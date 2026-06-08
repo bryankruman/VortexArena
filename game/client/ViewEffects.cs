@@ -127,20 +127,26 @@ public partial class ViewEffects : CanvasLayer
     /// <param name="dt">Frame time in seconds (QC <c>frametime</c> / <c>drawframetime</c>).</param>
     /// <param name="health">The local player's current health (QC <c>STAT(HEALTH)</c>).</param>
     /// <param name="eyeContents">SUPERCONTENTS bitmask at the eye (QC <c>pointcontents(view_origin)</c>).</param>
-    /// <param name="dead">True if the local player is dead/observing — drives the death fade.</param>
-    public void UpdateEffects(float dt, float health, int eyeContents, bool dead)
+    /// <param name="observing">
+    /// True when the local player is an observer / not yet spawned / the match has ended — the C# analogue of QC's
+    /// <c>spectatee_status == -1 || intermission</c> (view.qc:1281). The damage flash is force-cleared in this state
+    /// so the pre-spawn / connecting window (health 0, which would otherwise read as "dead" and ramp the death fade)
+    /// doesn't bleed a growing red tint onto the screen. A player who is genuinely dead DURING a match is NOT
+    /// observing, so the death fade still shows for them.
+    /// </param>
+    public void UpdateEffects(float dt, float health, int eyeContents, bool observing)
     {
         if (dt <= 0f)
             dt = 0.0166667f; // assume 60fps before we know the real frametime (QC drawframetime default)
 
-        UpdateDamage(dt, health);
+        UpdateDamage(dt, health, observing);
         UpdateContents(dt, eyeContents);
     }
 
     // -------------------------------------------------------------------------------------------------
     //  HUD_Damage (view.qc ~1237): myhealth_flash accumulate + decay; alpha = flash - pain_threshold.
     // -------------------------------------------------------------------------------------------------
-    private void UpdateDamage(float dt, float health)
+    private void UpdateDamage(float dt, float health, bool observing)
     {
         // Tint colour through the cvar (QC stov(autocvar_hud_damage_color), _hud_common.cfg:302), like the
         // liquid-tint sibling colours, instead of a hardcoded red.
@@ -201,6 +207,15 @@ public partial class ViewEffects : CanvasLayer
                 // still dead — ramp the flash up toward a steady death fade.
                 _myHealthFlash += fadeRate * dt;
             }
+        }
+
+        // Observing / not yet spawned / match ended (QC view.qc:1281 spectatee_status == -1 || intermission):
+        // force the flash off. Without this the pre-spawn window (health 0 reads as "dead" above and ramps the
+        // death fade) bleeds a growing red tint — the "view taking damage right after Create" glitch.
+        if (observing)
+        {
+            _myHealthFlash = 0f;
+            flashTemp = 0f;
         }
 
         _myHealthPrev = myhealth;

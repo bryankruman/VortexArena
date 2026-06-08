@@ -54,6 +54,7 @@ public partial class Shell : Node
     private XonoticGodot.Game.Net.NetGame? _netGame;
     private ConsoleOverlay _console = null!;
     private bool _paused;
+    private bool _toggleMenuHandled; // set by HandleToggleMenu, cleared each frame — prevents double-toggle
     private CanvasLayer? _loadingLayer;
     private LoadingScreen? _loadingScreen;
 
@@ -239,28 +240,53 @@ public partial class Shell : Node
     }
 
     // -------------------------------------------------------------------------------------------------
-    //  Escape — close / pop the in-game menu (opening is handled by the `togglemenu` command via bind)
+    //  Escape — toggle the in-game menu (only while a match is running)
     // -------------------------------------------------------------------------------------------------
+
+    public override void _Process(double delta)
+    {
+        // Clear the per-event guard flag after all input for this frame has been dispatched (Godot runs
+        // input before process). This prevents a stale flag from blocking the next frame's Escape.
+        _toggleMenuHandled = false;
+    }
 
     public override void _UnhandledInput(InputEvent @event)
     {
         if (@event is not InputEventKey { Pressed: true, Echo: false, Keycode: Key.Escape })
             return;
-        if (!MatchRunning || !_paused)
-            return; // opening the menu is the togglemenu command's job (fired by the Escape bind)
+        if (!MatchRunning)
+            return; // at the main menu Escape does nothing (there's nothing to pause)
 
-        // Inside a pushed sub-screen (Settings, …) Escape backs out one level; at the pause root it resumes.
-        if (_menu.CanPop) _menu.Pop();
-        else Resume();
+        // If the `togglemenu` command (fired by the Escape bind in a child node's _UnhandledInput)
+        // already handled the toggle during this same event dispatch, don't double-toggle.
+        if (_toggleMenuHandled)
+        {
+            GetViewport().SetInputAsHandled();
+            return;
+        }
+
+        if (_paused)
+        {
+            // Inside a pushed sub-screen (Settings, …) Escape backs out one level; at the pause root it resumes.
+            if (_menu.CanPop) _menu.Pop();
+            else Resume();
+        }
+        else
+        {
+            OpenPauseMenu();
+        }
         GetViewport().SetInputAsHandled();
     }
 
     /// <summary>DP <c>togglemenu</c> engine command: toggle the in-game pause menu. <paramref name="mode"/>
-    /// 0 = force close; anything else = toggle (open if closed, close/pop if open).</summary>
+    /// 0 = force close; anything else = toggle (open if closed, close/pop if open). Sets
+    /// <see cref="_toggleMenuHandled"/> so <see cref="_UnhandledInput"/> doesn't double-toggle when both
+    /// the bind and the hardcoded Escape handler fire on the same event.</summary>
     private void HandleToggleMenu(int mode)
     {
         if (!MatchRunning)
             return;
+        _toggleMenuHandled = true;
         if (mode == 0)
         {
             if (_paused) Resume();

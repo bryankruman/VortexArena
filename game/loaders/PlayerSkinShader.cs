@@ -66,6 +66,14 @@ public static class PlayerSkinShader
     /// </summary>
     public const string Code = @"// XonoticGodot player-skin shader (Darkplaces _shirt/_pants/_reflect masks). Generated in C#.
 shader_type spatial;
+// OPAQUE skin. These DP alias-model skins (players + weapon viewmodels) are solid: real translucency comes
+// from a shader blendFunc (which compiles elsewhere), never from the diffuse alpha — in DP a model skin's
+// alpha channel is a spec/gloss mask, not transparency. We must NOT write ALPHA below: in Godot 4 any
+// assignment to ALPHA sets the shader's `uses_alpha` flag, which moves the material into the transparent
+// pass (alpha-blended, and with the default depth_draw_opaque it stops writing depth). Depth-write off on a
+// self-overlapping mesh lets its own back faces draw over its front faces in submission order — the
+// ""I can see vertices through other vertices"" see-through artifact on every weapon model. Leaving ALPHA at
+// its default (1.0) keeps the skin opaque with normal depth testing.
 render_mode cull_back;
 
 uniform sampler2D albedo_tex : source_color, hint_default_white;
@@ -95,7 +103,8 @@ void fragment() {
     vec3 col = base.rgb + shirt * shirt_color + pants * pants_color;
     // colormod: the per-entity tint DP folds into the lighting term (default white = identity).
     ALBEDO = col * colormod;
-    ALPHA = base.a;
+    // NOTE: deliberately NOT writing ALPHA — see the opaque-skin note in the render_mode header. base.a is a
+    // spec/mask channel here, not transparency, and writing it would force the transparent (no-depth) pass.
 
     if (has_normal) {
         NORMAL_MAP = texture(normal_tex, UV).rgb;

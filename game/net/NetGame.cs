@@ -1247,7 +1247,11 @@ public sealed partial class NetGame : Node3D
             if (_prevHealth >= 0 && health < _prevHealth)
                 _viewEffects.ReportDamage(_prevHealth - health);
             _prevHealth = health;
-            _viewEffects.UpdateEffects(dt, health, SampleEyeContents(), health <= 0);
+            // "observing" = not yet spawned (the pre-spawn / connecting window right after Create): mirror QC's
+            // spectatee_status == -1 so health 0 here doesn't ramp the death fade onto the screen. _everAlive flips
+            // true on the first spawn (line ~1212), so a genuine in-match death (health<=0 after spawning) still
+            // shows the death fade. Matches the IsDead gate used for the death-cam below.
+            _viewEffects.UpdateEffects(dt, health, SampleEyeContents(), !_everAlive);
         }
 
         // Keep the radar oriented to the player's facing.

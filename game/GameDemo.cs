@@ -655,7 +655,9 @@ public partial class GameDemo : Node3D
     {
         if (_viewEffects is null || _player?.Player is null)
             return;
-        _viewEffects.UpdateEffects((float)delta, _player.Player.Health, _player.EyeContents, _player.IsDead);
+        // observing:false — the demo player is always a spawned, playing actor (never an observer / pre-spawn), so
+        // the death fade is driven by the internal health<1 ramp when it dies, not suppressed.
+        _viewEffects.UpdateEffects((float)delta, _player.Player.Health, _player.EyeContents, observing: false);
 
         // Advance the announcer queue (play the next queued voice if the current one finished).
         _notifications?.ProcessAnnouncerQueue();
