@@ -43,6 +43,12 @@ public partial class ProjectileRenderer : Node3D
 
     private readonly Dictionary<int, Visual> _visuals = new();
 
+    /// <summary>Reused per-frame iteration buffer so <see cref="Process"/> never allocates a snapshot list.</summary>
+    private readonly List<Visual> _iterBuffer = new();
+
+    /// <summary>Soft round glow sprite texture — identical for every energy bolt, so built once and shared.</summary>
+    private static ImageTexture? _glowTexture;
+
     /// <summary>Dependency: the effect system, used when a projectile is removed/explodes (optional).</summary>
     public EffectSystem? Effects { get; set; }
 
@@ -187,7 +193,11 @@ public partial class ProjectileRenderer : Node3D
             return;
 
         // Iterate over a snapshot since a removal could mutate the dictionary mid-loop in edge cases.
-        foreach (Visual v in new List<Visual>(_visuals.Values))
+        // Reuse a persistent buffer rather than allocating a fresh List every frame.
+        _iterBuffer.Clear();
+        foreach (Visual v in _visuals.Values)
+            _iterBuffer.Add(v);
+        foreach (Visual v in _iterBuffer)
         {
             if (v.Entity.IsFreed)
             {
@@ -252,7 +262,7 @@ public partial class ProjectileRenderer : Node3D
                 var sprite = new Sprite3D
                 {
                     Name = "Glow",
-                    Texture = MakeGlowTexture(),
+                    Texture = _glowTexture ??= MakeGlowTexture(),
                     Modulate = color,
                     Billboard = BaseMaterial3D.BillboardModeEnum.Enabled,
                     Shaded = false,

@@ -43,6 +43,26 @@ public partial class ModelAnimator : Node3D
     // Per-surface resolved materials (mirrors Md3Morph): re-applied on every morph rebuild in ApplyFrame.
     private readonly List<(Md3Surface surface, Material? material, bool visible)> _surfaces = new();
     private MeshInstance3D _mesh = null!;
+
+    /// <summary>
+    /// Pre-allocated per-surface morph buffers, built once by <see cref="BuildMorphBuffers"/> and reused on
+    /// every <see cref="ApplyFrame"/>. The static geometry (UV + triangle index) is marshalled into the
+    /// surface's <see cref="Godot.Collections.Array"/> once and retained; only the morphing position/normal
+    /// arrays are recomputed and re-uploaded each frame. This is what keeps per-frame playback allocation-free
+    /// (no <c>new ArrayMesh</c> / no fresh vertex arrays per tick), eliminating the GC churn that otherwise
+    /// stutters the game when several animated entities are visible.
+    /// </summary>
+    private sealed class SurfaceBuffers
+    {
+        public required Md3Surface Surface;
+        public required Material? Material;
+        public required Vector3[] Positions;   // mutated + re-uploaded each frame
+        public required Vector3[] Normals;     // mutated + re-uploaded each frame
+        public required Godot.Collections.Array Arrays; // holds the static UV/Index Variants across frames
+    }
+    private readonly List<SurfaceBuffers> _surfaceBuffers = new();
+    private ArrayMesh? _morphMesh;   // single persistent mesh — surfaces are updated in place, never reassigned
+    private bool _morphInit;
     private Node3D? _tagsRoot;
     private readonly List<(Md3Tag tag, Marker3D marker)> _tagMarkers = new();
 
@@ -284,16 +304,17 @@ public partial class ModelAnimator : Node3D
     // =================================================================================================
 
     /// <summary>
-    /// Rebuild the mesh surfaces interpolating each vertex between <paramref name="frameA"/> and
-    /// <paramref name="frameB"/> by <paramref name="t"/> (0 = A, 1 = B), and re-pose the tag markers.
-    /// This is the per-tick cost of MD3 morph playback; surfaces are small (player models are a few
-    /// hundred verts) so a fresh ArrayMesh per frame is fine for the entity counts a match has.
+    /// Allocate the persistent morph mesh and per-surface buffers once. The UV coordinates and triangle
+    /// indices never change between MD3 frames, so they're computed and marshalled into each surface's
+    /// <see cref="Godot.Collections.Array"/> here a single time and retained; only the position/normal arrays
+    /// are re-filled and re-uploaded per frame in <see cref="ApplyFrame"/>. Skips degenerate / nodraw surfaces
+    /// up front so the per-frame loop stays tight.
     /// </summary>
-    private void ApplyFrame(int frameA, int frameB, float t)
+    private void BuildMorphBuffers()
     {
-        var mesh = new ArrayMesh();
+        _morphInit = true;
+        _morphMesh = new ArrayMesh { ResourceName = "Md3Morph" };
 
-        int surfaceIndex = 0;
         foreach ((Md3Surface surface, Material? material, bool visible) in _surfaces)
         {
             if (!visible)
@@ -302,28 +323,11 @@ public partial class ModelAnimator : Node3D
             if (vcount <= 0 || surface.Triangles.Length == 0 || surface.FrameVertices.Length == 0)
                 continue;
 
-            int fa = Math.Clamp(frameA, 0, surface.FrameVertices.Length - 1);
-            int fb = Math.Clamp(frameB, 0, surface.FrameVertices.Length - 1);
-            Md3Vertex[] va = surface.FrameVertices[fa];
-            Md3Vertex[] vb = surface.FrameVertices[fb];
-            if (va.Length < vcount || vb.Length < vcount)
-                continue;
-
-            var positions = new Vector3[vcount];
-            var normals = new Vector3[vcount];
             var uvs = new Vector2[vcount];
             for (int v = 0; v < vcount; v++)
-            {
-                // Lerp in Quake space, then convert — equivalent to lerping the converted values.
-                System.Numerics.Vector3 p = System.Numerics.Vector3.Lerp(va[v].Position, vb[v].Position, t);
-                System.Numerics.Vector3 nrm = System.Numerics.Vector3.Lerp(va[v].Normal, vb[v].Normal, t);
-                positions[v] = Coords.ToGodot(p);
-                Vector3 gn = Coords.ToGodot(nrm);
-                normals[v] = gn.LengthSquared() > 1e-8f ? gn.Normalized() : Vector3.Up;
                 uvs[v] = v < surface.TexCoords.Length
                     ? new Vector2(surface.TexCoords[v].X, surface.TexCoords[v].Y)
                     : Vector2.Zero;
-            }
 
             var indices = new int[surface.Triangles.Length];
             for (int i = 0; i < surface.Triangles.Length; i++)
@@ -334,21 +338,74 @@ public partial class ModelAnimator : Node3D
 
             var arrays = new Godot.Collections.Array();
             arrays.Resize((int)Mesh.ArrayType.Max);
-            arrays[(int)Mesh.ArrayType.Vertex] = positions;
-            arrays[(int)Mesh.ArrayType.Normal] = normals;
+            // UV + index are static across frames — assign once (marshalled to Packed* Variants and retained).
             arrays[(int)Mesh.ArrayType.TexUV] = uvs;
             arrays[(int)Mesh.ArrayType.Index] = indices;
-            mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
-            if (material is not null)
-                mesh.SurfaceSetMaterial(surfaceIndex, material);
-            surfaceIndex++;
+
+            _surfaceBuffers.Add(new SurfaceBuffers
+            {
+                Surface = surface,
+                Material = material,
+                Positions = new Vector3[vcount],
+                Normals = new Vector3[vcount],
+                Arrays = arrays,
+            });
         }
 
-        // Preserve any material the caller set on surface 0 onto the rebuilt mesh.
-        Material? matOverride = _mesh.MaterialOverride;
-        _mesh.Mesh = mesh;
-        if (matOverride is not null)
-            _mesh.MaterialOverride = matOverride;
+        // Assign the persistent mesh to the instance once; from here on we mutate its surfaces in place so
+        // the MeshInstance is never re-pointed at a new resource (which would re-trigger render setup).
+        // MaterialOverride lives on the MeshInstance, not the mesh, so it survives in-place surface rebuilds.
+        _mesh.Mesh = _morphMesh;
+    }
+
+    /// <summary>
+    /// Rebuild the mesh surfaces interpolating each vertex between <paramref name="frameA"/> and
+    /// <paramref name="frameB"/> by <paramref name="t"/> (0 = A, 1 = B), and re-pose the tag markers — the
+    /// per-tick cost of MD3 morph playback (DarkPlaces' R_AliasLerpVerts). Reuses the buffers built by
+    /// <see cref="BuildMorphBuffers"/>: only the morphing position/normal arrays are recomputed and uploaded,
+    /// on a single persistent <see cref="ArrayMesh"/>, so a tick allocates nothing on the managed heap.
+    /// </summary>
+    private void ApplyFrame(int frameA, int frameB, float t)
+    {
+        if (!_morphInit)
+            BuildMorphBuffers();
+
+        if (_morphMesh is not null && _surfaceBuffers.Count > 0)
+        {
+            _morphMesh.ClearSurfaces();
+            int surfaceIndex = 0;
+            foreach (SurfaceBuffers sb in _surfaceBuffers)
+            {
+                Md3Surface surface = sb.Surface;
+                int vcount = surface.VertexCount;
+                int fa = Math.Clamp(frameA, 0, surface.FrameVertices.Length - 1);
+                int fb = Math.Clamp(frameB, 0, surface.FrameVertices.Length - 1);
+                Md3Vertex[] va = surface.FrameVertices[fa];
+                Md3Vertex[] vb = surface.FrameVertices[fb];
+                if (va.Length < vcount || vb.Length < vcount)
+                    continue;
+
+                Vector3[] positions = sb.Positions;
+                Vector3[] normals = sb.Normals;
+                for (int v = 0; v < vcount; v++)
+                {
+                    // Lerp in Quake space, then convert — equivalent to lerping the converted values.
+                    System.Numerics.Vector3 p = System.Numerics.Vector3.Lerp(va[v].Position, vb[v].Position, t);
+                    System.Numerics.Vector3 nrm = System.Numerics.Vector3.Lerp(va[v].Normal, vb[v].Normal, t);
+                    positions[v] = Coords.ToGodot(p);
+                    Vector3 gn = Coords.ToGodot(nrm);
+                    normals[v] = gn.LengthSquared() > 1e-8f ? gn.Normalized() : Vector3.Up;
+                }
+
+                // Only the morphing streams are re-uploaded; UV + index Variants stay as set in BuildMorphBuffers.
+                sb.Arrays[(int)Mesh.ArrayType.Vertex] = positions;
+                sb.Arrays[(int)Mesh.ArrayType.Normal] = normals;
+                _morphMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, sb.Arrays);
+                if (sb.Material is not null)
+                    _morphMesh.SurfaceSetMaterial(surfaceIndex, sb.Material);
+                surfaceIndex++;
+            }
+        }
 
         PoseTags(frameA, frameB, t);
     }
