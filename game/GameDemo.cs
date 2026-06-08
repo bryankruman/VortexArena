@@ -763,7 +763,17 @@ public partial class GameDemo : Node3D
             }
         }
         hand.QueueFree();
-        return attach;
+
+        // POSITION the gun only — never re-orient it. The v_ model geometry is already authored pointing
+        // "forward" (the same IQM the world pickup builds correctly via Coords.ToGodot), and ViewModel's
+        // ViewBasis re-aims that built-in forward into the camera frame. The socket's bind ROTATION must not
+        // be layered on top: the IQM hand rigs expose a `weapon` bone with identity rotation (so this was a
+        // no-op for them), but the older DPM hand rigs (h_crylink/electro/rl/gl/hagar/ok_*) expose only a
+        // `tag_handle`, whose bind pose carries the MD3/DPM tag-storage convention's 90°-about-X rotation.
+        // Applied verbatim that spun the gun 90° — the "twisted crylink" viewmodel (DPM-rig weapons twisted
+        // while IQM-rig weapons like shotgun/vortex looked fine). Keep the socket's translation (the held-hand
+        // offset) and any uniform scale, drop the rotation/shear.
+        return new Transform3D(Basis.Identity.Scaled(attach.Basis.Scale), attach.Origin);
     }
 
     /// <summary>
