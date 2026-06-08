@@ -38,13 +38,16 @@ public partial class ConsoleOverlay : CanvasLayer
     private ConsoleLineEdit _input = null!;
 
     private ConfigInterpreter? _interp;
+    private CvarService? _cvars;
     private ConsoleCommands? _commands;
     private Func<bool>? _shouldCaptureOnClose;
 
     private readonly List<string> _history = new();
     private int _histIndex = -1;                 // -1 = editing a fresh line (not navigating history)
 
-    private Action<LogLevel, string>? _prevSink; // the sink we wrapped (restored on teardown)
+    private Action<LogEntry>? _logSubscription;  // EntryRecorded handler we installed (detached on teardown)
+    private Action<string>? _cvarChangedSub;     // CvarService.Changed handler watching `developer`
+    private int _renderedDeveloper = -1;         // dev level the scrollback was last rendered at
     private Input.MouseModeEnum _savedMouseMode = Input.MouseModeEnum.Visible;
 
     /// <summary>True while the drop-down is showing (mirrors <see cref="ConsoleState.IsOpen"/>).</summary>
@@ -56,21 +59,31 @@ public partial class ConsoleOverlay : CanvasLayer
         ProcessMode = ProcessModeEnum.Always;     // usable even while the in-game menu pauses the tree
         BuildUi();
 
-        // Mirror the whole log stream into the scrollback while keeping the existing sink (GD.PrintRich → the
-        // editor Output panel). Deferred because logs can be emitted off the main thread / mid-frame.
-        _prevSink = Log.Sink;
-        Log.Sink = (level, line) =>
-        {
-            _prevSink?.Invoke(level, line);
-            string bb = Log.ToBBCode(level, line);
-            Callable.From(() => AppendBuffer(bb)).CallDeferred();
-        };
+        // Subscribe to the Log facade's ALWAYS-ON ring buffer. The buffer captures every Log.* call BEFORE the
+        // `developer` gate, so a Trace emitted at developer 0 still lands in the scrollback — switching to
+        // `set developer 1` reveals it retroactively (see RebuildScrollback). The live sink (Main._Ready's
+        // GD.PrintRich → editor Output) is left alone; we read the buffer in parallel.
+        _logSubscription = OnLogEntry;
+        Log.EntryRecorded += _logSubscription;
+
+        // Replay everything captured BEFORE we attached (MenuState.Boot, registries, etc.) so the console shows
+        // the boot log even on its first open. Rendered at the current developer level — when the cvar changes
+        // later we re-render the whole buffer.
+        RebuildScrollback();
     }
 
     public override void _ExitTree()
     {
-        if (_prevSink != null)
-            Log.Sink = _prevSink;                 // stop mirroring into a freed node
+        if (_logSubscription != null)
+        {
+            Log.EntryRecorded -= _logSubscription;
+            _logSubscription = null;
+        }
+        if (_cvarChangedSub != null && _cvars != null)
+        {
+            _cvars.Changed -= _cvarChangedSub;
+            _cvarChangedSub = null;
+        }
     }
 
     /// <summary>
@@ -88,9 +101,22 @@ public partial class ConsoleOverlay : CanvasLayer
         Func<bool> shouldCaptureOnClose)
     {
         _interp = interp;
+        _cvars = cvars;
         _shouldCaptureOnClose = shouldCaptureOnClose;
         _commands = new ConsoleCommands(interp, cvars, Print, Clear, localRouter, remoteSender);
         RegisterHostCommands(interp);
+
+        // Watch the `developer` cvar live: when it changes, re-render the entire scrollback so Trace/Debug
+        // entries previously hidden become visible (and vice-versa). The buffer itself keeps everything.
+        _cvarChangedSub = name =>
+        {
+            if (string.Equals(name, "developer", StringComparison.Ordinal))
+                Callable.From(RebuildScrollback).CallDeferred();
+        };
+        cvars.Changed += _cvarChangedSub;
+
+        // Re-render now that we know the live cvar (the boot replay in _Ready ran against dev 0 by default).
+        RebuildScrollback();
     }
 
     /// <summary>Engine/host actions that need the Godot front-end (DP engine commands the console exposes). Wired
@@ -158,13 +184,11 @@ public partial class ConsoleOverlay : CanvasLayer
             SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
             ClearButtonEnabled = false,
         };
-        _input.TextSubmitted += OnSubmit;
+        _input.Submit = OnSubmit;
         _input.HistoryPrev = HistoryPrev;
         _input.HistoryNext = HistoryNext;
         _input.CompleteTab = OnTab;
         vbox.AddChild(_input);
-
-        AppendBuffer("[color=#888888]XonoticGodot console. Type [/color][color=#cccccc]help[/color][color=#888888] for a hint, [/color][color=#cccccc]`[/color][color=#888888] to close.[/color]");
     }
 
     // =============================================================================================
@@ -226,11 +250,60 @@ public partial class ConsoleOverlay : CanvasLayer
     //  output
     // =============================================================================================
 
-    /// <summary>Append a line of command/server output (may carry Quake <c>^</c> colour codes).</summary>
-    public void Print(string line) => AppendBuffer(Log.ToBBCode(LogLevel.Info, line));
+    /// <summary>Append a line of command/server output (may carry Quake <c>^</c> colour codes). Routes through
+    /// the Log facade at HELP level so the line lands in the buffer + the editor Output panel WITHOUT a
+    /// <c>[::client::INFO]</c> header (HELP is bare-message at every dev level — DP's <c>LOG_HELP</c>) — typed
+    /// console replies shouldn't disappear from the scrollback the next time the user reopens the console, and
+    /// shouldn't gain a header at developer 1+.</summary>
+    public void Print(string line) => Log.Help(line ?? "");
 
-    /// <summary>Clear the scrollback (the <c>clear</c> command).</summary>
+    /// <summary>Clear the visible scrollback (the <c>clear</c> command). The Log buffer is preserved so
+    /// reopening the console after `clear` still shows the history — matches DP's <c>con_clear</c> which
+    /// scrolls past, not erases the journal.</summary>
     public void Clear() => _output.Clear();
+
+    /// <summary>Live handler installed on <see cref="Log.EntryRecorded"/>: render the entry at the current dev
+    /// level if it would be visible. Deferred because logs may be emitted off the main thread / mid-frame.</summary>
+    private void OnLogEntry(LogEntry entry)
+    {
+        Callable.From(() =>
+        {
+            int dev = CurrentDeveloper();
+            if (!Log.IsVisibleAt(entry.Level, dev))
+                return;
+            string? rendered = Log.Render(entry, dev);
+            if (rendered is null)
+                return;
+            AppendBuffer(Log.ToBBCode(entry.Level, rendered));
+        }).CallDeferred();
+    }
+
+    /// <summary>Re-render the entire scrollback from the Log ring buffer at the current <c>developer</c>
+    /// level. Called on _Ready, after Initialize wires the live cvar, and whenever `developer` changes —
+    /// switching from 0 → 1 reveals previously buffered Trace lines; switching back hides them.</summary>
+    private void RebuildScrollback()
+    {
+        if (_output == null || !GodotObject.IsInstanceValid(_output))
+            return;
+        int dev = CurrentDeveloper();
+        if (dev == _renderedDeveloper && _output.GetParagraphCount() > 0)
+            return; // nothing to do — already at this level and scrollback isn't empty
+        _output.Clear();
+        AppendBuffer("[color=#888888]XonoticGodot console. Type [/color][color=#cccccc]help[/color][color=#888888] for a hint, [/color][color=#cccccc]`[/color][color=#888888] to close. developer = [/color][color=#cccccc]" + dev.ToString() + "[/color][color=#888888].[/color]");
+        foreach (LogEntry e in Log.BufferSnapshot())
+        {
+            if (!Log.IsVisibleAt(e.Level, dev))
+                continue;
+            string? rendered = Log.Render(e, dev);
+            if (rendered is null)
+                continue;
+            AppendBuffer(Log.ToBBCode(e.Level, rendered));
+        }
+        _renderedDeveloper = dev;
+    }
+
+    /// <summary>The live <c>developer</c> level (0 when no cvar store is wired yet — early in _Ready).</summary>
+    private int CurrentDeveloper() => _cvars is null ? 0 : (int)_cvars.GetFloat("developer");
 
     /// <summary>Append one already-BBCode-formatted line, trimming the oldest paragraphs past the cap.</summary>
     private void AppendBuffer(string bbcode)
@@ -250,7 +323,6 @@ public partial class ConsoleOverlay : CanvasLayer
     {
         _input.Clear();
         _histIndex = -1;
-        _input.GrabFocus();
         if (string.IsNullOrWhiteSpace(text))
             return;
 
@@ -342,14 +414,17 @@ public partial class ConsoleOverlay : CanvasLayer
 
 /// <summary>
 /// The console input line — a <see cref="LineEdit"/> that intercepts Up/Down (history), Tab (completion), and
-/// lets Enter submit. Handled in <see cref="_GuiInput"/> with <see cref="Control.AcceptEvent"/> so Tab doesn't
-/// move focus and the arrows don't just move the caret.
+/// Enter (submit). All are handled in <see cref="_GuiInput"/> with <see cref="Control.AcceptEvent"/> so Tab
+/// doesn't move focus, the arrows don't just move the caret, and — crucially — Enter never reaches the native
+/// <see cref="LineEdit"/> submit path, which drops keyboard focus from the line (forcing a re-click). We drive
+/// the submit ourselves via <see cref="Submit"/> and the field keeps focus.
 /// </summary>
 public partial class ConsoleLineEdit : LineEdit
 {
     public Action? HistoryPrev;
     public Action? HistoryNext;
     public Func<bool>? CompleteTab;
+    public Action<string>? Submit;
 
     public override void _GuiInput(InputEvent @event)
     {
@@ -368,6 +443,13 @@ public partial class ConsoleLineEdit : LineEdit
             case Key.Tab:
                 if (CompleteTab?.Invoke() ?? false)
                     AcceptEvent();
+                break;
+            case Key.Enter:
+            case Key.KpEnter:
+                // Consume Enter so the built-in LineEdit submit (which releases focus) never runs; we submit
+                // ourselves, leaving focus on the field so the next command can be typed without a re-click.
+                Submit?.Invoke(Text);
+                AcceptEvent();
                 break;
         }
     }

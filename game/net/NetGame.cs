@@ -100,6 +100,12 @@ public sealed partial class NetGame : Node3D
     private ViewModel _viewModel = null!;       // first-person weapon view-model (CSQC viewmodel / wepent)
     private int _equippedWeaponId = int.MinValue; // weapon id currently in the viewmodel; rebuild only on a change
     private bool _weaponsPrecached;             // PrecacheWeaponModels ran once (warm the per-weapon asset caches)
+    private bool _readyComplete;                // _Ready finished — _Process can run its full body (before this, fields are half-built)
+    private HandshakeStage _handshakeStage;     // last sub-stage announced to the LoadingScreen (so we only BeginStage on a transition)
+
+    /// <summary>Sub-stages of the post-_Ready handshake/spawn phase, used by <see cref="_Process"/> to drive
+    /// the loading bar to BeginStage on each transition (not every frame).</summary>
+    private enum HandshakeStage { None, Connecting, WaitingForServer, Joining, Spawned }
     private MusicPlayer? _musicPlayer;          // client-side map music (cdtrack / target_music / trigger_music)
 
     // The SHARED first-person view subsystem (zoom + FOV + chase/death cam + eye-contents) — the SAME component
@@ -282,47 +288,76 @@ public sealed partial class NetGame : Node3D
     //  Lifecycle
     // =====================================================================================
 
-    public override void _Ready()
+    public override async void _Ready()
     {
         // The asset loader (models/sounds/maps) over the shared VFS, when the menu mounted one.
         if (_vfs is not null)
             _assets = new AssetLoader(_vfs);
 
-        // --- loading stages (DP SCR_PushLoadingScreen weighted hierarchy) ---
-        // Progress is set here even though Godot won't re-render mid-_Ready; the loading screen
-        // was already shown by Shell and these set the state that the first rendered frame sees.
-        LoadingScreen?.UpdateProgress(0.05f, "Loading map...");
+        // The load sequence runs as a coroutine: each BeginStage sets the bar's target and per-stage expected
+        // time (the LoadingScreen animates asymptotically from where it is now toward that target), then we
+        // yield one frame so the bar can repaint with the new status text BEFORE the synchronous work begins.
+        // After the work, we yield again so the bar can catch up to its now-elapsed-time-based position before
+        // the next stage takes over. Net effect: the bar advances visibly through every sub-step and slows down
+        // gracefully when a stage runs longer than expected, instead of one "Loading…" → snap-to-1 jump.
+        // (Async void so a TeardownGame mid-load just leaves this coroutine to fall off the tree-check below.)
 
         if (_isListenServer)
+        {
+            LoadingScreen?.BeginStage("Loading map…", 0.30f, 4.0f);
+            await YieldForLoadingFrame();
+            if (!IsInsideTree()) return;
+
             StartListenServer();
+
+            LoadingScreen?.BeginStage("Booting world…", 0.42f, 0.5f);
+            await YieldForLoadingFrame();
+            if (!IsInsideTree()) return;
+        }
         else
+        {
+            LoadingScreen?.BeginStage("Preparing client…", 0.30f, 0.5f);
+            await YieldForLoadingFrame();
+            if (!IsInsideTree()) return;
+
             BootClientFacade();
 
-        LoadingScreen?.UpdateProgress(0.40f, "Building world...");
+            LoadingScreen?.BeginStage("Resolving server…", 0.42f, 0.5f);
+            await YieldForLoadingFrame();
+            if (!IsInsideTree()) return;
+        }
 
         // The client connects to the chosen endpoint (a listen server is on 127.0.0.1; a pure client on _host).
         StartClient();
 
-        LoadingScreen?.UpdateProgress(0.50f, "Setting up renderer...");
+        LoadingScreen?.BeginStage("Setting up renderer…", 0.55f, 1.0f);
+        await YieldForLoadingFrame();
+        if (!IsInsideTree()) return;
 
         // Render layer + the net→render bridge + a basic HUD/camera. Built regardless of mode so a connect that
         // hasn't completed yet still has somewhere to draw once snapshots flow.
         SetupRender();
         SetupCameraAndHud();
 
-        LoadingScreen?.UpdateProgress(0.60f, "Starting music...");
+        LoadingScreen?.BeginStage("Starting music…", 0.62f, 0.3f);
+        await YieldForLoadingFrame();
+        if (!IsInsideTree()) return;
 
         // Map music: read the cdtrack from the mapinfo file (VFS) and wire a MusicPlayer into the render tree.
         SetupMusic();
 
-        LoadingScreen?.UpdateProgress(0.65f, "Precaching models...");
+        LoadingScreen?.BeginStage("Precaching weapon models…", 0.82f, 3.0f);
+        await YieldForLoadingFrame();
+        if (!IsInsideTree()) return;
 
         // Warm every weapon's view model + hand rig into the asset caches now, under the loading screen, so the
         // first switch/pickup of a weapon in combat doesn't hitch reading+decoding the model and its textures on
         // the main thread (DP precaches weapon models at map load). Runs after _assets is built above.
-        PrecacheWeaponModels();
+        // The async variant yields every few weapons so the bar visibly ticks through this stage.
+        await PrecacheWeaponModelsAsync();
+        if (!IsInsideTree()) return;
 
-        LoadingScreen?.UpdateProgress(0.80f, "Connecting...");
+        LoadingScreen?.BeginStage("Connecting…", 0.90f, 0.5f);
 
         // FPS mouse-look: capture the cursor (the Shell releases/recaptures it around the in-game menu).
         Input.MouseMode = Input.MouseModeEnum.Captured;
@@ -330,6 +365,18 @@ public sealed partial class NetGame : Node3D
         GD.Print(_isListenServer
             ? $"[NetGame] listen server on 127.0.0.1:{_port} (map '{_map}', {_gametype}, {_botCount} bots) — self-connecting."
             : $"[NetGame] connecting to {_host}:{_port}.");
+
+        // _Process can safely run its full body now (camera/HUD/render/client all built above).
+        _readyComplete = true;
+    }
+
+    /// <summary>Yield one process_frame so the LoadingScreen's _Process can repaint with whatever stage
+    /// is currently in flight. No-op (synchronously completes) if the node is no longer in the tree —
+    /// guards against ToSignal throwing on a torn-down NetGame mid-load.</summary>
+    private async System.Threading.Tasks.Task YieldForLoadingFrame()
+    {
+        if (!IsInsideTree()) return;
+        await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
     }
 
     /// <summary>
@@ -767,6 +814,11 @@ public sealed partial class NetGame : Node3D
         // time — hide it until it's wired (the scoreboard header already shows the time/frag limits).
         _fullHud.Timer.Visible = false;
 
+        // Ping readout (next to the FPS counter): feed it the live ENet round-trip estimate to the server. The
+        // panel self-gates on cl_showping/showping and stays hidden until the cvar is set; the provider returns
+        // -1 before the link is up (the panel then draws nothing). On a loopback listen server this reads ~0.
+        _fullHud.Ping.PingProvider = () => _client?.PingMs ?? -1;
+
         // [T51] Floating damage-number layer (QC cl_damagetext). Full-rect overlay; fed each frame in _Process
         // from the server-side DamagetextMutator's drained events, projected via the first-person _camera.
         _damageText = new XonoticGodot.Game.Client.DamageTextLayer { Name = "DamageText" };
@@ -922,13 +974,13 @@ public sealed partial class NetGame : Node3D
 
         // Map the active weapon → its first-person v_ model: W_Model = "models/weapons/" + v_*.md3 (all.qc:233/367).
         // Weapon.WorldModel is the bare "v_laser.md3", so prefix the directory; a missing model → placeholder bar.
+        // Base-faithful selection (CL_WeaponEntity_SetModel): full-model DPM rigs (rl/gl/crylink/electro/hagar/
+        // ok_*) render the h_ HAND RIG itself; invisible-hand IQM rigs render the v_ model attached to the rig's
+        // "weapon" bone. BuildViewModelEquip is the single source of truth shared with the GameDemo equip path.
         XonoticGodot.Common.Gameplay.Weapon w = XonoticGodot.Common.Gameplay.Weapons.ById(id);
         string vModel = WeaponVModelPath(w);
-        Node3D? built = string.IsNullOrEmpty(vModel) ? null : _assets?.LoadModel(vModel);
-        Transform3D attach = string.IsNullOrEmpty(vModel)
-            ? Transform3D.Identity
-            : GameDemo.WeaponAttachTransform(_assets, vModel);
-        _viewModel.SetWeaponModel(built, MuzzleEffectFor(w), "tag_shot", attach);
+        GameDemo.ViewModelEquip eq = GameDemo.BuildViewModelEquip(_assets, vModel);
+        _viewModel.SetWeaponModel(eq.Model, MuzzleEffectFor(w), "tag_shot", eq.Attach);
         _viewModel.Visible = true;
     }
 
@@ -955,44 +1007,178 @@ public sealed partial class NetGame : Node3D
     /// covers anything the player later picks up, switches to, or sees another player carry — faithful to
     /// DarkPlaces precaching weapon models at map load. Runs once (guarded by <see cref="_weaponsPrecached"/>).</para>
     /// </summary>
-    private void PrecacheWeaponModels()
+    private async System.Threading.Tasks.Task PrecacheWeaponModelsAsync()
     {
         if (_assets is null || _weaponsPrecached)
             return;
         _weaponsPrecached = true;
 
-        int warmed = 0, muzzles = 0;
+        // Smart-precache: only warm the v_ model + hand rig for weapons we EXPECT to see this match (the
+        // map's weapon_<netname> spawns, plus whatever the active gametype/mutators force). Anything else
+        // is left to AssetLoader's lazy cache — first encounter takes a one-frame hitch and then it's
+        // cached. The cost saving is real: a dm map averages ~9 distinct weapons; warming 24 is ~2.5× more
+        // mesh/material/texture work than this match will ever use. Mutators that REPLACE the loadout
+        // (instagib/overkill) shrink this further. Always register muzzle offsets, though — that uses a
+        // header-only parser (LoadMuzzleModel), is cheap, and the in-process listen server needs them for
+        // any weapon a player might fire (including the lazy ones).
+        System.Collections.Generic.HashSet<string> expected = ComputeExpectedWeapons();
+
+        // Spread the per-weapon load across frames so the loading bar visibly ticks instead of freezing on
+        // this one stage. Yield every few weapons (not every one — the yield costs a frame each).
+        const int YieldEveryNWeapons = 4;
+
+        int warmed = 0, skipped = 0, muzzles = 0;
+        int i = 0;
         foreach (XonoticGodot.Common.Gameplay.Weapon w in XonoticGodot.Common.Gameplay.Weapons.All)
         {
             string vModel = WeaponVModelPath(w);
             if (string.IsNullOrEmpty(vModel))
                 continue;
 
-            // Build once to fill the parse + material/texture caches, then discard the orphan node (never added
-            // to the tree → free it so it doesn't leak). A miss just caches the failure (no node to free).
-            _assets.LoadModel(vModel)?.QueueFree();
-            // The hand rig is loaded by WeaponAttachTransform on each switch; warm it too (it builds + frees its
-            // own throwaway node internally and caches the attach transform's model).
-            GameDemo.WeaponAttachTransform(_assets, vModel);
-
-            // Per-weapon shot-origin (QC CL_WeaponEntity_SetModel: movedir = gettaginfo(weapon, "shot")). Extract
-            // the weapon model's tag_shot in model-local Quake coords and register it so the (in-process, listen-
-            // server) WeaponFiring.SetupShot spawns each weapon's shot from its real muzzle. The shot tag lives on
-            // the h_ HAND RIG (the v_ visual model is attached to it), exactly as Base reads movedir from the
-            // weaponchild rig (all.qc:412) — so prefer h_<name>.iqm, falling back to the v_ model. A model with no
-            // shot tag leaves the weapon on the generic fallback. Runs once here at connect alongside the warm-up.
+            // Per-weapon shot-origin (QC CL_WeaponEntity_SetModel: movedir, all.qc:367-424). Computed via the
+            // header-only MuzzleTag parser — cheap enough to do for EVERY weapon so server-side projectile
+            // spawns stay correct even for weapons we didn't warm. Base prefers the v_ model's own shot tag
+            // (transformed through the h_ rig's weapon-attach bone), falling back to the h_ rig's shot tag.
             string hModel = vModel.Replace("/v_", "/h_").Replace(".md3", ".iqm");
-            System.Numerics.Vector3? shot =
-                (hModel != vModel && _assets.Vfs.Exists(hModel) ? _assets.LoadMuzzleOffset(hModel) : null)
-                ?? _assets.LoadMuzzleOffset(vModel);
+            System.Numerics.Vector3? shot = _assets.LoadMuzzleOffset(vModel, hModel != vModel ? hModel : null);
             if (shot is { } so)
             {
                 XonoticGodot.Common.Gameplay.WeaponFiring.RegisterMuzzleOffset(w.RegistryId, so);
                 muzzles++;
+                // `set developer 1` to confirm the per-weapon shot origin (QC movedir) actually applied: forward
+                // (x), +left (y), up (z) from the eye. A weapon that fires from screen-CENTER would show ~(0,0,0)
+                // or be ABSENT here (fell back to the generic offset). Devastator should read ~(40.9,-9,-17).
+                XonoticGodot.Common.Diagnostics.Log.Trace(
+                    $"[muzzle] {w.NetName}: movedir=({so.X:0.0},{so.Y:0.0},{so.Z:0.0}) fwd/left/up from eye");
             }
-            warmed++;
+
+            // The heavy bit: full mesh + material/texture build of the v_ model, plus the hand rig. Only do
+            // it if this match is likely to need this weapon. An unanticipated pickup just lazy-loads.
+            if (expected.Contains(w.NetName))
+            {
+                // Build once to fill the parse + material/texture caches, then discard the orphan node
+                // (never added to the tree → free it so it doesn't leak). A miss just caches the failure.
+                _assets.LoadModel(vModel)?.QueueFree();
+                // The hand rig is loaded by WeaponAttachTransform on each switch; warm it too (it builds +
+                // frees its own throwaway node internally and caches the attach transform's model).
+                GameDemo.WeaponAttachTransform(_assets, vModel);
+                warmed++;
+            }
+            else
+            {
+                skipped++;
+            }
+
+            if (++i % YieldEveryNWeapons == 0)
+            {
+                await YieldForLoadingFrame();
+                if (!IsInsideTree()) return;
+            }
         }
-        GD.Print($"[NetGame] precached {warmed} weapon models ({muzzles} muzzle tags).");
+        GD.Print($"[NetGame] precached {warmed} weapon models, skipped {skipped} (lazy), {muzzles} muzzle tags.");
+    }
+
+    /// <summary>
+    /// Decide which weapons this match is likely to use, so <see cref="PrecacheWeaponModelsAsync"/> can warm
+    /// just those instead of all 24. Combines (a) the map's <c>weapon_&lt;netname&gt;</c> spawn entities,
+    /// (b) the universal blaster (granted on spawn in nearly every standard gametype), and (c) mutator/arena
+    /// overrides that REPLACE the loadout (instagib → vaporizer only, overkill → ok* set, nix → all normal
+    /// non-mutatorblocked weapons it rotates through, <c>g_weaponarena</c> → the arena list). Falls back to
+    /// "all weapons" for the pure-client path where we have no map/cvar info yet; lazy <see cref="AssetLoader"/>
+    /// caching catches anything we missed (one-frame hitch on first use, then cached).
+    /// </summary>
+    private System.Collections.Generic.HashSet<string> ComputeExpectedWeapons()
+    {
+        var set = new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+
+        // Pure client (we don't see the map's entities, mutators, or cvars locally yet) — fall back to
+        // warming everything. Slightly wasteful, but keeps the first-use hitch off the connecting client.
+        if (!_isListenServer || _serverWorld is null)
+        {
+            foreach (XonoticGodot.Common.Gameplay.Weapon w in XonoticGodot.Common.Gameplay.Weapons.All)
+                if (!string.IsNullOrEmpty(w.NetName))
+                    set.Add(w.NetName);
+            return set;
+        }
+
+        XonoticGodot.Common.Services.ICvarService cv = _serverWorld.Services.Cvars;
+
+        // --- Replacement mutators: these define the loadout outright, so the map's weapon_ pickups are
+        //     gameplay-irrelevant (instagib/overkill replace the player's inventory each spawn; nix forces
+        //     a cycling weapon). Return EARLY — don't union with map entities. ---
+
+        if (cv.GetFloat("g_instagib") != 0f)
+        {
+            set.Add("vaporizer");
+            return set;
+        }
+
+        if (cv.GetFloat("g_overkill") != 0f)
+        {
+            set.Add("okmachinegun");
+            set.Add("oknex");
+            set.Add("okshotgun");
+            if (cv.GetFloat("g_weapon_overkill_rpc_weaponstart") != 0f) set.Add("okrpc");
+            if (cv.GetFloat("g_weapon_overkill_hmg_weaponstart") != 0f) set.Add("okhmg");
+            return set;
+        }
+
+        if (cv.GetFloat("g_nix") != 0f)
+        {
+            // NIX cycles through every "normal" non-mutator-blocked weapon — see NixMutator.CanChooseWeapon.
+            foreach (XonoticGodot.Common.Gameplay.Weapon w in XonoticGodot.Common.Gameplay.Weapons.All)
+            {
+                if ((w.SpawnFlags & XonoticGodot.Common.Gameplay.WeaponFlags.MutatorBlocked) != 0) continue;
+                if ((w.SpawnFlags & XonoticGodot.Common.Gameplay.WeaponFlags.Normal) == 0) continue;
+                if (!string.IsNullOrEmpty(w.NetName))
+                    set.Add(w.NetName);
+            }
+            if (cv.GetFloat("g_nix_with_blaster") != 0f) set.Add("blaster");
+            return set;
+        }
+
+        // g_weaponarena: empty / "0" / "off" = disabled (use normal map pickups). Otherwise space-separated
+        // list of netnames, or "all"/"most" shorthand. Arena REPLACES spawn loadout (map pickups still
+        // physically there, but the carried loadout is the arena set — that's what we definitely render).
+        string arena = cv.GetString("g_weaponarena");
+        if (!string.IsNullOrWhiteSpace(arena) && arena != "0" && !arena.Equals("off", System.StringComparison.OrdinalIgnoreCase))
+        {
+            if (arena.Equals("all", System.StringComparison.OrdinalIgnoreCase)
+             || arena.Equals("most", System.StringComparison.OrdinalIgnoreCase))
+            {
+                foreach (XonoticGodot.Common.Gameplay.Weapon w in XonoticGodot.Common.Gameplay.Weapons.All)
+                    if ((w.SpawnFlags & XonoticGodot.Common.Gameplay.WeaponFlags.MutatorBlocked) == 0
+                     && !string.IsNullOrEmpty(w.NetName))
+                        set.Add(w.NetName);
+            }
+            else
+            {
+                foreach (string tok in arena.Split(new[] { ' ', '\t', ',' }, System.StringSplitOptions.RemoveEmptyEntries))
+                    set.Add(tok.Trim());
+            }
+            // Arena weapons fully define the loadout — don't union with map pickups, but DO keep the blaster
+            // since g_weaponarena_with_blaster (and stock modes) usually still grant it.
+            set.Add("blaster");
+            return set;
+        }
+
+        // --- Normal path: union of map weapon_ entity classnames + universal starter weapons. ---
+        if (_bsp is not null)
+        {
+            foreach (System.Collections.Generic.IReadOnlyDictionary<string, string> dict in _bsp.Entities)
+            {
+                if (!dict.TryGetValue("classname", out string? cls) || string.IsNullOrEmpty(cls))
+                    continue;
+                const string prefix = "weapon_";
+                if (cls.StartsWith(prefix, System.StringComparison.Ordinal))
+                    set.Add(cls.Substring(prefix.Length));
+            }
+        }
+
+        // The blaster is granted on spawn in essentially every stock gametype — always include it.
+        set.Add("blaster");
+
+        return set;
     }
 
     /// <summary>The muzzle-flash effect name for a weapon (QC m_muzzleeffect = EFFECT_&lt;WEP&gt;_MUZZLEFLASH),
@@ -1089,6 +1275,13 @@ public sealed partial class NetGame : Node3D
 
     public override void _Process(double delta)
     {
+        // _Ready runs as a coroutine (async void) so the loading screen can animate between sub-stages —
+        // until it sets _readyComplete, many of the fields touched below (the HUD, the camera, _client,
+        // _server) are partly built. Just sit out _Process during this window; the LoadingScreen drives
+        // its own animation, and the handshake state machine doesn't matter yet (no _client).
+        if (!_readyComplete)
+            return;
+
         float dt = (float)delta;
 
         // Drive the listen server (if any) by real elapsed time — it runs its fixed ticks, pulls each client's
@@ -1219,31 +1412,42 @@ public sealed partial class NetGame : Node3D
         }
 
         // Loading screen progress during the async handshake + spawn phase (DP's progress bar filling up
-        // while connecting/joining). The loading screen is owned by Shell; we update it here and dismiss it
-        // via DismissLoadingScreen when the player spawns.
+        // while connecting/joining). The loading screen is owned by Shell; we BeginStage on each transition
+        // (NOT every frame — that would reset the asymptote and stall the bar) and dismiss it via
+        // DismissLoadingScreen when the player spawns. Final dismiss uses UpdateProgress to snap to 1.
         if (LoadingScreen is not null || _fallbackOverlay is not null)
         {
-            if (_cameraReady && _client.Health > 0)
-            {
-                // Player is live — dismiss the loading screen (or the fallback black overlay).
-                LoadingScreen?.UpdateProgress(1f, "");
-                DismissLoadingScreen?.Invoke();
-                LoadingScreen = null;
-                DismissLoadingScreen = null;
+            HandshakeStage stage =
+                (_cameraReady && _client.Health > 0) ? HandshakeStage.Spawned
+                : !_client.Accepted                  ? HandshakeStage.Connecting
+                : !_cameraReady                       ? HandshakeStage.WaitingForServer
+                : HandshakeStage.Joining;
 
-                if (_fallbackOverlay is not null && GodotObject.IsInstanceValid(_fallbackOverlay))
-                    _fallbackOverlay.QueueFree();
-                _fallbackOverlay = null;
-            }
-            else if (LoadingScreen is not null)
+            if (stage != _handshakeStage)
             {
-                // Still loading — update the progress bar for the async phase.
-                if (!_client.Accepted)
-                    LoadingScreen.UpdateProgress(0.85f, "Connecting...");
-                else if (!_cameraReady)
-                    LoadingScreen.UpdateProgress(0.90f, "Waiting for server...");
-                else
-                    LoadingScreen.UpdateProgress(0.95f, "Joining game...");
+                _handshakeStage = stage;
+                switch (stage)
+                {
+                    case HandshakeStage.Connecting:
+                        LoadingScreen?.BeginStage("Connecting to server…", 0.94f, 1.0f);
+                        break;
+                    case HandshakeStage.WaitingForServer:
+                        LoadingScreen?.BeginStage("Waiting for first snapshot…", 0.97f, 0.5f);
+                        break;
+                    case HandshakeStage.Joining:
+                        LoadingScreen?.BeginStage("Joining game…", 0.99f, 0.5f);
+                        break;
+                    case HandshakeStage.Spawned:
+                        LoadingScreen?.UpdateProgress(1f, "");
+                        DismissLoadingScreen?.Invoke();
+                        LoadingScreen = null;
+                        DismissLoadingScreen = null;
+
+                        if (_fallbackOverlay is not null && GodotObject.IsInstanceValid(_fallbackOverlay))
+                            _fallbackOverlay.QueueFree();
+                        _fallbackOverlay = null;
+                        break;
+                }
             }
         }
 
@@ -1676,6 +1880,19 @@ public sealed partial class NetGame : Node3D
 
         float now = _renderClock; // the clock the reconciler armed the prediction-error decay with (see _Process)
         NVec3 predicted = _client.PredictedOrigin + _client.PredictionErrorOffset(now);
+
+        // Sub-tic view smoothing (DP's partial final movement frame): the predicted origin only advances when an
+        // input tic is drained, so it moves in discrete 1/72 s (~13.9 ms) steps while the camera renders at the
+        // display rate. At any framerate that isn't a multiple of 72 the per-frame step count alternates (0/1, or
+        // 1/2), which reads as a faint shimmer/stutter even on a locked-fps machine. DP hides this by simulating a
+        // partial final frame each render; we approximate it by extrapolating the eye forward over the as-yet-
+        // unsimulated remainder (_inputAccum, always < one tic) along the PREDICTED velocity. That velocity is the
+        // post-slide-move value (its into-surface component already clipped by PushEntity), so extrapolating along
+        // it slides parallel to walls/floors rather than poking through them, and the next real tic lands within a
+        // few units of the extrapolated eye — so the error smoother never engages. Render-only: it does not touch
+        // the authoritative predicted state, the input ring, or anything the server/reconciler sees.
+        predicted += _client.PredictedVelocity * _inputAccum;
+
         // Subtract the stair-smooth Z so the camera glides over steps (cl_movement stairsmooth). Driven by the
         // REAL frame delta (dt), NOT the server-synced render clock — the rebasing clock's 1/72-quantized jumps
         // made the catch-up jitter up/down (the reference advances stair smoothing by real frametime).

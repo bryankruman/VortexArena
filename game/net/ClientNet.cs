@@ -80,6 +80,11 @@ public sealed class ClientNet : IDisposable
     /// <summary>The latest server time carried by a snapshot (the clock we interpolate remote entities at).</summary>
     public float LatestServerTime { get; private set; }
 
+    /// <summary>The round-trip latency to the server in milliseconds (ENet's smoothed RTT estimate), or -1 when
+    /// not connected — the value the HUD ping readout shows. ~0 on a loopback listen server, the real ping on a
+    /// remote one. Distinct from the server-side antilag RTT (which the server measures from the snapshot echo).</summary>
+    public int PingMs => _transport.RoundTripMs();
+
     /// <summary>The current predicted local origin (Quake space) — what the camera follows.</summary>
     public NVec3 PredictedOrigin => _reconciler.Predicted.Origin;
 

@@ -197,6 +197,87 @@ public class MuzzleOffsetTests
         Assert.Equal(0f, got.Value.Z, 3);
     }
 
+    // ---- ComputeShotOrigin: Base's full v_-then-h_ movedir selection (CL_WeaponEntity_SetModel) -------
+
+    [Fact]
+    public void ComputeShotOrigin_Composes_VShotTag_Through_HWeaponBone()
+    {
+        // The v_ model HAS a shot tag (branch 3, all.qc:411-412): movedir = (h_ weapon-attach bone rest) o
+        // (v_ shot tag local). Here the h_ "weapon" bone is yawed +90deg about Z and translated +X 5, and the
+        // v_ shot tag sits +X 10 in the v_ model's own frame. The composed muzzle = rotate the (10,0,0) offset
+        // by +90deg (-> (0,10,0)) then add the bone translation (5,0,0) = (5,10,0). Proves the attach-bone
+        // ROTATION is applied to the v_ shot-tag offset (not just two translations summed).
+        Quaternion yaw90 = Quaternion.CreateFromAxisAngle(Vector3.UnitZ, MathF.PI / 2f);
+        var vModel = new Md3Data
+        {
+            FrameCount = 1,
+            Tags = new[] { Md3ShotTag(new Vector3(10, 0, 0)) },
+            TagsByName = new Dictionary<string, Md3Tag>(StringComparer.Ordinal)
+                { ["tag_shot"] = Md3ShotTag(new Vector3(10, 0, 0)) },
+        };
+        var hRig = new IqmData
+        {
+            Version = 2,
+            Joints = new[]
+            {
+                new IqmJoint("origin", -1, Vector3.Zero, Quaternion.Identity, Vector3.One),
+                new IqmJoint("weapon", 0, new Vector3(5, 0, 0), yaw90, Vector3.One),
+                // the rig also has its own shot tag — but the v_ tag must WIN (branch 3 before branch 4).
+                new IqmJoint("shot", 0, new Vector3(99, 99, 99), Quaternion.Identity, Vector3.One),
+            },
+        };
+
+        Vector3? got = MuzzleTag.ComputeShotOrigin(MuzzleTag.Model.Of(vModel), MuzzleTag.Model.Of(hRig));
+        Assert.NotNull(got);
+        Assert.Equal(5f, got!.Value.X, 2);
+        Assert.Equal(10f, got.Value.Y, 2);
+        Assert.Equal(0f, got.Value.Z, 2);
+    }
+
+    [Fact]
+    public void ComputeShotOrigin_Falls_Back_To_HRig_OwnShotTag_When_VModel_TagLess()
+    {
+        // The v_ model has NO shot tag (branch 4, all.qc:413-417) — the live path for ALL stock weapons.
+        // movedir = the h_ rig's OWN shot tag, regardless of the rig's weapon-attach bone.
+        var vModel = new Md3Data { FrameCount = 1 }; // tag-less, like every shipped v_*.md3
+        var hRig = new IqmData
+        {
+            Version = 2,
+            Joints = new[]
+            {
+                new IqmJoint("origin", -1, Vector3.Zero, Quaternion.Identity, Vector3.One),
+                new IqmJoint("weapon", 0, new Vector3(5, 0, -15), Quaternion.Identity, Vector3.One),
+                new IqmJoint("shot", 1, new Vector3(30, 0, 5), Quaternion.Identity, Vector3.One),
+            },
+        };
+
+        Vector3? got = MuzzleTag.ComputeShotOrigin(MuzzleTag.Model.Of(vModel), MuzzleTag.Model.Of(hRig));
+        Assert.NotNull(got);
+        // h_ own shot world rest = weapon(5,0,-15) + shot(30,0,5) = (35,0,-10).
+        Assert.Equal(35f, got!.Value.X, 3);
+        Assert.Equal(0f, got.Value.Y, 3);
+        Assert.Equal(-10f, got.Value.Z, 3);
+    }
+
+    [Fact]
+    public void ComputeShotOrigin_Null_When_Neither_Has_Shot_Tag()
+    {
+        var vModel = new Md3Data { FrameCount = 1 };
+        var hRig = new IqmData
+        {
+            Version = 2,
+            Joints = new[] { new IqmJoint("origin", -1, Vector3.Zero, Quaternion.Identity, Vector3.One) },
+        };
+        Assert.Null(MuzzleTag.ComputeShotOrigin(MuzzleTag.Model.Of(vModel), MuzzleTag.Model.Of(hRig)));
+        Assert.Null(MuzzleTag.ComputeShotOrigin(MuzzleTag.Model.None, MuzzleTag.Model.None));
+    }
+
+    private static Md3Tag Md3ShotTag(Vector3 origin) => new()
+    {
+        Name = "tag_shot",
+        Transforms = new[] { new Md3TagTransform(origin, Vector3.UnitX, Vector3.UnitY, Vector3.UnitZ) },
+    };
+
     // ---- real-asset regression (guards the v_-vs-h_ wiring: the shot tag lives on the h_ HAND RIG) --
 
     private const string Pk3Dir = @"C:\Users\Bryan\Projects\Xonotic\XonoticGodot\assets\data\xonotic-data.pk3dir";
@@ -229,6 +310,72 @@ public class MuzzleOffsetTests
         Assert.NotEqual(WeaponFiring.DefaultMuzzleOffset, md);
     }
 
+    /// <summary>
+    /// End-to-end real-asset regression for the reported weapon, the Devastator, exercising the FULL Base
+    /// movedir path (<see cref="MuzzleTag.ComputeShotOrigin"/> over BOTH v_rl.md3 and h_rl.iqm), exactly as
+    /// <c>AssetLoader.LoadMuzzleOffset(v, h)</c> / <c>NetGame.PrecacheWeaponModels</c> wire it.
+    ///
+    /// <para>VERIFIED FINDING (2026-06-08): v_rl.md3 carries NO shot tag (num_tags == 0 — true of EVERY shipped
+    /// v_*.md3), so Base takes the ELSE branch (all.qc:413-417) and movedir = the h_rl rig's OWN tag_shot rest
+    /// = (40.936, -9.000, -16.958). The composition branch (3) is therefore a no-op for stock content, and the
+    /// full-path result EQUALS the h_-only single-bone value — there is no "fires low" gap in the shot ORIGIN;
+    /// the v_-vs-visible-muzzle divergence is a render-side rotation-strip (GameDemo.WeaponAttachTransform),
+    /// not the shot origin. This test pins that the wired v+h path reproduces the correct h_-own-shot movedir.</para>
+    /// </summary>
+    [Fact]
+    public void ComputeShotOrigin_Devastator_RealAssets_Uses_HRig_OwnShot()
+    {
+        string vPath = System.IO.Path.Combine(Pk3Dir, @"models\weapons\v_rl.md3");
+        string hPath = System.IO.Path.Combine(Pk3Dir, @"models\weapons\h_rl.iqm");
+        if (!System.IO.File.Exists(vPath) || !System.IO.File.Exists(hPath)) return; // no checkout → no-op
+
+        MuzzleTag.Model vModel = LoadModelFromFile(vPath);
+        MuzzleTag.Model hRig = LoadModelFromFile(hPath);
+
+        Vector3? full = MuzzleTag.ComputeShotOrigin(vModel, hRig);
+        Assert.NotNull(full);
+        Vector3 md = full!.Value;
+
+        // The faithful Devastator movedir = h_rl's own tag_shot (the v_ model is tag-less).
+        Assert.Equal(40.936f, md.X, 2);
+        Assert.Equal(-9.000f, md.Y, 2);
+        Assert.Equal(-16.958f, md.Z, 2);
+
+        // It must equal the h_-only single-bone extraction (proves branch (4) is what's live — no composition
+        // delta for stock content) and NOT the generic fallback.
+        Vector3? hOnly = ExtractFromFile(hPath);
+        Assert.NotNull(hOnly);
+        Assert.Equal(hOnly!.Value.X, md.X, 4);
+        Assert.Equal(hOnly.Value.Y, md.Y, 4);
+        Assert.Equal(hOnly.Value.Z, md.Z, 4);
+        Assert.NotEqual(WeaponFiring.DefaultMuzzleOffset, md);
+    }
+
+    /// <summary>
+    /// The Blaster (the reported weapon): an IQM invisible-hand rig (h_laser). Its real movedir is
+    /// (24.2, -5.8, -8.9) — forward, then to the RIGHT (y is +left, so -5.8 = 5.8 right) and DOWN. So the shot
+    /// must leave lower-RIGHT (where the gun is held), NOT screen-center. A weapon firing "centered horizontally,
+    /// below the crosshair" is the generic fallback (12,0,-8) (y==0) — i.e. the per-weapon offset failed to
+    /// register (the AssetLoader h_-rig load regression). This pins the real value + that y != 0.
+    /// </summary>
+    [Fact]
+    public void ComputeShotOrigin_Blaster_RealAssets_IsForwardRightAndDown_NotCentered()
+    {
+        string vPath = System.IO.Path.Combine(Pk3Dir, @"models\weapons\v_laser.md3");
+        string hPath = System.IO.Path.Combine(Pk3Dir, @"models\weapons\h_laser.iqm");
+        if (!System.IO.File.Exists(vPath) || !System.IO.File.Exists(hPath)) return; // no checkout → no-op
+
+        Vector3? full = MuzzleTag.ComputeShotOrigin(LoadModelFromFile(vPath), LoadModelFromFile(hPath));
+        Assert.NotNull(full);
+        Vector3 md = full!.Value;
+
+        Assert.Equal(24.230f, md.X, 2);
+        Assert.Equal(-5.819f, md.Y, 2);  // NEGATIVE y = to the RIGHT — NOT centered (the bug shows y==0)
+        Assert.Equal(-8.857f, md.Z, 2);
+        Assert.True(MathF.Abs(md.Y) > 1f, "blaster muzzle must be offset sideways (to the gun), not horizontally centered");
+        Assert.NotEqual(WeaponFiring.DefaultMuzzleOffset, md);
+    }
+
     /// <summary>Magic-byte model dispatch (extensions lie) → <see cref="MuzzleTag"/>, mirroring AssetLoader.</summary>
     private static Vector3? ExtractFromFile(string path)
     {
@@ -238,6 +385,17 @@ public class MuzzleOffsetTests
         if (magic.StartsWith("DARKPLACESMODEL", StringComparison.Ordinal)) return MuzzleTag.Extract(DpmReader.Read(bytes));
         if (magic.StartsWith("IDP3", StringComparison.Ordinal)) return MuzzleTag.Extract(Md3Reader.Read(bytes));
         return null;
+    }
+
+    /// <summary>Magic-dispatch a real model file into a <see cref="MuzzleTag.Model"/>, mirroring AssetLoader.LoadMuzzleModel.</summary>
+    private static MuzzleTag.Model LoadModelFromFile(string path)
+    {
+        byte[] bytes = System.IO.File.ReadAllBytes(path);
+        string magic = System.Text.Encoding.ASCII.GetString(bytes, 0, Math.Min(16, bytes.Length));
+        if (magic.StartsWith("INTERQUAKEMODEL", StringComparison.Ordinal)) return MuzzleTag.Model.Of(IqmReader.Read(bytes));
+        if (magic.StartsWith("DARKPLACESMODEL", StringComparison.Ordinal)) return MuzzleTag.Model.Of(DpmReader.Read(bytes));
+        if (magic.StartsWith("IDP3", StringComparison.Ordinal)) return MuzzleTag.Model.Of(Md3Reader.Read(bytes));
+        return MuzzleTag.Model.None;
     }
 
     // ---- scaffolding -------------------------------------------------------------------------------

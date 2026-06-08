@@ -240,6 +240,77 @@ public class LogTests : IDisposable
         Assert.Equal("a^b ^z", Log.ToBBCode(LogLevel.Info, "a^^b ^z"));
     }
 
+    // ================================================================================== ring buffer
+
+    [Fact]
+    public void Buffer_CapturesAllEntries_RegardlessOfDeveloperGate()
+    {
+        // The in-game console reads from the buffer, which captures EVERY Log.* call regardless of `developer`
+        // — so a Trace emitted at dev 0 still appears when the user opens `set developer 1`.
+        Capture(0);
+        Log.Info("info1");
+        Log.Trace("trace0");                                 // would be suppressed by the live sink at dev 0
+        Log.Debug("debug0");                                 // also suppressed by the live sink
+        Log.Warn("warn1");
+
+        var snap = Log.BufferSnapshot();
+        Assert.Equal(4, snap.Count);
+        Assert.Equal(LogLevel.Info, snap[0].Level);
+        Assert.Equal("info1", snap[0].Message);
+        Assert.Equal(LogLevel.Trace, snap[1].Level);
+        Assert.Equal("trace0", snap[1].Message);
+        Assert.Equal(LogLevel.Debug, snap[2].Level);
+        Assert.Equal(LogLevel.Warn, snap[3].Level);
+    }
+
+    [Fact]
+    public void Render_AtDeveloperLevel_GivesNullForHiddenEntries()
+    {
+        // Render reproduces the live-sink formatting for a buffered entry at the GIVEN dev level, returning
+        // null when the entry would be suppressed at that level (Trace<dev 1, Debug<dev 2).
+        Capture(0);
+        Log.Trace("hidden trace");
+        Log.Info("visible info");
+
+        var snap = Log.BufferSnapshot();
+        Assert.Null(Log.Render(snap[0], 0));                  // Trace hidden at dev 0
+        Assert.NotNull(Log.Render(snap[0], 1));               // visible at dev 1
+        Assert.Equal("visible info", Log.Render(snap[1], 0)); // Info bare at dev 0
+        Assert.StartsWith("[::test::INFO] ", Log.Render(snap[1], 1)!); // header at dev 1
+    }
+
+    [Fact]
+    public void EntryRecorded_FiresForEveryCall_EvenWhenSinkSuppresses()
+    {
+        // The buffer subscription gets the entry even for messages the live sink filters out (the console scrollback
+        // needs them so it can reveal them retroactively when developer goes up).
+        Capture(0);
+        var recorded = new List<LogEntry>();
+        Log.EntryRecorded += recorded.Add;
+
+        Log.Trace("rec");
+        Log.Info("rec2");
+
+        Assert.Equal(2, recorded.Count);
+        Assert.Equal(LogLevel.Trace, recorded[0].Level);
+        Assert.Equal("rec", recorded[0].Message);
+        Assert.Equal(LogLevel.Info, recorded[1].Level);
+    }
+
+    [Fact]
+    public void BufferClear_EmptiesBuffer_DoesNotResetSubscribers()
+    {
+        Capture(0);
+        Log.Info("one");
+        Assert.Single(Log.BufferSnapshot());
+
+        Log.BufferClear();
+        Assert.Empty(Log.BufferSnapshot());
+
+        Log.Info("two");                                      // subsequent calls still record
+        Assert.Single(Log.BufferSnapshot());
+    }
+
     // =================================================================== integration: the developer cvar
 
     [Fact]

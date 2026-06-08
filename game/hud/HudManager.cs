@@ -74,6 +74,13 @@ public partial class Hud : CanvasLayer
     public PhysicsPanel Physics { get; private set; } = null!;
     public MapVotePanel MapVote { get; private set; } = null!;
 
+    /// <summary>Bottom-right frames-per-second readout (DP <c>cl_showfps</c>/<c>showfps</c>); self-gating.</summary>
+    public FpsPanel Fps { get; private set; } = null!;
+
+    /// <summary>Bottom-right round-trip "ping" readout, stacked just above <see cref="Fps"/>
+    /// (<c>cl_showping</c>/<c>showping</c>); self-gating, fed by the net layer via <see cref="PingPanel.PingProvider"/>.</summary>
+    public PingPanel Ping { get; private set; } = null!;
+
     /// <summary>The active-minigame board overlay (CSQC minigame board draw + click-to-move).</summary>
     public MinigameRenderer Minigame { get; private set; } = null!;
 
@@ -106,6 +113,8 @@ public partial class Hud : CanvasLayer
         ItemsTime    = Add(new ItemsTimePanel  { Visible = false }); // shown when item timers are available
         Physics      = Add(new PhysicsPanel    { Visible = false }); // speedo: off unless enabled
         MapVote      = Add(new MapVotePanel    { Visible = false }); // intermission map/gametype vote
+        Fps          = Add(new FpsPanel        { Visible = false }); // showfps: self-enables (debug build / cvar)
+        Ping         = Add(new PingPanel       { Visible = false }); // showping: opt-in; net layer feeds PingProvider
 
         // The minigame board overlay isn't a HudPanel (it captures clicks + manages its own redraw), so add it
         // directly rather than through Add() (which forces MouseFilter.Ignore).
@@ -296,5 +305,11 @@ public partial class Hud : CanvasLayer
         // Map vote: large centered overlay shown at intermission (QC spans most of the screen).
         var mvSize = new Vector2(w * 0.84f, h * 0.80f);
         MapVote.Configure(new Rect2(new Vector2((w - mvSize.X) * 0.5f, h * 0.10f), mvSize));
+
+        // FPS readout: full-viewport rect so it can right-align against the bottom-right edge itself (DP showfps).
+        Fps.Configure(new Rect2(Vector2.Zero, vp));
+
+        // Ping readout: same full-viewport rect; it positions itself on the row directly above the FPS line.
+        Ping.Configure(new Rect2(Vector2.Zero, vp));
     }
 }

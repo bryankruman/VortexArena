@@ -58,8 +58,12 @@ public sealed class AssetLoader
     // Parsed MD3 data cache for the client's per-entity ModelResolver (world items/gibs/monsters render via the
     // MD3 morph/snapshot path). Keyed by normalized vpath; null caches a miss / non-MD3 model.
     private readonly Dictionary<string, Md3Data?> _md3Cache = new(StringComparer.Ordinal);
-    // tag_shot model-local muzzle offset (Quake coords) per weapon view-model vpath; null caches "no shot tag".
+    // Per-weapon shot-origin (QC movedir, Quake model-local coords), keyed by the "v|h" vpath pair (or just v
+    // when no hand rig); null caches "neither model has a shot tag".
     private readonly Dictionary<string, System.Numerics.Vector3?> _muzzleOffsetCache = new(StringComparer.Ordinal);
+    // Per-h_-rig first-person render bucket: true = invisible-hand (render v_ attached to "weapon" bone),
+    // false = full-model (render the h_ rig itself), null = missing/unparsable. Keyed by normalized vpath.
+    private readonly Dictionary<string, bool?> _rigBucketCache = new(StringComparer.Ordinal);
     // Resolved sample -> decoded AudioStream (or null when the sample resolves to nothing). The stream is
     // immutable and safe to share across many AudioStreamPlayer3D, so unlike models we cache the built resource.
     private readonly Dictionary<string, AudioStream?> _soundCache = new(StringComparer.Ordinal);
@@ -149,40 +153,102 @@ public sealed class AssetLoader
     }
 
     /// <summary>
-    /// Extract a weapon view-model's <c>tag_shot</c> position in MODEL-LOCAL Quake coords (x=fwd, y=+left, z=up)
-    /// — Base's <c>movedir = gettaginfo(weapon, "shot")</c> in <c>CL_WeaponEntity_SetModel</c>. Dispatched by the
-    /// file's magic (extensions lie: v_*.md3 are often IQM, h_*.iqm are DPM) onto the Godot-free
-    /// <see cref="XonoticGodot.Formats.MuzzleTag"/> extractor, which reads the raw parsed model (NOT the rendered
-    /// marker, which carries gun screen-positioning nudges that are not part of movedir). Returns null when the
-    /// file is missing, not a model, or carries no shot tag — the caller then keeps the generic muzzle fallback.
-    /// Cached per normalized vpath.
+    /// Compute a weapon's per-model shot origin (QC <c>movedir</c>) in MODEL-LOCAL Quake coords (x=fwd, y=+left,
+    /// z=up), faithful to <c>CL_WeaponEntity_SetModel</c>'s full v_-then-h_ selection (all.qc:367-424): given the
+    /// <c>v_*</c> VISUAL model path and the sibling <c>h_*</c> HAND RIG path, prefer the v_ model's own
+    /// <c>shot</c>/<c>tag_shot</c> tag transformed THROUGH the h_ rig's <c>weapon</c>/<c>tag_weapon</c> attach
+    /// bone; else fall back to the h_ rig's OWN shot tag; else null. Both files are magic-dispatched (extensions
+    /// lie: v_*.md3 are often IQM, h_*.iqm are DPM) onto the Godot-free
+    /// <see cref="XonoticGodot.Formats.MuzzleTag.ComputeShotOrigin"/>. (In stock content every v_ model is
+    /// tag-less, so this always resolves to the h_ rig's own shot tag — but the composition is here and correct
+    /// for any future weapon that ships a v_ shot tag.) Returns null when neither model carries a shot tag — the
+    /// caller then keeps the generic muzzle fallback. Cached per normalized (v,h) vpath pair.
     /// </summary>
-    public System.Numerics.Vector3? LoadMuzzleOffset(string vpath)
+    /// <param name="vModelPath">The <c>v_*</c> visual-model vpath (e.g. <c>models/weapons/v_rl.md3</c>).</param>
+    /// <param name="hRigPath">The sibling <c>h_*</c> hand-rig vpath, or null/missing to use only the v_ model.</param>
+    public System.Numerics.Vector3? LoadMuzzleOffset(string vModelPath, string? hRigPath)
     {
-        string key = AssetPaths.Normalize(vpath);
-        if (key.Length == 0)
+        string vKey = AssetPaths.Normalize(vModelPath);
+        if (vKey.Length == 0)
             return null;
-        if (_muzzleOffsetCache.TryGetValue(key, out System.Numerics.Vector3? cached))
+        string hKey = string.IsNullOrEmpty(hRigPath) ? "" : AssetPaths.Normalize(hRigPath!);
+        string cacheKey = hKey.Length == 0 ? vKey : $"{vKey}|{hKey}";
+        if (_muzzleOffsetCache.TryGetValue(cacheKey, out System.Numerics.Vector3? cached))
             return cached;
 
-        System.Numerics.Vector3? offset = null;
+        // Load each model INDEPENDENTLY (try-read, NO _vfs.Exists pre-gate). A stock weapon's v_ model is
+        // tag-less, so movedir comes from the h_ rig's own shot tag (ComputeShotOrigin branch 4) — if a flaky
+        // Exists() (path-normalization mismatch) blocked the h_ load, the whole result collapsed to null and the
+        // weapon silently fell back to the generic CENTERED muzzle (the "blaster fires from screen center, not
+        // the gun" regression — the old single-arg path read the h_ rig directly with no Exists check). A
+        // genuinely-absent file just yields Model.None here.
+        XonoticGodot.Formats.MuzzleTag.Model vModel = TryLoadMuzzleModel(vKey);
+        XonoticGodot.Formats.MuzzleTag.Model hRig = TryLoadMuzzleModel(hKey);
+        System.Numerics.Vector3? offset = XonoticGodot.Formats.MuzzleTag.ComputeShotOrigin(vModel, hRig);
+        _muzzleOffsetCache[cacheKey] = offset;
+        return offset;
+    }
+
+    /// <summary>Parse a model into a <see cref="XonoticGodot.Formats.MuzzleTag.Model"/>, or <c>None</c> on any
+    /// failure (empty key, missing file, unparsable) — so one model's absence never nulls the muzzle result.</summary>
+    private XonoticGodot.Formats.MuzzleTag.Model TryLoadMuzzleModel(string key)
+    {
+        if (key.Length == 0)
+            return XonoticGodot.Formats.MuzzleTag.Model.None;
+        try { return LoadMuzzleModel(key); }
+        catch { return XonoticGodot.Formats.MuzzleTag.Model.None; }
+    }
+
+    /// <summary>
+    /// Classify a weapon's first-person render bucket from its <c>h_*</c> HAND RIG (Base
+    /// <c>CL_WeaponEntity_SetModel</c>, all.qc:381-400): does the rig expose a <c>weapon</c>/<c>tag_weapon</c>
+    /// attach bone?
+    /// <list type="bullet">
+    ///   <item><c>true</c> — <b>invisible-hand</b> (the IQM rigs h_arc/h_nex/h_shotgun/…): Base creates a
+    ///   <c>weaponchild</c> and renders the <c>v_</c> visual model attached to that bone.</item>
+    ///   <item><c>false</c> — <b>full-model</b> (the DPM rigs h_rl/h_crylink/h_electro/h_gl/h_hagar/ok_*): Base
+    ///   leaves <c>weaponchild</c> NULL and renders the <b>h_ rig itself</b> (its own gun+hand mesh).</item>
+    ///   <item><c>null</c> — no rig file at this path, or it could not be parsed (caller treats as invisible-hand
+    ///   so it keeps the legacy v_ path rather than rendering nothing).</item>
+    /// </list>
+    /// Dispatch is by on-disk magic (extensions lie: h_*.iqm are often DPM). Cached per normalized vpath.
+    /// </summary>
+    /// <param name="hRigPath">The <c>h_*</c> hand-rig vpath (e.g. <c>models/weapons/h_rl.iqm</c>).</param>
+    public bool? WeaponRigIsInvisibleHand(string hRigPath)
+    {
+        string key = AssetPaths.Normalize(hRigPath);
+        if (key.Length == 0 || !_vfs.Exists(key))
+            return null;
+        if (_rigBucketCache.TryGetValue(key, out bool? cached))
+            return cached;
+
+        bool? result = null;
         try
         {
-            byte[] bytes = _vfs.ReadBytes(key);
-            string magic = ReadMagic(bytes);
-            if (magic.StartsWith(MagicIqm, StringComparison.Ordinal))
-                offset = XonoticGodot.Formats.MuzzleTag.Extract(IqmReader.Read(bytes));
-            else if (magic.StartsWith(MagicDpm, StringComparison.Ordinal))
-                offset = XonoticGodot.Formats.MuzzleTag.Extract(DpmReader.Read(bytes));
-            else if (magic.StartsWith(MagicMd3, StringComparison.Ordinal))
-                offset = XonoticGodot.Formats.MuzzleTag.Extract(Md3Reader.Read(bytes));
+            XonoticGodot.Formats.MuzzleTag.Model rig = LoadMuzzleModel(key);
+            result = XonoticGodot.Formats.MuzzleTag.IsInvisibleHandRig(rig);
         }
         catch (Exception ex)
         {
-            GD.PrintErr($"[AssetLoader] muzzle tag '{key}' read/parse failed: {ex.Message}");
+            GD.PrintErr($"[AssetLoader] rig classify '{key}' read/parse failed: {ex.Message}");
         }
-        _muzzleOffsetCache[key] = offset;
-        return offset;
+        _rigBucketCache[key] = result;
+        return result;
+    }
+
+    /// <summary>Read+magic-dispatch a single model file into a Godot-free <see cref="XonoticGodot.Formats.MuzzleTag.Model"/>
+    /// (or the empty model on a missing/unknown file). Extensions lie, so dispatch is by on-disk magic.</summary>
+    private XonoticGodot.Formats.MuzzleTag.Model LoadMuzzleModel(string key)
+    {
+        byte[] bytes = _vfs.ReadBytes(key);
+        string magic = ReadMagic(bytes);
+        if (magic.StartsWith(MagicIqm, StringComparison.Ordinal))
+            return XonoticGodot.Formats.MuzzleTag.Model.Of(IqmReader.Read(bytes));
+        if (magic.StartsWith(MagicDpm, StringComparison.Ordinal))
+            return XonoticGodot.Formats.MuzzleTag.Model.Of(DpmReader.Read(bytes));
+        if (magic.StartsWith(MagicMd3, StringComparison.Ordinal))
+            return XonoticGodot.Formats.MuzzleTag.Model.Of(Md3Reader.Read(bytes));
+        return XonoticGodot.Formats.MuzzleTag.Model.None;
     }
 
     /// <summary>

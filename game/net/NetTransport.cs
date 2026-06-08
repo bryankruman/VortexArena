@@ -209,6 +209,26 @@ public abstract class NetTransport : IDisposable
         /// <summary>True while still negotiating the ENet connection (status == Connecting).</summary>
         public bool IsConnecting => Peer is not null && Peer.GetConnectionStatus() == MultiplayerPeer.ConnectionStatus.Connecting;
 
+        /// <summary>
+        /// The round-trip time to the server in milliseconds — ENet's own smoothed mean RTT estimate for the
+        /// server peer (<see cref="ServerPeerId"/>), the "ping" the HUD shows. Returns -1 when not yet connected.
+        /// This is measured by ENet from its reliable-packet acknowledgements (independent of the gameplay
+        /// snapshot-time echo the server uses for antilag in <see cref="ServerNet"/>), so it's available client-side
+        /// with no protocol cooperation. On a loopback listen server it reads ~0; on a remote server it's the real
+        /// network ping. (Godot exposes ENet's per-peer <c>ENetPacketPeer</c> via
+        /// <see cref="ENetMultiplayerPeer.GetPeer"/>; <see cref="ENetPacketPeer.PeerStatistic.RoundTripTime"/> is in ms.)
+        /// </summary>
+        public int RoundTripMs()
+        {
+            if (!IsConnected)
+                return -1;
+            ENetPacketPeer p = Peer.GetPeer(ServerPeerId);
+            if (p is null)
+                return -1;
+            double rtt = p.GetStatistic(ENetPacketPeer.PeerStatistic.RoundTripTime);
+            return (int)System.Math.Round(rtt);
+        }
+
         private Client() { }
 
         /// <summary>

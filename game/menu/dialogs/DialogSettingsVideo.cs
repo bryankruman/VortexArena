@@ -179,6 +179,8 @@ public partial class DialogSettingsVideo : SettingsTab
             "Vsync prevents tearing, but increases latency and caps your fps at the screen refresh rate"));
         box.AddChild(Widgets.CheckBox("showfps", "Show frames per second",
             "Show your rendered frames per second"));
+        box.AddChild(Widgets.CheckBox("showping", "Show ping",
+            "Show your round-trip latency to the server, just above the FPS counter"));
 
         box.AddChild(Ui.Spacer());
         box.AddChild(applyButton); // "Apply immediately" — vid_restart

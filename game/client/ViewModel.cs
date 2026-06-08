@@ -284,7 +284,37 @@ public partial class ViewModel : Node3D
         model.Transform = attach ?? Transform3D.Identity;
         _modelRoot.AddChild(model);
 
-        _muzzleMarker = ResolveMuzzleMarker(name => FindMarkerByName(model, name));
+        _muzzleMarker = ResolveMuzzleMarker(name => FindMarkerByName(model, name))
+                        // Skeletal viewmodels (the h_ HAND RIG rendered for full-model DPM weapons) carry the
+                        // muzzle as a `tag_shot` BONE, not a Marker3D — FindMarkerByName won't see it. Fall back
+                        // to the skeleton's bone rest and pin a Marker3D there so the flash/light park at the
+                        // barrel, in the SAME model space as the rendered gun (so flash + shot origin coincide).
+                        ?? ResolveMuzzleMarker(name => MarkerFromSkeletonBone(model, name));
+    }
+
+    /// <summary>
+    /// Resolve a named muzzle socket (e.g. <c>tag_shot</c>) from a built skeletal model's <see cref="Skeleton3D"/>
+    /// bone rest, creating a child <see cref="Marker3D"/> at that local transform so it inherits the ViewBasis +
+    /// sway like the mesh. Returns null when the model has no skeleton or no such bone. Static rest pose (the
+    /// v_-attach path is also static-rest); a live-animated muzzle would need a BoneAttachment3D follow.
+    /// </summary>
+    private static Marker3D? MarkerFromSkeletonBone(Node3D model, string boneName)
+    {
+        Skeleton3D? skel = XonoticGodot.Game.Loaders.Models.IqmBuilder.FindSkeleton(model);
+        if (skel is null)
+            return null;
+        // Bones may be stored under a sanitized name (IqmBuilder replaces ':','/','@','%','.' with '_'); the
+        // muzzle tag names (tag_shot/shot/…) contain none of those, so a direct find suffices, but fall back to
+        // a sanitized find for safety. GetBoneGlobalRest composes the parent chain into built model space.
+        int idx = skel.FindBone(boneName);
+        if (idx < 0)
+            idx = skel.FindBone(boneName.Replace(':', '_').Replace('/', '_').Replace('@', '_').Replace('%', '_').Replace('.', '_'));
+        if (idx < 0)
+            return null;
+        var marker = new Marker3D { Name = boneName, Transform = skel.GetBoneGlobalRest(idx) };
+        // Parent under the skeleton so the marker shares the gun's exact built model space.
+        skel.AddChild(marker);
+        return marker;
     }
 
     private Marker3D? ResolveMuzzleMarker(Func<string, Marker3D?> lookup)

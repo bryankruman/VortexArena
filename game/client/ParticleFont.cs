@@ -27,6 +27,7 @@ public sealed class ParticleFont
     private Image? _atlas;
     private readonly Dictionary<int, ImageTexture> _cellTex = new();
     private readonly Dictionary<int, ImageTexture> _decalTex = new();
+    private readonly Dictionary<int, ImageTexture?> _stripTex = new();
 
     /// <summary>True once both the atlas image and at least one UV cell parsed.</summary>
     public bool Loaded => _atlas is not null && _cells.Count > 0;
@@ -178,6 +179,43 @@ public sealed class ParticleFont
 
         _decalTex[index] = tex!;
         return tex;
+    }
+
+    /// <summary>
+    /// A horizontal sprite strip packing every atlas cell in the half-open [<paramref name="tex0"/>,
+    /// <paramref name="tex1"/>) range side-by-side. Used with <c>ParticlesAnimHFrames</c> and
+    /// <c>ParticleProcessMaterial.AnimOffset</c> so each particle in a burst gets a randomly-selected
+    /// cell (a different smoke wisp, fire blob, spark dot…). Cached by range. Returns null if the font
+    /// is not loaded, the range is empty, or blit fails — callers fall back to <see cref="CellInRange"/>.
+    /// </summary>
+    public ImageTexture? CellStrip(int tex0, int tex1)
+    {
+        if (!Loaded || tex1 <= tex0) return null;
+        if (tex1 - tex0 == 1) return Cell(tex0);
+        int key = (tex0 << 16) | (tex1 & 0xFFFF);
+        if (_stripTex.TryGetValue(key, out ImageTexture? cached)) return cached;
+        ImageTexture? result = null;
+        try
+        {
+            if (!_cells.TryGetValue(tex0, out Rect2I r0) || r0.Size.X <= 0)
+            { _stripTex[key] = null; return null; }
+            int cellW = r0.Size.X, cellH = r0.Size.Y;
+            int count = tex1 - tex0;
+            var strip = Image.CreateEmpty(cellW * count, cellH, false, Image.Format.Rgba8);
+            for (int i = 0; i < count; i++)
+            {
+                if (!_cells.TryGetValue(tex0 + i, out Rect2I rect) || rect.Size.X <= 0) continue;
+                Image cell = _atlas!.GetRegion(rect);
+                if (cell.GetFormat() != Image.Format.Rgba8) cell.Convert(Image.Format.Rgba8);
+                strip.BlitRect(cell,
+                    new Rect2I(0, 0, Math.Min(cellW, cell.GetWidth()), Math.Min(cellH, cell.GetHeight())),
+                    new Vector2I(i * cellW, 0));
+            }
+            result = ImageTexture.CreateFromImage(strip);
+        }
+        catch { result = null; }
+        _stripTex[key] = result;
+        return result;
     }
 
     /// <summary>

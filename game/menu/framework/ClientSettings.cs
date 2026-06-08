@@ -50,6 +50,12 @@ public static class ClientSettings
         DisplayServer.WindowSetVsyncMode(c.GetFloat("vid_vsync") != 0f
             ? DisplayServer.VSyncMode.Enabled
             : DisplayServer.VSyncMode.Disabled);
+
+        // Framerate cap (DP cl_maxfps): 0 = unlimited. Previously read by the menu but never enforced, so the
+        // game ran uncapped — variable frame times beat against the fixed 72 Hz input/prediction tick and showed
+        // as micro-stutter. Honouring the cap lets the player pin a steady framerate (a multiple of 72 is ideal).
+        int maxFps = (int)c.GetFloat("cl_maxfps");
+        Godot.Engine.MaxFps = maxFps > 0 ? maxFps : 0;
     }
 
     /// <summary>

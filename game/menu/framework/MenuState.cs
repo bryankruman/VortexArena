@@ -77,11 +77,11 @@ public static class MenuState
             if (vfs.MountGameDir(GameDemo.ResolveDataPath(dataPath)))
                 _vfs = vfs;
             else
-                GD.PrintErr($"[MenuState] data dir '{dataPath}' not found — menu runs on registered cvar defaults only.");
+                XonoticGodot.Common.Diagnostics.Log.Warn($"[MenuState] data dir '{dataPath}' not found — menu runs on registered cvar defaults only.");
         }
         catch (Exception ex)
         {
-            GD.PrintErr($"[MenuState] failed to mount data dir '{dataPath}': {ex.Message}");
+            XonoticGodot.Common.Diagnostics.Log.Severe($"[MenuState] failed to mount data dir '{dataPath}': {ex.Message}");
         }
 
         // --- publish the process-wide facade so Api.Cvars resolves to the shared store at the menu ---
@@ -100,12 +100,12 @@ public static class MenuState
             {
                 _interp = ConfigLoader.Load(_cvars, reader,
                     "xonotic-client.cfg", "xonotic-server.cfg", "notifications.cfg");
-                GD.Print($"[MenuState] config: {_interp.CvarsAssigned} cvars from {_interp.FilesExecuted} cfg files " +
+                XonoticGodot.Common.Diagnostics.Log.Info($"[MenuState] config: {_interp.CvarsAssigned} cvars from {_interp.FilesExecuted} cfg files " +
                          $"({_interp.AliasesDefined} aliases, {_interp.FilesMissing} missing).");
             }
             catch (Exception ex)
             {
-                GD.PrintErr($"[MenuState] config load failed: {ex.Message}");
+                XonoticGodot.Common.Diagnostics.Log.Severe($"[MenuState] config load failed: {ex.Message}");
             }
         }
         // Even without a data dir (config skipped/failed) the console still needs a live command buffer.

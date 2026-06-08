@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -41,6 +42,32 @@ public sealed class LogFatalException : Exception
 }
 
 /// <summary>
+/// One captured log call (the raw fields, not yet rendered) — what <see cref="Log"/>'s ring buffer holds so
+/// the in-game console can re-render entries at the CURRENT <c>developer</c> level (DP <c>con_logfile</c>
+/// scrollback semantics): a TRACE captured while <c>developer 0</c> is invisible to the live sink but stays in
+/// the buffer so <c>set developer 1</c> reveals it retroactively.
+/// </summary>
+public readonly struct LogEntry
+{
+    public readonly LogLevel Level;
+    public readonly string Message;
+    public readonly string Program;
+    public readonly string File;
+    public readonly int Line;
+    public readonly string Member;
+
+    public LogEntry(LogLevel level, string message, string program, string file, int line, string member)
+    {
+        Level = level;
+        Message = message ?? "";
+        Program = program ?? "";
+        File = file ?? "";
+        Line = line;
+        Member = member ?? "";
+    }
+}
+
+/// <summary>
 /// The game-code logging facade — the C# successor to Xonotic's <c>lib/log.qh</c> (<c>LOG_INFO</c> /
 /// <c>LOG_TRACE</c> / <c>LOG_DEBUG</c> / <c>LOG_WARN</c> / <c>LOG_SEVERE</c> / <c>LOG_FATAL</c> /
 /// <c>LOG_HELP</c>) layered over the <c>print</c>/<c>dprint</c> builtins. Lives in <c>XonoticGodot.Common</c> so
@@ -78,6 +105,18 @@ public static class Log
     private static readonly char[] PathSeparators = { '/', '\\' };
     private static readonly object ConsoleLock = new();
 
+    // ---- ring buffer (always captures, regardless of `developer`) ----------------------------------
+    //
+    // The in-game console reads from this to render scrollback at the CURRENT dev level. Capturing
+    // pre-gate is the point: a Trace emitted at developer 0 is invisible to the live sink but stays
+    // here, so `set developer 1` retroactively reveals it. Size is a soft ring (~4096 lines ≈ a few
+    // minutes of busy logging) — old entries fall off the front as new ones arrive.
+    private const int BufferCapacity = 4096;
+    private static readonly object BufferLock = new();
+    private static readonly LogEntry[] BufferRing = new LogEntry[BufferCapacity];
+    private static int BufferStart;   // index of the OLDEST entry once the ring has wrapped
+    private static int BufferCount;   // number of valid entries (≤ BufferCapacity)
+
     /// <summary>
     /// The program tag in the header (QC <c>PROGNAME</c>: SVQC/CSQC/MENUQC). The host sets it once at boot —
     /// <c>"server"</c> on the headless/listen-server core, <c>"client"</c> in the Godot front-end.
@@ -97,6 +136,40 @@ public static class Log
     /// ambient facade (0 when no world/cvar is booted). A test can override it to drive gating without a cvar store.
     /// </summary>
     public static Func<int> DeveloperLevel { get; set; } = DefaultDeveloperLevel;
+
+    /// <summary>
+    /// Raised AFTER every log call's entry lands in the ring buffer (regardless of <c>developer</c>) — the live
+    /// feed for the in-game console scrollback. Carries the raw <see cref="LogEntry"/> so the subscriber can
+    /// re-render at the CURRENT verbosity (and re-filter when <c>developer</c> changes).
+    /// </summary>
+    public static event Action<LogEntry>? EntryRecorded;
+
+    /// <summary>
+    /// Snapshot of the buffered log entries, oldest first (capped at ~<see cref="BufferCapacity"/>). The
+    /// in-game console calls this on open to seed its scrollback with everything emitted since process boot —
+    /// including <see cref="Trace"/>/<see cref="Debug"/> calls that the live sink filtered out at the time.
+    /// </summary>
+    public static IReadOnlyList<LogEntry> BufferSnapshot()
+    {
+        lock (BufferLock)
+        {
+            var arr = new LogEntry[BufferCount];
+            for (int i = 0; i < BufferCount; i++)
+                arr[i] = BufferRing[(BufferStart + i) % BufferCapacity];
+            return arr;
+        }
+    }
+
+    /// <summary>Clear the ring buffer (test cleanup; the in-game <c>clear</c> command clears the SCROLLBACK,
+    /// not the buffer — so reopening the console after <c>clear</c> still shows the history).</summary>
+    public static void BufferClear()
+    {
+        lock (BufferLock)
+        {
+            BufferStart = 0;
+            BufferCount = 0;
+        }
+    }
 
     // ============================================================================ verbosity queries
 
@@ -159,56 +232,93 @@ public static class Log
     /// <summary>
     /// The C# successor to QC's <c>_LOG</c> macro family: assemble the header (gated like <c>_LOG_HEADER</c>) +
     /// message for <paramref name="level"/> and hand it to <see cref="Sink"/>, applying each level's
-    /// <c>autocvar_developer</c> gate.
+    /// <c>autocvar_developer</c> gate. ALSO records the raw entry in the always-on ring buffer (regardless of
+    /// <c>developer</c>) so the in-game console can scroll back through Trace/Debug calls that were filtered
+    /// out at the live sink — `set developer 1` reveals them retroactively.
     /// </summary>
     private static void Emit(LogLevel level, string message, string file, int line, string member)
     {
+        message ??= "";
+        int dev = DeveloperLevel();
+
+        // Record the RAW entry in the buffer ALWAYS, regardless of `developer`. The in-game console re-renders
+        // these per its current level, so a Trace captured at developer 0 still appears when the user opens
+        // developer 1+.
+        RecordBuffer(new LogEntry(level, message, Program, file, line, member));
+
         Action<LogLevel, string>? sink = Sink;
         if (sink is null)
-            return;
-
-        int dev = DeveloperLevel();
-        message ??= "";
-
-        switch (level)
         {
-            case LogLevel.Help:
-                sink(level, message);                                    // QC: bare message, no header
-                break;
-
-            case LogLevel.Info:
-                // QC _LOG_INFO: message always; header only at dev>0; source location only at dev>1.
-                sink(level, dev > 0 ? Header("INFO", dev > 1, file, line, member) + message : message);
-                break;
-
-            case LogLevel.Warn:
-                // QC _LOG_WARN: always; source location at dev>0.
-                sink(level, Header("WARNING", dev > 0, file, line, member) + message);
-                break;
-
-            case LogLevel.Trace:
-                // QC _LOG_TRACE (dprint): only at dev>0.
-                if (dev > 0)
-                    sink(level, Header("TRACE", true, file, line, member) + message);
-                break;
-
-            case LogLevel.Debug:
-                // QC _LOG_DEBUG: only at dev>1.
-                if (dev > 1)
-                    sink(level, Header("DEBUG", true, file, line, member) + message);
-                break;
-
-            case LogLevel.Severe:
-                // QC _LOG_SEVERE: header (always) + backtrace(message). backtrace() brackets the message and
-                // the stack with the engine's CUT markers; we use the managed stack trace.
-                sink(level, Header("SEVERE", dev > 0, file, line, member)
-                    + "\n--- CUT HERE ---\n" + message + "\n" + Environment.StackTrace + "\n--- CUT UNTIL HERE ---");
-                break;
-
-            case LogLevel.Fatal:
-                // QC _LOG_FATAL: header (always) + error(message). error() aborts → we throw after logging.
-                sink(level, Header("FATAL", dev > 0, file, line, member) + message);
+            // Fatal still aborts even with no live sink (faithful to QC error()).
+            if (level == LogLevel.Fatal)
                 throw new LogFatalException(message);
+            return;
+        }
+
+        // Live sink: dev-gated rendering (existing behavior — preserves stdout/GD.PrintRich filtering).
+        string? rendered = RenderForSink(level, message, dev, file, line, member);
+        if (rendered is not null)
+            sink(level, rendered);
+
+        if (level == LogLevel.Fatal)
+            throw new LogFatalException(message);
+    }
+
+    /// <summary>Format an entry for the live sink, applying the per-level <c>developer</c> gate; returns null
+    /// when the message should be suppressed at the current level (Trace at dev 0, Debug at dev&lt;2).</summary>
+    private static string? RenderForSink(LogLevel level, string message, int dev, string file, int line, string member) => level switch
+    {
+        LogLevel.Help => message,                                           // QC: bare, no header
+        LogLevel.Info => dev > 0 ? Header("INFO", dev > 1, file, line, member) + message : message,
+        LogLevel.Warn => Header("WARNING", dev > 0, file, line, member) + message,
+        LogLevel.Trace => dev > 0 ? Header("TRACE", true, file, line, member) + message : null,
+        LogLevel.Debug => dev > 1 ? Header("DEBUG", true, file, line, member) + message : null,
+        LogLevel.Severe => Header("SEVERE", dev > 0, file, line, member)
+            + "\n--- CUT HERE ---\n" + message + "\n" + Environment.StackTrace + "\n--- CUT UNTIL HERE ---",
+        LogLevel.Fatal => Header("FATAL", dev > 0, file, line, member) + message,
+        _ => message,
+    };
+
+    /// <summary>
+    /// Render a buffered <see cref="LogEntry"/> as it would appear to a viewer running at <paramref name="dev"/>
+    /// — the in-game console calls this with the LIVE <c>developer</c> cvar so the scrollback re-formats
+    /// whenever the user changes verbosity. Returns null if the entry is hidden at that level (Trace at dev 0,
+    /// Debug at dev&lt;2). The output matches what the live sink would have produced.
+    /// </summary>
+    public static string? Render(LogEntry e, int dev)
+        => RenderForSink(e.Level, e.Message, dev, e.File, e.Line, e.Member);
+
+    /// <summary>True if an entry would be visible at <paramref name="dev"/> (the in-game console's filter).</summary>
+    public static bool IsVisibleAt(LogLevel level, int dev) => level switch
+    {
+        LogLevel.Trace => dev > 0,
+        LogLevel.Debug => dev > 1,
+        _ => true,
+    };
+
+    private static void RecordBuffer(LogEntry entry)
+    {
+        lock (BufferLock)
+        {
+            if (BufferCount < BufferCapacity)
+            {
+                BufferRing[(BufferStart + BufferCount) % BufferCapacity] = entry;
+                BufferCount++;
+            }
+            else
+            {
+                // ring is full: overwrite the oldest slot
+                BufferRing[BufferStart] = entry;
+                BufferStart = (BufferStart + 1) % BufferCapacity;
+            }
+        }
+        try
+        {
+            EntryRecorded?.Invoke(entry);
+        }
+        catch
+        {
+            // a buggy subscriber must NEVER kill the logging path — swallow.
         }
     }
 
@@ -375,11 +485,15 @@ public static class Log
         => Api.Services is null ? 0 : (int)Api.Cvars.GetFloat("developer");
 
     /// <summary>Restore <see cref="Sink"/>, <see cref="Program"/>, and <see cref="DeveloperLevel"/> to defaults
-    /// (the facade is global static state; tests that override them reset here, e.g. in test teardown).</summary>
+    /// (the facade is global static state; tests that override them reset here, e.g. in test teardown). Also
+    /// clears the ring buffer and drops any <see cref="EntryRecorded"/> subscribers so tests don't accumulate
+    /// state between fixtures.</summary>
     public static void ResetForTests()
     {
         Sink = DefaultConsoleSink;
         Program = "game";
         DeveloperLevel = DefaultDeveloperLevel;
+        EntryRecorded = null;
+        BufferClear();
     }
 }

@@ -992,6 +992,17 @@ public partial class EffectSystem : Node3D
         // --- color + alpha over life (alphafade) ------------------------------------------------------
         mat.Color = baseColor;
         ApplyInfoColorRamp(mat, info, baseColor);
+        // Per-particle color randomization: DP picks a random lerp between color[0] and color[1] per particle.
+        // ColorInitialRamp assigns each particle a random tint sampled from the gradient at spawn time.
+        if (colorOverride is null && info.Color0 != info.Color1)
+        {
+            Color c0 = new Color(((info.Color0 >> 16) & 0xFF) / 255f, ((info.Color0 >> 8) & 0xFF) / 255f, (info.Color0 & 0xFF) / 255f);
+            Color c1 = new Color(((info.Color1 >> 16) & 0xFF) / 255f, ((info.Color1 >> 8) & 0xFF) / 255f, (info.Color1 & 0xFF) / 255f);
+            var initGrad = new Gradient();
+            initGrad.SetColor(0, c0);
+            initGrad.SetColor(1, c1);
+            mat.ColorInitialRamp = new GradientTexture1D { Gradient = initGrad };
+        }
 
         // --- rotation (rotate base/spin) --------------------------------------------------------------
         if (info.RotateSpinMin != 0f || info.RotateSpinMax != 0f || info.RotateBaseMax != info.RotateBaseMin)
@@ -1004,10 +1015,30 @@ public partial class EffectSystem : Node3D
         }
 
         particles.ProcessMaterial = mat;
-        // Texture the billboard with the real particlefont sprite the block's tex range selects (a fireball,
-        // smoke puff, spark streak, blood drop…); null when no atlas is mounted -> a flat tinted quad.
-        ImageTexture? sprite = Font?.CellInRange(info.Tex0, info.Tex1);
-        particles.DrawPass1 = BuildInfoMesh(info, baseColor, sprite);
+        // Per-particle texture randomization: when the tex range spans multiple cells, pack them as a
+        // horizontal sprite strip and use AnimOffset (0..1) so each particle spawns on a random cell
+        // (a different smoke wisp, fire blob, etc.). Single-cell ranges skip the strip to avoid overhead.
+        int cellSpan = info.Tex1 > info.Tex0 ? info.Tex1 - info.Tex0 : 1;
+        Texture2D? sprite;
+        bool useAnimOffset = false;
+        if (cellSpan > 1)
+        {
+            Texture2D? strip = Font?.CellStrip(info.Tex0, info.Tex1);
+            if (strip is not null)
+            {
+                sprite = strip;
+                useAnimOffset = true;
+                mat.AnimSpeedMin = 0f;
+                mat.AnimSpeedMax = 0f;
+                mat.AnimOffsetMin = 0f;
+                mat.AnimOffsetMax = 1f;
+            }
+            else
+                sprite = Font?.CellInRange(info.Tex0, info.Tex1);
+        }
+        else
+            sprite = Font?.CellInRange(info.Tex0, info.Tex1);
+        particles.DrawPass1 = BuildInfoMesh(info, baseColor, sprite, useAnimOffset ? cellSpan : 1);
         return particles;
     }
 
@@ -1060,13 +1091,15 @@ public partial class EffectSystem : Node3D
     }
 
     /// <summary>The billboard mesh for one emitter, blended per the parsed blend mode (add/alpha/invmod) and
-    /// textured with the particlefont sprite (<paramref name="sprite"/>, null => a flat tinted quad).</summary>
-    private static Mesh BuildInfoMesh(EffectInfoEmitter info, Color color, Texture2D? sprite)
+    /// textured with the particlefont sprite (<paramref name="sprite"/>, null => a flat tinted quad).
+    /// <paramref name="cellCount"/> &gt; 1 enables sprite-sheet particle animation so AnimOffset can randomise
+    /// the starting cell per particle (one cell of the horizontal strip per particle).</summary>
+    private static Mesh BuildInfoMesh(EffectInfoEmitter info, Color color, Texture2D? sprite, int cellCount = 1)
     {
-        // Sparks are stretched along velocity; everything else is a billboard quad. We approximate a spark with
-        // a thin tall quad billboarded to face the camera (Godot lacks a one-liner velocity-stretch in the
-        // process material path used here); billboards cover the rest.
-        var quad = new QuadMesh { Size = new Vector2(1f, 1f) };
+        // Sparks are velocity-stretched in DP; approximate with a thin elongated billboard quad (no velocity
+        // shader needed, but visually distinct from solid dots). Everything else is a 1×1 square quad.
+        bool isSpark = info.Orientation == EiOrientation.Spark;
+        var quad = new QuadMesh { Size = isSpark ? new Vector2(0.15f, 2.0f) : new Vector2(1f, 1f) };
 
         BaseMaterial3D.BlendModeEnum blend = info.Blend switch
         {
@@ -1085,6 +1118,14 @@ public partial class EffectSystem : Node3D
             AlbedoColor = color,
             DisableReceiveShadows = true,
         };
+        // Sprite-sheet particle animation: each particle starts on a random frame (AnimOffset) so the burst
+        // shows a mix of smoke wisps / fire blobs / spark dots rather than identical copies.
+        if (cellCount > 1)
+        {
+            mat.ParticlesAnimHFrames = cellCount;
+            mat.ParticlesAnimVFrames = 1;
+            mat.ParticlesAnimLoop = false;
+        }
         ApplySprite(mat, sprite);
         quad.Material = mat;
         return quad;

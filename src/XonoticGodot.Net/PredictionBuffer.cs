@@ -179,9 +179,12 @@ public sealed class Reconciler
     private const float MaxErrorOrigin = 32f;    // vdist(o, >, 32)
     private const float MaxErrorVelocity = 192f;  // vdist(v, >, 192)
 
-    // A vertical jump in one replayed tick larger than this is a teleport / jumppad / fall, NOT a stair —
-    // don't smooth it (QC: stairs are bounded by sv_stepheight ~ 34u; we allow a little slack).
-    private const float MaxStairStep = 48f;
+    // The MAX the rendered camera Z may lag the live Z — the reference's PHYS_STEPHEIGHT clamp
+    // (CSQCModel_ApplyStairSmoothing: bound(v.z - PHYS_STEPHEIGHT, ...)). MUST equal the player step height
+    // (sv_stepheight = MovementParameters.StepHeight = 31 in Xonotic): a larger value let the camera lag up to
+    // 48u below the eye on steep ramps/stairs (the "camera too low sometimes" regression). A real step can only
+    // raise/lower the eye by one step height, so the smoother's lag must be bounded by exactly that.
+    private const float MaxStairStep = 31f; // sv_stepheight (Xonotic default; keep in sync with MovementParameters.StepHeight)
 
     public Reconciler(PredictionBuffer input, IMovementStep movement)
     {

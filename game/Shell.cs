@@ -1,4 +1,5 @@
 using Godot;
+using XonoticGodot.Common.Diagnostics;
 using XonoticGodot.Common.Gameplay;
 using XonoticGodot.Common.Services;
 using XonoticGodot.Engine.Collision;
@@ -80,7 +81,7 @@ public partial class Shell : Node
             MenuState.Interp!,                       // non-null after MenuState.Boot
             MenuState.Cvars,
             LocalRouteCommand,                       // gameplay cmd → in-process listen-server world (null on a pure client)
-            line => _netGame?.SendStringCommand(line), // pure-client fallback: DP clc_stringcmd to the remote server
+            RouteRemoteCommand,                      // pure-client fallback: DP clc_stringcmd to the remote server (or print a hint at the menu)
             () => MatchRunning && !_paused);         // recapture the mouse on close only inside a live match
 
         // Keybind system: the runtime key→command table is already seeded by MenuState.Boot (above) from the
@@ -158,7 +159,7 @@ public partial class Shell : Node
         }
         else
         {
-            GD.PrintErr($"[Shell] unknown --menu-screen '{id}'.");
+            Log.Warn($"[Shell] unknown --menu-screen '{id}'.");
         }
     }
 
@@ -223,7 +224,7 @@ public partial class Shell : Node
         Control? screen = MenuDialogRegistry.Create(name);
         if (screen is null)
         {
-            GD.PrintErr($"[Shell] menu_cmd: no dialog named '{name}'.");
+            Log.Warn($"[Shell] menu_cmd: no dialog named '{name}'.");
             return;
         }
         if (resumeOnClose) _menu.PushResumeOnClose(screen);
@@ -312,7 +313,7 @@ public partial class Shell : Node
     /// (a real networked match the local client joins), so Create Game actually starts a playable server.</summary>
     private void OnStartGame(MatchConfig config)
     {
-        GD.Print($"[Shell] start game: {config}");
+        Log.Info($"[Shell] start game: {config}");
         StartListenServer(config);
     }
 
@@ -423,16 +424,20 @@ public partial class Shell : Node
     private void OnConnect(string address) => ConnectToServer(address);
 
     /// <summary>Tear down any match and spin up a client NetGame connected to <paramref name="address"/>.</summary>
-    public void ConnectToServer(string address)
+    public async void ConnectToServer(string address)
     {
         if (string.IsNullOrWhiteSpace(address))
         {
-            GD.PrintErr("[Shell] connect: empty address.");
+            Log.Warn("[Shell] connect: empty address.");
             return;
         }
-        GD.Print($"[Shell] connecting to {address}.");
+        Log.Info($"[Shell] connecting to {address}.");
         TeardownGame();
         ShowLoadingScreen(address);
+
+        // Hide the menu (and unfreeze the tree, capture the mouse) NOW so the loading screen is the only
+        // thing on screen during the blocking connect — not the menu frozen behind the overlay.
+        EnterMatchView();
 
         var net = new XonoticGodot.Game.Net.NetGame
         {
@@ -446,9 +451,12 @@ public partial class Shell : Node
         net.DismissLoadingScreen = DismissLoadingScreen;
         WireConsoleToNet(net);
         _netGame = net;
-        AddChild(net);
 
-        EnterMatchView();
+        // Wait for the loading screen to actually be PAINTED before kicking off the blocking connect.
+        await WaitForFramePainted();
+        if (_netGame != net) return; // abandoned: TeardownGame was called while we awaited
+
+        AddChild(net);
     }
 
     /// <summary>
@@ -457,11 +465,15 @@ public partial class Shell : Node
     /// networked client to 127.0.0.1. This is the "Create Game" / <c>map</c> path: a real playable server, not
     /// the no-net <see cref="StartLocalGame"/> demo. Reuses the menu's shared VFS + cvar store.
     /// </summary>
-    public void StartListenServer(MatchConfig config)
+    public async void StartListenServer(MatchConfig config)
     {
-        GD.Print($"[Shell] hosting listen server: {config}");
+        Log.Info($"[Shell] hosting listen server: {config}");
         TeardownGame();
         ShowLoadingScreen(config.Map ?? "");
+
+        // Hide the menu (and unfreeze + capture mouse) NOW so the loading screen is the only thing on
+        // screen during the blocking load, not the menu frozen behind it.
+        EnterMatchView();
 
         // Apply the chosen match limits to the shared cvars so the hosted world reads them.
         if (config.TimeLimit > 0) MenuState.Cvars.Set("timelimit", config.TimeLimit.ToString());
@@ -488,9 +500,38 @@ public partial class Shell : Node
         net.DismissLoadingScreen = DismissLoadingScreen;
         WireConsoleToNet(net);
         _netGame = net;
-        AddChild(net);
 
-        EnterMatchView();
+        // Wait for the loading screen to actually be PAINTED before kicking off the blocking map load.
+        await WaitForFramePainted();
+        if (_netGame != net) return; // abandoned: TeardownGame was called while we awaited
+
+        AddChild(net);
+    }
+
+    /// <summary>
+    /// Yield until the GPU has actually painted a frame (so any UI changes — e.g. the loading screen —
+    /// are on screen before we hand control back to a synchronous, blocking caller). Uses
+    /// <c>RenderingServer.frame_post_draw</c>, which fires after the renderer submits the frame.
+    /// Falls back to two <see cref="SceneTree.ProcessFrame"/> ticks if the renderer signal isn't
+    /// available (headless server or test runs).
+    /// </summary>
+    private async System.Threading.Tasks.Task WaitForFramePainted()
+    {
+        var rs = RenderingServer.Singleton;
+        if (rs is not null)
+        {
+            // Two cycles to be safe: the first may resume during the same iteration that scheduled the
+            // await (depending on where in the main loop we were called from); the second is a guaranteed
+            // post-draw fence.
+            await ToSignal(rs, RenderingServer.SignalName.FramePostDraw);
+            await ToSignal(rs, RenderingServer.SignalName.FramePostDraw);
+        }
+        else
+        {
+            // Headless: no renderer. Two process_frame ticks at least flushes one full iteration.
+            await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+            await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+        }
     }
 
     /// <summary>The local player's display name (QC <c>_cl_name</c>/<c>name</c> cvar), defaulting to "player".</summary>
@@ -591,5 +632,19 @@ public partial class Shell : Node
         if (world is null)
             return null;
         return world.Commands.Execute(line, isServerConsole: false, caller: _netGame?.LocalServerPlayer).Output;
+    }
+
+    /// <summary>
+    /// Fallback for the console's gameplay-command router when there is no in-process server: forward to the
+    /// connected remote server (DP <c>clc_stringcmd</c>) on a pure <c>--connect</c> client, otherwise PRINT a
+    /// hint so the user gets feedback instead of silent acceptance — the menu has no live game to route to,
+    /// but the cvar/exec/bind side of the console always processes regardless.
+    /// </summary>
+    private void RouteRemoteCommand(string line)
+    {
+        if (_netGame is not null)
+            _netGame.SendStringCommand(line);
+        else
+            XonoticGodot.Common.Diagnostics.Log.Help($"\"{line}\": no server — start a match (`map <name>`) or `connect <addr>` first.");
     }
 }

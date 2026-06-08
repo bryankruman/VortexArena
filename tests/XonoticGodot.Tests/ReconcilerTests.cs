@@ -163,7 +163,7 @@ public class ReconcilerTests
             z += 8f;
             DriveZ(rec, step, z);
             float off = rec.GetStairSmoothOffset(FrameDt);
-            Assert.True(MathF.Abs(off) <= 48f + 1e-3f, $"slope offset must stay clamped to one step height (got {off} at frame {i})");
+            Assert.True(MathF.Abs(off) <= 31f + 1e-3f, $"slope offset must stay clamped to one step height (31u), got {off} at frame {i}");
         }
 
         // Reach flat ground (Z stops changing): the offset must catch up to ~0 (not stay pinned).

@@ -37,14 +37,32 @@ public sealed partial class LoadingScreen : Control
     private float _progress;
     private string _status = "Loading...";
 
+    // Stage animation state — see BeginStage. When _animating is true, _Process advances _progress
+    // asymptotically from _stageStartProgress toward _stageTargetProgress over _stageExpectedSeconds:
+    // ~80% of the way to the target at the expected time, then slowing further (never quite reaching).
+    // UpdateProgress disables animation and snaps to its value (used for the final dismiss).
+    private bool _animating;
+    private ulong _stageStartMsec;
+    private float _stageStartProgress;
+    private float _stageTargetProgress;
+    private float _stageExpectedSeconds = 1f;
+    // ln(1 / (1 - 0.8)) — picks tau so that elapsed=expected → fraction=0.80 of the way to target.
+    private const double DefaultStageK = 1.6094379124341003;
+    // Cap fraction so we never quite touch the target — gives the visual "slow down, almost there" pause
+    // until the next stage explicitly takes over. Roughly 96% of the allotted range.
+    private const float StageMaxFraction = 0.96f;
+
     public override void _Ready()
     {
-        // Full-rect black background (the image may not cover the whole screen at all aspect ratios)
-        SetAnchorsPreset(LayoutPreset.FullRect);
+        // Parent is a sizeless CanvasLayer — `SetAnchorsPreset(FullRect)` alone sets anchors to 0,0,1,1
+        // but leaves offsets at 0 in a way that the runtime resolves to a (0,0) rect. The "AndOffsets"
+        // variant also sets offsets to fill the anchor area, which DOES resolve to the full viewport
+        // rect. Without this the whole tree below was 0×0 and nothing painted.
+        SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
         MouseFilter = MouseFilterEnum.Stop;
 
         var blackBg = new ColorRect { Name = "BlackBg", Color = Colors.Black };
-        blackBg.SetAnchorsPreset(LayoutPreset.FullRect);
+        blackBg.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
         AddChild(blackBg);
 
         // The loading image — centered, aspect-fit (DP scr_loadingscreen_scale_limit 2: scale until
@@ -55,7 +73,7 @@ public sealed partial class LoadingScreen : Control
             StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered,
             ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
         };
-        _background.SetAnchorsPreset(LayoutPreset.FullRect);
+        _background.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
         AddChild(_background);
 
         // Try to load gfx/loading.tga from the mounted VFS
@@ -117,13 +135,58 @@ public sealed partial class LoadingScreen : Control
         ApplyProgress();
     }
 
-    /// <summary>Update the progress bar and status text. <paramref name="fraction"/> is 0..1.</summary>
+    /// <summary>Update the progress bar and status text. <paramref name="fraction"/> is 0..1.
+    /// Cancels any active stage animation — the bar snaps to <paramref name="fraction"/>. Use this for the
+    /// final dismiss or any time the caller wants exact control. Prefer <see cref="BeginStage"/> for the
+    /// load sequence so the bar advances smoothly even when the main thread is briefly busy between steps.</summary>
     public void UpdateProgress(float fraction, string status)
     {
         _progress = Mathf.Clamp(fraction, 0f, 1f);
         _status = status ?? "";
+        _animating = false;
         if (IsInsideTree())
             ApplyProgress();
+    }
+
+    /// <summary>
+    /// Begin a new loading stage. The bar smoothly animates from its current position toward
+    /// <paramref name="targetProgress"/> over <paramref name="expectedSeconds"/>, then slows asymptotically
+    /// (the bar reaches ~80% of the allotted range at the expected time, ~96% by the time the next stage
+    /// begins, never quite touching the target). Each subsequent <see cref="BeginStage"/> jumps the start
+    /// position to wherever the bar is now and aims at the new target — so a stage that finishes early just
+    /// hands a partial range to the next one cleanly, with no visual snap-back.
+    /// </summary>
+    /// <param name="status">User-facing status line ("Loading map…", "Precaching weapon models…").</param>
+    /// <param name="targetProgress">0..1 — where this stage WANTS to end up (the next stage will start here).</param>
+    /// <param name="expectedSeconds">Best-guess duration. Tunes the curve so the bar paces itself; if the stage
+    /// runs long, the bar slows but keeps creeping forward (never stalls — that's the asymptote).</param>
+    public void BeginStage(string status, float targetProgress, float expectedSeconds = 2.0f)
+    {
+        _stageStartProgress = _progress;
+        _stageTargetProgress = Mathf.Clamp(targetProgress, 0f, 1f);
+        _stageExpectedSeconds = Mathf.Max(0.1f, expectedSeconds);
+        _stageStartMsec = Time.GetTicksMsec();
+        _status = status ?? "";
+        _animating = _stageTargetProgress > _stageStartProgress;
+        if (IsInsideTree())
+            ApplyProgress();
+    }
+
+    public override void _Process(double delta)
+    {
+        if (!_animating)
+            return;
+
+        double elapsed = (Time.GetTicksMsec() - _stageStartMsec) / 1000.0;
+        double tau = _stageExpectedSeconds / DefaultStageK;
+        float fraction = (float)(1.0 - System.Math.Exp(-elapsed / tau));
+        if (fraction > StageMaxFraction) fraction = StageMaxFraction;
+        float next = _stageStartProgress + (_stageTargetProgress - _stageStartProgress) * fraction;
+        if (next > _progress)
+        {
+            _progress = next;
+            ApplyProgress();
+        }
     }
 
     /// <summary>Set the map name displayed above the status text.</summary>
