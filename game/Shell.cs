@@ -54,7 +54,6 @@ public partial class Shell : Node
     private XonoticGodot.Game.Net.NetGame? _netGame;
     private ConsoleOverlay _console = null!;
     private bool _paused;
-    private bool _toggleMenuHandled; // set by HandleToggleMenu, cleared each frame — prevents double-toggle
     private CanvasLayer? _loadingLayer;
     private LoadingScreen? _loadingScreen;
 
@@ -243,27 +242,31 @@ public partial class Shell : Node
     //  Escape — toggle the in-game menu (only while a match is running)
     // -------------------------------------------------------------------------------------------------
 
-    public override void _Process(double delta)
+    /// <summary>
+    /// The single owner of the Escape→pause-menu toggle. Handled in <see cref="_UnhandledKeyInput"/> (Godot
+    /// dispatches this BEFORE <c>_unhandled_input</c>) and the event is CONSUMED, so the gameplay bind path in
+    /// <see cref="XonoticGodot.Game.Net.NetGame"/>/<see cref="PlayerController"/> — which runs in
+    /// <c>_unhandled_input</c> and would otherwise also fire the <c>togglemenu</c> bind — never sees this Escape.
+    /// Earlier-stage handlers still win: the console (<c>_Input</c>) eats Escape while open, and the key-rebind
+    /// capture button (<c>_GuiInput</c>) eats it while capturing.
+    ///
+    /// <para><b>Why we toggle on the RELEASE edge, not the press.</b> While the mouse is
+    /// <see cref="Input.MouseModeEnum.Captured"/>, the OS/Godot swallows the Escape <em>press</em> (it's used to
+    /// break the pointer grab) — only the release reaches the app. A press-based toggle therefore silently
+    /// dropped the very first Escape (mouse still captured), so the menu only opened from the second press on.
+    /// The release edge always arrives, so toggling on it makes the first Escape open the menu reliably.</para>
+    /// </summary>
+    public override void _UnhandledKeyInput(InputEvent @event)
     {
-        // Clear the per-event guard flag after all input for this frame has been dispatched (Godot runs
-        // input before process). This prevents a stale flag from blocking the next frame's Escape.
-        _toggleMenuHandled = false;
-    }
-
-    public override void _UnhandledInput(InputEvent @event)
-    {
-        if (@event is not InputEventKey { Pressed: true, Echo: false, Keycode: Key.Escape })
+        if (@event is not InputEventKey { Echo: false, Keycode: Key.Escape } key)
             return;
-        if (!MatchRunning)
-            return; // at the main menu Escape does nothing (there's nothing to pause)
+        if (!MatchRunning || ConsoleState.IsOpen)
+            return; // at the main menu Escape does nothing; an open console owns its own Escape
 
-        // If the `togglemenu` command (fired by the Escape bind in a child node's _UnhandledInput)
-        // already handled the toggle during this same event dispatch, don't double-toggle.
-        if (_toggleMenuHandled)
-        {
-            GetViewport().SetInputAsHandled();
+        // Own BOTH edges so the gameplay bind path never also reacts to Escape, but only act on release.
+        GetViewport().SetInputAsHandled();
+        if (key.Pressed)
             return;
-        }
 
         if (_paused)
         {
@@ -275,18 +278,16 @@ public partial class Shell : Node
         {
             OpenPauseMenu();
         }
-        GetViewport().SetInputAsHandled();
     }
 
-    /// <summary>DP <c>togglemenu</c> engine command: toggle the in-game pause menu. <paramref name="mode"/>
-    /// 0 = force close; anything else = toggle (open if closed, close/pop if open). Sets
-    /// <see cref="_toggleMenuHandled"/> so <see cref="_UnhandledInput"/> doesn't double-toggle when both
-    /// the bind and the hardcoded Escape handler fire on the same event.</summary>
+    /// <summary>DP <c>togglemenu</c> engine command (console / aliases like <c>team_auto</c>): toggle the
+    /// in-game pause menu. <paramref name="mode"/> 0 = force close; anything else = toggle (open if closed,
+    /// close/pop if open). The Escape KEY is handled directly in <see cref="_UnhandledKeyInput"/>, so this
+    /// path is only reached by an explicit <c>togglemenu</c> command, never by the Escape bind.</summary>
     private void HandleToggleMenu(int mode)
     {
         if (!MatchRunning)
             return;
-        _toggleMenuHandled = true;
         if (mode == 0)
         {
             if (_paused) Resume();
