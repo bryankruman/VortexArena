@@ -625,7 +625,9 @@ public static class ItemPickupRules
     {
         string snd = worldItem.Pickup?.PickupSoundName ?? "ITEMPICKUP";
         if (Api.Services is not null && !string.IsNullOrEmpty(snd))
-            Api.Sound.Play(player, SoundChannel.Item, snd);
+            // CH_TRIGGER (auto) so two quick pickups (e.g. armor + health in one pass) stack instead of the
+            // second one cutting off the first — DP plays item_pickupsound on the auto trigger channel.
+            Api.Sound.Play(player, SoundChannel.TriggerAuto, snd);
     }
 
     /// <summary>

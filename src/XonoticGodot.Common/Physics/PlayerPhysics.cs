@@ -86,7 +86,12 @@ public sealed class PlayerPhysics : IPlayerPhysics
     // --- view offset, standing vs crouched (sv_player_viewoffset '0 0 35' / sv_player_crouch_viewoffset '0 0 20').
     //     QC PM_ClientMovement_UpdateStatus sets this.view_ofs to STAT(PL_VIEW_OFS) / STAT(PL_CROUCH_VIEW_OFS) on the
     //     stand/duck transition; the eye drops 35 -> 20 while crouched. The render camera reads the live ViewOfs.Z. ---
-    private static readonly Vector3 StandViewOfs = new(0f, 0f, 35f);
+    /// <summary>The standing eye offset (QC <c>STAT(PL_VIEW_OFS)</c>, <c>sv_player_viewoffset '0 0 35'</c>) — the
+    /// canonical value the spawn path must seed onto a (re)spawned player's <see cref="Entity.ViewOfs"/> (QC
+    /// PutPlayerInServer sets <c>view_ofs = PL_VIEW_OFS</c>). Without it the server player's eye sits at the origin
+    /// (ViewOfs 0) until the first crouch-leave edge — firing the shot ~35u too LOW (the "shot low until I crouch
+    /// once" bug). Public so <see cref="XonoticGodot.Common.Gameplay.Player.SpawnSystem"/> seeds the same value.</summary>
+    public static readonly Vector3 StandViewOfs = new(0f, 0f, 35f);
     private static readonly Vector3 CrouchViewOfs = new(0f, 0f, 20f);
 
     // --- spectator free-flight speed ladder (ecs/systems/sv_physics.qc:3-5) ---
@@ -288,7 +293,7 @@ public sealed class PlayerPhysics : IPlayerPhysics
         // conveyors: restore velocity out of the conveyor frame
         if (onConveyor)
             player.Velocity += player.ConveyorMoveDir;
-        UpdateMovementSounds(player, mp);
+        UpdateMovementSounds(player, mp, input.Predicted);
         player.LastFlags = player.Flags;
 
         // QC sys_phys_postupdate: `this.lastclassname = this.classname;` (physics.qc:194). The port tracks the
@@ -1477,60 +1482,109 @@ public sealed class PlayerPhysics : IPlayerPhysics
 
     // --- movement sounds (QC PM_check_hitground / footsteps in sys_phys_postupdate) ---
 
-    private static void UpdateMovementSounds(Entity player, in MovementParameters mp)
+    private static void UpdateMovementSounds(Entity player, in MovementParameters mp, bool predicted)
     {
         if (Api.Services is null)
+            return;
+        // QC plays footsteps/landing only under #ifdef SVQC — the authoritative server tick. Suppress them on
+        // client-side prediction (and its reconciliation replays) so a predicted landing doesn't double up with
+        // the networked one and replays don't multiply the sound. WasFlying/footstep timing is then owned solely
+        // by the authoritative sim (the server entity), which is the one that actually emits the cue.
+        if (predicted)
             return;
         if (player is Player { IsObserver: true })
             return;
         if (player.DeadState != DeadFlag.No)
             return;
 
-        bool justLanded = !player.WasOnGround && player.OnGround;
-
-        if (justLanded)
+        // Mirror QC ecs/systems/physics.qc:86-96. On the ground: maybe play the landing sound, then footsteps.
+        // While genuinely airborne (real clearance below — IsFlying): latch WasFlying. The landing sound is gated
+        // on WasFlying, NOT on a raw "was-airborne→on-ground" edge: OnGround flickers on stairs, slopes and small
+        // bumps, which made the old edge re-fire the FALL sound every few frames (the landing-spam bug). WasFlying
+        // only latches after an actual fall, so FALL now plays exactly once per landing.
+        if (player.OnGround)
         {
-            player.LastFootstepTime = Now();
-            Vector3 down = player.Origin - new Vector3(0f, 0f, 1f);
-            TraceResult tr = Api.Trace.Trace(player.Origin, player.Mins, player.Maxs, down, MoveFilter.NoMonsters, player);
-            if ((tr.DpHitQ3SurfaceFlags & Q3SurfaceFlagNoSteps) == 0)
-            {
-                bool metal = (tr.DpHitQ3SurfaceFlags & Q3SurfaceFlagMetalSteps) != 0;
-                SoundSystem.PlayGlobalVariant(player, metal ? "FALL_METAL" : "FALL");
-            }
+            CheckHitground(player);
+            Footsteps(player, mp);
         }
-        else if (player.OnGround)
+        else if (IsFlying(player))
         {
-            float now = Now();
-            if (now - player.LastFootstepTime < FootstepInterval)
-                return;
-
-            float speed2 = Vec2LenSq(player.Velocity);
-            float threshold = mp.MaxSpeed * FootstepSpeedThreshold;
-            if (speed2 < threshold * threshold)
-                return;
-
-            Vector3 down = player.Origin - new Vector3(0f, 0f, 1f);
-            TraceResult tr = Api.Trace.Trace(player.Origin, player.Mins, player.Maxs, down, MoveFilter.NoMonsters, player);
-            if ((tr.DpHitQ3SurfaceFlags & Q3SurfaceFlagNoSteps) != 0)
-                return;
-
-            bool metal = (tr.DpHitQ3SurfaceFlags & Q3SurfaceFlagMetalSteps) != 0;
-            float volume = player.IsDucked ? SoundLevels.VolMuffled : SoundLevels.VolBase;
-            string group = metal ? "STEP_METAL" : "STEP";
-            GameSound? snd = Sounds.ByName(group);
-            if (snd is not null)
-            {
-                Api.Sound.Play(player, SoundChannel.Body,
-                    SoundVariantGroups.ResolveGlobalSample(snd), volume, SoundLevels.AttenNorm);
-            }
-
-            player.LastFootstepTime = now;
+            player.WasFlying = true;
         }
-        else
+    }
+
+    /// <summary>QC <c>PM_check_hitground</c> (player.qc:664): on a real landing (<see cref="Entity.WasFlying"/>
+    /// latched by <see cref="IsFlying"/>) play the FALL sound ONCE and throttle the next footstep. Emitted on
+    /// CH_PLAYER (auto) so it neither cuts off nor is cut off by a following footstep; muffled while ducked.</summary>
+    private static void CheckHitground(Entity player)
+    {
+        if (!player.WasFlying)
+            return;
+        player.WasFlying = false;
+        if (player.WaterLevel >= WaterLevelSwimming)
+            return;
+        // (QC also bails when on a ladder or holding an active grappling hook; the port doesn't model those here.)
+        player.LastFootstepTime = Now(); // QC nextstep: suppress a footstep for FootstepInterval after landing
+        if (TraceSteps(player, out bool metal))
         {
-            player.LastFootstepTime = Now();
+            float vol = player.IsDucked ? SoundLevels.VolMuffled : SoundLevels.VolBase;
+            PlayMovementSound(player, metal ? "FALL_METAL" : "FALL", vol);
         }
+    }
+
+    /// <summary>QC <c>PM_Footsteps</c> (player.qc:689): periodic footsteps while moving on the ground, throttled
+    /// to <see cref="FootstepInterval"/> and gated on speed. Silent while ducked (QC returns on IS_DUCKED).
+    /// Emitted on CH_PLAYER (auto) so consecutive steps stack rather than cancel each other.</summary>
+    private static void Footsteps(Entity player, in MovementParameters mp)
+    {
+        if (player.IsDucked)
+            return;
+        float now = Now();
+        if (now - player.LastFootstepTime < FootstepInterval)
+            return;
+        float speed2 = Vec2LenSq(player.Velocity);
+        float threshold = mp.MaxSpeed * FootstepSpeedThreshold;
+        if (speed2 < threshold * threshold)
+            return;
+        if (TraceSteps(player, out bool metal))
+            PlayMovementSound(player, metal ? "STEP_METAL" : "STEP", SoundLevels.VolBase);
+        player.LastFootstepTime = now;
+    }
+
+    /// <summary>Downward step-surface probe (QC <c>tracebox origin → origin-'0 0 1'</c>): false when the surface
+    /// is NOSTEPS (play nothing); otherwise reports via <paramref name="metal"/> whether it is a METALSTEPS surface.</summary>
+    private static bool TraceSteps(Entity player, out bool metal)
+    {
+        Vector3 down = player.Origin - new Vector3(0f, 0f, 1f);
+        TraceResult tr = Api.Trace.Trace(player.Origin, player.Mins, player.Maxs, down, MoveFilter.NoMonsters, player);
+        metal = (tr.DpHitQ3SurfaceFlags & Q3SurfaceFlagMetalSteps) != 0;
+        return (tr.DpHitQ3SurfaceFlags & Q3SurfaceFlagNoSteps) == 0;
+    }
+
+    /// <summary>Emit a movement-sound variant (STEP/FALL/…) on CH_PLAYER (auto, so plays stack) at ATTEN_NORM —
+    /// QC <c>GlobalSound(this, gs, CH_PLAYER, …)</c>. No-op when the group isn't registered.</summary>
+    private static void PlayMovementSound(Entity player, string group, float volume)
+    {
+        GameSound? snd = Sounds.ByName(group);
+        if (snd is null)
+            return;
+        Api.Sound.Play(player, SoundChannel.PlayerAuto,
+            SoundVariantGroups.ResolveGlobalSample(snd), volume, SoundLevels.AttenNorm);
+    }
+
+    /// <summary>QC <c>bool IsFlying</c> (player.qc:843): airborne, not swimming, and with &gt;24u of clearance
+    /// directly below. Latches <see cref="Entity.WasFlying"/> so the landing sound fires only after a genuine
+    /// fall. Distinct from the EV_IsFlying mutator hook (<see cref="CallIsFlying"/>), which forces the fly
+    /// movement branch.</summary>
+    private static bool IsFlying(Entity player)
+    {
+        if (player.OnGround)
+            return false;
+        if (player.WaterLevel >= WaterLevelSwimming)
+            return false;
+        Vector3 end = player.Origin - new Vector3(0f, 0f, 24f);
+        TraceResult tr = Api.Trace.Trace(player.Origin, player.Mins, player.Maxs, end, MoveFilter.Normal, player);
+        return tr.Fraction >= 1f;
     }
 
     private static float Now() => Api.Services is not null ? Api.Clock.Time : 0f;

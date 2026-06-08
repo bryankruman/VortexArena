@@ -982,6 +982,9 @@ public sealed partial class NetGame : Node3D
         GameDemo.ViewModelEquip eq = GameDemo.BuildViewModelEquip(_assets, vModel);
         _viewModel.SetWeaponModel(eq.Model, MuzzleEffectFor(w), "tag_shot", eq.Attach);
         _viewModel.Visible = true;
+        // Raise the new gun into view instead of popping the model in (Xonotic viewmodel_draw raise; pairs with
+        // the keypress holster in RunBoundCommand). Confirmed switch → cancels any pending holster auto-recovery.
+        _viewModel.PlayRaise();
     }
 
     /// <summary>
@@ -1721,6 +1724,12 @@ public sealed partial class NetGame : Node3D
         if (imp != 0)
         {
             _pendingImpulse = imp; // edge-triggered: SampleInput consumes it on the next command, then clears it
+            // Instant local feedback: begin lowering the gun the moment a weapon-SELECT key is pressed, so the
+            // switch starts visibly the same frame instead of waiting for the server round-trip (EquipNetworkedWeapon
+            // then raises the new gun when the change confirms). Only weapon-select impulses (group/next/prev/last/
+            // best/by-id) — NOT drop (17) or reload (20). Auto-recovers if the server denies the switch.
+            if (IsWeaponSwitchImpulse(imp) && _viewModel is not null && GodotObject.IsInstanceValid(_viewModel))
+                _viewModel.PlayHolster();
             return;
         }
 
@@ -1760,6 +1769,15 @@ public sealed partial class NetGame : Node3D
             _ => 0,
         };
     }
+
+    /// <summary>
+    /// True when an impulse number is a weapon-SELECT action (so the viewmodel should lower-then-raise): the
+    /// group keys + next/prev/last/best (1..14, matching <see cref="WeaponCommandToImpulse"/>: groups 1..9, 10
+    /// next, 11 last, 12 prev, 13 best, 14 group-0) and the direct weapon_byid_N (230+). Excludes drop (17) and
+    /// reload (20), which keep the current weapon shown.
+    /// </summary>
+    private static bool IsWeaponSwitchImpulse(int imp)
+        => (imp >= 1 && imp <= 14) || (imp >= 230 && imp <= 253);
 
     /// <summary>The live look sensitivity (DP `sensitivity` cvar) folded with the base feel — the value the
     /// input-settings dialog writes. Falls back to the previous hardcoded feel when the cvar is unset.</summary>

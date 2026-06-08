@@ -73,13 +73,20 @@ public interface ICvarService
     void Register(string name, string defaultValue, CvarFlags flags = CvarFlags.None);
 }
 
+// Mirrors QuakeC's CH_* constants (common/sounds/sound.qh) + Darkplaces' channel model (sound.h): a NEGATIVE
+// (auto) channel auto-allocates a fresh slot so overlapping plays STACK; a POSITIVE (single) channel is matched
+// per (entity, channel) so a new play REPLACES the one already on it (SND_PickChannel, snd_main.c). Most
+// gameplay one-shots (weapon fire, impacts, footsteps, pain, voice, pickups) are AUTO in stock Xonotic — single
+// channels are reserved for continuous/looping sources (tuba, bgm, projectile fly-loops) that must not stack.
 public enum SoundChannel
 {
-    ShotsAuto = -4,
-    TriggerAuto = -3,
-    VoiceAuto = -2,
-    WeaponAuto = -1,
-    Auto = 0,
+    PlayerAuto = -7,  // CH_PLAYER  — footsteps, landing, body sounds (stack)
+    PainAuto = -6,    // CH_PAIN    — pain (stack)
+    ShotsAuto = -4,   // CH_SHOTS   — projectile impacts (stack)
+    TriggerAuto = -3, // CH_TRIGGER — item pickups, world triggers (stack)
+    VoiceAuto = -2,   // CH_VOICE   — voice / taunts (stack)
+    WeaponAuto = -1,  // CH_WEAPON_A
+    Auto = 0,         // CH_INFO
     WeaponSingle = 1,
     Weapon = 1,
     Voice = 2,

@@ -81,6 +81,17 @@ public partial class ViewModel : Node3D
     [Export] public float RecoilKick { get; set; } = 2.0f;
     [Export] public float RecoilRecovery { get; set; } = 8f;
 
+    // --- weapon-switch raise/lower animation (the faithful stand-in for Xonotic's viewmodel_draw raise/drop;
+    //     see view.qc:339-362). Instead of popping the new model in, the gun lowers off the bottom of the view
+    //     and the new one rises up. -----------------------------------------------------------------------------
+    /// <summary>How far (view-space Quake units, straight down) the gun drops when fully holstered — enough to
+    /// clear the bottom of the screen for a ~25u model.</summary>
+    [Export] public float SwitchLowerDistance { get; set; } = 40f;
+    /// <summary>Seconds to lower the gun off-screen (the drop half — Xonotic <c>switchdelay_drop</c>-ish).</summary>
+    [Export] public float HolsterTime { get; set; } = 0.10f;
+    /// <summary>Seconds to raise the new gun into view (the raise half — Xonotic <c>switchdelay_raise</c>-ish).</summary>
+    [Export] public float RaiseTime { get; set; } = 0.15f;
+
     // --- gun sway cvars (Xonotic xonotic-client.cfg + DP defaults; see qcsrc/client/view.qc) ---------------
     [Export] public bool FollowModel { get; set; } = true;
     [Export] public float FollowSpeed { get; set; } = 0.3f;
@@ -121,6 +132,13 @@ public partial class ViewModel : Node3D
     private OmniLight3D _fillLight = null!; // soft constant light so the view-model is never a black silhouette
     private float _flashTime;              // remaining flash-light time
     private float _recoil;                 // current recoil displacement (Quake units, decays to 0)
+
+    // Weapon-switch raise/lower state. _switchOffset in [0,1]: 0 = fully raised (rest), 1 = fully lowered (off
+    // the bottom of the view). _switchDir: -1 raising (→0), +1 lowering (→1), 0 idle. _holsterGrace recovers a
+    // keypress-predicted holster that the server never confirms (a denied switch) so the gun can't stay stuck down.
+    private float _switchOffset;
+    private int _switchDir;
+    private float _holsterGrace;
 
     // Sway running state (the QC static locals: follow/lean low/high-pass accumulators + bob phase).
     private SwayState _sway;
@@ -381,6 +399,58 @@ public partial class ViewModel : Node3D
         return _animator!.CurrentClip;
     }
 
+    // =================================================================================================
+    //  Weapon switch raise/lower (Xonotic viewmodel_draw raise/drop — view.qc:339-362)
+    // =================================================================================================
+
+    /// <summary>
+    /// Begin lowering the current gun off the bottom of the view — the <b>drop</b> half of a weapon switch.
+    /// Called on the switch-key press for instant local feedback while the actual switch round-trips to the
+    /// server (the gun starts dropping the moment you press the key, masking the latency, exactly as Xonotic's
+    /// drop animation does). If the server never confirms the switch (e.g. denied — out of ammo / not owned),
+    /// the gun auto-recovers and raises the same weapon back up after a short grace, so it can never stay stuck
+    /// off-screen. Purely cosmetic — firing/usability stays server-authoritative.
+    /// </summary>
+    public void PlayHolster()
+    {
+        _switchDir = +1;        // animate toward fully lowered
+        _holsterGrace = 0.45f;  // recover if no raise confirms by then
+    }
+
+    /// <summary>
+    /// Snap the gun to fully lowered and raise it into view — the <b>raise</b> half of a weapon switch, called
+    /// right after the model is swapped to the new weapon on a server-confirmed change, so the new gun rises up
+    /// instead of popping in. Cancels any pending holster auto-recovery.
+    /// </summary>
+    public void PlayRaise()
+    {
+        _switchOffset = 1f;     // the new gun starts off-screen…
+        _switchDir = -1;        // …and rises to rest
+        _holsterGrace = 0f;     // confirmed — no auto-recovery needed
+    }
+
+    /// <summary>Advance the switch raise/lower animation one frame and recover a never-confirmed holster.</summary>
+    private void UpdateSwitch(float dt)
+    {
+        if (_switchDir > 0)         // lowering
+            _switchOffset = Mathf.MoveToward(_switchOffset, 1f, dt / Mathf.Max(HolsterTime, 1e-3f));
+        else if (_switchDir < 0)    // raising
+        {
+            _switchOffset = Mathf.MoveToward(_switchOffset, 0f, dt / Mathf.Max(RaiseTime, 1e-3f));
+            if (_switchOffset <= 0f)
+                _switchDir = 0;
+        }
+
+        // Auto-recover a keypress-predicted holster the server never confirmed: once fully lowered, count down
+        // the grace and then raise the (unchanged) weapon back up rather than leave it stuck off-screen.
+        if (_holsterGrace > 0f && _switchDir >= 0 && _switchOffset >= 1f)
+        {
+            _holsterGrace -= dt;
+            if (_holsterGrace <= 0f)
+                _switchDir = -1; // recover
+        }
+    }
+
     /// <summary>The muzzle socket's global transform (marker if present, else the model front).</summary>
     private Transform3D MuzzleGlobalTransform()
     {
@@ -413,6 +483,7 @@ public partial class ViewModel : Node3D
         // Recoil recovers along view forward (+X Quake). It and the sway both feed the gunorg below.
         _recoil = Mathf.MoveToward(_recoil, 0f, RecoilRecovery * RecoilKick * dt);
 
+        UpdateSwitch(dt);
         UpdateSway(dt);
     }
 
@@ -439,6 +510,15 @@ public partial class ViewModel : Node3D
                 gunangles += LeanModelOffset(vs, frametime);
             if (BobModel)
                 gunorg += BobModelOffset(vs, frametime);
+        }
+
+        // Weapon-switch raise/lower: drop the gun straight down by the lowered fraction (and tuck it back a
+        // little along -forward so it reads as stowed rather than sinking through the floor). Z is up in this
+        // view-space gunorg, so lowering = negative Z. Independent of the frametime>0 sway guard above.
+        if (_switchOffset > 0f)
+        {
+            gunorg.Z -= _switchOffset * SwitchLowerDistance;
+            gunorg.X -= _switchOffset * (SwitchLowerDistance * 0.25f);
         }
 
         // Map the view-space gunorg/gunangles into the camera-local Godot frame and apply.

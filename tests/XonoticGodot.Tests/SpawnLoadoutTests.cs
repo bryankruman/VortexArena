@@ -50,4 +50,22 @@ public class SpawnLoadoutTests
 
         Assert.True(p.DamageForceScale > 0f);            // was 0 → no knockback / globalforces inert
     }
+
+    /// <summary>
+    /// Regression for "shot fires too low until I crouch once": W_SetupShot's eye is <c>origin + view_ofs</c>, but
+    /// the spawn path never seeded <c>view_ofs</c> (it defaulted to 0 → eye AT the origin → shot ~35u low), and
+    /// <see cref="PlayerPhysics.UpdateCrouch"/> only sets it on a crouch EDGE — so the shot stayed low until the
+    /// first crouch-leave. QC <c>PutPlayerInServer</c> sets <c>view_ofs = PL_VIEW_OFS</c> on every (re)spawn; this
+    /// asserts the port seeds the STANDING eye + clears the duck state (a respawn-while-ducked must reset).
+    /// </summary>
+    [Fact]
+    public void Spawn_SeedsStandingViewOfs_SoShotsLeaveFromTheEye()
+    {
+        // simulate stale state a respawn could carry: a crouched eye + duck flag from a prior life.
+        var p = new Player { Flags = EntFlags.Client, ViewOfs = NVec3.Zero, IsDucked = true };
+        SpawnSystem.PutPlayerInServer(p, new SpawnPoint(NVec3.Zero, NVec3.Zero));
+
+        Assert.Equal(XonoticGodot.Common.Physics.PlayerPhysics.StandViewOfs, p.ViewOfs); // standing eye seeded (0,0,35)
+        Assert.False(p.IsDucked);                                                         // duck state reset to standing
+    }
 }

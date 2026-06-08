@@ -230,7 +230,10 @@ public static class SoundSystem
         float volume = SoundLevels.VolBaseVoice, float attenuation = SoundLevels.AttenNorm)
     {
         string sample = Sounds.PlayerSoundSample(modelSoundDir, id);
-        Api.Sound.Play(emitter, SoundChannel.Voice, sample, volume, attenuation);
+        // QC PlayerSound plays pain/voice on the AUTO voice channel (CH_VOICE = -2) so overlapping cues stack
+        // rather than cut each other off; the rate of these is bounded upstream (pain by the PainFinished
+        // debounce, voice/death once per event), so they don't pile up.
+        Api.Sound.Play(emitter, SoundChannel.VoiceAuto, sample, volume, attenuation);
     }
 
     /// <summary>

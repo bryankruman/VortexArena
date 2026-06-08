@@ -114,13 +114,21 @@ public sealed class GameSound : IRegistered
         Single = single;
     }
 
-    /// <summary>Maps the gameplay-side channel hint onto the engine facade's <see cref="SoundChannel"/>.</summary>
+    /// <summary>
+    /// Maps the gameplay-side channel hint onto the engine facade's <see cref="SoundChannel"/>, honoring
+    /// <see cref="Single"/> for EVERY family: a non-single sound resolves to its NEGATIVE (auto) channel so
+    /// overlapping plays STACK, exactly as the stock Xonotic call sites pass CH_WEAPON_A/CH_VOICE/CH_TRIGGER/
+    /// CH_PLAYER (sound.qh — all auto). Previously Voice/Item/Body were forced onto positive (single) channels
+    /// regardless of <see cref="Single"/>, so consecutive footsteps, gibs, impacts and pickups CANCELLED each
+    /// other (a new play stopped the previous one on the same (entity, channel) key). Continuous sources that
+    /// must not stack set <see cref="Single"/> = true (or use the dedicated loop path).
+    /// </summary>
     public SoundChannel EngineChannel => Channel switch
     {
-        SoundChannelHint.Weapon => Single ? SoundChannel.WeaponSingle : SoundChannel.WeaponAuto,
-        SoundChannelHint.Voice => SoundChannel.Voice,
-        SoundChannelHint.Item => SoundChannel.Item,
-        SoundChannelHint.Body => SoundChannel.Body,
+        SoundChannelHint.Weapon => Single ? SoundChannel.WeaponSingle : SoundChannel.WeaponAuto,  //  1 / -1
+        SoundChannelHint.Voice => Single ? SoundChannel.Voice : SoundChannel.VoiceAuto,            //  2 / -2
+        SoundChannelHint.Item => Single ? SoundChannel.Item : SoundChannel.TriggerAuto,            //  3 / -3
+        SoundChannelHint.Body => Single ? SoundChannel.Player : SoundChannel.PlayerAuto,           //  7 / -7
         _ => SoundChannel.Auto,
     };
 

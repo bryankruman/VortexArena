@@ -172,6 +172,30 @@ public class VehicleRuntimeTests
         Assert.True(racer.NextThink > 0f, "the boarded vehicle re-arms its think (Frame runs from Think)");
     }
 
+    /// <summary>
+    /// Dismounting must restore the on-foot STANDING eye + hull (QC vehicles_exit: view_ofs = STAT(PL_VIEW_OFS);
+    /// setsize(PL_MIN,PL_MAX)). EnterVehicle ZEROES view_ofs while seated, so without the restore the dismounted
+    /// player fires from its origin — W_SetupShot eye = origin + view_ofs → shot ~35u LOW — until a crouch cycle
+    /// re-sets the eye (the same eye-not-seeded class of bug as the spawn path).
+    /// </summary>
+    [Fact]
+    public void ExitVehicle_RestoresStandingEyeAndHull_SoDismountedShotsAreNotLow()
+    {
+        var h = Build();
+        WarmUpClock(h.Sim);
+        Entity racer = SpawnVehicle("vehicle_racer", new Vector3(0f, 0f, 64f));
+        Player pl = SpawnPlayer(new Vector3(100f, 0f, 64f));
+
+        VehicleBoarding.UseKey(pl);
+        Assert.Equal(Vector3.Zero, pl.ViewOfs); // EnterVehicle zeroed the eye while seated
+
+        VehicleCommon.ExitVehicle(racer, pl, VehicleExitFlag.Normal);
+
+        Assert.Equal(new Vector3(0f, 0f, 35f), pl.ViewOfs); // STANDING eye restored (was 0 → shot fired low)
+        Assert.False(pl.IsDucked);
+        Assert.Equal(new Vector3(16f, 16f, 45f), pl.Maxs);  // standing hull restored (PL_MAX)
+    }
+
     [Fact]
     public void UseKey_OutOfRadius_DoesNotBoard()
     {

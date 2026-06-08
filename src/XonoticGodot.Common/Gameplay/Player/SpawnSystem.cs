@@ -549,6 +549,13 @@ public static class SpawnSystem
             p.Mins = PlayerMins; p.Maxs = PlayerMaxs; p.Size = PlayerMaxs - PlayerMins;
         }
 
+        // QC PutPlayerInServer: this.view_ofs = STAT(PL_VIEW_OFS) — seed the STANDING eye height. UpdateCrouch only
+        // re-sets ViewOfs on a crouch EDGE, so without this the (re)spawned server player's eye sits at the origin
+        // (ViewOfs 0) and W_SetupShot fires ~35u too LOW until the first crouch cycle. Reset the duck state too so
+        // it matches the standing hull set above (a respawn while ducked must not carry the crouch eye/hull).
+        p.IsDucked = false;
+        p.ViewOfs = XonoticGodot.Common.Physics.PlayerPhysics.StandViewOfs;
+
         // QC nudge: 1 - mins.z - 24 = 1 - (-24) - 24 = 1 qu above the marker, so the hull clears the floor.
         float zNudge = 1f - PlayerMins.Z - 24f;
         Vector3 origin = sp.Origin + new Vector3(0f, 0f, zNudge);

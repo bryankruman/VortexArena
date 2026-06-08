@@ -96,6 +96,18 @@ public partial class ClientWorld : Node3D
     private readonly Dictionary<(int netId, int channel), AudioStreamPlayer3D> _singleChannelPlayers = new();
 
     /// <summary>
+    /// Active one-shot players that must FOLLOW their emitter for the sound's duration. DP attaches a sound to
+    /// the entity+channel so it moves with it; without this a gunshot fired while running is stranded at the
+    /// firing point — the listener (camera) moves away mid-playback, so Godot's distance attenuation makes it
+    /// go quiet AND its distance low-pass filter makes it muffled/muddy (the "sounds fine standing still, bad
+    /// while moving" bug, worst for your own weapon since its emitter should sit on the listener). Populated by
+    /// <see cref="OnSound"/> for any record with a valid source net id; driven each frame by
+    /// <see cref="DriveAttachedOneShots"/> (mirrors the looping-sound follow), entries pruned when the player
+    /// stops or is recycled. Auto/looping sounds are unaffected — loops already follow via _loopingSounds.
+    /// </summary>
+    private readonly List<(AudioStreamPlayer3D player, int netId)> _attachedOneShots = new();
+
+    /// <summary>
     /// Persistent LOOPING positional sounds keyed by (emitter net id, channel) — DP's entity+channel sound
     /// model (the Arc beam loop, vehicle engines). Distinct from the one-shot <see cref="_audioPool"/>: a loop
     /// follows its emitter each frame (<see cref="EntityOriginResolver"/>), is replaced by a new loop on the
@@ -484,27 +496,37 @@ public partial class ClientWorld : Node3D
             if (_singleChannelPlayers.TryGetValue(key, out AudioStreamPlayer3D? prev)
                 && GodotObject.IsInstanceValid(prev) && prev.Playing)
                 prev.Stop();
-            AudioStreamPlayer3D player = RentAudioPlayer();
-            player.Stream = stream;
-            player.Bus = bus;
-            player.GlobalPosition = Coords.ToGodot(origin);
-            player.VolumeDb = Mathf.LinearToDb(Mathf.Clamp(volume, 0.001f, 1f));
-            player.UnitSize = attenuation <= 0f ? 100000f : Mathf.Clamp(40f / attenuation, 1f, 100000f);
-            player.PitchScale = pitch;
-            player.Play();
-            _singleChannelPlayers[key] = player;
+            _singleChannelPlayers[key] = StartOneShot(stream, bus, origin, volume, attenuation, pitch, sourceNetId);
         }
         else
         {
-            AudioStreamPlayer3D player = RentAudioPlayer();
-            player.Stream = stream;
-            player.Bus = bus;
-            player.GlobalPosition = Coords.ToGodot(origin);
-            player.VolumeDb = Mathf.LinearToDb(Mathf.Clamp(volume, 0.001f, 1f));
-            player.UnitSize = attenuation <= 0f ? 100000f : Mathf.Clamp(40f / attenuation, 1f, 100000f);
-            player.PitchScale = pitch;
-            player.Play();
+            StartOneShot(stream, bus, origin, volume, attenuation, pitch, sourceNetId);
         }
+    }
+
+    /// <summary>Rent, configure and play a one-shot positional player; when the record has a valid emitter net id
+    /// register it to FOLLOW that emitter for its duration (<see cref="_attachedOneShots"/>) — DP attaches a sound
+    /// to the entity so it tracks the (moving) emitter/listener instead of being stranded at the firing point.</summary>
+    private AudioStreamPlayer3D StartOneShot(AudioStream stream, string bus, NVec3 origin,
+        float volume, float attenuation, float pitch, int sourceNetId)
+    {
+        AudioStreamPlayer3D player = RentAudioPlayer();
+        player.Stream = stream;
+        player.Bus = bus;
+        player.GlobalPosition = Coords.ToGodot(origin);
+        player.VolumeDb = Mathf.LinearToDb(Mathf.Clamp(volume, 0.001f, 1f));
+        player.UnitSize = attenuation <= 0f ? 100000f : Mathf.Clamp(40f / attenuation, 1f, 100000f);
+        player.PitchScale = pitch;
+        player.Play();
+
+        // A pooled player may have been following a previous emitter — drop that stale follow before (maybe)
+        // re-registering it, so one untracked sound can't get dragged around by an old entity's motion.
+        for (int i = _attachedOneShots.Count - 1; i >= 0; i--)
+            if (_attachedOneShots[i].player == player)
+                _attachedOneShots.RemoveAt(i);
+        if (sourceNetId > 0)
+            _attachedOneShots.Add((player, sourceNetId));
+        return player;
     }
 
     /// <summary>
@@ -521,11 +543,11 @@ public partial class ClientWorld : Node3D
         //   Auto=0/ShotsAuto=-4           → SFX
         return channel switch
         {
-            1 or -1 => "Weapon",   // WeaponSingle, WeaponAuto
-            2 or -2 => "Voice",    // Voice, VoiceAuto
-            4 or 6 or 7 => "Player",  // Body, Pain, Player
-            3 or -3 => "Ambient",  // Item, TriggerAuto
-            _ => "SFX",            // Auto (0), ShotsAuto (-4), Tuba (5), Bgm (8), etc.
+            1 or -1 => "Weapon",                    // WeaponSingle, WeaponAuto
+            2 or -2 => "Voice",                     // Voice, VoiceAuto
+            4 or 6 or 7 or -6 or -7 => "Player",    // Body, Pain, Player (+ PainAuto, PlayerAuto)
+            3 or -3 => "Ambient",                   // Item, TriggerAuto
+            _ => "SFX",                             // Auto (0), ShotsAuto (-4), Tuba (5), Bgm (8), etc.
         };
     }
 
@@ -649,6 +671,25 @@ public partial class ClientWorld : Node3D
                 DestroyLoop(dead);
     }
 
+    /// <summary>Move each attached one-shot to its emitter's current position and prune entries whose player has
+    /// finished or been recycled. Mirrors <see cref="DriveLoopingSounds"/> for the short-lived pooled players so a
+    /// sound (a footstep, a gunshot, the local weapon) tracks the entity that made it for its whole duration
+    /// instead of staying where it started — the fix for sounds going quiet/muffled while the listener moves.</summary>
+    private void DriveAttachedOneShots()
+    {
+        for (int i = _attachedOneShots.Count - 1; i >= 0; i--)
+        {
+            (AudioStreamPlayer3D player, int netId) = _attachedOneShots[i];
+            if (!GodotObject.IsInstanceValid(player) || !player.Playing)
+            {
+                _attachedOneShots.RemoveAt(i);
+                continue;
+            }
+            if (EntityOriginResolver?.Invoke(netId) is { } pos)
+                player.GlobalPosition = Coords.ToGodot(pos);
+        }
+    }
+
     /// <summary>Stop every looping sound emitted by <paramref name="netId"/> (any channel) — the emitter left the
     /// snapshot / was removed, so its loops (Arc beam, vehicle engine) must end even without an explicit stop.</summary>
     private void StopLoopsForEntity(int netId)
@@ -708,6 +749,7 @@ public partial class ClientWorld : Node3D
         DriveCsqcModelHooks((float)delta);
         DriveVehicles((float)delta);
         DriveLoopingSounds((float)delta);
+        DriveAttachedOneShots();
     }
 
     /// <summary>

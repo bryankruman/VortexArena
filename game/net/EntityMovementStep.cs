@@ -57,6 +57,9 @@ public sealed class EntityMovementStep : IMovementStep
             ButtonAttack1 = (b & InputButtons.Attack) != 0,
             ButtonAttack2 = (b & InputButtons.Attack2) != 0,
             ButtonUse = (b & InputButtons.Use) != 0,
+            // This is client-side prediction (and its reconciliation replays) — suppress the server-owned
+            // footstep/landing sounds so a predicted landing doesn't fire (and replays don't multiply) them.
+            Predicted = true,
         };
 
         // run one authoritative movement tick (gravity + friction/accel + slide/step collision).

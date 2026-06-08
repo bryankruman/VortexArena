@@ -1,4 +1,5 @@
 using Godot;
+using XonoticGodot.Common.Services;
 using XonoticGodot.Engine.Simulation;
 
 namespace XonoticGodot.Game.Menu;
@@ -68,10 +69,14 @@ public static class ClientSettings
         EnsureChannelBuses();
 
         CvarService c = MenuState.Cvars;
-        SetBusVolume("Master", c.GetFloat("mastervolume"));
-        SetBusVolume("Music", c.GetFloat("bgmvolume"));
+        RegisterEngineAudioDefaults(c);
+        // All three go through ChannelVol's "unset → full" guard too: these are DP ENGINE cvars (registered in
+        // C, not the .cfg tree), so without RegisterEngineAudioDefaults they'd read 0 → SetBusVolume would MUTE
+        // the Master/Music/SFX buses (the "all volume defaults are 0" bug). The guard is belt-and-suspenders.
+        SetBusVolume("Master", ChannelVol(c, "mastervolume"));
+        SetBusVolume("Music", ChannelVol(c, "bgmvolume"));
         // The "effects" bus stands in for the weapon/voice/item channels; use the loudest typical channel.
-        SetBusVolume("SFX", c.GetFloat("snd_channel0volume"));
+        SetBusVolume("SFX", ChannelVol(c, "snd_channel0volume"));
 
         // Per-channel buses (DP snd_channel<N>volume cvars → dedicated buses).
         // Default to 1.0 (full volume) when the cvar is unset (Xonotic's stock default.cfg sets these to 1).
@@ -83,11 +88,43 @@ public static class ClientSettings
     }
 
     /// <summary>
+    /// The stock Darkplaces audio-cvar defaults (snd_main.c). These are ENGINE cvars — Darkplaces registers them
+    /// in C, NOT in the .cfg tree Xonotic ships — so this port never picked up their defaults and every volume
+    /// cvar read 0, leaving the menu sliders at 0% and (because <see cref="SetBusVolume"/> mutes at ≤0) the audio
+    /// buses muted. Register them at boot (idempotent — <see cref="ICvarService.Register"/> keeps any value a cfg
+    /// or the user's config.cfg already set, so overrides still win) so the defaults are authentic and the menu
+    /// shows/resets them correctly. Values + flags (CF_ARCHIVE → Save) mirror snd_main.c verbatim.
+    /// </summary>
+    private static void RegisterEngineAudioDefaults(CvarService c)
+    {
+        const CvarFlags save = CvarFlags.Save;
+        c.Register("mastervolume", "0.7", save);   // master volume
+        c.Register("volume", "0.7", save);         // sound-effects volume
+        c.Register("bgmvolume", "1", save);        // background-music volume
+        c.Register("snd_staticvolume", "1", save); // ambient/static sounds
+        // Per-entity-channel multipliers snd_channel0volume..snd_channel9volume (8/9 are QC music/ambient).
+        for (int ch = 0; ch <= 9; ch++)
+            c.Register($"snd_channel{ch}volume", "1", save);
+        // Output cvars the audio dialog also displays (cosmetic here — Godot drives its own mixer).
+        c.Register("snd_speed", "48000", save);
+        c.Register("snd_channels", "2", save);
+        c.Register("snd_swapstereo", "0", save);
+        c.Register("snd_spatialization_control", "0", save);
+        c.Register("snd_mutewhenidle", "1", save);
+    }
+
+    /// <summary>
     /// Ensure per-channel audio buses exist as children of Master. Safe to call multiple times (no-op if
     /// the buses already exist). These provide independent volume control for weapon/voice/player sounds.
     /// </summary>
     private static void EnsureChannelBuses()
     {
+        // The Godot project ships no bus layout (.tres), so only the default "Master" bus exists — every other
+        // bus this client routes to (MusicPlayer → "Music"; BusForChannel → "SFX"/"Weapon"/"Voice"/"Player"/
+        // "Ambient") must be created here. Without "Music"/"SFX" their volume sliders silently no-op and those
+        // players route to Master with a Godot "invalid bus" warning, so create the full set, all under Master.
+        EnsureBus("Music", "Master");
+        EnsureBus("SFX", "Master");
         EnsureBus("Weapon", "Master");
         EnsureBus("Voice", "Master");
         EnsureBus("Player", "Master");

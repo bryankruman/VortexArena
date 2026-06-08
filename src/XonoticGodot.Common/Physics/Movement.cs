@@ -48,6 +48,17 @@ public interface IMovementInput
     /// predictor set it from the move command's impulse.
     /// </summary>
     int Impulse => 0;
+
+    /// <summary>
+    /// True when this tick is a CLIENT-SIDE PREDICTION step (and its reconciliation replays), false in the
+    /// authoritative simulation (dedicated/listen server, bots, single-player demo). The shared movement code
+    /// is non-authoritative-replayable, so anything with side effects the SERVER alone must own — currently the
+    /// footstep/landing sounds (QC plays these under <c>#ifdef SVQC</c>) — is suppressed when this is set, so a
+    /// predicted landing doesn't fire (and reconciliation replays don't multiply) the sound. Defaulted to
+    /// <c>false</c> as a default-interface-method so existing input sources keep compiling; only the client
+    /// predictor (<c>EntityMovementStep</c>) sets it true.
+    /// </summary>
+    bool Predicted => false;
 }
 
 /// <summary>A plain, fillable <see cref="IMovementInput"/> (used by the sim, the net layer, and tests).</summary>
@@ -64,6 +75,7 @@ public struct MovementInput : IMovementInput
     public bool ButtonJetpack { get; set; }
     public bool Typing { get; set; }
     public int Impulse { get; set; }
+    public bool Predicted { get; set; }
 }
 
 /// <summary>

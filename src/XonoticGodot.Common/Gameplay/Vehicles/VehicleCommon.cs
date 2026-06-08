@@ -238,12 +238,28 @@ namespace XonoticGodot.Common.Gameplay
                 player.Vehicle = null;
                 player.VehicleEnterDelay = Time + 2f; // QC: prevent instant re-entry
 
-                // NOTE — cross-boundary (other systems/agents): the rest of vehicles_exit is SVC_SETVIEWPORT/
-                // SETVIEWANGLES + CSQCVehicleSetup (net), the weaponentities[] switch-weapon restore (weapon
-                // view-entities), the view_ofs = STAT(PL_VIEW_OFS) restore + setsize(PL_MIN/PL_MAX) resize (both
-                // owned by the player-physics layer, which sets PL_VIEW_OFS from sv_player_viewoffset and owns
-                // the crouch hull), and MUTATOR_CALLHOOK(VehicleExit) (no VehicleExit hook in MutatorHooks yet).
-                // The server core — damage/solid/movetype restore, link drop, re-entry delay — is done above.
+                // QC vehicles_exit: restore the on-foot view + hull — view_ofs = STAT(PL_VIEW_OFS); setsize(PL_MIN,
+                // PL_MAX). Entering the vehicle ZEROED view_ofs (EnterVehicle), so without this the dismounted
+                // player fires from its origin (W_SetupShot eye = origin + view_ofs → shot ~35u LOW) until a crouch
+                // cycle re-sets the eye — the SAME eye-not-seeded bug the spawn path had. Reset the duck state +
+                // standing hull too so a pre-mount crouch doesn't linger.
+                player.IsDucked = false;
+                player.ViewOfs = XonoticGodot.Common.Physics.PlayerPhysics.StandViewOfs;
+                Vector3 standMins = XonoticGodot.Common.Physics.MovementParameters.Defaults.PlayerMins;
+                Vector3 standMaxs = XonoticGodot.Common.Physics.MovementParameters.Defaults.PlayerMaxs;
+                if (Api.Services is not null)
+                    Api.Entities.SetSize(player, standMins, standMaxs);
+                else
+                {
+                    player.Mins = standMins;
+                    player.Maxs = standMaxs;
+                    player.Size = standMaxs - standMins;
+                }
+
+                // NOTE — still cross-boundary (other systems/agents): SVC_SETVIEWPORT/SETVIEWANGLES + CSQCVehicleSetup
+                // (net), the weaponentities[] switch-weapon restore (weapon view-entities), and
+                // MUTATOR_CALLHOOK(VehicleExit) (no VehicleExit hook in MutatorHooks yet). The server core —
+                // damage/solid/movetype restore, the view_ofs + hull restore above, link drop, re-entry delay — is done here.
             }
 
             // QC: vehic.flags |= FL_NOTARGET; (no longer a valid target with no pilot). We approximate
