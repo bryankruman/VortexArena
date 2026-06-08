@@ -250,6 +250,7 @@ public partial class ConsoleOverlay : CanvasLayer
     {
         _input.Clear();
         _histIndex = -1;
+        _input.GrabFocus();
         if (string.IsNullOrWhiteSpace(text))
             return;
 
