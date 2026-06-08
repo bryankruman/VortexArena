@@ -499,7 +499,9 @@ namespace XonoticGodot.Common.Gameplay
             proj.Owner = owner;       // QC proj.owner = this (the vehicle/turret)
             proj.DmgInflictor = pilot; // QC proj.realowner = the crediting pilot
             proj.MoveType = MoveType.FlyMissile;
-            proj.Solid = Solid.BBox;
+            // QC PROJECTILE_MAKETRIGGER (sv_vehicles.qc:230): SOLID_CORPSE + dphitcontentsmask SOLID|BODY|CORPSE so
+            // the vehicle projectile is transparent to the firing vehicle's bbox — can't collide with / detonate on it.
+            Projectiles.MakeTrigger(proj);
             proj.Flags |= EntFlags.Item; // QC FL_PROJECTILE
             proj.Velocity = velocity;
             proj.Angles = QMath.VecToAngles(velocity);

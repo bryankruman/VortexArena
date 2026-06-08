@@ -206,6 +206,29 @@ public class RocketFlyingGateTests : IDisposable
     }
 
     [Fact]
+    public void Devastator_Rocket_IsSolidCorpse_TransparentToFirer()
+    {
+        // QC PROJECTILE_MAKETRIGGER (server/weapons/common.qh:33): the rocket is SOLID_CORPSE with
+        // dphitcontentsmask SOLID|BODY|CORPSE, so it is transparent to a player's movement (which masks
+        // SOLID|BODY|PLAYERCLIP, no CORPSE) — the fix for "the rocket hits the firer while walking forward".
+        var f = Boot();
+        f.GameClock.Time = 5f;
+
+        var dev = (Devastator)Weapons.ByName("devastator")!;
+        var actor = NewPlayer(f, Vector3.Zero);
+        var slot = new WeaponSlot(0);
+        ArmPrimary(actor, dev, slot);
+
+        dev.WrThink(actor, slot, FireMode.Primary);
+
+        Entity rocket = f.Entities.FindByClass("rocket").First(e => !e.IsFreed);
+        Assert.Equal(Solid.Corpse, rocket.Solid);
+        Assert.NotEqual(0, rocket.DpHitContentsMask & XonoticGodot.Engine.Collision.SuperContents.Corpse);
+        Assert.NotEqual(0, rocket.DpHitContentsMask & XonoticGodot.Engine.Collision.SuperContents.Body);
+        Assert.NotEqual(0, rocket.DpHitContentsMask & XonoticGodot.Engine.Collision.SuperContents.Solid);
+    }
+
+    [Fact]
     public void Devastator_GateField_NegativeDetonateDelay_IsProximity()
     {
         // detonatedelay < 0 -> spawnshieldtime = -1 (proximity-safety branch; QC the rocket-jump path).

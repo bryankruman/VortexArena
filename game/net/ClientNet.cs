@@ -327,6 +327,11 @@ public sealed class ClientNet : IDisposable
             _writer.WriteFloat(LatestServerTime);
             _inputBuffer.WriteRedundant(_writer, redundancy);
             _transport.SendToServer(_writer.WrittenSpan, reliable: false);
+            // Flush this input onto the wire NOW (send-only) instead of letting it sit until the next Poll(): on
+            // the in-process listen loop the server's next Tick then consumes it THIS frame rather than a render-
+            // frame later, cutting the input→fire latency that makes firing (and Blaster trick-jump timing) feel
+            // behind the keypress. Harmless on a remote client (the datagram just leaves a hair sooner).
+            _transport.Flush();
             _lastInputSend = now;
         }
         return seq;

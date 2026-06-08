@@ -257,7 +257,7 @@ public sealed class Hagar : Weapon
         missile.Owner = actor;
         missile.NetName = NetName;
         missile.MoveType = moveType;
-        missile.Solid = Solid.BBox;
+        Projectiles.MakeTrigger(missile); // QC PROJECTILE_MAKETRIGGER (SOLID_CORPSE): transparent to the firer's movement
         missile.Flags = EntFlags.Item; // QC FL_PROJECTILE
         missile.TakeDamage = DamageMode.Yes; // shootable
         missile.Health = health;

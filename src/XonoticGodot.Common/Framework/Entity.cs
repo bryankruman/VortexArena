@@ -34,6 +34,16 @@ public partial class Entity
     // --- movement / physics ---
     public MoveType MoveType;
     public Solid Solid;
+
+    /// <summary>
+    /// DP <c>.dphitcontentsmask</c> (Base/darkplaces/sv_phys.c SV_GenericHitSuperContentsMask): when nonzero,
+    /// this SUPERCONTENTS mask OVERRIDES the solid-derived default for THIS entity's own movement trace. A
+    /// projectile set up by <c>PROJECTILE_MAKETRIGGER</c> (SOLID_CORPSE) sets it to
+    /// <c>SOLID|BODY|CORPSE</c> so the projectile still clips corpses even though SOLID_CORPSE alone would
+    /// drop the CORPSE bit. 0 = unset (fall back to the solid-derived mask). See <c>Projectiles.MakeTrigger</c>.
+    /// </summary>
+    public int DpHitContentsMask;
+
     public EntFlags Flags;
     public Entity? GroundEntity;
     public int WaterLevel;

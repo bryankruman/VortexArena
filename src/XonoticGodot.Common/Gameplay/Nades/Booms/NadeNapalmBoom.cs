@@ -66,6 +66,9 @@ public sealed class NadeNapalmBoom : INadeBoom
         proj.Owner = origin.RealOwner;
         proj.Team = origin.Team;
         proj.MoveType = MoveType.Bounce;
+        // QC PROJECTILE_MAKETRIGGER (napalm.qc:76): SOLID_CORPSE + dphitcontentsmask SOLID|BODY|CORPSE so the
+        // napalm ball is transparent to the firer's movement — can't collide with / detonate on its owner.
+        Projectiles.MakeTrigger(proj);
         Api.Entities.SetSize(proj, new Vector3(-4, -4, -4), new Vector3(4, 4, 4));
         Api.Entities.SetOrigin(proj, origin.Origin);
         proj.Flags = EntFlags.Item; // QC FL_PROJECTILE

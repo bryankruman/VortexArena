@@ -151,7 +151,7 @@ public sealed class Fireball : Weapon
         proj.Owner = actor;
         proj.NetName = NetName;
         proj.MoveType = MoveType.Fly;
-        proj.Solid = Solid.BBox;
+        Projectiles.MakeTrigger(proj); // QC PROJECTILE_MAKETRIGGER (SOLID_CORPSE): transparent to the firer's movement
         proj.Flags = EntFlags.Item; // QC FL_PROJECTILE
         proj.Team = actor.Team;
         Api.Entities.SetSize(proj, new Vector3(-16, -16, -16), new Vector3(16, 16, 16));
@@ -290,7 +290,7 @@ public sealed class Fireball : Weapon
         proj.Owner = actor;
         proj.NetName = NetName;
         proj.MoveType = MoveType.Bounce;
-        proj.Solid = Solid.BBox;
+        Projectiles.MakeTrigger(proj); // QC PROJECTILE_MAKETRIGGER (SOLID_CORPSE): transparent to the firer's movement
         proj.Flags = EntFlags.Item; // QC FL_PROJECTILE
         proj.Gravity = 1f;
         Api.Entities.SetSize(proj, new Vector3(-4, -4, -4), new Vector3(4, 4, 4));

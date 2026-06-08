@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Numerics;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Math;
@@ -38,14 +39,54 @@ public static class WeaponFiring
     public const float MaxShotDistance = 32768f;
 
     /// <summary>
-    /// Generic gun-muzzle offset in the actor's view frame (X = forward, Y = right, Z = up) — the headless
-    /// stand-in for QC's per-model <c>movedir</c> (the weapon model's <c>tag_shot</c>, set in
-    /// <c>CL_WeaponEntity_SetModel</c>). Used by <see cref="SetupShot"/> to spawn the shot at the weapon rather
-    /// than the camera. Down+forward of the eye so it reads as "from the gun" for every weapon without needing
-    /// the model tags; tune per-weapon later if exact alignment matters. Hit-reg is unaffected (the shot dir is
-    /// re-aimed at the trueaim point).
+    /// Generic gun-muzzle offset in the actor's view frame, in Quake model-local coords (X = forward, Y = +left,
+    /// Z = up) — the fallback for QC's per-model <c>movedir</c> (the weapon model's <c>tag_shot</c>, set in
+    /// <c>CL_WeaponEntity_SetModel</c>) when a weapon has no registered per-model offset (a pure dedicated server
+    /// with no models, or a weapon whose v_ model lacks a shot tag). Used by <see cref="SetupShot"/> to spawn the
+    /// shot at the weapon rather than the camera. Hit-reg is unaffected (the shot dir is re-aimed at the trueaim
+    /// point). Per-weapon offsets are registered via <see cref="RegisterMuzzleOffset"/> at weapon-model load.
     /// </summary>
     public static readonly Vector3 DefaultMuzzleOffset = new(12f, 0f, -8f);
+
+    /// <summary>
+    /// Per-weapon muzzle offset registry — the C# successor to QC's <c>ent.(weaponentity).movedir</c>, keyed by
+    /// the weapon's RegistryId and holding the <c>tag_shot</c> position in MODEL-LOCAL Quake coords
+    /// (X = forward, Y = +left, Z = up), exactly the value Base reads from the v_ model. The muzzle tag IS a
+    /// parsed-model datum (MD3 tag origin / IQM-DPM bind bone, extracted by <c>XonoticGodot.Formats.MuzzleTag</c>),
+    /// just not something Common can read itself (it has no model loader), so it is populated on the Godot side at
+    /// weapon-model load and read here by <see cref="SetupShot"/> via the firing actor's
+    /// <see cref="Entity.ActiveWeaponId"/>. Empty by default, so an un-registered weapon falls back to
+    /// <see cref="DefaultMuzzleOffset"/> and today's behavior is kept.
+    /// </summary>
+    private static readonly Dictionary<int, Vector3> MuzzleOffsets = new();
+
+    /// <summary>
+    /// Register (or replace) the model-local <c>tag_shot</c> muzzle offset for weapon <paramref name="weaponId"/>
+    /// (its RegistryId). Called by the host when a weapon's view model is loaded — mirrors Base setting
+    /// <c>movedir</c> in <c>CL_WeaponEntity_SetModel</c>. The offset is in Quake model-local coords
+    /// (X = forward, Y = +left, Z = up), fed unchanged into <see cref="SetupShot"/>'s view-basis formula.
+    /// </summary>
+    public static void RegisterMuzzleOffset(int weaponId, Vector3 modelLocalShotOffset)
+    {
+        if (weaponId < 0) return;
+        MuzzleOffsets[weaponId] = modelLocalShotOffset;
+    }
+
+    /// <summary>Clear all registered per-weapon muzzle offsets (test isolation / a fresh content load).</summary>
+    public static void ClearMuzzleOffsets() => MuzzleOffsets.Clear();
+
+    /// <summary>True if weapon <paramref name="weaponId"/> has a registered per-model muzzle offset.</summary>
+    public static bool TryGetMuzzleOffset(int weaponId, out Vector3 offset)
+        => MuzzleOffsets.TryGetValue(weaponId, out offset);
+
+    /// <summary>
+    /// The muzzle offset <see cref="SetupShot"/> uses for <paramref name="actor"/>: the registered per-model
+    /// <c>tag_shot</c> of the actor's active weapon (<see cref="Entity.ActiveWeaponId"/>) if any, else the
+    /// generic <see cref="DefaultMuzzleOffset"/>. Model-local Quake coords (X = forward, Y = +left, Z = up).
+    /// </summary>
+    public static Vector3 MuzzleOffsetFor(Entity actor)
+        => actor is not null && MuzzleOffsets.TryGetValue(actor.ActiveWeaponId, out Vector3 o)
+            ? o : DefaultMuzzleOffset;
 
     /// <summary>QC Q3SURFACEFLAG_SKY — a shot hitting this surface stops (no impact/penetration).</summary>
     public const int Q3SurfaceFlagSky = 0x4;
@@ -88,16 +129,20 @@ public static class WeaponFiring
 
         // Muzzle offset (QC W_SetupShot: ent.(weaponentity).movedir) — slide the origin from the eye to the gun
         // muzzle so the shot visibly leaves the WEAPON, not the camera. Only a player carries a view weapon. The
-        // exact per-model offset lives in the weapon model's tag_shot (a render-pipeline datum we don't have
-        // headless), so we apply a modest generic forward+down muzzle (DefaultMuzzleOffset); the shot DIRECTION is
-        // recomputed to the trueaim point below, so the round still lands on the crosshair (Base offsets shotorg
-        // identically and lets w_shotdir compensate). Tracebox each leg so the muzzle never ends up inside a wall.
-        if (DefaultMuzzleOffset != Vector3.Zero && (actor.Flags & EntFlags.Client) != 0)
+        // exact per-model offset is the weapon model's tag_shot, available from the parsed model data: the host
+        // extracts it at weapon-model load (MuzzleTag/CL_WeaponEntity_SetModel) and registers it per weapon id, so
+        // MuzzleOffsetFor returns that movedir; a weapon with no registered tag (dedicated server / tag-less model)
+        // falls back to the generic DefaultMuzzleOffset. The offset is in model-local Quake coords (X=fwd, Y=+left,
+        // Z=up) — Base's right*(-md.y) handles Quake +y=left — and the shot DIRECTION is recomputed to the trueaim
+        // point below, so the round still lands on the crosshair. Tracebox each leg so the muzzle never ends up
+        // inside a wall.
+        Vector3 muzzle = MuzzleOffsetFor(actor);
+        if (muzzle != Vector3.Zero && (actor.Flags & EntFlags.Client) != 0)
         {
             QMath.AngleVectors(actor.Angles, out _, out Vector3 right, out Vector3 up);
-            Vector3 dv = right * -DefaultMuzzleOffset.Y + up * DefaultMuzzleOffset.Z;       // sideways + vertical
+            Vector3 dv = right * -muzzle.Y + up * muzzle.Z;                         // sideways + vertical
             shotOrg = Api.Trace.Trace(shotOrg, mins, maxs, shotOrg + dv, MoveFilter.Normal, actor).EndPos;
-            Vector3 fwd = QMath.Normalize(forward) * DefaultMuzzleOffset.X;                 // forward
+            Vector3 fwd = QMath.Normalize(forward) * muzzle.X;                      // forward
             shotOrg = Api.Trace.Trace(shotOrg, mins, maxs, shotOrg + fwd, MoveFilter.Normal, actor).EndPos;
         }
 

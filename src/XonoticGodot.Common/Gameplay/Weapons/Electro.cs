@@ -204,7 +204,7 @@ public sealed class Electro : Weapon
         proj.Owner = actor;
         proj.NetName = NetName;
         proj.MoveType = MoveType.Fly;
-        proj.Solid = Solid.BBox;
+        Projectiles.MakeTrigger(proj); // QC PROJECTILE_MAKETRIGGER (SOLID_CORPSE): transparent to the firer's movement
         proj.Flags = EntFlags.Item; // QC FL_PROJECTILE
         Api.Entities.SetSize(proj, new Vector3(0, 0, -3), new Vector3(0, 0, -3));
         Api.Entities.SetOrigin(proj, shot.Origin);
@@ -293,7 +293,7 @@ public sealed class Electro : Weapon
         orb.Owner = actor;
         orb.NetName = NetName;
         orb.MoveType = MoveType.Bounce;
-        orb.Solid = Solid.BBox;
+        Projectiles.MakeTrigger(orb); // QC PROJECTILE_MAKETRIGGER (SOLID_CORPSE): transparent to the firer's movement
         orb.Flags = EntFlags.Item; // QC FL_PROJECTILE
         orb.Gravity = 1f;
         Api.Entities.SetSize(orb, new Vector3(-4, -4, -4), new Vector3(4, 4, 4));

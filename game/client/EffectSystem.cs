@@ -135,6 +135,31 @@ public partial class EffectSystem : Node3D
         AddChild(Gibs);
     }
 
+    /// <summary>
+    /// Pre-warm the effect catalog + particle atlas off the hot fire path (DP precaches these at client/map
+    /// init — cl_particles.c CL_Particles_ParseEffectInfo — not on the first te_particleeffect). Call this once
+    /// at map load / spawn, AFTER the host has wired <see cref="TextureLoader"/>/<see cref="VfsTextLoader"/>.
+    /// It only builds CPU-side resources (parse effectinfo.txt, decode the atlas image, pre-crop the common
+    /// sprite bands) — it spawns NO visible particles. Idempotent: it shares <see cref="EnsureInfoLoaded"/>'s
+    /// guard, so a later lazy Spawn is a no-op and the warm-up never runs twice.
+    /// </summary>
+    public void Warmup()
+    {
+        EnsureInfoLoaded();
+        // Pre-crop the particlefont cells the common bursts use (smoke/dust 0-7, scorch/bullet decals 8-15,
+        // blood decals 16-23, blood drops 24-31, ring 32, sparkle 38-46, fire/flame 48-55, white dot 63,
+        // electro bolts 70-74). Cell()/DecalCell() cache per index, so the first real explosion/muzzleflash/
+        // blood burst no longer pays the GetRegion + ImageTexture.CreateFromImage crop on its frame.
+        if (Font?.Loaded == true)
+        {
+            for (int i = 0; i <= 74; i++)
+            {
+                Font.Cell(i);
+                if (i <= 23) Font.DecalCell(i); // decal-form cells (luminance->alpha) for scorch/blood marks
+            }
+        }
+    }
+
     /// <summary>Lazily load effectinfo.txt the first time we need it (so a TextLoader set after _Ready still applies).</summary>
     private void EnsureInfoLoaded()
     {

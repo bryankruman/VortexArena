@@ -200,7 +200,7 @@ public sealed class Crylink : Weapon
             proj.Owner = actor;
             proj.NetName = NetName;
             proj.MoveType = MoveType.BounceMissile;
-            proj.Solid = Solid.BBox;
+            Projectiles.MakeTrigger(proj); // QC PROJECTILE_MAKETRIGGER (SOLID_CORPSE): transparent to the firer's movement
             proj.Flags = EntFlags.Item; // QC FL_PROJECTILE
             Api.Entities.SetSize(proj, Vector3.Zero, Vector3.Zero);
             Api.Entities.SetOrigin(proj, shot.Origin);

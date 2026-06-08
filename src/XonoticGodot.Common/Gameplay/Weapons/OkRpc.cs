@@ -128,7 +128,7 @@ public sealed class OkRpc : Weapon
         missile.Owner = actor;            // missile.owner = missile.realowner = actor
         missile.NetName = NetName;
         missile.MoveType = MoveType.Fly;
-        missile.Solid = Solid.BBox;
+        Projectiles.MakeTrigger(missile); // QC PROJECTILE_MAKETRIGGER (SOLID_CORPSE): transparent to the firer's movement
         missile.Flags = EntFlags.Item;    // QC FL_PROJECTILE
         missile.DamageForceScale = Cvars.DamageForceScale;
 

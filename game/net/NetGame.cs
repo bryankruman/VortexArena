@@ -559,6 +559,17 @@ public sealed partial class NetGame : Node3D
         // The movement sim sweeps the carrier's hull against the world regardless of its own Solid value, so
         // prediction still slides-and-steps correctly.
         e.Solid = Solid.Not;
+        // The carrier is kept SOLID_NOT (above) so the listen-server authority never collides with the
+        // prediction ghost — but for MOVEMENT it IS a SOLID_SLIDEBOX player and must clip the SAME content mask
+        // the authoritative server Player does (SpawnSystem sets the real player SOLID_SLIDEBOX → Solid|Body|
+        // PlayerClip). Without this, GenericHitMask derives the SOLID_NOT default (Solid|Body|CORPSE), so the
+        // carrier collides with our OWN projectiles: PROJECTILE_MAKETRIGGER makes them SOLID_CORPSE precisely so
+        // a player's PlayerClip move passes through them, but the predicted carrier is a DISTINCT entity from the
+        // projectile's server-side .Owner, so the owner trace-exception can't protect it — and the CORPSE bit in
+        // the default mask let the rocket/orb block (and detonate on) the firer anyway. Match the server player's
+        // mask via the DP dphitcontentsmask override so prediction and authority stay in lockstep. (See
+        // Projectiles.MakeTrigger / TraceService.GenericHitMask.)
+        e.DpHitContentsMask = SuperContents.Solid | SuperContents.Body | SuperContents.PlayerClip;
         e.Flags |= EntFlags.Client | EntFlags.JumpReleased;
         e.Mins = HullMins;
         e.Maxs = HullMaxs;
@@ -587,6 +598,12 @@ public sealed partial class NetGame : Node3D
             _render.ForcedModelResolver = BuildForcedPlayerModel;
         }
         AddChild(_render);
+
+        // Pre-warm the effect catalog + particlefont atlas now (map-load), so the FIRST weapon shot doesn't hitch
+        // parsing effectinfo.txt + decoding the atlas on its render frame (DP precaches these at client init,
+        // cl_particles.c). The Assets setter above already wired the texture/text loaders via WireEffectAssets,
+        // and _render.Effects is live (ClientWorld._Ready ran synchronously on AddChild). Idempotent + invisible.
+        _render.Effects.Warmup();
 
         // CSQC appearance context (FORCEMODEL/FORCECOLORS need the local player + gametype): read live each frame.
         _render.AppearanceProvider = BuildAppearanceContext;
@@ -944,7 +961,7 @@ public sealed partial class NetGame : Node3D
             return;
         _weaponsPrecached = true;
 
-        int warmed = 0;
+        int warmed = 0, muzzles = 0;
         foreach (XonoticGodot.Common.Gameplay.Weapon w in XonoticGodot.Common.Gameplay.Weapons.All)
         {
             string vModel = WeaponVModelPath(w);
@@ -957,9 +974,25 @@ public sealed partial class NetGame : Node3D
             // The hand rig is loaded by WeaponAttachTransform on each switch; warm it too (it builds + frees its
             // own throwaway node internally and caches the attach transform's model).
             GameDemo.WeaponAttachTransform(_assets, vModel);
+
+            // Per-weapon shot-origin (QC CL_WeaponEntity_SetModel: movedir = gettaginfo(weapon, "shot")). Extract
+            // the weapon model's tag_shot in model-local Quake coords and register it so the (in-process, listen-
+            // server) WeaponFiring.SetupShot spawns each weapon's shot from its real muzzle. The shot tag lives on
+            // the h_ HAND RIG (the v_ visual model is attached to it), exactly as Base reads movedir from the
+            // weaponchild rig (all.qc:412) — so prefer h_<name>.iqm, falling back to the v_ model. A model with no
+            // shot tag leaves the weapon on the generic fallback. Runs once here at connect alongside the warm-up.
+            string hModel = vModel.Replace("/v_", "/h_").Replace(".md3", ".iqm");
+            System.Numerics.Vector3? shot =
+                (hModel != vModel && _assets.Vfs.Exists(hModel) ? _assets.LoadMuzzleOffset(hModel) : null)
+                ?? _assets.LoadMuzzleOffset(vModel);
+            if (shot is { } so)
+            {
+                XonoticGodot.Common.Gameplay.WeaponFiring.RegisterMuzzleOffset(w.RegistryId, so);
+                muzzles++;
+            }
             warmed++;
         }
-        GD.Print($"[NetGame] precached {warmed} weapon models.");
+        GD.Print($"[NetGame] precached {warmed} weapon models ({muzzles} muzzle tags).");
     }
 
     /// <summary>The muzzle-flash effect name for a weapon (QC m_muzzleeffect = EFFECT_&lt;WEP&gt;_MUZZLEFLASH),

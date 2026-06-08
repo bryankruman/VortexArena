@@ -147,7 +147,7 @@ public sealed class Porto : Weapon
         gren.Count = type; // QC gren.cnt = type (-1 combined, 0 in-portal, 1 out-portal)
         gren.Effects = EffectRed; // EF_RED; flips to EF_BLUE after placing the in-portal of a combined shot
         gren.MoveType = MoveType.BounceMissile;
-        gren.Solid = Solid.BBox;
+        Projectiles.MakeTrigger(gren); // QC PROJECTILE_MAKETRIGGER (SOLID_CORPSE): transparent to the firer's movement
         gren.Flags = EntFlags.Item; // QC FL_PROJECTILE
         gren.LTime = Api.Clock.Time; // portal_id (unique per shot)
         gren.AVelocity = right;      // right_vector (reuse AVelocity to carry portal orientation)

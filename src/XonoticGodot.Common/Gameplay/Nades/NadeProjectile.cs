@@ -100,7 +100,10 @@ public static class NadeProjectile
         nade.Angles = QMath.VecToAngles(nade.Velocity);
         nade.Flags = EntFlags.Item; // QC FL_PROJECTILE
         nade.NadeTossTime = Now();
-        nade.Solid = Solid.Corpse;  // QC SOLID_CORPSE
+        // QC PROJECTILE_MAKETRIGGER (sv_nades.qc:347): SOLID_CORPSE + dphitcontentsmask SOLID|BODY|CORPSE. The
+        // SOLID_CORPSE alone (above) left the dphitcontentsmask unset, so the thrown nade is transparent to the
+        // thrower's movement but its OWN trace still needs the explicit mask to keep hitting bodies/corpses.
+        Projectiles.MakeTrigger(nade);
 
         if (time != 0f)
         {

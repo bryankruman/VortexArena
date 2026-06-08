@@ -464,6 +464,13 @@ public sealed class TraceService : ITraceService
         if (ignore is null)
             return SuperContents.DefaultHitMask;
 
+        // DP checks the per-entity dphitcontentsmask FIRST: a nonzero value overrides the solid-derived
+        // default (sv_phys.c SV_GenericHitSuperContentsMask). A projectile (PROJECTILE_MAKETRIGGER) uses this
+        // to keep SOLID|BODY|CORPSE while being SOLID_CORPSE — so it clips corpses but is transparent to a
+        // player's PlayerClip-masked movement (the rocket-hits-the-firer fix).
+        if (ignore.DpHitContentsMask != 0)
+            return ignore.DpHitContentsMask;
+
         switch (ignore.Solid)
         {
             case Solid.SlideBox:

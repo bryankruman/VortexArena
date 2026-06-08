@@ -146,7 +146,7 @@ public sealed class Blaster : Weapon
         missile.Velocity = WeaponFiring.ProjectileVelocity(shot.Dir, up, Primary.Speed, 0f, 0f, Primary.Spread);
         missile.Angles = QMath.VecToAngles(missile.Velocity);
         missile.MoveType = MoveType.Fly;
-        missile.Solid = Solid.BBox;
+        Projectiles.MakeTrigger(missile); // QC PROJECTILE_MAKETRIGGER (SOLID_CORPSE): transparent to the firer's movement
         missile.Flags = EntFlags.Item; // QC FL_PROJECTILE (no dedicated flag in EntFlags yet)
 
         // settouch(missile, W_Blaster_Touch); — detonate + radius damage on contact.

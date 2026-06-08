@@ -145,7 +145,10 @@ public sealed class Devastator : Weapon
         missile.Owner = actor;
         missile.NetName = NetName;
         missile.MoveType = MoveType.Fly;
-        missile.Solid = Solid.BBox;
+        // QC PROJECTILE_MAKETRIGGER: SOLID_CORPSE + dphitcontentsmask SOLID|BODY|CORPSE so the rocket is
+        // transparent to player movement (no CORPSE in a player's move mask) — this is what stops the rocket
+        // colliding with / detonating on its firer — yet still hits the world, bodies and corpses.
+        Projectiles.MakeTrigger(missile);
         missile.Flags = EntFlags.Item; // QC FL_PROJECTILE
         missile.DamageForceScale = Cvars.DamageForceScale;
 

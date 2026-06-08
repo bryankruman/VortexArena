@@ -500,7 +500,9 @@ public sealed class Raptor : Vehicle
         bomb.Owner = vehicle;
         bomb.DmgInflictor = player;
         bomb.MoveType = MoveType.Bounce;
-        bomb.Solid = Solid.BBox;
+        // QC PROJECTILE_MAKETRIGGER (raptor_weapons.qc:208): SOLID_CORPSE + dphitcontentsmask SOLID|BODY|CORPSE so
+        // the dropped bomb is transparent to the raptor's bbox — can't collide with / detonate on its own vehicle.
+        Projectiles.MakeTrigger(bomb);
         bomb.Gravity = 1f;
         bomb.Velocity = vehicle.Velocity; // inherit the raptor's velocity, then fall
         Api.Entities.SetSize(bomb, Vector3.Zero, Vector3.Zero);
@@ -521,7 +523,9 @@ public sealed class Raptor : Vehicle
                 bomblet.Owner = self.Owner;
                 bomblet.DmgInflictor = self.DmgInflictor;
                 bomblet.MoveType = MoveType.Toss;
-                bomblet.Solid = Solid.BBox;
+                // QC PROJECTILE_MAKETRIGGER (raptor_weapons.qc:167): SOLID_CORPSE + dphitcontentsmask
+                // SOLID|BODY|CORPSE — transparent to the raptor's bbox so the scattered bomblets can't self-collide.
+                Projectiles.MakeTrigger(bomblet);
                 bomblet.Gravity = 1f;
                 bomblet.Velocity = QMath.Normalize(normVel + Prandom.Vec() * BombletSpread) * speed;
                 Api.Entities.SetSize(bomblet, Vector3.Zero, Vector3.Zero);

@@ -490,6 +490,11 @@ public partial class GameDemo : Node3D
         }
         AddChild(_client);
 
+        // Pre-warm the effect catalog + particlefont atlas at setup so the first shot doesn't hitch parsing
+        // effectinfo.txt + decoding the atlas on its frame (mirrors NetGame.SetupRender; DP precaches at init).
+        // _client.Assets was set above (wires the loaders) and _client.Effects is live after AddChild.
+        _client.Effects.Warmup();
+
         // Hang the first-person weapon view-model off the player camera (so it inherits view orientation).
         // Feed it live view state (velocity / angles / onground) so the gun sways (follow/lean/bob).
         _viewModel = new ViewModel { Name = "ViewModel", Effects = _client.Effects };

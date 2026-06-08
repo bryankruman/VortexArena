@@ -180,7 +180,7 @@ public sealed class Vaporizer : Weapon
             proj.Owner = actor;
             proj.NetName = NetName;
             proj.MoveType = MoveType.BounceMissile;
-            proj.Solid = Solid.BBox;
+            Projectiles.MakeTrigger(proj); // QC PROJECTILE_MAKETRIGGER (SOLID_CORPSE): transparent to the firer's movement
             proj.Flags = EntFlags.Item;
             Api.Entities.SetSize(proj, new Vector3(0, 0, -3), new Vector3(0, 0, -3));
             Api.Entities.SetOrigin(proj, shot.Origin);

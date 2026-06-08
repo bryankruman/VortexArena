@@ -334,7 +334,7 @@ public sealed class Arc : Weapon
             missile.Owner = actor;
             missile.NetName = NetName;
             missile.MoveType = MoveType.BounceMissile;
-            missile.Solid = Solid.BBox;
+            Projectiles.MakeTrigger(missile); // QC PROJECTILE_MAKETRIGGER (SOLID_CORPSE): transparent to the firer's movement
             missile.Flags = EntFlags.Item; // QC FL_PROJECTILE
             missile.DamageForceScale = Bolt.DamageForceScale;
             Api.Entities.SetSize(missile, Vector3.Zero, Vector3.Zero);

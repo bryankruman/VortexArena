@@ -236,6 +236,12 @@ public sealed class ServerNet : IDisposable
 
         // 4) master-server registration: answer browser probes + re-heartbeat periodically.
         PumpMasterServer(realDelta);
+
+        // 5) flush: push the snapshots/bundles queued above onto the wire NOW (send-only) instead of letting them
+        //    wait for the next tick's Poll(). On the in-process listen loop the client's Poll() later this SAME
+        //    frame then receives the snapshot, so the fire/knockback the server just simulated reconciles a render-
+        //    frame sooner — the return leg of the input→fire→feedback latency (pairs with the client send flush).
+        _transport.Flush();
     }
 
     /// <summary>

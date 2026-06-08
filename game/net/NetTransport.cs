@@ -69,6 +69,19 @@ public abstract class NetTransport : IDisposable
     }
 
     /// <summary>
+    /// Push any queued outgoing packets onto the wire NOW (an ENet host service send pass) WITHOUT draining
+    /// incoming — so a packet just <see cref="Send"/>-queued this frame physically leaves the socket immediately
+    /// instead of waiting for the next <see cref="Poll"/>. On the in-process listen loop this lets the peer on
+    /// the other end consume the packet on its very next service instead of a render-frame later: flushing the
+    /// client's input after sampling lets the server tick consume it next tick, and flushing the server's
+    /// snapshot after ticking lets the client receive it the same frame — together cutting ~2 frames of
+    /// input→fire→feedback latency with no change to tick ordering or received-packet handling. No-op when
+    /// inactive. (Godot's <c>ENetMultiplayerPeer.Host</c> is the underlying <c>ENetConnection</c>; its
+    /// <c>Flush()</c> is enet_host_flush — send-only, it never receives.)
+    /// </summary>
+    public void Flush() => Peer?.Host?.Flush();
+
+    /// <summary>
     /// Send <paramref name="payload"/> to <paramref name="targetPeerId"/> (use <see cref="ServerPeerId"/> from
     /// a client, or a client's id / <see cref="Godot.MultiplayerPeer.TargetPeerBroadcast"/> from the server)
     /// on the reliable or unreliable channel. Sets the transfer mode + channel + target on the peer, then

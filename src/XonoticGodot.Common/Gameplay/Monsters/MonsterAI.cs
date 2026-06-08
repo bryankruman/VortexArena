@@ -1189,7 +1189,7 @@ public static class MonsterAI
         float damage, float edgeDamage, float radius, float force, string deathType,
         MoveType moveType = MoveType.FlyMissile, float lifetime = 5f, Vector3? sizeMin = null, Vector3? sizeMax = null,
         Action<Entity>? onExplode = null, Action<Entity>? onThink = null, float shootableHealth = 0f,
-        float bounceFactor = 0f, float bounceStop = 0f)
+        float bounceFactor = 0f, float bounceStop = 0f, bool makeTrigger = false)
     {
         Vector3 mn = sizeMin ?? new Vector3(-4, -4, -4);
         Vector3 mx = sizeMax ?? new Vector3(4, 4, 4);
@@ -1199,7 +1199,14 @@ public static class MonsterAI
         proj.Owner = owner;
         proj.NetName = st.Def.NetName;
         proj.MoveType = moveType;
-        proj.Solid = Solid.BBox;
+        // QC golem/spider PROJECTILE_MAKETRIGGER (SOLID_CORPSE + dphitcontentsmask SOLID|BODY|CORPSE): transparent
+        // to the firer's movement so the monster's own projectile can't collide with / detonate on it. Opt-in
+        // because not every caller of this shared spawner uses it — the mage spike is SOLID_BBOX (mage.qc:224)
+        // and the wyvern fireball is SOLID_TRIGGER (wyvern.qc:36), both left as plain SOLID_BBOX here.
+        if (makeTrigger)
+            Projectiles.MakeTrigger(proj);
+        else
+            proj.Solid = Solid.BBox;
         proj.Flags = EntFlags.Item; // QC FL_PROJECTILE marker (no dedicated flag here)
         proj.GroundEntity = null;
         Api.Entities.SetSize(proj, mn, mx);

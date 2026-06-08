@@ -161,7 +161,7 @@ public sealed class Mortar : Weapon
         gren.MoveType = MoveType.Bounce;
         gren.BounceFactor = BounceFactor; // QC gren.bouncefactor / .bouncestop (engine MOVETYPE_BOUNCE)
         gren.BounceStop = BounceStop;
-        gren.Solid = Solid.BBox;
+        Projectiles.MakeTrigger(gren); // QC PROJECTILE_MAKETRIGGER (SOLID_CORPSE): transparent to the firer's movement
         gren.Flags = EntFlags.Item; // QC FL_PROJECTILE
         Api.Entities.SetSize(gren, new Vector3(-3, -3, -3), new Vector3(3, 3, 3));
         Api.Entities.SetOrigin(gren, shot.Origin);

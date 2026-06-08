@@ -101,6 +101,7 @@ public sealed class Spider : Monster
             radius: 25f, force: 0f, deathType: DeathTypes.FromWeapon(NetName),
             moveType: MoveType.Bounce, lifetime: 5f,
             bounceFactor: 0.3f, bounceStop: 0.05f,
+            makeTrigger: true,              // spider.qc:134 PROJECTILE_MAKETRIGGER
             onExplode: p =>
             {
                 // STATUSEFFECT_Webbed to everything alive in radius except other spiders (QC web explode).

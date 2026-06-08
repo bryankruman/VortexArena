@@ -207,7 +207,7 @@ public sealed class Hook : Weapon
         hook.Owner = actor;
         hook.NetName = NetName;
         hook.MoveType = MoveType.Fly;
-        hook.Solid = Solid.BBox;
+        Projectiles.MakeTrigger(hook); // QC PROJECTILE_MAKETRIGGER (SOLID_CORPSE): transparent to the firer's movement
         hook.Flags = EntFlags.Item;
         hook.TakeDamage = DamageMode.Aim; // shootable
         hook.Health = 0f;                  // 0 = in flight; set >0 (latched flag) on GrapplingHook_Stop
@@ -298,7 +298,7 @@ public sealed class Hook : Weapon
         gren.Owner = actor;
         gren.NetName = NetName;
         gren.MoveType = MoveType.Toss;
-        gren.Solid = Solid.BBox;
+        Projectiles.MakeTrigger(gren); // QC PROJECTILE_MAKETRIGGER (SOLID_CORPSE): transparent to the firer's movement
         gren.Flags = EntFlags.Item; // QC FL_PROJECTILE
         gren.Gravity = Secondary.Gravity;
         Api.Entities.SetSize(gren, Vector3.Zero, Vector3.Zero);

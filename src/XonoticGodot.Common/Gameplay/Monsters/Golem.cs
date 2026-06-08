@@ -148,6 +148,7 @@ public sealed class Golem : Monster
                 sizeMin: new Vector3(-8, -8, -8), sizeMax: new Vector3(8, 8, 8),
                 shootableHealth: 50f,           // golem.qc: gren takes damage (50 hp), explodes when destroyed
                 bounceFactor: 0.5f, bounceStop: 0.075f,
+                makeTrigger: true,              // golem.qc:141 PROJECTILE_MAKETRIGGER
                 onExplode: p =>
                 {
                     // Chained zaps: arc to every damageable target in the wide zap radius (te_csqc_lightningarc

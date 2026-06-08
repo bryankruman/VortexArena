@@ -58,6 +58,8 @@ public sealed class AssetLoader
     // Parsed MD3 data cache for the client's per-entity ModelResolver (world items/gibs/monsters render via the
     // MD3 morph/snapshot path). Keyed by normalized vpath; null caches a miss / non-MD3 model.
     private readonly Dictionary<string, Md3Data?> _md3Cache = new(StringComparer.Ordinal);
+    // tag_shot model-local muzzle offset (Quake coords) per weapon view-model vpath; null caches "no shot tag".
+    private readonly Dictionary<string, System.Numerics.Vector3?> _muzzleOffsetCache = new(StringComparer.Ordinal);
     // Resolved sample -> decoded AudioStream (or null when the sample resolves to nothing). The stream is
     // immutable and safe to share across many AudioStreamPlayer3D, so unlike models we cache the built resource.
     private readonly Dictionary<string, AudioStream?> _soundCache = new(StringComparer.Ordinal);
@@ -144,6 +146,43 @@ public sealed class AssetLoader
         }
         _md3Cache[key] = data;
         return data;
+    }
+
+    /// <summary>
+    /// Extract a weapon view-model's <c>tag_shot</c> position in MODEL-LOCAL Quake coords (x=fwd, y=+left, z=up)
+    /// — Base's <c>movedir = gettaginfo(weapon, "shot")</c> in <c>CL_WeaponEntity_SetModel</c>. Dispatched by the
+    /// file's magic (extensions lie: v_*.md3 are often IQM, h_*.iqm are DPM) onto the Godot-free
+    /// <see cref="XonoticGodot.Formats.MuzzleTag"/> extractor, which reads the raw parsed model (NOT the rendered
+    /// marker, which carries gun screen-positioning nudges that are not part of movedir). Returns null when the
+    /// file is missing, not a model, or carries no shot tag — the caller then keeps the generic muzzle fallback.
+    /// Cached per normalized vpath.
+    /// </summary>
+    public System.Numerics.Vector3? LoadMuzzleOffset(string vpath)
+    {
+        string key = AssetPaths.Normalize(vpath);
+        if (key.Length == 0)
+            return null;
+        if (_muzzleOffsetCache.TryGetValue(key, out System.Numerics.Vector3? cached))
+            return cached;
+
+        System.Numerics.Vector3? offset = null;
+        try
+        {
+            byte[] bytes = _vfs.ReadBytes(key);
+            string magic = ReadMagic(bytes);
+            if (magic.StartsWith(MagicIqm, StringComparison.Ordinal))
+                offset = XonoticGodot.Formats.MuzzleTag.Extract(IqmReader.Read(bytes));
+            else if (magic.StartsWith(MagicDpm, StringComparison.Ordinal))
+                offset = XonoticGodot.Formats.MuzzleTag.Extract(DpmReader.Read(bytes));
+            else if (magic.StartsWith(MagicMd3, StringComparison.Ordinal))
+                offset = XonoticGodot.Formats.MuzzleTag.Extract(Md3Reader.Read(bytes));
+        }
+        catch (Exception ex)
+        {
+            GD.PrintErr($"[AssetLoader] muzzle tag '{key}' read/parse failed: {ex.Message}");
+        }
+        _muzzleOffsetCache[key] = offset;
+        return offset;
     }
 
     /// <summary>

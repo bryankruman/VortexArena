@@ -62,7 +62,10 @@ public static class GuidedProjectile
         m.Enemy = enemy;
         m.Team = turret.Team;
         m.MoveType = mode == Mode.Hk ? MoveType.BounceMissile : MoveType.FlyMissile;
-        m.Solid = Solid.BBox;
+        // QC turret_projectile PROJECTILE_MAKETRIGGER (SOLID_CORPSE + dphitcontentsmask SOLID|BODY|CORPSE): the
+        // HK missile spawns via turret_projectile (hk_weapon.qc:29) so it inherits the maketrigger — transparent
+        // to the firing turret's bbox so it can't collide with / detonate on its launcher.
+        Projectiles.MakeTrigger(m);
         m.Flags = EntFlags.Item;
         m.Velocity = QMath.Normalize(dir) * launchSpeed;
         m.Angles = QMath.VecToAngles(m.Velocity);

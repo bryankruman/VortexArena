@@ -106,7 +106,9 @@ public static class TurretSpawn
         proj.Owner = turret;
         proj.Enemy = turret.Enemy;
         proj.MoveType = MoveType.FlyMissile;     // QC MOVETYPE_FLYMISSILE
-        proj.Solid = Solid.BBox;
+        // QC turret_projectile PROJECTILE_MAKETRIGGER (sv_turrets.qc:477): SOLID_CORPSE + dphitcontentsmask
+        // SOLID|BODY|CORPSE so the projectile is transparent to the firing turret's bbox (can't self-collide).
+        Projectiles.MakeTrigger(proj);
         proj.Flags = EntFlags.Item;              // QC FL_PROJECTILE stand-in
         proj.Team = turret.Team;                 // inherit team so it doesn't read as an enemy missile to allies
 

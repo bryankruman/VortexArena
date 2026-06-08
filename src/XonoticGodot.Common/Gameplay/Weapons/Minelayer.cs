@@ -130,7 +130,7 @@ public sealed class Minelayer : Weapon
         mine.Owner = actor;
         mine.NetName = NetName;
         mine.MoveType = MoveType.Toss;
-        mine.Solid = Solid.BBox;
+        Projectiles.MakeTrigger(mine); // QC PROJECTILE_MAKETRIGGER (SOLID_CORPSE): transparent to the firer's movement
         mine.Flags = EntFlags.Item; // QC FL_PROJECTILE
         Api.Entities.SetSize(mine, new Vector3(-4, -4, -4), new Vector3(4, 4, 4));
         // setorigin(mine, w_shotorg - v_forward * 4) so it hits the wall at the right point.

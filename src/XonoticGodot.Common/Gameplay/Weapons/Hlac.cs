@@ -188,7 +188,7 @@ public sealed class Hlac : Weapon
         missile.Owner = actor;
         missile.NetName = NetName;
         missile.MoveType = MoveType.Fly;
-        missile.Solid = Solid.BBox;
+        Projectiles.MakeTrigger(missile); // QC PROJECTILE_MAKETRIGGER (SOLID_CORPSE): transparent to the firer's movement
         missile.Flags = EntFlags.Item; // QC FL_PROJECTILE
         Api.Entities.SetSize(missile, Vector3.Zero, Vector3.Zero);
         Api.Entities.SetOrigin(missile, origin);
