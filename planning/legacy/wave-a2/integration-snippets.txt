@@ -1,0 +1,109 @@
+TOTAL SNIPPETS: 9
+
+####################################################################################################
+# FROM T43   ->  FILE: C:/Users/Bryan/Projects/Xonotic/Rebirth/game/net/NetGame.cs
+# ANCHOR: Inside FeedScoreboardHeader() (line ~1088-1095), immediately AFTER the two existing setters `_scoreboard.FragLimit = (int)cvars.GetFloat("fraglimit");` and `_scoreboard.TimeLimitMinutes = (int)cvars.GetFloat("timelimit");` (just before the method's closing brace).
+# REASON: The scoreboard MonstersTotal/MonstersKilled surfaces (game/hud/ScoreboardPanel.cs:88-89) + the 'Monsters killed: K/T' draw (DrawMapStats, line 731) already exist but are UNFED — only FragLimit/TimeLimit are set today. This 2-line feed in the T37-owned NetGame.cs surfaces my new MonsterAI.MonstersTotal/MonstersKilled statics on the listen-server scoreboard (the --host / Create-match play path). NO ScoreboardPanel.cs edit is needed. A pure remote-client map-stats STAT (in ServerNet/ClientNet, also T37-owned) is a documented deferred follow-up.
+# CODE:
+        // [T43] Feed the scoreboard map-stats row (Scoreboard_MapStats_Draw) from the monster globals
+        // (QC monsters_setstatus -> STAT(MONSTERS_TOTAL/KILLED)). -1 hides the row when there are no monsters
+        // (DrawMapStats gates on MonstersTotal > 0). Server-authoritative on a listen server / --host.
+        _scoreboard.MonstersTotal  = Rebirth.Common.Gameplay.MonsterAI.MonstersTotal > 0 ? Rebirth.Common.Gameplay.MonsterAI.MonstersTotal : -1;
+        _scoreboard.MonstersKilled = Rebirth.Common.Gameplay.MonsterAI.MonstersKilled;
+
+####################################################################################################
+# FROM T37   ->  FILE: src/Rebirth.Server/GameWorld.cs
+# ANCHOR: OnClientMove(Entity e): insert right AFTER the line `IMovementInput input = InputProvider(p);` and BEFORE `if (canMove)`. File already imports Rebirth.Common.Gameplay and Rebirth.Common.Physics.
+# REASON: SEAM A drive gate. Without it a seated player runs PM_Main AND gets glued by the vehicle Think (jitter) and Entity.VehInput is never written so every vehicle frame reads a zeroed input. Write VehInput to BOTH p (gunner: GunnerFrame reads gunner.VehInput) and p.Vehicle (pilot: descriptor Frame reads body.VehInput); skip the walk move but still PostThink. Writing both is a correctness fix over the recon draft which wrote only p.Vehicle.VehInput and left a gunner inert.
+# CODE:
+if (p.Vehicle is not null && canMove) { Rebirth.Common.Physics.MovementInput vehInput = VehicleBoarding.ToInput(input); p.VehInput = vehInput; p.Vehicle.VehInput = vehInput; OnPlayerPostThink(p); return; }
+
+####################################################################################################
+# FROM T37   ->  FILE: src/Rebirth.Server/GameWorld.cs
+# ANCHOR: OnEndFrame(): first statement in the method body, before DriveGametypeFrame(). GameStopped is the existing private property Intermission.Running || MatchEnded || Timeout.IsPaused.
+# REASON: SEAM E: feeds VehicleCommon.GameStopped from the match loop so vehicles park during intermission/match-end/timeout (QC game_stopped); the boarding path also reads it to block board/exit while stopped (UseKey_GameStopped_DoesNotBoard pins this).
+# CODE:
+Rebirth.Common.Gameplay.VehicleCommon.GameStopped = GameStopped;
+
+####################################################################################################
+# FROM T37   ->  FILE: src/Rebirth.Server/Commands.cs
+# ANCHOR: DispatchImpulse(ctx, caller, imp): insert right AFTER `if (_world.Timeout.IsPaused) return true;` and BEFORE `if (!WeaponImpulses.Handle(caller, imp))`. File already imports Rebirth.Common.Gameplay.
+# REASON: SEAM C: routes a seated pilot's impulse to the per-vehicle mode switch/cycle before weapon impulses (QC vehicle_impulse runs first); the existing C2S impulse path then makes weapon-group keys switch vehicle modes when seated with zero extra net work.
+# CODE:
+if (caller.Vehicle is not null && !VehicleCommon.IsDead(caller.Vehicle) && VehicleBoarding.Impulse(caller, imp)) return true;
+
+####################################################################################################
+# FROM T51   ->  FILE: C:/Users/Bryan/Projects/Xonotic/Rebirth/src/Rebirth.Common/Gameplay/Damage/DamageSystem.cs
+# ANCHOR: Inside PlayerDamage(...), immediately AFTER the subtract bookkeeping block 'targ.DmgSave += save; targ.DmgTake += take; targ.DmgInflictor = inflictor;' (currently ~line 437) and BEFORE the death check 'if (targ.GetResource(ResourceType.Health) < 1f) Killed(...)' (~line 440).
+# REASON: T51's damagetext server producer (DamagetextMutator) subscribes the pre-added MutatorHooks.PlayerDamaged chain but nothing FIRES it yet. This is the QC EV_PlayerDamaged emission point (player.qc:430): dh = initial_health - max(GetResource(this,HEALTH),0), da = initial_armor - max(armor,0), potential = the pre-split damage. initialHealth/initialArmor are already computed at the top of PlayerDamage (lines 324-325, already max(...,0)). DamageSystem.cs is T43-owned, so T51 does NOT make this edit.
+# CODE:
+        // --- PlayerDamaged mutator hook (QC server/player.qc:430) — damagetext (T51). Fire AFTER the
+        // health/armor subtract with the ACTUAL amounts removed (dh/da) + the pre-split potential damage.
+        {
+            float dh = initialHealth - MathF.Max(targ.GetResource(ResourceType.Health), 0f);
+            float da = initialArmor - MathF.Max(targ.GetResource(ResourceType.Armor), 0f);
+            var pd = new MutatorHooks.PlayerDamagedArgs(attacker, targ, dh, da, hitLoc, deathType, damage);
+            MutatorHooks.PlayerDamaged.Call(ref pd);
+        }
+
+####################################################################################################
+# FROM T51   ->  FILE: C:/Users/Bryan/Projects/Xonotic/Rebirth/game/net/NetGame.cs
+# ANCHOR: Two parts. (1) In the HUD setup where _fullHud is created/configured (~line 583-608, near 'AddChild(_fullHud)'), add a DamageTextLayer field + node. (2) In _Process(double delta) (~line 834+), after the server tick (_server?.Tick(dt)) where the server-side mutator registries are live, drain the two mutators and feed the HUD.
+# REASON: NetGame.cs (T37-owned) is the net->HUD seam. T51's server mutators expose clean static-free APIs: DamagetextMutator.DrainPending() (per-frame floating-damage-number events) and ItemstimeMutator.CurrentTimes (item-name -> absolute respawn time, with the negative 'available now' encoding the existing ItemsTimePanel already handles). The DamageTextLayer client node (game/client/DamageTextLayer.cs) + DamageTextConfig (the ~30 cl_damagetext_* cvars) are NEW T51 files; NetGame just needs to create the layer and feed both each frame. The exact Quake->Godot coordinate convention + camera accessor should match NetGame's existing UpdateCamera/ViewEntityRenderer usage (I left the basis swap as a guarded comment since the client coordinate convention is T37's). Both feeds are HUD niceties — the server-side data production is complete + unit-tested.
+# CODE:
+// --- part 1: field + node creation (next to the other _fullHud panels) ---
+private Rebirth.Game.Client.DamageTextLayer? _damageText;
+// ...in the HUD setup (after _fullHud is added):
+_damageText = new Rebirth.Game.Client.DamageTextLayer { Name = "DamageText" };
+_damageText.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+_fullHud.AddChild(_damageText);
+
+// --- part 2: per-frame feed in _Process (after _server?.Tick(dt)) ---
+// damagetext: drain the server producer's queued floating-number events to the client draw layer.
+if (_damageText is not null && Rebirth.Common.Gameplay.Mutators.ByName("damagetext") is Rebirth.Common.Gameplay.DamagetextMutator _dtm)
+{
+    _damageText.Camera = /* the host's Camera3D */ GetViewport().GetCamera3D();
+    foreach (var ev in _dtm.DrainPending())
+    {
+        // ev.Target.Origin is the victim's world position (Quake Z-up). Convert to Godot if the client uses a
+        // basis swap; the layer projects it via Camera.UnprojectPosition. deathTypeColorKey = the weapon id
+        // for per-weapon color (resolve from ev.DeathType, or pass -1).
+        var t = ev.Target;
+        var pos = new Godot.Vector3(t.Origin.X, t.Origin.Z, -t.Origin.Y); // Quake->Godot if applicable; else t.Origin
+        int colorKey = Rebirth.Common.Gameplay.Damage.DeathTypes.WeaponNetNameOf(ev.DeathType) is string wn && Rebirth.Common.Gameplay.Weapons.ByName(wn) is { } w ? w.RegistryId : -1;
+        _damageText.Add(ev, pos, colorKey);
+    }
+}
+// itemstime: push the server producer's respawn-time table to the existing ItemsTimePanel.
+if (Rebirth.Common.Gameplay.Mutators.ByName("itemstime") is Rebirth.Common.Gameplay.ItemstimeMutator _itm && _itm.IsEnabled)
+{
+    _fullHud.ItemsTime.Visible = true;
+    _fullHud.ItemsTime.SetItemTimes(_itm.CurrentTimes);
+}
+
+####################################################################################################
+# FROM T56   ->  FILE: src/Rebirth.Server/GameWorld.cs
+# ANCHOR: In OnStartFrame(), immediately after `Voting.Think();` (currently line 701, comment above it: `// QC the in-match vote bus think (server/command/vote.qc VoteThink).`)
+# REASON: LOAD-BEARING. Without this single line the deferred-command queue is never drained in the live game, so a passed `restart` vote (VoteController builds `defer 1 restart`) silently no-ops — the exact bug T56 fixes. Commands.Deferred and Time are both already on GameWorld; this is the only required GameWorld touch.
+# CODE:
+        // DP Cbuf_Execute_Deferred: fire any `defer`-queued commands whose delay has elapsed (the passed
+        // `restart` vote enqueues `defer 1 restart`). Pumped on the sim clock. [T56]
+        Commands.Deferred.Pump(Time, cmd => Commands.Execute(cmd, isServerConsole: true));
+
+####################################################################################################
+# FROM T56   ->  FILE: src/Rebirth.Server/GameWorld.cs
+# ANCHOR: In Boot(), immediately after `Booted = true;` (currently line 435, right after the `WireCommandsWarmupVoting();` call). OPTIONAL.
+# REASON: OPTIONAL (the reply commands already call Replies.Recompute() lazily on each invocation, so printmaplist/lsmaps/records/etc. work without this). Adding it matches QC's precompute-at-init and warms the cache; skip if you prefer to keep Boot minimal.
+# CODE:
+        // [T56] Precompute the common-command reply caches at world init (QC server/world.qc:1022-1038:
+        // maplist_reply/lsmaps_reply/monsterlist_reply/...). The reply commands also recompute lazily on read,
+        // so this is an optional warm-up that matches QC's "precompute once" — safe to omit.
+        Commands.Replies.Recompute();
+
+####################################################################################################
+# FROM T28   ->  FILE: game/Shell.cs
+# ANCHOR: In WireCommandHooks(), immediately after the existing line `MenuCommand.CloseDialog = _ => { if (_menu.CanPop) _menu.Pop(); };` (the last MenuCommand.* hook assignment in that method)
+# REASON: Wires the new MenuCommand.MenuRestart hook (in my owned MenuCommand.cs) to the new MenuRoot.Restart() (in my owned MenuRoot.cs). game/Shell.cs is not in my explicit ownership list, so I did not edit it; without this one line, `menu_restart` logs-and-no-ops (the skin/language change won't visibly refresh until the menu is reopened). _menu is the MenuRoot field already in scope in WireCommandHooks. No other A2 task touches Shell.cs; this is consistent with how every other MenuCommand.* hook is wired in that exact method.
+# CODE:
+        // QC menu_restart: rebuild the front-end (re-apply skin + re-translate) so a skin/language change shows.
+        MenuCommand.MenuRestart = () => _menu.Restart();   // T28

@@ -1,0 +1,67 @@
+using System.Numerics;
+
+namespace XonoticGodot.Common.Framework;
+
+public delegate void EntityThink(Entity self);
+public delegate void EntityTouch(Entity self, Entity other);
+public delegate void EntityUse(Entity self, Entity activator);
+
+/// <summary>
+/// Marker for the presentation-side binding (a Godot node wrapper, set on the client only).
+/// Defined as an interface so <c>XonoticGodot.Common</c> stays Godot-free (ADR-0008).
+/// </summary>
+public interface IEntityPresence { }
+
+/// <summary>
+/// The C# successor to the QuakeC edict. Engine fields live here; gameplay state lives on subclasses
+/// or components (resolving QC's flat field namespace — see planning/specs/entity-model.md and ADR-0007).
+/// The simulation operates on <see cref="Entity"/> with no Godot dependency.
+///
+/// Declared <c>partial</c> so feature areas can extend it in their own files without contention.
+/// </summary>
+public partial class Entity
+{
+    // --- identity / lifecycle ---
+    public int Index;                  // engine-assigned slot
+    public bool IsFreed;
+    public string ClassName = "";
+    public IEntityPresence? Presence;  // link to the Godot node (client-side only)
+
+    // --- spatial state (engine-maintained) ---
+    public Vector3 Origin, OldOrigin, Velocity, Angles, AVelocity;
+    public Vector3 Mins, Maxs, Size, AbsMin, AbsMax, ViewOfs, PunchAngle;
+
+    // --- movement / physics ---
+    public MoveType MoveType;
+    public Solid Solid;
+    public EntFlags Flags;
+    public Entity? GroundEntity;
+    public int WaterLevel;
+    public int WaterType;
+    public float Gravity = 1f;
+
+    // --- scheduling / callbacks ---
+    public float NextThink;
+    public float LTime;               // local time for moving brush entities (PUSH)
+    public EntityThink? Think;
+    public EntityTouch? Touch;
+    public EntityUse? Use;
+    public EntityTouch? Blocked;
+
+    // --- commonly shared gameplay fields (kept on base where QC used them generically) ---
+    public float Health, MaxHealth;
+    public float Frame, Skin;
+    public int Effects, ModelIndex;
+    public DamageMode TakeDamage;
+    public DeadFlag DeadState;
+    public Entity? Owner, Enemy, GoalEntity, Aiment, Chain, DmgInflictor;
+    public string Model = "", NetName = "", Target = "", TargetName = "", Message = "";
+    public int SpawnFlags, Items;
+    public float Team, Frags;
+
+    public Entity() { }
+
+    public bool OnGround => (Flags & EntFlags.OnGround) != 0;
+
+    public override string ToString() => $"{(string.IsNullOrEmpty(ClassName) ? "entity" : ClassName)}#{Index}{(IsFreed ? " (freed)" : "")}";
+}

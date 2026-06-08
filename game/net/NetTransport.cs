@@ -1,0 +1,226 @@
+using System;
+using System.Collections.Generic;
+using Godot;
+
+namespace XonoticGodot.Game.Net;
+
+/// <summary>
+/// The raw ENet packet transport for the XonoticGodot link — a thin wrapper over Godot's
+/// <see cref="ENetMultiplayerPeer"/> that sends/receives byte buffers on a reliable and an unreliable
+/// channel (<see cref="NetProtocol.ReliableChannel"/> / <see cref="NetProtocol.UnreliableChannel"/>) and
+/// surfaces peer connect/disconnect + per-packet receive as plain C# events.
+///
+/// We drive ENet manually (poll + put/get packet) rather than going through Godot's high-level
+/// <c>MultiplayerApi</c>/<c>rpc</c>/<c>MultiplayerSynchronizer</c>: the spec is explicit that the high-level
+/// layer gives no prediction/reconciliation/lag-comp and degrades past ~16 players, so we own the loop and
+/// only borrow ENet's reliability/channels/fragmentation. <see cref="ENetMultiplayerPeer"/> is exactly that
+/// — an ENet host exposed as a <see cref="MultiplayerPeer"/> with manual <see cref="MultiplayerPeer.Poll"/>,
+/// <see cref="PacketPeer.PutPacket"/> / <see cref="PacketPeer.GetPacket"/>, and target-peer/channel/mode
+/// selection.
+///
+/// Lifecycle: construct <see cref="Server"/> or <see cref="Client"/>, subscribe to the events, then call
+/// <see cref="Poll"/> once per host frame (before reading game state) so queued packets are dispatched and
+/// connect/disconnect signals fire. <see cref="Send"/> queues an outgoing packet on the chosen channel.
+/// </summary>
+public abstract class NetTransport : IDisposable
+{
+    /// <summary>The Godot peer ID Godot assigns the server itself (host) — peers are positive ids.</summary>
+    public const int ServerPeerId = 1;
+
+    protected ENetMultiplayerPeer Peer = null!;
+
+    /// <summary>Raised (on <see cref="Poll"/>) when a peer connects. Arg is the Godot peer id.</summary>
+    public event Action<int>? PeerConnected;
+
+    /// <summary>Raised (on <see cref="Poll"/>) when a peer disconnects. Arg is the Godot peer id.</summary>
+    public event Action<int>? PeerDisconnected;
+
+    /// <summary>Raised for each received packet: (sourcePeerId, channel, payload). The payload span is only
+    /// valid for the duration of the callback — copy out what you must retain.</summary>
+    public event Action<int, int, byte[]>? PacketReceived;
+
+    /// <summary>True once the underlying ENet host is up.</summary>
+    public bool IsActive => Peer is not null && Peer.GetConnectionStatus() != MultiplayerPeer.ConnectionStatus.Disconnected;
+
+    /// <summary>
+    /// Pump ENet: poll the host, fire connect/disconnect for any peers whose status changed, then drain all
+    /// queued packets, raising <see cref="PacketReceived"/> for each. Call once per frame before the game
+    /// reads its inputs/snapshots. Safe to call when inactive (no-op).
+    /// </summary>
+    public virtual void Poll()
+    {
+        if (Peer is null)
+            return;
+
+        Peer.Poll();
+
+        DrainConnectionEvents();
+
+        // Drain packets. ENetMultiplayerPeer queues across all peers/channels; GetPacket returns the next,
+        // with the source peer + channel queryable on the peer.
+        while (Peer.GetAvailablePacketCount() > 0)
+        {
+            int from = Peer.GetPacketPeer();
+            int channel = Peer.GetPacketChannel();
+            byte[] data = Peer.GetPacket();
+            if (data is { Length: > 0 })
+                PacketReceived?.Invoke(from, channel, data);
+        }
+    }
+
+    /// <summary>
+    /// Send <paramref name="payload"/> to <paramref name="targetPeerId"/> (use <see cref="ServerPeerId"/> from
+    /// a client, or a client's id / <see cref="Godot.MultiplayerPeer.TargetPeerBroadcast"/> from the server)
+    /// on the reliable or unreliable channel. Sets the transfer mode + channel + target on the peer, then
+    /// enqueues the packet for the next <see cref="ENetMultiplayerPeer"/> flush (which Godot does after the
+    /// scene-tree process step, or on the next <see cref="Poll"/>).
+    /// </summary>
+    public void Send(int targetPeerId, ReadOnlySpan<byte> payload, bool reliable)
+    {
+        if (Peer is null || payload.IsEmpty)
+            return;
+
+        Peer.SetTargetPeer(targetPeerId);
+        Peer.TransferMode = reliable
+            ? MultiplayerPeer.TransferModeEnum.Reliable
+            : MultiplayerPeer.TransferModeEnum.Unreliable;
+        Peer.TransferChannel = reliable ? NetProtocol.ReliableChannel : NetProtocol.UnreliableChannel;
+        // ENetMultiplayerPeer.PutPacket has a ReadOnlySpan overload that copies into ENet's packet buffer
+        // without an intermediate managed array — keep the hot send path allocation-free.
+        Peer.PutPacket(payload);
+    }
+
+    /// <summary>Broadcast to every connected peer (server-side convenience).</summary>
+    public void Broadcast(ReadOnlySpan<byte> payload, bool reliable)
+        => Send((int)MultiplayerPeer.TargetPeerBroadcast, payload, reliable);
+
+    // --- connect/disconnect: ENetMultiplayerPeer raises Godot signals; we bridge them to C# events. ---
+    private readonly List<int> _pendingConnects = new();
+    private readonly List<int> _pendingDisconnects = new();
+
+    protected void HookSignals()
+    {
+        Peer.PeerConnected += id => _pendingConnects.Add((int)id);
+        Peer.PeerDisconnected += id => _pendingDisconnects.Add((int)id);
+    }
+
+    private void DrainConnectionEvents()
+    {
+        if (_pendingConnects.Count > 0)
+        {
+            // copy then clear so a handler that sends (re-entrant Poll is not expected, but be safe) can't
+            // mutate the list mid-iteration.
+            for (int i = 0; i < _pendingConnects.Count; i++)
+                PeerConnected?.Invoke(_pendingConnects[i]);
+            _pendingConnects.Clear();
+        }
+        if (_pendingDisconnects.Count > 0)
+        {
+            for (int i = 0; i < _pendingDisconnects.Count; i++)
+                PeerDisconnected?.Invoke(_pendingDisconnects[i]);
+            _pendingDisconnects.Clear();
+        }
+    }
+
+    public virtual void Dispose()
+    {
+        if (Peer is not null)
+        {
+            Peer.Close();
+            Peer.Dispose();
+            Peer = null!;
+        }
+        GC.SuppressFinalize(this);
+    }
+
+    // =====================================================================================
+    //  Server
+    // =====================================================================================
+
+    /// <summary>
+    /// The host side: an ENet server bound to a UDP port. Peers connect to it; the server addresses them by
+    /// their Godot-assigned positive peer ids (and the server itself is <see cref="ServerPeerId"/>).
+    /// </summary>
+    public sealed class Server : NetTransport
+    {
+        /// <summary>The connected client peer ids (excludes the server's own id).</summary>
+        public IReadOnlyList<int> Peers => _peers;
+        private readonly List<int> _peers = new();
+
+        private Server() { }
+
+        /// <summary>
+        /// Start listening on <paramref name="port"/> for up to <paramref name="maxClients"/> clients. Returns
+        /// the server, or null on failure (port in use, etc.). The caller subscribes to the events and calls
+        /// <see cref="Poll"/> each frame. The peer list is maintained from the connect/disconnect signals.
+        /// </summary>
+        public static Server? Start(int port, int maxClients = 32)
+        {
+            var s = new Server();
+            s.Peer = new ENetMultiplayerPeer();
+            Error err = s.Peer.CreateServer(port, maxClients, NetProtocol.ChannelCount);
+            if (err != Error.Ok)
+            {
+                GD.PrintErr($"[NetTransport.Server] CreateServer({port}) failed: {err}");
+                s.Peer.Dispose();
+                return null;
+            }
+            s.HookSignals();
+            s.PeerConnected += id => { if (!s._peers.Contains(id)) s._peers.Add(id); };
+            s.PeerDisconnected += id => s._peers.Remove(id);
+            GD.Print($"[NetTransport.Server] listening on UDP {port} (max {maxClients}).");
+            return s;
+        }
+
+        /// <summary>Forcibly drop a client (e.g. after a build-parity reject).</summary>
+        public void Disconnect(int peerId, bool now = false)
+        {
+            if (Peer is null) return;
+            Peer.DisconnectPeer(peerId, now);
+        }
+    }
+
+    // =====================================================================================
+    //  Client
+    // =====================================================================================
+
+    /// <summary>
+    /// The client side: an ENet client connected to one server. All <see cref="Send"/> targets are the
+    /// server (<see cref="ServerPeerId"/>); <see cref="PacketReceived"/> always reports the server as source.
+    /// </summary>
+    public sealed class Client : NetTransport
+    {
+        /// <summary>True once the ENet connection handshake has completed (status == Connected).</summary>
+        public bool IsConnected => Peer is not null && Peer.GetConnectionStatus() == MultiplayerPeer.ConnectionStatus.Connected;
+
+        /// <summary>True while still negotiating the ENet connection (status == Connecting).</summary>
+        public bool IsConnecting => Peer is not null && Peer.GetConnectionStatus() == MultiplayerPeer.ConnectionStatus.Connecting;
+
+        private Client() { }
+
+        /// <summary>
+        /// Begin connecting to <paramref name="host"/>:<paramref name="port"/>. Returns immediately — the ENet
+        /// handshake completes asynchronously; watch <see cref="IsConnected"/> (or the transport-level
+        /// <see cref="NetControl.HandshakeAccept"/>) before sending gameplay. Returns null on a setup failure.
+        /// </summary>
+        public static Client? Connect(string host, int port)
+        {
+            var c = new Client();
+            c.Peer = new ENetMultiplayerPeer();
+            Error err = c.Peer.CreateClient(host, port, NetProtocol.ChannelCount);
+            if (err != Error.Ok)
+            {
+                GD.PrintErr($"[NetTransport.Client] CreateClient({host}:{port}) failed: {err}");
+                c.Peer.Dispose();
+                return null;
+            }
+            c.HookSignals();
+            GD.Print($"[NetTransport.Client] connecting to {host}:{port} …");
+            return c;
+        }
+
+        /// <summary>Send a packet to the server on the chosen channel.</summary>
+        public void SendToServer(ReadOnlySpan<byte> payload, bool reliable)
+            => Send(ServerPeerId, payload, reliable);
+    }
+}

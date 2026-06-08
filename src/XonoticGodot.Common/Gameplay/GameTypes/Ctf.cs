@@ -1,0 +1,1190 @@
+using System.Numerics;
+using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Gameplay.Damage;
+using XonoticGodot.Common.Math;
+using XonoticGodot.Common.Services;
+using GS = XonoticGodot.Common.Gameplay.Scoring.GameScores; // T7: alias the static score table for the per-mode ScoreRules
+
+namespace XonoticGodot.Common.Gameplay;
+
+/// <summary>
+/// Capture the Flag — port of <c>CLASS(CaptureTheFlag, Gametype)</c>
+/// (common/gametypes/gametype/ctf/{ctf.qh,sv_ctf.qc}). Each team owns a flag at its base; carry the
+/// enemy flag to your own (still-present) flag to score a capture for your team. First team to the
+/// capture limit (QC capturelimit_override, default 10) or the lead limit (leadlimit, 6) wins.
+///
+/// QC defaults (gametype_init): "timelimit=20 caplimit=10 leadlimit=6" (legacydefaults "300 20 10 0").
+/// CTF routes its limit through <c>capturelimit</c> (m_setTeams sets "fraglimit", but the capture count
+/// is gated by capturelimit) — we read capturelimit_override / capturelimit here.
+///
+/// Faithfully ported (Godot-free essence):
+///  - smallest-team assignment on join (<see cref="TeamBalance"/>);
+///  - per-team flag entities with a state machine (AtBase / Carried / Dropped) — <see cref="FlagState"/>,
+///    each backed by a real world <see cref="Entity"/> spawned at the map's item_flag_team* spawns
+///    (<see cref="SpawnFlag"/>, QC ctf_FlagSetup) with the carry/drop/return/capture flow driven on touch
+///    (<see cref="FlagTouch"/>, QC ctf_FlagTouch → Flag.giveTo) and a per-flag <see cref="FlagThink"/>
+///    (QC ctf_FlagThink: dropped-flag auto-return timer, landtime tracking);
+///  - the pickup → carry → capture flow (<see cref="Pickup"/>/<see cref="Capture"/>/<see cref="ReturnFlag"/>)
+///    with QC's capture scoring (carrier team SCORE += g_ctf_score_capture, CTF_CAPS += 1) and the
+///    flag-carrier-kill bonus on the obituary bus (g_ctf_score_kill);
+///  - the capture shield (QC ctf_CaptureShield_*): players too far behind in score are shielded from taking
+///    the flag (<see cref="CaptureShieldStatus"/>/<see cref="UpdateCaptureShields"/>);
+///  - time-based auto-return of a dropped flag (g_ctf_flag_return_time) via <see cref="Tick"/>;
+///  - team-count detection from the spawned flags (<see cref="OnInit"/> / <see cref="DelayedInit"/>);
+///  - capture-limit + lead-limit win condition;
+///  - flag PASSING + THROWING (g_ctf_pass / g_ctf_throw): <see cref="ThrowFlag"/> (forward+up toss with the
+///    Strength multiplier + the throw-punish ramp), <see cref="PassFlag"/>/<see cref="RequestPass"/> (a flag
+///    flown to a teammate as a FLAG_PASSING entity), the in-flight re-target/give-up think (<see cref="Tick"/>
+///    → DrivePass, QC ctf_FlagThink FLAG_PASSING), and the receiver retrieve (<see cref="RetrieveFlag"/>).
+///
+/// Deferred (NOTE — cross-boundary): flag entity networking + waypoints/HUD (CSQC), speedrunning/record timing,
+/// the flag-damage return path, the dropped-flag float-in-water physics, and the pass arc-height line-of-sight
+/// trace (a presentation refinement — the headless pass aims straight at the target) — client/physics concerns.
+/// </summary>
+[GameType]
+public sealed class Ctf : GameType
+{
+    // ----- capture-limit cvars + default (gametype_init caplimit=10; legacydefaults caps=10) -----
+    private const string CvarCapLimitOverride = "capturelimit_override";
+    private const string CvarCapLimit         = "capturelimit";
+    private const string CvarLeadLimitOverride = "leadlimit_override";
+    private const string CvarLeadLimit         = "leadlimit";
+    private const float  DefaultCapLimit  = 10f;
+    private const float  DefaultLeadLimit = 6f;
+
+    // ----- capture/kill score cvars + defaults (g_ctf_score_*; xonotic defaults) -----
+    private const string CvarScoreCapture = "g_ctf_score_capture";
+    private const string CvarScoreKill    = "g_ctf_score_kill";
+    private const string CvarScorePickupBase = "g_ctf_score_pickup_base";
+    private const string CvarScoreReturn  = "g_ctf_score_return";
+    private const string CvarScorePenaltyDrop = "g_ctf_score_penalty_drop";
+    private const string CvarScorePenaltyReturned = "g_ctf_score_penalty_returned";
+    private const float  DefaultScoreCapture = 1f; // team SCORE per capture (CTF_CAPS always +1)
+    private const float  DefaultScoreKill    = 20f;
+    private const float  DefaultScorePickupBase = 0f;
+    private const float  DefaultScoreReturn  = 5f;
+    private const float  DefaultScorePenaltyDrop = 0f;
+    private const float  DefaultScorePenaltyReturned = 0f;
+
+    // ----- flag timing + collect-delay cvars (g_ctf_flag_*; xonotic defaults) -----
+    private const string CvarFlagReturnTime   = "g_ctf_flag_return_time";   // seconds a dropped flag auto-returns after
+    private const string CvarFlagCollectDelay = "g_ctf_flag_collect_delay"; // delay before a dropper may re-pickup
+    private const float  DefaultFlagReturnTime   = 30f;
+    private const float  DefaultFlagCollectDelay = 1f;
+
+    // ----- passing / throwing cvars (g_ctf_pass / g_ctf_throw; gametypes-server.cfg defaults) -----
+    private const string CvarPass            = "g_ctf_pass";                    // 1 — allow passing to teammates
+    private const string CvarPassRequest     = "g_ctf_pass_request";            // 1 — allow +use to request a pass
+    private const string CvarPassRadius      = "g_ctf_pass_radius";             // 500 — max pass distance
+    private const string CvarPassVelocity    = "g_ctf_pass_velocity";           // 750 — pass flight speed
+    private const string CvarPassTimelimit   = "g_ctf_pass_timelimit";          // 2 — give-up time for an in-flight pass
+    private const string CvarPassWait        = "g_ctf_pass_wait";               // 2 — antispam between passes/throws
+    private const string CvarThrow           = "g_ctf_throw";                   // 1 — allow throwing the flag
+    private const string CvarThrowVelFwd     = "g_ctf_throw_velocity_forward";  // 500
+    private const string CvarThrowVelUp      = "g_ctf_throw_velocity_up";       // 200
+    private const string CvarThrowStrengthMul= "g_ctf_throw_strengthmultiplier";// 2 — multiply forward when Strength
+    private const string CvarThrowAngleMin   = "g_ctf_throw_angle_min";         // -90
+    private const string CvarThrowAngleMax   = "g_ctf_throw_angle_max";         // 90
+    private const string CvarThrowPunishCount= "g_ctf_throw_punish_count";      // 3 — throws before the punish cooldown
+    private const string CvarThrowPunishDelay= "g_ctf_throw_punish_delay";      // 30 — cooldown once punished
+    private const string CvarThrowPunishTime = "g_ctf_throw_punish_time";       // 10 — window the throw count resets after
+    private const float  DefaultPassRadius     = 500f;
+    private const float  DefaultPassVelocity   = 750f;
+    private const float  DefaultPassTimelimit  = 2f;
+    private const float  DefaultPassWait       = 2f;
+    private const float  DefaultThrowVelFwd    = 500f;
+    private const float  DefaultThrowVelUp     = 200f;
+    private const float  DefaultThrowStrengthMul = 2f;
+    private const float  DefaultThrowAngleMin  = -90f;
+    private const float  DefaultThrowAngleMax  = 90f;
+    private const int    DefaultThrowPunishCount = 3;
+    private const float  DefaultThrowPunishDelay = 30f;
+    private const float  DefaultThrowPunishTime  = 10f;
+
+    /// <summary>QC autocvar_g_ctf_pass — passing the flag to a teammate is enabled.</summary>
+    public bool PassEnabled => Cvar(CvarPass, 1f) != 0f;
+    /// <summary>QC autocvar_g_ctf_pass_request — a teammate may +use-request a pass from the carrier.</summary>
+    public bool PassRequestEnabled => Cvar(CvarPassRequest, 1f) != 0f;
+    /// <summary>QC autocvar_g_ctf_throw — deliberately throwing the flag is enabled.</summary>
+    public bool ThrowEnabled => Cvar(CvarThrow, 1f) != 0f;
+    public float PassRadius    => Cvar(CvarPassRadius, DefaultPassRadius);
+    public float PassVelocity  => Cvar(CvarPassVelocity, DefaultPassVelocity);
+    public float PassTimelimit => Cvar(CvarPassTimelimit, DefaultPassTimelimit);
+    public float PassWait      => Cvar(CvarPassWait, DefaultPassWait);
+
+    // ----- capture-shield cvars (g_ctf_shield_*; anti-camp punishment) -----
+    private const string CvarShieldMinNegScore = "g_ctf_shield_min_negscore"; // shield once score <= -this (default 20)
+    private const string CvarShieldMaxRatio    = "g_ctf_shield_max_ratio";    // shield at most this fraction of a team (default 0.3)
+    private const string CvarShieldForce       = "g_ctf_shield_force";        // push force of the shield
+    private const float  DefaultShieldMinNegScore = 20f;
+    private const float  DefaultShieldMaxRatio    = 0.3f;
+    private const float  DefaultShieldForce       = 7000f;
+
+    private int   _captureShieldMinNegScore = (int)DefaultShieldMinNegScore;
+    private float _captureShieldMaxRatio    = DefaultShieldMaxRatio;
+    private float _captureShieldForce       = DefaultShieldForce;
+
+    /// <summary>Per-flag drop offset for the dropped flag body (QC FLAG_DROP_OFFSET).</summary>
+    private static readonly Vector3 FlagDropOffset = new(0f, 0f, 32f);
+    /// <summary>Carry offset of a flag riding its carrier (QC FLAG_CARRY_OFFSET).</summary>
+    private static readonly Vector3 FlagCarryOffset = new(-16f, 0f, 8f);
+    /// <summary>Flag bbox (QC CTF_FLAG.m_mins/m_maxs scaled; here the vrint'd 60x60x70-ish hull).</summary>
+    private static readonly Vector3 FlagMins = new(-30f, -30f, -32f);
+    private static readonly Vector3 FlagMaxs = new(30f, 30f, 38f);
+
+    public float ScorePickupBase => TryCvar(CvarScorePickupBase, out float v) ? v : DefaultScorePickupBase;
+    public float ScoreReturn     => TryCvar(CvarScoreReturn, out float v) ? v : DefaultScoreReturn;
+    public float ScorePenaltyDrop => TryCvar(CvarScorePenaltyDrop, out float v) ? v : DefaultScorePenaltyDrop;
+    public float ScorePenaltyReturned => TryCvar(CvarScorePenaltyReturned, out float v) ? v : DefaultScorePenaltyReturned;
+    public float FlagReturnTime   => TryCvar(CvarFlagReturnTime, out float v) ? v : DefaultFlagReturnTime;
+    public float FlagCollectDelay => TryCvar(CvarFlagCollectDelay, out float v) ? v : DefaultFlagCollectDelay;
+
+    // Per-team capture totals (QC ST_CTF_CAPS, team slot 1) now live in the unified GameScores two-slot team
+    // store — the source of truth (common/scores.qh MAX_TEAMSCORE). Read via GetTeamCaps / written via
+    // AddTeamCaps; CTF no longer keeps a private dict (was the divergence GameScores.LeaderTeam couldn't see).
+
+    /// <summary>The flag belonging to each team (QC g_flags), keyed by the flag's home-team color code.</summary>
+    public readonly Dictionary<int, FlagState> Flags = new();
+
+    public bool MatchEnded { get; private set; }
+    public int LeaderTeam { get; private set; }
+
+    private HookHandler<DeathEvent>? _deathHandler;
+
+    public Ctf()
+    {
+        NetName = "ctf";
+        DisplayName = "Capture the Flag";
+        TeamGame = true;
+    }
+
+    /// <summary>QC g_flags intrusive list: every flag entity spawned on the map (item_flag_team*).</summary>
+    public readonly List<Entity> FlagEntities = new();
+
+    /// <summary>
+    /// QC ctf_oneflag: a neutral flag was found (one-flag CTF). One shared neutral flag is the carriable
+    /// objective; each team's base flag is a capture point (you bring the neutral flag to your own base to
+    /// score — or to an enemy base under <see cref="OneFlagReverse"/>). Team flags are not pickable in this mode.
+    /// </summary>
+    public bool OneFlag { get; private set; }
+
+    /// <summary>QC <c>g_ctf_oneflag_reverse</c>: in one-flag mode, capture at an ENEMY base instead of your own.</summary>
+    public bool OneFlagReverse => TryCvar("g_ctf_oneflag_reverse", out float v) && v != 0f;
+
+    /// <summary>The neutral flag (QC ctf_oneflag), or null when not one-flag mode.</summary>
+    public FlagState? NeutralFlag => Flags.TryGetValue(Teams.None, out var f) ? f : null;
+
+    /// <summary>Detected team count (QC ctf_DelayedInit BIT scan of flag teams), 2..4. Defaults to 2.</summary>
+    private int _detectedTeams = 2;
+
+    public override void OnInit()
+    {
+        // QC ctf_Initialize → ctf_DelayedInit: detect the team count and one-flag mode from the flag
+        // entities the BSP lump spawned, and seed the capture-shield tunables. GameRules_teams(true) and the
+        // Flag registrable (NEW(Flag)) are the engine's job; here OnInit wires the shield cvars.
+        _captureShieldMinNegScore = (int)Cvar(CvarShieldMinNegScore, DefaultShieldMinNegScore);
+        _captureShieldMaxRatio    = Cvar(CvarShieldMaxRatio, DefaultShieldMaxRatio);
+        _captureShieldForce       = Cvar(CvarShieldForce, DefaultShieldForce);
+        DelayedInit();
+    }
+
+    /// <summary>
+    /// QC ctf_DelayedInit: scan the spawned flags to decide how many teams play (a flag per team → that
+    /// team is in play) and whether a neutral flag makes this one-flag CTF. Falls back to Red+Blue when
+    /// fewer than two team-flags exist (QC NumTeams &lt; 2 → default two-base).
+    /// </summary>
+    public void DelayedInit()
+    {
+        int bits = 0;
+        OneFlag = false;
+        foreach (Entity f in FlagEntities)
+        {
+            switch ((int)f.Team)
+            {
+                case Teams.Red:    bits |= 1 << 0; break;
+                case Teams.Blue:   bits |= 1 << 1; break;
+                case Teams.Yellow: bits |= 1 << 2; break;
+                case Teams.Pink:   bits |= 1 << 3; break;
+                case Teams.None:   OneFlag = true; break;
+            }
+        }
+        int n = System.Numerics.BitOperations.PopCount((uint)bits);
+        _detectedTeams = n < 2 ? 2 : System.Math.Clamp(n, 2, 4);
+    }
+
+    /// <summary>
+    /// CTF team count: detected from the map's flags (QC ctf_DelayedInit), 2..4. Two-base is the design
+    /// default (QC m_isTwoBaseMode) so a map with only Red+Blue flags yields 2.
+    /// </summary>
+    public int TeamCount => _detectedTeams;
+
+    /// <summary>Capture limit in force (capturelimit_override, else capturelimit, else 10). 0 == unlimited.</summary>
+    public float CaptureLimit
+    {
+        get
+        {
+            if (TryCvar(CvarCapLimitOverride, out float ov)) return ov;
+            if (TryCvar(CvarCapLimit, out float cl)) return cl;
+            return DefaultCapLimit;
+        }
+    }
+
+    public float LeadLimit
+    {
+        get
+        {
+            if (TryCvar(CvarLeadLimitOverride, out float ov)) return ov;
+            if (TryCvar(CvarLeadLimit, out float l)) return l;
+            return DefaultLeadLimit;
+        }
+    }
+
+    public float ScoreCapture => TryCvar(CvarScoreCapture, out float v) ? v : DefaultScoreCapture;
+    public float ScoreKill    => TryCvar(CvarScoreKill,    out float v) ? v : DefaultScoreKill;
+
+    public void Activate()
+    {
+        if (_deathHandler is not null)
+            return;
+        MatchEnded = false;
+        LeaderTeam = Teams.None;
+        Scoring.GameScores.ResetTeams();  // QC Score_ClearAll at match start: zero both team slots before declaring
+        DeclareScoreRules();
+        Scoring.GameScores.SeedTeams(TeamCount); // zero both team slots for the active teams (stable leader scan)
+        foreach (int team in Teams.Active(TeamCount))
+            if (!Flags.ContainsKey(team)) Flags[team] = new FlagState(team);
+        _deathHandler = OnDeath;
+        Combat.Death.Add(_deathHandler);
+    }
+
+    /// <summary>
+    /// QC <c>ctf_ScoreRules</c> (sv_ctf.qc): declare CTF's scoreboard columns + the two TEAM-score slots and pin
+    /// the sort keys. QC: <c>GameRules_scoring(teams, SFL_SORT_PRIO_PRIMARY, 0, { field_team(ST_CTF_CAPS, "caps",
+    /// PRIMARY); field(SP_CTF_CAPS, "caps", SECONDARY); ... })</c> — so the TEAM primary is slot 1 (ST_CTF_CAPS,
+    /// "caps"), slot 0 (ST_SCORE) is the team's secondary (stprio=0); the PLAYER primary is SP_SCORE with
+    /// SP_CTF_CAPS secondary. Teams rank by total caps then total score; players rank by score then personal caps.
+    /// The remaining columns (captime/pickups/fckills/returns/drops) are display stats.
+    /// </summary>
+    private static void DeclareScoreRules()
+    {
+        GS.ScoreRulesBasics(teams: true);
+        // Team slots: ST_SCORE (slot 0) "score" no-prio; ST_CTF_CAPS (slot 1) "caps" PRIMARY.
+        GS.TeamRulesBasics(scorePrio: Scoring.ScoreFlags.None);
+        GS.SetTeamLabel(GS.TeamSlotSecondary, "caps", Scoring.ScoreFlags.SortPrioPrimary);
+        GS.DeclareColumn("CTF_CAPS", Scoring.ScoreFlags.None, "caps");
+        GS.DeclareColumn("CTF_CAPTIME", Scoring.ScoreFlags.LowerIsBetter | Scoring.ScoreFlags.Time, "captime");
+        GS.DeclareColumn("CTF_PICKUPS", Scoring.ScoreFlags.None, "pickups");
+        GS.DeclareColumn("CTF_FCKILLS", Scoring.ScoreFlags.None, "fckills");
+        GS.DeclareColumn("CTF_RETURNS", Scoring.ScoreFlags.None, "returns");
+        GS.DeclareColumn("CTF_DROPS", Scoring.ScoreFlags.LowerIsBetter, "drops");
+        // sprio PRIMARY = SP_SCORE; SP_CTF_CAPS SECONDARY (QC field(SP_CTF_CAPS, "caps", SFL_SORT_PRIO_SECONDARY)).
+        GS.SetSortKeys(GS.Score, GS.Field("CTF_CAPS"));
+    }
+
+    /// <summary>QC <c>GameRules_scoring_add(player, SP_X, n)</c> for one of CTF's player columns (no-op if the
+    /// field is somehow unregistered). Centralizes the per-event column writes onto the unified score table.</summary>
+    private static void AddCol(Player p, string field, int n)
+    {
+        Scoring.ScoreField? f = Scoring.GameScores.Field(field);
+        if (f is not null) Scoring.GameScores.AddToPlayer(p, f, n);
+    }
+
+    public void Deactivate()
+    {
+        if (_deathHandler is null)
+            return;
+        Combat.Death.Remove(_deathHandler);
+        _deathHandler = null;
+    }
+
+    public int AssignTeam(Player joiner, IReadOnlyList<Player> roster)
+        => TeamBalance.JoinSmallestTeam(joiner, roster, TeamCount);
+
+    /// <summary>The flag whose home base is <paramref name="team"/>, or null if no such flag exists.</summary>
+    public FlagState? FlagOf(int team) => Flags.TryGetValue(team, out var f) ? f : null;
+
+    /// <summary>
+    /// QC ctf_Handle_Pickup (PICKUP_BASE/DROPPED): <paramref name="player"/> takes the enemy flag
+    /// <paramref name="flag"/>. The flag must not be the player's own and must be takeable (at base or
+    /// dropped). Sets the flag to Carried by the player. Returns true if the pickup happened.
+    /// </summary>
+    public bool Pickup(Player player, FlagState flag)
+    {
+        if (MatchEnded || player.IsDead)
+            return false;
+        if (flag.HomeTeam == (int)player.Team)
+            return false; // can't pick up your own flag (that's a return, not a pickup)
+        if (flag.Status == FlagStatus.Carried)
+            return false; // already carried
+
+        bool fromBase = flag.Status == FlagStatus.AtBase;
+        flag.Status = FlagStatus.Carried;
+        flag.Carrier = player;
+        if (fromBase)
+            flag.PickupTime = Api.Services is not null ? Api.Clock.Time : 0f; // QC PICKUP_BASE timing baseline
+
+        // QC ctf_Handle_Pickup scoring: PICKUP_BASE awards g_ctf_score_pickup_base to the carrier's team.
+        if (fromBase && ScorePickupBase != 0f)
+            player.ScoreFrags += (int)ScorePickupBase;
+        AddCol(player, "CTF_PICKUPS", 1); // QC GameRules_scoring_add(player, CTF_PICKUPS, 1)
+
+        // Attach the world flag entity to the carrier (QC setattachment + FLAG_CARRY_OFFSET).
+        if (flag.Entity is not null)
+        {
+            GametypeEntities.AttachToCarrier(flag.Entity, player, FlagCarryOffset);
+            flag.Entity.GtStatus = (int)FlagStatus.Carried;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// QC ctf_Handle_Capture (CAPTURE_NORMAL): <paramref name="player"/> brings the enemy flag they carry
+    /// home and captures it. Requires that the player carries an enemy flag AND their own flag is at base
+    /// (QC CTF_SAMETEAM(toucher, flag) &amp;&amp; toucher.flagcarried). Awards the team a capture and applies
+    /// the win condition. Returns the captured flag's home team, or <see cref="Teams.None"/> if no capture.
+    /// </summary>
+    public int Capture(Player player)
+    {
+        if (MatchEnded)
+            return Teams.None;
+
+        FlagState? carried = CarriedBy(player);
+        if (carried is null)
+            return Teams.None;
+
+        // The capturing player's own flag must be home (QC requires the home flag present to score).
+        FlagState? home = FlagOf((int)player.Team);
+        if (home is not null && home.Status != FlagStatus.AtBase)
+            return Teams.None;
+
+        // ----- score the capture (QC GameRules_scoring_add_team SCORE + CTF_CAPS) -----
+        // QC adds capscore to BOTH the player SP_SCORE and the team ST_SCORE (slot 0); +1 to player+team CTF_CAPS.
+        AddTeamCaps(player.Team, 1);
+        player.ScoreFrags += (int)ScoreCapture;     // individual SCORE credit (carrier)
+        AddTeamScore(player.Team, (int)ScoreCapture); // QC GameRules_scoring_add_team(player, SCORE, capscore): team ST_SCORE
+        AddCol(player, "CTF_CAPS", 1);              // QC GameRules_scoring_add_team(player, CTF_CAPS, 1): player caps column
+        // QC CTF_CAPTIME (best/fastest capture run): the carry duration of the captured flag, encoded as hundredths
+        // (SFL_LOWER_IS_BETTER | SFL_TIME); only updates when it beats the player's prior best.
+        if (carried.PickupTime > 0f)
+        {
+            float captime = (Api.Services is not null ? Api.Clock.Time : 0f) - carried.PickupTime;
+            Scoring.ScoreField? cf = Scoring.GameScores.Field("CTF_CAPTIME");
+            if (captime > 0f && cf is not null)
+                Scoring.GameScores.SetBestTime(player, cf, Scoring.GameScores.TimeEncode(captime));
+        }
+
+        // return the captured flag to its base, freeing the carrier (QC ctf_RespawnFlag(enemy_flag))
+        carried.ResetToBase();
+        RespawnFlagEntity(carried);
+
+        // QC ctf_Handle_Capture: a successful capture clears the carrier's capture shield (they're scoring now).
+        UpdateCaptureShield(player);
+
+        UpdateLeaderAndCheckLimit();
+        return carried.HomeTeam;
+    }
+
+    /// <summary>
+    /// QC ctf_Handle_Return: <paramref name="player"/> touches their own dropped/away flag, returning it to
+    /// base (only meaningful for a dropped flag). Awards the QC return SCORE to the player.
+    /// </summary>
+    public void ReturnFlag(Player player, FlagState flag)
+    {
+        if (flag.HomeTeam != (int)player.Team)
+            return;
+        if (flag.Status == FlagStatus.AtBase)
+            return;
+
+        // QC g_ctf_score_return: reward the returner; punish the team/player who lost it (penalty_returned).
+        player.ScoreFrags += (int)ScoreReturn;
+        AddTeamScore(player.Team, (int)ScoreReturn); // QC GameRules_scoring_add_team(player, SCORE, score_return)
+        AddCol(player, "CTF_RETURNS", 1); // QC GameRules_scoring_add(player, CTF_RETURNS, 1)
+        AddTeamScorePenalty(flag.HomeTeam, (int)ScorePenaltyReturned);
+
+        flag.ResetToBase();
+        RespawnFlagEntity(flag);
+    }
+
+    /// <summary>
+    /// QC ctf_CheckFlagReturn / auto-return: a dropped flag whose return timer elapsed (or that was killed by
+    /// the world) returns itself to base. Used by <see cref="Tick"/>; no player credit.
+    /// </summary>
+    public void AutoReturnFlag(FlagState flag)
+    {
+        if (flag.Status != FlagStatus.Dropped)
+            return;
+        flag.ResetToBase();
+        RespawnFlagEntity(flag);
+    }
+
+    /// <summary>QC ctf_Handle_Drop / PlayerDies: a carrier who dies drops the flag where they fell.</summary>
+    public void DropFlag(Player carrier)
+    {
+        FlagState? carried = CarriedBy(carrier);
+        if (carried is null)
+            return;
+        float now = Api.Services is not null ? Api.Clock.Time : 0f;
+
+        carried.Status = FlagStatus.Dropped;
+        carried.Carrier = null;
+        carried.DropOrigin = carrier.Origin;
+        carried.DropTime = now;
+        carried.Dropper = carrier;
+
+        // QC ctf_Handle_Drop scoring: the dropper's team is docked g_ctf_score_penalty_drop + CTF_DROPS +1.
+        // QC GameRules_scoring_add_team(player, SCORE, -penalty) docks BOTH the player SP_SCORE and the team ST_SCORE.
+        if (ScorePenaltyDrop != 0f)
+        {
+            carrier.ScoreFrags -= (int)ScorePenaltyDrop;
+            AddTeamScore(carrier.Team, -(int)ScorePenaltyDrop);
+        }
+        AddCol(carrier, "CTF_DROPS", 1); // QC GameRules_scoring_add(player, CTF_DROPS, 1)
+        // QC: the dropper can't immediately re-take the flag (next_take_time), and is shielded from camping it.
+        carrier.GtNextTakeTime = now + FlagCollectDelay;
+
+        // Position the world flag entity at the drop point as a tossable pickup (QC MOVETYPE_TOSS, SOLID_TRIGGER).
+        if (carried.Entity is Entity fe)
+        {
+            GametypeEntities.DetachFromCarrier(fe);
+            fe.Solid = Solid.Trigger;
+            fe.MoveType = MoveType.Toss;
+            fe.TakeDamage = DamageMode.Yes;
+            fe.Angles = Vector3.Zero;
+            fe.GtStatus = (int)FlagStatus.Dropped;
+            fe.GtDropTime = now;
+            fe.GtLandTime = 0f;
+            fe.GtCapturer = carrier;
+            GametypeEntities.SetOrigin(fe, carrier.Origin + FlagDropOffset);
+        }
+    }
+
+    /// <summary>The enemy flag <paramref name="player"/> is currently carrying, or null.</summary>
+    public FlagState? CarriedBy(Player player)
+    {
+        foreach (var f in Flags.Values)
+            if (f.Status == FlagStatus.Carried && ReferenceEquals(f.Carrier, player))
+                return f;
+        return null;
+    }
+
+    // ============================================================================================
+    //  Flag passing / throwing (QC ctf_Handle_Throw / ctf_CalculatePassVelocity / FLAG_PASSING think)
+    // ============================================================================================
+
+    /// <summary>
+    /// QC ctf_Handle_Throw DROP_THROW (sv_ctf.qc:551): the carrier deliberately throws the flag forward. Gated
+    /// by autocvar_g_ctf_throw and the throw-punish ramp (QC throw_count/throw_prevtime: after
+    /// g_ctf_throw_punish_count throws within g_ctf_throw_punish_time the player is benched for
+    /// g_ctf_throw_punish_delay). Drops the flag with a forward+up velocity (× the Strength multiplier when the
+    /// thrower has Strength). Returns true if the throw was performed.
+    /// </summary>
+    public bool ThrowFlag(Player player)
+    {
+        if (MatchEnded || !ThrowEnabled)
+            return false;
+        FlagState? carried = CarriedBy(player);
+        if (carried is null)
+            return false;
+
+        float now = Now;
+        // QC throw_antispam (g_ctf_pass_wait): rate-limit consecutive throws/passes (also enforced in PassFlag).
+        if (now < player.GtThrowAntispam)
+            return false;
+        // QC throw-punish ramp (sv_ctf.qc:2488): -1 means benched; otherwise count throws within the window.
+        if (player.GtThrowCount == -1)
+        {
+            if (now <= player.GtThrowPrevTime + Cvar(CvarThrowPunishDelay, DefaultThrowPunishDelay))
+                return false; // still benched
+            player.GtThrowPrevTime = now;
+            player.GtThrowCount = 1;
+        }
+        else
+        {
+            if (now > player.GtThrowPrevTime + Cvar(CvarThrowPunishTime, DefaultThrowPunishTime))
+                player.GtThrowCount = 1;
+            else
+                player.GtThrowCount += 1;
+            if (player.GtThrowCount >= (int)Cvar(CvarThrowPunishCount, DefaultThrowPunishCount))
+                player.GtThrowCount = -1;
+            player.GtThrowPrevTime = now;
+        }
+
+        // QC: makevectors((v_angle.y * '0 1 0') + (bound(min,v_angle.x,max) * '1 0 0')); the thrown velocity is
+        // up + forward, with the forward leg multiplied by the Strength bonus when the thrower has it.
+        float pitch = QClamp(player.Angles.X, Cvar(CvarThrowAngleMin, DefaultThrowAngleMin), Cvar(CvarThrowAngleMax, DefaultThrowAngleMax));
+        QMath.AngleVectors(new Vector3(pitch, player.Angles.Y, 0f), out Vector3 forward, out _, out _);
+        float strengthMul = HasStrength(player) ? Cvar(CvarThrowStrengthMul, DefaultThrowStrengthMul) : 1f;
+        Vector3 vel = new Vector3(0f, 0f, 1f) * Cvar(CvarThrowVelUp, DefaultThrowVelUp)
+                    + forward * (Cvar(CvarThrowVelFwd, DefaultThrowVelFwd) * strengthMul);
+
+        ThrowDropCommon(carried, player, FlagDropType.Throw);
+        if (carried.Entity is Entity fe)
+            fe.Velocity = player.Velocity + vel; // QC W_CalculateProjectileVelocity adds the thrower's velocity
+        player.GtThrowAntispam = now + PassWait;
+        return true;
+    }
+
+    /// <summary>
+    /// QC ctf_Handle_Throw DROP_PASS (sv_ctf.qc:525): the carrier passes the flag toward <paramref name="receiver"/>.
+    /// Gated by autocvar_g_ctf_pass and the throw antispam. The flag enters FLAG_PASSING, flying toward the
+    /// receiver at g_ctf_pass_velocity along <see cref="CalculatePassVelocity"/>; the per-tick
+    /// <see cref="DrivePass"/> re-targets it and gives up (becomes dropped) if the target is lost or the
+    /// g_ctf_pass_timelimit elapses. Returns true if the pass was launched.
+    /// </summary>
+    public bool PassFlag(Player passer, Player receiver)
+    {
+        if (MatchEnded || !PassEnabled || receiver is null)
+            return false;
+        if (ReferenceEquals(passer, receiver) || (int)receiver.Team != (int)passer.Team || receiver.IsDead)
+            return false;
+        FlagState? carried = CarriedBy(passer);
+        if (carried is null)
+            return false;
+        if (CarriedBy(receiver) is not null)
+            return false; // QC: can't pass to someone already carrying a flag
+
+        float now = Now;
+        // QC throw_antispam (g_ctf_pass_wait): rate-limit consecutive throws/passes.
+        if (now < passer.GtThrowAntispam)
+            return false;
+        // QC pass_distance = planar (XY) distance passer→receiver.
+        Vector3 d = receiver.Origin - passer.Origin; d.Z = 0f;
+        carried.PassDistance = d.Length();
+
+        ThrowDropCommon(carried, passer, FlagDropType.Pass);
+        carried.Status = FlagStatus.Passing;     // QC FLAG_PASSING
+        carried.PassSender = passer;
+        carried.PassTarget = receiver;
+        carried.DropTime = now;                  // QC ctf_droptime — the give-up timer baseline
+
+        if (carried.Entity is Entity fe)
+        {
+            fe.GtStatus = (int)FlagStatus.Passing;
+            fe.TakeDamage = DamageMode.No;       // QC: a passing flag can't be shot down
+            fe.MoveType = MoveType.Fly;          // QC MOVETYPE_FLY
+            fe.GtCapturer = passer;              // remember the sender (credited on retrieve)
+            fe.Velocity = CalculatePassVelocity(fe.Origin, receiver.Origin, carried.PassDistance, fe.Velocity, turnrate: false);
+        }
+        passer.GtThrowAntispam = now + PassWait;
+        return true;
+    }
+
+    /// <summary>
+    /// QC ctf_PrepareNeutralFlags-style +use pass request (sv_ctf.qc:2452, ctf_CheckPassDirection slice): a
+    /// teammate <paramref name="requester"/> asks the nearest in-radius flag carrier to pass to them. With
+    /// g_ctf_pass_request set and the requester empty-handed, the closest same-team carrier within
+    /// g_ctf_pass_radius passes to them. Returns true if a pass was triggered.
+    /// </summary>
+    public bool RequestPass(Player requester, IReadOnlyList<Player> roster)
+    {
+        if (MatchEnded || !PassEnabled || !PassRequestEnabled)
+            return false;
+        if (CarriedBy(requester) is not null)
+            return false;
+        float radius = PassRadius;
+        Player? best = null;
+        float bestDist = radius;
+        for (int i = 0; i < roster.Count; i++)
+        {
+            Player it = roster[i];
+            if (ReferenceEquals(it, requester) || (int)it.Team != (int)requester.Team || it.IsDead)
+                continue;
+            if (CarriedBy(it) is null)
+                continue;
+            float dist = (it.Origin - requester.Origin).Length();
+            if (dist <= bestDist)
+            {
+                bestDist = dist;
+                best = it;
+            }
+        }
+        if (best is null)
+            return false;
+        return PassFlag(best, requester);
+    }
+
+    /// <summary>
+    /// QC ctf_Handle_Retrieve (sv_ctf.qc:428): an in-flight passed flag reaches its target — transfer it to the
+    /// receiver as a normal carry. Used by <see cref="DrivePass"/> when the flag arrives.
+    /// </summary>
+    public void RetrieveFlag(FlagState flag, Player receiver)
+    {
+        flag.Status = FlagStatus.Carried;
+        flag.Carrier = receiver;
+        flag.PassTarget = null;
+        flag.PassSender = null;
+        flag.PassDistance = 0f;
+        if (flag.Entity is Entity fe)
+        {
+            GametypeEntities.AttachToCarrier(fe, receiver, FlagCarryOffset);
+            fe.GtStatus = (int)FlagStatus.Carried;
+        }
+    }
+
+    /// <summary>
+    /// QC ctf_CalculatePassVelocity (sv_ctf.qc:202): the velocity for an in-flight passed flag — a straight
+    /// shot toward the target at g_ctf_pass_velocity, optionally blended with the current direction by
+    /// g_ctf_pass_turnrate while in flight (<paramref name="turnrate"/>). The arc-height trace fallback is a
+    /// presentation refinement (it only nudges the aim point when line-of-sight is blocked); headlessly we aim
+    /// straight at the target, which is the faithful flight outcome.
+    /// </summary>
+    public Vector3 CalculatePassVelocity(Vector3 from, Vector3 to, float passDistance, Vector3 currentVelocity, bool turnrate)
+    {
+        _ = passDistance; // (QC uses it only for the arc-height trace fallback, deferred — see XML doc)
+        Vector3 desired = QNormalize(to - from);
+        if (turnrate)
+        {
+            float tr = Cvar("g_ctf_pass_turnrate", 50f);
+            Vector3 blended = QNormalize(QNormalize(currentVelocity) + desired * tr);
+            return blended * PassVelocity;
+        }
+        return desired * PassVelocity;
+    }
+
+    /// <summary>
+    /// QC the FLAG_PASSING case of ctf_FlagThink (sv_ctf.qc:1102), evaluated headlessly: each tick, give up the
+    /// pass (become a dropped flag) if the target is gone/dead/now-carrying, out of g_ctf_pass_radius, or past
+    /// the g_ctf_pass_timelimit (QC the give-up branch → ctf_Handle_Drop DROP_PASS); otherwise the pass is still
+    /// viable and the receiver collects it (QC ctf_FlagTouch FLAG_PASSING → ctf_Handle_Retrieve).
+    ///
+    /// NOTE (deferral, per spec): without a physics toss/fly integrator the flag entity doesn't actually travel,
+    /// so a viable pass completes as an instant transfer to the receiver here (the faithful OUTCOME) rather than
+    /// faking multi-tick projectile flight. The flight velocity is still computed (so the entity carries the
+    /// right initial velocity for any host that does integrate), and the give-up conditions are honored exactly.
+    /// </summary>
+    private void DrivePass(FlagState flag, float now)
+    {
+        if (flag.Status != FlagStatus.Passing)
+            return;
+        Player? target = flag.PassTarget;
+        Entity? fe = flag.Entity;
+        Vector3 flagPos = fe?.Origin ?? flag.DropOrigin;
+        float dist = target is not null ? (flagPos - target.Origin).Length() : float.MaxValue;
+
+        // QC give-up conditions: no/dead/already-carrying target, out of radius, or past the time limit.
+        bool giveUp = target is null
+            || target.IsDead
+            || CarriedBy(target) is not null
+            || dist > PassRadius
+            || now > flag.DropTime + PassTimelimit;
+
+        if (giveUp)
+        {
+            // QC: ctf_Handle_Drop(this, NULL, DROP_PASS) — the pass failed; the flag becomes a normal dropped flag.
+            flag.Status = FlagStatus.Dropped;
+            flag.Carrier = null;
+            flag.DropTime = now;
+            flag.DropOrigin = flagPos;
+            flag.Dropper = flag.PassSender;
+            flag.PassTarget = null;
+            flag.PassSender = null;
+            flag.PassDistance = 0f;
+            if (fe is not null)
+            {
+                fe.GtStatus = (int)FlagStatus.Dropped;
+                fe.MoveType = MoveType.Toss;
+                fe.TakeDamage = DamageMode.Yes;
+                fe.GtDropTime = now;
+                fe.Velocity = Vector3.Zero;
+            }
+            return;
+        }
+
+        // Still viable → the receiver collects the pass (QC ctf_Handle_Retrieve). Degraded to an instant transfer
+        // (see the NOTE) since the entity doesn't physically travel headlessly.
+        RetrieveFlag(flag, target!);
+    }
+
+    /// <summary>
+    /// The shared head of ctf_Handle_Throw (sv_ctf.qc:479): detach the flag from the carrier, place it at the
+    /// carrier's feet as a tossable trigger, clear the carry back-links, and record the dropper/drop-time. The
+    /// per-droptype velocity (throw/pass/normal) is set by the caller afterward.
+    /// </summary>
+    private void ThrowDropCommon(FlagState flag, Player carrier, FlagDropType droptype)
+    {
+        float now = Now;
+        flag.Status = FlagStatus.Dropped;
+        flag.Carrier = null;
+        flag.DropOrigin = carrier.Origin;
+        flag.DropTime = now;
+        flag.Dropper = carrier;
+        carrier.GtNextTakeTime = now + FlagCollectDelay; // QC: dropper can't instantly re-take
+
+        if (flag.Entity is Entity fe)
+        {
+            GametypeEntities.DetachFromCarrier(fe);
+            fe.Solid = Solid.Trigger;
+            fe.MoveType = MoveType.Toss;
+            fe.TakeDamage = DamageMode.Yes;
+            fe.Angles = Vector3.Zero;
+            fe.GtStatus = (int)FlagStatus.Dropped;
+            fe.GtDropTime = now;
+            fe.GtLandTime = 0f;
+            fe.GtCapturer = carrier;
+            GametypeEntities.SetOrigin(fe, carrier.Origin + FlagDropOffset);
+        }
+        _ = droptype; // (the velocity + FLAG_PASSING transition are applied by the caller)
+    }
+
+    /// <summary>QC StatusEffects_active(STATUSEFFECT_Strength, player) — the thrower has the Strength powerup.</summary>
+    private static bool HasStrength(Player p)
+        => StatusEffectsCatalog.ByName("strength") is { } s && StatusEffectsCatalog.Has(p, s);
+
+    /// <summary>QC bound(lo, v, hi).</summary>
+    private static float QClamp(float v, float lo, float hi) => v < lo ? lo : (v > hi ? hi : v);
+
+    /// <summary>QC normalize(v) — zero for the zero vector.</summary>
+    private static Vector3 QNormalize(Vector3 v) { float l = v.Length(); return l > 0f ? v / l : Vector3.Zero; }
+
+    /// <summary>Current sim time (QC time); 0 with no facade.</summary>
+    private static float Now => Api.Services is not null ? Api.Clock.Time : 0f;
+
+    private bool OnDeath(ref DeathEvent ev)
+    {
+        if (ev.Victim is not Player victim)
+            return false;
+        if (MatchEnded)
+            return false;
+
+        Player? attacker = ev.Attacker as Player;
+
+        // QC PlayerDies: killing an enemy flag carrier rewards the attacker's team (g_ctf_score_kill);
+        // a teamkill of a carrier is penalized.
+        if (attacker is not null && !ReferenceEquals(attacker, victim) && CarriedBy(victim) is not null)
+        {
+            float kill = ScoreKill;
+            attacker.ScoreFrags += Teams.SameTeam(attacker, victim) ? -(int)kill : (int)kill;
+            AddCol(attacker, "CTF_FCKILLS", 1); // QC GameRules_scoring_add(frag_attacker, CTF_FCKILLS, 1)
+        }
+
+        // The victim drops any flag they were carrying (and the world entity falls to the ground).
+        DropFlag(victim);
+
+        // CTF respawns normally (it is not elimination); arm the respawn timer (QC calculate_respawntime).
+        GametypeEntities.ScheduleRespawn(victim);
+        return false;
+    }
+
+    /// <summary>QC <c>GameRules_scoring_add_team(player, CTF_CAPS, delta)</c>'s team side: add to a team's
+    /// ST_CTF_CAPS total (GameScores team slot 1 — the team primary).</summary>
+    public void AddTeamCaps(float team, int delta)
+    {
+        int t = (int)team;
+        if (t == Teams.None)
+            return;
+        Scoring.GameScores.AddToTeam(t, Scoring.GameScores.TeamSlotSecondary, delta);
+    }
+
+    public int GetTeamCaps(int team) => Scoring.GameScores.TeamScore(team, Scoring.GameScores.TeamSlotSecondary);
+
+    /// <summary>QC <c>GameRules_scoring_add_team(player, SCORE, delta)</c>'s team side: add to a team's ST_SCORE
+    /// total (GameScores team slot 0). CTF tracks this as the team secondary (stprio=0 in ctf_ScoreRules).</summary>
+    public void AddTeamScore(float team, int delta)
+    {
+        int t = (int)team;
+        if (t == Teams.None)
+            return;
+        Scoring.GameScores.AddToTeam(t, Scoring.GameScores.TeamSlotScore, delta);
+    }
+
+    /// <summary>
+    /// QC ctf_Handle_Return penalty (sv_ctf.qc: <c>TeamScore_AddToTeam(team, ST_SCORE, -penalty)</c>): dock a
+    /// team's SCORE (slot 0), NOT its capture total — ST_CTF_CAPS is the win-condition primary and must not move
+    /// on a return. QC allows team SCORE to go negative, so no floor.
+    /// </summary>
+    public void AddTeamScorePenalty(int team, int penalty)
+    {
+        if (team == Teams.None || penalty == 0)
+            return;
+        Scoring.GameScores.AddToTeam(team, Scoring.GameScores.TeamSlotScore, -penalty);
+    }
+
+    // ============================================================================================
+    //  Flag ENTITY layer (QC ctf_FlagSetup / ctf_FlagTouch / ctf_FlagThink / ctf_RespawnFlag)
+    // ============================================================================================
+
+    /// <summary>
+    /// QC ctf_FlagSetup (spawnfunc item_flag_team*): create a world flag entity for <paramref name="team"/>
+    /// at <paramref name="origin"/>, register it in <see cref="FlagEntities"/> + <see cref="Flags"/>, and
+    /// wire its touch/think so the carry/drop/return/capture state machine runs on the entity. Returns the
+    /// <see cref="FlagState"/> (with its <see cref="FlagState.Entity"/> set when a facade is present).
+    /// </summary>
+    public FlagState SpawnFlag(int team, Vector3 origin, Vector3 angles = default)
+    {
+        if (!Flags.TryGetValue(team, out FlagState? flag))
+        {
+            flag = new FlagState(team);
+            Flags[team] = flag;
+        }
+        if (team != Teams.None)
+            Scoring.GameScores.SetTeamScore(team, Scoring.GameScores.TeamSlotSecondary,
+                Scoring.GameScores.TeamScore(team, Scoring.GameScores.TeamSlotSecondary)); // ensure a zeroed caps slot
+
+        Entity? e = GametypeEntities.SpawnObjective("item_flag_team", origin, team, FlagMins, FlagMaxs,
+            touch: FlagTouchEntity, think: FlagThinkEntity);
+        if (e is not null)
+        {
+            e.Angles = angles;
+            e.GtSpawnAngles = angles;
+            e.GtStatus = (int)FlagStatus.AtBase;
+            e.NextThink = GametypeEntities.Now + 0.2f; // QC FLAG_THINKRATE
+            FlagEntities.Add(e);
+        }
+        flag.Entity = e;
+        flag.HomeOrigin = origin;
+        flag.Status = FlagStatus.AtBase;
+        return flag;
+    }
+
+    /// <summary>
+    /// QC spawnfunc item_flag_neutral: create the single neutral flag for one-flag CTF (team = <see cref="Teams.None"/>).
+    /// Marks the gametype one-flag. The neutral flag is the only carriable objective in this mode; team flags
+    /// (spawned via <see cref="SpawnFlag"/>) become capture-point bases.
+    /// </summary>
+    public FlagState SpawnNeutralFlag(Vector3 origin, Vector3 angles = default)
+    {
+        OneFlag = true;
+        return SpawnFlag(Teams.None, origin, angles);
+    }
+
+    /// <summary>The <see cref="FlagState"/> bound to a world flag <see cref="Entity"/>, or null.</summary>
+    public FlagState? FlagForEntity(Entity e)
+    {
+        foreach (var f in Flags.Values)
+            if (ReferenceEquals(f.Entity, e)) return f;
+        return null;
+    }
+
+    /// <summary>
+    /// QC ctf_RespawnFlag: snap a flag's world entity back to its home base (solid trigger, no carrier,
+    /// home angles). Mirrors <see cref="FlagState.ResetToBase"/> on the entity side.
+    /// </summary>
+    public void RespawnFlagEntity(FlagState flag)
+    {
+        if (flag.Entity is not Entity e)
+            return;
+        GametypeEntities.DetachFromCarrier(e);
+        e.Solid = Solid.Trigger;
+        e.MoveType = MoveType.None;
+        e.TakeDamage = DamageMode.No;
+        e.Velocity = Vector3.Zero;
+        e.Angles = e.GtSpawnAngles;
+        e.GtStatus = (int)FlagStatus.AtBase;
+        e.GtCarrier = null;
+        e.GtCapturer = null;
+        e.GtDropTime = 0f;
+        e.GtLandTime = 0f;
+        GametypeEntities.SetOrigin(e, e.GtSpawnOrigin);
+    }
+
+    /// <summary>
+    /// QC ctf_FlagTouch → Flag.giveTo: the world flag <paramref name="flagEnt"/> was touched by
+    /// <paramref name="toucher"/>. Drives the FLAG_BASE/FLAG_DROPPED touch dispatch — capture an enemy flag
+    /// at your base, return your own dropped flag, or pick up a takeable flag — honoring the capture shield
+    /// and the collect-delay. This is the entity-facing counterpart of the POJO Pickup/Capture/ReturnFlag.
+    /// </summary>
+    public void FlagTouch(Entity flagEnt, Player toucher)
+    {
+        if (MatchEnded || toucher.IsDead)
+            return;
+        FlagState? flag = FlagForEntity(flagEnt);
+        if (flag is null)
+            return;
+
+        int toucherTeam = (int)toucher.Team;
+        bool sameTeam = flag.HomeTeam == toucherTeam;
+        bool isNeutral = flag.HomeTeam == Teams.None;
+        FlagState? carried = CarriedBy(toucher);
+
+        // One-flag CTF: only the NEUTRAL flag is carriable; team flags are capture-point bases. A carrier scores
+        // by touching their own team's base flag (QC CTF_DIFFTEAM(player, flag) return → capture at same team),
+        // or an ENEMY base flag under g_ctf_oneflag_reverse.
+        if (OneFlag)
+        {
+            switch (flag.Status)
+            {
+                case FlagStatus.AtBase:
+                    if (isNeutral)
+                    {
+                        // grab the neutral flag from its base (hands free, not shielded, past collect delay).
+                        if (carried is null && !toucher.GtCaptureShielded && GametypeEntities.Now >= toucher.GtNextTakeTime)
+                            Pickup(toucher, flag);
+                    }
+                    else if (carried is not null && ReferenceEquals(carried, NeutralFlag))
+                    {
+                        // touching a team base flag while carrying the neutral flag → capture, at own base
+                        // (default) or an enemy base (reverse).
+                        bool atCaptureBase = OneFlagReverse ? !sameTeam : sameTeam;
+                        if (atCaptureBase)
+                            Capture(toucher);
+                    }
+                    break;
+
+                case FlagStatus.Dropped:
+                    // only the neutral flag can be dropped; reclaim it (any team), honoring the dropper delay.
+                    if (isNeutral && carried is null
+                        && (!ReferenceEquals(flag.Dropper, toucher) || GametypeEntities.Now > flag.DropTime + FlagCollectDelay))
+                        Pickup(toucher, flag);
+                    break;
+            }
+            return;
+        }
+
+        switch (flag.Status)
+        {
+            case FlagStatus.AtBase:
+                // Same team + carrying an enemy flag → capture it home (QC CTF_SAMETEAM && flagcarried).
+                if (sameTeam && carried is not null && carried.HomeTeam != toucherTeam)
+                {
+                    Capture(toucher);
+                }
+                // Enemy flag at base, hands free, not shielded, past collect delay → steal it.
+                else if (!sameTeam && carried is null && !toucher.GtCaptureShielded
+                         && GametypeEntities.Now >= toucher.GtNextTakeTime)
+                {
+                    Pickup(toucher, flag);
+                }
+                break;
+
+            case FlagStatus.Dropped:
+                // Your own dropped flag → return it (QC ctf_Immediate_Return_Allowed path).
+                if (sameTeam)
+                {
+                    ReturnFlag(toucher, flag);
+                }
+                // An enemy's dropped flag, hands free, not the recent dropper (or delay elapsed) → pick up.
+                else if (carried is null
+                         && (!ReferenceEquals(flag.Dropper, toucher)
+                             || GametypeEntities.Now > flag.DropTime + FlagCollectDelay))
+                {
+                    Pickup(toucher, flag);
+                }
+                break;
+
+            case FlagStatus.Passing:
+                // QC ctf_FlagTouch FLAG_PASSING (sv_ctf.qc:2280): the intended receiver catching the in-flight
+                // pass collects it (ctf_Handle_Retrieve). Any other toucher is ignored — a passed flag is only
+                // for its target.
+                if (ReferenceEquals(flag.PassTarget, toucher) && carried is null)
+                    RetrieveFlag(flag, toucher);
+                break;
+        }
+    }
+
+    /// <summary>Entity touch trampoline: only players (QC IS_PLAYER + alive) drive the flag state machine.</summary>
+    private void FlagTouchEntity(Entity self, Entity other)
+    {
+        if (other is Player p && !p.IsDead)
+            FlagTouch(self, p);
+    }
+
+    /// <summary>
+    /// QC ctf_FlagThink (per-flag, FLAG_THINKRATE): for a dropped flag, record its land time and bleed its
+    /// auto-return timer; when the timer elapses, return it to base. Re-arms itself.
+    /// </summary>
+    private void FlagThinkEntity(Entity self)
+    {
+        self.NextThink = GametypeEntities.Now + 0.2f; // QC FLAG_THINKRATE
+        if ((FlagStatus)self.GtStatus != FlagStatus.Dropped)
+            return;
+        if (self.OnGround && self.GtLandTime == 0f)
+            self.GtLandTime = GametypeEntities.Now; // QC: landtime set once it comes to rest
+
+        float returnTime = FlagReturnTime;
+        if (returnTime > 0f && GametypeEntities.Now >= self.GtDropTime + returnTime)
+        {
+            FlagState? flag = FlagForEntity(self);
+            if (flag is not null)
+                AutoReturnFlag(flag);
+        }
+    }
+
+    /// <summary>
+    /// Advance CTF's time-driven bits (QC ctf_FlagThink, evaluated headlessly): auto-return any dropped flag
+    /// whose return timer has elapsed. Call each tick. Complements the per-entity think; safe with or without
+    /// the entity layer (operates on <see cref="FlagState.DropTime"/>).
+    /// </summary>
+    public void Tick()
+    {
+        if (MatchEnded)
+            return;
+        float now = Api.Services is not null ? Api.Clock.Time : 0f;
+        float returnTime = FlagReturnTime;
+        foreach (var flag in Flags.Values)
+        {
+            // QC ctf_FlagThink FLAG_PASSING: re-aim / retrieve / give up an in-flight passed flag every tick.
+            if (flag.Status == FlagStatus.Passing)
+                DrivePass(flag, now);
+            // QC ctf_CheckFlagReturn: a dropped flag whose return timer elapsed returns itself to base.
+            else if (returnTime > 0f && flag.Status == FlagStatus.Dropped && now >= flag.DropTime + returnTime)
+                AutoReturnFlag(flag);
+        }
+    }
+
+    // ============================================================================================
+    //  Capture shield (QC ctf_CaptureShield_*) — shield the worst players from taking the flag
+    // ============================================================================================
+
+    /// <summary>
+    /// QC ctf_CaptureShield_CheckStatus: a player is shielded (blocked from taking the flag) when their net
+    /// CTF score is sufficiently negative AND they are in the worse part of their team relative to
+    /// <see cref="_captureShieldMaxRatio"/>. With no negative-score floor configured, nobody is shielded.
+    /// </summary>
+    public bool CaptureShieldStatus(Player p, IReadOnlyList<Player> roster)
+    {
+        if (_captureShieldMaxRatio <= 0f)
+            return false;
+
+        int myScore = p.ScoreFrags; // QC uses (CAPS - PICKUPS + RETURNS + FCKILLS); ScoreFrags is our net SCORE
+        if (myScore >= -_captureShieldMinNegScore)
+            return false;
+
+        int playersTotal = 0, playersWorseEq = 0;
+        for (int i = 0; i < roster.Count; i++)
+        {
+            Player it = roster[i];
+            if ((int)it.Team != (int)p.Team)
+                continue;
+            if (it.ScoreFrags <= myScore)
+                playersWorseEq++;
+            playersTotal++;
+        }
+
+        // Shielded only if the player is in the worse part of the team (QC ratio test).
+        return playersWorseEq < playersTotal * _captureShieldMaxRatio;
+    }
+
+    /// <summary>QC ctf_CaptureShield_Update for one player: refresh their shielded flag (no roster context).</summary>
+    public void UpdateCaptureShield(Player p) => p.GtCaptureShielded = false;
+
+    /// <summary>
+    /// QC ctf_CaptureShield_Update over the roster: recompute each player's shielded flag. Call when scores
+    /// change (after a capture/return/frag) so the worst players are blocked from flag camping.
+    /// </summary>
+    public void UpdateCaptureShields(IReadOnlyList<Player> roster)
+    {
+        for (int i = 0; i < roster.Count; i++)
+            roster[i].GtCaptureShielded = CaptureShieldStatus(roster[i], roster);
+    }
+
+    public void UpdateLeaderAndCheckLimit()
+    {
+        // QC: the team winner ranks by the team primary slot — ST_CTF_CAPS (caps). LeaderTeam / SecondTeam read
+        // the flag-aware two-slot compare from GameScores (the source of truth), so caps drive the standings.
+        int bestTeam = Scoring.GameScores.LeaderTeam();
+        LeaderTeam = bestTeam;
+        if (bestTeam == Teams.None)
+            return;
+
+        int bestScore = GetTeamCaps(bestTeam);
+        float capLimit = CaptureLimit;
+        if (capLimit > 0f && bestScore >= capLimit)
+            MatchEnded = true;
+
+        int secondTeam = Scoring.GameScores.SecondTeam();
+        float leadLimit = LeadLimit;
+        if (leadLimit > 0f && secondTeam != Teams.None && (bestScore - GetTeamCaps(secondTeam)) >= leadLimit)
+            MatchEnded = true;
+    }
+
+    private static float Cvar(string name, float def) => TryCvar(name, out float v) ? v : def;
+
+    private static bool TryCvar(string name, out float value)
+    {
+        value = 0f;
+        if (Api.Services is null)
+            return false;
+        string s = Api.Cvars.GetString(name);
+        if (string.IsNullOrEmpty(s))
+            return false;
+        value = Api.Cvars.GetFloat(name);
+        return true;
+    }
+}
+
+/// <summary>The lifecycle of a CTF flag (QC FLAG_BASE / FLAG_CARRY / FLAG_DROPPED / FLAG_PASSING, ctf_status).
+/// Note: the port's ordinals (0/1/2/3) differ from QC's (1/2/3/4); the meaning is identical.</summary>
+public enum FlagStatus
+{
+    /// <summary>Resting at its home base, capturable target and pickup source.</summary>
+    AtBase = 0,
+    /// <summary>Held by an enemy carrier.</summary>
+    Carried = 1,
+    /// <summary>Dropped on the ground after the carrier died (awaiting return or re-pickup).</summary>
+    Dropped = 2,
+    /// <summary>In flight toward a teammate (QC FLAG_PASSING): a thrown pass that has not yet been received.</summary>
+    Passing = 3,
+}
+
+/// <summary>QC the drop variants passed to ctf_Handle_Throw (sv_ctf.qh DROP_NORMAL..DROP_RESET).</summary>
+public enum FlagDropType
+{
+    /// <summary>QC DROP_NORMAL — the carrier died/disconnected; the flag tumbles where they fell.</summary>
+    Normal = 1,
+    /// <summary>QC DROP_THROW — the carrier deliberately threw the flag forward (g_ctf_throw).</summary>
+    Throw = 2,
+    /// <summary>QC DROP_PASS — the carrier passed the flag toward a teammate (g_ctf_pass).</summary>
+    Pass = 3,
+    /// <summary>QC DROP_RESET — the flag is being force-reset to base (no toss).</summary>
+    Reset = 4,
+}
+
+/// <summary>
+/// One CTF flag — the Godot-free essence of the QC flag edict (item_flag_team*, .ctf_status / .owner /
+/// .flagcarried). Tracks which team it belongs to, its current <see cref="FlagStatus"/>, the carrier while
+/// held, and — when a facade is wired — the world <see cref="Entity"/> that physically represents the flag
+/// (spawned by <see cref="Ctf.SpawnFlag"/>). The model/animation, CSQC networking, and waypoint sprites
+/// remain client concerns.
+/// </summary>
+public sealed class FlagState
+{
+    /// <summary>The team whose base this flag lives at (a <see cref="Teams"/> color code).</summary>
+    public readonly int HomeTeam;
+
+    public FlagStatus Status = FlagStatus.AtBase;
+
+    /// <summary>The enemy player carrying this flag (QC flag.owner), or null when not carried.</summary>
+    public Player? Carrier;
+
+    /// <summary>The world entity representing this flag (QC the item_flag_team* edict), or null (headless).</summary>
+    public Entity? Entity;
+
+    /// <summary>Home base position the flag returns to (QC ctf_spawnorigin / dropped_origin).</summary>
+    public Vector3 HomeOrigin;
+
+    /// <summary>The player who last dropped this flag (QC ctf_dropper), gating quick re-pickup.</summary>
+    public Player? Dropper;
+
+    /// <summary>Sim time the flag was last picked up (QC ctf_pickuptime) — for capture-time records.</summary>
+    public float PickupTime;
+
+    /// <summary>Where the flag was dropped (QC drop origin), valid while <see cref="FlagStatus.Dropped"/>.</summary>
+    public Vector3 DropOrigin;
+
+    /// <summary>Sim time the flag was dropped (QC ctf_droptime) — drives the auto-return timer.</summary>
+    public float DropTime;
+
+    /// <summary>QC flag.pass_target: the teammate a FLAG_PASSING flag is flying toward, or null.</summary>
+    public Player? PassTarget;
+
+    /// <summary>QC flag.pass_sender: the player who initiated the in-flight pass (credited if it succeeds).</summary>
+    public Player? PassSender;
+
+    /// <summary>QC flag.pass_distance: the planar distance from the passer to the target when the pass began.</summary>
+    public float PassDistance;
+
+    public FlagState(int homeTeam) => HomeTeam = homeTeam;
+
+    /// <summary>Reset to resting at base (QC ctf_RespawnFlag): clear carrier + drop + pass bookkeeping.</summary>
+    public void ResetToBase()
+    {
+        Status = FlagStatus.AtBase;
+        Carrier = null;
+        Dropper = null;
+        DropOrigin = Vector3.Zero;
+        DropTime = 0f;
+        PassTarget = null;
+        PassSender = null;
+        PassDistance = 0f;
+    }
+}

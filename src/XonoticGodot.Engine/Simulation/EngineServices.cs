@@ -1,0 +1,597 @@
+using System.Numerics;
+using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Services;
+using XonoticGodot.Engine.Collision;
+
+namespace XonoticGodot.Engine.Simulation;
+
+/// <summary>
+/// Concrete <see cref="IEngineServices"/> — the C# reimplementation of the QuakeC builtins facade
+/// (planning/specs/engine-services-facade.md). Aggregates the entity table, the collision/trace
+/// service, the sim clock, and the cvar/sound/model services. A host wires it up once at startup:
+/// <code>Api.Services = engineServices;</code>
+/// </summary>
+public sealed class EngineServices : IEngineServices
+{
+    public EntityService EntityTable { get; }
+    public TraceService TraceImpl { get; }
+    public CvarService CvarsImpl { get; }
+    public SoundService SoundImpl { get; }
+    public ModelService ModelsImpl { get; }
+    public GameClock ClockImpl { get; }
+    public SurfaceService SurfacesImpl { get; }
+
+    public ITraceService Trace => TraceImpl;
+    public IEntityService Entities => EntityTable;
+    public ICvarService Cvars => CvarsImpl;
+    public ISoundService Sound => SoundImpl;
+    public IModelService Models => ModelsImpl;
+    public IGameClock Clock => ClockImpl;
+    public ISurfaceService Surfaces => SurfacesImpl;
+
+    /// <summary>
+    /// The map's compiled PVS, backing <c>checkpvs</c> (<see cref="ITraceService.CheckPvs"/>). The host that
+    /// loads the BSP sets <c>new BspPvs(bsp)</c> here; null leaves every PVS query conservatively visible.
+    /// </summary>
+    public XonoticGodot.Formats.Bsp.BspPvs? Pvs { get => TraceImpl.Pvs; set => TraceImpl.Pvs = value; }
+
+    /// <param name="world">The collision world this facade traces against.</param>
+    /// <param name="sharedCvars">
+    /// An optional process-wide cvar store to reuse instead of a fresh one. The menu front-end creates the
+    /// store once at boot (stock config + the user's saved prefs), then hands it to each match so a setting
+    /// changed in the menu is live in-game and survives map changes. Null → a private store (tests, headless).
+    /// </param>
+    public EngineServices(CollisionWorld world, CvarService? sharedCvars = null)
+    {
+        EntityTable = new EntityService();
+        TraceImpl = new TraceService(world, EntityTable);
+        CvarsImpl = sharedCvars ?? new CvarService();
+        SoundImpl = new SoundService();
+        ModelsImpl = new ModelService();
+        ClockImpl = new GameClock();
+        SurfacesImpl = new SurfaceService(ModelsImpl);
+        EntityTable.Models = ModelsImpl; // setmodel resolves index + brush bounds through the model catalog
+    }
+}
+
+/// <summary>
+/// The entity table — spawn/remove/find plus the spatial builtins (setorigin/setsize/setmodel) that
+/// relink the entity's bounds. Successor to the QC entity-management builtins (spawn, remove, find,
+/// findradius, setorigin, setsize, setmodel). Also serves the trace service its solid-entity list
+/// (<see cref="TraceService.IEntityProvider"/>) and the physics context its relink hook.
+/// </summary>
+public sealed class EntityService : IEntityService, TraceService.IEntityProvider
+{
+    private readonly List<Entity> _all = new();          // dense, indexed by Entity.Index
+    private readonly List<Entity> _solid = new();        // cache of non-freed solid entities for traces
+    private readonly Queue<int> _freeSlots = new();
+    private bool _solidDirty = true;
+
+    public IReadOnlyList<Entity> All => _all;
+
+    /// <summary>
+    /// The model catalog, used by <see cref="SetModel"/> to resolve a model name to its index and (for
+    /// inline <c>*N</c> brush models) its bounds. Wired by <see cref="EngineServices"/> at construction.
+    /// </summary>
+    public ModelService? Models { get; set; }
+
+    /// <summary>
+    /// DP's PRVM_EDICT_MARK_SETORIGIN_CAUGHT counter: bumped on every <see cref="SetOrigin"/>. SV_Impact /
+    /// SV_PushEntity sample it across a touch call to detect a setorigin-driven teleport and abort the move.
+    /// </summary>
+    public int SetOriginEpoch { get; private set; }
+
+    public Entity Spawn()
+    {
+        Entity e;
+        if (_freeSlots.Count > 0)
+        {
+            int idx = _freeSlots.Dequeue();
+            e = new Entity { Index = idx };
+            _all[idx] = e;
+        }
+        else
+        {
+            e = new Entity { Index = _all.Count };
+            _all.Add(e);
+        }
+        _solidDirty = true;
+        return e;
+    }
+
+    public void Remove(Entity e)
+    {
+        if (e.IsFreed) return;
+        e.IsFreed = true;
+        e.Solid = Solid.Not;
+        e.Think = null;
+        e.Touch = null;
+        e.NextThink = 0f;
+        if (e.Index >= 0 && e.Index < _all.Count)
+            _freeSlots.Enqueue(e.Index);
+        _solidDirty = true;
+    }
+
+    // --- spatial builtins (relink bounds; DP SV_LinkEdict recomputes absmin/absmax) ---
+
+    public void SetOrigin(Entity e, Vector3 origin)
+    {
+        e.Origin = origin;
+        e.OldOrigin = origin;
+        // DP marks the edict so SV_Impact/SV_PushEntity can detect a teleport that happens inside a touch.
+        SetOriginEpoch++;
+        LinkEdict(e);
+    }
+
+    public void SetSize(Entity e, Vector3 mins, Vector3 maxs)
+    {
+        e.Mins = mins;
+        e.Maxs = maxs;
+        e.Size = maxs - mins;
+        LinkEdict(e);
+    }
+
+    /// <summary>
+    /// SV_SetModel (sv_main.c) + SV_GetModelByIndex: record the model name, resolve its precache index, and
+    /// — for an inline brush model (a name beginning with <c>*</c>, e.g. <c>"*3"</c>) — copy the model's
+    /// mins/maxs onto the entity (DP <c>SetMinMaxSize(ent, mod->normalmins, mod->normalmaxs)</c>) and stash
+    /// the brush set so a brush-aware trace can clip against it. Non-brush (alias/sprite) models just set
+    /// the name + index; their hull stays whatever <see cref="SetSize"/> gave them.
+    /// </summary>
+    public void SetModel(Entity e, string model)
+    {
+        e.Model = model;
+        e.ModelIndex = Models?.IndexOf(model) ?? 0;
+
+        if (Models is not null && Models.TryGetModel(model, out ModelService.ModelDef def))
+        {
+            if (def.IsBrushModel)
+            {
+                // inline brush model: its bounds become the entity's hull (like a func_door/func_plat).
+                e.Mins = def.Mins;
+                e.Maxs = def.Maxs;
+                e.Size = def.Maxs - def.Mins;
+            }
+        }
+        LinkEdict(e);
+    }
+
+    /// <summary>
+    /// SV_LinkEdict (sv_phys.c:804): recompute AbsMin/AbsMax from origin+mins/maxs and mark the solid
+    /// cache dirty so the broadphase candidate list is rebuilt. AbsMin/AbsMax are kept exact for traces;
+    /// the trigger touch test (<see cref="PhysicsContext.TouchAreaGrid"/>) applies DP's 1-unit areagrid
+    /// expansion itself. The static-brush broadphase grid is the CollisionWorld's; the entity broadphase
+    /// is the flat solid list (correct, and adequate at typical entity counts — a uniform-grid entity
+    /// index would only change performance, not behavior).
+    /// </summary>
+    public void LinkEdict(Entity e)
+    {
+        if (e.IsFreed) return;
+        e.AbsMin = e.Origin + e.Mins;
+        e.AbsMax = e.Origin + e.Maxs;
+        _solidDirty = true;
+    }
+
+    public IEnumerable<Entity> FindByClass(string className)
+    {
+        for (int i = 0; i < _all.Count; i++)
+        {
+            var e = _all[i];
+            if (!e.IsFreed && e.ClassName == className)
+                yield return e;
+        }
+    }
+
+    public IEnumerable<Entity> FindInRadius(Vector3 origin, float radius)
+    {
+        float r2 = radius * radius;
+        for (int i = 0; i < _all.Count; i++)
+        {
+            var e = _all[i];
+            if (e.IsFreed) continue;
+            // DP findradius measures from the entity's box center (origin + (mins+maxs)/2).
+            Vector3 center = e.Origin + (e.Mins + e.Maxs) * 0.5f;
+            if ((center - origin).LengthSquared() <= r2)
+                yield return e;
+        }
+    }
+
+    // --- TraceService.IEntityProvider ---
+
+    public IReadOnlyList<Entity> SolidEntities
+    {
+        get
+        {
+            if (_solidDirty)
+            {
+                _solid.Clear();
+                for (int i = 0; i < _all.Count; i++)
+                {
+                    var e = _all[i];
+                    if (!e.IsFreed && e.Solid >= Solid.Trigger)
+                        _solid.Add(e);
+                }
+                _solidDirty = false;
+            }
+            return _solid;
+        }
+    }
+
+    /// <summary>Force the solid cache to rebuild (call when an entity's Solid changes outside the builtins).</summary>
+    public void InvalidateSolidCache() => _solidDirty = true;
+
+    /// <summary>
+    /// <see cref="TraceService.IEntityProvider.TryGetEntityBrushModel"/>: resolve a SOLID_BSP entity's
+    /// model-local clip brushes and its local→world transform. The brushes come from the model catalog
+    /// (<see cref="ModelService.ModelDef.LocalClipBrushes"/> — loaded BSP brushes, or the AABB box fallback);
+    /// the transform is <c>Matrix4x4_CreateFromQuakeEntity(origin, angles, scale 1)</c>.
+    /// </summary>
+    public bool TryGetEntityBrushModel(Entity e, out IReadOnlyList<Collision.Brush> localBrushes, out Collision.EntityMatrix toWorld)
+    {
+        localBrushes = System.Array.Empty<Collision.Brush>();
+        toWorld = default;
+
+        if (Models is null || string.IsNullOrEmpty(e.Model))
+            return false;
+        if (!Models.TryGetModel(e.Model, out ModelService.ModelDef def) || !def.IsBrushModel)
+            return false;
+
+        IReadOnlyList<Collision.Brush> brushes = def.LocalClipBrushes();
+        if (brushes.Count == 0)
+            return false;
+
+        localBrushes = brushes;
+        toWorld = Collision.EntityMatrix.FromQuakeEntity(e.Origin, e.Angles);
+        return true;
+    }
+}
+
+/// <summary>The simulation clock (QC time/frametime globals). Driven by <see cref="SimulationLoop"/>.</summary>
+public sealed class GameClock : IGameClock
+{
+    public float Time { get; internal set; }
+    public float FrameTime { get; internal set; }
+}
+
+/// <summary>
+/// Dictionary-backed cvar store (QC cvar/cvar_set/registercvar). Honors Xonotic cvar names.
+///
+/// Beyond the bare <see cref="ICvarService"/> get/set/register, this carries the few extra capabilities the
+/// menu front-end needs from the engine cvar store (the same ones DP's real cvar store exposes): a
+/// <see cref="Changed"/> notification so several menu widgets bound to one cvar — and the
+/// enable-on-dependency logic (<c>setDependent</c>) — stay in sync; per-cvar <see cref="GetDefault"/> /
+/// <see cref="ResetToDefault"/> tracking for the reset dialogs; enumeration (<see cref="Names"/>) for the
+/// cvar list; and an <see cref="MarkArchived"/>/<see cref="ArchivedNames"/> set so the menu can persist the
+/// user's preferences to <c>user://config.cfg</c> (DP's <c>seta</c> archive flag). All additive and inert for
+/// the headless server, which only ever uses get/set/register.
+/// </summary>
+public sealed class CvarService : ICvarService
+{
+    private sealed class Var
+    {
+        public string Value = "";
+        public float FloatValue;
+        public CvarFlags Flags;
+        public string Default = "";
+        public bool HasDefault;
+        public bool Archived;
+    }
+
+    private readonly Dictionary<string, Var> _vars = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Raised after a cvar's value actually changes (the name is the argument). Lets menu widgets re-read a
+    /// cvar another widget/command just wrote, and drives <c>setDependent</c> enable/disable reactivity. Fired
+    /// only on a real value change, so the bulk config load (no subscribers yet) costs nothing.
+    /// </summary>
+    public event Action<string>? Changed;
+
+    public float GetFloat(string name) => _vars.TryGetValue(name, out var v) ? v.FloatValue : 0f;
+    public string GetString(string name) => _vars.TryGetValue(name, out var v) ? v.Value : "";
+
+    public void Set(string name, string value)
+    {
+        if (!_vars.TryGetValue(name, out var v))
+        {
+            v = new Var { Default = value, HasDefault = true }; // first value seen is the baseline default
+            _vars[name] = v;
+        }
+        if ((v.Flags & CvarFlags.ReadOnly) != 0)
+            return;
+        bool changed = !string.Equals(v.Value, value, StringComparison.Ordinal);
+        v.Value = value;
+        v.FloatValue = ParseFloat(value);
+        if (changed)
+            Changed?.Invoke(name);
+    }
+
+    public void Register(string name, string defaultValue, CvarFlags flags = CvarFlags.None)
+    {
+        if (_vars.TryGetValue(name, out var existing))
+        {
+            // registration is idempotent; keep the existing value but fold in the registered default + flags
+            // (a cvar first seen via `set` in a cfg keeps that cfg value as its default until a real Register).
+            existing.Flags |= flags;
+            if (!existing.HasDefault) { existing.Default = defaultValue; existing.HasDefault = true; }
+            return;
+        }
+        _vars[name] = new Var
+        {
+            Value = defaultValue,
+            FloatValue = ParseFloat(defaultValue),
+            Flags = flags,
+            Default = defaultValue,
+            HasDefault = true,
+        };
+    }
+
+    // ---- menu-facing extras (the DP cvar-store features the front-end binds to) ---------------------------
+
+    /// <summary>Whether a cvar exists in the store (set or registered).</summary>
+    public bool Has(string name) => _vars.ContainsKey(name);
+
+    /// <summary>Every known cvar name (for the cvar-list dialog / search).</summary>
+    public IReadOnlyCollection<string> Names => _vars.Keys;
+
+    /// <summary>The cvar's baseline default (registered default, or the first value a cfg set). "" if unknown.</summary>
+    public string GetDefault(string name) => _vars.TryGetValue(name, out var v) ? v.Default : "";
+
+    /// <summary>True when the cvar's current value differs from its default (the reset dialogs flag these).</summary>
+    public bool IsModified(string name)
+        => _vars.TryGetValue(name, out var v) && v.HasDefault && !string.Equals(v.Value, v.Default, StringComparison.Ordinal);
+
+    /// <summary>Restore a cvar to its default value (the reset-to-default affordance).</summary>
+    public void ResetToDefault(string name)
+    {
+        if (_vars.TryGetValue(name, out var v) && v.HasDefault)
+            Set(name, v.Default);
+    }
+
+    /// <summary>Mark a cvar as archived (DP <c>seta</c>) so the menu persists it to the user config.</summary>
+    public void MarkArchived(string name)
+    {
+        if (_vars.TryGetValue(name, out var v))
+            v.Archived = true;
+    }
+
+    /// <summary>True if the cvar is archived (declared <c>seta</c>/<see cref="CvarFlags.Save"/>, or menu-touched).</summary>
+    public bool IsArchived(string name)
+        => _vars.TryGetValue(name, out var v) && (v.Archived || (v.Flags & CvarFlags.Save) != 0);
+
+    /// <summary>Every archived cvar name (what the menu writes to <c>user://config.cfg</c> as <c>seta</c>).</summary>
+    public IEnumerable<string> ArchivedNames
+    {
+        get
+        {
+            foreach (var kv in _vars)
+                if (kv.Value.Archived || (kv.Value.Flags & CvarFlags.Save) != 0)
+                    yield return kv.Key;
+        }
+    }
+
+    private static float ParseFloat(string s)
+        => float.TryParse(s, System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out float f) ? f : 0f;
+}
+
+/// <summary>
+/// A single server→client sound broadcast (DP SV_StartSound message): which entity emitted it, on what
+/// channel, the precached sample, and its volume/attenuation. The headless sim has no audio device, so a
+/// sound is an EVENT the host (a listen server's client, or the net layer) renders/transmits.
+///
+/// <see cref="Loop"/> marks a persistent looping sound keyed by <c>(Source, Channel)</c> (QC <c>loopsound</c>);
+/// <see cref="Stop"/> marks the SND_Null channel-stop that ends one. A normal one-shot has both false. The pair
+/// is mutually exclusive in practice (a stop carries an empty <see cref="Sample"/>).
+/// </summary>
+public readonly record struct SoundEvent(
+    Entity Source, SoundChannel Channel, string Sample, float Volume, float Attenuation,
+    System.Numerics.Vector3 Origin, bool Loop = false, bool Stop = false, float Pitch = 1f);
+
+/// <summary>
+/// Server-side sound service — the C# successor to QC <c>sound()</c> / DP <c>SV_StartSound</c>. On the
+/// headless sim a sound has no audible effect, so <see cref="Play"/>/<see cref="Stop"/> broadcast a
+/// <see cref="SoundEvent"/> on <see cref="Broadcast"/>; the host (listen-server client, net replication, or a
+/// test) subscribes to render or transmit it. This replaces the former no-op with the real server→client
+/// emission path, including DP's entity+channel loop/stop model (a loop is replaced by a later loop on the
+/// same entity+channel, and ended by <see cref="Stop"/>).
+/// </summary>
+public sealed class SoundService : ISoundService
+{
+    /// <summary>Fired for every <see cref="Play"/>/<see cref="Stop"/> — the server→client sound emission (SV_StartSound).</summary>
+    public event Action<SoundEvent>? Broadcast;
+
+    public void Play(Entity e, SoundChannel channel, string sample, float volume = 1f, float attenuation = 1f, bool loop = false, float pitch = 1f)
+    {
+        // SV_StartSound emits from the entity's box center (DP uses ent.origin + 0.5*(mins+maxs)).
+        Vector3 origin = e.Origin + (e.Mins + e.Maxs) * 0.5f;
+        Broadcast?.Invoke(new SoundEvent(e, channel, sample, volume, attenuation, origin, Loop: loop, Pitch: pitch));
+    }
+
+    public void Stop(Entity e, SoundChannel channel)
+    {
+        // SND_Null on a channel: end whatever sound is playing on (e, channel). Carries the entity origin so the
+        // wire can still key the stop by the emitter's net id; the sample is empty (nothing new to play).
+        Vector3 origin = e.Origin + (e.Mins + e.Maxs) * 0.5f;
+        Broadcast?.Invoke(new SoundEvent(e, channel, "", 0f, 0f, origin, Stop: true));
+    }
+}
+
+/// <summary>
+/// Model / tag service — the C# successor to the QC model builtins (<c>precache_model</c>,
+/// <c>setmodel</c>'s index lookup, <c>gettaginfo</c>, <c>setattachment</c>) and DP's model catalog
+/// (SV_GetModelByIndex, Mod_Alias_GetTagMatrix). Models are registered by the map/asset loader; each
+/// carries its bounds (for <see cref="EntityService.SetModel"/>) and an optional set of named tags
+/// (local transforms) that <see cref="TryGetTag"/> composes with the entity transform to give a tag's
+/// world-space basis — the real Mod_Alias_GetTagMatrix path, not the identity fallback.
+/// </summary>
+public sealed class ModelService : IModelService
+{
+    /// <summary>A model tag: a named local transform (origin + Euler angles) on the model's skeleton.</summary>
+    public readonly record struct ModelTag(string Name, Vector3 Origin, Vector3 Angles);
+
+    /// <summary>A registered model: its precache index, bounds, brush-model flag, and named tags.</summary>
+    public sealed class ModelDef
+    {
+        public string Name = "";
+        public int Index;
+        public Vector3 Mins;
+        public Vector3 Maxs;
+        public bool IsBrushModel;                       // inline "*N" map brush model (bounds = the brush's)
+        public readonly Dictionary<string, ModelTag> Tags = new(StringComparer.Ordinal);
+
+        /// <summary>
+        /// The model's collision brushes in MODEL-LOCAL space (origin-relative), supplied by the BSP loader
+        /// for inline <c>*N</c> brush models. When a brush-aware trace clips against a SOLID_BSP entity it
+        /// transforms these by the entity's matrix (Collision_ClipToGenericEntity). Null until the loader runs:
+        /// in that case the trace falls back to the model AABB (DP's <c>bodymins/bodymaxs</c> box, the same
+        /// degradation DP applies when a SOLID_BSP model has no <c>TraceBrush</c> function).
+        /// </summary>
+        public Collision.Brush[]? CollisionBrushes;
+
+        /// <summary>
+        /// The model's render surfaces in MODEL-LOCAL space, supplied by the BSP/model loader for the
+        /// <c>getsurface*</c> builtins (<see cref="SurfaceService"/>). Null until a loader attaches geometry
+        /// (e.g. <c>BspSurfaceBuilder</c> for inline <c>*N</c> models); the surface queries then return empty.
+        /// </summary>
+        public IReadOnlyList<ModelSurface>? Surfaces;
+
+        // Cached local-space AABB box-brush fallback (one-element array) used when CollisionBrushes is null.
+        // Built lazily and keyed on the current Mins/Maxs so a re-sized model rebuilds it.
+        private Collision.Brush[]? _boxBrush;
+        private Vector3 _boxMins, _boxMaxs;
+
+        /// <summary>
+        /// The local-space clip geometry for a brush-model trace: the loaded <see cref="CollisionBrushes"/>
+        /// when present, otherwise a single AABB box brush spanning [Mins,Maxs] (the SOLID_BSP fallback). The
+        /// box carries SUPERCONTENTS_SOLID so it blocks like a real brush. Returns an empty array for a
+        /// non-brush / zero-size model.
+        /// </summary>
+        public IReadOnlyList<Collision.Brush> LocalClipBrushes()
+        {
+            if (CollisionBrushes is { Length: > 0 })
+                return CollisionBrushes;
+            if (Maxs.X <= Mins.X && Maxs.Y <= Mins.Y && Maxs.Z <= Mins.Z)
+                return System.Array.Empty<Collision.Brush>();
+            if (_boxBrush is null || _boxMins != Mins || _boxMaxs != Maxs)
+            {
+                _boxBrush = new[] { Collision.Brush.FromBox(Mins, Maxs, Collision.SuperContents.Solid) };
+                _boxMins = Mins; _boxMaxs = Maxs;
+            }
+            return _boxBrush;
+        }
+    }
+
+    private readonly List<ModelDef> _models = new();    // dense; index 0 reserved for "no model" (DP)
+    private readonly Dictionary<string, ModelDef> _byName = new(StringComparer.Ordinal);
+
+    // per-entity model-tag attachment (DP .tag_entity/.tag_index), kept off Entity (engine-side state).
+    private readonly Dictionary<Entity, (Entity parent, string tag)> _attachments = new();
+
+    public ModelService()
+    {
+        // index 0 == "" == no model (DP reserves modelindex 0).
+        var none = new ModelDef { Name = "", Index = 0 };
+        _models.Add(none);
+        _byName[""] = none;
+    }
+
+    /// <summary>
+    /// precache_model: register a model (idempotent) and return its index. <paramref name="mins"/>/
+    /// <paramref name="maxs"/> are the model bounds (used by setmodel for inline brush models);
+    /// <paramref name="isBrushModel"/> marks a <c>*N</c> inline map brush model.
+    /// </summary>
+    public int Register(string name, Vector3 mins = default, Vector3 maxs = default, bool isBrushModel = false)
+    {
+        if (_byName.TryGetValue(name, out var existing))
+            return existing.Index;
+        var def = new ModelDef
+        {
+            Name = name,
+            Index = _models.Count,
+            Mins = mins,
+            Maxs = maxs,
+            IsBrushModel = isBrushModel || (name.Length > 0 && name[0] == '*'),
+        };
+        _models.Add(def);
+        _byName[name] = def;
+        return def.Index;
+    }
+
+    /// <summary>Register a named tag (local transform) on a model (DP Mod_Alias tag table).</summary>
+    public void RegisterTag(string modelName, string tagName, Vector3 localOrigin, Vector3 localAngles)
+    {
+        if (!_byName.TryGetValue(modelName, out var def))
+        {
+            Register(modelName);
+            def = _byName[modelName];
+        }
+        def.Tags[tagName] = new ModelTag(tagName, localOrigin, localAngles);
+    }
+
+    /// <summary>SV_GetModelIndex: the precache index of a model name (0 if unregistered / empty).</summary>
+    public int IndexOf(string name) => _byName.TryGetValue(name, out var d) ? d.Index : 0;
+
+    /// <summary>Look up a registered model by name.</summary>
+    public bool TryGetModel(string name, out ModelDef def)
+    {
+        if (_byName.TryGetValue(name, out var d)) { def = d; return true; }
+        def = null!;
+        return false;
+    }
+
+    /// <summary>
+    /// gettaginfo (Mod_Alias_GetTagMatrix): resolve <paramref name="tagName"/>'s world transform for
+    /// <paramref name="e"/>. Composes the entity transform (origin + angles) with the tag's local
+    /// transform: world = entity · tag. Returns true when the tag was actually found on the entity's model;
+    /// otherwise falls back to the entity's own basis at its origin (and returns false).
+    /// </summary>
+    public bool TryGetTag(Entity e, string tagName, out Vector3 origin, out Vector3 forward, out Vector3 right, out Vector3 up)
+    {
+        XonoticGodot.Common.Math.QMath.AngleVectors(e.Angles, out Vector3 ef, out Vector3 er, out Vector3 eu);
+
+        if (_byName.TryGetValue(e.Model, out var def) && def.Tags.TryGetValue(tagName, out var tag))
+        {
+            // local tag basis
+            XonoticGodot.Common.Math.QMath.AngleVectors(tag.Angles, out Vector3 tf, out Vector3 tr, out Vector3 tu);
+
+            // world tag origin = entity origin + entity-basis * local tag origin
+            origin = e.Origin
+                + ef * tag.Origin.X
+                + er * tag.Origin.Y
+                + eu * tag.Origin.Z;
+
+            // world tag basis = entity basis composed with the tag's local basis.
+            // DP composes the rotation matrices; here we rotate each local axis into world space.
+            forward = ef * tf.X + er * tf.Y + eu * tf.Z;
+            right   = ef * tr.X + er * tr.Y + eu * tr.Z;
+            up      = ef * tu.X + er * tu.Y + eu * tu.Z;
+            return true;
+        }
+
+        // no tag data: identity at the entity's origin (DP behavior when the tag is missing).
+        origin = e.Origin;
+        forward = ef; right = er; up = eu;
+        return false;
+    }
+
+    /// <summary>
+    /// setattachment: attach <paramref name="e"/> to <paramref name="parent"/>'s tag. Records the parent
+    /// (engine <see cref="Entity.Aiment"/>, consumed by the FOLLOW physics + the renderer) and the tag name
+    /// so the renderer / a server-side follow can place the entity on the tag each frame.
+    /// </summary>
+    public void SetAttachment(Entity e, Entity parent, string tagName)
+    {
+        e.Aiment = parent;
+        if (string.IsNullOrEmpty(tagName))
+            _attachments.Remove(e);
+        else
+            _attachments[e] = (parent, tagName);
+    }
+
+    /// <summary>The recorded model-tag attachment for an entity (parent + tag), if any.</summary>
+    public bool TryGetAttachment(Entity e, out Entity parent, out string tag)
+    {
+        if (_attachments.TryGetValue(e, out var a)) { parent = a.parent; tag = a.tag; return true; }
+        parent = null!; tag = ""; return false;
+    }
+}

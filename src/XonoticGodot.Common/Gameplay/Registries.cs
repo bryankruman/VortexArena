@@ -1,0 +1,154 @@
+using System.Reflection;
+using XonoticGodot.Common.Framework;
+
+namespace XonoticGodot.Common.Gameplay;
+
+// Per-category catalog accessors (the C# successors to QC's FOREACH(Weapons, …) targets).
+
+public static class Weapons
+{
+    public static IReadOnlyList<Weapon> All => Registry<Weapon>.All;
+    public static int Count => Registry<Weapon>.Count;
+    public static Weapon? ByName(string name) => Registry<Weapon>.ByName(name);
+    public static Weapon ById(int id) => Registry<Weapon>.ById(id); // RegistryId == index; caller guards 0 ≤ id < Count
+    public static uint Hash => Registry<Weapon>.ContentHash();
+
+    /// <summary>
+    /// Re-seed every weapon's balance block from the live <c>g_balance_*</c> cvars (QC re-reading WEP_CVAR
+    /// autocvars). Call after the config interpreter loads a balance set so weapons pick up the real values
+    /// (and again if the balance changes at runtime, e.g. a ruleset vote that exec's a different bal-wep cfg).
+    /// </summary>
+    public static void ConfigureAll()
+    {
+        foreach (Weapon w in Registry<Weapon>.All)
+            w.Configure();
+    }
+
+    // ---- central NetName→ammo-type / superweapon registry (QC the weapon ATTRIBs) ----
+
+    /// <summary>QC <c>w.ammo_type</c>: the resource a weapon consumes (RES_NONE for ammo-less weapons / unknown name).</summary>
+    public static ResourceType AmmoTypeOf(string netName) => ByName(netName)?.AmmoType ?? ResourceType.None;
+
+    /// <summary>QC <c>w.m_wepset &amp; WEPSET_SUPERWEAPONS</c>: is this weapon a timed superweapon?</summary>
+    public static bool IsSuperWeapon(string netName) => ByName(netName)?.IsSuperWeapon ?? false;
+
+    /// <summary>The superweapon set (QC WEPSET_SUPERWEAPONS) — every weapon with WEP_FLAG_SUPERWEAPON.</summary>
+    public static IEnumerable<Weapon> Superweapons
+    {
+        get { foreach (var w in Registry<Weapon>.All) if (w.IsSuperWeapon) yield return w; }
+    }
+
+    /// <summary>QC <c>STAT(WEAPONS) &amp; WEPSET_SUPERWEAPONS</c>: does this owned-weapon set contain any superweapon?</summary>
+    public static bool OwnsAnySuperWeapon(IEnumerable<string> ownedNetNames)
+    {
+        foreach (string n in ownedNetNames)
+            if (IsSuperWeapon(n)) return true;
+        return false;
+    }
+}
+
+public static class Items
+{
+    public static IReadOnlyList<Pickup> All => Registry<Pickup>.All;
+    public static int Count => Registry<Pickup>.Count;
+    public static Pickup? ByName(string name) => Registry<Pickup>.ByName(name);
+    public static uint Hash => Registry<Pickup>.ContentHash();
+}
+
+public static class Mutators
+{
+    public static IReadOnlyList<MutatorBase> All => Registry<MutatorBase>.All;
+    public static int Count => Registry<MutatorBase>.Count;
+    public static MutatorBase? ByName(string name) => Registry<MutatorBase>.ByName(name);
+    public static uint Hash => Registry<MutatorBase>.ContentHash();
+}
+
+public static class GameTypes
+{
+    public static IReadOnlyList<GameType> All => Registry<GameType>.All;
+    public static int Count => Registry<GameType>.Count;
+    public static GameType? ByName(string name) => Registry<GameType>.ByName(name);
+    public static uint Hash => Registry<GameType>.ContentHash();
+}
+
+/// <summary>
+/// Populates the registries. Today this is a reflection scan over loaded assemblies; the
+/// <c>XonoticGodot.SourceGen</c> generator will emit explicit registration to replace it at compile time
+/// (ADR-0003). Bootstrap is idempotent and prefers a generated <c>RegisterAll</c> if one is present.
+/// </summary>
+public static class GameRegistries
+{
+    private static bool _done;
+
+    public static void Bootstrap(params Assembly[] extraAssemblies)
+    {
+        if (_done) return;
+        _done = true;
+
+        var assemblies = new HashSet<Assembly> { typeof(GameRegistries).Assembly };
+        foreach (var a in extraAssemblies) assemblies.Add(a);
+        foreach (var a in AppDomain.CurrentDomain.GetAssemblies()) assemblies.Add(a);
+
+        foreach (var asm in assemblies)
+        {
+            foreach (var t in SafeGetTypes(asm))
+            {
+                if (t is null || t.IsAbstract) continue;
+                if (t.GetCustomAttribute<GameRegistryAttribute>() is null) continue;
+
+                object? inst;
+                try { inst = Activator.CreateInstance(t); }
+                catch { continue; }
+
+                switch (inst)
+                {
+                    case Weapon w: Registry<Weapon>.Register(w); break;
+                    case Pickup p: Registry<Pickup>.Register(p); break;
+                    case MutatorBase m: Registry<MutatorBase>.Register(m); break;
+                    case GameType g: Registry<GameType>.Register(g); break;
+                    case Monster mo: Registry<Monster>.Register(mo); break;
+                    case Turret tu: Registry<Turret>.Register(tu); break;
+                    case Vehicle ve: Registry<Vehicle>.Register(ve); break;
+                }
+            }
+        }
+
+        // deterministic ordering for CL/SV agreement
+        Registry<Weapon>.Sort();
+        Registry<Pickup>.Sort();
+        Registry<MutatorBase>.Sort();
+        Registry<GameType>.Sort();
+        Registry<Monster>.Sort();
+        Registry<Turret>.Sort();
+        Registry<Vehicle>.Sort();
+
+        // Seed each weapon's balance block from its g_balance_* cvars (QC W_PROPS at progs init). At this point
+        // no .cfg is loaded yet, so this stamps the stock fallbacks; Weapons.ConfigureAll() re-runs it after the
+        // config interpreter loads the real balance table. Without this, every weapon's balance struct stays at
+        // its zero default and weapons fire with no damage/speed.
+        Weapons.ConfigureAll();
+    }
+
+    /// <summary>Reset (test support).</summary>
+    public static void Reset()
+    {
+        _done = false;
+        // Unsubscribe any active mutator hooks before dropping the instances, so the global hook chains don't
+        // retain handlers bound to about-to-be-discarded mutators (QC: a progs reload tears down the chains too).
+        MutatorActivation.DeactivateAll();
+        Registry<Weapon>.Clear();
+        Registry<Pickup>.Clear();
+        Registry<MutatorBase>.Clear();
+        Registry<GameType>.Clear();
+        Registry<Monster>.Clear();
+        Registry<Turret>.Clear();
+        Registry<Vehicle>.Clear();
+    }
+
+    private static IEnumerable<Type?> SafeGetTypes(Assembly a)
+    {
+        try { return a.GetTypes(); }
+        catch (ReflectionTypeLoadException e) { return e.Types; }
+        catch { return Array.Empty<Type?>(); }
+    }
+}

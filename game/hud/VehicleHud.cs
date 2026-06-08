@@ -1,0 +1,287 @@
+using System.Collections.Generic;
+using Godot;
+
+namespace XonoticGodot.Game.Hud;
+
+/// <summary>
+/// The in-vehicle HUD overlay — the port of <c>Vehicles_drawHUD</c> / <c>Vehicles_drawCrosshair</c> /
+/// <c>AuxiliaryXhair_Draw2D</c> and the <c>TE_CSQC_VEHICLESETUP</c> dispatch
+/// (Base/.../qcsrc/common/vehicles/cl_vehicles.qc). When the local player is driving a vehicle the engine
+/// hands CSQC the per-vehicle stat set (<c>VEHICLESTAT_*</c>: health / shield / energy / ammo1 / reload1 /
+/// ammo2 / reload2, each a 0..100 percent) and a HUD id selecting which vehicle's art to show; this panel
+/// mirrors those onto the bottom-center vehicle frame — the silhouette tinted by health, the weapon overlays
+/// tinted by ammo, the health/shield/ammo bars, and the health/shield icons that blink + alarm when low.
+///
+/// It also draws the <b>auxiliary lock-on crosshairs</b> (<c>AuxiliaryXhair</c>): small images projected from
+/// 3D lock positions (the Racer rocket lock, the Bumblebee gunner targets), tinted by lock strength and faded
+/// out shortly after their last update — fed by <see cref="SetAuxiliaryXhair"/>.
+///
+/// <see cref="ConfigureForVehicle"/> is the <c>TE_CSQC_VEHICLESETUP</c> entry: it selects the vehicle art set
+/// (and shows the panel); <see cref="Exit"/> is the <c>hud_id == HUD_NORMAL</c> case that hides it. The actual
+/// first-person viewport override (<c>SVC_SETVIEWPORT</c>/<c>SETVIEWANGLES</c>) is a camera concern the host
+/// reads from <see cref="InVehicle"/>; the stat mirroring + crosshairs live here.
+/// </summary>
+public partial class VehicleHud : HudPanel
+{
+    /// <summary>True while the local player is in a vehicle (drives both this overlay and the host's camera).</summary>
+    public bool InVehicle { get; private set; }
+
+    /// <summary>The HUD skin whose vehicle art is preferred (default-skin is the fallback).</summary>
+    public string HudSkin { get; set; } = "luma";
+
+    // --- the mirrored VEHICLESTAT_* values, each in [0,1] (the QC 0.01 * STAT(...)) ---
+    public float Health { get; set; } = 1f;
+    public float Shield { get; set; }
+    public float Energy { get; set; }
+    public float Ammo1 { get; set; }
+    public float Reload1 { get; set; }
+    public float Ammo2 { get; set; }
+    public float Reload2 { get; set; }
+
+    /// <summary>Tint for the two ammo bars (QC colorAmmo1/2).</summary>
+    public Color Ammo1Color { get; set; } = new(0.8f, 0.8f, 0.3f);
+    public Color Ammo2Color { get; set; } = new(0.3f, 0.6f, 0.9f);
+
+    // Art base names selected by ConfigureForVehicle (the vehicle silhouette + weapon overlays).
+    private string _vehiclePic = "vehicle_racer";
+    private string? _weapon1Pic = "vehicle_racer_weapon1";
+    private string? _weapon2Pic;
+
+    private double _time;
+
+    public override bool IsDynamic => InVehicle || _aux.Count > 0;
+
+    // =====================================================================================
+    //  TE_CSQC_VEHICLESETUP dispatch
+    // =====================================================================================
+
+    /// <summary>
+    /// Select the vehicle art set and show the HUD (the <c>TE_CSQC_VEHICLESETUP</c> non-zero hud_id case).
+    /// Mirrors <c>info.vr_setup</c> picking <c>vehicle_&lt;name&gt;</c> + its weapon overlays.
+    /// </summary>
+    public void ConfigureForVehicle(VehicleHudKind kind)
+    {
+        (_vehiclePic, _weapon1Pic, _weapon2Pic) = kind switch
+        {
+            VehicleHudKind.Racer => ("vehicle_racer", "vehicle_racer_weapon1", "vehicle_racer_weapon2"),
+            VehicleHudKind.Raptor => ("vehicle_raptor", "vehicle_raptor_weapon1", "vehicle_raptor_weapon2"),
+            VehicleHudKind.Spiderbot => ("vehicle_spider", "vehicle_spider_weapon1", "vehicle_spider_weapon2"),
+            VehicleHudKind.Bumblebee => ("vehicle_bumble", "vehicle_bumble_weapon1", "vehicle_bumble_weapon2"),
+            VehicleHudKind.BumblebeeGun => ("vehicle_gunner", "vehicle_gunner_weapon1", null),
+            _ => ("vehicle_racer", "vehicle_racer_weapon1", null),
+        };
+        InVehicle = true;
+        Visible = true;
+        QueueRedraw();
+    }
+
+    /// <summary>The vehicle HUD layouts (QC HUD_* ids), selected by TE_CSQC_VEHICLESETUP.</summary>
+    public enum VehicleHudKind { Racer, Raptor, Spiderbot, Bumblebee, BumblebeeGun }
+
+    /// <summary>Exit the vehicle HUD (the <c>hud_id == HUD_NORMAL</c> case): hide it + clear aux crosshairs.</summary>
+    public void Exit()
+    {
+        InVehicle = false;
+        Visible = false;
+        _aux.Clear();
+        QueueRedraw();
+    }
+
+    // =====================================================================================
+    //  Auxiliary lock-on crosshairs (AuxiliaryXhair)
+    // =====================================================================================
+
+    private sealed class AuxXhair
+    {
+        public Vector3 World;     // 3D lock position (Godot space)
+        public Color Color = Colors.White;
+        public string Image = "";  // art base name (e.g. "gfx/vehicles/axh-target")
+        public double LastUpdate;  // for the fade-out (QC axh_fadetime)
+    }
+
+    private readonly Dictionary<int, AuxXhair> _aux = new();
+
+    /// <summary>How long after its last update an aux crosshair fades out (QC <c>axh_fadetime</c>, ~0.1s).</summary>
+    public float AuxFadeTime { get; set; } = 0.1f;
+
+    /// <summary>Crosshair size scale (QC <c>cl_vehicles_crosshair_size</c>).</summary>
+    public float AuxSize { get; set; } = 24f;
+
+    /// <summary>
+    /// Set/refresh an auxiliary lock-on crosshair (QC <c>UpdateAuxiliaryXhair</c> / the ENT_CLIENT_AUXILIARYXHAIR
+    /// update): a 2D marker projected from a 3D world position (Godot space), tinted by lock strength. Keyed by
+    /// slot id; re-set each frame the lock holds, then auto-fades when updates stop.
+    /// </summary>
+    public void SetAuxiliaryXhair(int slot, Vector3 worldGodot, Color color, string image = "gfx/vehicles/axh-ring")
+    {
+        if (!_aux.TryGetValue(slot, out AuxXhair? x))
+        {
+            x = new AuxXhair();
+            _aux[slot] = x;
+        }
+        x.World = worldGodot;
+        x.Color = color;
+        x.Image = image;
+        x.LastUpdate = _time;
+    }
+
+    /// <summary>
+    /// Set/refresh a lock-on aux crosshair colored by lock strength (QC racer <c>UpdateAuxiliaryXhair</c>):
+    /// the marker shifts red→yellow while the lock builds (0..1) and snaps to green once locked (≥1). The
+    /// host feeds the 3D target position + the server's lock-progress value.
+    /// </summary>
+    public void SetAuxiliaryXhairLock(int slot, Vector3 worldGodot, float lockStrength,
+        string image = "gfx/vehicles/axh-target")
+        => SetAuxiliaryXhair(slot, worldGodot, AuxLockColor(lockStrength), image);
+
+    /// <summary>Lock-strength → color (QC racer lock coloring): red building → yellow → green locked.</summary>
+    public static Color AuxLockColor(float lockStrength)
+    {
+        float s = Mathf.Clamp(lockStrength, 0f, 1f);
+        if (s >= 1f) return new Color(0.3f, 1f, 0.3f);              // locked = green
+        return new Color(1f, Mathf.Lerp(0.2f, 1f, s), 0.2f);       // building = red → yellow
+    }
+
+    /// <summary>Clear an aux crosshair slot (the lock released).</summary>
+    public void ClearAuxiliaryXhair(int slot) => _aux.Remove(slot);
+
+    // =====================================================================================
+    //  Draw
+    // =====================================================================================
+
+    public override void _Process(double delta)
+    {
+        _time += delta;
+        // Drop aux crosshairs that stopped updating (faded out).
+        if (_aux.Count > 0)
+        {
+            var stale = new List<int>();
+            foreach (var kv in _aux)
+                if (_time - kv.Value.LastUpdate > AuxFadeTime * 4)
+                    stale.Add(kv.Key);
+            foreach (int k in stale) _aux.Remove(k);
+        }
+    }
+
+    protected override void DrawPanel()
+    {
+        DrawAuxiliaryXhairs();
+
+        if (!InVehicle)
+            return;
+
+        float w = Size2.X, h = Size2.Y;
+        float blink = 0.55f + Mathf.Sin((float)_time * 7f) * 0.45f;
+
+        // Frame (gfx/hud/<skin>/vehicle_frame), or a translucent panel fallback.
+        Texture2D? frame = Skin("vehicle_frame");
+        if (frame is not null)
+            DrawTextureRect(frame, new Rect2(Vector2.Zero, Size2), tile: false, Colors.White);
+        else
+            DrawBackground();
+
+        // Vehicle silhouette, tinted by health (red flash when critical) — QC drawpic_skin(vehicle, health tint).
+        var modelRect = new Rect2(new Vector2(w / 3f, 0f), new Vector2(w / 3f, h));
+        Color healthTint = Health < 0.25f
+            ? new Color(1f, blink, blink)
+            : new Color(1f, 1f, 1f) * Health + new Color(1f, 0f, 0f) * (1f - Health);
+        DrawSkinPic(_vehiclePic, modelRect, healthTint);
+
+        // Weapon overlays, tinted by ammo.
+        if (_weapon1Pic is not null)
+            DrawSkinPic(_weapon1Pic, modelRect, AmmoTint(Ammo1));
+        if (_weapon2Pic is not null)
+            DrawSkinPic(_weapon2Pic, modelRect, AmmoTint(Ammo2));
+        // Shield overlay (fades in with shield strength).
+        DrawSkinPic("vehicle_shield", modelRect, new Color(1f, 1f, 1f, Shield));
+
+        // Bars: health (NW), shield (SW), ammo1 (NE), ammo2 (SE). QC clips the bar pic to the fraction.
+        float barW = w / 3f, barH = h * 0.5f;
+        float leftX = w * (32f / 768f), rightX = w * (480f / 768f);
+        DrawClippedBar("vehicle_bar_northwest", new Rect2(leftX, 0f, barW, barH), Health, fromRight: true,
+            new Color(0.8f, 0.2f, 0.2f));
+        DrawClippedBar("vehicle_bar_southwest", new Rect2(leftX, barH, barW, barH), Shield, fromRight: true,
+            new Color(0.3f, 0.6f, 0.9f));
+        DrawClippedBar("vehicle_bar_northeast", new Rect2(rightX, 0f, barW, barH), Ammo1 > 0f ? Ammo1 : Reload1,
+            fromRight: false, Ammo1Color);
+        DrawClippedBar("vehicle_bar_southeast", new Rect2(rightX, barH, barW, barH), Ammo2 > 0f ? Ammo2 : Reload2,
+            fromRight: false, Ammo2Color);
+
+        // Icons: health + shield, blinking when low (the QC alarm pulse).
+        var iconSize = new Vector2(w * (80f / 768f), h * (80f / 256f));
+        DrawSkinPic("vehicle_icon_health", new Rect2(new Vector2(w * (64f / 768f), h * (48f / 256f)), iconSize),
+            new Color(1f, 1f, 1f, Health < 0.25f ? blink : 1f));
+        DrawSkinPic("vehicle_icon_shield", new Rect2(new Vector2(w * (64f / 768f), h * 0.5f), iconSize),
+            new Color(1f, 1f, 1f, Shield < 0.25f ? blink : 1f));
+        DrawSkinPic("vehicle_icon_ammo1", new Rect2(new Vector2(w * (624f / 768f), h * (48f / 256f)), iconSize),
+            new Color(1f, 1f, 1f, Ammo1 > 0f ? 1f : 0.2f));
+        DrawSkinPic("vehicle_icon_ammo2", new Rect2(new Vector2(w * (624f / 768f), h * 0.5f), iconSize),
+            new Color(1f, 1f, 1f, Ammo2 > 0f ? 1f : 0.2f));
+    }
+
+    private static Color AmmoTint(float ammo) => new Color(1f, 1f, 1f) * ammo + new Color(1f, 0f, 0f) * (1f - ammo);
+
+    /// <summary>Draw a vehicle bar pic revealing <paramref name="fraction"/> of it (QC drawsetcliparea),
+    /// or a colored <see cref="HudPanel.DrawBar"/> when the art is missing.</summary>
+    private void DrawClippedBar(string pic, Rect2 area, float fraction, bool fromRight, Color fallback)
+    {
+        fraction = Mathf.Clamp(fraction, 0f, 1f);
+        Texture2D? tex = Skin(pic);
+        if (tex is null)
+        {
+            DrawBar(area, fraction, fallback);
+            return;
+        }
+        // Reveal a sub-region of the texture matching the fraction (NW/SW bars fill from the right).
+        Vector2 ts = tex.GetSize();
+        float revealW = ts.X * fraction;
+        Rect2 src = fromRight
+            ? new Rect2(ts.X - revealW, 0f, revealW, ts.Y)
+            : new Rect2(0f, 0f, revealW, ts.Y);
+        Rect2 dst = fromRight
+            ? new Rect2(area.Position.X + area.Size.X * (1f - fraction), area.Position.Y, area.Size.X * fraction, area.Size.Y)
+            : new Rect2(area.Position, new Vector2(area.Size.X * fraction, area.Size.Y));
+        if (revealW > 0.5f)
+            DrawTextureRectRegion(tex, dst, src, fallback);
+    }
+
+    private void DrawAuxiliaryXhairs()
+    {
+        if (_aux.Count == 0) return;
+        Camera3D? cam = GetViewport()?.GetCamera3D();
+        if (cam is null) return;
+
+        foreach (AuxXhair x in _aux.Values)
+        {
+            if (cam.IsPositionBehind(x.World)) continue;
+            Vector2 screen = cam.UnprojectPosition(x.World);
+            // The panel is laid out at a fixed rect; aux crosshairs are screen-space, so convert to panel-local.
+            Vector2 local = screen - PanelRect.Position;
+            float fade = 1f - Mathf.Clamp((float)(_time - x.LastUpdate) / Mathf.Max(0.001f, AuxFadeTime * 4), 0f, 1f);
+            Color c = x.Color; c.A *= fade;
+
+            Texture2D? tex = TextureCache.Get(x.Image);
+            var half = new Vector2(AuxSize, AuxSize) * 0.5f;
+            if (tex is not null)
+                DrawTextureRect(tex, new Rect2(local - half, new Vector2(AuxSize, AuxSize)), tile: false, c);
+            else
+                DrawRect(new Rect2(local - half, new Vector2(AuxSize, AuxSize)), c, filled: false, width: 2f);
+        }
+    }
+
+    // =====================================================================================
+    //  Art resolution (skin-aware, VFS-backed via TextureCache)
+    // =====================================================================================
+
+    /// <summary>Resolve a vehicle HUD pic, preferred skin then default skin then a project override.</summary>
+    private Texture2D? Skin(string baseName)
+        => TextureCache.GetFirst($"gfx/hud/{HudSkin}/{baseName}", $"gfx/hud/default/{baseName}",
+            $"res://art/hud/vehicles/{baseName}.png");
+
+    private void DrawSkinPic(string baseName, Rect2 dst, Color tint)
+    {
+        Texture2D? tex = Skin(baseName);
+        if (tex is not null)
+            DrawTextureRect(tex, dst, tile: false, tint);
+    }
+}

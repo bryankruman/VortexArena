@@ -1,0 +1,595 @@
+using System;
+using System.Collections.Generic;
+using Godot;
+using XonoticGodot.Formats.Bsp;
+using XonoticGodot.Formats.Dpm;
+using XonoticGodot.Formats.Iqm;
+using XonoticGodot.Formats.Md3;
+using XonoticGodot.Formats.Sidecars;
+using XonoticGodot.Formats.Sprites;
+using XonoticGodot.Formats.Vfs;
+using XonoticGodot.Game.Loaders.Models; // IqmBuilder / DpmBuilder / Md3Builder
+
+namespace XonoticGodot.Game.Loaders;
+
+/// <summary>
+/// The unified, host-side asset entry point for the Godot port: one object that owns a
+/// <see cref="VirtualFileSystem"/> and an <see cref="AssetSystem"/> (the material/texture resolver) and turns
+/// a virtual path into a ready Godot scene node or resource.
+///
+/// <para>It is the single place that knows the mapping from a file to the right importer + builder:
+/// <list type="bullet">
+///   <item><b>Models</b> are dispatched by their on-disk magic, NOT by extension, exactly as Darkplaces does
+///         (<c>INTERQUAKEMODEL</c> → IQM, <c>DARKPLACESMODEL</c> → DPM, <c>IDP3</c> → MD3). The matching
+///         sidecars are loaded through the VFS and passed to the builder: a <c>.framegroups</c> animation
+///         table for every format, and a <c>_0.skin</c> material override for MD3.</item>
+///   <item><b>Maps</b> go BspReader → <see cref="MapLoader.BuildMap"/> (render geometry) with collision built
+///         on the side via <see cref="MapLoader.BuildCollision"/>.</item>
+///   <item><b>Sprites</b> go SpriteReader → <see cref="SpriteBuilder.Build"/>.</item>
+///   <item><b>Textures / materials</b> delegate straight to the owned <see cref="AssetSystem"/>.</item>
+/// </list></para>
+///
+/// <para>The expensive part of a model/sprite load — reading the file and decoding the binary format plus
+/// its sidecars — is cached per normalized vpath as a build factory; each call invokes it to produce a fresh,
+/// independent scene node (Godot nodes and their script-backed state cannot be shared across two tree
+/// positions, and a parsed POCO is cheap to re-build). Maps are not cached (a level is loaded once).</para>
+///
+/// All file reads go through the VFS, so a missing or malformed asset throws an
+/// <see cref="XonoticGodot.Formats.AssetParseException"/> that callers can catch to skip the asset rather than crash.
+/// </summary>
+public sealed class AssetLoader
+{
+    // Model file magics (first bytes). MD3 is a 4-byte tag; IQM/DPM are 16-byte (NUL-padded) tags.
+    private const string MagicIqm = "INTERQUAKEMODEL";
+    private const string MagicDpm = "DARKPLACESMODEL";
+    private const string MagicMd3 = "IDP3";
+
+    private readonly VirtualFileSystem _vfs;
+    private readonly AssetSystem _assets;
+    private readonly FontLoader _fonts;
+
+    // We cache the *parsed* inputs (the expensive binary decode + sidecar parse), NOT the built Godot node:
+    // the builders return nodes backed by C# script fields (Md3Morph, Skeleton3D-driven IQM/DPM) that
+    // Node.Duplicate() would not deep-copy correctly, and Godot resources/nodes can't be shared across two
+    // tree positions anyway. So each LoadModel/LoadSprite call rebuilds a fresh node from the cached parse —
+    // cheap relative to re-reading and re-decoding the file. Null caches a known parse failure.
+    private readonly Dictionary<string, Func<Node3D?>?> _modelCache = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Func<Node3D?>?> _spriteCache = new(StringComparer.Ordinal);
+    // Parsed MD3 data cache for the client's per-entity ModelResolver (world items/gibs/monsters render via the
+    // MD3 morph/snapshot path). Keyed by normalized vpath; null caches a miss / non-MD3 model.
+    private readonly Dictionary<string, Md3Data?> _md3Cache = new(StringComparer.Ordinal);
+    // Resolved sample -> decoded AudioStream (or null when the sample resolves to nothing). The stream is
+    // immutable and safe to share across many AudioStreamPlayer3D, so unlike models we cache the built resource.
+    private readonly Dictionary<string, AudioStream?> _soundCache = new(StringComparer.Ordinal);
+
+    /// <summary>The virtual filesystem this loader reads from (mounted gamedirs/pk3s).</summary>
+    public VirtualFileSystem Vfs => _vfs;
+
+    /// <summary>The material/texture resolver shared with the model/map builders.</summary>
+    public AssetSystem Assets => _assets;
+
+    /// <summary>The font cache/loader over the same VFS.</summary>
+    public FontLoader Fonts => _fonts;
+
+    /// <summary>
+    /// Build a loader over an already-mounted <paramref name="vfs"/>. The <see cref="AssetSystem"/> is
+    /// constructed over the same VFS so shader/texture resolution sees the same mounts.
+    /// </summary>
+    public AssetLoader(VirtualFileSystem vfs)
+    {
+        _vfs = vfs ?? throw new ArgumentNullException(nameof(vfs));
+        _assets = new AssetSystem(_vfs);
+        _fonts = new FontLoader(_vfs);
+    }
+
+    /// <summary>Build a loader over an existing <see cref="AssetSystem"/> (when the host already made one).</summary>
+    public AssetLoader(VirtualFileSystem vfs, AssetSystem assets)
+    {
+        _vfs = vfs ?? throw new ArgumentNullException(nameof(vfs));
+        _assets = assets ?? throw new ArgumentNullException(nameof(assets));
+        _fonts = new FontLoader(_vfs);
+    }
+
+    // =============================================================================================
+    //  Models  (dispatch by magic)
+    // =============================================================================================
+
+    /// <summary>
+    /// Load a model from the VFS at <paramref name="vpath"/>, dispatching by the file's magic (not its
+    /// extension) to the right importer + Godot builder, and passing any sibling <c>.framegroups</c> /
+    /// <c>_N.skin</c> sidecars. Returns an independent scene node (a duplicate of the cached template), or
+    /// <c>null</c> when the file is missing or cannot be parsed.
+    /// </summary>
+    /// <param name="vpath">Virtual path, e.g. <c>"models/player/erebus.iqm"</c>.</param>
+    /// <param name="skinIndex">Which <c>_N.skin</c> variant to apply for skinned formats (MD3). Default 0.</param>
+    public Node3D? LoadModel(string vpath, int skinIndex = 0)
+    {
+        string key = AssetPaths.Normalize(vpath);
+        if (key.Length == 0)
+            return null;
+
+        // Cache key includes the skin variant (different skins build different nodes).
+        string cacheKey = skinIndex == 0 ? key : $"{key}#skin{skinIndex}";
+        if (!_modelCache.TryGetValue(cacheKey, out Func<Node3D?>? factory))
+        {
+            factory = BuildModelFactory(key, skinIndex);
+            _modelCache[cacheKey] = factory;
+        }
+        return factory?.Invoke();
+    }
+
+    /// <summary>
+    /// Parse a model as raw <see cref="Md3Data"/> for the client's per-entity <c>ClientWorld.ModelResolver</c>
+    /// (world items/gibs/monsters that render via the MD3 morph/snapshot path). Returns null for a missing file
+    /// or a non-MD3 model (IQM/DPM go through <see cref="LoadModel"/>); cached per normalized vpath.
+    /// </summary>
+    public Md3Data? LoadMd3(string vpath)
+    {
+        string key = AssetPaths.Normalize(vpath);
+        if (key.Length == 0)
+            return null;
+        if (_md3Cache.TryGetValue(key, out Md3Data? cached))
+            return cached;
+
+        Md3Data? data = null;
+        try
+        {
+            byte[] bytes = _vfs.ReadBytes(key);
+            if (ReadMagic(bytes).StartsWith(MagicMd3, StringComparison.Ordinal))
+                data = Md3Reader.Read(bytes);
+        }
+        catch (Exception ex)
+        {
+            GD.PrintErr($"[AssetLoader] md3 '{key}' read/parse failed: {ex.Message}");
+        }
+        _md3Cache[key] = data;
+        return data;
+    }
+
+    /// <summary>
+    /// Read+parse the model and its sidecars once and return a factory that builds a fresh Godot node from
+    /// the cached parse on each call. Returns null (cached) if the file is missing or not a known model.
+    /// </summary>
+    private Func<Node3D?>? BuildModelFactory(string key, int skinIndex)
+    {
+        byte[] bytes;
+        try
+        {
+            bytes = _vfs.ReadBytes(key);
+        }
+        catch (Exception ex)
+        {
+            GD.PrintErr($"[AssetLoader] model '{key}' read failed: {ex.Message}");
+            return null;
+        }
+
+        string magic = ReadMagic(bytes);
+        try
+        {
+            if (magic.StartsWith(MagicIqm, StringComparison.Ordinal))
+            {
+                IqmData iqm = IqmReader.Read(bytes);
+                IReadOnlyList<FrameGroup>? groups = LoadFrameGroups(key);
+                SkinFile? skin = LoadSkin(key, skinIndex);
+                return () => IqmBuilder.Build(iqm, _assets, groups, skin);
+            }
+            if (magic.StartsWith(MagicDpm, StringComparison.Ordinal))
+            {
+                DpmData dpm = DpmReader.Read(bytes);
+                IReadOnlyList<FrameGroup>? groups = LoadFrameGroups(key);
+                return () => DpmBuilder.Build(dpm, _assets, groups);
+            }
+            if (magic.StartsWith(MagicMd3, StringComparison.Ordinal))
+            {
+                Md3Data md3 = Md3Reader.Read(bytes);
+                SkinFile? skin = LoadSkin(key, skinIndex);
+                IReadOnlyList<FrameGroup>? groups = LoadFrameGroups(key);
+                return () => Md3Builder.Build(md3, _assets, skin, groups);
+            }
+        }
+        catch (Exception ex)
+        {
+            GD.PrintErr($"[AssetLoader] model '{key}' parse failed: {ex.Message}");
+            return null;
+        }
+
+        GD.PrintErr($"[AssetLoader] '{key}' is not a known model (magic \"{Printable(magic)}\").");
+        return null;
+    }
+
+    /// <summary>
+    /// Load + parse a player model's <c>_N.txt</c> model-info sidecar (e.g. <c>erebus.iqm_0.txt</c>): the
+    /// per-skin skeletal parameters (bone_upperbody / bone_aim* / fixbone) the upper/lower split + aim need.
+    /// Returns null when the model has no such sidecar.
+    /// </summary>
+    public ModelInfo? LoadModelInfo(string vpath, int skinIndex = 0)
+    {
+        string key = AssetPaths.Normalize(vpath);
+        if (key.Length == 0) return null;
+        string sidecar = $"{key}_{skinIndex}.txt";
+        if (!_vfs.Exists(sidecar)) return null;
+        try { return ModelInfoParser.Parse(_vfs.ReadText(sidecar)); }
+        catch (Exception ex) { GD.PrintErr($"[AssetLoader] modelinfo '{sidecar}' failed: {ex.Message}"); return null; }
+    }
+
+    /// <summary>
+    /// The pieces a <c>PlayerModel</c> needs to drive a skeletal IQM at runtime: the parsed
+    /// <see cref="IqmData"/> (bones + per-frame poses), a freshly built Godot scene root
+    /// (<see cref="Skeleton3D"/> + skinned mesh + <see cref="AnimationPlayer"/>), the animation clip ranges,
+    /// and the model-info skeletal parameters.
+    /// </summary>
+    public sealed record SkeletalModelParts(
+        IqmData Iqm, Node3D Root, IReadOnlyList<FrameGroup>? Groups, ModelInfo? Info);
+
+    /// <summary>
+    /// Load a skeletal (IQM) model and its sidecars for runtime CPU posing (the player upper/lower split +
+    /// aim). Returns null for a missing file or a non-IQM model (only IQM carries the skeleton + per-frame
+    /// poses Xonotic players animate with). The caller wraps the result in a <c>PlayerModel</c>.
+    /// </summary>
+    public SkeletalModelParts? LoadSkeletalModel(string vpath, int skinIndex = 0)
+    {
+        string key = AssetPaths.Normalize(vpath);
+        if (key.Length == 0) return null;
+        byte[] bytes;
+        try { bytes = _vfs.ReadBytes(key); }
+        catch (Exception ex) { GD.PrintErr($"[AssetLoader] skeletal model '{key}' read failed: {ex.Message}"); return null; }
+
+        if (!ReadMagic(bytes).StartsWith(MagicIqm, StringComparison.Ordinal))
+            return null;
+        try
+        {
+            IqmData iqm = IqmReader.Read(bytes);
+            IReadOnlyList<FrameGroup>? groups = LoadFrameGroups(key);
+            ModelInfo? info = LoadModelInfo(vpath, skinIndex);
+            SkinFile? skin = LoadSkin(key, skinIndex);
+            Node3D root = IqmBuilder.Build(iqm, _assets, groups, skin);
+            return new SkeletalModelParts(iqm, root, groups, info);
+        }
+        catch (Exception ex) { GD.PrintErr($"[AssetLoader] skeletal model '{key}' build failed: {ex.Message}"); return null; }
+    }
+
+    // =============================================================================================
+    //  Maps
+    // =============================================================================================
+
+    /// <summary>
+    /// Load a BSP map from the VFS into Godot render geometry. Reads the bytes, parses with
+    /// <see cref="BspReader"/>, and builds the textured mesh via <see cref="MapLoader.BuildMap"/> (which
+    /// resolves materials through the shared <see cref="AssetSystem"/>). Returns the map root node or null.
+    /// Use <see cref="ReadBsp"/> + <see cref="MapLoader.BuildCollision"/> for the matching collision world
+    /// (parse once, build both render geometry and collision).
+    /// </summary>
+    public Node3D? LoadMap(string vpath)
+    {
+        BspData? bsp = ReadBsp(vpath);
+        if (bsp is null)
+            return null;
+        try
+        {
+            // Pass the vpath so external lightmaps (maps/<name>/lm_NNNN.jpg) resolve — stock Xonotic maps
+            // carry no internal lightmap lump, so without a name the world renders with no baked lighting.
+            return MapLoader.BuildMap(bsp, _assets, vpath);
+        }
+        catch (Exception ex)
+        {
+            GD.PrintErr($"[AssetLoader] map '{vpath}' build failed: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Parse a BSP from the VFS and return its raw <see cref="BspData"/> (so a caller can build both the
+    /// render geometry and the collision world from one parse without reading the file twice). Null on miss.
+    /// </summary>
+    public BspData? ReadBsp(string vpath)
+    {
+        string key = AssetPaths.Normalize(vpath);
+        if (key.Length == 0)
+            return null;
+        try
+        {
+            byte[] bytes = _vfs.ReadBytes(key);
+            return BspReader.Read(bytes);
+        }
+        catch (Exception ex)
+        {
+            GD.PrintErr($"[AssetLoader] map '{key}' read/parse failed: {ex.Message}");
+            return null;
+        }
+    }
+
+    // =============================================================================================
+    //  Sprites
+    // =============================================================================================
+
+    /// <summary>
+    /// Load a Quake-family sprite (spr/sprhl/spr32/sp2) from the VFS into a billboarded Godot node via
+    /// <see cref="SpriteBuilder.Build"/>. Returns an independent node (duplicate of the cached template), or
+    /// null on miss/parse failure. Dispatch is by the parsed sprite <see cref="SpriteData.Format"/>, not the
+    /// file extension (SpriteReader reads the magic).
+    /// </summary>
+    public Node3D? LoadSprite(string vpath)
+    {
+        string key = AssetPaths.Normalize(vpath);
+        if (key.Length == 0)
+            return null;
+
+        if (!_spriteCache.TryGetValue(key, out Func<Node3D?>? factory))
+        {
+            factory = BuildSpriteFactory(key);
+            _spriteCache[key] = factory;
+        }
+        return factory?.Invoke();
+    }
+
+    /// <summary>Read+parse the sprite once; return a factory that builds a fresh node from the cached parse.</summary>
+    private Func<Node3D?>? BuildSpriteFactory(string key)
+    {
+        SpriteData spr;
+        try
+        {
+            byte[] bytes = _vfs.ReadBytes(key);
+            spr = SpriteReader.Read(bytes);
+        }
+        catch (Exception ex)
+        {
+            GD.PrintErr($"[AssetLoader] sprite '{key}' read/parse failed: {ex.Message}");
+            return null;
+        }
+        return () => SpriteBuilder.Build(spr, _assets);
+    }
+
+    // =============================================================================================
+    //  Textures / materials  (delegate to AssetSystem)
+    // =============================================================================================
+
+    /// <summary>Resolve a texture base name (extension-agnostic) to a Godot <see cref="Texture2D"/>, or null.</summary>
+    public Texture2D? LoadTexture(string name)
+    {
+        try
+        {
+            return _assets.LoadTexture(name);
+        }
+        catch (Exception ex)
+        {
+            GD.PrintErr($"[AssetLoader] texture '{name}' failed: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>Resolve a Q3/DP shader name to a Godot <see cref="Material"/> through the shared compiler.</summary>
+    public Material ResolveMaterial(string shaderName) => _assets.ResolveMaterial(shaderName);
+
+    /// <summary>Get a UI/HUD font by logical name (e.g. "xolonium"), loaded from the font packs. Null on miss.</summary>
+    public FontFile? GetFont(string name) => _fonts.GetFont(name);
+
+    // =============================================================================================
+    //  Sounds  (VFS → Godot AudioStream)
+    // =============================================================================================
+
+    /// <summary>
+    /// Resolve a QC sound sample (e.g. <c>"weapons/rocket_impact"</c>, with or without a leading
+    /// <c>sound/</c> and with or without an extension) to a decoded Godot <see cref="AudioStream"/> read
+    /// from the mounted VFS — the audio equivalent of <see cref="LoadTexture"/>. Reproduces Darkplaces'
+    /// <c>S_PrecacheSound</c> path search: the bare sample is rooted under <c>sound/</c> and probed as
+    /// <c>.ogg</c> then <c>.wav</c>. Returns a cached stream (shared, immutable) or <c>null</c> when the
+    /// sample resolves to no file / fails to decode, so callers can fall back or stay silent.
+    /// </summary>
+    public AudioStream? LoadSound(string sample)
+    {
+        if (string.IsNullOrWhiteSpace(sample))
+            return null;
+
+        string cacheKey = AssetPaths.Normalize(sample);
+        if (cacheKey.Length == 0)
+            return null;
+        if (_soundCache.TryGetValue(cacheKey, out AudioStream? cached))
+            return cached;
+
+        AudioStream? stream = null;
+        string? vpath = ResolveSoundVpath(cacheKey);
+        if (vpath is not null)
+        {
+            try
+            {
+                stream = BuildAudioStream(_vfs.ReadBytes(vpath), vpath);
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr($"[AssetLoader] sound '{vpath}' load failed: {ex.Message}");
+            }
+        }
+
+        _soundCache[cacheKey] = stream; // cache misses too, to avoid re-probing a known-absent sample
+        return stream;
+    }
+
+    /// <summary>The ordered VFS vpaths a sample is probed at: under <c>sound/</c> (DP convention) and verbatim,
+    /// each as <c>.ogg</c> then <c>.wav</c>. Returns the first that exists, or null.</summary>
+    private string? ResolveSoundVpath(string normalizedSample)
+    {
+        // Strip a trailing audio extension to get the stem, then re-probe both extensions.
+        string stem = normalizedSample;
+        string ext = AssetPaths.GetExtension(stem);
+        if (ext is "ogg" or "wav")
+            stem = AssetPaths.StripExtension(stem);
+
+        // Root under sound/ unless the caller already did (some QC samples are pre-rooted).
+        string underSound = stem.StartsWith("sound/", StringComparison.Ordinal) ? stem : "sound/" + stem;
+
+        foreach (string root in underSound == stem ? new[] { stem } : new[] { underSound, stem })
+        {
+            if (_vfs.Exists(root + ".ogg")) return root + ".ogg";
+            if (_vfs.Exists(root + ".wav")) return root + ".wav";
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Decode raw audio bytes into a Godot <see cref="AudioStream"/>: <c>.ogg</c> via
+    /// <see cref="AudioStreamOggVorbis.LoadFromBuffer"/>, <c>.wav</c> via a minimal RIFF/PCM parse into an
+    /// <see cref="AudioStreamWav"/> (8/16-bit, mono/stereo — the formats Xonotic ships). Null on unsupported.
+    /// </summary>
+    private static AudioStream? BuildAudioStream(byte[] bytes, string vpath)
+    {
+        string ext = AssetPaths.GetExtension(vpath);
+        return ext switch
+        {
+            "ogg" => AudioStreamOggVorbis.LoadFromBuffer(bytes),
+            "wav" => DecodeWav(bytes),
+            _ => null,
+        };
+    }
+
+    /// <summary>Minimal canonical-WAV (RIFF/PCM) → <see cref="AudioStreamWav"/>: reads the <c>fmt </c> and
+    /// <c>data</c> chunks, supporting 8-bit (unsigned→signed) and 16-bit LE PCM, mono or stereo.</summary>
+    private static AudioStreamWav? DecodeWav(byte[] b)
+    {
+        if (b.Length < 12 ||
+            b[0] != 'R' || b[1] != 'I' || b[2] != 'F' || b[3] != 'F' ||
+            b[8] != 'W' || b[9] != 'A' || b[10] != 'V' || b[11] != 'E')
+            return null;
+
+        int channels = 0, sampleRate = 0, bits = 0;
+        byte[]? data = null;
+
+        int pos = 12;
+        while (pos + 8 <= b.Length)
+        {
+            string id = System.Text.Encoding.ASCII.GetString(b, pos, 4);
+            int size = BitConverter.ToInt32(b, pos + 4);
+            int body = pos + 8;
+            if (size < 0 || body + size > b.Length)
+                size = b.Length - body; // tolerate a truncated/over-stated size
+
+            if (id == "fmt " && body + 16 <= b.Length)
+            {
+                channels = BitConverter.ToUInt16(b, body + 2);
+                sampleRate = BitConverter.ToInt32(b, body + 4);
+                bits = BitConverter.ToUInt16(b, body + 14);
+            }
+            else if (id == "data")
+            {
+                data = new byte[size];
+                Array.Copy(b, body, data, 0, size);
+            }
+            pos = body + size + (size & 1); // chunks are word-aligned
+        }
+
+        if (data is null || channels is < 1 or > 2 || sampleRate <= 0)
+            return null;
+
+        var wav = new AudioStreamWav { MixRate = sampleRate, Stereo = channels == 2 };
+        if (bits == 16)
+        {
+            wav.Format = AudioStreamWav.FormatEnum.Format16Bits;
+            wav.Data = data;
+        }
+        else if (bits == 8)
+        {
+            // WAV 8-bit is unsigned; Godot's Format8Bits expects signed — rebias by 128.
+            var signed = new byte[data.Length];
+            for (int i = 0; i < data.Length; i++)
+                signed[i] = (byte)(data[i] - 128);
+            wav.Format = AudioStreamWav.FormatEnum.Format8Bits;
+            wav.Data = signed;
+        }
+        else
+        {
+            return null; // 24/32-bit PCM not used by Xonotic SFX
+        }
+        return wav;
+    }
+
+    // =============================================================================================
+    //  Sidecars
+    // =============================================================================================
+
+    /// <summary>
+    /// Load and parse the model's <c>.framegroups</c> sidecar (e.g. <c>player.iqm.framegroups</c>): the named
+    /// animation ranges that carve the model's flat pose stack into clips. Returns null when there is no
+    /// sidecar (the builder then uses the model's own anims / a single default clip).
+    /// </summary>
+    private List<FrameGroup>? LoadFrameGroups(string modelKey)
+    {
+        // DP convention: "<modelname>.framegroups" sits next to the model (full filename + suffix).
+        string sidecar = modelKey + ".framegroups";
+        if (!_vfs.Exists(sidecar))
+            return null;
+        try
+        {
+            return FrameGroups.Parse(_vfs.ReadText(sidecar));
+        }
+        catch (Exception ex)
+        {
+            GD.PrintErr($"[AssetLoader] framegroups '{sidecar}' failed: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Load and parse the model's <c>_N.skin</c> sidecar (e.g. <c>player.iqm_0.skin</c>): per-mesh material
+    /// overrides for the requested skin variant. Returns null when there is no matching skin file.
+    /// </summary>
+    private SkinFile? LoadSkin(string modelKey, int skinIndex)
+    {
+        // DP convention: "<modelname>_<index>.skin" (the index after the full filename, including extension).
+        string sidecar = $"{modelKey}_{skinIndex}.skin";
+        if (!_vfs.Exists(sidecar))
+            return null;
+        try
+        {
+            return SkinFile.Parse(_vfs.ReadText(sidecar));
+        }
+        catch (Exception ex)
+        {
+            GD.PrintErr($"[AssetLoader] skin '{sidecar}' failed: {ex.Message}");
+            return null;
+        }
+    }
+
+    // =============================================================================================
+    //  Enumeration helpers (used by the offline converter)
+    // =============================================================================================
+
+    /// <summary>Enumerate every model vpath under <c>models/</c> (by extension: iqm/dpm/md3).</summary>
+    public IEnumerable<string> EnumerateModels()
+    {
+        foreach (string p in _vfs.Find("models/", "iqm")) yield return p;
+        foreach (string p in _vfs.Find("models/", "dpm")) yield return p;
+        foreach (string p in _vfs.Find("models/", "md3")) yield return p;
+    }
+
+    /// <summary>Enumerate every map vpath under <c>maps/</c> (.bsp).</summary>
+    public IEnumerable<string> EnumerateMaps() => _vfs.Find("maps/", "bsp");
+
+    /// <summary>Enumerate every sprite vpath (spr/spr32/sp2) anywhere in the mounts.</summary>
+    public IEnumerable<string> EnumerateSprites()
+    {
+        foreach (string p in _vfs.Find("", "spr")) yield return p;
+        foreach (string p in _vfs.Find("", "spr32")) yield return p;
+        foreach (string p in _vfs.Find("", "sp2")) yield return p;
+    }
+
+    // =============================================================================================
+    //  Low-level
+    // =============================================================================================
+
+    /// <summary>Read up to the first 16 bytes as an ASCII tag (trimming at the first NUL) for magic dispatch.</summary>
+    private static string ReadMagic(byte[] data)
+    {
+        int n = Math.Min(16, data.Length);
+        int end = 0;
+        while (end < n && data[end] != 0)
+            end++;
+        return System.Text.Encoding.ASCII.GetString(data, 0, end);
+    }
+
+    private static string Printable(string magic)
+    {
+        var sb = new System.Text.StringBuilder(magic.Length);
+        foreach (char c in magic)
+            sb.Append(c >= 32 && c < 127 ? c : '?');
+        return sb.ToString();
+    }
+}

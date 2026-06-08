@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Shared gameplay + framework + physics + protocol definitions + facade interfaces.
+       MUST NOT reference Godot (ADR-0008): keeps gameplay headless-testable and server-portable. -->
+  <PropertyGroup>
+    <TargetFramework>$(XonoticGodotTfm)</TargetFramework>
+    <RootNamespace>XonoticGodot.Common</RootNamespace>
+  </PropertyGroup>
+</Project>

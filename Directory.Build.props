@@ -1,0 +1,14 @@
+<Project>
+  <!-- Shared MSBuild properties for all XonoticGodot projects.
+       The Godot host (Godot.NET.Sdk) and the SourceGen analyzer (netstandard2.0)
+       set their own TargetFramework; the plain libraries inherit $(XonoticGodotTfm). -->
+  <PropertyGroup>
+    <XonoticGodotTfm>net8.0</XonoticGodotTfm>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <Deterministic>true</Deterministic>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+</Project>

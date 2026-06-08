@@ -1,0 +1,806 @@
+using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Gameplay;
+using XonoticGodot.Common.Gameplay.Damage;
+using XonoticGodot.Common.Gameplay.Scoring;
+using XonoticGodot.Common.Services;
+
+namespace XonoticGodot.Server;
+
+/// <summary>
+/// The per-player score fields — the C# successor to the QuakeC SP_* PlayerScoreField registry
+/// (server/scores_rules.qc <c>ScoreRules_basics</c>: SP_KILLS / SP_DEATHS / SP_SUICIDES / SP_TEAMKILLS /
+/// SP_SCORE / SP_DMG / SP_DMGTAKEN). QC reaches these through a field-pointer indirection on the
+/// scorekeeper edict; here they are dense columns in <see cref="PlayerScoreRow"/> keyed by this enum.
+/// </summary>
+public enum ScoreField
+{
+    /// <summary>SP_KILLS — enemy frags (QC "kills").</summary>
+    Kills = 0,
+    /// <summary>SP_DEATHS — times died (QC "deaths", SFL_LOWER_IS_BETTER).</summary>
+    Deaths,
+    /// <summary>SP_SUICIDES — self/world deaths (QC "suicides", SFL_LOWER_IS_BETTER).</summary>
+    Suicides,
+    /// <summary>SP_TEAMKILLS — teammates killed (QC "teamkills", team games only).</summary>
+    TeamKills,
+    /// <summary>SP_SCORE — the sortable match score (QC "score", the primary sort key).</summary>
+    Score,
+    /// <summary>SP_DMG — damage dealt (QC "dmg", cosmetic).</summary>
+    Damage,
+    /// <summary>SP_DMGTAKEN — damage taken (QC "dmgtaken", SFL_LOWER_IS_BETTER).</summary>
+    DamageTaken,
+}
+
+/// <summary>
+/// One player's score columns — the Godot-free essence of a QC scorekeeper edict (its
+/// <c>.(scores(i))</c> slots, server/scores.qc). Kept as a small mutable object the <see cref="Scores"/>
+/// table owns.
+///
+/// IMPORTANT ownership rule: the SP_SCORE column is NOT a private counter — it is a read-through projection
+/// of the live <see cref="Player.ScoreFrags"/> (backed by <see cref="Entity.Frags"/>). The active gametype
+/// is the authoritative frag-scorer (Deathmatch/TDM/CA write <c>ScoreFrags</c> in their obituary handlers),
+/// so this row reflects that single source of truth instead of maintaining a second tally that would fight
+/// it (which would double-count when both the gametype and this table subscribe to the death bus). The
+/// auxiliary columns (kills/deaths/suicides/teamkills/dmg/dmgtaken) ARE owned here, because the gametypes
+/// don't track them. When <see cref="Scores"/> is run as the SOLE scorer (no gametype handler), it writes
+/// SP_SCORE through this projection via <see cref="SetScore"/>, which updates <c>ScoreFrags</c> directly.
+/// </summary>
+public sealed class PlayerScoreRow
+{
+    /// <summary>The player this row belongs to.</summary>
+    public Player Player { get; }
+
+    public PlayerScoreRow(Player player) => Player = player;
+
+    // Map the dense Server-side enum onto the shared GameScores SP_* columns — the single source of truth, so
+    // every column (incl. SP_SCORE == Player.ScoreFrags) is one networked value, not a private projection.
+    internal static Common.Gameplay.Scoring.ScoreField Col(ScoreField f) => f switch
+    {
+        ScoreField.Kills => GameScores.Kills,
+        ScoreField.Deaths => GameScores.Deaths,
+        ScoreField.Suicides => GameScores.Suicides,
+        ScoreField.TeamKills => GameScores.TeamKills,
+        ScoreField.Score => GameScores.Score,
+        ScoreField.Damage => GameScores.Dmg,
+        ScoreField.DamageTaken => GameScores.DmgTaken,
+        _ => GameScores.Score,
+    };
+
+    /// <summary>Read a field — every column lives in the unified <see cref="GameScores"/> store.</summary>
+    public int Get(ScoreField f) => GameScores.Get(Player, Col(f));
+
+    /// <summary>SP_* convenience accessors.</summary>
+    public int Kills => GameScores.Get(Player, GameScores.Kills);
+    public int Deaths => GameScores.Get(Player, GameScores.Deaths);
+    public int Suicides => GameScores.Get(Player, GameScores.Suicides);
+    public int TeamKills => GameScores.Get(Player, GameScores.TeamKills);
+    public int Score => Player.ScoreFrags;              // == GameScores SP_SCORE (the authoritative match score)
+    public int DamageDealt => GameScores.Get(Player, GameScores.Dmg);
+    public int DamageTaken => GameScores.Get(Player, GameScores.DmgTaken);
+
+    /// <summary>Add to a column (QC PlayerScore_Add). For SP_SCORE the gametype owns it — write via the table's
+    /// sole-scorer path; here we route every column through the unified store so it networks.</summary>
+    internal int AddAux(ScoreField f, int delta) => GameScores.AddToPlayer(Player, Col(f), delta);
+
+    /// <summary>Write SP_SCORE through to the authoritative <see cref="Player.ScoreFrags"/> (sole-scorer mode).</summary>
+    internal void SetScore(int value) => Player.ScoreFrags = value;
+
+    /// <summary>Reset every column to 0 (QC PlayerScore_Clear), including the score, + accuracy/streaks.</summary>
+    internal void Clear()
+    {
+        GameScores.ClearPlayer(Player);
+        Accuracy.Clear();
+        KillStreak = 0;
+        BestKillStreak = 0;
+        MultiKill = 0;
+        MultiKillBest = 0;
+        _lastKillTime = 0f;
+    }
+
+    /// <summary>
+    /// QC <c>PlayerScore_Clear</c> on a team change (KillPlayerForTeamChange): reset the auxiliary score
+    /// columns + accuracy/streak counters so a mid-match team move doesn't carry kills/deaths to the new
+    /// team. Deliberately leaves SP_SCORE (the frag total) alone — DEATH_AUTOTEAMCHANGE "does not negate
+    /// frags" in QC — so the player's standing is preserved across the forced move.
+    /// </summary>
+    internal void ClearForTeamChange()
+    {
+        int keepScore = Player.ScoreFrags;
+        GameScores.ClearPlayer(Player);
+        Player.ScoreFrags = keepScore;
+        Accuracy.Clear();
+        KillStreak = 0;
+        MultiKill = 0;
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // per-weapon accuracy + kill-streak / multikill medals (QC accuracy.qc + the spree counters)
+    // ---------------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// Per-weapon accuracy tallies (QC the <c>.accuracy</c> sub-entity's hit/fired/damage arrays), keyed by
+    /// weapon NetName. Filled by <see cref="Scores.RecordWeaponKill"/> off the kill's deathtype.
+    /// </summary>
+    public readonly WeaponAccuracy Accuracy = new();
+
+    /// <summary>QC the current kill spree (<c>.killcount</c>): consecutive kills without dying.</summary>
+    public int KillStreak { get; internal set; }
+
+    /// <summary>The best kill spree this match (for the end-of-match medal).</summary>
+    public int BestKillStreak { get; internal set; }
+
+    /// <summary>QC the rolling multikill count (kills within the multikill window).</summary>
+    public int MultiKill { get; internal set; }
+
+    /// <summary>The best multikill this match (double/triple/... medal).</summary>
+    public int MultiKillBest { get; internal set; }
+
+    internal float _lastKillTime;
+}
+
+/// <summary>
+/// Per-weapon accuracy bookkeeping — the Godot-free essence of the QC <c>accuracy</c> sub-entity
+/// (server/weapons/accuracy.qc): hits, shots fired, damage dealt and damage potential, per weapon NetName.
+/// The scoreboard reads these for the per-weapon accuracy% column.
+/// </summary>
+public sealed class WeaponAccuracy
+{
+    private readonly Dictionary<string, int> _hits = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, int> _fired = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, float> _damage = new(StringComparer.Ordinal);
+
+    /// <summary>QC accuracy_add(this, w, hit): record a landed hit with the given weapon.</summary>
+    public void AddHit(string weapon, int count = 1)
+    {
+        if (string.IsNullOrEmpty(weapon)) return;
+        _hits[weapon] = (_hits.TryGetValue(weapon, out int v) ? v : 0) + count;
+    }
+
+    /// <summary>QC accuracy_add fired: record a shot fired with the given weapon.</summary>
+    public void AddFired(string weapon, int count = 1)
+    {
+        if (string.IsNullOrEmpty(weapon)) return;
+        _fired[weapon] = (_fired.TryGetValue(weapon, out int v) ? v : 0) + count;
+    }
+
+    /// <summary>QC accuracy damage tally: record damage dealt with the given weapon.</summary>
+    public void AddDamage(string weapon, float amount)
+    {
+        if (string.IsNullOrEmpty(weapon) || amount <= 0f) return;
+        _damage[weapon] = (_damage.TryGetValue(weapon, out float v) ? v : 0f) + amount;
+    }
+
+    public int Hits(string weapon) => _hits.TryGetValue(weapon, out int v) ? v : 0;
+    public int Fired(string weapon) => _fired.TryGetValue(weapon, out int v) ? v : 0;
+    public float Damage(string weapon) => _damage.TryGetValue(weapon, out float v) ? v : 0f;
+
+    /// <summary>The hit/fired accuracy fraction for a weapon (0..1), or 0 when nothing was fired.</summary>
+    public float Fraction(string weapon)
+    {
+        int fired = Fired(weapon);
+        return fired > 0 ? (float)Hits(weapon) / fired : 0f;
+    }
+
+    /// <summary>Weapon NetNames that have any recorded activity (for a scoreboard column).</summary>
+    public IEnumerable<string> Weapons()
+    {
+        foreach (var k in _fired.Keys) yield return k;
+    }
+
+    public void Clear()
+    {
+        _hits.Clear();
+        _fired.Clear();
+        _damage.Clear();
+    }
+}
+
+/// <summary>
+/// The unified score table — the C# successor to the server scoring layer
+/// (server/scores.qc <c>PlayerScore_Add</c> / <c>TeamScore_Add</c> / <c>Score_ClearAll</c> +
+/// the obituary <c>GiveFrags</c> classification in server/damage.qc). It owns a
+/// <see cref="PlayerScoreRow"/> per player and exposes one <see cref="Obituary"/>/<see cref="GiveFrags"/> API
+/// for the per-kill bookkeeping (kills/deaths/suicides/teamkills) the gametypes don't already do.
+///
+/// Ownership (see <see cref="PlayerScoreRow"/>): the active gametype is the authoritative frag-scorer — it
+/// writes <see cref="Player.ScoreFrags"/> and (for team modes) its own per-team totals. To avoid
+/// double-counting, this table by default tracks ONLY the auxiliary columns and projects SP_SCORE / the
+/// team score read-through from the gametype. It can ALSO run as the sole scorer (<see cref="OwnsScore"/> =
+/// true) when no gametype handler is active — then it writes SP_SCORE (and its own team totals) using the
+/// QC DM matrix (enemy +1, suicide/world −1, teamkill −1).
+///
+/// Two ways to drive it:
+///  - <see cref="SubscribeToDeaths"/> hooks <see cref="Combat.Death"/> directly, so the table fills itself
+///    from the damage pipeline; or
+///  - a gametype/controller calls <see cref="Obituary"/> / <see cref="GiveFrags"/> explicitly.
+///
+/// Now tracked too: per-weapon accuracy (<see cref="RecordShotFired"/>/<see cref="RecordHit"/> + the kill
+/// credit keyed off deathtype in <see cref="Obituary"/>), kill-spree + multikill medals
+/// (<see cref="PlayerScoreRow.BestKillStreak"/>/<see cref="PlayerScoreRow.MultiKillBest"/>), and the
+/// AddPlayerScore hook (<see cref="AddPlayerScoreHook"/>).
+///
+/// Deferred: the network scoreboard (Net_LinkEntity / SendFlags), playerstats reporting, and the SFL_*
+/// sort-flag metadata.
+/// </summary>
+public sealed class Scores
+{
+    private readonly Dictionary<Player, PlayerScoreRow> _rows = new();
+    private readonly Dictionary<int, int> _teamScores = new(); // team color code -> running score (sole-scorer mode)
+
+    /// <summary>
+    /// True when this table is the authoritative scorer (no gametype owns SP_SCORE / team totals). Then
+    /// <see cref="Obituary"/> writes SP_SCORE via the DM matrix and maintains its own team totals. False
+    /// (the default under <see cref="GameWorld"/>) means a gametype owns the frag score and this table only
+    /// records the aux columns + reads through. Set by <see cref="SubscribeToDeaths"/>.
+    /// </summary>
+    public bool OwnsScore { get; private set; }
+
+    /// <summary>
+    /// QC <c>checkrules_firstblood</c> (server/damage.qc): the once-per-match first-blood latch. Set true the
+    /// first time an enemy frag lands outside warmup, so that frag (and only that frag) renders the
+    /// "First blood!"/"First victim!" spree banner (kill_count_to_attacker = -1 / target = -2). Reset by
+    /// <see cref="ClearAll"/> on a match restart. T40.
+    /// </summary>
+    private bool _checkrulesFirstblood;
+
+    /// <summary>
+    /// Optional read-through for team scores when a gametype owns them (its per-team dict). When set,
+    /// <see cref="TeamScore"/> returns the gametype's value rather than this table's local total — so the
+    /// scoreboard reflects the authoritative team score without this table double-counting. Null in
+    /// sole-scorer mode (then the local <c>_teamScores</c> totals are authoritative).
+    /// </summary>
+    public Func<int, int>? TeamScoreSource { get; set; }
+
+    /// <summary>True once <see cref="SubscribeToDeaths"/> wired the obituary handler (mirrors QC scores_initialized).</summary>
+    public bool Subscribed { get; private set; }
+
+    private HookHandler<DeathEvent>? _deathHandler;
+
+    // ---------------------------------------------------------------------------------------------
+    // roster registration (QC PlayerScore_Attach / _Detach)
+    // ---------------------------------------------------------------------------------------------
+
+    /// <summary>Register a player so they have a score row (QC PlayerScore_Attach). Idempotent.</summary>
+    public PlayerScoreRow Register(Player p)
+    {
+        if (!_rows.TryGetValue(p, out var row))
+        {
+            row = new PlayerScoreRow(p);
+            _rows[p] = row;
+        }
+        return row;
+    }
+
+    /// <summary>Drop a player's score row (QC PlayerScore_Detach, on disconnect).</summary>
+    public void Unregister(Player p) => _rows.Remove(p);
+
+    /// <summary>The score row for a player (created on demand — QC implicitly attaches on join).</summary>
+    public PlayerScoreRow Row(Player p) => Register(p);
+
+    /// <summary>Snapshot of all rows (scoreboard order is the caller's concern; see <see cref="Sorted"/>).</summary>
+    public IReadOnlyCollection<PlayerScoreRow> Rows => _rows.Values;
+
+    // ---------------------------------------------------------------------------------------------
+    // the unified GiveFrags / Obituary API (QC server/damage.qc)
+    // ---------------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// QC <c>PlayerScore_Add(player, field, delta)</c> — add to one of a player's score columns. For SP_SCORE
+    /// this only takes effect in sole-scorer mode (<see cref="OwnsScore"/>); otherwise it is a no-op for that
+    /// field because the gametype owns the frag score (it is read through from <see cref="Player.ScoreFrags"/>).
+    /// Returns the field's resulting value.
+    /// </summary>
+    public int Add(Player p, ScoreField field, int delta)
+    {
+        // QC MUTATOR_CALLHOOK(AddPlayerScore, ...): let a host/mutator veto or rewrite a score change.
+        if (AddPlayerScoreHook is not null)
+        {
+            var (allow, newDelta) = AddPlayerScoreHook(p, field, delta);
+            if (!allow)
+                return Row(p).Get(field);
+            delta = newDelta;
+        }
+
+        PlayerScoreRow row = Row(p);
+        if (field == ScoreField.Score)
+        {
+            if (OwnsScore)
+                row.SetScore(row.Score + delta);
+            return row.Score;
+        }
+        return row.AddAux(field, delta);
+    }
+
+    /// <summary>
+    /// QC the <c>AddPlayerScore</c> mutator hook: invoked before any <see cref="Add"/> applies, the handler
+    /// returns (allow, delta) — return allow=false to veto the change, or a rewritten delta to scale it
+    /// (e.g. a double-score powerup). Null = no hook (every change applies as-is).
+    /// </summary>
+    public Func<Player, ScoreField, int, (bool allow, int delta)>? AddPlayerScoreHook { get; set; }
+
+    // ---------------------------------------------------------------------------------------------
+    // per-weapon accuracy hooks (QC server/weapons/accuracy.qc accuracy_add)
+    // ---------------------------------------------------------------------------------------------
+
+    /// <summary>QC <c>accuracy_add(actor, weapon, fired)</c>: record a shot fired (for the accuracy% column).</summary>
+    public void RecordShotFired(Player p, string weaponNetName, int shots = 1)
+        => Row(p).Accuracy.AddFired(weaponNetName, shots);
+
+    /// <summary>QC <c>accuracy_add(actor, weapon, hit, damage)</c>: record a landed hit + the damage dealt.</summary>
+    public void RecordHit(Player p, string weaponNetName, int hits = 1, float damage = 0f)
+    {
+        var acc = Row(p).Accuracy;
+        acc.AddHit(weaponNetName, hits);
+        acc.AddDamage(weaponNetName, damage);
+    }
+
+    /// <summary>
+    /// QC <c>GiveFrags(attacker, targ, f)</c> reduced to its scoreboard effect: award <paramref name="amount"/>
+    /// SP_SCORE to <paramref name="attacker"/> (and the attacker's team in a team game). A null attacker is a
+    /// no-op (world deaths credit nobody). Only mutates the score in sole-scorer mode (<see cref="OwnsScore"/>);
+    /// under a gametype this is the call a gametype would route through, but the bundled gametypes already
+    /// write <see cref="Player.ScoreFrags"/> themselves, so the table runs in read-through mode.
+    /// </summary>
+    public void GiveFrags(Player? attacker, Player victim, int amount, bool teamGame)
+    {
+        if (attacker is null || amount == 0)
+            return;
+        if (OwnsScore)
+        {
+            Add(attacker, ScoreField.Score, amount);
+            if (teamGame)
+                AddTeamScore((int)attacker.Team, amount);
+        }
+        _ = victim; // (kept in the signature to mirror QC; victim-side bookkeeping is in Obituary)
+    }
+
+    /// <summary>
+    /// The unified obituary — the Godot-free essence of QC <c>Obituary</c> (server/damage.qc): classify the
+    /// kill and update the AUX columns it owns (the victim's deaths/suicides, the attacker's kills/teamkills).
+    /// SP_SCORE / team totals are only touched in sole-scorer mode (otherwise the gametype owns them). This
+    /// keeps the scoreboard's kill/death/etc. columns consistent across every gametype in one place.
+    /// <paramref name="teamGame"/> selects the team-aware matrix.
+    /// </summary>
+    public void Obituary(Player? attacker, Player victim, string deathType, bool teamGame)
+    {
+        // QC reads CS(targ).killcount (the victim's spree) for the obituary's spree_end/spree_lost arg BEFORE it
+        // resets it to 0 (server/damage.qc:480). Capture it now so EmitObituary renders "ending their N frag
+        // spree" / "losing their N frag spree" before the reset below zeroes it. T40.
+        int victimStreakBefore = Row(victim).KillStreak;
+
+        Row(victim).AddAux(ScoreField.Deaths, 1); // QC: victim always gets a death
+
+        bool teamKill = teamGame && attacker is not null && !ReferenceEquals(attacker, victim)
+                        && Teams.SameTeam(attacker, victim);
+
+        if (attacker is null || ReferenceEquals(attacker, victim))
+        {
+            // SUICIDE / world death (QC "SUICIDE"/"ACCIDENT-TRAP"): +1 suicide; −1 frag (only if we own score).
+            Row(victim).AddAux(ScoreField.Suicides, 1);
+            if (OwnsScore)
+            {
+                Add(victim, ScoreField.Score, -1);
+                if (teamGame) AddTeamScore((int)victim.Team, -1);
+            }
+        }
+        else if (teamKill)
+        {
+            // TEAMKILL (QC "FRAG"/team): +1 teamkill; −1 frag (only if we own score).
+            Row(attacker).AddAux(ScoreField.TeamKills, 1);
+            if (OwnsScore)
+            {
+                Add(attacker, ScoreField.Score, -1);
+                AddTeamScore((int)attacker.Team, -1);
+            }
+        }
+        else
+        {
+            // ENEMY FRAG (QC "MURDER"): attacker +1 kill, +1 score (the latter only if we own score).
+            Row(attacker).AddAux(ScoreField.Kills, 1);
+
+            // QC GiveFrags fires MUTATOR_CALLHOOK(GiveFragsForKill, attacker, targ, f, deathtype, weaponentity)
+            // and reads the (possibly-adjusted) delta back via f = M_ARGV(2, float) when the hook handled it
+            // (server/damage.qc:72). Mirror that here: the base frag award is +1, but instagib / weaponarena_random
+            // rewrite it through this chain. The attacker weapon entity isn't carried on this scoring path, so the
+            // weaponentity slot is null (latent: no bundled subscriber today, but this wires the dormant site).
+            int frag = 1;
+            var gfk = new MutatorHooks.GiveFragsForKillArgs(attacker, victim, fragScore: 1f, deathType, weaponEntity: null);
+            if (MutatorHooks.GiveFragsForKill.Call(ref gfk))
+                frag = (int)gfk.FragScore;
+            GiveFrags(attacker, victim, frag, teamGame);
+
+            // QC the spree / medal + accuracy logging, all keyed off the kill's deathtype.
+            RecordKillStreakAndMedals(attacker);
+            RecordWeaponKill(attacker, deathType);
+        }
+
+        // QC Obituary's notification + sound emission (server/damage.qc:268-477): kill feed, frag/typefrag/
+        // teamkill centerprints, the killstreak announcer, and first blood. Runs AFTER the scoring above so the
+        // attacker's KillStreak reflects this kill (the 3rd kill announces KILLSTREAK_03). T40.
+        EmitObituary(attacker, victim, deathType, teamGame, victimStreakBefore);
+
+        // QC: a kill resets the victim's kill spree (they died).
+        if (!ReferenceEquals(attacker, victim))
+        {
+            var vrow = Row(victim);
+            vrow.KillStreak = 0;
+            vrow.MultiKill = 0;
+        }
+    }
+
+    /// <summary>
+    /// Port of the notification + announcer emission inside QC <c>Obituary</c> (server/damage.qc:268-477):
+    /// the kill feed (MSG_MULTI to the victim + MSG_INFO to everyone else — <c>Obituary_WeaponDeath</c> /
+    /// <c>Obituary_SpecialDeath</c>), the frag/typefrag/teamkill centerprints (MSG_CHOICE / MSG_CENTER), the
+    /// killstreak announcer (KILL_SPREE_LIST), and the first-blood latch. Runs on the server right after the
+    /// kill is scored. Reads the attacker's now-incremented <see cref="PlayerScoreRow.KillStreak"/> (the QC
+    /// <c>CS(attacker).killcount</c>) and the victim's pre-reset streak (<paramref name="victimStreakBefore"/>,
+    /// QC <c>CS(targ).killcount</c>). Mirrors the SUICIDE / MURDER(team vs enemy) / ACCIDENT branch order.
+    /// </summary>
+    private void EmitObituary(Player? attacker, Player victim, string deathType, bool teamGame, int victimStreakBefore)
+    {
+        // QC: deathlocation = autocvar_notification_server_allows_location ? NearestLocation(...) : "". The cvar
+        // ships 0, so location is off; the s2loc/s3loc token collapses to "" for an empty string. T40.
+        const string deathloc = "";
+        string victimName = victim.NetName;
+        bool weapon = DeathTypes.IsWeapon(deathType);
+
+        // =======  SUICIDE / ACCIDENT-TRAP (QC: targ == attacker, or no player attacker)  =======
+        if (attacker is null || ReferenceEquals(attacker, victim))
+        {
+            // QC SUICIDE shape: WEAPON_*_SUICIDE / DEATH_SELF_* with (s1=netname, s2loc=location, spree_lost=killcount).
+            string self = weapon
+                ? DeathMessages.SelectSuicideMessage(DeathTypes.WeaponNetNameOf(deathType), deathType)
+                : DeathMessages.SelectSpecial(deathType, murder: false);
+            BroadcastObituary(self, victim, victimName, deathloc, "", victimStreakBefore, 0, suicide: true);
+            return;
+        }
+
+        // =======  TEAMKILL (QC: IS_PLAYER(attacker) && SAME_TEAM)  =======
+        if (teamGame && Teams.SameTeam(attacker, victim))
+        {
+            // QC: CS(attacker).killcount = 0 (a teamkill breaks the attacker's spree). T40.
+            Row(attacker).KillStreak = 0;
+
+            string attackerName = attacker.NetName;
+            // QC: CENTER to the attacker + the victim, INFO_DEATH_TEAMKILL (team-keyed) to everyone. No weapon line.
+            NotificationSystem.Send(NotifBroadcast.One, attacker, MsgType.Center, "DEATH_TEAMKILL_FRAG", victimName);
+            NotificationSystem.Send(NotifBroadcast.One, victim, MsgType.Center, "DEATH_TEAMKILL_FRAGGED", attackerName);
+            // QC APP_TEAM_NUM(targ.team, INFO_DEATH_TEAMKILL): the team suffix is keyed on the VICTIM's team.
+            NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info,
+                "DEATH_TEAMKILL_" + TeamSuffix(victim.Team), victimName, attackerName, deathloc, victimStreakBefore);
+            return;
+        }
+
+        // =======  ENEMY FRAG (QC: the else of SAME_TEAM)  =======
+        {
+            string attackerName = attacker.NetName;
+            int attackerStreak = Row(attacker).KillStreak;   // QC CS(attacker).killcount (already ++'d)
+
+            // QC the killstreak announcer switch over CS(attacker).killcount (KILL_SPREE_LIST). T40.
+            string? streak = KillStreakAnnce(attackerStreak);
+            if (streak is not null)
+                NotificationSystem.Send(NotifBroadcast.One, attacker, MsgType.Annce, streak);
+
+            // QC first blood (server/damage.qc:354): the first enemy frag outside warmup flips the latch and
+            // makes THIS frag render "First blood!"/"First victim!" via kill_count -1 / -2.
+            int killCountToAttacker, killCountToTarget;
+            if (!NotificationSystem.WarmupStage && !_checkrulesFirstblood)
+            {
+                _checkrulesFirstblood = true;
+                killCountToAttacker = -1;
+                killCountToTarget = -2;
+            }
+            else
+            {
+                killCountToAttacker = attackerStreak;
+                killCountToTarget = 0;
+            }
+
+            // QC frag/typefrag centerprints (server/damage.qc:371). Ping isn't tracked per-player in this port;
+            // pass -1 for a bot (renders "(Bot)") and 0 otherwise (the QC CS(x).ping value is unavailable). T40.
+            int attackerHealth = (int)MathF.Max(attacker.GetResource(ResourceType.Health), 0f);
+            int attackerArmor = (int)MathF.Max(attacker.GetResource(ResourceType.Armor), 0f);
+            float victimPing = victim.IsBot ? -1f : 0f;
+            float attackerPing = attacker.IsBot ? -1f : 0f;
+
+            if (victim.IsTypeFrag)
+            {
+                // CHOICE_TYPEFRAG to attacker (s1=victim, f1=spree_cen=kill_count_to_attacker, f2=ping).
+                NotificationSystem.Send(NotifBroadcast.One, attacker, MsgType.Choice, "TYPEFRAG",
+                    victimName, killCountToAttacker, victimPing);
+                // CHOICE_TYPEFRAGGED to victim (s1=attacker, f1=spree_cen=kill_count_to_target, f2=health, f3=armor, f4=ping).
+                NotificationSystem.Send(NotifBroadcast.One, victim, MsgType.Choice, "TYPEFRAGGED",
+                    attackerName, killCountToTarget, attackerHealth, attackerArmor, attackerPing);
+            }
+            else if (DeathTypes.BaseOf(deathType) == DeathTypes.Fire)
+            {
+                // QC frag_centermessage_override: DEATH_FIRE -> CHOICE_FRAG_FIRE / CHOICE_FRAGGED_FIRE.
+                NotificationSystem.Send(NotifBroadcast.One, attacker, MsgType.Choice, "FRAG_FIRE",
+                    victimName, killCountToAttacker, victimPing);
+                NotificationSystem.Send(NotifBroadcast.One, victim, MsgType.Choice, "FRAGGED_FIRE",
+                    attackerName, killCountToTarget, attackerHealth, attackerArmor, attackerPing);
+            }
+            else
+            {
+                NotificationSystem.Send(NotifBroadcast.One, attacker, MsgType.Choice, "FRAG",
+                    victimName, killCountToAttacker, victimPing);
+                NotificationSystem.Send(NotifBroadcast.One, victim, MsgType.Choice, "FRAGGED",
+                    attackerName, killCountToTarget, attackerHealth, attackerArmor, attackerPing);
+            }
+
+            // QC the kill feed (server/damage.qc:418): Obituary_WeaponDeath, falling back to Obituary_SpecialDeath.
+            string murder = weapon
+                ? DeathMessages.SelectKillMessage(DeathTypes.WeaponNetNameOf(deathType), deathType)
+                : DeathMessages.SelectSpecial(deathType, murder: true);
+            BroadcastObituary(murder, victim, victimName, attackerName, deathloc, victimStreakBefore, killCountToAttacker, suicide: false);
+        }
+    }
+
+    /// <summary>
+    /// QC the <c>Obituary_WeaponDeath</c> / <c>Obituary_SpecialDeath</c> kill-feed send pair: MSG_MULTI to the
+    /// victim (their personal info + any center sub) and MSG_INFO to everyone else (the global kill feed).
+    /// For a suicide the arg shape is (s1=victim, s2loc=location, spree_lost=victimStreak); for a murder it is
+    /// (s1=victim, s2=attacker, s3loc=location, spree_inf via f2, spree_end via f1). T40.
+    /// </summary>
+    private static void BroadcastObituary(string bareName, Player victim, string s1, string s2OrAttacker,
+        string s3Location, int victimStreak, int killCountToAttacker, bool suicide)
+    {
+        if (suicide)
+        {
+            // (2 strings, 1 float): s1, s2loc, spree_lost.
+            NotificationSystem.Send(NotifBroadcast.One, victim, MsgType.Multi, bareName, s1, s2OrAttacker, victimStreak);
+            NotificationSystem.Send(NotifBroadcast.AllExcept, victim, MsgType.Info, bareName, s1, s2OrAttacker, victimStreak);
+        }
+        else
+        {
+            // (3 strings, 2 floats): s1=victim, s2=attacker, s3loc, f1=victimStreak (spree_end), f2=killCountToAttacker (spree_inf).
+            NotificationSystem.Send(NotifBroadcast.One, victim, MsgType.Multi, bareName,
+                s1, s2OrAttacker, s3Location, victimStreak, killCountToAttacker);
+            NotificationSystem.Send(NotifBroadcast.AllExcept, victim, MsgType.Info, bareName,
+                s1, s2OrAttacker, s3Location, victimStreak, killCountToAttacker);
+        }
+    }
+
+    /// <summary>
+    /// QC the KILL_SPREE_LIST switch in Obituary (server/damage.qc:346): the ANNCE_KILLSTREAK_## announcer for a
+    /// milestone kill count (3/5/10/15/20/25/30), or null for a non-milestone. The bare name maps the milestone
+    /// to its zero-padded suffix (3 -> KILLSTREAK_03, 5 -> KILLSTREAK_05, …). T40.
+    /// </summary>
+    private static string? KillStreakAnnce(int killcount) => killcount switch
+    {
+        3 => "KILLSTREAK_03",
+        5 => "KILLSTREAK_05",
+        10 => "KILLSTREAK_10",
+        15 => "KILLSTREAK_15",
+        20 => "KILLSTREAK_20",
+        25 => "KILLSTREAK_25",
+        30 => "KILLSTREAK_30",
+        _ => null,
+    };
+
+    /// <summary>QC APP_TEAM_NUM(team, …): the team color suffix (RED/BLUE/YELLOW/PINK) for a team color code.</summary>
+    private static string TeamSuffix(float team) => (int)team switch
+    {
+        Teams.Red => "RED",
+        Teams.Blue => "BLUE",
+        Teams.Yellow => "YELLOW",
+        Teams.Pink => "PINK",
+        _ => "RED", // QC APP_TEAM_NUM clamps; a teamkill always has a real team.
+    };
+
+    /// <summary>
+    /// QC the kill-spree + multikill tracking (server/damage.qc Obituary's <c>.killcount</c> bump +
+    /// the multikill window): increment the attacker's current streak (tracking the match best), and the
+    /// rolling multikill count when kills land within the multikill window (default 2s). Drives the
+    /// end-of-match SPREE/MULTI medals.
+    /// </summary>
+    private void RecordKillStreakAndMedals(Player attacker)
+    {
+        PlayerScoreRow row = Row(attacker);
+        float now = Api.Services is not null ? Api.Clock.Time : 0f;
+
+        row.KillStreak++;
+        if (row.KillStreak > row.BestKillStreak)
+            row.BestKillStreak = row.KillStreak;
+
+        // QC multikill window (g_multikill_*; default ~2s): consecutive kills within the window chain up.
+        const float multiKillWindow = 2f;
+        if (now - row._lastKillTime <= multiKillWindow && row._lastKillTime > 0f)
+            row.MultiKill++;
+        else
+            row.MultiKill = 1;
+        if (row.MultiKill > row.MultiKillBest)
+            row.MultiKillBest = row.MultiKill;
+        row._lastKillTime = now;
+    }
+
+    /// <summary>
+    /// QC the per-weapon accuracy credit on a kill (accuracy_add hit): if the kill came from a weapon
+    /// (the deathtype names one), record a hit for that weapon on the attacker's accuracy table. Special
+    /// deaths (fall/drown/lava/...) credit no weapon. Mirrors the obituary's accuracy keying off deathtype.
+    /// </summary>
+    private void RecordWeaponKill(Player attacker, string deathType)
+    {
+        if (!DeathTypes.IsWeapon(deathType))
+            return;
+        string weapon = DeathTypes.WeaponNetNameOf(deathType);
+        Row(attacker).Accuracy.AddHit(weapon);
+    }
+
+    /// <summary>
+    /// Accumulate the per-frame damage-dealt / damage-taken columns (QC PlayerFrame: score_frame_dmg →
+    /// GameRules_scoring_add(DMG, ...)). Cosmetic; does not affect the win condition.
+    /// </summary>
+    public void AddDamageDealt(Player p, float amount)
+    {
+        if (amount > 0f) Row(p).AddAux(ScoreField.Damage, (int)amount);
+    }
+
+    public void AddDamageTaken(Player p, float amount)
+    {
+        if (amount > 0f) Row(p).AddAux(ScoreField.DamageTaken, (int)amount);
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // team scores (QC TeamScore_AddToTeam / teamscorekeepers)
+    // ---------------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// QC <c>TeamScore_AddToTeam</c>: add to a team's running score (no-op for the neutral team). Only mutates
+    /// the local total when this table owns the score; when a gametype owns team totals, team scoring goes
+    /// through the gametype and this table reads through via <see cref="TeamScoreSource"/>.
+    /// </summary>
+    public int AddTeamScore(int team, int delta)
+    {
+        if (team == Teams.None)
+            return TeamScore(team);
+        if (!OwnsScore)
+            return TeamScore(team); // gametype-owned; don't double-count
+        int v = (_teamScores.TryGetValue(team, out int cur) ? cur : 0) + delta;
+        _teamScores[team] = v;
+        return v;
+    }
+
+    /// <summary>
+    /// Read a team's running score: the gametype's value via <see cref="TeamScoreSource"/> when set
+    /// (read-through), else this table's local total (sole-scorer mode). 0 if never scored.
+    /// </summary>
+    public int TeamScore(int team)
+    {
+        if (TeamScoreSource is not null)
+            return TeamScoreSource(team);
+        return _teamScores.TryGetValue(team, out int v) ? v : 0;
+    }
+
+    /// <summary>Ensure each active team has a (zeroed) score slot so the leader scan is stable from frame 0.</summary>
+    public void SeedTeams(int teamCount)
+    {
+        foreach (int t in Teams.Active(teamCount))
+            if (!_teamScores.ContainsKey(t))
+                _teamScores[t] = 0;
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // queries (QC PlayerScore_Sort / winning-team checks)
+    // ---------------------------------------------------------------------------------------------
+
+    /// <summary>The leader by the active gametype's primary key (QC the top of PlayerScore_Sort) — falls back to
+    /// SP_SCORE in a plain DM — or null when no one is registered. Spectators (FRAGS_SPECTATOR) are skipped
+    /// (QC PlayerScore_Sort's <c>nospectators</c>): a stale spectator score row must not be returned as leader.</summary>
+    public Player? Leader
+    {
+        get
+        {
+            Player? best = null;
+            foreach (var row in _rows.Values)
+            {
+                if (row.Player.FragsStatus == Player.FragsSpectator) continue;
+                if (best is null || GameScores.ComparePlayers(row.Player, best) > 0)
+                    best = row.Player;
+            }
+            return best;
+        }
+    }
+
+    /// <summary>
+    /// The leading team's color code by running team score, or <see cref="Teams.None"/> if no team scored.
+    /// Reads through <see cref="TeamScore"/> so it reflects the gametype's totals when a gametype owns them.
+    /// </summary>
+    public int LeaderTeam
+    {
+        get
+        {
+            int bestTeam = Teams.None, bestScore = int.MinValue;
+            // scan the seeded slots (read-through resolves each to the authoritative value).
+            foreach (int team in _teamScores.Keys)
+            {
+                int score = TeamScore(team);
+                if (score > bestScore) { bestScore = score; bestTeam = team; }
+            }
+            return bestTeam;
+        }
+    }
+
+    /// <summary>
+    /// Rows in scoreboard order — QC <c>PlayerScore_Sort</c> via <see cref="GameScores.ComparePlayers"/>: the
+    /// active gametype's primary key (CTF_CAPS / RACE_FASTEST / DOM_TICKS / LMS_RANK / …), then secondary, then
+    /// the registration-order column tiebreaks (so a plain DM still falls back to SP_SCORE then deaths). This
+    /// makes the scoreboard sort per-mode rather than always by SP_SCORE. Allocates; for display, not the hot path.
+    /// </summary>
+    public List<PlayerScoreRow> Sorted()
+    {
+        // QC PlayerScore_Sort's nospectators guard: exclude FRAGS_SPECTATOR rows so a stale spectator doesn't rank.
+        var list = new List<PlayerScoreRow>();
+        foreach (var row in _rows.Values)
+            if (row.Player.FragsStatus != Player.FragsSpectator) list.Add(row);
+        // GameScores.ComparePlayers(a, b) > 0 ⇒ a ranks ahead; List.Sort wants negative when a should come first.
+        list.Sort(static (a, b) => -GameScores.ComparePlayers(a.Player, b.Player));
+        return list;
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // lifecycle (QC Score_ClearAll / scores_initialized)
+    // ---------------------------------------------------------------------------------------------
+
+    /// <summary>QC <c>Score_ClearAll</c>: zero every player row and every team score (e.g. on map reset).</summary>
+    public void ClearAll()
+    {
+        foreach (var row in _rows.Values)
+            row.Clear();
+        foreach (int team in new List<int>(_teamScores.Keys))
+            _teamScores[team] = 0;
+        _checkrulesFirstblood = false; // QC: a match restart re-arms first blood. T40.
+    }
+
+    /// <summary>
+    /// Subscribe this table to the obituary bus (QC the implicit GiveFrags inside Obituary). After this, the
+    /// table fills itself from <see cref="Combat.Death"/> for any registered player. <paramref name="teamGame"/>
+    /// fixes the matrix for the active gametype. <paramref name="ownsScore"/> makes this table the
+    /// authoritative frag-scorer (writes SP_SCORE + team totals); leave it false (the default) when a gametype
+    /// already scores frags so the table only records the aux columns and reads SP_SCORE through. Idempotent.
+    /// The handler ignores deaths of non-players and of unregistered players (e.g. monsters), matching QC's
+    /// "only score player edicts" guard.
+    /// </summary>
+    public void SubscribeToDeaths(bool teamGame, bool ownsScore = false)
+    {
+        if (_deathHandler is not null)
+            return;
+        _teamGameForBus = teamGame;
+        OwnsScore = ownsScore;
+        _deathHandler = OnDeath;
+        Combat.Death.Add(_deathHandler);
+        Subscribed = true;
+
+        // QC Create_Notification_Entity_Choice sets each MSG_CHOICE's arg counts to max(optionA, optionB) so a
+        // CHOICE_FRAG/FRAGGED/TYPEFRAG Send (1s + spree_cen + ping/health/armor) validates; the C# Choice()
+        // builder doesn't, so back-fill those counts here before any obituary emits (idempotent). T40.
+        DeathMessages.EnsureChoiceArgCounts();
+    }
+
+    /// <summary>Unsubscribe from the obituary bus (QC teardown on map end).</summary>
+    public void UnsubscribeFromDeaths()
+    {
+        if (_deathHandler is null)
+            return;
+        Combat.Death.Remove(_deathHandler);
+        _deathHandler = null;
+        Subscribed = false;
+    }
+
+    private bool _teamGameForBus;
+
+    private bool OnDeath(ref DeathEvent ev)
+    {
+        // QC Obituary sanity: only score player victims that this table knows about.
+        if (ev.Victim is not Player victim || !_rows.ContainsKey(victim))
+            return false; // not consumed — other Death subscribers (gametype, mutators) still run
+
+        Player? attacker = ev.Attacker as Player;
+        // Only credit a registered attacker (an unknown attacker scores no frag, like a world death).
+        if (attacker is not null && !_rows.ContainsKey(attacker))
+            attacker = null;
+
+        Obituary(attacker, victim, ev.DeathType, _teamGameForBus);
+        return false;
+    }
+}

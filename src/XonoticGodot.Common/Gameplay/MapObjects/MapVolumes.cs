@@ -1,0 +1,236 @@
+// Port of the per-frame volume-scan brush volumes from qcsrc/common/mapobjects/func/:
+//   conveyor.qc -> trigger_conveyor / func_conveyor  (mark overlapping pushables with a conveyor velocity)
+//   ladder.qc   -> func_ladder / func_water          (mark overlapping players as climbing a ladder)
+//
+// These are SELF-THINKING volumes: each frame they FindInRadius their own box and tag the overlapping
+// entities with a per-entity field the MOVEMENT code then consumes. The CONSUMER side is ALREADY ported in
+// PlayerPhysics:
+//   - conveyor: PlayerPhysics subtracts Entity.ConveyorMoveDir before the slide-move and adds it back after
+//     (sys_phys_update), so acceleration is computed in the conveyor's frame.
+//   - ladder:   PlayerPhysics uses Entity.LadderEntity for the gravity-free climb branch, and special-cases a
+//     func_water ladder to drive the waterlevel from the volume bounds.
+// Only the PRODUCER (this file) was missing: the spawnfunc + the per-frame think that assigns those fields.
+//
+// The volume-overlap pattern is copied from Triggers.SwampThink: FindInRadius on the box center/radius +
+// re-tag each frame + reschedule the think for the next frame. The CSQC draw/networking halves and the bot
+// waypoint tracetest tail of func_ladder_init (bot navigation only) are out of scope.
+
+using System.Numerics;
+using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Services;
+
+namespace XonoticGodot.Common.Gameplay;
+
+/// <summary>
+/// The per-frame volume-scan brush volumes: trigger_conveyor / func_conveyor (push) and func_ladder /
+/// func_water (climb). Each setup is a spawnfunc registered by <see cref="MapObjectsRegistry"/>; the producer
+/// thinks assign <see cref="Entity.ConveyorEntity"/> / <see cref="Entity.LadderEntity"/> on overlapping
+/// entities for the (already-ported) PlayerPhysics consumer.
+/// </summary>
+public static class MapVolumes
+{
+    // ===================================================================
+    //  trigger_conveyor / func_conveyor (func/conveyor.qc)
+    // ===================================================================
+
+    /// <summary><c>spawnfunc(trigger_conveyor)</c> — a trigger-volume conveyor (no brush model collision).</summary>
+    public static void TriggerConveyorSetup(Entity this_)
+    {
+        MapMover.SetMovedir(this_);
+        MapMover.InitTrigger(this_); // WarpZoneLib_ExactTrigger_Init analogue: SOLID_TRIGGER + the bbox
+        this_.ClassName = "trigger_conveyor";
+        ConveyorInit(this_);
+    }
+
+    /// <summary><c>spawnfunc(func_conveyor)</c> — a solid brush conveyor (a moving-brush-style surface, MOVETYPE_NONE).</summary>
+    public static void FuncConveyorSetup(Entity this_)
+    {
+        MapMover.SetMovedir(this_);
+        MapMover.InitMovingBrushTrigger(this_);
+        this_.MoveType = MoveType.None; // QC set_movetype(this, MOVETYPE_NONE)
+        this_.ClassName = "func_conveyor";
+        ConveyorInit(this_);
+    }
+
+    /// <summary>QC <c>conveyor_init</c>: default speed 200, bake movedir*=speed, start the per-frame think.</summary>
+    private static void ConveyorInit(Entity this_)
+    {
+        if (this_.Speed == 0f)
+            this_.Speed = 200f;
+        this_.MoveDir *= this_.Speed;     // QC: movedir *= speed (the cached per-tick conveyor velocity)
+        this_.Think = ConveyorThink;
+        this_.NextThink = MapMover.Now();
+        if (!string.IsNullOrEmpty(this_.TargetName))
+            this_.Use = ConveyorLegacyUse; // QC generic_netlinked_legacy_use: a targeted conveyor toggles
+        // QC: this.reset = generic_netlinked_reset; this.reset(this) — a TARGETED conveyor starts OFF unless
+        // START_ENABLED (it's toggled on by its trigger); an untargeted one is always ACTIVE.
+        GenericNetlinkedReset(this_);
+        MapMover.IndexRegister(this_);
+    }
+
+    /// <summary>QC <c>generic_netlinked_reset</c>: targeted -&gt; START_ENABLED ? ACTIVE : NOT; untargeted -&gt; ACTIVE.</summary>
+    private static void GenericNetlinkedReset(Entity e)
+    {
+        if (!string.IsNullOrEmpty(e.TargetName))
+            e.Active = (e.SpawnFlags & MapMover.SpawnStartEnabled) != 0 ? MapMover.ActiveActive : MapMover.ActiveNot;
+        else
+            e.Active = MapMover.ActiveActive;
+    }
+
+    /// <summary>QC <c>generic_netlinked_legacy_use</c> (toggle active) for a targeted conveyor.</summary>
+    private static void ConveyorLegacyUse(Entity self, Entity actor)
+        => LogicGates.GenericSetActive(self, MapMover.ActiveToggle);
+
+    // QC kept the conveyed/laddered entities in inventory lists (g_conveyed / g_ladderents) so the release
+    // pass walks EVERY tagged entity regardless of position — a FindInRadius release would miss an entity that
+    // left the sphere in one frame and leave it stuck. The port has no such IL, so each producer tracks the
+    // entities it currently holds in a per-producer set (the g_conveyed/g_ladderents analogue).
+    private static readonly Dictionary<Entity, List<Entity>> _conveyed = new();
+    private static readonly Dictionary<Entity, List<Entity>> _laddered = new();
+
+    /// <summary>Drop the per-producer conveyed/laddered tracking lists (QC clears g_conveyed/g_ladderents on map (re)load).</summary>
+    public static void ResetTracking()
+    {
+        _conveyed.Clear();
+        _laddered.Clear();
+    }
+
+    /// <summary>
+    /// QC <c>conveyor_think</c> (SVQC half): release every entity this conveyor was carrying, then — if active —
+    /// re-tag the overlapping pushable entities with this conveyor + its movedir. Non-client carried entities
+    /// are also nudged by movedir*frametime (clients are moved via velocity in PlayerPhysics). Reschedules every
+    /// frame.
+    /// </summary>
+    private static void ConveyorThink(Entity self)
+    {
+        self.NextThink = MapMover.Now();
+        if (Api.Services is null)
+            return;
+
+        // release everything we were carrying (QC IL_EACH(g_conveyed, it.conveyor == this) clear).
+        List<Entity> held = Held(_conveyed, self);
+        foreach (Entity it in held)
+            if (ReferenceEquals(it.ConveyorEntity, self))
+            {
+                it.ConveyorEntity = null;
+                it.ConveyorMoveDir = Vector3.Zero;
+            }
+        held.Clear();
+
+        if (self.Active != MapMover.ActiveActive)
+            return;
+
+        foreach (Entity it in Api.Entities.FindInRadius(BoxCenter(self), BoxRadius(self)).ToList())
+        {
+            // QC: it.conveyor.active == ACTIVE_NOT && isPushable(it) — claim only entities not held by an ACTIVE
+            // conveyor (a null conveyor reads as world.active == ACTIVE_NOT, i.e. claimable).
+            bool claimable = it.ConveyorEntity is null || it.ConveyorEntity.Active == MapMover.ActiveNot;
+            if (!claimable || !MapMover.IsPushable(it))
+                continue;
+            if (!BoxesOverlap(self.AbsMin, self.AbsMax, it.AbsMin, it.AbsMax))
+                continue;
+
+            it.ConveyorEntity = self;
+            it.ConveyorMoveDir = self.MoveDir;
+            held.Add(it);
+        }
+
+        // QC: non-client carried ents are advanced by movedir*frametime (clients move via velocity in physics).
+        float dt = MapMover.FrameTime();
+        foreach (Entity it in held)
+        {
+            if ((it.Flags & EntFlags.Client) != 0)
+                continue; // done in SV_PlayerPhysics
+            MapMover.SetOrigin(it, it.Origin + self.MoveDir * dt);
+        }
+    }
+
+    // ===================================================================
+    //  func_ladder / func_water (func/ladder.qc)
+    // ===================================================================
+
+    /// <summary><c>spawnfunc(func_ladder)</c> — a climbable volume (sets LadderEntity on overlapping players).</summary>
+    public static void FuncLadderSetup(Entity this_)
+    {
+        this_.ClassName = "func_ladder";
+        LadderInit(this_);
+    }
+
+    /// <summary>
+    /// <c>spawnfunc(func_water)</c> — shares func_ladder's volume scan; PlayerPhysics special-cases the
+    /// "func_water" classname to drive the waterlevel from the volume bounds (CheckWater skips its probe).
+    /// </summary>
+    public static void FuncWaterSetup(Entity this_)
+    {
+        this_.ClassName = "func_water";
+        LadderInit(this_);
+    }
+
+    /// <summary>
+    /// QC <c>func_ladder_init</c> (the part that matters server-side): WarpZoneLib_ExactTrigger_Init analogue
+    /// (the trigger bbox) + the per-frame think. The bot-waypoint tracetest tail (after IL_PUSH) is bot
+    /// navigation only and is skipped.
+    /// </summary>
+    private static void LadderInit(Entity this_)
+    {
+        MapMover.InitTrigger(this_); // SOLID_TRIGGER + the brush bbox (the exact-trigger init analogue)
+        this_.Think = LadderThink;
+        this_.NextThink = MapMover.Now();
+        MapMover.IndexRegister(this_);
+    }
+
+    /// <summary>
+    /// QC <c>func_ladder_think</c> (SVQC half): release every player this ladder was holding, then re-tag the
+    /// overlapping live (non-noclip, non-dead) players with this ladder. Reschedules every frame.
+    /// </summary>
+    private static void LadderThink(Entity self)
+    {
+        self.NextThink = MapMover.Now();
+        if (Api.Services is null)
+            return;
+
+        // release everything we were holding (QC IL_EACH(g_ladderents, it.ladder_entity == this) clear).
+        List<Entity> held = Held(_laddered, self);
+        foreach (Entity it in held)
+            if (ReferenceEquals(it.LadderEntity, self))
+                it.LadderEntity = null;
+        held.Clear();
+
+        foreach (Entity it in Api.Entities.FindInRadius(BoxCenter(self), BoxRadius(self)).ToList())
+        {
+            // QC: !it.ladder_entity && IS_PLAYER(it) && it.move_movetype != MOVETYPE_NOCLIP && !IS_DEAD(it)
+            if (it.LadderEntity is not null)
+                continue;
+            if ((it.Flags & EntFlags.Client) == 0)
+                continue;
+            if (it.MoveType == MoveType.Noclip)
+                continue;
+            if (MapMover.IsDead(it))
+                continue;
+            if (!BoxesOverlap(self.AbsMin, self.AbsMax, it.AbsMin, it.AbsMax))
+                continue;
+
+            it.LadderEntity = self;
+            held.Add(it);
+        }
+    }
+
+    // ---- helpers (the SwampThink box center/radius + an AABB overlap, mirroring Teleporters) -------------
+
+    /// <summary>The per-producer "currently held" list (the g_conveyed / g_ladderents IL analogue), created on demand.</summary>
+    private static List<Entity> Held(Dictionary<Entity, List<Entity>> map, Entity producer)
+    {
+        if (!map.TryGetValue(producer, out List<Entity>? list))
+            map[producer] = list = new List<Entity>();
+        return list;
+    }
+
+    private static Vector3 BoxCenter(Entity e) => (e.AbsMin + e.AbsMax) * 0.5f;
+    private static float BoxRadius(Entity e) => (e.AbsMax - e.AbsMin).Length() * 0.5f + 1f;
+
+    /// <summary>QC <c>WarpZoneLib_BoxTouchesBox</c> / the exact-trigger AABB test: do two AABBs overlap?</summary>
+    private static bool BoxesOverlap(Vector3 amin, Vector3 amax, Vector3 bmin, Vector3 bmax)
+        => amin.X <= bmax.X && amax.X >= bmin.X
+        && amin.Y <= bmax.Y && amax.Y >= bmin.Y
+        && amin.Z <= bmax.Z && amax.Z >= bmin.Z;
+}

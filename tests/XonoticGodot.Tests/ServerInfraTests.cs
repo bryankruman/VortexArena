@@ -1,0 +1,649 @@
+using System.Collections.Generic;
+using System.Numerics;
+using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Gameplay;
+using XonoticGodot.Common.Physics;
+using XonoticGodot.Common.Services;
+using XonoticGodot.Engine.Collision;
+using XonoticGodot.Engine.Simulation;
+using XonoticGodot.Server;
+using Xunit;
+
+namespace XonoticGodot.Tests;
+
+/// <summary>
+/// Tests for §5 (server infrastructure): bans, cheats, anticheat, the vote system, the event log, the
+/// player-stats report, campaign, demo control, the map rotation/vote flow, and the timeout system — plus a
+/// GameWorld integration smoke that exercises the end-of-match map rotation.
+/// </summary>
+[Collection("GlobalState")]
+public class ServerInfraTests
+{
+    public ServerInfraTests()
+    {
+        Api.Services = new EngineServices(new CollisionWorld());
+        Cvars.RegisterDefaults();
+    }
+
+    private static Player NewPlayer(string name = "p", string ip = "1.2.3.4", string id = "")
+        => new() { NetName = name, NetAddress = ip, PersistentId = id, Flags = EntFlags.Client, PlayerId = 1 };
+
+    // =========================================================================================== bans
+
+    [Fact]
+    public void Bans_GetClientIp_IPv4_DerivesMasks()
+    {
+        var p = NewPlayer(ip: "12.34.56.78:27015");
+        ClientBanIp ip = Bans.GetClientIp(p);
+        Assert.True(ip.Ok);
+        Assert.Equal("12", ip.Mask8);
+        Assert.Equal("12.34", ip.Mask16);
+        Assert.Equal("12.34.56", ip.Mask24);
+        Assert.Equal("12.34.56.78", ip.Mask32);
+    }
+
+    [Fact]
+    public void Bans_GetClientIp_RejectsLocalAndBot()
+    {
+        Assert.False(Bans.GetClientIp(NewPlayer(ip: "bot")).Ok);
+        Assert.False(Bans.GetClientIp(NewPlayer(ip: "local")).Ok);
+        Assert.False(Bans.GetClientIp(NewPlayer(ip: "")).Ok);
+    }
+
+    [Fact]
+    public void Bans_InsertAndCheck_ByIp()
+    {
+        var bans = new Bans();
+        Assert.True(bans.Insert("12.34.56.78", 100f, "test"));
+        Assert.True(bans.IsClientBanned(NewPlayer(ip: "12.34.56.78:5000")));
+        Assert.False(bans.IsClientBanned(NewPlayer(ip: "99.99.99.99")));
+    }
+
+    [Fact]
+    public void Bans_IdMode_IpBanOnlyCatchesAnonymous()
+    {
+        Cvars.Set("g_banned_list_idmode", "1");
+        var bans = new Bans();
+        bans.Insert("12.34.56", 100f, "subnet ban"); // a /24 IP ban
+        // anonymous (no crypto id) on that subnet → banned
+        Assert.True(bans.IsClientBanned(NewPlayer(ip: "12.34.56.78", id: "")));
+        // authenticated (has a crypto id) → NOT caught by the IP ban under idmode
+        Assert.False(bans.IsClientBanned(NewPlayer(ip: "12.34.56.78", id: "ABC123")));
+    }
+
+    [Fact]
+    public void Bans_CryptoIdBan_AlwaysWins()
+    {
+        var bans = new Bans();
+        bans.Insert("DEADBEEF", 100f, "id ban");
+        Assert.True(bans.IsClientBanned(NewPlayer(ip: "9.9.9.9", id: "DEADBEEF")));
+    }
+
+    [Fact]
+    public void Bans_Delete_RemovesBan()
+    {
+        var bans = new Bans();
+        bans.Insert("5.5.5.5", 100f, "x");
+        Assert.True(bans.IsClientBanned(NewPlayer(ip: "5.5.5.5")));
+        Assert.True(bans.Delete(0));
+        Assert.False(bans.IsClientBanned(NewPlayer(ip: "5.5.5.5")));
+    }
+
+    [Fact]
+    public void Bans_SaveLoad_RoundTripsThroughCvar()
+    {
+        var bans = new Bans();
+        bans.Insert("7.7.7.7", 500f, "x");
+        Assert.StartsWith("1 ", Cvars.String("g_banned_list"));
+        var reloaded = new Bans();
+        reloaded.Load();
+        Assert.True(reloaded.IsClientBanned(NewPlayer(ip: "7.7.7.7")));
+    }
+
+    [Fact]
+    public void Bans_PrefixList_MuteMatchesByIpAndId()
+    {
+        var p = NewPlayer(ip: "1.2.3.4", id: "ABCDEF");
+        Bans.AddToList(p, "g_chatban_list");
+        Assert.True(Bans.PlayerInList(p, "g_chatban_list"));
+        Assert.True(Bans.PlayerInList(NewPlayer(ip: "1.2.3.4"), "g_chatban_list"));
+        Assert.False(Bans.PlayerInList(NewPlayer(ip: "9.9.9.9"), "g_chatban_list"));
+        Bans.RemoveFromList(p, "g_chatban_list");
+        Assert.False(Bans.PlayerInList(p, "g_chatban_list"));
+    }
+
+    // =========================================================================================== cheats
+
+    [Fact]
+    public void Cheats_GatedBySvCheats()
+    {
+        var c = new Cheats();
+        Cvars.Set("sv_cheats", "0");
+        c.Init();
+        var p = NewPlayer();
+        Assert.False(c.Allowed(p));
+        Assert.Equal(EntFlags.Client, p.Flags & ~EntFlags.GodMode); // god not set
+
+        Cvars.Set("sv_cheats", "1");
+        c.Init();
+        Assert.True(c.Allowed(p));
+        Assert.True(c.Command(p, new[] { "god" }));
+        Assert.True((p.Flags & EntFlags.GodMode) != 0);
+        Assert.Equal(1, c.CheatCountTotal);
+    }
+
+    [Fact]
+    public void Cheats_NoclipAndFlyToggle()
+    {
+        var c = new Cheats();
+        Cvars.Set("sv_cheats", "1");
+        c.Init();
+        var p = NewPlayer();
+        c.Command(p, new[] { "noclip" });
+        Assert.Equal(MoveType.Noclip, p.MoveType);
+        c.Command(p, new[] { "noclip" });
+        Assert.Equal(MoveType.Walk, p.MoveType);
+    }
+
+    [Fact]
+    public void Cheats_GiveAll_GrantsWeaponsAndResources()
+    {
+        GameRegistries.Bootstrap(); // ensure the weapon registry is populated
+        var c = new Cheats();
+        Cvars.Set("sv_cheats", "1");
+        c.Init();
+        var p = NewPlayer();
+        Assert.True(c.GiveAll(p));
+        Assert.True(p.OwnedWeapons.Count > 0);
+        Assert.True(p.GetResource(ResourceType.Health) > 0f);
+    }
+
+    // ====================================================================================== anticheat
+
+    [Fact]
+    public void AntiCheat_Mean_PowerMean()
+    {
+        var m = new Mean(1);          // arithmetic mean
+        m.Accumulate(2, 1);
+        m.Accumulate(4, 1);
+        Assert.Equal(3.0, m.Evaluate(), 6);
+
+        var empty = new Mean(5);
+        Assert.Equal(0.0, empty.Evaluate(), 6); // no samples → 0
+    }
+
+    [Fact]
+    public void AntiCheat_MovementOddity_BotlikeReversalScoresHigh()
+    {
+        // a near-180° reversal is "odd"; an identical direction is not.
+        double rev = AntiCheat.MovementOddity(new Vector3(1, 0, 0), new Vector3(-1, 0, 0));
+        double same = AntiCheat.MovementOddity(new Vector3(1, 0, 0), new Vector3(1, 0, 0));
+        Assert.True(rev > 0);
+        Assert.Equal(0.0, same, 6);
+    }
+
+    [Fact]
+    public void AntiCheat_Physics_AccumulatesWithoutThrowing()
+    {
+        var ac = new AntiCheat();
+        var p = NewPlayer();
+        ac.Init(p, 0f);
+        var input = new MovementInput { ViewAngles = new Vector3(0, 90, 0), MoveValues = new Vector3(400, 0, 0), FrameTime = 0.014f };
+        for (int i = 0; i < 5; i++)
+            ac.Physics(p, input, i * 0.014f, 0.014f, 0.014f, 1f);
+        // the speedhack baseline gets seeded after the first frame.
+        Assert.NotEqual(0f, ac.Of(p).SpeedhackOffset);
+    }
+
+    [Fact]
+    public void AntiCheat_Display_Verdicts()
+    {
+        Assert.EndsWith(":N", AntiCheat.Display(0.0, 200, 120, 0.2f, 0.5f)); // below mi, enough time → clean
+        Assert.EndsWith(":Y", AntiCheat.Display(0.9, 200, 120, 0.2f, 0.5f)); // above ma → flagged
+        Assert.EndsWith(":-", AntiCheat.Display(0.9, 10, 120, 0.2f, 0.5f));  // not enough time → inconclusive
+    }
+
+    // ============================================================================================ vote
+
+    [Fact]
+    public void Vote_CheckNasty_RejectsInjection()
+    {
+        Assert.False(VoteController.CheckNasty("restart; quit"));
+        Assert.False(VoteController.CheckNasty("map $foo"));
+        Assert.True(VoteController.CheckNasty("gotomap dance"));
+    }
+
+    [Fact]
+    public void Vote_CheckInList_WholeWordAndMapNormalization()
+    {
+        string list = "restart gotomap endmatch";
+        Assert.True(VoteController.CheckInList("gotomap", list));
+        Assert.True(VoteController.CheckInList("map", list));   // map → gotomap
+        Assert.True(VoteController.CheckInList("chmap", list)); // chmap → gotomap
+        Assert.False(VoteController.CheckInList("quit", list));
+    }
+
+    [Fact]
+    public void Vote_CallAndPass_SinglePlayerAutoMajority()
+    {
+        var p = NewPlayer();
+        var roster = new List<Player> { p };
+        var vc = new VoteController { Roster = () => roster };
+        string? ran = null;
+        vc.VotePassed = cmd => ran = cmd;
+
+        var ctx = new CommandContext(new[] { "vote", "call", "restart" }, isServerConsole: false, caller: p);
+        vc.Execute(ctx);
+        // one voter, auto-yes → majority(0.5) needs 1 → passes immediately, running "defer 1 restart".
+        Assert.Equal("defer 1 restart", ran);
+        Assert.False(vc.Active);
+    }
+
+    [Fact]
+    public void Vote_Reject_WhenMajorityNo()
+    {
+        var a = NewPlayer("a"); var b = NewPlayer("b"); var c = NewPlayer("c");
+        var roster = new List<Player> { a, b, c };
+        var vc = new VoteController { Roster = () => roster };
+        bool ran = false; vc.VotePassed = _ => ran = true;
+
+        vc.Execute(new CommandContext(new[] { "vote", "call", "endmatch" }, false, a)); // a auto-yes
+        vc.Execute(new CommandContext(new[] { "vote", "no" }, false, b));
+        vc.Execute(new CommandContext(new[] { "vote", "no" }, false, c));
+        // 2 no of 3 → yes can't reach the needed 2 → rejected.
+        Assert.False(vc.Active);
+        Assert.False(ran);
+    }
+
+    [Fact]
+    public void Vote_MasterLogin_GrantsAndDoRuns()
+    {
+        Cvars.Set("sv_vote_master", "1");
+        Cvars.Set("sv_vote_master_password", "secret");
+        var p = NewPlayer();
+        var vc = new VoteController { Roster = () => new List<Player> { p } };
+        string? ran = null; vc.VotePassed = cmd => ran = cmd;
+
+        vc.Execute(new CommandContext(new[] { "vote", "master", "login", "secret" }, false, p));
+        Assert.True(vc.IsMaster(p));
+        vc.Execute(new CommandContext(new[] { "vote", "master", "do", "restart" }, false, p));
+        Assert.Equal("defer 1 restart", ran);
+    }
+
+    // ========================================================================================= gamelog
+
+    [Fact]
+    public void GameLog_Echo_CapturesAndFormatsJoin()
+    {
+        var log = new GameLog();
+        var p = NewPlayer("Frag", "1.2.3.4");
+        log.Join(p);
+        Assert.Contains(log.Recent, l => l.StartsWith(":join:1:") && l.EndsWith(":Frag"));
+    }
+
+    [Fact]
+    public void GameLog_ConsoleSink_GatedByCvar()
+    {
+        var captured = new List<string>();
+        var log = new GameLog { ConsoleSink = captured.Add };
+        Cvars.Set("sv_eventlog_console", "0");
+        log.Echo(":test:1");
+        Assert.Empty(captured);
+        Cvars.Set("sv_eventlog_console", "1");
+        log.Echo(":test:2");
+        Assert.Single(captured);
+    }
+
+    // ===================================================================================== playerstats
+
+    [Fact]
+    public void PlayerStats_DisabledWithoutUri()
+    {
+        var ps = new PlayerStats();
+        Cvars.Set("g_playerstats_gamereport_uri", "");
+        ps.Init();
+        Assert.False(ps.Enabled);
+        Assert.False(ps.DelayMapVote);
+    }
+
+    [Fact]
+    public void PlayerStats_AccumulatesAndBuildsReport()
+    {
+        var ps = new PlayerStats();
+        Cvars.Set("g_playerstats_gamereport_uri", "http://example/submit");
+        ps.Init();
+        Assert.True(ps.Enabled);
+
+        var p = NewPlayer("Frag", id: "UID1");
+        ps.AddPlayer(p);
+        ps.EventPlayer(p, PlayerStats.Wins, 1);
+        ps.EventPlayer(p, "kills-1", 5);
+
+        Assert.Single(ps.Players);
+        Assert.Equal("UID1", ps.Players[0]);
+
+        string report = ps.BuildReport(120f);
+        Assert.StartsWith("V 9\n", report);
+        Assert.Contains("P UID1", report);
+        Assert.Contains("e wins 1", report);
+    }
+
+    [Fact]
+    public void PlayerStats_GameReport_WarmupDiscards()
+    {
+        var ps = new PlayerStats { IsWarmup = () => true };
+        Cvars.Set("g_playerstats_gamereport_uri", "http://example/submit");
+        ps.Init();
+        var p = NewPlayer();
+        ps.AddPlayer(p);
+        string report = ps.GameReport(true, new[] { p }, 60f, false);
+        Assert.Equal("", report);          // warmup → discarded
+        Assert.False(ps.DelayMapVote);     // never blocks the map vote
+    }
+
+    // ========================================================================================= campaign
+
+    [Fact]
+    public void Campaign_ParseCsvLine_HandlesQuotesAndEmpties()
+    {
+        var f = Campaign.ParseCsvLine("\"dm\",\"boil\",\"5\",\"2\",\"10\",,,\"Deathmatch\",\"desc\"");
+        Assert.Equal("dm", f[0]);
+        Assert.Equal("boil", f[1]);
+        Assert.Equal("5", f[2]);
+        Assert.Equal("", f[5]); // empty timelimit field
+        Assert.Equal("", f[6]); // empty mutators field
+    }
+
+    [Fact]
+    public void Campaign_Load_SkipsCommentsAndIndexesDataRows()
+    {
+        string file =
+            "//campaign:Test Campaign\n" +
+            "//\"game\",\"mapname\",...\n" +
+            "\"dm\",\"boil\",\"5\",\"2\",\"10\",,,\"DM\",\"d\"\n" +
+            "\"ctf\",\"dance\",\"9\",\"3\",\"3\",,,\"CTF\",\"d\"\n";
+        var c = new Campaign { FileReader = _ => file };
+        int n = c.Load(0, 2);
+        Assert.Equal(2, n);
+        Assert.Equal("Test Campaign", c.Title);
+        Assert.Equal("dm", c.Entries[0].Gametype);
+        Assert.Equal("boil", c.Entries[0].MapName);
+        Assert.Equal(5f, c.Entries[0].Bots);
+
+        // offset 1 → the second data row is entry[0]
+        var c2 = new Campaign { FileReader = _ => file };
+        c2.Load(1, 1);
+        Assert.Equal("dance", c2.Entries[0].MapName);
+    }
+
+    [Fact]
+    public void Campaign_PreInit_AppliesLevelCvars()
+    {
+        // columns: game, mapname, bots, skill, fraglimit, timelimit, mutators, desc, longdesc
+        // here: dm/boil, 7 bots, skill 3, fraglimit 20, timelimit 15.
+        string file = "//campaign:T\n\"dm\",\"boil\",\"7\",\"3\",\"20\",\"15\",,\"DM\",\"d\"\n";
+        Cvars.Set("_campaign_index", "0");
+        Cvars.Set("_campaign_name", "");
+        Cvars.Set("g_campaign_skill", "1");
+        Cvars.Set("sv_cheats", "0");
+        var c = new Campaign { FileReader = _ => file };
+        Assert.True(c.PreInit());
+        Assert.Equal("dm", c.CurrentGametype);
+        Assert.Equal("boil", c.CurrentMap);
+        Assert.Equal(7f, Cvars.Float("bot_number"));
+        Assert.Equal(4f, Cvars.Float("skill")); // g_campaign_skill(1) + level skill(3)
+        c.PostInit();
+        Assert.Equal(20f, Cvars.Float("fraglimit"));
+        Assert.Equal(15f, Cvars.Float("timelimit"));
+    }
+
+    [Fact]
+    public void Campaign_WinLose_RequiresSoleWinner()
+    {
+        string file = "//campaign:T\n\"dm\",\"boil\",\"5\",\"2\",\"10\",,,\"DM\",\"d\"\n";
+        var c = new Campaign { FileReader = _ => file, CfgReader = () => "", CfgWriter = _ => { } };
+        c.PreInit();
+        var human = NewPlayer();
+        // sole winner → won
+        Assert.Equal(1, c.PreIntermission(new[] { human }, _ => true, false, 0, 1f));
+        // not a winner → lost
+        Assert.Equal(0, c.PreIntermission(new[] { human }, _ => false, false, 0, 1f));
+    }
+
+    [Fact]
+    public void Campaign_ProgressSave_FiresOnProgressSavedHook()
+    {
+        // Winning the frontier level advances + persists g_campaign<id>_index; the OnProgressSaved hook is how an
+        // in-process listen server mirrors that back to the shared menu cvar store so the campaign list unlocks.
+        string file = "//campaign:T\n\"dm\",\"boil\",\"5\",\"2\",\"10\",,,\"DM\",\"d\"\n";
+        Cvars.Set("_campaign_index", "0");
+        Cvars.Set("_campaign_name", "test");
+        Cvars.Set("sv_cheats", "0");
+        var saved = new Dictionary<string, float>();
+        var c = new Campaign
+        {
+            FileReader = _ => file, CfgReader = () => "", CfgWriter = _ => { },
+            OnProgressSaved = (n, v) => saved[n] = v,
+        };
+        c.PreInit();
+        Assert.Equal(1, c.PreIntermission(new[] { NewPlayer() }, _ => true, false, 0, 1f)); // sole winner @ frontier
+        Assert.Equal(1f, saved["g_campaigntest_index"]); // frontier advanced 0 -> 1
+        Assert.Equal(1f, saved["g_campaigntest_won"]);   // single-entry campaign also marks it won
+
+        // A replay of an already-completed level (Level 0 while the frontier is 2) must NOT regress progress.
+        saved.Clear();
+        Cvars.Set("g_campaigntest_index", "2");
+        c.PreIntermission(new[] { NewPlayer() }, _ => true, false, 0, 1f);
+        Assert.Empty(saved); // Level(0) != frontier(2) → no save
+    }
+
+    // ============================================================================================ demo
+
+    [Fact]
+    public void Demo_ShouldRecordClient_Modes()
+    {
+        var p = NewPlayer();
+        Assert.False(DemoControl.ShouldRecordClient(p, 0));
+        Assert.True(DemoControl.ShouldRecordClient(p, 1));  // in-game player
+        Assert.True(DemoControl.ShouldRecordClient(p, 2));  // all clients
+        Assert.False(DemoControl.ShouldRecordClient(new Player { IsBot = true }, 2)); // bots never
+    }
+
+    [Fact]
+    public void Demo_MatchStartStop()
+    {
+        Cvars.Set("sv_autodemo", "1");
+        string? started = null; bool stopped = false;
+        var demo = new DemoControl { StartRecording = n => started = n, StopRecording = () => stopped = true };
+        demo.OnMatchStart("boil", "dm", System.Array.Empty<Player>());
+        Assert.True(demo.Recording);
+        Assert.NotNull(started);
+        demo.OnMatchEnd();
+        Assert.False(demo.Recording);
+        Assert.True(stopped);
+    }
+
+    // ===================================================================================== map rotation
+
+    [Fact]
+    public void MapRotation_GetNextMap_Iterates()
+    {
+        Cvars.Set("g_maplist", "boil dance stormkeep");
+        Cvars.Set("g_maplist_shuffle", "0");
+        Cvars.Set("g_maplist_selectrandom", "0");
+        Cvars.Set("g_maplist_mostrecent", "");
+        var r = new MapRotation();
+        r.Init("boil");
+        string next = r.GetNextMap();
+        Assert.Equal("dance", next);
+    }
+
+    [Fact]
+    public void MapRotation_RecentMapsExcluded()
+    {
+        Cvars.Set("g_maplist", "boil dance");
+        Cvars.Set("g_maplist_shuffle", "0");
+        Cvars.Set("g_maplist_mostrecent_count", "2");
+        var r = new MapRotation();
+        r.MarkAsRecent("dance");
+        Assert.True(MapRotation.IsRecent("dance"));
+        r.Init("boil");
+        // dance is recent → iterate skips it → repeats boil (pass-2 fallback) since it's the only non-recent
+        string next = r.GetNextMap();
+        Assert.NotEqual("dance", next);
+    }
+
+    [Fact]
+    public void MapRotation_BuildBallot()
+    {
+        Cvars.Set("g_maplist", "boil dance stormkeep solarium");
+        Cvars.Set("g_maplist_shuffle", "0");
+        Cvars.Set("g_maplist_mostrecent", "");
+        var r = new MapRotation();
+        r.Init("boil");
+        var ballot = r.BuildBallot(3);
+        Assert.True(ballot.Count >= 2);
+        Assert.Equal(ballot.Count, new HashSet<string>(ballot).Count); // distinct
+    }
+
+    // ========================================================================================== timeout
+
+    [Fact]
+    public void Timeout_LeadThenPauseThenResume()
+    {
+        Cvars.Set("sv_timeout", "1");
+        Cvars.Set("sv_timeout_leadtime", "4");
+        Cvars.Set("sv_timeout_length", "120");
+        Cvars.Set("sv_timeout_number", "2");
+        Cvars.Set("timelimit", "0"); // no "too late" guard
+
+        float now = 0f;
+        var t = new TimeoutController { Clock = () => now };
+        var p = NewPlayer();
+        t.ResetAllowance(p);
+        Assert.True(t.CallTimeout(p, out _));
+        Assert.Equal(TimeoutController.LeadTime, t.Status);
+        Assert.Equal(1, t.AllowedOf(p)); // one used
+
+        now = 5f; t.Think();             // past leadtime (4s) → paused
+        Assert.True(t.IsPaused);
+
+        Assert.True(t.CallTimein(p, out _)); // shorten to resumetime (3s)
+        now = 10f; t.Think();                // resumetime elapsed → resumed
+        Assert.False(t.Active);
+    }
+
+    // ====================================================================== GameWorld end-of-match flow
+
+    [Fact]
+    public void GameWorld_EndOfMatch_RotatesToNextMap()
+    {
+        var world = new GameWorld(new CollisionWorld()) { MapName = "boil" };
+        string? changedTo = null;
+        world.Boot("dm");
+        // Boot publishes the world's own cvar store, so set the rotation cvars AFTER Boot.
+        Cvars.Set("g_maplist", "boil dance");
+        Cvars.Set("g_maplist_shuffle", "0");
+        Cvars.Set("g_maplist_votable", "0"); // no vote → silent rotation
+        Cvars.Set("g_maplist_mostrecent", "");
+        Cvars.Set("sv_mapchange_delay", "0");
+        world.Commands.ChangeLevelHandler = m => changedTo = m;
+        world.Commands.AddBotHandler = (_, _) => true;
+
+        // connect two bots so there is a roster, then force the match to end.
+        world.Clients.ClientConnect(isBot: true, netName: "bot1");
+        world.Clients.ClientConnect(isBot: true, netName: "bot2");
+        world.EndMatch();
+
+        // advance enough frames for intermission to elapse + the map flow to apply.
+        for (int i = 0; i < 80 && changedTo is null; i++)
+            world.Frame(0.1f);
+
+        Assert.Equal("dance", changedTo); // rotated from boil → dance
+        Assert.Equal("dance", world.SelectedNextMap);
+        Assert.True(MapRotation.IsRecent("dance"));
+    }
+
+    // ====================================================================== console chat / bot host sinks
+
+    [Fact]
+    public void CmdSay_WithChatHandler_BroadcastsWithoutLocalEcho()
+    {
+        var world = new GameWorld(new CollisionWorld());
+        world.Boot("dm");
+        Player? sawCaller = null;
+        string? sawMsg = null;
+        world.Commands.ChatHandler = (caller, msg, _) => { sawCaller = caller; sawMsg = msg; };
+
+        CommandContext ctx = world.Commands.Execute("say hello there", isServerConsole: false, caller: NewPlayer("alice"));
+
+        Assert.Equal("alice", sawCaller?.NetName);  // the broadcast pipeline received it...
+        Assert.Equal("hello there", sawMsg);
+        Assert.Equal("", ctx.Output.Trim());        // ...and it was NOT also echoed locally (no double on a listen server)
+    }
+
+    [Fact]
+    public void CmdSay_WithoutChatHandler_EchoesLocally()
+    {
+        var world = new GameWorld(new CollisionWorld());
+        world.Boot("dm");
+        world.Commands.ChatHandler = null;          // no broadcast pipeline wired
+
+        CommandContext ctx = world.Commands.Execute("say hi", isServerConsole: false, caller: NewPlayer("bob"));
+
+        Assert.Contains("hi", ctx.Output);          // falls back to a local echo so `say` isn't silent
+    }
+
+    [Fact]
+    public void BotConnect_AddsToRoster_AndDisconnectRemoves()
+    {
+        // The world-level mechanics NetGame's AddBot/RemoveBot host sinks drive: connect adds a (bot) client to
+        // the roster (the per-tick snapshot loop then networks it), disconnect drops it.
+        var world = new GameWorld(new CollisionWorld());
+        world.Boot("dm");
+        Assert.Equal(0, world.Clients.BotCount);
+
+        ClientManager.ClientInfo info = world.Clients.ClientConnect(isBot: true, netName: "[BOT] Sasha");
+        Assert.Equal(1, world.Clients.BotCount);
+        Assert.True(info.Player.IsBot);
+
+        Assert.True(world.Clients.ClientDisconnect(info.Player));
+        Assert.Equal(0, world.Clients.BotCount);
+    }
+
+    [Fact]
+    public void Map_ImmediatelyRoutesToChangeLevelHandler()
+    {
+        // DP `map`: an immediate changelevel — CmdMap invokes the host's ChangeLevelHandler right away (NetGame
+        // wires it to reboot the listen server on that map).
+        var world = new GameWorld(new CollisionWorld()) { MapName = "boil" };
+        world.Boot("dm");
+        string? changedTo = null;
+        world.Commands.ChangeLevelHandler = m => changedTo = m;
+
+        world.Commands.Execute("map dance", isServerConsole: true);
+
+        Assert.Equal("dance", changedTo);
+    }
+
+    [Fact]
+    public void GotoMap_QueuesThenRoutesToChangeLevelHandlerAtMatchEnd()
+    {
+        // DP `gotomap`: queue the map + end the match; after intermission the end-of-match flow routes the QUEUED
+        // map (it wins over the rotation/vote) to ChangeLevelHandler — what NetGame reboots the server on.
+        var world = new GameWorld(new CollisionWorld()) { MapName = "boil" };
+        world.Boot("dm");
+        Cvars.Set("g_maplist_votable", "0"); // no end-of-match vote → direct apply
+        Cvars.Set("sv_mapchange_delay", "0");
+        string? changedTo = null;
+        world.Commands.ChangeLevelHandler = m => changedTo = m;
+        world.Clients.ClientConnect(isBot: true, netName: "bot1"); // a roster so the match flow runs
+
+        world.Commands.Execute("gotomap dance", isServerConsole: true);
+        for (int i = 0; i < 80 && changedTo is null; i++)
+            world.Frame(0.1f);
+
+        Assert.Equal("dance", changedTo);            // gotomap's queued map won and reached the changelevel pipeline
+        Assert.Equal("dance", world.SelectedNextMap); // and is recorded as the chosen next map
+    }
+}

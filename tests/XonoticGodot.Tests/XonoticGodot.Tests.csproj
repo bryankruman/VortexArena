@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- xUnit tests for the Godot-free libraries: framework, physics math, collision, net round-trips,
+       asset parsers. The fidelity/golden-trace harnesses (planning/process/testing-strategy.md) grow here. -->
+  <PropertyGroup>
+    <TargetFramework>$(XonoticGodotTfm)</TargetFramework>
+    <RootNamespace>XonoticGodot.Tests</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\XonoticGodot.Common\XonoticGodot.Common.csproj" />
+    <ProjectReference Include="..\..\src\XonoticGodot.Engine\XonoticGodot.Engine.csproj" />
+    <ProjectReference Include="..\..\src\XonoticGodot.Net\XonoticGodot.Net.csproj" />
+    <ProjectReference Include="..\..\src\XonoticGodot.Formats\XonoticGodot.Formats.csproj" />
+    <ProjectReference Include="..\..\src\XonoticGodot.Server\XonoticGodot.Server.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,203 @@
+// Port of the item_*/weapon_* spawnfuncs: the SPAWNFUNC_ITEM(classname, ITEM_X) table across
+// common/items/item/*.qh + the powerup .qh files + server/items/spawning.qc (the compat aliases), and
+// weapon_defaultspawnfunc (server/weapons/spawning.qc:29) for the weapon_* classnames.
+//
+// Each spawnfunc resolves a classname to a Pickup def and calls StartItem.Spawn (mirroring QC's
+// SPAWNFUNC_BODY: `if (item && Item_IsDefinitionAllowed(item)) StartItem(this, item); else delete`). Weapon
+// items wrap the Weapon registry entry in a synthetic WeaponPickup (QC wpn.m_pickup) that seeds the world
+// item's weapon set + pickup ammo. Registered into SpawnFuncs by MapObjectsRegistry via Register().
+
+using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Services;
+
+namespace XonoticGodot.Common.Gameplay;
+
+/// <summary>
+/// Installs the item_*/weapon_* classname spawnfuncs into <see cref="SpawnFuncs"/> (QC SPAWNFUNC_ITEM +
+/// weapon_defaultspawnfunc). <see cref="Register"/> is called once from <see cref="MapObjectsRegistry"/>.
+/// </summary>
+public static class ItemSpawnFuncs
+{
+    // weapon-pickup defs are synthesized lazily (one per Weapon, keyed by NetName) so they're stable singletons.
+    private static readonly Dictionary<string, WeaponPickup> _weaponPickups = new(StringComparer.Ordinal);
+
+    // the canonical classname for each item NetName (QC m_canonical_spawnfunc), used by StartItem to set
+    // this.classname. Built from the same table Register() installs.
+    private static readonly Dictionary<string, string> _netNameToClassName = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// QC the SPAWNFUNC_ITEM table + the compat aliases + weapon_defaultspawnfunc: register every item_* /
+    /// weapon_* classname into <see cref="SpawnFuncs"/>. Idempotent (re-registering overwrites). Resolving a
+    /// def by NetName from <see cref="Items"/> means the [Item]-registered pickups (health/armor/
+    /// ammo/powerups) are picked up automatically; only the classname→NetName mapping + the compat aliases +
+    /// the weapon path live here.
+    /// </summary>
+    public static void Register()
+    {
+        // Clear the per-weapon pickup cache + the canonical-name map: a re-Register follows a GameRegistries
+        // re-Bootstrap (new Weapon/Pickup instances), so stale wrappers/ids must be dropped (test isolation).
+        _weaponPickups.Clear();
+        _netNameToClassName.Clear();
+
+        // ---- resource + powerup items: classname -> the [Item] Pickup NetName (QC SPAWNFUNC_ITEM) ----
+        // (the canonical spawnfunc classname for each def is the FIRST entry that maps to it.)
+        RegisterItem("item_health_small", "health_small");
+        RegisterItem("item_health_medium", "health_medium");
+        RegisterItem("item_health_big", "health_big");
+        RegisterItem("item_health_mega", "health_mega");
+
+        RegisterItem("item_armor_small", "armor_small");
+        RegisterItem("item_armor_medium", "armor_medium");
+        RegisterItem("item_armor_big", "armor_big");
+        RegisterItem("item_armor_mega", "armor_mega");
+
+        RegisterItem("item_shells", "shells");
+        RegisterItem("item_bullets", "bullets");
+        RegisterItem("item_rockets", "rockets");
+        RegisterItem("item_cells", "cells");
+        RegisterItem("item_fuel", "fuel");
+
+        RegisterItem("item_strength", "strength");
+        RegisterItem("item_shield", "invincible");        // ShieldItem.NetName == "invincible"
+        RegisterItem("item_speed", "speed");
+        RegisterItem("item_invisibility", "invisibility");
+        RegisterItem("item_jetpack", "jetpack");
+        RegisterItem("item_fuel_regen", "fuel_regen");
+
+        // ---- alias spawnfuncs that share a def (QC SPAWNFUNC_ITEM aliases in the powerup .qh) ----
+        AliasItem("item_invincible", "invincible");       // -> ITEM_Shield
+        AliasItem("item_buff_speed", "speed");            // -> ITEM_Speed
+        AliasItem("item_buff_invisibility", "invisibility"); // -> ITEM_Invisibility
+
+        // ---- compatibility spawn functions (server/items/spawning.qc:99-105) ----
+        // item_armor1: Quake green armor = a Xonotic armor SHARD (medium) — or small on a Q3 map. The port has
+        // no live q3compat flag in this layer, so default to the Xonotic mapping (ArmorMedium). (Q3-map armor1
+        // sizing is non-fatal; recorded as a deviation.)
+        AliasItem("item_armor1", "armor_medium");
+        AliasItem("item_armor25", "armor_mega");          // Nexuiz Mega Armor
+        AliasItem("item_armor_large", "armor_mega");
+        AliasItem("item_health1", "health_small");
+        AliasItem("item_health25", "health_medium");
+        AliasItem("item_health100", "health_mega");
+        AliasItem("item_health_large", "health_big");
+
+        // ---- weapon_* (QC weapon_defaultspawnfunc): one spawnfunc per Weapon registry entry ----
+        foreach (Weapon w in Weapons.All)
+        {
+            string cls = "weapon_" + w.NetName;
+            Weapon wep = w; // capture
+            SpawnFuncs.Register(cls, e => WeaponSpawn(e, wep));
+            // weapon items have no item_*-style NetName; their canonical classname is weapon_<netname>.
+            _netNameToClassName[w.NetName] = cls;
+        }
+    }
+
+    // Register a classname -> the [Item] Pickup with the given NetName, and record it as that def's canonical name.
+    private static void RegisterItem(string className, string netName)
+    {
+        SpawnFuncs.Register(className, e => ItemSpawn(e, netName));
+        if (!_netNameToClassName.ContainsKey(netName))
+            _netNameToClassName[netName] = className; // first classname registered is canonical
+    }
+
+    // Register an ALIAS classname pointing at the same def (does NOT override the canonical classname).
+    private static void AliasItem(string className, string netName)
+        => SpawnFuncs.Register(className, e => ItemSpawn(e, netName));
+
+    /// <summary>QC <c>m_canonical_spawnfunc</c> for a def — the classname StartItem assigns to this.classname.</summary>
+    public static string CanonicalSpawnFunc(Pickup def)
+        => _netNameToClassName.TryGetValue(def.NetName, out string? cls) ? cls
+            : (def.IsWeaponPickup ? "weapon_" + def.NetName : "item_" + def.NetName);
+
+    // ---- the resource/powerup item spawnfunc (QC SPAWNFUNC_BODY) ----
+    private static void ItemSpawn(Entity e, string netName)
+    {
+        Pickup? def = Items.ByName(netName);
+        if (def is null || !def.ItemDef.IsAllowed)
+        {
+            // QC SPAWNFUNC_BODY else-branch: startitem_failed = true; delete(this).
+            MapMover.RemoveEntity(e);
+            return;
+        }
+        StartItem.Spawn(e, def);
+        // (StartItem removes the edict itself on a failed permanent spawn; nothing more to do here.)
+    }
+
+    // ---- the weapon item spawnfunc (QC weapon_defaultspawnfunc, server/weapons/spawning.qc:29) ----
+    private static void WeaponSpawn(Entity e, Weapon w)
+    {
+        WeaponPickup def = WeaponPickupFor(w);
+
+        // QC weapon_defaultspawnfunc: default respawntime; default pickup ammo if the edict didn't set it; the
+        // g_pickup_weapons_anyway pickup_anyway. The ammo + weapon-set seeding happen in WeaponPickup.ItemInit.
+        if (e.ItemRespawnTime == 0f)
+            e.ItemRespawnTime = ItemPickupRules.CvarOr(
+                w.IsSuperWeapon ? "g_pickup_respawntime_superweapon" : "g_pickup_respawntime_weapon", 10f);
+        if (ItemPickupRules.CvarBoolOr("g_pickup_weapons_anyway", false))
+            e.PickupAnyway = 1;
+
+        StartItem.Spawn(e, def);
+    }
+
+    private static WeaponPickup WeaponPickupFor(Weapon w)
+    {
+        if (!_weaponPickups.TryGetValue(w.NetName, out WeaponPickup? wp))
+            _weaponPickups[w.NetName] = wp = new WeaponPickup(w);
+        return wp;
+    }
+}
+
+/// <summary>
+/// A synthetic <see cref="Pickup"/> wrapping a <see cref="Weapon"/> — the C# successor to QC <c>wpn.m_pickup</c>
+/// (the WeaponPickup GameItem a weapon's m_pickup ATTRIB points at). Marks the def a weapon pickup, carries the
+/// weapon's item model + colour, and in <see cref="ItemInit"/> seeds the world item's weapon set (so Item_GiveTo's
+/// weapon block grants it) and the pickup ammo (so a fresh weapon comes with ammo). One stable instance per weapon.
+/// </summary>
+public sealed class WeaponPickup : Pickup
+{
+    private readonly Weapon _weapon;
+
+    public WeaponPickup(Weapon w)
+    {
+        _weapon = w;
+        NetName = w.NetName;
+        DisplayName = w.DisplayName;
+        Model = w.ItemModel ?? w.WorldModel;
+        Mins = ItemBoxes.DefaultMins; // QC weapons use the default Pickup box
+        Maxs = ItemBoxes.DefaultMaxs;
+        RespawnTime = 10f;            // g_pickup_respawntime_weapon (overridden per-edict in WeaponSpawn)
+        ItemDef.IsWeaponPickup = true; // QC instanceOfWeaponPickup
+        ItemDef.ItemId = ItemFlag.None; // weapons carry no IT_* bit (the weapon set is the ownership rep)
+        ItemDef.Color = w.Color;
+        ItemDef.PickupSound = "WEAPONPICKUP";
+    }
+
+    /// <summary>
+    /// QC weapon_defaultspawnfunc body: put this weapon in the world item's weapon set (STAT(WEAPONS,this)) and,
+    /// if its ammo resource isn't already set on the edict, seed the pickup ammo (WEP_CVAR(pickup_ammo), else the
+    /// matching g_pickup_&lt;resource&gt; amount). Item_GiveTo then grants the weapon + that ammo on touch.
+    /// </summary>
+    public override void ItemInit(Entity item)
+    {
+        item.OwnedWeaponSet.Add(_weapon);
+
+        if (_weapon.AmmoType != ResourceType.None && item.GetResource(_weapon.AmmoType) == 0f)
+        {
+            float ammo = ItemPickupRules.CvarOr($"g_balance_{_weapon.NetName}_pickup_ammo", PickupAmmoFallback());
+            if (ammo > 0f)
+                item.SetResourceExplicit(_weapon.AmmoType, ammo);
+        }
+    }
+
+    // A reasonable stock pickup-ammo per resource when the per-weapon cvar is unset — the matching ammo-item
+    // amount (QC's WEP_CVAR pickup_ammo values are close to these). Faithful enough for the pickup give.
+    private float PickupAmmoFallback() => _weapon.AmmoType switch
+    {
+        ResourceType.Shells  => ItemPickupRules.CvarOr("g_pickup_shells", 15f),
+        ResourceType.Bullets => ItemPickupRules.CvarOr("g_pickup_nails", 80f),
+        ResourceType.Rockets => ItemPickupRules.CvarOr("g_pickup_rockets", 40f),
+        ResourceType.Cells   => ItemPickupRules.CvarOr("g_pickup_cells", 30f),
+        ResourceType.Fuel    => ItemPickupRules.CvarOr("g_pickup_fuel", 50f),
+        _ => 0f,
+    };
+}

@@ -1,0 +1,123 @@
+using System.Numerics;
+using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Services;
+
+namespace XonoticGodot.Common.Gameplay;
+
+/// <summary>
+/// The Touch Explode mutator — port of common/mutators/mutator/touchexplode/sv_touchexplode.qc. When two
+/// living players' bounding boxes overlap, a small explosion goes off between them (with a short per-pair
+/// cooldown). Enabled by the <c>g_touchexplode</c> cvar.
+///
+/// Ported: the per-frame pairwise overlap scan (PlayerPreThink) with the game-stopped / frozen /
+/// independent-player guards, the impact sound, and the radius blast at the midpoint via the shared
+/// <see cref="WeaponSplash.RadiusDamage"/> helper. (The DEATH_TOUCHEXPLODE death id and the networked
+/// explosion particle belong to the deathtype-registry / effects phases; the blast itself is faithful.)
+/// </summary>
+[Mutator]
+public sealed class TouchExplodeMutator : MutatorBase
+{
+    /// <summary>QC autocvar_g_touchexplode_radius.</summary>
+    public float Radius = 100f;
+
+    /// <summary>QC autocvar_g_touchexplode_damage.</summary>
+    public float DamageAmount = 50f;
+
+    /// <summary>QC autocvar_g_touchexplode_edgedamage.</summary>
+    public float EdgeDamage = 20f;
+
+    /// <summary>QC autocvar_g_touchexplode_force.</summary>
+    public float Force = 200f;
+
+    public TouchExplodeMutator() => NetName = "touchexplode";
+
+    // QC: expr_evaluate(autocvar_g_touchexplode).
+    public override bool IsEnabled =>
+        Api.Services is not null && Api.Cvars.GetFloat("g_touchexplode") != 0f;
+
+    private HookHandler<MutatorHooks.PlayerPreThinkArgs>? _onPreThink;
+
+    public override void Hook()
+    {
+        _onPreThink ??= OnPlayerPreThink;
+        MutatorHooks.PlayerPreThink.Add(_onPreThink);
+
+        if (Api.Services is not null)
+        {
+            float r = Api.Cvars.GetFloat("g_touchexplode_radius");      if (r != 0f) Radius = r;
+            float d = Api.Cvars.GetFloat("g_touchexplode_damage");      if (d != 0f) DamageAmount = d;
+            float e = Api.Cvars.GetFloat("g_touchexplode_edgedamage");  if (e != 0f) EdgeDamage = e;
+            float f = Api.Cvars.GetFloat("g_touchexplode_force");       if (f != 0f) Force = f;
+        }
+    }
+
+    public override void Unhook()
+    {
+        if (_onPreThink is not null) MutatorHooks.PlayerPreThink.Remove(_onPreThink);
+    }
+
+    private static bool IsLivePlayer(Entity e) =>
+        (e.Flags & EntFlags.Client) != 0 && e.DeadState == DeadFlag.No && !e.IsFreed;
+
+    private static bool IsFrozen(Entity e)
+    {
+        var frozen = StatusEffectsCatalog.Frozen;
+        return frozen is not null && StatusEffectsCatalog.Has(e, frozen);
+    }
+
+    // MUTATOR_HOOKFUNCTION(touchexplode, PlayerPreThink)
+    private bool OnPlayerPreThink(ref MutatorHooks.PlayerPreThinkArgs args)
+    {
+        Entity player = args.Player;
+        if (Api.Services is null) return false;
+
+        // QC: !game_stopped && IS_PLAYER && !IS_DEAD && !STAT(FROZEN) && !IS_INDEPENDENT_PLAYER.
+        if (VehicleCommon.GameStopped) return false;
+        float now = Api.Clock.Time;
+
+        if (now <= player.TouchExplodeTime || !IsLivePlayer(player)
+            || IsFrozen(player) || player.IsIndependentPlayer)
+            return false;
+
+        foreach (Entity other in Api.Entities.FindByClass("player"))
+        {
+            if (ReferenceEquals(other, player) || !IsLivePlayer(other))
+                continue;
+            if (now <= other.TouchExplodeTime || IsFrozen(other) || other.IsIndependentPlayer)
+                continue;
+            if (!BoxesOverlap(player, other))
+                continue;
+
+            PlayerTouchExplode(player, other);
+            player.TouchExplodeTime = other.TouchExplodeTime = now + 0.2f;
+        }
+        return false;
+    }
+
+    // void PlayerTouchExplode(entity p1, entity p2)
+    private void PlayerTouchExplode(Entity p1, Entity p2)
+    {
+        Vector3 org = (p1.Origin + p2.Origin) * 0.5f;
+        org.Z += (p1.Mins.Z + p2.Mins.Z) * 0.5f;
+
+        // QC: sound(p1, CH_TRIGGER, SND_TOUCHEXPLODE) + Send_Effect(EFFECT_EXPLOSION_SMALL, org).
+        // SND_TOUCHEXPLODE is the grenade-impact sample; the explosion particle is networked by the host.
+        Api.Sound.Play(p1, SoundChannel.Item, "weapons/grenade_impact.wav");
+
+        // QC spawns a temp inflictor at the midpoint and RadiusDamage's around it. QC tags the blast
+        // DEATH_TOUCHEXPLODE; the int-deathtype radius helper carries 0 (no weapon) — the dedicated
+        // touchexplode death id is part of the deathtype-registry phase, but the blast geometry is faithful.
+        Entity e = Api.Entities.Spawn();
+        e.ClassName = "touchexplode";
+        Api.Entities.SetOrigin(e, org);
+        WeaponSplash.RadiusDamage(e, org, DamageAmount, EdgeDamage, Radius, attacker: null,
+            deathType: 0, force: Force);
+        Api.Entities.Remove(e);
+    }
+
+    /// <summary>QC boxesoverlap(p1.absmin, p1.absmax, p2.absmin, p2.absmax).</summary>
+    private static bool BoxesOverlap(Entity a, Entity b)
+        => a.AbsMin.X <= b.AbsMax.X && a.AbsMax.X >= b.AbsMin.X
+        && a.AbsMin.Y <= b.AbsMax.Y && a.AbsMax.Y >= b.AbsMin.Y
+        && a.AbsMin.Z <= b.AbsMax.Z && a.AbsMax.Z >= b.AbsMin.Z;
+}

@@ -1,0 +1,156 @@
+using System.Numerics;
+using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Math;
+using XonoticGodot.Common.Services;
+using XonoticGodot.Common.Gameplay.Damage;
+
+namespace XonoticGodot.Common.Gameplay;
+
+/// <summary>
+/// The Zombie — port of common/monsters/monster/zombie.{qh,qc}. An undead melee bruiser: it charges the
+/// nearest player, punches/bites in melee, and (at range) leaps to close the gap dealing contact damage.
+/// MONSTER_TYPE_UNDEAD | MON_FLAG_MELEE | MON_FLAG_RIDE.
+///
+/// Identity/size from zombie.qh; health/damage/speeds from monsters.cfg (g_monster_zombie_*). Fully ported:
+/// the melee charge + leap, the three-way melee anim choice, the block/defend stance, always-respawn at the
+/// death point, the spawn-shield gating, and the pain/death handlers. Only client frame playback is CSQC.
+/// </summary>
+[Monster]
+public sealed class Zombie : Monster
+{
+    // Balance — g_monster_zombie_* (monsters.cfg). Defaults match the shipped cfg.
+    public float MeleeDamage = 55f;     // g_monster_zombie_attack_melee_damage
+    public float MeleeDelay = 1f;       // g_monster_zombie_attack_melee_delay
+    public float LeapDamage = 60f;      // g_monster_zombie_attack_leap_damage
+    public float LeapForce = 55f;       // g_monster_zombie_attack_leap_force
+    public float LeapSpeed = 500f;      // g_monster_zombie_attack_leap_speed
+    public float LeapDelay = 1.5f;      // g_monster_zombie_attack_leap_delay
+    public float SpeedWalk = 300f;      // g_monster_zombie_speed_walk
+    public float SpeedRun = 600f;       // g_monster_zombie_speed_run
+    public float SpeedStop = 100f;      // g_monster_zombie_speed_stop
+
+    public Zombie()
+    {
+        NetName = "zombie";
+        DisplayName = "Zombie";
+        Model = "models/monsters/zombie.dpm";
+        StartHealth = 200f;             // g_monster_zombie_health
+        Damage = 55f;                   // representative (melee) damage
+        Speed = 600f;                   // run speed (speed2)
+    }
+
+    // Monster_Spawn + METHOD(Zombie, mr_setup) — zombie.qc
+    public override void Spawn(Entity e)
+    {
+        var st = MonsterAI.Setup(this, e);
+        Api.Entities.SetSize(e, new Vector3(-18, -18, -25), new Vector3(18, 18, 47));
+
+        st.WalkSpeed = MonsterAI.Cvar("g_monster_zombie_speed_walk", SpeedWalk);
+        st.RunSpeed = MonsterAI.Cvar("g_monster_zombie_speed_run", SpeedRun);
+        st.StopSpeed = MonsterAI.Cvar("g_monster_zombie_speed_stop", SpeedStop);
+        st.DamageForceScale = MonsterAI.Cvar("g_monster_zombie_damageforcescale", 0.55f);
+        st.MonsterLoot = MonsterAI.CvarString("g_monster_zombie_loot", "health_medium");
+
+        // zombie.qc mr_setup: zombies ALWAYS respawn (NORESPAWN cleared), come back at the death point, and
+        // respawn near-instantly. Once they've appeared they shouldn't re-appear, just respawn.
+        st.NoRespawn = false;
+        st.AlwaysRespawn = true;
+        st.RespawnAtDeathPoint = true;
+        st.RespawnTime = 0.2f;
+        e.SpawnFlags &= ~MonsterAI.MonsterFlag_Appear;
+
+        // Spawn animation gating: no thinking + no push while the spawn anim plays (QC spawn_time / shield).
+        // anim_spawn '30 1 3' ≈ 1/3s; gate the brain and apply a matching spawn shield.
+        float spawnAnim = 1f / 3f;
+        st.SpawnTime = MonsterAI.Now + spawnAnim;
+        st.DamageForceScale = 0.0001f; // no push while spawning (restored in Think once spawned)
+        MonsterFramework.ApplyFor(MonsterFramework.SpawnShield, e, spawnAnim);
+        st.Anim = MonsterAI.MonsterAnim.Idle; // spawn anim plays client-side; brain idles until SpawnTime
+    }
+
+    // METHOD(Zombie, mr_think) — zombie.qc (drives the shared chase/attack loop).
+    public override void Think(Entity e)
+    {
+        var st = MonsterAI.StateOf(e);
+        if (st is null) return;
+
+        // Restore the real knockback scale once the spawn animation has finished (QC mr_think).
+        if (MonsterAI.Now >= st.SpawnTime && st.DamageForceScale < 0.5f)
+            st.DamageForceScale = MonsterAI.Cvar("g_monster_zombie_damageforcescale", 0.55f);
+
+        MonsterAI.RunThink(e, st);
+    }
+
+    // M_Zombie_Attack (zombie.qc): melee when close, leap when far.
+    public override void Attack(Entity e, Entity target)
+    {
+        var st = MonsterAI.StateOf(e);
+        if (st is null) return;
+
+        float dist = (target.Origin - e.Origin).Length();
+        if (dist <= st.AttackRange)
+        {
+            // Sometimes raise a block instead of swinging when hurt and the enemy is healthy (QC: 0.3 chance,
+            // self health < 75, enemy health > 10).
+            if (MonsterRandom.Next() < 0.3f && e.Health < 75f && target.Health > 10f)
+            {
+                DefendBlock(e, st);
+                return;
+            }
+
+            // MONSTER_ATTACK_MELEE: punch/bite — QC rolls one of three melee anims (timing identical; the
+            // frame choice is CSQC, so the roll is a no-op server-side beyond consuming a draw for parity).
+            MonsterRandom.Next();
+            st.Anim = MonsterAI.MonsterAnim.Attack;
+            MonsterAI.MeleeAttack(e, st, MeleeDamage, st.AttackRange, MeleeDelay,
+                DeathTypes.FromWeapon(NetName));
+        }
+        else
+        {
+            // MONSTER_ATTACK_RANGED: leap toward the enemy (Monster_Attack_Leap + M_Zombie_Attack_Leap_Touch).
+            Vector3 forward = QMath.Forward(e.Angles);
+            Vector3 vel = forward * LeapSpeed + new Vector3(0, 0, 200);
+            MonsterAI.Leap(e, st, vel, LeapTouch, LeapDelay);
+        }
+    }
+
+    // M_Zombie_Attack_Leap_Touch (zombie.qc): deal contact damage when the leaping zombie hits a target,
+    // then revert the touch so it doesn't spam, and clear the attack state.
+    private void LeapTouch(Entity self, Entity other)
+    {
+        if (self.Health <= 0f) return;
+        var st = MonsterAI.StateOf(self);
+
+        if (other.TakeDamage != DamageMode.No)
+        {
+            // QC: face the moveto, scale to leap_force.
+            Vector3 face = QMath.Normalize(QMath.VecToAngles((st?.MoveTo ?? other.Origin) - self.Origin))
+                           * LeapForce;
+            float dmg = LeapDamage * MonsterAI.SkillMod(st!);
+            Combat.Damage(other, self, self, dmg, DeathTypes.FromWeapon(NetName), other.Origin, face);
+            self.Touch = (s, o) => MonsterAI.Touch(s, o); // instantly off to stop damage spam (QC Monster_Touch)
+            if (st is not null) st.State = 0;
+        }
+    }
+
+    // M_Zombie_Defend_Block (zombie.qc): briefly raise armor to 0.9 and freeze, then restore. Blocks the next
+    // ~2.1s of attacks behind near-total armor (QC SetResourceExplicit(RES_ARMOR, 0.9) + Monster_Delay end).
+    private void DefendBlock(Entity e, MonsterAI.MonsterState st)
+    {
+        e.ArmorValue = 0.9f;
+        st.State = MonsterAI.MonsterState_AttackMelee; // freeze monster
+        st.AttackFinished = MonsterAI.Now + 2.1f;
+        st.AnimFinished = st.AttackFinished;
+        st.Anim = MonsterAI.MonsterAnim.Attack;
+
+        // Restore the normal block armor after the block ends (QC M_Zombie_Defend_Block_End via Monster_Delay).
+        float restore = MonsterAI.Cvar("g_monsters_armor_blockpercent", 0.6f);
+        MonsterAI.QueueDelayedAttack(e, st, 2f, 2.1f, self =>
+        {
+            if (self.Health <= 0f) return;
+            self.ArmorValue = restore;
+        });
+
+        Api.Sound.Play(e, SoundChannel.Voice, "monsters/zombie_melee.wav");
+    }
+}

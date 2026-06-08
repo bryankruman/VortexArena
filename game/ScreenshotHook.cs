@@ -1,0 +1,62 @@
+using Godot;
+
+namespace XonoticGodot.Game;
+
+/// <summary>
+/// Dev/CI visual-capture helper. When the host is launched with <c>--screenshot &lt;path&gt;</c>,
+/// <see cref="Main"/> attaches this node: it lets the scene settle for <see cref="WarmupFrames"/> idle frames
+/// (assets stream in, lighting/shadows resolve), waits for the GPU to finish drawing, writes the root viewport
+/// to a PNG, and quits the tree.
+///
+/// Run WINDOWED — a <c>--headless</c> run uses the dummy renderer and the capture comes out blank. With this an
+/// agent (or CI) can produce a real frame of the running game and actually inspect it. See RUNNING.md
+/// "Visual capture".
+/// </summary>
+public partial class ScreenshotHook : Node
+{
+    /// <summary>Destination PNG. A <c>res://</c>/<c>user://</c> path is globalized; otherwise it's an OS path.</summary>
+    public string OutPath { get; init; } = "";
+
+    /// <summary>Idle frames to spin before capturing, so streaming assets + shadows settle.</summary>
+    public int WarmupFrames { get; init; } = 90;
+
+    public override async void _Ready()
+    {
+        if (string.IsNullOrWhiteSpace(OutPath))
+        {
+            GD.PrintErr("[Screenshot] no output path; skipping.");
+            return;
+        }
+
+        // Let the scene settle (asset streaming, shadow/SSAO convergence, the player dropping to the floor).
+        for (int i = 0; i < WarmupFrames; i++)
+            await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+
+        // Capture only AFTER the GPU has drawn the frame, or the viewport image is stale/blank.
+        await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
+
+        Image? img = GetViewport()?.GetTexture()?.GetImage();
+        if (img is null)
+        {
+            GD.PrintErr("[Screenshot] viewport image unavailable (running headless?).");
+            GetTree().Quit(1);
+            return;
+        }
+
+        // Resolve res://|user:// to an absolute path and ensure the directory exists (SavePng won't create it).
+        string path = OutPath;
+        if (path.StartsWith("res://") || path.StartsWith("user://"))
+            path = ProjectSettings.GlobalizePath(path);
+        string? dir = System.IO.Path.GetDirectoryName(path);
+        if (!string.IsNullOrEmpty(dir))
+            System.IO.Directory.CreateDirectory(dir);
+
+        Error err = img.SavePng(path);
+        if (err == Error.Ok)
+            GD.Print($"[Screenshot] wrote {img.GetWidth()}x{img.GetHeight()} -> {path}");
+        else
+            GD.PrintErr($"[Screenshot] SavePng('{path}') failed: {err}");
+
+        GetTree().Quit(err == Error.Ok ? 0 : 1);
+    }
+}

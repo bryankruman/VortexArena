@@ -1,0 +1,193 @@
+using System.Collections.Generic;
+using Godot;
+using XonoticGodot.Common.Services;
+using XonoticGodot.Engine.Simulation;
+using XonoticGodot.Game.Loaders;
+
+namespace XonoticGodot.Game.Client;
+
+/// <summary>
+/// Drives the per-entity tint instance-uniforms of <see cref="PlayerSkinShader"/> on every
+/// <see cref="MeshInstance3D"/> under a model root — the Godot successor to Darkplaces' per-entity
+/// <c>colormod</c>/<c>glowmod</c> and the shirt/pants colormap (<c>gl_rmain.c</c>).
+///
+/// <para>The colors are <b>instance shader parameters</b>, so the shared (cached) skin material is reused
+/// while each model instance carries its own colors. Surfaces using a plain <see cref="StandardMaterial3D"/>
+/// (a model with no <c>_shirt</c>/<c>_pants</c>/<c>_reflect</c> siblings) simply have no such uniforms and
+/// ignore the call — harmless, since colormod/glowmod default to white there anyway.</para>
+///
+/// <para><see cref="ApplyAppearance"/> ports the GLOWMOD + death-fade tail of
+/// <c>CSQCPlayer_ModelAppearance_Apply</c> (qcsrc/client/csqcmodel_hooks.qc:331-360): glowmod from the full
+/// <c>colormapPaletteColor</c> palette, the <c>cl_deathglow</c> fade while dead, the respawn-ghost zeroing
+/// (<c>cl_respawn_ghosts_keepcolors</c>), and the <c>r_hdr_glowintensity</c> divide. The pure math lives in
+/// <see cref="CsqcModelAppearance"/> (engine, unit-tested); this reads the cvars + clock.</para>
+/// </summary>
+public static class ModelTint
+{
+    /// <summary>Identity tint (no change): white colormod/glowmod.</summary>
+    public static readonly Color White = new(1f, 1f, 1f);
+
+    /// <summary>No team contribution: black shirt/pants (the additive masks vanish).</summary>
+    public static readonly Color Black = new(0f, 0f, 0f);
+
+    /// <summary>
+    /// Set the four tint instance-uniforms (<c>colormod</c>/<c>glowmod</c>/<c>shirt_color</c>/<c>pants_color</c>)
+    /// on every mesh under <paramref name="root"/>.
+    /// </summary>
+    public static void Apply(Node root, Color colormod, Color glowmod, Color shirt, Color pants)
+    {
+        if (root is null)
+            return;
+        foreach (MeshInstance3D mi in Meshes(root))
+        {
+            mi.SetInstanceShaderParameter(PlayerSkinShader.ColormodUniform, colormod);
+            mi.SetInstanceShaderParameter(PlayerSkinShader.GlowmodUniform, glowmod);
+            mi.SetInstanceShaderParameter(PlayerSkinShader.ShirtColorUniform, shirt);
+            mi.SetInstanceShaderParameter(PlayerSkinShader.PantsColorUniform, pants);
+        }
+    }
+
+    /// <summary>
+    /// Apply a player's team/colormap tint: the team color drives the shirt + pants masks AND the glow
+    /// (DP sets glowmod from the pants color). FFA / unknown (no team) leaves the model untinted with a
+    /// white — i.e. native — glow. Colormod stays white (no per-entity darkening here).
+    /// </summary>
+    public static void ApplyColormap(Node root, int colormap)
+    {
+        Color team = TeamColor(colormap, out bool hasTeam);
+        Color tint = hasTeam ? team : Black;
+        Color glow = hasTeam ? team : White;
+        Apply(root, White, glow, tint, tint);
+    }
+
+    /// <summary>
+    /// Port of the GLOWMOD + death-fade + respawn-ghost tail of <c>CSQCPlayer_ModelAppearance_Apply</c>
+    /// (csqcmodel_hooks.qc:331-360). Computes the glowmod from the colormap's low (pants) nibble via the full
+    /// <c>colormapPaletteColor</c> palette, fades it while the model is dead (<c>cl_deathglow</c>), and divides
+    /// by <c>r_hdr_glowintensity</c> when &gt;1. A respawn ghost with <c>cl_respawn_ghosts_keepcolors</c>=0
+    /// zeroes the color and glow. The shirt/pants masks still ride the (team) colormap like
+    /// <see cref="ApplyColormap"/>. <paramref name="deathTime"/> is the client-observed death timestamp (the
+    /// wire doesn't carry the server <c>death_time</c>) — see the T58 parity note.
+    /// </summary>
+    public static void ApplyAppearance(Node root, int colormap, bool isDead, float deathTime, bool isRespawnGhost)
+    {
+        // RESPAWNGHOST early-out: (csqcmodel_effects & CSQCMODEL_EF_RESPAWNGHOST) && !keepcolors → black, colormap 0.
+        if (isRespawnGhost && Cvar("cl_respawn_ghosts_keepcolors", 1f) == 0f)
+        {
+            Apply(root, White, Black, Black, Black); // glowmod '0 0 0', no shirt/pants, colormap 0
+            return;
+        }
+
+        // Resolve the shirt/pants/glow colors from the colormap. A PLAIN networked team id (0..4) keeps the
+        // team mapping (TeamColor); a packed/forced colormap (>=1024, or any non-zero high nibble — e.g. the
+        // FORCECOLORS / unique-color combos) is decoded through the full colormapPaletteColor palette so
+        // cl_forceplayercolors / cl_forcemyplayercolors / cl_forceuniqueplayercolors paint correctly.
+        ColormapColors(colormap, out Color shirt, out Color pants, out bool hasColor);
+
+        // GLOWMOD: QC colormapPaletteColor(colormap & 0x0F /* pants */, true) when colormap>0, else '1 1 1'
+        // (csqcmodel_hooks.qc:339-342). The glow base is the PANTS color, matching QC.
+        Color glow = hasColor ? pants : White;
+
+        // DEATH FADING: scale glowmod by the death-fade factor while dead (cl_deathglow drives the rate).
+        float deathglow = Cvar("cl_deathglow", 0f); // engine cvar default 0; xonotic-client.cfg sets 2 at runtime
+        if (deathglow > 0f && isDead)
+        {
+            float minFactor = Cvar("cl_deathglow_min", 0.5f);
+            float factor = CsqcModelAppearance.DeathGlowFactor(deathglow, minFactor, hasColor: colormap > 0,
+                isDead: true, now: Now(), deathTime: deathTime);
+            glow = new Color(glow.R * factor, glow.G * factor, glow.B * factor);
+            // QC: if glowmod == '0 0 0' set glowmod.x = 0.000001 (so the engine doesn't treat it as "no glowmod").
+            if (glow.R == 0f && glow.G == 0f && glow.B == 0f)
+                glow = new Color(0.000001f, 0f, 0f);
+        }
+
+        // Don't let the engine increase the player's glowmod (HDR): glowmod /= r_hdr_glowintensity when >1.
+        float hdr = Cvar("r_hdr_glowintensity", 0f);
+        if (hdr > 1f)
+            glow = new Color(glow.R / hdr, glow.G / hdr, glow.B / hdr);
+
+        // Shirt = high-nibble color, pants = low-nibble color (distinct for a packed/forced colormap; equal for a
+        // plain team id; FFA/untinted = black masks).
+        Apply(root, White, glow, hasColor ? shirt : Black, hasColor ? pants : Black);
+    }
+
+    /// <summary>
+    /// Map XonoticGodot's networked colormap/team value (the low nibble: 1=red, 2=blue, 3=yellow, 4=pink — see
+    /// <c>RadarPanel.TeamColor</c>) to its team color, using Xonotic's canonical <c>colormapPaletteColor</c>
+    /// RGBs (<c>lib/color.qh</c>). <paramref name="hasTeam"/> is false for FFA / unknown.
+    /// </summary>
+    public static Color TeamColor(int colormap, out bool hasTeam)
+    {
+        int team = colormap & 0x0F;
+        hasTeam = team is >= 1 and <= 4;
+        return team switch
+        {
+            1 => new Color(1f, 0f, 0f),       // red    (palette code 4)
+            2 => new Color(0f, 0.333f, 1f),   // blue   (palette code 13)
+            3 => new Color(1f, 1f, 0f),       // yellow (palette code 12)
+            4 => new Color(1f, 0f, 0.5f),     // pink   (palette code 10)
+            _ => White,
+        };
+    }
+
+    /// <summary>
+    /// Resolve a colormap's shirt (high nibble) + pants (low nibble) colors, mirroring QC's
+    /// <c>colormapPaletteColor(nibble, isPants)</c> use. A PLAIN networked team id (high nibble 0, low nibble
+    /// 1..4 — what the XonoticGodot wire carries in <c>Entity.Team</c>) keeps the team mapping (<see cref="TeamColor"/>),
+    /// so team rendering is unchanged. A packed/forced colormap (any non-zero high nibble, e.g. the FORCECOLORS /
+    /// unique-color combos which are <c>1024 + (shirt&lt;&lt;4) + pants</c>) is decoded through the full 0..15
+    /// <c>colormapPaletteColor</c> palette so forced colors paint their real shirt/pants. <paramref name="hasColor"/>
+    /// is false only for a truly colorless map (both nibbles 0 → FFA/untinted).
+    /// </summary>
+    private static void ColormapColors(int colormap, out Color shirt, out Color pants, out bool hasColor)
+    {
+        int lo = colormap & 0x0F;
+        int hi = (colormap >> 4) & 0x0F;
+        if (hi == 0 && lo is >= 1 and <= 4)
+        {
+            // Plain networked team id — preserve the existing team mapping for both masks.
+            Color team = TeamColor(colormap, out hasColor);
+            shirt = pants = team;
+            return;
+        }
+        if (lo == 0 && hi == 0)
+        {
+            shirt = pants = White;
+            hasColor = false;
+            return;
+        }
+        // Packed/forced colormap → full palette (shirt = high nibble, pants = low nibble).
+        float t = Now();
+        (float sr, float sg, float sb) = CsqcModelAppearance.ColormapPaletteColor(hi, isPants: false, t);
+        (float pr, float pg, float pb) = CsqcModelAppearance.ColormapPaletteColor(lo, isPants: true, t);
+        shirt = new Color(sr, sg, sb);
+        pants = new Color(pr, pg, pb);
+        hasColor = true;
+    }
+
+    /// <summary>
+    /// Read a float cvar live, honoring an explicit <c>0</c> (only an UNSET cvar — empty string — falls back).
+    /// Mirrors <c>ViewEffects.Cvar</c>: so a user setting <c>cl_deathglow 0</c> disables the fade rather than
+    /// being reinterpreted as "use the default 2". Returns <paramref name="fallback"/> when no services are wired.
+    /// </summary>
+    private static float Cvar(string name, float fallback)
+    {
+        if (Api.Services is null)
+            return fallback;
+        string s = Api.Cvars.GetString(name);
+        return string.IsNullOrWhiteSpace(s) ? fallback : Api.Cvars.GetFloat(name);
+    }
+
+    /// <summary>The simulation clock time (QC <c>time</c>), for the animated rainbow palette + death fade.</summary>
+    private static float Now() => Api.Services?.Clock?.Time ?? 0f;
+
+    /// <summary>Depth-first walk of every <see cref="MeshInstance3D"/> at or under <paramref name="node"/>.</summary>
+    private static IEnumerable<MeshInstance3D> Meshes(Node node)
+    {
+        if (node is MeshInstance3D mi)
+            yield return mi;
+        foreach (Node child in node.GetChildren())
+            foreach (MeshInstance3D m in Meshes(child))
+                yield return m;
+    }
+}

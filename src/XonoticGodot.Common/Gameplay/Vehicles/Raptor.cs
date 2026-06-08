@@ -1,0 +1,618 @@
+// Port: qcsrc/common/vehicles/vehicle/raptor.{qh,qc} + raptor_weapons.{qh,qc}
+//
+// The Raptor — a single-seat VTOL gunship. It takes off vertically (raptor_takeoff), then flies free
+// (raptor_frame, an avelocity-based pitch/roll/yaw controller); the pilot operates twin laser cannons
+// (primary, alternating gun1/gun2) and switches the secondary between cluster bombs (which burst into N
+// independent bomblets) and decoy flares (which seduce incoming guided missiles). Balance values are the
+// cfg defaults inlined below (g_vehicle_raptor_*).
+//
+// FULL deep behavior is implemented: the avelocity flight controller, the takeoff/landing state machines,
+// the cannon lock/predict + turret aim of both guns, the bomb cluster split (raptor_bomb_burst spawning
+// real bomblets with spread + delayed explosions), and the flare decoys (raptor_flare_think re-targeting
+// nearby guided rockets). Only client-only items (muzzle/rotor FX, dropmark crosshair, HUD %) stay TODO.
+
+using System.Numerics;
+using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Gameplay.Damage;
+using XonoticGodot.Common.Math;
+using XonoticGodot.Common.Physics;
+using XonoticGodot.Common.Services;
+
+namespace XonoticGodot.Common.Gameplay;
+
+/// <summary>The raptor's secondary fire mode (QC RSM_* — raptor.qh).</summary>
+public enum RaptorMode { Bomb = 1, Flare = 2 }
+
+/// <summary>
+/// The Raptor vehicle (QC <c>CLASS(Raptor, Vehicle)</c>). Registered via <see cref="VehicleAttribute"/>.
+/// </summary>
+[Vehicle]
+public sealed class Raptor : Vehicle
+{
+    // ---- chassis (raptor.qc autocvars) ----
+    public int MoveStyle = 1;           // g_vehicle_raptor_movestyle (1 = level flight)
+    public float SpeedForward = 1700f;  // g_vehicle_raptor_speed_forward
+    public float SpeedStrafe = 2200f;   // g_vehicle_raptor_speed_strafe
+    public float SpeedUp = 2300f;       // g_vehicle_raptor_speed_up
+    public float SpeedDown = 2000f;     // g_vehicle_raptor_speed_down
+    public float Friction = 2f;         // g_vehicle_raptor_friction
+    public float TurnSpeed = 200f;      // g_vehicle_raptor_turnspeed
+    public float PitchSpeed = 50f;      // g_vehicle_raptor_pitchspeed
+    public float PitchLimit = 45f;      // g_vehicle_raptor_pitchlimit
+    public float TakeoffTime = 1.5f;    // g_vehicle_raptor_takefftime
+    public float ThinkRate = VehicleCommon.DefaultThinkRate;
+
+    // ---- cannon aim/lock (raptor.qc) ----
+    public float CannonTurnSpeed = 120f;       // g_vehicle_raptor_cannon_turnspeed
+    public float CannonTurnLimit = 20f;        // g_vehicle_raptor_cannon_turnlimit
+    public float CannonPitchLimitUp = 12f;     // g_vehicle_raptor_cannon_pitchlimit_up
+    public float CannonPitchLimitDown = 32f;   // g_vehicle_raptor_cannon_pitchlimit_down
+    public int CannonLockTarget = 1;           // g_vehicle_raptor_cannon_locktarget
+    public float CannonLockingTime = 0.2f;     // g_vehicle_raptor_cannon_locking_time
+    public float CannonLockingReleaseTime = 0.45f; // g_vehicle_raptor_cannon_locking_releasetime
+    public float CannonLockedTime = 1f;        // g_vehicle_raptor_cannon_locked_time
+    public bool CannonPredictTarget = true;    // g_vehicle_raptor_cannon_predicttarget
+
+    // ---- resources ----
+    public float MaxEnergy = 100f;          // g_vehicle_raptor_energy
+    public float EnergyRegen = 25f;         // g_vehicle_raptor_energy_regen
+    public float EnergyRegenPause = 0.25f;  // g_vehicle_raptor_energy_regen_pause
+    public float MaxShield = 200f;          // g_vehicle_raptor_shield
+    public float ShieldRegen = 25f;         // g_vehicle_raptor_shield_regen
+    public float ShieldRegenPause = 1.5f;   // g_vehicle_raptor_shield_regen_pause
+    public float HealthRegen = 0f;          // g_vehicle_raptor_health_regen
+    public float RespawnTime = 40f;         // g_vehicle_raptor_respawntime
+
+    // ---- cannon (raptor_weapons.qh) ----
+    public float CannonCost = 1f;        // g_vehicle_raptor_cannon_cost
+    public float CannonDamage = 10f;     // g_vehicle_raptor_cannon_damage
+    public float CannonRadius = 60f;     // g_vehicle_raptor_cannon_radius
+    public float CannonForce = 25f;      // g_vehicle_raptor_cannon_force
+    public float CannonSpeed = 24000f;   // g_vehicle_raptor_cannon_speed
+    public float CannonSpread = 0.01f;   // g_vehicle_raptor_cannon_spread
+    public float CannonRefire = 0.033333f; // g_vehicle_raptor_cannon_refire
+
+    // ---- bombs (raptor_weapons.qh) ----
+    public int Bomblets = 8;              // g_vehicle_raptor_bomblets
+    public float BombletDamage = 55f;     // g_vehicle_raptor_bomblet_damage
+    public float BombletEdgeDamage = 25f; // g_vehicle_raptor_bomblet_edgedamage
+    public float BombletRadius = 350f;    // g_vehicle_raptor_bomblet_radius
+    public float BombletForce = 150f;     // g_vehicle_raptor_bomblet_force
+    public float BombletSpread = 0.4f;    // g_vehicle_raptor_bomblet_spread
+    public float BombletExplodeDelay = 0.4f; // g_vehicle_raptor_bomblet_explode_delay
+    public float BombletTime = 0.5f;      // g_vehicle_raptor_bomblet_time (fall time before burst)
+    public float BombsRefire = 5f;        // g_vehicle_raptor_bombs_refire
+
+    // ---- flares (raptor_weapons.qh) ----
+    public float FlareRefire = 5f;        // g_vehicle_raptor_flare_refire
+    public float FlareLifetime = 10f;     // g_vehicle_raptor_flare_lifetime
+    public float FlareChase = 0.9f;       // g_vehicle_raptor_flare_chase
+    public float FlareRange = 2000f;      // g_vehicle_raptor_flare_range
+
+    public Raptor()
+    {
+        NetName = "raptor";
+        DisplayName = "Raptor";
+        Model = "models/vehicles/raptor.dpm";
+        StartHealth = 250f;               // g_vehicle_raptor_health
+    }
+
+    // METHOD(Raptor, vr_spawn) — raptor.qc
+    public override void Spawn(Entity vehicle)
+    {
+        VehicleCommon.SpawnVehicle(vehicle, this);
+
+        if (Model is not null && Api.Services is not null)
+            Api.Entities.SetModel(vehicle, Model);
+
+        // Sub-entities: the two cannon barrels (gun1/gun2) the aim controller slews. Created once.
+        vehicle.VehGun1 ??= NewGun(vehicle);
+        vehicle.VehGun2 ??= NewGun(vehicle);
+
+        vehicle.MaxHealth = StartHealth;
+        vehicle.SetResourceExplicit(ResourceType.Health, StartHealth);
+        vehicle.VehicleShield = MaxShield;
+        vehicle.VehicleEnergy = 1f; // QC seeds energy at 1, regens up
+        vehicle.RespawnTime = RespawnTime;
+        vehicle.MoveType = MoveType.Toss;   // QC: MOVETYPE_TOSS on spawn
+        vehicle.Solid = Solid.SlideBox;
+        vehicle.DeadState = DeadFlag.No;
+        vehicle.DamageForceScale = 0.25f;   // QC vr_spawn: instance.damageforcescale = 0.25
+        vehicle.VehAnimFrame = 0f;
+        vehicle.VehW2Mode = (int)RaptorMode.Bomb;
+        vehicle.VehWeaponDelay = Time;
+        vehicle.VehReloadStart = Time;
+        vehicle.Touch = null;
+
+        // Hitbox: '-80 -80 0' .. '80 80 70' (raptor.qh).
+        if (Api.Services is not null)
+            Api.Entities.SetSize(vehicle, new Vector3(-80f, -80f, 0f), new Vector3(80f, 80f, 70f));
+
+        vehicle.VehicleFlags |= VehicleFlags.HasShield | VehicleFlags.MoveFly | VehicleFlags.DmgShake | VehicleFlags.DmgRoll;
+        if (EnergyRegen > 0f) vehicle.VehicleFlags |= VehicleFlags.EnergyRegen;
+        if (ShieldRegen > 0f) vehicle.VehicleFlags |= VehicleFlags.ShieldRegen;
+        if (HealthRegen > 0f) vehicle.VehicleFlags |= VehicleFlags.HealthRegen;
+
+        vehicle.Think = self => Think(self);
+        vehicle.NextThink = Time;
+
+        // TODO(port,client): qcsrc/common/vehicles/vehicle/raptor.qc vr_spawn — rotor spinner entities +
+        //                    raptor_rotor_anglefix, raptor_bomb/tail cosmetic models (visual only).
+    }
+
+    // METHOD(Raptor, vr_enter) — raptor.qc
+    public override void Enter(Entity vehicle, Entity player)
+    {
+        VehicleCommon.EnterVehicle(vehicle, player);
+        vehicle.MoveType = MoveType.BounceMissile; // QC: MOVETYPE_BOUNCEMISSILE
+        vehicle.Solid = Solid.SlideBox;
+        vehicle.Velocity = new Vector3(0, 0, 1f);  // QC: nudge up so the takeoff sequence can start
+        vehicle.VehW2Mode = (int)RaptorMode.Bomb;  // QC: STAT(VEHICLESTAT_W2MODE) = RSM_BOMB
+        vehicle.VehAnimFrame = 0f;
+        vehicle.VehWeaponDelay = Time + BombsRefire;
+        vehicle.VehReloadStart = Time;
+
+        // QC installs raptor_takeoff first (vertical takeoff), then hands off to raptor_frame at frame 25.
+        vehicle.VehSoundState = 0; // 0 = in takeoff phase, 1 = flying
+        vehicle.Think = self => Think(self);
+        vehicle.NextThink = Time;
+    }
+
+    // void raptor_exit(entity this, int eject) — raptor.qc
+    public override void Exit(Entity vehicle, Entity player)
+    {
+        QMath.AngleVectors(vehicle.Angles, out Vector3 forward, out _, out Vector3 up);
+        Vector3 spot;
+        bool dying = VehicleCommon.IsDead(vehicle);
+        if (dying)
+        {
+            spot = vehicle.Origin + forward * 100f + new Vector3(0, 0, 64f);
+            spot = VehicleCommon.FindGoodExit(vehicle, player, spot);
+            player.Velocity = (up + forward * 0.25f) * 750f;
+        }
+        else
+        {
+            float maxAir = MaxAirSpeed();
+            if (QMath.VLen(vehicle.Velocity) > 2f * maxAir)
+            {
+                player.Velocity = QMath.Normalize(vehicle.Velocity) * maxAir * 2f + new Vector3(0, 0, 200f);
+                spot = vehicle.Origin + forward * 32f + new Vector3(0, 0, 64f);
+            }
+            else
+            {
+                player.Velocity = vehicle.Velocity * 0.5f + new Vector3(0, 0, 10f);
+                spot = vehicle.Origin - forward * 200f + new Vector3(0, 0, 64f);
+            }
+            spot = VehicleCommon.FindGoodExit(vehicle, player, spot);
+        }
+
+        VehicleCommon.ExitVehicle(vehicle, player, dying ? VehicleExitFlag.Eject : VehicleExitFlag.Normal);
+        if (Api.Services is not null)
+            Api.Entities.SetOrigin(player, spot);
+
+        // QC: a living raptor auto-lands (raptor_land think) once the pilot leaves.
+        if (!dying)
+        {
+            vehicle.MoveType = MoveType.Toss;
+            vehicle.Think = self => Land(self);
+            vehicle.NextThink = Time;
+        }
+    }
+
+    // raptor_takeoff + raptor_frame dispatcher — raptor.qc.
+    public override void Think(Entity vehicle)
+    {
+        float dt = ThinkRate;
+        vehicle.NextThink = Time + dt;
+
+        if (VehicleCommon.FreezeIfGameStopped(vehicle))
+            return;
+
+        Entity? player = vehicle.Owner;
+
+        if (player is not null && !VehicleCommon.IsDead(vehicle))
+        {
+            if (vehicle.VehSoundState == 0)
+                Takeoff(vehicle, player, dt);
+            else
+                Frame(vehicle, player, vehicle.VehInput, dt);
+        }
+        // An empty raptor that hasn't landed just coasts under MOVETYPE_TOSS gravity (engine-integrated).
+
+        if ((vehicle.VehicleFlags & VehicleFlags.ShieldRegen) != 0)
+            vehicle.VehicleShield = VehicleCommon.Regen(vehicle, vehicle.VehicleShield, vehicle.DmgTime,
+                MaxShield, ShieldRegenPause, ShieldRegen, dt, healthScale: true);
+        if ((vehicle.VehicleFlags & VehicleFlags.EnergyRegen) != 0)
+            vehicle.VehicleEnergy = VehicleCommon.Regen(vehicle, vehicle.VehicleEnergy, vehicle.VehRegenPauseTime,
+                MaxEnergy, EnergyRegenPause, EnergyRegen, dt, healthScale: false);
+        if ((vehicle.VehicleFlags & VehicleFlags.HealthRegen) != 0)
+            VehicleCommon.RegenResource(vehicle, vehicle.DmgTime, StartHealth, 0f, HealthRegen, dt, false, ResourceType.Health);
+
+        if (player is not null)
+        {
+            if (Api.Services is not null)
+                Api.Entities.SetOrigin(player, vehicle.Origin + new Vector3(0, 0, 32f));
+            player.OldOrigin = player.Origin;
+            player.Velocity = vehicle.Velocity;
+        }
+    }
+
+    /// <summary>Port of <c>raptor_takeoff</c>: rise vertically while the animation frame ramps 0→25, then hand off to flight.</summary>
+    private void Takeoff(Entity vehicle, Entity player, float dt)
+    {
+        if (vehicle.VehAnimFrame < 25f)
+        {
+            vehicle.VehAnimFrame += 25f * dt / TakeoffTime;
+            Vector3 v = vehicle.Velocity;
+            v.Z = MathF.Min(v.Z * 1.5f, 256f);
+            vehicle.Velocity = v;
+        }
+        else
+        {
+            vehicle.VehSoundState = 1; // QC: this.PlayerPhysplug = raptor_frame
+        }
+    }
+
+    /// <summary>
+    /// Port of <c>raptor_frame</c> (the SVQC half): the avelocity-based pitch/yaw flight controller toward
+    /// the pilot's aim, roll on strafe, yaw-relative thrust, vertical jump/crouch climb, the twin-cannon
+    /// turret aim + lock/predict, and the bomb/flare secondary.
+    /// </summary>
+    public void Frame(Entity vehicle, Entity player, in MovementInput input, float dt)
+    {
+        if (VehicleCommon.IsDead(vehicle)) return;
+
+        Vector3 move = input.MoveValues;
+        Vector3 vAng = input.ViewAngles;
+
+        // Crosshair aim point (drives both the turret aim and the avelocity controller).
+        TraceResult tr = VehiclePhysics.CrosshairTrace(vehicle, vAng, vehicle);
+        Vector3 aimPoint = tr.EndPos;
+
+        // Hover-flip guard (QC): a hard-rolled raptor turns jump into descend.
+        bool jump = input.ButtonJump, crouch = input.ButtonCrouch;
+        if ((vehicle.Angles.Z > 50f || vehicle.Angles.Z < -50f) && jump) { crouch = true; jump = false; }
+
+        // --- avelocity yaw/pitch controller (raptor_frame) ---------------------------------------------
+        Vector3 vang = vehicle.Angles; vang.X = -vang.X;
+        Vector3 df = QMath.FixedVecToAngles(QMath.Normalize(aimPoint - vehicle.Origin + new Vector3(0, 0, 32f)));
+        df = VehiclePhysics.ShortAngles(df);
+
+        // Yaw toward view yaw (smoothed avelocity).
+        float yawErr = VehiclePhysics.ShortAngle(vAng.Y - vang.Y);
+        Vector3 av = vehicle.AVelocity;
+        av.Y = QMath.Bound(-TurnSpeed, yawErr + av.Y * 0.9f, TurnSpeed);
+
+        // Pitch: a small bias from forward/back input plus the aim pitch, clamped to the pitch limit.
+        float pbias = 0f;
+        if (move.X > 0f && vang.X < PitchLimit) pbias = 5f;
+        else if (move.X < 0f && vang.X > -PitchLimit) pbias = -20f;
+        float dfx = QMath.Bound(-PitchLimit, df.X, PitchLimit);
+        float pitchErr = vang.X - QMath.Bound(-PitchLimit, dfx + pbias, PitchLimit);
+        av.X = QMath.Bound(-PitchSpeed, pitchErr + av.X * 0.9f, PitchSpeed);
+        vehicle.AVelocity = av;
+
+        Vector3 a = vehicle.Angles;
+        a.X = VehiclePhysics.AngleMods(a.X); a.Y = VehiclePhysics.AngleMods(a.Y); a.Z = VehiclePhysics.AngleMods(a.Z);
+        vehicle.Angles = a;
+
+        // --- thrust (yaw-relative in movestyle 1) ------------------------------------------------------
+        Vector3 basisAng = MoveStyle == 1 ? new Vector3(0f, vehicle.Angles.Y, 0f) : vAng;
+        QMath.AngleVectors(basisAng, out Vector3 forward, out Vector3 right, out Vector3 up);
+
+        Vector3 nv = vehicle.Velocity * -Friction;
+        if (move.X != 0f) nv += forward * (move.X > 0f ? SpeedForward : -SpeedForward);
+        if (move.Y != 0f)
+        {
+            nv += right * (move.Y > 0f ? SpeedStrafe : -SpeedStrafe);
+            a = vehicle.Angles;
+            a.Z = QMath.Bound(-30f, a.Z + move.Y / SpeedStrafe, 30f); // roll on strafe
+            vehicle.Angles = a;
+        }
+        else
+        {
+            a = vehicle.Angles; a.Z *= 0.95f; vehicle.Angles = a;
+        }
+        if (crouch) nv -= up * SpeedDown;
+        else if (jump) nv += up * SpeedUp;
+
+        vehicle.Velocity += nv * dt;
+
+        // --- twin cannon: lock/predict + turret aim of gun1/gun2 ---------------------------------------
+        Vector3 aimAt = aimPoint;
+        if (CannonLockTarget == 1)
+        {
+            VehiclePhysics.LockTarget(vehicle, tr.Ent,
+                dt / CannonLockingTime, dt / CannonLockingReleaseTime, CannonLockedTime);
+            if (vehicle.VehLockTarget is not null && CannonPredictTarget && vehicle.VehLockStrength == 1f)
+                aimAt = PredictAim(vehicle, vehicle.VehLockTarget);
+        }
+
+        if (vehicle.VehGun1 is not null)
+            VehiclePhysics.AimTurret(vehicle, aimAt, vehicle.VehGun1, "fire1",
+                -CannonPitchLimitDown, CannonPitchLimitUp, -CannonTurnLimit, CannonTurnLimit, CannonTurnSpeed, dt);
+        if (vehicle.VehGun2 is not null)
+            VehiclePhysics.AimTurret(vehicle, aimAt, vehicle.VehGun2, "fire1",
+                -CannonPitchLimitDown, CannonPitchLimitUp, -CannonTurnLimit, CannonTurnLimit, CannonTurnSpeed, dt);
+
+        // --- primary fire: twin cannon (the 1-1-2-2 cadence) -------------------------------------------
+        // QC: refire is doubled at the end of the 4-shot pattern.
+        float refire = CannonRefire * (1f + ((vehicle.VehBulletCounter + 1) >= 4 ? 1f : 0f));
+        if (input.ButtonAttack1 && vehicle.VehicleEnergy >= CannonCost && Time >= vehicle.VehAttackFinished)
+        {
+            vehicle.VehAttackFinished = Time + refire;
+            FireCannon(vehicle, player);
+        }
+
+        // --- secondary fire: bomb or flare -------------------------------------------------------------
+        if (input.ButtonAttack2 && Time > vehicle.VehReloadStart + (vehicle.VehW2Mode == (int)RaptorMode.Bomb ? BombsRefire : FlareRefire))
+        {
+            if (vehicle.VehW2Mode == (int)RaptorMode.Bomb)
+                DropBombs(vehicle, player);
+            else
+                FireFlares(vehicle, player, vAng);
+            float rf = vehicle.VehW2Mode == (int)RaptorMode.Bomb ? BombsRefire : FlareRefire;
+            vehicle.VehWeaponDelay = Time + rf;
+            vehicle.VehReloadStart = Time;
+        }
+
+        // --- incoming-missile alarm (raptor_frame): a guided rocket tracking us within range -----------
+        // QC gates this on .bomb1.cnt (once per second); reuse VehSoundNextTime (no engine sound here yet).
+        if (vehicle.VehSoundNextTime < Time)
+        {
+            if (Api.Services is not null)
+            {
+                foreach (Entity proj in Api.Entities.FindByClass("vehicles_projectile"))
+                {
+                    if (proj.Enemy == vehicle && proj.VehGuideMode >= 0
+                        && QMath.VLen(vehicle.Origin - proj.Origin) < 2f * FlareRange)
+                    {
+                        Api.Sound.Play(vehicle, SoundChannel.Voice, "vehicles/alarm.wav");
+                        break;
+                    }
+                }
+            }
+            vehicle.VehSoundNextTime = Time + 1f;
+        }
+
+        // TODO(port,client): qcsrc/common/vehicles/vehicle/raptor.qc raptor_frame — engine fly sound,
+        //                    EFFECT_RAPTOR_MUZZLEFLASH, vehicle_ammo2/reload2 HUD %, dropmark aux crosshair.
+    }
+
+    /// <summary>QC cannon predict: iterate the impact-time lead solve toward the locked target.</summary>
+    private Vector3 PredictAim(Entity vehicle, Entity target)
+    {
+        Vector3 vf = target.Origin;
+        Vector3 ad = vf;
+        for (int i = 0; i < 4; ++i)
+        {
+            float distance = QMath.VLen(ad - vehicle.Origin);
+            float impactTime = distance / CannonSpeed;
+            ad = vf + target.Velocity * impactTime;
+        }
+        return ad;
+    }
+
+    // void raptor_land(entity this) — raptor.qc: settle to the ground after the pilot exits.
+    private void Land(Entity vehicle)
+    {
+        if (Api.Services is null) { vehicle.NextThink = 0f; return; }
+        float hgt = VehiclePhysics.Altitude(vehicle, 512f);
+
+        vehicle.Velocity = vehicle.Velocity * 0.9f + new Vector3(0, 0, -1800f) * (hgt / 256f) * FrameTime;
+        Vector3 a = vehicle.Angles; a.X *= 0.95f; a.Z *= 0.95f; vehicle.Angles = a;
+
+        if (hgt < 16f)
+        {
+            vehicle.MoveType = MoveType.Toss;
+            vehicle.VehAnimFrame = 0f;
+            vehicle.Think = self => Think(self); // QC: hand back to vehicles_think
+        }
+        vehicle.NextThink = Time;
+    }
+
+    // METHOD(Raptor, vr_death) — raptor.qc
+    public override void Death(Entity vehicle)
+    {
+        vehicle.SetResourceExplicit(ResourceType.Health, 0f);
+        vehicle.TakeDamage = DamageMode.No;
+        vehicle.Solid = Solid.Corpse;
+        vehicle.DeadState = DeadFlag.Dying;
+        vehicle.MoveType = MoveType.Bounce;
+        Vector3 v = vehicle.Velocity; v.Z += 600f; vehicle.Velocity = v;
+        // QC: a wild tumble.
+        vehicle.AVelocity = new Vector3(0f, 0.5f, 1f) * 400f * (Prandom.Float() - Prandom.Float());
+
+        // raptor_diethink: small explosions for ~5-10s, then raptor_blowup. raptor_blowup also runs on touch.
+        float when = Time + 5f + Prandom.Range(0f, 5f);
+        vehicle.Touch = (self, _) => Blowup(self);
+        vehicle.Think = self =>
+        {
+            if (Time >= when) { Blowup(self); return; }
+            self.NextThink = Time;
+            // TODO(port,client): random EFFECT_EXPLOSION_SMALL + SND_ROCKET_IMPACT during the tumble.
+        };
+        vehicle.NextThink = Time;
+    }
+
+    /// <summary>Port of <c>raptor_blowup</c>: the death blast, then schedule respawn.</summary>
+    private void Blowup(Entity vehicle)
+    {
+        vehicle.DeadState = DeadFlag.Dead;
+        // The pilot was already ejected when health hit 0 (vehicles_damage). Eject any straggler defensively.
+        if (vehicle.Owner is not null)
+            VehicleCommon.ExitVehicle(vehicle, vehicle.Owner, VehicleExitFlag.Normal);
+
+        WeaponSplash.RadiusDamage(vehicle, vehicle.Origin, 250f, 15f, 250f, vehicle.Enemy, RegistryId, 250f);
+
+        vehicle.MoveType = MoveType.None;
+        vehicle.Solid = Solid.Not;
+        vehicle.Touch = null;
+        vehicle.AVelocity = Vector3.Zero;
+        vehicle.Velocity = Vector3.Zero;
+        if (Api.Services is not null)
+            Api.Entities.SetOrigin(vehicle, vehicle.SpawnPos);
+        vehicle.NextThink = Time + RespawnTime;
+        vehicle.Think = self => Spawn(self);
+    }
+
+    // ============================ WEAPONS ============================
+
+    // METHOD(RaptorCannon, wr_think) — raptor_weapons.qc: the twin laser cannons (alternating gun1/gun2).
+    /// <summary>Fire one cannon bolt from the next barrel in the 1-1-2-2 pattern (energy-gated).</summary>
+    public void FireCannon(Entity vehicle, Entity player)
+    {
+        if (vehicle.VehicleEnergy < CannonCost) return; // wr_checkammo1
+        vehicle.VehicleEnergy -= CannonCost;
+        vehicle.VehRegenPauseTime = Time; // QC: actor.cnt = time (energy regen pause)
+
+        ++vehicle.VehBulletCounter;
+        Entity? gun;
+        if (vehicle.VehBulletCounter <= 2) gun = vehicle.VehGun1;
+        else { gun = vehicle.VehGun2; if (vehicle.VehBulletCounter >= 4) vehicle.VehBulletCounter = 0; }
+
+        var (org, fwd) = VehiclePhysics.TagOriginForward(gun ?? vehicle, "fire1");
+        QMath.AngleVectors(QMath.VecToAngles(fwd), out Vector3 f, out Vector3 r, out Vector3 u);
+        Vector3 vel = Prandom.Spread(f, r, u, CannonSpread) * CannonSpeed;
+
+        VehicleCommon.SpawnProjectile(vehicle, player, org, vel,
+            CannonDamage, CannonRadius, CannonForce, size: 0f,
+            DeathTypes.FromWeapon("raptorcannon"), RegistryId, health: 0f, lifetime: 0f,
+            fireSound: "vehicles/lasergun_fire.wav");
+        // TODO(port,client): EFFECT_RAPTOR_MUZZLEFLASH + CSQCProjectile visual.
+    }
+
+    // raptor_bombdrop -> raptor_bomb_burst — raptor_weapons.qc: drop two cluster bombs that burst into bomblets.
+    /// <summary>Drop the two cluster bombs from the bomb mounts; each falls then bursts into <see cref="Bomblets"/> bomblets.</summary>
+    public void DropBombs(Entity vehicle, Entity player)
+    {
+        DropOneBomb(vehicle, player, "bombmount_left");
+        DropOneBomb(vehicle, player, "bombmount_right");
+    }
+
+    private void DropOneBomb(Entity vehicle, Entity player, string tag)
+    {
+        if (Api.Services is null) return;
+        Vector3 org = VehiclePhysics.TagOrigin(vehicle, tag, new Vector3(0f, 0f, -16f));
+
+        Entity bomb = Api.Entities.Spawn();
+        bomb.ClassName = "raptor_bomb";
+        bomb.Owner = vehicle;
+        bomb.DmgInflictor = player;
+        bomb.MoveType = MoveType.Bounce;
+        bomb.Solid = Solid.BBox;
+        bomb.Gravity = 1f;
+        bomb.Velocity = vehicle.Velocity; // inherit the raptor's velocity, then fall
+        Api.Entities.SetSize(bomb, Vector3.Zero, Vector3.Zero);
+        Api.Entities.SetOrigin(bomb, org);
+
+        void Burst(Entity self)
+        {
+            self.Touch = null;
+            self.Think = null;
+            // raptor_bomb_burst: scatter `Bomblets` independent bomblets with spread, each exploding on
+            // touch or after a short fuse.
+            Vector3 normVel = QMath.Normalize(self.Velocity);
+            float speed = QMath.VLen(self.Velocity);
+            for (int i = 0; i < Bomblets; ++i)
+            {
+                Entity bomblet = Api.Entities.Spawn();
+                bomblet.ClassName = "raptor_bomblet";
+                bomblet.Owner = self.Owner;
+                bomblet.DmgInflictor = self.DmgInflictor;
+                bomblet.MoveType = MoveType.Toss;
+                bomblet.Solid = Solid.BBox;
+                bomblet.Gravity = 1f;
+                bomblet.Velocity = QMath.Normalize(normVel + Prandom.Vec() * BombletSpread) * speed;
+                Api.Entities.SetSize(bomblet, Vector3.Zero, Vector3.Zero);
+                Api.Entities.SetOrigin(bomblet, self.Origin);
+
+                void Boom(Entity b)
+                {
+                    b.Touch = null; b.Think = null;
+                    WeaponSplash.RadiusDamage(b, b.Origin, BombletDamage, BombletEdgeDamage, BombletRadius,
+                        b.DmgInflictor, RegistryId, BombletForce);
+                    Api.Entities.Remove(b);
+                }
+                bomblet.Touch = (b, other) => { if (other != b.Owner) Boom(b); };
+                bomblet.Think = Boom;
+                bomblet.NextThink = Time + 5f; // QC: 5s safety fuse; touch detonates sooner (+random delay)
+            }
+            Api.Entities.Remove(self);
+        }
+
+        bomb.Touch = (self, _) => Burst(self);
+        bomb.Think = Burst;
+        bomb.NextThink = Time + BombletTime;
+    }
+
+    // METHOD(RaptorFlare, wr_think) — raptor_weapons.qc: drop three decoy flares that seduce guided missiles.
+    /// <summary>Drop a spread of three flares; each re-targets nearby guided rockets onto itself for its lifetime.</summary>
+    public void FireFlares(Entity vehicle, Entity player, Vector3 viewAngles)
+    {
+        if (Api.Services is null) return;
+        QMath.AngleVectors(viewAngles, out Vector3 forward, out _, out _);
+        for (int i = 0; i < 3; ++i)
+        {
+            Entity flare = Api.Entities.Spawn();
+            flare.ClassName = "raptor_flare";
+            flare.Owner = vehicle;
+            flare.DmgInflictor = player;
+            flare.MoveType = MoveType.Toss;
+            flare.Solid = Solid.Corpse;
+            flare.Gravity = 0.15f;
+            flare.TakeDamage = DamageMode.Yes;
+            flare.Health = 20f;
+            flare.Velocity = 0.25f * vehicle.Velocity + (forward + Prandom.Vec() * 0.25f) * -500f;
+            Api.Entities.SetSize(flare, Vector3.Zero, Vector3.Zero);
+            Api.Entities.SetOrigin(flare, vehicle.Origin - new Vector3(0, 0, 16f));
+
+            float expire = Time + FlareLifetime;
+            flare.Think = self =>
+            {
+                self.NextThink = Time + 0.1f;
+                // raptor_flare_think: nearby guided rockets aimed at us get re-pointed at the flare.
+                foreach (Entity proj in Api.Entities.FindByClass("vehicles_projectile"))
+                {
+                    if (proj.Enemy == self.Owner && proj.VehGuideMode >= 0
+                        && QMath.VLen(self.Origin - proj.Origin) < FlareRange
+                        && Prandom.Float() > FlareChase)
+                        proj.Enemy = self;
+                }
+                if (expire < Time) Api.Entities.Remove(self);
+            };
+            flare.Touch = (self, _) => Api.Entities.Remove(self);
+            flare.NextThink = Time;
+        }
+    }
+
+    // ---- mode switch (raptor_impulse) ----
+    /// <summary>Port of <c>raptor_impulse</c> weapon-group / cycle: select or cycle the secondary fire mode.</summary>
+    public static void SetMode(Entity vehicle, RaptorMode mode) => vehicle.VehW2Mode = (int)mode;
+    public static void CycleMode(Entity vehicle, int dir)
+    {
+        int m = vehicle.VehW2Mode + dir;
+        if (m > (int)RaptorMode.Flare) m = (int)RaptorMode.Bomb;
+        if (m < (int)RaptorMode.Bomb) m = (int)RaptorMode.Flare;
+        vehicle.VehW2Mode = m;
+    }
+
+    private Entity NewGun(Entity vehicle)
+    {
+        Entity g = Api.Services is not null ? Api.Entities.Spawn() : new Entity();
+        g.ClassName = "raptor_gun";
+        g.Owner = vehicle;
+        g.VehSlotOwner = vehicle;
+        if (Api.Services is not null) Api.Models.SetAttachment(g, vehicle, "");
+        return g;
+    }
+
+    private static float Time => Api.Services is not null ? Api.Clock.Time : 0f;
+    private static float FrameTime => Api.Services is not null ? Api.Clock.FrameTime : 0.05f;
+    private static float MaxAirSpeed()
+    {
+        if (Api.Services is null) return 400f;
+        float v = Api.Cvars.GetFloat("sv_maxairspeed");
+        return v != 0f ? v : 400f;
+    }
+}

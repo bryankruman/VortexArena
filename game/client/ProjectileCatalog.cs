@@ -1,0 +1,261 @@
+using System;
+using Godot;
+using XonoticGodot.Common.Framework;
+
+namespace XonoticGodot.Game.Client;
+
+/// <summary>
+/// The per-projectile-type visual table — the faithful port of CSQC's <c>Projectile_Draw</c> /
+/// <c>ENT_CLIENT_PROJECTILE</c> HANDLE switch (Base/.../qcsrc/client/weapons/projectile.qc). The QC code
+/// keyed every networked projectile by a <c>csqcprojectile_type</c> (PROJECTILE_*) and, per type, selected a
+/// <c>traileffect</c> (EFFECT_TR_*), a model <c>scale</c>, a spin (<c>avelocity</c>/the z-rotation in
+/// <c>Projectile_Draw</c>), and a looping fly sound. This is that table, so the
+/// <see cref="ProjectileRenderer"/> can give a rocket its smoke-and-z-spin, electro its blue plasma trail,
+/// crylink its purple shards, the fireball its particle-only fire, etc. — instead of one generic trail.
+///
+/// Why a separate file: the trail *identity* (which EFFECT_TR_* a type uses) is gameplay data straight from
+/// the QC; turning that identity into concrete Godot particle parameters (color / additive / density /
+/// gravity) is presentation. Keeping the mapping here, beside the renderer, makes the QC correspondence
+/// auditable (every <see cref="ProjectileType"/> below cites its <c>projectile.qc</c> HANDLE line).
+/// </summary>
+public static class ProjectileCatalog
+{
+    /// <summary>The networked CSQC projectile type (QC <c>PROJECTILE_*</c>). Only the types this port's
+    /// weapons + vehicles actually spawn are enumerated; unknown classnames fall back to <see cref="Generic"/>.</summary>
+    public enum ProjectileType
+    {
+        None = 0,
+        Electro, Rocket, Crylink, CrylinkBouncing, ElectroBeam,
+        Grenade, GrenadeBouncing, Mine, Blaster, ArcBolt, Hlac,
+        PortoRed, PortoBlue, Hookbomb, Hagar, HagarBouncing,
+        Fireball, Firemine, Tag, Flac, Seeker, MageSpike, GolemLightning,
+        SpiderRocket, WakiRocket, WakiCannon, BumbleGun, BumbleBeam,
+        Rpc, RocketMinstaLaser, Plasma, Generic,
+    }
+
+    /// <summary>The body look a projectile draws with when it has no resolved model (QC setmodel fallback).</summary>
+    public enum BodyFamily
+    {
+        RocketMesh,   // an elongated solid body (rockets, seeker, spider/waki rockets)
+        GrenadeMesh,  // a small tumbling solid (grenades, mines, tag)
+        GlowSprite,   // an additive energy billboard (electro/crylink/arc/plasma/blaster bolts)
+        FireSprite,   // a fire billboard, no solid model (fireball/firemine — QC modelindex=0)
+    }
+
+    /// <summary>Concrete particle parameters for a trail (the presentation of one EFFECT_TR_* identity).</summary>
+    public readonly record struct TrailParams(
+        Color Color, bool Additive, int Amount, float Life, float Scale, float Gravity);
+
+    /// <summary>One projectile type's full visual descriptor (trail + body + spin + loop sound).</summary>
+    public sealed class Desc
+    {
+        public required ProjectileType Type;
+        /// <summary>The QC <c>traileffect</c> EFFECT_* name (informational / for routing through EffectSystem).</summary>
+        public string TrailEffect = "";
+        /// <summary>Concrete trail particles, or null for a trailless type (Blaster/HLAC/WakiCannon/Raptorbomb).</summary>
+        public TrailParams? Trail;
+        /// <summary>QC model <c>scale</c> (1 default; rocket 2, porto 4, hagar 0.75, flac 0.4, golem 2.5…).</summary>
+        public float ModelScale = 1f;
+        /// <summary>Continuous spin in degrees/sec about each local axis (QC <c>avelocity</c> / the z-rot in Draw).</summary>
+        public Vector3 SpinDegPerSec = Vector3.Zero;
+        /// <summary>Looping fly sound sample (QC <c>loopsound</c>, e.g. "weapons/rocket_fly"); null = silent.</summary>
+        public string? LoopSound;
+        /// <summary>The body look when no model resolves.</summary>
+        public BodyFamily Body = BodyFamily.GlowSprite;
+        /// <summary>The bolt/light tint.</summary>
+        public Color GlowColor = new(0.8f, 0.85f, 0.9f);
+        /// <summary>Whether this type casts a dynamic point light (rockets/plasma/fireball).</summary>
+        public bool HasLight;
+    }
+
+    // ============================================================================================
+    //  Trail presets — one per EFFECT_TR_* identity used by projectile.qc
+    // ============================================================================================
+
+    // Grey exhaust smoke (TR_ROCKET): dense, non-additive, drifts up a touch.
+    private static readonly TrailParams RocketSmoke = new(new Color(0.5f, 0.5f, 0.5f), false, 60, 0.6f, 1.4f, 18f);
+    // Thinner smoke (TR_GRENADE) for grenades/mines.
+    private static readonly TrailParams GrenadeSmoke = new(new Color(0.45f, 0.45f, 0.45f), false, 24, 0.5f, 0.7f, 12f);
+    // Small light smoke (HAGAR_ROCKET / TR_SEEKER) for hagar/flac/seeker/vehicle rockets.
+    private static readonly TrailParams SmallSmoke = new(new Color(0.5f, 0.5f, 0.5f), false, 22, 0.45f, 0.55f, 14f);
+    // Blue plasma glow (TR_NEXUIZPLASMA): electro / vortex-ish bolts.
+    private static readonly TrailParams BluePlasma = new(new Color(0.4f, 0.6f, 1.0f), true, 40, 0.4f, 0.7f, 0f);
+    // Purple shards (TR_CRYLINKPLASMA): crylink / raptor cannon.
+    private static readonly TrailParams PurplePlasma = new(new Color(0.8f, 0.4f, 1.0f), true, 30, 0.35f, 0.5f, 0f);
+    // Pale energy spike (TR_WIZSPIKE): arc bolt / porto.
+    private static readonly TrailParams WizSpike = new(new Color(0.55f, 0.9f, 0.8f), true, 24, 0.4f, 0.5f, 0f);
+    // Red energy spike (TR_KNIGHTSPIKE): hookbomb.
+    private static readonly TrailParams KnightSpike = new(new Color(1.0f, 0.45f, 0.3f), true, 24, 0.4f, 0.5f, 0f);
+    // Violet spike (TR_VORESPIKE): mage spike.
+    private static readonly TrailParams VoreSpike = new(new Color(0.7f, 0.4f, 1.0f), true, 26, 0.4f, 0.55f, 0f);
+    // Fire (FIREBALL): big orange flame trail.
+    private static readonly TrailParams FireBig = new(new Color(1.0f, 0.5f, 0.15f), true, 50, 0.5f, 1.1f, 30f);
+    // Fire (FIREMINE): smaller flame.
+    private static readonly TrailParams FireSmall = new(new Color(1.0f, 0.5f, 0.15f), true, 30, 0.45f, 0.7f, 20f);
+    // Laser (ROCKETMINSTA_LASER): thin red streak.
+    private static readonly TrailParams LaserRed = new(new Color(1.0f, 0.2f, 0.2f), true, 20, 0.3f, 0.4f, 0f);
+
+    // Common tints.
+    private static readonly Color ElectroBlue = new(0.45f, 0.65f, 1.0f);
+    private static readonly Color CrylinkPurple = new(0.8f, 0.4f, 1.0f);
+    private static readonly Color RocketOrange = new(1.0f, 0.55f, 0.2f);
+    private static readonly Color FireOrange = new(1.0f, 0.5f, 0.15f);
+    private static readonly Color BlasterYellow = new(1.0f, 0.9f, 0.4f);
+    private static readonly Color GrenadeGreen = new(0.3f, 0.45f, 0.2f);
+
+    // ============================================================================================
+    //  The table — keyed by ProjectileType (mirrors the projectile.qc HANDLE switch)
+    // ============================================================================================
+
+    private static readonly System.Collections.Generic.Dictionary<ProjectileType, Desc> Table = Build();
+
+    private static System.Collections.Generic.Dictionary<ProjectileType, Desc> Build()
+    {
+        var t = new System.Collections.Generic.Dictionary<ProjectileType, Desc>();
+        void Add(Desc d) => t[d.Type] = d;
+
+        // EFFECT_TR_NEXUIZPLASMA, electro_fly loop, bounce (projectile.qc:346,405)
+        Add(new Desc { Type = ProjectileType.Electro, TrailEffect = "TR_NEXUIZPLASMA", Trail = BluePlasma,
+            Body = BodyFamily.GlowSprite, GlowColor = ElectroBlue, HasLight = true, LoopSound = "weapons/electro_fly" });
+        // EFFECT_TR_NEXUIZPLASMA (electro beam / secondary orb)
+        Add(new Desc { Type = ProjectileType.ElectroBeam, TrailEffect = "TR_NEXUIZPLASMA", Trail = BluePlasma,
+            Body = BodyFamily.GlowSprite, GlowColor = ElectroBlue, HasLight = true });
+        // EFFECT_TR_ROCKET, scale 2, z-spin 720, devastator_fly loop (projectile.qc:347,138-140,415)
+        Add(new Desc { Type = ProjectileType.Rocket, TrailEffect = "TR_ROCKET", Trail = RocketSmoke,
+            Body = BodyFamily.RocketMesh, ModelScale = 2f, SpinDegPerSec = new Vector3(0, 0, 720f),
+            GlowColor = RocketOrange, HasLight = true, LoopSound = "weapons/rocket_fly" });
+        // EFFECT_TR_ROCKET (RPC) — devastator fly
+        Add(new Desc { Type = ProjectileType.Rpc, TrailEffect = "TR_ROCKET", Trail = RocketSmoke,
+            Body = BodyFamily.RocketMesh, ModelScale = 2f, SpinDegPerSec = new Vector3(0, 0, 720f),
+            GlowColor = RocketOrange, HasLight = true, LoopSound = "weapons/rocket_fly" });
+        // EFFECT_TR_CRYLINKPLASMA (projectile.qc:348-349)
+        Add(new Desc { Type = ProjectileType.Crylink, TrailEffect = "TR_CRYLINKPLASMA", Trail = PurplePlasma,
+            Body = BodyFamily.GlowSprite, GlowColor = CrylinkPurple, HasLight = true });
+        Add(new Desc { Type = ProjectileType.CrylinkBouncing, TrailEffect = "TR_CRYLINKPLASMA", Trail = PurplePlasma,
+            Body = BodyFamily.GlowSprite, GlowColor = CrylinkPurple, HasLight = true });
+        // EFFECT_TR_GRENADE, sideways tumble for bouncing (projectile.qc:351-353,132-134)
+        Add(new Desc { Type = ProjectileType.Grenade, TrailEffect = "TR_GRENADE", Trail = GrenadeSmoke,
+            Body = BodyFamily.GrenadeMesh, GlowColor = GrenadeGreen });
+        Add(new Desc { Type = ProjectileType.GrenadeBouncing, TrailEffect = "TR_GRENADE", Trail = GrenadeSmoke,
+            Body = BodyFamily.GrenadeMesh, SpinDegPerSec = new Vector3(0, -1000f, 0), GlowColor = GrenadeGreen });
+        Add(new Desc { Type = ProjectileType.Mine, TrailEffect = "TR_GRENADE", Trail = GrenadeSmoke,
+            Body = BodyFamily.GrenadeMesh, GlowColor = GrenadeGreen });
+        // EFFECT_Null — no trail (projectile.qc:354,356)
+        Add(new Desc { Type = ProjectileType.Blaster, TrailEffect = "", Trail = null,
+            Body = BodyFamily.GlowSprite, GlowColor = BlasterYellow });
+        Add(new Desc { Type = ProjectileType.Hlac, TrailEffect = "", Trail = null,
+            Body = BodyFamily.GlowSprite, GlowColor = new Color(0.9f, 0.7f, 0.3f) });
+        // EFFECT_TR_WIZSPIKE (projectile.qc:355,357-358)
+        Add(new Desc { Type = ProjectileType.ArcBolt, TrailEffect = "TR_WIZSPIKE", Trail = WizSpike,
+            Body = BodyFamily.GlowSprite, GlowColor = new Color(0.5f, 0.9f, 1.0f), HasLight = true });
+        Add(new Desc { Type = ProjectileType.PortoRed, TrailEffect = "TR_WIZSPIKE", Trail = WizSpike,
+            Body = BodyFamily.GlowSprite, ModelScale = 4f, GlowColor = new Color(1.0f, 0.4f, 0.4f) });
+        Add(new Desc { Type = ProjectileType.PortoBlue, TrailEffect = "TR_WIZSPIKE", Trail = WizSpike,
+            Body = BodyFamily.GlowSprite, ModelScale = 4f, GlowColor = new Color(0.4f, 0.4f, 1.0f) });
+        // EFFECT_TR_KNIGHTSPIKE (projectile.qc:359, forward tumble :135-136)
+        Add(new Desc { Type = ProjectileType.Hookbomb, TrailEffect = "TR_KNIGHTSPIKE", Trail = KnightSpike,
+            Body = BodyFamily.GrenadeMesh, SpinDegPerSec = new Vector3(1000f, 0, 0), GlowColor = new Color(1.0f, 0.5f, 0.3f) });
+        // EFFECT_HAGAR_ROCKET, scale 0.75 (projectile.qc:360-361)
+        Add(new Desc { Type = ProjectileType.Hagar, TrailEffect = "HAGAR_ROCKET", Trail = SmallSmoke,
+            Body = BodyFamily.RocketMesh, ModelScale = 0.75f, GlowColor = RocketOrange });
+        Add(new Desc { Type = ProjectileType.HagarBouncing, TrailEffect = "HAGAR_ROCKET", Trail = SmallSmoke,
+            Body = BodyFamily.RocketMesh, ModelScale = 0.75f, GlowColor = RocketOrange });
+        // EFFECT_FIREBALL / FIREMINE — particle-only, modelindex 0 (projectile.qc:362-363,463,468)
+        Add(new Desc { Type = ProjectileType.Fireball, TrailEffect = "FIREBALL", Trail = FireBig,
+            Body = BodyFamily.FireSprite, GlowColor = FireOrange, HasLight = true, LoopSound = "weapons/fireball_fly2" });
+        Add(new Desc { Type = ProjectileType.Firemine, TrailEffect = "FIREMINE", Trail = FireSmall,
+            Body = BodyFamily.FireSprite, GlowColor = FireOrange, HasLight = true, LoopSound = "weapons/fireball_fly" });
+        // EFFECT_TR_ROCKET (tag) (projectile.qc:364)
+        Add(new Desc { Type = ProjectileType.Tag, TrailEffect = "TR_ROCKET", Trail = SmallSmoke,
+            Body = BodyFamily.GrenadeMesh, GlowColor = new Color(0.8f, 0.8f, 0.4f) });
+        // EFFECT_FLAC_TRAIL, scale 0.4 (projectile.qc:365)
+        Add(new Desc { Type = ProjectileType.Flac, TrailEffect = "FLAC_TRAIL", Trail = SmallSmoke,
+            Body = BodyFamily.GrenadeMesh, ModelScale = 0.4f, GlowColor = new Color(0.8f, 0.8f, 0.5f) });
+        // EFFECT_SEEKER_TRAIL, seeker_fly loop (projectile.qc:366,483)
+        Add(new Desc { Type = ProjectileType.Seeker, TrailEffect = "SEEKER_TRAIL", Trail = SmallSmoke,
+            Body = BodyFamily.RocketMesh, GlowColor = RocketOrange, LoopSound = "weapons/seeker_fly" });
+        // EFFECT_TR_VORESPIKE (projectile.qc:368)
+        Add(new Desc { Type = ProjectileType.MageSpike, TrailEffect = "TR_VORESPIKE", Trail = VoreSpike,
+            Body = BodyFamily.GlowSprite, GlowColor = new Color(0.7f, 0.4f, 1.0f), HasLight = true });
+        // EFFECT_TR_NEXUIZPLASMA, scale 2.5, random tumble (projectile.qc:369,431-435)
+        Add(new Desc { Type = ProjectileType.GolemLightning, TrailEffect = "TR_NEXUIZPLASMA", Trail = BluePlasma,
+            Body = BodyFamily.GlowSprite, ModelScale = 2.5f, SpinDegPerSec = new Vector3(360f, 480f, 600f),
+            GlowColor = new Color(0.5f, 0.7f, 1.0f), HasLight = true });
+        // Vehicle projectiles (projectile.qc:373-380)
+        Add(new Desc { Type = ProjectileType.SpiderRocket, TrailEffect = "SPIDERBOT_ROCKET_TRAIL", Trail = SmallSmoke,
+            Body = BodyFamily.RocketMesh, GlowColor = RocketOrange, LoopSound = "weapons/tag_rocket_fly" });
+        Add(new Desc { Type = ProjectileType.WakiRocket, TrailEffect = "RACER_ROCKET_TRAIL", Trail = SmallSmoke,
+            Body = BodyFamily.RocketMesh, GlowColor = RocketOrange, LoopSound = "weapons/tag_rocket_fly" });
+        Add(new Desc { Type = ProjectileType.WakiCannon, TrailEffect = "", Trail = null,
+            Body = BodyFamily.GlowSprite, GlowColor = BlasterYellow });
+        Add(new Desc { Type = ProjectileType.BumbleGun, TrailEffect = "TR_NEXUIZPLASMA", Trail = BluePlasma,
+            Body = BodyFamily.GlowSprite, GlowColor = ElectroBlue, HasLight = true });
+        Add(new Desc { Type = ProjectileType.BumbleBeam, TrailEffect = "TR_NEXUIZPLASMA", Trail = BluePlasma,
+            Body = BodyFamily.GlowSprite, GlowColor = ElectroBlue, HasLight = true });
+        // EFFECT_ROCKETMINSTA_LASER (projectile.qc:384)
+        Add(new Desc { Type = ProjectileType.RocketMinstaLaser, TrailEffect = "ROCKETMINSTA_LASER", Trail = LaserRed,
+            Body = BodyFamily.GlowSprite, GlowColor = new Color(1.0f, 0.3f, 0.3f), HasLight = true });
+        // Generic plasma (Fireball/Vaporizer "plasma_prim") — blue energy bolt with a light.
+        Add(new Desc { Type = ProjectileType.Plasma, TrailEffect = "TR_NEXUIZPLASMA", Trail = BluePlasma,
+            Body = BodyFamily.GlowSprite, GlowColor = ElectroBlue, HasLight = true });
+        // Generic fallback — neutral glow, light smoke.
+        Add(new Desc { Type = ProjectileType.Generic, TrailEffect = "", Trail = SmallSmoke,
+            Body = BodyFamily.GlowSprite, GlowColor = new Color(0.85f, 0.85f, 0.9f) });
+        return t;
+    }
+
+    /// <summary>The descriptor for a projectile type (never null; <see cref="ProjectileType.Generic"/> fallback).</summary>
+    public static Desc DescOf(ProjectileType type)
+        => Table.TryGetValue(type, out Desc? d) ? d : Table[ProjectileType.Generic];
+
+    // ============================================================================================
+    //  Classify an entity → ProjectileType (the server-spawned classname/model is the QC key)
+    // ============================================================================================
+
+    /// <summary>
+    /// Resolve a projectile entity to its <see cref="ProjectileType"/> from the server-assigned classname /
+    /// model / netname (the same strings the QC keys on). The classnames are the ones the ported weapons set
+    /// (rocket, grenade, spike, electro_bolt, mine, seeker_missile, …); falls back to <see cref="ProjectileType.Generic"/>.
+    /// </summary>
+    public static ProjectileType Classify(Entity e)
+    {
+        if (e is null) return ProjectileType.Generic;
+        string s = (e.ClassName + " " + e.Model + " " + e.NetName).ToLowerInvariant();
+
+        // Vehicle rockets first (more specific than the generic "rocket"/"missile").
+        if (Has(s, "spiderbot_rocket", "spiderrocket")) return ProjectileType.SpiderRocket;
+        if (Has(s, "wakizashi_rocket", "wakirocket", "racer_rocket")) return ProjectileType.WakiRocket;
+        if (Has(s, "raptorcannon")) return ProjectileType.WakiCannon;
+
+        if (Has(s, "electro_orb", "electro_bolt", "electro")) return ProjectileType.Electro;
+        if (Has(s, "devastator", "rocket")) return ProjectileType.Rocket;
+        if (Has(s, "rpc")) return ProjectileType.Rpc;
+        if (Has(s, "spike", "crylink")) return ProjectileType.Crylink;
+        if (Has(s, "hookbomb")) return ProjectileType.Hookbomb;
+        if (Has(s, "grapplinghook", "hook")) return ProjectileType.Hookbomb;
+        if (Has(s, "mine")) return ProjectileType.Mine;
+        if (Has(s, "grenade", "nade", "mortar")) return ProjectileType.Grenade;
+        if (Has(s, "hagar")) return ProjectileType.Hagar;
+        if (Has(s, "seeker_tag", "tag_tracker", "tag")) return ProjectileType.Tag;
+        if (Has(s, "seeker_missile", "seeker")) return ProjectileType.Seeker;
+        if (Has(s, "flac")) return ProjectileType.Flac;
+        if (Has(s, "firemine", "firemine")) return ProjectileType.Firemine;
+        if (Has(s, "fireball")) return ProjectileType.Fireball;
+        if (Has(s, "porto")) return ProjectileType.PortoRed;
+        if (Has(s, "arc")) return ProjectileType.ArcBolt;
+        if (Has(s, "hlacbolt", "hlac")) return ProjectileType.Hlac;
+        if (Has(s, "rocketminsta")) return ProjectileType.RocketMinstaLaser;
+        if (Has(s, "mage")) return ProjectileType.MageSpike;
+        if (Has(s, "golem")) return ProjectileType.GolemLightning;
+        if (Has(s, "plasma", "vaporizer", "minsta")) return ProjectileType.Plasma;
+        if (Has(s, "blaster", "laser")) return ProjectileType.Blaster;
+        return ProjectileType.Generic;
+    }
+
+    private static bool Has(string hay, params string[] needles)
+    {
+        foreach (string n in needles)
+            if (hay.Contains(n, StringComparison.Ordinal)) return true;
+        return false;
+    }
+}

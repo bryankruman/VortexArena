@@ -1,0 +1,267 @@
+using System.Numerics;
+using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Gameplay;
+using XonoticGodot.Common.Services;
+
+namespace XonoticGodot.Server.Bot;
+
+/// <summary>
+/// A scored goal candidate produced during goal-rating (QC navigation_routerating's running best). The
+/// brain picks the highest-rated one and routes to it. <see cref="Target"/> is the entity (item/enemy) or
+/// null for a bare position goal (e.g. a roam waypoint).
+/// </summary>
+public readonly struct GoalRating
+{
+    public readonly Vector3 Position;
+    public readonly Entity? Target;
+    public readonly float Rating;
+
+    public GoalRating(Vector3 position, Entity? target, float rating)
+    {
+        Position = position;
+        Target = target;
+        Rating = rating;
+    }
+}
+
+/// <summary>
+/// Accumulates rated goals during a strategy frame (QC navigation_goalrating_start/routerating/end). The
+/// QC code weights item value against travel cost along the waypoint graph; this port uses value weighted
+/// by inverse straight-line distance (rangebias / (rangebias + dist)), which preserves the "prefer near,
+/// valuable goals" behaviour without recomputing the whole Dijkstra field every frame. Picking the actual
+/// route is then left to <see cref="BotNavigation.SetGoal"/> (waypoint A*).
+/// </summary>
+public sealed class GoalRater
+{
+    private GoalRating _best;
+    private bool _has;
+
+    public bool HasGoal => _has;
+    public GoalRating Best => _best;
+
+    public void Start()
+    {
+        _best = default;
+        _has = false;
+    }
+
+    /// <summary>Rate a candidate goal (QC navigation_routerating): value <paramref name="f"/> discounted by distance.</summary>
+    public void Rate(Vector3 from, Entity? target, Vector3 goalPos, float f, float rangeBias)
+    {
+        if (f <= 0f) return;
+        float dist = (goalPos - from).Length();
+        float rating = f * (rangeBias / (rangeBias + dist));
+        if (!_has || rating > _best.Rating)
+        {
+            _best = new GoalRating(goalPos, target, rating);
+            _has = true;
+        }
+    }
+
+    public void End() { /* QC navigation_goalrating_end commits navigation_bestgoal; we expose Best directly */ }
+}
+
+/// <summary>
+/// Bot role/goal selection — the C# port of server/bot/default/havocbot/roles.qc and the
+/// HavocBot_ChooseRole mutator dispatch. A role is a per-frame function that fills a <see cref="GoalRater"/>
+/// with rated goals (items, enemies, roam waypoints). The brain runs the role on its strategy clock, then
+/// routes to the winning goal.
+///
+/// The generic DM role (seek items + frags, fall back to roaming) and the per-gametype objective roles
+/// (CTF / Domination / Onslaught / KeyHunt / Keepaway, in <see cref="BotObjectiveRoles"/>) are all wired:
+/// <see cref="ChooseRole"/> dispatches on the gametype NetName so each bot rates its mode's objectives.
+/// </summary>
+public static class BotRoles
+{
+    /// <summary>QC BOT_RATING_ENEMY (roles.qh).</summary>
+    private const float RatingEnemy = 2500f;
+
+    private static readonly Random Rng = new();
+
+    /// <summary>
+    /// Pick the role function for a gametype (QC havocbot_chooserole / HavocBot_ChooseRole). Matches on the
+    /// gametype's NetName; unknown/team gametypes fall back to <see cref="RoleGeneric"/>.
+    /// </summary>
+    public static BotRole ChooseRole(string? gameTypeNetName)
+    {
+        return (gameTypeNetName ?? "").ToLowerInvariant() switch
+        {
+            "ctf" => BotObjectiveRoles.RoleCtf,                 // havocbot_role_ctf_* (carrier/offense/defense/middle)
+            "keyhunt" or "kh" => BotObjectiveRoles.RoleKeyHunt, // havocbot_role_kh_*
+            "dom" or "domination" => BotObjectiveRoles.RoleDomination, // havocbot_role_dom
+            "ons" or "onslaught" => BotObjectiveRoles.RoleOnslaught,   // havocbot_role_ons_*
+            "ka" or "keepaway" or "tka" => BotObjectiveRoles.RoleKeepaway, // havocbot_role_ka_*
+            "nexball" or "nb" => BotObjectiveRoles.RoleNexball,         // havocbot_role_nexball
+            "assault" or "as" => BotObjectiveRoles.RoleAssault,        // havocbot_role_ass_*
+            _ => RoleGeneric,
+        };
+    }
+
+    /// <summary>
+    /// Legacy DM role (QC havocbot_role_generic): rate items, enemy players, and roam waypoints, then the
+    /// brain routes to the best. Self-contained so it works without team state.
+    /// </summary>
+    public static void RoleGeneric(BotBrain brain, GoalRater rater)
+    {
+        var bot = brain.Bot;
+        rater.Start();
+        GoalrateItems(brain, rater, bot.Origin, 10000f);
+        GoalrateEnemyPlayers(brain, rater, bot.Origin, 10000f);
+        GoalrateRoamWaypoints(brain, rater, bot.Origin, 3000f);
+        rater.End();
+    }
+
+    /// <summary>Team-gametype fallback when no objective role applies: plays the DM role.</summary>
+    public static void RoleGenericTeam(BotBrain brain, GoalRater rater) => RoleGeneric(brain, rater);
+
+    // ---- goal-rating helpers (QC havocbot_goalrating_*) ----
+
+    /// <summary>
+    /// Rate nearby pickup items (QC havocbot_goalrating_items). Items are world entities flagged
+    /// <see cref="EntFlags.Item"/>; value is a need-based score (health/armor low =&gt; want more). Faithful to
+    /// QC: a taken item (Solid.Not) is still rated when its respawn is imminent — within a skill-scaled lead
+    /// window (<c>bot_ai_timeitems</c>) — so high-skill bots time item respawns and camp the spawn. The
+    /// passed <paramref name="ratingScale"/> is multiplied by QC's 0.0001 like the original.
+    /// </summary>
+    public static void GoalrateItems(BotBrain brain, GoalRater rater, Vector3 org, float radius, float scale = 10000f)
+    {
+        var bot = brain.Bot;
+        float ratingScale = scale * 0.0001f; // QC multiplies the passed scale by 0.0001
+        float now = Api.Services is not null ? Api.Clock.Time : 0f;
+        bool timeItems = Cvars.Bool("bot_ai_timeitems");
+        float minRespawnDelay = System.Math.Max(11f, Cvars.FloatOr("bot_ai_timeitems_minrespawndelay", 11f));
+
+        foreach (var it in Api.Entities.FindInRadius(org, radius))
+        {
+            if (it.IsFreed || ReferenceEquals(it, bot)) continue;
+            if ((it.Flags & EntFlags.Item) == 0) continue;
+
+            if (it.Solid == Solid.Not)
+            {
+                // Item is taken/awaiting respawn. QC: only rate it if the bot times items and the respawn is
+                // both long enough to be worth predicting AND coming up within a skill-scaled lead window.
+                if (!timeItems) continue;
+                if (it.ScheduledRespawnTime <= 0f) continue;
+                if (it.RespawnTime < minRespawnDelay) continue;
+                if (it.RespawnTimeJitter != 0f) continue; // jittered respawns aren't reliably predictable
+
+                // lead time the bot will pre-position by (QC: skill 9+ leads 4s; powerups scale with skill).
+                float lead = brain.Skill >= 9f ? 4f : 0f;
+                if (now < it.ScheduledRespawnTime - lead) continue; // not soon enough to head there yet
+            }
+
+            var pos = (it.AbsMin + it.AbsMax) * 0.5f;
+            if (pos == Vector3.Zero) pos = it.Origin;
+
+            float value = ItemValue(brain, it);
+            rater.Rate(org, it, pos, value * ratingScale, 2000f);
+        }
+    }
+
+    /// <summary>
+    /// Rate visible enemy players (QC havocbot_goalrating_enemyplayers). Distance-gated, LOS not required
+    /// here (the QC version also rates non-visible to encourage pursuit). Skill nudges aggression.
+    /// </summary>
+    public static void GoalrateEnemyPlayers(BotBrain brain, GoalRater rater, Vector3 org, float radius)
+    {
+        var bot = brain.Bot;
+        float ratingScale = 10000f * 0.0001f;
+        float radius2 = radius * radius;
+        foreach (var e in brain.Players())
+        {
+            if (!BotBrain.ShouldAttack(bot, e)) continue;
+            float d2 = (e.Origin - org).LengthSquared();
+            if (d2 < 100f * 100f || d2 > radius2) continue;
+
+            // health/armor advantage and low skill both increase aggression (QC t factor)
+            float advantage = (bot.Health - e.Health) / 150f;
+            float t = System.Math.Clamp(1f + advantage, 0f, 3f);
+            t += System.Math.Max(0f, 8f - brain.Skill) * 0.05f;
+            rater.Rate(org, e, e.Origin, ratingScale * t * RatingEnemy, 2000f);
+        }
+    }
+
+    /// <summary>
+    /// Rate roam waypoints when nothing better exists (QC havocbot_goalrating_waypoints). Picks waypoints in
+    /// a shell around the bot with mild randomness so idle bots wander instead of freezing. Only contributes
+    /// if no stronger goal was rated (checked by the caller via <see cref="GoalRater.HasGoal"/>).
+    /// </summary>
+    public static void GoalrateRoamWaypoints(BotBrain brain, GoalRater rater, Vector3 org, float radius)
+    {
+        if (rater.HasGoal) return; // only roam when there's no item/enemy goal
+        var net = brain.Network;
+        if (net is null || net.Count == 0) return;
+
+        float radius2 = radius * radius;
+        foreach (var wp in net.Nodes)
+        {
+            if (wp.HasFlag(WaypointFlags.Teleport)) continue;
+            float d2 = (wp.Origin - org).LengthSquared();
+            if (d2 > radius2 || d2 < 100f * 100f) continue;
+            float f = 0.5f + (float)Rng.NextDouble() * 0.5f;
+            rater.Rate(org, null, wp.Center, f, 2000f);
+        }
+    }
+
+    /// <summary>
+    /// Need-based item value — the C# essence of each item's QC <c>bot_pickupevalfunc</c> (the health/armor
+    /// pickups rate higher the more the bot lacks that resource; ammo rates higher when low; an unowned
+    /// weapon rates high; powerups always pull). Reads the item's classname/NetName + the resource amount it
+    /// grants (carried on the world item's resource fields) against the bot's current resources via
+    /// <see cref="Resources"/>, so the value falls to ~0 once the bot is topped up (QC: don't path to an item
+    /// you can't use).
+    /// </summary>
+    private static float ItemValue(BotBrain brain, Entity item)
+    {
+        var bot = brain.Bot;
+        string name = string.IsNullOrEmpty(item.NetName) ? item.ClassName : item.NetName;
+
+        // Health: want proportional to the missing fraction (QC commodity_pickupevalfunc for health).
+        float itemHealth = item.GetResource(ResourceType.Health);
+        if (itemHealth > 0f || Mentions(name, "health"))
+        {
+            float missing = 1f - bot.Health / System.Math.Max(1f, bot.MaxHealth);
+            return System.Math.Max(0f, missing) + 0.25f;
+        }
+
+        // Armor: want proportional to the headroom under the armor cap.
+        float itemArmor = item.GetResource(ResourceType.Armor);
+        if (itemArmor > 0f || Mentions(name, "armor"))
+        {
+            float cap = System.Math.Max(1f, Resources.GetResourceLimit(bot, ResourceType.Armor));
+            float missing = 1f - bot.GetResource(ResourceType.Armor) / cap;
+            return System.Math.Max(0f, missing) * 0.9f + 0.1f;
+        }
+
+        // Weapon pickup: want strongly if not yet owned, mildly otherwise (for its ammo).
+        if (!string.IsNullOrEmpty(item.NetName) && Weapons.ByName(item.NetName) is not null)
+            return bot.HasWeapon(item.NetName) ? 0.25f : 0.9f;
+
+        // Ammo: want proportional to how empty the matching pool is.
+        foreach (ResourceType ammo in AmmoResources)
+        {
+            float amt = item.GetResource(ammo);
+            if (amt <= 0f) continue;
+            float cap = System.Math.Max(1f, Resources.GetResourceLimit(bot, ammo));
+            float missing = 1f - bot.GetResource(ammo) / cap;
+            return System.Math.Max(0.1f, missing * 0.6f);
+        }
+
+        // Powerup / unknown pickup: a steady pull (QC powerups rate high; scaled by the caller's bias).
+        if (Mentions(name, "powerup") || Mentions(name, "strength") || Mentions(name, "shield")
+            || Mentions(name, "invincible") || Mentions(name, "buff"))
+            return 1.0f;
+        return 0.3f;
+    }
+
+    private static readonly ResourceType[] AmmoResources =
+    {
+        ResourceType.Shells, ResourceType.Bullets, ResourceType.Rockets, ResourceType.Cells, ResourceType.Fuel,
+    };
+
+    private static bool Mentions(string s, string token)
+        => s.Contains(token, StringComparison.OrdinalIgnoreCase);
+}
+
+/// <summary>A bot role: fills the rater with goal candidates for this frame (QC <c>.havocbot_role</c>).</summary>
+public delegate void BotRole(BotBrain brain, GoalRater rater);

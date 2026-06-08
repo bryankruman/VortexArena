@@ -1,0 +1,58 @@
+XonoticGodot Licensing
+======================
+
+XonoticGodot is a port of the Xonotic game code — originally QuakeC running on the
+DarkPlaces engine — to C# on the Godot Engine.
+
+
+Source code
+-----------
+
+All source code in this repository is licensed under the GNU General Public
+License version 3 or any later version, at your choice. The full text is in the
+file GPL-3.
+
+This is the license of the upstream Xonotic *game* source (the qcsrc/ QuakeC), of
+which this port is a derivative work: upstream licenses all of its game source
+files under "GPL version 3 or any later version" (see the upstream COPYING). A
+derivative of GPLv3-or-later code must itself be GPLv3-or-later, so that is the
+license of this port.
+
+
+DarkPlaces engine
+-----------------
+
+The original game ran on the DarkPlaces engine, which upstream licenses under "GPL
+version 2 or any later version". This port does NOT include, link, or redistribute
+DarkPlaces — it runs on the Godot Engine instead — so the GPL-2 license text is not
+bundled here. Where individual files reimplement behavior originally found in
+DarkPlaces engine code, that is noted in the file; under the "or any later version"
+clause such code is distributed here under the GPLv3 along with the rest of the port.
+
+
+Godot Engine
+------------
+
+This project targets the Godot Engine, which is licensed under the MIT License
+(https://godotengine.org/license/). MIT is compatible with the GPL. Godot is not
+vendored in this repository; builds that bundle the Godot runtime must include
+Godot's copyright notice and MIT license text, as required by the MIT terms.
+
+
+Assets
+------
+
+Game assets are downloaded from the upstream Xonotic repositories by
+download-assets.sh and are not committed to this repository. They remain under
+their original licenses as established by the Xonotic project — primarily GPLv2+
+for code-adjacent assets, with various Creative Commons and other free-content
+licenses for art, music, and sound. See the Xonotic project's licensing
+documentation for specifics.
+
+
+Contributions
+-------------
+
+By contributing code to this repository, you agree to license your changes and
+additions under the GNU General Public License version 3 or any later version, and
+you guarantee that you have acquired all the rights necessary to do so.

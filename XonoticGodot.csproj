@@ -1,0 +1,29 @@
+<Project Sdk="Godot.NET.Sdk/4.6.3">
+  <!-- The Godot host: the game client + (headless) dedicated server entry point.
+       This is the ONE Godot-managed C# project; everything else is a referenced class library.
+       SDK version matches the installed Godot 4.6.3 .NET editor; the stable 4.6.3 SDK package isn't on
+       public NuGet, so nuget.config adds the editor's bundled package source. -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <RootNamespace>XonoticGodot</RootNamespace>
+  </PropertyGroup>
+  <!-- Godot.NET.Sdk globs **/*.cs from the project root, which would double-compile the class
+       libraries under src/ (and their obj/). The host compiles only its own code (root + game/). -->
+  <ItemGroup>
+    <Compile Remove="src/**/*.cs" />
+    <Compile Remove="tests/**/*.cs" />
+    <Compile Remove="planning/**/*.cs" />
+    <Compile Remove=".godot/**/*.cs" />
+    <Compile Remove="obj/**/*.cs" />
+    <Compile Remove="bin/**/*.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="src\XonoticGodot.Common\XonoticGodot.Common.csproj" />
+    <ProjectReference Include="src\XonoticGodot.Engine\XonoticGodot.Engine.csproj" />
+    <ProjectReference Include="src\XonoticGodot.Net\XonoticGodot.Net.csproj" />
+    <ProjectReference Include="src\XonoticGodot.Formats\XonoticGodot.Formats.csproj" />
+    <ProjectReference Include="src\XonoticGodot.SourceGen\XonoticGodot.SourceGen.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="src\XonoticGodot.Server\XonoticGodot.Server.csproj" />
+  </ItemGroup>
+</Project>
