@@ -282,6 +282,29 @@ public partial class EffectSystem : Node3D
     public Node3D? MuzzleFlash(string effectName, NVec3 origin, NVec3 direction)
         => Spawn(effectName, origin, direction, 1);
 
+    /// <summary>
+    /// Returns the particlefont atlas sprite for a named trail effect (e.g. "TR_ROCKET", "TR_NEXUIZPLASMA"),
+    /// for use by the <see cref="ProjectileRenderer"/>'s continuous-emitter trail builder. Loads effectinfo
+    /// lazily on first call. Returns null when the atlas isn't mounted, the effect isn't in effectinfo, or
+    /// every block is a non-sprite type (decal / bubble / beam / underwater-only).
+    /// </summary>
+    public Texture2D? QueryTrailSprite(string trailEffectName)
+    {
+        if (string.IsNullOrEmpty(trailEffectName)) return null;
+        EnsureInfoLoaded();
+        Effect? effect = ResolveEffect(trailEffectName);
+        IReadOnlyList<EffectInfoEmitter>? blocks = LookupInfo(trailEffectName, effect);
+        if (blocks is null) return null;
+        foreach (EffectInfoEmitter block in blocks)
+        {
+            if (!block.Defined || block.Underwater) continue;
+            if (block.Type is EiType.Decal or EiType.Bubble or EiType.Beam) continue;
+            Texture2D? sprite = Font?.CellInRange(block.Tex0, block.Tex1);
+            if (sprite is not null) return sprite;
+        }
+        return null;
+    }
+
     // --- decals / casings / model-gibs entry points (T20) -------------------------------------------
     // These are the public hooks the net/client layer calls for the CSQC temp-entities that aren't plain
     // pointparticles: the `casings` casing-eject TE (casings.qc), the `net_gibsplash` gib splash

@@ -323,6 +323,7 @@ public sealed class Hook : Weapon
         MutatorHooks.EditProjectile.Call(ref ep);
 
         Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/hookbomb_fire.wav");
+        EffectEmitter.Emit("HOOK_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
     }
 
     // W_Hook_Explode2 — begin the duration-spread gravity blast (pulls victims in over `duration`). hook.qc
@@ -331,6 +332,7 @@ public sealed class Hook : Weapon
         self.Touch = null;
         self.TakeDamage = DamageMode.No;
         self.MoveType = MoveType.None;
+        EffectEmitter.Emit("HOOK_EXPLODE", self.Origin);
 
         // QC ticks W_Hook_ExplodeThink every 0.05s for `duration`, applying the *delta* of a power-curve
         // falloff each tick so the total blast == one full RadiusDamage. teleport_time marks the blast start.

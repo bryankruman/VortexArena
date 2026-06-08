@@ -1172,6 +1172,19 @@ public sealed partial class NetGame : Node3D
                 GD.Print($"[NetGame] handshake accepted by '{_client.ServerName}': netId {_client.LocalNetId}.");
             }
 
+            // LISTEN-SERVER prediction parity: the predicted carrier and the authoritative host Player are TWO
+            // distinct, co-located entities in the SAME world. The host Player is a SOLID_SLIDEBOX body in the
+            // trace set, and the carrier's slide-move (PlayerPhysics.PushEntity, MoveFilter.Normal) clips Body —
+            // so the carrier's sweep collides with the host player's own body, which the server player (ignore=
+            // self) never does. That intermittent block makes the predicted origin drift sideways from authority,
+            // and the prediction-error smoother drags the camera to the side then crawls it back. Link the carrier
+            // to the host Player so TraceService.ClipToEntities skips it (it excludes ignore.Owner==touch); the
+            // host player isn't known at SpawnCarrier time, so (re)assign here each frame once the spawn resolves.
+            // Only the host body is skipped — projectiles/world still clip — so the projectile-passthrough fix
+            // (carrier.DpHitContentsMask=PlayerClip) is unaffected.
+            if (_carrier is not null && LocalServerPlayer is { } hostSelf && !ReferenceEquals(_carrier.Owner, hostSelf))
+                _carrier.Owner = hostSelf;
+
             // Fixed-timestep input: emit exactly one InputCommand per 1/72 s of REAL time, independent of the
             // display frame rate, so each command represents the dt it claims (DeltaTime = TicRate) and the
             // server advances this player at true wall-clock speed (sending one-per-render-frame would make the
@@ -1661,10 +1674,12 @@ public sealed partial class NetGame : Node3D
         if (_client is null || _camera is null)
             return;
 
-        float now = _renderClock; // the clock the reconciler armed the stair/error decays with (see _Process)
+        float now = _renderClock; // the clock the reconciler armed the prediction-error decay with (see _Process)
         NVec3 predicted = _client.PredictedOrigin + _client.PredictionErrorOffset(now);
-        // Subtract the decaying stair-smooth Z so the camera glides over steps (cl_movement stairsmooth).
-        predicted.Z -= _client.PredictedStairOffset(now);
+        // Subtract the stair-smooth Z so the camera glides over steps (cl_movement stairsmooth). Driven by the
+        // REAL frame delta (dt), NOT the server-synced render clock — the rebasing clock's 1/72-quantized jumps
+        // made the catch-up jitter up/down (the reference advances stair smoothing by real frametime).
+        predicted.Z -= _client.PredictedStairOffset(dt);
 
         var st = new Client.FirstPersonView.ViewState
         {

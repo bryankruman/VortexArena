@@ -79,7 +79,7 @@ public static class EffectsList
         Effects.Register("GREEN_HLAC_MUZZLEFLASH", "hlac_muzzleflash");
 
         // ---- Vortex ----
-        Effects.Register("VORTEX_BEAM", "nex_beam");
+        Effects.Register("VORTEX_BEAM", "nex_beam", isTrail: true);
         Effects.Register("VORTEX_BEAM_OLD", "TE_TEI_G3");
         Effects.Register("VORTEX_IMPACT", "nex_impact");
         Effects.Register("VORTEX_MUZZLEFLASH", "nex_muzzleflash");

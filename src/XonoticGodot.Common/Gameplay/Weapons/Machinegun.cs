@@ -275,7 +275,11 @@ public sealed class Machinegun : Weapon
     {
         WeaponFiring.FireBullet(actor, shot.Origin, shot.Dir, WeaponFiring.MaxShotDistance, damage,
             RegistryId, spread, Cvars.SolidPenetration, force: force);
+        Vector3 impEnd = shot.Origin + shot.Dir * WeaponFiring.MaxShotDistance;
+        TraceResult impTr = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, impEnd, MoveFilter.WorldOnly, actor);
+        EffectEmitter.Emit("MACHINEGUN_IMPACT", impTr.EndPos, -shot.Dir * 1000f);
         Api.Sound.Play(actor, SoundChannel.WeaponAuto, "weapons/uzi_fire.wav");
+        EffectEmitter.Emit("MACHINEGUN_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
     }
 
     // Port of MachineGun_Update_Spread (machinegun.qc): time-based decay model, or the legacy

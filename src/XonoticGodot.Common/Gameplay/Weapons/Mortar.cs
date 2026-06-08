@@ -195,6 +195,7 @@ public sealed class Mortar : Weapon
         gren.ProjectileDamage = (self, attacker) => Explode(self, damage, edge, radius, force, deathType);
 
         Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/grenade_fire.wav");
+        EffectEmitter.Emit("GRENADE_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
 
         // MUTATOR_CALLHOOK(EditProjectile, actor, gren) (mortar.qc) — fired before the primary's first think
         // runs, so invincibleproj's health-zeroing takes effect before the grenade can be shot down.
@@ -265,6 +266,7 @@ public sealed class Mortar : Weapon
 
         WeaponSplash.RadiusDamage(self, self.Origin, damage, edge, radius, self.Owner, deathType, force);
 
+        EffectEmitter.Emit("GRENADE_EXPLODE", self.Origin);
         Api.Entities.Remove(self);
     }
 

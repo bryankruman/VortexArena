@@ -135,6 +135,50 @@ public class ProjectileFirerCollisionTests
     }
 
     /// <summary>
+    /// Listen-server prediction parity: the predicted <c>client_predict</c> carrier (SOLID_NOT) and the
+    /// authoritative host Player (SOLID_SLIDEBOX body) are two DISTINCT, co-located entities in the same world.
+    /// The carrier's slide-move (MoveFilter.Normal, mask includes BODY) clips the host player's own body — which
+    /// the server player (ignore=self) never does — so the predicted origin drifts sideways from authority and
+    /// the camera gets tugged to the side then crawls back. Linking <c>carrier.Owner = hostPlayer</c> makes
+    /// <see cref="TraceService.ClipToEntities"/> skip it (it excludes <c>ignore.Owner==touch</c>), without
+    /// affecting projectile/world clipping.
+    /// </summary>
+    [Fact]
+    public void Prediction_carrier_owner_linked_to_host_player_passes_through_its_body()
+    {
+        var loop = new SimulationLoop(FloorWorld());
+        loop.InstallAsAmbient();
+        var ents = loop.Services.EntityTable;
+
+        // The authoritative host Player body, slightly ahead so the sweep meets it (not startsolid co-location).
+        var host = NewPlayer(ents, new Vector3(40, 0, 25));
+
+        // The predicted carrier: SOLID_NOT client entity with the player move mask (as NetGame.SpawnCarrier sets).
+        var carrier = ents.Spawn();
+        carrier.ClassName = "client_predict";
+        carrier.Flags = EntFlags.Client;
+        carrier.Solid = Solid.Not;
+        carrier.DpHitContentsMask = SuperContents.Solid | SuperContents.Body | SuperContents.PlayerClip;
+        ents.SetSize(carrier, new Vector3(-16, -16, -24), new Vector3(16, 16, 45));
+        ents.SetOrigin(carrier, new Vector3(0, 0, 25));
+
+        Vector3 end = new(60, 0, 25);
+
+        // BUG: no owner link → the carrier's forward sweep is blocked by the host player's body.
+        carrier.Owner = null;
+        ents.InvalidateSolidCache();
+        var blocked = Api.Trace.Trace(carrier.Origin, carrier.Mins, carrier.Maxs, end, MoveFilter.Normal, carrier);
+        Assert.Same(host, blocked.Ent);
+
+        // FIX: link the carrier to the host Player → the sweep passes through its body (prediction matches authority).
+        carrier.Owner = host;
+        ents.InvalidateSolidCache();
+        var passes = Api.Trace.Trace(carrier.Origin, carrier.Mins, carrier.Maxs, end, MoveFilter.Normal, carrier);
+        Assert.True(passes.Ent is null || !ReferenceEquals(passes.Ent, host),
+            "an owner-linked carrier passes through the authoritative host player body");
+    }
+
+    /// <summary>
     /// The MAKETRIGGER projectile still hits ENEMY bodies and the world during its OWN move (its
     /// dphitcontentsmask keeps SOLID|BODY|CORPSE) — so the fix doesn't make projectiles pass through targets.
     /// </summary>

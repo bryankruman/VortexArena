@@ -147,9 +147,14 @@ public sealed class Reconciler
     private float _errorUntilTime;     // csqcplayer_predictionerrortime
     private float _errorFactor;        // csqcplayer_predictionerrorfactor
 
-    // --- stair-smoothing state (csqcmodel CSQCModel_ApplyStairSmoothing: smooth_dz over cl_stairsmoothtime) ---
-    private float _stairOffset;        // current un-decayed vertical offset (predicted_origin.z - rendered.z)
-    private float _stairUntilTime;     // sim time the offset finishes decaying to zero
+    // --- stair-smoothing state (csqcmodel CSQCModel_ApplyStairSmoothing) ---
+    // The rendered camera Z LAGS the live predicted Z and catches up at StairSmoothSpeed, hard-clamped to within
+    // one step height of the live Z every frame (so it can NEVER persist an offset on a slope — the bug the old
+    // delta-accumulating/time-window model had). Advanced per RENDER FRAME by the REAL clamped frame dt (NOT the
+    // server-synced/rebasing render clock, whose 1/72-quantized jumps made the catch-up jitter), exactly like the
+    // reference's `smoothtime = bound(0, time - prevtime, 0.1)`.
+    private float _renderedZ;          // absolute rendered camera Z (the smoothed eye height)
+    private bool _stairInit;           // false until the first frame seeds _renderedZ to the live Z
 
     /// <summary>The current predicted state after the last <see cref="Reconcile"/> — what the camera/render
     /// reads (before adding the smoothing offset).</summary>
@@ -161,13 +166,13 @@ public sealed class Reconciler
     /// <summary>Server tick rate (Hz) used to scale the error-decay factor (QC <c>ticrate</c>).</summary>
     public float TickRate = 72f;
 
-    /// <summary>cl_stairsmoothing: seconds over which a stair-step vertical jump is blended out of the view.
-    /// 0 disables stair smoothing (the camera follows the predicted Z exactly). QC default ≈ 0.16s.</summary>
-    public float StairSmoothTime = 0.16f;
+    /// <summary>cl_stairsmoothing ENABLE toggle: &gt;0 = stair smoothing on (the reference has no time window — the
+    /// blend rate is <see cref="StairSmoothSpeed"/>); 0 = off (the camera follows the predicted Z exactly).</summary>
+    public float StairSmoothTime = 1f;
 
-    /// <summary>cl_stairsmoothspeed analogue: max vertical units the stair offset may decay per second (a
-    /// jump bigger than this still gets smoothed but never crawls slower than this). 0 = time-based only.</summary>
-    public float StairSmoothSpeed = 160f;
+    /// <summary>cl_stairsmoothspeed (Base default 200): the rate (u/s) at which the rendered Z catches up to the
+    /// live predicted Z over a step. 0 disables the speed cap (instant follow).</summary>
+    public float StairSmoothSpeed = 200f;
 
     // Thresholds from CSQCPlayer_SetPredictionError: errors larger than these are assumed to be a
     // teleport / jumppad / jump-timing disagreement and are ignored rather than smoothed.
@@ -202,10 +207,6 @@ public sealed class Reconciler
     {
         _input.Acknowledge(ackedSeq);
 
-        // Remember last frame's predicted pose so we can detect a stair step the replay introduces.
-        PredictedState previous = Predicted;
-        bool hadPrediction = _hasPredicted;
-
         // 1) Unpredict: start from the authoritative state.
         PredictedState s = serverState;
 
@@ -238,19 +239,11 @@ public sealed class Reconciler
         Vector3 vErr = previousPredictionAtAck.Velocity - s.Velocity;
         SetPredictionError(oErr, vErr, now);
 
-        // 4) Stair smoothing: if this prediction jumped the player up/down a step while grounded, fold that
-        //    vertical jump into the decaying view offset so the camera glides instead of popping. We only
-        //    consider it a stair when both frames are on the ground and the jump is within step height —
-        //    otherwise it's a jump/fall/teleport and the view should follow the real Z.
-        if (hadPrediction && StairSmoothTime > 0f && s.OnGround && previous.OnGround)
-            NoteStep(previous.Origin.Z, s.Origin.Z, now);
-
+        // Stair smoothing is no longer measured here per-tick (the old per-tick delta model perpetually re-armed
+        // on slopes); it is driven per RENDER FRAME from the live predicted Z in GetStairSmoothOffset.
         Predicted = s;
-        _hasPredicted = true;
         return s;
     }
-
-    private bool _hasPredicted;
 
     /// <summary>
     /// Replay-only prediction: re-run the unacked inputs (acked+1 .. newest) on top of the last authoritative
@@ -266,9 +259,7 @@ public sealed class Reconciler
     /// </summary>
     public PredictedState Predict(in PredictedState serverState, uint ackedSeq, in PlayerState vars, float now)
     {
-        PredictedState previous = Predicted;
-        bool hadPrediction = _hasPredicted;
-
+        _ = now; // stair smoothing now runs per-frame in GetStairSmoothOffset, not per replayed tick
         PredictedState s = serverState;
         uint newest = _input.NextSeq - 1;
         for (uint seq = ackedSeq + 1; seq <= newest; seq++)
@@ -277,11 +268,7 @@ public sealed class Reconciler
             _movement.Step(ref s, in cmd, in vars);
         }
 
-        if (hadPrediction && StairSmoothTime > 0f && s.OnGround && previous.OnGround)
-            NoteStep(previous.Origin.Z, s.Origin.Z, now);
-
         Predicted = s;
-        _hasPredicted = true;
         return s;
     }
 
@@ -350,58 +337,49 @@ public sealed class Reconciler
     // ---------------------------------------------------------------------
 
     /// <summary>
-    /// Record a grounded vertical step between two predicted Z heights so the camera blends over it instead
-    /// of popping. Port of <c>CSQCModel_ApplyStairSmoothing</c>'s <c>smooth_dz</c> accumulation: the new
-    /// offset is the residual still-decaying offset plus this step, clamped to one step height; a jump larger
-    /// than a stair (jump/fall/teleport) is treated as a hard move and clears any pending smoothing.
+    /// The vertical offset to SUBTRACT from the predicted origin Z before rendering, so the camera glides over
+    /// stair-steps instead of popping. Faithful port of <c>CSQCModel_ApplyStairSmoothing</c> (cl_player.qc): the
+    /// rendered Z (<see cref="_renderedZ"/>) catches up to the LIVE predicted Z at <see cref="StairSmoothSpeed"/>
+    /// u/s and is HARD-CLAMPED to within one step height of it every frame — so it can never lag the true Z by
+    /// more than a step (the structural fix for the old delta-accumulating / time-window model that perpetually
+    /// re-armed on any grounded Z change and pinned a persistent offset on slopes/ramps). Snaps (no smoothing)
+    /// while airborne, so jumps/falls follow the real Z.
+    ///
+    /// <para>Advanced once per RENDER FRAME. <paramref name="frameDt"/> is the REAL wall-clock frame delta (NOT
+    /// the server-synced render clock, whose snapshot-rebased 1/72-quantized jumps made the catch-up jitter up/
+    /// down); it is clamped to <c>[0, 0.1]</c> exactly like the reference's <c>smoothtime</c>. A placement-only
+    /// call (frameDt 0) returns the current offset without advancing. Callers do
+    /// <c>renderZ = predicted.Z - GetStairSmoothOffset(frameDt)</c>, i.e. the camera sits at <c>_renderedZ</c>.</para>
     /// </summary>
-    public void NoteStep(float prevZ, float newZ, float now)
+    public float GetStairSmoothOffset(float frameDt)
     {
-        float step = newZ - prevZ;
-        if (MathF.Abs(step) > MaxStairStep)
+        float trueZ = Predicted.Origin.Z;
+
+        // Disabled or first frame: (re)seed the rendered Z to the live Z, no offset.
+        if (StairSmoothTime <= 0f || !_stairInit)
         {
-            // not a stair — let the view follow the real Z (clear any residual smoothing).
-            _stairOffset = 0f;
-            _stairUntilTime = now;
-            return;
-        }
-        if (step == 0f) return;
-
-        // The rendered Z lagged behind the predicted Z by the residual offset; add the new step on top, then
-        // re-arm the decay window. Clamp so a burst of steps can't open an arbitrarily large gap.
-        float residual = GetStairSmoothOffset(now);
-        float offset = residual + step;
-        offset = QMathClamp(offset, -MaxStairStep, MaxStairStep);
-        _stairOffset = offset;
-        _stairUntilTime = now + StairSmoothTime;
-    }
-
-    /// <summary>
-    /// The current vertical offset to ADD to the predicted origin before rendering, decaying linearly to
-    /// zero by <see cref="StairSmoothTime"/> (and never faster than <see cref="StairSmoothSpeed"/> u/s).
-    /// Port of the per-frame <c>smooth_dz</c> read in <c>CSQCModel_ApplyStairSmoothing</c>. The offset is the
-    /// NEGATIVE of the step (the camera sits where it was and catches up), so callers do
-    /// <c>renderZ = predicted.Z - GetStairSmoothOffset(now)</c>.
-    /// </summary>
-    public float GetStairSmoothOffset(float now)
-    {
-        if (StairSmoothTime <= 0f || now >= _stairUntilTime || _stairOffset == 0f)
+            _renderedZ = trueZ;
+            _stairInit = true;
             return 0f;
-
-        float remaining = _stairUntilTime - now;
-        // time-based linear decay fraction in [0,1].
-        float frac = remaining / StairSmoothTime;
-        float offset = _stairOffset * frac;
-
-        // speed cap: never let the *remaining* offset exceed what StairSmoothSpeed could have left, so a tiny
-        // step still resolves quickly and a big one doesn't crawl (mirrors cl_stairsmoothspeed clamping).
-        if (StairSmoothSpeed > 0f)
-        {
-            float maxRemaining = StairSmoothSpeed * remaining;
-            if (offset > maxRemaining) offset = maxRemaining;
-            else if (offset < -maxRemaining) offset = -maxRemaining;
         }
-        return offset;
+
+        // Airborne (jump/fall) / teleport: no stair smoothing — the view follows the real Z (snap).
+        if (!Predicted.OnGround)
+        {
+            _renderedZ = trueZ;
+            return 0f;
+        }
+
+        // Slide the rendered Z toward the live true Z at StairSmoothSpeed (smoothtime = bound(0, dt, 0.1))...
+        float smoothtime = frameDt < 0f ? 0f : (frameDt > 0.1f ? 0.1f : frameDt);
+        float maxMove = (StairSmoothSpeed > 0f ? StairSmoothSpeed : float.MaxValue) * smoothtime;
+        if (_renderedZ < trueZ) _renderedZ = MathF.Min(_renderedZ + maxMove, trueZ);
+        else                    _renderedZ = MathF.Max(_renderedZ - maxMove, trueZ);
+        // ...then HARD-CLAMP to one step height of the live Z (PHYS_STEPHEIGHT) so a slope can't pin an
+        // ever-growing offset: the clamp re-pins the lag to <= one step every frame.
+        _renderedZ = QMathClamp(_renderedZ, trueZ - MaxStairStep, trueZ + MaxStairStep);
+
+        return trueZ - _renderedZ;
     }
 
     /// <summary>Reset all smoothing state (e.g. on respawn / hard teleport).</summary>
@@ -409,9 +387,8 @@ public sealed class Reconciler
     {
         _errorOrigin = _errorVelocity = Vector3.Zero;
         _errorUntilTime = 0f;
-        _stairOffset = 0f;
-        _stairUntilTime = 0f;
-        _hasPredicted = false;
+        // Re-seed stair smoothing to the live Z next frame (a teleport/respawn must not drag a stale lag).
+        _stairInit = false;
         _errorFactor = 0f;
     }
 

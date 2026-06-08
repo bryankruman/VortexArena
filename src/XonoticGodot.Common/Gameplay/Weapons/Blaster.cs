@@ -165,6 +165,7 @@ public sealed class Blaster : Weapon
             missile.Think(missile);
 
         Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/lasergun_fire.wav");
+        EffectEmitter.Emit("BLASTER_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
 
         // Deferred (client render/networking): MIF_SPLASH projectile flag, CSQCProjectile/PROJECTILE_BLASTER
         // spawn, muzzle flash effect.
@@ -188,6 +189,7 @@ public sealed class Blaster : Weapon
         WeaponSplash.RadiusDamage(self, center, Primary.Damage, Primary.EdgeDamage, Primary.Radius,
             self.Owner, RegistryId, Primary.Force, forceZScale: Primary.ForceZScale, directHit: other);
 
+        EffectEmitter.Emit("BLASTER_IMPACT", center);
         Api.Entities.Remove(self);
     }
 }

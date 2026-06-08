@@ -170,9 +170,13 @@ public sealed class Shotgun : Weapon
         {
             WeaponFiring.FireBullet(actor, shot.Origin, shot.Dir, WeaponFiring.MaxShotDistance, Primary.Damage,
                 deathType, Primary.Spread, Primary.SolidPenetration, force: Primary.Force);
+            Vector3 impEnd = shot.Origin + shot.Dir * WeaponFiring.MaxShotDistance;
+            TraceResult impTr = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, impEnd, MoveFilter.WorldOnly, actor);
+            EffectEmitter.Emit("SHOTGUN_IMPACT", impTr.EndPos, -shot.Dir * 1000f);
         }
 
         Api.Sound.Play(actor, SoundChannel.WeaponAuto, "weapons/shotgun_fire.wav");
+        EffectEmitter.Emit("SHOTGUN_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
     }
 
     // W_Shotgun_Attack2 + W_Shotgun_Melee_Think — a single melee swing in front of the actor. shotgun.qc

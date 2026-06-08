@@ -272,6 +272,7 @@ public sealed class Arc : Weapon
         // smoothing of this same trace.
         Vector3 end = shot.Origin + st.BeamDir * Beam.Range;
         TraceResult tr = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, end, MoveFilter.Normal, actor);
+        EffectEmitter.Emit("ARC_BEAM", shot.Origin, tr.EndPos, 0);
 
         Entity? hit = tr.Ent;
         if (hit is not null && hit.TakeDamage != DamageMode.No)
@@ -391,6 +392,7 @@ public sealed class Arc : Weapon
         self.TakeDamage = DamageMode.No;
         WeaponSplash.RadiusDamage(self, self.Origin, Bolt.Damage, Bolt.EdgeDamage, Bolt.Radius,
             self.Owner, RegistryId, Bolt.Force);
+        EffectEmitter.Emit("ELECTRO_IMPACT", self.Origin);
         Api.Entities.Remove(self);
     }
 

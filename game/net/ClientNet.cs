@@ -108,9 +108,10 @@ public sealed class ClientNet : IDisposable
     /// Already applied to the shared <see cref="XonoticGodot.Common.Gameplay.Scoring.GameScores"/> when set.</summary>
     public XonoticGodot.Net.ScoreInfoBlock.Decoded? LatestScoreInfo { get; private set; }
 
-    /// <summary>The decaying stair-smoothing Z offset to subtract from <see cref="PredictedOrigin"/> Z when
-    /// placing the camera (so it glides over steps). Read with the render clock <c>now</c>.</summary>
-    public float PredictedStairOffset(float now) => _reconciler.GetStairSmoothOffset(now);
+    /// <summary>The stair-smoothing Z offset to subtract from <see cref="PredictedOrigin"/> Z when placing the
+    /// camera (so it glides over steps). Advanced by the REAL frame delta <paramref name="frameDt"/> (clamped),
+    /// NOT the server-synced render clock — the rebasing clock's quantized jumps made the view jitter up/down.</summary>
+    public float PredictedStairOffset(float frameDt) => _reconciler.GetStairSmoothOffset(frameDt);
 
     /// <summary>The prediction-error smoothing offset to add to the rendered origin (decays to zero).</summary>
     public NVec3 PredictionErrorOffset(float now) => _reconciler.GetPredictionErrorOrigin(now);

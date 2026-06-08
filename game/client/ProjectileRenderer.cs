@@ -277,7 +277,7 @@ public partial class ProjectileRenderer : Node3D
         }
     }
 
-    private static GpuParticles3D? BuildTrail(ProjectileCatalog.Desc desc)
+    private GpuParticles3D? BuildTrail(ProjectileCatalog.Desc desc)
     {
         if (desc.Trail is not { } c)
             return null;
@@ -310,8 +310,16 @@ public partial class ProjectileRenderer : Node3D
         mat.ColorRamp = new GradientTexture1D { Gradient = ramp };
         p.ProcessMaterial = mat;
 
+        // Apply the real particlefont atlas sprite when the effectinfo catalog is mounted.
+        // The sprite defines the particle SHAPE (smoke wisps for TR_ROCKET, sparkle dots for TR_NEXUIZPLASMA,
+        // fire blobs for fireball trails, etc.) while c.Color continues to tint it — matching the
+        // StandardMaterial3D formula: albedo_texture × albedo_color × vertex_color_from_ramp.
+        Texture2D? sprite = !string.IsNullOrEmpty(desc.TrailEffect)
+            ? Effects?.QueryTrailSprite(desc.TrailEffect)
+            : null;
+
         var quad = new QuadMesh { Size = new Vector2(1f, 1f) };
-        quad.Material = new StandardMaterial3D
+        var meshMat = new StandardMaterial3D
         {
             ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
             Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
@@ -320,6 +328,12 @@ public partial class ProjectileRenderer : Node3D
             VertexColorUseAsAlbedo = true,
             AlbedoColor = c.Color,
         };
+        if (sprite is not null)
+        {
+            meshMat.AlbedoTexture = sprite;
+            meshMat.TextureFilter = BaseMaterial3D.TextureFilterEnum.Linear;
+        }
+        quad.Material = meshMat;
         p.DrawPass1 = quad;
         return p;
     }
@@ -394,12 +408,16 @@ public partial class ProjectileRenderer : Node3D
     /// </summary>
     private static string? ImpactEffectFor(PType t) => t switch
     {
-        PType.Rocket or PType.Rpc or PType.Fireball or PType.SpiderRocket or PType.WakiRocket => "EXPLOSION_BIG",
-        PType.Grenade or PType.GrenadeBouncing or PType.Mine or PType.Firemine or PType.Hagar
-            or PType.HagarBouncing or PType.Seeker or PType.Tag or PType.Flac or PType.GolemLightning
-            or PType.MageSpike => "EXPLOSION_SMALL",
-        PType.Electro or PType.ElectroBeam or PType.Crylink or PType.CrylinkBouncing or PType.Plasma
-            or PType.ArcBolt or PType.RocketMinstaLaser or PType.Hlac or PType.Blaster => "EXPLOSION_SMALL",
+        PType.Rocket or PType.Rpc or PType.SpiderRocket or PType.WakiRocket => "ROCKET_EXPLODE",
+        PType.Fireball => "FIREBALL_EXPLODE",
+        PType.Grenade or PType.GrenadeBouncing or PType.Mine => "GRENADE_EXPLODE",
+        PType.Firemine => "GRENADE_EXPLODE",
+        PType.Hagar or PType.HagarBouncing or PType.Seeker or PType.Flac or PType.Tag => "HAGAR_EXPLODE",
+        PType.Electro or PType.ElectroBeam => "ELECTRO_BALLEXPLODE",
+        PType.Crylink or PType.CrylinkBouncing => "CRYLINK_IMPACT",
+        PType.Blaster or PType.RocketMinstaLaser => "BLASTER_IMPACT",
+        PType.Hlac => "GREEN_HLAC_IMPACT",
+        PType.GolemLightning or PType.MageSpike or PType.ArcBolt or PType.Plasma => "ELECTRO_IMPACT",
         _ => null,
     };
 

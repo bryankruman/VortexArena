@@ -222,6 +222,7 @@ public sealed class Seeker : Weapon
         MutatorHooks.EditProjectile.Call(ref ep);
 
         Api.Sound.Play(actor, SoundChannel.WeaponAuto, "weapons/seeker_fire.wav");
+        EffectEmitter.Emit("SEEKER_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
     }
 
     // W_Seeker_Missile_Think — accel/decel speed clamp + turnrate homing toward the tagged enemy. seeker.qc
@@ -269,6 +270,7 @@ public sealed class Seeker : Weapon
         self.TakeDamage = DamageMode.No;
         WeaponSplash.RadiusDamage(self, self.Origin, Missile.Damage, Missile.EdgeDamage, Missile.Radius,
             self.Owner, RegistryId, Missile.Force);
+        EffectEmitter.Emit("HAGAR_EXPLODE", self.Origin);
         Api.Entities.Remove(self);
     }
 
@@ -316,6 +318,7 @@ public sealed class Seeker : Weapon
         MutatorHooks.EditProjectile.Call(ref ep);
 
         Api.Sound.Play(actor, SoundChannel.WeaponAuto, "weapons/flac_fire.wav");
+        EffectEmitter.Emit("SEEKER_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
     }
 
     // W_Seeker_Flac_Explode — radius damage + knockback, then remove. seeker.qc
@@ -326,6 +329,7 @@ public sealed class Seeker : Weapon
         self.TakeDamage = DamageMode.No;
         WeaponSplash.RadiusDamage(self, self.Origin, Flac.Damage, Flac.EdgeDamage, Flac.Radius,
             self.Owner, RegistryId, Flac.Force);
+        EffectEmitter.Emit("HAGAR_EXPLODE", self.Origin);
         Api.Entities.Remove(self);
     }
 

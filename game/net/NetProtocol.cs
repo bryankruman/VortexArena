@@ -59,6 +59,18 @@ public static class NetProtocol
     public const int ChannelCount = 2;
 
     /// <summary>
+    /// The largest payload (bytes) we send on the <see cref="UnreliableChannel"/>. Godot's ENet host reports an
+    /// MTU of 1392; an UNRELIABLE packet above it is sent as a lossy unreliable-fragment datagram (Godot logs a
+    /// "Sending N bytes unreliably which is above the MTU" warning + a higher drop rate — a lost fragment loses
+    /// the WHOLE packet). A snapshot only exceeds this on its initial full-baseline frame (every static map item
+    /// at once, before the client's first ack lets the server delta-compress it) or after packet loss reverts the
+    /// stream to full baselines — both must arrive, so <see cref="ServerNet.BroadcastSnapshots"/> promotes an
+    /// oversized snapshot to the <see cref="ReliableChannel"/> (ENet fragments reliable packets losslessly).
+    /// Kept a touch under the reported MTU to leave headroom for ENet's per-packet overhead.
+    /// </summary>
+    public const int MaxUnreliablePayload = 1350;
+
+    /// <summary>
     /// Build-parity gate: a single hash mixing the protocol version with the content hashes of every
     /// registry whose ORDER the client and server must agree on (effects, notifications) — the analogue of
     /// QC's registry-hash handshake (registry_net.qh) that replaced the DP <c>csprogs.dat</c> push. A client

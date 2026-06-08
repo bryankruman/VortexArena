@@ -144,7 +144,10 @@ public sealed class Vortex : Weapon
         // W_DecreaseAmmo(thiswep, actor, ammo) — subtract cells (unless unlimited ammo).
         actor.TakeResource(AmmoType, Cvars.Ammo);
 
-        // Deferred (client render): SendCSQCVortexBeamParticle beam, yoda/impressive achievements, muzzle flash.
+        TraceResult impTr = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, end, MoveFilter.WorldOnly, actor);
+        EffectEmitter.Emit("VORTEX_BEAM", shot.Origin, impTr.EndPos, 0);
+        EffectEmitter.Emit("VORTEX_IMPACT", impTr.EndPos, -shot.Dir * 1000f);
+        EffectEmitter.Emit("VORTEX_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
     }
 
     // METHOD(Vortex, wr_setup / wr_resetplayer) — seed the per-slot charge to charge_start.

@@ -282,6 +282,7 @@ public sealed class Minelayer : Weapon
         WeaponSplash.RadiusDamage(self, self.Origin, Cvars.Damage, Cvars.EdgeDamage, Cvars.Radius,
             self.Owner, RegistryId, Cvars.Force, directHit: directHit);
 
+        EffectEmitter.Emit("ROCKET_EXPLODE", self.Origin);
         Api.Entities.Remove(self);
         // (The airshot achievement + out-of-ammo weapon switch are gametype/HUD concerns layered elsewhere.)
     }

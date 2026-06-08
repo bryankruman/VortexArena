@@ -182,6 +182,7 @@ public sealed class Fireball : Weapon
         MutatorHooks.EditProjectile.Call(ref ep);
 
         Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/fireball_fire2.wav");
+        EffectEmitter.Emit("FIREBALL_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
     }
 
     // W_Fireball_Think — tick the fireball; scorch a nearby enemy each tick; explode at end of lifetime. fireball.qc
@@ -276,6 +277,7 @@ public sealed class Fireball : Weapon
             }
         }
 
+        EffectEmitter.Emit("FIREBALL_EXPLODE", self.Origin);
         Api.Entities.Remove(self);
     }
 
@@ -310,6 +312,7 @@ public sealed class Fireball : Weapon
         MutatorHooks.EditProjectile.Call(ref ep);
 
         Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/fireball_fire.wav");
+        EffectEmitter.Emit("FIREBALL_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
     }
 
     // W_Fireball_Firemine_Think — scorch a nearby enemy each tick; self-destruct at end of lifetime. fireball.qc
@@ -339,6 +342,7 @@ public sealed class Fireball : Weapon
                     strength: Secondary.Damage, source: self.Owner ?? self);
             else // fall back to a direct hit if the burning effect isn't registered
                 WeaponFiring.ApplyDamage(other, self.Owner ?? self, Secondary.Damage, RegistryId, inflictor: self);
+            EffectEmitter.Emit("GRENADE_EXPLODE", self.Origin);
             Api.Entities.Remove(self);
             return;
         }

@@ -812,7 +812,16 @@ public sealed class ServerNet : IDisposable
             // delta-compressed entity section (everyone but the recipient's own entity).
             st.SnapHistory.EncodeSnapshot(_snapshotWriter, _entityScratch, _snapshotSeq, excludeEntNum: st.NetId);
 
-            _transport.Send(st.PeerId, _snapshotWriter.WrittenSpan, reliable: false);
+            // Snapshots are normally unreliable (latest-wins, loss-tolerant), but the FIRST frame to a client is a
+            // full baseline of every networked entity (all of the map's static items at once) and exceeds the
+            // unreliable MTU until the client's first ack lets the server delta-compress against it. An oversized
+            // unreliable packet is lossy (fragmented, any lost fragment drops the whole frame) — so a dropped
+            // baseline would leave the client missing static items until they next change (rare). Promote any
+            // over-MTU snapshot to the reliable channel (ENet fragments it losslessly); the client dispatches by
+            // the leading control byte regardless of channel, so this is transparent. Steady-state deltas stay
+            // unreliable, so this adds no head-of-line blocking once the first ack shrinks the frame.
+            ReadOnlySpan<byte> snapshot = _snapshotWriter.WrittenSpan;
+            _transport.Send(st.PeerId, snapshot, reliable: snapshot.Length > NetProtocol.MaxUnreliablePayload);
         }
     }
 

@@ -242,6 +242,7 @@ public sealed class Crylink : Weapon
         }
 
         Api.Sound.Play(actor, SoundChannel.Weapon, secondary ? "weapons/crylink_fire2.wav" : "weapons/crylink_fire.wav");
+        EffectEmitter.Emit("CRYLINK_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
 
         // Register the group for the converge-on-release link-join (only when joinspread is enabled).
         float joinSpread = secondary ? SecondaryJoinSpread : PrimaryJoinSpread;
@@ -312,6 +313,7 @@ public sealed class Crylink : Weapon
             // Chain-detonate the rest of the linked group (W_Crylink_LinkExplode) if enabled.
             if (linkExplode != 0)
                 LinkExplode(self, group, damage, edge, radius, force, deathType);
+            EffectEmitter.Emit("CRYLINK_IMPACT", self.Origin);
             RemoveFromGroup(self, group);
             Api.Entities.Remove(self);
             return;
@@ -326,14 +328,19 @@ public sealed class Crylink : Weapon
     private void LinkExplode(Entity except, List<Entity> group, float damage, float edge, float radius,
         float force, int deathType)
     {
+        Vector3 avgOrg = Vector3.Zero;
+        int linkCount = 0;
         foreach (var e in group.ToArray())
         {
             if (ReferenceEquals(e, except) || e.IsFreed) continue;
             float a = QMath.Clamp(1f - (Api.Clock.Time - e.MaxHealth) * e.Health, 0f, 1f);
             WeaponSplash.RadiusDamage(e, e.Origin, a * damage, a * edge, radius, e.Owner, deathType, a * force);
+            EffectEmitter.Emit("CRYLINK_IMPACT", e.Origin);
+            avgOrg += e.Origin; ++linkCount;
             e.Touch = null; e.Think = null;
             Api.Entities.Remove(e);
         }
+        if (linkCount > 0) EffectEmitter.Emit("CRYLINK_JOINEXPLODE", avgOrg / linkCount);
         group.Clear();
     }
 

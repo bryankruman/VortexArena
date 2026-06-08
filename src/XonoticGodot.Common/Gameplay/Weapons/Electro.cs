@@ -223,6 +223,7 @@ public sealed class Electro : Weapon
         MutatorHooks.EditProjectile.Call(ref ep);
 
         Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/electro_fire.wav");
+        EffectEmitter.Emit("ELECTRO_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
     }
 
     // W_Electro_Bolt_Think — while in flight, trigger nearby orbs into a combo (midaircombo); explode at end
@@ -250,6 +251,7 @@ public sealed class Electro : Weapon
                 e.Touch = null; e.Think = null; e.TakeDamage = DamageMode.No;
                 WeaponSplash.RadiusDamage(e, e.Origin, Combo.Damage, Combo.EdgeDamage, Combo.Radius,
                     self.Owner, RegistryId, Combo.Force);
+                EffectEmitter.Emit("ELECTRO_COMBO", e.Origin);
                 Api.Entities.Remove(e);
                 found = true;
             }
@@ -275,6 +277,7 @@ public sealed class Electro : Weapon
         WeaponSplash.RadiusDamage(self, self.Origin, Primary.Damage, Primary.EdgeDamage, Primary.Radius,
             self.Owner, RegistryId, Primary.Force);
 
+        EffectEmitter.Emit("ELECTRO_BALLEXPLODE", self.Origin);
         Api.Entities.Remove(self);
     }
 
@@ -319,6 +322,7 @@ public sealed class Electro : Weapon
             self.Touch = null; self.Think = null; self.TakeDamage = DamageMode.No;
             WeaponSplash.RadiusDamage(self, self.Origin, Combo.Damage, Combo.EdgeDamage, Combo.Radius,
                 self.Owner, RegistryId, Combo.Force);
+            EffectEmitter.Emit("ELECTRO_COMBO", self.Origin);
             Api.Entities.Remove(self);
         };
 
@@ -328,6 +332,7 @@ public sealed class Electro : Weapon
         MutatorHooks.EditProjectile.Call(ref ep);
 
         Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/electro_fire2.wav");
+        EffectEmitter.Emit("ELECTRO_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
     }
 
     // W_Electro_Orb_Touch — burst on a player (touchexplode), otherwise bounce. electro.qc
@@ -354,6 +359,7 @@ public sealed class Electro : Weapon
         WeaponSplash.RadiusDamage(self, self.Origin, Secondary.Damage, Secondary.EdgeDamage, Secondary.Radius,
             self.Owner, RegistryId, Secondary.Force);
 
+        EffectEmitter.Emit("ELECTRO_BALLEXPLODE", self.Origin);
         Api.Entities.Remove(self);
     }
 
@@ -396,6 +402,7 @@ public sealed class Electro : Weapon
         self.Think = null;
         WeaponSplash.RadiusDamage(self, self.Origin, Combo.Damage, Combo.EdgeDamage, Combo.Radius,
             self.Owner, RegistryId, Combo.Force);
+        EffectEmitter.Emit("ELECTRO_COMBO", self.Origin);
         Api.Entities.Remove(self);
     }
 

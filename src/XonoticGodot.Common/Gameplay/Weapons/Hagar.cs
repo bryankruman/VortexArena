@@ -167,6 +167,7 @@ public sealed class Hagar : Weapon
         MutatorHooks.EditProjectile.Call(ref ep);
 
         Api.Sound.Play(actor, SoundChannel.WeaponAuto, "weapons/hagar_fire.wav");
+        EffectEmitter.Emit("HAGAR_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
     }
 
     // W_Hagar_Attack2 — a single bouncing rocket (the non-loaded secondary). hagar.qc
@@ -193,6 +194,7 @@ public sealed class Hagar : Weapon
         MutatorHooks.EditProjectile.Call(ref ep);
 
         Api.Sound.Play(actor, SoundChannel.WeaponAuto, "weapons/hagar_fire.wav");
+        EffectEmitter.Emit("HAGAR_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
     }
 
     // W_Hagar_Touch2 — bounce once then explode on the next contact / on a player. hagar.qc
@@ -247,6 +249,7 @@ public sealed class Hagar : Weapon
         }
 
         Api.Sound.Play(actor, SoundChannel.WeaponAuto, "weapons/hagar_fire.wav");
+        EffectEmitter.Emit("HAGAR_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
     }
 
     /// <summary>Spawn a shootable Hagar rocket with the common fields set (shared by primary + load volley).</summary>
@@ -275,6 +278,7 @@ public sealed class Hagar : Weapon
 
         WeaponSplash.RadiusDamage(self, self.Origin, damage, edge, radius, self.Owner, RegistryId, force);
 
+        EffectEmitter.Emit("HAGAR_EXPLODE", self.Origin);
         Api.Entities.Remove(self);
     }
 

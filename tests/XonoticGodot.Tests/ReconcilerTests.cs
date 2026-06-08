@@ -1,3 +1,4 @@
+using System;
 using System.Numerics;
 using XonoticGodot.Net;
 using Xunit;
@@ -92,5 +93,132 @@ public class ReconcilerTests
         rec.SetPredictionError(new Vector3(0f, 0f, 1f), new Vector3(0f, 0f, 500f), now: 0f);
         float after = rec.GetPredictionErrorOrigin(0f).Length();
         Assert.True(after >= before - 1e-3f, $"a velocity spike must not clear origin smoothing (before={before}, after={after})");
+    }
+
+    // ---- Stair-step view smoothing (CSQCModel_ApplyStairSmoothing) ----------------------------------
+    // The rewritten smoother tracks an absolute rendered Z that catches up to the LIVE predicted Z at
+    // StairSmoothSpeed, hard-clamped to within one step height. The OLD model accumulated per-tick deltas into a
+    // re-arming time window, so any grounded Z change (a slope/ramp) perpetually re-armed and PINNED a vertical
+    // offset that only crawled back once the player stopped — the reported "camera too-high/too-low that resets."
+
+    /// <summary>Drives the predicted pose to a controllable Z + onground so we can sample the per-frame smoother.</summary>
+    private sealed class ZStep : IMovementStep
+    {
+        public float Z;
+        public bool OnGround = true;
+        public void Step(ref PredictedState state, in InputCommand cmd, in PlayerState vars)
+        { state.Origin = new Vector3(0f, 0f, Z); state.OnGround = OnGround; }
+    }
+
+    private static Reconciler NewStairRec(ZStep step, PredictionBuffer buf)
+    {
+        buf.Push(new InputCommand());
+        return new Reconciler(buf, step) { StairSmoothTime = 0.16f, StairSmoothSpeed = 160f };
+    }
+
+    private static void DriveZ(Reconciler rec, ZStep step, float z, bool onGround = true)
+    {
+        step.Z = z; step.OnGround = onGround;
+        rec.Predict(new PredictedState { Origin = new Vector3(0f, 0f, z), OnGround = onGround }, ackedSeq: 0, default, now: 0f);
+    }
+
+    private const float FrameDt = 1f / 72f; // a typical render-frame delta
+
+    [Fact]
+    public void Stair_StepUp_Grounded_OffsetAppearsThenDecaysToZero()
+    {
+        var buf = new PredictionBuffer();
+        var step = new ZStep();
+        Reconciler rec = NewStairRec(step, buf);
+
+        DriveZ(rec, step, 0f);
+        Assert.Equal(0f, rec.GetStairSmoothOffset(FrameDt), 3); // seed frame, no offset
+
+        // A 16u grounded step-up in one tick: the rendered Z lags, so the camera offset jumps toward the step...
+        DriveZ(rec, step, 16f);
+        float justAfter = rec.GetStairSmoothOffset(FrameDt);
+        Assert.True(justAfter > 8f, $"right after a step-up the view should lag the true Z (got {justAfter})");
+
+        // ...and at StairSmoothSpeed (160 u/s) it catches up within ~16/160 s. After 20 frames it is ~0.
+        for (int i = 0; i < 20; i++) rec.GetStairSmoothOffset(FrameDt);
+        Assert.True(MathF.Abs(rec.GetStairSmoothOffset(FrameDt)) < 0.5f,
+            $"the stair offset must decay to ~0 once the Z stabilizes (got {rec.GetStairSmoothOffset(FrameDt)})");
+    }
+
+    [Fact]
+    public void Stair_ContinuousSlope_OffsetStaysBounded_AndClearsWhenFlat()
+    {
+        var buf = new PredictionBuffer();
+        var step = new ZStep();
+        Reconciler rec = NewStairRec(step, buf);
+
+        DriveZ(rec, step, 0f);
+        rec.GetStairSmoothOffset(FrameDt);
+
+        // Walk up a STEEP slope: +8u every render frame for 60 frames (Z rate ~576 u/s >> StairSmoothSpeed). The OLD
+        // code would re-arm every tick and pin the offset; the rewrite hard-clamps the lag to one step height.
+        float z = 0f;
+        for (int i = 0; i < 60; i++)
+        {
+            z += 8f;
+            DriveZ(rec, step, z);
+            float off = rec.GetStairSmoothOffset(FrameDt);
+            Assert.True(MathF.Abs(off) <= 48f + 1e-3f, $"slope offset must stay clamped to one step height (got {off} at frame {i})");
+        }
+
+        // Reach flat ground (Z stops changing): the offset must catch up to ~0 (not stay pinned).
+        for (int i = 0; i < 30; i++) rec.GetStairSmoothOffset(FrameDt);
+        Assert.True(MathF.Abs(rec.GetStairSmoothOffset(FrameDt)) < 0.5f,
+            $"once on flat ground the pinned-on-slope offset must clear (got {rec.GetStairSmoothOffset(FrameDt)})");
+    }
+
+    [Fact]
+    public void Stair_Airborne_SnapsToTrueZ_NoSmoothing()
+    {
+        var buf = new PredictionBuffer();
+        var step = new ZStep();
+        Reconciler rec = NewStairRec(step, buf);
+
+        DriveZ(rec, step, 0f);
+        rec.GetStairSmoothOffset(FrameDt);
+
+        // Jumping/falling (airborne): the view must follow the real Z exactly (snap), or the camera lags the jump.
+        DriveZ(rec, step, 40f, onGround: false);
+        Assert.True(MathF.Abs(rec.GetStairSmoothOffset(FrameDt)) < 1e-3f, "airborne Z changes must not be stair-smoothed");
+    }
+
+    [Fact]
+    public void Stair_FlatGround_NeverOffsets()
+    {
+        var buf = new PredictionBuffer();
+        var step = new ZStep();
+        Reconciler rec = NewStairRec(step, buf);
+
+        for (int i = 0; i < 30; i++)
+        {
+            DriveZ(rec, step, 25f); // constant Z, on ground
+            Assert.Equal(0f, rec.GetStairSmoothOffset(FrameDt), 3);
+        }
+    }
+
+    [Fact]
+    public void Stair_JitteryFrameDt_DoesNotJitterOnFlatGround()
+    {
+        // Regression for the reported up/down jitter: feeding an IRREGULAR per-frame dt (the symptom of driving the
+        // smoother off the snapshot-rebasing render clock) must NOT produce a nonzero offset on flat ground — the
+        // rendered Z is already AT the true Z, so any clamped dt leaves it there.
+        var buf = new PredictionBuffer();
+        var step = new ZStep();
+        Reconciler rec = NewStairRec(step, buf);
+
+        DriveZ(rec, step, 25f);
+        rec.GetStairSmoothOffset(FrameDt);
+
+        float[] jitter = { 0f, 1f / 144f, 1f / 30f, 0f, 1f / 72f, 0.2f /*hitch, clamped*/, 1f / 240f };
+        foreach (float d in jitter)
+        {
+            DriveZ(rec, step, 25f);
+            Assert.Equal(0f, rec.GetStairSmoothOffset(d), 3);
+        }
     }
 }

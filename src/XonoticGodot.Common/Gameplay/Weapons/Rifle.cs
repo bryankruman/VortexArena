@@ -235,9 +235,13 @@ public sealed class Rifle : Weapon
             WeaponFiring.FireBullet(actor, shot.Origin, shot.Dir, WeaponFiring.MaxShotDistance, bal.Damage,
                 deathType, bal.Spread, bal.SolidPenetration, force: bal.Force,
                 headshotMultiplier: bal.HeadshotMultiplier);
+            Vector3 impEnd = shot.Origin + shot.Dir * WeaponFiring.MaxShotDistance;
+            TraceResult impTr = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, impEnd, MoveFilter.WorldOnly, actor);
+            EffectEmitter.Emit("RIFLE_IMPACT", impTr.EndPos, -shot.Dir * 1000f);
         }
 
         Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/campingrifle_fire.wav");
+        EffectEmitter.Emit("RIFLE_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
     }
 
     // METHOD(Rifle, wr_checkammo1) — rifle.qc

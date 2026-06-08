@@ -191,6 +191,7 @@ public sealed class Devastator : Weapon
         MutatorHooks.EditProjectile.Call(ref ep);
 
         Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/rocket_fire.wav");
+        EffectEmitter.Emit("ROCKET_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
 
         if (Api.Clock.Time >= missile.NextThink)
             missile.Think(missile);
@@ -313,6 +314,7 @@ public sealed class Devastator : Weapon
 
         WeaponSplash.RadiusDamage(self, self.Origin, Cvars.RemoteDamage, Cvars.RemoteEdgeDamage,
             Cvars.RemoteRadius, owner, RegistryId, Cvars.RemoteForce, forceZScale: Cvars.ForceXyScale);
+        EffectEmitter.Emit("ROCKET_EXPLODE", self.Origin);
         Api.Entities.Remove(self);
     }
 
@@ -332,6 +334,7 @@ public sealed class Devastator : Weapon
         WeaponSplash.RadiusDamage(self, self.Origin, Cvars.Damage, Cvars.EdgeDamage, Cvars.Radius,
             self.Owner, RegistryId, Cvars.Force, directHit: directHit);
 
+        EffectEmitter.Emit("ROCKET_EXPLODE", self.Origin);
         Api.Entities.Remove(self);
     }
 

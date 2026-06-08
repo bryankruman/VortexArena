@@ -156,6 +156,7 @@ public sealed class Hlac : Weapon
             Primary.Damage, Primary.EdgeDamage, Primary.Radius, Primary.Force, spread);
 
         Api.Sound.Play(actor, SoundChannel.WeaponAuto, "weapons/lasergun_fire.wav");
+        EffectEmitter.Emit("GREEN_HLAC_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
     }
 
     // W_HLAC_Attack2 — fire a burst of `shots` randomly-scattered bolts at once. hlac.qc
@@ -177,6 +178,7 @@ public sealed class Hlac : Weapon
         }
 
         Api.Sound.Play(actor, SoundChannel.WeaponAuto, "weapons/lasergun_fire.wav");
+        EffectEmitter.Emit("GREEN_HLAC_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
     }
 
     /// <summary>Spawn an HLAC laser bolt that bursts (radius damage) on touch or lifetime. hlac.qc.</summary>
@@ -225,6 +227,7 @@ public sealed class Hlac : Weapon
 
         WeaponSplash.RadiusDamage(self, self.Origin, damage, edge, radius, self.Owner, deathType, force);
 
+        EffectEmitter.Emit("GREEN_HLAC_IMPACT", self.Origin);
         Api.Entities.Remove(self);
     }
 

@@ -425,6 +425,8 @@ public sealed class DamageSystem : IDamageSystem
                     targ.PainFinished = Now() + 0.5f;
                     EmitPainSound(targ, attacker, deathType, take);
                 }
+                if (take > 0f)
+                    EffectEmitter.TeBlood(hitLoc, force.LengthSquared() > 0f ? Vector3.Normalize(-force) * 400f : Vector3.Zero, (int)(take * 0.2f + 1f));
             }
             else
             {
