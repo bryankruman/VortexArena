@@ -72,10 +72,12 @@ public static class SurfaceFlags
         /// <summary>This is a sky surface (<c>surfaceparm sky</c>/<c>skyParms</c>): draw the skybox, no lightmap.</summary>
         public bool Sky { get; init; }
 
-        /// <summary>Suppress the lightmap pass (<c>surfaceparm nolightmap</c>, or any fullbright/sky/translucent surface).</summary>
+        /// <summary>Suppress the lightmap pass (<c>surfaceparm nolightmap</c>/sky/liquid/fog). NOT set by
+        /// <c>trans</c> — a translucent surface still uses whatever lightmap the BSP face carries (DP keys the
+        /// lightmap off the face's <c>lightmapindex</c>, not the surfaceparms).</summary>
         public bool NoLightmap { get; init; }
 
-        /// <summary>The surface is translucent (<c>surfaceparm trans</c>): hint for sort order / no lightmap.</summary>
+        /// <summary>The surface is translucent (<c>surfaceparm trans</c>): sort-order / vis hint only.</summary>
         public bool Translucent { get; init; }
 
         /// <summary>Low-friction floor (<c>surfaceparm slick</c>): physics applies reduced ground friction.</summary>
@@ -164,7 +166,11 @@ public static class SurfaceFlags
                 case "nolightmap":
                     noLightmap = true; break;
                 case "trans":
-                    translucent = true; noLightmap = true; break;
+                    // Sort/vis hint ONLY — NOT a lightmap suppressor. DP keys a face's lightmap purely off the
+                    // BSP lightmapindex (Mod_Q3BSP_LoadFaces), and q3map2 happily lightmaps trans surfaces:
+                    // alpha-masked grates (exx/floor-grate01) and lit glass carry a real lightmap + a {$lightmap}
+                    // modulate stage. Forcing noLightmap here dropped them to the unlit shader path → fullbright.
+                    translucent = true; break;
                 case "fog":
                     // Volumetric fog brush: never solid, no lightmap. Treated like nonsolid translucent.
                     nonSolid = true; translucent = true; noLightmap = true; surf |= SurfNonSolid; break;

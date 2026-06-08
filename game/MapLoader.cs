@@ -623,8 +623,9 @@ public static class MapLoader
     /// <summary>
     /// The de-interleaved lightmap page a face renders with, or -1 if it should render unlit (no lightmap).
     /// Returns -1 when the face has no valid <see cref="BspFace.LightmapIndex"/> OR the shader suppresses
-    /// lightmaps (<c>surfaceparm nolightmap</c>/sky/translucent/fullbright) — those surfaces must not split
-    /// into a lightmap material, and feeding them a page would double-light.
+    /// lightmaps (<c>surfaceparm nolightmap</c>/sky/liquid/fog) — those surfaces must not split into a lightmap
+    /// material, and feeding them a page would double-light. Note <c>surfaceparm trans</c> does NOT suppress:
+    /// alpha-masked grates and lit glass keep the lightmap their BSP face carries.
     ///
     /// On a deluxemapped map the face's stored index counts both lightmap and deluxe pages, so it is halved
     /// (<see cref="BspData.RealLightmapIndex"/>) to address the de-interleaved <see cref="BspData.Lightmaps"/>
