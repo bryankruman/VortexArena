@@ -48,6 +48,7 @@ public partial class ConsoleOverlay : CanvasLayer
     private Action<LogEntry>? _logSubscription;  // EntryRecorded handler we installed (detached on teardown)
     private Action<string>? _cvarChangedSub;     // CvarService.Changed handler watching `developer`
     private int _renderedDeveloper = -1;         // dev level the scrollback was last rendered at
+    private bool _eatEscapeRelease;              // true between the Escape press we consumed and its matching release
     private Input.MouseModeEnum _savedMouseMode = Input.MouseModeEnum.Visible;
 
     /// <summary>True while the drop-down is showing (mirrors <see cref="ConsoleState.IsOpen"/>).</summary>
@@ -205,12 +206,25 @@ public partial class ConsoleOverlay : CanvasLayer
             GetViewport().SetInputAsHandled();
             return;
         }
+
+        // Escape release: if we previously closed the console on its matching press, swallow the release too —
+        // Shell's pause-menu toggle fires on the Escape RELEASE edge (its design — see Shell._UnhandledKeyInput
+        // comment about mouse-capture swallowing the press), so leaking the release would pop the pause menu the
+        // instant the console closes. The press handler below set _eatEscapeRelease; clear it on the way out.
+        if (_eatEscapeRelease && @event is InputEventKey { Pressed: false, Echo: false, Keycode: Key.Escape })
+        {
+            _eatEscapeRelease = false;
+            GetViewport().SetInputAsHandled();
+            return;
+        }
+
         if (!IsOpen)
             return;
         // While open, Escape closes the console (instead of opening the pause menu — Shell never sees it).
         if (@event is InputEventKey { Pressed: true, Echo: false, Keycode: Key.Escape })
         {
             Close();
+            _eatEscapeRelease = true;        // consume the matching release so Shell's release-edge toggle no-ops
             GetViewport().SetInputAsHandled();
         }
     }
