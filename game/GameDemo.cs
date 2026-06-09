@@ -226,6 +226,9 @@ public partial class GameDemo : Node3D
             int fi = System.Array.IndexOf(cl, "--fx-demo");
             if (fi >= 0)
                 _fxDemoEffect = (fi + 1 < cl.Length && !cl[fi + 1].StartsWith("--")) ? cl[fi + 1] : "rocket_explode";
+            // `--proj-demo` repeatedly fires the equipped demo weapon's projectile straight ahead so a windowed
+            // --screenshot captures a flying rocket/grenade with its model + trail (orientation/trail parity check).
+            _projDemo = System.Array.IndexOf(cl, "--proj-demo") >= 0;
         }
 
         GD.Print(bsp is not null
@@ -490,6 +493,12 @@ public partial class GameDemo : Node3D
         }
         AddChild(_client);
 
+        // Projectiles draw their REAL model (rocket.md3 with its additive RocketThrust flame cone,
+        // grenademodel.md3) via the same VFS loader the world/weapon models use — set after AddChild since
+        // ClientWorld._Ready (which built _client.Projectiles) ran synchronously on it.
+        if (_assets is not null)
+            _client.Projectiles.ModelFactory = m => _assets.LoadModel(m);
+
         // Pre-warm the effect catalog + particlefont atlas at setup so the first shot doesn't hitch parsing
         // effectinfo.txt + decoding the atlas on its frame (mirrors NetGame.SetupRender; DP precaches at init).
         // _client.Assets was set above (wires the loaders) and _client.Effects is live after AddChild.
@@ -669,7 +678,21 @@ public partial class GameDemo : Node3D
 
         if (_fxDemoEffect is not null)
             DriveFxDemo((float)delta);
+
+        if (_projDemo)
+        {
+            _projDemoTimer -= (float)delta;
+            if (_projDemoTimer <= 0f)
+            {
+                _projDemoTimer = 0.25f; // a fresh projectile 4×/sec; each flies ~2s, so several are airborne at varied range
+                OnPlayerAttacked();
+            }
+        }
     }
+
+    // --- dev visual: `--proj-demo` auto-fires the equipped projectile for --screenshot capture ---
+    private bool _projDemo;
+    private float _projDemoTimer;
 
     // --- dev visual fx preview (--fx-demo) ---------------------------------------------------------------
     private string? _fxDemoEffect;

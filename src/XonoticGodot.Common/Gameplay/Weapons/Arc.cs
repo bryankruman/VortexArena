@@ -392,6 +392,7 @@ public sealed class Arc : Weapon
         self.TakeDamage = DamageMode.No;
         WeaponSplash.RadiusDamage(self, self.Origin, Bolt.Damage, Bolt.EdgeDamage, Bolt.Radius,
             self.Owner, RegistryId, Bolt.Force);
+        WeaponSplash.ImpactSound(self, "weapons/electro_impact.wav"); // QC SND_ARC_BOLT_IMPACT (wr_impacteffect)
         EffectEmitter.Emit("ELECTRO_IMPACT", self.Origin);
         Api.Entities.Remove(self);
     }

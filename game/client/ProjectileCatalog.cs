@@ -62,6 +62,12 @@ public static class ProjectileCatalog
         public string? LoopSound;
         /// <summary>The body look when no model resolves.</summary>
         public BodyFamily Body = BodyFamily.GlowSprite;
+        /// <summary>Real model VFS path to render instead of the procedural <see cref="Body"/> mesh, when the host
+        /// wired a <see cref="ProjectileRenderer.ModelFactory"/> — the QC <c>setmodel(MDL_PROJECTILE_*)</c>. e.g.
+        /// rocket.md3 (its <c>RL</c> body + the additive <c>RocketThrust</c> flame cone) and grenademodel.md3.
+        /// Null = always use the procedural body; the <see cref="Body"/> stays the asset-less fallback (headless
+        /// tests / missing content / factory miss).</summary>
+        public string? ModelPath;
         /// <summary>The bolt/light tint.</summary>
         public Color GlowColor = new(0.8f, 0.85f, 0.9f);
         /// <summary>Whether this type casts a dynamic point light (rockets/plasma/fireball).</summary>
@@ -72,10 +78,12 @@ public static class ProjectileCatalog
     //  Trail presets — one per EFFECT_TR_* identity used by projectile.qc
     // ============================================================================================
 
-    // Grey exhaust smoke (TR_ROCKET): dense, non-additive, drifts up a touch.
-    private static readonly TrailParams RocketSmoke = new(new Color(0.5f, 0.5f, 0.5f), false, 60, 0.6f, 1.4f, 18f);
+    // Grey exhaust smoke (TR_ROCKET): dense, non-additive, drifts up a touch. Godot emits per-TIME, not per
+    // -distance like QC trailspacing — so the count/size are sized up for the rocket's ~1300u/s so the puffs
+    // form a continuous trail instead of sparse dots.
+    private static readonly TrailParams RocketSmoke = new(new Color(0.55f, 0.55f, 0.55f), false, 96, 0.8f, 2.6f, 10f);
     // Thinner smoke (TR_GRENADE) for grenades/mines.
-    private static readonly TrailParams GrenadeSmoke = new(new Color(0.45f, 0.45f, 0.45f), false, 24, 0.5f, 0.7f, 12f);
+    private static readonly TrailParams GrenadeSmoke = new(new Color(0.5f, 0.5f, 0.5f), false, 54, 0.7f, 1.6f, 8f);
     // Small light smoke (HAGAR_ROCKET / TR_SEEKER) for hagar/flac/seeker/vehicle rockets.
     private static readonly TrailParams SmallSmoke = new(new Color(0.5f, 0.5f, 0.5f), false, 22, 0.45f, 0.55f, 14f);
     // Blue plasma glow (TR_NEXUIZPLASMA): electro / vortex-ish bolts.
@@ -120,24 +128,26 @@ public static class ProjectileCatalog
         // EFFECT_TR_NEXUIZPLASMA (electro beam / secondary orb)
         Add(new Desc { Type = ProjectileType.ElectroBeam, TrailEffect = "TR_NEXUIZPLASMA", Trail = BluePlasma,
             Body = BodyFamily.GlowSprite, GlowColor = ElectroBlue, HasLight = true });
-        // EFFECT_TR_ROCKET, scale 2, z-spin 720, devastator_fly loop (projectile.qc:347,138-140,415)
+        // EFFECT_TR_ROCKET, MDL_PROJECTILE_ROCKET, scale 2, roll 720 about the nose, devastator_fly loop
+        // (projectile.qc:347,138-140,415). QC rot '0 0 720' = roll about forward; the nose is the body's local
+        // +X (see OrientToVelocity), so the spin is on X, not Z.
         Add(new Desc { Type = ProjectileType.Rocket, TrailEffect = "TR_ROCKET", Trail = RocketSmoke,
-            Body = BodyFamily.RocketMesh, ModelScale = 2f, SpinDegPerSec = new Vector3(0, 0, 720f),
+            Body = BodyFamily.RocketMesh, ModelPath = "models/rocket.md3", ModelScale = 2f, SpinDegPerSec = new Vector3(720f, 0, 0),
             GlowColor = RocketOrange, HasLight = true, LoopSound = "weapons/rocket_fly" });
         // EFFECT_TR_ROCKET (RPC) — devastator fly
         Add(new Desc { Type = ProjectileType.Rpc, TrailEffect = "TR_ROCKET", Trail = RocketSmoke,
-            Body = BodyFamily.RocketMesh, ModelScale = 2f, SpinDegPerSec = new Vector3(0, 0, 720f),
+            Body = BodyFamily.RocketMesh, ModelPath = "models/rocket.md3", ModelScale = 2f, SpinDegPerSec = new Vector3(720f, 0, 0),
             GlowColor = RocketOrange, HasLight = true, LoopSound = "weapons/rocket_fly" });
         // EFFECT_TR_CRYLINKPLASMA (projectile.qc:348-349)
         Add(new Desc { Type = ProjectileType.Crylink, TrailEffect = "TR_CRYLINKPLASMA", Trail = PurplePlasma,
             Body = BodyFamily.GlowSprite, GlowColor = CrylinkPurple, HasLight = true });
         Add(new Desc { Type = ProjectileType.CrylinkBouncing, TrailEffect = "TR_CRYLINKPLASMA", Trail = PurplePlasma,
             Body = BodyFamily.GlowSprite, GlowColor = CrylinkPurple, HasLight = true });
-        // EFFECT_TR_GRENADE, sideways tumble for bouncing (projectile.qc:351-353,132-134)
+        // EFFECT_TR_GRENADE, MDL_PROJECTILE_GRENADE, sideways tumble for bouncing (projectile.qc:351-353,132-134)
         Add(new Desc { Type = ProjectileType.Grenade, TrailEffect = "TR_GRENADE", Trail = GrenadeSmoke,
-            Body = BodyFamily.GrenadeMesh, GlowColor = GrenadeGreen });
+            Body = BodyFamily.GrenadeMesh, ModelPath = "models/grenademodel.md3", GlowColor = GrenadeGreen });
         Add(new Desc { Type = ProjectileType.GrenadeBouncing, TrailEffect = "TR_GRENADE", Trail = GrenadeSmoke,
-            Body = BodyFamily.GrenadeMesh, SpinDegPerSec = new Vector3(0, -1000f, 0), GlowColor = GrenadeGreen });
+            Body = BodyFamily.GrenadeMesh, ModelPath = "models/grenademodel.md3", SpinDegPerSec = new Vector3(0, -1000f, 0), GlowColor = GrenadeGreen });
         Add(new Desc { Type = ProjectileType.Mine, TrailEffect = "TR_GRENADE", Trail = GrenadeSmoke,
             Body = BodyFamily.GrenadeMesh, GlowColor = GrenadeGreen });
         // EFFECT_Null — no trail (projectile.qc:354,356)

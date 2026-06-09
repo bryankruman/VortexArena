@@ -599,6 +599,9 @@ public partial class EffectSystem : Node3D
             Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
             BlendMode = additive ? BaseMaterial3D.BlendModeEnum.Add : BaseMaterial3D.BlendModeEnum.Mix,
             BillboardMode = BaseMaterial3D.BillboardModeEnum.Particles,
+            // Keep the per-particle scale through billboarding (godot#74897); without it large puffs collapse
+            // to the 1×1 base quad and vanish.
+            BillboardKeepScale = true,
             VertexColorUseAsAlbedo = true,
             AlbedoColor = color,
             // Use the particle billboard path; let the shader read per-particle color from the process mat.
@@ -862,6 +865,10 @@ public partial class EffectSystem : Node3D
             // A point burst is explosive (all at once); a trail spreads emission over the segment/time.
             Explosiveness = isTrail ? 0.0f : 1.0f,
             Emitting = true,
+            // Pin a generous visibility box so a burst whose particles fly out far (velocityjitter up to 900) +
+            // grow big isn't frustum-culled as a whole once the emitter point drifts off-screen (Godot's auto
+            // AABB tracks only the emitter origin). Defensive — cheap for a short-lived one-shot.
+            VisibilityAabb = new Aabb(new Vector3(-384f, -384f, -384f), new Vector3(768f, 768f, 768f)),
         };
 
         var mat = new ParticleProcessMaterial();
@@ -974,20 +981,20 @@ public partial class EffectSystem : Node3D
         }
 
         // --- size + sizeincrease ----------------------------------------------------------------------
-        mat.ScaleMin = sizeMin;
-        mat.ScaleMax = sizeMax;
-        if (info.SizeIncrease != 0f)
-        {
-            // Growth over life as a scale curve: end scale = 1 + (sizeincrease*life)/avgsize.
-            float avg = (sizeMin + sizeMax) * 0.5f;
-            float endScale = avg > 0.001f ? MathF.Max(0.01f, 1f + (info.SizeIncrease * 2f * life) / avg) : 1f;
-            // Godot's Curve defaults MaxValue=1.0 and the baked CurveTexture CLAMPS samples to [MinValue,MaxValue],
-            // so a growth endScale > 1 would be silently clamped to 1 (expanding puffs never grow). Widen first.
-            var sc = new Curve { MinValue = 0f, MaxValue = MathF.Max(1f, endScale) };
-            sc.AddPoint(new Vector2(0f, 1f));
-            sc.AddPoint(new Vector2(1f, endScale));
-            mat.ScaleCurve = new CurveTexture { Curve = sc };
-        }
+        // DP grows/shrinks each particle by `sizeincrease` (world units/sec) over its life. The Godot-native
+        // way is ParticleProcessMaterial.scale_curve (a CurveTexture), but that path is ENGINE-BUGGY: a scale
+        // curve combined with a non-Point emission shape (we use Box) + a non-default amount + Particle
+        // billboard mode makes GPUParticles3D silently STOP DRAWING (godotengine/godot#75748, #76332 — closed
+        // "won't fix"). That is exactly why every explosion fire/smoke and every rocket/grenade smoke-TRAIL
+        // emitter — all of which carry `sizeincrease` — rendered INVISIBLE, while the sparks/decals/debris
+        // (no sizeincrease, so no scale curve) drew fine. So instead of a scale curve we bake the size SPAN
+        // (birth..death) straight into scale_min/scale_max: the burst spawns puffs across that range, reading
+        // as an expanding cloud for positive sizeincrease (or holding the big birth size for the negative-
+        // sizeincrease fire flash), and ALWAYS renders. We lose per-particle temporal growth; visibility wins.
+        float grow = info.SizeIncrease * 2f * life; // total edge-size change over the particle's life
+        float endMin = sizeMin + grow, endMax = sizeMax + grow;
+        mat.ScaleMin = MathF.Max(0.4f, MathF.Min(sizeMin, endMin));
+        mat.ScaleMax = MathF.Max(mat.ScaleMin, MathF.Max(sizeMax, endMax));
 
         // --- color + alpha over life (alphafade) ------------------------------------------------------
         mat.Color = baseColor;
@@ -1015,30 +1022,15 @@ public partial class EffectSystem : Node3D
         }
 
         particles.ProcessMaterial = mat;
-        // Per-particle texture randomization: when the tex range spans multiple cells, pack them as a
-        // horizontal sprite strip and use AnimOffset (0..1) so each particle spawns on a random cell
-        // (a different smoke wisp, fire blob, etc.). Single-cell ranges skip the strip to avoid overhead.
-        int cellSpan = info.Tex1 > info.Tex0 ? info.Tex1 - info.Tex0 : 1;
-        Texture2D? sprite;
-        bool useAnimOffset = false;
-        if (cellSpan > 1)
-        {
-            Texture2D? strip = Font?.CellStrip(info.Tex0, info.Tex1);
-            if (strip is not null)
-            {
-                sprite = strip;
-                useAnimOffset = true;
-                mat.AnimSpeedMin = 0f;
-                mat.AnimSpeedMax = 0f;
-                mat.AnimOffsetMin = 0f;
-                mat.AnimOffsetMax = 1f;
-            }
-            else
-                sprite = Font?.CellInRange(info.Tex0, info.Tex1);
-        }
-        else
-            sprite = Font?.CellInRange(info.Tex0, info.Tex1);
-        particles.DrawPass1 = BuildInfoMesh(info, baseColor, sprite, useAnimOffset ? cellSpan : 1);
+        // Sprite: one representative atlas cell from the block's [tex0,tex1) range. DP randomises the cell PER
+        // PARTICLE; we pick one PER EMITTER (CellInRange already randomises within the range, so repeated bursts
+        // still vary the wisp/blob). We deliberately do NOT pack the range into a ParticlesAnimHFrames sprite
+        // strip + AnimOffset: that GPU sprite-sheet path rendered every multi-cell billboard INVISIBLE (the fire
+        // `static`, the `smoke`, the dark `alphastatic` smoke, debris — all tex ranges), while the single-cell
+        // emitters (spark tex 40) drew fine. One static cell uses that same proven single-sprite path so the
+        // fire and smoke puffs actually show, at the cost of per-particle cell variety (a fair trade).
+        Texture2D? sprite = Font?.CellInRange(info.Tex0, info.Tex1);
+        particles.DrawPass1 = BuildInfoMesh(info, baseColor, sprite);
         return particles;
     }
 
@@ -1114,6 +1106,11 @@ public partial class EffectSystem : Node3D
             Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
             BlendMode = blend,
             BillboardMode = BaseMaterial3D.BillboardModeEnum.Particles,
+            // CRITICAL: particle billboarding DISCARDS the per-particle scale (scale_min/max from the process
+            // material) unless keep-scale is on (godotengine/godot#74897). Without this the big fire/smoke
+            // puffs (scale 66-128) collapsed to their 1×1 base quad — a near-invisible dot — which is why only
+            // the sparks (a 0.15×2 base quad that reads even at scale 1) showed. Keep the scale so they render.
+            BillboardKeepScale = true,
             VertexColorUseAsAlbedo = true,
             AlbedoColor = color,
             DisableReceiveShadows = true,

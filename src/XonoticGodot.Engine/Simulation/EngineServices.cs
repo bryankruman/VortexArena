@@ -384,7 +384,7 @@ public sealed class CvarService : ICvarService
 /// is mutually exclusive in practice (a stop carries an empty <see cref="Sample"/>).
 /// </summary>
 public readonly record struct SoundEvent(
-    Entity Source, SoundChannel Channel, string Sample, float Volume, float Attenuation,
+    Entity? Source, SoundChannel Channel, string Sample, float Volume, float Attenuation,
     System.Numerics.Vector3 Origin, bool Loop = false, bool Stop = false, float Pitch = 1f);
 
 /// <summary>
@@ -406,6 +406,12 @@ public sealed class SoundService : ISoundService
         Vector3 origin = e.Origin + (e.Mins + e.Maxs) * 0.5f;
         Broadcast?.Invoke(new SoundEvent(e, channel, sample, volume, attenuation, origin, Loop: loop, Pitch: pitch));
     }
+
+    public void PlayAt(Vector3 point, SoundChannel channel, string sample, float volume = 1f, float attenuation = 1f)
+        // A point sound with NO emitter entity (DP CSQC wr_impacteffect impact sounds, played at the trace
+        // endpoint). Source is null → the wire encodes net-id 0, so the client plays it at this fixed point
+        // with no emitter-follow and no (entity,channel) keying — exactly right for a stationary impact.
+        => Broadcast?.Invoke(new SoundEvent(null, channel, sample, volume, attenuation, point));
 
     public void Stop(Entity e, SoundChannel channel)
     {

@@ -336,6 +336,13 @@ public sealed class GameWorld
             Weapons.ConfigureAll();
         }
 
+        // QC autocvars are read live; our weapons cache their balance block in a struct (Weapon.Configure), so a
+        // runtime change to a g_balance_* cvar (a console `set`, a script/cfg `exec`, or a ruleset vote) must
+        // re-run ConfigureAll or the live match keeps firing with the old numbers. Watch this world's cvar store
+        // and re-derive on the next tick (OnStartFrame), coalesced so a whole balance cfg — hundreds of sets —
+        // costs one reconfigure, and so ConfigureAll runs with Api.Services pointing at THIS world's store.
+        Services.CvarsImpl.Changed += OnServerCvarChanged;
+
         // 1d) register the map's inline "*N" brush models BEFORE spawning entities, so a func_door/plat's
         //     setmodel("*N") resolves real bounds and the SOLID_BSP trace clips against its real moving brushes
         //     (instead of an AABB). The builder hands these alongside the static CollisionWorld; the host wires
@@ -711,8 +718,30 @@ public sealed class GameWorld
     /// <see cref="OnClientMove"/> (the engine calls ClientMove right after StartFrame), matching the QC
     /// StartFrame FOREACH_CLIENT(IS_FAKE_CLIENT) PreThink.
     /// </summary>
+    /// <summary>Set when a <c>g_balance_*</c> cvar changed since the last tick; drives the coalesced weapon
+    /// balance re-derive at the top of <see cref="OnStartFrame"/> (see <see cref="OnServerCvarChanged"/>).</summary>
+    private bool _weaponBalanceDirty;
+
+    /// <summary>This world's cvar-store <see cref="CvarService.Changed"/> hook: a runtime <c>g_balance_*</c> change
+    /// marks the weapon balance dirty so the next tick re-runs <see cref="Weapons.ConfigureAll"/> (the QC autocvar
+    /// re-read). Only flags here — the actual reconfigure runs in <see cref="OnStartFrame"/> where this world is
+    /// the ambient facade.</summary>
+    private void OnServerCvarChanged(string name)
+    {
+        if (name.StartsWith("g_balance", System.StringComparison.Ordinal))
+            _weaponBalanceDirty = true;
+    }
+
     private void OnStartFrame()
     {
+        // Apply any runtime balance change (g_balance_* set via console/script/vote) before the tick reads weapon
+        // stats: re-seed every weapon's cached balance block from the now-current cvars (QC autocvars are live).
+        if (_weaponBalanceDirty)
+        {
+            _weaponBalanceDirty = false;
+            Weapons.ConfigureAll();
+        }
+
         // [T40] mirror the warmup stage onto the notification gate each tick, so the obituary's MSG_CHOICE
         // allow-gate + the first-blood !warmup test (server/damage.qc) see the right stage.
         NotificationSystem.WarmupStage = Warmup.WarmupStage;

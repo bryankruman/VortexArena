@@ -314,6 +314,7 @@ public sealed class Devastator : Weapon
 
         WeaponSplash.RadiusDamage(self, self.Origin, Cvars.RemoteDamage, Cvars.RemoteEdgeDamage,
             Cvars.RemoteRadius, owner, RegistryId, Cvars.RemoteForce, forceZScale: Cvars.ForceXyScale);
+        WeaponSplash.ImpactSound(self, "weapons/rocket_impact.wav"); // QC SND_ROCKET_IMPACT (wr_impacteffect)
         EffectEmitter.Emit("ROCKET_EXPLODE", self.Origin);
         Api.Entities.Remove(self);
     }
@@ -334,6 +335,7 @@ public sealed class Devastator : Weapon
         WeaponSplash.RadiusDamage(self, self.Origin, Cvars.Damage, Cvars.EdgeDamage, Cvars.Radius,
             self.Owner, RegistryId, Cvars.Force, directHit: directHit);
 
+        WeaponSplash.ImpactSound(self, "weapons/rocket_impact.wav"); // QC SND_ROCKET_IMPACT (wr_impacteffect)
         EffectEmitter.Emit("ROCKET_EXPLODE", self.Origin);
         Api.Entities.Remove(self);
     }

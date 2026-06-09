@@ -112,6 +112,14 @@ public interface ISoundService
     void Play(Entity e, SoundChannel channel, string sample, float volume = 1f, float attenuation = 1f, bool loop = false, float pitch = 1f);
 
     /// <summary>
+    /// QC <c>sound()</c> at a world POINT with no emitter entity — DP's CSQC <c>wr_impacteffect</c> impact/
+    /// explosion sounds, played at the trace endpoint. Fire-and-forget: no <c>(entity, channel)</c> keying and
+    /// no emitter-follow, so it stays put at <paramref name="point"/> (correct for a wall/blast impact). Default
+    /// no-op so non-audio implementations (tests) ignore it; the real <c>SoundService</c> broadcasts it.
+    /// </summary>
+    void PlayAt(Vector3 point, SoundChannel channel, string sample, float volume = 1f, float attenuation = 1f) { }
+
+    /// <summary>
     /// Stop the sound on <c>(e, channel)</c> — DP <c>sound(e, channel, SND_Null)</c>. Ends a looping sound
     /// started with <c>Play(..., loop: true)</c> (e.g. the Arc beam loop when the trigger is released). A no-op
     /// if nothing is playing on that entity+channel.

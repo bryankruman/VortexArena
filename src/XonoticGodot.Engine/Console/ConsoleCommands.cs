@@ -421,6 +421,16 @@ public sealed class ConsoleCommands
 
     private void RouteUnknown(string name, IReadOnlyList<string> argv)
     {
+        // DP Cmd_ExecuteString's cvar fallback: a lone cvar name typed at the console prints its value and is
+        // NOT forwarded to the server. (A `name value` line is already a bare cvar assignment in the interpreter,
+        // so only the no-value query reaches here.) Without this, `g_balance_blaster_primary_radius` typed alone
+        // fell through to "Unknown command".
+        if (argv.Count == 1 && _cvars.Has(name))
+        {
+            PrintCvar(name);
+            return;
+        }
+
         string line = Rejoin(argv);
         if (_localRouter != null)
         {

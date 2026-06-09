@@ -79,6 +79,28 @@ public class ConsoleTests
         Assert.Equal("kill", sent);
     }
 
+    [Fact]
+    public void BareCvarName_PrintsValue_AndIsNotRouted()
+    {
+        // DP: a lone cvar name typed at the console prints its value and is NOT forwarded to the game.
+        bool routed = false;
+        var (interp, cvars, output) = Make(localRouter: _ => { routed = true; return ""; });
+        cvars.Set("g_balance_blaster_primary_radius", "60");
+        interp.ExecuteLine("g_balance_blaster_primary_radius");
+        Assert.False(routed);
+        Assert.Contains(output, l => l.Contains("g_balance_blaster_primary_radius") && l.Contains("60"));
+    }
+
+    [Fact]
+    public void BareUnknownName_StillRoutes_NotTreatedAsCvar()
+    {
+        // A single token that is NOT a known cvar must still route to the game (the `kill` path), unchanged.
+        string? captured = null;
+        var (interp, _, _) = Make(localRouter: line => { captured = line; return ""; });
+        interp.ExecuteLine("not_a_cvar_xyz");
+        Assert.Equal("not_a_cvar_xyz", captured);
+    }
+
     // ---- cvar / console builtins -------------------------------------------------------------------------
 
     [Fact]

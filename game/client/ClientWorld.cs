@@ -96,16 +96,23 @@ public partial class ClientWorld : Node3D
     private readonly Dictionary<(int netId, int channel), AudioStreamPlayer3D> _singleChannelPlayers = new();
 
     /// <summary>
-    /// Active one-shot players that must FOLLOW their emitter for the sound's duration. DP attaches a sound to
-    /// the entity+channel so it moves with it; without this a gunshot fired while running is stranded at the
-    /// firing point — the listener (camera) moves away mid-playback, so Godot's distance attenuation makes it
-    /// go quiet AND its distance low-pass filter makes it muffled/muddy (the "sounds fine standing still, bad
-    /// while moving" bug, worst for your own weapon since its emitter should sit on the listener). Populated by
-    /// <see cref="OnSound"/> for any record with a valid source net id; driven each frame by
-    /// <see cref="DriveAttachedOneShots"/> (mirrors the looping-sound follow), entries pruned when the player
-    /// stops or is recycled. Auto/looping sounds are unaffected — loops already follow via _loopingSounds.
+    /// Every currently-playing one-shot, driven each frame by <see cref="DriveOneShots"/>: it (a) FOLLOWS its
+    /// emitter when <see cref="ActiveOneShot.NetId"/> &gt; 0 (DP attaches a sound to the entity so it tracks the
+    /// moving emitter — without this a gunshot fired while running is stranded at the firing point), and (b)
+    /// re-applies the DP distance attenuation (<see cref="SetSpatialVolume"/>) relative to the listener, so a
+    /// fixed-point impact gets quieter/louder as YOU move toward or away from it. Entries are pruned when the
+    /// player stops or is recycled. (Looping sounds carry the same data on <see cref="LoopingSound"/>.)
     /// </summary>
-    private readonly List<(AudioStreamPlayer3D player, int netId)> _attachedOneShots = new();
+    private readonly List<ActiveOneShot> _activeOneShots = new();
+
+    /// <summary>A live one-shot player + the data needed to re-spatialize it each frame.</summary>
+    private struct ActiveOneShot
+    {
+        public AudioStreamPlayer3D Player;
+        public int NetId;          // emitter net id to follow (0 = a fixed world point, e.g. an impact/explosion)
+        public float BaseVolume;   // pre-attenuation volume (QC vol); the DP falloff scales this each frame
+        public float Attenuation;  // QC ATTEN_* — 0 = heard everywhere (no spatialization)
+    }
 
     /// <summary>
     /// Persistent LOOPING positional sounds keyed by (emitter net id, channel) — DP's entity+channel sound
@@ -124,7 +131,23 @@ public partial class ClientWorld : Node3D
         public string Sample = "";   // the resolved sample currently looping (idempotency check on re-emit)
         public float SilentTime;     // seconds since the last keepalive refresh (auto-stop past the timeout)
         public bool Alive = true;    // false once stopped, so the Finished re-play handler goes inert
+        public float BaseVolume = 1f; // pre-attenuation volume; the DP falloff scales this each frame
+        public float Attenuation = 1f; // QC ATTEN_* for the distance falloff
     }
+
+    // Darkplaces distance-attenuation parameters (snd_main.c SND_Spatialize), read LIVE from the snd_* cvars each
+    // frame (ClientSettings registers the defaults) so they're tunable at runtime. Godot's own attenuation is
+    // disabled; we reproduce DP's curve in SetSpatialVolume. Godot units are 1:1 with Quake units (Coords swap).
+    // gain = (exponent==0 ? 1 : (1 - min(1, dist*atten/radius))^exponent) * (decibel==0 ? 1 : 0.1^(0.1*decibel*f)).
+    // Defaults below mirror Xonotic's shipped method 1 (radius 2400 / exponent 4) — a steep tail so distant
+    // sounds go quiet — vs the Quake default (1200 / exponent 1) which is a too-flat linear ramp.
+    private float _sndRadius = 2400f;     // snd_soundradius
+    private float _sndExponent = 4f;      // snd_attenuation_exponent
+    private float _sndDecibel = 0f;       // snd_attenuation_decibel
+
+    /// <summary>Last known listener (camera) position in Godot space; the fallback when no camera is available
+    /// this frame so a transient null doesn't silence or mis-place sounds.</summary>
+    private Godot.Vector3 _lastListener;
 
     /// <summary>A looping sound auto-stops if it isn't refreshed (re-emitted) for this long — the safety net for an
     /// emitter that stops without an explicit stop (e.g. the player switches off the Arc mid-fire, so the server
@@ -504,29 +527,72 @@ public partial class ClientWorld : Node3D
         }
     }
 
-    /// <summary>Rent, configure and play a one-shot positional player; when the record has a valid emitter net id
-    /// register it to FOLLOW that emitter for its duration (<see cref="_attachedOneShots"/>) — DP attaches a sound
-    /// to the entity so it tracks the (moving) emitter/listener instead of being stranded at the firing point.</summary>
+    /// <summary>Rent, configure and play a one-shot positional player and register it in <see cref="_activeOneShots"/>
+    /// so it is re-spatialized each frame (<see cref="DriveOneShots"/>): it FOLLOWS its emitter when the record has
+    /// a valid net id — DP attaches a sound to the entity so it tracks the moving emitter instead of being stranded
+    /// at the firing point — and its DP distance volume is updated as the listener moves.</summary>
     private AudioStreamPlayer3D StartOneShot(AudioStream stream, string bus, NVec3 origin,
         float volume, float attenuation, float pitch, int sourceNetId)
     {
+        Godot.Vector3 listener = ListenerPos();
         AudioStreamPlayer3D player = RentAudioPlayer();
         player.Stream = stream;
         player.Bus = bus;
-        player.GlobalPosition = Coords.ToGodot(origin);
-        player.VolumeDb = Mathf.LinearToDb(Mathf.Clamp(volume, 0.001f, 1f));
-        player.UnitSize = attenuation <= 0f ? 100000f : Mathf.Clamp(40f / attenuation, 1f, 100000f);
+        // ATTEN_NONE: play centered on the listener (DP plays these non-spatialized); else at the emit point.
+        player.GlobalPosition = attenuation <= 0f ? listener : Coords.ToGodot(origin);
         player.PitchScale = pitch;
+        SetSpatialVolume(player, volume, attenuation, listener); // initial DP-attenuated volume (no 1-frame blast)
         player.Play();
 
-        // A pooled player may have been following a previous emitter — drop that stale follow before (maybe)
-        // re-registering it, so one untracked sound can't get dragged around by an old entity's motion.
-        for (int i = _attachedOneShots.Count - 1; i >= 0; i--)
-            if (_attachedOneShots[i].player == player)
-                _attachedOneShots.RemoveAt(i);
-        if (sourceNetId > 0)
-            _attachedOneShots.Add((player, sourceNetId));
+        // A pooled player may still be registered from a previous sound — drop that stale entry before re-adding,
+        // so one sound can't be dragged around / re-volumed by a prior emitter's tracking.
+        for (int i = _activeOneShots.Count - 1; i >= 0; i--)
+            if (_activeOneShots[i].Player == player)
+                _activeOneShots.RemoveAt(i);
+        _activeOneShots.Add(new ActiveOneShot
+        {
+            Player = player, NetId = sourceNetId, BaseVolume = volume, Attenuation = attenuation,
+        });
         return player;
+    }
+
+    /// <summary>The current listener position (the active <see cref="Camera3D"/>, which IS Godot's audio listener)
+    /// in Godot space; falls back to the last known position when no camera is available this frame.</summary>
+    private Godot.Vector3 ListenerPos()
+    {
+        Camera3D? cam = GetViewport()?.GetCamera3D();
+        if (cam is not null && GodotObject.IsInstanceValid(cam))
+            _lastListener = cam.GlobalPosition;
+        return _lastListener;
+    }
+
+    /// <summary>DP distance gain (snd_main.c SND_Spatialize): the exponent term — <c>(1 - min(1, f))^exponent</c>,
+    /// f = dist·atten/radius — times the optional decibel term — <c>0.1^(0.1·decibel·f)</c>. With the shipped
+    /// exponent 4 the curve has a steep tail so distant sounds go quiet; exponent 1 is the flat Quake linear ramp;
+    /// the decibel method (exponent 0, decibel&gt;0) is a pure dB falloff with no hard cutoff. ATTEN_NONE (≤0) is
+    /// full everywhere.</summary>
+    private float DpDistanceGain(float distance, float attenuation)
+    {
+        if (attenuation <= 0f)
+            return 1f;
+        float radius = _sndRadius > 0f ? _sndRadius : 2400f;
+        float f = distance * (attenuation / radius); // DP: dist * distfade, distfade = atten/soundradius
+        float g = _sndExponent == 0f ? 1f : Mathf.Pow(Mathf.Max(0f, 1f - Mathf.Min(1f, f)), _sndExponent);
+        if (_sndDecibel != 0f)
+            g *= Mathf.Pow(0.1f, 0.1f * _sndDecibel * f);
+        return g;
+    }
+
+    /// <summary>Apply the DP distance attenuation to a 3D player relative to <paramref name="listener"/>, scaling
+    /// its pre-attenuation <paramref name="baseVolume"/>. Godot's own attenuation model is DISABLED on these
+    /// players (see <see cref="RentAudioPlayer"/>/<see cref="CreateLoop"/>), so this is the sole volume curve —
+    /// it reproduces DP's falloff instead of Godot's steep inverse-distance one. Panning still comes from the
+    /// player's 3D position relative to the listener.</summary>
+    private void SetSpatialVolume(AudioStreamPlayer3D player, float baseVolume, float attenuation, Godot.Vector3 listener)
+    {
+        float dist = player.GlobalPosition.DistanceTo(listener);
+        float gain = Mathf.Clamp(baseVolume, 0f, 1f) * DpDistanceGain(dist, attenuation);
+        player.VolumeDb = gain <= 0.0008f ? -80f : Mathf.LinearToDb(gain); // -80 dB ≈ silent
     }
 
     /// <summary>
@@ -576,7 +642,7 @@ public partial class ClientWorld : Node3D
             {
                 // Same loop already playing on this (entity, channel): refresh, don't restart (idempotent re-emit).
                 existing.SilentTime = 0f;
-                ApplyLoopSpatial(existing.Player, origin, volume, attenuation);
+                ApplyLoopSpatial(existing, origin, volume, attenuation, ListenerPos());
                 return;
             }
             DestroyLoop(existing);          // a different sample on the key → replace
@@ -588,7 +654,7 @@ public partial class ClientWorld : Node3D
             return;
 
         LoopingSound ls = CreateLoop(netId, channel, stream, bare);
-        ApplyLoopSpatial(ls.Player, origin, volume, attenuation);
+        ApplyLoopSpatial(ls, origin, volume, attenuation, ListenerPos());
         _loopingSounds[key] = ls;
     }
 
@@ -611,7 +677,10 @@ public partial class ClientWorld : Node3D
         {
             Name = $"loop_{netId}_{channel}",
             Stream = looping,
-            MaxDistance = 4096f,
+            // Godot attenuation off — the DP linear curve is applied each frame in DriveLoopingSounds.
+            AttenuationModel = AudioStreamPlayer3D.AttenuationModelEnum.Disabled,
+            MaxDistance = 0f,
+            AttenuationFilterCutoffHz = 20500f, // disable Godot's distance low-pass (DP has none)
         };
         var ls = new LoopingSound { Player = player, Sample = sample };
         AddChild(player);
@@ -632,17 +701,19 @@ public partial class ClientWorld : Node3D
         }
     }
 
-    /// <summary>Place + tune a looping source (mirrors the one-shot spatialization in <see cref="OnSound"/>).</summary>
-    private static void ApplyLoopSpatial(AudioStreamPlayer3D p, NVec3 origin, float volume, float attenuation)
+    /// <summary>Place + tune a looping source (mirrors the one-shot spatialization in <see cref="StartOneShot"/>):
+    /// store the base volume/attenuation for the per-frame DP falloff and set the initial position + volume.</summary>
+    private void ApplyLoopSpatial(LoopingSound ls, NVec3 origin, float volume, float attenuation, Godot.Vector3 listener)
     {
-        p.GlobalPosition = Coords.ToGodot(origin);
-        p.VolumeDb = Mathf.LinearToDb(Mathf.Clamp(volume, 0.001f, 1f));
-        p.UnitSize = attenuation <= 0f ? 100000f : Mathf.Clamp(40f / attenuation, 1f, 100000f);
+        ls.BaseVolume = volume;
+        ls.Attenuation = attenuation;
+        ls.Player.GlobalPosition = attenuation <= 0f ? listener : Coords.ToGodot(origin);
+        SetSpatialVolume(ls.Player, volume, attenuation, listener);
     }
 
     /// <summary>Follow each looping source to its emitter's current position and age its keepalive; auto-stop a loop
     /// not refreshed for <see cref="LoopKeepaliveTimeout"/> (its emitter stopped without an explicit stop).</summary>
-    private void DriveLoopingSounds(float delta)
+    private void DriveLoopingSounds(float delta, Godot.Vector3 listener)
     {
         if (_loopingSounds.Count == 0)
             return;
@@ -662,31 +733,38 @@ public partial class ClientWorld : Node3D
                 _loopScratch.Add(kv.Key);
                 continue;
             }
-            // Follow the emitter (local player → predicted eye; remotes → interpolated pose).
-            if (EntityOriginResolver?.Invoke(kv.Key.netId) is { } pos)
+            // ATTEN_NONE → centered on the listener; else follow the emitter (local player → predicted eye;
+            // remotes → interpolated pose). Then re-apply the DP distance falloff.
+            if (ls.Attenuation <= 0f)
+                ls.Player.GlobalPosition = listener;
+            else if (EntityOriginResolver?.Invoke(kv.Key.netId) is { } pos)
                 ls.Player.GlobalPosition = Coords.ToGodot(pos);
+            SetSpatialVolume(ls.Player, ls.BaseVolume, ls.Attenuation, listener);
         }
         for (int i = 0; i < _loopScratch.Count; i++)
             if (_loopingSounds.Remove(_loopScratch[i], out LoopingSound? dead))
                 DestroyLoop(dead);
     }
 
-    /// <summary>Move each attached one-shot to its emitter's current position and prune entries whose player has
-    /// finished or been recycled. Mirrors <see cref="DriveLoopingSounds"/> for the short-lived pooled players so a
-    /// sound (a footstep, a gunshot, the local weapon) tracks the entity that made it for its whole duration
-    /// instead of staying where it started — the fix for sounds going quiet/muffled while the listener moves.</summary>
-    private void DriveAttachedOneShots()
+    /// <summary>Each frame, for every live one-shot: follow its emitter (so a sound tracks the entity that made it
+    /// rather than being stranded where it started) and re-apply the DP distance attenuation relative to the
+    /// listener (so a fixed-point impact gets quieter/louder as YOU move toward or away from it — Godot's own
+    /// attenuation is disabled). Prune entries whose player has finished or been recycled.</summary>
+    private void DriveOneShots(Godot.Vector3 listener)
     {
-        for (int i = _attachedOneShots.Count - 1; i >= 0; i--)
+        for (int i = _activeOneShots.Count - 1; i >= 0; i--)
         {
-            (AudioStreamPlayer3D player, int netId) = _attachedOneShots[i];
-            if (!GodotObject.IsInstanceValid(player) || !player.Playing)
+            ActiveOneShot a = _activeOneShots[i];
+            if (!GodotObject.IsInstanceValid(a.Player) || !a.Player.Playing)
             {
-                _attachedOneShots.RemoveAt(i);
+                _activeOneShots.RemoveAt(i);
                 continue;
             }
-            if (EntityOriginResolver?.Invoke(netId) is { } pos)
-                player.GlobalPosition = Coords.ToGodot(pos);
+            if (a.Attenuation <= 0f)
+                a.Player.GlobalPosition = listener;                  // ATTEN_NONE: stay centered
+            else if (a.NetId > 0 && EntityOriginResolver?.Invoke(a.NetId) is { } pos)
+                a.Player.GlobalPosition = Coords.ToGodot(pos);       // follow the emitter; fixed point otherwise
+            SetSpatialVolume(a.Player, a.BaseVolume, a.Attenuation, listener);
         }
     }
 
@@ -748,8 +826,15 @@ public partial class ClientWorld : Node3D
 
         DriveCsqcModelHooks((float)delta);
         DriveVehicles((float)delta);
-        DriveLoopingSounds((float)delta);
-        DriveAttachedOneShots();
+        // Re-spatialize active sounds against the current listener (camera) — DP distance attenuation +
+        // emitter-follow — so volume tracks how near/far you are even while you move past a fixed-point impact.
+        // Refresh the attenuation cvars live so a runtime `set snd_attenuation_exponent N` takes effect at once.
+        _sndRadius = CvarF("snd_soundradius", 2400f);
+        _sndExponent = CvarF("snd_attenuation_exponent", 4f);
+        _sndDecibel = CvarF("snd_attenuation_decibel", 0f);
+        Godot.Vector3 listener = ListenerPos();
+        DriveLoopingSounds((float)delta, listener);
+        DriveOneShots(listener);
     }
 
     /// <summary>
@@ -1283,7 +1368,15 @@ public partial class ClientWorld : Node3D
             if (GodotObject.IsInstanceValid(p) && !p.Playing)
                 return p;
 
-        var np = new AudioStreamPlayer3D { Name = $"sfx{_audioPool.Count}", MaxDistance = 4096f };
+        // Godot's own distance attenuation is DISABLED (we apply the DP linear curve via SetSpatialVolume each
+        // frame); MaxDistance 0 = no Godot cutoff, so our gain alone decides the audible radius.
+        var np = new AudioStreamPlayer3D
+        {
+            Name = $"sfx{_audioPool.Count}",
+            AttenuationModel = AudioStreamPlayer3D.AttenuationModelEnum.Disabled,
+            MaxDistance = 0f,
+            AttenuationFilterCutoffHz = 20500f, // disable Godot's distance low-pass (DP has none — no far muffling)
+        };
         AddChild(np);
         _audioPool.Add(np);
         return np;

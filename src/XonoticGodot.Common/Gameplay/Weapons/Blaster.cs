@@ -189,6 +189,7 @@ public sealed class Blaster : Weapon
         WeaponSplash.RadiusDamage(self, center, Primary.Damage, Primary.EdgeDamage, Primary.Radius,
             self.Owner, RegistryId, Primary.Force, forceZScale: Primary.ForceZScale, directHit: other);
 
+        WeaponSplash.ImpactSound(self, "weapons/laserimpact.wav"); // QC SND_LASERIMPACT (wr_impacteffect)
         EffectEmitter.Emit("BLASTER_IMPACT", center);
         Api.Entities.Remove(self);
     }

@@ -797,4 +797,56 @@ public class ItemSpawnTouchTests
         Assert.Equal(1f, aOff, 3);
         Assert.False(eOff);
     }
+
+    // =====================================================================================
+    //  Pickup-sound wiring (regression: a pickup whose PickupSound name isn't in the Sounds
+    //  catalog resolves to no sample and plays SILENTLY — the bug that made every health/armor
+    //  except mega health soundless. PlayPickupSound passes ItemDef.PickupSound to the client's
+    //  OnSound, which does Sounds.ByName(name); an unregistered name => LoadStream(name) => null.)
+    // =====================================================================================
+
+    [Fact]
+    public void EveryPickupSound_ResolvesToARegisteredSample()
+    {
+        Boot();
+        Sounds.RegisterAll(); // the sound catalog (GameInit wires this at boot; idempotent)
+
+        var unresolved = new List<string>();
+        foreach (Pickup p in Items.All)
+        {
+            string name = p.ItemDef.PickupSound;
+            // empty/null is allowed (no sound); a non-empty name MUST resolve to a registered GameSound, else
+            // the pickup is silent on the client.
+            if (!string.IsNullOrEmpty(name) && Sounds.ByName(name) is null)
+                unresolved.Add($"{p.NetName} -> \"{name}\"");
+        }
+
+        Assert.True(unresolved.Count == 0,
+            "These pickups reference an unregistered pickup sound (silent on pickup): "
+            + string.Join(", ", unresolved));
+    }
+
+    [Theory]
+    [InlineData("item_health_small", "HealthSmall")]
+    [InlineData("item_health_medium", "HealthMedium")]
+    [InlineData("item_health_big", "HealthBig")]
+    [InlineData("item_health_mega", "MEGAHEALTH")]
+    [InlineData("item_armor_small", "ArmorSmall")]
+    [InlineData("item_armor_medium", "ArmorMedium")]
+    [InlineData("item_armor_big", "ArmorBig")]
+    [InlineData("item_armor_mega", "ArmorMega")]
+    public void HealthArmorPickupSounds_AreRegistered(string spawnFunc, string expectedSound)
+    {
+        Boot();
+        Sounds.RegisterAll();
+
+        var item = Api.Services!.Entities.Spawn();
+        Assert.True(SpawnFuncs.TrySpawn(spawnFunc, item));
+        Assert.Equal(expectedSound, item.Pickup!.ItemDef.PickupSound);
+
+        // the name must resolve to a real (non-empty) sample path under sound/.
+        GameSound? snd = Sounds.ByName(expectedSound);
+        Assert.NotNull(snd);
+        Assert.StartsWith("misc/", snd!.Sample);
+    }
 }

@@ -277,6 +277,8 @@ public sealed class Fireball : Weapon
             }
         }
 
+        // QC SND_FIREBALL_IMPACT2 at ATTN_NORM*0.25 (wr_impacteffect) — heard from far, like the big BFG ball.
+        WeaponSplash.ImpactSound(self, "weapons/fireball_impact2.wav", attenuation: SoundLevels.AttenNorm * 0.25f);
         EffectEmitter.Emit("FIREBALL_EXPLODE", self.Origin);
         Api.Entities.Remove(self);
     }
@@ -342,6 +344,7 @@ public sealed class Fireball : Weapon
                     strength: Secondary.Damage, source: self.Owner ?? self);
             else // fall back to a direct hit if the burning effect isn't registered
                 WeaponFiring.ApplyDamage(other, self.Owner ?? self, Secondary.Damage, RegistryId, inflictor: self);
+            WeaponSplash.ImpactSound(self, "weapons/fireball_impact2.wav"); // firemine ignite burst
             EffectEmitter.Emit("GRENADE_EXPLODE", self.Origin);
             Api.Entities.Remove(self);
             return;

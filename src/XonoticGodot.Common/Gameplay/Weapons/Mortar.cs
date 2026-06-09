@@ -266,6 +266,7 @@ public sealed class Mortar : Weapon
 
         WeaponSplash.RadiusDamage(self, self.Origin, damage, edge, radius, self.Owner, deathType, force);
 
+        WeaponSplash.ImpactSound(self, "weapons/grenade_impact.wav"); // QC SND_MORTAR_IMPACT (wr_impacteffect)
         EffectEmitter.Emit("GRENADE_EXPLODE", self.Origin);
         Api.Entities.Remove(self);
     }

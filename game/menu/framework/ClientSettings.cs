@@ -111,6 +111,17 @@ public static class ClientSettings
         c.Register("snd_swapstereo", "0", save);
         c.Register("snd_spatialization_control", "0", save);
         c.Register("snd_mutewhenidle", "1", save);
+
+        // Distance-attenuation curve (ClientWorld reads these live to spatialize 3D sounds — see DpDistanceGain).
+        // Defaults = Xonotic's shipped "new style" method 1 (binds-xonotic.cfg `snd_attenuation_method_1`:
+        // menu_snd_attenuation_method 1 → radius 2400 / exponent 4 / decibel 0), NOT the Quake default
+        // (1200/1/0, a too-flat linear ramp). Exponent 4 makes distant sounds fall off steeply so far-away
+        // explosions go quiet. Tunable at runtime: e.g. `set snd_attenuation_exponent 2` (gentler) or the
+        // decibel method `set snd_attenuation_exponent 0; set snd_attenuation_decibel 10` (radius 1200).
+        c.Register("snd_soundradius", "2400", save);
+        c.Register("snd_attenuation_exponent", "4", save);
+        c.Register("snd_attenuation_decibel", "0", save);
+        c.Register("menu_snd_attenuation_method", "1", save);
     }
 
     /// <summary>

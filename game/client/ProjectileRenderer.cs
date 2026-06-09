@@ -69,6 +69,16 @@ public partial class ProjectileRenderer : Node3D
     /// <c>AssetLoader.LoadSound</c>). Tried before the <see cref="SoundResolver"/> <c>res://</c> fallback.</summary>
     public Func<string, AudioStream?>? AudioLoader { get; set; }
 
+    /// <summary>
+    /// Builds a fully-textured render node for a model VFS path (host-set to <c>AssetLoader.LoadModel</c>), used
+    /// to draw a projectile with its REAL model — the QC <c>setmodel(MDL_PROJECTILE_*)</c> — instead of the
+    /// procedural <see cref="ProjectileCatalog.BodyFamily"/> mesh. So a rocket draws models/rocket.md3 (the
+    /// <c>RL</c> body plus the additive <c>RocketThrust</c> flame cone) and a grenade draws grenademodel.md3.
+    /// Null (or a null return / missing content) falls back to the procedural body — keeps headless tests and
+    /// asset-less runs working.
+    /// </summary>
+    public Func<string, Node3D?>? ModelFactory { get; set; }
+
     // =================================================================================================
     //  Lifecycle hooks (driven by ClientWorld)
     // =================================================================================================
@@ -88,7 +98,11 @@ public partial class ProjectileRenderer : Node3D
         ProjectileCatalog.Desc desc = ProjectileCatalog.DescOf(type);
         var root = new Node3D { Name = $"proj#{entity.Index}_{type}" };
 
-        Node3D body = BuildBody(desc);
+        // The real model (rocket.md3 / grenademodel.md3) when the host wired a factory and the content is
+        // present, else the procedural fallback body. The model is authored Quake-forward (+X), so after the
+        // loader's Coords.ToGodot it faces Godot -Z — the same axis OrientToVelocity aims the root down, and the
+        // same axis ApplySpin rolls about. No extra orientation fix-up needed (the capsule's 90° tilt is not).
+        Node3D body = BuildModelBody(desc) ?? BuildBody(desc);
         if (desc.ModelScale is > 0f and not 1f)
             body.Scale = Vector3.One * desc.ModelScale;
         root.AddChild(body);
@@ -236,6 +250,24 @@ public partial class ProjectileRenderer : Node3D
     //  Node construction (driven by the catalog descriptor)
     // =================================================================================================
 
+    /// <summary>
+    /// Render the projectile's REAL model (<see cref="ProjectileCatalog.Desc.ModelPath"/>) via the host
+    /// <see cref="ModelFactory"/>, or null to fall back to the procedural <see cref="BuildBody"/>. The models
+    /// are authored Quake-forward (+X — the rocket/grenade meshes are ~2× longer on Quake X), so after the
+    /// loader's per-vertex <c>Coords.ToGodot</c> their nose points Godot <b>+X</b>. <see cref="OrientToVelocity"/>
+    /// therefore aims the root's +X down the velocity, and <see cref="ApplySpin"/> rolls about +X (the nose).
+    /// </summary>
+    private Node3D? BuildModelBody(ProjectileCatalog.Desc desc)
+    {
+        if (string.IsNullOrEmpty(desc.ModelPath) || ModelFactory is null)
+            return null;
+        Node3D? model = ModelFactory(desc.ModelPath!);
+        if (model is null)
+            return null;
+        model.Name = "Body";
+        return model;
+    }
+
     private static Node3D BuildBody(ProjectileCatalog.Desc desc)
     {
         Color color = desc.GlowColor;
@@ -251,11 +283,17 @@ public partial class ProjectileRenderer : Node3D
                     ? new CapsuleMesh { Radius = 2.0f, Height = 12f }
                     : new SphereMesh { Radius = 3f, Height = 6f };
                 var mat = new StandardMaterial3D { AlbedoColor = color, Metallic = 0.4f, Roughness = 0.6f };
-                var mi = new MeshInstance3D { Name = "Body", Mesh = mesh, MaterialOverride = mat };
-                // Capsule's long axis is +Y in Godot; lay it along forward (-Z) so it points where it flies.
-                if (rocket)
-                    mi.RotationDegrees = new Vector3(90f, 0f, 0f);
-                return mi;
+                var mi = new MeshInstance3D { Name = "Mesh", Mesh = mesh, MaterialOverride = mat };
+                if (!rocket)
+                    return mi; // sphere: symmetric, spin acts directly on it
+                // Capsule's long axis is +Y; lay it along the body's NOSE axis (Godot +X) to match the real
+                // rocket model, so OrientToVelocity (+X → velocity) points it the right way. Keep that tilt on a
+                // CHILD so the returned body stays identity and ApplySpin's +X roll stays a clean barrel-roll
+                // about the nose (symmetric capsule → invisible) rather than a transverse tumble.
+                mi.RotationDegrees = new Vector3(0f, 0f, -90f);
+                var holder = new Node3D { Name = "Body" };
+                holder.AddChild(mi);
+                return holder;
             }
             default: // GlowSprite / FireSprite — a bright additive billboard (no real model needed).
             {
@@ -291,13 +329,19 @@ public partial class ProjectileRenderer : Node3D
             Emitting = true,
             LocalCoords = false, // emit in world space so the trail stays behind the moving projectile
             Explosiveness = 0f,
+            // World-space (LocalCoords=false) particles are LEFT BEHIND the fast-moving emitter, far outside the
+            // node's auto AABB — so Godot frustum-culls the whole trail the instant the emitter's tiny AABB
+            // leaves view, making the trail vanish/flicker. Pin a generous box so the smoke stays drawn.
+            VisibilityAabb = new Aabb(new Vector3(-256f, -256f, -256f), new Vector3(512f, 512f, 512f)),
         };
         var mat = new ParticleProcessMaterial
         {
-            Direction = Vector3.Zero,
-            Spread = 8f,
-            InitialVelocityMin = 0f,
-            InitialVelocityMax = 8f,
+            // A non-zero direction is required for the spread cone to produce any spawn velocity — Direction
+            // Zero leaves the puffs pinned at the emit point. Drift them gently upward like real exhaust smoke.
+            Direction = Vector3.Up,
+            Spread = 25f,
+            InitialVelocityMin = 2f,
+            InitialVelocityMax = 10f,
             Gravity = new Vector3(0f, c.Gravity, 0f),
             ScaleMin = c.Scale * 0.5f,
             ScaleMax = c.Scale,
@@ -325,6 +369,9 @@ public partial class ProjectileRenderer : Node3D
             Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
             BlendMode = c.Additive ? BaseMaterial3D.BlendModeEnum.Add : BaseMaterial3D.BlendModeEnum.Mix,
             BillboardMode = BaseMaterial3D.BillboardModeEnum.Particles,
+            // Particle billboarding discards per-particle scale unless this is set (godot#74897) — without it
+            // the trail puffs collapsed to a 1×1 dot and the rocket/grenade flew with no visible smoke.
+            BillboardKeepScale = true,
             VertexColorUseAsAlbedo = true,
             AlbedoColor = c.Color,
         };
@@ -421,7 +468,13 @@ public partial class ProjectileRenderer : Node3D
         _ => null,
     };
 
-    /// <summary>Point the root along the entity's velocity (or its frame motion when velocity is zero).</summary>
+    /// <summary>
+    /// Aim the root so the body's NOSE (Godot +X — see <see cref="BuildModelBody"/>) points down the entity's
+    /// velocity (the QC <c>angles = vectoangles(velocity)</c>). We can't use <see cref="Node3D.LookAt"/> (it
+    /// aims -Z, a 90° miss for these +X-forward models — the old sideways-tumble bug); instead build an
+    /// orthonormal basis with +X along velocity and a world-up-stable cross for the other two axes. The body's
+    /// accumulated roll lives on the child, so re-setting the root basis here every frame never wipes the spin.
+    /// </summary>
     private static void OrientToVelocity(Node3D root, Entity e, Vector3? motionFallback = null)
     {
         Vector3 vel = Coords.ToGodot(e.Velocity);
@@ -429,10 +482,11 @@ public partial class ProjectileRenderer : Node3D
             vel = m;
         if (vel.LengthSquared() < 1e-4f)
             return;
-        Vector3 fwd = vel.Normalized();
-        Vector3 up = Mathf.Abs(fwd.Dot(Vector3.Up)) > 0.99f ? Vector3.Right : Vector3.Up;
-        // Godot LookAt makes -Z point at the target; aim a unit ahead along velocity.
-        root.LookAt(root.Position + fwd, up);
+        Vector3 x = vel.Normalized();                                                   // nose → velocity
+        Vector3 upRef = Mathf.Abs(x.Dot(Vector3.Up)) > 0.99f ? Vector3.Forward : Vector3.Up; // avoid degeneracy
+        Vector3 z = x.Cross(upRef).Normalized();                                         // a transverse axis
+        Vector3 y = z.Cross(x).Normalized();                                             // completes RH frame
+        root.Basis = new Basis(x, y, z); // columns (X,Y,Z); x×y = z, orthonormal — preserves root.Position
     }
 
     /// <summary>Presence link for a projectile entity (so the sim can reach its node, like EntityNode).</summary>

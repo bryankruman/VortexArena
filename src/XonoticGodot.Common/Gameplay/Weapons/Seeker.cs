@@ -270,6 +270,7 @@ public sealed class Seeker : Weapon
         self.TakeDamage = DamageMode.No;
         WeaponSplash.RadiusDamage(self, self.Origin, Missile.Damage, Missile.EdgeDamage, Missile.Radius,
             self.Owner, RegistryId, Missile.Force);
+        WeaponSplash.ImpactSound(self, "weapons/tag_impact.wav"); // QC SND_TAG_IMPACT (wr_impacteffect)
         EffectEmitter.Emit("HAGAR_EXPLODE", self.Origin);
         Api.Entities.Remove(self);
     }
@@ -329,6 +330,7 @@ public sealed class Seeker : Weapon
         self.TakeDamage = DamageMode.No;
         WeaponSplash.RadiusDamage(self, self.Origin, Flac.Damage, Flac.EdgeDamage, Flac.Radius,
             self.Owner, RegistryId, Flac.Force);
+        WeaponSplash.ImpactSound(self, "weapons/tag_impact.wav"); // QC SND_TAG_IMPACT (wr_impacteffect)
         EffectEmitter.Emit("HAGAR_EXPLODE", self.Origin);
         Api.Entities.Remove(self);
     }

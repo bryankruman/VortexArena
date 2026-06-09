@@ -146,6 +146,7 @@ public sealed class Vortex : Weapon
 
         TraceResult impTr = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, end, MoveFilter.WorldOnly, actor);
         EffectEmitter.Emit("VORTEX_BEAM", shot.Origin, impTr.EndPos, 0);
+        WeaponSplash.ImpactSoundAt(impTr.EndPos, "weapons/neximpact.wav"); // QC SND_VORTEX_IMPACT (wr_impacteffect)
         EffectEmitter.Emit("VORTEX_IMPACT", impTr.EndPos, -shot.Dir * 1000f);
         EffectEmitter.Emit("VORTEX_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
     }

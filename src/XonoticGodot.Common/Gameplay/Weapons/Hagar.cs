@@ -278,6 +278,8 @@ public sealed class Hagar : Weapon
 
         WeaponSplash.RadiusDamage(self, self.Origin, damage, edge, radius, self.Owner, RegistryId, force);
 
+        // QC SND_HAGEXP_RANDOM (wr_impacteffect): one of hagexp1..3.
+        WeaponSplash.ImpactSound(self, (SoundVariantGroups.FlacExp()?.Sample ?? "weapons/hagexp1") + ".wav");
         EffectEmitter.Emit("HAGAR_EXPLODE", self.Origin);
         Api.Entities.Remove(self);
     }

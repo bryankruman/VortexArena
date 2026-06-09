@@ -227,6 +227,7 @@ public sealed class Hlac : Weapon
 
         WeaponSplash.RadiusDamage(self, self.Origin, damage, edge, radius, self.Owner, deathType, force);
 
+        WeaponSplash.ImpactSound(self, "weapons/laserimpact.wav"); // QC SND_LASERIMPACT (wr_impacteffect)
         EffectEmitter.Emit("GREEN_HLAC_IMPACT", self.Origin);
         Api.Entities.Remove(self);
     }

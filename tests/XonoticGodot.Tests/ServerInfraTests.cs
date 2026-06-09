@@ -612,6 +612,32 @@ public class ServerInfraTests
     }
 
     [Fact]
+    public void BalanceCvarChange_RederivesWeaponBalance_OnNextTick()
+    {
+        // QC autocvars are live; the port caches each weapon's balance block in a struct (Weapon.Configure), so a
+        // runtime `set g_balance_*` would otherwise never reach the live match. GameWorld watches its cvar store
+        // and re-derives on the next tick (OnStartFrame), coalesced — this is the fix for "I changed the blaster
+        // radius in the console and it had no effect".
+        var world = new GameWorld(new CollisionWorld());
+        world.Boot("dm");
+
+        var blaster = (Blaster)Weapons.ByName("blaster")!;
+        float original = blaster.Primary.Radius;
+
+        // A `set` lands on the server's own cvar store (on a listen server the console→server bridge mirrors the
+        // shared store into here). The store updates immediately, but the cached struct is stale until a tick.
+        world.Commands.Execute("set g_balance_blaster_primary_radius 999", isServerConsole: true);
+        Assert.Equal(original, blaster.Primary.Radius);   // coalesced — not applied mid-frame
+
+        world.Frame(0.1f);                                // OnStartFrame flushes the dirty balance → ConfigureAll
+        Assert.Equal(999f, blaster.Primary.Radius);
+
+        // restore the GLOBAL weapon registry so later tests see stock balance (a fresh Boot would also reset it).
+        world.Commands.Execute("set g_balance_blaster_primary_radius 60", isServerConsole: true);
+        world.Frame(0.1f);
+    }
+
+    [Fact]
     public void Map_ImmediatelyRoutesToChangeLevelHandler()
     {
         // DP `map`: an immediate changelevel — CmdMap invokes the host's ChangeLevelHandler right away (NetGame

@@ -181,14 +181,40 @@ public static class SoundsList
         Add("POWERUP", Item("powerup"), SoundChannelHint.Item);
         Add("SHIELD_RESPAWN", Item("shield_respawn"), SoundChannelHint.Item);
         Add("STRENGTH_RESPAWN", Item("strength_respawn"), SoundChannelHint.Item);
-        Add("ARMOR25", Item("armor25"), SoundChannelHint.Item);
         Add("ARMORIMPACT", "misc/armorimpact", SoundChannelHint.Body);
         Add("BODYIMPACT1", "misc/bodyimpact1", SoundChannelHint.Body);
         Add("BODYIMPACT2", "misc/bodyimpact2", SoundChannelHint.Body);
         Add("ITEMPICKUP", Item("itempickup"), SoundChannelHint.Item);
         Add("ITEMRESPAWNCOUNTDOWN", Item("itemrespawncountdown"), SoundChannelHint.Item);
         Add("ITEMRESPAWN", Item("itemrespawn"), SoundChannelHint.Item);
-        Add("MEGAHEALTH", Item("megahealth"), SoundChannelHint.Item);
+
+        // Per-size health/armor pickup sounds — the SOUND() tables in common/items/item/health.qh + armor.qh.
+        // Each item def (HealthSmall.., ArmorSmall..) sets ItemDef.PickupSound to one of these NAMES; the pickup
+        // path resolves the name to a GameSound and plays its sample. Without the registration the name resolves
+        // to nothing and the pickup is SILENT — which is why only HealthMega made a sound (its def uses the
+        // legacy "MEGAHEALTH" alias kept below); small/medium/big health & armor and mega armor were all silent.
+        // All eight samples ship under sound/misc/.
+        Add("HealthSmall",  Item("minihealth"),   SoundChannelHint.Item); // SOUND(HealthSmall,  "minihealth")
+        Add("HealthMedium", Item("mediumhealth"), SoundChannelHint.Item); // SOUND(HealthMedium, "mediumhealth")
+        Add("HealthBig",    Item("mediumhealth"), SoundChannelHint.Item); // SOUND(HealthBig,    "mediumhealth")
+        Add("HealthMega",   Item("megahealth"),   SoundChannelHint.Item); // SOUND(HealthMega,   "megahealth")
+        Add("ArmorSmall",   Item("armor1"),       SoundChannelHint.Item); // SOUND(ArmorSmall,   "armor1")
+        Add("ArmorMedium",  Item("armor10"),      SoundChannelHint.Item); // SOUND(ArmorMedium,  "armor10")
+        Add("ArmorBig",     Item("armor17_5"),    SoundChannelHint.Item); // SOUND(ArmorBig,     "armor17_5")
+        Add("ArmorMega",    Item("armor25"),      SoundChannelHint.Item); // SOUND(ArmorMega,    "armor25")
+
+        // Powerup pickup sounds — the SOUND() tables in common/mutators/mutator/powerups/powerup/*.qh. The
+        // powerup item defs (StrengthItem/ShieldItem/SpeedItem/InvisibilityItem) set ItemDef.PickupSound to one
+        // of these NAMES; unregistered => silent pickup (same trap as the health/armor sizes). Both samples ship
+        // under sound/misc/. (Jetpack + FuelRegen use the default "ITEMPICKUP", already registered above.)
+        Add("Strength",     Item("powerup"),        SoundChannelHint.Item); // SOUND(Strength,     "powerup")
+        Add("Shield",       Item("powerup_shield"), SoundChannelHint.Item); // SOUND(Shield,       "powerup_shield")
+        Add("Speed",        Item("powerup_shield"), SoundChannelHint.Item); // SOUND(Speed,        "powerup_shield")
+        Add("Invisibility", Item("powerup"),        SoundChannelHint.Item); // SOUND(Invisibility, "powerup")
+
+        // Legacy alias: HealthMega's item def + ItemSpawnTouchTests reference "MEGAHEALTH" (same sample as the
+        // faithful "HealthMega" name above).
+        Add("MEGAHEALTH",   Item("megahealth"),   SoundChannelHint.Item);
     }
 
     // --- misc world sounds (all.inc: misc/, player/) ---

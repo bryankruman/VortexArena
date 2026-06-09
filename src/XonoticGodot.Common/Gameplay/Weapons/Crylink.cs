@@ -313,6 +313,7 @@ public sealed class Crylink : Weapon
             // Chain-detonate the rest of the linked group (W_Crylink_LinkExplode) if enabled.
             if (linkExplode != 0)
                 LinkExplode(self, group, damage, edge, radius, force, deathType);
+            WeaponSplash.ImpactSound(self, "weapons/crylink_impact2.wav"); // QC SND_CRYLINK_IMPACT2 (wr_impacteffect)
             EffectEmitter.Emit("CRYLINK_IMPACT", self.Origin);
             RemoveFromGroup(self, group);
             Api.Entities.Remove(self);
@@ -335,6 +336,7 @@ public sealed class Crylink : Weapon
             if (ReferenceEquals(e, except) || e.IsFreed) continue;
             float a = QMath.Clamp(1f - (Api.Clock.Time - e.MaxHealth) * e.Health, 0f, 1f);
             WeaponSplash.RadiusDamage(e, e.Origin, a * damage, a * edge, radius, e.Owner, deathType, a * force);
+            WeaponSplash.ImpactSound(e, "weapons/crylink_impact2.wav"); // QC SND_CRYLINK_IMPACT2 (wr_impacteffect)
             EffectEmitter.Emit("CRYLINK_IMPACT", e.Origin);
             avgOrg += e.Origin; ++linkCount;
             e.Touch = null; e.Think = null;

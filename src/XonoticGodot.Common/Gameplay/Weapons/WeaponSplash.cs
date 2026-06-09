@@ -104,4 +104,30 @@ public static class WeaponSplash
         float v = Api.Cvars.GetFloat(name);
         return v != 0f ? v : fallback;
     }
+
+    /// <summary>
+    /// Play a weapon's impact/explosion sound at the blast — DP's per-weapon CSQC <c>wr_impacteffect</c>
+    /// <c>sound(actor, CH_SHOTS, …)</c>. The port emits explosions SERVER-side (next to <c>EffectEmitter.Emit</c>),
+    /// so this networks the cue to every client. <c>CH_SHOTS</c> (= <see cref="SoundChannel.ShotsAuto"/>) is an
+    /// auto channel, so simultaneous blasts stack instead of cutting each other off; volume/attenuation default
+    /// to VOL_BASE / ATTN_NORM. Use the <paramref name="emitter"/> overload for a projectile (the entity is at
+    /// the blast point); use <see cref="ImpactSoundAt"/> for a hitscan trace endpoint (no entity there).
+    /// No-op without services or with an empty sample.
+    /// </summary>
+    public static void ImpactSound(Entity emitter, string sample,
+        float volume = SoundLevels.VolBase, float attenuation = SoundLevels.AttenNorm)
+    {
+        if (Api.Services is not null && !string.IsNullOrEmpty(sample))
+            Api.Sound.Play(emitter, SoundChannel.ShotsAuto, sample, volume, attenuation);
+    }
+
+    /// <summary>Hitscan-impact variant of <see cref="ImpactSound"/>: play the impact sound at a world POINT (the
+    /// trace endpoint, which has no entity) — fire-and-forget, staying put at the impact (DP plays these in
+    /// wr_impacteffect at <c>w_org</c>).</summary>
+    public static void ImpactSoundAt(Vector3 point, string sample,
+        float volume = SoundLevels.VolBase, float attenuation = SoundLevels.AttenNorm)
+    {
+        if (Api.Services is not null && !string.IsNullOrEmpty(sample))
+            Api.Sound.PlayAt(point, SoundChannel.ShotsAuto, sample, volume, attenuation);
+    }
 }

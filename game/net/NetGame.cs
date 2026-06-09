@@ -73,6 +73,7 @@ public sealed partial class NetGame : Node3D
     private string _playerName = "player";
     private VirtualFileSystem? _vfs;            // shared asset VFS (from the menu shell), for models/sounds/maps
     private XonoticGodot.Engine.Simulation.CvarService? _sharedCvars;
+    private System.Action<string>? _sharedCvarBridge;   // mirrors console/menu cvar writes into the server's store
 
     // --- live pieces ---
     private GameWorld? _serverWorld;            // listen server only
@@ -488,6 +489,24 @@ public sealed partial class NetGame : Node3D
             CopyCvarIfSet(_sharedCvars, _serverWorld.Services.Cvars, "fraglimit");
         }
 
+        // Bridge runtime cvar changes from the shared (console/menu) store into the listen server's PRIVATE store.
+        // The in-game console writes `set`/`seta`/bare assignments to the shared MenuState.Cvars, but GameWorld
+        // keeps its own store (loaded from the cfg tree at Boot), so without this a console `set g_balance_…` — or
+        // any server-cvar tweak — never reaches the live match. Mirror only cvars the server already knows (Has)
+        // so we don't pollute its store with client-only cvars; the server's own Changed event then re-derives any
+        // cached state (GameWorld re-runs Weapons.ConfigureAll on a g_balance_* change). One-way, idempotent
+        // (Set skips no-op writes), so the campaign progress mirror above can't feed back into a loop.
+        if (_sharedCvars is not null)
+        {
+            _sharedCvarBridge = name =>
+            {
+                var server = _serverWorld?.Services.CvarsImpl;   // re-read the field so a map change is followed
+                if (server is not null && server.Has(name) && _sharedCvars is not null)
+                    server.Set(name, _sharedCvars.GetString(name));
+            };
+            _sharedCvars.Changed += _sharedCvarBridge;
+        }
+
         // --- bots so a solo host has opponents to see/play (QC bot_number / minplayers fill). ---
         for (int i = 0; i < _botCount; i++)
         {
@@ -645,6 +664,12 @@ public sealed partial class NetGame : Node3D
             _render.ForcedModelResolver = BuildForcedPlayerModel;
         }
         AddChild(_render);
+
+        // Networked projectiles draw their REAL model (rocket.md3 with its additive RocketThrust flame cone,
+        // grenademodel.md3) through the same VFS loader the world/weapon models use. Set after AddChild since
+        // ClientWorld._Ready (which built _render.Projectiles) ran synchronously on it.
+        if (_assets is not null)
+            _render.Projectiles.ModelFactory = m => _assets.LoadModel(m);
 
         // Pre-warm the effect catalog + particlefont atlas now (map-load), so the FIRST weapon shot doesn't hitch
         // parsing effectinfo.txt + decoding the atlas on its render frame (DP precaches these at client init,
@@ -1262,6 +1287,11 @@ public sealed partial class NetGame : Node3D
             _client.NotificationReceived -= OnNotificationReceived;
             _client.MinigameStateReceived -= OnMinigameStateReceived;
             _client.PrintReceived -= OnServerPrintForMinigame;
+        }
+        if (_sharedCvarBridge is not null && _sharedCvars is not null)
+        {
+            _sharedCvars.Changed -= _sharedCvarBridge;   // shared store outlives this match; don't leak the hook
+            _sharedCvarBridge = null;
         }
         _minigame?.Dispose();
         _client?.Dispose();
