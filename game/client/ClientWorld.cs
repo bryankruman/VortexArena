@@ -826,6 +826,10 @@ public partial class ClientWorld : Node3D
 
         DriveCsqcModelHooks((float)delta);
         DriveVehicles((float)delta);
+        // Live-poll the dynamic map/scene tint cvars so a console `set r_map_tint*` re-tints instantly (the
+        // testing path); when the strength cvars are 0 this is a couple of cheap reads and leaves the map/code
+        // baseline in place. See XonoticGodot.Game.WorldTint.
+        WorldTint.PollCvars();
         // Re-spatialize active sounds against the current listener (camera) — DP distance attenuation +
         // emitter-follow — so volume tracks how near/far you are even while you move past a fixed-point impact.
         // Refresh the attenuation cvars live so a runtime `set snd_attenuation_exponent N` takes effect at once.

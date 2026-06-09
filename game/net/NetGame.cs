@@ -921,6 +921,11 @@ public sealed partial class NetGame : Node3D
         _viewEffects = new ViewEffects { Name = "ViewEffects" };
         AddChild(_viewEffects);
 
+        // Screen-space vignette (cl_vignette_*): a soft darkened gradient framing the view edges, on its own
+        // CanvasLayer above the world/ViewEffects tint but below the HUD. Self-contained — it registers its own
+        // cvars, reads them live, and self-drives; no per-frame feeding needed here.
+        AddChild(new XonoticGodot.Game.Client.VignetteOverlay { Name = "Vignette" });
+
         // The loading screen (Shell's CanvasLayer 100) covers the viewport during the handshake and the
         // connect-as-observer window — the DP gfx/loading.tga + progress bar, replacing the old plain black
         // overlay. It is owned by Shell (above this node) and dismissed via DismissLoadingScreen once the camera
@@ -2222,13 +2227,44 @@ public sealed partial class NetGame : Node3D
     private void AddLight()
     {
         AddChild(new DirectionalLight3D { Name = "Sun", RotationDegrees = new GVec3(-50f, -30f, 0f), ShadowEnabled = true });
+
+        // The map's real Xonotic skybox (DP R_LoadSkyBox semantics), falling back to the procedural sky when
+        // the map declares none. Same path GameDemo.AddLighting uses; gated on the BSP the client loaded.
+        Sky sky = XonoticGodot.Game.Loaders.SkyboxLoader.TryBuild(_bsp, _assets?.Assets)
+                  ?? new Sky { SkyMaterial = new ProceduralSkyMaterial() };
+
         var env = new Godot.Environment
         {
             BackgroundMode = Godot.Environment.BGMode.Sky,
-            Sky = new Sky { SkyMaterial = new ProceduralSkyMaterial() },
+            Sky = sky,
             AmbientLightSource = Godot.Environment.AmbientSource.Sky,
             AmbientLightEnergy = 0.6f,
+
+            // Tonemap stays LINEAR. The world (LightmapShader) and skin shaders output colour hand-tuned to
+            // round-trip with Godot's Linear mapper, and the content's dynamic range is low (overbright tops out
+            // ~lightmap_scale 2.0). A filmic curve (ACES/Filmic) crushes the mid-tones and shadows here — verified
+            // on stormkeep — so it's left off. Switch to ToneMapper.Aces (TonemapWhite ~1.5) for a punchier,
+            // less faithful "modern" grade if desired.
+            TonemapMode = Godot.Environment.ToneMapper.Linear,
+
+            // Bloom on genuinely-bright pixels only (light fixtures, lava, _glow pages, additive particles,
+            // muzzle/explosion flashes). Threshold ~1.0 keeps ordinary lit walls from washing out — this is
+            // the equivalent of the r_bloom post pass Darkplaces ships.
+            GlowEnabled = true,
+            GlowIntensity = 0.8f,
+            GlowStrength = 1.0f,
+            GlowBloom = 0.05f,
+            GlowHdrThreshold = 1.0f,
+            GlowBlendMode = Godot.Environment.GlowBlendModeEnum.Screen,
         };
+
+        // Map-declared fog (worldspawn "fog"), restoring the mapper's intended atmosphere + depth cue.
+        XonoticGodot.Game.MapLoader.ApplyFog(env, _bsp);
+
+        // Map-declared colour tint baseline (worldspawn "_map_tint"/"_scene_tint"); identity if unset. Live cvars
+        // and the C# API can override it at runtime (XonoticGodot.Game.WorldTint).
+        XonoticGodot.Game.WorldTint.ApplyWorldspawn(_bsp);
+
         AddChild(new WorldEnvironment { Name = "WorldEnvironment", Environment = env });
     }
 

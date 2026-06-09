@@ -128,7 +128,7 @@ public static class MapLoader
 
         // --- pack each surface into the mesh and assign its material ---
         int surfaceIndex = 0;
-        int nLit = 0, nLitMissing = 0, nVtx = 0, nPlain = 0, nGlow = 0, nTrans = 0; // surface-material tally (logged below)
+        int nLit = 0, nLitMissing = 0, nVtx = 0, nPlain = 0, nGlow = 0, nTrans = 0, nNormal = 0; // surface-material tally (logged below)
         foreach (var kv in surfaces)
         {
             SurfaceBuilder sb = kv.Value;
@@ -155,6 +155,10 @@ public static class MapLoader
             else nPlain++;
             if (onLightmapShader && mat is ShaderMaterial g &&
                 g.GetShaderParameter(LightmapShader.UseGlowUniform).AsBool()) nGlow++;
+            // _norm-mapped surfaces (per-pixel relief under the deluxe light). A regression that drops the
+            // LightmapDiffuse.Normal thread or the companion lookup takes this to 0 on a normal-mapped map.
+            if (onLightmapShader && mat is ShaderMaterial nmm &&
+                nmm.GetShaderParameter(LightmapShader.UseNormalUniform).AsBool()) nNormal++;
             // Translucent (alpha-blended) lightmap surfaces — glass etc. (Q3 blendFunc blend). A regression
             // that re-opaques these (e.g. losing the LightmapDiffuse.Translucent thread) drops this to 0.
             if (mat is ShaderMaterial tr && tr.Shader == LightmapShader.TranslucentShader) nTrans++;
@@ -165,7 +169,7 @@ public static class MapLoader
         GD.Print($"[MapLoader] '{mapName}' surfaces: lightmapped={nLit} vertexLit={nVtx} plain={nPlain}" +
                  (nLitMissing > 0 ? $" lightmapMissing={nLitMissing}" : string.Empty) +
                  (nTrans > 0 ? $" translucent={nTrans}" : string.Empty) +
-                 $" glow={nGlow} (deluxe={deluxe}, internalPages={bsp.Lightmaps.Length})");
+                 $" glow={nGlow} normalMapped={nNormal} (deluxe={deluxe}, internalPages={bsp.Lightmaps.Length})");
 
         var mi = new MeshInstance3D { Name = "Geometry", Mesh = mesh };
         root.AddChild(mi);
@@ -407,7 +411,7 @@ public static class MapLoader
                 // A blendFunc-blend diffuse (glass) routes to the translucent variant so it renders see-through.
                 return LightmapShader.MakeMaterial(diffuse.Texture, lightmapTex, deluxemap: deluxeTex,
                     albedoUvScale: diffuse.UvScale, alphaCutoff: diffuse.AlphaCutoff, glow: diffuse.Glow,
-                    translucent: diffuse.Translucent);
+                    translucent: diffuse.Translucent, normal: diffuse.Normal, gloss: diffuse.Gloss);
             }
             // No lightmap available — degrade to the plain material rather than dropping the surface.
         }
@@ -814,10 +818,14 @@ public static class MapLoader
         public readonly string Sky;           // skybox basename ("sky" / "_skybox" / "skyname")
         public readonly float Gravity;        // "gravity" (default 800)
         public readonly bool HasFog;
-        public readonly Color FogColor;       // parsed from "fog" (r g b ...)
-        public readonly float FogDensity;     // density term from "fog"
+        public readonly Color FogColor;       // parsed from "fog" (… r g b …)
+        public readonly float FogDensity;     // density term from "fog" (DP fog_density)
+        public readonly float FogAlpha;       // max fog opacity (DP fog_alpha; default 1)
+        public readonly float FogStart;       // distance before which there is no fog (DP fog_start; default 0)
+        public readonly float FogEnd;         // distance at which fog buildup stops (DP fog_end; default 16384)
 
-        public Worldspawn(string message, string sky, float gravity, bool hasFog, Color fogColor, float fogDensity)
+        public Worldspawn(string message, string sky, float gravity, bool hasFog, Color fogColor,
+            float fogDensity, float fogAlpha, float fogStart, float fogEnd)
         {
             Message = message;
             Sky = sky;
@@ -825,6 +833,9 @@ public static class MapLoader
             HasFog = hasFog;
             FogColor = fogColor;
             FogDensity = fogDensity;
+            FogAlpha = fogAlpha;
+            FogStart = fogStart;
+            FogEnd = fogEnd;
         }
     }
 
@@ -842,6 +853,9 @@ public static class MapLoader
         bool hasFog = false;
         Color fogColor = new Color(0.3f, 0.3f, 0.3f);
         float fogDensity = 0f;
+        float fogAlpha = 1f;
+        float fogStart = 0f;
+        float fogEnd = 16384f;   // DP default fog_end (gl_rmain.c R_UpdateFog).
 
         if (bsp.Entities.Count > 0)
         {
@@ -861,7 +875,9 @@ public static class MapLoader
 
             if (ws.TryGetValue("fog", out string? fog) && !string.IsNullOrWhiteSpace(fog))
             {
-                // Xonotic/DP fog string: "<density> <r> <g> <b> [...]" (density first, then color 0..1).
+                // DP fog string: "<density> <r> <g> <b> [alpha] [start] [end] [...]" (density first, then
+                // colour 0..1, then max-opacity alpha, then the start/end distances). See cl_parse.c (sscanf)
+                // + gl_rmain.c R_BuildFogTexture.
                 var parts = fog.Split((char[])null, StringSplitOptions.RemoveEmptyEntries);
                 if (parts.Length >= 1)
                 {
@@ -869,11 +885,64 @@ public static class MapLoader
                     fogDensity = ParseFloat(parts[0]);
                     if (parts.Length >= 4)
                         fogColor = new Color(ParseFloat(parts[1]), ParseFloat(parts[2]), ParseFloat(parts[3]));
+                    if (parts.Length >= 5)
+                        fogAlpha = ParseFloat(parts[4]);
+                    if (parts.Length >= 6)
+                        fogStart = ParseFloat(parts[5]);
+                    if (parts.Length >= 7 && ParseFloat(parts[6]) > 0f)
+                        fogEnd = ParseFloat(parts[6]);
                 }
             }
         }
 
-        return new Worldspawn(message, sky, gravity, hasFog, fogColor, fogDensity);
+        return new Worldspawn(message, sky, gravity, hasFog, fogColor, fogDensity, fogAlpha, fogStart, fogEnd);
+    }
+
+    /// <summary>
+    /// Apply the map's <c>worldspawn</c> "fog" directive to <paramref name="env"/> as Godot depth fog, or
+    /// leave fog untouched when the map declares none.
+    ///
+    /// <para>The crucial faithfulness point: <b>DP fog is BOUNDED, Godot's exponential fog is NOT.</b> DP's
+    /// default linear fog (<c>r_fog_exp2 0</c>) gives visibility <c>exp(-density * 0.004 * (dist - start))</c>
+    /// (gl_rmain.c R_BuildFogTexture), but the buildup STOPS at <c>fogrange = 2048/density + start</c> (clamped
+    /// to <c>fog_end</c>) and the whole fog is scaled by <c>fog_alpha</c> — so most maps are a subtle, capped
+    /// haze, not a wall. Feeding the raw <c>density*0.004</c> into Godot's unbounded fog overshoots badly at
+    /// distance (the "too thick" bug). Instead we compute DP's true <i>maximum</i> fog opacity (reached at
+    /// fogrange and held) and choose the Godot density that reaches exactly that opacity at fogrange — matching
+    /// DP across the visible range; it overshoots only beyond fogrange, which is usually past the sightlines.
+    /// <see cref="Coords"/> is 1:1 with Godot units. <c>fog_start</c> (no near clearing in Godot's exp fog) is
+    /// the one residual approximation.</para>
+    /// </summary>
+    public static void ApplyFog(Godot.Environment env, BspData? bsp)
+    {
+        if (bsp is null)
+            return;
+        Worldspawn ws = BuildWorldspawn(bsp);
+        if (!ws.HasFog || ws.FogDensity <= 0f || ws.FogAlpha <= 0f)
+            return;
+
+        // DP fogrange (gl_rmain.c R_UpdateFog, linear mode): the distance at which fog saturates and is held.
+        float fogrange = Mathf.Clamp(2048f / ws.FogDensity + ws.FogStart, ws.FogStart, ws.FogEnd);
+        // DP visibility at fogrange: exp(-density * 0.004 * (fogrange - start)); the max fog opacity is then
+        // (1 - vis) * fog_alpha (R_BuildFogTexture). This is the haze DP actually shows — typically subtle.
+        float buildup = Mathf.Max(1f, fogrange - ws.FogStart);
+        float maxVis = Mathf.Exp(-ws.FogDensity * 0.004f * buildup);
+        float maxFog = (1f - maxVis) * Mathf.Clamp(ws.FogAlpha, 0f, 1f);
+        if (maxFog < 0.002f || fogrange <= 0f)
+            return;   // negligible fog — leave it off rather than add an invisible cost.
+
+        // Godot's exponential fog amount is 1 - exp(-FogDensity * dist); pick the density that reaches maxFog
+        // at fogrange so the visible range tracks DP. (Overshoots only beyond fogrange — past most sightlines.)
+        float godotDensity = -Mathf.Log(1f - Mathf.Min(maxFog, 0.98f)) / fogrange;
+
+        env.FogEnabled = true;
+        env.FogLightColor = ws.FogColor;
+        env.FogDensity = godotDensity;
+        // Don't fully drown the skybox in fog — DP fogs the sky only partially; keep the horizon readable.
+        env.FogSkyAffect = 0.5f;
+        GD.Print($"[MapLoader] fog: density {ws.FogDensity:0.####} alpha {ws.FogAlpha:0.##} start {ws.FogStart:0} " +
+                 $"-> maxFog {maxFog:0.00} @ {fogrange:0}u, godotDensity {godotDensity:0.000000} " +
+                 $"color ({ws.FogColor.R:0.00} {ws.FogColor.G:0.00} {ws.FogColor.B:0.00})");
     }
 
     /// <summary>Find the worldspawn entity (by classname; falls back to the first entity, Quake convention).</summary>

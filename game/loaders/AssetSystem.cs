@@ -190,7 +190,8 @@ public sealed class AssetSystem
             ResourceName = textureBase,
             AlbedoTexture = albedo,
             // Q3 content is authored for nearest-ish but Godot's default trilinear looks right with mips.
-            TextureFilter = BaseMaterial3D.TextureFilterEnum.LinearWithMipmaps,
+            // Anisotropic keeps it crisp at grazing angles (floors/ramps) — cap set in project.godot.
+            TextureFilter = BaseMaterial3D.TextureFilterEnum.LinearWithMipmapsAnisotropic,
         };
 
         WireCompanions(mat, textureBase);
@@ -338,7 +339,8 @@ public sealed class AssetSystem
     /// otherwise), and whether the diffuse stage alpha-blends (Q3 <c>blendFunc blend</c> → render translucent,
     /// e.g. <c>trak5x/misc-glass</c>). See <see cref="ResolveLightmapDiffuse"/>.</summary>
     public readonly record struct LightmapDiffuse(
-        Texture2D? Texture, float AlphaCutoff, Vector2 UvScale, Texture2D? Glow, bool Translucent);
+        Texture2D? Texture, float AlphaCutoff, Vector2 UvScale, Texture2D? Glow, bool Translucent,
+        Texture2D? Normal, Texture2D? Gloss);
 
     /// <summary>
     /// The render parameters a lightmapped surface needs from its shader's <i>diffuse</i> stage: the base
@@ -359,11 +361,12 @@ public sealed class AssetSystem
     public LightmapDiffuse ResolveLightmapDiffuse(string shaderName)
     {
         if (string.IsNullOrEmpty(shaderName))
-            return new LightmapDiffuse(null, 0f, Vector2.One, null, false);
+            return new LightmapDiffuse(null, 0f, Vector2.One, null, false, null, null);
 
         ShaderDef? def = GetShader(shaderName);
         if (def is null)
-            return new LightmapDiffuse(LoadTexture(shaderName), 0f, Vector2.One, LoadGlow(shaderName), false);
+            return new LightmapDiffuse(LoadTexture(shaderName), 0f, Vector2.One, LoadGlow(shaderName), false,
+                LoadNorm(shaderName), LoadGloss(shaderName));
 
         foreach (ShaderStage stage in def.Stages)
         {
@@ -379,11 +382,12 @@ public sealed class AssetSystem
             // A diffuse stage with blendFunc blend (GL_SRC_ALPHA GL_ONE_MINUS_SRC_ALPHA) is an alpha-blended
             // surface (glass): flag it translucent so the lightmap path renders it see-through, not opaque.
             return new LightmapDiffuse(LoadTexture(image), DiffuseAlphaCutoff(stage), DiffuseUvScale(stage),
-                LoadGlow(image), stage.BlendMode == BlendMode.Blend);
+                LoadGlow(image), stage.BlendMode == BlendMode.Blend, LoadNorm(image), LoadGloss(image));
         }
 
         // Global-only / $lightmap-only shader: best-effort the shader name as a texture (usually null → white).
-        return new LightmapDiffuse(LoadTexture(shaderName), 0f, Vector2.One, LoadGlow(shaderName), false);
+        return new LightmapDiffuse(LoadTexture(shaderName), 0f, Vector2.One, LoadGlow(shaderName), false,
+            LoadNorm(shaderName), LoadGloss(shaderName));
     }
 
     /// <summary>Load the <c>_glow</c> self-illumination companion for a diffuse image. The extension MUST be
@@ -391,6 +395,16 @@ public sealed class AssetSystem
     /// appending the suffix yields <c>foo.tga_glow</c>, which never resolves. Mirrors DP's companion lookup.</summary>
     private Texture2D? LoadGlow(string image)
         => LoadTexture(AssetPaths.StripImageExtension(image) + "_glow");
+
+    /// <summary>Load the <c>_norm</c> (tangentspace normal) companion for a diffuse image; the extension is
+    /// stripped first (same hazard as <see cref="LoadGlow"/>). Null when the surface ships no normal map.</summary>
+    private Texture2D? LoadNorm(string image)
+        => LoadTexture(AssetPaths.StripImageExtension(image) + "_norm");
+
+    /// <summary>Load the <c>_gloss</c> (specular) companion for a diffuse image; the extension is stripped
+    /// first (see <see cref="LoadNorm"/>). Null when the surface ships no gloss map.</summary>
+    private Texture2D? LoadGloss(string image)
+        => LoadTexture(AssetPaths.StripImageExtension(image) + "_gloss");
 
     /// <summary>The Godot alpha-scissor cutoff for a stage's Q3 <c>alphaFunc</c> (GE128→0.5, GT0→~0, else 0.5);
     /// 0 when the stage has no alpha test. Mirrors <see cref="ShaderCompiler"/>'s mapping.</summary>
@@ -459,7 +473,38 @@ public sealed class AssetSystem
         return tex;
     }
 
+    /// <summary>
+    /// Resolve and decode a texture by extension-agnostic base name to a raw <see cref="Image"/> (no GPU
+    /// upload, not cached). Used by callers that need direct pixel access — e.g. the skybox loader, which
+    /// reorients each cube face on the CPU before uploading. Returns null if nothing resolves or the bytes
+    /// fail to decode.
+    /// </summary>
+    public Image? LoadImage(string baseNameNoExt)
+    {
+        if (string.IsNullOrEmpty(baseNameNoExt))
+            return null;
+        string? vpath = _vfs.ResolveImage(baseNameNoExt);
+        return vpath == null ? null : LoadImageFromVpath(vpath);
+    }
+
     private Texture2D? LoadTextureFromVpath(string vpath)
+    {
+        Image? image = LoadImageFromVpath(vpath);
+        if (image == null)
+            return null;
+
+        try
+        {
+            return ImageTexture.CreateFromImage(image);
+        }
+        catch (Exception ex)
+        {
+            GD.PrintErr($"[AssetSystem] could not create texture from '{vpath}': {ex.Message}");
+            return null;
+        }
+    }
+
+    private Image? LoadImageFromVpath(string vpath)
     {
         byte[] bytes;
         try
@@ -473,7 +518,7 @@ public sealed class AssetSystem
         }
 
         string ext = AssetPaths.GetExtension(vpath);
-        Image? image = ext switch
+        return ext switch
         {
             "tga" => DecodeTga(bytes, vpath),
             "png" => LoadViaGodot(bytes, isPng: true, vpath),
@@ -481,19 +526,6 @@ public sealed class AssetSystem
             "dds" => DecodeDds(bytes, vpath),
             _ => DecodeUnknown(bytes, vpath), // pcx/wal/etc.: unsupported
         };
-
-        if (image == null)
-            return null;
-
-        try
-        {
-            return ImageTexture.CreateFromImage(image);
-        }
-        catch (Exception ex)
-        {
-            GD.PrintErr($"[AssetSystem] could not create texture from '{vpath}': {ex.Message}");
-            return null;
-        }
     }
 
     private static Image? DecodeTga(byte[] bytes, string vpath)

@@ -80,6 +80,18 @@ public static class LightmapShader
     /// <summary>Uniform name for the additive glow scale (DP <c>Color_Glow</c>; ~1).</summary>
     public const string GlowScaleUniform = "glow_scale";
 
+    /// <summary>Uniform name for the per-pixel surface-normal (<c>_norm</c>) companion texture.</summary>
+    public const string NormalUniform = "normal_tex";
+
+    /// <summary>Uniform name for the flag that enables <c>_norm</c> per-pixel normal perturbation.</summary>
+    public const string UseNormalUniform = "use_normal";
+
+    /// <summary>Uniform name for the specular (<c>_gloss</c>) companion texture.</summary>
+    public const string GlossUniform = "gloss_tex";
+
+    /// <summary>Uniform name for the flag that enables the <c>_gloss</c> deluxe specular highlight.</summary>
+    public const string UseGlossUniform = "use_gloss";
+
     /// <summary>
     /// The GDShader source. Unshaded so the baked lightmap is the only lighting term; the albedo is
     /// modulated by <c>lightmap * scale</c> (or the per-vertex color when <c>use_vertex_color</c>). A 1×1
@@ -92,7 +104,7 @@ render_mode unshaded, cull_back, depth_draw_opaque;
 
 // NOTE: albedo/lightmap are sampled RAW (no source_color) — the stock Xonotic config renders in gamma space.
 // The srgb_color path decodes them explicitly. See LightmapShader's type doc.
-uniform sampler2D albedo_tex : hint_default_white;
+uniform sampler2D albedo_tex : hint_default_white, filter_linear_mipmap_anisotropic;
 uniform sampler2D lightmap_tex : hint_default_white;
 uniform sampler2D deluxemap_tex : hint_default_black;   // light-direction page (deluxemapped maps only).
 uniform bool use_deluxemap = false;     // enable the deluxemap directional re-modulation.
@@ -106,6 +118,20 @@ uniform vec2 albedo_uv_scale = vec2(1.0, 1.0);   // Q3 tcMod scale on the albedo
 uniform sampler2D glow_tex : hint_default_black; // self-illumination (_glow companion); added fullbright.
 uniform bool use_glow = false;          // enable the glow add (a _glow page was found for this surface).
 uniform float glow_scale = 1.0;         // DP Color_Glow (straight additive scale; ~1).
+// Per-pixel normal/specular companions. Only applied on DELUXEMAPPED surfaces (they need a per-texel light
+// DIRECTION to shade against); on a flat lightmap the surface normal has no light to dot with, so they go
+// unused — matching DP, which only normal/gloss-maps the lightdirectionmap modes.
+uniform sampler2D normal_tex : filter_linear_mipmap_anisotropic; // tangentspace _norm companion (raw; decoded *2-1).
+uniform bool use_normal = false;        // a _norm page was found for this surface.
+uniform sampler2D gloss_tex : hint_default_black;               // _gloss specular map (DP Texture_Gloss).
+uniform bool use_gloss = false;         // a _gloss page was found for this surface.
+uniform float specular_power = 32.0;    // DP r_shadow_glossexponent (× glosstex.a per-texel in the shader).
+uniform float specular_scale = 0.15;    // DP Color_Specular (gloss intensity) — a subtle glint; 0 disables.
+
+// Dynamic whole-map colour tint (XonoticGodot.Game.WorldTint). A GLOBAL shader parameter so one
+// RenderingServer.GlobalShaderParameterSet re-tints every world surface at once; the strength is folded into the
+// multiplier on the C# side, so this is a trivial final multiply and the registered default (1,1,1) is identity.
+global uniform vec3 map_tint;
 
 // Per-surface tangent frame (DP VectorS/T/R = tangent/binormal/normal), captured in modelspace so the
 // modelspace deluxe light direction can be rotated into it without a view-space mismatch.
@@ -113,6 +139,7 @@ varying vec3 v_tangent;
 varying vec3 v_binormal;
 varying vec3 v_normal;
 varying vec4 v_color;   // per-vertex color (vertex-lit faces); white when the mesh has no COLOR array.
+varying vec3 v_eye_model; // camera minus vertex in modelspace (deluxe specular half-angle; normalized in frag).
 
 // Accurate piecewise sRGB transfer functions — the same curve Godot uses for its framebuffer encode, so
 // srgb_to_linear here exactly cancels Godot's linear->sRGB output transform in the default gamma-space mode.
@@ -127,6 +154,9 @@ void vertex() {
     v_binormal = BINORMAL;
     v_normal = NORMAL;
     v_color = COLOR;
+    // Eye vector in modelspace for the deluxe specular half-angle. Per-vertex via the model inverse (the BSP
+    // world matrix is identity, but stay correct under any transform); normalized in fragment.
+    v_eye_model = (inverse(MODEL_MATRIX) * INV_VIEW_MATRIX[3]).xyz - VERTEX;
 }
 
 void fragment() {
@@ -144,6 +174,7 @@ void fragment() {
         glow = srgb_to_linear(glow);
     }
 
+    vec3 spec_accum = vec3(0.0);   // deluxe specular highlight; added (overbright-scaled) into combined below.
     if (use_deluxemap) {
         // DP shader_glsl.h MODE_LIGHTDIRECTIONMAP_MODELSPACE (~1605-1622) + the SHADING combine (~1657-1664).
         // Decode the modelspace light direction. q3map2 stores it in Quake space; rotate to Godot space so it
@@ -158,19 +189,35 @@ void fragment() {
         lightnormal.y = dot(lightnormal_modelspace, vt);
         lightnormal.z = dot(lightnormal_modelspace, vr);
         lightnormal = normalize(lightnormal);
-        // Directional diffuse against the flat tangentspace normal (0,0,1): SHADEDIFFUSE reduces to
-        // possatdot(surfacenormal, lightnormal) = clamp(lightnormal.z, 0, 1) with no per-surface normalmap.
-        float diffuse = clamp(lightnormal.z, 0.0, 1.0);
-        // lightcolor = lightmap / max(0.25, lightnormal.z)  (angle-attenuation undo), then * diffuse.
+        // Per-pixel surface normal from the _norm companion (tangentspace), else the flat face normal (0,0,1).
+        // DP MODE_LIGHTDIRECTIONMAP_TANGENTSPACE: the directional diffuse is dot(surfacenormal, lightnormal),
+        // which reduces to clamp(lightnormal.z,0,1) when there is no normalmap (sn = (0,0,1)) — the old path.
+        vec3 sn = use_normal
+            ? normalize(texture(normal_tex, UV * albedo_uv_scale).xyz * 2.0 - 1.0)
+            : vec3(0.0, 0.0, 1.0);
+        float diffuse = clamp(dot(sn, lightnormal), 0.0, 1.0);
+        // lightcolor = lightmap / max(0.25, lightnormal.z)  (angle-attenuation undo); reused by the specular.
         lm *= 1.0 / max(0.25, lightnormal.z);
-        lm *= diffuse;
+        // Specular: Blinn half-vector between the light dir and the tangentspace eye (DP shader_glsl.h ~1660:
+        // specular = pow(dot(N,H), SpecularPower * glosstex.a); added as glosstex.rgb * Color_Specular * specular
+        // * lightcolor). The per-texel ALPHA modulates the exponent (highlight tightness) and Color_Specular
+        // (specular_scale, low) keeps it a subtle glint rather than the broad sheen a fixed low exponent gives.
+        if (use_gloss) {
+            vec3 eye_ts = normalize(vec3(dot(v_eye_model, vs), dot(v_eye_model, vt), dot(v_eye_model, vr)));
+            vec3 halfdir = normalize(lightnormal + eye_ts);
+            vec4 gtex = texture(gloss_tex, UV * albedo_uv_scale);
+            float spec = pow(clamp(dot(sn, halfdir), 0.0, 1.0), specular_power * gtex.a);
+            spec_accum = lm * spec * gtex.rgb * specular_scale;
+        }
+        lm *= diffuse;   // SHADEDIFFUSE: re-modulate the light by the (possibly normal-mapped) diffuse term.
     }
 
     lm *= lightmap_scale;
     // Self-illumination (DP shader_glsl.h: color.rgb += Texture_Glow * Color_Glow): added on top of the lit
     // diffuse and NOT modulated by the lightmap, so light fixtures glow at full intensity regardless of how
     // lit their own luxels are. Without this, lightmapped lights render as a dim diffuse×lightmap and look dark.
-    vec3 combined = albedo * lm + glow * glow_scale;
+    vec3 combined = albedo * lm + spec_accum * lightmap_scale + glow * glow_scale;
+    combined *= map_tint;   // dynamic whole-map tint (identity (1,1,1) when no tint is active).
     // In sRGB mode combined is linear (let Godot encode it). In the default gamma-space mode it's the
     // display-ready value, so pre-encode it to linear to cancel Godot's linear->sRGB output transform.
     ALBEDO = srgb_color ? combined : srgb_to_linear(combined);
@@ -234,7 +281,8 @@ void fragment() {
     public static ShaderMaterial MakeMaterial(
         Texture2D? albedo, Texture2D? lightmap, float lightmapScale = 2.0f,
         Texture2D? deluxemap = null, Vector2? albedoUvScale = null, float alphaCutoff = 0.0f,
-        Texture2D? glow = null, float glowScale = 1.0f, bool translucent = false)
+        Texture2D? glow = null, float glowScale = 1.0f, bool translucent = false,
+        Texture2D? normal = null, Texture2D? gloss = null)
     {
         var mat = new ShaderMaterial { Shader = translucent ? TranslucentShader : Shader };
         if (albedo != null)
@@ -251,6 +299,19 @@ void fragment() {
             mat.SetShaderParameter(GlowUniform, glow);
             mat.SetShaderParameter(UseGlowUniform, true);
             mat.SetShaderParameter(GlowScaleUniform, glowScale);
+        }
+        // _norm/_gloss only shade on a deluxemapped surface (the shader gates them on use_deluxemap), but bind
+        // them whenever present — a non-deluxe map just leaves them dormant, mirroring the always-present tangent
+        // frame. The per-pixel normal perturbs the directional diffuse; the gloss masks a Blinn specular highlight.
+        if (normal != null)
+        {
+            mat.SetShaderParameter(NormalUniform, normal);
+            mat.SetShaderParameter(UseNormalUniform, true);
+        }
+        if (gloss != null)
+        {
+            mat.SetShaderParameter(GlossUniform, gloss);
+            mat.SetShaderParameter(UseGlossUniform, true);
         }
         mat.SetShaderParameter(LightmapScaleUniform, lightmapScale);
         mat.SetShaderParameter(AlphaCutoffUniform, alphaCutoff);

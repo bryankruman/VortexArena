@@ -76,7 +76,7 @@ shader_type spatial;
 // its default (1.0) keeps the skin opaque with normal depth testing.
 render_mode cull_back;
 
-uniform sampler2D albedo_tex : source_color, hint_default_white;
+uniform sampler2D albedo_tex : source_color, hint_default_white, filter_linear_mipmap_anisotropic;
 uniform sampler2D shirt_mask : hint_default_black;
 uniform sampler2D pants_mask : hint_default_black;
 uniform sampler2D reflect_mask : hint_default_black;
@@ -94,6 +94,10 @@ instance uniform vec3 pants_color : source_color = vec3(0.0);
 instance uniform vec3 colormod : source_color = vec3(1.0);
 instance uniform vec3 glowmod : source_color = vec3(1.0);
 uniform float reflect_strength = 1.0;
+// Dynamic scene tint (XonoticGodot.Game.WorldTint) — a GLOBAL shader parameter applied to every model/skin
+// (players, weapon viewmodels, pickups) so the ""everything else"" grade can differ from the whole-map tint.
+// Strength is folded in on the C# side; default (1,1,1) is identity. Distinct from the per-entity colormod.
+global uniform vec3 entity_tint;
 
 void fragment() {
     vec4 base = texture(albedo_tex, UV);
@@ -102,7 +106,8 @@ void fragment() {
     float pants = texture(pants_mask, UV).r;
     vec3 col = base.rgb + shirt * shirt_color + pants * pants_color;
     // colormod: the per-entity tint DP folds into the lighting term (default white = identity).
-    ALBEDO = col * colormod;
+    // entity_tint: the global, dynamic scene grade (default white = identity), applied on top.
+    ALBEDO = col * colormod * entity_tint;
     // NOTE: deliberately NOT writing ALPHA — see the opaque-skin note in the render_mode header. base.a is a
     // spec/mask channel here, not transparency, and writing it would force the transparent (no-depth) pass.
 

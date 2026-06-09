@@ -138,7 +138,7 @@ internal static class HeroMaterials
 shader_type spatial;
 render_mode cull_disabled, blend_mix, depth_draw_opaque, specular_schlick_ggx;
 
-uniform sampler2D albedo_tex : source_color, hint_default_white;
+uniform sampler2D albedo_tex : source_color, hint_default_white, filter_linear_mipmap_anisotropic;
 uniform bool has_albedo = false;
 uniform vec3 water_tint : source_color = vec3(0.20, 0.45, 0.55);
 uniform float water_alpha = 0.55;
@@ -180,7 +180,7 @@ void fragment() {
             CullMode = def.Cull == CullMode.None
                 ? BaseMaterial3D.CullModeEnum.Disabled
                 : BaseMaterial3D.CullModeEnum.Back,
-            TextureFilter = BaseMaterial3D.TextureFilterEnum.LinearWithMipmaps,
+            TextureFilter = BaseMaterial3D.TextureFilterEnum.LinearWithMipmapsAnisotropic,
         };
         if (albedo != null)
             mat.AlbedoTexture = albedo;
@@ -208,7 +208,7 @@ void fragment() {
             ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
             CullMode = BaseMaterial3D.CullModeEnum.Disabled, // force fields are cull none
             DepthDrawMode = BaseMaterial3D.DepthDrawModeEnum.Disabled,
-            TextureFilter = BaseMaterial3D.TextureFilterEnum.LinearWithMipmaps,
+            TextureFilter = BaseMaterial3D.TextureFilterEnum.LinearWithMipmapsAnisotropic,
         };
         if (albedo != null)
             mat.AlbedoTexture = albedo;

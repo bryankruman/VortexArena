@@ -38,6 +38,11 @@ public partial class Main : Node
         // (reflection bootstrap; the source generator will replace this at compile time — ADR-0003).
         GameRegistries.Bootstrap();
 
+        // Register the dynamic map/scene colour-tint global shader parameters (XonoticGodot.Game.WorldTint).
+        // MUST happen before any world/skin shader that declares them compiles (i.e. before the first map loads),
+        // else Godot rejects the unknown global and the surface fails to render — so it's done here, up front.
+        WorldTint.EnsureRegistered();
+
         // Boot banner through the new facade (a live end-to-end exercise of it): the summary at LOG_INFO
         // (always shown), the per-registry dump at LOG_TRACE — uncluttered at `developer 0`, and visible the
         // moment you `set developer 1`. Run with `developer 2` to also get DEBUG + source locations.

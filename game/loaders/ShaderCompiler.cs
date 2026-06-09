@@ -164,7 +164,7 @@ public static class ShaderCompiler
         {
             ResourceName = def.Name,
             AlbedoTexture = albedo,
-            TextureFilter = BaseMaterial3D.TextureFilterEnum.LinearWithMipmaps,
+            TextureFilter = BaseMaterial3D.TextureFilterEnum.LinearWithMipmapsAnisotropic,
         };
 
         // Companions only make sense for a real texture base (not $lightmap/$white). The team-colorable
@@ -233,7 +233,7 @@ public static class ShaderCompiler
         {
             ResourceName = def.Name + (isBasePass ? "" : "/pass"),
             AlbedoTexture = albedo,
-            TextureFilter = BaseMaterial3D.TextureFilterEnum.LinearWithMipmaps,
+            TextureFilter = BaseMaterial3D.TextureFilterEnum.LinearWithMipmapsAnisotropic,
         };
 
         if (isBasePass)
@@ -435,7 +435,10 @@ public static class ShaderCompiler
             modes.Add("depth_draw_opaque");
         sb.Append("render_mode ").Append(string.Join(", ", modes)).Append(";\n\n");
 
-        sb.Append("uniform sampler2D albedo_tex : source_color;\n");
+        sb.Append("uniform sampler2D albedo_tex : source_color, filter_linear_mipmap_anisotropic;\n");
+        // Dynamic whole-map colour tint (XonoticGodot.Game.WorldTint) — a global shader parameter so animated
+        // world surfaces (scrolling textures, lava) re-tint with the rest of the map. Identity (1,1,1) default.
+        sb.Append("global uniform vec3 map_tint;\n");
         bool alphaTest = !string.IsNullOrEmpty(stage.AlphaFunc);
         if (alphaTest)
             sb.Append("const float ALPHA_CUTOFF = ").Append(Flt(AlphaCutoff(stage.AlphaFunc!))).Append(";\n");
@@ -456,7 +459,7 @@ public static class ShaderCompiler
         foreach (TcMod m in stage.TcMods)
             EmitTcMod(sb, m);
         sb.Append("    vec4 c = texture(albedo_tex, uv);\n");
-        sb.Append("    ALBEDO = c.rgb;\n");
+        sb.Append("    ALBEDO = c.rgb * map_tint;\n");
         sb.Append("    ALPHA = c.a;\n");
         if (alphaTest)
             sb.Append("    if (c.a < ALPHA_CUTOFF) discard;\n");

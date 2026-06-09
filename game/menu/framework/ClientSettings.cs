@@ -22,6 +22,28 @@ public static class ClientSettings
     {
         ApplyVideo();
         ApplyAudio();
+
+        // Register the client-effect cvar defaults (the vignette's cl_vignette_* set) into the shared menu/console
+        // store at boot, so they're visible/bindable in the menu and console before a match's overlay registers
+        // them. Idempotent — keeps any value the user's config already set.
+        Client.VignetteOverlay.RegisterDefaults(MenuState.Cvars);
+
+        RegisterTintDefaults(MenuState.Cvars);
+    }
+
+    /// <summary>
+    /// The dynamic colour-tint cvars (<see cref="Game.WorldTint"/>), so the console/menu can see and drive them.
+    /// <c>r_map_tint</c>/<c>r_scene_tint</c> are <c>"r g b"</c> colours (0..1) and the matching <c>_strength</c>
+    /// cvars are 0..1, where 0 = off (the default — no tint until you opt in). NOT archived: a tint set for a quick
+    /// test shouldn't silently survive a restart and override every map. Maps set their own baseline via worldspawn
+    /// keys; a strength cvar &gt; 0 overrides it live (e.g. <c>set r_map_tint "1 0 0"; set r_map_tint_strength 0.6</c>).
+    /// </summary>
+    private static void RegisterTintDefaults(CvarService c)
+    {
+        c.Register("r_map_tint", "1 1 1");
+        c.Register("r_map_tint_strength", "0");
+        c.Register("r_scene_tint", "1 1 1");
+        c.Register("r_scene_tint_strength", "0");
     }
 
     /// <summary>

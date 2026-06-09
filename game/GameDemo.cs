@@ -172,7 +172,7 @@ public partial class GameDemo : Node3D
             SpawnGameplayEntities(bsp);
 
         // --- lighting + environment ---
-        AddLighting();
+        AddLighting(bsp, assetSystem);
 
         // --- render geometry (skip faces of gametype-filtered "*N" brush entities) ---
         if (bsp is not null && assetSystem is not null)
@@ -655,6 +655,11 @@ public partial class GameDemo : Node3D
         _viewEffects = new Client.ViewEffects { Name = "ViewEffects" };
         AddChild(_viewEffects);
 
+        // Screen-space vignette (cl_vignette_*): a soft darkened gradient framing the view edges, above the
+        // world/ViewEffects tint but below the HUD. Self-contained — registers its own cvars, reads them live,
+        // and self-drives.
+        AddChild(new Client.VignetteOverlay { Name = "Vignette" });
+
         // Pain edge → red flash (QC .dmg_take feeding HUD_Damage). The controller detects a health drop on the
         // player entity it owns and raises Damaged with the amount lost.
         _player.Damaged += amount => _viewEffects.ReportDamage(amount);
@@ -667,6 +672,10 @@ public partial class GameDemo : Node3D
     /// </summary>
     public override void _Process(double delta)
     {
+        // Live-poll the dynamic map/scene tint cvars (XonoticGodot.Game.WorldTint) — kept ahead of the
+        // pre-spawn early-return so `set r_map_tint*` re-tints even before the demo player is up.
+        WorldTint.PollCvars();
+
         if (_viewEffects is null || _player?.Player is null)
             return;
         // observing:false — the demo player is always a spawned, playing actor (never an observer / pre-spawn), so
@@ -1109,7 +1118,7 @@ public partial class GameDemo : Node3D
     //  Lighting
     // -------------------------------------------------------------------------------------------------
 
-    private void AddLighting()
+    private void AddLighting(BspData? bsp, AssetSystem? assets)
     {
         var sun = new DirectionalLight3D
         {
@@ -1120,13 +1129,44 @@ public partial class GameDemo : Node3D
         };
         AddChild(sun);
 
+        // The map's real Xonotic skybox (worldspawn "sky" key / sky-shader skyParms), faithful to DP's
+        // R_LoadSkyBox; falls back to the procedural sky when the map declares none. Drives sky-based
+        // ambient/reflection too.
+        Sky sky = SkyboxLoader.TryBuild(bsp, assets)
+                  ?? new Sky { SkyMaterial = new ProceduralSkyMaterial() };
+
         var env = new Godot.Environment
         {
             BackgroundMode = Godot.Environment.BGMode.Sky,
-            Sky = new Sky { SkyMaterial = new ProceduralSkyMaterial() },
+            Sky = sky,
             AmbientLightSource = Godot.Environment.AmbientSource.Sky,
             AmbientLightEnergy = 0.6f,
+
+            // Tonemap stays LINEAR. The world (LightmapShader) and skin shaders output colour hand-tuned to
+            // round-trip with Godot's Linear mapper, and the content's dynamic range is low (overbright tops out
+            // ~lightmap_scale 2.0). A filmic curve (ACES/Filmic) crushes the mid-tones and shadows here — verified
+            // on stormkeep — so it's left off. Switch to ToneMapper.Aces (TonemapWhite ~1.5) for a punchier,
+            // less faithful "modern" grade if desired.
+            TonemapMode = Godot.Environment.ToneMapper.Linear,
+
+            // Bloom on genuinely-bright pixels only (light fixtures, lava, _glow pages, additive particles,
+            // muzzle/explosion flashes). Threshold ~1.0 keeps ordinary lit walls from washing out — this is
+            // the equivalent of the r_bloom post pass Darkplaces ships.
+            GlowEnabled = true,
+            GlowIntensity = 0.8f,
+            GlowStrength = 1.0f,
+            GlowBloom = 0.05f,
+            GlowHdrThreshold = 1.0f,
+            GlowBlendMode = Godot.Environment.GlowBlendModeEnum.Screen,
         };
+
+        // Map-declared fog (worldspawn "fog"), restoring the mapper's intended atmosphere + depth cue.
+        MapLoader.ApplyFog(env, bsp);
+
+        // Map-declared colour tint (worldspawn "_map_tint"/"_scene_tint") as the baseline; identity if unset, so a
+        // tint never carries over from a previous map. Live cvars/API can override it (XonoticGodot.Game.WorldTint).
+        WorldTint.ApplyWorldspawn(bsp);
+
         var worldEnv = new WorldEnvironment { Name = "WorldEnvironment", Environment = env };
         AddChild(worldEnv);
     }
