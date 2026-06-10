@@ -334,6 +334,11 @@ public sealed class Ctf : GameType
             GametypeEntities.AttachToCarrier(flag.Entity, player, FlagCarryOffset);
             flag.Entity.GtStatus = (int)FlagStatus.Carried;
         }
+
+        // QC ctf_Handle_Pickup: the global "flag taken" voice + the kill-feed line + the carrier's centerprint.
+        FlagAnnounceSound(flag.HomeTeam, "TAKEN");
+        NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, $"CTF_PICKUP_{TeamSuffix(flag.HomeTeam)}", player.NetName);
+        NotificationSystem.Center(player, $"CTF_PICKUP_{TeamSuffix(flag.HomeTeam)}");
         return true;
     }
 
@@ -373,6 +378,11 @@ public sealed class Ctf : GameType
                 Scoring.GameScores.SetBestTime(player, cf, Scoring.GameScores.TimeEncode(captime));
         }
 
+        // QC ctf_Handle_Capture: the global "flag captured" voice + the kill-feed line + the capturer's centerprint.
+        FlagAnnounceSound(carried.HomeTeam, "CAPTURE");
+        NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, $"CTF_CAPTURE_{TeamSuffix(carried.HomeTeam)}", player.NetName);
+        NotificationSystem.Center(player, $"CTF_CAPTURE_{TeamSuffix(carried.HomeTeam)}");
+
         // return the captured flag to its base, freeing the carrier (QC ctf_RespawnFlag(enemy_flag))
         carried.ResetToBase();
         RespawnFlagEntity(carried);
@@ -401,6 +411,10 @@ public sealed class Ctf : GameType
         AddCol(player, "CTF_RETURNS", 1); // QC GameRules_scoring_add(player, CTF_RETURNS, 1)
         AddTeamScorePenalty(flag.HomeTeam, (int)ScorePenaltyReturned);
 
+        // QC ctf_Handle_Return: the global "flag returned" voice + the kill-feed line.
+        FlagAnnounceSound(flag.HomeTeam, "RETURNED");
+        NotificationSystem.Info("CTF_FLAGRETURN_TIMEOUT_NEUTRAL");
+
         flag.ResetToBase();
         RespawnFlagEntity(flag);
     }
@@ -413,6 +427,11 @@ public sealed class Ctf : GameType
     {
         if (flag.Status != FlagStatus.Dropped)
             return;
+
+        // QC ctf_CheckFlagReturn: the global "flag returned" voice + the timeout kill-feed line (no player credit).
+        FlagAnnounceSound(flag.HomeTeam, "RETURNED");
+        NotificationSystem.Info("CTF_FLAGRETURN_TIMEOUT_NEUTRAL");
+
         flag.ResetToBase();
         RespawnFlagEntity(flag);
     }
@@ -441,6 +460,10 @@ public sealed class Ctf : GameType
         AddCol(carrier, "CTF_DROPS", 1); // QC GameRules_scoring_add(player, CTF_DROPS, 1)
         // QC: the dropper can't immediately re-take the flag (next_take_time), and is shielded from camping it.
         carrier.GtNextTakeTime = now + FlagCollectDelay;
+
+        // QC ctf_Handle_Drop: the global "flag dropped/lost" voice + the kill-feed line crediting the dropper.
+        FlagAnnounceSound(carried.HomeTeam, "DROPPED");
+        NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, $"CTF_LOST_{TeamSuffix(carried.HomeTeam)}", carrier.NetName);
 
         // Position the world flag entity at the drop point as a tossable pickup (QC MOVETYPE_TOSS, SOLID_TRIGGER).
         if (carried.Entity is Entity fe)
@@ -739,6 +762,50 @@ public sealed class Ctf : GameType
     /// <summary>Current sim time (QC time); 0 with no facade.</summary>
     private static float Now => Api.Services is not null ? Api.Clock.Time : 0f;
 
+    // ============================================================================================
+    //  Flag presentation (QC ctf_FlagSetup model/skin/glow + the _sound / Send_Notification calls)
+    // ============================================================================================
+
+    /// <summary>EF_FULLBRIGHT (dpextensions) — networked via Entity.Effects so the flag reads clearly map-wide.</summary>
+    private const int EfFullbright = 512;
+
+    /// <summary>Lowercase team token for the <c>g_ctf_flag_&lt;team&gt;_*</c> cvars (red/blue/yellow/pink/neutral).</summary>
+    private static string TeamName(int team) => team switch
+    {
+        Teams.Red => "red", Teams.Blue => "blue", Teams.Yellow => "yellow", Teams.Pink => "pink", _ => "neutral",
+    };
+
+    /// <summary>UPPERCASE team suffix used by the registered CTF sounds + notifications (CTF_TAKEN_RED, …).</summary>
+    private static string TeamSuffix(int team) => team switch
+    {
+        Teams.Red => "RED", Teams.Blue => "BLUE", Teams.Yellow => "YELLOW", Teams.Pink => "PINK", _ => "NEUTRAL",
+    };
+
+    /// <summary>Default per-team flag skin (gametypes-server.cfg: red=0/blue=1/yellow=2/pink=3/neutral=4).</summary>
+    private static int DefaultFlagSkin(int team) => team switch
+    {
+        Teams.Red => 0, Teams.Blue => 1, Teams.Yellow => 2, Teams.Pink => 3, _ => 4,
+    };
+
+    /// <summary>Read a string cvar with a fallback (facade-guarded; used for the flag model path).</summary>
+    private static string CvarStr(string name, string def)
+    {
+        if (Api.Services is null) return def;
+        string s = Api.Cvars.GetString(name);
+        return string.IsNullOrEmpty(s) ? def : s;
+    }
+
+    /// <summary>
+    /// QC ctf_FlagSetup audio: play one of the registered CTF flag voices GLOBALLY (QC <c>_sound(flag, …,
+    /// ATTEN_NONE)</c> — heard by everyone, the flag "announcer"). <paramref name="evt"/> is the event token
+    /// (TAKEN / CAPTURE / DROPPED / RETURNED); the sound is keyed by the flag's home team. No-op headlessly.
+    /// </summary>
+    private static void FlagAnnounceSound(int flagTeam, string evt)
+    {
+        if (Api.Services is null) return;
+        SoundSystem.PlayGlobal(Sounds.ByName($"CTF_{evt}_{TeamSuffix(flagTeam)}"));
+    }
+
     private bool OnDeath(ref DeathEvent ev)
     {
         if (ev.Victim is not Player victim)
@@ -828,6 +895,16 @@ public sealed class Ctf : GameType
             e.GtSpawnAngles = angles;
             e.GtStatus = (int)FlagStatus.AtBase;
             e.NextThink = GametypeEntities.Now + 0.2f; // QC FLAG_THINKRATE
+
+            // QC ctf_FlagSetup: give the flag its MODEL + per-team SKIN from the g_ctf_flag_<team>_model / _skin
+            // cvars (gametypes-server.cfg: models/ctf/flags.md3, skin 0..4 = red/blue/yellow/pink/neutral). The
+            // entity layer previously left Model empty, so the flag networked as an invisible point — the cause
+            // of "flags not visible" despite the scoreboard logic working. EF_FULLBRIGHT keeps it clearly lit.
+            string tn = TeamName(team);
+            e.Model = CvarStr($"g_ctf_flag_{tn}_model", "models/ctf/flags.md3");
+            e.Skin = GametypeEntities.TryCvar($"g_ctf_flag_{tn}_skin", out float sk) ? sk : DefaultFlagSkin(team);
+            e.Effects |= EfFullbright;
+
             FlagEntities.Add(e);
         }
         flag.Entity = e;
@@ -1012,8 +1089,19 @@ public sealed class Ctf : GameType
         float returnTime = FlagReturnTime;
         foreach (var flag in Flags.Values)
         {
+            // QC setattachment: a carried flag rides its carrier. AttachToCarrier only places it ONCE, so without
+            // a per-tick reposition the networked flag entity stays at the pickup spot instead of travelling with
+            // the player. Re-place it behind+above the carrier (FLAG_CARRY_OFFSET, rotated by the carrier's yaw so
+            // it trails them) and face it the carrier's way each tick.
+            if (flag.Status == FlagStatus.Carried && flag.Carrier is { } carrier && flag.Entity is Entity cfe)
+            {
+                QMath.AngleVectors(new Vector3(0f, carrier.Angles.Y, 0f), out Vector3 cf, out Vector3 cr, out Vector3 cu);
+                Vector3 pos = carrier.Origin + cf * FlagCarryOffset.X + cr * FlagCarryOffset.Y + cu * FlagCarryOffset.Z;
+                GametypeEntities.SetOrigin(cfe, pos);
+                cfe.Angles = new Vector3(0f, carrier.Angles.Y, 0f);
+            }
             // QC ctf_FlagThink FLAG_PASSING: re-aim / retrieve / give up an in-flight passed flag every tick.
-            if (flag.Status == FlagStatus.Passing)
+            else if (flag.Status == FlagStatus.Passing)
                 DrivePass(flag, now);
             // QC ctf_CheckFlagReturn: a dropped flag whose return timer elapsed returns itself to base.
             else if (returnTime > 0f && flag.Status == FlagStatus.Dropped && now >= flag.DropTime + returnTime)

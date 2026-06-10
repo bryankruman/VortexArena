@@ -552,6 +552,12 @@ public static class SpawnSystem
 
         // --- orientation + motion reset (QC angles = spot.angles; angles_z = 0; velocities/punch cleared) ---
         p.Angles = sp.Angles;              // already roll-zeroed in ToSpawnPoint
+        // QC PutPlayerInServer: this.fixangle = true — the (re)spawn forcibly turns the view to the spawn-spot
+        // facing. The client owns its view angles (prediction), so p.Angles alone never reaches the camera (and is
+        // overwritten by the client's input view angles on the very next live tick). Latch the spawn facing in the
+        // QC .fixangle channel (reused for teleporters) so the client snaps the view to it on the respawn edge.
+        p.FixAngle = true;
+        p.FixAngleAngles = sp.Angles;
         p.Velocity = Vector3.Zero;
         p.OldOrigin = Vector3.Zero;        // recomputed below after placement
         p.AVelocity = Vector3.Zero;

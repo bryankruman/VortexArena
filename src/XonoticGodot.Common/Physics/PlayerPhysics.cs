@@ -107,6 +107,16 @@ public sealed class PlayerPhysics : IPlayerPhysics
         if (dt <= 0f)
             return;
 
+        // ----- dead players don't move (QC PlayerThink bails on IS_DEAD before PM_Main) -----
+        // The authoritative server already gates this (GameWorld.OnClientMove runs DeadPlayerThink and returns
+        // for a dead player), but the CLIENT-PREDICTION carrier (EntityMovementStep) and the single-process demo
+        // path (PlayerController) call Move directly — without this gate a dead local player keeps sliding under
+        // WASD (the corpse "drives"). DeadPlayerThink runs no corpse physics, so the server holds the body fixed
+        // at the death spot; freezing the predicted/demo body here keeps client and server in lockstep. The dead
+        // state is mirrored onto the prediction carrier each frame (NetGame) so this gate actually fires.
+        if (player.DeadState != DeadFlag.No)
+            return;
+
         // Per-player parameter resolution (T54): QC reads per-player STATs filled by Physics_UpdateStats —
         // preset-resolved when g_physics_clientselect is on. Resolve() consults the server's PresetProvider
         // (authoritative leg) or the client's replicated PredictionOverride (predicted leg); both default null

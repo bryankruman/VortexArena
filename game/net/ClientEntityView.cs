@@ -135,6 +135,16 @@ public sealed partial class ClientEntityView : Node
                       : (s.Flags & NetEntityFlags.ItemAnimate2) != 0 ? (byte)2 : (byte)0;
         // QC FL_DUCKED: a remote player's crouch drives LocomotionBlend (duck legs) + the lowered hull/nameplate.
         e.IsDucked = (s.Flags & NetEntityFlags.Crouched) != 0;
+        // QC FL_ONGROUND: the skeletal PlayerModel's LocomotionBlend.SelectLegs picks the JUMP clip whenever the
+        // player is airborne — so without copying the networked on-ground flag onto the proxy (Entity.OnGround is
+        // derived from EntFlags.OnGround), every remote player reads as in-air and is frozen in the jump pose
+        // (the "bot doesn't animate" bug). Mirror it here so run/walk/idle/jump are selected correctly.
+        if ((s.Flags & NetEntityFlags.OnGround) != 0) e.Flags |= EntFlags.OnGround;
+        else e.Flags &= ~EntFlags.OnGround;
+        // QC csqcmodel_isdead: a corpse plays the death animation (LocomotionBlend.Dead). PlayerModel.Pose also
+        // checks Health, but the proxy carries no MaxHealth, so drive the dead state straight off the networked
+        // flag so a killed remote player poses dead instead of idling.
+        e.DeadState = (s.Flags & NetEntityFlags.Dead) != 0 ? DeadFlag.Dead : DeadFlag.No;
         ApplyIdentity(e, s);
 
         switch (s.Kind)

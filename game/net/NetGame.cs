@@ -1431,6 +1431,31 @@ public sealed partial class NetGame : Node3D
             if (_carrier is not null && LocalServerPlayer is { } hostSelf && !ReferenceEquals(_carrier.Owner, hostSelf))
                 _carrier.Owner = hostSelf;
 
+            // F02 dead-movement gate: the carrier is a DISTINCT prediction entity that never learns it died, so
+            // PlayerPhysics.Move's dead-gate would never fire for the local player and a dead host would keep
+            // sliding under WASD. Mirror the authoritative dead state onto the carrier each frame: a listen
+            // server reads the host Player; a pure client derives it from the networked health (only after the
+            // first spawn, matching the IsDead gate used for the death-cam below). PlayerPhysics.Move then bails.
+            if (_carrier is not null)
+            {
+                bool localDead = LocalServerPlayer is { } self ? self.IsDead : (_everAlive && _client.Health <= 0);
+                _carrier.DeadState = localDead ? DeadFlag.Dead : DeadFlag.No;
+            }
+
+            // F03 (re)spawn view snap (QC PutPlayerInServer: self.fixangle = true; self.angles = spot.angles). The
+            // server latches the spawn-spot facing in the host Player's FixAngle/FixAngleAngles channel (the same
+            // QC .fixangle reused for teleporters). The client owns its view angles, so snap _viewAngles to the
+            // latched facing here — BEFORE the input loop below samples/sends the view — then clear (one-shot). A
+            // listen server reads it in-process; a pure client would need it networked (follow-up). This also
+            // snaps the view out of any server-side (multi-destination) teleport that set the host Player's flag.
+            if (LocalServerPlayer is { FixAngle: true } fixSelf)
+            {
+                _viewAngles.X = Mathf.Clamp(fixSelf.FixAngleAngles.X, -89f, 89f);
+                _viewAngles.Y = fixSelf.FixAngleAngles.Y;
+                _viewAngles.Z = 0f;
+                fixSelf.FixAngle = false;
+            }
+
             // Local fire feedback runs EVERY render frame (before the input drain below), so the muzzle flash,
             // recoil and HUD pulse pop the same frame as the click rather than waiting for the next 1/72 s input
             // tick — the felt "snap" on high-refresh displays. It also latches the press for the next sampled

@@ -1043,6 +1043,11 @@ public sealed class ServerNet : IDisposable
                 Skin = (int)p.Skin,
                 Origin = p.Origin,
                 Angles = p.Angles,
+                // The remote player's velocity drives the client-side locomotion pick (LocomotionBlend.SelectLegs
+                // → run/walk/idle) for the skeletal PlayerModel — exactly as CSQC's animdecide derives walk/run
+                // from the networked velocity. Without it every remote velocity reads 0 and (combined with the
+                // OnGround flag below) the bot is frozen in a single pose. (QC csqcmodel networks .velocity.)
+                Velocity = p.Velocity,
                 Health = (int)p.Health,
                 Colormap = (int)p.Team,
                 Weapon = p.ActiveWeaponId, // renders the remote player's held weapon (QC wepent)
