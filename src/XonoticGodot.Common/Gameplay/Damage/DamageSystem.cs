@@ -527,6 +527,15 @@ public sealed class DamageSystem : IDamageSystem
         };
         Combat.Death.Call(ref death);
 
+        // A non-player victim with its OWN death handler (turret/monster/breakable) wired onto the Death bus has
+        // just run it (e.g. TurretAI.Die -> SOLID_NOT + respawn schedule, DeadState advanced past DeadFlag.No).
+        // In QC those entities carry their death in .event_damage and the generic player-corpse path below is
+        // NEVER reached for them; the headless pipeline has no per-edict event_damage, so mirror that here:
+        // once a non-player has been transitioned out of DeadFlag.No by its hook, don't clobber it with the
+        // MOVETYPE_TOSS / SOLID_CORPSE / DeadFlag.Dying player-corpse setup.
+        if (victim is not Player && victim.DeadState != DeadFlag.No)
+            return;
+
         // MUTATOR_CALLHOOK(PlayerDies) — pinata/overkill/instagib drop loot or bump damage to force a gib.
         var pd = new MutatorHooks.PlayerDiesArgs(inflictor, attacker, victim, deathType, damage);
         MutatorHooks.PlayerDies.Call(ref pd);

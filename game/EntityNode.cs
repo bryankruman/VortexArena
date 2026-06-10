@@ -30,6 +30,7 @@ public partial class EntityNode : Node3D, IEntityPresence
 
     public override void _Process(double delta)
     {
+        using var _enScope = XonoticGodot.Game.Client.FrameProfiler.Scope("entitynode"); // [profiling] all EntityNode syncs
         SyncFromEntity();
     }
 

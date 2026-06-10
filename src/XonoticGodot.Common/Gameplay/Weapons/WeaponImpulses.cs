@@ -125,17 +125,19 @@ public static class WeaponImpulses
         => Inventory.CycleWeapon(actor, Inventory.WeaponPriority(actor), dir);
 
     /// <summary>
-    /// QC <c>weapon_byid_handle</c>: switch directly to the weapon whose unique impulse is the by-id index. The
-    /// port doesn't model <c>m_unique_impulse</c> and registers no Null weapon, so by-id index
-    /// <paramref name="idx"/> maps straight to registry id <paramref name="idx"/> (every id in [0, Count) is a real
-    /// weapon) — the same registry-order assignment QC uses for the unique impulses. Uses the try-others fallback
-    /// (QC <c>W_SwitchWeapon_TryOthers</c>).
+    /// QC <c>weapon_byid_handle</c> (server/impulse.qc:150): switch directly to the weapon whose
+    /// <c>m_unique_impulse</c> is <c>WEP_IMPULSE_BEGIN + idx</c> — i.e. <c>Weapon_from_impulse(230 + idx)</c>
+    /// (all.qh:150). That impulse is allocated in QC weapon DEFINITION order (the 19 hardcoded-impulse core
+    /// weapons first, then the strcmp-sorted tail), NOT in the port's alphabetical
+    /// <see cref="Registry{T}.Sort"/> id order — so <c>weapon_byid_0</c> is blaster, not the alphabetically-first
+    /// weapon (arc). <see cref="WeaponOrder.WeaponByIdIndex"/> reproduces that QC unique-impulse order
+    /// (weapon-local, leaving the global registry sort untouched). Uses the try-others fallback (QC
+    /// <c>W_SwitchWeapon_TryOthers</c>).
     /// </summary>
     private static void ByIdHandle(Entity actor, int idx)
     {
-        int id = idx;
-        if (id < 0 || id >= Registry<Weapon>.Count) return;
-        Weapon w = Registry<Weapon>.ById(id);
+        Weapon? w = WeaponOrder.WeaponByIdIndex(idx);
+        if (w is null) return; // out of range / impulse-unreachable (QC Weapon_from_impulse → WEP_Null → no-op)
         // QC W_SwitchWeapon_TryOthers: switch; if not owned and cl_weapon_switch_fallback_to_impulse, fall back to
         // cycling that weapon's impulse group. The fallback cvar defaults off, so a plain switch matches stock.
         if (!Inventory.SwitchWeaponWithComplain(actor, w)

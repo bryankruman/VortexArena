@@ -830,9 +830,11 @@ public partial class ClientWorld : Node3D
 
     public override void _Process(double delta)
     {
+        using var _cwScope = FrameProfiler.Scope("cw.process"); // [profiling] whole ClientWorld._Process
         // The EffectSystem nodes and projectile trails advance themselves (they're Godot particle nodes);
         // ProjectileRenderer and the ModelAnimators also self-advance via their own _Process. We still poll
         // here for entity-bound animators that need their clip re-selected from movement each frame.
+        using (FrameProfiler.Scope("cw.anim"))
         foreach (var kv in _animators)
         {
             ModelAnimator anim = kv.Value;
@@ -843,6 +845,7 @@ public partial class ClientWorld : Node3D
         }
 
         // Skeletal player models: synthesize the four-pose split + aim each frame and push the CPU bones.
+        using (FrameProfiler.Scope("cw.players"))
         foreach (PlayerModel pm in _playerModels.Values)
         {
             Entity? e = pm.Bound;
@@ -850,8 +853,8 @@ public partial class ClientWorld : Node3D
                 pm.Pose(e, (float)delta);
         }
 
-        DriveCsqcModelHooks((float)delta);
-        DriveVehicles((float)delta);
+        using (FrameProfiler.Scope("cw.csqc")) DriveCsqcModelHooks((float)delta);
+        using (FrameProfiler.Scope("cw.vehicles")) DriveVehicles((float)delta);
         // Live-poll the dynamic map/scene tint cvars so a console `set r_map_tint*` re-tints instantly (the
         // testing path); when the strength cvars are 0 this is a couple of cheap reads and leaves the map/code
         // baseline in place. See XonoticGodot.Game.WorldTint.
@@ -863,8 +866,11 @@ public partial class ClientWorld : Node3D
         _sndExponent = CvarF("snd_attenuation_exponent", 4f);
         _sndDecibel = CvarF("snd_attenuation_decibel", 0f);
         Godot.Vector3 listener = ListenerPos();
-        DriveLoopingSounds((float)delta, listener);
-        DriveOneShots(listener);
+        using (FrameProfiler.Scope("cw.audio"))
+        {
+            DriveLoopingSounds((float)delta, listener);
+            DriveOneShots(listener);
+        }
     }
 
     /// <summary>

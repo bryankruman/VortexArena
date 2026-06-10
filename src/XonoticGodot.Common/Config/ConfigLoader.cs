@@ -13,7 +13,8 @@ namespace XonoticGodot.Common.Config;
 /// </code>
 ///
 /// The default entry is <c>xonotic-server.cfg</c>, which <c>exec</c>s the entire authoritative gameplay-cvar
-/// chain (<c>balance-xonotic.cfg</c> → <c>bal-wep-xonotic.cfg</c>, <c>physicsX.cfg</c>, <c>physics.cfg</c>,
+/// chain (<c>balance-xonotic.cfg</c> → <c>bal-wep-xonotic.cfg</c>, <c>physicsBryan.cfg</c> [the default physics —
+/// stock Xonotic + sv_step_upspeed_max 1], <c>physics.cfg</c>,
 /// <c>turrets.cfg</c>, <c>vehicles.cfg</c>, <c>gametypes-server.cfg</c>, <c>mutators.cfg</c>, <c>monsters.cfg</c>,
 /// <c>minigames.cfg</c>) without needing the client/menu config tree. The <c>readFile</c> delegate resolves a
 /// config path (relative to the gamedir root, e.g. <c>"balance-xonotic.cfg"</c>) to its text, or null if absent.

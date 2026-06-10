@@ -503,6 +503,7 @@ public partial class GameDemo : Node3D
         // effectinfo.txt + decoding the atlas on its frame (mirrors NetGame.SetupRender; DP precaches at init).
         // _client.Assets was set above (wires the loaders) and _client.Effects is live after AddChild.
         _client.Effects.Warmup();
+        _client.Projectiles.WarmupTrails(); // pre-build shared per-type projectile-trail Resources (see ProjectileRenderer)
 
         // Hang the first-person weapon view-model off the player camera (so it inherits view orientation).
         // Feed it live view state (velocity / angles / onground) so the gun sways (follow/lean/bob).

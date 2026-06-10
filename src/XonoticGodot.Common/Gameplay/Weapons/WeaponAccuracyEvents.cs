@@ -124,12 +124,15 @@ public static class WeaponAccuracyEvents
     /// <summary>
     /// Port of <c>accuracy_byte(n, d)</c> (accuracy.qc:17-24): 0 = never fired; 255 = &gt;100% (hit damage
     /// exceeded fired damage, e.g. one Vortex beam through two players); else <c>1 + rint(n*100/d)</c>
-    /// (1..101 = accuracy% + 1). <c>rint</c> rounds half-to-even like the DP builtin.
+    /// (1..101 = accuracy% + 1). DP's <c>rint</c> builtin rounds half AWAY FROM ZERO (round-half-up here, since
+    /// the argument <c>n*100/d</c> is always &gt;= 0), NOT round-half-to-even — so use
+    /// <see cref="MidpointRounding.AwayFromZero"/>, otherwise e.g. 50.5% accuracy would tie-break to 50 instead
+    /// of QC's 51.
     /// </summary>
     public static int AccuracyByte(float n, float d)
     {
         if (n < 0f || d <= 0f) return 0;
         if (n > d) return 255;
-        return 1 + (int)System.MathF.Round(n * 100f / d);
+        return 1 + (int)System.MathF.Round(n * 100f / d, System.MidpointRounding.AwayFromZero);
     }
 }

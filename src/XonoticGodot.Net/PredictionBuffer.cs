@@ -170,21 +170,43 @@ public sealed class Reconciler
     /// blend rate is <see cref="StairSmoothSpeed"/>); 0 = off (the camera follows the predicted Z exactly).</summary>
     public float StairSmoothTime = 1f;
 
-    /// <summary>cl_stairsmoothspeed (Base default 200): the rate (u/s) at which the rendered Z catches up to the
-    /// live predicted Z over a step. 0 disables the speed cap (instant follow).</summary>
+    /// <summary>cl_stairsmoothspeed (Base default 200): the FLOOR rate (u/s) at which the rendered Z catches up to
+    /// the live predicted Z over a step. The catch-up speeds UP beyond this when the lag is large (see
+    /// <see cref="StairCatchupTime"/>). 0 disables the speed cap (instant follow); the caller maps cl_stairsmoothspeed
+    /// &lt;= 0 to <see cref="StairSmoothTime"/> = 0 (off), matching the reference's single-cvar semantics.</summary>
     public float StairSmoothSpeed = 200f;
+
+    /// <summary>The live <c>sv_stepheight</c> (Xonotic 31): the MAX the rendered camera Z may lag the live Z — the
+    /// reference's <c>PHYS_STEPHEIGHT</c> clamp (CSQCModel_ApplyStairSmoothing: <c>bound(v.z - PHYS_STEPHEIGHT, …)</c>).
+    /// A real step can only raise/lower the eye by one step height, so the smoother's lag is bounded by exactly that
+    /// (a larger value let the camera lag ~48u below the eye on steep ramps — the "camera too low sometimes" bug).
+    /// Defaults to 31; the caller refreshes it from the replicated step height so a non-stock preset stays correct.</summary>
+    public float StairStepHeight = 31f;
+
+    /// <summary>PORT-EXTENSION knob (<c>cl_stairsmooth_snapspeed</c>, default 30 u/s) — the AIRBORNE vertical speed
+    /// above which the smoother adds the velocity FEEDFORWARD (fast-follow) rather than the gentle ground catch-up.
+    /// (Originally the threshold above which the camera SNAPPED to the true Z; the snap is now a fast feedforward
+    /// follow, so this just gates "track the jump/fall arc 1:1" vs "ease gently".) Kept low (30) so it engages as
+    /// soon as you're genuinely moving vertically, but above the ~11 u/s one-tick stair-flicker blip so a grounded
+    /// step still eases through the gentle path. Name kept for config compatibility despite no longer snapping.</summary>
+    public float StairSnapVerticalSpeed = 30f;
+
+    /// <summary>PORT-EXTENSION anti-jitter knob #2 (<c>cl_stairsmooth_catchuptime</c>, default 0.1 s). The catch-up
+    /// speed is raised, when needed, to close the CURRENT lag within this time (so the effective rate is
+    /// <c>max(StairSmoothSpeed, |lag| / StairCatchupTime)</c>). At running speed you climb a staircase faster than a
+    /// fixed 200 u/s catch-up, so the old fixed-speed smoother saturated and the ±step clamp yanked the camera up a
+    /// few units on every step; scaling the catch-up with the lag keeps it inside the clamp (no yank) while staying
+    /// gentle for a single small step (the floor speed dominates there) and easing in/out like the reference. 0 = use
+    /// the fixed floor speed only (the old behaviour).</summary>
+    public float StairCatchupTime = 0.1f;
 
     // Thresholds from CSQCPlayer_SetPredictionError: errors larger than these are assumed to be a
     // teleport / jumppad / jump-timing disagreement and are ignored rather than smoothed.
     private const float MaxErrorOrigin = 32f;    // vdist(o, >, 32)
     private const float MaxErrorVelocity = 192f;  // vdist(v, >, 192)
 
-    // The MAX the rendered camera Z may lag the live Z — the reference's PHYS_STEPHEIGHT clamp
-    // (CSQCModel_ApplyStairSmoothing: bound(v.z - PHYS_STEPHEIGHT, ...)). MUST equal the player step height
-    // (sv_stepheight = MovementParameters.StepHeight = 31 in Xonotic): a larger value let the camera lag up to
-    // 48u below the eye on steep ramps/stairs (the "camera too low sometimes" regression). A real step can only
-    // raise/lower the eye by one step height, so the smoother's lag must be bounded by exactly that.
-    private const float MaxStairStep = 31f; // sv_stepheight (Xonotic default; keep in sync with MovementParameters.StepHeight)
+    // Fallback step-height clamp when StairStepHeight is left unset/0 (keep in sync with MovementParameters.StepHeight).
+    private const float MaxStairStepFallback = 31f;
 
     public Reconciler(PredictionBuffer input, IMovementStep movement)
     {
@@ -341,12 +363,12 @@ public sealed class Reconciler
 
     /// <summary>
     /// The vertical offset to SUBTRACT from the predicted origin Z before rendering, so the camera glides over
-    /// stair-steps instead of popping. Faithful port of <c>CSQCModel_ApplyStairSmoothing</c> (cl_player.qc): the
-    /// rendered Z (<see cref="_renderedZ"/>) catches up to the LIVE predicted Z at <see cref="StairSmoothSpeed"/>
-    /// u/s and is HARD-CLAMPED to within one step height of it every frame — so it can never lag the true Z by
-    /// more than a step (the structural fix for the old delta-accumulating / time-window model that perpetually
-    /// re-armed on any grounded Z change and pinned a persistent offset on slopes/ramps). Snaps (no smoothing)
-    /// while airborne, so jumps/falls follow the real Z.
+    /// stair-steps instead of popping. The rendered Z (<see cref="_renderedZ"/>) catches up to the LIVE predicted Z
+    /// at <see cref="StairSmoothSpeed"/> u/s (sped up to close a large lag within <see cref="StairCatchupTime"/>) and
+    /// is HARD-CLAMPED to within one step height of it — so it can never lag the true Z by more than a step (no
+    /// persistent offset pinned on slopes/ramps). While following a genuine jump/fall (airborne, fast) it adds a
+    /// velocity FEEDFORWARD so the camera keeps pace with the arc (≈ no lag, like the old snap) while still gliding
+    /// over an instant step pop — i.e. it moves fast but SMOOTH over that motion instead of snapping to it.
     ///
     /// <para>Advanced once per RENDER FRAME. <paramref name="frameDt"/> is the REAL wall-clock frame delta (NOT
     /// the server-synced render clock, whose snapshot-rebased 1/72-quantized jumps made the catch-up jitter up/
@@ -357,6 +379,7 @@ public sealed class Reconciler
     public float GetStairSmoothOffset(float frameDt)
     {
         float trueZ = Predicted.Origin.Z;
+        float step = StairStepHeight > 0f ? StairStepHeight : MaxStairStepFallback;
 
         // Disabled or first frame: (re)seed the rendered Z to the live Z, no offset.
         if (StairSmoothTime <= 0f || !_stairInit)
@@ -366,21 +389,31 @@ public sealed class Reconciler
             return 0f;
         }
 
-        // Airborne (jump/fall) / teleport: no stair smoothing — the view follows the real Z (snap).
-        if (!Predicted.OnGround)
-        {
-            _renderedZ = trueZ;
-            return 0f;
-        }
-
-        // Slide the rendered Z toward the live true Z at StairSmoothSpeed (smoothtime = bound(0, dt, 0.1))...
+        // Slide the rendered Z toward the live true Z (smoothtime = bound(0, dt, 0.1)). The base catch-up rate is the
+        // configured floor (cl_stairsmoothspeed) OR — when the lag is large — fast enough to close the whole gap
+        // within StairCatchupTime, whichever is greater. Scaling with the lag keeps the rendered Z INSIDE the ±step
+        // clamp on a fast multi-step climb (no per-step yank), while the floor speed keeps a single small step gentle.
         float smoothtime = frameDt < 0f ? 0f : (frameDt > 0.1f ? 0.1f : frameDt);
-        float maxMove = (StairSmoothSpeed > 0f ? StairSmoothSpeed : float.MaxValue) * smoothtime;
+        float gap = MathF.Abs(trueZ - _renderedZ);
+        float floorSpeed = StairSmoothSpeed > 0f ? StairSmoothSpeed : float.MaxValue;
+        float adaptiveSpeed = StairCatchupTime > 0f ? gap / StairCatchupTime : 0f;
+        float rate = MathF.Max(floorSpeed, adaptiveSpeed);
+
+        // Following a GENUINE vertical move (airborne, |velocity.z| above the threshold) we used to SNAP the rendered
+        // Z straight to the live Z — which showed every step-up pop clipped mid-jump as an instant jump (the snap
+        // felt while bunnyhopping up stairs). Instead, add a velocity FEEDFORWARD: move at the player's real vertical
+        // speed so the camera keeps pace with the jump/fall arc with ~no lag (a steady jump still tracks 1:1, exactly
+        // like the snap did), while the adaptive term on top still glides over an instant step pop within
+        // ~StairCatchupTime — i.e. the camera moves FAST but SMOOTHLY over that movement instead of popping.
+        if (!Predicted.OnGround && MathF.Abs(Predicted.Velocity.Z) > StairSnapVerticalSpeed)
+            rate = MathF.Max(rate, MathF.Abs(Predicted.Velocity.Z) + adaptiveSpeed);
+
+        float maxMove = rate * smoothtime;
         if (_renderedZ < trueZ) _renderedZ = MathF.Min(_renderedZ + maxMove, trueZ);
         else                    _renderedZ = MathF.Max(_renderedZ - maxMove, trueZ);
-        // ...then HARD-CLAMP to one step height of the live Z (PHYS_STEPHEIGHT) so a slope can't pin an
-        // ever-growing offset: the clamp re-pins the lag to <= one step every frame.
-        _renderedZ = QMathClamp(_renderedZ, trueZ - MaxStairStep, trueZ + MaxStairStep);
+        // Safety clamp: the rendered Z may never lag the live Z by more than one step height (PHYS_STEPHEIGHT) so a
+        // pathological case (a very steep continuous slope / a fast mover) can't pin an ever-growing offset.
+        _renderedZ = QMathClamp(_renderedZ, trueZ - step, trueZ + step);
 
         return trueZ - _renderedZ;
     }

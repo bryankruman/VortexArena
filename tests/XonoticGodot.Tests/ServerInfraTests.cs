@@ -28,6 +28,69 @@ public class ServerInfraTests
     private static Player NewPlayer(string name = "p", string ip = "1.2.3.4", string id = "")
         => new() { NetName = name, NetAddress = ip, PersistentId = id, Flags = EntFlags.Client, PlayerId = 1 };
 
+    // =========================================================================== step-up limiter cvar registration
+
+    [Fact]
+    public void StepUpSpeedCvars_Registered_Discoverable_AndDefaultIsNoOp()
+    {
+        // The ctor's Cvars.RegisterDefaults() stamped them into the ambient store — exactly what MenuState.Boot
+        // does to the shared console store (so cvarlist/autocomplete, which read CvarService.Names, list them) and
+        // what GameWorld.Boot does to the server store (so the listen-server bridge's Has(name) gate forwards a
+        // console `set` to the physics tick). Presence in the store == listed by cvarlist.
+        Assert.Equal("1", Api.Cvars.GetString("sv_step_upspeed_scale"));
+        Assert.Equal("-1", Api.Cvars.GetString("sv_step_upspeed_max"));
+
+        // Registering did NOT shadow the FromCvars fallback with a wrong value: the registered defaults are the
+        // no-op identity, byte-equal to MovementParameters.Defaults (scale 1, max -1 = disabled).
+        MovementParameters mp = MovementParameters.FromCvars();
+        Assert.Equal(1f, mp.StepUpSpeedScale);
+        Assert.Equal(-1f, mp.StepUpSpeedMax);
+
+        // A console-style `set` is read live, and a real configured 0 survives the EXISTS-gated read.
+        Api.Cvars.Set("sv_step_upspeed_scale", "0");
+        Api.Cvars.Set("sv_step_upspeed_max", "80");
+        MovementParameters mp2 = MovementParameters.FromCvars();
+        Assert.Equal(0f, mp2.StepUpSpeedScale);
+        Assert.Equal(80f, mp2.StepUpSpeedMax);
+    }
+
+    [Fact]
+    public void BackfillModified_CarriesUserOverridesAcrossAMapBoot_WithoutClobberingDefaults()
+    {
+        // Simulate the two-store split: a SHARED (console/menu) store where the user changed some cvars, and a
+        // freshly-booted SERVER store reloaded from the cfg tree (so it holds the cfg defaults). Backfill must carry
+        // the user's CHANGED cvars (the "sv_step_* lost on new map" bug) but leave the server's untouched cfg/map
+        // values — and the ruleset/map ones the user never touched — alone.
+        var shared = new CvarService();
+        var server = new CvarService();
+
+        // both stores "load the cfg tree" — same registered defaults (server does NOT know the client-only cvar).
+        shared.Register("sv_step_upspeed_max", "-1");
+        shared.Register("sv_maxspeed", "360");
+        shared.Register("sv_gravity", "800");
+        shared.Register("cl_local_only", "0");   // a CLIENT cvar — present in shared, absent from the server store
+        server.Register("sv_step_upspeed_max", "-1");
+        server.Register("sv_maxspeed", "360");
+        server.Register("sv_gravity", "800");
+
+        // the user changes things in the console (shared store only)
+        shared.Set("sv_step_upspeed_max", "5");   // CHANGED → must carry
+        shared.Set("sv_gravity", "200");          // CHANGED but BOOT-AUTHORED (map worldspawn) → must NOT carry
+        shared.Set("cl_local_only", "1");         // CHANGED but server doesn't Has it → must NOT carry
+        // sv_maxspeed left at its default 360 → not modified → must NOT carry (don't clobber a ruleset value)
+
+        // the new map's server store happens to run a ruleset value the user never touched
+        server.Set("sv_maxspeed", "320");         // a ruleset/map override the backfill must preserve
+
+        var exclude = new System.Collections.Generic.HashSet<string>(System.StringComparer.Ordinal) { "sv_gravity" };
+        CvarService.BackfillModified(shared, server, exclude);
+
+        Assert.Equal(5f, server.GetFloat("sv_step_upspeed_max"));   // user override carried across the boot
+        Assert.Equal(320f, server.GetFloat("sv_maxspeed"));         // untouched-by-user ruleset value preserved
+        Assert.Equal(800f, server.GetFloat("sv_gravity"));          // boot-authored exclusion respected
+        Assert.False(server.Has("cl_local_only"));                  // client-only cvar never leaked into the server
+    }
+
     // =========================================================================================== bans
 
     [Fact]

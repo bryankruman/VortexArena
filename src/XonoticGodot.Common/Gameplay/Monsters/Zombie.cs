@@ -18,7 +18,9 @@ namespace XonoticGodot.Common.Gameplay;
 [Monster]
 public sealed class Zombie : Monster
 {
-    // Balance — g_monster_zombie_* (monsters.cfg). Defaults match the shipped cfg.
+    // Balance — g_monster_zombie_* (monsters.cfg). These are the FALLBACK defaults; the live values are read
+    // via MonsterAI.Cvar(...) at attack/spawn time (QC reads the autocvars live in zombie.qc), so a runtime
+    // `set g_monster_zombie_attack_*` takes effect. Defaults match the shipped cfg.
     public float MeleeDamage = 55f;     // g_monster_zombie_attack_melee_damage
     public float MeleeDelay = 1f;       // g_monster_zombie_attack_melee_delay
     public float LeapDamage = 60f;      // g_monster_zombie_attack_leap_damage
@@ -100,17 +102,23 @@ public sealed class Zombie : Monster
 
             // MONSTER_ATTACK_MELEE: punch/bite — QC rolls one of three melee anims (timing identical; the
             // frame choice is CSQC, so the roll is a no-op server-side beyond consuming a draw for parity).
+            // QC reads autocvar_g_monster_zombie_attack_melee_{damage,delay} LIVE at attack time (zombie.qc:86).
             MonsterRandom.Next();
             st.Anim = MonsterAI.MonsterAnim.Attack;
-            MonsterAI.MeleeAttack(e, st, MeleeDamage, st.AttackRange, MeleeDelay,
+            float meleeDamage = MonsterAI.Cvar("g_monster_zombie_attack_melee_damage", MeleeDamage);
+            float meleeDelay = MonsterAI.Cvar("g_monster_zombie_attack_melee_delay", MeleeDelay);
+            MonsterAI.MeleeAttack(e, st, meleeDamage, st.AttackRange, meleeDelay,
                 DeathTypes.FromWeapon(NetName));
         }
         else
         {
             // MONSTER_ATTACK_RANGED: leap toward the enemy (Monster_Attack_Leap + M_Zombie_Attack_Leap_Touch).
+            // QC reads autocvar_g_monster_zombie_attack_leap_{speed,delay} LIVE at attack time (zombie.qc:90).
+            float leapSpeed = MonsterAI.Cvar("g_monster_zombie_attack_leap_speed", LeapSpeed);
+            float leapDelay = MonsterAI.Cvar("g_monster_zombie_attack_leap_delay", LeapDelay);
             Vector3 forward = QMath.Forward(e.Angles);
-            Vector3 vel = forward * LeapSpeed + new Vector3(0, 0, 200);
-            MonsterAI.Leap(e, st, vel, LeapTouch, LeapDelay);
+            Vector3 vel = forward * leapSpeed + new Vector3(0, 0, 200);
+            MonsterAI.Leap(e, st, vel, LeapTouch, leapDelay);
         }
     }
 
@@ -123,10 +131,13 @@ public sealed class Zombie : Monster
 
         if (other.TakeDamage != DamageMode.No)
         {
-            // QC: face the moveto, scale to leap_force.
+            // QC: face the moveto, scale to leap_force; reads autocvar_g_monster_zombie_attack_leap_{force,damage}
+            // LIVE in the touch handler (zombie.qc:27-29).
+            float leapForce = MonsterAI.Cvar("g_monster_zombie_attack_leap_force", LeapForce);
+            float leapDamage = MonsterAI.Cvar("g_monster_zombie_attack_leap_damage", LeapDamage);
             Vector3 face = QMath.Normalize(QMath.VecToAngles((st?.MoveTo ?? other.Origin) - self.Origin))
-                           * LeapForce;
-            float dmg = LeapDamage * MonsterAI.SkillMod(st!);
+                           * leapForce;
+            float dmg = leapDamage * MonsterAI.SkillMod(st!);
             Combat.Damage(other, self, self, dmg, DeathTypes.FromWeapon(NetName), other.Origin, face);
             self.Touch = (s, o) => MonsterAI.Touch(s, o); // instantly off to stop damage spam (QC Monster_Touch)
             if (st is not null) st.State = 0;

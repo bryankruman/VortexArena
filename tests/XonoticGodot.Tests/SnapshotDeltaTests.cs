@@ -158,14 +158,16 @@ public class SnapshotDeltaTests
     }
 
     [Fact]
-    public void MoveVars_Has46Entries_WithTheV7TailAppended()
+    public void MoveVars_Has48Entries_WithTheV7TailAppended()
     {
-        // v7 (T54): the block grew 40 → 46, APPEND-only (prefix-stable Apply/FromValues across versions).
-        Assert.Equal(46, MoveVarsBlock.Count);
+        // v7 (T54): the block grew 40 → 46 (T54 breadth), then 46 → 48 (the step-up velocity-limiter port
+        // extension). APPEND-only (prefix-stable Apply/FromValues across versions).
+        Assert.Equal(48, MoveVarsBlock.Count);
         string[] tail =
         {
             "g_movement_highspeed", "g_movement_highspeed_q3_compat", "sv_gameplayfix_nudgeoutofsolid",
             "sv_wallclip", "sv_nostep", "sv_slick_applygravity",
+            "sv_step_upspeed_scale", "sv_step_upspeed_max",
         };
         for (int i = 0; i < tail.Length; i++)
             Assert.Equal(tail[i], MoveVarsBlock.MovementCvars[40 + i]);

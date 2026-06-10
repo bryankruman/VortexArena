@@ -734,7 +734,9 @@ public sealed class GameWorld
     /// → non-client integrators → EndFrame (which drives the gametype/round/intermission). The match logic
     /// runs inside the tick via the wired callbacks; call this once per host frame.
     /// </summary>
-    public void Frame(float realDelta) => Simulation.Advance(realDelta);
+    /// <returns>The number of fixed 72 Hz ticks that ran this call (0 when the host renders faster than the tick
+    /// rate) — lets the network layer skip a redundant broadcast on a frame where the world didn't advance.</returns>
+    public int Frame(float realDelta) => Simulation.Advance(realDelta);
 
     /// <summary>
     /// QC StartFrame top — fired once per tick before any entity moves (self/other = world). Drives the
@@ -1461,7 +1463,8 @@ public sealed class GameWorld
     private void RespawnDuePlayers()
     {
         // The per-player DEAD_* respawn machine (DeadPlayerThink, run from OnClientMove each tick) now owns the
-        // normal respawn — button-to-respawn at stock defaults, forced respawn with g_forced_respawn, and bots.
+        // normal respawn — button-to-respawn at stock defaults (humans press fire, bots press jump while
+        // DEAD_DEAD), and forced respawn with g_forced_respawn.
         // This stays only as a SAFETY net for a dead player that somehow isn't being driven by OnClientMove
         // (e.g. not in the sim client list): force it back in after its forced ceiling elapses so it can't get
         // stuck dead. Skipped for round modes and once the match ended (QC game_stopped gate).
@@ -1492,7 +1495,9 @@ public sealed class GameWorld
     /// DYING→DEAD→RESPAWNABLE→RESPAWNING — respawning via <see cref="ClientManager.Spawn"/> once
     /// <see cref="DeadFlag.Respawning"/> and the respawn time has passed. At stock defaults
     /// (<c>g_forced_respawn 0</c>) the player must press+release fire after the delay; with the
-    /// <see cref="RespawnFlag.Force"/> flag (or a bot) it auto-respawns at <see cref="Player.RespawnTimeMax"/>.
+    /// <see cref="RespawnFlag.Force"/> flag it auto-respawns at <see cref="Player.RespawnTimeMax"/>. A BOT runs
+    /// this same machine but advances it through its own input (BotBrain presses jump while DEAD_DEAD, QC
+    /// bot.qc:147) — it is not specially forced (matching QC client.qc:1483-1484).
     /// Also maintains the networked <see cref="Player.RespawnTimeStat"/> (QC STAT(RESPAWN_TIME)).
     /// </summary>
     private void DeadPlayerThink(Player p, IMovementInput input)
@@ -1979,6 +1984,16 @@ public sealed class GameWorld
         if (f.TryGetValue("height", out var ht) && float.TryParse(ht,
                 System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float htf))
             e.Height = htf;
+
+        // [T48] content-tail keys (misc_laser / models.qc props / func_pointparticles emitter mdl+jitter+count /
+        // func_rain/snow fall velocity+wind / target_music+trigger_music lifetime+fade_time+fade_rate /
+        // func_wall/func_static solid override + distance-fade). The MapObjects-owned helper parses the same
+        // extra key set onto the edict that the offline GameDemo.ApplyMapFields path already applies, so on the
+        // live --host path props get their model, func_pointparticles gets Entity.Mdl set, weather keeps its
+        // direction and music keeps its fades — instead of all of it being silently dropped. Runs BEFORE the
+        // spawnfunc dispatch (SpawnMapEntities), so PointParticles/RainSnow/TargetMusic read the values.
+        // Idempotent with the keys promoted above (angle anglehack, count, cnt) — same guards.
+        XonoticGodot.Common.Gameplay.MapObjectFieldsExtra.Apply(e, f);
 
         // Re-link after setting origin so traces/find see the final placement.
         if (Api.Services is not null)

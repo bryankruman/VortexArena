@@ -211,8 +211,9 @@ public sealed class FreezeTag : GameType
 
     /// <summary>
     /// Freeze <paramref name="targ"/> (QC freezetag_Freeze + freezetag_Add_Score): mark frozen with HP 1,
-    /// reset revive progress, and apply the score matrix — enemy freeze → attacker +1 / victim −1; self or
-    /// teammate freeze → −1 (and victim −1 when a teammate did it). No-op if already frozen.
+    /// reset revive progress, and apply the score matrix — self freeze → victim −1; teammate freeze →
+    /// attacker −1 + victim −1; enemy freeze → attacker +1 + victim −1; and a NULL/non-player attacker
+    /// (frozen by the gametype rules themselves) → NO score change. No-op if already frozen.
     /// </summary>
     public void Freeze(Player targ, Player? attacker)
     {
@@ -233,22 +234,21 @@ public sealed class FreezeTag : GameType
         if (StatusEffectsCatalog.Frozen is { } frozenDef)
             StatusEffectsCatalog.Apply(targ, frozenDef, maxtime > 0f ? maxtime : 0f, 1f, attacker);
 
-        // ----- score matrix (QC freezetag_Add_Score) -----
-        if (attacker is null || ReferenceEquals(attacker, targ))
+        // ----- score matrix (QC freezetag_Add_Score, sv_freezetag.qc:162-181) -----
+        if (ReferenceEquals(attacker, targ))
         {
-            // froze your own dumb self (or gametype-rules freeze with a player victim): victim −1.
+            // QC (attacker == targ): froze your own dumb self — victim −1 (counted as suicide already).
             targ.ScoreFrags -= 1;
         }
-        else if (Teams.SameTeam(attacker, targ))
+        else if (attacker is not null) // QC IS_PLAYER(attacker): froze a teammate or an enemy
         {
-            attacker.ScoreFrags -= 1; // froze a teammate
+            if (Teams.SameTeam(attacker, targ))
+                attacker.ScoreFrags -= 1; // froze a teammate
+            else
+                attacker.ScoreFrags += 1; // froze an enemy
             targ.ScoreFrags -= 1;
         }
-        else
-        {
-            attacker.ScoreFrags += 1; // froze an enemy
-            targ.ScoreFrags -= 1;
-        }
+        // QC else: NULL / non-player attacker — got frozen by the gametype rules themselves → NO score change.
     }
 
     /// <summary>

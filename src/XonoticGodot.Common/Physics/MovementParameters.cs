@@ -71,6 +71,21 @@ public struct MovementParameters
     public float StepDownMaxSpeed;   // sv_gameplayfix_stepdown_maxspeed (400)
     public int   WallFriction;       // sv_wallfriction        (1 in stock: DP engine default, no .cfg sets it; gate is live but the QC _Movetype_WallFriction body is commented out, so the term is a no-op — see PlayerPhysics.WallFriction)
 
+    // --- step-up vertical-velocity limiter (PORT EXTENSION, not in stock Xonotic) -------------------
+    // Stock step-up is purely POSITIONAL: when the slide-move runs into a step it lifts the hull up to
+    // StepHeight in one tick and preserves the player's existing velocity (the stair_step_up golden trace
+    // keeps velocity.z == 0 when walking; a JUMPING player keeps its full jump velocity). The visible
+    // result is that jumping into a stair/bump "launches" you to (step height + jump apex). These two knobs
+    // let a host scale and/or hard-cap the UPWARD (positive) velocity.z that survives a step-up THIS tick,
+    // so the launch can be tamed without breaking stair traversal (the positional lift is untouched).
+    // Defaults are a strict no-op (scale 1, max disabled) → byte-identical to stock, golden traces unchanged.
+    /// <summary>sv_step_upspeed_scale (default 1 = vanilla): multiplies the positive velocity.z that survives a
+    /// step-up. 0 = "step up but add no upward motion" (the player settles on the step instead of launching).</summary>
+    public float StepUpSpeedScale;   // sv_step_upspeed_scale  (1)
+    /// <summary>sv_step_upspeed_max (default -1 = disabled): hard cap on the positive velocity.z after a step-up.
+    /// A value &gt;= 0 clamps the carried upward velocity to at most this many u/s; -1 leaves it uncapped.</summary>
+    public float StepUpSpeedMax;     // sv_step_upspeed_max    (-1 -> disabled)
+
     // --- the high-speed modifier + remaining MOVEVARS breadth (T54) ---
     /// <summary>QC <c>STAT(MOVEVARS_HIGHSPEED) = autocvar_g_movement_highspeed</c> (player.qc:47) — the BASE
     /// per-player top-speed multiplier the PlayerPhysics mutator hooks (Speed powerup, entrap nade, buffs)
@@ -160,6 +175,10 @@ public struct MovementParameters
         p.StepDown                  = (int)CvarRaw(prefix + "gameplayfix_stepdown", p.StepDown);
         p.StepDownMaxSpeed          = Cvar(prefix + "gameplayfix_stepdown_maxspeed", p.StepDownMaxSpeed);
         p.WallFriction              = (int)CvarRaw(prefix + "wallfriction",     p.WallFriction);
+        // EXISTS-gated (CvarRaw): a configured 0 is meaningful (scale 0 / max 0 both kill upward step velocity),
+        // so an explicit 0 must read back as 0; only a genuinely-unset cvar falls back to the no-op default.
+        p.StepUpSpeedScale          = CvarRaw(prefix + "step_upspeed_scale",     p.StepUpSpeedScale);
+        p.StepUpSpeedMax            = CvarRaw(prefix + "step_upspeed_max",        p.StepUpSpeedMax);
 
         // T54 breadth. g_movement_highspeed: unset must read 1, and a deliberate 0 must be honored (it would
         // freeze movement, but that's what the cvar says) — so gate on the STRING being present, not the float.
@@ -231,6 +250,8 @@ public struct MovementParameters
         StepHeight = 31f, // Xonotic physicsX.cfg value; task brief mentions 34 (the Nexuiz/Vecxis value).
         StepDown = 2,
         StepDownMaxSpeed = 400f,
+        StepUpSpeedScale = 1f,  // sv_step_upspeed_scale 1  — no-op (keep full upward velocity through a step)
+        StepUpSpeedMax = -1f,   // sv_step_upspeed_max  -1  — disabled (no upward-velocity cap after a step)
         WallFriction = 1, // sv_wallfriction 1 — Darkplaces engine default (QC autocvar_sv_wallfriction has no
                           // initializer and no Xonotic .cfg sets it; a live engine dump confirms 1). The net effect
                           // is still NO wall friction: the stock QC _Movetype_WallFriction body is commented out, and
@@ -326,18 +347,31 @@ public struct MovementParameters
     /// <summary>
     /// Build the parameter block positionally from a replicated <c>MoveVarsBlock</c> vector (the wire twin of
     /// <see cref="FromCvars"/> — keep the assignment order in lockstep with <c>MoveVarsBlock.MovementCvars</c>).
-    /// Same unset-fallback semantics as the cvar reads (a 0 where the stock default is non-zero means "unset"),
-    /// EXCEPT the jumpspeedcaps: the wire already encodes "disabled" as NaN (MoveVarsBlock.CaptureOne), so a
-    /// real 0 (the xdf/quake3/cpma presets) passes through as a genuine 0 cap. A short vector (an older peer)
-    /// leaves the tail at <see cref="Defaults"/>.
+    /// A PRESENT wire slot is AUTHORITATIVE and assigned verbatim: <c>MoveVarsBlock.Capture</c>/<c>CaptureResolved</c>
+    /// always emit every slot (they loop the full <c>MovementCvars</c> length), so a 0/false on the wire is a real
+    /// configured 0/false — NOT "unset" — and must survive (sv_gameplayfix_stepdown 0, sv_airstrafeaccel_qw 0 on the
+    /// cpma/quake3/warsow presets, else stepdown+airstrafe would snap back to the Xonotic default and diverge from
+    /// Base, where player.qc:23-42 Physics_ClientOption returns the cvar value verbatim). The jumpspeedcaps already
+    /// encode "disabled" as NaN (MoveVarsBlock.CaptureOne), so a real 0 (the xdf/quake3/cpma presets) passes through
+    /// as a genuine 0 cap. The <see cref="Defaults"/> fallback applies ONLY to the short-vector tail an older peer
+    /// omits — guarded by the <c>i &lt; v.Length</c> length check, so verbatim-on-present loses nothing there.
     /// </summary>
     public static MovementParameters FromValues(float[] v)
     {
         MovementParameters p = Defaults;
         int i = 0;
+        // F: a "magnitude" field whose stock default is non-zero — a 0 on the wire means the server's cvar was
+        // unset (Capture's bare GetFloat reads 0 for an absent cvar), so fall back to the port default. This MUST
+        // mirror FromCvars' Cvar helper (value==0 → fallback) for the wire/cvar-equivalence contract to hold.
         float F(float fallback) { float x = i < v.Length ? v[i] : fallback; i++; return x != 0f ? x : fallback; }
-        float Raw(float fallback) { float x = i < v.Length ? v[i] : fallback; i++; return (x == 0f && fallback != 0f) ? fallback : x; }
-        bool B(bool fallback) { float x = i < v.Length ? v[i] : (fallback ? 1f : 0f); i++; return x != 0f || fallback; }
+        // Raw/B: fields that can legitimately be a configured 0/false (airstrafeaccel_qw, stepdown, the bool set).
+        // A PRESENT wire slot is AUTHORITATIVE and assigned verbatim — Capture/CaptureResolved always emit every
+        // slot, so a 0/false here is a real configured value (the cpma/quake3/warsow presets set stepdown 0,
+        // airstrafeaccel_qw 0; player.qc:23-42 returns the cvar value verbatim) and must NOT snap back to the
+        // Xonotic default. The Defaults fallback applies ONLY to the short-vector tail an older peer omits, guarded
+        // by the i<v.Length length check.
+        float Raw(float fallback) { float x = i < v.Length ? v[i] : fallback; i++; return x; }
+        bool B(bool fallback) { bool x = i < v.Length ? v[i] != 0f : fallback; i++; return x; }
         float Nan() { float x = i < v.Length ? v[i] : float.NaN; i++; return x; } // NaN sentinel already on the wire
 
         p.MaxSpeed = F(p.MaxSpeed); p.Accelerate = F(p.Accelerate); p.Friction = F(p.Friction);
@@ -377,6 +411,12 @@ public struct MovementParameters
         p.NoStep = B(p.NoStep);
         p.SlickApplyGravity = B(p.SlickApplyGravity);
 
+        // step-up velocity limiter tail (PORT EXTENSION): a PRESENT slot is authoritative and assigned verbatim
+        // (Capture sends the unset→default — 1 / -1 — so a real configured 0 survives); the Defaults fallback
+        // applies only to the short-vector tail an older peer omits (guarded by i < v.Length).
+        p.StepUpSpeedScale = i < v.Length ? v[i] : p.StepUpSpeedScale; i++;
+        p.StepUpSpeedMax   = i < v.Length ? v[i] : p.StepUpSpeedMax; i++;
+
         return p;
     }
 
@@ -389,23 +429,21 @@ public struct MovementParameters
         return v != 0f ? v : fallback;
     }
 
-    // For cvars that can legitimately be 0 or negative (qw fractions, penalties, flags, on_land):
-    // we cannot distinguish "unset" from "0", so the host is expected to register these. If truly
-    // unset GetFloat returns 0, which matches several Xonotic defaults anyway.
+    // CVAR_TYPEFLAG_EXISTS gate (player.qc:31/38) — the same EXISTS semantics PhysicsPreset.Exists uses when no
+    // explicit `exists` func is passed: an absent cvar reads "" (CvarService.GetString of a missing key), a
+    // present one reads a non-empty string EVEN when its value is "0". ICvarService has no Has(), so probe the
+    // string length exactly like PhysicsPreset.Exists' null-fallback branch.
+    private static bool Exists(string name) => Api.Cvars.GetString(name).Length != 0;
+
+    // For cvars that can legitimately be 0 or negative (qw fractions, penalties, flags, on_land, stepdown):
+    // an explicitly-set 0 (sv_gameplayfix_stepdown 0, sv_airstrafeaccel_qw 0 on the cpma/quake3/warsow presets)
+    // must read back 0 — gate the fallback on cvar EXISTENCE, not value==0, so only a genuinely-absent cvar uses
+    // the port default (player.qc:23-42 Physics_ClientOption returns the cvar value verbatim, a real 0 is real).
     private static float CvarRaw(string name, float fallback)
-    {
-        float v = Api.Cvars.GetFloat(name);
-        // Only keep the fallback when the value is exactly 0 AND the fallback is non-zero (cvar likely
-        // missing); otherwise honor the live value (including a deliberate 0).
-        return (v == 0f && fallback != 0f) ? fallback : v;
-    }
+        => Exists(name) ? Api.Cvars.GetFloat(name) : fallback;
 
     private static bool CvarBool(string name, bool fallback)
-    {
-        float v = Api.Cvars.GetFloat(name);
-        // GetFloat of an unset cvar is 0; can't distinguish from a real "0", so default to fallback at 0.
-        return v != 0f || fallback;
-    }
+        => Exists(name) ? Api.Cvars.GetFloat(name) != 0f : fallback;
 
     // jumpspeedcap_min/max default to "nan" in Xonotic; a missing cvar reads 0 which would wrongly enable
     // the cap, so we keep NaN unless the host registered a finite value.

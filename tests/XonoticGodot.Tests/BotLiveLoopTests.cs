@@ -196,16 +196,87 @@ public class BotLiveLoopTests
         bot.DeadState = DeadFlag.Dying;
         bot.SetResourceExplicit(ResourceType.Health, 0f);
 
+        // QC bot_think:144-147: the bot RELEASES jump in DEAD_DYING (so the keydown EDGE registers) then PRESSES
+        // it in DEAD_DEAD to ask for respawn. That jump press is exactly what advances the button-gated DEAD_*
+        // machine DEAD→RESPAWNABLE — so the brain produces it WHILE it sees DEAD_DEAD, and the SAME tick's
+        // DeadPlayerThink consumes it and moves the state on to RESPAWNABLE (atomic, like QC's bot_think +
+        // PlayerThink in one frame). So observe the jump the brain produced for the dead state at PRODUCTION time
+        // (prevState was DEAD_DEAD), not the post-frame state which has already advanced.
         bool jumpWhileDeadDead = false, jumpWhileDying = false;
+        DeadFlag prevState = bot.DeadState;
         RunTo(world, world.Time + 6f, () =>
         {
-            if (bot.DeadState == DeadFlag.Dead) jumpWhileDeadDead |= brain.LastInput.ButtonJump;
-            if (bot.DeadState == DeadFlag.Dying) jumpWhileDying |= brain.LastInput.ButtonJump;
+            // the brain pressed jump and the state advanced DEAD_DEAD -> RESPAWNABLE this frame: that jump WAS the
+            // dead-dead respawn press (the brain only presses jump while .deadflag==DEAD_DEAD).
+            if (prevState == DeadFlag.Dead && bot.DeadState == DeadFlag.Respawnable)
+                jumpWhileDeadDead |= brain.LastInput.ButtonJump;
+            // a frame that stays in DEAD_DEAD: the brain is holding jump (or between throttled thinks).
+            if (prevState == DeadFlag.Dead && bot.DeadState == DeadFlag.Dead)
+                jumpWhileDeadDead |= brain.LastInput.ButtonJump;
+            // DEAD_DYING must never show a pressed jump (the released-frame keydown-edge rule).
+            if (prevState == DeadFlag.Dying && bot.DeadState == DeadFlag.Dying)
+                jumpWhileDying |= brain.LastInput.ButtonJump;
+            prevState = bot.DeadState;
         });
 
         Assert.True(jumpWhileDeadDead, "bot never pressed jump while DEAD_DEAD (QC bot_think:147)");
         Assert.False(jumpWhileDying, "jump must stay RELEASED during DEAD_DYING so the keydown edge registers");
         Assert.False(bot.IsDead); // respawned through the DEAD_* machine
+    }
+
+    [Fact]
+    public void LiveLoop_StrategyToken_KeepsRotating_WhenAHolderDies()
+    {
+        // QC havocbot_ai:103 sets bot_strategytoken_taken = true UNCONDITIONALLY before the dead/frozen return
+        // at :113, so a dead token-holder STILL releases the token and bot_serverframe (:786-813) passes it on.
+        // The port's regression was: ThinkProduce returned early for a dead bot BEFORE consuming the token, so
+        // RotateStrategyToken (gated on _tokenTaken) froze it on the corpse and the WHOLE population stopped
+        // re-rating goals until that bot respawned. This pins the fix: with a holder kept dead, the token must
+        // still leave it and keep cycling among the living bots.
+        var world = new GameWorld(FlatFloor(), SpawnDicts(
+            new Vector3(-256f, 0f, 32f), new Vector3(256f, 0f, 32f), new Vector3(0f, 320f, 32f)));
+        world.Boot("dm");
+        Cvars.Set("bot_join_empty", "1");
+        Cvars.Set("bot_number", "3");
+        Cvars.Set("skill", "5");
+        RunTo(world, 4.0f);
+        Assert.Equal(3, world.Clients.BotCount);
+
+        // settle a couple of frames so exactly one brain holds the token, then pick that holder as the victim.
+        RunTo(world, world.Time + 0.2f);
+        int Holder()
+        {
+            for (int i = 0; i < world.Bots.Brains.Count; i++)
+                if (world.Bots.Brains[i].StrategyTokenHeld) return i;
+            return -1;
+        }
+        int victimIdx = Holder();
+        Assert.InRange(victimIdx, 0, 2);                  // some bot holds the token
+        Player victim = world.Bots.Brains[victimIdx].Bot;
+
+        // keep the victim permanently dead (re-stamp each frame so it never respawns through the DEAD_* machine).
+        // Observe: the token must move OFF the dead holder, and a LIVING bot must hold it on multiple frames
+        // (proving rotation never froze on the corpse).
+        bool tokenLeftCorpse = false;
+        var livingHolders = new HashSet<int>();
+        int framesWhereCorpseHeld = 0, frames = 0;
+        RunTo(world, world.Time + 3f, () =>
+        {
+            victim.DeadState = DeadFlag.Dying;
+            victim.SetResourceExplicit(ResourceType.Health, 0f);
+
+            frames++;
+            int h = Holder();
+            if (h < 0) return;
+            if (world.Bots.Brains[h].Bot == victim) framesWhereCorpseHeld++;
+            else { tokenLeftCorpse = true; livingHolders.Add(h); }
+        });
+
+        Assert.True(tokenLeftCorpse, "token never left the dead holder (deadlock)");
+        Assert.True(livingHolders.Count >= 1, "no living bot ever held the token while a holder was dead");
+        // the corpse may legitimately hold it for the one handoff frame, but must not monopolize it.
+        Assert.True(framesWhereCorpseHeld < frames,
+            $"token stuck on the corpse for all {frames} frames (deadlock)");
     }
 
     // =============================================================================================

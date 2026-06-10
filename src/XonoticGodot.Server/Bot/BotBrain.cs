@@ -197,10 +197,18 @@ public sealed class BotBrain
         bool jumpHeld = !bot.IsDead && now < _jumpTime + 0.2f; // QC bot_think:112
 
         // ---- dead / observer (QC bot_think:129-149 + havocbot_ai:113-119) ----
+        // QC havocbot_ai:103 sets bot_strategytoken_taken = true UNCONDITIONALLY when this bot holds the token,
+        // BEFORE the dead/frozen early return at :113. So a dead/observer token-holder must STILL consume the
+        // token here, or BotPopulation.RotateStrategyToken (gated on _tokenTaken) freezes it on the corpse and
+        // the whole population stops re-rating goals (observer = permanently) until this bot respawns.
         if (bot.IsObserver)
+        {
+            if (StrategyTokenHeld) OnStrategyTokenUsed?.Invoke();
             return Emit(bot, default, jump: false, crouch: false, attack: false, dt);
+        }
         if (bot.IsDead)
         {
+            if (StrategyTokenHeld) OnStrategyTokenUsed?.Invoke();
             Nav.ClearRoute();
             bot.Enemy = null;
             _strategyForced = true; // QC navigation_goalrating_timeout_force while dead
@@ -315,6 +323,11 @@ public sealed class BotBrain
         if (enemy is { IsFreed: false })
         {
             wantAttack = AimAndDecideFire(enemy, dt, now);
+            // QC havocbot_ai:142-146: bot_nofire (and independent_players) suppress the fire button while
+            // leaving aim + combat movement intact. (Only the primary attack is wired here; secondary fire is
+            // the deferred per-weapon wr_aim — see residuals.)
+            if (Cvars.Bool("bot_nofire"))
+                wantAttack = false;
             // combat movement (QC havocbot_dodge + the retreat-when-outgunned behaviour): strafe to dodge
             // incoming fire and, if much weaker than the enemy, back away while still facing it.
             move = CombatMovement(enemy, move, now);

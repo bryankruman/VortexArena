@@ -63,6 +63,14 @@ public partial class ModelAnimator : Node3D
     private readonly List<SurfaceBuffers> _surfaceBuffers = new();
     private ArrayMesh? _morphMesh;   // single persistent mesh — surfaces are updated in place, never reassigned
     private bool _morphInit;
+
+    // The morph output (surface buffers + tag poses) is a pure function of (frameA, frameB, t), so when those
+    // inputs are byte-identical to the last applied frame — a static pickup, a weapon at rest, a clip parked on
+    // one frame — re-emitting them would just re-upload the same vertex/normal buffers to the GPU. Track the last
+    // applied triple and skip the rebuild when it recurs. Reset by BuildMorphBuffers so a (re)build re-applies.
+    private bool _haveLastFrame;
+    private int _lastFrameA = int.MinValue, _lastFrameB = int.MinValue;
+    private float _lastFrameT = float.NaN;
     private Node3D? _tagsRoot;
     private readonly List<(Md3Tag tag, Marker3D marker)> _tagMarkers = new();
 
@@ -232,6 +240,7 @@ public partial class ModelAnimator : Node3D
     /// <summary>Advance the playhead and rebuild the morph mesh for this frame (call once per frame).</summary>
     public void Advance(float delta)
     {
+        using var _animScope = XonoticGodot.Game.Client.FrameProfiler.Scope("md3.morph"); // [profiling] all MD3 morph this frame
         if (_md3.FrameCount <= 1)
             return;
 
@@ -313,6 +322,7 @@ public partial class ModelAnimator : Node3D
     private void BuildMorphBuffers()
     {
         _morphInit = true;
+        _haveLastFrame = false;   // a (re)build must re-apply the current frame even if its inputs match the cache
         _morphMesh = new ArrayMesh { ResourceName = "Md3Morph" };
 
         foreach ((Md3Surface surface, Material? material, bool visible) in _surfaces)
@@ -369,6 +379,12 @@ public partial class ModelAnimator : Node3D
     {
         if (!_morphInit)
             BuildMorphBuffers();
+
+        // Nothing to do when the interpolation inputs haven't moved since the last upload (see _haveLastFrame).
+        if (_haveLastFrame && frameA == _lastFrameA && frameB == _lastFrameB && t == _lastFrameT)
+            return;
+        _haveLastFrame = true;
+        _lastFrameA = frameA; _lastFrameB = frameB; _lastFrameT = t;
 
         if (_morphMesh is not null && _surfaceBuffers.Count > 0)
         {

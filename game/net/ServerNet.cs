@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Net;
 using Godot;
+using XonoticGodot.Common.Diagnostics;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Gameplay;
 using XonoticGodot.Common.Physics;
@@ -52,6 +53,10 @@ public sealed class ServerNet : IDisposable
     private readonly BitWriter _eventWriter = new(1024);
     private readonly BitWriter _reliableWriter = new(1024);
     private readonly BitWriter _scratchWriter = new(512);
+
+    /// <summary>Reusable scratch for the per-peer personalized GametypeStatusBlock (T53) — serialized first so
+    /// it can be hash-gated before deciding to copy it into the snapshot.</summary>
+    private readonly BitWriter _modeStatusScratch = new(256);
 
     private readonly Dictionary<int, PeerState> _peers = new();      // by Godot peer id
     private readonly Dictionary<Player, PeerState> _byPlayer = new(ReferenceEqualityComparer.Instance);
@@ -163,6 +168,18 @@ public sealed class ServerNet : IDisposable
         public uint LastScoreInfoHash;
         public bool SentScoreInfo;
 
+        /// <summary>FNV hash of the last GametypeStatusBlock sent to this client (0 = never) — the per-mode
+        /// round/objective HUD stats (T53) are personalized (the KH "31 = self" slot, the SURV hunter
+        /// visibility), so each peer gates on the hash of ITS OWN serialized block, resending only when the
+        /// bytes change.</summary>
+        public uint LastModeStatusHash;
+
+        /// <summary>The accuracy-change generation last sent to this client (T57, QC ENT_CLIENT_ACCURACY's
+        /// per-weapon SendFlags change detection): the owner's per-weapon accuracy byte array is re-sent only
+        /// when <see cref="Scores.AccuracyGeneration"/> moves. -1 = never sent (so the first snapshot to a client
+        /// always carries the array, even when it's all zeros).</summary>
+        public int LastAccuracyGen = -1;
+
         /// <summary>Measured round-trip latency in seconds (DP <c>host_client-&gt;ping = cmd.receivetime - cmd.time</c>,
         /// sv_user.c:847) — the server-receive time minus the server-time the client echoed from the snapshot it was
         /// responding to. Exponentially smoothed to damp per-packet jitter; this is the value <c>ANTILAG_LATENCY</c>
@@ -272,11 +289,13 @@ public sealed class ServerNet : IDisposable
     public void Tick(float realDelta)
     {
         // 1) receive: handshakes + input frames (fills each peer's input queue).
-        _transport.Poll();
+        using (Prof.Sample("net.poll")) _transport.Poll();
 
         // 2) simulate: the world runs its fixed ticks, pulling each client's queued input via ProvideInput
-        //    and firing effect/notification emissions into our sinks.
-        _world.Frame(realDelta);
+        //    and firing effect/notification emissions into our sinks. ticksRan == 0 when the host renders faster
+        //    than the 72 Hz sim — those frames leave the world byte-identical to the last broadcast.
+        int ticksRan = _world.Frame(realDelta);
+        Prof.Mark("ticks", ticksRan); // >1 ⇒ a server.tick spike is catch-up amortizing a prior stall, not new work
 
         // 2b) observer/join lifecycle: a human connects as an OBSERVER (ClientConnect → TRANSMUTE(Observer)) and
         //     only enters the match via Join — on +jump/+attack or the delayed autojoin (server/client.qc
@@ -284,10 +303,20 @@ public sealed class ServerNet : IDisposable
         //     path, so we run it here per accepted peer from its last input. (Bots autojoined at connect.)
         DriveObserverJoins();
 
-        // 3) send: one snapshot per client + the shared event bundles.
-        BroadcastSnapshots();
-        SendMinigameState(); // [T38] push per-peer minigame session snapshots (reliable channel)
-        FlushEventBundles();
+        // 3) send: one snapshot per client + the shared event bundles — but ONLY on a frame where the world
+        //    actually advanced. The sim is a fixed 72 Hz accumulator, so when the render rate outruns it many
+        //    frames run 0 ticks and the world (and _world.Time) is identical to the last broadcast: rebuilding the
+        //    entity set + scoreboard and re-encoding a duplicate snapshot per peer is pure waste, and it's the
+        //    dominant per-frame server cost at high refresh. Gating on ticksRan sends at the sim rate (DP networks
+        //    at sys_ticrate, not the render rate) and lets a 0-tick frame after a hitch recover a frame sooner.
+        //    Events/minigame state are only produced inside a tick, so on a 0-tick frame they're empty too.
+        using (Prof.Sample("net.send"))
+        if (ticksRan > 0)
+        {
+            BroadcastSnapshots();
+            SendMinigameState(); // [T38] push per-peer minigame session snapshots (reliable channel)
+            FlushEventBundles();
+        }
 
         // 4) master-server registration: answer browser probes + re-heartbeat periodically.
         PumpMasterServer(realDelta);
@@ -296,7 +325,7 @@ public sealed class ServerNet : IDisposable
         //    wait for the next tick's Poll(). On the in-process listen loop the client's Poll() later this SAME
         //    frame then receives the snapshot, so the fire/knockback the server just simulated reconciles a render-
         //    frame sooner — the return leg of the input→fire→feedback latency (pairs with the client send flush).
-        _transport.Flush();
+        using (Prof.Sample("net.flush")) _transport.Flush();
     }
 
     /// <summary>
@@ -864,7 +893,7 @@ public sealed class ServerNet : IDisposable
 
             // owner-replicated state (full precision — aim/position fidelity matters for prediction).
             _snapshotWriter.WriteUShort(st.NetId);                 // owner net id (echo, lets the client confirm)
-            WriteOwnerState(_snapshotWriter, owner);
+            WriteOwnerState(_snapshotWriter, owner, st);
 
             // movevars: send the block only when this client's physics is stale (steady-state = one bool).
             bool sendMoveVars = st.LastMoveVarsHash != _moveVarsHash;
@@ -921,13 +950,27 @@ public sealed class ServerNet : IDisposable
                 st.LastScoreVersion = _scoreVersion;
             }
 
-            // [A3 reserved: T53 mode-stats block] — T53's gametype-status block (bool + hash/version-gated block,
-            // the movevars pattern) splices in HERE, after the scores block and before the entity section. The
-            // mirrored read goes at the matching marker in ClientNet.HandleSnapshot. Rides the v7 bump.
+            // Gametype status (T53): the per-mode round/objective HUD stats — QC STAT(REDALIVE..PINKALIVE)
+            // (CA/FT), STAT(OBJECTIVE_STATUS) (the KH key pack), eliminatedPlayers (scoreboard grey-out) and
+            // survivalStatuses (role + hunter disclosure). The block is PERSONALIZED per recipient (the KH
+            // "31 = self" slot, the SURV hunter visibility), so serialize per peer into a scratch and hash-gate
+            // (steady-state cost = one bool; QC's equivalent is stat delta-compression + linked-entity SendFlags).
+            _modeStatusScratch.Reset();
+            bool haveModeStatus = XonoticGodot.Net.GametypeStatusBlock.Capture(
+                _modeStatusScratch, _world.GameType, owner, _world.Clients.Players, NetIdFor,
+                roundStarted: _world.Rounds is { IsRoundStarted: true });
+            uint modeStatusHash = haveModeStatus ? XonoticGodot.Net.GametypeStatusBlock.Hash(_modeStatusScratch.WrittenSpan) : 0u;
+            bool sendModeStatus = haveModeStatus && st.LastModeStatusHash != modeStatusHash;
+            _snapshotWriter.WriteBool(sendModeStatus);
+            if (sendModeStatus)
+            {
+                _snapshotWriter.WriteBytes(_modeStatusScratch.WrittenSpan);
+                st.LastModeStatusHash = modeStatusHash;
+            }
 
-            // [A3 reserved: T57 accuracy block] — if T57's payload is a bool-gated block (per-weapon arrays), it
-            // splices in HERE, directly after T53's slot; small per-owner scalars go in WriteOwnerState's
-            // append-at-END slot instead. Rides the v7 bump.
+            // [T57 accuracy] — the owner's per-weapon accuracy byte array (QC ENT_CLIENT_ACCURACY, owner-only)
+            // is a PER-OWNER payload, so it is written/read at the END of the owner block (WriteOwnerState's
+            // append-at-END slot), NOT here in the broadcast entity-shared region.
 
             // delta-compressed entity section (everyone but the recipient's own entity).
             st.SnapHistory.EncodeSnapshot(_snapshotWriter, _entityScratch, _snapshotSeq, excludeEntNum: st.NetId);
@@ -1223,7 +1266,7 @@ public sealed class ServerNet : IDisposable
     /// the active weapon id (the local first-person viewmodel selector — QC wepent m_weapon, which the owner is
     /// excluded from the entity stream for). Fixed-layout: keep these in lockstep with
     /// <c>ClientNet.HandleSnapshot</c>'s owner read, appending new fields at the END.</summary>
-    private void WriteOwnerState(BitWriter w, Player p)
+    private void WriteOwnerState(BitWriter w, Player p, PeerState st)
     {
         w.WriteVector(p.Origin, XonoticGodot.Net.NetPrecision.Float);
         w.WriteVector(p.Velocity, XonoticGodot.Net.NetPrecision.Float);
@@ -1251,9 +1294,25 @@ public sealed class ServerNet : IDisposable
         p.SpectateeStatus = spec;
         w.WriteShort(spec);
 
-        // [A3 reserved: owner-state appends] — new per-owner fields (T57 accuracy scalars, etc.) append HERE,
-        // strictly at the END (no per-field gating in the owner block; both sides must land in one commit —
-        // mirror point: after `SpectateeStatus = r.ReadShort()` in ClientNet.HandleSnapshot).
+        // [T57 accuracy] — the owner's own per-weapon accuracy bytes (QC ENT_CLIENT_ACCURACY, owner-only:
+        // a.drawonlytoclient = e, accuracy.qc:54). One QC accuracy_byte per Registry<Weapon> id (0 = never fired,
+        // 1..101 = pct+1, 255 = >100%). Sent at the END of the owner block, in lockstep with ClientNet's matching
+        // read. Change-gated like QC's accuracy_send SendFlags (accuracy.qc:38: "zero sendflags can never be
+        // sent... so we can use that to say that we send no accuracy"): write the change generation, then a bool
+        // "changed since last sent to THIS peer" (tracked in PeerState.LastAccuracyGen, the T53 hash pattern);
+        // only when changed do the length + bytes ride along. Steady state = one int + one false bool.
+        int accGen = _world.Scores.AccuracyGeneration(p);
+        w.WriteLong(accGen);
+        bool sendAccuracy = st.LastAccuracyGen != accGen;
+        w.WriteBool(sendAccuracy);
+        if (sendAccuracy)
+        {
+            byte[] bytes = _world.Scores.AccuracyBytes(p);
+            int n = bytes.Length > 255 ? 255 : bytes.Length; // length byte — the per-weapon array is small
+            w.WriteByte(n);
+            w.WriteBytes(bytes.AsSpan(0, n));
+            st.LastAccuracyGen = accGen;
+        }
     }
 
     // =====================================================================================

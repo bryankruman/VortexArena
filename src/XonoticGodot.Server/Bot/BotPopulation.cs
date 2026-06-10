@@ -433,20 +433,27 @@ public sealed class BotPopulation
         if (_tokenTaken)
         {
             _tokenTaken = false;
-            // give the token to the next bot WITHOUT a current goal, skipping dead bots; if every bot is
-            // dead or has a goal, simply the next one (the QC two-wrap walk reduces to exactly this).
+            // QC bot_relinkplayerlist (bot.qc:437) builds bot_list EXCLUDING IS_OBSERVER || bot_ispaused, and the
+            // token (bot.qc:786-813) only ever walks bot_list — so an observer can never hold the token. Mirror
+            // that: the candidate set is non-observer bots only. Pass 1 picks the first non-observer WITHOUT a
+            // goal (skipping dead, per the QC break condition); pass 2 ("simply the next one") falls to the next
+            // non-observer. If every bot is an observer (bot_list == NULL), the token can't rotate — leave it put.
             int n = _brains.Count;
-            int next = (_tokenIndex + 1) % n;
+            int next = -1;
             for (int step = 0; step < n; step++)
             {
-                BotBrain b = _brains[(_tokenIndex + 1 + step) % n];
-                if (!b.Bot.IsDead && !b.Nav.HasGoal)
+                int idx = (_tokenIndex + 1 + step) % n;
+                BotBrain b = _brains[idx];
+                if (b.Bot.IsObserver) continue;               // not in bot_list
+                if (next < 0) next = idx;                      // pass 2 fallback: first non-observer
+                if (!b.Bot.IsDead && !b.Nav.HasGoal)          // pass 1: first goal-less (skip dead)
                 {
-                    next = (_tokenIndex + 1 + step) % n;
+                    next = idx;
                     break;
                 }
             }
-            _tokenIndex = next;
+            if (next >= 0)
+                _tokenIndex = next;
         }
         for (int i = 0; i < _brains.Count; i++)
             _brains[i].StrategyTokenHeld = i == _tokenIndex;

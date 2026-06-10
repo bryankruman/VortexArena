@@ -129,7 +129,12 @@ public sealed partial class NetGame : Node3D
     // Accumulated view angles in DEGREES, Quake convention (X = pitch down-positive, Y = yaw, Z = roll) — the
     // same convention PlayerController keeps, sampled into each InputCommand and used to orient the camera.
     private NVec3 _viewAngles;
-    private bool _attackHeld;
+    private bool _attackHeld;                     // per-frame previous +attack state (local fire-feedback edge)
+    private bool _attack2Held;                    // per-frame previous +attack2 state
+    // Sub-tick fire latch: set on the per-frame press edge (UpdateLocalFireFeedback), OR'd into the next sampled
+    // InputCommand and cleared, so a tap shorter than one 1/72 s input tick still reaches the server.
+    private bool _attackLatch;
+    private bool _attack2Latch;
     private bool _loggedAccept;
     private bool _cameraReady;                   // C5: false until the first snapshot seeds the predicted eye
     private int _prevHealth = -1;               // previous networked local health, for the damage red-flash edge
@@ -498,6 +503,17 @@ public sealed partial class NetGame : Node3D
         // (Set skips no-op writes), so the campaign progress mirror above can't feed back into a loop.
         if (_sharedCvars is not null)
         {
+            // INITIAL BACKFILL (fixes "console-set server cvar lost on map change / new server"): a new map boots a
+            // fresh GameWorld whose private store reloads from the cfg tree, so a sv_*/g_* the user changed in the
+            // console (shared store) reverts to its cfg default even though the console still shows the user's value
+            // (the two-store split). The bridge below only forwards FUTURE Changed events, so re-apply the user's
+            // CURRENT overrides now. Skip in campaign mode (the level file authors the cvars, like the limits copy
+            // above). BackfillModifiedCvars only touches cvars the user actually changed AND the server Has, so it
+            // never clobbers a map/ruleset value the user didn't set.
+            if (string.IsNullOrEmpty(_campaignName))
+                XonoticGodot.Engine.Simulation.CvarService.BackfillModified(
+                    _sharedCvars, _serverWorld.Services.CvarsImpl, BootAuthoredCvars);
+
             _sharedCvarBridge = name =>
             {
                 var server = _serverWorld?.Services.CvarsImpl;   // re-read the field so a map change is followed
@@ -670,6 +686,9 @@ public sealed partial class NetGame : Node3D
         // cl_particles.c). The Assets setter above already wired the texture/text loaders via WireEffectAssets,
         // and _render.Effects is live (ClientWorld._Ready ran synchronously on AddChild). Idempotent + invisible.
         _render.Effects.Warmup();
+        // Likewise pre-build the shared per-type projectile-trail Resources so the first rocket/plasma/grenade
+        // doesn't construct its trail material on its render frame (see ProjectileRenderer.WarmupTrails).
+        _render.Projectiles.WarmupTrails();
 
         // CSQC appearance context (FORCEMODEL/FORCECOLORS need the local player + gametype): read live each frame.
         _render.AppearanceProvider = BuildAppearanceContext;
@@ -1307,6 +1326,7 @@ public sealed partial class NetGame : Node3D
 
     public override void _Process(double delta)
     {
+        using var _ngScope = XonoticGodot.Game.Client.FrameProfiler.Scope("ng.process"); // [profiling] whole-method cost
         // _Ready runs as a coroutine (async void) so the loading screen can animate between sub-stages —
         // until it sets _readyComplete, many of the fields touched below (the HUD, the camera, _client,
         // _server) are partly built. Just sit out _Process during this window; the LoadingScreen drives
@@ -1318,7 +1338,8 @@ public sealed partial class NetGame : Node3D
 
         // Drive the listen server (if any) by real elapsed time — it runs its fixed ticks, pulls each client's
         // queued input, simulates, and broadcasts snapshots.
-        _server?.Tick(dt);
+        using (XonoticGodot.Game.Client.FrameProfiler.Scope("server.tick"))
+            _server?.Tick(dt);
 
         // Feed the music player the current server time so trigger_music touch freshness works.
         if (_musicPlayer is not null && _serverWorld is not null)
@@ -1409,6 +1430,12 @@ public sealed partial class NetGame : Node3D
             // (carrier.DpHitContentsMask=PlayerClip) is unaffected.
             if (_carrier is not null && LocalServerPlayer is { } hostSelf && !ReferenceEquals(_carrier.Owner, hostSelf))
                 _carrier.Owner = hostSelf;
+
+            // Local fire feedback runs EVERY render frame (before the input drain below), so the muzzle flash,
+            // recoil and HUD pulse pop the same frame as the click rather than waiting for the next 1/72 s input
+            // tick — the felt "snap" on high-refresh displays. It also latches the press for the next sampled
+            // command so a sub-tick tap can't be dropped.
+            UpdateLocalFireFeedback();
 
             // Fixed-timestep input: emit exactly one InputCommand per 1/72 s of REAL time, independent of the
             // display frame rate, so each command represents the dt it claims (DeltaTime = TicRate) and the
@@ -1549,6 +1576,8 @@ public sealed partial class NetGame : Node3D
         // team totals whenever a fresh LatestScoreboard arrives (the panel only repaints on data/toggle, so this
         // is cheap). BindTable.ShowScores is the held-button state set from the +showscores bind.
         UpdateScoreboard();
+        UpdateModIcons();
+        UpdateAccuracy();
 
         // Minigame cursor (QC hud_cursormode): while a minigame board/menu owns input, show the cursor so the
         // player can click TTT/C4 tiles + the menu; recapture for play on the edge back out. Skip while the
@@ -1668,13 +1697,17 @@ public sealed partial class NetGame : Node3D
         if (!show)
             return;
 
-        // feed rows only when the data changed (identity by reference — ClientNet replaces the object per decode).
+        // feed rows only when the data changed (identity by reference — ClientNet replaces the object per
+        // decode). A mode-status change (T53) also re-feeds: the eliminated grey-out must track freezes/deaths
+        // that don't bump a score version.
         XonoticGodot.Net.ScoreboardWire? sb = _client.LatestScoreboard;
-        if (sb is not null && !ReferenceEquals(sb, _lastFedScoreboard))
+        XonoticGodot.Net.GametypeStatusBlock.Decoded? ms = _client.LatestModeStatus;
+        if (sb is not null && (!ReferenceEquals(sb, _lastFedScoreboard) || !ReferenceEquals(ms, _lastFedModeStatus)))
         {
             _lastFedScoreboard = sb;
+            _lastFedModeStatus = ms;
             _scoreboard.Title = ScoreboardTitle();
-            _scoreboard.SetWireRows(sb, _client.LocalNetId);
+            _scoreboard.SetWireRows(sb, _client.LocalNetId, ms?.EliminatedNetIds); // grey-out (QC eliminatedPlayers)
             FeedScoreboardHeader();
         }
         else if (sb is null)
@@ -1684,6 +1717,86 @@ public sealed partial class NetGame : Node3D
         }
     }
     private XonoticGodot.Net.ScoreboardWire? _lastFedScoreboard;
+    private XonoticGodot.Net.GametypeStatusBlock.Decoded? _lastFedModeStatus;
+
+    /// <summary>Feed + toggle the mod-icons panel (QC HUD_ModIcons_SetFunc → gametype.m_modicons) from the
+    /// networked per-mode status (T53). Cheap: property writes + a Visible toggle; the panel repaints itself.</summary>
+    private void UpdateModIcons()
+    {
+        if (_fullHud is null || _client is null)
+            return;
+        ModIconsPanel panel = _fullHud.ModIcons;
+        XonoticGodot.Net.GametypeStatusBlock.Decoded? ms = _client.LatestModeStatus;
+        if (ms is null)
+        {
+            if (panel.Visible) panel.Visible = false;
+            return;
+        }
+        switch (ms.Mode)
+        {
+            case XonoticGodot.Net.GametypeStatusBlock.Kind.ClanArena:
+                panel.Mode = ModIconsPanel.ModIconsMode.ClanArena;
+                panel.SetAliveCounts(ms.Alive[0], ms.Alive[1], ms.Alive[2], ms.Alive[3]);
+                break;
+            case XonoticGodot.Net.GametypeStatusBlock.Kind.FreezeTag:
+                panel.Mode = ModIconsPanel.ModIconsMode.FreezeTag;
+                panel.SetAliveCounts(ms.Alive[0], ms.Alive[1], ms.Alive[2], ms.Alive[3]);
+                break;
+            case XonoticGodot.Net.GametypeStatusBlock.Kind.KeyHunt:
+                panel.Mode = ModIconsPanel.ModIconsMode.Keyhunt;
+                panel.ObjectiveStatus = unchecked((int)ms.KeyState);
+                break;
+            case XonoticGodot.Net.GametypeStatusBlock.Kind.Survival:
+                panel.Mode = ModIconsPanel.ModIconsMode.Survival;
+                panel.SurvivalStatus = ms.MyStatus;
+                break;
+            default:
+                panel.Mode = ModIconsPanel.ModIconsMode.None;
+                break;
+        }
+        panel.MyTeam = ms.MyTeamIndex;
+        if (ms.TeamCount > 0) panel.TeamCount = ms.TeamCount;
+        bool show = panel.Mode != ModIconsPanel.ModIconsMode.None;
+        if (panel.Visible != show)
+            panel.Visible = show;
+    }
+
+    // [T57] last-fed accuracy generation (rebuild the dictionaries only when the server's changes). -1 = none yet.
+    private int _lastFedAccuracyGen = -1;
+    private readonly System.Collections.Generic.Dictionary<int, int> _accuracyById = new();          // weapon registry id → hit% (-1 never fired)
+    private readonly System.Collections.Generic.Dictionary<string, float> _accuracyByNetName = new(); // weapon NetName → hit% (0 never fired)
+
+    /// <summary>
+    /// [T57] Decode the networked owner accuracy bytes (QC ENT_CLIENT_ACCURACY, owner-only) into the two HUD
+    /// accuracy grids when the server's change generation moves: the scoreboard's per-id grid
+    /// (<see cref="ScoreboardPanel.SetAccuracy"/>, registry-id → hit% 0..100, -1 never fired) and the weapons
+    /// panel's per-NetName grid (<see cref="WeaponsPanel.SetAccuracy"/>, NetName → %). QC accuracy_byte decode:
+    /// 0 → never fired (-1 for the scoreboard's sentinel / omitted from the weapons map), 255 → 100% (capped),
+    /// else byte−1 = the percentage.
+    /// </summary>
+    private void UpdateAccuracy()
+    {
+        if (_fullHud is null || _client is null)
+            return;
+        if (_client.LocalAccuracyGeneration == _lastFedAccuracyGen)
+            return;
+        _lastFedAccuracyGen = _client.LocalAccuracyGeneration;
+
+        byte[] bytes = _client.LocalAccuracyBytes;
+        _accuracyById.Clear();
+        _accuracyByNetName.Clear();
+        int count = System.Math.Min(bytes.Length, Registry<Weapon>.Count);
+        for (int id = 0; id < count; id++)
+        {
+            int b = bytes[id];
+            int pct = b == 0 ? -1 : (b >= 255 ? 100 : b - 1); // QC accuracy_byte: 0 never fired, 255 >100%, else b-1
+            _accuracyById[id] = pct;
+            if (b != 0) // only weapons actually fired get a weapons-panel tint (QC skips the unfired ones)
+                _accuracyByNetName[Registry<Weapon>.ById(id).NetName] = pct;
+        }
+        _scoreboard.SetAccuracy(_accuracyById);
+        _fullHud.Weapons.SetAccuracy(_accuracyByNetName);
+    }
 
     /// <summary>The scoreboard title: the active gametype's display name from the networked ScoreInfo (else the
     /// configured gametype). QC the scoreboard header gametype name.</summary>
@@ -1872,6 +1985,43 @@ public sealed partial class NetGame : Node3D
         => _fullHud is not null
         && ((_fullHud.MinigameMenu is { IsOpen: true }) || (_minigame is not null && _minigame.Active is not null));
 
+    /// <summary>
+    /// Per-render-frame local fire feedback, decoupled from the 1/72 s input cadence: edge-detect +attack/+attack2
+    /// off the live bind state and, on a primary-fire press edge, fire the view-model muzzle flash + recoil and
+    /// pulse the HUD crosshair THIS frame (CSQC W_MuzzleFlash on the local attack). Each press edge also sets a
+    /// latch (<see cref="_attackLatch"/>/<see cref="_attack2Latch"/>) that <see cref="SampleInput"/> OR's into the
+    /// next command, so a tap shorter than one input tick still reaches the server. Inert while the in-game menu /
+    /// console / minigame menu owns input (matching <see cref="SampleInput"/>'s active gate).
+    /// </summary>
+    private void UpdateLocalFireFeedback()
+    {
+        bool active = !GetTree().Paused && !ConsoleState.IsOpen && !MinigameMenuOpen;
+        if (!active)
+        {
+            // Input is owned elsewhere (in-game menu / console / minigame): drop the edge state and any pending
+            // tap latch so nothing fires on resume (matches SampleInput's in_releaseall on the inactive edge).
+            _attackHeld = _attack2Held = false;
+            _attackLatch = _attack2Latch = false;
+            return;
+        }
+
+        bool a1 = BindTable.AttackHeld;
+        if (a1 && !_attackHeld)
+        {
+            _attackLatch = true;
+            _hud?.PulseFire();
+            _viewModel?.Fire(); // local viewmodel muzzle flash + recoil
+        }
+        _attackHeld = a1;
+
+        // Secondary fire: latch the press so its tap reaches the server (the secondary muzzle flash still arrives
+        // via the networked effect path until fire-FX prediction lands; primary keeps the existing local flash).
+        bool a2 = BindTable.Attack2Held;
+        if (a2 && !_attack2Held)
+            _attack2Latch = true;
+        _attack2Held = a2;
+    }
+
     private InputCommand SampleInput()
     {
         // Re-capture on click if the user released the mouse (e.g. after alt-tab); never while the tree is
@@ -1907,14 +2057,12 @@ public sealed partial class NetGame : Node3D
             if (BindTable.ZoomHeld) buttons |= InputButtons.Zoom;
             if (BindTable.UseHeld) buttons |= InputButtons.Use;
 
-            // Client fire hook (muzzle flash) on the rising edge of primary fire.
-            bool attack1 = BindTable.AttackHeld;
-            if (attack1 && !_attackHeld)
-            {
-                _hud?.PulseFire();
-                _viewModel?.Fire(); // local viewmodel muzzle flash + recoil (CSQC W_MuzzleFlash on the local attack)
-            }
-            _attackHeld = attack1;
+            // Sub-tick fire latch (set per render frame in UpdateLocalFireFeedback): OR a press that landed since
+            // the last sampled command into THIS command — so a tap shorter than one input tick still fires —
+            // then clear it. The local muzzle flash / recoil / HUD pulse themselves are now driven per-frame in
+            // UpdateLocalFireFeedback (CSQC W_MuzzleFlash on the local attack), no longer gated to this 1/72 s sample.
+            if (_attackLatch) { buttons |= InputButtons.Attack; _attackLatch = false; }
+            if (_attack2Latch) { buttons |= InputButtons.Attack2; _attack2Latch = false; }
         }
 
         // While FOLLOWING a player (spectatee_status > 0), the server keeps us MOVETYPE_NONE and glues us to the
@@ -2001,7 +2149,15 @@ public sealed partial class NetGame : Node3D
 
         // Subtract the stair-smooth Z so the camera glides over steps (cl_movement stairsmooth). Driven by the
         // REAL frame delta (dt), NOT the server-synced render clock — the rebasing clock's 1/72-quantized jumps
-        // made the catch-up jitter up/down (the reference advances stair smoothing by real frametime).
+        // made the catch-up jitter up/down (the reference advances stair smoothing by real frametime). Refresh the
+        // tunables from the live cvars first so cl_stairsmoothspeed / the port anti-jitter knobs apply immediately
+        // and the lag clamp tracks the live sv_stepheight (a non-stock physics preset can change it).
+        XonoticGodot.Common.Services.ICvarService cv = Api.Cvars;
+        _client.ConfigureStairSmoothing(
+            smoothSpeed: CvarOr(cv, "cl_stairsmoothspeed", 200f),
+            stepHeight:  CvarOr(cv, "sv_stepheight", 31f),
+            snapSpeed:   CvarOr(cv, "cl_stairsmooth_snapspeed", 30f),
+            catchupTime: CvarOr(cv, "cl_stairsmooth_catchuptime", 0.1f));
         predicted.Z -= _client.PredictedStairOffset(dt);
 
         var st = new Client.FirstPersonView.ViewState
@@ -2018,6 +2174,14 @@ public sealed partial class NetGame : Node3D
             EyeHeightZ = _carrier?.ViewOfs.Z ?? EyeHeight,
         };
         _view.UpdateView(_camera, st, dt);
+    }
+
+    /// <summary>Read a float cvar, falling back to <paramref name="fallback"/> only when it is UNSET (empty string),
+    /// so a deliberately-configured 0 (e.g. <c>cl_stairsmooth_catchuptime 0</c> = adaptive off) is honoured.</summary>
+    private static float CvarOr(XonoticGodot.Common.Services.ICvarService c, string name, float fallback)
+    {
+        string s = c.GetString(name);
+        return s.Length == 0 ? fallback : c.GetFloat(name);
     }
 
     /// <summary>SUPERCONTENTS at the FINAL render origin this frame — read back from the shared view after
@@ -2266,6 +2430,15 @@ public sealed partial class NetGame : Node3D
         if (from.Has(name) && from.GetFloat(name) > 0f)
             to.Set(name, from.GetString(name));
     }
+
+    /// <summary>Cvars the listen-server boot sequence (or the map's worldspawn) authors itself — a console override
+    /// of these must NOT be backfilled across a map change, or it would clobber the new map's gravity, the host's
+    /// spectate/bot setup, the chosen match limits, or the map name. The limits ride the campaign-guarded
+    /// <see cref="CopyCvarIfSet"/> path above; sv_gravity is owned by each map's worldspawn.</summary>
+    private static readonly System.Collections.Generic.HashSet<string> BootAuthoredCvars = new(System.StringComparer.Ordinal)
+    {
+        "mapname", "sv_gravity", "sv_spectate", "timelimit", "fraglimit", "bot_number", "skill",
+    };
 
     private static CollisionWorld BuildTestFloor()
     {

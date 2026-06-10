@@ -43,6 +43,10 @@ public partial class Main : Node
         // else Godot rejects the unknown global and the surface fails to render — so it's done here, up front.
         WorldTint.EnsureRegistered();
 
+        // Always-on frame-time + GC hitch monitor (session-wide: menu + match). Self-driving; the on-screen
+        // graph + hitch logging are gated by cl_frameprofiler (debug-default-on). Added early so it spans boot.
+        AddChild(new XonoticGodot.Game.Client.FrameProfiler { Name = "FrameProfiler" });
+
         // Boot banner through the new facade (a live end-to-end exercise of it): the summary at LOG_INFO
         // (always shown), the per-registry dump at LOG_TRACE — uncluttered at `developer 0`, and visible the
         // moment you `set developer 1`. Run with `developer 2` to also get DEBUG + source locations.

@@ -1097,8 +1097,9 @@ public sealed class PlayerPhysics : IPlayerPhysics
         Vector3 startOrigin = player.Origin;
         Vector3 startVelocity = player.Velocity;
 
-        // Primary slide (with immediate stair-stepping when stepmultipletimes is on).
-        int clip = FlyMove(player, mp, dt, applyGravity, StepMultipleTimes ? mp.StepHeight : 0f, out Vector3 stepNormal);
+        // Primary slide (with immediate stair-stepping when stepmultipletimes is on). steppedUp latches if the
+        // in-loop stair-step actually lifted the hull over an obstacle this tick (for the step-up velocity clamp).
+        int clip = FlyMove(player, mp, dt, applyGravity, StepMultipleTimes ? mp.StepHeight : 0f, out Vector3 stepNormal, out bool steppedUp);
 
         // DOWNTRACEONGROUND: re-acquire the floor if the slide didn't register one.
         if (DownTraceOnGround && (clip & 1) == 0)
@@ -1122,6 +1123,14 @@ public sealed class PlayerPhysics : IPlayerPhysics
             return;
         if ((player.Flags & EntFlags.WaterJump) != 0)
             return;
+
+        // Port extension: the primary slide stepped UP over an obstacle this tick (in-loop stair-step). The step
+        // is purely positional and preserves velocity, so a player who jumped into the step keeps full upward
+        // velocity and "launches" to step+jump height. Optionally scale/cap that carried upward velocity. No-op at
+        // the stock defaults (scale 1, max -1). Applied here so the snapshot below captures the clamped velocity
+        // (a stair-recovery revert then restores the clamped value, keeping the tick self-consistent).
+        if (steppedUp)
+            ApplyStepUpSpeedClamp(player, mp);
 
         // ===== SV_WalkMove stair recovery (walk.qc ~80) =====
         Vector3 originalOrigin = player.Origin;
@@ -1150,7 +1159,7 @@ public sealed class PlayerPhysics : IPlayerPhysics
 
             // move forward with z velocity zeroed, then restore it
             player.Velocity = new Vector3(player.Velocity.X, player.Velocity.Y, 0f);
-            int clip2 = FlyMove(player, mp, dt, applyGravity, 0f, out stepNormal);
+            int clip2 = FlyMove(player, mp, dt, applyGravity, 0f, out stepNormal, out _);
             player.Velocity = new Vector3(player.Velocity.X, player.Velocity.Y, player.Velocity.Z + startVelocity.Z);
             if ((clip2 & 8) != 0)
                 return; // teleported on the forward move
@@ -1172,6 +1181,10 @@ public sealed class PlayerPhysics : IPlayerPhysics
             // is a deliberate no-op because the stock QC _Movetype_WallFriction body is commented out.
             if ((clip2 & 2) != 0 && mp.WallFriction != 0)
                 WallFriction(player, viewAngles, stepNormal);
+
+            // Port extension: this explicit up/forward step just RE-ADDED start_velocity.z (line above), so it is the
+            // other place a step-up carries upward velocity through. Clamp it the same way (no-op at stock defaults).
+            ApplyStepUpSpeedClamp(player, mp);
             return;
         }
 
@@ -1235,14 +1248,43 @@ public sealed class PlayerPhysics : IPlayerPhysics
     }
 
     /// <summary>
+    /// Port extension (NOT in stock Xonotic): scale and/or hard-cap the UPWARD (positive) <c>velocity.z</c> a
+    /// player carries THROUGH a step-up this tick. Stock step-up is purely positional — it lifts the hull up to
+    /// <see cref="MovementParameters.StepHeight"/> and preserves velocity — so jumping into a stair/bump keeps the
+    /// full jump velocity and "launches" you to step+jump height. <c>sv_step_upspeed_scale</c> (default 1) multiplies
+    /// that surviving upward velocity; <c>sv_step_upspeed_max</c> (default -1 = off) caps it. The positional lift is
+    /// untouched, so stair TRAVERSAL is unchanged — only the residual launch velocity is tamed. A no-op at the stock
+    /// defaults (and whenever velocity.z &lt;= 0), so walking up stairs — velocity.z == 0, see the stair_step_up
+    /// golden trace — and all non-stepping motion are byte-identical to before. Called from <see cref="WalkMove"/>
+    /// at the two points a step-up carries vertical velocity (the in-loop primary step and the explicit recovery).
+    /// </summary>
+    private static void ApplyStepUpSpeedClamp(Entity player, in MovementParameters mp)
+    {
+        float vz = player.Velocity.Z;
+        if (vz <= 0f)
+            return; // only limit UPWARD launch; never add downward pull or touch a descending/level player
+
+        float clamped = vz;
+        if (mp.StepUpSpeedScale != 1f)
+            clamped *= mp.StepUpSpeedScale;
+        if (mp.StepUpSpeedMax >= 0f && clamped > mp.StepUpSpeedMax)
+            clamped = mp.StepUpSpeedMax;
+
+        if (clamped != vz)
+            player.Velocity = new Vector3(player.Velocity.X, player.Velocity.Y, clamped);
+    }
+
+    /// <summary>
     /// SV_FlyMove: gravity half-step, then up to <see cref="MaxClipPlanes"/> trace-and-slide iterations
     /// with crease handling, plus immediate stair-step when <paramref name="stepheight"/> &gt; 0. Returns
     /// the QC blocked-flag bitmask (bit0=floor, bit1=wall/step-out, bit3=teleported);
     /// <paramref name="stepNormal"/> receives the wall plane normal on a step (for wall friction).
     /// </summary>
-    private int FlyMove(Entity player, in MovementParameters mp, float dt, bool applyGravity, float stepheight, out Vector3 stepNormal)
+    private int FlyMove(Entity player, in MovementParameters mp, float dt, bool applyGravity, float stepheight,
+        out Vector3 stepNormal, out bool steppedUp)
     {
         stepNormal = Vector3.Zero;
+        steppedUp = false; // latches when the in-loop stair-step lifts the hull over an obstacle (for the up-speed clamp)
         if (dt <= 0f)
             return 0;
 
@@ -1322,6 +1364,7 @@ public sealed class PlayerPhysics : IPlayerPhysics
                 {
                     timeLeft *= 1f - trace2Fraction;
                     numplanes = 0;
+                    steppedUp = true; // a stair-step over an obstacle was accepted this tick
                     continue;
                 }
                 else

@@ -27,8 +27,31 @@ public static class ClientSettings
         // store at boot, so they're visible/bindable in the menu and console before a match's overlay registers
         // them. Idempotent — keeps any value the user's config already set.
         Client.VignetteOverlay.RegisterDefaults(MenuState.Cvars);
+        Client.FrameProfiler.RegisterDefaults(MenuState.Cvars);
 
         RegisterTintDefaults(MenuState.Cvars);
+        RegisterStairSmoothDefaults(MenuState.Cvars);
+    }
+
+    /// <summary>
+    /// The stair-step view-smoothing cvars so the console/menu can see and drive them. <c>cl_stairsmoothspeed</c>
+    /// (the Base default, 200) already ships in xonotic-client.cfg; the two <c>cl_stairsmooth_*</c> knobs are PORT
+    /// EXTENSIONS that tame the stair "jitter" (NetGame reads all three live each frame via ClientNet.ConfigureStairSmoothing):
+    /// <list type="bullet">
+    ///   <item><c>cl_stairsmooth_snapspeed</c> (30): airborne <c>|velocity.z|</c> above which the camera snaps to the
+    ///         real Z (a jump/fall) instead of smoothing — below it the smoother survives the one-tick onground
+    ///         flicker a stair step produces. Kept low so a descent snaps fast: with <c>sv_step_upspeed_max</c>
+    ///         capping a step launch, the eye briefly falls after the cap, and a high threshold smoothed-then-jolted
+    ///         that fall on every step (the "jittery with the cap set" report).</item>
+    ///   <item><c>cl_stairsmooth_catchuptime</c> (0.1): close a step-sized lag within this time so a fast climb stays
+    ///         inside the one-step clamp and never yanks the camera. 0 = fixed-speed (old) behaviour.</item>
+    /// </list>
+    /// </summary>
+    private static void RegisterStairSmoothDefaults(CvarService c)
+    {
+        c.Register("cl_stairsmoothspeed", "200");
+        c.Register("cl_stairsmooth_snapspeed", "30");
+        c.Register("cl_stairsmooth_catchuptime", "0.1");
     }
 
     /// <summary>

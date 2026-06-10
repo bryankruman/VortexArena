@@ -117,16 +117,24 @@ public sealed partial class ModelGibs : Node3D
         return GeneratedChunk();
     }
 
+    // The fallback chunk mesh+material is identical for every generated gib, so build it once and share the Mesh
+    // resource across all instances (only the lightweight MeshInstance3D node is per-gib). Avoids constructing a
+    // BoxMesh + StandardMaterial3D — and compiling that material's shader on first draw — on the gib's frame.
+    private static BoxMesh? _chunkMesh;
+
     /// <summary>A small reddish chunk used for chunk.mdl and any model that fails to load.</summary>
     private static MeshInstance3D GeneratedChunk()
     {
-        var box = new BoxMesh { Size = new Vector3(4f, 4f, 4f) };
-        box.Material = new StandardMaterial3D
+        _chunkMesh ??= new BoxMesh
         {
-            AlbedoColor = new Color(0.45f, 0.06f, 0.05f),
-            Roughness = 0.9f,
+            Size = new Vector3(4f, 4f, 4f),
+            Material = new StandardMaterial3D
+            {
+                AlbedoColor = new Color(0.45f, 0.06f, 0.05f),
+                Roughness = 0.9f,
+            },
         };
-        return new MeshInstance3D { Mesh = box };
+        return new MeshInstance3D { Mesh = _chunkMesh };
     }
 
     private void CullIfNeeded()

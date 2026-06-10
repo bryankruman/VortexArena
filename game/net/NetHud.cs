@@ -61,6 +61,7 @@ public sealed partial class NetHud : Control
 
     public override void _Process(double delta)
     {
+        using var _nhScope = XonoticGodot.Game.Client.FrameProfiler.Scope("nethud"); // [profiling] NetHud per-frame
         if (_fireRing > 0f)
             _fireRing = Mathf.Max(0f, _fireRing - (float)delta / FireDecay);
 

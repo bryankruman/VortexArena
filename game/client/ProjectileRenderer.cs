@@ -203,6 +203,7 @@ public partial class ProjectileRenderer : Node3D
     /// <summary>Advance every visual toward its entity's current Quake origin (call once per frame).</summary>
     public void Process(float delta)
     {
+        using var _projScope = XonoticGodot.Game.Client.FrameProfiler.Scope("proj"); // [profiling] projectile interp/spin
         if (_visuals.Count == 0)
             return;
 
@@ -315,6 +316,13 @@ public partial class ProjectileRenderer : Node3D
         }
     }
 
+    // Per-projectile-type cache of the trail's ParticleProcessMaterial + DrawPass mesh. Every projectile of a
+    // given type produces an IDENTICAL trail — all params derive from the catalog Desc, nothing per-instance — so
+    // the heavy Resources are built once and SHARED across instances (Godot lets many GpuParticles3D reference the
+    // same ProcessMaterial/mesh). Only the lightweight GpuParticles3D node is per-projectile. Removes ~5 Resource
+    // allocations per projectile spawn (proc mat + gradient + ramp texture + quad + mesh material) in a firefight.
+    private readonly System.Collections.Generic.Dictionary<PType, (ParticleProcessMaterial Proc, Mesh Mesh)> _trailResCache = new();
+
     private GpuParticles3D? BuildTrail(ProjectileCatalog.Desc desc)
     {
         if (desc.Trail is not { } c)
@@ -334,55 +342,78 @@ public partial class ProjectileRenderer : Node3D
             // leaves view, making the trail vanish/flicker. Pin a generous box so the smoke stays drawn.
             VisibilityAabb = new Aabb(new Vector3(-256f, -256f, -256f), new Vector3(512f, 512f, 512f)),
         };
-        var mat = new ParticleProcessMaterial
-        {
-            // A non-zero direction is required for the spread cone to produce any spawn velocity — Direction
-            // Zero leaves the puffs pinned at the emit point. Drift them gently upward like real exhaust smoke.
-            Direction = Vector3.Up,
-            Spread = 25f,
-            InitialVelocityMin = 2f,
-            InitialVelocityMax = 10f,
-            Gravity = new Vector3(0f, c.Gravity, 0f),
-            ScaleMin = c.Scale * 0.5f,
-            ScaleMax = c.Scale,
-            Color = c.Color,
-            EmissionShape = ParticleProcessMaterial.EmissionShapeEnum.Point,
-        };
-        var ramp = new Gradient();
-        ramp.SetColor(0, c.Color);
-        ramp.SetColor(1, new Color(c.Color.R, c.Color.G, c.Color.B, 0f));
-        mat.ColorRamp = new GradientTexture1D { Gradient = ramp };
-        p.ProcessMaterial = mat;
 
-        // Apply the real particlefont atlas sprite when the effectinfo catalog is mounted.
-        // The sprite defines the particle SHAPE (smoke wisps for TR_ROCKET, sparkle dots for TR_NEXUIZPLASMA,
-        // fire blobs for fireball trails, etc.) while c.Color continues to tint it — matching the
-        // StandardMaterial3D formula: albedo_texture × albedo_color × vertex_color_from_ramp.
-        Texture2D? sprite = !string.IsNullOrEmpty(desc.TrailEffect)
-            ? Effects?.QueryTrailSprite(desc.TrailEffect)
-            : null;
+        if (!_trailResCache.TryGetValue(desc.Type, out (ParticleProcessMaterial Proc, Mesh Mesh) res))
+        {
+            var mat = new ParticleProcessMaterial
+            {
+                // A non-zero direction is required for the spread cone to produce any spawn velocity — Direction
+                // Zero leaves the puffs pinned at the emit point. Drift them gently upward like real exhaust smoke.
+                Direction = Vector3.Up,
+                Spread = 25f,
+                InitialVelocityMin = 2f,
+                InitialVelocityMax = 10f,
+                Gravity = new Vector3(0f, c.Gravity, 0f),
+                ScaleMin = c.Scale * 0.5f,
+                ScaleMax = c.Scale,
+                Color = c.Color,
+                EmissionShape = ParticleProcessMaterial.EmissionShapeEnum.Point,
+            };
+            var ramp = new Gradient();
+            ramp.SetColor(0, c.Color);
+            ramp.SetColor(1, new Color(c.Color.R, c.Color.G, c.Color.B, 0f));
+            mat.ColorRamp = new GradientTexture1D { Gradient = ramp };
 
-        var quad = new QuadMesh { Size = new Vector2(1f, 1f) };
-        var meshMat = new StandardMaterial3D
-        {
-            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
-            Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
-            BlendMode = c.Additive ? BaseMaterial3D.BlendModeEnum.Add : BaseMaterial3D.BlendModeEnum.Mix,
-            BillboardMode = BaseMaterial3D.BillboardModeEnum.Particles,
-            // Particle billboarding discards per-particle scale unless this is set (godot#74897) — without it
-            // the trail puffs collapsed to a 1×1 dot and the rocket/grenade flew with no visible smoke.
-            BillboardKeepScale = true,
-            VertexColorUseAsAlbedo = true,
-            AlbedoColor = c.Color,
-        };
-        if (sprite is not null)
-        {
-            meshMat.AlbedoTexture = sprite;
-            meshMat.TextureFilter = BaseMaterial3D.TextureFilterEnum.Linear;
+            // Apply the real particlefont atlas sprite when the effectinfo catalog is mounted.
+            // The sprite defines the particle SHAPE (smoke wisps for TR_ROCKET, sparkle dots for TR_NEXUIZPLASMA,
+            // fire blobs for fireball trails, etc.) while c.Color continues to tint it — matching the
+            // StandardMaterial3D formula: albedo_texture × albedo_color × vertex_color_from_ramp.
+            Texture2D? sprite = !string.IsNullOrEmpty(desc.TrailEffect)
+                ? Effects?.QueryTrailSprite(desc.TrailEffect)
+                : null;
+
+            var quad = new QuadMesh { Size = new Vector2(1f, 1f) };
+            var meshMat = new StandardMaterial3D
+            {
+                ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+                Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+                BlendMode = c.Additive ? BaseMaterial3D.BlendModeEnum.Add : BaseMaterial3D.BlendModeEnum.Mix,
+                BillboardMode = BaseMaterial3D.BillboardModeEnum.Particles,
+                // Particle billboarding discards per-particle scale unless this is set (godot#74897) — without it
+                // the trail puffs collapsed to a 1×1 dot and the rocket/grenade flew with no visible smoke.
+                BillboardKeepScale = true,
+                VertexColorUseAsAlbedo = true,
+                AlbedoColor = c.Color,
+            };
+            if (sprite is not null)
+            {
+                meshMat.AlbedoTexture = sprite;
+                meshMat.TextureFilter = BaseMaterial3D.TextureFilterEnum.Linear;
+            }
+            quad.Material = meshMat;
+
+            res = (mat, quad);
+            _trailResCache[desc.Type] = res;
         }
-        quad.Material = meshMat;
-        p.DrawPass1 = quad;
+
+        p.ProcessMaterial = res.Proc;
+        p.DrawPass1 = res.Mesh;
         return p;
+    }
+
+    /// <summary>
+    /// Pre-build the shared per-type trail Resources for every projectile type at map-load, so the first rocket/
+    /// plasma/grenade of a match doesn't construct its trail material + gradient on its render frame. Idempotent
+    /// (the cache is keyed by type); the throwaway emitter node is freed immediately. (Note: this amortizes the
+    /// CPU-side construction — the GPU shader pipeline still compiles on the trail's first actual draw.)
+    /// </summary>
+    public void WarmupTrails()
+    {
+        foreach (PType t in System.Enum.GetValues<PType>())
+        {
+            ProjectileCatalog.Desc d = ProjectileCatalog.DescOf(t);
+            BuildTrail(d)?.QueueFree();
+        }
     }
 
     private static OmniLight3D BuildLight(ProjectileCatalog.Desc desc)

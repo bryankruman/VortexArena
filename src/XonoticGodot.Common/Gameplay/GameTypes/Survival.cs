@@ -177,36 +177,68 @@ public sealed class Survival : GameType
     public SurvStatus StatusOf(Player p) => _states.TryGetValue(p, out SurvState? st) ? st.Status : SurvStatus.None;
 
     /// <summary>
-    /// QC round-start role assignment: pick the hunter count from <c>g_survival_hunter_count</c> — a value ≥1
-    /// is an absolute count, a value &lt;1 is a fraction of the player total — bounded to at least 1 and at
-    /// most (total − 1), then mark that many players as hunters (in roster order) and the rest as prey. Also
-    /// resets everyone to alive and clears any prior round result.
+    /// QC <c>Surv_RoundStart</c> (sv_survival.qc:160-193) role assignment. The hunter count is derived from the
+    /// LIVE player count (FOREACH_CLIENT(IS_PLAYER &amp;&amp; !IS_DEAD) — observers and dead players don't count);
+    /// the count comes from <c>g_survival_hunter_count</c> (≥1 = absolute, &lt;1 = a fraction of the live total)
+    /// bounded to at least 1 and at most (live − 1). The hunter subset is a RANDOM selection over the live
+    /// players (QC FOREACH_CLIENT_RANDOM — an inside-out Fisher–Yates shuffle via the seeded
+    /// <see cref="XonoticGodot.Common.Math.Prandom"/> facade), NOT the first roster slots. Everyone starts as
+    /// prey and alive; the chosen subset becomes hunters. Also clears any prior round result.
     /// </summary>
     public void AssignRoles(IReadOnlyList<Player> roster)
     {
-        int total = roster.Count;
         RoundOver = false;
         WinningSide = SurvStatus.None;
+
+        // QC FOREACH_CLIENT: everyone resets to prey (a non-live client gets survival_status = 0, but the port's
+        // roster is the in-round set; untracked/observer/dead players keep Prey and don't count for the split).
         foreach (Player p in roster)
         {
             SurvState st = GetState(p);
             st.Status = SurvStatus.Prey;
             st.Alive = true;
         }
-        if (total < 2)
-            return; // need at least 2 players to have both sides
 
-        int hunters = HunterCount(total);
-        for (int i = 0; i < hunters && i < total; i++)
-            GetState(roster[i]).Status = SurvStatus.Hunter;
+        // QC: playercount only counts live players (IS_PLAYER && !IS_DEAD). Build that live subset.
+        var live = new List<Player>(roster.Count);
+        foreach (Player p in roster)
+            if (IsLive(p))
+                live.Add(p);
+
+        int playercount = live.Count;
+        if (playercount < 2)
+            return; // need at least 2 live players to have both sides
+
+        int hunters = HunterCount(playercount);
+
+        // QC FOREACH_CLIENT_RANDOM(IS_PLAYER && !IS_DEAD): inside-out Knuth–Fisher–Yates shuffle of the live
+        // players (server/utils.qh:54-79), then take the first hunter_count from the shuffled order. Faithful to
+        // QC's floor(random() * (cnt + 1)) using the seeded deterministic Prandom (ADR-0010).
+        var shuffled = new Player[playercount];
+        for (int cnt = 0; cnt < playercount; cnt++)
+        {
+            int j = (int)System.MathF.Floor(XonoticGodot.Common.Math.Prandom.Float() * (cnt + 1));
+            if (j > cnt) j = cnt; // guard: random() can theoretically reach the open bound after float rounding
+            if (j != cnt)
+                shuffled[cnt] = shuffled[j];
+            shuffled[j] = live[cnt];
+        }
+        for (int i = 0; i < hunters && i < playercount; i++)
+            GetState(shuffled[i]).Status = SurvStatus.Hunter;
     }
 
-    /// <summary>QC hunter-count formula: bound(1, (cvar≥1 ? cvar : floor(total*cvar)), total−1).</summary>
-    public int HunterCount(int total)
+    /// <summary>QC IS_PLAYER(it) &amp;&amp; !IS_DEAD(it): a live, non-observer player counts for the role split.</summary>
+    private static bool IsLive(Player p) => !p.IsObserver && !p.IsDead;
+
+    /// <summary>
+    /// QC hunter-count formula (sv_survival.qc:175): bound(1, (cvar≥1 ? cvar : floor(playercount*cvar)),
+    /// playercount−1) — over the LIVE player count.
+    /// </summary>
+    public int HunterCount(int playercount)
     {
         float c = TryCvar(CvarHunterCount, out float v) ? v : DefaultHunterCount;
-        int count = c >= 1f ? (int)c : (int)System.MathF.Floor(total * c);
-        int max = total - 1;
+        int count = c >= 1f ? (int)c : (int)System.MathF.Floor(playercount * c);
+        int max = playercount - 1;
         if (count < 1) count = 1;
         if (count > max) count = max;
         return count;

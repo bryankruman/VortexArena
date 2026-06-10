@@ -347,6 +347,25 @@ public sealed class CvarService : ICvarService
             Set(name, v.Default);
     }
 
+    /// <summary>
+    /// Re-apply the user's overrides from one store onto another: for every cvar in <paramref name="from"/> that
+    /// the user actually CHANGED (<see cref="IsModified"/> — value differs from its cfg/registered default) AND that
+    /// <paramref name="to"/> already <see cref="Has"/>, copy the value across (skipping any name in
+    /// <paramref name="exclude"/>). Used by the listen server to carry console/menu cvar overrides onto a freshly
+    /// (re)booted world store across a map change, without clobbering values <paramref name="to"/> loaded from a
+    /// map/ruleset cfg that the user never touched. One-way and idempotent (<see cref="Set"/> skips no-op writes).
+    /// </summary>
+    public static void BackfillModified(CvarService from, CvarService to,
+        IReadOnlySet<string>? exclude = null)
+    {
+        foreach (string name in from._vars.Keys)
+        {
+            if (exclude is not null && exclude.Contains(name)) continue;
+            if (to._vars.ContainsKey(name) && from.IsModified(name))
+                to.Set(name, from.GetString(name));
+        }
+    }
+
     /// <summary>Mark a cvar as archived (DP <c>seta</c>) so the menu persists it to the user config.</summary>
     public void MarkArchived(string name)
     {

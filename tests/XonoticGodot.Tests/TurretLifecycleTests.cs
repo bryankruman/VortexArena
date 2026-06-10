@@ -217,7 +217,11 @@ public class TurretLifecycleTests
         TurretAI.Respawn(e);
 
         Assert.Equal(DeadFlag.No, e.DeadState);            // QC DEAD_NO
-        Assert.Equal(Solid.BBox, e.Solid);                 // QC SOLID_BBOX
+        // QC turret_respawn sets SOLID_BBOX then calls tur.tr_setup (sv_turrets.qc:273,291); the ewheel's
+        // tr_setup (turret/ewheel.qc:204) re-applies SOLID_SLIDEBOX, so a MOBILE turret ends up SlideBox — the
+        // TurretAI.Respawn -> EWheelTurret.OnRespawn chain mirrors that exactly.
+        Assert.Equal(Solid.SlideBox, e.Solid);
+        Assert.Equal(MoveType.Step, e.MoveType);           // ewheel OnRespawn re-applies MOVETYPE_STEP
         Assert.Equal(DamageMode.Aim, e.TakeDamage);        // QC DAMAGE_AIM
         Assert.Equal(e.MaxHealth, e.Health);               // health restored to max
         Assert.Null(e.Enemy);
@@ -226,8 +230,6 @@ public class TurretLifecycleTests
         Assert.Equal(st.AmmoMax, st.Ammo);                 // ammo refilled
         Assert.Equal(0f, st.AttackFinished);
         Assert.True(st.Active);                            // team is nonzero -> reactivates
-        // the ewheel's OnRespawn re-applies its mobile setup
-        Assert.Equal(Solid.SlideBox, e.Solid == Solid.SlideBox ? e.Solid : Solid.SlideBox);
     }
 
     [Fact]

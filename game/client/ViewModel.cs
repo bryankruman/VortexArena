@@ -374,14 +374,20 @@ public partial class ViewModel : Node3D
     {
         string effect = string.IsNullOrEmpty(effectOverride) ? MuzzleEffect : effectOverride!;
 
-        // World-space muzzle origin + forward, then convert Godot -> Quake for the EffectSystem.
-        Transform3D muzzleXf = MuzzleGlobalTransform();
-        Vector3 originGodot = muzzleXf.Origin;
-        Vector3 forwardGodot = -muzzleXf.Basis.Z; // -Z is "forward" in Godot
-        var originQuake = Coords.ToQuake(originGodot);
-        var dirQuake = Coords.ToQuake(forwardGodot) * 120f; // give the flash a little forward velocity
-
-        Effects?.MuzzleFlash(effect, originQuake, dirQuake);
+        // Muzzle flash: attach the burst to the muzzle socket so it emits from the barrel and rides the gun's
+        // sway/recoil/bob (the snappy local first-person flash). Remote players still see the networked world-space
+        // copy. Fall back to a one-shot world-space burst at the model front when no socket resolved.
+        if (_muzzleMarker is not null && GodotObject.IsInstanceValid(_muzzleMarker))
+        {
+            Effects?.MuzzleFlashAttached(effect, _muzzleMarker);
+        }
+        else
+        {
+            Transform3D muzzleXf = MuzzleGlobalTransform();
+            var originQuake = Coords.ToQuake(muzzleXf.Origin);
+            var dirQuake = Coords.ToQuake(-muzzleXf.Basis.Z) * 120f; // forward
+            Effects?.MuzzleFlash(effect, originQuake, dirQuake);
+        }
 
         // Flash light + recoil.
         _flashTime = 0.06f;
@@ -466,6 +472,7 @@ public partial class ViewModel : Node3D
 
     public override void _Process(double delta)
     {
+        using var _vmScope = XonoticGodot.Game.Client.FrameProfiler.Scope("viewmodel"); // [profiling] viewmodel sway/anim
         float dt = (float)delta;
 
         if (_flashTime > 0f)

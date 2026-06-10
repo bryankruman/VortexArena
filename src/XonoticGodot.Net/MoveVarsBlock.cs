@@ -45,6 +45,11 @@ public static class MoveVarsBlock
         "sv_wallclip",                     // STAT(MOVEVARS_WALLCLIP) (stats.qh:448) — no cfg sets it, default 0
         "sv_nostep",                       // STAT(NOSTEP) (stats.qh:235), default 0
         "sv_slick_applygravity",           // STAT(SLICK_APPLYGRAVITY) (stats.qh:365), default 0
+        // ---- port extension: step-up vertical-velocity limiter (read by PlayerPhysics.ApplyStepUpSpeedClamp).
+        //      Replicated so a remote client's prediction tames the step "launch" identically to the server.
+        //      Unset defaults are NON-ZERO (scale→1, max→-1) → see AbsentDefaults (verbatim Raw-tail decode). ----
+        "sv_step_upspeed_scale",           // multiply positive velocity.z surviving a step-up (1 = vanilla)
+        "sv_step_upspeed_max",             // hard cap (u/s) on that upward velocity (-1 = disabled)
         // Deliberately NOT replicated: MOVEVARS_TICRATE/TIMESCALE (the port advertises the tick rate at
         // handshake and ships dt per InputCommand), MOVEVARS_ENTGRAVITY (per-entity, not a cvar),
         // MOVEVARS_CL_TRACK_CANJUMP (a client→server cvar loopback — rides the sentcvar channel instead).
@@ -52,6 +57,53 @@ public static class MoveVarsBlock
 
     /// <summary>The number of replicated movement cvars.</summary>
     public static int Count => MovementCvars.Length;
+
+    /// <summary>
+    /// Absent-cvar default for the movement cvars whose <c>MovementParameters.FromCvars</c> fallback is NON-ZERO
+    /// AND which decode through <c>FromValues</c>' verbatim <c>Raw</c>/<c>B</c> path (present-slot-is-authoritative).
+    ///
+    /// WHY this exists (the unregistered-cvar asymmetry): many <c>sv_*</c> movement cvars are NOT registered in the
+    /// port's server cvar table (see <c>XonoticGodot.Server.Cvars.Defaults</c> — only <c>sv_gravity</c> is; the rest
+    /// of the per-tick tunables intentionally live only as <c>FromCvars</c> fallbacks). On a default-config server
+    /// those cvars are absent, so a bare <c>GetFloat</c> in <see cref="CaptureOne"/> reads <b>0</b>. But the server's
+    /// OWN physics reads the SAME absent cvar through <c>FromCvars</c>, which — now that its per-cvar fallback is
+    /// gated on cvar EXISTENCE (<c>CvarRaw</c>/<c>CvarBool</c>), not value==0 — resolves the stock port default
+    /// (e.g. <c>sv_airaccel_qw</c> → -0.8, <c>sv_gameplayfix_stepdown</c> → 2, <c>sv_wallfriction</c> → 1). If we put
+    /// the bare 0 on the wire, the client stamps 0, its EXISTS-gated <c>FromCvars</c> reads the present "0" as a real
+    /// configured 0, and <c>FromValues</c> (which treats a PRESENT wire slot as authoritative for these Raw/B fields)
+    /// keeps the 0 — so client and server disagree → prediction rubber-bands in the default deployment.
+    ///
+    /// Fix: for an ABSENT cvar, emit the SAME stock default <c>FromCvars</c> resolves (sourced field-by-field below),
+    /// so the wire carries the default and both sides agree. The magnitude (<c>F</c>) fields don't need an entry:
+    /// <c>FromValues.F</c> already falls back to the port default on a wire-0, mirroring <c>FromCvars</c>' <c>Cvar</c>
+    /// helper (value==0 → fallback), so an absent magnitude cvar is already symmetric at 0. Zero-default Raw/B fields
+    /// also need no entry (Capture's GetFloat→0 already matches the 0 fallback). Names already special-cased in
+    /// <see cref="CaptureOne"/> (g_movement_highspeed / sv_gameplayfix_nudgeoutofsolid → unset 1; the jumpspeedcaps →
+    /// NaN) are deliberately ABSENT from this map — their branch handles the asymmetry already.
+    ///
+    /// Each default is taken verbatim from the matching <c>MovementParameters.FromCvars</c> fallback
+    /// (= the <c>MovementParameters.Defaults</c> field). Keep them EXACTLY in lockstep — a drift reintroduces the
+    /// desync in the other direction.
+    /// </summary>
+    private static readonly System.Collections.Generic.Dictionary<string, float> AbsentDefaults = new()
+    {
+        // FromCvars  CvarRaw("airaccel_qw",      Defaults.AirAccelQW = -0.8)
+        ["sv_airaccel_qw"] = -0.8f,
+        // FromCvars  CvarRaw("airstrafeaccel_qw", Defaults.AirStrafeAccelQW = -0.95)
+        ["sv_airstrafeaccel_qw"] = -0.95f,
+        // FromCvars  CvarBool("jumpspeedcap_max_disable_on_ramps", Defaults.JumpSpeedCapMaxDisableOnRamps = true)
+        ["sv_jumpspeedcap_max_disable_on_ramps"] = 1f,
+        // FromCvars  CvarBool("jumpstep",        Defaults.JumpStep = true)
+        ["sv_jumpstep"] = 1f,
+        // FromCvars  (int)CvarRaw("gameplayfix_stepdown", Defaults.StepDown = 2)
+        ["sv_gameplayfix_stepdown"] = 2f,
+        // FromCvars  (int)CvarRaw("wallfriction", Defaults.WallFriction = 1)
+        ["sv_wallfriction"] = 1f,
+        // FromCvars  CvarRaw("step_upspeed_scale", Defaults.StepUpSpeedScale = 1) — verbatim Raw-tail decode
+        ["sv_step_upspeed_scale"] = 1f,
+        // FromCvars  CvarRaw("step_upspeed_max", Defaults.StepUpSpeedMax = -1) — -1 = disabled (uncapped)
+        ["sv_step_upspeed_max"] = -1f,
+    };
 
     /// <summary>Read the live movement-cvar values from the server's store, in <see cref="MovementCvars"/> order.</summary>
     public static float[] Capture(ICvarService cvars)
@@ -87,6 +139,12 @@ public static class MoveVarsBlock
             case "sv_jumpspeedcap_max":
                 return ParseNanFloat(cvars.GetString(name));
             default:
+                // Unregistered-cvar asymmetry (see AbsentDefaults): an ABSENT movement cvar reads "" → GetFloat 0,
+                // but the server's own FromCvars resolves the stock port default for it (EXISTS-gated CvarRaw/Bool).
+                // For the Raw/B-decoded fields with a non-zero default, put that default on the wire so both sides
+                // agree; everything else keeps the bare GetFloat (a genuine 0 default, or a registered live value).
+                if (cvars.GetString(name).Length == 0 && AbsentDefaults.TryGetValue(name, out float dflt))
+                    return dflt;
                 return cvars.GetFloat(name);
         }
     }

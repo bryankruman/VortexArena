@@ -95,31 +95,35 @@ public class ReconcilerTests
         Assert.True(after >= before - 1e-3f, $"a velocity spike must not clear origin smoothing (before={before}, after={after})");
     }
 
-    // ---- Stair-step view smoothing (CSQCModel_ApplyStairSmoothing) ----------------------------------
-    // The rewritten smoother tracks an absolute rendered Z that catches up to the LIVE predicted Z at
-    // StairSmoothSpeed, hard-clamped to within one step height. The OLD model accumulated per-tick deltas into a
-    // re-arming time window, so any grounded Z change (a slope/ramp) perpetually re-armed and PINNED a vertical
-    // offset that only crawled back once the player stopped — the reported "camera too-high/too-low that resets."
+    // ---- Stair-step view smoothing ------------------------------------------------------------------
+    // The smoother tracks an absolute rendered Z that catches up to the LIVE predicted Z at StairSmoothSpeed,
+    // hard-clamped to within one step height. Following a genuine jump/fall (airborne AND |velocity.z| >
+    // StairSnapVerticalSpeed) it adds a velocity FEEDFORWARD so the camera keeps pace with the arc (no lag) while
+    // still EASING — not snapping — an instant step pop clipped mid-jump.
 
-    /// <summary>Drives the predicted pose to a controllable Z + onground so we can sample the per-frame smoother.</summary>
+    /// <summary>Drives the predicted pose to a controllable Z + onground + vertical velocity so we can sample the
+    /// per-frame smoother (vertical velocity drives the airborne snap gate).</summary>
     private sealed class ZStep : IMovementStep
     {
         public float Z;
         public bool OnGround = true;
+        public float VelZ;
         public void Step(ref PredictedState state, in InputCommand cmd, in PlayerState vars)
-        { state.Origin = new Vector3(0f, 0f, Z); state.OnGround = OnGround; }
+        { state.Origin = new Vector3(0f, 0f, Z); state.OnGround = OnGround; state.Velocity = new Vector3(0f, 0f, VelZ); }
     }
 
     private static Reconciler NewStairRec(ZStep step, PredictionBuffer buf)
     {
         buf.Push(new InputCommand());
-        return new Reconciler(buf, step) { StairSmoothTime = 0.16f, StairSmoothSpeed = 160f };
+        // StairCatchupTime 0 → pure fixed-speed catch-up, so the legacy single-step/slope assertions below stay exact.
+        return new Reconciler(buf, step) { StairSmoothTime = 0.16f, StairSmoothSpeed = 160f, StairCatchupTime = 0f };
     }
 
-    private static void DriveZ(Reconciler rec, ZStep step, float z, bool onGround = true)
+    private static void DriveZ(Reconciler rec, ZStep step, float z, bool onGround = true, float velZ = 0f)
     {
-        step.Z = z; step.OnGround = onGround;
-        rec.Predict(new PredictedState { Origin = new Vector3(0f, 0f, z), OnGround = onGround }, ackedSeq: 0, default, now: 0f);
+        step.Z = z; step.OnGround = onGround; step.VelZ = velZ;
+        rec.Predict(new PredictedState { Origin = new Vector3(0f, 0f, z), OnGround = onGround, Velocity = new Vector3(0f, 0f, velZ) },
+            ackedSeq: 0, default, now: 0f);
     }
 
     private const float FrameDt = 1f / 72f; // a typical render-frame delta
@@ -173,8 +177,33 @@ public class ReconcilerTests
     }
 
     [Fact]
-    public void Stair_Airborne_SnapsToTrueZ_NoSmoothing()
+    public void Stair_Airborne_SteadyJump_TrackedNoLag()
     {
+        // A steady jump (eye-Z rising consistently with velocity.z) is tracked 1:1 by the velocity feedforward, so
+        // the camera keeps pace with the arc with ~no lag (offset ~0) — what the old snap achieved, minus the snap.
+        var buf = new PredictionBuffer();
+        var step = new ZStep();
+        Reconciler rec = NewStairRec(step, buf);
+
+        float z = 0f; const float vz = 260f;
+        DriveZ(rec, step, z, onGround: false, velZ: vz);
+        rec.GetStairSmoothOffset(FrameDt); // seed
+
+        for (int i = 0; i < 10; i++)
+        {
+            z += vz * FrameDt;   // a consistent ballistic rise (FrameDt == one tic here)
+            DriveZ(rec, step, z, onGround: false, velZ: vz);
+            float off = rec.GetStairSmoothOffset(FrameDt);
+            Assert.True(MathF.Abs(off) < 0.5f, $"a steady jump must be tracked with no lag (offset {off} at i={i})");
+        }
+    }
+
+    [Fact]
+    public void Stair_Airborne_FlickerWithSmallVelocity_KeepsSmoothing()
+    {
+        // The anti-jitter fix: a stair step momentarily clears the onground flag for ONE tick while velocity.z stays
+        // ~0 (the step is a positional pop). The smoother must KEEP RUNNING across that flicker instead of snapping —
+        // snapping on it was what made stair climbing jitter despite the smoother.
         var buf = new PredictionBuffer();
         var step = new ZStep();
         Reconciler rec = NewStairRec(step, buf);
@@ -182,9 +211,78 @@ public class ReconcilerTests
         DriveZ(rec, step, 0f);
         rec.GetStairSmoothOffset(FrameDt);
 
-        // Jumping/falling (airborne): the view must follow the real Z exactly (snap), or the camera lags the jump.
-        DriveZ(rec, step, 40f, onGround: false);
-        Assert.True(MathF.Abs(rec.GetStairSmoothOffset(FrameDt)) < 1e-3f, "airborne Z changes must not be stair-smoothed");
+        // 16u step up, reported AIRBORNE for this tick (the flicker) but with a tiny vertical velocity (gravity blip).
+        DriveZ(rec, step, 16f, onGround: false, velZ: -8f);
+        float off = rec.GetStairSmoothOffset(FrameDt);
+        Assert.True(off > 8f, $"a low-velocity airborne flicker on a step must still be smoothed (got {off})");
+    }
+
+    [Fact]
+    public void Stair_Airborne_JumpIntoStep_PopEasedNotSnapped()
+    {
+        // Clipping a step on the way up a jump: the eye-Z change = ballistic rise + a step pop. The feedforward
+        // tracks the ballistic part; the step pop is EASED (an offset appears and then decays) instead of snapping
+        // the camera to the step. Needs the adaptive term, so use a real catch-up time.
+        var buf = new PredictionBuffer();
+        var step = new ZStep();
+        Reconciler rec = new(buf, step)
+            { StairSmoothTime = 1f, StairSmoothSpeed = 200f, StairCatchupTime = 0.1f, StairStepHeight = 31f, StairSnapVerticalSpeed = 30f };
+        buf.Push(new InputCommand());
+
+        const float vz = 200f;
+        DriveZ(rec, step, 0f, onGround: false, velZ: vz);
+        rec.GetStairSmoothOffset(FrameDt); // seed
+
+        float z = vz * FrameDt + 24f;       // one tick: ballistic rise + a 24u step clip
+        DriveZ(rec, step, z, onGround: false, velZ: vz);
+        float first = rec.GetStairSmoothOffset(FrameDt);
+        Assert.True(first > 8f, $"the step pop clipped mid-jump should be eased (camera trails the step), not snapped away (got {first})");
+
+        // ...and it decays as the camera catches up.
+        for (int i = 0; i < 20; i++) rec.GetStairSmoothOffset(FrameDt);
+        float later = rec.GetStairSmoothOffset(FrameDt);
+        Assert.True(later < first, $"the eased step pop must decay (first {first}, later {later})");
+        Assert.True(MathF.Abs(later) < 0.5f, $"the step pop must settle to ~0 (got {later})");
+    }
+
+    [Fact]
+    public void Stair_FastMultiStepClimb_AdaptiveCatchup_ReducesPerStepYank()
+    {
+        // At running speed you climb a staircase faster than the fixed floor catch-up, so the old fixed-speed
+        // smoother saturated and the ±step clamp yanked the rendered Z up on every step (the jitter). The adaptive
+        // catch-up scales with the lag, so it stays closer to the live Z and the per-step clamp yank shrinks.
+        // A/B: the same discrete climb with adaptive catch-up must yank LESS than with the fixed-speed (old) model.
+        float adaptiveWorst = WorstPerFrameYankClimbing(catchupTime: 0.1f);
+        float fixedWorst    = WorstPerFrameYankClimbing(catchupTime: 0f);
+        Assert.True(adaptiveWorst < fixedWorst,
+            $"adaptive catch-up should reduce the per-step camera yank (adaptive {adaptiveWorst:F2}u vs fixed {fixedWorst:F2}u)");
+    }
+
+    /// <summary>Walk a 24u-per-2-tic staircase (~860 u/s vertical, faster than the 200 u/s floor) and return the
+    /// worst single-render-frame change in the rendered camera Z — the visible "yank".</summary>
+    private static float WorstPerFrameYankClimbing(float catchupTime)
+    {
+        var buf = new PredictionBuffer();
+        var step = new ZStep();
+        Reconciler rec = new(buf, step) { StairSmoothTime = 1f, StairSmoothSpeed = 200f, StairCatchupTime = catchupTime, StairStepHeight = 31f };
+        buf.Push(new InputCommand());
+
+        DriveZ(rec, step, 0f);
+        rec.GetStairSmoothOffset(1f / 144f);
+
+        float trueZ = 0f, prevRenderedZ = 0f, worst = 0f;
+        for (int s = 0; s < 10; s++)
+        {
+            trueZ += 24f;
+            DriveZ(rec, step, trueZ);                  // grounded walk up the stairs (velocity.z ~ 0)
+            for (int f = 0; f < 2; f++)                // ~144 fps: render frames within the 1/72 s tic pair
+            {
+                float renderedZ = trueZ - rec.GetStairSmoothOffset(1f / 144f);
+                if (s > 1) worst = MathF.Max(worst, MathF.Abs(renderedZ - prevRenderedZ)); // skip the warm-up steps
+                prevRenderedZ = renderedZ;
+            }
+        }
+        return worst;
     }
 
     [Fact]

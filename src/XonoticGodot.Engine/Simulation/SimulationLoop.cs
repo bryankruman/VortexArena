@@ -1,4 +1,5 @@
 using System.Numerics;
+using XonoticGodot.Common.Diagnostics;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Services;
 using XonoticGodot.Engine.Collision;
@@ -110,7 +111,7 @@ public sealed class SimulationLoop
     /// accumulated (capped by <see cref="MaxTicksPerAdvance"/> to avoid a spiral of death). Mirrors the
     /// SV_Frame loop: <c>sv_timer += delta; while (sv_timer &gt; 0 &amp;&amp; count &lt; limit) { sv_timer -= ticrate; Tick(); }</c>.
     /// </summary>
-    public void Advance(float realDelta)
+    public int Advance(float realDelta)
     {
         if (realDelta < 0f) realDelta = 0f;
         // clamp a single huge delta (DP caps the per-call timer at 100ms before sub-stepping)
@@ -129,6 +130,10 @@ public sealed class SimulationLoop
         // if we hit the cap, drop the backlog so we don't perpetually run behind
         if (ticks >= MaxTicksPerAdvance && _accumulator > TicRate)
             _accumulator = 0f;
+
+        // The number of fixed ticks that ran this call (0 when the render rate outruns the tick rate). The caller
+        // uses this to avoid network/broadcast work on a frame where the world didn't actually advance.
+        return ticks;
     }
 
     /// <summary>Run exactly one fixed tick of SV_Physics. Public so tests can step deterministically.</summary>
@@ -143,9 +148,11 @@ public sealed class SimulationLoop
         _services.ClockImpl.FrameTime = TicRate;
 
         // 1) StartFrame
-        StartFrame?.Invoke();
+        using (Prof.Sample("sim.start"))
+            StartFrame?.Invoke();
 
         // 2) client entities, in order (PreThink → movement → PostThink), via the host callback
+        using (Prof.Sample("sim.move"))
         if (ClientMove != null)
         {
             var clients = Clients;
@@ -173,6 +180,7 @@ public sealed class SimulationLoop
         // snapshot count: entities spawned during this pass move next tick (DP's delayprojectiles
         // behavior — newly spawned ents don't run their move the frame they appear).
         int count = all.Count;
+        using (Prof.Sample("sim.integrate"))
         for (int i = 0; i < count; i++)
         {
             Entity e = all[i];
@@ -182,7 +190,8 @@ public sealed class SimulationLoop
         }
 
         // 4) EndFrame
-        EndFrame?.Invoke();
+        using (Prof.Sample("sim.end"))
+            EndFrame?.Invoke();
 
         // 5) advance time (sv.time += sv.frametime), at the very end like DP
         Time += FrameTime;

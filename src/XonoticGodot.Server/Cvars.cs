@@ -80,6 +80,18 @@ public static class Cvars
         // read them directly (vehicles/mutators, which each carry their own correct self-default too).
         new("sv_gravity", "800", Notify, "world gravity (u/s^2)"),
 
+        // Step-up vertical-velocity limiter (PORT EXTENSION — see PlayerPhysics.ApplyStepUpSpeedClamp). Unlike the
+        // magnitude movement tunables above (deliberately UNregistered so FromCvars owns their defaults), these two
+        // ARE registered: (1) so the in-game console/menu can SEE + complete them (RegisterDefaults stamps the shared
+        // MenuState.Cvars store at MenuState.Boot), and (2) so the listen-server cvar bridge — which only forwards a
+        // console `set` to the server tick when the server store already Has(name) (NetGame._sharedCvarBridge) —
+        // actually applies a change. SAFE from the shadowing trap that comment warns about: the registered value is
+        // the NO-OP identity, byte-equal to MovementParameters.Defaults (scale 1 / max -1 = disabled), so FromCvars'
+        // EXISTS-gated CvarRaw reads back exactly the same default it would have fallen back to. KEEP these two values
+        // in lockstep with MovementParameters.Defaults.StepUpSpeedScale / StepUpSpeedMax.
+        new("sv_step_upspeed_scale", "1", "step-up upward-velocity multiplier (1 = vanilla launch, 0 = step up without launching)"),
+        new("sv_step_upspeed_max", "-1", "step-up upward-velocity hard cap in u/s (-1 = disabled/uncapped)"),
+
         // ---- match flow / limits (mapinfo + xonotic-server.cfg) ----
         new("timelimit", "20", Notify, "match time limit in minutes (0 = none)"),
         new("fraglimit", "0", Notify, "score limit (0 = none)"),

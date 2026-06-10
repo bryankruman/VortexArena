@@ -63,19 +63,16 @@ public static class RespawnTiming
         // QC: arm the 10-9-8… announcer only for a long-enough wait.
         p.RespawnCountdown = (sdelay + waves >= 5f && p.RespawnTime - now > 1.75f) ? 10 : -1;
 
-        // QC: forced respawn auto-respawns at respawn_time_max even without a fire press. Bots have no input
-        // stream in this port (they never "press fire"), so they must be force-respawned too or they'd lie dead
-        // forever under the button-gated machine.
+        // QC calculate_player_respawn_time (client.qc:1483-1484): forced respawn auto-respawns at
+        // respawn_time_max even without a fire press, and is armed ONLY by g_forced_respawn — bots are NOT
+        // special-cased. In this port (T39) bots DO drive an input stream: BotBrain.ThinkProduce presses JUMP
+        // while DEAD_DEAD (QC bot.qc:147) to advance the same button-gated DEAD_* machine a human uses, so giving
+        // a bot RESPAWN_FORCE here would short-circuit DYING→RESPAWNING and skip DEAD_DEAD entirely (the bot
+        // would never get to press jump). Match QC: force only on g_forced_respawn.
         RespawnFlag flags = RespawnFlag.None;
-        if (Cvar("g_forced_respawn", 0f) != 0f || p.IsBot)
+        if (Cvar("g_forced_respawn", 0f) != 0f)
             flags |= RespawnFlag.Force;
         p.RespawnFlags = flags;
-
-        // A bot has no input stream to "press fire", so it relies on RESPAWN_FORCE — which respawns at
-        // respawn_time_max (the 5 s ceiling). Collapse the bot's ceiling to the base delay so bots respawn on the
-        // normal schedule (matching the old timer-driven path) instead of always waiting the full forced ceiling.
-        if (p.IsBot)
-            p.RespawnTimeMax = p.RespawnTime;
     }
 
     private static float Cvar(string name, float fallback)

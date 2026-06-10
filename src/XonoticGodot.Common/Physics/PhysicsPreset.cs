@@ -69,6 +69,11 @@ public static class PhysicsPreset
         ("jumpspeedcap_max_disable_on_ramps",    "sv_jumpspeedcap_max_disable_on_ramps"),
         ("track_canjump",                        "sv_track_canjump"),
         ("stepdown",                             "sv_gameplayfix_stepdown"),        // GAMEPLAYFIX_STEPDOWN, player.qc:148
+        // PORT EXTENSION (not in stock QC): make the step-up launch cap preset-resolvable so a client-selectable
+        // set (the "bryan" preset) can carry its own sv_step_upspeed_max. A set that doesn't define
+        // g_physics_<set>_step_upspeed_max resolves to the global sv_step_upspeed_max (default -1 = disabled), so
+        // every existing preset is unchanged. sv_step_upspeed_scale stays GLOBAL (no preset needs to vary it yet).
+        ("step_upspeed_max",                     "sv_step_upspeed_max"),
     };
 
     /// <summary>

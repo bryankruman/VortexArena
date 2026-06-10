@@ -189,4 +189,93 @@ public static class WeaponOrder
     /// <summary>QC <c>tokenize_console</c> on a space list: split on any whitespace, drop empties.</summary>
     private static List<string> Tokenize(string s)
         => new(s.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+
+    // =================================================================================================
+    //  QC unique-impulse / by-id order (all.qh:353 REGISTRY_SORT + the m_unique_impulse allocation)
+    // =================================================================================================
+
+    /// <summary>
+    /// The QC weapon DEFINITION order (common/weapons/all.inc) for the 19 "hardcoded-impulse" core weapons,
+    /// in the exact include order. QC's <c>REGISTRY_SORT(Weapons, WEP_HARDCODED_IMPULSES + 1)</c> (all.qh:353,
+    /// <c>skip = 20</c>) heapsorts only registry indices &gt;= 20, leaving index 0 (<c>WEP_Null</c>) and indices
+    /// 1..19 (these weapons) in definition order. <c>m_unique_impulse</c> is then assigned in registry-index
+    /// order from <c>WEP_IMPULSE_BEGIN == 230</c> (all.qh:359-382), so <c>weapon_byid_0</c> (impulse 230) is
+    /// blaster, <c>weapon_byid_1</c> shotgun, and so on. The port has no Null weapon, so id 0 here maps straight
+    /// onto blaster (see <see cref="ByIdOrder"/>).
+    /// </summary>
+    private static readonly string[] CoreDefinitionOrder =
+    {
+        "blaster", "shotgun", "machinegun", "mortar", "minelayer", "electro", "crylink", "vortex", "hagar",
+        "devastator", "porto", "vaporizer", "hook", "hlac", "tuba", "rifle", "fireball", "seeker", "arc",
+    };
+
+    /// <summary>
+    /// Port of the QC <c>m_unique_impulse</c> allocation ORDER (all.qh:359-382): the registry walked in
+    /// <c>FOREACH(Weapons)</c> (registry-index) order, skipping <c>WEP_Null</c>, any
+    /// <see cref="WeaponFlags.SpecialAttack"/> weapon, and the Ball-Stealer special case
+    /// (<see cref="WeaponFlags.MutatorBlocked"/> AND <see cref="WeaponFlags.TypeOther"/>). The Nth surviving
+    /// weapon gets impulse <c>230 + N</c>, i.e. is reachable as <c>weapon_byid_N</c>.
+    ///
+    /// <para>The QC registry order is: index 0 = Null (absent in this port), indices 1..19 = the core weapons
+    /// in <see cref="CoreDefinitionOrder"/>, indices 20+ = every other weapon STRCMP-sorted by
+    /// <c>registered_id</c> (the <c>WEP_*</c> token). For the port's Overkill tail the <c>registered_id</c>
+    /// ordinal order (<c>WEP_OVERKILL_HMG/MACHINEGUN/NEX/RPC/SHOTGUN</c>) coincides with the NetName ordinal
+    /// order (okhmg/okmachinegun/oknex/okrpc/okshotgun), which is the <see cref="Registry{T}.Sort"/> order the
+    /// port already imposes — so the tail is taken straight from the live registry, filtered the same way.</para>
+    ///
+    /// <para>Returns the weapons in by-id order; index <c>N</c> is the weapon <c>weapon_byid_N</c> selects. Any
+    /// core name absent from the registry is skipped (defensive; all 19 exist), and registry weapons not in the
+    /// core list are appended in registry (Sort) order after the core block, mirroring the QC tail.</para>
+    /// </summary>
+    public static IReadOnlyList<Weapon> ByIdOrder()
+    {
+        var ordered = new List<Weapon>(Registry<Weapon>.Count);
+        var taken = new HashSet<Weapon>();
+
+        // Core block: the 19 hardcoded-impulse weapons in QC definition order.
+        foreach (string name in CoreDefinitionOrder)
+        {
+            Weapon? w = Registry<Weapon>.ByName(name);
+            if (w is null) continue;          // defensive — all 19 are registered
+            if (IsImpulseSkipped(w)) continue; // none of the core weapons are skipped, but stay faithful
+            ordered.Add(w);
+            taken.Add(w);
+        }
+
+        // Tail: every remaining weapon in registry (ordinal NetName == strcmp registered_id) order, applying
+        // the same QC skip rules (Null/specialattack/Ball-Stealer). This is the heapsorted >= 20 region.
+        foreach (Weapon w in Registry<Weapon>.All)
+        {
+            if (taken.Contains(w)) continue;
+            if (IsImpulseSkipped(w)) continue;
+            ordered.Add(w);
+        }
+
+        return ordered;
+    }
+
+    /// <summary>
+    /// QC's <c>m_unique_impulse</c> skip rules (all.qh:367-372): <c>WEP_Null</c> (no Null weapon in this port),
+    /// any <see cref="WeaponFlags.SpecialAttack"/> weapon, and the Ball-Stealer special case
+    /// (<see cref="WeaponFlags.MutatorBlocked"/> AND <see cref="WeaponFlags.TypeOther"/>) never receive an
+    /// impulse, so they are unreachable by id.
+    /// </summary>
+    private static bool IsImpulseSkipped(Weapon w)
+    {
+        if ((w.SpawnFlags & WeaponFlags.SpecialAttack) != 0) return true;
+        if ((w.SpawnFlags & WeaponFlags.MutatorBlocked) != 0
+            && (w.SpawnFlags & WeaponFlags.TypeOther) != 0) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// Resolve <c>weapon_byid_N</c> (<paramref name="idx"/> = the impulse minus <c>WEP_IMPULSE_BEGIN</c>) to its
+    /// weapon, mirroring QC <c>Weapon_from_impulse(230 + idx)</c>. Returns null when <paramref name="idx"/> is out
+    /// of range of the impulse-reachable weapons.
+    /// </summary>
+    public static Weapon? WeaponByIdIndex(int idx)
+    {
+        IReadOnlyList<Weapon> order = ByIdOrder();
+        return idx >= 0 && idx < order.Count ? order[idx] : null;
+    }
 }

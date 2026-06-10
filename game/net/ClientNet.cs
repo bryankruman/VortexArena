@@ -133,10 +133,51 @@ public sealed class ClientNet : IDisposable
     /// Already applied to the shared <see cref="XonoticGodot.Common.Gameplay.Scoring.GameScores"/> when set.</summary>
     public XonoticGodot.Net.ScoreInfoBlock.Decoded? LatestScoreInfo { get; private set; }
 
+    /// <summary>The latest per-mode round/objective HUD status (T53): the CA/FT alive counts + eliminated ids,
+    /// the KH OBJECTIVE_STATUS key pack, the Survival role + disclosed hunter ids. Null until a tracked mode
+    /// sends one. Consumers: NetGame.UpdateModIcons (ModIconsPanel) + UpdateScoreboard (eliminated grey-out).</summary>
+    public XonoticGodot.Net.GametypeStatusBlock.Decoded? LatestModeStatus { get; private set; }
+
+    /// <summary>[T57] The local player's own per-weapon accuracy bytes (QC ENT_CLIENT_ACCURACY, owner-only):
+    /// one QC accuracy_byte per Registry&lt;Weapon&gt; id (0 = never fired, 1..101 = pct+1, 255 = &gt;100%).
+    /// Empty until the first owner block carrying the array arrives; updated only when the server's
+    /// <see cref="LocalAccuracyGeneration"/> moves. NetGame polls the generation and decodes these into the
+    /// scoreboard/weapons-panel accuracy grids.</summary>
+    public byte[] LocalAccuracyBytes { get; private set; } = System.Array.Empty<byte>();
+
+    /// <summary>[T57] The owner accuracy change counter the server replicated (QC the accuracy SendFlags
+    /// generation). NetGame compares this against its last-fed value to rebuild the accuracy dictionaries only
+    /// on a change.</summary>
+    public int LocalAccuracyGeneration { get; private set; }
+
     /// <summary>The stair-smoothing Z offset to subtract from <see cref="PredictedOrigin"/> Z when placing the
     /// camera (so it glides over steps). Advanced by the REAL frame delta <paramref name="frameDt"/> (clamped),
     /// NOT the server-synced render clock — the rebasing clock's quantized jumps made the view jitter up/down.</summary>
     public float PredictedStairOffset(float frameDt) => _reconciler.GetStairSmoothOffset(frameDt);
+
+    /// <summary>
+    /// Push the live stair-smoothing tunables into the reconciler before reading <see cref="PredictedStairOffset"/>.
+    /// <paramref name="smoothSpeed"/> is <c>cl_stairsmoothspeed</c> (&lt;= 0 turns smoothing OFF, matching the
+    /// reference's single-cvar semantics); <paramref name="stepHeight"/> is the live <c>sv_stepheight</c> (the lag
+    /// clamp); the two port-extension knobs (<c>cl_stairsmooth_snapspeed</c> / <c>cl_stairsmooth_catchuptime</c>)
+    /// gate the airborne snap on vertical speed and scale the catch-up so a fast climb doesn't yank the camera.
+    /// Cheap (a few field writes); call once per render frame so live cvar edits take effect immediately.
+    /// </summary>
+    public void ConfigureStairSmoothing(float smoothSpeed, float stepHeight, float snapSpeed, float catchupTime)
+    {
+        if (smoothSpeed <= 0f)
+        {
+            _reconciler.StairSmoothTime = 0f;       // cl_stairsmoothspeed <= 0 => off (reference semantics)
+        }
+        else
+        {
+            _reconciler.StairSmoothTime = 1f;
+            _reconciler.StairSmoothSpeed = smoothSpeed;
+        }
+        if (stepHeight > 0f) _reconciler.StairStepHeight = stepHeight;
+        if (snapSpeed > 0f) _reconciler.StairSnapVerticalSpeed = snapSpeed;
+        _reconciler.StairCatchupTime = catchupTime >= 0f ? catchupTime : 0f;
+    }
 
     /// <summary>The prediction-error smoothing offset to add to the rendered origin (decays to zero).</summary>
     public NVec3 PredictionErrorOffset(float now) => _reconciler.GetPredictionErrorOrigin(now);
@@ -546,8 +587,26 @@ public sealed class ClientNet : IDisposable
         RespawnTimeStat = r.ReadFloat(); // QC STAT(RESPAWN_TIME): dead respawn countdown / "press fire" prompt
         SpectateeStatus = r.ReadShort(); // QC spectatee_status: 0 playing, own id observing, other id spectating
 
-        // [A3 reserved: owner-state appends] — new per-owner reads (T57 accuracy scalars, etc.) append HERE,
-        // strictly at the END of the owner block, in lockstep with ServerNet.WriteOwnerState's matching marker.
+        // [T57 accuracy] — the owner's own per-weapon accuracy bytes (QC ENT_CLIENT_ACCURACY, owner-only), read
+        // in lockstep with ServerNet.WriteOwnerState's append: the change generation, then a bool gate, and —
+        // only when set — a length byte + that many bytes (one QC accuracy_byte per weapon registry id). ALWAYS
+        // consume whatever is present to keep the stream aligned. NetGame polls LocalAccuracyGeneration and
+        // decodes the bytes into the scoreboard + weapons-panel accuracy grids.
+        int accGen = r.ReadLong();
+        if (r.ReadBool())
+        {
+            int n = r.ReadByte();
+            ReadOnlySpan<byte> accBytes = r.ReadBytes(n);
+            if (!r.BadRead)
+            {
+                LocalAccuracyBytes = accBytes.ToArray();
+                LocalAccuracyGeneration = accGen;
+            }
+        }
+        else if (!r.BadRead)
+        {
+            LocalAccuracyGeneration = accGen; // no change this frame; keep the generation current
+        }
 
         // movevars: when the server's physics changed, stamp the replicated values into our cvar store so the
         // predictor's MovementParameters.FromCvars() matches authority (mid-match physics/mutator changes), then
@@ -622,13 +681,18 @@ public sealed class ClientNet : IDisposable
                 LatestScoreboard = sb;
         }
 
-        // [A3 reserved: T53 mode-stats block] — T53's gametype-status read splices in HERE, after the scoreboard
-        // read and before the BadRead bail, mirroring ServerNet.BroadcastSnapshots' matching marker. ALWAYS
-        // consume the bytes even with no consumer wired (the ScoreInfo comment above documents the alignment
-        // contract).
+        // Gametype status (T53): read in lockstep with ServerNet's write order (owner → movevars → scoreinfo →
+        // scoreboard → THIS → entity section). ALWAYS consume the bytes to keep the stream aligned, even with
+        // no consumer wired (the ScoreInfo comment above documents the alignment contract).
+        if (r.ReadBool())
+        {
+            XonoticGodot.Net.GametypeStatusBlock.Decoded? ms = XonoticGodot.Net.GametypeStatusBlock.Deserialize(ref r);
+            if (ms is not null && !r.BadRead)
+                LatestModeStatus = ms;
+        }
 
-        // [A3 reserved: T57 accuracy block] — if T57 ships a bool-gated block, its read splices in HERE,
-        // directly after T53's slot (same alignment contract).
+        // [T57 accuracy] — the owner's accuracy array is a PER-OWNER payload; it is read at the END of the owner
+        // block above (next to SpectateeStatus), NOT here in the broadcast region.
 
         if (r.BadRead)
             return;

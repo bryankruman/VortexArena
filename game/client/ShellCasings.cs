@@ -95,30 +95,43 @@ public sealed partial class ShellCasings : Node3D
         return GeneratedCasing(kind);
     }
 
+    // Each casing kind's fallback mesh+material is identical across spawns, so build the two variants once and
+    // share the Mesh resource (only the MeshInstance3D node is per-casing). Avoids constructing a CylinderMesh +
+    // StandardMaterial3D — and the material's first-draw shader compile — on the casing's frame.
+    private static CylinderMesh? _shellMesh;
+    private static CylinderMesh? _bulletMesh;
+
     /// <summary>A tiny brass cylinder used when the real casing model can't be loaded.</summary>
     private static MeshInstance3D GeneratedCasing(CasingKind kind)
     {
         bool shell = kind == CasingKind.Shell;
-        var cyl = new CylinderMesh
+        CylinderMesh mesh = shell
+            ? _shellMesh ??= BuildCasingMesh(true)
+            : _bulletMesh ??= BuildCasingMesh(false);
+        // Lay the cylinder along its travel-ish axis (Godot cylinder is Y-up by default; rotate to be a pin).
+        return new MeshInstance3D
+        {
+            Mesh = mesh,
+            RotationDegrees = new Vector3(90f, 0f, 0f),
+        };
+    }
+
+    private static CylinderMesh BuildCasingMesh(bool shell)
+    {
+        Color brass = shell ? new Color(0.7f, 0.15f, 0.12f) : new Color(0.78f, 0.62f, 0.25f);
+        return new CylinderMesh
         {
             TopRadius = shell ? 0.9f : 0.5f,
             BottomRadius = shell ? 0.9f : 0.5f,
             Height = shell ? 3.0f : 1.6f,
             RadialSegments = 6,
             Rings = 0,
-        };
-        Color brass = shell ? new Color(0.7f, 0.15f, 0.12f) : new Color(0.78f, 0.62f, 0.25f);
-        cyl.Material = new StandardMaterial3D
-        {
-            AlbedoColor = brass,
-            Metallic = 0.8f,
-            Roughness = 0.35f,
-        };
-        // Lay the cylinder along its travel-ish axis (Godot cylinder is Y-up by default; rotate to be a pin).
-        return new MeshInstance3D
-        {
-            Mesh = cyl,
-            RotationDegrees = new Vector3(90f, 0f, 0f),
+            Material = new StandardMaterial3D
+            {
+                AlbedoColor = brass,
+                Metallic = 0.8f,
+                Roughness = 0.35f,
+            },
         };
     }
 

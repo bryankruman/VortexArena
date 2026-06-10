@@ -156,6 +156,7 @@ public partial class Hud : CanvasLayer
 
     public override void _Process(double delta)
     {
+        using var _hudScope = XonoticGodot.Game.Client.FrameProfiler.Scope("hud.mgr"); // [profiling] HudManager per-frame
         // QC redrew the entire HUD every frame; we only invalidate panels whose contents are live so
         // static panels (scoreboard) repaint solely when their data is pushed via QueueRedraw.
         foreach (HudPanel p in _panels)

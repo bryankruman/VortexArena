@@ -113,17 +113,27 @@ public class PlayerLoopParityTests
     }
 
     [Fact]
-    public void RespawnTiming_BotIsAlwaysForced_SoItAutoRespawns()
+    public void RespawnTiming_BotIsNotSpeciallyForced_RespawnsViaItsJumpButton()
     {
         Boot();
         Api.Cvars.Set("g_respawn_delay_small", "2");
         Api.Cvars.Set("g_respawn_delay_max", "5");
+        Api.Cvars.Set("g_forced_respawn", "0");
         var bot = new Player { IsBot = true };
         RespawnTiming.Calculate(bot, new List<Player> { bot }, teamplay: false);
-        // A bot has no input stream to "press fire", so it must carry RESPAWN_FORCE to leave the dead state...
+        // QC calculate_player_respawn_time (client.qc:1483-1484) arms RESPAWN_FORCE only on g_forced_respawn —
+        // bots are NOT special-cased. In this port (T39) a bot DOES drive an input stream: BotBrain.ThinkProduce
+        // presses JUMP while DEAD_DEAD (QC bot.qc:147) to advance the SAME button-gated DEAD_* machine a human
+        // uses. Forcing a bot here would short-circuit DYING→RESPAWNING and skip DEAD_DEAD (see
+        // BotLiveLoopTests.LiveLoop_DeadBot_PressesJumpWhenDeadDead_AndRespawns).
+        Assert.False((bot.RespawnFlags & RespawnFlag.Force) != 0);
+        // Same timing as a human at stock defaults: small(2) < max(5) -> respawn_time_max = now + max.
+        Assert.Equal(2f, bot.RespawnTime, 2);
+        Assert.Equal(5f, bot.RespawnTimeMax, 2);
+
+        // ...and g_forced_respawn still forces everyone, bot included (QC: the flag is universal).
+        Api.Cvars.Set("g_forced_respawn", "1");
+        RespawnTiming.Calculate(bot, new List<Player> { bot }, teamplay: false);
         Assert.True((bot.RespawnFlags & RespawnFlag.Force) != 0);
-        // ...and its forced ceiling is collapsed to the base delay so it respawns on the normal schedule (2s),
-        // not the 5s forced ceiling a human with g_forced_respawn would wait.
-        Assert.Equal(bot.RespawnTime, bot.RespawnTimeMax, 2);
     }
 }

@@ -50,6 +50,11 @@ public static class CsqcModelEffects
     /// <summary>One DP <c>adddynamiclight</c>: a unit position offset + range + (possibly &gt;1) color.</summary>
     private readonly record struct LightSpec(float Range, Color Color, NVec3 Offset);
 
+    // Reused across calls instead of allocating per glowing entity per frame: Apply runs once per entity per
+    // frame on the (single) main thread and fully consumes the list via DriveLights before it returns, so one
+    // shared scratch buffer is safe and removes the steady-state GC drip from models carrying EF_* light bits.
+    private static readonly List<LightSpec> _lightScratch = new(4);
+
     /// <summary>
     /// QC <c>CSQCModel_Effects_Apply(this)</c> for one frame. <paramref name="root"/> is the model's rendered
     /// node (its meshes get the render-flag tweaks), <paramref name="e"/> the networked entity (Effects + origin),
@@ -67,8 +72,10 @@ public static class CsqcModelEffects
         // don't accumulate (additive/fullbright/depthtest/noshadow visibility all back to the model defaults).
         ResetRenderFlags(root);
         // QC spawns an INDEPENDENT adddynamiclight per set light bit (csqcmodel_hooks.qc:557-593), so accumulate
-        // one LightSpec per bit (not a single overwriting light) and drive N pooled lights below.
-        var lights = new List<LightSpec>(2);
+        // one LightSpec per bit (not a single overwriting light) and drive N pooled lights below. Reuses the
+        // shared scratch buffer (consumed by DriveLights before this returns) — no per-entity-per-frame alloc.
+        List<LightSpec> lights = _lightScratch;
+        lights.Clear();
         string? tref = null;
 
         // EF_BRIGHTFIELD → TR_NEXUIZPLASMA trail (csqcmodel_hooks.qc:554-555).

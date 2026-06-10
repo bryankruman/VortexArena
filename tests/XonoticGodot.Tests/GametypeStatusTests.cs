@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Gameplay;
 using XonoticGodot.Common.Gameplay.Scoring;
@@ -228,32 +229,34 @@ public class GametypeStatusTests
             surv.Tick();
             surv.Tick();
             Assert.True(surv.RoleAssigned);
-            // g_survival_hunter_count default 0.25 → floor(4 * 0.25) = 1 hunter = roster[0].
-            Assert.Equal(Survival.SurvStatus.Hunter, surv.StatusOf(p0));
-            Assert.Equal(Survival.SurvStatus.Prey, surv.StatusOf(p1));
+            // g_survival_hunter_count default 0.25 → floor(4 * 0.25) = 1 hunter, picked RANDOMLY among the
+            // live roster (QC Surv_RoundStart FOREACH_CLIENT_RANDOM) — resolve WHO it is rather than assuming
+            // a fixed slot (the old port marked roster[0]; the random pick is the Base-faithful behavior).
+            Player hunterP = roster.Single(p => surv.StatusOf(p) == Survival.SurvStatus.Hunter);
+            Player[] preyP = roster.Where(p => surv.StatusOf(p) == Survival.SurvStatus.Prey).ToArray();
+            Assert.Equal(3, preyP.Length);
 
             // Mid-round PREY viewer: own role only — hunter ids MUST NOT ride the wire (anti-cheat).
-            GametypeStatusBlock.Decoded prey = DecodeWithSentinels(surv, p1, roster, ids);
+            GametypeStatusBlock.Decoded prey = DecodeWithSentinels(surv, preyP[0], roster, ids);
             Assert.Equal(1, prey.MyStatus);
             Assert.Empty(prey.HunterNetIds);
 
             // Mid-round HUNTER viewer: hunters know all hunters (QC sendflags |= STATUS_SEND_HUNTERS).
-            GametypeStatusBlock.Decoded hunter = DecodeWithSentinels(surv, p0, roster, ids);
+            GametypeStatusBlock.Decoded hunter = DecodeWithSentinels(surv, hunterP, roster, ids);
             Assert.Equal(2, hunter.MyStatus);
-            Assert.Equal(new HashSet<int> { ids(p0) }, hunter.HunterNetIds);
+            Assert.Equal(new HashSet<int> { ids(hunterP) }, hunter.HunterNetIds);
 
             // Wipe the prey → round over → EVERYONE receives the hunter set (the round-end scoreboard out)
             // and the eliminated set carries the dead prey.
-            surv.GetState(p1).Alive = false;
-            surv.GetState(p2).Alive = false;
-            surv.GetState(p3).Alive = false;
+            foreach (Player pr in preyP)
+                surv.GetState(pr).Alive = false;
             surv.CheckWinningCondition();
             Assert.True(surv.RoundOver);
-            Assert.True(surv.DisclosesHuntersTo(p1));
+            Assert.True(surv.DisclosesHuntersTo(preyP[0]));
 
-            GametypeStatusBlock.Decoded over = DecodeWithSentinels(surv, p1, roster, ids);
-            Assert.Equal(new HashSet<int> { ids(p0) }, over.HunterNetIds);
-            Assert.Equal(new HashSet<int> { ids(p1), ids(p2), ids(p3) }, over.EliminatedNetIds);
+            GametypeStatusBlock.Decoded over = DecodeWithSentinels(surv, preyP[0], roster, ids);
+            Assert.Equal(new HashSet<int> { ids(hunterP) }, over.HunterNetIds);
+            Assert.Equal(preyP.Select(ids).ToHashSet(), over.EliminatedNetIds);
         }
         finally
         {

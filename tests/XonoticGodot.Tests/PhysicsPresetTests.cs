@@ -1,3 +1,4 @@
+using XonoticGodot.Common.Services;
 using XonoticGodot.Common.Physics;
 using XonoticGodot.Engine.Simulation;
 using XonoticGodot.Net;
@@ -38,10 +39,13 @@ public class PhysicsPresetTests
         // xdf rows (physics.cfg:207-208)
         c.Set("g_physics_xdf_jumpspeedcap_min", "0");
         c.Set("g_physics_xdf_jumpspeedcap_max", "0.5");
-        // the sv_* globals presets fall back to
+        // the sv_* globals presets fall back to (stock Xonotic values from physicsX.cfg — sv_friction 6 is the
+        // one the cpma set does NOT override, so it must be seeded here for the missing-row fallback to land on
+        // the real default rather than an unset 0).
         c.Set("sv_maxspeed", "360");
         c.Set("sv_gravity", "800");
         c.Set("sv_aircontrol", "100");
+        c.Set("sv_friction", "6");          // physicsX.cfg:12 — no g_physics_cpma_friction row → falls back here
         return c;
     }
 
@@ -131,8 +135,11 @@ public class PhysicsPresetTests
         Assert.Null(PhysicsPreset.OptionFor("sv_gameplayfix_stepdown_maxspeed"));
         Assert.Null(PhysicsPreset.OptionFor("g_movement_highspeed"));
         Assert.Null(PhysicsPreset.OptionFor("sv_gameplayfix_nudgeoutofsolid"));
-        // exactly the 36-option preset block (physics.cfg per-set rows)
-        Assert.Equal(36, PhysicsPreset.Options.Length);
+        // the stock 36-option QC block + one PORT EXTENSION (step_upspeed_max, for the "bryan" preset). The other
+        // step-up cvar (sv_step_upspeed_scale) stays GLOBAL — no preset varies it — so it is NOT resolvable.
+        Assert.Equal("step_upspeed_max", PhysicsPreset.OptionFor("sv_step_upspeed_max"));
+        Assert.Null(PhysicsPreset.OptionFor("sv_step_upspeed_scale"));
+        Assert.Equal(37, PhysicsPreset.Options.Length);
     }
 
     [Fact]
@@ -171,6 +178,93 @@ public class PhysicsPresetTests
         float[] globals = MoveVarsBlock.Capture(c);
         float[] resolved = MoveVarsBlock.CaptureResolved(c, "cpma", globals, c.Has);
         Assert.Equal(MoveVarsBlock.Hash(globals), MoveVarsBlock.Hash(resolved)); // the wire's "no deviation" gate
+    }
+
+    /// <summary>
+    /// Regression: an explicitly-configured 0 must survive BOTH decode paths. The cpma/quake3/warsow presets set
+    /// <c>sv_gameplayfix_stepdown 0</c> and <c>sv_airstrafeaccel_qw 0</c> deliberately (player.qc:23-42
+    /// Physics_ClientOption returns the cvar value verbatim — a real 0 is real). The wire (FromValues) must keep
+    /// it because <see cref="MoveVarsBlock.Capture"/> always emits every slot; the cvar path (FromCvars) must keep
+    /// it because the fallback gates on CVAR_TYPEFLAG_EXISTS (an absent cvar reads ""), not value==0. Before the
+    /// fix the Raw/CvarRaw helpers clobbered the 0 back to the Xonotic default (StepDown 2 / airstrafeaccel_qw
+    /// -0.95), diverging from Base on a non-Xonotic server.
+    /// </summary>
+    [Fact]
+    public void ExplicitZero_StepdownAndAirstrafe_SurvivesBothDecodePaths()
+    {
+        var c = new CvarService();
+        c.Set("sv_gameplayfix_stepdown", "0");
+        c.Set("sv_airstrafeaccel_qw", "0");
+
+        // WIRE path: Capture emits every slot, so the EXPLICITLY-set 0 is authoritative through FromValues
+        // (it would snap back to StepDown 2 / airstrafeaccel_qw -0.95 under the old fall-back-on-0 helpers).
+        MovementParameters wire = MovementParameters.FromValues(MoveVarsBlock.Capture(c));
+        Assert.Equal(0, wire.StepDown);
+        Assert.Equal(0f, wire.AirStrafeAccelQW);
+        // The real production driver of a preset 0 is CaptureResolved (the preset row EXISTS → resolves to a
+        // genuine 0, distinguishable from an unset global). Prove that vector carries the 0 too.
+        var resStore = new CvarService();
+        resStore.Set("g_physics_clientselect", "1");
+        resStore.Set("g_physics_clientselect_options", "cpma");
+        resStore.Set("g_physics_cpma_stepdown", "0");
+        resStore.Set("g_physics_cpma_airstrafeaccel_qw", "0");
+        float[] resolved = MoveVarsBlock.CaptureResolved(resStore, "cpma", MoveVarsBlock.Capture(resStore), resStore.Has);
+        MovementParameters res = MovementParameters.FromValues(resolved);
+        Assert.Equal(0, res.StepDown);
+        Assert.Equal(0f, res.AirStrafeAccelQW);
+
+        // CVAR path: FromCvars reads the ambient store; the EXISTS gate honors the explicit 0.
+        IEngineServices? saved = Api.Services;
+        try
+        {
+            Api.Services = new CvarOnlyServices(c);
+            MovementParameters cvar = MovementParameters.FromCvars();
+            Assert.Equal(0, cvar.StepDown);
+            Assert.Equal(0f, cvar.AirStrafeAccelQW);
+            // a genuinely-absent cvar still falls back to the port default.
+            Api.Services = new CvarOnlyServices(new CvarService());
+            Assert.Equal(2, MovementParameters.FromCvars().StepDown);
+        }
+        finally
+        {
+            Api.Services = saved!;
+        }
+    }
+
+    [Fact]
+    public void BryanPreset_ResolvesStepUpSpeedCap_OthersFallBackToGlobalDefault()
+    {
+        // The client-selectable "bryan" set (physics.cfg) carries its own sv_step_upspeed_max via the new
+        // preset-resolvable option; every other set falls back to the global default (-1 = disabled), so the
+        // existing presets are unchanged.
+        var c = new CvarService();
+        c.Set("g_physics_clientselect", "1");
+        c.Set("g_physics_clientselect_options", "xonotic cpma bryan");
+        c.Set("g_physics_bryan_step_upspeed_max", "1");
+        const float globalDefault = -1f; // sv_step_upspeed_max unset → AbsentDefaults -1 on the wire
+
+        Assert.Equal(1f, PhysicsPreset.Resolve(c, "bryan", "step_upspeed_max", globalDefault, c.Has));
+        Assert.Equal(globalDefault, PhysicsPreset.Resolve(c, "cpma", "step_upspeed_max", globalDefault, c.Has));
+
+        // The full per-peer wire vector (CaptureResolved → FromValues) carries the bryan cap and the cpma fallback.
+        float[] globals = MoveVarsBlock.Capture(c); // sv_step_upspeed_max unset → -1 (AbsentDefaults), scale → 1
+        MovementParameters bryan = MovementParameters.FromValues(MoveVarsBlock.CaptureResolved(c, "bryan", globals, c.Has));
+        Assert.Equal(1f, bryan.StepUpSpeedMax);
+        Assert.Equal(1f, bryan.StepUpSpeedScale); // scale stays global (1), only the cap is preset-driven
+        MovementParameters cpma = MovementParameters.FromValues(MoveVarsBlock.CaptureResolved(c, "cpma", globals, c.Has));
+        Assert.Equal(-1f, cpma.StepUpSpeedMax);
+    }
+
+    /// <summary>Minimal services whose only live member is a real cvar store — FromCvars touches nothing else.</summary>
+    private sealed class CvarOnlyServices : IEngineServices
+    {
+        public CvarOnlyServices(ICvarService cvars) => Cvars = cvars;
+        public ICvarService Cvars { get; }
+        public ITraceService Trace => null!;
+        public IEntityService Entities => null!;
+        public ISoundService Sound => null!;
+        public IModelService Models => null!;
+        public IGameClock Clock => null!;
     }
 
     [Fact]
