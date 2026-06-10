@@ -21,9 +21,21 @@ mono_crash.*.json
 .idea/
 .vscode/
 
-# Visual-capture output (--screenshot; see RUNNING.md "Visual capture")
-screenshots/
+# Visual-capture output (--screenshot; see RUNNING.md "Visual capture"). The
+# .gdignore IS tracked so the Godot editor skips this tree (no *.import sidecars
+# for captured PNGs) even on a fresh checkout before anything is captured.
+screenshots/*
+!screenshots/.gdignore
+# Stray captures dropped in the project root (prefer _scratch/ below).
 _*.png
+
+# Local scratch / throwaway dev files (test textures, comparison captures, one-off
+# experiments). Same deal as assets/ and screenshots/: the folder is .gdignore'd so
+# Godot never imports it (no *.import noise) and the contents are git-ignored. The
+# two marker files stay tracked so a fresh checkout has the folder ready to use.
+_scratch/*
+!_scratch/.gdignore
+!_scratch/README.md
 
 # Export/packaging output (export presets + tools/package.sh). Test-run artifacts
 # (TestResults/) are already covered by the [Tt]est[Rr]esults/ rule above.

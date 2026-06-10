@@ -1,0 +1,5 @@
+# Scratch / throwaway dev files (test textures, comparison captures, one-off
+# experiments). Tell the Godot editor to skip this whole tree so it doesn't
+# generate *.import sidecars for everything dropped in here. The folder's
+# contents are also git-ignored (see ../.gitignore). Only this file and
+# README.md are tracked, so a fresh checkout already has the folder primed.

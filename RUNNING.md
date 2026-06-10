@@ -238,7 +238,11 @@ ToS/welcome/team-select, tools, confirms). Architecture:
   # success → stdout has: [Screenshot] wrote 1280x720 -> .../screenshots/stormkeep.png
   ```
   The window opens for ~1.5 s and self-quits. Point `Main.cs`/`GameDemo` at a different map/model to capture
-  other scenes; bump `--screenshot-frames` if assets/shadows need longer to settle. Output dir is git-ignored.
+  other scenes; bump `--screenshot-frames` if assets/shadows need longer to settle. Write captures into
+  `screenshots/` (or `_scratch/` for general throwaway test files) — **not** the project root: both dirs carry a
+  `.gdignore` so the Godot editor skips them and never spams the tree with `*.import` sidecars, and both are
+  git-ignored. A root-level capture (`_*.png`) is git-ignored too but Godot will still generate a stray
+  `_*.png.import` next to it, so prefer the folders.
   (First proof of this caught stormkeep's **walls rendering as missing-texture magenta** — unsupported DDS
   textures — while the headless smoke test still reported `0 errors`; now fixed by `DdsDecoder` (S3TC/BC1-3 +
   uncompressed). The last couple of `_norm`/`_gloss` maps were pk3 **symlink** stubs from build-time dedup,

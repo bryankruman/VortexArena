@@ -21,9 +21,5 @@ project/assembly_name="XonoticGodot"
 
 [rendering]
 
-; 4x MSAA on 3D geometry — smooths the aliased map/model silhouettes (no TAA: it
-; ghosts on the fast camera motion of an arena shooter). 8x anisotropic is the cap
-; used by samplers that request it (the world/skin albedo shaders + StandardMaterial3D
-; fallbacks all opt in via filter_linear_mipmap_anisotropic / LinearWithMipmapsAnisotropic).
-anti_aliasing/quality/msaa_3d=2
 textures/default_filters/anisotropic_filtering_level=3
+anti_aliasing/quality/msaa_3d=2

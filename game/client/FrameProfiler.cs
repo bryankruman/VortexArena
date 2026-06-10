@@ -118,8 +118,17 @@ public partial class FrameProfiler : CanvasLayer
         // environment, not game code — an attached managed/Mono debugger adds main-thread sync stalls, and the
         // vsync/fps cap paces frame delivery. This prints the facts so you don't have to guess (esp. when running
         // from an IDE "Player" config, which attaches a debugger for hot-reload even on a non-breakpoint run).
+        // `debug-build` = OS.IsDebugBuild() = Godot's export/run CONTEXT (always true from the editor, regardless
+        // of the C# config). `csharp` = the actual managed assembly optimization (#if DEBUG), which IS what the
+        // Rider Debug/Release switch controls — check this line to confirm a Release switch reached the running DLL.
+#if DEBUG
+        const string csharpConfig = "Debug";
+#else
+        const string csharpConfig = "Release(optimized)";
+#endif
         Log.Info($"[frameprofiler] env: managed-debugger={System.Diagnostics.Debugger.IsAttached} " +
-                 $"debug-build={OS.IsDebugBuild()} vsync={DisplayServer.WindowGetVsyncMode()} maxfps={Godot.Engine.MaxFps}");
+                 $"godot-context={(OS.IsDebugBuild() ? "debug" : "release")} csharp={csharpConfig} " +
+                 $"vsync={DisplayServer.WindowGetVsyncMode()} maxfps={Godot.Engine.MaxFps}");
     }
 
     public override void _Process(double delta)
