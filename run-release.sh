@@ -18,7 +18,22 @@ OUT="$PROJ/dist/windows-client/XonoticGodot.exe"
 
 mkdir -p "$(dirname "$OUT")"
 echo "[run-release] exporting '$PRESET' (release, optimized C#) → $OUT"
-"$GODOT" --headless --path "$PROJ" --export-release "$PRESET" "$OUT"
 
+# Godot's headless --export-release frequently exits NON-ZERO even on a fully successful export
+# (benign import/shader/.NET warnings). So don't trust the exit code — gate on the binary appearing.
+set +e
+"$GODOT" --headless --path "$PROJ" --export-release "$PRESET" "$OUT"
+rc=$?
+set -e
+if [ ! -f "$OUT" ]; then
+    echo "[run-release] export FAILED — '$OUT' was not produced (godot exit $rc)" >&2
+    exit 1
+fi
+[ "$rc" -ne 0 ] && echo "[run-release] note: godot exited $rc but produced the binary (benign export warnings) — continuing."
+
+# Launch from the project root so the exported build's asset resolver finds the in-tree assets/data
+# (GameDemo.ResolveDataPath falls back to a CWD-relative 'assets/data' in an exported build; a packaged
+# zip instead carries assets beside the binary). Without this a release run boots into an empty world.
 echo "[run-release] launching: $OUT $*"
-"$OUT" "$@"
+cd "$PROJ"
+exec "$OUT" "$@"

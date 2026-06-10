@@ -22,8 +22,18 @@ if (-not (Test-Path (Join-Path $tpl "*"))) {
 
 New-Item -ItemType Directory -Force -Path (Split-Path $Out) | Out-Null
 Write-Host "[run-release] exporting '$Preset' (release, optimized C#) -> $Out"
-& $Godot --headless --path $Proj --export-release $Preset $Out
-if ($LASTEXITCODE -ne 0) { Write-Host "[run-release] export failed (exit $LASTEXITCODE)" -ForegroundColor Red; exit $LASTEXITCODE }
 
+# Godot's headless --export-release frequently exits NON-ZERO even on a fully successful export (benign
+# import/shader/.NET warnings). Don't trust $LASTEXITCODE — gate on the binary actually appearing.
+& $Godot --headless --path $Proj --export-release $Preset $Out
+if (-not (Test-Path $Out)) {
+    Write-Host "[run-release] export FAILED -- '$Out' was not produced (godot exit $LASTEXITCODE)" -ForegroundColor Red
+    exit 1
+}
+if ($LASTEXITCODE -ne 0) { Write-Host "[run-release] note: godot exited $LASTEXITCODE but produced the binary (benign export warnings) -- continuing." -ForegroundColor Yellow }
+
+# Launch from the project root so the exported build's CWD-relative asset fallback finds the in-tree
+# assets/data (a packaged zip instead carries assets beside the binary). Else: empty world.
 Write-Host "[run-release] launching $Out $args"
+Set-Location $Proj
 & $Out @args

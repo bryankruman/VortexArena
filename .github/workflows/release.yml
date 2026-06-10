@@ -35,6 +35,9 @@ env:
   DOTNET_NOLOGO: "1"
   DOTNET_CLI_TELEMETRY_OPTOUT: "1"
   GODOT_VERSION: "4.6.3"
+  # Run the Node-20 JS actions (checkout/cache/upload-artifact/…) on Node 24 now — the documented opt-in
+  # ahead of GitHub's forced switch. No-op once Node 24 is the default.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   # ── Resolve the version string once, share it with every job ────────────────
@@ -102,9 +105,12 @@ jobs:
         shell: bash
 
       - name: Export windows-client
+        # Godot's headless export often exits non-zero on benign warnings — `|| true`, then assert the
+        # binary actually appeared so a REAL export failure (no output) still fails the job.
         run: |
           mkdir -p dist/windows-client
-          godot --headless --path . --export-release "windows-client" dist/windows-client/XonoticGodot.exe
+          godot --headless --path . --export-release "windows-client" dist/windows-client/XonoticGodot.exe || true
+          test -f dist/windows-client/XonoticGodot.exe
         shell: bash
 
       - name: Fetch assets
@@ -139,10 +145,13 @@ jobs:
         run: godot --headless --path . --import || true
 
       - name: Export linux-client + linux-dedicated
+        # Godot's headless export often exits non-zero on benign warnings — `|| true`, then assert outputs.
         run: |
           mkdir -p dist/linux-client dist/linux-dedicated
-          godot --headless --path . --export-release "linux-client"    dist/linux-client/XonoticGodot.x86_64
-          godot --headless --path . --export-release "linux-dedicated" dist/linux-dedicated/xonoticgodot-dedicated.x86_64
+          godot --headless --path . --export-release "linux-client"    dist/linux-client/XonoticGodot.x86_64 || true
+          godot --headless --path . --export-release "linux-dedicated" dist/linux-dedicated/xonoticgodot-dedicated.x86_64 || true
+          test -f dist/linux-client/XonoticGodot.x86_64
+          test -f dist/linux-dedicated/xonoticgodot-dedicated.x86_64
 
       - name: Fetch assets
         uses: actions/download-artifact@v4
@@ -175,9 +184,11 @@ jobs:
         run: godot --headless --path . --import || true
 
       - name: Export macos-client
+        # Godot's headless export often exits non-zero on benign warnings — `|| true`, then assert the .app.
         run: |
           mkdir -p dist/macos-client
-          godot --headless --path . --export-release "macos-client" dist/macos-client/XonoticGodot.app
+          godot --headless --path . --export-release "macos-client" dist/macos-client/XonoticGodot.app || true
+          test -d dist/macos-client/XonoticGodot.app
 
       - name: Fetch assets
         uses: actions/download-artifact@v4

@@ -23,3 +23,6 @@ project/assembly_name="XonoticGodot"
 
 textures/default_filters/anisotropic_filtering_level=3
 anti_aliasing/quality/msaa_3d=2
+; Required for the macOS universal/arm64 export (the Apple-Silicon slice uses ETC2/ASTC, not S3TC/BPTC).
+; Harmless for the Windows/Linux exports — their presets don't include the etc2_astc texture variants.
+textures/vram_compression/import_etc2_astc=true
