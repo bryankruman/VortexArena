@@ -149,6 +149,43 @@ public sealed class Player : Entity
     /// <summary>QC IS_DEAD(this): the player is dying or already dead (<see cref="Entity.DeadState"/> != No).</summary>
     public bool IsDead => DeadState != DeadFlag.No;
 
+    // ===== respawn state machine (server/client.qc PlayerThink dead branch + calculate_player_respawn_time) =====
+
+    /// <summary>
+    /// QC <c>.respawn_time_max</c>: the latest sim time the player may stay dead — once reached (and
+    /// <see cref="RespawnFlag.Force"/> is set) the respawn is forced even without a button press. Set by
+    /// <c>calculate_player_respawn_time</c>; 0 = unset.
+    /// </summary>
+    public float RespawnTimeMax;
+
+    /// <summary>QC <c>.respawn_flags</c> (RESPAWN_FORCE/SILENT/DENY). Set on death, cleared on (re)spawn.</summary>
+    public RespawnFlag RespawnFlags;
+
+    /// <summary>QC <c>.respawn_countdown</c>: the next announcer number to count down from (-1 = no countdown).</summary>
+    public int RespawnCountdown;
+
+    /// <summary>
+    /// The respawn timer the client should display (QC <c>STAT(RESPAWN_TIME)</c>): the absolute sim time the
+    /// player becomes/became respawnable, NEGATED while <see cref="DeadFlag.Respawning"/> so the client can show
+    /// "respawning" vs "press fire", and 0 while <see cref="RespawnFlag.Silent"/>. Networked in the owner snapshot.
+    /// </summary>
+    public float RespawnTimeStat;
+
+    // ===== spectate / follow-cam (server/client.qc SetSpectatee / SpectateCopy / spectatee_status) =====
+
+    /// <summary>
+    /// QC <c>.enemy</c> while observing/spectating: the live player this observer is currently following
+    /// (null = free-fly, not following anyone). Set by <c>SpectateNext</c>/<c>SpectatePrev</c>/<c>Spectate</c>.
+    /// </summary>
+    public Player? Spectatee;
+
+    /// <summary>
+    /// QC <c>spectatee_status</c> (server/client.qc:1904): 0 = a live player; this player's own net id =
+    /// observing (free-fly, the client maps it to -1); another player's net id (&gt;0) = spectating that
+    /// player (the client renders from their eyes). Networked in the owner snapshot (QC ClientData BIT(1)).
+    /// </summary>
+    public int SpectateeStatus;
+
     /// <summary>True once the player is dead and the respawn delay has elapsed (the match loop should respawn it).</summary>
     public bool IsAwaitingRespawn(float now) => IsDead && RespawnTime > 0f && now >= RespawnTime;
 

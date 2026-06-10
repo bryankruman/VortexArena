@@ -33,6 +33,13 @@ public partial class Entity
     public int LastWeaponId = -1;
 
     /// <summary>
+    /// QC <c>.vortex_chargepool_pauseregen_finished</c> (common/weapons/weapon/vortex.qc:172) — an
+    /// ACTOR-level field (not per weapon slot, unlike <c>vortex_chargepool_ammo</c>): the server time the
+    /// secondary charge pool may resume regenerating after charging paused it. [T57]
+    /// </summary>
+    public float VortexChargepoolPauseRegenFinished;
+
+    /// <summary>
     /// QC <c>.bouncefactor</c> — velocity retained per bounce for MOVETYPE_BOUNCE/BOUNCEMISSILE projectiles
     /// (mortar grenades, electro orbs). 0 = engine default. Read by the movement integrator.
     /// </summary>

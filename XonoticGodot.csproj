@@ -23,7 +23,6 @@
     <ProjectReference Include="src\XonoticGodot.Engine\XonoticGodot.Engine.csproj" />
     <ProjectReference Include="src\XonoticGodot.Net\XonoticGodot.Net.csproj" />
     <ProjectReference Include="src\XonoticGodot.Formats\XonoticGodot.Formats.csproj" />
-    <ProjectReference Include="src\XonoticGodot.SourceGen\XonoticGodot.SourceGen.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
     <ProjectReference Include="src\XonoticGodot.Server\XonoticGodot.Server.csproj" />
   </ItemGroup>
 </Project>

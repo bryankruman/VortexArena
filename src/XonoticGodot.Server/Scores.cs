@@ -89,6 +89,7 @@ public sealed class PlayerScoreRow
     {
         GameScores.ClearPlayer(Player);
         Accuracy.Clear();
+        AccuracyGeneration++; // the bytes all dropped to 0 — force a wire resend
         KillStreak = 0;
         BestKillStreak = 0;
         MultiKill = 0;
@@ -108,6 +109,7 @@ public sealed class PlayerScoreRow
         GameScores.ClearPlayer(Player);
         Player.ScoreFrags = keepScore;
         Accuracy.Clear();
+        AccuracyGeneration++;
         KillStreak = 0;
         MultiKill = 0;
     }
@@ -117,10 +119,19 @@ public sealed class PlayerScoreRow
     // ---------------------------------------------------------------------------------------------
 
     /// <summary>
-    /// Per-weapon accuracy tallies (QC the <c>.accuracy</c> sub-entity's hit/fired/damage arrays), keyed by
-    /// weapon NetName. Filled by <see cref="Scores.RecordWeaponKill"/> off the kill's deathtype.
+    /// Per-weapon accuracy tallies (QC the <c>.accuracy</c> sub-entity's fired/hit/real damage arrays +
+    /// cnt/frag counters), keyed by weapon NetName. Filled by the <see cref="WeaponAccuracyEvents"/> bus
+    /// (the accuracy_add credits at SetupShot / the hit sites / PlayerDamage) once
+    /// <see cref="Scores.SubscribeToDeaths"/> wired it, plus the frag credit in <c>RecordWeaponKill</c>.
     /// </summary>
     public readonly WeaponAccuracy Accuracy = new();
+
+    /// <summary>
+    /// [T57] Bumped whenever any weapon's networked accuracy_byte changes (QC's <c>SendFlags |= BIT(...)</c>
+    /// change detection, accuracy.qc:125-127) or the row is cleared — the snapshot composer resends the
+    /// accuracy block only when this moves (see <see cref="Scores.AccuracyGeneration"/>).
+    /// </summary>
+    public int AccuracyGeneration { get; internal set; }
 
     /// <summary>QC the current kill spree (<c>.killcount</c>): consecutive kills without dying.</summary>
     public int KillStreak { get; internal set; }
@@ -139,58 +150,90 @@ public sealed class PlayerScoreRow
 
 /// <summary>
 /// Per-weapon accuracy bookkeeping — the Godot-free essence of the QC <c>accuracy</c> sub-entity
-/// (server/weapons/accuracy.qc): hits, shots fired, damage dealt and damage potential, per weapon NetName.
-/// The scoreboard reads these for the per-weapon accuracy% column.
+/// (server/weapons/accuracy.qc), keyed by weapon NetName. [T57] reworked from shot COUNTS to the QC DAMAGE
+/// columns: <c>fired</c> = total potential damage of every shot, <c>hit</c> = total damage dealt (may
+/// exceed fired — networked as 255), <c>real</c> = damage dealt minus overkill excess, plus the per-shot
+/// <c>cnt_fired</c>/<c>cnt_hit</c> counters (once per server frame, accuracy.qc:115-123) and the per-weapon
+/// frag count (player.qc:493-495). Accuracy% = hit damage / fired damage, exactly QC's accuracy_byte ratio.
 /// </summary>
 public sealed class WeaponAccuracy
 {
-    private readonly Dictionary<string, int> _hits = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, int> _fired = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, float> _damage = new(StringComparer.Ordinal);
+    private sealed class Cols
+    {
+        public float Fired, Hit, Real;
+        public int CntFired, CntHit, Frags;
+    }
 
-    /// <summary>QC accuracy_add(this, w, hit): record a landed hit with the given weapon.</summary>
-    public void AddHit(string weapon, int count = 1)
+    private readonly Dictionary<string, Cols> _cols = new(StringComparer.Ordinal);
+
+    // QC .fired_time / STAT(HIT_TIME) — the once-per-server-frame cnt guards (shared across weapons).
+    internal float FiredTime = -1f;
+    internal float HitTime = -1f;
+
+    private Cols Get(string weapon)
+    {
+        if (!_cols.TryGetValue(weapon, out Cols? c))
+            _cols[weapon] = c = new Cols();
+        return c;
+    }
+
+    /// <summary>accuracy_fired += maxdamage (potential damage of a shot).</summary>
+    public void AddFired(string weapon, float damage)
     {
         if (string.IsNullOrEmpty(weapon)) return;
-        _hits[weapon] = (_hits.TryGetValue(weapon, out int v) ? v : 0) + count;
+        Get(weapon).Fired += damage;
     }
 
-    /// <summary>QC accuracy_add fired: record a shot fired with the given weapon.</summary>
-    public void AddFired(string weapon, int count = 1)
+    /// <summary>accuracy_hit += damage dealt (pre-excess; may exceed fired).</summary>
+    public void AddHit(string weapon, float damage)
     {
         if (string.IsNullOrEmpty(weapon)) return;
-        _fired[weapon] = (_fired.TryGetValue(weapon, out int v) ? v : 0) + count;
+        Get(weapon).Hit += damage;
     }
 
-    /// <summary>QC accuracy damage tally: record damage dealt with the given weapon.</summary>
-    public void AddDamage(string weapon, float amount)
+    /// <summary>accuracy_real += post-excess damage (the PlayerDamage real credit).</summary>
+    public void AddReal(string weapon, float damage)
     {
-        if (string.IsNullOrEmpty(weapon) || amount <= 0f) return;
-        _damage[weapon] = (_damage.TryGetValue(weapon, out float v) ? v : 0f) + amount;
+        if (string.IsNullOrEmpty(weapon)) return;
+        Get(weapon).Real += damage;
     }
 
-    public int Hits(string weapon) => _hits.TryGetValue(weapon, out int v) ? v : 0;
-    public int Fired(string weapon) => _fired.TryGetValue(weapon, out int v) ? v : 0;
-    public float Damage(string weapon) => _damage.TryGetValue(weapon, out float v) ? v : 0f;
+    /// <summary>++accuracy_cnt_fired (the caller enforces the once-per-frame guard via <see cref="FiredTime"/>).</summary>
+    public void IncCntFired(string weapon) { if (!string.IsNullOrEmpty(weapon)) Get(weapon).CntFired++; }
 
-    /// <summary>The hit/fired accuracy fraction for a weapon (0..1), or 0 when nothing was fired.</summary>
+    /// <summary>++accuracy_cnt_hit (the caller enforces the once-per-frame guard via <see cref="HitTime"/>).</summary>
+    public void IncCntHit(string weapon) { if (!string.IsNullOrEmpty(weapon)) Get(weapon).CntHit++; }
+
+    /// <summary>++accuracy_frags (QC player.qc:495 — the kill credit, kept apart from the hit columns).</summary>
+    public void AddFrag(string weapon) { if (!string.IsNullOrEmpty(weapon)) Get(weapon).Frags++; }
+
+    public float FiredDamage(string weapon) => _cols.TryGetValue(weapon, out Cols? c) ? c.Fired : 0f;
+    public float HitDamage(string weapon) => _cols.TryGetValue(weapon, out Cols? c) ? c.Hit : 0f;
+    public float RealDamage(string weapon) => _cols.TryGetValue(weapon, out Cols? c) ? c.Real : 0f;
+    public int CntFired(string weapon) => _cols.TryGetValue(weapon, out Cols? c) ? c.CntFired : 0;
+    public int CntHit(string weapon) => _cols.TryGetValue(weapon, out Cols? c) ? c.CntHit : 0;
+    public int Frags(string weapon) => _cols.TryGetValue(weapon, out Cols? c) ? c.Frags : 0;
+
+    /// <summary>The hit/fired DAMAGE accuracy fraction (0..1; can exceed 1 like QC's 255 byte), 0 when never fired.</summary>
     public float Fraction(string weapon)
     {
-        int fired = Fired(weapon);
-        return fired > 0 ? (float)Hits(weapon) / fired : 0f;
+        float fired = FiredDamage(weapon);
+        return fired > 0f ? HitDamage(weapon) / fired : 0f;
     }
 
     /// <summary>Weapon NetNames that have any recorded activity (for a scoreboard column).</summary>
     public IEnumerable<string> Weapons()
     {
-        foreach (var k in _fired.Keys) yield return k;
+        foreach (var kv in _cols)
+            if (kv.Value.Fired != 0f || kv.Value.Hit != 0f || kv.Value.Real != 0f || kv.Value.Frags != 0)
+                yield return kv.Key;
     }
 
     public void Clear()
     {
-        _hits.Clear();
-        _fired.Clear();
-        _damage.Clear();
+        _cols.Clear();
+        FiredTime = -1f;
+        HitTime = -1f;
     }
 }
 
@@ -213,8 +256,9 @@ public sealed class WeaponAccuracy
 ///    from the damage pipeline; or
 ///  - a gametype/controller calls <see cref="Obituary"/> / <see cref="GiveFrags"/> explicitly.
 ///
-/// Now tracked too: per-weapon accuracy (<see cref="RecordShotFired"/>/<see cref="RecordHit"/> + the kill
-/// credit keyed off deathtype in <see cref="Obituary"/>), kill-spree + multikill medals
+/// Now tracked too: per-weapon accuracy (the <see cref="WeaponAccuracyEvents"/> bus feeds the
+/// fired/hit/real damage columns; the kill path adds the separate frag credit in <see cref="Obituary"/>),
+/// kill-spree + multikill medals
 /// (<see cref="PlayerScoreRow.BestKillStreak"/>/<see cref="PlayerScoreRow.MultiKillBest"/>), and the
 /// AddPlayerScore hook (<see cref="AddPlayerScoreHook"/>).
 ///
@@ -318,20 +362,62 @@ public sealed class Scores
     public Func<Player, ScoreField, int, (bool allow, int delta)>? AddPlayerScoreHook { get; set; }
 
     // ---------------------------------------------------------------------------------------------
-    // per-weapon accuracy hooks (QC server/weapons/accuracy.qc accuracy_add)
+    // per-weapon accuracy (QC server/weapons/accuracy.qc accuracy_add via the WeaponAccuracyEvents bus)
     // ---------------------------------------------------------------------------------------------
 
-    /// <summary>QC <c>accuracy_add(actor, weapon, fired)</c>: record a shot fired (for the accuracy% column).</summary>
-    public void RecordShotFired(Player p, string weaponNetName, int shots = 1)
-        => Row(p).Accuracy.AddFired(weaponNetName, shots);
-
-    /// <summary>QC <c>accuracy_add(actor, weapon, hit, damage)</c>: record a landed hit + the damage dealt.</summary>
-    public void RecordHit(Player p, string weaponNetName, int hits = 1, float damage = 0f)
+    /// <summary>
+    /// [T57] The <see cref="WeaponAccuracyEvents.Added"/> handler — the tally half of QC
+    /// <c>accuracy_add</c> (accuracy.qc:102-129): the fired/hit/real damage columns, the once-per-server-
+    /// frame cnt_fired/cnt_hit counters (the fired_time / STAT(HIT_TIME) guards), and the accuracy_byte
+    /// change detection that drives the wire resend (the QC SendFlags bit).
+    /// </summary>
+    private void OnAccuracyAdd(Entity attacker, Weapon weapon, float fired, float hit, float real)
     {
-        var acc = Row(p).Accuracy;
-        acc.AddHit(weaponNetName, hits);
-        acc.AddDamage(weaponNetName, damage);
+        if (attacker is not Player p || !_rows.TryGetValue(p, out PlayerScoreRow? row))
+            return; // only score registered players (QC: no accuracy entity attached)
+
+        WeaponAccuracy acc = row.Accuracy;
+        string key = weapon.NetName;
+        int before = WeaponAccuracyEvents.AccuracyByte(acc.HitDamage(key), acc.FiredDamage(key));
+
+        if (real != 0f) acc.AddReal(key, real);
+        if (hit != 0f) acc.AddHit(key, hit);
+        if (fired != 0f) acc.AddFired(key, fired);
+
+        float now = Api.Services is not null ? Api.Clock.Time : 0f;
+        if (hit != 0f && acc.HitTime != now) // only run this once per frame (accuracy.qc:115)
+        {
+            acc.IncCntHit(key);
+            acc.HitTime = now;
+        }
+        if (fired != 0f && acc.FiredTime != now) // only run this once per frame (accuracy.qc:120)
+        {
+            acc.IncCntFired(key);
+            acc.FiredTime = now;
+        }
+
+        if (before != WeaponAccuracyEvents.AccuracyByte(acc.HitDamage(key), acc.FiredDamage(key)))
+            row.AccuracyGeneration++; // QC SendFlags |= BIT(wepid % 24) — networked-byte change
     }
+
+    /// <summary>
+    /// [T57] The accuracy wire payload for one player — one QC <c>accuracy_byte</c> per weapon RegistryId
+    /// (ENT_CLIENT_ACCURACY's per-weapon byte array): 0 = never fired, 1..101 = accuracy% + 1, 255 = &gt;100%.
+    /// </summary>
+    public byte[] AccuracyBytes(Player p)
+    {
+        WeaponAccuracy acc = Row(p).Accuracy;
+        var bytes = new byte[Registry<Weapon>.Count];
+        for (int id = 0; id < bytes.Length; id++)
+        {
+            string name = Registry<Weapon>.ById(id).NetName;
+            bytes[id] = (byte)WeaponAccuracyEvents.AccuracyByte(acc.HitDamage(name), acc.FiredDamage(name));
+        }
+        return bytes;
+    }
+
+    /// <summary>[T57] The player's accuracy change counter — resend the wire block when this moves.</summary>
+    public int AccuracyGeneration(Player p) => Row(p).AccuracyGeneration;
 
     /// <summary>
     /// QC <c>GiveFrags(attacker, targ, f)</c> reduced to its scoreboard effect: award <paramref name="amount"/>
@@ -410,7 +496,7 @@ public sealed class Scores
 
             // QC the spree / medal + accuracy logging, all keyed off the kill's deathtype.
             RecordKillStreakAndMedals(attacker);
-            RecordWeaponKill(attacker, deathType);
+            RecordWeaponKill(attacker, victim, deathType);
         }
 
         // QC Obituary's notification + sound emission (server/damage.qc:268-477): kill feed, frag/typefrag/
@@ -615,16 +701,21 @@ public sealed class Scores
     }
 
     /// <summary>
-    /// QC the per-weapon accuracy credit on a kill (accuracy_add hit): if the kill came from a weapon
-    /// (the deathtype names one), record a hit for that weapon on the attacker's accuracy table. Special
-    /// deaths (fall/drown/lava/...) credit no weapon. Mirrors the obituary's accuracy keying off deathtype.
+    /// [T57] QC the per-weapon FRAG credit on a kill (server/player.qc:493-495:
+    /// <c>++accuracy_frags[w.m_id-1]</c> when DEATH_WEAPONOF != WEP_Null &amp;&amp; accuracy_isgooddamage):
+    /// counted in its own column — the HIT columns are fed by the damage-path credits, so crediting kills
+    /// as hits here (the old behavior) would double-count.
     /// </summary>
-    private void RecordWeaponKill(Player attacker, string deathType)
+    private void RecordWeaponKill(Player attacker, Player victim, string deathType)
     {
         if (!DeathTypes.IsWeapon(deathType))
             return;
         string weapon = DeathTypes.WeaponNetNameOf(deathType);
-        Row(attacker).Accuracy.AddHit(weapon);
+        if (Weapons.ByName(weapon) is null)
+            return; // an unresolvable weapon tag (non-weapon source) — QC's WEP_Null
+        if (!WeaponAccuracyEvents.IsGoodDamage(attacker, victim))
+            return;
+        Row(attacker).Accuracy.AddFrag(weapon);
     }
 
     /// <summary>
@@ -771,6 +862,13 @@ public sealed class Scores
         Combat.Death.Add(_deathHandler);
         Subscribed = true;
 
+        // [T57] the accuracy bus (QC accuracy_add) + the per-frame damage score columns (score_frame_dmg /
+        // score_frame_dmgtaken, player.qc:443-446) come alive with the same subscription — GameWorld's
+        // existing SubscribeToDeaths call is the single wiring point. Idempotent via _deathHandler above.
+        WeaponAccuracyEvents.Added += OnAccuracyAdd;
+        WeaponAccuracyEvents.DamageDealtScored += OnDamageDealtScored;
+        WeaponAccuracyEvents.DamageTakenScored += OnDamageTakenScored;
+
         // QC Create_Notification_Entity_Choice sets each MSG_CHOICE's arg counts to max(optionA, optionB) so a
         // CHOICE_FRAG/FRAGGED/TYPEFRAG Send (1s + spree_cen + ping/health/armor) validates; the C# Choice()
         // builder doesn't, so back-fill those counts here before any obituary emits (idempotent). T40.
@@ -785,6 +883,25 @@ public sealed class Scores
         Combat.Death.Remove(_deathHandler);
         _deathHandler = null;
         Subscribed = false;
+
+        WeaponAccuracyEvents.Added -= OnAccuracyAdd;
+        WeaponAccuracyEvents.DamageDealtScored -= OnDamageDealtScored;
+        WeaponAccuracyEvents.DamageTakenScored -= OnDamageTakenScored;
+    }
+
+    // [T57] QC attacker.score_frame_dmg / this.score_frame_dmgtaken → the SP_DMG / SP_DMGTAKEN columns
+    // (QC accumulates per frame and flushes in PlayerFrame; the integer truncation in AddDamageDealt is the
+    // same rounding QC's GameRules_scoring_add ends up with on whole-number balance damage).
+    private void OnDamageDealtScored(Entity attacker, float realdmg)
+    {
+        if (attacker is Player p && _rows.ContainsKey(p))
+            AddDamageDealt(p, realdmg);
+    }
+
+    private void OnDamageTakenScored(Entity victim, float realdmg)
+    {
+        if (victim is Player p && _rows.ContainsKey(p))
+            AddDamageTaken(p, realdmg);
     }
 
     private bool _teamGameForBus;

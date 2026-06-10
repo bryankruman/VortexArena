@@ -202,8 +202,12 @@ public static class MasterServerProtocol
         if (!StartsWithAscii(body, token))
             return new Dictionary<string, string>();
 
+        // The infostring VALUES are byte-oriented in DP and, on real Xonotic servers, UTF-8 (decorated
+        // hostnames). The protocol grammar itself is ASCII (a UTF-8 subset), so decoding the whole
+        // infostring as UTF-8 is loss-free for ASCII and renders the unicode hostnames correctly
+        // (Encoding.ASCII would flatten every non-ASCII byte to '?').
         ReadOnlySpan<byte> infoBytes = body.Slice(token.Length);
-        return ParseInfostring(Ascii.GetString(infoBytes));
+        return ParseInfostring(Encoding.UTF8.GetString(infoBytes));
     }
 
     // =====================================================================================

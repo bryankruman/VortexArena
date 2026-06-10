@@ -95,6 +95,26 @@ public sealed class ClientNet : IDisposable
     public int Health { get; private set; }
     public int Armor { get; private set; }
 
+    /// <summary>
+    /// QC <c>STAT(RESPAWN_TIME)</c>: the absolute sim time the local player becomes/became respawnable while
+    /// dead, NEGATED while a respawn is imminent (DEAD_RESPAWNING) and 0 while alive. The HUD shows the
+    /// remaining countdown (<c>|RespawnTimeStat| − LatestServerTime</c>) / "Press fire to respawn".
+    /// </summary>
+    public float RespawnTimeStat { get; private set; }
+
+    /// <summary>
+    /// QC <c>spectatee_status</c>: 0 = the local client is a live player; <see cref="LocalNetId"/> = observing
+    /// (free-fly, not following anyone); another player's net id (&gt;0) = spectating that player (the camera +
+    /// HUD should track that entity). See <see cref="IsObserving"/> / <see cref="SpectatingNetId"/>.
+    /// </summary>
+    public int SpectateeStatus { get; private set; }
+
+    /// <summary>True when the local client is observing (free-fly) and not following any specific player.</summary>
+    public bool IsObserving => SpectateeStatus != 0 && SpectateeStatus == LocalNetId;
+
+    /// <summary>The net id of the player the local client is spectating (following), or 0 if not following one.</summary>
+    public int SpectatingNetId => (SpectateeStatus != 0 && SpectateeStatus != LocalNetId) ? SpectateeStatus : 0;
+
     // Spawn/respawn settle-snap state: a freshly spawned player teleports to the spawn point and falls to the
     // floor; the client predicts the whole fall instantly while the server lands tick-by-tick, so the reconcile
     // would fold that prediction LEAD into the view smoother. We snap (clear smoothing) until the server lands.
@@ -229,6 +249,10 @@ public sealed class ClientNet : IDisposable
         _wasConnected = false;
         Accepted = false;
         _remotes.Clear();
+        // session-scoped replication state: a fresh session re-sends all cvars and starts override-free.
+        MovementParameters.PredictionOverride = null;
+        _replicatedLastSent.Clear();
+        _replicateSendAll = false;
         // Reset the echoed snapshot clock so the first post-reconnect input frame doesn't carry a stale large
         // server-time the server would read as a near-zero/negative RTT (it self-heals via the rtt<0 clamp, but
         // this avoids the brief under-report). 0 = "no snapshot yet", which the server treats as "measure nothing".
@@ -309,6 +333,9 @@ public sealed class ClientNet : IDisposable
     {
         if (!Accepted)
             return 0;
+
+        // Push changed replicated cl_* cvars on the QC ReplicateVars cadence (piggybacks the input clock).
+        PumpReplicatedCvars(now);
 
         InputCommand cmd = _sampleInput();
         uint seq = _inputBuffer.Push(cmd);
@@ -428,7 +455,69 @@ public sealed class ClientNet : IDisposable
         ServerName = r.ReadString();
         _reconciler.TickRate = ServerTickRate;
         Accepted = true;
+        // ReplicateVars_Start (lib/replicate.qh:50-57): push ALL replicated cvars once at session init, then the
+        // periodic watcher (PumpReplicatedCvars) only sends changes.
+        _replicateSendAll = true;
+        _nextReplicateTime = 0f;
         GD.Print($"[ClientNet] handshake accepted by '{ServerName}': netId {LocalNetId}, tickrate {ServerTickRate} Hz.");
+    }
+
+    // =====================================================================================
+    //  Replicated client cvars — the CSQC ReplicateVars watcher (lib/replicate.qh)
+    // =====================================================================================
+
+    /// <summary>
+    /// The client cvars automatically replicated to the server via <c>cmd sentcvar</c> — the ported slice of
+    /// the QC REPLICATE set with live server-side consumers (Commands.SentCvarAllowlist is the receiving gate):
+    /// weapon priority (selection), autoswitch (pickup), noantilag (lag-comp opt-out), physics (preset select).
+    /// </summary>
+    private static readonly string[] ReplicatedCvars =
+        { "cl_weaponpriority", "cl_autoswitch", "cl_noantilag", "cl_physics" };
+
+    /// <summary>
+    /// Where the watcher reads the replicated <c>cl_*</c> values — the host wires this to the SHARED menu/console
+    /// cvar store (where cl_* live; on a listen host <c>Api.Cvars</c> is the server world's PRIVATE store, which
+    /// doesn't carry them). Falls back to <c>Api.Cvars</c> when unset (headless/loopback rigs).
+    /// </summary>
+    public Func<string, string>? ReplicatedCvarSource { get; set; }
+
+    private readonly Dictionary<string, string> _replicatedLastSent = new(StringComparer.Ordinal);
+    private bool _replicateSendAll;
+    private float _nextReplicateTime;
+    private readonly Random _replicateJitter = new();
+
+    private string ReadReplicatedCvar(string name)
+        => ReplicatedCvarSource is not null
+            ? (ReplicatedCvarSource(name) ?? "")
+            : (Api.Services is not null ? Api.Cvars.GetString(name) : "");
+
+    /// <summary>
+    /// The CSQC ReplicateVars poll (replicate.qh:43-57): on session start send every replicated cvar once
+    /// (REPLICATEVARS_SEND_ALL), then every 0.8 + random()*0.4 s compare against the last-sent value and push
+    /// only the changed ones (value != last → "cl_cmd sendcvar" → "cmd sentcvar <name> <value>"; here we send
+    /// the sentcvar line directly). An UNSET cvar reads "" and is skipped — the server then keeps its own
+    /// defaults (QC always has cfg-seeded values; pushing "" would zero them server-side).
+    /// </summary>
+    private void PumpReplicatedCvars(float now)
+    {
+        if (!Accepted)
+            return;
+        if (!_replicateSendAll && now < _nextReplicateTime)
+            return;
+        bool sendAll = _replicateSendAll;
+        _replicateSendAll = false;
+        _nextReplicateTime = now + 0.8f + (float)_replicateJitter.NextDouble() * 0.4f; // replicate.qh:48
+
+        foreach (string name in ReplicatedCvars)
+        {
+            string value = ReadReplicatedCvar(name);
+            if (value.Length == 0)
+                continue; // unset locally → don't clobber the server's default
+            if (!sendAll && _replicatedLastSent.TryGetValue(name, out string? last) && last == value)
+                continue;
+            _replicatedLastSent[name] = value;
+            SendStringCommand($"sentcvar {name} \"{value}\"");
+        }
     }
 
     /// <summary>The server's display name, learned at handshake (for the client UI / server browser).</summary>
@@ -454,6 +543,11 @@ public sealed class ClientNet : IDisposable
         Health = r.ReadShort();
         Armor = r.ReadShort();
         ActiveWeaponId = r.ReadShort(); // owner block — same order as ServerNet.WriteOwnerState (viewmodel selector)
+        RespawnTimeStat = r.ReadFloat(); // QC STAT(RESPAWN_TIME): dead respawn countdown / "press fire" prompt
+        SpectateeStatus = r.ReadShort(); // QC spectatee_status: 0 playing, own id observing, other id spectating
+
+        // [A3 reserved: owner-state appends] — new per-owner reads (T57 accuracy scalars, etc.) append HERE,
+        // strictly at the END of the owner block, in lockstep with ServerNet.WriteOwnerState's matching marker.
 
         // movevars: when the server's physics changed, stamp the replicated values into our cvar store so the
         // predictor's MovementParameters.FromCvars() matches authority (mid-match physics/mutator changes), then
@@ -468,6 +562,33 @@ public sealed class ClientNet : IDisposable
             {
                 MoveVarsBlock.Apply(Api.Cvars, mv);
                 _vars = VarsFromCvars();
+            }
+        }
+
+        // [v7] per-peer preset-RESOLVED physics (T54): when the server replicates OUR preset-resolved movevar
+        // vector (g_physics_clientselect — `cmd physics cpma` etc.), park it as the predictor's
+        // MovementParameters.PredictionOverride so the prediction replays integrate with the SAME per-player
+        // physics the server simulates us with. A count-0 block clears the override (preset deactivated).
+        // NEVER stamped into the cvar store: on a listen host the shared→server cvar bridge (NetGame) would
+        // leak the local player's preset into the authoritative store and change everyone's physics.
+        // ALWAYS consume the bytes (stream alignment), even with no engine wired.
+        if (r.ReadBool())
+        {
+            float[] resolved = MoveVarsBlock.Deserialize(ref r);
+            if (!r.BadRead)
+            {
+                if (resolved.Length == 0)
+                {
+                    MovementParameters.PredictionOverride = null;
+                    if (Api.Services is not null)
+                        _vars = VarsFromCvars(); // back to the replicated global movevars
+                }
+                else
+                {
+                    MovementParameters mp = MovementParameters.FromValues(resolved);
+                    MovementParameters.PredictionOverride = mp;
+                    _vars = ToPlayerVars(mp); // keep the carried stat subset honest for its consumers
+                }
             }
         }
 
@@ -500,6 +621,14 @@ public sealed class ClientNet : IDisposable
             if (sb is not null)
                 LatestScoreboard = sb;
         }
+
+        // [A3 reserved: T53 mode-stats block] — T53's gametype-status read splices in HERE, after the scoreboard
+        // read and before the BadRead bail, mirroring ServerNet.BroadcastSnapshots' matching marker. ALWAYS
+        // consume the bytes even with no consumer wired (the ScoreInfo comment above documents the alignment
+        // contract).
+
+        // [A3 reserved: T57 accuracy block] — if T57 ships a bool-gated block, its read splices in HERE,
+        // directly after T53's slot (same alignment contract).
 
         if (r.BadRead)
             return;
@@ -743,5 +872,11 @@ public sealed class ClientNet : IDisposable
         StepHeight = mp.StepHeight,
     };
 
-    public void Dispose() => _transport.Dispose();
+    public void Dispose()
+    {
+        // Drop the per-player physics override this session may have installed — it's session state, and a
+        // later session (or a local GameDemo) must not predict with a stale preset.
+        MovementParameters.PredictionOverride = null;
+        _transport.Dispose();
+    }
 }

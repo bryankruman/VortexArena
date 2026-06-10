@@ -38,6 +38,19 @@ public enum DeadFlag
     Respawning = 4,
 }
 
+/// <summary>Respawn behavior flags (QC RESPAWN_* in server/client.qh).</summary>
+[Flags]
+public enum RespawnFlag
+{
+    None = 0,
+    /// <summary>QC RESPAWN_FORCE: auto-respawn at respawn_time_max even without a button press (g_forced_respawn).</summary>
+    Force = 1,
+    /// <summary>QC RESPAWN_SILENT: don't network the respawn countdown timer to the client.</summary>
+    Silent = 2,
+    /// <summary>QC RESPAWN_DENY: respawning is blocked entirely (the player stays dead).</summary>
+    Deny = 4,
+}
+
 /// <summary>takedamage values (QC DAMAGE_*).</summary>
 public enum DamageMode
 {

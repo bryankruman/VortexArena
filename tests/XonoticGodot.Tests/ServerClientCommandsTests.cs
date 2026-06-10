@@ -221,6 +221,23 @@ public class ServerClientCommandsTests
         Assert.Equal(1f, world.Commands.GetClientVersion(p));
     }
 
+    // ============================================================================== sentcvar (T54 — full suite in CvarReplicationTests)
+
+    [Fact]
+    public void Sentcvar_IsRegistered_AndCallerGated()
+    {
+        var world = NewWorld();
+        Assert.True(world.Commands.Has("sentcvar"));
+        // server console (no caller) → rejected, like the other ClientCommand_* verbs in this family.
+        CommandContext ctx = world.Commands.Execute("sentcvar cl_autoswitch 1", isServerConsole: true);
+        Assert.Contains("client command", ctx.Output);
+        // a real caller lands in the per-client store and bridges into the T56 autoswitch flag.
+        Player p = NewCaller();
+        world.Commands.Execute("sentcvar cl_autoswitch 1", isServerConsole: false, caller: p);
+        Assert.True(world.Commands.GetAutoswitch(p));
+        Assert.Equal("1", world.Commands.GetClientCvar(p, "cl_autoswitch"));
+    }
+
     // ============================================================================== voice
 
     [Fact]

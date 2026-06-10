@@ -309,6 +309,39 @@ public sealed class Survival : GameType
         }
     }
 
+    // ============================================================================================
+    //  HUD/wire disclosure surface (QC SurvivalStatuses_SendEntity + surv_isEliminated)
+    // ============================================================================================
+
+    /// <summary>
+    /// True while the round's hidden roles are live (assigned by <see cref="AssignRoles"/> when
+    /// <see cref="Handler"/> starts the round). Gates the networked own-role stat: pre-round the server
+    /// sends <see cref="SurvStatus.None"/>, standing in for QC's <c>STAT(GAMESTARTTIME)/STAT(ROUNDSTARTTIME)
+    /// &gt; time</c> HUD hide (cl_survival.qc:60).
+    /// </summary>
+    public bool RoleAssigned => Handler?.IsRoundStarted ?? false;
+
+    /// <summary>QC the SurvivalStatuses hunter bit (sv_survival.qc:31-37): <c>INGAME(e) &amp;&amp;
+    /// e.survival_status == SURV_STATUS_HUNTER</c>. A DEAD hunter is still a hunter — the bitfield carries the
+    /// role, not aliveness (the round-end scoreboard outs every hunter, dead or not).</summary>
+    public bool IsHunter(Player p) => StatusOf(p) == SurvStatus.Hunter;
+
+    /// <summary>
+    /// QC <c>surv_isEliminated</c> (sv_survival.qc:228-235; same shape as ca_isEliminated) approximated like
+    /// CA's: the port lacks INGAME_JOINING / FRAGS_PLAYER_OUT_OF_GAME, so eliminated = tracked-and-not-alive
+    /// (<see cref="SurvState.Alive"/> goes false on death — no respawn in Survival — and resets at the next
+    /// <see cref="AssignRoles"/>, matching QC where the dead stay out until the round resets).
+    /// </summary>
+    public bool IsEliminatedPlayer(Player p) => _states.TryGetValue(p, out SurvState? st) && !st.Alive;
+
+    /// <summary>
+    /// QC SurvivalStatuses_SendEntity's visibility rule (sv_survival.qc:19-20 + Surv_CheckWinner sendflags at
+    /// lines 93/151): a HUNTER destination always receives the hunter set ("hunters know all hunters"); everyone
+    /// else only receives it once the round is over (so the round-end scoreboard can out the hunters). The
+    /// anti-cheat invariant: hunter identities must NEVER reach a prey/observer recipient mid-round.
+    /// </summary>
+    public bool DisclosesHuntersTo(Player viewer) => RoundOver || StatusOf(viewer) == SurvStatus.Hunter;
+
     /// <summary>QC the timed-out round end (Surv_CheckWinner timeout branch): survivors win, award scores.</summary>
     public void EndRoundTimedOut()
     {

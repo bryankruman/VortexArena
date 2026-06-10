@@ -5,31 +5,27 @@ using XonoticGodot.Engine.Simulation;
 namespace XonoticGodot.Game.Menu;
 
 /// <summary>
-/// The multiplayer Profile dialog — a faithful C# port of <c>XonoticProfileTab_fill</c>
-/// (qcsrc/menu/xonotic/dialog_multiplayer_profile.qc). The player's identity: name, model, the two
-/// player colors (glowing/shirt and detail/pants), the statistics-tracking opt-ins, and a language
-/// selector. Every control binds the same engine cvar the QC binds, through the shared
-/// <see cref="MenuState.Cvars"/> store.
-///
-/// FAITHFUL UI NOW — three pieces are data-driven by engine systems XonoticGodot does not have yet and are
-/// rendered inert (controls present, no fabricated data):
-///   * the player <b>model preview</b> image and its <c>&lt;&lt;</c>/<c>&gt;&gt;</c> cycler are driven by
-///     <c>XonoticPlayerModelSelector</c> globbing the model datafiles (playermodel.qc); here the model is a
-///     plain text field bound to <c>_cl_playermodel</c> with a placeholder preview panel;
-///   * the <b>statistics list</b> (<c>makeXonoticStatsList</c>) reads server-side stats — rendered as an
-///     empty note;
-///   * the colorpicker + charmap that the QC attaches to the name box are text-entry helpers — omitted.
-///
-/// The two color controls edit the single packed integer cvar <c>_cl_color</c> exactly as the QC
-/// <c>XonoticColorButton</c> does: glowing color is the low nibble (<c>color &amp; 15</c>, cvarPart 0),
-/// detail color the high nibble (<c>(color &amp; 240) / 16</c>, cvarPart 1). See <see cref="ProfileColorNibble"/>.
+/// The multiplayer Profile tab/dialog — a faithful C# port of <c>XonoticProfileTab_fill</c>
+/// (qcsrc/menu/xonotic/dialog_multiplayer_profile.qc). Two halves, like the QC grid:
+/// <list type="bullet">
+/// <item>LEFT — the Name section (header, the bold colour-coded name preview, the <c>_cl_name</c> box, then
+/// the HSL colorpicker beside the charmap, both typing into the box), then the Model section: the Glowing /
+/// Detail colour PALETTE GRIDS (15 <c>XonoticColorButton</c>s each, editing the two <c>_cl_color</c>
+/// nibbles) on the left with the player-model selector (&lt;&lt; preview &gt;&gt;) beside them — QC's
+/// "MODEL RIGHT, COLOR LEFT" arrangement.</item>
+/// <item>RIGHT — the Statistics section (the three <c>cl_allow_uid*</c> opt-ins + the stats list, which is
+/// an honest empty note until the stats backend exists) and the "Select language..." button.</item>
+/// </list>
+/// Bottom row: the full-width "Apply immediately" command button (same command string the QC issues).
 /// </summary>
 public partial class DialogMultiplayerProfile : MenuScreen
 {
     // QC profileApplyButton: makeXonoticCommandButton(_("Apply immediately"), ..., COMMANDBUTTON_APPLY).
-    // Same command string the QC issues on apply (color -1 -1 re-applies _cl_color; name/model/skin).
     private const string ApplyCommand =
         "color -1 -1; name \"$_cl_name\"; playermodel $_cl_playermodel; playerskin $_cl_playerskin";
+
+    /// <summary>True when hosted as the Multiplayer dialog's Profile TAB (QC XonoticProfileTab): no title/Back.</summary>
+    public bool Embedded { get; set; }
 
     protected override void BuildUi()
     {
@@ -38,106 +34,125 @@ public partial class DialogMultiplayerProfile : MenuScreen
         var margin = new MarginContainer();
         margin.SetAnchorsPreset(LayoutPreset.FullRect);
         foreach (string side in new[] { "margin_left", "margin_right", "margin_top", "margin_bottom" })
-            margin.AddThemeConstantOverride(side, 32);
+            margin.AddThemeConstantOverride(side, Embedded ? 4 : 24);
         AddChild(margin);
 
         var root = new VBoxContainer();
-        root.AddThemeConstantOverride("separation", 14);
+        root.AddThemeConstantOverride("separation", 10);
         margin.AddChild(root);
 
-        root.AddChild(MakeTitle("Profile"));
+        if (!Embedded && !HostProvidesTitle)
+            root.AddChild(MakeTitle("Profile"));
 
-        // The QC lays Name/Model on the left half and Statistics/Country on the right half. We stack them
-        // vertically inside a scroll region (single-column) — same controls, same order, same cvars.
-        var scroll = new ScrollContainer { SizeFlagsVertical = SizeFlags.ExpandFill, SizeFlagsHorizontal = SizeFlags.ExpandFill };
-        scroll.HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled;
-        root.AddChild(scroll);
+        var body = new HBoxContainer { SizeFlagsVertical = SizeFlags.ExpandFill };
+        body.AddThemeConstantOverride("separation", 26);
+        root.AddChild(body);
 
-        var box = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
-        box.AddThemeConstantOverride("separation", 8);
-        scroll.AddChild(box);
+        // =========================================================================== LEFT HALF (QC cols 0-3)
+        var left = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill, SizeFlagsStretchRatio = 1.05f };
+        left.AddThemeConstantOverride("separation", 8);
+        body.AddChild(left);
 
-        // ==============
-        //  NAME SECTION
-        // ==============
-        box.AddChild(Ui.Header("Name"));
+        // --- NAME ---
+        var nameHeader = MakeHeader("Name");
+        nameHeader.HorizontalAlignment = HorizontalAlignment.Center;
+        left.AddChild(nameHeader);
 
-        // QC: a bold title-size text label that mirrors the typed name (allowColors). Bound preview, read-only.
-        var namePreview = new ProfileNamePreview();
-        box.AddChild(namePreview);
+        left.AddChild(new ProfileNamePreview());
 
-        // QC makeXonoticInputBox_T(1, "_cl_name", ...). Keep the box reference so the colorpicker + charmap
-        // below can type ^-codes / glyphs into it (QC attaches both to this box).
         var nameBox = Widgets.InputBox("_cl_name", "Player", "Name under which you will appear in the game");
-        box.AddChild(nameBox);
+        left.AddChild(nameBox);
 
-        // QC attaches makeXonoticColorpicker(box) + makeXonoticCharmap(box) here — the HSL name color picker
-        // (inserts a ^xRGB code at the caret) + the character map (inserts a glyph at the caret).
-        box.AddChild(HslColorPicker.ForNameBox(nameBox));
-        box.AddChild(new CharmapPicker(nameBox));
+        // QC: colorpicker (1 col) beside the charmap (2 cols), both 5 rows tall, typing into the name box.
+        var pickers = new HBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        pickers.AddThemeConstantOverride("separation", 10);
+        var hsl = HslColorPicker.ForNameBox(nameBox);
+        hsl.CustomMinimumSize = new Vector2(150, 132);
+        hsl.SizeFlagsHorizontal = SizeFlags.Fill;
+        pickers.AddChild(hsl);
+        var charmap = new CharmapPicker(nameBox)
+        {
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            CustomMinimumSize = new Vector2(0, 132),
+        };
+        pickers.AddChild(charmap);
+        left.AddChild(pickers);
 
-        box.AddChild(Ui.Spacer());
+        left.AddChild(Ui.Spacer(6));
 
-        // ===============
-        //  MODEL SECTION
-        // ===============
-        box.AddChild(Ui.Header("Model"));
+        // --- MODEL (QC: colors at column 0, the model selector to their right) ---
+        var modelHeader = MakeHeader("Model");
+        modelHeader.HorizontalAlignment = HorizontalAlignment.Center;
+        left.AddChild(modelHeader);
 
-        // QC: << / >> buttons flank makeXonoticPlayerModelSelector() (the model preview cycled by the
-        // datafile glob). The selector writes _cl_playermodel (+ _cl_playerskin) deferred — NOT applied live
-        // (the Apply button below applies). This replaces the old inert preview panel + raw text field.
-        box.AddChild(new PlayerModelSelector());
+        var modelRow = new HBoxContainer
+        {
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            SizeFlagsVertical = SizeFlags.ExpandFill,
+        };
+        modelRow.AddThemeConstantOverride("separation", 16);
+        left.AddChild(modelRow);
 
-        box.AddChild(Ui.Spacer());
+        var colors = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.Fill };
+        colors.AddThemeConstantOverride("separation", 6);
+        colors.AddChild(Ui.Header("Glowing color"));
+        colors.AddChild(new ProfileColorGrid(pants: false));
+        colors.AddChild(Ui.Spacer(10));
+        colors.AddChild(Ui.Header("Detail color"));
+        colors.AddChild(new ProfileColorGrid(pants: true));
+        modelRow.AddChild(colors);
 
-        // QC: "Glowing color" — XonoticColorButton(group 1, cvarPart 0) editing the low nibble of _cl_color.
-        box.AddChild(Ui.Header("Glowing color"));
-        box.AddChild(new ProfileColorNibble(pants: false));
+        var pms = new PlayerModelSelector
+        {
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            SizeFlagsVertical = SizeFlags.ExpandFill,
+        };
+        modelRow.AddChild(pms);
 
-        // QC: "Detail color" — XonoticColorButton(group 2, cvarPart 1) editing the high nibble of _cl_color.
-        box.AddChild(Ui.Header("Detail color"));
-        box.AddChild(new ProfileColorNibble(pants: true));
+        // ========================================================================== RIGHT HALF (QC col 3.1+)
+        var right = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        right.AddThemeConstantOverride("separation", 8);
+        body.AddChild(right);
 
-        box.AddChild(Ui.Spacer());
+        var statsHeader = MakeHeader("Statistics");
+        statsHeader.HorizontalAlignment = HorizontalAlignment.Center;
+        right.AddChild(statsHeader);
 
-        // ====================
-        //  STATISTICS SECTION
-        // ====================
-        box.AddChild(Ui.Header("Statistics"));
-
-        // QC makeXonoticCheckBox(0, "cl_allow_uidtracking", ...) (sendCvars).
-        box.AddChild(Widgets.CheckBox("cl_allow_uidtracking",
+        right.AddChild(Widgets.CheckBox("cl_allow_uidtracking",
             "Allow player statistics to track your client"));
 
-        // QC: the next two depend on cl_allow_uidtracking == 1 (setDependent(...,1,1)).
         var uid2name = Widgets.CheckBox("cl_allow_uid2name",
             "Allow player statistics to use your nickname");
-        box.AddChild(uid2name);
+        right.AddChild(uid2name);
         Dependent.Bind(uid2name, "cl_allow_uidtracking", 1, 1);
 
         var uidranking = Widgets.CheckBox("cl_allow_uidranking",
             "Allow player statistics to rank you in leaderboards");
-        box.AddChild(uidranking);
+        right.AddChild(uidranking);
         Dependent.Bind(uidranking, "cl_allow_uidtracking", 1, 1);
 
-        // QC makeXonoticStatsList() — server-fed stats list. Backend pending: honest empty note.
-        box.AddChild(Ui.Label("(player statistics list — stats backend pending)"));
+        // QC makeXonoticStatsList() — server-fed; honest empty area until the stats backend exists.
+        var statsNote = Ui.Label("(player statistics — backend pending)");
+        statsNote.HorizontalAlignment = HorizontalAlignment.Center;
+        statsNote.SizeFlagsVertical = SizeFlags.ExpandFill;
+        statsNote.VerticalAlignment = VerticalAlignment.Center;
+        statsNote.Modulate = new Color(1, 1, 1, 0.5f);
+        right.AddChild(statsNote);
 
-        box.AddChild(Ui.Spacer());
+        // QC: "Select language..." centred at half width near the bottom of the right half.
+        var langRow = new HBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        langRow.AddChild(new Control { SizeFlagsHorizontal = SizeFlags.ExpandFill });
+        var lang = Widgets.CommandButton("Select language...", "menu_cmd languageselect");
+        lang.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        lang.SizeFlagsStretchRatio = 2f;
+        langRow.AddChild(lang);
+        langRow.AddChild(new Control { SizeFlagsHorizontal = SizeFlags.ExpandFill });
+        right.AddChild(langRow);
 
-        // =================
-        //  COUNTRY SECTION
-        // =================
-        // QC: "Select language..." button -> localcmd("menu_cmd languageselect"). Same command string.
-        box.AddChild(Widgets.CommandButton("Select language...", "menu_cmd languageselect"));
-
-        box.AddChild(Ui.Spacer());
-
-        // QC: the profile Apply button spans the bottom row (re-applies colors/name/model/skin live).
+        // ================================================================================== BOTTOM ROW
+        // QC: the Apply button spans the full bottom row; a pushed dialog also gets Back.
         var apply = Widgets.CommandButton("Apply immediately", ApplyCommand);
-
-        // Bottom bar: Apply (QC bottom-row apply button) + Back (the dialog's close).
-        root.AddChild(MakeButtonBar(apply, MakeButton("Back", GoBack)));
+        root.AddChild(Embedded ? MakeButtonBar(apply) : MakeButtonBar(apply, MakeButton("Back", GoBack)));
     }
 }
 
@@ -176,60 +191,78 @@ public partial class ProfileNamePreview : RichTextLabel
 }
 
 /// <summary>
-/// One of the two player-color controls — the C# successor to a row of QC <c>XonoticColorButton</c>s. Both
-/// edit the single packed integer cvar <c>_cl_color</c>: the glowing/shirt color lives in the low nibble
-/// (<c>color &amp; 15</c>), the detail/pants color in the high nibble (<c>(color &amp; 240) / 16</c>). Presented
-/// as a dropdown of the 16 palette colors with a live swatch beside it; selecting rewrites just that
-/// nibble (preserving the other), exactly as <c>XonoticColorButton_saveCvars</c> does.
+/// One player-colour palette grid — the faithful C# successor to the QC's row of 15
+/// <c>XonoticColorButton</c>s (3×5, <c>colorbutton_*</c> skin art tinted by
+/// <c>colormapPaletteColor(i, …)</c>). Both grids edit the single packed integer cvar <c>_cl_color</c>:
+/// the glowing/shirt colour lives in the low nibble (<c>color &amp; 15</c>), the detail/pants colour in
+/// the high nibble (<c>(color &amp; 240) / 16</c>); selecting rewrites just that nibble, exactly as
+/// <c>XonoticColorButton_saveCvars</c> does.
 /// </summary>
-public partial class ProfileColorNibble : HBoxContainer
+public partial class ProfileColorGrid : GridContainer
 {
-    // The 16 Xonotic palette entries (qcsrc/lib/color.qh colormapPaletteColor_); index 15 is the animated
-    // "rainbow" — shown here as a representative static swatch.
-    private static readonly (string Name, Color Swatch)[] Palette =
-    {
-        ("White",       new Color(1.00f, 1.00f, 1.00f)),
-        ("Orange",      new Color(1.00f, 0.33f, 0.00f)),
-        ("Sea green",   new Color(0.00f, 1.00f, 0.50f)),
-        ("Green",       new Color(0.00f, 1.00f, 0.00f)),
-        ("Red",         new Color(1.00f, 0.00f, 0.00f)),
-        ("Sky blue",    new Color(0.00f, 0.67f, 1.00f)),
-        ("Cyan",        new Color(0.00f, 1.00f, 1.00f)),
-        ("Lime",        new Color(0.50f, 1.00f, 0.00f)),
-        ("Violet",      new Color(0.50f, 0.00f, 1.00f)),
-        ("Magenta",     new Color(1.00f, 0.00f, 1.00f)),
-        ("Pink",        new Color(1.00f, 0.00f, 0.50f)),
-        ("Blue",        new Color(0.00f, 0.00f, 1.00f)),
-        ("Yellow",      new Color(1.00f, 1.00f, 0.00f)),
-        ("Royal blue",  new Color(0.00f, 0.33f, 1.00f)),
-        ("Gold",        new Color(1.00f, 0.67f, 0.00f)),
-        ("Rainbow",     new Color(0.70f, 0.70f, 0.70f)),
-    };
-
     private const string Cvar = "_cl_color";
+    private const int ColorCount = 15; // QC: for(i = 0; i < 15; ++i) — no animated rainbow in the profile grid
 
     private static CvarService Cvars => MenuState.Cvars;
 
     private readonly bool _pants;
-    private readonly OptionButton _choices;
-    private readonly ColorRect _swatch;
+    private readonly Button[] _buttons = new Button[ColorCount];
     private bool _updating;
 
-    /// <param name="pants">true = detail color (high nibble); false = glowing color (low nibble).</param>
-    public ProfileColorNibble(bool pants)
+    /// <param name="pants">true = detail colour (high nibble); false = glowing colour (low nibble).</param>
+    public ProfileColorGrid(bool pants)
     {
         _pants = pants;
-        SizeFlagsHorizontal = SizeFlags.ExpandFill;
-        AddThemeConstantOverride("separation", 10);
+        Columns = 5;
+        AddThemeConstantOverride("h_separation", 4);
+        AddThemeConstantOverride("v_separation", 4);
 
-        _swatch = new ColorRect { CustomMinimumSize = new Vector2(28, 28), SizeFlagsVertical = SizeFlags.ShrinkCenter };
-        AddChild(_swatch);
+        Texture2D? art = MenuSkin.SkinImage("colorbutton_n");
+        for (int i = 0; i < ColorCount; i++)
+        {
+            (float r, float g, float b) = CsqcModelAppearance.ColormapPaletteColor(i, pants, 0f);
+            var tint = new Color(r, g, b);
+            var btn = new Button
+            {
+                CustomMinimumSize = new Vector2(30, 26),
+                FocusMode = FocusModeEnum.None,
+                ToggleMode = true,
+                TooltipText = $"{(pants ? "Detail" : "Glowing")} color {i}",
+            };
+            btn.AddThemeStyleboxOverride("normal", new StyleBoxEmpty());
+            btn.AddThemeStyleboxOverride("hover", new StyleBoxEmpty());
+            btn.AddThemeStyleboxOverride("focus", new StyleBoxEmpty());
+            var pressedRim = new StyleBoxFlat
+            {
+                BgColor = Colors.Transparent,
+                BorderColor = MenuSkin.Bright,
+                DrawCenter = false,
+            };
+            pressedRim.SetBorderWidthAll(2);
+            btn.AddThemeStyleboxOverride("pressed", pressedRim);
+            btn.AddThemeStyleboxOverride("hover_pressed", pressedRim);
 
-        _choices = new OptionButton { SizeFlagsHorizontal = SizeFlags.ExpandFill };
-        for (int i = 0; i < Palette.Length; i++)
-            _choices.AddItem(Palette[i].Name, i);
-        _choices.ItemSelected += OnItemSelected;
-        AddChild(_choices);
+            if (art is not null)
+            {
+                // The skin's colorbutton art tinted by the palette colour (QC draws colorbutton_n modulated).
+                btn.Icon = art;
+                btn.ExpandIcon = true;
+                btn.IconAlignment = HorizontalAlignment.Center;
+                foreach (string state in new[] { "icon_normal_color", "icon_hover_color", "icon_pressed_color",
+                                                 "icon_hover_pressed_color", "icon_focus_color" })
+                    btn.AddThemeColorOverride(state, tint);
+            }
+            else
+            {
+                btn.AddThemeStyleboxOverride("normal", new StyleBoxFlat { BgColor = tint });
+                btn.AddThemeStyleboxOverride("hover", new StyleBoxFlat { BgColor = tint.Lightened(0.2f) });
+            }
+
+            int index = i;
+            btn.Pressed += () => OnPick(index);
+            _buttons[i] = btn;
+            AddChild(btn);
+        }
     }
 
     public override void _EnterTree() { Cvars.Changed += OnCvarChanged; Refresh(); }
@@ -237,7 +270,6 @@ public partial class ProfileColorNibble : HBoxContainer
 
     private void OnCvarChanged(string name) { if (name == Cvar) Refresh(); }
 
-    /// <summary>Extract this control's nibble from the packed _cl_color value.</summary>
     private int CurrentIndex()
     {
         int packed = (int)Cvars.GetFloat(Cvar);
@@ -248,22 +280,22 @@ public partial class ProfileColorNibble : HBoxContainer
     {
         if (_updating) return;
         _updating = true;
-        int idx = Mathf.Clamp(CurrentIndex(), 0, Palette.Length - 1);
-        _choices.Selected = idx;
-        _swatch.Color = Palette[idx].Swatch;
+        int active = CurrentIndex();
+        for (int i = 0; i < ColorCount; i++)
+            _buttons[i].SetPressedNoSignal(i == active);
         _updating = false;
     }
 
-    private void OnItemSelected(long index)
+    private void OnPick(int index)
     {
-        if (_updating || index < 0 || index >= Palette.Length) return;
+        if (_updating) return;
         int packed = (int)Cvars.GetFloat(Cvar);
         // Rewrite only our nibble, preserving the other (mirrors XonoticColorButton_saveCvars).
         packed = _pants
-            ? (packed & 15) + (int)index * 16
-            : (packed & 240) + (int)index;
+            ? (packed & 15) + index * 16
+            : (packed & 240) + index;
         Cvars.Set(Cvar, packed.ToString(CultureInfo.InvariantCulture));
         Cvars.MarkArchived(Cvar);
-        _swatch.Color = Palette[(int)index].Swatch;
+        Refresh();
     }
 }

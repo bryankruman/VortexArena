@@ -1,20 +1,20 @@
+using System;
+using System.Collections.Generic;
 using Godot;
-using XonoticGodot.Common.Gameplay;
 
 namespace XonoticGodot.Game.Menu;
 
 /// <summary>
-/// Multiplayer screen: a server browser plus a compact "Create Game" sub-panel. C# successor to
-/// <c>XonoticMultiplayerDialog</c> + its Servers/Create tabs (dialog_multiplayer.qc,
-/// dialog_multiplayer_join.qc, dialog_multiplayer_create.qc).
+/// The Multiplayer dialog — C# successor to <c>XonoticMultiplayerDialog</c> (dialog_multiplayer.qc): one
+/// full-width row of three tabs, <b>Servers / Create / Profile</b>, over the frameless tab body.
 ///
-/// Layout (a <see cref="TabContainer"/> standing in for the QC tab controller):
-///  * "Servers" tab — an <see cref="ItemList"/> driven by a real <see cref="ServerBrowser"/> model
-///    (<see cref="ServerEntry"/> rows from saved favorites + a LAN discovery sweep), with Refresh /
-///    Connect / favorite controls and an address <see cref="LineEdit"/>. Connect parses the address and
-///    raises the browser's <see cref="ServerBrowser.ConnectRequested"/> callback for the net layer to wire.
-///  * "Create" tab — a quick gametype list (from the <see cref="GameTypes"/> registry) and a map field,
-///    handing off to the full <see cref="CreateGameScreen"/> (pre-seeded with the picks) to start a match.
+/// The Servers tab is the faithful port of <c>XonoticServerListTab_fill</c> (dialog_multiplayer_join.qc):
+/// filter row (Categories, Filter box, Empty/Full/Laggy, Refresh, Pause), the five sort-header buttons
+/// (Ping/Hostname/Map/Type/Players) over a real columned list, the Address + Bookmark + Info row, and the
+/// bottom Leave-match/Join! row. Rows come from the shared <see cref="ServerBrowser"/> model (favorites +
+/// LAN sweep + the master-server query) and refresh automatically when the tab first shows, like the QC
+/// list does. The Create tab embeds the full <see cref="CreateGameScreen"/> (the QC create tab) and Profile
+/// embeds <see cref="DialogMultiplayerProfile"/>.
 /// </summary>
 public partial class MultiplayerScreen : MenuScreen
 {
@@ -22,10 +22,25 @@ public partial class MultiplayerScreen : MenuScreen
     // net layer can attach its ConnectRequested handler once.
     public static readonly ServerBrowser Browser = new();
 
-    private ItemList _serverList = null!;
+    private XonoticTabs _tabs = null!;
+    private Tree _serverTree = null!;
+    private LineEdit _filterEdit = null!;
     private LineEdit _addressEdit = null!;
-    private ItemList _createGametypeList = null!;
-    private LineEdit _createMapEdit = null!;
+    private Button _favoriteButton = null!;
+    private Button _leaveButton = null!;
+
+    private bool _refreshedOnce;
+    private int _renderedRevision = -1;
+    private string _renderedFilterKey = "";
+
+    // Sort state (QC: default ping ascending — serverlist.qc draw: setSortOrder(SLIST_FIELD_PING, +1)).
+    private enum SortField { Ping, Name, Map, Type, Players }
+    private SortField _sortField = SortField.Ping;
+    private int _sortOrder = +1;
+    private readonly Button[] _sortButtons = new Button[5];
+
+    /// <summary>Select a tab by title ("Servers"/"Create"/"Profile"); no-op if not found. Dev/CI capture.</summary>
+    public void SelectTab(string title) => _tabs.SelectByTitle(title);
 
     protected override void BuildUi()
     {
@@ -34,232 +49,349 @@ public partial class MultiplayerScreen : MenuScreen
         var margin = new MarginContainer();
         margin.SetAnchorsPreset(LayoutPreset.FullRect);
         foreach (var side in new[] { "margin_left", "margin_right", "margin_top", "margin_bottom" })
-            margin.AddThemeConstantOverride(side, 32);
+            margin.AddThemeConstantOverride(side, 18);
         AddChild(margin);
 
         var root = new VBoxContainer();
-        root.AddThemeConstantOverride("separation", 14);
+        root.AddThemeConstantOverride("separation", 10);
         margin.AddChild(root);
 
         if (!HostProvidesTitle) root.AddChild(MakeTitle("Multiplayer"));
 
-        var tabs = new TabContainer { SizeFlagsVertical = SizeFlags.ExpandFill };
-        root.AddChild(tabs);
+        // QC: one row of three equal tab buttons (each 4/3 of 4 columns), then the tab body.
+        _tabs = new XonoticTabs();
+        _tabs.AddRow();
+        _tabs.AddTab("Servers", BuildServersTab());
 
-        var servers = BuildServersTab();
-        servers.Name = "Servers";
-        tabs.AddChild(servers);
+        var create = new CreateGameScreen { Embedded = true, Menu = Menu, HostProvidesTitle = true };
+        _tabs.AddTab("Create", create);
 
-        var create = BuildCreateTab();
-        create.Name = "Create";
-        tabs.AddChild(create);
+        var profile = new DialogMultiplayerProfile { Embedded = true, Menu = Menu, HostProvidesTitle = true };
+        _tabs.AddTab("Profile", profile);
 
-        // Back + Player setup (the QC multiplayer dialog has a Player Setup tab/button for the profile).
-        root.AddChild(MakeButtonBar(
-            MakeButton("Back", GoBack),
-            MakeButton("Player setup...", () => Menu?.Push(new DialogMultiplayerProfile()))));
+        root.AddChild(_tabs);
     }
 
     // -------------------------------------------------------------------------------------------------
-    //  Servers tab
+    //  Servers tab — faithful XonoticServerListTab_fill layout
     // -------------------------------------------------------------------------------------------------
 
     private Control BuildServersTab()
     {
         var col = new VBoxContainer();
-        col.AddThemeConstantOverride("separation", 10);
+        col.AddThemeConstantOverride("separation", 8);
 
-        // Column header row mirroring the QC sort buttons (Name / Map / Type / Players / Ping).
-        var header = new HBoxContainer();
-        header.AddChild(ColumnLabel("Server", 3));
-        header.AddChild(ColumnLabel("Map", 2));
-        header.AddChild(ColumnLabel("Type", 2));
-        header.AddChild(ColumnLabel("Players", 1));
-        header.AddChild(ColumnLabel("Ping", 1));
+        // --- filter row: Categories | Filter: [box] | Empty Full Laggy | Refresh | Pause ---------------
+        var filter = new HBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        filter.AddThemeConstantOverride("separation", 10);
+
+        var categories = Widgets.CheckBox("menu_slist_categories", "Categories",
+            "Show servers grouped by category (not supported yet — uncategorised list)");
+        categories.Toggled += _ => InvalidateRender();
+        filter.AddChild(categories);
+
+        var filterLabel = MakeLabel("Filter:");
+        filterLabel.VerticalAlignment = VerticalAlignment.Center;
+        filter.AddChild(filterLabel);
+
+        _filterEdit = new LineEdit { SizeFlagsHorizontal = SizeFlags.ExpandFill, SizeFlagsStretchRatio = 2f };
+        _filterEdit.TextChanged += _ => InvalidateRender();
+        filter.AddChild(_filterEdit);
+
+        AddFilterCheck(filter, "menu_slist_showempty", "Empty", "Show empty servers");
+        AddFilterCheck(filter, "menu_slist_showfull", "Full", "Show full servers that have no slots available");
+        AddFilterCheck(filter, "menu_slist_showlaggy", "Laggy", "Show high latency servers");
+
+        var refresh = MakeButton("Refresh", OnRefresh);
+        refresh.TooltipText = Localization.Tr("Reload the server list");
+        refresh.SizeFlagsHorizontal = SizeFlags.Fill; // compact, like the QC 0.8-column button
+        refresh.CustomMinimumSize = new Vector2(110, 30);
+        filter.AddChild(refresh);
+
+        var pause = Widgets.CheckBox("net_slist_pause", "Pause",
+            "Pause updating the server list to prevent servers from \"jumping around\"");
+        filter.AddChild(pause);
+
+        col.AddChild(filter);
+
+        // --- the five sort-header buttons over the columned list (QC sortButton1..5) -------------------
+        var header = new HBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        header.AddThemeConstantOverride("separation", 4);
+        string[] titles = { "Ping", "Hostname", "Map", "Type", "Players" };
+        for (int i = 0; i < 5; i++)
+        {
+            int idx = i;
+            var b = new Button
+            {
+                Text = Localization.Tr(titles[i]),
+                SizeFlagsHorizontal = SizeFlags.ExpandFill,
+                SizeFlagsStretchRatio = ColumnRatio(i),
+                CustomMinimumSize = new Vector2(0, 28),
+                FocusMode = FocusModeEnum.None,
+            };
+            b.Pressed += () => OnSortClicked((SortField)idx);
+            _sortButtons[i] = b;
+            header.AddChild(b);
+        }
         col.AddChild(header);
 
-        _serverList = new ItemList { SizeFlagsVertical = SizeFlags.ExpandFill };
-        _serverList.ItemActivated += _ => OnConnect(); // double-click a row to join
-        col.AddChild(_serverList);
+        _serverTree = new Tree
+        {
+            SizeFlagsVertical = SizeFlags.ExpandFill,
+            Columns = 5,
+            HideRoot = true,
+            SelectMode = Tree.SelectModeEnum.Row,
+            FocusMode = FocusModeEnum.None,
+        };
+        for (int i = 0; i < 5; i++)
+        {
+            _serverTree.SetColumnExpand(i, true);
+            _serverTree.SetColumnExpandRatio(i, Mathf.RoundToInt(ColumnRatio(i) * 100));
+        }
+        _serverTree.ItemActivated += OnConnect;     // double-click / Enter = Join (QC doubleClick)
+        _serverTree.ItemSelected += OnRowSelected;  // echo the address into the box (QC setSelected)
+        col.AddChild(_serverTree);
 
-        // Initial population (favorites; LAN sweep happens on explicit Refresh to avoid a startup stall).
-        RenderServers();
+        // --- Address: [box] [Bookmark] [Info...] (QC rows-2) --------------------------------------------
+        var addr = new HBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        addr.AddThemeConstantOverride("separation", 10);
+        var addrLabel = MakeLabel("Address:");
+        addrLabel.VerticalAlignment = VerticalAlignment.Center;
+        addr.AddChild(addrLabel);
+        _addressEdit = new LineEdit
+        {
+            PlaceholderText = "ip:port",
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            SizeFlagsStretchRatio = 2.2f,
+        };
+        _addressEdit.TextChanged += _ => UpdateFavoriteButton();
+        _addressEdit.TextSubmitted += _ => OnConnect(); // QC onEnter = Connect
+        addr.AddChild(_addressEdit);
 
-        // Address + favorite row (QC bottom row of the servers tab).
-        _addressEdit = new LineEdit { PlaceholderText = "address (ip or ip:port)" };
-        col.AddChild(MakeRow("Address:", _addressEdit, 90f));
+        _favoriteButton = MakeButton("Bookmark", OnToggleFavorite);
+        _favoriteButton.SizeFlagsStretchRatio = 1.1f;
+        addr.AddChild(_favoriteButton);
 
-        // Action buttons: Refresh / Connect / favorite add-remove.
-        col.AddChild(MakeButtonBar(
-            MakeButton("Refresh", OnRefresh),
-            MakeButton("Connect", OnConnect),
-            MakeButton("Add favorite", OnAddFavorite),
-            MakeButton("Remove favorite", OnRemoveFavorite)));
+        var info = MakeButton("Info...", OnInfo);
+        info.TooltipText = Localization.Tr("Show more information about the currently highlighted server");
+        info.SizeFlagsStretchRatio = 1.1f;
+        addr.AddChild(info);
+        col.AddChild(addr);
+
+        // --- bottom row: Leave current match | Join! (QC last row) --------------------------------------
+        _leaveButton = MakeButton("Leave current match", () => MenuCommand.Run("disconnect"));
+        var join = MakeButton("Join!", OnConnect);
+        col.AddChild(MakeButtonBar(_leaveButton, join));
 
         return col;
     }
 
-    private static Label ColumnLabel(string text, int stretch)
+    private void AddFilterCheck(HBoxContainer row, string cvar, string label, string tooltip)
     {
-        var l = MakeLabel(text);
-        l.SizeFlagsHorizontal = SizeFlags.ExpandFill;
-        l.SizeFlagsStretchRatio = stretch;
-        return l;
+        var cb = Widgets.CheckBox(cvar, label, tooltip);
+        cb.Toggled += _ => InvalidateRender();
+        row.AddChild(cb);
     }
 
-    /// <summary>Render the browser's current <see cref="ServerEntry"/> list into the ItemList.</summary>
-    private void RenderServers()
+    /// <summary>QC column proportions (serverlist.qc resizeNotify): ping 3ch, name the rest, map 10ch, type 4ch, players 5ch.</summary>
+    private static float ColumnRatio(int column) => column switch
     {
-        int previous = _serverList.IsAnythingSelected() ? _serverList.GetSelectedItems()[0] : -1;
+        0 => 0.09f,  // Ping
+        1 => 0.50f,  // Hostname
+        2 => 0.20f,  // Map
+        3 => 0.09f,  // Type
+        4 => 0.12f,  // Players
+        _ => 0.1f,
+    };
 
-        _serverList.Clear();
-        var servers = Browser.Servers;
-        _renderedRevision = Browser.Revision;
-        for (int i = 0; i < servers.Count; i++)
-        {
-            ServerEntry s = servers[i];
-            string star = s.Favorite ? "* " : "  ";
-            // Column-aligned text row (the QC renders real columns; we pad text to fake them).
-            string row = $"{star}{Trunc(s.Name, 26),-26} {Trunc(s.Map, 14),-14} " +
-                         $"{Trunc(s.Gametype, 18),-18} {s.PlayersText,7}  {s.PingText,6}";
-            int idx = _serverList.AddItem(row);
-            _serverList.SetItemMetadata(idx, s.Address);
-        }
+    // -------------------------------------------------------------------------------------------------
+    //  List rendering: filter + sort the browser rows into the Tree
+    // -------------------------------------------------------------------------------------------------
 
-        if (servers.Count == 0)
-        {
-            int idx = _serverList.AddItem("(no servers — Refresh to scan the LAN, or type an address below)");
-            _serverList.SetItemDisabled(idx, true);
-        }
-        else
-        {
-            _serverList.Select(previous >= 0 && previous < servers.Count ? previous : 0);
-        }
-    }
-
-    private static string Trunc(string s, int max) => s.Length <= max ? s : s[..max];
+    private void InvalidateRender() => _renderedRevision = -1;
 
     /// <summary>
-    /// Pump the browser's async master/server replies each frame and re-render so internet rows (and their
-    /// details) fill in over the frames following a Refresh. Cheap when idle: Poll is a non-blocking socket
-    /// drain that no-ops with no query in flight, and the revision check skips the relayout unless a row was
-    /// added or a row's fields changed.
+    /// Pump the browser's async master/server replies each frame and re-render when rows changed (or the
+    /// filter/sort changed). Also auto-refreshes ONCE when the tab first becomes visible — the QC list
+    /// refreshes when it first draws, so the user never stares at an empty pane.
     /// </summary>
     public override void _Process(double delta)
     {
-        Browser.Poll();
-        if (Browser.Revision != _renderedRevision)
-            RenderServers();
+        if (!IsVisibleInTree())
+            return;
+
+        if (!_refreshedOnce)
+        {
+            _refreshedOnce = true;
+            OnRefresh();
+        }
+
+        bool paused = MenuState.Cvars.GetFloat("net_slist_pause") != 0f;
+        if (!paused)
+            Browser.Poll();
+
+        _leaveButton.Disabled = MenuCommand.InMatch is null || !MenuCommand.InMatch();
+
+        string filterKey = FilterKey();
+        if (Browser.Revision != _renderedRevision || filterKey != _renderedFilterKey)
+            RenderServers(filterKey);
     }
 
-    /// <summary>Browser revision last rendered into the ItemList — skips needless relayouts in <see cref="_Process"/>.</summary>
-    private int _renderedRevision = -1;
+    private string FilterKey() =>
+        $"{_filterEdit.Text}|{MenuState.Cvars.GetFloat("menu_slist_showempty")}|{MenuState.Cvars.GetFloat("menu_slist_showfull")}|" +
+        $"{MenuState.Cvars.GetFloat("menu_slist_showlaggy")}|{(int)_sortField}|{_sortOrder}";
 
     private void OnRefresh()
     {
         GD.Print("[Menu] Refreshing server list (favorites + LAN + internet master query).");
         Browser.Refresh();
-        RenderServers();
+        InvalidateRender();
+    }
+
+    private void OnSortClicked(SortField field)
+    {
+        // QC setSortOrder: clicking the active column flips the order, a new column starts ascending.
+        if (_sortField == field) _sortOrder = -_sortOrder;
+        else { _sortField = field; _sortOrder = +1; }
+        InvalidateRender();
+    }
+
+    /// <summary>Filter + sort + pour the rows into the Tree (the QC drawListBoxItem columns).</summary>
+    private void RenderServers(string filterKey)
+    {
+        _renderedRevision = Browser.Revision;
+        _renderedFilterKey = filterKey;
+
+        string selectedAddress = SelectedRowAddress() ?? "";
+
+        var rows = new List<ServerEntry>();
+        bool showEmpty = MenuState.Cvars.GetFloat("menu_slist_showempty") != 0f;
+        bool showFull = MenuState.Cvars.GetFloat("menu_slist_showfull") != 0f;
+        bool showLaggy = MenuState.Cvars.GetFloat("menu_slist_showlaggy") != 0f;
+        float maxPing = MenuState.Cvars.GetFloat("menu_slist_maxping");
+        if (maxPing <= 0) maxPing = 300;
+        string needle = _filterEdit.Text.Trim();
+
+        foreach (ServerEntry s in Browser.Servers)
+        {
+            int humans = Math.Max(0, s.Players - s.Bots);
+            if (!showEmpty && humans == 0 && !s.Favorite && !s.IsLan) continue;
+            if (!showFull && s.MaxPlayers > 0 && s.Players >= s.MaxPlayers) continue;
+            if (!showLaggy && s.Ping > maxPing) continue;
+            if (needle.Length > 0
+                && !Contains(s.Name, needle) && !Contains(s.Map, needle) && !Contains(s.Gametype, needle))
+                continue;
+            rows.Add(s);
+        }
+
+        rows.Sort((a, b) => _sortOrder * Compare(a, b));
+
+        _serverTree.Clear();
+        TreeItem rootItem = _serverTree.CreateItem();
+        TreeItem? reselect = null;
+        foreach (ServerEntry s in rows)
+        {
+            TreeItem item = _serverTree.CreateItem(rootItem);
+            item.SetText(0, s.PingText);
+            item.SetCustomColor(0, PingColor(s.Ping));
+            item.SetText(1, (s.Favorite ? "★ " : s.IsLan ? "LAN " : "") + MenuColorCodes.Strip(s.Name));
+            item.SetText(2, s.Map);
+            item.SetText(3, s.Gametype);
+            item.SetText(4, s.PlayersText);
+            item.SetTextAlignment(0, HorizontalAlignment.Right);
+            item.SetTextAlignment(3, HorizontalAlignment.Center);
+            item.SetTextAlignment(4, HorizontalAlignment.Center);
+            item.SetMetadata(0, s.Address);
+            if (s.Address == selectedAddress)
+                reselect = item;
+        }
+        reselect?.Select(0);
+    }
+
+    private static bool Contains(string haystack, string needle)
+        => haystack.Contains(needle, StringComparison.OrdinalIgnoreCase);
+
+    private int Compare(ServerEntry a, ServerEntry b) => _sortField switch
+    {
+        // Unknown pings sort to the bottom of the ascending list (QC: unqueried servers trail).
+        SortField.Ping => (a.Ping < 0 ? int.MaxValue : a.Ping).CompareTo(b.Ping < 0 ? int.MaxValue : b.Ping),
+        SortField.Name => string.Compare(MenuColorCodes.Strip(a.Name), MenuColorCodes.Strip(b.Name), StringComparison.OrdinalIgnoreCase),
+        SortField.Map => string.Compare(a.Map, b.Map, StringComparison.OrdinalIgnoreCase),
+        SortField.Type => string.Compare(a.Gametype, b.Gametype, StringComparison.OrdinalIgnoreCase),
+        SortField.Players => (a.Players - a.Bots).CompareTo(b.Players - b.Bots),
+        _ => 0,
+    };
+
+    /// <summary>The QC ping tint: green when snappy, fading to red as latency climbs.</summary>
+    private static Color PingColor(int ping) => ping switch
+    {
+        < 0 => new Color(0.7f, 0.7f, 0.7f, 0.6f),
+        < 70 => new Color(0.45f, 0.95f, 0.45f),
+        < 140 => new Color(0.95f, 0.95f, 0.45f),
+        < 200 => new Color(0.95f, 0.65f, 0.30f),
+        _ => new Color(0.95f, 0.35f, 0.30f),
+    };
+
+    // -------------------------------------------------------------------------------------------------
+    //  Row/address actions
+    // -------------------------------------------------------------------------------------------------
+
+    /// <summary>The address of the selected Tree row, or null when nothing is selected.</summary>
+    private string? SelectedRowAddress()
+    {
+        TreeItem? sel = _serverTree.GetSelected();
+        if (sel is null) return null;
+        Variant meta = sel.GetMetadata(0);
+        return meta.VariantType == Variant.Type.String ? meta.AsString() : null;
+    }
+
+    private void OnRowSelected()
+    {
+        // QC: selecting a row loads its address into the box (setSelected → ipAddressBox.setText).
+        if (SelectedRowAddress() is { } address)
+        {
+            _addressEdit.Text = address;
+            UpdateFavoriteButton();
+        }
     }
 
     /// <summary>The address to act on: the typed field if non-empty, else the selected row's address.</summary>
-    private string SelectedAddress()
-    {
-        if (!string.IsNullOrWhiteSpace(_addressEdit.Text))
-            return _addressEdit.Text;
-        if (_serverList.IsAnythingSelected())
-        {
-            Variant meta = _serverList.GetItemMetadata(_serverList.GetSelectedItems()[0]);
-            if (meta.VariantType == Variant.Type.String)
-                return meta.AsString();
-        }
-        return "";
-    }
+    private string TargetAddress()
+        => !string.IsNullOrWhiteSpace(_addressEdit.Text) ? _addressEdit.Text : SelectedRowAddress() ?? "";
 
     private void OnConnect()
     {
-        string address = SelectedAddress();
-        string? target = Browser.Connect(address);
+        string? target = Browser.Connect(TargetAddress());
         if (target is null)
-            GD.Print("[Menu] Connect: no address entered or selected.");
+            GD.Print("[Menu] Join: no address entered or selected.");
         else
             GD.Print($"[Menu] Connecting to {target}.");
     }
 
-    private void OnAddFavorite()
+    private void OnInfo()
     {
-        string address = SelectedAddress();
-        if (string.IsNullOrWhiteSpace(address))
-        {
-            GD.Print("[Menu] Add favorite: no address entered or selected.");
+        string address = TargetAddress();
+        if (address.Length > 0)
+            Menu?.Push(new DialogServerInfo(ServerBrowser.NormalizeAddress(address)));
+    }
+
+    /// <summary>QC ServerList_Favorite_Click + Update_favoriteButton: one button toggling bookmark state.</summary>
+    private void OnToggleFavorite()
+    {
+        string address = ServerBrowser.NormalizeAddress(TargetAddress());
+        if (address.Length == 0)
             return;
-        }
-        Browser.AddFavorite(address);
+        if (Browser.IsFavorite(address)) Browser.RemoveFavorite(address);
+        else Browser.AddFavorite(address);
         Browser.Refresh();
-        RenderServers();
+        UpdateFavoriteButton();
+        InvalidateRender();
     }
 
-    private void OnRemoveFavorite()
+    private void UpdateFavoriteButton()
     {
-        string address = SelectedAddress();
-        if (string.IsNullOrWhiteSpace(address))
-            return;
-        Browser.RemoveFavorite(address);
-        Browser.Refresh();
-        RenderServers();
-    }
-
-    // -------------------------------------------------------------------------------------------------
-    //  Create tab (compact) — opens the full CreateGameScreen for the rest of the options.
-    // -------------------------------------------------------------------------------------------------
-
-    private Control BuildCreateTab()
-    {
-        var col = new VBoxContainer();
-        col.AddThemeConstantOverride("separation", 10);
-
-        col.AddChild(MakeHeader("Host your own game"));
-
-        // Quick gametype list from the registry (the QC Create tab leads with a GametypeList). Each row
-        // stores its NetName so the hand-off to CreateGameScreen can pre-select the same gametype.
-        _createGametypeList = new ItemList { SizeFlagsVertical = SizeFlags.ExpandFill };
-        col.AddChild(MakeRow("Gametype:", _createGametypeList));
-        foreach (var gt in GameTypes.All)
-        {
-            string label = string.IsNullOrEmpty(gt.DisplayName) ? gt.NetName : gt.DisplayName;
-            int idx = _createGametypeList.AddItem(label);
-            _createGametypeList.SetItemMetadata(idx, gt.NetName);
-        }
-        if (GameTypes.All.Count == 0)
-        {
-            _createGametypeList.AddItem("(no gametypes registered)");
-            _createGametypeList.SetItemDisabled(0, true);
-        }
-        else
-        {
-            _createGametypeList.Select(0);
-        }
-
-        _createMapEdit = new LineEdit { Text = "dm_example", PlaceholderText = "map name" };
-        col.AddChild(MakeRow("Map:", _createMapEdit));
-
-        // Hand off to the full Create screen (with bot count/skill, limits, …), pre-seeded with the picks.
-        col.AddChild(MakeButtonBar(MakeButton("More options / Start...", OpenFullCreate)));
-
-        return col;
-    }
-
-    private void OpenFullCreate()
-    {
-        string? gametype = null;
-        if (_createGametypeList.IsAnythingSelected())
-        {
-            Variant meta = _createGametypeList.GetItemMetadata(_createGametypeList.GetSelectedItems()[0]);
-            if (meta.VariantType == Variant.Type.String)
-                gametype = meta.AsString();
-        }
-        string? map = string.IsNullOrWhiteSpace(_createMapEdit.Text) ? null : _createMapEdit.Text;
-
-        Menu?.Push(new CreateGameScreen { InitialGametype = gametype, InitialMap = map });
+        string address = ServerBrowser.NormalizeAddress(TargetAddress());
+        _favoriteButton.Text = Localization.Tr(
+            address.Length > 0 && Browser.IsFavorite(address) ? "Unbookmark" : "Bookmark");
     }
 }

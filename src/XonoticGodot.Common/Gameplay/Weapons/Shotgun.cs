@@ -158,7 +158,9 @@ public sealed class Shotgun : Weapon
         actor.TakeResource(AmmoType, Primary.Ammo);
 
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out Vector3 right, out Vector3 up);
-        ShotInfo shot = WeaponFiring.SetupShot(actor, forward);
+        // fired credit: damage * bullets — the whole volley's potential (QC shotgun.qc:19-20).
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward,
+            wep: this, maxDamage: Primary.Damage * Primary.Bullets);
 
         int deathType = RegistryId;
         int pellets = (int)Primary.Bullets;

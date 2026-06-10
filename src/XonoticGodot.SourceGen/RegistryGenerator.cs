@@ -2,11 +2,12 @@
 // RegistryGenerator — Roslyn incremental source generator for the XonoticGodot (Godot/C#) port of Xonotic.
 //
 // Purpose (ADR-0003): replace QuakeC's REGISTER_WEAPON / [[accumulate]] compile-time registry
-// metaprogramming with generated C#. Types tagged with the marker attributes from
-// XonoticGodot.Common.Framework ([Weapon]/[Item]/[Mutator]/[GameType]) are enrolled into their
+// metaprogramming with generated C#. Types tagged with the marker attributes
+// ([Weapon]/[Item]/[Mutator]/[GameType]/[Monster] from XonoticGodot.Common.Framework,
+// [Turret]/[Vehicle] from XonoticGodot.Common.Gameplay) are enrolled into their
 // Registry<T> catalog at COMPILE TIME — no runtime reflection (cf. GameRegistries.Bootstrap).
 //
-// What it emits, into the *consuming* assembly (e.g. XonoticGodot.Common or the Godot host):
+// What it emits, into the *consuming* assembly (XonoticGodot.Common, where all registrable content lives):
 //
 //     namespace XonoticGodot.Common.Gameplay
 //     {
@@ -23,12 +24,15 @@
 //     }
 //
 // HOW A CONSUMER ENABLES THIS:
-//   The generator ships in the netstandard2.0 analyzer project XonoticGodot.SourceGen, already wired into
-//   XonoticGodot.csproj as:
-//       <ProjectReference Include="src\XonoticGodot.SourceGen\XonoticGodot.SourceGen.csproj"
+//   The generator ships in the netstandard2.0 analyzer project XonoticGodot.SourceGen, wired into
+//   src/XonoticGodot.Common/XonoticGodot.Common.csproj (the assembly holding every attributed type) as:
+//       <ProjectReference Include="..\XonoticGodot.SourceGen\XonoticGodot.SourceGen.csproj"
 //                         OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
-//   Any assembly that references it gets a generated GeneratedRegistrations.RegisterAll(); call it
-//   once at startup INSTEAD of GameRegistries.Bootstrap() to populate the catalogs with zero reflection.
+//   GameRegistries.Bootstrap() (Gameplay/Registries.cs) calls the generated
+//   GeneratedRegistrations.RegisterAll() — zero reflection on the hot boot path; a reflection scan
+//   remains only for explicitly-passed extra (mod) assemblies. Do NOT also wire the analyzer into a
+//   project that REFERENCES Common (e.g. the Godot host): that compilation would gain its own — empty —
+//   GeneratedRegistrations shadowing Common's real one (CS0436).
 //   GeneratedRegistrations is declared `partial` so hand-written helpers can be added alongside it.
 //
 // CONSTRAINTS:
@@ -50,8 +54,8 @@ namespace XonoticGodot.SourceGen
     [Generator]
     public sealed class RegistryGenerator : IIncrementalGenerator
     {
-        // All marker attribute metadata names we hook. MonsterAttribute is included so it is recognised
-        // and explicitly skipped (Common exposes no Registry<Monster> catalog) rather than silently missed.
+        // All marker attribute metadata names we hook — one per Registry<T> catalog
+        // (QC: REGISTER_WEAPON/ITEM/MUTATOR/GAMETYPE/MONSTER/TURRET/VEHICLE).
         private static readonly string[] s_markerAttributeNames =
         {
             GeneratorHelpers.WeaponAttributeName,
@@ -59,6 +63,8 @@ namespace XonoticGodot.SourceGen
             GeneratorHelpers.MutatorAttributeName,
             GeneratorHelpers.GameTypeAttributeName,
             GeneratorHelpers.MonsterAttributeName,
+            GeneratorHelpers.TurretAttributeName,
+            GeneratorHelpers.VehicleAttributeName,
         };
 
         public void Initialize(IncrementalGeneratorInitializationContext context)
@@ -196,7 +202,7 @@ namespace XonoticGodot.SourceGen
 
             if (types.Count == 0)
             {
-                sb.AppendLine("            // No [Weapon]/[Item]/[Mutator]/[GameType]-tagged types were found.");
+                sb.AppendLine("            // No [Weapon]/[Item]/[Mutator]/[GameType]/[Monster]/[Turret]/[Vehicle]-tagged types were found.");
             }
             else
             {

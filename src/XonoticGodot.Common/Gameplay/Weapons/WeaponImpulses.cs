@@ -111,8 +111,9 @@ public static class WeaponImpulses
                 if (!dead) ReloadHandle(actor);
                 return true;
             case Drop:
-                // W_ThrowWeapon isn't owned by this task (server/weapons/throwing.qc); the impulse is recognized
-                // so the host stops dispatching, but the throw itself is left to the throwing port.
+                // QC IMPULSE(weapon_drop) (server/impulse.qc:334-351): per slot, throw the current weapon.
+                // (The vehicle gate is N/A on this path — no vehicle occupancy field reaches the impulse router.)
+                if (!dead) DropHandle(actor);
                 return true;
         }
 
@@ -142,6 +143,28 @@ public static class WeaponImpulses
         {
             Inventory.NextWeaponOnImpulse(actor, w.Impulse);
         }
+    }
+
+    /// <summary>
+    /// QC <c>IMPULSE(weapon_drop)</c> (server/impulse.qc:334-351): throw the current weapon forward.
+    /// Velocity = <c>W_CalculateProjectileVelocity(this, this.velocity, v_forward*750, false)</c>
+    /// (tracing.qc:174-183) — with stock <c>g_projectiles_newton_style 0</c> this is ABSOLUTE
+    /// <c>v_forward * 750 * W_WeaponSpeedFactor</c>, no player-velocity inheritance. The dual-wield
+    /// <c>dv = v_right * -movedir.y</c> sideways offset collapses to <c>'0 0 0'</c> (the port drives one slot).
+    /// </summary>
+    private static void DropHandle(Entity actor)
+    {
+        XonoticGodot.Common.Math.QMath.AngleVectors(actor.Angles, out System.Numerics.Vector3 forward, out _, out _);
+        // QC W_WeaponSpeedFactor: g_weaponspeedfactor (default 1) — the only live term of
+        // W_CalculateProjectileVelocity with newton_style 0.
+        float factor = 1f;
+        if (Api.Services is not null)
+        {
+            float f = Api.Cvars.GetFloat("g_weaponspeedfactor");
+            if (f > 0f) factor = f;
+        }
+        WeaponThrowing.ThrowWeapon(actor, new WeaponSlot(0), forward * (750f * factor),
+            System.Numerics.Vector3.Zero, doreduce: true);
     }
 
     /// <summary>

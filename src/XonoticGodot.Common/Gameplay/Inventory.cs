@@ -154,13 +154,26 @@ public static class Inventory
     private static int _weaponOrderByIdCount = -1;
 
     /// <summary>
-    /// QC <c>CS_CVAR(this).cvar_cl_weaponpriority</c> (the player's priority list). cl_weaponpriority is a
-    /// replicated per-client cvar; this port reads the server cvar facade (the same value on a listen server /
-    /// when not yet replicated). Tokens naming weapons absent from this port (Overkill weapons) are simply
-    /// skipped by <see cref="GetCycleWeapon"/> since their NetName doesn't resolve.
+    /// PER-CLIENT priority source (T54, the QC <c>CS_CVAR(this).cvar_cl_weaponpriority</c> field): returns the
+    /// player's replicated weapon-priority list in NUMBER (registry-id) form — the post-fixup value the server's
+    /// <c>sentcvar</c> handler stored (replicate.qh's <c>W_FixWeaponOrder_ForceComplete…</c> fixup) — or
+    /// null/empty for "not replicated" (fall back to the global cvar read below). Installed by the server's
+    /// <c>Commands</c> ctor; null by default so the listen-server/local path is unchanged.
+    /// </summary>
+    public static Func<Entity, string?>? PriorityProvider;
+
+    /// <summary>
+    /// QC <c>CS_CVAR(this).cvar_cl_weaponpriority</c> (the player's priority list). Consults the per-client
+    /// <see cref="PriorityProvider"/> first (the sentcvar-replicated value, already in id form); otherwise
+    /// cl_weaponpriority is read off the server cvar facade (the same value on a listen server / when not yet
+    /// replicated). Tokens naming weapons absent from this port (Overkill weapons) are simply skipped by
+    /// <see cref="GetCycleWeapon"/> since their NetName doesn't resolve.
     /// </summary>
     public static string WeaponPriority(Entity e)
     {
+        string? per = PriorityProvider?.Invoke(e);
+        if (!string.IsNullOrEmpty(per))
+            return per;
         string s = Api.Services is not null ? Api.Cvars.GetString("cl_weaponpriority") : "";
         return string.IsNullOrEmpty(s) ? WeaponOrderByPriorityDefault : PriorityNamesToIds(s);
     }

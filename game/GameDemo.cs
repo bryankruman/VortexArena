@@ -992,6 +992,10 @@ public partial class GameDemo : Node3D
         if (f.TryGetValue("spawnflags", out var sf) && int.TryParse(sf, out int sfi)) e.SpawnFlags = sfi;
         if (f.TryGetValue("team", out var tm) && TryFloat(tm, out float tmf)) e.Team = tmf;
 
+        // [T48] content-tail keys (misc_laser / models.qc props / pointparticles / rainsnow / music fades):
+        // parsed by the MapObjects-owned helper so this twin of GameWorld.ApplyDictFields stays one line.
+        XonoticGodot.Common.Gameplay.MapObjectFieldsExtra.Apply(e, f);
+
         Api.Entities.SetOrigin(e, e.Origin); // relink AbsMin/AbsMax to the final placement
     }
 

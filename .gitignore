@@ -9,7 +9,9 @@ obj/
 .godot/
 .import/
 export.cfg
-export_presets.cfg
+# NOTE: export_presets.cfg IS tracked (the windows-client/linux-dedicated presets carry no
+# secrets — no keystores/credentials; Godot keeps those in export_credentials.cfg, which stays
+# ignored via .godot/).
 mono_crash.*.json
 # NOTE: *.cs.uid files are intentionally committed (Godot 4.4+ guidance) for
 # stable script UIDs across machines/checkouts. Do NOT add *.uid here.
@@ -21,6 +23,11 @@ mono_crash.*.json
 
 # Visual-capture output (--screenshot; see RUNNING.md "Visual capture")
 screenshots/
+_*.png
+
+# Export/packaging output (export presets + tools/package.sh). Test-run artifacts
+# (TestResults/) are already covered by the [Tt]est[Rr]esults/ rule above.
+/dist/
 
 # Compiled golden-trace generator (the .c source + the generated golden/*.json fixtures ARE tracked)
 /tools/movement-ref/movement_ref

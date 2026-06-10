@@ -19,8 +19,10 @@ public static class MoveVarsBlock
 {
     /// <summary>
     /// The <c>sv_*</c> (and a couple of <c>g_*</c>) movement cvars the deterministic predictor reads, in wire
-    /// order. MUST stay in sync with <c>XonoticGodot.Common.Physics.MovementParameters.FromCvars</c>. Sent
-    /// positionally as floats (covers ints/bools, and NaN for the uncapped jumpspeedcaps).
+    /// order. MUST stay in sync with <c>XonoticGodot.Common.Physics.MovementParameters.FromCvars</c> AND with
+    /// <c>MovementParameters.FromValues</c> (which decodes this vector positionally). Sent positionally as
+    /// floats (covers ints/bools, and NaN for the uncapped jumpspeedcaps). APPEND-ONLY — never reorder
+    /// (Apply/FromValues are prefix-stable across versions).
     /// </summary>
     public static readonly string[] MovementCvars =
     {
@@ -36,6 +38,16 @@ public static class MoveVarsBlock
         "sv_jumpspeedcap_max_disable_on_ramps", "sv_track_canjump", "sv_doublejump", "sv_jumpstep",
         "sv_gravity", "sv_stepheight", "sv_gameplayfix_stepdown", "sv_gameplayfix_stepdown_maxspeed",
         "sv_wallfriction",
+        // ---- v7 additions (T54): the rest of the stats.qh MOVEVARS breadth the shared sim consults. ----
+        "g_movement_highspeed",            // STAT(MOVEVARS_HIGHSPEED), player.qc:47 — unset reads 1 (see Capture)
+        "g_movement_highspeed_q3_compat",  // the q3-compat maxspd_mod fold selector (player.qc:52-65), stock 0
+        "sv_gameplayfix_nudgeoutofsolid",  // read ambiently by PlayerPhysics.NudgeOutOfSolid — unset reads 1 (DP default ON)
+        "sv_wallclip",                     // STAT(MOVEVARS_WALLCLIP) (stats.qh:448) — no cfg sets it, default 0
+        "sv_nostep",                       // STAT(NOSTEP) (stats.qh:235), default 0
+        "sv_slick_applygravity",           // STAT(SLICK_APPLYGRAVITY) (stats.qh:365), default 0
+        // Deliberately NOT replicated: MOVEVARS_TICRATE/TIMESCALE (the port advertises the tick rate at
+        // handshake and ships dt per InputCommand), MOVEVARS_ENTGRAVITY (per-entity, not a cvar),
+        // MOVEVARS_CL_TRACK_CANJUMP (a client→server cvar loopback — rides the sentcvar channel instead).
     };
 
     /// <summary>The number of replicated movement cvars.</summary>
@@ -46,7 +58,75 @@ public static class MoveVarsBlock
     {
         var v = new float[MovementCvars.Length];
         for (int i = 0; i < v.Length; i++)
-            v[i] = cvars.GetFloat(MovementCvars[i]);
+            v[i] = CaptureOne(cvars, MovementCvars[i]);
+        return v;
+    }
+
+    /// <summary>
+    /// Read one movement cvar with the wire's value semantics. Three names need more than a bare GetFloat:
+    /// <list type="bullet">
+    ///   <item><c>g_movement_highspeed</c> / <c>sv_gameplayfix_nudgeoutofsolid</c>: their engine defaults are 1
+    ///         (xonotic-server.cfg:586 / DP sv_gameplayfix default), but an UNSET cvar reads 0 via GetFloat —
+    ///         so an empty store must capture 1, not silently turn the feature off for remote clients.</item>
+    ///   <item><c>sv_jumpspeedcap_min/_max</c>: the stock value is the literal string <c>"nan"</c> (= cap
+    ///         disabled). The wire is float, so NaN IS the disabled sentinel — map "nan"/unset → NaN and keep a
+    ///         REAL 0 (the xdf/quake3/cpma presets) as 0. NaN survives serialization.</item>
+    /// </list>
+    /// </summary>
+    public static float CaptureOne(ICvarService cvars, string name)
+    {
+        switch (name)
+        {
+            case "g_movement_highspeed":
+            case "sv_gameplayfix_nudgeoutofsolid":
+            {
+                string s = cvars.GetString(name);
+                return s.Length == 0 ? 1f : cvars.GetFloat(name);
+            }
+            case "sv_jumpspeedcap_min":
+            case "sv_jumpspeedcap_max":
+                return ParseNanFloat(cvars.GetString(name));
+            default:
+                return cvars.GetFloat(name);
+        }
+    }
+
+    /// <summary>DP <c>atof("nan")</c> semantics for the jumpspeedcap cvars: ""/unset or "nan" → NaN (cap
+    /// disabled), anything else parses as a float (a real 0 stays 0 — the xdf/quake3/cpma presets).</summary>
+    public static float ParseNanFloat(string s)
+    {
+        if (s.Length == 0 || s.Equals("nan", System.StringComparison.OrdinalIgnoreCase))
+            return float.NaN;
+        return float.TryParse(s, System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out float f) ? f : float.NaN;
+    }
+
+    /// <summary>
+    /// Build a client's preset-RESOLVED movevar vector — the per-player half of QC
+    /// <c>Physics_UpdateStats</c> (common/physics/player.qc:44-151): every preset-resolvable entry goes through
+    /// <c>Physics_ClientOption</c> (<see cref="XonoticGodot.Common.Physics.PhysicsPreset.Resolve"/>) with the
+    /// already-captured global value as the <c>autocvar_sv_*</c> fallback; global-only entries (the stats.qh
+    /// names WITH a cvar expression — jumpstep, friction_on_land, wallfriction, stepdown_maxspeed, …) are copied
+    /// from <paramref name="globalValues"/> verbatim. The maxspd_mod fold is NOT applied here — both sides fold
+    /// it at move time via <c>MovementParameters.ApplyHighSpeed</c> (the replicated <c>g_movement_highspeed</c>
+    /// entry), so folding it into the vector would double-apply.
+    /// </summary>
+    /// <param name="cvars">The server's cvar store (holds the <c>g_physics_&lt;set&gt;_*</c> table).</param>
+    /// <param name="clPhysics">The client's replicated <c>cl_physics</c> ("" for a bot / not sent).</param>
+    /// <param name="globalValues">This tick's <see cref="Capture"/> result (the sv_* fallbacks).</param>
+    /// <param name="exists">CVAR_TYPEFLAG_EXISTS check (pass <c>CvarService.Has</c>); null → GetString != "".</param>
+    public static float[] CaptureResolved(ICvarService cvars, string clPhysics, float[] globalValues,
+        System.Func<string, bool>? exists = null)
+    {
+        var v = new float[MovementCvars.Length];
+        int n = System.Math.Min(globalValues.Length, v.Length);
+        for (int i = 0; i < n; i++)
+        {
+            string? option = XonoticGodot.Common.Physics.PhysicsPreset.OptionFor(MovementCvars[i]);
+            v[i] = option is null
+                ? globalValues[i]
+                : XonoticGodot.Common.Physics.PhysicsPreset.Resolve(cvars, clPhysics, option, globalValues[i], exists);
+        }
         return v;
     }
 

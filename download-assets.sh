@@ -8,10 +8,12 @@
 #   - font-*.pk3dir          → extracted from the main xonotic.git repo (sparse checkout)
 #   - compiled map .pk3s     → downloaded from dl.xonotic.org release zip
 #
-# Usage:
-#   ./tools/download-assets.sh          # full download (data + music + maps)
-#   ./tools/download-assets.sh --no-music   # skip the ~300 MB music repo
-#   ./tools/download-assets.sh --no-maps    # skip the ~750 MB map pk3 download
+# Usage (the script lives at the REPO ROOT):
+#   ./download-assets.sh                # full download (data + music + maps)
+#   ./download-assets.sh --no-music     # skip the ~300 MB music repo
+#   ./download-assets.sh --no-maps      # skip the ~750 MB map pk3 download
+#   ./download-assets.sh --dest <dir>   # download into <dir> instead of assets/data
+#                                       # (tools/package.sh-style reuse for a dist layout)
 
 set -euo pipefail
 
@@ -48,12 +50,19 @@ MAP_PK3S=(
 
 skip_music=false
 skip_maps=false
+expect_dest=false
 for arg in "$@"; do
+    if $expect_dest; then
+        ASSETS_DIR="$(mkdir -p "$arg" && cd "$arg" && pwd)"
+        expect_dest=false
+        continue
+    fi
     case "$arg" in
         --no-music) skip_music=true ;;
         --no-maps)  skip_maps=true ;;
+        --dest)     expect_dest=true ;;
         --help|-h)
-            echo "Usage: $0 [--no-music] [--no-maps]"
+            echo "Usage: $0 [--no-music] [--no-maps] [--dest <dir>]"
             exit 0
             ;;
         *)
@@ -62,6 +71,10 @@ for arg in "$@"; do
             ;;
     esac
 done
+if $expect_dest; then
+    echo "--dest requires a directory argument"
+    exit 1
+fi
 
 info()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn()  { printf '\033[1;33mWARN:\033[0m %s\n' "$*"; }
@@ -81,9 +94,10 @@ mkdir -p "$ASSETS_DIR"
 # Ensure Godot's editor skips this tree — the game reads it via its own VFS (raw byte
 # reads), not Godot's resource importer. Without this the editor tries to import every
 # pk3dir .tga/.ogg/.ttf and spams errors (e.g. Xonotic's tiny 1x1 color-swatch TGAs).
-if [ ! -f "$REPO_ROOT/assets/.gdignore" ]; then
+# (Written beside ASSETS_DIR so a --dest download into another Godot project is covered too.)
+if [ ! -f "$(dirname "$ASSETS_DIR")/.gdignore" ]; then
     printf '# Consumed by the game VFS, not Godot'\''s importer — skip this tree.\n' \
-        > "$REPO_ROOT/assets/.gdignore"
+        > "$(dirname "$ASSETS_DIR")/.gdignore"
 fi
 
 # ── Clone a pk3dir git repo (shallow, single-branch) ──────────────────────

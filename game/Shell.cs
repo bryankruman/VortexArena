@@ -156,6 +156,8 @@ public partial class Shell : Node
                 ds.SelectTab(tab);
             else if (tab is not null && screen is MediaScreen mediaScreen)
                 mediaScreen.SelectTab(tab);
+            else if (tab is not null && screen is MultiplayerScreen mp)
+                mp.SelectTab(tab);
         }
         else
         {
@@ -234,6 +236,10 @@ public partial class Shell : Node
 
     public override void _ExitTree()
     {
+        // DP saves config.cfg at engine shutdown (Host_SaveConfig) — persist the archived cvars here so
+        // settings edits survive a quit even without passing through a Back button.
+        MenuState.SaveUserConfig();
+
         // Detach the static menu callbacks so a re-created shell (or test) doesn't double-fire.
         CreateGameScreen.StartGameRequested -= OnStartGame;
         MultiplayerScreen.Browser.ConnectRequested -= OnConnect;

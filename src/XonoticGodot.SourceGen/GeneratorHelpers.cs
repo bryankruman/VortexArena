@@ -16,12 +16,15 @@ namespace XonoticGodot.SourceGen
     /// </summary>
     internal enum RegistryCategory
     {
-        /// <summary>Not a recognised registry attribute (or has no matching catalog, e.g. Monster).</summary>
+        /// <summary>Not a recognised registry attribute.</summary>
         None = 0,
         Weapon,
         Item,
         Mutator,
         GameType,
+        Monster,
+        Turret,
+        Vehicle,
     }
 
     /// <summary>
@@ -73,11 +76,16 @@ namespace XonoticGodot.SourceGen
         private const string RegistryOpenType = "global::XonoticGodot.Common.Framework.Registry";
 
         // Fully-qualified metadata names of the marker attributes (used by ForAttributeWithMetadataName).
+        // Weapon/Item/Mutator/GameType/Monster live in Framework (Framework/Registry.cs); Turret and Vehicle
+        // were declared later, next to their descriptor bases, in the Gameplay namespace
+        // (Gameplay/Turrets/TurretAI.cs, Gameplay/Vehicles/VehicleCommon.cs).
         public const string WeaponAttributeName = "XonoticGodot.Common.Framework.WeaponAttribute";
         public const string ItemAttributeName = "XonoticGodot.Common.Framework.ItemAttribute";
         public const string MutatorAttributeName = "XonoticGodot.Common.Framework.MutatorAttribute";
         public const string GameTypeAttributeName = "XonoticGodot.Common.Framework.GameTypeAttribute";
         public const string MonsterAttributeName = "XonoticGodot.Common.Framework.MonsterAttribute";
+        public const string TurretAttributeName = "XonoticGodot.Common.Gameplay.TurretAttribute";
+        public const string VehicleAttributeName = "XonoticGodot.Common.Gameplay.VehicleAttribute";
 
         public const string GameRegistryAttributeSimpleName = "GameRegistryAttribute";
 
@@ -95,8 +103,7 @@ namespace XonoticGodot.SourceGen
         /// Infers the registry category from a marker attribute's type symbol, matching BY NAME so no
         /// reference to XonoticGodot.Common is required. Recognises the concrete attribute names and, as a
         /// fallback, anything whose base type chain includes <c>GameRegistryAttribute</c>.
-        /// Returns <see cref="RegistryCategory.None"/> for attributes without a matching catalog
-        /// (e.g. <c>MonsterAttribute</c>, which Common has no <c>Registry&lt;Monster&gt;</c> for).
+        /// Returns <see cref="RegistryCategory.None"/> for unrecognised attributes.
         /// </summary>
         public static RegistryCategory InferCategory(INamedTypeSymbol? attributeType)
         {
@@ -126,12 +133,16 @@ namespace XonoticGodot.SourceGen
                 return RegistryCategory.None;
 
             // Match on the trailing "*Attribute" name; tolerate custom subclass names that END WITH
-            // one of the known markers (e.g. "SuperWeaponAttribute").
+            // one of the known markers (e.g. "SuperWeaponAttribute"). No category suffix may be a
+            // suffix of another's (checked by SourceGenTests) or this greedy match would misroute.
             if (EndsWithOrdinal(simpleName, "WeaponAttribute")) return RegistryCategory.Weapon;
             if (EndsWithOrdinal(simpleName, "ItemAttribute")) return RegistryCategory.Item;
             if (EndsWithOrdinal(simpleName, "MutatorAttribute")) return RegistryCategory.Mutator;
             if (EndsWithOrdinal(simpleName, "GameTypeAttribute")) return RegistryCategory.GameType;
-            // MonsterAttribute and the bare GameRegistryAttribute intentionally have no catalog.
+            if (EndsWithOrdinal(simpleName, "MonsterAttribute")) return RegistryCategory.Monster;
+            if (EndsWithOrdinal(simpleName, "TurretAttribute")) return RegistryCategory.Turret;
+            if (EndsWithOrdinal(simpleName, "VehicleAttribute")) return RegistryCategory.Vehicle;
+            // The bare GameRegistryAttribute base intentionally has no catalog.
             return RegistryCategory.None;
         }
 
@@ -142,13 +153,16 @@ namespace XonoticGodot.SourceGen
         public static string GetFullyQualifiedName(INamedTypeSymbol type)
             => type.ToDisplayString(s_fqnFormat);
 
-        /// <summary>The base catalog type argument for a category (Weapon/Pickup/MutatorBase/GameType).</summary>
+        /// <summary>The base catalog type argument for a category (Weapon/Pickup/MutatorBase/GameType/Monster/Turret/Vehicle).</summary>
         public static string CatalogElementType(RegistryCategory category) => category switch
         {
             RegistryCategory.Weapon => "global::XonoticGodot.Common.Gameplay.Weapon",
             RegistryCategory.Item => "global::XonoticGodot.Common.Gameplay.Pickup",
             RegistryCategory.Mutator => "global::XonoticGodot.Common.Gameplay.MutatorBase",
             RegistryCategory.GameType => "global::XonoticGodot.Common.Gameplay.GameType",
+            RegistryCategory.Monster => "global::XonoticGodot.Common.Gameplay.Monster",
+            RegistryCategory.Turret => "global::XonoticGodot.Common.Gameplay.Turret",
+            RegistryCategory.Vehicle => "global::XonoticGodot.Common.Gameplay.Vehicle",
             _ => string.Empty,
         };
 

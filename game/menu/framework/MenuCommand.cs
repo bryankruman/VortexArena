@@ -210,6 +210,13 @@ public static class MenuCommand
                 OpenDialog?.Invoke("quitdialog");
                 break;
 
+            // The HUD-panel configuration host (the port's stand-in for QC's in-game HUD editor entry):
+            // menu_showhudoptions is what the Game→HUD "Enter HUD editor" button issues.
+            case "menu_showhudpanels":
+            case "menu_showhudoptions":
+                OpenDialogOverlay?.Invoke("hudpanels");
+                break;
+
             // ---- live-match gameplay commands (dialog_gamemenu / teamselect COMMANDBUTTON strings) ----------
 
             // "cmd <rest>" — DP forwards the rest to the server as a client command (clc_stringcmd). Strip the

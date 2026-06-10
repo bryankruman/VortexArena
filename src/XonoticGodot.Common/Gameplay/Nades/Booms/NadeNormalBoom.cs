@@ -66,7 +66,6 @@ internal static class NadeBlast
         Entity? attacker = nade.RealOwner;
         Entity? directHit = nade.Enemy;
 
-        float selfDamagePercent = Cvar("g_balance_selfdamagepercent", 0.65f);
         float throughFloorDmg = Cvar("g_throughfloor_damage", 0.5f);
         float throughFloorForce = Cvar("g_throughfloor_force", 0.7f);
         float denom = MathF.Max(damage, edgeDamage);
@@ -75,9 +74,10 @@ internal static class NadeBlast
         {
             if (e.TakeDamage == DamageMode.No) continue;
 
+            // Nearest-point-on-bbox distance (full damage at contact range), knockback aimed at bbox center.
             Vector3 targetCenter = e.Origin + (e.Mins + e.Maxs) * 0.5f;
-            Vector3 delta = targetCenter - nade.Origin;
-            float dist = delta.Length();
+            Vector3 nearest = Vector3.Clamp(nade.Origin, e.Origin + e.Mins, e.Origin + e.Maxs);
+            float dist = (nearest - nade.Origin).Length();
             if (dist > radius) continue;
 
             float frac = 1f - dist / radius;
@@ -87,7 +87,9 @@ internal static class NadeBlast
             Vector3 forceVec = Vector3.Zero;
             if (force != 0f && denom > 0f)
             {
-                Vector3 dir = dist > 0f ? delta / dist : Vector3.UnitZ;
+                Vector3 dirDelta = targetCenter - nade.Origin;
+                float dirLen = dirDelta.Length();
+                Vector3 dir = dirLen > 0f ? dirDelta / dirLen : Vector3.UnitZ;
                 forceVec = dir * ((finalDmg / denom) * force);
             }
 
@@ -103,9 +105,7 @@ internal static class NadeBlast
                 }
             }
 
-            if (attacker is not null && ReferenceEquals(e, attacker))
-                finalDmg *= selfDamagePercent;
-
+            // self-damage scaling is applied once in DamageSystem.Apply (not here) — see WeaponSplash (DMG1).
             Combat.Damage(e, nade, attacker, finalDmg, dt, targetCenter, forceVec);
         }
     }

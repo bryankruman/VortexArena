@@ -70,8 +70,34 @@ public sealed class BotBrain
     private float _strategyTime;
     private float _aimTime;
     private float _chooseWeaponTime;
+    private float _nextThink;       // QC .bot_nextthink (think throttle)
+    private float _jumpTime;        // QC .bot_jump_time (jump stays held 0.2s for ramp jumps)
+    private Entity? _ignoreGoal;    // QC .ignoregoal (a danger-unreachable goal, snubbed for a timeout)
+    private float _ignoreGoalTime;  // QC .ignoregoaltime
+    private bool _strategyForced;   // QC navigation_goalrating_timeout_force (re-rate on next token hold)
 
-    // last input emitted (useful for the host/tests)
+    /// <summary>
+    /// QC <c>bot_strategytoken == this</c>: only the token holder may run its role (goal rating + routing)
+    /// this frame — exactly one bot per frame across the population (bot.qc:786-813). Defaults to true so a
+    /// standalone brain (tests/bench, no <see cref="BotPopulation"/>) keeps re-planning on its own clock.
+    /// </summary>
+    public bool StrategyTokenHeld = true;
+
+    /// <summary>Fired when the holder actually consumes the token (QC <c>bot_strategytoken_taken = true</c>).</summary>
+    public Action? OnStrategyTokenUsed;
+
+    /// <summary>QC bot_think:153-157 latch: this bot already auto-readied during the current warmup stage.
+    /// Maintained by <see cref="BotPopulation"/> (cleared when warmup ends so a later warmup re-readies).</summary>
+    public bool AutoReadied;
+
+    /// <summary>
+    /// QC the pre-game movement holds (bot_think:80-83 campaign hold + :122-127 countdown): when this returns
+    /// true the bot keeps its buttons but emits zero movement. Wired by <see cref="BotPopulation"/> to
+    /// <c>time &lt; game_starttime || (g_campaign &amp;&amp; !campaign_bots_may_start)</c>; null = no hold.
+    /// </summary>
+    public Func<bool>? MovementHold;
+
+    // last input emitted (useful for the host/tests); repeated between throttled thinks (QC's persisted CS movement)
     public MovementInput LastInput { get; private set; }
 
     /// <summary>The bot's current target (QC <c>.enemy</c>).</summary>
@@ -114,20 +140,79 @@ public sealed class BotBrain
     }
 
     /// <summary>
-    /// Advance the bot one frame (QC havocbot_ai + bot_think). <paramref name="dt"/> is the tick length in
-    /// seconds (PHYS_INPUT_TIMELENGTH). Produces and applies a <see cref="MovementInput"/> via
-    /// <see cref="Movement.Move"/>. No-op while the bot is dead (QC IS_DEAD early-out clears the route).
+    /// Advance the bot one frame (QC havocbot_ai + bot_think) AND apply the produced move via
+    /// <see cref="Movement.Move"/> — the standalone/bench entry point (the live server instead pulls
+    /// <see cref="ThinkProduce"/> through the per-tick input path so the SAME tick's physics consumes it).
+    /// No-op while the bot is dead (the old standalone behavior, kept for BotNavTests/BotPerfBench).
     /// </summary>
     public void Think(Player bot, float dt)
     {
-        float now = Now;
-
         if (bot.IsDead)
         {
             Nav.ClearRoute();
             bot.Enemy = null;
             return;
         }
+        MovementInput input = ThinkProduce(bot, dt);
+        Movement.Move(bot, input);
+    }
+
+    /// <summary>
+    /// The produce-only think (QC <c>bot_think</c> + <c>havocbot_ai</c>, run from the per-client physics step
+    /// like ecs sys_phys_ai): assembles this tick's <see cref="MovementInput"/> WITHOUT stepping physics — the
+    /// caller (GameWorld's bot input branch) feeds it to the same-tick movement + weapon drivers exactly like a
+    /// human usercmd. Throttled by skill (QC bot_think:71-75); between thinks the last command is repeated
+    /// (QC's CS(this).movement/buttons persist on the entity). Also writes the bot's own view angles onto the
+    /// entity (bots steer by writing Angles; the server never clobbers a bot's aim from input).
+    /// </summary>
+    public MovementInput ThinkProduce(Player bot, float dt)
+    {
+        float now = Now;
+
+        // ---- think throttle (QC bot_think:62-75) ----
+        if (now < _nextThink)
+        {
+            MovementInput repeat = LastInput;
+            repeat.FrameTime = dt;
+            return repeat; // QC: early return leaves the persisted movement/buttons in force
+        }
+
+        // QC bot_god → FL_GODMODE re-stamped every think.
+        bot.Flags &= ~EntFlags.GodMode;
+        if (Cvars.Bool("bot_god"))
+            bot.Flags |= EntFlags.GodMode;
+
+        // QC: SUPERBOT thinks at 0.005; others at bot_ai_thinkinterval * min(14/(skill+14), 1), floor 0.01.
+        // (The per-bot bot_aiskill modifier rides on Skill here — the port folds bots.txt's "ai" column into it.)
+        if (Skill > BotAim.SuperbotSkill)
+            _nextThink = MathF.Max(now, _nextThink) + 0.005f;
+        else
+        {
+            float interval = Cvars.FloatOr("bot_ai_thinkinterval", 0.05f);
+            _nextThink = MathF.Max(now, _nextThink)
+                + MathF.Max(0.01f, interval * MathF.Min(14f / (Skill + 14f), 1f));
+        }
+
+        // ---- button baseline (QC clears all buttons each think; JUMP stays held for ramp jumps) ----
+        bool jumpHeld = !bot.IsDead && now < _jumpTime + 0.2f; // QC bot_think:112
+
+        // ---- dead / observer (QC bot_think:129-149 + havocbot_ai:113-119) ----
+        if (bot.IsObserver)
+            return Emit(bot, default, jump: false, crouch: false, attack: false, dt);
+        if (bot.IsDead)
+        {
+            Nav.ClearRoute();
+            bot.Enemy = null;
+            _strategyForced = true; // QC navigation_goalrating_timeout_force while dead
+            // QC: jump must be RELEASED for a frame (DEAD_DYING) so PlayerThink sees the keydown edge, then
+            // PRESSED while DEAD_DEAD — that's how a bot asks to respawn through the same DEAD_* machine.
+            bool jump = bot.DeadState == DeadFlag.Dead;
+            return Emit(bot, Vector3.Zero, jump, crouch: false, attack: false, dt);
+        }
+
+        // ---- pre-game / campaign movement hold (QC bot_think:80-83 + :122-127) ----
+        if (MovementHold?.Invoke() == true)
+            return Emit(bot, Vector3.Zero, jumpHeld, crouch: false, attack: false, dt);
 
         // 1) target selection (throttled; SUPERBOT reacts fast)
         ChooseEnemy(now);
@@ -139,23 +224,86 @@ public sealed class BotBrain
             ChooseWeapon(bot.Enemy);
         }
 
-        // 2) strategy: rate goals via the role and route to the best (slower clock). A little random jitter
-        // staggers bots so they don't all re-plan on the same frame (QC bot_strategytoken rotation effect).
-        float strategyInterval = System.Math.Max(0.1f, 2f - System.Math.Min(Skill, 10f) * 0.1f);
-        if (now >= _strategyTime)
+        // 2) strategy (QC havocbot_ai:52-104): ONLY the strategy-token holder may run its role — one goal
+        // search per server frame across all bots. The role re-rates when the slow clock expired, the route is
+        // empty, or a clearroute forced a re-plan (QC navigation_goalrating_timeout/_force inside the roles).
+        if (StrategyTokenHeld)
         {
-            _strategyTime = now + strategyInterval + (float)_rng.NextDouble() * 0.1f;
-            Role(this, _rater);
-            if (_rater.HasGoal)
+            float strategyInterval = Cvars.FloatOr("bot_ai_strategyinterval", 7f);
+            if (_strategyForced || !Nav.HasGoal || now >= _strategyTime)
             {
-                var g = _rater.Best;
-                Nav.SetGoal(bot.Origin, g.Position, Network, g.Target);
+                _strategyTime = now + strategyInterval;
+                _strategyForced = false;
+                Role(this, _rater);
+                if (_rater.HasGoal)
+                {
+                    var g = _rater.Best;
+                    // QC .ignoregoal: skip a goal that danger marked unreachable, for ignoregoal_timeout secs.
+                    if (!(g.Target is not null && ReferenceEquals(g.Target, _ignoreGoal) && now < _ignoreGoalTime))
+                        Nav.SetGoal(bot.Origin, g.Position, Network, g.Target);
+                }
             }
+            OnStrategyTokenUsed?.Invoke(); // QC bot_strategytoken_taken = true (used this frame)
+        }
+
+        // stale goal: the target entity was freed (QC havocbot_ai:106-111).
+        if (Nav.GoalEntity is { IsFreed: true })
+        {
+            Nav.ClearRoute();
+            _strategyForced = true;
         }
 
         // 3) navigation: steer toward current goal -> wish-move + jump/crouch
         bool onGround = bot.OnGround;
         Vector3 move = Nav.Steer(bot, Aim.ViewAngles.Y, onGround);
+
+        // 3b) no-progress watchdog (QC havocbot_checkgoaldistance): >0.5s without closing on the goal →
+        // drop the route and force a re-rate on the next token hold (covers navigation_unstuck's main value).
+        if (Nav.HasGoal && Nav.CheckGoalProgress(bot, now))
+        {
+            Nav.ClearRoute();
+            _strategyForced = true;
+        }
+
+        // 3c) danger ahead (QC havocbot_movetogoal:1136-1182 → havocbot_checkdanger): probe the ground under
+        // the point we're about to occupy; lava/slime/void/cliff → brake; a trigger_hurt under a high goal →
+        // the goal is unreachable (clear + ignore it for bot_ai_ignoregoal_timeout).
+        if (Nav.Current is Vector3 cur)
+        {
+            Vector3 flat = new(cur.X - bot.Origin.X, cur.Y - bot.Origin.Y, 0f);
+            Vector3 flatdir = flat.LengthSquared() > 0f ? QMath.Normalize(flat) : Vector3.Zero;
+            Vector3 offset = bot.Velocity.Length() > 32f ? bot.Velocity * 0.2f : flatdir * 32f;
+            Vector3 eye = bot.Origin + Aim.ViewOffset;
+            int r = BotDanger.CheckDanger(bot, eye, eye + offset, cur.Z, Nav.Mins, Nav.Maxs,
+                onGround, jumpHeld || Nav.WantJump, moving: move != Vector3.Zero, committed: false);
+            bool danger = r is > 0 and < 4;
+            if (r == 4)
+            {
+                if (cur.Z > bot.Origin.Z + BotNavigation.JumpStepHeight)
+                {
+                    // goal probably on an upper platform — unreachable (QC: clearroute + ignoregoal).
+                    _ignoreGoal = Nav.GoalEntity;
+                    _ignoreGoalTime = now + Cvars.FloatOr("bot_ai_ignoregoal_timeout", 3f);
+                    Nav.ClearRoute();
+                    _strategyForced = true;
+                }
+                else
+                    danger = true;
+            }
+            if (danger)
+            {
+                // QC do_break: back off along -velocity (the port folds the AI_STATUS_DANGER_AHEAD evade into
+                // the brake; the lateral evade vector is a documented simplification).
+                move = Nav.WorldToLocalMove(-bot.Velocity, Aim.ViewAngles.Y);
+                if (Nav.GoalEntity is Player) // QC: a player goal past danger is unreachable
+                {
+                    _ignoreGoal = Nav.GoalEntity;
+                    _ignoreGoalTime = now + Cvars.FloatOr("bot_ai_ignoregoal_timeout", 3f);
+                    Nav.ClearRoute();
+                    _strategyForced = true;
+                }
+            }
+        }
 
         // 4) aim
         bool wantAttack = false;
@@ -179,23 +327,33 @@ public sealed class BotBrain
             Aim.AimAt(lookDir, bot.Origin, Skill, dt, now, 0f, hasEnemy: false);
         }
 
-        // 5) assemble input and step physics
+        // 5) assemble the command (the caller's same-tick physics/weapon drivers consume it).
+        bool wantJump = Nav.WantJump;
+        if (wantJump)
+            _jumpTime = now;        // QC bot_jump_time: keep jump held ~0.2s so ramp jumps register
+        return Emit(bot, move, wantJump || jumpHeld, Nav.WantCrouch, wantAttack, dt);
+    }
+
+    /// <summary>Stamp the bot's view onto the entity and record + return the assembled command.</summary>
+    private MovementInput Emit(Player bot, Vector3 move, bool jump, bool crouch, bool attack, float dt)
+    {
         var input = new MovementInput
         {
             ViewAngles = Aim.ViewAngles,
             MoveValues = move,
             FrameTime = dt,
-            ButtonJump = Nav.WantJump,
-            ButtonCrouch = Nav.WantCrouch,
-            ButtonAttack1 = wantAttack,
+            ButtonJump = jump,
+            ButtonCrouch = crouch,
+            ButtonAttack1 = attack,
             ButtonAttack2 = false,
         };
         LastInput = input;
 
+        // bots steer by writing their OWN angles (GameWorld's input path deliberately skips bots).
         bot.Angles = Aim.ViewAngles;
+        bot.ViewAngles = Aim.ViewAngles;
         bot.ViewOfs = Aim.ViewOffset;
-
-        Movement.Move(bot, input);
+        return input;
     }
 
     /// <summary>
@@ -278,7 +436,7 @@ public sealed class BotBrain
     /// Pick the best owned weapon for the current engagement range (QC <c>havocbot_chooseweapon</c>): with no
     /// enemy, hold a mid-range weapon; with an enemy, prefer a hitscan weapon at long range and a splash
     /// weapon up close (the QC close/mid/far distance buckets, default thresholds from
-    /// <c>bot_ai_custom_weapon_priority_distances</c> "300 1000"). Among the candidates of the preferred type
+    /// <c>bot_ai_custom_weapon_priority_distances</c> "300 850"). Among the candidates of the preferred type
     /// it takes the highest-impulse (strongest) owned weapon. Sets <see cref="ChosenWeapon"/> and equips it
     /// via <see cref="Inventory"/> so the weapon-frame + shot-speed read use it.
     /// </summary>
@@ -296,7 +454,7 @@ public sealed class BotBrain
         else
         {
             float dist = (enemy.Origin - Bot.Origin).Length();
-            float distClose = 300f, distFar = 1000f;
+            float distClose = 300f, distFar = 850f; // bot_ai_custom_weapon_priority_distances ships "300 850"
             ReadDistances(ref distClose, ref distFar);
             if (dist > distFar) { wantHitscan = true; wantSplash = false; }       // far: hitscan
             else if (dist <= distClose) { wantHitscan = false; wantSplash = true; } // close: splash

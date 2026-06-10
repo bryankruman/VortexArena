@@ -1,0 +1,169 @@
+// Port of the remaining flat QC entity fields the map-entity "content tail" reads off the edict
+// (qcsrc/common/mapobjects/misc/laser.qc, models.qc, func/pointparticles.qc, func/rainsnow.qc,
+// target/music.qc), plus the one generic key-parse helper the spawn chokepoints call.
+//
+// In DarkPlaces, ED_ParseEdict copies EVERY "key" "value" pair of a map entity onto the matching QC
+// field generically. The port's GameWorld.ApplyDictFields (and GameDemo.ApplyMapFields) instead promote a
+// fixed key set — so each new field family needs (a) the Entity partial fields (ADR-0007: new file, no
+// Entity.cs edits) and (b) a parse hook. Apply() below is that hook: the GameWorld/GameDemo chokepoints
+// call it with the raw field dict, keeping the chokepoint itself one line.
+
+using System.Globalization;
+using System.Numerics;
+
+namespace XonoticGodot.Common.Framework
+{
+    public partial class Entity
+    {
+        // ---- effect-name / emitter keys (laser.qc / pointparticles.qc) ----
+        /// <summary>QC <c>.mdl</c> — an effectinfo effect NAME (laser end effect, pointparticles emitter).</summary>
+        public string Mdl = "";
+        /// <summary>QC <c>.impulse</c> as a map key — func_pointparticles emission density (per second; negative = relative per-64³).</summary>
+        public float Impulse;
+        /// <summary>QC <c>.waterlevel</c> reused as the func_pointparticles velocity JITTER magnitude.</summary>
+        public float ParticleJitter;
+        /// <summary>QC <c>.count</c> as the FLOAT map key (pointparticles per-emission multiplier, rain/snow density).
+        /// Distinct from the int <see cref="Count"/> the monster_spawner path promotes.</summary>
+        public float ParticleCount;
+
+        // ---- laser keys (laser.qc) ----
+        /// <summary>QC <c>.beam_color</c> — misc_laser beam tint.</summary>
+        public Vector3 BeamColor;
+        /// <summary>QC <c>.colormod</c> map key — the LEGACY alias of beam_color (named *Key to avoid clashing with
+        /// any render-side colormod promotion).</summary>
+        public Vector3 ColorModKey;
+        /// <summary>The raw <c>alpha</c> map key (0 = key absent). QC semantics branch on "alpha set/0"
+        /// (laser.qc:244-248), and <see cref="Alpha"/> defaults to 1 and drives render fades — so the raw key is
+        /// recorded separately and each spawnfunc decides what to do with it.</summary>
+        public float AlphaKey;
+        /// <summary>Port-side resolution of the QC laser <c>.cnt</c> end-effect: the effectinfo NAME to play where
+        /// the beam hits ("" = no effect, QC cnt -1). The port resolves effects by name, not number.</summary>
+        public string LaserEndEffect = "";
+        /// <summary>The misc_laser DETECTOR edge latch (QC reuses <c>.count</c>, laser.qc:95-109 — kept separate
+        /// here because <c>count</c> is a plumbed map key on this port's Entity).</summary>
+        public bool LaserHitLatch;
+        /// <summary>Port: the INITPRIO_FINDTARGET enemy lookup ran (done lazily on the first laser think).</summary>
+        public bool LaserTargetSearched;
+
+        // ---- model-prop keys (models.qc / laser.qc) ----
+        /// <summary>QC <c>.scale</c> — model/render scale (misc_gamemodel props; laser beam radius). Named
+        /// ScaleFactor to avoid colliding with other partials.</summary>
+        public float ScaleFactor;
+        /// <summary>QC <c>.modelscale</c> — fallback scale (models.qc) / laser dlight radius factor.</summary>
+        public float ModelScale;
+        /// <summary>The raw <c>solid</c> map key (0 = unset; &lt;0 forces SOLID_NOT — models.qc:178-179).</summary>
+        public float SolidOverride;
+        /// <summary>QC <c>.colormap</c> as set by g_model_setcolormaptoactivator (models.qc:17-29). Render-side
+        /// consumption is a follow-up; the field keeps the QC math observable.</summary>
+        public int ColorMapOverride;
+
+        // ---- distance-fade keys (models.qc ENT_CLIENT_WALL / Ent_Wall_PreDraw) ----
+        public float FadeStartDist;      // QC .fade_start
+        public float FadeEndDist;        // QC .fade_end
+        public float AlphaMax;           // QC .alpha_max — PERCENT (the /100 in Ent_Wall_PreDraw is load-bearing)
+        public float AlphaMin;           // QC .alpha_min — PERCENT
+        public float FadeVerticalOffset; // QC .fade_vertical_offset
+
+        // ---- weather (rainsnow.qc) ----
+        /// <summary>QC <c>.dest</c> — the rain/snow fall velocity (moved off <c>.velocity</c> at spawn).</summary>
+        public Vector3 Dest;
+
+        // ---- music keys (target/music.qc) ----
+        public float MusicLifetime;      // QC .lifetime — seconds a triggered target_music outranks the default (0 = becomes the default)
+        public float MusicFadeIn;        // QC .fade_time — seconds to ramp the track IN
+        public float MusicFadeOut;       // QC .fade_rate — seconds to ramp the track OUT
+        /// <summary>Port: sim time target_music_use last fired (-1 = never). The client player evaluates the
+        /// lifetime window against this (QC stamps <c>e.lifetime = time + tim</c> client-side on receive).</summary>
+        public float MusicActivationTime = -1f;
+    }
+}
+
+namespace XonoticGodot.Common.Gameplay
+{
+    using XonoticGodot.Common.Framework;
+
+    /// <summary>
+    /// Parses the T48 "content tail" map keys onto the edict — the shared helper both spawn paths call
+    /// (GameWorld.ApplyDictFields and GameDemo.ApplyMapFields), so the per-host chokepoint stays one line.
+    /// Keys already promoted by GameWorld (dmg/volume/atten/cnt/count/noise + the single-float <c>angle</c>
+    /// anglehack) are re-parsed here too: idempotent on the server path, and it COMPLETES the demo path,
+    /// whose slimmer ApplyMapFields never carried them.
+    /// </summary>
+    public static class MapObjectFieldsExtra
+    {
+        public static void Apply(Entity e, System.Collections.Generic.IReadOnlyDictionary<string, string> fields)
+        {
+            // --- DP anglehack (PRVM_ED_ParseEdict): single-float `angle "Y"` => angles '0 Y 0'. No-op when the
+            //     host already applied it (GameWorld); fixes the GameDemo path, which never had it. ---
+            if (e.Angles == Vector3.Zero && TryF(fields, "angle", out float yaw))
+                e.Angles = new Vector3(0f, yaw, 0f);
+
+            // --- effect / emitter keys ---
+            if (fields.TryGetValue("mdl", out string? mdl)) e.Mdl = mdl;
+            if (TryF(fields, "impulse", out float imp)) e.Impulse = imp;
+            if (TryF(fields, "waterlevel", out float wl)) e.ParticleJitter = wl;
+            if (TryF(fields, "count", out float cntF))
+            {
+                e.ParticleCount = cntF;
+                e.Count = (int)cntF; // keep the int promotion in lockstep for the demo path
+            }
+            if (TryF(fields, "cnt", out float cv)) e.Cnt = (int)cv;
+
+            // --- motion keys ---
+            if (TryVec(fields, "velocity", out Vector3 vel)) e.Velocity = vel;
+            if (TryVec(fields, "movedir", out Vector3 md)) e.MoveDir = md;
+            if (TryVec(fields, "mins", out Vector3 mins)) { e.Mins = mins; e.Size = e.Maxs - e.Mins; }
+            if (TryVec(fields, "maxs", out Vector3 maxs)) { e.Maxs = maxs; e.Size = e.Maxs - e.Mins; }
+
+            // --- laser keys ---
+            if (TryVec(fields, "beam_color", out Vector3 bc)) e.BeamColor = bc;
+            if (TryVec(fields, "colormod", out Vector3 cm)) e.ColorModKey = cm;
+            if (TryF(fields, "alpha", out float al)) e.AlphaKey = al;
+
+            // --- model-prop keys ---
+            if (TryF(fields, "scale", out float sc)) e.ScaleFactor = sc;
+            if (TryF(fields, "modelscale", out float msc)) e.ModelScale = msc;
+            if (TryF(fields, "solid", out float sol)) e.SolidOverride = sol;
+            if (TryF(fields, "fade_start", out float fs)) e.FadeStartDist = fs;
+            if (TryF(fields, "fade_end", out float fe)) e.FadeEndDist = fe;
+            if (TryF(fields, "alpha_max", out float amx)) e.AlphaMax = amx;
+            if (TryF(fields, "alpha_min", out float amn)) e.AlphaMin = amn;
+            if (TryF(fields, "fade_vertical_offset", out float fvo)) e.FadeVerticalOffset = fvo;
+
+            // --- music keys ---
+            if (TryF(fields, "lifetime", out float lt)) e.MusicLifetime = lt;
+            if (TryF(fields, "fade_time", out float ft)) e.MusicFadeIn = ft;
+            if (TryF(fields, "fade_rate", out float fr)) e.MusicFadeOut = fr;
+
+            // --- keys GameWorld promotes but GameDemo's slimmer twin never did (demo-path completion) ---
+            if (TryF(fields, "dmg", out float dmg)) e.Dmg = dmg;
+            if (TryF(fields, "volume", out float vol)) e.Volume = vol;
+            if (TryF(fields, "atten", out float att)) e.Atten = att;
+            if (fields.TryGetValue("noise", out string? ns)) e.Noise = ns;
+        }
+
+        private static bool TryF(System.Collections.Generic.IReadOnlyDictionary<string, string> f, string key, out float v)
+        {
+            v = 0f;
+            return f.TryGetValue(key, out string? s)
+                && float.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out v);
+        }
+
+        private static bool TryVec(System.Collections.Generic.IReadOnlyDictionary<string, string> f, string key, out Vector3 v)
+        {
+            v = Vector3.Zero;
+            if (!f.TryGetValue(key, out string? s) || string.IsNullOrWhiteSpace(s))
+                return false;
+            string[] p = s.Split((char[]?)null, System.StringSplitOptions.RemoveEmptyEntries);
+            if (p.Length < 3)
+                return false;
+            bool ok = float.TryParse(p[0], NumberStyles.Float, CultureInfo.InvariantCulture, out float x);
+            ok &= float.TryParse(p[1], NumberStyles.Float, CultureInfo.InvariantCulture, out float y);
+            ok &= float.TryParse(p[2], NumberStyles.Float, CultureInfo.InvariantCulture, out float z);
+            if (!ok)
+                return false;
+            v = new Vector3(x, y, z);
+            return true;
+        }
+    }
+}

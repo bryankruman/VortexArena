@@ -46,8 +46,25 @@ public static class NetProtocol
     /// of a live <c>MinigameSession</c> (board/turn/winner/players + bespoke Pong state) to its participating
     /// peer(s), the C# stand-in for QC's per-entity minigame networking (ENT_CLIENT_MINIGAME). The <c>cmd
     /// minigame …</c> command itself rides the existing <see cref="NetControl.ClientCommand"/> channel.
+    /// v7 (the SINGLE wave-A3 bump — T53/T57 additions ride it too):
+    /// <list type="number">
+    ///   <item>the snapshot's <see cref="XonoticGodot.Net.MoveVarsBlock"/> grew from 40 to 46 entries (the full
+    ///         stats.qh MOVEVARS breadth: g_movement_highspeed(+_q3_compat), sv_gameplayfix_nudgeoutofsolid,
+    ///         sv_wallclip, sv_nostep, sv_slick_applygravity — appended, prefix-stable);</item>
+    ///   <item>a per-peer preset-RESOLVED physics block follows the global movevars block: one bool, then —
+    ///         when true — a MoveVarsBlock vector resolved through g_physics_clientselect/cl_physics
+    ///         (Physics_ClientOption, player.qc:18-42). A count-0 block clears the client's override. Hash-gated
+    ///         per peer; always the bare false bool when client physics selection is off (the stock default);</item>
+    ///   <item>RESERVED: T53's mode-stats block — a bool(+block) slot between the scores block and the entity
+    ///         section of the snapshot (see the [A3 reserved] markers in ServerNet.BroadcastSnapshots /
+    ///         ClientNet.HandleSnapshot). Absent until T53's snippets land (no wire bytes — doc-only);</item>
+    ///   <item>RESERVED: T57's accuracy fields — appended at the END of the owner state (after spectateeStatus,
+    ///         per the append-at-END lockstep contract; see the markers in ServerNet.WriteOwnerState and the
+    ///         ClientNet owner read). Absent until T57's snippets land.</item>
+    /// </list>
+    /// Any new top-level frame kind starts at <see cref="NetControl"/> id 18 (MinigameState=17 is the last used).
     /// </summary>
-    public const uint ProtocolVersion = 6;
+    public const uint ProtocolVersion = 7;
 
     /// <summary>Ordered, reliable ENet channel — handshake, spawns/removes, notifications, scores.</summary>
     public const int ReliableChannel = 0;

@@ -55,6 +55,7 @@ public sealed partial class MusicPlayer : Node
     private float _fadeOutProgress = 1f;   // 0..1, how far through the fade-out the fading track is
     private float _fadeInTime = 2f;        // seconds for the current fade-in
     private float _fadeOutTime = 2f;       // seconds for the current fade-out
+    private float _activeFadeOutSpec;      // the ACTIVE source's own fade_rate (0 = unset → DefaultFadeTime)
 
     // ---- music source scan ----
     // These are populated by the host (listen server) each frame or on entity state change.
@@ -90,15 +91,17 @@ public sealed partial class MusicPlayer : Node
         float dt = (float)delta;
 
         // --- evaluate the priority stack to find the best music source ---
-        EvaluateMusicSources(out string bestTrack, out float bestVolume, out float fadeTime);
+        EvaluateMusicSources(out string bestTrack, out float bestVolume, out float fadeIn, out float fadeOut);
 
         // --- if the best track changed, start a crossfade ---
+        // The OUTGOING track fades on ITS OWN fade_rate (captured when it started — QC TargetMusic_Advance
+        // ramps each source down by frametime/its.fade_rate), the incoming one on its fade_time.
         if (!string.Equals(bestTrack, _activeTrack, StringComparison.OrdinalIgnoreCase))
         {
             if (!string.IsNullOrEmpty(bestTrack))
-                StartTrack(bestTrack, bestVolume, fadeTime);
+                StartTrack(bestTrack, bestVolume, fadeIn, fadeOut);
             else
-                FadeOutCurrent(fadeTime);
+                FadeOutCurrent(_activeFadeOutSpec);
         }
         else if (_active is not null)
         {
@@ -114,11 +117,12 @@ public sealed partial class MusicPlayer : Node
     //  Priority evaluation
     // ========================================================================
 
-    private void EvaluateMusicSources(out string bestTrack, out float bestVolume, out float fadeTime)
+    private void EvaluateMusicSources(out string bestTrack, out float bestVolume, out float fadeIn, out float fadeOut)
     {
         bestTrack = "";
         bestVolume = 1f;
-        fadeTime = DefaultFadeTime;
+        fadeIn = DefaultFadeTime;
+        fadeOut = DefaultFadeTime;
 
         // Highest priority: trigger_music (player inside a brush volume)
         if (EntityList is not null)
@@ -146,11 +150,14 @@ public sealed partial class MusicPlayer : Node
             {
                 bestTrack = ResolveMusicPath(bestTrigger.Noise);
                 bestVolume = bestTrigger.Volume > 0f ? bestTrigger.Volume : 1f;
-                fadeTime = bestTrigger.Speed > 0f ? bestTrigger.Speed : DefaultFadeTime; // QC fade_time stored in Speed or Count
+                (fadeIn, fadeOut) = Fades(bestTrigger); // the REAL fade_time/fade_rate map keys (not .speed)
                 return;
             }
 
-            // Medium priority: target_music (triggered, active)
+            // Medium priority: a TRIGGERED target_music whose .lifetime window is still open.
+            // QC (music.qc TargetMusic_Advance + Net_TargetMusic): a used target_music with lifetime>0
+            // becomes music_target and outranks the default only while time < activation + lifetime; a used
+            // one with lifetime 0 instead REPLACES the music_default slot (handled in the default pass below).
             Entity? bestTarget = null;
             for (int i = 0; i < EntityList.Count; i++)
             {
@@ -159,24 +166,24 @@ public sealed partial class MusicPlayer : Node
                 if (e.ClassName != "target_music") continue;
                 if (e.Active != MapMover.ActiveActive) continue;
                 if (string.IsNullOrEmpty(e.Noise)) continue;
-
-                // A target_music with NO targetname is the map default (same priority as cdtrack).
-                // Only target_music WITH a targetname that is ACTIVE counts as a triggered override.
-                if (!string.IsNullOrEmpty(e.TargetName))
-                {
-                    bestTarget = e;
-                    break;
-                }
+                if (string.IsNullOrEmpty(e.TargetName)) continue;     // untargeted = default slot
+                if (e.MusicActivationTime < 0f) continue;             // never triggered
+                if (e.MusicLifetime <= 0f) continue;                  // lifetime 0 => default slot
+                if (ServerTime >= e.MusicActivationTime + e.MusicLifetime) continue; // expired
+                bestTarget = e;
+                break;
             }
             if (bestTarget is not null)
             {
                 bestTrack = ResolveMusicPath(bestTarget.Noise);
                 bestVolume = bestTarget.Volume > 0f ? bestTarget.Volume : 1f;
-                fadeTime = bestTarget.Speed > 0f ? bestTarget.Speed : DefaultFadeTime;
+                (fadeIn, fadeOut) = Fades(bestTarget);
                 return;
             }
 
-            // Check for a target_music default (no targetname, always active) — overrides cdtrack.
+            // Default slot — overrides cdtrack. Prefer the most recently ACTIVATED lifetime-0 targeted
+            // track (QC: Net_TargetMusic with tim==0 reassigns music_default), else the untargeted default.
+            Entity? def = null;
             for (int i = 0; i < EntityList.Count; i++)
             {
                 Entity e = EntityList[i];
@@ -184,13 +191,25 @@ public sealed partial class MusicPlayer : Node
                 if (e.ClassName != "target_music") continue;
                 if (e.Active != MapMover.ActiveActive) continue;
                 if (string.IsNullOrEmpty(e.Noise)) continue;
-                if (string.IsNullOrEmpty(e.TargetName))
+                if (!string.IsNullOrEmpty(e.TargetName))
                 {
-                    bestTrack = ResolveMusicPath(e.Noise);
-                    bestVolume = e.Volume > 0f ? e.Volume : 1f;
-                    fadeTime = DefaultFadeTime;
-                    return;
+                    // A used lifetime-0 track claims the default slot; latest activation wins.
+                    if (e.MusicLifetime > 0f || e.MusicActivationTime < 0f) continue;
+                    if (def is null || string.IsNullOrEmpty(def.TargetName)
+                        || e.MusicActivationTime > def.MusicActivationTime)
+                        def = e;
                 }
+                else if (def is null)
+                {
+                    def = e; // the untargeted map default (loses to any claimed lifetime-0 track)
+                }
+            }
+            if (def is not null)
+            {
+                bestTrack = ResolveMusicPath(def.Noise);
+                bestVolume = def.Volume > 0f ? def.Volume : 1f;
+                (fadeIn, fadeOut) = Fades(def);
+                return;
             }
         }
 
@@ -199,22 +218,35 @@ public sealed partial class MusicPlayer : Node
         {
             bestTrack = CdTrack;
             bestVolume = 1f;
-            fadeTime = DefaultFadeTime;
+            fadeIn = DefaultFadeTime;
+            fadeOut = DefaultFadeTime;
         }
     }
+
+    /// <summary>A source's fade pair: the plumbed QC <c>fade_time</c>/<c>fade_rate</c> map keys, falling back
+    /// to <see cref="DefaultFadeTime"/> when unset (0). QC's 0 means "instant"; the port keeps its established
+    /// gentle default crossfade instead — no shipped map carries the keys, so nothing regresses.</summary>
+    private (float fadeIn, float fadeOut) Fades(Entity e) => (
+        e.MusicFadeIn > 0f ? e.MusicFadeIn : DefaultFadeTime,
+        e.MusicFadeOut > 0f ? e.MusicFadeOut : DefaultFadeTime);
 
     // ========================================================================
     //  Track management
     // ========================================================================
 
-    private void StartTrack(string track, float volume, float fadeTime)
+    /// <param name="track">Resolved VFS track path.</param>
+    /// <param name="volume">The source's target volume.</param>
+    /// <param name="fadeIn">Seconds to ramp the NEW track in (the source's fade_time).</param>
+    /// <param name="fadeOutSpec">The NEW source's fade_rate — remembered so when THIS track is later
+    /// replaced, it fades out on its own spec (QC ramps each source down by frametime/its.fade_rate).</param>
+    private void StartTrack(string track, float volume, float fadeIn, float fadeOutSpec = 0f)
     {
         AudioStream? stream = LoadMusicStream(track);
         if (stream is null)
         {
             // Can't load this track — treat as silence.
             _activeTrack = track; // remember it so we don't keep retrying
-            FadeOutCurrent(fadeTime);
+            FadeOutCurrent(_activeFadeOutSpec);
             return;
         }
 
@@ -225,12 +257,13 @@ public sealed partial class MusicPlayer : Node
         AudioStreamPlayer? newActive = (_active == _playerA) ? _playerB : _playerA;
         if (newActive is null) return;
 
-        // Start fading out the old track (if any).
+        // Start fading out the old track (if any) — on the OLD source's fade_rate, captured when it started.
         if (_active is not null && _active.Playing)
         {
             _fading = _active;
             _fadeOutProgress = 0f;
-            _fadeOutTime = fadeTime > 0f ? fadeTime : DefaultFadeTime;
+            float fo = _activeFadeOutSpec > 0f ? _activeFadeOutSpec : DefaultFadeTime;
+            _fadeOutTime = fo;
         }
 
         // Start the new track.
@@ -244,7 +277,8 @@ public sealed partial class MusicPlayer : Node
         _activeTrack = track;
         _activeVolume = volume;
         _fadeInProgress = 0f;
-        _fadeInTime = fadeTime > 0f ? fadeTime : DefaultFadeTime;
+        _fadeInTime = fadeIn > 0f ? fadeIn : DefaultFadeTime;
+        _activeFadeOutSpec = fadeOutSpec; // this track's OWN fade_rate, used when IT later fades out
     }
 
     private void FadeOutCurrent(float fadeTime)

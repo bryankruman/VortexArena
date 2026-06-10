@@ -189,7 +189,10 @@ public sealed class Machinegun : Weapon
     private void AttackAuto(Entity actor, WeaponSlot slot, WeaponSlotState st)
     {
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out _);
-        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, WeaponFiring.MaxShotDistance, penetrateWalls: true);
+        // fired credit: QC machinegun.qc:164 passes the raw sustained_damage (heat scaling applies to the
+        // dealt damage only, not the accuracy denominator).
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, WeaponFiring.MaxShotDistance, penetrateWalls: true,
+            wep: this, maxDamage: Cvars.SustainedDamage);
         Recoil(actor);
 
         UpdateSpread(st);
@@ -218,7 +221,9 @@ public sealed class Machinegun : Weapon
     {
         // Re-sample the shot each round (QC W_SetupShot per call) so aim tracks the player mid-burst.
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out _);
-        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, WeaponFiring.MaxShotDistance, penetrateWalls: true);
+        // fired credit per burst round: sustained_damage (QC machinegun.qc:217).
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, WeaponFiring.MaxShotDistance, penetrateWalls: true,
+            wep: this, maxDamage: Cvars.SustainedDamage);
         Recoil(actor); // per-round punchangle kick (QC sets it every W_MachineGun_Attack_Burst call)
 
         UpdateSpread(st);
@@ -262,7 +267,9 @@ public sealed class Machinegun : Weapon
         // misc_bulletcounter == 1 selects the "first" (more powerful, less spread) values.
         st.MiscBulletCounter = 1;
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out _);
-        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, WeaponFiring.MaxShotDistance, penetrateWalls: true);
+        // fired credit: first_damage (QC machinegun.qc:59 — misc_bulletcounter==1 here, set just above).
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, WeaponFiring.MaxShotDistance, penetrateWalls: true,
+            wep: this, maxDamage: Cvars.FirstDamage);
         Recoil(actor);
 
         // QC W_MachineGun_Attack applies spread_crouchmod to the first/sustained spread when ducked+grounded.

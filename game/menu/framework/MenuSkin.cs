@@ -303,9 +303,27 @@ public static class MenuSkin
             t.SetColor("font_hovered_color", type, Bright);
             t.SetFontSize("font_size", type, BodySize);
         }
-        t.SetStylebox("panel", "TabContainer", BorderPanel() ?? Flat(new Color(0.02f, 0.04f, 0.07f, 0.6f), Colors.White));
+        // The tab BODY has no frame in Xonotic: QC tab content draws straight onto the dialog backing
+        // (dialog.qc places the tab entity in the dialog grid; nothing draws a panel around it). The old
+        // border.tga panel here put a chunky inner frame around every tab page ("weird border around the
+        // controls") — keep just a little breathing room.
+        var tabPanel = new StyleBoxEmpty();
+        tabPanel.SetContentMarginAll(6);
+        t.SetStylebox("panel", "TabContainer", tabPanel);
         t.SetStylebox("tabbar_background", "TabContainer", Flat(Colors.Transparent, Colors.White));
     }
+
+    /// <summary>
+    /// A tab pill stylebox for <see cref="XonoticTabs"/> (the QC tab-row buttons): <c>"active"</c> = the
+    /// accent-orange button art (SKINCOLOR_TAB_ACTIVE), <c>"hover"</c> = the focused button art,
+    /// anything else = the dimmed normal art.
+    /// </summary>
+    public static StyleBox TabPill(string state) => state switch
+    {
+        "active" => PicStyle("button_n", Accent, 12, 7),
+        "hover" => PicStyle("button_f", Colors.White, 12, 7),
+        _ => PicStyle("button_n", new Color(1, 1, 1, 0.55f), 12, 7),
+    };
 
     private static void StyleScrollbars(Theme t)
     {

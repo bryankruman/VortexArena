@@ -508,11 +508,21 @@ public sealed partial class NetGame : Node3D
         }
 
         // --- bots so a solo host has opponents to see/play (QC bot_number / minplayers fill). ---
-        for (int i = 0; i < _botCount; i++)
+        // [T39] Seed the SERVER store's bot_number/skill instead of direct ClientConnect calls: the live
+        // BotPopulation fixcount (GameWorld.OnStartFrame → Bots.ServerFrame, QC bot_fixcount) fills one bot per
+        // frame from time 2.5 — and, critically, a faithful fixcount REMOVES bots above the bot_number target
+        // at its first recount, so host-added bots must raise the floor, not bypass it (QC bot.qc:682-683).
+        if (_botCount > 0)
         {
-            ClientManager.ClientInfo info = _serverWorld.Clients.ClientConnect(isBot: true, netName: $"[BOT] {BotName(i)}");
-            info.Player.BotSkill = _botSkill;
+            _serverWorld.Services.Cvars.Set("bot_number",
+                _botCount.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            _serverWorld.Services.Cvars.Set("skill",
+                _botSkill.ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
+        // any bot leaving (fixcount trim / removebots / intermission teardown) must clear ServerNet's
+        // per-player id/antilag maps, exactly like the old explicit remove handler did.
+        _serverWorld.Bots.BotRemoved += p => _server?.ForgetPlayer(p);
+        _serverWorld.Bots.MaxClients = 16; // QC maxclients (mirrors ServerNet.Start's maxClients below)
 
         ServerNet? server = ServerNet.Start(_serverWorld, _port, maxClients: 16, serverName: _serverName);
         if (server is null)
@@ -521,6 +531,9 @@ public sealed partial class NetGame : Node3D
             return;
         }
         _server = server;
+        // Answer server-browser getinfo probes so this host shows up in the LAN list (no master heartbeat —
+        // the port's transport is ENet, so registering with the public DP masters would only mislead DP clients).
+        server.EnableLanDiscovery(_port);
 
         // --- wire the server-command host sinks (QC the say bus / bprint + bot_cmd add/remove). Without these,
         //     console/clc_stringcmd `say`/`bot_add`/`setbots` no-op; with them, chat reaches every client's console
@@ -534,33 +547,14 @@ public sealed partial class NetGame : Node3D
             _server?.BroadcastPrint($"{(teamOnly ? "(team) " : "")}{caller?.NetName ?? "server"}^7: {msg}");
         cmd.ChatBroadcast = msg => _server?.BroadcastPrint(msg);
 
-        // bot_add / setbots: connect a bot (auto-joins + spawns); the snapshot loop networks it next tick.
-        cmd.AddBotHandler = (name, skill) =>
-        {
-            if (_serverWorld is null)
-                return false;
-            string botName = string.IsNullOrWhiteSpace(name) ? $"[BOT] {BotName(_serverWorld.Clients.BotCount)}" : name!;
-            ClientManager.ClientInfo info = _serverWorld.Clients.ClientConnect(isBot: true, netName: botName);
-            info.Player.BotSkill = skill ?? _botSkill;
-            return true;
-        };
+        // bot_add / setbots: spawn a brained bot through the live population (raises bot_number so the faithful
+        // fixcount keeps it); the snapshot loop networks it next tick. [T39]
+        cmd.AddBotHandler = (name, skill) => _serverWorld?.Bots.AddBot(name, skill) is not null;
 
-        // bot_remove / removebots: drop a bot (by name, else the last) — leaves the client list so the next snapshot
-        // delta despawns it on clients; ForgetPlayer clears ServerNet's id/antilag maps so they don't retain it.
-        cmd.RemoveBotHandler = name =>
-        {
-            if (_serverWorld is null)
-                return false;
-            Player? bot = null;
-            foreach (Player p in _serverWorld.Clients.Players)
-                if (p.IsBot && (string.IsNullOrWhiteSpace(name) || p.NetName.Contains(name!, StringComparison.OrdinalIgnoreCase)))
-                    bot = p; // last match, so repeated removes peel bots off the end
-            if (bot is null)
-                return false;
-            _serverWorld.Clients.ClientDisconnect(bot);
-            _server?.ForgetPlayer(bot);
-            return true;
-        };
+        // bot_remove / removebots: drop the newest matching bot via the population (lowers bot_number so
+        // fixcount doesn't re-add); the disconnect chain fires Bots.BotRemoved → ForgetPlayer clears ServerNet's
+        // id/antilag maps, and the next snapshot delta despawns it on clients. [T39]
+        cmd.RemoveBotHandler = name => _serverWorld?.Bots.RemoveBot(name) ?? false;
 
         // map / gotomap / nextmap / map-vote / rotation / samelevel all funnel here (QC changelevel): record the
         // target; the deferred emit in _Process reboots the listen server on it (preserving gametype + bots).
@@ -1521,6 +1515,7 @@ public sealed partial class NetGame : Node3D
         // listen server, so they reflect live local state as the spawn lands (QC the view player). A pure client
         // has no local Player actor — the NetHud crosshair/health covers it. Cheap: SetPlayer no-ops when same.
         UpdateFullHudPlayer();
+        UpdateInfoMessages();
 
         // Install / swap the first-person weapon model when the networked active weapon changes (CSQC view.qc:305
         // picks the v_ model from the active weapon, rebuilding only on a swap).
@@ -1535,11 +1530,15 @@ public sealed partial class NetGame : Node3D
             if (_prevHealth >= 0 && health < _prevHealth)
                 _viewEffects.ReportDamage(_prevHealth - health);
             _prevHealth = health;
-            // "observing" = not yet spawned (the pre-spawn / connecting window right after Create): mirror QC's
-            // spectatee_status == -1 so health 0 here doesn't ramp the death fade onto the screen. _everAlive flips
-            // true on the first spawn (line ~1212), so a genuine in-match death (health<=0 after spawning) still
-            // shows the death fade. Matches the IsDead gate used for the death-cam below.
-            _viewEffects.UpdateEffects(dt, health, SampleEyeContents(), !_everAlive);
+            // Observing/spectating (spectatee_status != 0) suppresses the death-fade like the pre-spawn window:
+            // a free-fly observer has Health 0 (would otherwise ramp the death fade), and a follower's copied
+            // health drives the HUD without a death overlay (QC spectatee_status guards the screen effects).
+            bool observing = !_everAlive || _client.SpectateeStatus != 0;
+            // "observing" = not yet spawned (the pre-spawn / connecting window right after Create) OR actively
+            // observing/spectating: mirror QC's spectatee_status guard so health 0 here doesn't ramp the death
+            // fade onto the screen. _everAlive flips true on the first spawn (line ~1212), so a genuine in-match
+            // death (health<=0 after spawning) still shows the death fade. Matches the IsDead gate used below.
+            _viewEffects.UpdateEffects(dt, health, SampleEyeContents(), observing);
         }
 
         // Keep the radar oriented to the player's facing.
@@ -1613,6 +1612,32 @@ public sealed partial class NetGame : Node3D
         _fullHud.SetPlayer(p);
     }
     private Player? _lastHudPlayer;
+
+    /// <summary>
+    /// Feed the InfoMessages panel the networked dead/respawn + observing/spectating state each frame (QC the
+    /// infomessages panel reads STAT(RESPAWN_TIME) + spectatee_status). Works on a pure remote client (no local
+    /// Player) since it sources everything from <see cref="ClientNet"/>: the respawn countdown / "press fire"
+    /// prompt from <see cref="ClientNet.RespawnTimeStat"/>, and the "Observing" / "Spectating: name" line from
+    /// <see cref="ClientNet.SpectateeStatus"/> (the spectatee's name resolved on a listen server).
+    /// </summary>
+    private void UpdateInfoMessages()
+    {
+        if (_fullHud is null || _client is null)
+            return;
+        InfoMessagesPanel im = _fullHud.InfoMessages;
+        im.RespawnStat = _client.RespawnTimeStat;
+        im.NetServerTime = _client.LatestServerTime;
+
+        bool spectating = _client.Accepted && _client.SpectateeStatus != 0;
+        im.IsSpectating = spectating;
+        if (spectating)
+        {
+            int sid = _client.SpectatingNetId;
+            im.SpectatingName = sid != 0 && _server is not null
+                ? (_server.PlayerByNetId(sid)?.NetName ?? "")
+                : "";
+        }
+    }
 
     /// <summary>Size the scoreboard panel to a centered slab of the viewport (QC HUD_Panel_UpdatePosSize for the
     /// scoreboard, simplified). Called once at setup; the panel reads its own rect via <c>Configure</c>.</summary>
@@ -1892,6 +1917,13 @@ public sealed partial class NetGame : Node3D
             _attackHeld = attack1;
         }
 
+        // While FOLLOWING a player (spectatee_status > 0), the server keeps us MOVETYPE_NONE and glues us to the
+        // spectatee — so suppress local movement (don't predict our own walk, which would fight the follow-cam),
+        // but KEEP the buttons: +attack cycles the spectatee and +attack2 drops to free-fly on the server. (A
+        // free-fly observer, spectatee_status == own id, still moves — server + client agree, no drift.)
+        if (_client is not null && _client.SpectatingNetId != 0)
+            forward = side = up = 0f;
+
         // C2S impulse (QC usercmd.impulse): consume the one-shot weapon-switch/reload number a bind set this
         // frame (RunBoundCommand stamped it into _pendingImpulse, edge-triggered). Stamp it onto THIS command and
         // clear the pending value so it rides exactly one InputCommand — the redundant input tail re-sends the
@@ -1930,6 +1962,27 @@ public sealed partial class NetGame : Node3D
     {
         if (_client is null || _camera is null)
             return;
+
+        // Follow-cam: while spectating a specific player (spectatee_status > 0), render from THAT player's
+        // interpolated pose + view angles, not the local predicted origin. The server glues us to the spectatee
+        // (MOVETYPE_NONE + SpectateCopy) so the owner-state origin already tracks them, but the local predictor
+        // would still replay our inputs and walk the camera off them; sourcing the followed entity's snapshot pose
+        // directly (and slaving the view angles, QC SpectateCopy fixangle) is the robust fix. Falls through to the
+        // predicted path if the entity isn't known yet (then the zeroed spectate input keeps it at the glued origin).
+        if (_client.SpectatingNetId != 0
+            && _client.SampleRemote(_client.SpectatingNetId, _client.LatestServerTime, out NVec3 specOrg, out NVec3 specAng))
+        {
+            var sst = new Client.FirstPersonView.ViewState
+            {
+                OriginQuake = specOrg,
+                VelocityQuake = NVec3.Zero,
+                ViewAnglesQuake = specAng,   // see what the spectated player sees
+                IsDead = false,              // following a live player — no death-cam pullback
+                EyeHeightZ = EyeHeight,
+            };
+            _view.UpdateView(_camera, sst, dt);
+            return;
+        }
 
         float now = _renderClock; // the clock the reconciler armed the prediction-error decay with (see _Process)
         NVec3 predicted = _client.PredictedOrigin + _client.PredictionErrorOffset(now);
@@ -2268,11 +2321,7 @@ public sealed partial class NetGame : Node3D
         AddChild(new WorldEnvironment { Name = "WorldEnvironment", Environment = env });
     }
 
-    private static string BotName(int i)
-    {
-        string[] names = { "Eureka", "Rampage", "Hellfire", "Specter", "Razor", "Cipher", "Vortex", "Havoc" };
-        return names[i % names.Length];
-    }
+    // (the old hardcoded BotName table moved into BotPopulation's bots.txt fallback — T39)
 
     // =====================================================================================
     //  Address parsing

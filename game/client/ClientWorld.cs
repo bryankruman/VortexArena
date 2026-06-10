@@ -44,6 +44,15 @@ public partial class ClientWorld : Node3D
     /// <summary>Lightning-arc / beam renderer (te_csqc_lightningarc: electro combo, Golem zaps, Tesla arcs).</summary>
     public BeamRenderer Beams { get; private set; } = null!;
 
+    /// <summary>misc_laser beam renderer (T48 — the Draw_Laser successor; ambient-facade scan).</summary>
+    public LaserRenderer Lasers { get; private set; } = null!;
+
+    /// <summary>func_pointparticles / func_sparks persistent emitters (T48; ambient-facade scan).</summary>
+    public MapParticleEmitters MapEmitters { get; private set; } = null!;
+
+    /// <summary>func_rain / func_snow weather volumes (T48; ambient-facade scan).</summary>
+    public WeatherSystem Weather { get; private set; } = null!;
+
     /// <summary>The local player's first-person weapon view-model (optional; set by the host).</summary>
     public ViewModel? ViewModel { get; set; }
 
@@ -188,6 +197,10 @@ public partial class ClientWorld : Node3D
             try { return _assets.Vfs.ReadText(v); }
             catch { return null; }
         };
+        // The laser beam texture (particles/laserbeam.tga) resolves through the same asset pipeline; the
+        // host may set Assets before OR after _Ready, so wire it from both sites (null until _Ready ran).
+        if (Lasers is not null)
+            Lasers.TextureLoader = _assets.LoadTexture;
     }
 
     /// <summary>
@@ -293,6 +306,19 @@ public partial class ClientWorld : Node3D
         // Let the effect system route beam-class effects (lightning/arc/laser) to the real beam renderer
         // instead of a particle burst (te_csqc_lightningarc).
         Effects.Beams = Beams;
+
+        // T48 map-entity client renderers: misc_laser beams, func_pointparticles/func_sparks continuous
+        // emitters, func_rain/func_snow weather. All self-driving ambient-facade scanners (the
+        // TriggerTouch.Predict*Ambient pattern) — live on the listen-server/demo paths; a pure --connect
+        // client has no entity facade (or BSP) yet, so they idle there (the established seam).
+        Lasers = new LaserRenderer { Name = "Lasers", Effects = Effects };
+        if (_assets is not null)
+            Lasers.TextureLoader = _assets.LoadTexture;
+        AddChild(Lasers);
+        MapEmitters = new MapParticleEmitters { Name = "MapEmitters", Effects = Effects };
+        AddChild(MapEmitters);
+        Weather = new WeatherSystem { Name = "Weather", ViewOriginProvider = () => ViewOrigin() };
+        AddChild(Weather);
 
         // Mirror in-process effect emissions (server/local gameplay calling EffectEmitter.Emit) onto the
         // renderer. This is what makes a single-process demo show effects with no network layer present.

@@ -53,14 +53,18 @@ public static class TargetMusic
         }
     }
 
-    /// <summary>Toggle target_music on/off when triggered.</summary>
+    /// <summary>
+    /// Port of <c>target_music_use</c> (music.qc:59-72): each trigger RE-SENDS the track to the activator —
+    /// it never toggles off. The override then lives for <see cref="Entity.MusicLifetime"/> seconds
+    /// (client-side: <c>e.lifetime = time + tim</c> in Net_TargetMusic, evaluated by TargetMusic_Advance);
+    /// with lifetime 0 the track instead REPLACES the map-default slot permanently. The activation time is
+    /// stamped here and the client MusicPlayer evaluates the window against it.
+    /// (The previous port behavior — toggling Active off on the second use — had no QC counterpart.)
+    /// </summary>
     private static void TargetMusicUse(Entity self, Entity activator)
     {
-        // Toggle: active -> inactive, inactive -> active
-        if (self.Active == MapMover.ActiveActive)
-            self.Active = MapMover.ActiveNot;
-        else
-            self.Active = MapMover.ActiveActive;
+        self.Active = MapMover.ActiveActive;
+        self.MusicActivationTime = MapMover.Now();
     }
 
     // ========================================================================

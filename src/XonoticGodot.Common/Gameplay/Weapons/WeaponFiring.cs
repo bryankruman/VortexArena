@@ -103,8 +103,15 @@ public static class WeaponFiring
     /// minrange clamp and accuracy/hitplot bookkeeping.
     /// </summary>
     public static ShotInfo SetupShot(Entity actor, Vector3 forward, Vector3 mins, Vector3 maxs,
-        float range = MaxShotDistance, bool penetrateWalls = false)
+        float range = MaxShotDistance, bool penetrateWalls = false,
+        Weapon? wep = null, float maxDamage = 0f)
     {
+        // [T57] track max damage — the accuracy FIRED credit (QC tracing.qc:64-66): each weapon passes the
+        // shot's potential damage (its QC W_SetupShot maxdamage arg) so the accuracy% denominator grows.
+        // Zero maxDamage (porto/seeker missile) is filtered by accuracy_add's all-zero guard.
+        if (wep is not null && (actor.Flags & EntFlags.Client) != 0 && WeaponAccuracyEvents.CanBeGoodDamage(actor))
+            WeaponAccuracyEvents.Fired(actor, wep, maxDamage);
+
         Vector3 eye = actor.Origin + actor.ViewOfs;
         Vector3 aimEnd = eye + forward * range;
 
@@ -154,8 +161,8 @@ public static class WeaponFiring
 
     /// <summary>W_SetupShot convenience overload (zero projectile size, v_forward direction).</summary>
     public static ShotInfo SetupShot(Entity actor, Vector3 forward, float range = MaxShotDistance,
-        bool penetrateWalls = false)
-        => SetupShot(actor, forward, Vector3.Zero, Vector3.Zero, range, penetrateWalls);
+        bool penetrateWalls = false, Weapon? wep = null, float maxDamage = 0f)
+        => SetupShot(actor, forward, Vector3.Zero, Vector3.Zero, range, penetrateWalls, wep, maxDamage);
 
     /// <summary>
     /// Hitscan bullet (back-compat single-arg overload) — keeps existing call sites working.
@@ -194,6 +201,7 @@ public static class WeaponFiring
 
         float solidPenetrationFraction = 1f;
         float damageFraction = 1f;
+        float totalDamage = 0f; // QC total_damage — the running ballistic hit-credit cap (tracing.qc:378)
         Entity? lastHit = null;
         Entity? firstHit = null;
         bool headshot = false; // QC fireBullet_falloff: one of the hit targets was a headshot
@@ -228,6 +236,9 @@ public static class WeaponFiring
                     headshot = true;
                 }
 
+                // [T57] capture the accuracy gate BEFORE Damage (QC tracing.qc:446) so the kill shot counts.
+                bool goodDamage = WeaponAccuracyEvents.IsGoodDamage(actor, hit);
+
                 float dealt = damage * damageFraction;
                 Vector3 dealtForce = dir * (force * damageFraction);
                 if (falloffHalflife != 0f || falloffForceHalflife != 0f)
@@ -239,6 +250,15 @@ public static class WeaponFiring
                         dealtForce *= ExponentialFalloff(falloffMinDist, falloffMaxDist, falloffForceHalflife, dist);
                 }
                 ApplyDamage(hit, actor, dealt, deathType, inflictor: actor, force: dealtForce, hitLoc: cur);
+
+                // [T57] ballistic hit credit (QC tracing.qc:470-477): per-hit credit is the PENETRATION-scaled
+                // damage WITHOUT the distance falloff, capped so a multi-target bullet never exceeds 100%.
+                if (goodDamage)
+                {
+                    float addedDamage = MathF.Min(damage - totalDamage, damage * damageFraction);
+                    totalDamage += damage * damageFraction;
+                    WeaponAccuracyEvents.Hit(actor, Inventory.CurrentWeapon(actor), addedDamage); // add to hit
+                }
             }
 
             // Penetrate the solid we just hit, if allowed. -1 means "no penetration ever".
@@ -325,16 +345,26 @@ public static class WeaponFiring
 
         // Restore solidity, then apply damage + falloff to everyone we passed through.
         foreach (var p in pierced) p.ent.Solid = p.solid;
+        float totalDmg = 0f; // QC totaldmg — the per-target falloff-scaled good damage (tracing.qc:323-324)
         foreach (var p in pierced)
         {
-            if (p.ent.TakeDamage == DamageMode.No) continue;
             float foff = (falloffHalflife != 0f)
                 ? ExponentialFalloff(falloffMinDist, falloffMaxDist, falloffHalflife, p.dist) : 1f;
+
+            // [T57] gate captured BEFORE Damage (QC tracing.qc:323): credit accumulates per pierced target.
+            if (WeaponAccuracyEvents.IsGoodDamage(actor, p.ent))
+                totalDmg += damage * foff;
+
+            if (p.ent.TakeDamage == DamageMode.No) continue;
             float ffs = (falloffForceHalflife != 0f)
                 ? ExponentialFalloff(falloffMinDist, falloffMaxDist, falloffForceHalflife, p.dist) : 1f;
             ApplyDamage(p.ent, actor, damage * foff, deathType, inflictor: actor,
                 force: dir * (force * ffs), hitLoc: p.loc);
         }
+
+        // [T57] ONE hit credit per shot, capped at one shot's damage (QC tracing.qc:346-348) — a beam through
+        // two players still credits min(bdamage, totaldmg); the >100% case shows as byte 255 over fired.
+        WeaponAccuracyEvents.Hit(actor, Inventory.CurrentWeapon(actor), MathF.Min(damage, totalDmg));
 
         // QC tracing.qc:343-344: announce the headshot to the shooter.
         if (headshot && (actor.Flags & EntFlags.Client) != 0)
@@ -440,12 +470,14 @@ public static class WeaponFiring
         if (damage <= 0f && force == Vector3.Zero) return;
 
         // Map the int deathtype id to the string tag the pipeline carries (DeathTypes stand-in for the QC
-        // registry). 0 == unattributed; otherwise treat it as the attacking weapon, named by its NetName.
-        // (A full int<->Deathtype registry that preserves HITTYPE_* flags is a damage-system concern owned
-        // outside the weapons folder; weapons pass the weapon RegistryId and rely on the NetName mapping.)
-        string deathTag = deathType == 0
-            ? Damage.DeathTypes.Generic
-            : Damage.DeathTypes.FromWeapon(attacker.NetName);
+        // registry). The call sites pass the WEAPON RegistryId; 0 doubles as the "unattributed" sentinel
+        // (which aliases weapon id 0 — Arc — whose beam therefore tags Generic; pre-existing convention).
+        // [T57] FIX: this previously tagged FromWeapon(attacker.NetName) — the PLAYER's name — so every
+        // weapon kill carried an unresolvable "weapon/<playername>" tag (generic kill feed, no per-weapon
+        // attribution). Resolve the registry id to the weapon's NetName instead.
+        string deathTag = deathType > 0 && deathType < Registry<Weapon>.Count
+            ? Damage.DeathTypes.FromWeapon(Registry<Weapon>.ById(deathType).NetName)
+            : Damage.DeathTypes.Generic;
 
         // inflictor defaults to the attacker for direct hitscan (QC passes the bullet's owner == attacker).
         Damage.Combat.Damage(target, inflictor ?? attacker, attacker, damage, deathTag, hitLoc, force);

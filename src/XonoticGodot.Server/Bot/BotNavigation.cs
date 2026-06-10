@@ -24,8 +24,8 @@ public sealed class BotNavigation
     private const int MaxGoals = 32;        // QC goalstack depth (goalcurrent + goalstack01..31)
     private const float GoalReachedXY = 24f; // horizontal "touched the waypoint" radius
     private const float GoalReachedZ = 48f;  // vertical tolerance
-    private const float StepHeight = 34f;    // QC stepheightvec.z — walkable step
-    private const float JumpStepHeight = 48f; // QC jumpstepheightvec.z — reachable with a jump
+    public const float StepHeight = 34f;    // QC stepheightvec.z — walkable step
+    public const float JumpStepHeight = 48f; // QC jumpstepheightvec.z — reachable with a jump (brain danger check reads it)
 
     /// <summary>One entry on the goal stack: a world point plus the waypoint flags that govern how to
     /// traverse it (jump/crouch/teleport/ladder) and the source waypoint (for box-volume reach tests).</summary>
@@ -73,6 +73,64 @@ public sealed class BotNavigation
         _goals.Clear();
         GoalEntity = null;
         LastTeleportTime = 0f;
+        ResetGoalProgress();
+    }
+
+    // ---- no-progress detection (QC havocbot_checkgoaldistance, havocbot.qc:344-368) ----
+    private float _goalDistZ;
+    private float _goalDist2d;
+    private float _goalDistTime;
+
+    private void ResetGoalProgress()
+    {
+        _goalDistZ = float.MaxValue;
+        _goalDist2d = float.MaxValue;
+        _goalDistTime = 0f;
+    }
+
+    /// <summary>
+    /// QC <c>havocbot_checkgoaldistance</c>: returns true when the bot has spent &gt; 0.5 s without getting any
+    /// closer to the current goal (both vertically and horizontally) — the stuck signal that makes the brain
+    /// clear the route and force a goal re-rate (QC's caller re-verifies with tracewalk first; the port goes
+    /// straight to the clearroute, trading a possible early re-plan for simplicity). Distances shrink-track
+    /// like QC (each improvement re-arms the watchdog 10qu tighter, floored at 20).
+    /// </summary>
+    public bool CheckGoalProgress(Entity bot, float now)
+    {
+        if (_goals.Count == 0)
+            return false;
+        Vector3 gco = _goals[0].Pos;
+        float currZ = MathF.Max(20f, MathF.Abs(bot.Origin.Z - gco.Z));
+        float curr2d = MathF.Max(20f, new Vector2(bot.Origin.X - gco.X, bot.Origin.Y - gco.Y).Length());
+        if (currZ >= _goalDistZ && curr2d >= _goalDist2d)
+        {
+            if (_goalDistTime == 0f)
+                _goalDistTime = now;
+            else if (now - _goalDistTime > 0.5f)
+                return true;
+        }
+        else
+        {
+            // reduce a little so it works even with very small approaches to the goal (QC comment).
+            _goalDistZ = MathF.Max(20f, currZ - 10f);
+            _goalDist2d = MathF.Max(20f, curr2d - 10f);
+            _goalDistTime = 0f;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Project a world-frame direction into the bot's local move frame (the same yaw-only basis
+    /// <see cref="Steer"/> uses — QC makevectors(v_angle.y * '0 1 0')), scaled to <see cref="MaxSpeed"/>.
+    /// Used by the brain's danger brake (QC <c>do_break = normalize(velocity) * -1</c>).
+    /// </summary>
+    public Vector3 WorldToLocalMove(Vector3 worldDir, float viewYaw)
+    {
+        if (worldDir == Vector3.Zero)
+            return Vector3.Zero;
+        Vector3 dir = QMath.Normalize(worldDir);
+        QMath.AngleVectors(new Vector3(0f, viewYaw, 0f), out var forward, out var right, out var up);
+        return new Vector3(QMath.Dot(dir, forward), QMath.Dot(dir, right), QMath.Dot(dir, up)) * MaxSpeed;
     }
 
     /// <summary>Push a goal point to the front of the stack (QC navigation_pushroute).</summary>
@@ -90,6 +148,7 @@ public sealed class BotNavigation
     {
         if (_goals.Count > 0)
             _goals.RemoveAt(0);
+        ResetGoalProgress(); // a fresh goal re-arms the no-progress watchdog (QC resets goalcurrent_distance_*)
     }
 
     /// <summary>
@@ -252,8 +311,8 @@ public sealed class BotNavigation
     /// </summary>
     private bool Bunnyhop(Entity bot, Vector3 dir, bool onGround, Goal goal, bool attacking)
     {
-        // skill gate (QC: bunnyhopping bots are skill >= bot_ai_bunnyhop_skilloffset).
-        float skillOffset = Cvars.FloatOr("bot_ai_bunnyhop_skilloffset", 6f);
+        // skill gate (QC: bunnyhopping bots are skill >= bot_ai_bunnyhop_skilloffset; ships 7).
+        float skillOffset = Cvars.FloatOr("bot_ai_bunnyhop_skilloffset", 7f);
         if (Skill < skillOffset)
             return false;
         if (attacking || !onGround)
@@ -273,7 +332,7 @@ public sealed class BotNavigation
         Vector3 velAngles = QMath.VecToAngles(new Vector3(bot.Velocity.X, bot.Velocity.Y, 0f));
         Vector3 dirAngles = QMath.VecToAngles(new Vector3(dir.X, dir.Y, 0f));
         float devY = WrapDeg(velAngles.Y - dirAngles.Y);
-        float maxDev = Cvars.FloatOr("bot_ai_bunnyhop_dir_deviation_max", 10f);
+        float maxDev = Cvars.FloatOr("bot_ai_bunnyhop_dir_deviation_max", 20f); // ships 20
         if (MathF.Abs(devY) >= maxDev)
             return false;
 

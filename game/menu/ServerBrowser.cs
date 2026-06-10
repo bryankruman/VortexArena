@@ -17,13 +17,16 @@ public sealed class ServerEntry
     public string Map = "";
     public string Gametype = "";
     public int Players;
+    public int Bots;
     public int MaxPlayers;
     public int Ping = -1;             // -1 = unknown / not yet measured
     public bool Favorite;
     public bool IsLan;
 
-    public string PlayersText => MaxPlayers > 0 ? $"{Players}/{MaxPlayers}" : Players.ToString();
-    public string PingText => Ping >= 0 ? $"{Ping}ms" : "--";
+    /// <summary>Humans/slots, the QC players column (SLIST_FIELD_NUMHUMANS / maxclients).</summary>
+    public string PlayersText => MaxPlayers > 0 ? $"{System.Math.Max(0, Players - Bots)}/{MaxPlayers}"
+                                                : System.Math.Max(0, Players - Bots).ToString();
+    public string PingText => Ping >= 0 ? Ping.ToString() : "--";
 }
 
 /// <summary>
@@ -75,8 +78,15 @@ public sealed class ServerBrowser : IDisposable
     /// <summary>Favorites persist alongside the menu settings file.</summary>
     private const string FavoritesPath = "user://favorites.cfg";
 
-    /// <summary>The UDP port LAN discovery pings (placeholder XonoticGodot server port).</summary>
+    /// <summary>The default XonoticGodot game port (DP <c>port</c> 26000) — the Connect default.</summary>
     public const int LanDiscoveryPort = 26000;
+
+    /// <summary>
+    /// How many ports above <see cref="LanDiscoveryPort"/> the LAN sweep probes. The game socket is ENet (it
+    /// drops OOB datagrams), so a host answers <c>getinfo</c> on a side socket at <c>gamePort+1..+8</c>
+    /// (<c>ServerNet.EnableLanDiscovery</c>); sweeping the small range finds every local server.
+    /// </summary>
+    private const int LanSweepRange = 9;
 
     /// <summary>
     /// The dpmaster game filter and DP network protocol version sent in <c>getservers</c> — Xonotic's
@@ -103,6 +113,11 @@ public sealed class ServerBrowser : IDisposable
 
     private readonly List<ServerEntry> _servers = new();
     private readonly List<string> _favoriteAddresses = new();
+
+    /// <summary>getinfo send time per "ip:port" target, for the ping column (reply time − send time).</summary>
+    private readonly Dictionary<string, long> _probeSent = new();
+
+    private static long NowMs => System.Environment.TickCount64;
 
     /// <summary>The shared UDP socket for master queries + per-server info probes. Lazily created on refresh.</summary>
     private MasterServerLink? _link;
@@ -235,7 +250,11 @@ public sealed class ServerBrowser : IDisposable
                     string address = $"{ip}:{port}";
                     if (!_servers.Exists(s => s.Address == address))
                         AddAndReturn(new ServerEntry { Name = address, Address = address });
-                    try { link.RequestInfo(new IPEndPoint(ip, port), InfoChallenge); }
+                    try
+                    {
+                        _probeSent[address] = NowMs;
+                        link.RequestInfo(new IPEndPoint(ip, port), InfoChallenge);
+                    }
                     catch (Exception e) { GD.Print($"[Menu] info probe to {address} failed: {e.Message}"); }
                 }
             };
@@ -246,6 +265,8 @@ public sealed class ServerBrowser : IDisposable
                 string address = $"{from.Address}:{from.Port}";
                 ServerEntry entry = _servers.Find(s => s.Address == address)
                                     ?? AddAndReturn(new ServerEntry { Address = address });
+                if (_probeSent.TryGetValue(address, out long sent))
+                    entry.Ping = (int)Math.Min(int.MaxValue, NowMs - sent);
                 PopulateFromInfo(entry, info);
             };
 
@@ -284,6 +305,7 @@ public sealed class ServerBrowser : IDisposable
         existing.Map = entry.Map;
         existing.Gametype = entry.Gametype;
         existing.Players = entry.Players;
+        existing.Bots = entry.Bots;
         existing.MaxPlayers = entry.MaxPlayers;
         existing.Ping = entry.Ping;
         if (isLan) existing.IsLan = true;
@@ -304,11 +326,42 @@ public sealed class ServerBrowser : IDisposable
             entry.Name = entry.Address;
 
         if (info.TryGetValue("mapname", out string? map)) entry.Map = map;
-        if (info.TryGetValue("gametype", out string? gt)) entry.Gametype = gt;
+        if (info.TryGetValue("gametype", out string? gt) && gt.Length > 0)
+        {
+            entry.Gametype = gt;
+        }
+        else if (info.TryGetValue("qcstatus", out string? qc) && qc.Length > 0)
+        {
+            // Real Xonotic servers carry the gametype as the first ":"-token of qcstatus ("ctf:git:P0:S16:...").
+            int colon = qc.IndexOf(':');
+            entry.Gametype = colon > 0 ? qc[..colon] : qc;
+        }
         if (info.TryGetValue("clients", out string? c) && int.TryParse(c, out int players))
             entry.Players = players;
+        if (info.TryGetValue("bots", out string? b) && int.TryParse(b, out int bots))
+            entry.Bots = bots;
         if (info.TryGetValue("sv_maxclients", out string? m) && int.TryParse(m, out int max))
             entry.MaxPlayers = max;
+
+        // A XonoticGodot server answers getinfo on a SIDE socket and reports its real game port in the
+        // infostring ("port") — re-key the row to the connectable address (and fold any duplicate row).
+        if (info.TryGetValue("port", out string? p) && int.TryParse(p, out int gamePort) && gamePort > 0)
+        {
+            int colonAt = entry.Address.LastIndexOf(':');
+            string ip = colonAt > 0 ? entry.Address[..colonAt] : entry.Address;
+            string rekeyed = $"{ip}:{gamePort}";
+            if (rekeyed != entry.Address)
+            {
+                ServerEntry? existing = _servers.Find(s => s.Address == rekeyed && !ReferenceEquals(s, entry));
+                if (existing is not null)
+                {
+                    entry.Favorite |= existing.Favorite;
+                    _servers.Remove(existing);
+                }
+                entry.Address = rekeyed;
+            }
+            entry.Favorite |= _favoriteAddresses.Contains(rekeyed);
+        }
         Revision++;
     }
 
@@ -356,10 +409,15 @@ public sealed class ServerBrowser : IDisposable
             if (udp.Bind(0) != Error.Ok)
                 return found;
 
-            udp.SetDestAddress("255.255.255.255", LanDiscoveryPort);
-            // The standard DP connectionless info probe: 4×0xFF + "getinfo rebirth". This is the byte-for-byte
-            // request the server's getinfo handler matches on (the OOB marker is 4 bytes, not the old 2).
-            udp.PutPacket(MasterServerProtocol.EncodeGetInfo(InfoChallenge));
+            // The standard DP connectionless info probe: 4×0xFF + "getinfo rebirth" — broadcast across the
+            // small discovery range (a host answers on gamePort+1..+8, since ENet owns the game port itself).
+            byte[] probe = MasterServerProtocol.EncodeGetInfo(InfoChallenge);
+            long sentAt = NowMs;
+            for (int port = LanDiscoveryPort; port < LanDiscoveryPort + LanSweepRange; port++)
+            {
+                udp.SetDestAddress("255.255.255.255", port);
+                udp.PutPacket(probe);
+            }
 
             // Check a handful of times with a tiny sleep between — total well under one frame's worth of
             // stall, and only when the user explicitly hit Refresh. (UDP packets are available immediately;
@@ -372,7 +430,10 @@ public sealed class ServerBrowser : IDisposable
                     string fromIp = udp.GetPacketIP();
                     int fromPort = udp.GetPacketPort();
                     if (TryParseLanInfo(packet, fromIp, fromPort, out ServerEntry entry))
+                    {
+                        entry.Ping = (int)Math.Min(int.MaxValue, NowMs - sentAt);
                         found.Add(entry);
+                    }
                 }
                 if (found.Count > 0)
                     break;
@@ -447,6 +508,9 @@ public sealed class ServerBrowser : IDisposable
     // -------------------------------------------------------------------------------------------------
     //  Favorites — add/remove + persistence.
     // -------------------------------------------------------------------------------------------------
+
+    /// <summary>True when <paramref name="address"/> (normalised) is bookmarked — drives the Bookmark/Unbookmark toggle.</summary>
+    public bool IsFavorite(string address) => _favoriteAddresses.Contains(NormalizeAddress(address));
 
     public void AddFavorite(string address)
     {

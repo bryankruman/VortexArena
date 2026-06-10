@@ -126,7 +126,7 @@ public static class ItemSpawnFuncs
     // ---- the weapon item spawnfunc (QC weapon_defaultspawnfunc, server/weapons/spawning.qc:29) ----
     private static void WeaponSpawn(Entity e, Weapon w)
     {
-        WeaponPickup def = WeaponPickupFor(w);
+        WeaponPickup def = PickupFor(w);
 
         // QC weapon_defaultspawnfunc: default respawntime; default pickup ammo if the edict didn't set it; the
         // g_pickup_weapons_anyway pickup_anyway. The ammo + weapon-set seeding happen in WeaponPickup.ItemInit.
@@ -139,7 +139,9 @@ public static class ItemSpawnFuncs
         StartItem.Spawn(e, def);
     }
 
-    private static WeaponPickup WeaponPickupFor(Weapon w)
+    /// <summary>The stable per-weapon <see cref="WeaponPickup"/> def (QC <c>wpn.m_pickup</c>). Public so the
+    /// thrown-weapon path (<see cref="WeaponThrowing"/>, T57) reuses the same loot def the map spawnfunc uses.</summary>
+    public static WeaponPickup PickupFor(Weapon w)
     {
         if (!_weaponPickups.TryGetValue(w.NetName, out WeaponPickup? wp))
             _weaponPickups[w.NetName] = wp = new WeaponPickup(w);

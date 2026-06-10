@@ -33,6 +33,7 @@ public static class MenuDialogRegistry
         ["videosettings"]  = () => MakeSettings("Video"),           // QC videosettings → Settings on the Video tab
         ["guide"]       = () => new DialogMediaGuide(),             // QC dialog_multiplayer_media_screenshot's guide → the entry guide
         ["quitdialog"]  = () => new QuitDialog(),                   // QC menu_showquitdialog
+        ["hudpanels"]   = () => new DialogHudPanels(),              // HUD-panel config host (menu_showhudoptions)
         // QC `menu_cmd skinselect`/`languageselect` remap to the skinselector/languageselector dialogs. Those QC
         // dialogs are the skin list / language list; the port folds both into the Settings dialog's User tab
         // (dialog_settings_user.qc — the faithful home of both pickers), so the *select overlay verbs resolve there.

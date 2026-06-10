@@ -480,7 +480,10 @@ internal static class WeaponAmmo
         Blaster => true,
         Shotgun s => secondary ? s.CheckAmmoSecondary(actor) : s.CheckAmmoPrimary(actor),
         Machinegun m => m.CheckAmmoPrimary(actor), // sustained/burst both draw bullets; primary check suffices
-        Vortex v => v.CheckAmmoPrimary(actor),     // secondary is the zoom/charge key, same cells as primary
+        // Vortex secondary: wr_checkammo2 (vortex.qc:287-298) — a real check only when the secondary FIRE
+        // mode is enabled (g_balance_vortex_secondary); with the stock zoom-charge secondary it reports
+        // false ("zoom is not a fire mode"), so a cells-dry vortex auto-switches away like QC. [T57]
+        Vortex v => secondary ? v.CheckAmmoSecondary(actor) : v.CheckAmmoPrimary(actor),
         Crylink c => secondary ? c.CheckAmmoSecondary(actor) : c.CheckAmmoPrimary(actor),
         Devastator d => d.CheckAmmoPrimary(actor),
         Mortar mo => secondary ? mo.CheckAmmoSecondary(actor) : mo.CheckAmmoPrimary(actor),

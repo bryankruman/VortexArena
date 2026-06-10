@@ -440,12 +440,45 @@ public sealed class DamageSystem : IDamageSystem
 
         // [T51] PlayerDamaged mutator hook (QC server/player.qc:430) — damagetext. Fire AFTER the health/armor
         // subtract with the ACTUAL amounts removed (dh/da) + the pre-split potential damage. initialHealth/
-        // initialArmor were captured (already max(…,0)) at the top of PlayerDamage.
+        // initialArmor were captured (already max(…,0)) at the top of PlayerDamage. QC reads the hook's return
+        // back as forbid_logging_damage, gating the accuracy/score block below.
+        float dhRemoved = initialHealth - MathF.Max(targ.GetResource(ResourceType.Health), 0f);
+        float daRemoved = initialArmor - MathF.Max(targ.GetResource(ResourceType.Armor), 0f);
+        bool forbidLoggingDamage;
         {
-            float dh = initialHealth - MathF.Max(targ.GetResource(ResourceType.Health), 0f);
-            float da = initialArmor - MathF.Max(targ.GetResource(ResourceType.Armor), 0f);
-            var pd = new MutatorHooks.PlayerDamagedArgs(attacker, targ, dh, da, hitLoc, deathType, damage);
-            MutatorHooks.PlayerDamaged.Call(ref pd);
+            var pd = new MutatorHooks.PlayerDamagedArgs(attacker, targ, dhRemoved, daRemoved, hitLoc, deathType, damage);
+            forbidLoggingDamage = MutatorHooks.PlayerDamaged.Call(ref pd);
+        }
+
+        // [T57] accuracy REAL credit + per-frame damage score columns — QC server/player.qc:432-447.
+        // realdmg = damage - excess (the part that actually removed health/armor, no overkill).
+        if ((dhRemoved != 0f || daRemoved != 0f) && !forbidLoggingDamage)
+        {
+            float realdmg = damage - excess;
+            bool deathKill = DeathTypes.BaseOf(deathType) == DeathTypes.Kill;
+            // QC round gate: !(round active && !round started) && time >= game_starttime. No round handler is
+            // reachable from the pipeline; the game-start half uses the StartItem host seam (game_starttime).
+            float gameStart = StartItem.GameStartTimeProvider?.Invoke() ?? 0f;
+            if ((!ReferenceEquals(targ, attacker) || deathKill) && realdmg != 0f && Now() >= gameStart)
+            {
+                // QC: IS_PLAYER(attacker) && DIFF_TEAM(attacker, this) && deathtype != DEATH_KILL.
+                if (IsPlayer(attacker) && !WeaponAccuracyEvents.SameTeam(attacker!, targ) && !deathKill)
+                {
+                    // awep (player.qc:416-419): the deathtype's weapon, or the attacker's HELD weapon for
+                    // special deathtypes. A weapon tag that doesn't resolve (a non-weapon source mislabeled
+                    // upstream) also falls back to the held weapon, like QC's special-deathtype branch.
+                    Weapon? awep = DeathTypes.IsWeapon(deathType)
+                        ? Weapons.ByName(DeathTypes.WeaponNetNameOf(deathType))
+                        : null;
+                    awep ??= Inventory.CurrentWeapon(attacker!);
+
+                    if (awep is not null && WeaponAccuracyEvents.IsGoodDamage(attacker, targ))
+                        WeaponAccuracyEvents.Real(attacker!, awep, realdmg);     // add to real
+                    WeaponAccuracyEvents.ScoreFrameDamage(attacker!, realdmg);   // attacker.score_frame_dmg
+                }
+                if (IsPlayer(targ))
+                    WeaponAccuracyEvents.ScoreFrameDamageTaken(targ, realdmg);   // this.score_frame_dmgtaken
+            }
         }
 
         // --- death check (QC player.qc ~450): health < 1 ---
@@ -517,6 +550,12 @@ public sealed class DamageSystem : IDamageSystem
         // QC: if no respawn time was set by a hook, schedule one now (default-ish 2s post-death window).
         if (victim is Player pr && pr.RespawnTime <= 0f)
             pr.RespawnTime = Now() + DefaultRespawnDelay;
+
+        // [T57] throw the held weapon (QC player.qc:533-537): per slot, SpawnThrownWeapon at the body center,
+        // after the resuscitation bail + respawn-time calc and BEFORE the corpse setup. The port drives one
+        // weapon slot. (g_pinata's extra drops already ran in the PlayerDies hook above, like QC.)
+        WeaponThrowing.SpawnThrownWeapon(victim, victim.Origin + (victim.Mins + victim.Maxs) * 0.5f,
+            Inventory.CurrentWeapon(victim), new WeaponSlot(0));
 
         // ----- become a corpse (QC player.qc ~528-591) -----
         victim.Alpha = 1f;                    // QC default_player_alpha — fully visible

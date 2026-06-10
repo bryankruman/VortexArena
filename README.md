@@ -1,5 +1,7 @@
 # XonoticGodot
 
+[![CI](https://github.com/bryankruman/XonoticGodot/actions/workflows/ci.yml/badge.svg)](https://github.com/bryankruman/XonoticGodot/actions/workflows/ci.yml)
+
 **XonoticGodot** is a work-in-progress port of [Xonotic](https://xonotic.org) — the free, open-source arena
 shooter — from its original QuakeC/Darkplaces engine stack to **C# on Godot 4.6 (.NET)**. The goal is a
 faithful recreation of Xonotic's gameplay, physics, and visual style on a modern, maintainable engine.
@@ -92,7 +94,13 @@ dotnet test  tests/XonoticGodot.Tests/XonoticGodot.Tests.csproj
 
 # Build the full Godot project
 dotnet build XonoticGodot.csproj
+
+# Or run the whole local CI gate (build + tests + host + headless boot smoke)
+ci/ci.sh
 ```
+
+CI (GitHub Actions) runs the test suite and the host build on every push/PR; note that the
+asset-dependent tests self-skip there, so `ci/ci.sh` with assets downloaded is the stronger check.
 
 ### Run
 

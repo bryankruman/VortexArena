@@ -349,7 +349,13 @@ public partial class MainMenu : MenuScreen
     /// <summary>Begin collapsing the open dialog back to its fan slot. Safe when nothing is open.</summary>
     public void CloseActivePanel()
     {
-        if (_active != null) _opening = false;
+        if (_active != null)
+        {
+            _opening = false;
+            // Persist archived cvars when a panel collapses — the nexposee panels never leave the tree, so a
+            // settings/profile edit would otherwise only be written at shutdown (DP saves config on menu exit).
+            MenuState.SaveUserConfig();
+        }
     }
 
     /// <summary>True while a dialog is open (or animating) — lets the host route Back/Escape to a collapse.</summary>

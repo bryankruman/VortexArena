@@ -1,0 +1,210 @@
+{
+  "task": "T53 — Round/objective HUD stats for the untracked modes (ClanArena, FreezeTag, KeyHunt, Survival): network the QC STAT(REDALIVE..PINKALIVE) alive counts, STAT(OBJECTIVE_STATUS) KH key pack, the eliminatedPlayers bitfield (scoreboard grey-out) and the SurvivalStatuses role disclosure to the client, and render them in ModIconsPanel + ScoreboardPanel. Implementer OWNS src/XonoticGodot.Common/Gameplay/GameTypes/{ClanArena,FreezeTag,KeyHunt,Survival}.cs and game/hud/ModIconsPanel.cs; ALL ServerNet.cs/ClientNet.cs/NetProtocol.cs changes are specified verbatim in chokepointSnippets for the T54 owner.",
+
+  "baseBehaviors": [
+    {
+      "id": "CA-alive-stats",
+      "source": "qcsrc/common/gametypes/gametype/clanarena/sv_clanarena.qc:17-43 (CA_count_alive_players)",
+      "behavior": "Zeroes per-team alive counters, walks FOREACH_CLIENT(IS_PLAYER && Entity_HasValidTeam): total_players++ per player, alive++ per team for non-dead players, then writes STAT(REDALIVE/BLUEALIVE/YELLOWALIVE/PINKALIVE) onto EVERY real client (same values for all). Alive test = !IS_DEAD.",
+      "recountTriggers": "CA_CheckWinner (sv_clanarena.qc:157) — the round_handler canRoundEnd callback, called EVERY SERVER FRAME while a round is live (round_handler.qc:74 'this.nextthink = time; // canRoundEnd every frame'); and CA_CheckTeams (sv_clanarena.qc:224) — canRoundStart, called once per second during the countdown (round_handler.qc:61). So in CA the stats are effectively recomputed per frame during a live round."
+    },
+    {
+      "id": "CA-eliminated",
+      "source": "qcsrc/common/gametypes/gametype/clanarena/sv_clanarena.qc:243-250 (ca_isEliminated) + hooks at 272-283 (PlayerSpawn), 295-311 (PutClientInServer), 370-385 (PlayerDies), 397-422 (MakePlayerObserver); qcsrc/server/elimination.qc:6-32",
+      "behavior": "ca_isEliminated(e) = (INGAME_JOINED(e) && (IS_DEAD(e) || e.frags == FRAGS_PLAYER_OUT_OF_GAME)) || INGAME_JOINING(e). The shared eliminatedPlayers linked entity (EliminatedPlayers_SendEntity, elimination.qc:7-21) broadcasts ceil(maxclients/8) bytes, one bit per client slot, bit set = eliminated. Resent (SendFlags = 0xFFFFFF) on the EVENTS above, only when !warmup_stage. Event-driven, not per-frame."
+    },
+    {
+      "id": "FT-alive-stats",
+      "source": "qcsrc/common/gametypes/gametype/freezetag/sv_freezetag.qc:22-50 (freezetag_count_alive_players)",
+      "behavior": "Same shape as CA but alive test = GetResource(RES_HEALTH) >= 1 && !STAT(FROZEN). The SAME function also raises eliminatedPlayers.SendFlags = 0xFFFFFF at its end (line 49) — every recount rebroadcasts the eliminated bitfield. freezetag_isEliminated (288-293) = IS_PLAYER && (FROZEN || IS_DEAD).",
+      "recountTriggers": "EVENT-driven (unlike CA): freezetag_Freeze (line 245), revive completion in the PlayerPreThink loop (line 829), PlayerDies countdown branch (463) + teamchange branch (478), PlayerSpawn (545), ft_RemovePlayer = disconnect/observer (411), reset_map_players (586). freezetag_CheckWinner does NOT recount — it reads Team_GetNumberOfAlivePlayers maintained by the events."
+    },
+    {
+      "id": "FT-eliminated-wire",
+      "source": "qcsrc/server/elimination.qc:7-21 (EliminatedPlayers_SendEntity), qcsrc/client/main.qc:819-838 (NET_HANDLE ENT_CLIENT_ELIMINATEDPLAYERS), qcsrc/client/hud/panel/scoreboard.qc:1519-1520 + 1645-1649 + cfg default",
+      "behavior": "Client handler marks every playerslot eliminated=true then clears the bit-NOT-set slots (bit set = eliminated). Scoreboard grey-out: when pl.eliminated, drawfill a BLACK rect over the row at alpha hud_panel_scoreboard_table_highlight_alpha_eliminated * panel_fg_alpha (shipped default: luma skin 0.6, luminos family 0.5; _hud_descriptions registers the seta). FT additionally registers EliminatedPlayers_Init(freezetag_isEliminated) at freezetag_Initialize (sv_freezetag.qc:1031)."
+    },
+    {
+      "id": "KH-objective-status",
+      "source": "qcsrc/common/gametypes/gametype/keyhunt/sv_keyhunt.qc:60-64 (layout comment), 126-148 (kh_update_state), call-sites 374 (kh_Key_AssignTo tail) and 502 (kh_Key_Remove tail)",
+      "behavior": "kh_state packs one 5-bit slot per key at bit (5 * key.count), key.count = key index 0..3 (one key per team, created in team order). Slot value: 0 = no such key in play; key.team (the CARRIER's SVQC team code 5/14/13/10 — kh_Key_Attach sets key.team = key.owner.team) when carried; 30 when dropped (no owner); then a per-recipient OVERRIDE: for each key's owner client the slot is OR'd to 31 ('self'). Written to STAT(OBJECTIVE_STATUS) of every client, then personalized. Recomputed EVENT-driven: every kh_Key_AssignTo (pickup, collect, drop-to-NULL, round-start assign) and kh_Key_Remove (capture/auto-return cleanup). When all keys are removed between rounds the stat becomes 0.",
+      "clientDecode": "qcsrc/common/gametypes/gametype/keyhunt/cl_keyhunt.qc:16-46: key_state = (bitshift(state, i*-5) & 31) - 1 → -1 none / CSQC NUM_TEAM (4/13/12/9) carried-by-team / 29 dropped / 30 carried-by-me ('carrying'; counted as myteam). NOTE the CSQC NUM_TEAM constants are the SVQC codes minus 1 (teams.qh: CSQC 4/13/12/9 vs SVQC 5/14/13/10) — that is what the -1 bridges."
+    },
+    {
+      "id": "KH-modicon-render",
+      "source": "qcsrc/common/gametypes/gametype/keyhunt/cl_keyhunt.qc:8-135 (HUD_Mod_KH)",
+      "behavior": "mod_active=1 always; return if state==0. Count keys per team + dropped + carrying. Slots laid out: 4 keys & near-square panel → 2x2 quadrant grid, else horizontal (w>h) or vertical strips of all_keys slots. Icons per slot: kh_<color>_carrying for my team's keys while I carry any, kh_<color>_taken otherwise, kh_dropped for loose keys. Blink: when carrying_keys and MY team holds ALL keys, alpha oscillates 0.2..1.0 at 1 Hz (0.6 + sin(2*pi*time)*0.4)."
+    },
+    {
+      "id": "CA-FT-modicon-render",
+      "source": "qcsrc/common/gametypes/gametype/clanarena/cl_clanarena.qc:19-92 (DrawCAItem/HUD_Mod_CA_Draw/HUD_Mod_CA) + qcsrc/common/gametypes/gametype/freezetag/cl_freezetag.qc:10-18 (HUD_Mod_FreezeTag)",
+      "behavior": "mod_active=1 always (panel always shows in these modes). Grid: aspect_ratio = layout ? 2 : 1; rows = HUD_GetRowCount(team_count, panelSize, aspect_ratio) where HUD_GetRowCount = bound(1, floor((sqrt(4*item_aspect*(h/w)*N + (h/w)^2) + (h/w) + 0.5) * 0.5), N) (qcsrc/client/hud/hud.qc:165-170); columns = ceil(team_count/rows); cells filled row-first down each column. Per cell i (0=red,1=blue,2=yellow,3=pink): content aspect-fit-centered; layout==1 → left half 'player_red|blue|yellow|pink' skin icon + right half the alive COUNT as text in team color ('1 0 0','0 0 1','1 1 0','1 0 1'); layout==0 → count text only. Counts come straight from STAT(REDALIVE..PINKALIVE). FreezeTag reuses HUD_Mod_CA_Draw with its own layout cvar. Cvars: hud_panel_modicons_ca_layout (shipped skin cfgs: 1), hud_panel_modicons_freezetag_layout (shipped: 1); 0 = number only, 1 = icon+number (_hud_descriptions.cfg:213,215)."
+    },
+    {
+      "id": "SURV-statuses",
+      "source": "qcsrc/common/gametypes/gametype/survival/sv_survival.qc:10-52 (SurvivalStatuses_SendEntity), 160-193 (Surv_RoundStart), 76-158 (Surv_CheckWinner), survival.qh:34-43 (SURV_STATUS_PREY=1/HUNTER=2, SURV_COLOR_PREY=51/HUNTER=68)",
+      "behavior": "Per-DESTINATION linked entity: sendflags byte, BIT(0)=RESET (client marks ALL playerslots prey), BIT(1)=HUNTERS (ceil(maxclients/8)-byte bitfield, bit set = that slot is INGAME && survival_status==HUNTER). Crucially the send function adds STATUS_SEND_HUNTERS for a destination that is ITSELF a hunter (line 19-20) — so mid-round, hunters know all hunters while prey only ever get the reset (they believe everyone is prey). SendFlags raised: STATUS_SEND_RESET at Surv_RoundStart (184) and reset_map_players (329); STATUS_SEND_HUNTERS broadcast to EVERYONE at round end (Surv_CheckWinner lines 93 and 151) so the scoreboard can out the hunters once the round is over. Roles: Surv_RoundStart marks all live players PREY then a random hunter_count = bound(1, cvar>=1 ? cvar : floor(playercount*cvar), playercount-1) of them HUNTER (g_survival_hunter_count default 0.25). eliminatedPlayers also registered (surv_isEliminated, 228-235, same shape as CA's) and resent on PlayerSpawn/PutClientInServer/PlayerDies/MakePlayerObserver."
+    },
+    {
+      "id": "SURV-modicon-render",
+      "source": "qcsrc/common/gametypes/gametype/survival/cl_survival.qc:6-110 (NET_HANDLE + HUD_Mod_Survival + scoreboard hooks)",
+      "behavior": "Client keeps per-slot survival_status; colors playerslot colormap 1024+51 (green) prey / 1024+68 (red) hunter — drives player model + scoreboard row color. HUD_Mod_Survival: mod_active=1; HIDDEN when STAT(GAMESTARTTIME) > time || STAT(ROUNDSTARTTIME) > time || spectating; otherwise one centered text: 'Hunter' in (1,0,0) if own status HUNTER, 'Survivor' in (0,1,0) if PREY. DrawScoreboard_Force returns STAT(GAME_STOPPED) — scoreboard forced open at round end so players can see who the hunter was."
+    },
+    {
+      "id": "round-handler-cadence",
+      "source": "qcsrc/server/round_handler.qc:11-77 (round_handler_Think)",
+      "behavior": "canRoundStart polled once per second during the countdown (nextthink = time + 1); canRoundEnd polled EVERY FRAME while a round is live (nextthink = time). This is what makes CA's stat recount per-frame and bounds how fresh any of these stats need to be — there is no sub-frame requirement, and value-change-gated sending is observationally identical to QC stat deltas (DP stats are themselves only sent when the value changes)."
+    }
+  ],
+
+  "portState": [
+    {
+      "file": "src/XonoticGodot.Common/Gameplay/GameTypes/ClanArena.cs",
+      "state": "NO alive-stat networking anywhere (no REDALIVE mention, not even comments — the audit overstated; there is simply nothing). BUT the data already exists: RoundState.AliveByTeam (lines 506-523, Dictionary<int,int> keyed by Teams color codes) is recomputed by CheckTeams (lines 280-302), CheckWinner (310-362) and CheckRound (418-463). GameWorld.DriveGametypeFrame calls ca.CheckRound(Clients.Players) EVERY frame (GameWorld.cs:1390), so AliveByTeam is per-frame fresh — matching QC's per-frame CA_CheckWinner recount. No isEliminated equivalent; Player.IsDead is the available signal."
+    },
+    {
+      "file": "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs",
+      "state": "Frozen dict (line 89) + IsFrozen (192) + IsEliminated(p) = p.IsDead || IsFrozen(p) (195) already public. Round.AliveByTeam recomputed by CheckRound (496-537), called per frame from GameWorld.cs:1398 — a superset of QC's event recount producing identical values. No wire/stat output."
+    },
+    {
+      "file": "src/XonoticGodot.Common/Gameplay/GameTypes/KeyHunt.cs",
+      "state": "Keys dict (line 113, keyed by home-team color code) + KeyState {Carrier, Entity, Dropper, DropperTeam, DropTime} (740-761) + Phase (RoundPhase, line 92). NO kh_update_state / OBJECTIVE_STATUS pack exists. Key 'in play' = Phase==InProgress && (Entity != null || Carrier != null); dropped = Carrier==null && Entity!=null; between rounds AutoReturnKey/CheckCaptureGeometry null the Entity → slot reads 0."
+    },
+    {
+      "file": "src/XonoticGodot.Common/Gameplay/GameTypes/Survival.cs",
+      "state": "SurvStatus enum None/Prey/Hunter (49-56) matches SURV_STATUS_* values 0/1/2. Per-player state _states is PRIVATE (line 68); StatusOf(p) public (177); SurvState.Alive is the eliminated signal (62-65); RoundOver/WinningSide (76-79). Handler (public, line 89) is the Common RoundHandler — Handler.IsRoundStarted gates 'roles are live'. GameWorld drives surv.SetRoster+Tick+CheckWinningCondition per frame (GameWorld.cs:1403-1407). No networking of roles."
+    },
+    {
+      "file": "game/hud/ModIconsPanel.cs",
+      "state": "Modes None/Ctf/Keyhunt/Domination (line 25). The Keyhunt renderer (149-205) is ALREADY a faithful HUD_Mod_KH decode — `((state >> (i*5)) & 31) - 1`, 30→carrying-as-MyTeam, 29→dropped, carrying-all blink 0.6+sin(2πt)*0.4 — but it expects 1-BASED TEAM INDICES (decoded 1..4 = red..pink, MyTeam 1..4), NOT the port's Teams color codes (4/13/12/9). ObjectiveStatus/MyTeam/TeamCount setters (28-37) are NEVER set by anyone (grep: only construction at HudManager.cs:112, Visible=false) — the panel is fully dormant. No ClanArena/FreezeTag/Survival renderers."
+    },
+    {
+      "file": "game/net/ServerNet.cs (T54-owned)",
+      "state": "Snapshot frame order per peer (BroadcastSnapshots, 769-856): control byte, time, ack, ownerNetId, WriteOwnerState (fixed layout, append-at-END contract, 1136-1163: origin/velocity/onground/health/armor/activeWeapon/respawnTimeStat/spectateeStatus), bool+MoveVarsBlock, bool+ScoreInfoBlock (hash-gated, PeerState.LastScoreInfoHash/SentScoreInfo, 824-831), bool+ScoreboardBlock (version-gated, LastScoreVersion, 834-840), then SnapHistory.EncodeSnapshot entity section (843). PeerState (120-167) is where per-client gates live. NetIdFor(Player) (1121-1130) is the stable wire id used by scoreboard rows. _world is the GameWorld: _world.GameType (used at 1061), _world.Rounds (GameWorld.cs:96, public, IsRoundStarted), _world.Clients.Players all reachable — NO GameWorld edit needed."
+    },
+    {
+      "file": "game/net/ClientNet.cs (T54-owned)",
+      "state": "HandleSnapshot (464-527) reads in exact lockstep: owner block, bool→movevars, bool→ScoreInfoBlock (Apply sets GameScores.Gametype/Teamplay; LatestScoreInfo property line 134), bool→ScoreboardBlock (LatestScoreboard), then entity section. The new block MUST be read between the scoreboard block and _snapHistory.DecodeSnapshot (559)."
+    },
+    {
+      "file": "game/net/NetProtocol.cs (T54-owned)",
+      "state": "ProtocolVersion = 6 (line 50) with a per-version changelog docstring; any snapshot layout change requires a bump (BuildParity rejects mixed builds at handshake)."
+    },
+    {
+      "file": "game/net/NetGame.cs (shared/hot — coordinate)",
+      "state": "Owns the client HUD: _fullHud (Hud, HudManager.cs:49) created at 835; UpdateScoreboard (1669-1695) is THE LatestScoreboard consumer, re-feeds rows only when the wire object reference changes; ScoreboardTitle reads GameScores.Gametype (1701). _fullHud.ModIcons exists but is never configured. This is where UpdateModIcons() must be added and called from _Process next to UpdateScoreboard() (1560)."
+    },
+    {
+      "file": "game/hud/ScoreboardPanel.cs (uncontended)",
+      "state": "ScoreRow struct (36-67) has Name/Team/Score/.../IsLocal/Columns — NO NetId and NO Eliminated flag. SetWireRows (139-168) builds rows from ScoreRowWire (which HAS NetId). DrawRow (703-725) draws the IsLocal highlight fill then the columns — the grey-out fill belongs right after the IsLocal fill."
+    },
+    {
+      "file": "src/XonoticGodot.Net/ (uncontended)",
+      "state": "ScoreInfoBlock.cs / ScoreboardBlock.cs are the precedent for snapshot sub-block codecs (static Serialize/Deserialize + Decoded class + FNV hash). The project already references XonoticGodot.Common (GameScores, Entity), so a new GametypeStatusBlock.cs here CAN see the Common gametype classes. BitWriter/BitReader primitives available: WriteBool/Byte/UShort/ULong(=4-byte uint)/String/Bytes, BadRead flag."
+    },
+    {
+      "file": "src/XonoticGodot.Server/GameWorld.cs (chokepoint — read-only for this task)",
+      "state": "ActivateGameType (1060-1156) and DriveGametypeFrame (1385-1415) already drive all four modes per frame (ca.CheckRound / ft.CheckRound / kh.Tick / surv.Tick) — NO changes required; all new server-side reads go through public surfaces (GameType, Rounds, Clients.Players)."
+    }
+  ],
+
+  "plan": [
+    "1. (owned) KeyHunt.cs: add `public uint PackKeyState(Player? viewer)` — the kh_update_state port. For slot i = 0..TeamCount-1 over Teams.Active(TeamCount) (red,blue,yellow,pink order — matches QC key.count): value = 0 if Phase != RoundPhase.InProgress or the key is out of play (Carrier==null && Entity==null); 31 if Carrier == viewer; (carrierTeamIndex + 1) where carrierTeamIndex = 1 red / 2 blue / 3 yellow / 4 pink if carried by someone else (so the wire carries 2..5, matching the EXISTING panel decode `(v & 31) - 1` → 1..4); 30 if dropped (Carrier==null, Entity!=null). OR each `value << (5*i)` into a uint. Add a private static TeamIndex(int colorCode) helper (Teams.Red→1, Blue→2, Yellow→3, Pink→4, else 0).",
+    "2. (owned) ClanArena.cs: add `public int AliveCount(int teamCode)` reading Round.AliveByTeam (0 fallback) and `public bool IsEliminatedPlayer(Player p) => p.IsDead` (the port has no INGAME_JOINING/OUT_OF_GAME state; document the approximation against ca_isEliminated). No recount change — GameWorld already drives CheckRound per frame, the QC-faithful cadence for CA (per-frame canRoundEnd).",
+    "3. (owned) FreezeTag.cs: add the same `public int AliveCount(int teamCode)` (IsEliminated already exists and is the QC freezetag_isEliminated). Counts already refresh per frame via CheckRound — value-identical to QC's event recount (counting is a pure function of Frozen/IsDead state); do NOT add a second event-recount path.",
+    "4. (owned) Survival.cs: add read APIs for the wire: `public bool RoleAssigned => Handler?.IsRoundStarted ?? false` (gates myStatus, standing in for QC's GAMESTARTTIME/ROUNDSTARTTIME HUD gate by sending None pre-round); `public void CollectHunters(List<Player> into)` (players with Status==Hunter); `public void CollectEliminated(List<Player> into)` (tracked players with !Alive); and `public bool DisclosesHuntersTo(Player viewer) => StatusOf(viewer) == SurvStatus.Hunter || RoundOver` (QC: sendflags |= STATUS_SEND_HUNTERS for hunter destinations; broadcast at round end).",
+    "5. (new file) src/XonoticGodot.Net/GametypeStatusBlock.cs: the snapshot sub-block codec, modeled on ScoreInfoBlock. `public enum Kind : byte { None=0, ClanArena=1, FreezeTag=2, KeyHunt=3, Survival=4 }`. `public static bool Capture(BitWriter w, object? gametype, Player viewer, IReadOnlyList<Player> players, Func<Player,int> netIdOf, bool roundStarted)` — switches on the Common gametype type, returns false (writes nothing) for untracked modes, else writes the block per the wire layout below using the step-1..4 gametype APIs. `public static Decoded? Deserialize(ref BitReader r)`. `public static uint Hash(ReadOnlySpan<byte> bytes)` — FNV-1a, fold to nonzero (if h==0 h=1) so 'never sent' (0) can't collide. Decoded carries: Kind Mode; int MyTeamIndex; int TeamCount; int[] Alive (4); HashSet<int> EliminatedNetIds; uint KeyState; int MyStatus; HashSet<int> HunterNetIds.",
+    "6. (chokepoint → T54) ServerNet.cs: PeerState gains `public uint LastModeStatusHash;` + a reusable `_modeStatusScratch` BitWriter; in BroadcastSnapshots, AFTER the scoreboard bool/block and BEFORE SnapHistory.EncodeSnapshot, serialize the personalized block to the scratch, hash-gate per peer, write bool + bytes (exact code in chokepointSnippets). ClientNet.cs: read the bool + block after the scoreboard read, store `LatestModeStatus`. NetProtocol.cs: bump ProtocolVersion 6 → 7 with a v7 changelog line.",
+    "7. (owned) ModIconsPanel.cs: add ModIconsMode.ClanArena, FreezeTag, Survival. New inputs: `SetAliveCounts(int red,int blue,int yellow,int pink)`, `public int SurvivalStatus` (0/1/2), plus layout knobs `CaLayout`/`FreezeTagLayout` read from cvars hud_panel_modicons_ca_layout / hud_panel_modicons_freezetag_layout (default 1, fall back when unregistered). CA/FT renderer = HUD_Mod_CA_Draw port: rows via the HUD_GetRowCount formula (bound(1, floor((sqrt(4*item_aspect*(h/w)*N + (h/w)^2) + (h/w) + 0.5)*0.5), N), item_aspect = layout!=0 ? 2 : 1), columns = ceil(N/rows), fill row-first per column; each cell aspect-fit; layout 1 = TextureCache icon 'player_red|blue|yellow|pink' (colored-swatch fallback like the CTF renderer) on the left half + alive-count text in team color (1,0,0)/(0,0,1)/(1,1,0)/(1,0,1) on the right half; layout 0 = count only. Survival renderer = centered 'Hunter' (1,0,0) / 'Survivor' (0,1,0) text, draw nothing when SurvivalStatus==0 (covers pre-round + spectating, since the server sends 0 then). Keyhunt renderer: UNCHANGED (the wire pack in step 1 was designed to match its existing decode).",
+    "8. (coordinate — NetGame.cs): add UpdateModIcons() called from _Process next to UpdateScoreboard(): map LatestModeStatus.Mode → panel mode, feed AliveCounts/ObjectiveStatus/SurvivalStatus/MyTeam/TeamCount, toggle Visible. Extend UpdateScoreboard() to re-feed rows when LatestModeStatus changes (not just on a new scoreboard) and pass the eliminated set (snippet below).",
+    "9. (uncontended — ScoreboardPanel.cs): ScoreRow gains `public readonly bool Eliminated`; SetWireRows gains an `IReadOnlyCollection<int>? eliminatedNetIds = null` parameter (flag rows by wr.NetId); DrawRow draws, immediately after the IsLocal highlight, a black fill over the row: `if (r.Eliminated) DrawRect(new Rect2(layout.X, y, layout.W, rowH), new Color(0f, 0f, 0f, 0.6f));` — 0.6 = the luma-skin hud_panel_scoreboard_table_highlight_alpha_eliminated default (optionally cvar-read with 0.6 fallback).",
+    "10. Tests (tests/XonoticGodot.Tests): codec round-trips, KH pack semantics against the panel's decode math, CA/FT alive counts + eliminated capture, Survival per-viewer hunter visibility (the anti-cheat property), hash-gating stability. See testPlan."
+  ],
+
+  "filesToCreate": [
+    {
+      "path": "src/XonoticGodot.Net/GametypeStatusBlock.cs",
+      "purpose": "The snapshot sub-block codec (Capture/Serialize on the server, Deserialize→Decoded on the client, nonzero FNV Hash for per-peer gating). Lives next to ScoreInfoBlock/ScoreboardBlock; references the Common gametype classes (the project already references XonoticGodot.Common). Keeping the codec OUT of ServerNet/ClientNet is what lets T54's integration be a verbatim ~15-line splice."
+    },
+    {
+      "path": "tests/XonoticGodot.Tests/GametypeStatusTests.cs",
+      "purpose": "Unit tests per testPlan (codec round-trip, KH pack, per-viewer survival visibility, eliminated capture, hash gating)."
+    }
+  ],
+
+  "filesToModify": [
+    { "path": "src/XonoticGodot.Common/Gameplay/GameTypes/KeyHunt.cs", "owned": true, "change": "PackKeyState(viewer) + TeamIndex helper (plan step 1)." },
+    { "path": "src/XonoticGodot.Common/Gameplay/GameTypes/ClanArena.cs", "owned": true, "change": "AliveCount(teamCode) + IsEliminatedPlayer (plan step 2)." },
+    { "path": "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs", "owned": true, "change": "AliveCount(teamCode) (plan step 3)." },
+    { "path": "src/XonoticGodot.Common/Gameplay/GameTypes/Survival.cs", "owned": true, "change": "RoleAssigned / CollectHunters / CollectEliminated / DisclosesHuntersTo (plan step 4)." },
+    { "path": "game/hud/ModIconsPanel.cs", "owned": true, "change": "ClanArena/FreezeTag/Survival modes + renderers, SetAliveCounts/SurvivalStatus inputs, layout cvars (plan step 7)." },
+    { "path": "game/hud/ScoreboardPanel.cs", "owned": false, "change": "UNCONTENDED this wave but not in the T53 grant — small additive change only (ScoreRow.Eliminated + SetWireRows param + one DrawRow fill, plan step 9). Flag to the orchestrator if another task claims it.", "note": "additive, low-risk" },
+    { "path": "game/net/NetGame.cs", "owned": false, "change": "HOT FILE — UpdateModIcons() + the two-line UpdateScoreboard extension (plan step 8, exact code in chokepointSnippets). Coordinate with the orchestrator; the change is additive and confined to two private methods.", "note": "seam snippet provided" },
+    { "path": "game/net/ServerNet.cs", "owned": false, "change": "T54-OWNED — apply chokepointSnippets verbatim (PeerState field, scratch writer, snapshot splice)." },
+    { "path": "game/net/ClientNet.cs", "owned": false, "change": "T54-OWNED — apply chokepointSnippets verbatim (LatestModeStatus property + HandleSnapshot read)." },
+    { "path": "game/net/NetProtocol.cs", "owned": false, "change": "T54-OWNED — ProtocolVersion 6 → 7 + v7 changelog line (chokepointSnippets)." }
+  ],
+
+  "chokepointSnippets": [
+    {
+      "file": "WIRE LAYOUT (normative — both sides + the codec implement exactly this)",
+      "snippet": "Position in the snapshot: immediately AFTER the scoreboard bool/block (ServerNet.cs:834-840 / ClientNet.cs:519-524) and BEFORE the entity section (SnapHistory.EncodeSnapshot / DecodeSnapshot). Framing: WriteBool(sendModeStatus) EVERY snapshot; when true, the block follows. Steady state and all untracked modes = the single false bool.\n\nBlock fields, in order (BitWriter primitives):\n  byte  mode          — 1=ClanArena, 2=FreezeTag, 3=KeyHunt, 4=Survival (0 is never written; untracked modes never send the block)\n  byte  myTeamIndex   — recipient's team as an INDEX: 0 none/observer, 1 red, 2 blue, 3 yellow, 4 pink (NOT the Teams color codes 4/13/12/9)\n  byte  teamCount     — active team count 2..4 for modes 1/2/3; 0 for mode 4 (Survival is roleplay-FFA)\n  -- mode 1 and 2 (CA / FreezeTag) payload --\n  byte redAlive, byte blueAlive, byte yellowAlive, byte pinkAlive — alive counts in FIXED red,blue,yellow,pink order; inactive teams write 0; clamp 0..255 (QC STAT(REDALIVE..PINKALIVE))\n  byte elimCount (clamp 255); elimCount x ushort eliminatedNetId — players the scoreboard greys out (CA: IsDead; FT: frozen||dead — QC eliminatedPlayers bitfield, sent as an id list because the port has net ids, not client slots)\n  -- mode 3 (KeyHunt) payload --\n  uint keyState (WriteULong) — 4 x 5-bit slots, slot i at bits [5i..5i+4] for key i (0=red key .. 3=pink key; only slots < teamCount are ever nonzero). Slot values: 0 = key not in play; 2..5 = carried by team index (value-1: 1 red..4 pink); 30 = dropped/loose; 31 = carried by THE RECIPIENT (personalized — QC kh_update_state's '|= 31' self override). Decode contract = the EXISTING ModIconsPanel.DrawKeyhunt math: ((state >> (i*5)) & 31) - 1 → 1..4 team / 29 dropped / 30 carrying.\n  -- mode 4 (Survival) payload --\n  byte myStatus — recipient's own role: 0 none (ALSO sent while the round/roles are not live yet — the client hides the panel on 0, standing in for QC's GAMESTARTTIME/ROUNDSTARTTIME gate), 1 prey, 2 hunter\n  byte hunterCount; hunterCount x ushort hunterNetId — MUST be 0/empty unless the recipient is a hunter OR the round is over (QC STATUS_SEND_HUNTERS visibility; this is an anti-cheat invariant — never leak hunter ids to prey mid-round)\n  byte elimCount; elimCount x ushort eliminatedNetId — players dead this round (greys the scoreboard; QC surv_isEliminated)\n\nDefaults when the mode is inactive: the bool gate is false every snapshot; client keeps LatestModeStatus == null and all panels stay hidden. Send gating: the block bytes are personalized per recipient, so the server hash-gates per peer (PeerState.LastModeStatusHash, 0 = never sent; Hash() is fold-to-nonzero so the first snapshot always sends when a tracked mode is live)."
+    },
+    {
+      "file": "game/net/ServerNet.cs (T54) — PeerState addition (insert after `public bool SentScoreInfo;`, line ~156)",
+      "snippet": "/// <summary>FNV hash of the last GametypeStatusBlock sent to this client (0 = never) — the per-mode\n/// round/objective HUD stats (T53) are personalized (KH self-slot, SURV hunter visibility), so each peer\n/// gates on the hash of ITS OWN serialized block, resending only when the bytes change.</summary>\npublic uint LastModeStatusHash;"
+    },
+    {
+      "file": "game/net/ServerNet.cs (T54) — field addition (next to _snapshotWriter)",
+      "snippet": "/// <summary>Reusable scratch for the per-peer personalized GametypeStatusBlock (T53) — serialized first so it can be hash-gated.</summary>\nprivate readonly XonoticGodot.Net.BitWriter _modeStatusScratch = new();"
+    },
+    {
+      "file": "game/net/ServerNet.cs (T54) — BroadcastSnapshots splice: insert AFTER the scoreboard `if (sendScores) { ... }` block (line ~840) and BEFORE `st.SnapHistory.EncodeSnapshot(...)` (line ~843)",
+      "snippet": "// Gametype status (T53): per-mode round/objective HUD stats — QC STAT(REDALIVE..PINKALIVE) (CA/FT),\n// STAT(OBJECTIVE_STATUS) (KH key pack), eliminatedPlayers (scoreboard grey-out) and survivalStatuses\n// (role + hunter disclosure). The block is PERSONALIZED per recipient (KH '31 = self' slot, SURV hunter\n// visibility), so serialize per peer into a scratch and hash-gate (steady-state cost = one bool; QC's\n// equivalent is stat delta-compression + linked-entity SendFlags).\n_modeStatusScratch.Reset();\nbool haveModeStatus = XonoticGodot.Net.GametypeStatusBlock.Capture(\n    _modeStatusScratch, _world.GameType, owner, _world.Clients.Players, NetIdFor,\n    roundStarted: _world.Rounds is { IsRoundStarted: true });\nuint modeStatusHash = haveModeStatus ? XonoticGodot.Net.GametypeStatusBlock.Hash(_modeStatusScratch.WrittenSpan) : 0u;\nbool sendModeStatus = haveModeStatus && st.LastModeStatusHash != modeStatusHash;\n_snapshotWriter.WriteBool(sendModeStatus);\nif (sendModeStatus)\n{\n    _snapshotWriter.WriteBytes(_modeStatusScratch.WrittenSpan);\n    st.LastModeStatusHash = modeStatusHash;\n}"
+    },
+    {
+      "file": "game/net/ClientNet.cs (T54) — property addition (next to LatestScoreInfo, line ~134)",
+      "snippet": "/// <summary>The latest per-mode round/objective HUD status (T53): CA/FT alive counts + eliminated ids,\n/// the KH OBJECTIVE_STATUS key pack, the Survival role + hunter ids. Null until a tracked mode sends one.\n/// Consumers: NetGame.UpdateModIcons (ModIconsPanel) + UpdateScoreboard (eliminated grey-out).</summary>\npublic XonoticGodot.Net.GametypeStatusBlock.Decoded? LatestModeStatus { get; private set; }"
+    },
+    {
+      "file": "game/net/ClientNet.cs (T54) — HandleSnapshot splice: insert AFTER the scoreboard `if (r.ReadBool()) { ... LatestScoreboard = sb; }` block (line ~524) and BEFORE `if (r.BadRead) return;` (line ~526)",
+      "snippet": "// Gametype status (T53): read in lockstep with ServerNet's write order (owner -> movevars -> scoreinfo ->\n// scoreboard -> THIS -> entity section). Always consume the bytes to keep the stream aligned.\nif (r.ReadBool())\n{\n    XonoticGodot.Net.GametypeStatusBlock.Decoded? ms = XonoticGodot.Net.GametypeStatusBlock.Deserialize(ref r);\n    if (ms is not null && !r.BadRead)\n        LatestModeStatus = ms;\n}"
+    },
+    {
+      "file": "game/net/NetProtocol.cs (T54) — version bump (line ~50) + changelog line appended to the ProtocolVersion docstring",
+      "snippet": "/// v7: the snapshot gained the bool-gated <see cref=\"XonoticGodot.Net.GametypeStatusBlock\"/> (T53) between the\n/// scoreboard block and the entity section — the per-mode round/objective HUD stats (QC STAT(REDALIVE..PINKALIVE),\n/// STAT(OBJECTIVE_STATUS) for KeyHunt, the eliminatedPlayers scoreboard grey-out set, and the Survival\n/// role/hunter disclosure), personalized per recipient and hash-gated per peer.\n/// </summary>\npublic const uint ProtocolVersion = 7;"
+    },
+    {
+      "file": "game/net/NetGame.cs (coordinate — hot file) — call site: add `UpdateModIcons();` in _Process directly after `UpdateScoreboard();` (line ~1560); method added near UpdateScoreboard",
+      "snippet": "/// <summary>Feed + toggle the mod-icons panel (QC HUD_ModIcons_SetFunc -> gametype.m_modicons) from the\n/// networked per-mode status (T53). Cheap: property writes + a Visible toggle; the panel repaints itself.</summary>\nprivate void UpdateModIcons()\n{\n    if (_fullHud is null || _client is null) return;\n    var panel = _fullHud.ModIcons;\n    XonoticGodot.Net.GametypeStatusBlock.Decoded? ms = _client.LatestModeStatus;\n    if (ms is null) { if (panel.Visible) panel.Visible = false; return; }\n    switch (ms.Mode)\n    {\n        case XonoticGodot.Net.GametypeStatusBlock.Kind.ClanArena:\n            panel.Mode = Hud.ModIconsPanel.ModIconsMode.ClanArena;\n            panel.SetAliveCounts(ms.Alive[0], ms.Alive[1], ms.Alive[2], ms.Alive[3]);\n            break;\n        case XonoticGodot.Net.GametypeStatusBlock.Kind.FreezeTag:\n            panel.Mode = Hud.ModIconsPanel.ModIconsMode.FreezeTag;\n            panel.SetAliveCounts(ms.Alive[0], ms.Alive[1], ms.Alive[2], ms.Alive[3]);\n            break;\n        case XonoticGodot.Net.GametypeStatusBlock.Kind.KeyHunt:\n            panel.Mode = Hud.ModIconsPanel.ModIconsMode.Keyhunt;\n            panel.ObjectiveStatus = unchecked((int)ms.KeyState);\n            break;\n        case XonoticGodot.Net.GametypeStatusBlock.Kind.Survival:\n            panel.Mode = Hud.ModIconsPanel.ModIconsMode.Survival;\n            panel.SurvivalStatus = ms.MyStatus;\n            break;\n        default:\n            panel.Mode = Hud.ModIconsPanel.ModIconsMode.None;\n            break;\n    }\n    panel.MyTeam = ms.MyTeamIndex;\n    panel.TeamCount = ms.TeamCount > 0 ? ms.TeamCount : panel.TeamCount;\n    bool show = panel.Mode != Hud.ModIconsPanel.ModIconsMode.None;\n    if (panel.Visible != show) panel.Visible = show;\n}"
+    },
+    {
+      "file": "game/net/NetGame.cs (coordinate — hot file) — UpdateScoreboard extension (method at line ~1669): re-feed on a mode-status change too, and pass the eliminated set",
+      "snippet": "// inside UpdateScoreboard(), replace the feed condition + SetWireRows call:\nXonoticGodot.Net.ScoreboardWire? sb = _client.LatestScoreboard;\nXonoticGodot.Net.GametypeStatusBlock.Decoded? ms = _client.LatestModeStatus;\nif (sb is not null && (!ReferenceEquals(sb, _lastFedScoreboard) || !ReferenceEquals(ms, _lastFedModeStatus)))\n{\n    _lastFedScoreboard = sb;\n    _lastFedModeStatus = ms;   // new field: private XonoticGodot.Net.GametypeStatusBlock.Decoded? _lastFedModeStatus;\n    _scoreboard.Title = ScoreboardTitle();\n    _scoreboard.SetWireRows(sb, _client.LocalNetId, ms?.EliminatedNetIds); // grey-out (QC eliminatedPlayers)\n    FeedScoreboardHeader();\n}"
+    }
+  ],
+
+  "risks": [
+    "TEAM-CODE vs TEAM-INDEX confusion is the #1 footgun: the port's Teams color codes are 4/13/12/9 (CSQC NUM_TEAM values) but the existing ModIconsPanel KH decode and MyTeam expect 1..4 indices, and the wire spec deliberately uses indices. PackKeyState must emit slot values 2..5 (= index+1) and myTeamIndex 1..4 — emitting Teams codes would render blank/garbage icons with no error. The KH pack unit test cross-checks against the panel's exact decode expression.",
+    "Survival information leak: hunter ids must NEVER ride the wire to a prey/observer recipient mid-round (QC only adds STATUS_SEND_HUNTERS for hunter destinations / at round end). This forces the per-peer personalized serialize + per-peer hash gate — do NOT 'optimize' to one shared block. The visibility unit test is the guard.",
+    "Recount cadence: CA is per-frame in QC (canRoundEnd every frame), FT/KH are event-driven; the port recomputes all of them per frame via GameWorld.DriveGametypeFrame. Output values are identical (pure functions of state) and the per-peer hash gate keeps wire traffic event-shaped — document, don't restructure GameWorld.",
+    "Stream alignment: the block sits between the scoreboard block and the delta-compressed entity section; a length mismatch corrupts every subsequent read on that snapshot. Both sides must consume the bool every frame and the codec must read exactly what it wrote even when it will be discarded (mirror the movevars/scoreinfo 'always deserialize to consume' pattern). Round-trip + sentinel-alignment tests cover this.",
+    "Protocol v7 must land atomically with T54's other wire changes — BuildParity folds ProtocolVersion, so a client/server pair straddling the bump is rejected at handshake (correct, but means T53 cannot ship enabled without T54).",
+    "Ownership seams: NetGame.cs and ScoreboardPanel.cs are not in T53's grant (nor T54's). Both edits are small and additive; the snippets are written to be apply-verbatim so the orchestrator can route them to whoever holds those files (or approve T53 taking them).",
+    "ScoreInfo/mode ordering on the client: panel mode selection in UpdateModIcons keys off LatestModeStatus.Mode (not GameScores.Gametype), so it cannot race the ScoreInfo block's Apply — both ride the same snapshot but mode-status is self-describing.",
+    "CA eliminated approximation: the port lacks INGAME_JOINING / FRAGS_PLAYER_OUT_OF_GAME, so IsEliminatedPlayer = IsDead misses 'joined late, waiting for next round' players (they won't grey). Acceptable v1; note it in the code comment so a future spectate/INGAME pass closes it.",
+    "Eliminated grey-out staleness: scoreboard rows are only re-fed on a new ScoreboardBlock (score version); a freeze/death does not always bump a score. The UpdateScoreboard extension re-feeds when LatestModeStatus changes — keep that, or frozen players grey late.",
+    "GameDemo / offline path gets none of this (no ClientNet) — out of scope; the listen server sees it through its own loopback client like every other networked HUD element."
+  ],
+
+  "testPlan": [
+    "GametypeStatusBlock round-trip (xUnit, no Godot): for each Kind, Capture→Deserialize and assert every field; wrap the block between two sentinel ushorts in the same BitWriter and assert the trailing sentinel reads back (stream alignment).",
+    "KH pack semantics: KeyHunt with TeamCount=3; arrange (red key carried by a blue-team player, blue key carried by the VIEWER, yellow key dropped, no pink key) → PackKeyState(viewer) slots = [3 (blue index 2 +1), 31, 30, 0]; assert via the panel's decode expression ((s>>(5i))&31)-1 yields [2, 30, 29, -1]. Also: Phase != InProgress → 0u.",
+    "CA/FT alive counts + eliminated: roster of 2 teams with mixed dead/frozen; assert AliveCount per team matches QC semantics (CA: !IsDead; FT: !frozen && !dead) and the captured eliminated id set is exactly the dead (CA) / frozen-or-dead (FT) players' net ids.",
+    "Survival visibility (anti-cheat): mid-round (RoundOver=false), Capture for a PREY viewer → myStatus=1, hunterCount=0; for a HUNTER viewer → myStatus=2, hunter set = all hunters; after RoundOver=true → every viewer receives the hunter set. Pre-round (RoleAssigned=false) → myStatus=0.",
+    "Hash gating: Capture twice with unchanged state → equal hashes (no resend); kill one player → hash changes; Hash never returns 0 (the 'never sent' sentinel).",
+    "Eliminated grey-out plumbing: ScoreboardPanel.SetWireRows with an eliminated set flags exactly those rows (ScoreRow.Eliminated) — a pure data test; the DrawRow fill is visual-only.",
+    "Regression: full `dotnet test tests/XonoticGodot.Tests` (1059+ tests) — especially the existing snapshot/scoreboard codec tests, which catch any framing slip.",
+    "Manual smoke (after T54 lands): `--host` with gametype ca (or freezetag) windowed + a second `--connect` client; verify the alive-count digits appear top-center, drop on kills, the scoreboard greys dead/frozen rows while +showscores, and in kh the key icons appear/blink when one team holds all keys. Survival needs 2+ humans (bots aren't in the live loop) — verify the Hunter/Survivor tag appears only after the round starts and the scoreboard outs hunters at round end."
+  ]
+}

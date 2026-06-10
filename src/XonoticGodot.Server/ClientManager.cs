@@ -1,3 +1,4 @@
+using System.Numerics;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Gameplay;
 using XonoticGodot.Common.Services;
@@ -38,6 +39,12 @@ public sealed class ClientManager
 
         /// <summary>QC <c>.jointime</c>: sim time the client joined as a player (0 while observing).</summary>
         public float JoinTime { get; internal set; }
+
+        /// <summary>Edge tracker for the observer's +attack (SpectateNext) press, so a HELD key cycles once.</summary>
+        public bool SpecNextReleased { get; internal set; } = true;
+
+        /// <summary>Edge tracker for the observer's +attack2 (drop to free-fly) press.</summary>
+        public bool SpecFreeflyReleased { get; internal set; } = true;
 
         public ClientInfo(Player player, bool isBot)
         {
@@ -97,6 +104,10 @@ public sealed class ClientManager
     /// <summary>Server-only per-player state table (regen/drown/contents timers). Set by <see cref="GameWorld"/>.</summary>
     public ServerPlayerStates? PlayerStates { get; set; }
 
+    /// <summary>QC <c>warmup_stage</c> query (wired by <see cref="GameWorld"/> to the WarmupController): when true,
+    /// <see cref="Spawn"/> gives the warmup loadout (100/100/all-guns) instead of the live start loadout.</summary>
+    public Func<bool>? IsWarmup { get; set; }
+
     /// <summary>
     /// On a single-player listen server hosting a campaign level, let the local host auto-spawn instead of
     /// being held as an observer by <c>g_campaign</c>. The listen server is "host AND play" and already forces
@@ -118,6 +129,14 @@ public sealed class ClientManager
 
     /// <summary>Fired before a client is removed (QC ClientDisconnect head) — finalize stats, <c>:part:</c>, cleanup.</summary>
     public Action<Player>? OnClientDisconnect { get; set; }
+
+    /// <summary>
+    /// [T39] Fired after a BOT client has connected and auto-joined (QC bot_clientconnect + havocbot_setupbot:
+    /// the hook where the bot gets its AI). GameWorld wires this to <c>BotPopulation.RegisterBot</c> so EVERY
+    /// bot connect path (fixcount fill, console bot_add, a host's direct ClientConnect) grows a brain. Fired
+    /// after the auto-Join so the spawned hull/view are real when the brain snapshots them.
+    /// </summary>
+    public Action<Player>? OnBotConnected { get; set; }
 
     private int _nextPlayerId = 1;
 
@@ -196,6 +215,7 @@ public sealed class ClientManager
         {
             p.AutoJoinChecked = 1; // QC CS(this).autojoin_checked = 1
             Join(p);
+            OnBotConnected?.Invoke(p); // [T39] QC bot_clientconnect: hand the new bot its AI brain
         }
 
         return info;
@@ -212,6 +232,8 @@ public sealed class ClientManager
         // QC Join: TRANSMUTE(Player, this) — leave the observer phase. Spawn() (PutPlayerInServer) resets MoveType
         // WALK / Solid SLIDEBOX / DAMAGE_AIM, so we only need to clear the observer marker + intent here.
         p.IsObserver = false;
+        p.Spectatee = null;       // stop following anyone (entering the match as a live player)
+        p.SpectateeStatus = 0;
         p.WantsJoin = 0;          // QC this.wants_join = 0
         p.JoinJumpReleased = true;
 
@@ -256,8 +278,9 @@ public sealed class ClientManager
     /// </summary>
     /// <param name="p">The client to think for.</param>
     /// <param name="jumpHeld">QC PHYS_INPUT_BUTTON_JUMP this tick.</param>
-    /// <param name="attackHeld">QC PHYS_INPUT_BUTTON_ATCK this tick.</param>
-    public void ObserverOrSpectatorThink(Player p, bool jumpHeld, bool attackHeld)
+    /// <param name="attackHeld">QC PHYS_INPUT_BUTTON_ATCK this tick (cycle to the next spectatee).</param>
+    /// <param name="attack2Held">QC PHYS_INPUT_BUTTON_ATCK2 this tick (drop back to free-fly observing).</param>
+    public void ObserverOrSpectatorThink(Player p, bool jumpHeld, bool attackHeld, bool attack2Held = false)
     {
         ClientInfo? info = InfoOf(p);
         if (info is null || !info.IsConnected || !p.IsObserver)
@@ -266,13 +289,12 @@ public sealed class ClientManager
         float now = Now;
         bool withinGrace = now < info.JoinTime + MinSpecTime; // QC: time < jointime + MIN_SPEC_TIME
 
-        // QC ObserverOrSpectatorThink: the +jump/+attack JOIN edge. FL_JUMPRELEASED gates it so a HELD key fires
-        // once. QC arms FL_SPAWNING on the press, then commits Join on release; we collapse that to "fire on the
-        // rising edge once joinAllowed (or still inside the MIN_SPEC_TIME grace, matching QC's jointime window)".
-        bool firePressed = jumpHeld || attackHeld;
+        // QC ObserverOrSpectatorThink: +jump = JOIN. FL_JUMPRELEASED gates it so a HELD key fires once. (Unlike
+        // the older port, +attack no longer joins — it cycles the spectatee, matching QC; the listen-server
+        // autojoin below still spawns the host without any keypress.)
         if (p.JoinJumpReleased)
         {
-            if (firePressed && (JoinAllowed(p, now) || withinGrace))
+            if (jumpHeld && (JoinAllowed(p, now) || withinGrace))
             {
                 p.JoinJumpReleased = false;
                 if (JoinAllowed(p, now))
@@ -284,9 +306,38 @@ public sealed class ClientManager
                 p.AutoJoinChecked = -1;
             }
         }
-        else if (!firePressed)
+        else if (!jumpHeld)
         {
             p.JoinJumpReleased = true; // QC: re-arm once the key is released
+        }
+
+        // QC ObserverOrSpectatorThink spectate controls (server/client.qc:2540-2614): +attack = SpectateNext
+        // (follow the next living player), +attack2 = drop back to free-fly. Gated on !withinGrace so the
+        // pre-spawn connect window (before the autojoin) doesn't briefly snap the camera to another player.
+        if (!withinGrace)
+        {
+            if (info.SpecNextReleased)
+            {
+                if (attackHeld) { info.SpecNextReleased = false; SpectateNext(p); }
+            }
+            else if (!attackHeld) { info.SpecNextReleased = true; }
+
+            if (info.SpecFreeflyReleased)
+            {
+                if (attack2Held) { info.SpecFreeflyReleased = false; StopSpectating(p); }
+            }
+            else if (!attack2Held) { info.SpecFreeflyReleased = true; }
+        }
+
+        // QC SpectateUpdate (run each tick while following): mirror the spectatee's view/state onto this
+        // observer so the owner-state snapshot (origin/health/armor) tracks the player being watched, and drop
+        // back to free-fly if the spectatee left / died / itself became an observer.
+        if (p.Spectatee is { } spec)
+        {
+            if (InfoOf(spec) is null || spec.IsObserver || spec.IsDead)
+                StopSpectating(p);
+            else
+                SpectateCopy(p, spec);
         }
 
         // QC PlayerPreThink delayed autojoin (server/client.qc:2708): a REAL client that hasn't joined autojoins
@@ -317,6 +368,117 @@ public sealed class ClientManager
             else if (!spectateOnly)
                 p.AutoJoinChecked = -1; // QC: keep trying for MIN_SPEC_TIME (brief blockers)
         }
+    }
+
+    /// <summary>
+    /// QC <c>PutObserverInServer</c> (server/client.qc:261): turn a live player (or a connecting client) into a
+    /// free-fly OBSERVER — hide its model, strip its weapons, make it non-solid + non-damageable, give it the
+    /// free-fly movetype (so <c>PlayerPhysics.SpectatorControl</c> flies it), and mark it a spectator on the
+    /// scoreboard. Used by the <c>spectate</c> command (the live-player→observer direction QC has but the port
+    /// lacked) and any forced-spectate path. The observer keeps its current origin (free-flies from there).
+    /// </summary>
+    public void PutObserverInServer(Player p)
+    {
+        p.IsObserver = true;
+        p.Spectatee = null;
+        p.SpectateeStatus = 0;
+        p.FragsStatus = Player.FragsSpectator;   // QC RES_HEALTH/.frags = FRAGS_SPECTATOR (scoreboard sentinel)
+
+        // QC: solid=SOLID_NOT, takedamage=DAMAGE_NO, MOVETYPE_FLY_WORLDONLY (free-fly), FL_CLIENT|FL_NOTARGET.
+        p.DeadState = DeadFlag.No;
+        p.MoveType = MoveType.FlyWorldOnly;
+        p.Solid = Solid.Not;
+        p.TakeDamage = DamageMode.No;
+        p.Flags = EntFlags.Client | EntFlags.NoTarget;
+        p.CanPickupItems = false;                // QC drops FL_PICKUPITEMS
+        p.Velocity = Vector3.Zero;
+        p.AVelocity = Vector3.Zero;
+        p.PunchAngle = Vector3.Zero;
+
+        // QC: an observer has no health/armor (FRAGS_SPECTATOR sentinel) and no weapons.
+        p.SetResourceExplicit(ResourceType.Health, 0f);
+        p.SetResourceExplicit(ResourceType.Armor, 0f);
+        p.OwnedWeapons.Clear();
+        p.OwnedWeaponSet.Clear();
+        p.ActiveWeaponId = -1;
+        p.SwitchWeaponId = -1;
+
+        // QC: setmodel(MDL_Null) — hide the body. Observers are also excluded from the entity stream
+        // (ServerNet skips IsObserver), so no client sees a phantom at the observer's origin.
+        if (Api.Services is not null)
+            Api.Entities.SetModel(p, "");
+        else
+            p.Model = "";
+
+        // clear respawn + transient state (no longer a dead player awaiting respawn).
+        p.RespawnTime = 0f;
+        p.RespawnTimeMax = 0f;
+        p.RespawnFlags = RespawnFlag.None;
+        p.RespawnTimeStat = 0f;
+
+        ClientInfo? info = InfoOf(p);
+        if (info is not null)
+        {
+            info.JoinTime = Now;                 // restart the MIN_SPEC_TIME dwell before a re-join
+            info.SpecNextReleased = true;
+            info.SpecFreeflyReleased = true;
+        }
+        p.JoinJumpReleased = true;
+        p.AutoJoinChecked = 1;                   // a deliberate spectator should NOT be auto-rejoined
+
+        PlayerStates?.Of(p).OnSpawn();           // reset air/contents timers
+        ServerEntities?.LinkPlayer(p);
+        // NOTE: the client stays in the gametype roster (Join re-uses it); IsObserver/FragsSpectator keep it out
+        // of scoring/respawn/spawn-selection, which all already gate on those flags.
+    }
+
+    /// <summary>
+    /// QC <c>SpectateNext</c> (server/client.qc:1987): follow the next living player after the current spectatee,
+    /// honouring the gametype's anti-ghost <c>spectate_enemies</c> mode via <see cref="SpectatorRules"/>. No-op
+    /// when no valid target exists (stays free-fly). <paramref name="forward"/> false = SpectatePrev.
+    /// </summary>
+    public void SpectateNext(Player p, bool forward = true)
+    {
+        if (!p.IsObserver) return;
+        int mode = SpectatorRules.SpectateEnemiesMode(_match.GameType?.NetName);
+        Player? next = SpectatorRules.CycleSpectatee(
+            p, _players, p.Spectatee, spectatorInGame: false, mode, _teamplay.IsTeamGame, forward);
+        if (next is not null)
+            Spectate(p, next);
+    }
+
+    /// <summary>QC <c>Spectate</c>/<c>SpectateSet</c>: lock onto <paramref name="target"/> (MOVETYPE_NONE, glued
+    /// via <see cref="SpectateCopy"/> each tick) and mark this observer as following it.</summary>
+    public void Spectate(Player p, Player target)
+    {
+        p.Spectatee = target;
+        p.MoveType = MoveType.None;   // QC SpectateSet: MOVETYPE_NONE — the spectator is glued to the spectatee
+        p.Velocity = Vector3.Zero;
+        SpectateCopy(p, target);
+    }
+
+    /// <summary>QC the <c>+attack2</c> drop-to-free-fly: stop following and return to free-fly observing.</summary>
+    public void StopSpectating(Player p)
+    {
+        p.Spectatee = null;
+        p.MoveType = MoveType.FlyWorldOnly;
+    }
+
+    /// <summary>
+    /// QC <c>SpectateCopy</c> (server/client.qc:1799): mirror the spectatee's view/origin/resources onto the
+    /// following observer so the observer's own owner-state snapshot — which the client renders the camera + HUD
+    /// from — tracks the watched player.
+    /// </summary>
+    private static void SpectateCopy(Player spectator, Player target)
+    {
+        spectator.Origin = target.Origin;
+        spectator.Velocity = target.Velocity;
+        spectator.Angles = target.Angles;
+        spectator.ViewAngles = target.ViewAngles;
+        spectator.ViewOfs = target.ViewOfs;
+        spectator.SetResourceExplicit(ResourceType.Health, target.GetResource(ResourceType.Health));
+        spectator.SetResourceExplicit(ResourceType.Armor, target.GetResource(ResourceType.Armor));
+        spectator.ActiveWeaponId = target.ActiveWeaponId;
     }
 
     /// <summary>
@@ -357,7 +519,7 @@ public sealed class ClientManager
             return false;
         }
 
-        SpawnSystem.PutPlayerInServer(p, sp.Value);
+        SpawnSystem.PutPlayerInServer(p, sp.Value, warmup: IsWarmup?.Invoke() ?? false);
 
         // [T35] QC PutClientInServer: this.flags = FL_CLIENT | FL_PICKUPITEMS. A spawned, live player can pick
         // up world items — Item_Touch's first gate (CanPickupItems) only passes for a flagged player, so an
@@ -422,12 +584,14 @@ public sealed class ClientManager
 
     private readonly List<Player> _liveScratch = new();
 
-    /// <summary>The currently-alive players (spawn selection keeps new spawns away from these).</summary>
+    /// <summary>The currently-alive players (spawn selection keeps new spawns away from these). Excludes
+    /// observers: a free-fly spectator has DeadState==No (so IsDead is false) but is NOT a live player — QC's
+    /// IS_PLAYER excludes spectators, so they must not repel/skew spawn-point selection.</summary>
     private IReadOnlyList<Player> LivePlayers()
     {
         _liveScratch.Clear();
         for (int i = 0; i < _players.Count; i++)
-            if (!_players[i].IsDead)
+            if (!_players[i].IsDead && !_players[i].IsObserver)
                 _liveScratch.Add(_players[i]);
         return _liveScratch;
     }

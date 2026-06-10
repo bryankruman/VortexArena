@@ -305,6 +305,26 @@ public partial class EffectSystem : Node3D
         return null;
     }
 
+    /// <summary>
+    /// The parsed effectinfo emitter blocks for a name (raw name, then the registry NetName) — the lookup
+    /// the PERSISTENT map emitters (func_pointparticles / misc_laser end fx, game/client/MapParticleEmitters
+    /// + LaserRenderer) use to configure long-lived <see cref="GpuParticles3D"/> nodes instead of churning a
+    /// transient node per frame through <see cref="Spawn(string, NVec3, NVec3, int, Color?)"/>. Loads
+    /// effectinfo lazily; null when the file is missing or the name is unknown.
+    /// </summary>
+    public IReadOnlyList<EffectInfoEmitter>? GetInfoBlocks(string effectName)
+    {
+        if (string.IsNullOrEmpty(effectName))
+            return null;
+        EnsureInfoLoaded();
+        return LookupInfo(effectName, ResolveEffect(effectName));
+    }
+
+    /// <summary>The billboard mesh for one emitter block (sprite from the block's atlas range, blend per the
+    /// parsed mode) — public so the persistent map emitters reuse the proven particle-material path.</summary>
+    public Mesh BuildEmitterMesh(EffectInfoEmitter info, Color color)
+        => BuildInfoMesh(info, color, Font?.CellInRange(info.Tex0, info.Tex1));
+
     // --- decals / casings / model-gibs entry points (T20) -------------------------------------------
     // These are the public hooks the net/client layer calls for the CSQC temp-entities that aren't plain
     // pointparticles: the `casings` casing-eject TE (casings.qc), the `net_gibsplash` gib splash

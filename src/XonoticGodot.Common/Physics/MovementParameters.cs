@@ -1,4 +1,5 @@
 using System.Numerics;
+using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Services;
 
 namespace XonoticGodot.Common.Physics;
@@ -70,6 +71,31 @@ public struct MovementParameters
     public float StepDownMaxSpeed;   // sv_gameplayfix_stepdown_maxspeed (400)
     public int   WallFriction;       // sv_wallfriction        (1 in stock: DP engine default, no .cfg sets it; gate is live but the QC _Movetype_WallFriction body is commented out, so the term is a no-op — see PlayerPhysics.WallFriction)
 
+    // --- the high-speed modifier + remaining MOVEVARS breadth (T54) ---
+    /// <summary>QC <c>STAT(MOVEVARS_HIGHSPEED) = autocvar_g_movement_highspeed</c> (player.qc:47) — the BASE
+    /// per-player top-speed multiplier the PlayerPhysics mutator hooks (Speed powerup, entrap nade, buffs)
+    /// multiply onto. Unset reads 1 (xonotic-server.cfg:586 ships 1). PlayerPhysics seeds
+    /// <c>player.SpeedMultiplier</c> from this each tick; the fold happens at <see cref="ApplyHighSpeed"/>.</summary>
+    public float HighSpeed;          // g_movement_highspeed   (1)
+    /// <summary>QC <c>autocvar_g_movement_highspeed_q3_compat</c> (player.qc:52-65, xonotic-server.cfg:587
+    /// ships 0): selects WHICH stats the maxspd_mod fold scales — see <see cref="ApplyHighSpeed"/>.</summary>
+    public bool  HighSpeedQ3Compat;  // g_movement_highspeed_q3_compat (0)
+    /// <summary>DP <c>sv_gameplayfix_nudgeoutofsolid</c> (default ON) — replicated so a server that disables the
+    /// embedded-in-solid recovery doesn't desync prediction. PlayerPhysics still reads the cvar ambiently
+    /// (stamped by MoveVarsBlock.Apply on the client), so this field is informational.</summary>
+    public bool  NudgeOutOfSolid;    // sv_gameplayfix_nudgeoutofsolid (1)
+    /// <summary>QC <c>STAT(MOVEVARS_WALLCLIP)</c> (stats.qh:448, autocvar_sv_wallclip — no cfg sets it, 0).
+    /// Carried for replication completeness; no consumer in the port yet (doc-only, like QC where only the
+    /// movetypes wallclip experiment reads it).</summary>
+    public int   WallClip;           // sv_wallclip            (0)
+    /// <summary>QC <c>STAT(NOSTEP)</c> (stats.qh:235, cvar sv_nostep, default 0). Doc-only until the
+    /// movetypes step path consults it.</summary>
+    public bool  NoStep;             // sv_nostep              (0)
+    /// <summary>QC <c>STAT(SLICK_APPLYGRAVITY)</c> (stats.qh:365, default 0). PlayerPhysics currently pins the
+    /// stock value as a const (PlayerPhysics.SlickApplyGravity) — this field carries the replicated value for a
+    /// future live consumer.</summary>
+    public bool  SlickApplyGravity;  // sv_slick_applygravity  (0)
+
     /// <summary>Player bounding box mins. QC <c>autocvar_sv_player_mins</c> = '-16 -16 -24'.</summary>
     public Vector3 PlayerMins;
     /// <summary>Player bounding box maxs. QC <c>autocvar_sv_player_maxs</c> = '16 16 45'.</summary>
@@ -135,6 +161,17 @@ public struct MovementParameters
         p.StepDownMaxSpeed          = Cvar(prefix + "gameplayfix_stepdown_maxspeed", p.StepDownMaxSpeed);
         p.WallFriction              = (int)CvarRaw(prefix + "wallfriction",     p.WallFriction);
 
+        // T54 breadth. g_movement_highspeed: unset must read 1, and a deliberate 0 must be honored (it would
+        // freeze movement, but that's what the cvar says) — so gate on the STRING being present, not the float.
+        p.HighSpeed                 = Api.Cvars.GetString("g_movement_highspeed").Length == 0
+                                        ? p.HighSpeed
+                                        : Api.Cvars.GetFloat("g_movement_highspeed");
+        p.HighSpeedQ3Compat         = CvarBool("g_movement_highspeed_q3_compat", p.HighSpeedQ3Compat);
+        p.NudgeOutOfSolid           = Api.Cvars.GetString(prefix + "gameplayfix_nudgeoutofsolid") != "0"; // DP default ON
+        p.WallClip                  = (int)CvarRaw(prefix + "wallclip",          p.WallClip);
+        p.NoStep                    = CvarBool(prefix + "nostep",                p.NoStep);
+        p.SlickApplyGravity         = CvarBool(prefix + "slick_applygravity",    p.SlickApplyGravity);
+
         // Hull: QC reads these from autocvar_sv_player_mins/maxs (vector cvars). We don't have a vector
         // cvar accessor on the facade, so the Xonotic hull is taken from Defaults. A host that wants to
         // override the hull can set the fields after FromCvars().
@@ -199,25 +236,148 @@ public struct MovementParameters
                           // is still NO wall friction: the stock QC _Movetype_WallFriction body is commented out, and
                           // PlayerPhysics.WallFriction mirrors that no-op — so the corpus stays byte-identical.
 
+        HighSpeed = 1f,            // g_movement_highspeed 1 (xonotic-server.cfg:586)
+        HighSpeedQ3Compat = false, // g_movement_highspeed_q3_compat 0 (:587)
+        NudgeOutOfSolid = true,    // sv_gameplayfix_nudgeoutofsolid — DP default ON
+        WallClip = 0,              // sv_wallclip — no cfg sets it
+        NoStep = false,            // sv_nostep 0
+        SlickApplyGravity = false, // sv_slick_applygravity 0
+
         PlayerMins = new Vector3(-16f, -16f, -24f),
         PlayerMaxs = new Vector3(16f, 16f, 45f),
     };
 
     /// <summary>
-    /// Apply the <c>g_movement_highspeed</c> modifier the way <c>Physics_UpdateStats</c> does:
-    /// MaxSpeed and the *_nonqw / strafe air speeds scale by <paramref name="maxspeedMod"/>, and the QW
-    /// accel fractions are re-stretched via <see cref="PMAccelerate.AdjustAirAccelQW"/> (unless q3-compat,
-    /// which we don't emulate here). Call after <see cref="FromCvars"/> when a high-speed mutator is active.
+    /// Apply the <c>maxspd_mod</c> fold the way <c>Physics_UpdateStats</c> does (player.qc:50-65,116-119):
+    /// MaxSpeed always scales ("also slow walking", :51); then — when NOT q3-compat (the stock path, :58-64) —
+    /// AirSpeedLimitNonQW scales and the two QW accel fractions are re-stretched via
+    /// <see cref="PMAccelerate.AdjustAirAccelQW"/> (AirStrafeAccelQW only when non-zero, the QC ternary :61-63);
+    /// when q3-compat (:54-57,:116-117) the QW vars stay RAW and MaxAirSpeed scales instead. NOTE
+    /// MaxAirStrafeSpeed is scaled in NEITHER branch (player.qc:115 has no ×mod — an earlier port revision
+    /// wrongly scaled it here). Call after <see cref="FromCvars"/>/<see cref="FromValues"/> when the
+    /// effective multiplier (HighSpeed × mutator SpeedMultiplier) differs from 1.
     /// </summary>
     public void ApplyHighSpeed(float maxspeedMod)
     {
         if (maxspeedMod == 1f) return;
         MaxSpeed *= maxspeedMod;
-        AirSpeedLimitNonQW *= maxspeedMod;
-        MaxAirStrafeSpeed *= maxspeedMod;
-        AirAccelQW = PMAccelerate.AdjustAirAccelQW(AirAccelQW, maxspeedMod);
-        if (AirStrafeAccelQW != 0f)
-            AirStrafeAccelQW = PMAccelerate.AdjustAirAccelQW(AirStrafeAccelQW, maxspeedMod);
+        if (HighSpeedQ3Compat)
+        {
+            MaxAirSpeed *= maxspeedMod;     // player.qc:117 — q3compat scales maxairspeed, leaves the QW vars raw
+        }
+        else
+        {
+            AirSpeedLimitNonQW *= maxspeedMod;
+            AirAccelQW = PMAccelerate.AdjustAirAccelQW(AirAccelQW, maxspeedMod);
+            if (AirStrafeAccelQW != 0f)
+                AirStrafeAccelQW = PMAccelerate.AdjustAirAccelQW(AirStrafeAccelQW, maxspeedMod);
+        }
+    }
+
+    // =================================================================================================
+    //  Wire-vector decode + the per-player resolution seams (T54)
+    // =================================================================================================
+
+    // CLR gotcha: a struct may not declare a static FIELD of Nullable<itself> (generic layout cycle →
+    // TypeLoadException at runtime), so the override storage lives in a nested class behind properties.
+    private static class OverrideStore
+    {
+        internal static MovementParameters? Prediction;
+        internal static System.Func<Entity, float[]?>? Provider;
+    }
+
+    /// <summary>
+    /// CLIENT-side per-player physics override: when the server replicates a preset-RESOLVED movevar vector
+    /// (g_physics_clientselect — the per-peer block after the global MoveVarsBlock in the snapshot), the net
+    /// layer parks <c>FromValues(resolved)</c> here and the PREDICTED move (<c>input.Predicted</c>) reads it
+    /// instead of the cvar store. Null (the default) = stock behavior, byte-identical to <see cref="FromCvars"/>.
+    /// Cleared on disconnect (ClientNet.Dispose) — reset in tests that set it.
+    /// </summary>
+    public static MovementParameters? PredictionOverride
+    {
+        get => OverrideStore.Prediction;
+        set => OverrideStore.Prediction = value;
+    }
+
+    /// <summary>
+    /// SERVER-side per-player physics resolver: returns the entity's preset-resolved movevar vector (in
+    /// MoveVarsBlock order) or null for "no per-player physics" (the stock path). Installed by ServerNet when
+    /// hosting; null (the default) = every player moves on the global cvars. Cleared in ServerNet.Dispose.
+    /// </summary>
+    public static System.Func<Entity, float[]?>? PresetProvider
+    {
+        get => OverrideStore.Provider;
+        set => OverrideStore.Provider = value;
+    }
+
+    /// <summary>
+    /// The per-tick parameter read for <see cref="PlayerPhysics.Move"/> — QC's per-player stat read. The
+    /// PREDICTED leg (client prediction replays) takes <see cref="PredictionOverride"/> when set; the
+    /// authoritative leg consults <see cref="PresetProvider"/>; both default to the ambient
+    /// <see cref="FromCvars"/> — the pre-T54 path, so a host with clientselect off is byte-identical.
+    /// </summary>
+    public static MovementParameters Resolve(Entity player, bool predicted)
+    {
+        if (predicted)
+            return PredictionOverride ?? FromCvars();
+        return PresetProvider?.Invoke(player) is { } v ? FromValues(v) : FromCvars();
+    }
+
+    /// <summary>
+    /// Build the parameter block positionally from a replicated <c>MoveVarsBlock</c> vector (the wire twin of
+    /// <see cref="FromCvars"/> — keep the assignment order in lockstep with <c>MoveVarsBlock.MovementCvars</c>).
+    /// Same unset-fallback semantics as the cvar reads (a 0 where the stock default is non-zero means "unset"),
+    /// EXCEPT the jumpspeedcaps: the wire already encodes "disabled" as NaN (MoveVarsBlock.CaptureOne), so a
+    /// real 0 (the xdf/quake3/cpma presets) passes through as a genuine 0 cap. A short vector (an older peer)
+    /// leaves the tail at <see cref="Defaults"/>.
+    /// </summary>
+    public static MovementParameters FromValues(float[] v)
+    {
+        MovementParameters p = Defaults;
+        int i = 0;
+        float F(float fallback) { float x = i < v.Length ? v[i] : fallback; i++; return x != 0f ? x : fallback; }
+        float Raw(float fallback) { float x = i < v.Length ? v[i] : fallback; i++; return (x == 0f && fallback != 0f) ? fallback : x; }
+        bool B(bool fallback) { float x = i < v.Length ? v[i] : (fallback ? 1f : 0f); i++; return x != 0f || fallback; }
+        float Nan() { float x = i < v.Length ? v[i] : float.NaN; i++; return x; } // NaN sentinel already on the wire
+
+        p.MaxSpeed = F(p.MaxSpeed); p.Accelerate = F(p.Accelerate); p.Friction = F(p.Friction);
+        p.FrictionSlick = F(p.FrictionSlick); p.StopSpeed = F(p.StopSpeed);
+        p.SlickAccelerate = F(p.SlickAccelerate); p.FrictionOnLand = Raw(p.FrictionOnLand);
+
+        p.MaxAirSpeed = F(p.MaxAirSpeed); p.AirAccelerate = F(p.AirAccelerate);
+        p.AirAccelQW = Raw(p.AirAccelQW); p.AirStrafeAccelQW = Raw(p.AirStrafeAccelQW);
+        p.AirAccelQWStretchFactor = F(p.AirAccelQWStretchFactor); p.AirSpeedLimitNonQW = F(p.AirSpeedLimitNonQW);
+        p.AirAccelSidewaysFriction = Raw(p.AirAccelSidewaysFriction);
+        p.MaxAirStrafeSpeed = F(p.MaxAirStrafeSpeed); p.AirStrafeAccelerate = F(p.AirStrafeAccelerate);
+        p.AirStopAccelerate = F(p.AirStopAccelerate); p.AirStopAccelerateFull = B(p.AirStopAccelerateFull);
+
+        p.AirControl = F(p.AirControl); p.AirControlFlags = (int)Raw(p.AirControlFlags);
+        p.AirControlPower = F(p.AirControlPower); p.AirControlPenalty = Raw(p.AirControlPenalty);
+
+        p.WarsowBunnyTurnAccel = Raw(p.WarsowBunnyTurnAccel);
+        p.WarsowBunnyAirForwardAccel = F(p.WarsowBunnyAirForwardAccel);
+        p.WarsowBunnyTopSpeed = F(p.WarsowBunnyTopSpeed); p.WarsowBunnyAccel = F(p.WarsowBunnyAccel);
+        p.WarsowBunnyBackToSideRatio = F(p.WarsowBunnyBackToSideRatio);
+
+        p.JumpVelocity = F(p.JumpVelocity); p.JumpVelocityCrouch = Raw(p.JumpVelocityCrouch);
+        p.JumpSpeedCapMin = Nan(); p.JumpSpeedCapMax = Nan();
+        p.JumpSpeedCapMaxDisableOnRamps = B(p.JumpSpeedCapMaxDisableOnRamps);
+        p.TrackCanJump = B(p.TrackCanJump); p.DoubleJump = B(p.DoubleJump); p.JumpStep = B(p.JumpStep);
+
+        p.Gravity = F(p.Gravity);
+
+        p.StepHeight = F(p.StepHeight); p.StepDown = (int)Raw(p.StepDown);
+        p.StepDownMaxSpeed = F(p.StepDownMaxSpeed); p.WallFriction = (int)Raw(p.WallFriction);
+
+        // v7 tail: HighSpeed rides the wire with unset→1 already applied at Capture, so honor a genuine 0.
+        p.HighSpeed = i < v.Length ? v[i] : p.HighSpeed; i++;
+        p.HighSpeedQ3Compat = B(p.HighSpeedQ3Compat);
+        p.NudgeOutOfSolid = i < v.Length ? v[i] != 0f : p.NudgeOutOfSolid; i++; // Capture sends unset→1
+        p.WallClip = (int)Raw(p.WallClip);
+        p.NoStep = B(p.NoStep);
+        p.SlickApplyGravity = B(p.SlickApplyGravity);
+
+        return p;
     }
 
     // --- cvar read helpers -------------------------------------------------------------------------

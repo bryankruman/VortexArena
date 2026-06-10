@@ -356,9 +356,10 @@ public static class SpawnSystem
                 scored.Add((spot, 0f, 0f));
         }
 
-        // QC SelectSpawnPoint: 50/50 between a near-uniform pick (1,1,1) and a strongly-far-biased pick
-        // (1,5000,5). The far-biased branch makes back-to-back spawn frags unlikely.
-        Entity chosen = _rng.NextDouble() > 0.5
+        // QC SelectSpawnPoint: with probability (1 - g_spawn_furthest) use a near-uniform pick (1,1,1); otherwise
+        // a strongly-far-biased pick (1,5000,5) — `if (random() > g_spawn_furthest)` takes the near branch, so a
+        // HIGHER g_spawn_furthest means MORE spawns far from players. Default 0.5 = 50/50 (identical to before).
+        Entity chosen = _rng.NextDouble() > Cvar("g_spawn_furthest", 0.5f)
             ? WeightedPick(scored, lower: 1f, upper: 1f, exponent: 1f)
             : WeightedPick(scored, lower: 1f, upper: 5000f, exponent: 5f);
 
@@ -414,7 +415,9 @@ public static class SpawnSystem
         for (int i = 0; i < livePlayers.Count; i++)
         {
             Player other = livePlayers[i];
-            if (ReferenceEquals(other, forPlayer) || other.IsDead)
+            // Skip self, the dead, and observers (a free-fly spectator has DeadState==No but isn't a live
+            // player — QC IS_PLAYER excludes spectators, so they must not bias spawn distance scoring).
+            if (ReferenceEquals(other, forPlayer) || other.IsDead || other.IsObserver)
                 continue;
             float d = Vector3.Distance(other.Origin, spot.Origin);
             if (d < shortest)
@@ -503,7 +506,7 @@ public static class SpawnSystem
     /// state, give the starting loadout, clear the dead state, and place it at <paramref name="sp"/>.
     /// Faithfully mirrors the QC field assignments in order; deferred mechanics flagged inline.
     /// </summary>
-    public static void PutPlayerInServer(Player p, SpawnPoint sp)
+    public static void PutPlayerInServer(Player p, SpawnPoint sp, bool warmup = false)
     {
         // --- physics / solidity (QC: set_movetype WALK; solid SLIDEBOX; takedamage AIM; flags FL_CLIENT) ---
         p.MoveType = MoveType.Walk;
@@ -511,6 +514,18 @@ public static class SpawnSystem
         p.TakeDamage = DamageMode.Aim;     // QC DAMAGE_AIM (autoaim-eligible, takes damage)
         p.Flags = EntFlags.Client;         // QC this.flags = FL_CLIENT | FL_PICKUPITEMS (no FL_PICKUPITEMS enum yet)
         p.DeadState = DeadFlag.No;         // QC this.deadflag = DEAD_NO
+
+        // QC: the live edict is REUSED on respawn (the corpse is a separate CopyBody clone), so it must come
+        // back as a clean LIVE player. DamageSystem.Killed set IsCorpse=true (routing further hits to the corpse
+        // path) and may have gibbed it (Alpha=-1) or set the corpse ballistics density — none of which were ever
+        // reset. Without this, after the first death+respawn the player stayed flagged a corpse forever: it could
+        // never re-enter PlayerDamage (so it couldn't die again or award a frag) and was bullet-penetrable.
+        p.IsCorpse = false;
+        p.Alpha = 1f;                      // QC default_player_alpha — fully visible (un-gib)
+        p.BallisticsDensity = 0f;          // QC live-player density (corpse density reset)
+        p.RespawnFlags = RespawnFlag.None; // QC this.respawn_flags = 0
+        p.RespawnTimeMax = 0f;
+        p.RespawnCountdown = 0;
         // QC client.qc:676 this.damageforcescale = autocvar_g_player_damageforcescale (default 2). Every knockback
         // consumer (base damage push AND the globalforces mutator) multiplies by the victim's damageforcescale, so
         // a player spawned with 0 here takes NO knockback — must seed it on (re)spawn.
@@ -522,8 +537,11 @@ public static class SpawnSystem
         // wipes score progress. Restores the QC semantics the scores-table port enables.
         p.FragsStatus = Player.FragsPlayer;
 
-        // --- starting loadout (QC PutPlayerInServer non-warmup branch) ---
-        ApplyStartLoadout(p);
+        // --- starting loadout (QC PutPlayerInServer: warmup vs non-warmup branch) ---
+        if (warmup)
+            ApplyWarmupLoadout(p);
+        else
+            ApplyStartLoadout(p);
 
         // --- respawn bookkeeping cleared (QC: death_time/respawn_flags/respawn_time = 0) ---
         p.RespawnTime = 0f;
@@ -571,7 +589,17 @@ public static class SpawnSystem
         // The damage pipeline reads the shield off Entity.SpawnShieldExpire (an absolute sim time), so set it
         // here to now + g_spawnshieldtime. Firing a weapon clears it (handled by the weapon/damage side).
         float now = Api.Services is not null ? Api.Clock.Time : 0f;
-        p.SpawnShieldExpire = now + Cvar(CvarSpawnShieldTime, DefSpawnShieldTime);
+        // Honor an explicit g_spawnshieldtime 0 (disable the shield) — CvarOr distinguishes unset from 0 (SPAWN5).
+        p.SpawnShieldExpire = now + CvarOr(CvarSpawnShieldTime, DefSpawnShieldTime);
+
+        // QC client.qc:661-664 PRIMES the rot/regen pause timers on spawn (rather than zeroing) so a player
+        // spawned above the stable point (e.g. a 200 HP CA/LMS start) holds for a few seconds before rotting.
+        // These live on the Entity (DamageEntityState) shared with the regen tick + the pickup path (REGEN3).
+        // CvarOr honors an explicit 0 (a host disabling a spawn pause), unlike the 0-fallback Cvar helper.
+        p.PauseRegenFinished     = now + CvarOr("g_balance_pause_health_regen_spawn", 0f); // shared (incl. fuel regen)
+        p.PauseRotHealthFinished = now + CvarOr("g_balance_pause_health_rot_spawn", 5f);
+        p.PauseRotArmorFinished  = now + CvarOr("g_balance_pause_armor_rot_spawn", 5f);
+        p.PauseRotFuelFinished   = now + CvarOr("g_balance_pause_fuel_rot_spawn", 10f);
 
         // --- player model (QC PutPlayerInServer: this.model = ""; FixPlayermodel(this) → setplayermodel;
         //     server/client.qc:720-721 / :241-248) ---
@@ -693,6 +721,54 @@ public static class SpawnSystem
     }
 
     /// <summary>
+    /// QC <c>GiveWarmupResources</c> (server/client.qc:568) + the <c>warmup_stage</c> branch of PutPlayerInServer:
+    /// the gear-up loadout used during warmup — <c>g_warmup_start_health</c> (100) / <c>g_warmup_start_armor</c>
+    /// (100) / the warmup ammo pools, and <c>WARMUP_START_WEAPONS</c> = all normal weapons when
+    /// <c>g_warmup_allguns</c> (else the normal start loadout). Lets players practice with the full arsenal
+    /// before the match goes live (SPAWN3). No-op in normal play (g_warmup ships 0).
+    /// </summary>
+    private static void ApplyWarmupLoadout(Player p)
+    {
+        float health = Cvar("g_warmup_start_health", 100f);
+        float armor  = Cvar("g_warmup_start_armor", 100f);
+        p.MaxHealth = MathF.Max(health, 100f);
+        p.SetResource(ResourceType.Health, health);
+        p.SetResource(ResourceType.Armor,  armor);
+        p.SetResource(ResourceType.Shells,  Cvar("g_warmup_start_ammo_shells", 30f));
+        p.SetResource(ResourceType.Bullets, Cvar("g_warmup_start_ammo_nails", 160f));
+        p.SetResource(ResourceType.Rockets, Cvar("g_warmup_start_ammo_rockets", 80f));
+        p.SetResource(ResourceType.Cells,   Cvar("g_warmup_start_ammo_cells", 30f));
+        p.SetResource(ResourceType.Fuel,    Cvar("g_warmup_start_ammo_fuel", 0f));
+
+        p.OwnedWeapons.Clear();
+        p.OwnedWeaponSet.Clear();
+        if (CvarBool("g_warmup_allguns", true))
+        {
+            // QC WARMUP_START_WEAPONS = weapons_all() with allguns (server/world.qc:1953): want_weapon filters
+            // ONLY on WEP_FLAG_HIDDEN (+ mutator-blocked) — so superweapons ARE included (they're not hidden)
+            // and the hidden Tuba is excluded. Matching that exactly avoids dropping superweapons / leaking Tuba.
+            foreach (Weapon w in Weapons.All)
+            {
+                if ((w.SpawnFlags & WeaponFlags.Hidden) != 0) continue;
+                if ((w.SpawnFlags & WeaponFlags.MutatorBlocked) != 0) continue;
+                p.OwnedWeapons.Add(w.NetName);
+                p.OwnedWeaponSet.Add(w);
+            }
+        }
+        else
+        {
+            foreach (string w in DefaultLoadout)
+            {
+                p.OwnedWeapons.Add(w);
+                if (Weapons.ByName(w) is { } wep) p.OwnedWeaponSet.Add(wep);
+            }
+        }
+
+        p.Items = (int)Cvar(CvarStartItems, 0f);
+        Inventory.SwitchToBest(p);
+    }
+
+    /// <summary>
     /// Port of <c>GiveRandomWeapons</c> (server/items.qc:440), weapon-set half: pick
     /// <paramref name="numWeapons"/> distinct weapons at random (without replacement) from the space-
     /// separated <paramref name="weaponNames"/> list, skipping any the player already owns, and add their
@@ -755,6 +831,20 @@ public static class SpawnSystem
             return fallback;
         float v = Api.Cvars.GetFloat(name);
         return v != 0f ? v : fallback;
+    }
+
+    /// <summary>
+    /// Read a float cvar, falling back to <paramref name="fallback"/> ONLY when the cvar is unset (empty string)
+    /// — an explicit <c>0</c> is honored. Use for cvars where 0 is a meaningful value a host may set (e.g.
+    /// <c>g_spawnshieldtime 0</c> to disable the spawn shield), which the plain <see cref="Cvar"/> 0-fallback
+    /// would silently override back to the default.
+    /// </summary>
+    private static float CvarOr(string name, float fallback)
+    {
+        if (Api.Services is null)
+            return fallback;
+        string s = Api.Cvars.GetString(name);
+        return string.IsNullOrEmpty(s) ? fallback : Api.Cvars.GetFloat(name);
     }
 
     /// <summary>Read a string cvar through the facade (empty when unset / no services).</summary>

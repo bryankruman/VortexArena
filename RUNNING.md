@@ -11,7 +11,7 @@ Operational reference for building, running, and smoke-testing the port. A scrat
 |---|---|---|
 | **Godot 4.6.3 (GUI/editor)** | `C:\Program Files\Godot\Godot_v4.6.3-stable_mono_win64.exe` | The **mono/.NET** build — required (the plain build can't run C#). |
 | **Godot 4.6.3 (console)** | `C:\Program Files\Godot\Godot_v4.6.3-stable_mono_win64_console.exe` | Same engine, but **writes to stdout** — use this for headless/CLI runs so you capture `GD.Print` + errors. |
-| Godot bundled C# packages | `C:\Program Files\Godot\GodotSharp\Tools\nupkgs` | Holds `Godot.NET.Sdk 4.6.3` etc. The stable patch SDK is **not** on public NuGet, so `XonoticGodot/nuget.config` adds this folder as a package source. |
+| Godot bundled C# packages | `C:\Program Files\Godot\GodotSharp\Tools\nupkgs` | Holds `Godot.NET.Sdk 4.6.3` etc. `XonoticGodot/nuget.config` adds this folder as a package source (exact editor parity + offline builds). The 4.6.3 packages **are** also on public NuGet (verified 2026-06) — CI removes this source and restores from nuget.org (see `.github/workflows/ci.yml`). |
 | .NET SDK | `dotnet --version` → 9.0.308 (builds the `net8.0` targets) | net8.0 ref pack auto-restores. |
 | Project root | `C:\Users\Bryan\Projects\Xonotic\XonoticGodot` | `project.godot` + `XonoticGodot.csproj` (the Godot host) live here. |
 | Xonotic asset data | `assets/data/` (in-tree, gitignored) | Downloaded by `download-assets.sh` from the upstream Xonotic GitLab repos + official release. The VFS mounts this at runtime (see `GameDemo.DataPath`, default `res://assets/data`). **`Base/` is only the historical port source — the game no longer reads it.** |
@@ -38,13 +38,55 @@ cd C:/Users/Bryan/Projects/Xonotic/XonoticGodot
 
 # libraries + tests (Common, Engine, Net, Assets, Server) — fast, no Godot needed
 dotnet build tests/XonoticGodot.Tests/XonoticGodot.Tests.csproj -c Debug
-dotnet test  tests/XonoticGodot.Tests/XonoticGodot.Tests.csproj           # 19 tests, incl. 3 on real Xonotic data
+dotnet test  tests/XonoticGodot.Tests/XonoticGodot.Tests.csproj   # ~1160 tests, incl. real-data ones (skip w/o assets)
 
 # the Godot host (game client/server). Outputs into .godot/mono/temp/bin so the editor/engine picks it up.
 dotnet build XonoticGodot.csproj -c Debug
 ```
 
 The SourceGen analyzer: `dotnet build src/XonoticGodot.SourceGen/XonoticGodot.SourceGen.csproj`.
+
+---
+
+## CI (GitHub Actions + the local mirror)
+
+`.github/workflows/ci.yml` runs on every push/PR to `main` (see `planning/decisions/ADR-0014`):
+
+- **test** — the full xUnit suite on ubuntu-latest. **No assets in CI**: the ~18 real-data test
+  classes self-skip, so a green badge proves *less* than a local run.
+- **build-host** — `dotnet build XonoticGodot.csproj` from a clean clone, restoring `Godot.NET.Sdk`
+  purely from nuget.org (CI first runs `dotnet nuget remove source godot-editor` because the
+  Windows-only local source in `nuget.config` would hard-fail on a Linux runner).
+- **export** — on-demand only (`workflow_dispatch` or a `v*` tag, `continue-on-error`): headless
+  Godot export of both presets in `export_presets.cfg` (the mono templates are ~1 GB — never per-push).
+
+**The authoritative pre-push gate is the local mirror** (assets present → real-data tests + the
+headless boot smoke actually run):
+
+```bash
+ci/ci.sh              # libs+tests build, full suite, host build, headless smoke
+ci/ci.sh --export     # + both export presets (needs the 4.6.3 mono export templates installed)
+ci\ci.ps1             # PowerShell wrapper around the same script
+```
+
+---
+
+## Dedicated server (v1 = headless listen server)
+
+There is no separate server binary yet — `--headless --host <map>` runs the full host with a dummy
+renderer (the same `NetGame` listen server `--host` uses; a true client-less host like DP's
+`ca_dedicated` is a deferred Shell/NetGame seam — ADR-0014). From the repo:
+
+```bash
+"$GODOT" --headless --path . --host stormkeep --gametype dm --bots 2
+# a second, windowed instance joins it:
+"$GODOT" --path . --connect 127.0.0.1
+```
+
+For a packaged install, `tools/run-dedicated.sh` (shipped beside the exported `linux-dedicated`
+binary by `tools/package.sh`) `cd`s to its own directory first — the exported build resolves
+`assets/data` against the CWD, so the data must sit beside the binary and the launcher must start
+there (same contract as upstream's `xonotic-linux-dedicated.sh`).
 
 ---
 
@@ -202,5 +244,21 @@ ToS/welcome/team-select, tools, confirms). Architecture:
   uncompressed). The last couple of `_norm`/`_gloss` maps were pk3 **symlink** stubs from build-time dedup,
   now followed by the VFS (`Pk3Mount`). Visual capture sees what the log can't.) Godot's Movie Maker
   `--write-movie <file>` still works for rendering animation *sequences* to frames (also needs a non-headless context).
-- **Dedicated/headless server (later):** Godot's "export as dedicated server" + `OS.HasFeature("dedicated_server")`
-  branch; the `XonoticGodot.Server` lib is Godot-free so it can also be driven from a plain console host.
+- **Perf benches (T33):** three measurement-first benches live in `tests/XonoticGodot.Tests/Perf/`
+  (`NetSnapshotPerfBench` — snapshot delta encode/decode; `TracePerfBench` — TraceService sweeps + map-load
+  time on real atelier collision; `ServerTickPerfBench` — a booted `GameWorld`'s ms/tick + B/tick with 0 and
+  4 players), plus the older `BotPerfBench` (bot nav). Run them with
+  `dotnet test tests/XonoticGodot.Tests --filter PerfBench -l "console;verbosity=detailed"` — each prints a
+  ms + B/op table; measured baselines are recorded as comments atop each file (update them when numbers move
+  materially). They skip without assets; point `XG_DATA_DIR` at a content dir to override the default path.
+- **Live-process GC profiling:** the headless benches can't reach client-side per-frame paths
+  (`EffectSystem._Process`, HUD rebuilds). Attach `dotnet-counters` to the running game instead:
+  `dotnet tool install -g dotnet-counters`, launch the game windowed, then
+  `dotnet-counters monitor --process-id <godot PID> --counters System.Runtime` and watch
+  *Allocation Rate* / *% Time in GC* / gen0 counts while playing. **Do not** flip GC modes
+  (`ServerGarbageCollection` etc.) in `XonoticGodot.csproj` without counter evidence — client frame-pauses
+  trade against dedicated throughput.
+- **Dedicated/headless server:** v1 is the headless listen server (`--headless --host`, see the section
+  above + `tools/run-dedicated.sh`); the `linux-dedicated` export preset uses Godot's "export as dedicated
+  server" mode (`OS.HasFeature("dedicated_server")` is the feature-tag branch point). The
+  `XonoticGodot.Server` lib is Godot-free so a plain console host remains possible later.

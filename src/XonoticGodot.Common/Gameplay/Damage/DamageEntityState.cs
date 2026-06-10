@@ -54,8 +54,15 @@ public partial class Entity
     // --- pain / regen timers ---
     /// <summary>QC <c>.pain_finished</c>: sim time until which a new pain animation/sound is suppressed.</summary>
     public float PainFinished;
-    /// <summary>QC <c>.pauseregen_finished</c>: sim time until which health/armor regeneration is paused.</summary>
+    /// <summary>QC <c>.pauseregen_finished</c>: sim time until which health/armor regeneration is paused (after a hit).</summary>
     public float PauseRegenFinished;
+    /// <summary>QC <c>.pauserothealth_finished</c>: sim time until which health ROT is paused (after a health pickup / spawn).</summary>
+    public float PauseRotHealthFinished;
+    /// <summary>QC <c>.pauserotarmor_finished</c>: sim time until which armor ROT is paused.</summary>
+    public float PauseRotArmorFinished;
+    /// <summary>QC <c>.pauserotfuel_finished</c>: sim time until which fuel ROT is paused. (Fuel REGEN shares
+    /// <see cref="PauseRegenFinished"/>, like QC — the jetpack/hook write that.)</summary>
+    public float PauseRotFuelFinished;
 
     // --- credited-attacker window (QC .pusher / .pushltime) ---
     /// <summary>QC <c>.pusher</c>: the last player who damaged this entity (credited for kills within the window).</summary>

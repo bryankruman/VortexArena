@@ -92,6 +92,14 @@ public sealed class GameWorld
     /// <summary>The client roster + connect/spawn lifecycle, created by <see cref="Boot"/>.</summary>
     public ClientManager Clients { get; private set; } = null!;
 
+    /// <summary>
+    /// [T39] The live bot population + brains (QC bot_serverframe / bot_fixcount / the per-bot havocbot think),
+    /// created by <see cref="Boot"/>. Its <see cref="Bot.BotPopulation.ServerFrame"/> runs each tick from
+    /// <see cref="OnStartFrame"/> (main.qc:372's slot), and <see cref="OnClientMove"/> sources each bot's
+    /// per-tick input from it instead of the net <see cref="InputProvider"/> (the sys_phys_ai seam).
+    /// </summary>
+    public Bot.BotPopulation Bots { get; private set; } = null!;
+
     /// <summary>The round flow state machine (round-based modes); spawned lazily via <see cref="EnableRounds"/>.</summary>
     public RoundHandler? Rounds { get; private set; }
 
@@ -395,6 +403,11 @@ public sealed class GameWorld
         Teamplay.SkillProvider = p => p.IsBot ? p.BotSkill : 5f;
         Clients = new ClientManager(Simulation, Scores, Teamplay, Match) { ServerEntities = ServerServices.ServerEntities, PlayerStates = PlayerStates, TeamsLocked = TeamsLocked };
 
+        // [T39] the bot population (QC bot_serverframe): brains are created for EVERY bot connect path via the
+        // ClientManager hook (fixcount fill, console bot_add, a host's direct ClientConnect(isBot:true)).
+        Bots = new Bot.BotPopulation(this);
+        Clients.OnBotConnected = Bots.RegisterBot;
+
         // 4) subscribe the unified score table to the obituary bus. The bundled gametypes are the
         //    authoritative frag-scorers (they write Player.ScoreFrags + their own team totals), so the table
         //    runs in READ-THROUGH mode (ownsScore: false) and only records the aux columns
@@ -590,6 +603,7 @@ public sealed class GameWorld
         // Client lifecycle: feed the connect/spawn/disconnect hooks into the §5 systems.
         Clients.OnClientConnect = InfraClientConnect;
         Clients.OnClientSpawn = InfraClientSpawn;
+        Clients.IsWarmup = () => Warmup.WarmupStage; // QC warmup_stage → the warmup gear-up loadout (SPAWN3)
         Clients.OnClientDisconnect = InfraClientDisconnect;
     }
 
@@ -625,6 +639,13 @@ public sealed class GameWorld
     {
         PlayerStats.BeginAlivetime(p, Time);
         AntiCheat.FixAngle(p, Time, 0f); // a spawn forcibly sets the view → suppress snap-aim briefly
+
+        // [T39] QC PutClientInServer: campaign_bots_may_start = true once a real player spawns (the campaign's
+        // bots hold position until then); a bot re-applies its bots.txt model (FixPlayermodel analogue).
+        if (p.IsBot)
+            Bots.OnBotSpawned(p);
+        else
+            Campaign.BotsMayStart = true;
     }
 
     /// <summary>QC the ClientDisconnect head: finalize stats, log :part:, and drop the client from the subsystems.</summary>
@@ -650,6 +671,11 @@ public sealed class GameWorld
         Voting.RemoveVoter(p);
         MapVote.RemoveVoter(p);
         Demo.OnClientDisconnect(p);
+
+        // [T39] every bot removal path (fixcount trim, console remove, intermission teardown, a host kick)
+        // funnels through this disconnect chain: drop the brain + notify the net host (BotRemoved).
+        if (p.IsBot)
+            Bots.OnBotDisconnected(p);
     }
 
     /// <summary>QC the scoreboard rank (1-based) of a player by SP_SCORE (0 if not registered).</summary>
@@ -757,6 +783,10 @@ public sealed class GameWorld
         // QC the timeout/timein pause state machine (server/command/common.qc timeout_handler_think).
         Timeout.Think();
 
+        // [T39] QC bot_serverframe() (main.qc:372): population fill/trim, waypoint load-once, the strategy
+        // token, skill resync — after the warmup check, before anticheat_startframe, matching the QC order.
+        Bots.ServerFrame();
+
         // QC anticheat_startframe: advance the global evade phase walk (server/anticheat.qc).
         AntiCheat.StartFrame(Simulation.FrameTime);
 
@@ -780,8 +810,9 @@ public sealed class GameWorld
         XonoticGodot.Common.Gameplay.MutatorHooks.FireStartFrame(Time);
     }
 
-    /// <summary>True when the match is frozen (intermission, ended, or a timeout pause) — QC <c>game_stopped</c>.</summary>
-    private bool GameStopped => Intermission.Running || MatchEnded || Timeout.IsPaused;
+    /// <summary>True when the match is frozen (intermission, ended, or a timeout pause) — QC <c>game_stopped</c>.
+    /// Internal so the bot population's serverframe can honor the same gate (QC bot.qc:704).</summary>
+    internal bool GameStopped => Intermission.Running || MatchEnded || Timeout.IsPaused;
 
     /// <summary>
     /// QC <c>CreatureFrame_All</c> (player slice): run the per-frame contents + fall damage for each player.
@@ -840,9 +871,24 @@ public sealed class GameWorld
         // input/tick across the whole window (~72 ticks) and then NEVER drains (the server acks 1/tick while the
         // client adds 1/tick), leaving the client predicting ~1 s ahead of authority forever, which turns every
         // later reconcile correction into a deep, jarring snap. So always pull the input (advancing LastProcessedSeq
-        // via InputProvider); just don't run PM_Main when the player isn't live. (Bots have no input queue, so
-        // InputProvider returns ZeroInput for them with no dequeue/ack — unchanged.)
-        IMovementInput input = InputProvider(p);
+        // via InputProvider); just don't run PM_Main when the player isn't live.
+        //
+        // [T39] BOTS source their command from the brain instead of the net InputProvider — the produce-only
+        // BotBrain.ThinkProduce runs HERE, inside the bot's own client step right before its movement, exactly
+        // like QC's sys_phys_ai (ecs/systems/physics.qc:28 → sv_physics.qc:41-46 → bot_think): the same tick's
+        // PM_Main, DeadPlayerThink and weapon driver all consume the one produced command (cached per tick in
+        // BotPopulation, mirroring ServerNet's per-tick cache for humans).
+        IMovementInput input = p.IsBot ? Bots.InputFor(p, Simulation.FrameTime) : InputProvider(p);
+
+        // ---- dead-player respawn state machine (QC PlayerThink dead branch) ----
+        // A dead (non-observer) player doesn't move; it runs the DEAD_DYING→DEAD→RESPAWNABLE→RESPAWNING machine
+        // each tick off this tick's fire/jump buttons, so the player respawns by pressing fire after the delay
+        // (or is force-respawned with g_forced_respawn). The input was already dequeued/acked above.
+        if (p.IsDead && !p.IsObserver)
+        {
+            DeadPlayerThink(p, input);
+            return; // dead players don't run movement/PostThink (PostThink is a no-op while dead anyway)
+        }
 
         // QC: apply the usercmd view angles to the player entity every frame. Without this the entity keeps its
         // SPAWN angles forever, so everything server-side that reads the player's facing — the weapon fire
@@ -941,8 +987,10 @@ public sealed class GameWorld
 
         // Source the held attack buttons from the player's current input (QC reads them straight off the
         // applied move command). InputProvider is the per-tick command feed; a host with no net layer returns
-        // ZeroInput (no buttons), so the driver simply advances timers and fires nothing.
-        IMovementInput input = InputProvider(p);
+        // ZeroInput (no buttons), so the driver simply advances timers and fires nothing. [T39] A bot's buttons
+        // come from its brain via the SAME per-tick cache the movement step used (one command, two readers) —
+        // ButtonAttack1/2 reach WeaponFireDriver through exactly the human path.
+        IMovementInput input = p.IsBot ? Bots.InputFor(p, Simulation.FrameTime) : InputProvider(p);
         WeaponFireDriver.Frame(p, input);
     }
 
@@ -1412,6 +1460,11 @@ public sealed class GameWorld
     /// </summary>
     private void RespawnDuePlayers()
     {
+        // The per-player DEAD_* respawn machine (DeadPlayerThink, run from OnClientMove each tick) now owns the
+        // normal respawn — button-to-respawn at stock defaults, forced respawn with g_forced_respawn, and bots.
+        // This stays only as a SAFETY net for a dead player that somehow isn't being driven by OnClientMove
+        // (e.g. not in the sim client list): force it back in after its forced ceiling elapses so it can't get
+        // stuck dead. Skipped for round modes and once the match ended (QC game_stopped gate).
         if (MatchEnded || Intermission.Running)
             return;
         if (Rounds is { IsRoundStarted: true })
@@ -1422,9 +1475,91 @@ public sealed class GameWorld
         for (int i = 0; i < players.Count; i++)
         {
             Player p = players[i];
-            if (p.IsAwaitingRespawn(now))
+            // Only the safety case: a FORCED dead player whose ceiling has well passed but the DEAD_* machine
+            // never advanced (no OnClientMove driver). Gating on RESPAWN_FORCE is critical — a human at stock
+            // defaults (g_forced_respawn 0) deliberately waits on the kill-cam until they press fire, and must
+            // NOT be auto-respawned here. Live/forced players are normally respawned by DeadPlayerThink.
+            if (p.IsDead && !p.IsObserver && (p.RespawnFlags & RespawnFlag.Force) != 0
+                && p.RespawnTimeMax > 0f && now >= p.RespawnTimeMax + 1f)
                 Clients.Spawn(p);
         }
+    }
+
+    /// <summary>
+    /// QC <c>PlayerThink</c> dead branch (server/client.qc:2359-2438): the per-tick respawn state machine for a
+    /// dead player. On the death edge it computes the respawn timing (<see cref="RespawnTiming.Calculate"/>),
+    /// then advances <see cref="DeadFlag"/> by this tick's fire/jump/secondary/use buttons —
+    /// DYING→DEAD→RESPAWNABLE→RESPAWNING — respawning via <see cref="ClientManager.Spawn"/> once
+    /// <see cref="DeadFlag.Respawning"/> and the respawn time has passed. At stock defaults
+    /// (<c>g_forced_respawn 0</c>) the player must press+release fire after the delay; with the
+    /// <see cref="RespawnFlag.Force"/> flag (or a bot) it auto-respawns at <see cref="Player.RespawnTimeMax"/>.
+    /// Also maintains the networked <see cref="Player.RespawnTimeStat"/> (QC STAT(RESPAWN_TIME)).
+    /// </summary>
+    private void DeadPlayerThink(Player p, IMovementInput input)
+    {
+        // Don't respawn while the match is over / between rounds (QC game_stopped + round gate). The kill-cam
+        // still holds; STAT(RESPAWN_TIME) is suppressed so the client doesn't show a bogus countdown.
+        bool respawnAllowed = !MatchEnded && !Intermission.Running && !(Rounds is { IsRoundStarted: true });
+        if (!respawnAllowed)
+        {
+            p.RespawnTimeStat = 0f;
+            return;
+        }
+
+        float now = Time;
+
+        // Death edge: compute the respawn timing once (RespawnTimeMax is reset to 0 on spawn, and Calculate sets
+        // it > 0, so this runs exactly once per death). Overrides any flat delay a gametype obituary set.
+        if (p.RespawnTimeMax <= 0f)
+            RespawnTiming.Calculate(p, Clients.Players, Teamplay.IsTeamGame);
+
+        // QC RESPAWN_DENY: respawning is blocked entirely; the player stays dead (e.g. eliminated in a round).
+        if ((p.RespawnFlags & RespawnFlag.Deny) != 0)
+        {
+            p.RespawnTimeStat = 0f;
+            return;
+        }
+
+        bool forced = (p.RespawnFlags & RespawnFlag.Force) != 0;
+        // QC button_pressed = ATCK | JUMP | ATCK2 | HOOK | USE. (Hook is impulse-driven here, so omitted.) A bot
+        // has no input stream, so it relies on the Force flag (set for bots in RespawnTiming) to advance.
+        bool button = input.ButtonAttack1 || input.ButtonJump || input.ButtonAttack2 || input.ButtonUse;
+
+        switch (p.DeadState)
+        {
+            case DeadFlag.Dying:
+                if (forced && !(p.RespawnTime < p.RespawnTimeMax))
+                    p.DeadState = DeadFlag.Respawning;
+                else if (!button || (now >= p.RespawnTimeMax && forced))
+                    p.DeadState = DeadFlag.Dead;
+                break;
+            case DeadFlag.Dead:
+                if (button)
+                    p.DeadState = DeadFlag.Respawnable;
+                else if (now >= p.RespawnTimeMax && forced)
+                    p.DeadState = DeadFlag.Respawning;
+                break;
+            case DeadFlag.Respawnable:
+                if (!button || forced)
+                    p.DeadState = DeadFlag.Respawning;
+                break;
+            case DeadFlag.Respawning:
+                if (now > p.RespawnTime)
+                {
+                    p.RespawnTime = now + 1f;       // QC: only retry once a second
+                    p.RespawnTimeMax = p.RespawnTime;
+                    Clients.Spawn(p);
+                    return;
+                }
+                break;
+        }
+
+        // QC STAT(RESPAWN_TIME) (client.qc:2421-2436): the client shows the countdown / "press fire" prompt off
+        // this. Negated while RESPAWNING so the client knows a respawn is imminent; 0 while SILENT.
+        if ((p.RespawnFlags & RespawnFlag.Silent) != 0)
+            p.RespawnTimeStat = 0f;
+        else
+            p.RespawnTimeStat = p.DeadState == DeadFlag.Respawning ? -p.RespawnTime : p.RespawnTime;
     }
 
     // =============================================================================================
@@ -2007,6 +2142,35 @@ public sealed class GameWorld
     // =============================================================================================
     // helpers
     // =============================================================================================
+
+    /// <summary>
+    /// [T39] Load the map's bot waypoint graph (QC waypoint_loadall + waypoint_load_links +
+    /// waypoint_load_hardwiredlinks, waypoints.qc:1837+/1324+/1472+): try
+    /// <c>maps/&lt;map&gt;&lt;gt_ext&gt;.waypoints</c> (gt_ext = ".race" in Race mode — QC
+    /// GET_GAMETYPE_EXTENSION, waypoints.qc:1314), falling back to the base name; same fallback for the
+    /// <c>.cache</c> (skips the O(N²) AutoLink) and <c>.hardwired</c> companions. With no file (or no
+    /// ConfigReader at all) <see cref="Bot.WaypointNetwork.ForMap"/> auto-generates a graph from the spawned
+    /// map entities so bots still roam. Called ONCE by the population on the first frame with bots present.
+    /// </summary>
+    internal Bot.WaypointNetwork LoadWaypointNetwork()
+    {
+        string ext = GameType is Race ? ".race" : "";
+        string? Read(string suffix)
+        {
+            if (ConfigReader is null || string.IsNullOrEmpty(MapName))
+                return null;
+            string? text = ext.Length > 0 ? ConfigReader($"maps/{MapName}{ext}{suffix}") : null;
+            return text ?? ConfigReader($"maps/{MapName}{suffix}");
+        }
+
+        string? wp = Read(".waypoints");
+        string? cache = Read(".waypoints.cache");
+        string? hardwired = Read(".waypoints.hardwired");
+        var net = Bot.WaypointNetwork.ForMap(wp, Services.EntityTable.All, cache, hardwired);
+        XonoticGodot.Common.Diagnostics.Log.Trace(
+            $"[bots] waypoints for '{MapName}': nodes={net.Count} (file={(wp is null ? "none/auto" : "loaded")}, cache={(cache is null ? "no" : "yes")})");
+        return net;
+    }
 
     private static GameType? ResolveGameType(string? name)
     {

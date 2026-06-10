@@ -120,6 +120,31 @@ public static class MapObjectsRegistry
         SpawnFuncs.Register("target_music", TargetMusic.TargetMusicSetup);
         SpawnFuncs.Register("trigger_music", TargetMusic.TriggerMusicSetup);
 
+        // ---- hazard laser (T48: misc/laser.qc) — damage/detector think server-side; the beam renders
+        //      client-side via game/client/LaserRenderer.cs (facade scan, listen-server/demo seam). ----
+        SpawnFuncs.Register("misc_laser", Laser.LaserSetup);
+
+        // ---- decoration props + static walls (T48: models.qc) — the misc_* model entities flip pitch and
+        //      stay non-solid; func_wall/func_clientwall/func_static get Solid.Bsp + their inline brush via
+        //      SetModel (real collision through ClipToEntities — previously walk-through bare edicts). ----
+        SpawnFuncs.Register("misc_gamemodel", MapModels.GameModelSetup);
+        SpawnFuncs.Register("misc_clientmodel", MapModels.ClientModelSetup);
+        SpawnFuncs.Register("misc_models", MapModels.ModelsSetup);
+        SpawnFuncs.Register("func_illusionary", MapModels.IllusionarySetup);
+        SpawnFuncs.Register("func_clientillusionary", MapModels.ClientIllusionarySetup);
+        SpawnFuncs.Register("func_wall", MapModels.WallSetup);
+        SpawnFuncs.Register("func_clientwall", MapModels.ClientWallSetup);
+        SpawnFuncs.Register("func_static", MapModels.StaticSetup);
+
+        // ---- continuous map particle emitters (T48: func/pointparticles.qc) — server state/toggling;
+        //      emission is client-side (game/client/MapParticleEmitters.cs). ----
+        SpawnFuncs.Register("func_pointparticles", PointParticles.PointParticlesSetup);
+        SpawnFuncs.Register("func_sparks", PointParticles.SparksSetup);
+
+        // ---- weather volumes (T48: func/rainsnow.qc) — drawn by game/client/WeatherSystem.cs. ----
+        SpawnFuncs.Register("func_rain", RainSnow.RainSetup);
+        SpawnFuncs.Register("func_snow", RainSnow.SnowSetup);
+
         // ---- continuously-moving brushes (func/rotating.qc, bobbing.qc, pendulum.qc, train.qc) ----
         SpawnFuncs.Register("func_rotating", MovingBrushes.RotatingSetup);
         SpawnFuncs.Register("func_bobbing", MovingBrushes.BobbingSetup);

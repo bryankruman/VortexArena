@@ -41,6 +41,12 @@ public static class Widgets
     public static CvarRadioButton RadioButton(string cvar, string value, string label, ButtonGroup group, string tooltip = "")
         => new(cvar, value, Localization.Tr(label), group) { TooltipText = Localization.Tr(tooltip) };
 
+    /// <summary>QC <c>makeXonoticMixedSlider(cvar)</c> — a DISCRETE slider over labeled values ("Default", a
+    /// numeric range, "Infinite") with a live text readout. Chain <see cref="CvarMixedSlider.Add"/> /
+    /// <see cref="CvarMixedSlider.AddRange"/> then call <see cref="CvarMixedSlider.Finish"/>.</summary>
+    public static CvarMixedSlider MixedSlider(string cvar, string tooltip = "")
+        => new(cvar) { TooltipText = Localization.Tr(tooltip) };
+
     /// <summary>QC <c>makeXonoticInputBox(cvar)</c> — a text field bound to a string cvar.</summary>
     public static CvarLineEdit InputBox(string cvar, string placeholder = "", string tooltip = "")
         => new(cvar) { PlaceholderText = Localization.Tr(placeholder), TooltipText = Localization.Tr(tooltip) };
@@ -303,6 +309,109 @@ public partial class CvarTextSlider : OptionButton
     {
         if (_updating || index < 0 || index >= _values.Count) return;
         CvarUi.Cvars.Set(_cvar, _values[(int)index]);
+        CvarUi.Cvars.MarkArchived(_cvar);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------
+//  Mixed slider (discrete labeled values on a real slider) — QC mixedslider.qc
+// ---------------------------------------------------------------------------------------------------------
+
+/// <summary>
+/// The C# successor to QC <c>XonoticMixedSlider</c>: a real slider whose positions are DISCRETE labeled
+/// values — typically "Default" (-1), a numeric range, "Infinite" (0) — with the active label read out to the
+/// right (the Create-game Time/Frag/Teams/Bot-skill rows). Reads/writes the cvar like every other bound
+/// widget; the store value snaps to the nearest entry on refresh.
+/// </summary>
+public partial class CvarMixedSlider : HBoxContainer
+{
+    private readonly string _cvar;
+    private readonly List<(string Label, string Value)> _entries = new();
+    private readonly HSlider _slider;
+    private readonly Label _readout;
+    private bool _updating;
+
+    public CvarMixedSlider(string cvar)
+    {
+        _cvar = cvar;
+        SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        AddThemeConstantOverride("separation", 8);
+
+        _slider = new HSlider
+        {
+            MinValue = 0, Step = 1,
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            SizeFlagsVertical = SizeFlags.ShrinkCenter,
+            CustomMinimumSize = new Vector2(0, 26),
+        };
+        _readout = new Label { CustomMinimumSize = new Vector2(76, 0), HorizontalAlignment = HorizontalAlignment.Right };
+        _readout.AddThemeColorOverride("font_color", new Color(0.92f, 0.92f, 0.94f));
+        _slider.ValueChanged += OnValueChanged;
+        AddChild(_slider);
+        AddChild(_readout);
+    }
+
+    /// <summary>QC <c>e.addText(label, value)</c>: one labeled stop.</summary>
+    public CvarMixedSlider Add(string label, float value)
+    {
+        _entries.Add((Localization.Tr(label), value.ToString(CultureInfo.InvariantCulture)));
+        return this;
+    }
+
+    /// <summary>QC <c>e.addRange(min, max, step)</c>: numeric stops labeled by their value.</summary>
+    public CvarMixedSlider AddRange(float min, float max, float step)
+    {
+        for (float v = min; v <= max + 0.001f; v += step)
+            _entries.Add((CvarUi.Tidy(v), v.ToString(CultureInfo.InvariantCulture)));
+        return this;
+    }
+
+    /// <summary>QC <c>configureXonoticMixedSliderValues</c>: lock the entry list in and sync from the cvar.</summary>
+    public CvarMixedSlider Finish()
+    {
+        _slider.MaxValue = Math.Max(0, _entries.Count - 1);
+        Refresh();
+        return this;
+    }
+
+    public override void _EnterTree() { CvarUi.Cvars.Changed += OnCvarChanged; Refresh(); }
+    public override void _ExitTree() { CvarUi.Cvars.Changed -= OnCvarChanged; }
+
+    private void OnCvarChanged(string name) { if (name == _cvar) Refresh(); }
+
+    private void Refresh()
+    {
+        if (_updating || _entries.Count == 0) return;
+        _updating = true;
+        string cur = CvarUi.Cvars.GetString(_cvar);
+        int idx = _entries.FindIndex(e => e.Value == cur);
+        if (idx < 0)
+        {
+            // nearest numeric entry (the store may hold a value between stops)
+            float target = CvarUi.Cvars.GetFloat(_cvar);
+            float best = float.MaxValue;
+            for (int i = 0; i < _entries.Count; i++)
+            {
+                if (float.TryParse(_entries[i].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out float val))
+                {
+                    float d = Math.Abs(val - target);
+                    if (d < best) { best = d; idx = i; }
+                }
+            }
+            if (idx < 0) idx = 0;
+        }
+        _slider.Value = idx;
+        _readout.Text = _entries[idx].Label;
+        _updating = false;
+    }
+
+    private void OnValueChanged(double v)
+    {
+        int idx = Mathf.Clamp((int)v, 0, _entries.Count - 1);
+        if (_entries.Count == 0) return;
+        _readout.Text = _entries[idx].Label;
+        if (_updating) return;
+        CvarUi.Cvars.Set(_cvar, _entries[idx].Value);
         CvarUi.Cvars.MarkArchived(_cvar);
     }
 }

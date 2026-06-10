@@ -49,11 +49,16 @@ public static class PlayerFrameLogic
 
         if (!regenDisabled)
         {
+            // The regen/rot pause timers live on the Entity (DamageEntityState) so the damage path (which sets
+            // PauseRegenFinished on a hit) and the pickup path (GiveResource sets PauseRot*Finished) and this
+            // tick all share ONE storage. They were previously split across a separate ServerPlayerState copy
+            // that the damage/pickup paths never wrote — so getting hit never paused regen and over-stacked
+            // health/armor rotted with no grace (REGEN1/REGEN2).
             // ----- armor (QC RES_ARMOR; no max_mod applied to armor) -----
             float armorRegenStable = Cvars.Float("g_balance_armor_regenstable");
             float armorRotStable = Cvars.Float("g_balance_armor_rotstable");
-            float armorRegenFt = now > st.PauseRegenFinished ? frameTime : 0f;
-            float armorRotFt = now > st.PauseRotArmorFinished ? frameTime : 0f;
+            float armorRegenFt = now > p.PauseRegenFinished ? frameTime : 0f;
+            float armorRotFt = now > p.PauseRotArmorFinished ? frameTime : 0f;
             RotRegen(p, ResourceType.Armor,
                 armorRegenStable, Cvars.Float("g_balance_armor_regen"), Cvars.Float("g_balance_armor_regenlinear"), armorRegenFt,
                 armorRotStable, Cvars.Float("g_balance_armor_rot"), Cvars.Float("g_balance_armor_rotlinear"), armorRotFt);
@@ -61,8 +66,8 @@ public static class PlayerFrameLogic
             // ----- health (QC RES_HEALTH) -----
             float healthRegenStable = Cvars.Float("g_balance_health_regenstable");
             float healthRotStable = Cvars.Float("g_balance_health_rotstable");
-            float healthRegenFt = now > st.PauseRegenFinished ? frameTime : 0f;
-            float healthRotFt = now > st.PauseRotHealthFinished ? frameTime : 0f;
+            float healthRegenFt = now > p.PauseRegenFinished ? frameTime : 0f;
+            float healthRotFt = now > p.PauseRotHealthFinished ? frameTime : 0f;
             RotRegen(p, ResourceType.Health,
                 healthRegenStable, Cvars.Float("g_balance_health_regen"), Cvars.Float("g_balance_health_regenlinear"), healthRegenFt,
                 healthRotStable, Cvars.Float("g_balance_health_rot"), Cvars.Float("g_balance_health_rotlinear"), healthRotFt);
@@ -74,10 +79,13 @@ public static class PlayerFrameLogic
             Combat.Damage(p, null, null, 1f, "rot", p.Origin, Vector3.Zero);
 
         // ----- fuel (QC RES_FUEL; only when not IT_UNLIMITED_AMMO — we always regen since items aren't modeled) -----
+        // QC fuel regen shares the health/armor pauseregen_finished (client.qc:1748; cfg: "fuel uses the health
+        // regen counter"). The jetpack/hook write that shared field — so gate fuel REGEN on it, not a separate
+        // field (which they never write, leaking the jetpack fuel-use regen pause). Fuel ROT keeps its own timer.
         float fuelRegenStable = Cvars.Float("g_balance_fuel_regenstable");
         float fuelRotStable = Cvars.Float("g_balance_fuel_rotstable");
-        float fuelRegenFt = now > st.PauseRegenFuelFinished ? frameTime : 0f;
-        float fuelRotFt = now > st.PauseRotFuelFinished ? frameTime : 0f;
+        float fuelRegenFt = now > p.PauseRegenFinished ? frameTime : 0f;
+        float fuelRotFt = now > p.PauseRotFuelFinished ? frameTime : 0f;
         RotRegen(p, ResourceType.Fuel,
             fuelRegenStable, Cvars.Float("g_balance_fuel_regen"), Cvars.Float("g_balance_fuel_regenlinear"), fuelRegenFt,
             fuelRotStable, Cvars.Float("g_balance_fuel_rot"), Cvars.Float("g_balance_fuel_rotlinear"), fuelRotFt);

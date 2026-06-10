@@ -88,6 +88,13 @@ public sealed class ConsoleCommands
         _interp.RegisterCommand("name", CmdName);
         _interp.RegisterCommand("developer", CmdDeveloper);
 
+        // DP/QC `cl_cmd sendcvar <name>` (qcsrc/client/command/cl_cmd.qc:395-428, minus the cl_cmd prefix —
+        // the menu's "Apply immediately" button and the QC binds issue the bare `sendcvar cl_weaponpriority`):
+        // read the cvar from the local store and push it to the live game as `sentcvar <name> "<value>"` (the
+        // server-side per-client replication command). The QC client-side cl_weaponpriority W_FixWeaponOrder
+        // pre-send fixup is skipped — the server applies the same fixup on receive (Commands.CmdSentCvar).
+        _interp.RegisterCommand("sendcvar", CmdSendCvar);
+
         // ---- generic commands (DP common/command/generic.qc + rpn.qc) — present in ALL programs (menu/
         //      client/server) in QC, so they live on the SHARED console surface here too. Pure cvar/string ops.
         _interp.RegisterCommand("rpn", a => Rpn.Run(a, _cvars, _print));
@@ -413,6 +420,40 @@ public sealed class ConsoleCommands
         foreach (var kv in _settemp)
             _cvars.Set(kv.Key, kv.Value);
         _settemp.Clear();
+    }
+
+    // =============================================================================================
+    //  cvar replication (DP/QC LocalCommand_sendcvar — cl_cmd.qc:395-428)
+    // =============================================================================================
+
+    /// <summary>
+    /// <c>sendcvar &lt;cvar&gt;</c>: push the local value of a replicated client cvar to the server. Routes the
+    /// resulting <c>sentcvar &lt;name&gt; "&lt;value&gt;"</c> line exactly like an unknown gameplay command —
+    /// the in-process listen world first (with the caller attached by the host's router), else the remote
+    /// string-command channel. With neither wired (a bare menu console) it is a silent no-op, like QC's
+    /// <c>cmd</c> into a disconnected client.
+    /// </summary>
+    private void CmdSendCvar(IReadOnlyList<string> a)
+    {
+        if (a.Count < 2)
+        {
+            _print("usage: sendcvar <cvar>");
+            return;
+        }
+        string name = a[1];
+        string line = $"sentcvar {name} \"{_cvars.GetString(name)}\"";
+        if (_localRouter != null)
+        {
+            string? output = _localRouter(line);   // null = no local world; "" = handled silently
+            if (output != null)
+            {
+                string trimmed = output.TrimEnd('\n', '\r', ' ', '\t');
+                if (trimmed.Length > 0)
+                    _print(trimmed);
+                return;
+            }
+        }
+        _remoteSender?.Invoke(line);
     }
 
     // =============================================================================================

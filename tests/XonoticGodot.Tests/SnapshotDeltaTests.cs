@@ -158,6 +158,75 @@ public class SnapshotDeltaTests
     }
 
     [Fact]
+    public void MoveVars_Has46Entries_WithTheV7TailAppended()
+    {
+        // v7 (T54): the block grew 40 → 46, APPEND-only (prefix-stable Apply/FromValues across versions).
+        Assert.Equal(46, MoveVarsBlock.Count);
+        string[] tail =
+        {
+            "g_movement_highspeed", "g_movement_highspeed_q3_compat", "sv_gameplayfix_nudgeoutofsolid",
+            "sv_wallclip", "sv_nostep", "sv_slick_applygravity",
+        };
+        for (int i = 0; i < tail.Length; i++)
+            Assert.Equal(tail[i], MoveVarsBlock.MovementCvars[40 + i]);
+        Assert.Equal("sv_maxspeed", MoveVarsBlock.MovementCvars[0]); // prefix untouched
+        Assert.Equal("sv_wallfriction", MoveVarsBlock.MovementCvars[39]);
+    }
+
+    [Fact]
+    public void MoveVars_Capture_SpecialSemantics_OnAnEmptyStore()
+    {
+        // An UNSET store must capture the engine defaults for the unset→non-zero names, or replication would
+        // silently turn the features off for remote clients (g_movement_highspeed 1, nudgeoutofsolid ON), and
+        // the jumpspeedcaps must capture the NaN "disabled" sentinel rather than a real 0 cap.
+        var empty = new CvarService();
+        float[] vals = MoveVarsBlock.Capture(empty);
+        int IndexOf(string name) => System.Array.IndexOf(MoveVarsBlock.MovementCvars, name);
+        Assert.Equal(1f, vals[IndexOf("g_movement_highspeed")]);
+        Assert.Equal(1f, vals[IndexOf("sv_gameplayfix_nudgeoutofsolid")]);
+        Assert.True(float.IsNaN(vals[IndexOf("sv_jumpspeedcap_min")]));
+        Assert.True(float.IsNaN(vals[IndexOf("sv_jumpspeedcap_max")]));
+        Assert.Equal(0f, vals[IndexOf("sv_maxspeed")]); // plain entries still read raw (Apply/FromValues default them)
+
+        // …and explicit values win: a real 0 jumpspeedcap (xdf-style) and highspeed 2 survive capture.
+        var set = new CvarService();
+        set.Set("g_movement_highspeed", "2");
+        set.Set("sv_jumpspeedcap_min", "0");
+        set.Set("sv_jumpspeedcap_max", "0.5");
+        float[] vals2 = MoveVarsBlock.Capture(set);
+        Assert.Equal(2f, vals2[IndexOf("g_movement_highspeed")]);
+        Assert.Equal(0f, vals2[IndexOf("sv_jumpspeedcap_min")]);
+        Assert.Equal(0.5f, vals2[IndexOf("sv_jumpspeedcap_max")]);
+    }
+
+    [Fact]
+    public void MoveVars_NaN_SurvivesTheWire_AndHashIsStable()
+    {
+        var cvars = new CvarService();
+        cvars.Set("sv_jumpspeedcap_max", "nan");
+        float[] vals = MoveVarsBlock.Capture(cvars);
+        var w = new BitWriter();
+        MoveVarsBlock.Serialize(w, vals);
+        var r = new BitReader(w.WrittenSpan);
+        float[] got = MoveVarsBlock.Deserialize(ref r);
+        int idx = System.Array.IndexOf(MoveVarsBlock.MovementCvars, "sv_jumpspeedcap_max");
+        Assert.True(float.IsNaN(got[idx]));
+        Assert.Equal(MoveVarsBlock.Hash(vals), MoveVarsBlock.Hash(got)); // NaN bits hash deterministically
+    }
+
+    [Fact]
+    public void MoveVars_EmptyBlock_RoundTrips_AsTheOverrideClearSentinel()
+    {
+        // v7: a count-0 resolved block is the "clear the per-client physics override" sentinel.
+        var w = new BitWriter();
+        MoveVarsBlock.Serialize(w, System.Array.Empty<float>());
+        var r = new BitReader(w.WrittenSpan);
+        float[] got = MoveVarsBlock.Deserialize(ref r);
+        Assert.False(r.BadRead);
+        Assert.Empty(got);
+    }
+
+    [Fact]
     public void SequenceWraparound_Comparison_Is_Correct()
     {
         Assert.True(ServerSnapshotHistory.IsNewer(2, 1));

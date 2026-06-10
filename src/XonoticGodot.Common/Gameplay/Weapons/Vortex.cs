@@ -7,16 +7,18 @@ namespace XonoticGodot.Common.Gameplay;
 
 /// <summary>
 /// The Vortex (Nexuiz "Nex") — port of common/weapons/weapon/vortex.{qh,qc}. A hitscan rail weapon:
-/// primary fire is an instant beam dealing a large fixed chunk of damage, consuming cells. The full
-/// charge mechanic (hold-zoom to overcharge for more damage) is modeled in the balance block and the
-/// charge math; per-actor charge *state* tracking is deferred to the weapon-entity component phase.
+/// primary fire is an instant beam dealing a large fixed chunk of damage, consuming cells. The hold-to-
+/// overcharge mechanic is modeled in full (T57): per-tick charge regen (gated by <c>charge_always</c>),
+/// the secondary charge ladder — chargepool / secondary-ammo-eating / free — with the chargepool regen +
+/// player-health-regen pause interaction, the forced reload, the velocity-charge mutator, and the optional
+/// real secondary fire mode (<c>g_balance_vortex_secondary</c>).
 ///
 /// Identity/attributes from vortex.qh; balance from bal-wep-xonotic.cfg (g_balance_vortex_*).
 /// </summary>
 [Weapon]
 public sealed class Vortex : Weapon
 {
-    /// <summary>Balance block — QC WEP_CVAR(WEP_VORTEX, *) (primary + charge cvars).</summary>
+    /// <summary>Balance block — QC WEP_CVAR(WEP_VORTEX, *) (primary + secondary + charge cvars).</summary>
     public struct Balance
     {
         public float Damage;             // g_balance_vortex_primary_damage
@@ -26,13 +28,28 @@ public sealed class Vortex : Weapon
         public float Ammo;               // g_balance_vortex_primary_ammo (cells per shot)
 
         public bool  Charge;             // g_balance_vortex_charge
+        public bool  ChargeAlways;       // g_balance_vortex_charge_always
         public float ChargeStart;        // g_balance_vortex_charge_start
         public float ChargeMinDmg;       // g_balance_vortex_charge_mindmg
         public float ChargeLimit;        // g_balance_vortex_charge_limit
         public float ChargeRate;         // g_balance_vortex_charge_rate
         public float ChargeAnimLimit;    // g_balance_vortex_charge_animlimit
         public float ChargeShotMul;      // g_balance_vortex_charge_shot_multiplier
+        public float ChargeRotPause;     // g_balance_vortex_charge_rot_pause
+        public float ChargeVelocityRate; // g_balance_vortex_charge_velocity_rate
+        public float ChargeMinSpeed;     // g_balance_vortex_charge_minspeed
+        public float ChargeMaxSpeed;     // g_balance_vortex_charge_maxspeed
+
         public bool  Secondary;          // g_balance_vortex_secondary (0 = zoom, not a fire mode)
+        public float SecondaryDamage;    // g_balance_vortex_secondary_damage
+        public float SecondaryForce;     // g_balance_vortex_secondary_force
+        public float SecondaryRefire;    // g_balance_vortex_secondary_refire
+        public float SecondaryAnimtime;  // g_balance_vortex_secondary_animtime
+        public float SecondaryAmmo;      // g_balance_vortex_secondary_ammo (cells/sec while charging)
+        public bool  SecondaryChargePool;       // g_balance_vortex_secondary_chargepool
+        public float ChargePoolRegen;           // g_balance_vortex_secondary_chargepool_regen
+        public float ChargePoolPauseRegen;      // g_balance_vortex_secondary_chargepool_pause_regen
+        public float ReloadAmmo;         // g_balance_vortex_reload_ammo (clip size; 0 = not reloadable)
     }
 
     public Balance Cvars;
@@ -61,59 +78,178 @@ public sealed class Vortex : Weapon
         Cvars.Ammo = Bal("g_balance_vortex_primary_ammo", 6f);
 
         Cvars.Charge = BalBool("g_balance_vortex_charge", true);
+        Cvars.ChargeAlways = BalBool("g_balance_vortex_charge_always", false);
         Cvars.ChargeStart = Bal("g_balance_vortex_charge_start", 0.5f);
         Cvars.ChargeMinDmg = Bal("g_balance_vortex_charge_mindmg", 40f);
         Cvars.ChargeLimit = Bal("g_balance_vortex_charge_limit", 1f);
         Cvars.ChargeRate = Bal("g_balance_vortex_charge_rate", 0.6f);
         Cvars.ChargeAnimLimit = Bal("g_balance_vortex_charge_animlimit", 0.5f);
         Cvars.ChargeShotMul = Bal("g_balance_vortex_charge_shot_multiplier", 0f);
+        Cvars.ChargeRotPause = Bal("g_balance_vortex_charge_rot_pause", 0f);
+        Cvars.ChargeVelocityRate = Bal("g_balance_vortex_charge_velocity_rate", 0f);
+        Cvars.ChargeMinSpeed = Bal("g_balance_vortex_charge_minspeed", 400f);
+        Cvars.ChargeMaxSpeed = Bal("g_balance_vortex_charge_maxspeed", 800f);
+
         Cvars.Secondary = BalBool("g_balance_vortex_secondary", false);
+        Cvars.SecondaryDamage = Bal("g_balance_vortex_secondary_damage", 0f);
+        Cvars.SecondaryForce = Bal("g_balance_vortex_secondary_force", 0f);
+        Cvars.SecondaryRefire = Bal("g_balance_vortex_secondary_refire", 0f);
+        Cvars.SecondaryAnimtime = Bal("g_balance_vortex_secondary_animtime", 0f);
+        Cvars.SecondaryAmmo = Bal("g_balance_vortex_secondary_ammo", 2f);
+        Cvars.SecondaryChargePool = BalBool("g_balance_vortex_secondary_chargepool", false);
+        Cvars.ChargePoolRegen = Bal("g_balance_vortex_secondary_chargepool_regen", 0.15f);
+        Cvars.ChargePoolPauseRegen = Bal("g_balance_vortex_secondary_chargepool_pause_regen", 1f);
+        Cvars.ReloadAmmo = Bal("g_balance_vortex_reload_ammo", 0f);
     }
 
-    // METHOD(Vortex, wr_think) — common/weapons/weapon/vortex.qc (primary path).
+    // METHOD(Vortex, wr_think) — common/weapons/weapon/vortex.qc:185-276.
+    //
+    // dt: QC runs wr_think TWICE per server frame with frametime/W_TICSPERFRAME (weaponsystem.qc:595,
+    // W_TICSPERFRAME=2); the port's driver runs WrThink once per tick with the full frametime — the same
+    // per-second charge/regen/deplete rates.
     public override void WrThink(Entity actor, WeaponSlot slot, FireMode fire)
     {
         var st = actor.WeaponState(slot);
-
-        // W_Vortex_Charge: charge regenerates toward charge_limit over time (charge_rate/tick). This per-tick
-        // upkeep runs in the Primary call (the driver calls WrThink(Primary) every tick); skipping it on the
-        // Secondary call avoids double-charging while ATK2 is held.
-        if (fire == FireMode.Primary && Cvars.Charge && st.VortexCharge < Cvars.ChargeLimit)
-            st.VortexCharge = MathF.Min(1f, st.VortexCharge + Cvars.ChargeRate * Api.Clock.FrameTime);
+        float dt = Api.Clock.FrameTime;
 
         if (fire == FireMode.Primary)
         {
+            // QC vortex.qc:187-188 — W_Vortex_Charge regen (only toward charge_limit) unless charge_always
+            // (whose every-PlayerFrame path, server/client.qc:2461, is gated off stock: charge_always 0).
+            if (!Cvars.ChargeAlways)
+                Charge(st, dt);
+
+            // Velocity-charge (vortex.qc:89-111, the vortex_charge GetPressedKeys mutator hook): while
+            // HOLDING the vortex and moving faster than minspeed, charge rises by velocity_rate scaled by
+            // how close xyspeed is to maxspeed. The hook requires m_weapon == WEP_VORTEX, and the driver
+            // only calls WrThink for the held weapon, so the per-tick condition is identical. Stock
+            // charge_velocity_rate is 0 (off).
+            if (Cvars.Charge && Cvars.ChargeVelocityRate > 0f && Cvars.ChargeMaxSpeed > Cvars.ChargeMinSpeed)
+            {
+                float xyspeed = new Vector2(actor.Velocity.X, actor.Velocity.Y).Length();
+                if (xyspeed > Cvars.ChargeMinSpeed)
+                {
+                    xyspeed = MathF.Min(xyspeed, Cvars.ChargeMaxSpeed);
+                    float f = (xyspeed - Cvars.ChargeMinSpeed) / (Cvars.ChargeMaxSpeed - Cvars.ChargeMinSpeed);
+                    st.VortexCharge = MathF.Min(1f, st.VortexCharge + Cvars.ChargeVelocityRate * f * dt);
+                }
+            }
+
+            // Chargepool regen (vortex.qc:190-196): regen only after the pause window; while the pool is
+            // below full, the PLAYER's health-regen pause is continuously pushed out.
+            if (Cvars.SecondaryChargePool && st.VortexChargePoolAmmo < 1f)
+            {
+                if (actor.VortexChargepoolPauseRegenFinished < Api.Clock.Time)
+                    st.VortexChargePoolAmmo = MathF.Min(1f, st.VortexChargePoolAmmo + Cvars.ChargePoolRegen * dt);
+                actor.PauseRegenFinished = MathF.Max(actor.PauseRegenFinished,
+                    Api.Clock.Time + Cvars.ChargePoolPauseRegen);
+            }
+
+            // Forced reload (vortex.qc:198-202): clip below the cheaper mode's cost -> reload and bail.
+            if (ForcedReload(actor, slot, st))
+                return;
+
             // QC: if (weapon_prepareattack(..., refire)) { W_Vortex_Attack(...); weapon_thinkf(..., animtime); }
             if (PrepareAttack(actor, slot, fire))
                 Attack(actor, slot, st, isSecondary: false);
         }
         else if (fire == FireMode.Secondary)
         {
-            // Secondary is the zoom/charge button: when charge is on and the plain zoom secondary is in
-            // use (not g_balance_vortex_secondary), holding it overcharges the beam toward full.
-            if (Cvars.Charge && !Cvars.Secondary)
+            // The driver invokes the Secondary call only while ATK2 is held — the port's stand-in for QC's
+            // charge key selection (vortex.qc:212): ZOOM when (charge && !secondary), else fire&2. With no
+            // separate zoom button, ATK2 serves both roles, so the inner "only eat ammo when the button is
+            // pressed (fire & 2)" check (vortex.qc:237) is implied by reaching this branch.
+            if (ForcedReload(actor, slot, st))
+                return;
+
+            if (Cvars.Charge)
             {
-                st.VortexChargeRotTime = Api.Clock.Time; // pause charge rot while actively charging
+                // ---- the charging ladder (vortex.qc:214-265) ----
+                st.VortexChargeRotTime = Api.Clock.Time + Cvars.ChargeRotPause;
                 if (st.VortexCharge < 1f)
                 {
-                    float dt = MathF.Min(Api.Clock.FrameTime, (1f - st.VortexCharge) / Cvars.ChargeRate);
-                    st.VortexCharge += dt * Cvars.ChargeRate;
+                    if (Cvars.SecondaryChargePool)
+                    {
+                        if (Cvars.SecondaryAmmo > 0f)
+                        {
+                            // always deplete while the key is held (vortex.qc:226)
+                            st.VortexChargePoolAmmo =
+                                MathF.Max(0f, st.VortexChargePoolAmmo - Cvars.SecondaryAmmo * dt);
+
+                            float cdt = MathF.Min(dt, (1f - st.VortexCharge) / Cvars.ChargeRate);
+                            actor.VortexChargepoolPauseRegenFinished =
+                                Api.Clock.Time + Cvars.ChargePoolPauseRegen;
+                            cdt = QMath.Clamp(cdt, 0f, st.VortexChargePoolAmmo);
+
+                            st.VortexCharge += cdt * Cvars.ChargeRate;
+                        }
+                    }
+                    else if (Cvars.SecondaryAmmo > 0f)
+                    {
+                        // sec-ammo path (vortex.qc:235-259): eat cells while charging, but never let the
+                        // reserve (or the clip, with reload_ammo) drop below the PRIMARY shot cost.
+                        float cdt = MathF.Min(dt, (1f - st.VortexCharge) / Cvars.ChargeRate);
+                        bool unlimited = actor.UnlimitedAmmo || (actor.Items & ItUnlimitedAmmoBit) != 0;
+                        if (!unlimited)
+                        {
+                            if (Cvars.ReloadAmmo > 0f)
+                            {
+                                cdt = QMath.Clamp(cdt, 0f, (st.ClipLoad - Cvars.Ammo) / Cvars.SecondaryAmmo);
+                                if (cdt > 0f)
+                                    st.ClipLoad = (int)MathF.Max(Cvars.SecondaryAmmo,
+                                        st.ClipLoad - Cvars.SecondaryAmmo * cdt);
+                                SetWeaponLoad(st, RegistryId, st.ClipLoad);
+                            }
+                            else
+                            {
+                                float res = actor.GetResource(AmmoType);
+                                cdt = QMath.Clamp(cdt, 0f, (res - Cvars.Ammo) / Cvars.SecondaryAmmo);
+                                if (cdt > 0f)
+                                    actor.SetResource(AmmoType,
+                                        MathF.Max(Cvars.SecondaryAmmo, res - Cvars.SecondaryAmmo * cdt));
+                            }
+                        }
+                        st.VortexCharge += cdt * Cvars.ChargeRate;
+                    }
+                    else
+                    {
+                        // free path (vortex.qc:260-264)
+                        float cdt = MathF.Min(dt, (1f - st.VortexCharge) / Cvars.ChargeRate);
+                        st.VortexCharge += cdt * Cvars.ChargeRate;
+                    }
                 }
             }
             else if (Cvars.Secondary)
             {
-                // g_balance_vortex_secondary: secondary is a real (weaker) fire mode — refire-gated.
+                // g_balance_vortex_secondary without charge: a real (weaker) fire mode — refire-gated.
                 if (PrepareAttack(actor, slot, fire))
                     Attack(actor, slot, st, isSecondary: true);
             }
         }
     }
 
-    // W_Vortex_Attack — common/weapons/weapon/vortex.qc
+    // W_Vortex_Charge (vortex.qc:174-178): regen toward charge_limit (a charge above the limit — e.g. from
+    // velocity charging — is left alone, it only decays via the rot path, stock-disabled).
+    private void Charge(WeaponSlotState st, float dt)
+    {
+        if (Cvars.Charge && st.VortexCharge < Cvars.ChargeLimit)
+            st.VortexCharge = MathF.Min(1f, st.VortexCharge + Cvars.ChargeRate * dt);
+    }
+
+    // vortex.qc:198-202: autocvar_g_balance_vortex_reload_ammo && clip_load < min(pri_ammo, sec_ammo).
+    private bool ForcedReload(Entity actor, WeaponSlot slot, WeaponSlotState st)
+    {
+        if (Cvars.ReloadAmmo <= 0f || st.ClipLoad >= MathF.Min(Cvars.Ammo, Cvars.SecondaryAmmo))
+            return false;
+        WrReload(actor, slot);
+        return true;
+    }
+
+    // W_Vortex_Attack — common/weapons/weapon/vortex.qc:113-170.
     private void Attack(Entity actor, WeaponSlot slot, WeaponSlotState st, bool isSecondary)
     {
-        float mydmg = Cvars.Damage;
-        float myforce = Cvars.Force;
+        float mydmg = isSecondary ? Cvars.SecondaryDamage : Cvars.Damage;
+        float myforce = isSecondary ? Cvars.SecondaryForce : Cvars.Force;
 
         // charge = chargeMinDmg/dmg + (1 - chargeMinDmg/dmg) * vortex_charge, then the shot consumes charge
         // via charge_shot_multiplier (a fast-shot penalty). Uses the per-slot accumulated charge.
@@ -122,13 +258,14 @@ public sealed class Vortex : Weapon
         {
             float baseFrac = Cvars.ChargeMinDmg / mydmg;
             charge = baseFrac + (1f - baseFrac) * st.VortexCharge;
-            st.VortexCharge *= Cvars.ChargeShotMul; // AFTER computing damage/force
+            st.VortexCharge *= Cvars.ChargeShotMul; // AFTER setting mydmg/myforce
         }
         mydmg *= charge;
         myforce *= charge;
 
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out _);
-        ShotInfo shot = WeaponFiring.SetupShot(actor, forward);
+        // QC vortex.qc:137: W_SetupShot(..., mydmg, dtype) — the fired credit is the POST-charge damage.
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, wep: this, maxDamage: mydmg);
 
         Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/nexfire.wav");
         // Overcharge sound when charged past the anim limit (a louder zap the more overcharged it is).
@@ -141,8 +278,8 @@ public sealed class Vortex : Weapon
         WeaponFiring.FireRailgunBullet(actor, shot.Origin, end, mydmg, RegistryId, myforce,
             headshotNotify: false);
 
-        // W_DecreaseAmmo(thiswep, actor, ammo) — subtract cells (unless unlimited ammo).
-        actor.TakeResource(AmmoType, Cvars.Ammo);
+        // W_DecreaseAmmo(thiswep, actor, WEP_CVAR_BOTH(ammo)) — clip/resource via the shared helper.
+        DecreaseAmmo(actor, slot, isSecondary ? Cvars.SecondaryAmmo : Cvars.Ammo);
 
         TraceResult impTr = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, end, MoveFilter.WorldOnly, actor);
         EffectEmitter.Emit("VORTEX_BEAM", shot.Origin, impTr.EndPos, 0);
@@ -151,17 +288,42 @@ public sealed class Vortex : Weapon
         EffectEmitter.Emit("VORTEX_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
     }
 
-    // METHOD(Vortex, wr_setup / wr_resetplayer) — seed the per-slot charge to charge_start.
+    // METHOD(Vortex, wr_setup / wr_resetplayer) — seed the per-slot charge + chargepool.
+    // NOTE: QC seeds these in wr_resetplayer (on respawn, vortex.qc:299-311); the port has no respawn-reset
+    // weapon hook, so the seed runs on switch-in (wr_setup) — a switch away+back also re-seeds (deviation,
+    // pre-existing for the charge; the pool seed follows the same convention).
     public override void WrSetup(Entity actor, WeaponSlot slot)
     {
-        if (Cvars.Charge) actor.WeaponState(slot).VortexCharge = Cvars.ChargeStart;
+        if (!Cvars.Charge) return;
+        var st = actor.WeaponState(slot);
+        st.VortexCharge = Cvars.ChargeStart;
+        if (Cvars.SecondaryChargePool)
+            st.VortexChargePoolAmmo = 1f;
     }
 
-    // QC the Vortex has a single refire/animtime block (primary); the optional g_balance_vortex_secondary
-    // fire mode reuses it, so both modes report the primary timing.
-    public override float RefireFor(FireMode fire) => Cvars.Refire;
-    public override float AnimtimeFor(FireMode fire) => Cvars.Animtime;
+    // QC WEP_CVAR_BOTH refire/animtime: the real secondary fire mode has its own timing block; the
+    // zoom-charge secondary never reaches PrepareAttack, so primary timing covers everything else.
+    public override float RefireFor(FireMode fire)
+        => fire == FireMode.Secondary && Cvars.Secondary ? Cvars.SecondaryRefire : Cvars.Refire;
+    public override float AnimtimeFor(FireMode fire)
+        => fire == FireMode.Secondary && Cvars.Secondary ? Cvars.SecondaryAnimtime : Cvars.Animtime;
 
-    // METHOD(Vortex, wr_checkammo1) — common/weapons/weapon/vortex.qc
-    public bool CheckAmmoPrimary(Entity actor) => actor.GetResource(AmmoType) >= Cvars.Ammo;
+    // METHOD(Vortex, wr_checkammo1) — vortex.qc:281-286 (resource OR the persistent clip when reloadable).
+    public bool CheckAmmoPrimary(Entity actor)
+        => actor.GetResource(AmmoType) >= Cvars.Ammo
+        || (Cvars.ReloadAmmo > 0f
+            && GetWeaponLoad(actor.WeaponState(new WeaponSlot(0)), RegistryId) >= Cvars.Ammo);
+
+    // METHOD(Vortex, wr_checkammo2) — vortex.qc:287-298: with g_balance_vortex_secondary, don't allow
+    // charging without enough ammo; otherwise "zoom is not a fire mode" (false).
+    public bool CheckAmmoSecondary(Entity actor)
+    {
+        if (!Cvars.Secondary)
+            return false;
+        return actor.GetResource(AmmoType) >= Cvars.SecondaryAmmo
+            || GetWeaponLoad(actor.WeaponState(new WeaponSlot(0)), RegistryId) >= Cvars.SecondaryAmmo;
+    }
+
+    /// <summary>QC <c>IT_UNLIMITED_AMMO</c> = BIT(0) (common/items/item.qh).</summary>
+    private const int ItUnlimitedAmmoBit = 1 << 0;
 }

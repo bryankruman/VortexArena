@@ -538,6 +538,16 @@ public sealed class FreezeTag : GameType
 
     public int GetTeamRounds(int team) => Scoring.GameScores.TeamScore(team, Scoring.GameScores.TeamSlotSecondary);
 
+    /// <summary>
+    /// QC STAT(REDALIVE..PINKALIVE) source (<c>freezetag_count_alive_players</c>, sv_freezetag.qc:22-50):
+    /// living (unfrozen, undead — QC <c>GetResource(RES_HEALTH) &gt;= 1 &amp;&amp; !STAT(FROZEN)</c>) players on
+    /// <paramref name="teamCode"/> (a <see cref="Teams"/> color code) per the last recount. QC recounts on
+    /// freeze/revive/death/spawn EVENTS; the port's per-frame <see cref="CheckRound"/>
+    /// (GameWorld.DriveGametypeFrame) recomputes the same pure function of the Frozen/IsDead state —
+    /// value-identical, so no second event-driven recount path is added. Inactive/unknown teams read 0.
+    /// </summary>
+    public int AliveCount(int teamCode) => Round.AliveByTeam.TryGetValue(teamCode, out int n) ? n : 0;
+
     public void UpdateLeaderAndCheckLimit()
     {
         // QC: FT teams rank by the team primary slot ST_FT_ROUNDS (round wins). LeaderTeam / SecondTeam read the

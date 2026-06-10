@@ -698,6 +698,51 @@ public sealed class KeyHunt : GameType
         return owner;
     }
 
+    // ============================================================================================
+    //  HUD stat pack (QC kh_update_state → STAT(OBJECTIVE_STATUS))
+    // ============================================================================================
+
+    /// <summary>
+    /// QC <c>kh_update_state</c> (sv_keyhunt.qc:126-148): pack one 5-bit slot per key at bits [5i..5i+4]
+    /// (key i = the i-th team's key in red,blue,yellow,pink order — QC <c>key.count</c>). Slot values:
+    /// 0 = no such key in play (also the whole state between rounds, when every key is removed);
+    /// 30 = dropped (QC "no owner"); 31 = carried by <paramref name="viewer"/> (QC's per-recipient
+    /// <c>STAT |= 31</c> self override — this makes the pack PERSONALIZED, so the server serializes it per
+    /// peer); otherwise the CARRIER's team as (team index + 1), i.e. 2=red .. 5=pink.
+    ///
+    /// DELIBERATE wire deviation: QC writes the SVQC team code (<c>f = key.team</c>, the carrier's — 5/14/13/10)
+    /// and the CSQC decode's −1 bridges to the NUM_TEAM codes (cl_keyhunt.qc:25); the port's panel decode
+    /// (ModIconsPanel.DrawKeyhunt, the same <c>((s &gt;&gt; (5i)) &amp; 31) − 1</c> expression) expects 1..4 team
+    /// INDICES, so we write index+1 — observationally identical icons, one index convention on the wire.
+    /// </summary>
+    public uint PackKeyState(Player? viewer)
+    {
+        if (Phase != RoundPhase.InProgress)
+            return 0u; // between rounds kh_Key_Remove deletes every key → QC state 0
+
+        uint s = 0;
+        for (int i = 0; i < Teams.All.Length; i++)
+        {
+            if (!Keys.TryGetValue(Teams.All[i], out KeyState? key))
+                continue; // no key for that team (slot 0) — only the first TeamCount teams have keys
+            uint f;
+            if (key.Carrier is { } c)
+                f = ReferenceEquals(c, viewer) ? 31u : (uint)(TeamIndex((int)c.Team) + 1); // QC f = key.team (the CARRIER's)
+            else if (key.Entity is not null)
+                f = 30u; // QC: key exists with no owner → dropped
+            else
+                continue; // out of play (returned/removed) → slot 0
+            s |= f << (5 * i);
+        }
+        return s;
+    }
+
+    /// <summary>Team color code → 1-based team index (1 red, 2 blue, 3 yellow, 4 pink; 0 unknown).</summary>
+    private static int TeamIndex(int team) => team switch
+    {
+        Teams.Red => 1, Teams.Blue => 2, Teams.Yellow => 3, Teams.Pink => 4, _ => 0,
+    };
+
     public void UpdateLeaderAndCheckLimit()
     {
         // QC: KH teams rank by the team primary slot ST_SCORE, then ST_KH_CAPS. LeaderTeam / SecondTeam read the

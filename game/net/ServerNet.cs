@@ -44,6 +44,9 @@ public sealed class ServerNet : IDisposable
     private readonly GameWorld _world;
     private readonly string _serverName;
 
+    /// <summary>The transport's connection cap — the browser's slots fallback when g_maxplayers is unset.</summary>
+    private int _maxClients = 32;
+
     // Reused writers (the networking spec's allocation discipline: one writer per send path, reset+refilled).
     private readonly BitWriter _snapshotWriter = new(2048);
     private readonly BitWriter _eventWriter = new(1024);
@@ -147,6 +150,11 @@ public sealed class ServerNet : IDisposable
         /// <summary>The movevars hash last sent to this client (re-send the block only when the physics changes).</summary>
         public uint LastMoveVarsHash;
 
+        /// <summary>The hash of the preset-RESOLVED movevar vector last sent to this client (v7, T54 —
+        /// g_physics_clientselect). 0 = no per-client override outstanding; when a peer's resolved physics stops
+        /// deviating from the global block, a count-0 "clear" block is sent once and this resets to 0.</summary>
+        public uint LastResolvedVarsHash;
+
         /// <summary>The score-table version last sent (re-send the scoreboard block only when a score changed). -1 = never.</summary>
         public int LastScoreVersion = -1;
 
@@ -197,13 +205,60 @@ public sealed class ServerNet : IDisposable
         // Install the lag-compensation hook so hitscan weapon traces rewind other players to the shooter's view
         // time (antilag.qc). Weapons call LagComp.Begin/End ambiently; this routes it to our rewind/restore.
         LagComp.Provider = new LagCompProvider(this);
+
+        // Per-player physics resolution (T54, QC Physics_UpdateStats → Physics_ClientOption): the shared sim
+        // asks this for each player's preset-resolved movevar vector. Returns null when g_physics_clientselect
+        // is off (the stock default) — the sim then reads the global cvars exactly as before.
+        _presetProvider = ResolvePresetVector;
+        MovementParameters.PresetProvider = _presetProvider;
+    }
+
+    // --- per-player preset physics (T54): the provider + a per-sim-tick resolve cache ---
+    private readonly System.Func<Entity, float[]?> _presetProvider;
+    private readonly Dictionary<Player, float[]?> _presetCache = new(ReferenceEqualityComparer.Instance);
+    private float _presetCacheTime = float.NaN;
+    private float[]? _presetCacheGlobals;
+
+    /// <summary>
+    /// QC <c>Physics_ClientOption</c> over the whole movevar vector for one player. Null when client physics
+    /// selection is off, or when the player's resolution doesn't deviate from the globals (so the sim takes the
+    /// plain FromCvars path). Cached per sim tick (keyed on <c>_world.Time</c>, which is constant within a tick)
+    /// because the sim asks once per move and the snapshot writer asks again at broadcast.
+    /// A bot/unknown player resolves with cl_physics "" — chain 2 skipped, but the g_physics_clientselect_default
+    /// chain still applies, faithful to player.qc:34-40 running for ANY entity.
+    /// </summary>
+    private float[]? ResolvePresetVector(Entity e)
+    {
+        if (e is not Player p)
+            return null;
+        var cvars = _world.Services.Cvars;
+        if (cvars.GetFloat("g_physics_clientselect") == 0f)
+            return null;
+
+        float now = _world.Time;
+        if (_presetCacheTime != now)
+        {
+            _presetCache.Clear();
+            _presetCacheGlobals = MoveVarsBlock.Capture(cvars);
+            _presetCacheTime = now;
+        }
+        if (_presetCache.TryGetValue(p, out float[]? cached))
+            return cached;
+
+        string clPhysics = _byPlayer.ContainsKey(p) ? _world.Commands.GetClientCvar(p, "cl_physics", "") : "";
+        float[] globals = _presetCacheGlobals!;
+        float[] resolved = MoveVarsBlock.CaptureResolved(cvars, clPhysics, globals, _world.Services.CvarsImpl.Has);
+        // No deviation from the global vector → null (the cheap shared path; also what keys the wire "clear").
+        float[]? result = MoveVarsBlock.Hash(resolved) == MoveVarsBlock.Hash(globals) ? null : resolved;
+        _presetCache[p] = result;
+        return result;
     }
 
     /// <summary>Convenience: start a server on <paramref name="port"/> and drive <paramref name="world"/>.</summary>
     public static ServerNet? Start(GameWorld world, int port, int maxClients = 32, string serverName = "XonoticGodot Server")
     {
         NetTransport.Server? t = NetTransport.Server.Start(port, maxClients);
-        return t is null ? null : new ServerNet(t, world, serverName);
+        return t is null ? null : new ServerNet(t, world, serverName) { _maxClients = maxClients };
     }
 
     // =====================================================================================
@@ -264,14 +319,15 @@ public sealed class ServerNet : IDisposable
             if (!st.Accepted || st.Player is not { IsObserver: true } observer)
                 continue;
 
-            bool jump = false, attack = false;
+            bool jump = false, attack = false, attack2 = false;
             if (st.HasLast)
             {
                 InputButtons b = st.Last.TypedButtons;
                 jump = (b & InputButtons.Jump) != 0;
                 attack = (b & InputButtons.Attack) != 0;
+                attack2 = (b & InputButtons.Attack2) != 0;
             }
-            _world.Clients.ObserverOrSpectatorThink(observer, jump, attack);
+            _world.Clients.ObserverOrSpectatorThink(observer, jump, attack, attack2);
         }
     }
 
@@ -285,6 +341,35 @@ public sealed class ServerNet : IDisposable
     /// <c>getinfo</c> probes with this server's infostring. Call after <see cref="Start"/>; silently skips an
     /// address that can't be resolved.
     /// </summary>
+    /// <summary>
+    /// Make this server discoverable on the LAN: bind the out-of-band <c>getinfo</c> answerer to a well-known
+    /// port NEXT TO the game port so browser broadcasts reach it. DP answers OOB probes on the game socket
+    /// itself, but our game socket is ENet (it drops raw OOB datagrams), so the discovery socket lives on the
+    /// first free port in <c>[gamePort+1 .. gamePort+8]</c> — the browser sweeps that small range and the
+    /// <c>infoResponse</c> carries the real game <c>port</c> to connect to (<see cref="BuildServerInfo"/>).
+    /// Safe to call when every candidate port is taken (discovery is then simply off, logged).
+    /// </summary>
+    public void EnableLanDiscovery(int gamePort)
+    {
+        if (_master is not null)
+            return; // already discoverable (EnableMasterServer bound a link)
+        for (int candidate = gamePort + 1; candidate <= gamePort + 8; candidate++)
+        {
+            try
+            {
+                _master = new MasterServerLink(candidate);
+                _master.GetInfoRequested += (from, _) => _master!.SendInfoResponse(from, BuildServerInfo(gamePort));
+                GD.Print($"[ServerNet] LAN discovery: answering getinfo on UDP {candidate} (game port {gamePort}).");
+                return;
+            }
+            catch (System.Net.Sockets.SocketException)
+            {
+                // port taken (another local server's discovery socket) — try the next one
+            }
+        }
+        GD.Print($"[ServerNet] LAN discovery unavailable: UDP {gamePort + 1}..{gamePort + 8} all in use.");
+    }
+
     public void EnableMasterServer(IEnumerable<string> masters, int port)
     {
         _master ??= new MasterServerLink();
@@ -320,7 +405,11 @@ public sealed class ServerNet : IDisposable
         ["mapname"] = _world.Services.Cvars.GetString("mapname"),
         ["gametype"] = _world.GameType?.RegistryName ?? "dm",
         ["clients"] = _byPlayer.Count.ToString(),
-        ["sv_maxclients"] = _world.Services.Cvars.GetString("g_maxplayers"),
+        // g_maxplayers 0/unset means "no gameplay cap" — report the transport's connection cap so the
+        // browser's players column shows real slots instead of "/0".
+        ["sv_maxclients"] = _world.Services.Cvars.GetFloat("g_maxplayers") > 0
+            ? _world.Services.Cvars.GetString("g_maxplayers")
+            : _maxClients.ToString(),
         ["protocol"] = NetProtocol.BuildParity().ToString(),
         ["port"] = port.ToString(),
         ["gamename"] = "Xonotic",
@@ -362,6 +451,7 @@ public sealed class ServerNet : IDisposable
             _antilag.Remove(st.Player);
             _lastSnapOrigin.Remove(st.Player);
             _playerNetIds.Remove(st.Player);
+            _world.Commands.ForgetPlayer(st.Player); // drop the per-client replicated-cvar/autoswitch tables
             _world.Clients.ClientDisconnect(st.Player);
             GD.Print($"[ServerNet] peer {peerId} disconnected ({st.Player.NetName}).");
         }
@@ -496,6 +586,7 @@ public sealed class ServerNet : IDisposable
         _byPlayer.Remove(p);
         _antilag.Remove(p);
         _lastSnapOrigin.Remove(p);
+        _world.Commands.ForgetPlayer(p); // per-client replicated-cvar/autoswitch tables
     }
 
     /// <summary>Send a reject reason and drop the peer (build mismatch / failed auth / full).</summary>
@@ -784,6 +875,27 @@ public sealed class ServerNet : IDisposable
                 st.LastMoveVarsHash = _moveVarsHash;
             }
 
+            // [v7] per-peer preset-RESOLVED physics (T54 — QC Physics_ClientOption, player.qc:18-42): when this
+            // client's g_physics_clientselect resolution deviates from the global block, send the resolved
+            // vector (hash-gated like the movevars block); when the deviation ENDS (preset back to default /
+            // clientselect turned off) send ONE count-0 block so the client clears its PredictionOverride.
+            // Steady state either way is a single false bool. The same vector drives the server sim via
+            // MovementParameters.PresetProvider (ResolvePresetVector), so authority and prediction agree.
+            {
+                float[]? resolved = ResolvePresetVector(owner);
+                uint resolvedHash = resolved is null ? 0u : MoveVarsBlock.Hash(resolved);
+                bool sendResolved = st.LastResolvedVarsHash != resolvedHash;
+                _snapshotWriter.WriteBool(sendResolved);
+                if (sendResolved)
+                {
+                    MoveVarsBlock.Serialize(_snapshotWriter, resolved ?? System.Array.Empty<float>());
+                    st.LastResolvedVarsHash = resolvedHash;
+                    if (_world.Services.Cvars.GetFloat("developer") != 0f)
+                        GD.Print($"[ServerNet] resolved physics block → {owner.NetName}: "
+                                 + (resolved is null ? "cleared (back to global)" : $"hash 0x{resolvedHash:X8}"));
+                }
+            }
+
             // ScoreInfo (the per-mode label/flag layout + gametype/teamplay): send the block only when the layout
             // changed since this client last got it — a gametype/mode switch (else one bool). MUST precede the
             // scoreboard block so the client applies the labels BEFORE deserializing the per-player columns, or the
@@ -808,6 +920,14 @@ public sealed class ServerNet : IDisposable
                 XonoticGodot.Net.ScoreboardBlock.Serialize(_snapshotWriter, _scoreRows, _scoreTeams);
                 st.LastScoreVersion = _scoreVersion;
             }
+
+            // [A3 reserved: T53 mode-stats block] — T53's gametype-status block (bool + hash/version-gated block,
+            // the movevars pattern) splices in HERE, after the scores block and before the entity section. The
+            // mirrored read goes at the matching marker in ClientNet.HandleSnapshot. Rides the v7 bump.
+
+            // [A3 reserved: T57 accuracy block] — if T57's payload is a bool-gated block (per-weapon arrays), it
+            // splices in HERE, directly after T53's slot; small per-owner scalars go in WriteOwnerState's
+            // append-at-END slot instead. Rides the v7 bump.
 
             // delta-compressed entity section (everyone but the recipient's own entity).
             st.SnapHistory.EncodeSnapshot(_snapshotWriter, _entityScratch, _snapshotSeq, excludeEntNum: st.NetId);
@@ -1103,7 +1223,7 @@ public sealed class ServerNet : IDisposable
     /// the active weapon id (the local first-person viewmodel selector — QC wepent m_weapon, which the owner is
     /// excluded from the entity stream for). Fixed-layout: keep these in lockstep with
     /// <c>ClientNet.HandleSnapshot</c>'s owner read, appending new fields at the END.</summary>
-    private static void WriteOwnerState(BitWriter w, Player p)
+    private void WriteOwnerState(BitWriter w, Player p)
     {
         w.WriteVector(p.Origin, XonoticGodot.Net.NetPrecision.Float);
         w.WriteVector(p.Velocity, XonoticGodot.Net.NetPrecision.Float);
@@ -1111,6 +1231,29 @@ public sealed class ServerNet : IDisposable
         w.WriteShort((int)p.Health);
         w.WriteShort((int)p.ArmorValue);
         w.WriteShort(p.ActiveWeaponId); // QC wepent m_weapon — drives the local first-person viewmodel
+
+        // QC STAT(RESPAWN_TIME) (server/client.qc:2419-2436): the dead-player respawn countdown / "press fire"
+        // prompt. Absolute sim time, negated while DEAD_RESPAWNING, 0 while alive/silent. Float (a sim time can
+        // exceed a short over a long match).
+        w.WriteFloat(p.RespawnTimeStat);
+
+        // QC spectatee_status (server/client.qc:1904, networked in ClientData BIT(1)): 0 = this owner is a live
+        // player; its own net id = observing (free-fly; the client maps it to -1); another player's net id = it
+        // is spectating that player (the client renders from their eyes). Net ids are assigned here, so the
+        // Player-ref spectatee link is resolved to a wire id at send time.
+        int spec;
+        if (p.Spectatee is { } tgt && !tgt.IsDead && !tgt.IsObserver)
+            spec = NetIdFor(tgt);
+        else if (p.IsObserver)
+            spec = NetIdFor(p);          // observing (not following anyone)
+        else
+            spec = 0;                    // a live player
+        p.SpectateeStatus = spec;
+        w.WriteShort(spec);
+
+        // [A3 reserved: owner-state appends] — new per-owner fields (T57 accuracy scalars, etc.) append HERE,
+        // strictly at the END (no per-field gating in the owner block; both sides must land in one commit —
+        // mirror point: after `SpectateeStatus = r.ReadShort()` in ClientNet.HandleSnapshot).
     }
 
     // =====================================================================================
@@ -1149,6 +1292,12 @@ public sealed class ServerNet : IDisposable
         // QC's hitscan path only rewinds at g_antilag == 2 (traceline_antilag: autocvar_g_antilag != 2 → lag = 0);
         // g_antilag == 1 is client-verified hitscan with NO server takeback. The cvar-unset fallback is 2 (stock).
         if (_lagCompActive || _antilagMode != 2 || shooter is not Player sp || !_byPlayer.ContainsKey(sp))
+            return;
+        // Per-shooter opt-out (T54): QC forces lag = 0 for a shooter whose replicated cl_noantilag is set
+        // (antilag.qc:154,205-230 — antilag_takeback_all's `if (noantilag(ignore)) lag = 0`; same gate in
+        // tracing.qc:115 for fireBullet). Zero lag == no rewind, so skipping Begin entirely is equivalent
+        // (EndLagComp no-ops via _lagCompActive). The restore path is untouched.
+        if (_world.Commands.GetClientCvarBool(sp, "cl_noantilag"))
             return;
         _lagCompActive = true;
         // Rewind depth is the shooter's measured latency alone: ANTILAG_LATENCY(e) = min(0.4, ping) (antilag.qh),
@@ -1472,6 +1621,9 @@ public sealed class ServerNet : IDisposable
         if (NotificationSystem.Sink is NotificationNetSink) NotificationSystem.Sink = NotificationSystem.Recorder;
         _world.Services.SoundImpl.Broadcast -= OnSoundEmitted; // drop the sound capture (avoid a re-host double-subscribe)
         if (LagComp.Provider is LagCompProvider) LagComp.Provider = null;
+        // drop the per-player physics resolver only if it is still OURS (a re-host may have installed a new one).
+        if (ReferenceEquals(MovementParameters.PresetProvider, _presetProvider))
+            MovementParameters.PresetProvider = null;
         _master?.Dispose();
         _transport.Dispose();
     }

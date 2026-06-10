@@ -72,9 +72,13 @@ public static class GameTypes
 }
 
 /// <summary>
-/// Populates the registries. Today this is a reflection scan over loaded assemblies; the
-/// <c>XonoticGodot.SourceGen</c> generator will emit explicit registration to replace it at compile time
-/// (ADR-0003). Bootstrap is idempotent and prefers a generated <c>RegisterAll</c> if one is present.
+/// Populates the registries. The body of <see cref="Bootstrap"/> is the source-generated
+/// <c>GeneratedRegistrations.RegisterAll()</c> (emitted into this assembly by <c>XonoticGodot.SourceGen</c>
+/// from the <c>[Weapon]</c>/<c>[Item]</c>/<c>[Mutator]</c>/<c>[GameType]</c>/<c>[Monster]</c>/<c>[Turret]</c>/
+/// <c>[Vehicle]</c> markers — ADR-0003, the C# successor to QC's REGISTER_* / [[accumulate]] compile-time
+/// registration, lib/registry.qh). A reflection scan remains ONLY for explicitly-passed extra (mod)
+/// assemblies; registrable content in the port itself must live in <c>XonoticGodot.Common</c>.
+/// Bootstrap is idempotent (the <c>_done</c> flag; use <see cref="Reset"/> in tests to re-run it).
 /// </summary>
 public static class GameRegistries
 {
@@ -85,47 +89,53 @@ public static class GameRegistries
         if (_done) return;
         _done = true;
 
-        var assemblies = new HashSet<Assembly> { typeof(GameRegistries).Assembly };
-        foreach (var a in extraAssemblies) assemblies.Add(a);
-        foreach (var a in AppDomain.CurrentDomain.GetAssemblies()) assemblies.Add(a);
+        // Compile-time registration tables (no reflection). RegisterAll() also Sort()s every touched
+        // catalog, so after this call the registries are already in their deterministic CL/SV order
+        // (ordinal RegistryName — same final order the old AppDomain reflection scan produced).
+        GeneratedRegistrations.RegisterAll();
 
-        foreach (var asm in assemblies)
+        // Extension hook: mod/expansion assemblies passed explicitly still register via reflection
+        // (the generator only sees Common's compilation). No caller in the port passes any today.
+        if (extraAssemblies.Length > 0)
         {
-            foreach (var t in SafeGetTypes(asm))
+            foreach (var asm in extraAssemblies)
             {
-                if (t is null || t.IsAbstract) continue;
-                if (t.GetCustomAttribute<GameRegistryAttribute>() is null) continue;
-
-                object? inst;
-                try { inst = Activator.CreateInstance(t); }
-                catch { continue; }
-
-                switch (inst)
+                foreach (var t in SafeGetTypes(asm))
                 {
-                    case Weapon w: Registry<Weapon>.Register(w); break;
-                    case Pickup p: Registry<Pickup>.Register(p); break;
-                    case MutatorBase m: Registry<MutatorBase>.Register(m); break;
-                    case GameType g: Registry<GameType>.Register(g); break;
-                    case Monster mo: Registry<Monster>.Register(mo); break;
-                    case Turret tu: Registry<Turret>.Register(tu); break;
-                    case Vehicle ve: Registry<Vehicle>.Register(ve); break;
+                    if (t is null || t.IsAbstract) continue;
+                    if (t.GetCustomAttribute<GameRegistryAttribute>() is null) continue;
+
+                    object? inst;
+                    try { inst = Activator.CreateInstance(t); }
+                    catch { continue; }
+
+                    switch (inst)
+                    {
+                        case Weapon w: Registry<Weapon>.Register(w); break;
+                        case Pickup p: Registry<Pickup>.Register(p); break;
+                        case MutatorBase m: Registry<MutatorBase>.Register(m); break;
+                        case GameType g: Registry<GameType>.Register(g); break;
+                        case Monster mo: Registry<Monster>.Register(mo); break;
+                        case Turret tu: Registry<Turret>.Register(tu); break;
+                        case Vehicle ve: Registry<Vehicle>.Register(ve); break;
+                    }
                 }
             }
-        }
 
-        // deterministic ordering for CL/SV agreement
-        Registry<Weapon>.Sort();
-        Registry<Pickup>.Sort();
-        Registry<MutatorBase>.Sort();
-        Registry<GameType>.Sort();
-        Registry<Monster>.Sort();
-        Registry<Turret>.Sort();
-        Registry<Vehicle>.Sort();
+            // Re-sort: the extras were appended after the generated tables' Sort().
+            Registry<Weapon>.Sort();
+            Registry<Pickup>.Sort();
+            Registry<MutatorBase>.Sort();
+            Registry<GameType>.Sort();
+            Registry<Monster>.Sort();
+            Registry<Turret>.Sort();
+            Registry<Vehicle>.Sort();
+        }
 
         // Seed each weapon's balance block from its g_balance_* cvars (QC W_PROPS at progs init). At this point
         // no .cfg is loaded yet, so this stamps the stock fallbacks; Weapons.ConfigureAll() re-runs it after the
         // config interpreter loads the real balance table. Without this, every weapon's balance struct stays at
-        // its zero default and weapons fire with no damage/speed.
+        // its zero default and weapons fire with no damage/speed. Must stay AFTER the Sort()s.
         Weapons.ConfigureAll();
     }
 

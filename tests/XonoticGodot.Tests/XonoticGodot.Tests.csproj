@@ -11,6 +11,9 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
     <PackageReference Include="xunit" Version="2.9.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+    <!-- Drives the registry source generator in-memory (SourceGenTests). Pin to the same Roslyn
+         version as src/XonoticGodot.SourceGen to avoid analyzer/driver version skew. -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.8.0" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\XonoticGodot.Common\XonoticGodot.Common.csproj" />
@@ -18,5 +21,7 @@
     <ProjectReference Include="..\..\src\XonoticGodot.Net\XonoticGodot.Net.csproj" />
     <ProjectReference Include="..\..\src\XonoticGodot.Formats\XonoticGodot.Formats.csproj" />
     <ProjectReference Include="..\..\src\XonoticGodot.Server\XonoticGodot.Server.csproj" />
+    <!-- Normal (non-analyzer) reference: SourceGenTests instantiate RegistryGenerator directly. -->
+    <ProjectReference Include="..\..\src\XonoticGodot.SourceGen\XonoticGodot.SourceGen.csproj" />
   </ItemGroup>
 </Project>

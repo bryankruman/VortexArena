@@ -121,6 +121,24 @@ public static class Resources
         amount = ResourceHooks.CallGiveResource(e, res, amount);
         if (amount <= 0f) return;
         SetResource(e, res, GetResource(e, res) + amount);
+
+        // QC sv_resources.qc:134-156: giving health/armor/fuel pauses that resource's ROT for a grace window
+        // (g_balance_pause_{health,armor,fuel}_rot), so an over-stacked pickup (e.g. 200 HP from a mega) holds
+        // before decaying. The rot-pause timers live on the Entity so the server-side regen tick reads them.
+        if (Api.Services is null) return;
+        float now = Api.Clock.Time;
+        switch (res)
+        {
+            case ResourceType.Health:
+                e.PauseRotHealthFinished = MathF.Max(e.PauseRotHealthFinished, now + Cvar("g_balance_pause_health_rot", 1f));
+                break;
+            case ResourceType.Armor:
+                e.PauseRotArmorFinished = MathF.Max(e.PauseRotArmorFinished, now + Cvar("g_balance_pause_armor_rot", 1f));
+                break;
+            case ResourceType.Fuel:
+                e.PauseRotFuelFinished = MathF.Max(e.PauseRotFuelFinished, now + Cvar("g_balance_pause_fuel_rot", 5f));
+                break;
+        }
     }
 
     /// <summary>GiveResourceWithLimit(receiver, res_type, amount, limit) — caps the *post-give* total at limit.</summary>

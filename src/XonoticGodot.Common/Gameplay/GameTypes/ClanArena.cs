@@ -464,6 +464,24 @@ public sealed class ClanArena : GameType
 
     public int GetTeamRounds(int team) => Scoring.GameScores.TeamScore(team, Scoring.GameScores.TeamSlotSecondary);
 
+    /// <summary>
+    /// QC STAT(REDALIVE..PINKALIVE) source (<c>CA_count_alive_players</c>, sv_clanarena.qc:17-43): living
+    /// players on <paramref name="teamCode"/> (a <see cref="Teams"/> color code) per the last recount.
+    /// <see cref="CheckTeams"/>/<see cref="CheckWinner"/>/<see cref="CheckRound"/> all refresh
+    /// <see cref="RoundState.AliveByTeam"/>, and the live path (GameWorld.DriveGametypeFrame → CheckRound)
+    /// runs per frame — matching QC's per-frame recount (CA_CheckWinner is the round_handler canRoundEnd
+    /// callback, polled every server frame while a round is live). Inactive/unknown teams read 0.
+    /// </summary>
+    public int AliveCount(int teamCode) => Round.AliveByTeam.TryGetValue(teamCode, out int n) ? n : 0;
+
+    /// <summary>
+    /// QC <c>ca_isEliminated</c> (sv_clanarena.qc:243-250) approximated: QC = INGAME_JOINED &amp;&amp;
+    /// (IS_DEAD || frags == FRAGS_PLAYER_OUT_OF_GAME), or INGAME_JOINING. The port has no INGAME_JOINING /
+    /// FRAGS_PLAYER_OUT_OF_GAME state yet, so eliminated = dead — a late joiner waiting for the next round
+    /// won't grey on the scoreboard until a spectate/INGAME pass adds that state.
+    /// </summary>
+    public bool IsEliminatedPlayer(Player p) => p.IsDead;
+
     public void UpdateLeaderAndCheckLimit()
     {
         // QC: CA teams rank by the team primary slot ST_CA_ROUNDS (round wins). LeaderTeam / SecondTeam read the

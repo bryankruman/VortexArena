@@ -133,15 +133,40 @@ public sealed class Commands
     public CommandReplies Replies { get; }
 
     /// <summary>QC <c>CS_CVAR(caller).cvar_cl_autoswitch</c>: the per-client auto-weapon-switch flag, kept off the
-    /// shared Player type (a small per-player table here). Set by the <c>autoswitch</c> command, read by the
-    /// pickup→bestweapon logic when that consults it. Default unset == 0 (off) until the client sends it.</summary>
+    /// shared Player type (a small per-player table here). Set by the <c>autoswitch</c> command (and synced by a
+    /// replicated <c>sentcvar cl_autoswitch</c>), read by the pickup→bestweapon logic when that consults it.
+    /// Default unset == 0 (off) until the client sends it.</summary>
     private readonly Dictionary<Player, bool> _autoswitch = new();
-
-    /// <summary>QC <c>CS_CVAR(caller).cvar_cl_physics</c>: the per-client physics set name (the <c>physics</c> command).</summary>
-    private readonly Dictionary<Player, string> _clPhysics = new();
 
     /// <summary>QC <c>CS(caller).version</c>: the client's reported game version (the internal <c>clientversion</c> command).</summary>
     private readonly Dictionary<Player, float> _clientVersion = new();
+
+    /// <summary>
+    /// The per-client replicated-cvar store — the C# successor to QC's <c>CS_CVAR(player).cvar_cl_*</c> fields
+    /// (lib/replicate.qh: the SVQC side of REPLICATE keeps each client's pushed cvar values on its clientstate
+    /// entity). Written ONLY by the caller-gated <c>sentcvar</c> command (and the <c>physics</c>/<c>autoswitch</c>
+    /// verbs that share state with it) — NEVER the world cvar store, which would be the T47 privilege-separation
+    /// hole. Keyed by Player; dropped in <see cref="ForgetPlayer"/> on disconnect.
+    /// </summary>
+    private readonly Dictionary<Player, Dictionary<string, string>> _clientCvars = new();
+
+    /// <summary>
+    /// The cvars a client may push via <c>cmd sentcvar</c> — the ported slice of the QC REPLICATE registrations
+    /// (common/replicate.qh:15-23 + physics/player.qc:7-9) that have live consumers here. Anything else is
+    /// silently ignored (QC stores only known REPLICATE fields; an unknown name writes nothing).
+    /// </summary>
+    private static readonly HashSet<string> SentCvarAllowlist = new(StringComparer.Ordinal)
+    {
+        "cl_weaponpriority",
+        "cl_weaponpriority0", "cl_weaponpriority1", "cl_weaponpriority2", "cl_weaponpriority3",
+        "cl_weaponpriority4", "cl_weaponpriority5", "cl_weaponpriority6", "cl_weaponpriority7",
+        "cl_weaponpriority8", "cl_weaponpriority9",
+        "cl_autoswitch", "cl_autoswitch_cts",
+        "cl_noantilag",
+        "cl_physics",
+        "cl_movement_track_canjump",
+        "cl_jetpack_jump",
+    };
 
     /// <summary>QC <c>mapvote_suggestions</c>: maps players suggested for the end-of-match ballot (the <c>suggestmap</c>
     /// command). Kept here (the port's <see cref="MapVoting"/> defers the suggestion array); deduped, order kept.</summary>
@@ -150,11 +175,54 @@ public sealed class Commands
     /// <summary>QC the per-client auto-switch flag read (default off). Exposed so the pickup path can honor it.</summary>
     public bool GetAutoswitch(Player p) => _autoswitch.TryGetValue(p, out bool v) && v;
 
+    /// <summary>QC <c>CS_CVAR(p).cvar_&lt;name&gt;</c>: the per-client replicated cvar value, or
+    /// <paramref name="fallback"/> when the client never sent it.</summary>
+    public string GetClientCvar(Player p, string name, string fallback = "")
+        => _clientCvars.TryGetValue(p, out var t) && t.TryGetValue(name, out string? v) ? v : fallback;
+
+    /// <summary>Boolean read of a per-client replicated cvar (QC <c>boolean(stoi(...))</c> semantics via
+    /// <see cref="InterpretBoolean"/>).</summary>
+    public bool GetClientCvarBool(Player p, string name, bool fallback = false)
+        => _clientCvars.TryGetValue(p, out var t) && t.TryGetValue(name, out string? v) ? InterpretBoolean(v) : fallback;
+
+    /// <summary>Float read of a per-client replicated cvar (QC <c>stof</c> — unparsable → 0).</summary>
+    public float GetClientCvarFloat(Player p, string name, float fallback = 0f)
+        => _clientCvars.TryGetValue(p, out var t) && t.TryGetValue(name, out string? v)
+            ? (float.TryParse(v, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out float f) ? f : 0f)
+            : fallback;
+
+    private void SetClientCvar(Player p, string name, string value)
+    {
+        if (!_clientCvars.TryGetValue(p, out var t))
+            _clientCvars[p] = t = new Dictionary<string, string>(StringComparer.Ordinal);
+        t[name] = value;
+    }
+
+    /// <summary>
+    /// Drop every per-client table entry for a departed player (the QC clientstate entity being freed on
+    /// disconnect). The net layer calls this from its disconnect/bot-removal paths so the dictionaries don't
+    /// retain dead Player references across a long-running server.
+    /// </summary>
+    public void ForgetPlayer(Player p)
+    {
+        _clientCvars.Remove(p);
+        _autoswitch.Remove(p);
+        _clientVersion.Remove(p);
+    }
+
     public Commands(GameWorld world)
     {
         _world = world;
         Replies = new CommandReplies(world);
         RegisterBuiltins();
+
+        // Per-client weapon priority (T54): point the selection code's per-player priority source at this
+        // world's replicated-cvar table (QC w_getbestweapon reading CS_CVAR(this).cvar_cl_weaponpriority).
+        // The stored value is already fixed-up NUMBER form (see CmdSentCvar); "" → Inventory falls back to the
+        // global cvar read, so a player that never replicated behaves exactly as before. Static: the latest
+        // world's Commands owns it (a torn-down world's players simply read "" → fallback).
+        Inventory.PriorityProvider = e => e is Player p ? GetClientCvar(p, "cl_weaponpriority", "") : null;
     }
 
     /// <summary>The registered commands (read-only), e.g. for a <c>help</c>/completion dump.</summary>
@@ -364,6 +432,7 @@ public sealed class Commands
         Register("autoswitch", "autoswitch <on|off> — auto-switch to a better weapon on pickup", CmdAutoswitch);
         Register("physics", "physics <set> — select a client physics set", CmdPhysics);
         Register("clientversion", "clientversion <version> — (internal) report the client game version", CmdClientVersion);
+        Register("sentcvar", "sentcvar <cvar> <value> — (internal) a client pushing a replicated cl_* cvar", CmdSentCvar);
 
         // ---- common reply commands (QC server/command/common.qc — cached reply strings) ----
         Register("records", "records [<page>] — show the gametype records", CmdRecords);
@@ -696,7 +765,7 @@ public sealed class Commands
         string dest = ctx.Arg(2).ToLowerInvariant();
         if (dest is "spec" or "spectator" or "spectate")
         {
-            target.FragsStatus = Player.FragsSpectator;
+            _world.Clients.PutObserverInServer(target); // QC: real observer transition, not just the scoreboard flag
             ctx.Print($"moved {target.NetName} to spectators");
             return true;
         }
@@ -713,8 +782,9 @@ public sealed class Commands
     {
         string reason = ctx.ArgTail(1);
         int n = 0;
-        foreach (Player p in _world.Clients.Players)
-            if (p.FragsStatus != Player.FragsSpectator) { p.FragsStatus = Player.FragsSpectator; n++; }
+        // Snapshot the roster: PutObserverInServer may mutate roster-adjacent state, so iterate a copy.
+        foreach (Player p in new List<Player>(_world.Clients.Players))
+            if (!p.IsObserver) { _world.Clients.PutObserverInServer(p); n++; }
         ChatBroadcast?.Invoke($"^2* All players moved to spectators{(string.IsNullOrEmpty(reason) ? "" : $" ({reason})")}");
         ctx.Print($"moved {n} player(s) to spectators");
         return true;
@@ -748,7 +818,12 @@ public sealed class Commands
             p.FragsStatus = Player.FragsPlayer;
         if (_world.Teamplay.IsTeamGame && (int)p.Team == Teams.None && !_world.TeamsLocked)
             _world.Teamplay.AssignBestTeam(p, _world.Clients.Players);
-        _world.Clients.Spawn(p);
+        // QC Join: an OBSERVER goes through the observer→player transition (clears IsObserver/Spectatee, restores
+        // MOVETYPE_WALK/SOLID/DAMAGE via PutPlayerInServer); a live (dead) player just respawns.
+        if (p.IsObserver)
+            _world.Clients.Join(p);
+        else
+            _world.Clients.Spawn(p);
         ctx.Print("joined the game");
         return true;
     }
@@ -757,7 +832,20 @@ public sealed class Commands
     {
         if (ctx.Caller is null) { ctx.Print("spectate is a client command"); return true; }
         if (!Cvars.Bool("sv_spectate")) { ctx.Print("Spectating is not allowed."); return true; }
-        ctx.Caller.FragsStatus = Player.FragsSpectator;
+        Player p = ctx.Caller;
+        // QC ClientCommand_spectate: run the REAL observer transition (free-fly, non-solid, model hidden,
+        // weapons stripped) — not just flip the scoreboard sentinel as before, which left the player a solid,
+        // shootable, still-scoring actor (SPEC4/LOOP2).
+        _world.Clients.PutObserverInServer(p);
+        // optional <client> arg → follow that player (QC Spectate(this, GetFilteredEntity(argv(1)))).
+        if (ctx.ArgCount >= 2 && ctx.Arg(1) != "0")
+        {
+            Player? tgt = FindPlayerByName(ctx.Arg(1));
+            if (tgt is not null && !tgt.IsObserver && !tgt.IsDead && !ReferenceEquals(tgt, p))
+                _world.Clients.Spectate(p, tgt);
+            else
+                ctx.Print($"no player matching \"{ctx.Arg(1)}\"");
+        }
         ctx.Print("now spectating");
         return true;
     }
@@ -1412,15 +1500,74 @@ public sealed class Commands
             || System.Array.IndexOf(options.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries), command) >= 0;
         if (valid)
         {
-            _clPhysics[ctx.Caller] = command; // QC stuffcmd(caller, "seta cl_physics <set>") — recorded server-side
+            // QC stuffcmd(caller, "seta cl_physics <set>") — recorded server-side in the per-client cvar table
+            // (the same slot a replicated `sentcvar cl_physics` writes), which the snapshot's per-peer preset
+            // resolution reads each tick (T54).
+            SetClientCvar(ctx.Caller, "cl_physics", command);
             ctx.Print($"^2Physics set successfully changed to ^3{command}");
             return true;
         }
         // QC default branch: report the current set, then fall through to the usage block (QC's default: → usage).
-        ctx.Print($"Current physics set: ^3{(_clPhysics.TryGetValue(ctx.Caller, out string? cur) ? cur : "")}");
+        ctx.Print($"Current physics set: ^3{GetClientCvar(ctx.Caller, "cl_physics", "")}");
         ctx.Print("Usage:^3 cmd physics <physics>");
         ctx.Print("  See 'cmd physics list' for available physics sets.");
         ctx.Print("  Argument 'default' resets to standard physics.");
+        return true;
+    }
+
+    /// <summary>
+    /// QC <c>ClientCommand_sentcvar</c> (server/command/cmd.qc:804-836) + the SVQC REPLICATE receive leg
+    /// (lib/replicate.qh:79-100): a client pushing one of its replicated <c>cl_*</c> cvars to the server's
+    /// per-client store. Caller-gated (never the server console) and allowlisted — the value is an
+    /// attacker-controlled wire string, so it must NEVER reach the world cvar store (the T47
+    /// privilege-separation class). The QC fixup funcs run on the RECEIVED value (replicate.qh:63-73):
+    /// cl_weaponpriority → number + force-complete; cl_weaponpriority0..9 → fix without completing. The
+    /// deprecated server→client GetCvars f==0 "request" direction (getreplies.qc:392 warns it's deprecated)
+    /// is intentionally not ported — clients push via the sendcvar watcher instead.
+    /// </summary>
+    private bool CmdSentCvar(CommandContext ctx)
+    {
+        if (ctx.Caller is null) { ctx.Print("sentcvar is a client command"); return true; }
+        if (ctx.ArgCount < 3)
+        {
+            // QC cmd.qc:827-832 — the default/usage block ("Incorrect parameters" then usage).
+            ctx.Print($"Incorrect parameters for ^2{ctx.Arg(0)}^7");
+            ctx.Print("Usage:^3 cmd sentcvar <cvar> <arguments>");
+            return true;
+        }
+
+        string name = ctx.Arg(1);
+        if (!SentCvarAllowlist.Contains(name))
+            return true; // unknown REPLICATE field → stored nowhere (QC writes no field), silently consumed
+
+        string value = ctx.Arg(2);
+        if (value.Length > 1024)
+            value = value[..1024]; // clamp the wire string (defensive; QC strings are engine-bounded)
+
+        // QC REPLICATE fixups, applied to the received value before it lands in the per-client field.
+        if (name == "cl_weaponpriority")
+        {
+            // W_FixWeaponOrder_ForceComplete_AndBuildImpulseList (weapons/all.qc:799-818 registration): the
+            // client may send NAME or NUMBER form; number it, then force-complete. Stored in NUMBER form —
+            // exactly what Inventory.GetCycleWeapon consumes (the impulse-list half is the client's own concern).
+            value = Common.Gameplay.WeaponOrder.FixWeaponOrderForceComplete(
+                Common.Gameplay.WeaponOrder.NumberWeaponOrder(value),
+                _world.Services.CvarsImpl.GetDefault("cl_weaponpriority"));
+        }
+        else if (name.StartsWith("cl_weaponpriority", StringComparison.Ordinal) && name.Length == "cl_weaponpriority".Length + 1)
+        {
+            // cl_weaponpriorityN — W_FixWeaponOrder_AllowIncomplete (fix, do NOT complete).
+            value = Common.Gameplay.WeaponOrder.FixWeaponOrder(
+                Common.Gameplay.WeaponOrder.NumberWeaponOrder(value), complete: false);
+        }
+
+        SetClientCvar(ctx.Caller, name, value);
+
+        // Bridges into the pre-existing T56 per-client state, so both write paths share one source of truth.
+        if (name == "cl_autoswitch")
+            _autoswitch[ctx.Caller] = InterpretBoolean(value);
+
+        // QC prints nothing on the happy path.
         return true;
     }
 

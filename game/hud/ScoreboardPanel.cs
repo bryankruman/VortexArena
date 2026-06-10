@@ -3,6 +3,7 @@ using Godot;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Gameplay;
 using XonoticGodot.Common.Gameplay.Scoring;
+using XonoticGodot.Common.Services;
 
 namespace XonoticGodot.Game.Hud;
 
@@ -47,11 +48,14 @@ public partial class ScoreboardPanel : HudPanel
         public readonly int Ping;
         /// <summary>True if this row is the local player (highlighted). Set by the feeder or matched by name.</summary>
         public readonly bool IsLocal;
+        /// <summary>True if this player is eliminated for the round (QC <c>pl.eliminated</c>, the networked
+        /// eliminatedPlayers bitfield: CA dead / FT frozen-or-dead / Survival out) — greys the row.</summary>
+        public readonly bool Eliminated;
         /// <summary>Full registry-indexed column values (QC scores(field)) when fed from the wire; else null.</summary>
         public readonly int[]? Columns;
 
         public ScoreRow(string name, int score, int team = 0, int deaths = -1, int ping = -1,
-            bool isLocal = false, int[]? columns = null)
+            bool isLocal = false, int[]? columns = null, bool eliminated = false)
         {
             Name = name ?? "";
             Score = score;
@@ -59,6 +63,7 @@ public partial class ScoreboardPanel : HudPanel
             Deaths = deaths;
             Ping = ping;
             IsLocal = isLocal;
+            Eliminated = eliminated;
             Columns = columns;
         }
 
@@ -136,7 +141,8 @@ public partial class ScoreboardPanel : HudPanel
     /// the scoreboard grid). Maps the wire columns (in <see cref="GameScores.NetworkedFields"/> order) back to a
     /// registry-indexed array so <see cref="ScoreRow.Col"/> reads the right field.
     /// </summary>
-    public void SetWireRows(XonoticGodot.Net.ScoreboardWire wire, int localNetId)
+    public void SetWireRows(XonoticGodot.Net.ScoreboardWire wire, int localNetId,
+        IReadOnlyCollection<int>? eliminatedNetIds = null)
     {
         _rows.Clear();
         if (wire is not null)
@@ -155,7 +161,10 @@ public partial class ScoreboardPanel : HudPanel
                 int score = scoreF is not null ? cols[scoreF.RegistryId] : 0;
                 int deaths = deathsF is not null ? cols[deathsF.RegistryId] : -1;
                 _rows.Add(new ScoreRow(wr.Name, score, wr.Team, deaths, ping: -1,
-                    isLocal: wr.NetId == localNetId, columns: cols));
+                    isLocal: wr.NetId == localNetId, columns: cols,
+                    // QC pl.eliminated (NET_HANDLE ENT_CLIENT_ELIMINATEDPLAYERS, client/main.qc:819): flag the
+                    // rows the round-status block marked eliminated so DrawRow greys them.
+                    eliminated: eliminatedNetIds is not null && eliminatedNetIds.Contains(wr.NetId)));
             }
 
             _teamScores.Clear();
@@ -699,6 +708,17 @@ public partial class ScoreboardPanel : HudPanel
         y += 4f;
     }
 
+    /// <summary>QC <c>autocvar_hud_panel_scoreboard_table_highlight_alpha_eliminated</c> (scoreboard.qc:77,
+    /// default 0.6 — the luma skin also ships 0.6): the eliminated-row grey-out strength, cvar-read live with
+    /// the shipped default as fallback.</summary>
+    private static float EliminatedAlpha()
+    {
+        if (Api.Services is null) return 0.6f;
+        string s = Api.Cvars.GetString("hud_panel_scoreboard_table_highlight_alpha_eliminated");
+        if (string.IsNullOrEmpty(s)) return 0.6f;
+        return Mathf.Clamp(Api.Cvars.GetFloat("hud_panel_scoreboard_table_highlight_alpha_eliminated"), 0f, 1f);
+    }
+
     /// <summary>Draw one player row across all columns; returns false once the panel is full.</summary>
     private bool DrawRow(Layout layout, in ScoreRow r, int rank, ref float y, float rowH)
     {
@@ -706,6 +726,11 @@ public partial class ScoreboardPanel : HudPanel
 
         if (r.IsLocal)
             DrawRect(new Rect2(layout.X, y, layout.W, rowH), new Color(0.3f, 0.5f, 0.9f, 0.30f));
+
+        // QC scoreboard.qc:1519-1520: grey out an eliminated player's row (the eliminatedPlayers bitfield)
+        // with a BLACK fill at hud_panel_scoreboard_table_highlight_alpha_eliminated (shipped luma skin: 0.6).
+        if (r.Eliminated)
+            DrawRect(new Rect2(layout.X, y, layout.W, rowH), new Color(0f, 0f, 0f, EliminatedAlpha()));
 
         DrawText(new Vector2(layout.RankX + 2f, y + 3f), rank.ToString(), r.IsLocal ? new Color(1f, 1f, 1f, 1f) : FgColor, 16);
 

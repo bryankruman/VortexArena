@@ -32,7 +32,7 @@ public static class GameInit
     public static void Boot(IEngineServices services)
     {
         Api.Services = services;
-        GameRegistries.Bootstrap();
-        InstallGameplaySystems();
+        GameRegistries.Bootstrap();   // source-generated registration tables (ADR-0003), then ConfigureAll
+        InstallGameplaySystems();     // MapObjectsRegistry.RegisterAll etc. — must stay AFTER Bootstrap
     }
 }

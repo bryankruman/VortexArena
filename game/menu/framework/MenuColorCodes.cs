@@ -79,4 +79,29 @@ public static class MenuColorCodes
     }
 
     private static bool IsHex(char c) => c is (>= '0' and <= '9') or (>= 'a' and <= 'f') or (>= 'A' and <= 'F');
+
+    /// <summary>
+    /// Remove <c>^</c> colour codes entirely (server hostnames in plain widgets — Tree/ItemList cells can't
+    /// render BBCode, so the codes would show as garbage). <c>^^</c> collapses to a literal caret.
+    /// </summary>
+    public static string Strip(string? s)
+    {
+        if (string.IsNullOrEmpty(s) || s.IndexOf('^') < 0)
+            return s ?? "";
+        var sb = new StringBuilder(s.Length);
+        for (int i = 0; i < s.Length; i++)
+        {
+            char c = s[i];
+            if (c == '^' && i + 1 < s.Length)
+            {
+                char n = s[i + 1];
+                if (n == '^') { sb.Append('^'); i++; continue; }
+                if (n is >= '0' and <= '9') { i++; continue; }
+                if (n == 'x' && i + 4 < s.Length && IsHex(s[i + 2]) && IsHex(s[i + 3]) && IsHex(s[i + 4]))
+                { i += 4; continue; }
+            }
+            sb.Append(c);
+        }
+        return sb.ToString();
+    }
 }

@@ -13,12 +13,10 @@ namespace XonoticGodot.Server;
 /// </summary>
 public sealed class ServerPlayerState
 {
-    // ---- regen / rot pause timers (QC client.qc; damage pauses regen for a few seconds) ----
-    public float PauseRegenFinished;     // QC .pauseregen_finished (health+armor regen)
-    public float PauseRotHealthFinished; // QC .pauserothealth_finished
-    public float PauseRotArmorFinished;  // QC .pauserotarmor_finished
-    public float PauseRegenFuelFinished; // QC (shared pauseregen) — fuel regen gate
-    public float PauseRotFuelFinished;   // QC .pauserotfuel_finished
+    // NOTE: the regen/rot pause timers (QC .pauseregen_finished / .pauserot{health,armor,fuel}_finished) used to
+    // live here, but the damage path / pickup path / spawn path all write the Entity-side copies
+    // (DamageEntityState.PauseRegenFinished etc.). The regen tick now reads those, so the duplicates were removed
+    // to fix the storage split that left damage unable to pause regen (REGEN1/REGEN2/REGEN3).
 
     // ---- drowning (QC STAT(AIR_FINISHED) + .pain_finished gate) ----
     public float AirFinished;            // QC STAT(AIR_FINISHED): time the player runs out of air (0 = breathing)
@@ -32,14 +30,10 @@ public sealed class ServerPlayerState
     // ---- fall-damage bookkeeping (QC .oldvelocity captured each CreatureFrame) ----
     public System.Numerics.Vector3 OldVelocity;
 
-    /// <summary>Reset the transient timers on (re)spawn (QC PutPlayerInServer clears these).</summary>
+    /// <summary>Reset the transient timers on (re)spawn (QC PutPlayerInServer clears these). The regen/rot
+    /// pause timers are primed on the Entity by SpawnSystem.PutPlayerInServer (REGEN3), not here.</summary>
     public void OnSpawn()
     {
-        PauseRegenFinished = 0f;
-        PauseRotHealthFinished = 0f;
-        PauseRotArmorFinished = 0f;
-        PauseRegenFuelFinished = 0f;
-        PauseRotFuelFinished = 0f;
         AirFinished = 0f;
         PainFinished = 0f;
         ContentsDamageTime = 0f;

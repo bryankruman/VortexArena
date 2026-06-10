@@ -57,6 +57,17 @@ public partial class InfoMessagesPanel : HudPanel
     /// </summary>
     public double Now { get; set; } = -1.0;
 
+    /// <summary>
+    /// QC <c>STAT(RESPAWN_TIME)</c> as networked to the owner (ClientNet.RespawnTimeStat): 0 = alive; otherwise
+    /// the absolute respawn time, NEGATED while a respawn is imminent. Drives the dead/respawn line WITHOUT a
+    /// local <see cref="Player"/> actor — so the countdown shows on a pure remote client too. Paired with
+    /// <see cref="NetServerTime"/> for the remaining seconds.
+    /// </summary>
+    public float RespawnStat { get; set; }
+
+    /// <summary>The latest networked server time (ClientNet.LatestServerTime), to count <see cref="RespawnStat"/> down against.</summary>
+    public float NetServerTime { get; set; }
+
     private readonly List<string> _extra = new();
     private readonly List<string> _spectators = new();
 
@@ -96,6 +107,16 @@ public partial class InfoMessagesPanel : HudPanel
         {
             lines.Add(string.IsNullOrEmpty(SpectatingName) ? "Observing" : $"Spectating: {SpectatingName}");
             lines.Add(string.IsNullOrEmpty(JoinHint) ? "Press Fire to join" : JoinHint);
+        }
+        else if (RespawnStat != 0f)
+        {
+            // Networked respawn timer (QC STAT(RESPAWN_TIME)) — works even with no local Player actor (pure
+            // client). |stat| is the absolute respawn time; a negative stat means a respawn is imminent.
+            float remaining = Mathf.Abs(RespawnStat) - NetServerTime;
+            if (remaining > 0.05f)
+                lines.Add($"Respawning in {Mathf.CeilToInt(remaining)}...");
+            else
+                lines.Add(string.IsNullOrEmpty(JoinHint) ? "Press Fire to respawn" : JoinHint);
         }
         else if (Player is not null && Player.IsDead)
         {

@@ -107,7 +107,11 @@ public sealed class PlayerPhysics : IPlayerPhysics
         if (dt <= 0f)
             return;
 
-        MovementParameters mp = MovementParameters.FromCvars();
+        // Per-player parameter resolution (T54): QC reads per-player STATs filled by Physics_UpdateStats —
+        // preset-resolved when g_physics_clientselect is on. Resolve() consults the server's PresetProvider
+        // (authoritative leg) or the client's replicated PredictionOverride (predicted leg); both default null
+        // → the ambient FromCvars() read, byte-identical to the pre-T54 path.
+        MovementParameters mp = MovementParameters.Resolve(player, input.Predicted);
 
         // Make sure the hull matches the player (QC keeps PL_MIN/PL_MAX on the entity via setsize()).
         if (player.Mins == Vector3.Zero && player.Maxs == Vector3.Zero)
@@ -148,12 +152,15 @@ public sealed class PlayerPhysics : IPlayerPhysics
         if (onConveyor)
             player.Velocity -= player.ConveyorMoveDir;
 
-        // ----- per-player movement-stat reset (QC Physics_UpdateStats seeds STAT(MOVEVARS_HIGHSPEED)=1 each
-        //       frame, then mutators multiply it). Reset BEFORE the hook so every PlayerPhysics handler can use
-        //       a pure multiplicative write to player.SpeedMultiplier (powerup speed, entrap-nade slow, buffs
-        //       speed/disability) and the value stays frame-local. Centralizing the reset here means the
-        //       highspeed effects work even when the buffs mutator (which also resets) is OFF. -----
-        player.SpeedMultiplier = 1f;
+        // ----- per-player movement-stat reset (QC Physics_UpdateStats:47 seeds STAT(MOVEVARS_HIGHSPEED) =
+        //       autocvar_g_movement_highspeed each frame, then mutators multiply it via the hook below — the
+        //       maxspd_mod fold at player.qc:50). Seed from the resolved g_movement_highspeed (unset → 1, the
+        //       xonotic-server.cfg:586 stock value, so the golden traces are unchanged) instead of a literal 1 —
+        //       a server-set g_movement_highspeed ≠ 1 now actually scales movement, identically on both sides
+        //       because the cvar rides the replicated MoveVarsBlock (T54). Reset BEFORE the hook so every
+        //       PlayerPhysics handler can use a pure multiplicative write to player.SpeedMultiplier (powerup
+        //       speed, entrap-nade slow, buffs speed/disability) and the value stays frame-local. -----
+        player.SpeedMultiplier = mp.HighSpeed;
 
         // ----- PlayerPhysics mutator hook (QC ecs/systems/physics.qc:56 MUTATOR_CALLHOOK(PlayerPhysics, this, dt))
         //       Fired after PM_check_frozen/PM_check_blocked + the conveyor velocity-fix and BEFORE the movement
