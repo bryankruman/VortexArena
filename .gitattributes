@@ -1,0 +1,8 @@
+# Shell scripts run on the Linux/macOS CI runners (release.yml) — a CRLF shebang breaks them
+# ("bad interpreter: /bin/sh^M"). Force LF regardless of a contributor's core.autocrlf setting.
+*.sh    text eol=lf
+
+# Windows-only launchers stay CRLF.
+*.ps1   text eol=crlf
+*.cmd   text eol=crlf
+*.bat   text eol=crlf

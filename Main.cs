@@ -77,6 +77,13 @@ public partial class Main : Node
             // `--gametype <short>` (e.g. dm/ctf/rc) selects the boot gametype — drives the per-gametype
             //   map-entity filter (which conditional walls appear); defaults to "dm".
             var shell = new Shell { Name = "Shell" };
+            // `--data <dir>` overrides the asset root (default res://assets/data). Mainly an escape hatch for
+            // a packaged build whose data dir isn't beside the binary (ADR-0014: the exported default already
+            // resolves exe-relative, so this is rarely needed) and for pointing a dev build at an external
+            // gamedir. An absolute/user:// path here bypasses the res:// exe-relative resolution entirely.
+            int d = Array.IndexOf(args, "--data");
+            if (d >= 0 && d + 1 < args.Length)
+                shell.DataPath = args[d + 1];
             int m = Array.IndexOf(args, "--map");
             if (m >= 0 && m + 1 < args.Length)
                 shell.BootMap = args[m + 1];

@@ -57,8 +57,9 @@ The SourceGen analyzer: `dotnet build src/XonoticGodot.SourceGen/XonoticGodot.So
 - **build-host** — `dotnet build XonoticGodot.csproj` from a clean clone, restoring `Godot.NET.Sdk`
   purely from nuget.org (CI first runs `dotnet nuget remove source godot-editor` because the
   Windows-only local source in `nuget.config` would hard-fail on a Linux runner).
-- **export** — on-demand only (`workflow_dispatch` or a `v*` tag, `continue-on-error`): headless
-  Godot export of both presets in `export_presets.cfg` (the mono templates are ~1 GB — never per-push).
+
+Packaged **releases** live in a separate workflow, `.github/workflows/release.yml` (push a `v*` tag →
+fat per-platform zips published to GitHub Releases). See **[RELEASING.md](RELEASING.md)**.
 
 **The authoritative pre-push gate is the local mirror** (assets present → real-data tests + the
 headless boot smoke actually run):
@@ -84,9 +85,10 @@ renderer (the same `NetGame` listen server `--host` uses; a true client-less hos
 ```
 
 For a packaged install, `tools/run-dedicated.sh` (shipped beside the exported `linux-dedicated`
-binary by `tools/package.sh`) `cd`s to its own directory first — the exported build resolves
-`assets/data` against the CWD, so the data must sit beside the binary and the launcher must start
-there (same contract as upstream's `xonotic-linux-dedicated.sh`).
+binary by `tools/package.sh`) `cd`s to its own directory first, matching upstream's
+`xonotic-linux-dedicated.sh`. The exported build resolves `assets/data` relative to the **executable**
+(`GameDemo.ResolveDataPath` — exe-dir, plus the macOS `../Resources` bundle path), so the data just has
+to sit beside the binary; the launcher is a convenience, not a requirement (`--data <path>` overrides).
 
 ---
 

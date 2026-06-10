@@ -120,3 +120,31 @@ evidence from a live process (procedure documented in RUNNING.md).
   presets hold no secrets.
 - The first real Actions run (after push) and the first `workflow_dispatch` export run are the
   remaining end-to-end proofs; expect a debug iteration on the export job.
+
+## Update (2026-06-10) — full release matrix + GitHub Releases
+
+The on-demand `export` job (CI artifacts only, binary-only) is superseded by a dedicated
+[`release.yml`](../../.github/workflows/release.yml) that builds the **full ADR-0012 client matrix** and
+**publishes downloadable zips to GitHub Releases** on `v*` tags. Operator guide: [RELEASING.md](../../RELEASING.md).
+
+- **Targets (4):** added `linux-client` (preset.2) and `macos-client` (preset.3) alongside the original
+  `windows-client` + `linux-dedicated`. The Linux desktop client was the gap — Linux was server-only.
+- **Distribution = fat per-platform zips** (decided with the runtime owner): binary + Godot runtime + ALL
+  Xonotic data in one download. Simpler for players than a shared data pack; each zip is ~1.5 GB, under
+  GitHub's 2 GB/file cap. The assets are downloaded **once** per release (an `assets` job → single-file tar
+  artifact, cached on the `download-assets.sh` hash) and fanned out to the build jobs.
+- **Native per-runner export** (windows-latest / ubuntu-latest / macos-latest) — the cross-export the
+  original ADR flagged as unproven is avoided entirely. Godot + .NET export templates via
+  `chickensoft-games/setup-godot@v2`; release upload via `softprops/action-gh-release@v2`
+  (`permissions: contents: write`). `ci.yml` keeps only the lean per-push gate (test + build-host).
+- **The assets-beside-binary contract is now executable-relative, not CWD-relative.**
+  `GameDemo.ResolveDataPath`, in an exported build (`GlobalizePath("res://") == ""`), resolves `assets/data`
+  against `OS.GetExecutablePath()`'s directory, probing `<exe-dir>/assets/data` then the macOS
+  `<exe-dir>/../Resources/assets/data`. This closes the "launched from the wrong CWD → silent blank world"
+  sharp edge for ALL platforms (the deferred fix from §2) and is what makes a double-clicked macOS `.app`
+  work. The `--data <path>` flag (also §2) is wired in `Main.cs` as the explicit override.
+- **macOS is best-effort / unverified:** the `macos` job is `continue-on-error` (codesign/bundle-id config
+  has never run), the build is unsigned (quarantine note in the per-zip README), and `architecture` is
+  `universal` with an `arm64` fallback documented. A macOS failure never blocks the Win/Linux release.
+- **Still cut:** installers, auto-update, code signing/notarization (the macOS unsigned caveat stands),
+  Steam/itch — unchanged from the original cut list.

@@ -65,9 +65,10 @@ fi
 # ── 5. optional: the two export presets (untested path — see ADR-0014) ────────
 if $do_export; then
     [ -f "$GODOT" ] || fail "--export needs Godot (set GODOT=)"
-    step "export windows-client + linux-dedicated"
-    mkdir -p "$ROOT/dist/windows-client" "$ROOT/dist/linux-dedicated"
-    "$GODOT" --headless --path "$ROOT" --export-release "windows-client" "$ROOT/dist/windows-client/XonoticGodot.exe"
+    step "export windows-client + linux-client + linux-dedicated (macos-client is CI-only — needs a Mac)"
+    mkdir -p "$ROOT/dist/windows-client" "$ROOT/dist/linux-client" "$ROOT/dist/linux-dedicated"
+    "$GODOT" --headless --path "$ROOT" --export-release "windows-client"  "$ROOT/dist/windows-client/XonoticGodot.exe"
+    "$GODOT" --headless --path "$ROOT" --export-release "linux-client"    "$ROOT/dist/linux-client/XonoticGodot.x86_64"
     "$GODOT" --headless --path "$ROOT" --export-release "linux-dedicated" "$ROOT/dist/linux-dedicated/xonoticgodot-dedicated.x86_64"
     echo "exports in $ROOT/dist/ — run tools/package.sh to bundle assets + zip"
 fi

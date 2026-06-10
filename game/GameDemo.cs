@@ -366,6 +366,17 @@ public partial class GameDemo : Node3D
     /// rooted at the project directory (so <c>res://assets/data</c> finds the in-tree content
     /// repo regardless of where the checkout lives), <c>user://</c> via Godot, and an absolute path is used
     /// verbatim. Any <c>..</c> segments are collapsed. Falls back to the raw string if globalization fails.
+    ///
+    /// <para><b>Exported builds (the packaged-release path — ADR-0014):</b> in an exported game
+    /// <c>GlobalizePath("res://")</c> returns <c>""</c>, so a default <c>res://assets/data</c> can no longer
+    /// be project-rooted. The packaged layout (<c>tools/package.sh</c>) lays <c>assets/data</c> BESIDE the
+    /// executable, so we resolve the relative remainder against the executable's own directory — NOT the
+    /// process CWD. This is the durable fix for the "launched from the wrong directory → silent blank world"
+    /// trap: a double-clicked binary, a file-manager launch, or a macOS <c>.app</c> all run with a CWD of
+    /// <c>/</c> or <c>$HOME</c>, not the install dir. The macOS bundle keeps its data in
+    /// <c>Contents/Resources/assets/data</c>, so <c>../Resources</c> (relative to <c>Contents/MacOS</c>) is
+    /// also probed. An explicit absolute/<c>user://</c> <see cref="DataPath"/> (e.g. the <c>--data</c> flag)
+    /// always wins — only the default <c>res://</c> gets the exe-relative treatment.</para>
     /// </summary>
     public static string ResolveDataPath(string configured)
     {
@@ -374,8 +385,11 @@ public partial class GameDemo : Node3D
         {
             if (p.StartsWith("res://", System.StringComparison.OrdinalIgnoreCase))
             {
+                string rel = p["res://".Length..];                         // e.g. "assets/data"
                 string projectDir = ProjectSettings.GlobalizePath("res://");
-                p = System.IO.Path.Combine(projectDir, p["res://".Length..]);
+                if (string.IsNullOrEmpty(projectDir))
+                    return ResolveExportedDataPath(rel);                    // exported build: no res:// root
+                p = System.IO.Path.Combine(projectDir, rel);
             }
             else if (p.StartsWith("user://", System.StringComparison.OrdinalIgnoreCase))
             {
@@ -388,6 +402,32 @@ public partial class GameDemo : Node3D
             GD.PrintErr($"[GameDemo] could not resolve DataPath '{configured}': {ex.Message}");
             return p;
         }
+    }
+
+    /// <summary>
+    /// Resolve a <c>res://</c>-relative data path inside an EXPORTED build, where <c>res://</c> no longer maps
+    /// to a real directory. Probes, in order: beside the executable (Windows/Linux packaged layout), the
+    /// macOS <c>.app</c> <c>Contents/Resources</c> (executable lives in <c>Contents/MacOS</c>), then the CWD
+    /// (the historical behaviour, kept as a back-compat last resort). Returns the first existing candidate, or
+    /// — if none exists yet — the exe-relative path (the layout packaging produces), so the loader logs a
+    /// sensible "mounted '…'" path even on a broken install.
+    /// </summary>
+    private static string ResolveExportedDataPath(string rel)
+    {
+        string exeDir = System.IO.Path.GetDirectoryName(OS.GetExecutablePath()) ?? "";
+        string[] candidates =
+        {
+            System.IO.Path.Combine(exeDir, rel),                                  // beside the binary
+            System.IO.Path.Combine(exeDir, "..", "Resources", rel),               // macOS .app bundle
+            rel,                                                                  // CWD-relative (legacy)
+        };
+        foreach (string cand in candidates)
+        {
+            string full = System.IO.Path.GetFullPath(cand);
+            if (System.IO.Directory.Exists(full))
+                return full;
+        }
+        return System.IO.Path.GetFullPath(System.IO.Path.Combine(exeDir, rel));   // expected packaged layout
     }
 
     /// <summary>

@@ -7,10 +7,9 @@
 #   build-host — always: compile the Godot host project (XonoticGodot.csproj) from a clean clone with
 #                NO Godot editor installed — proves the Godot.NET.Sdk/GodotSharp 4.6.3 restore works
 #                purely from nuget.org.
-#   export     — on demand (workflow_dispatch / version tags) + continue-on-error: a full Godot
-#                headless export of both presets (windows-client, linux-dedicated). The mono export
-#                templates are ~1 GB, so this never runs per-push. Export has never been exercised
-#                anywhere yet — treat failures here as signal, not noise.
+# Export + packaging + GitHub Releases live in a SEPARATE workflow (.github/workflows/release.yml),
+# triggered on `v*` tags (and workflow_dispatch). Keeping the heavy Godot export off this per-push gate is
+# deliberate (ADR-0014): the mono export templates are ~1 GB and the data is ~1.5 GB.
 #
 # The one repo-specific gotcha: nuget.config adds the Windows dev machine's Godot editor nupkgs folder
 # as a package source ("godot-editor"). On a Linux runner that path doesn't exist and NuGet hard-fails
@@ -31,7 +30,6 @@ on:
 env:
   DOTNET_NOLOGO: "1"
   DOTNET_CLI_TELEMETRY_OPTOUT: "1"
-  GODOT_VERSION: "4.6.3"
 
 jobs:
   test:
@@ -79,67 +77,3 @@ jobs:
 
       - name: Build the Godot host project
         run: dotnet build XonoticGodot.csproj -c Debug
-
-  export:
-    name: Godot export (on demand)
-    # The mono export templates are ~1 GB and the export path has never run anywhere — keep it off
-    # the per-push critical path and tolerate failures while it's being shaken out.
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
-    continue-on-error: true
-    needs: [test, build-host]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: "9.0.x" # Godot drives `dotnet publish` during a C# export
-
-      - name: Drop the Windows-only Godot editor NuGet source
-        run: dotnet nuget remove source godot-editor --configfile nuget.config
-
-      - name: Cache Godot editor + export templates
-        id: godot-cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/godot-bin
-            ~/.local/share/godot/export_templates
-          key: godot-${{ env.GODOT_VERSION }}-stable-mono
-
-      - name: Download Godot ${{ env.GODOT_VERSION }} (mono) + export templates
-        if: steps.godot-cache.outputs.cache-hit != 'true'
-        run: |
-          set -euo pipefail
-          base="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
-          mkdir -p ~/godot-bin ~/.local/share/godot/export_templates
-          curl -fsSL -o /tmp/godot.zip "$base/Godot_v${GODOT_VERSION}-stable_mono_linux_x86_64.zip"
-          unzip -q /tmp/godot.zip -d ~/godot-bin
-          curl -fsSL -o /tmp/templates.tpz "$base/Godot_v${GODOT_VERSION}-stable_mono_export_templates.tpz"
-          unzip -q /tmp/templates.tpz -d /tmp/templates
-          mv /tmp/templates/templates ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable.mono
-
-      - name: Resolve the Godot binary path
-        run: echo "GODOT=$(find ~/godot-bin -maxdepth 2 -name 'Godot_v*_mono_linux_x86_64*' -type f | head -1)" >> "$GITHUB_ENV"
-
-      - name: Import resources (first project open)
-        run: '"$GODOT" --headless --path . --import || true' # the import pass can exit non-zero on warnings
-
-      - name: Export windows-client
-        run: |
-          mkdir -p dist/windows-client
-          "$GODOT" --headless --path . --export-release "windows-client" dist/windows-client/XonoticGodot.exe
-
-      - name: Export linux-dedicated
-        run: |
-          mkdir -p dist/linux-dedicated
-          "$GODOT" --headless --path . --export-release "linux-dedicated" dist/linux-dedicated/xonoticgodot-dedicated.x86_64
-          cp tools/run-dedicated.sh dist/linux-dedicated/
-          chmod +x dist/linux-dedicated/run-dedicated.sh dist/linux-dedicated/xonoticgodot-dedicated.x86_64
-
-      - name: Upload export artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: exports
-          path: dist
-          if-no-files-found: error

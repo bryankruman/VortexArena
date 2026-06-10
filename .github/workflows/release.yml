@@ -1,0 +1,226 @@
+name: Release
+
+# Build the full release matrix and publish downloadable "fat" zips (binary + Godot runtime + all Xonotic
+# data) to GitHub Releases. See planning/decisions/ADR-0014-ci-packaging-distribution.md and RELEASING.md.
+#
+# Trigger:
+#   - push a tag `vX.Y.Z`  → builds all targets and PUBLISHES a GitHub Release with the zips attached.
+#   - workflow_dispatch    → builds all targets and uploads them as Actions artifacts only (no Release).
+#                            Use this to shake out the export path without cutting a real release.
+#
+# Topology — one job per native runner (each platform exports on its OWN OS; we do NOT cross-export, which
+# ADR-0014 flags as the flakiest path). The assets are downloaded ONCE (assets job) and fanned out as a
+# single-file tar artifact so the three build jobs don't each pull ~1.5 GB from gitlab/dl.xonotic.org.
+#
+#   assets  → download-assets.sh → tar → artifact (cached across runs)
+#   windows → export windows-client                     → fat zip
+#   linux   → export linux-client + linux-dedicated     → 2 fat zips
+#   macos   → export macos-client (continue-on-error)   → fat zip   [BEST-EFFORT: see ADR-0014 §macOS]
+#   release → collect all zips, checksum, publish to GitHub Releases (tag pushes only)
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version string for the zip names (dispatch runs don't publish a Release)"
+        default: "dev"
+        type: string
+
+permissions:
+  contents: write          # required for softprops/action-gh-release to create the Release + upload assets
+
+env:
+  DOTNET_NOLOGO: "1"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  GODOT_VERSION: "4.6.3"
+
+jobs:
+  # ── Resolve the version string once, share it with every job ────────────────
+  prep:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "version=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ── Download the Xonotic assets ONCE; publish as a single tar artifact ───────
+  assets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The asset versions are pinned inside download-assets.sh, so its hash is the cache key.
+      - name: Cache downloaded assets
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: assets/data
+          key: xonotic-assets-${{ hashFiles('download-assets.sh') }}
+
+      - name: Download assets
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: ./download-assets.sh
+
+      - name: Tar assets (single file = fast artifact transfer)
+        run: tar -cf assets-data.tar --exclude='.git' assets/data
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: assets-data
+          path: assets-data.tar
+          retention-days: 1
+          if-no-files-found: error
+
+  # ── Windows desktop client ───────────────────────────────────────────────────
+  windows:
+    needs: [prep, assets]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: "9.0.x" }       # global.json: 8.0.0 + rollForward latestMajor
+
+      # The nuget.config "godot-editor" source is a dev-machine-local Windows path that doesn't exist on a
+      # clean runner; NuGet (and the Godot.NET.Sdk MSBuild resolver) hard-fail on a missing local source.
+      - name: Drop the dev-machine Godot editor NuGet source
+        run: dotnet nuget remove source godot-editor --configfile nuget.config
+        shell: bash
+
+      - uses: chickensoft-games/setup-godot@v2
+        with: { version: "${{ env.GODOT_VERSION }}", use-dotnet: true, include-templates: true }
+
+      - name: Import resources (first project open + .NET glue)
+        run: godot --headless --path . --import || true
+        shell: bash
+
+      - name: Export windows-client
+        run: |
+          mkdir -p dist/windows-client
+          godot --headless --path . --export-release "windows-client" dist/windows-client/XonoticGodot.exe
+        shell: bash
+
+      - name: Fetch assets
+        uses: actions/download-artifact@v4
+        with: { name: assets-data }
+      - name: Unpack assets
+        run: tar -xf assets-data.tar
+        shell: bash
+
+      - name: Package
+        run: tools/package.sh --version "${{ needs.prep.outputs.version }}" windows-client
+        shell: bash
+
+      - uses: actions/upload-artifact@v4
+        with: { name: zip-windows, path: "dist/XonoticGodot-*-windows-x86_64.zip", if-no-files-found: error }
+
+  # ── Linux desktop client + headless dedicated server ─────────────────────────
+  linux:
+    needs: [prep, assets]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: "9.0.x" }
+      - name: Drop the dev-machine Godot editor NuGet source
+        run: dotnet nuget remove source godot-editor --configfile nuget.config
+
+      - uses: chickensoft-games/setup-godot@v2
+        with: { version: "${{ env.GODOT_VERSION }}", use-dotnet: true, include-templates: true }
+
+      - name: Import resources
+        run: godot --headless --path . --import || true
+
+      - name: Export linux-client + linux-dedicated
+        run: |
+          mkdir -p dist/linux-client dist/linux-dedicated
+          godot --headless --path . --export-release "linux-client"    dist/linux-client/XonoticGodot.x86_64
+          godot --headless --path . --export-release "linux-dedicated" dist/linux-dedicated/xonoticgodot-dedicated.x86_64
+
+      - name: Fetch assets
+        uses: actions/download-artifact@v4
+        with: { name: assets-data }
+      - name: Unpack assets
+        run: tar -xf assets-data.tar
+
+      - name: Package
+        run: tools/package.sh --version "${{ needs.prep.outputs.version }}" linux-client linux-dedicated
+
+      - uses: actions/upload-artifact@v4
+        with: { name: zip-linux, path: "dist/XonoticGodot-*-linux*.zip", if-no-files-found: error }
+
+  # ── macOS desktop client (BEST-EFFORT — never blocks the Win/Linux release) ──
+  macos:
+    needs: [prep, assets]
+    runs-on: macos-latest
+    continue-on-error: true       # macOS export config (codesign/bundle id) is unverified — see ADR-0014
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: "9.0.x" }
+      - name: Drop the dev-machine Godot editor NuGet source
+        run: dotnet nuget remove source godot-editor --configfile nuget.config
+
+      - uses: chickensoft-games/setup-godot@v2
+        with: { version: "${{ env.GODOT_VERSION }}", use-dotnet: true, include-templates: true }
+
+      - name: Import resources
+        run: godot --headless --path . --import || true
+
+      - name: Export macos-client
+        run: |
+          mkdir -p dist/macos-client
+          godot --headless --path . --export-release "macos-client" dist/macos-client/XonoticGodot.app
+
+      - name: Fetch assets
+        uses: actions/download-artifact@v4
+        with: { name: assets-data }
+      - name: Unpack assets
+        run: tar -xf assets-data.tar
+
+      - name: Package
+        run: tools/package.sh --version "${{ needs.prep.outputs.version }}" macos-client
+
+      - uses: actions/upload-artifact@v4
+        with: { name: zip-macos, path: "dist/XonoticGodot-*-macos-*.zip", if-no-files-found: warn }
+
+  # ── Collect every zip, checksum, and publish the GitHub Release ──────────────
+  release:
+    needs: [prep, windows, linux, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Collect all zip artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: zip-*
+          path: out
+          merge-multiple: true
+
+      - name: Flatten + checksum
+        run: |
+          mkdir -p final
+          # Flatten whatever nesting upload-artifact produced into one dir, then checksum.
+          find out -name 'XonoticGodot-*.zip' -exec mv {} final/ \;
+          cd final
+          sha256sum XonoticGodot-*.zip > "SHA256SUMS-${{ needs.prep.outputs.version }}.txt"
+          echo "── release contents ──"; ls -lh
+
+      # Tag pushes publish a real Release; workflow_dispatch runs stop here (artifacts only).
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: XonoticGodot ${{ github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            final/XonoticGodot-*.zip
+            final/SHA256SUMS-*.txt
