@@ -67,7 +67,7 @@ jobs:
 
       - name: Download assets
         if: steps.cache.outputs.cache-hit != 'true'
-        run: ./download-assets.sh
+        run: bash ./download-assets.sh   # `bash` not `./` — the exec bit can be lost on a Windows checkout
 
       - name: Tar assets (single file = fast artifact transfer)
         run: tar -cf assets-data.tar --exclude='.git' assets/data
@@ -115,7 +115,7 @@ jobs:
         shell: bash
 
       - name: Package
-        run: tools/package.sh --version "${{ needs.prep.outputs.version }}" windows-client
+        run: bash tools/package.sh --version "${{ needs.prep.outputs.version }}" windows-client
         shell: bash
 
       - uses: actions/upload-artifact@v4
@@ -151,7 +151,7 @@ jobs:
         run: tar -xf assets-data.tar
 
       - name: Package
-        run: tools/package.sh --version "${{ needs.prep.outputs.version }}" linux-client linux-dedicated
+        run: bash tools/package.sh --version "${{ needs.prep.outputs.version }}" linux-client linux-dedicated
 
       - uses: actions/upload-artifact@v4
         with: { name: zip-linux, path: "dist/XonoticGodot-*-linux*.zip", if-no-files-found: error }
@@ -186,7 +186,7 @@ jobs:
         run: tar -xf assets-data.tar
 
       - name: Package
-        run: tools/package.sh --version "${{ needs.prep.outputs.version }}" macos-client
+        run: bash tools/package.sh --version "${{ needs.prep.outputs.version }}" macos-client
 
       - uses: actions/upload-artifact@v4
         with: { name: zip-macos, path: "dist/XonoticGodot-*-macos-*.zip", if-no-files-found: warn }

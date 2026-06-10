@@ -94,7 +94,7 @@ info "packaging: ${targets[*]}"
 # ── 2. assets (download if missing — reuses the repo-root downloader) ─────────
 if [ ! -d "$ASSETS_SRC" ] || [ -z "$(ls -A "$ASSETS_SRC" 2>/dev/null)" ]; then
     info "assets/data missing — running download-assets.sh ${no_music_flag[*]:-}"
-    "$ROOT/download-assets.sh" "${no_music_flag[@]}"
+    bash "$ROOT/download-assets.sh" "${no_music_flag[@]}"   # `bash` — exec bit may be absent on a Windows checkout
 fi
 
 copy_assets() {  # copy_assets <dest-assets-data-dir>
