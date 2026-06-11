@@ -69,13 +69,23 @@ including the new particle parity + SDF tests.
 - Faithful sim is bit-faithful to the independent C reference across all 6 archetypes (no skips).
 - SDF generator + `.psdf` round-trip + cache hashing.
 
-**NOT runtime-verified** (needs a windowed Godot session — could not run here):
-- Faithful `MultiMesh` rendering output (the parity-tested data is correct; the *draw* is unproven).
-- The modern `shader_type particles` GLSL (authored to the Godot 4.6 builtin spec, not GPU-compiled) —
-  run a `Shader` compile probe via `--fx-demo --fx-mode 2`.
+**Verified in a windowed Godot 4.6.3 session** (2026-06-11, stormkeep, `--fx-demo rocket_explode`):
+- **Mode 0 (faithful CPU)** renders in-game — `MultiMesh` billboards draw the rocket_explode burst on a real
+  map, `[Particles] backend=original`, no script errors. (Screenshot: `screenshots/particles_mode0.png`.)
+- **Mode 2 (modern GPU)** renders in-game — the custom `shader_type particles` process shader + spatial draw
+  shader compile and produce a vivid emissive explosion with live spark streaks, `[Particles] backend=modern`.
+  This required fixing 4 Godot-4.6 shader bugs the spec-authored (never-GPU-compiled) shaders had: `uint >> int`
+  (needs `uint` shift operand), `INSTANCE_CUSTOM` read in `fragment()` (vertex-only → pass via a `varying`),
+  `return` in `process()` (forbidden → guard the body), `DEPTH_TEXTURE` (removed in 4.x → `hint_depth_texture`
+  uniform). (Screenshot: `screenshots/particles_mode2.png`.)
+
+**Still NOT verified:**
 - The SDF Texture3D encoding (`§A.4`) — `SdfCollisionService.BuildSdfTexture` is **provisional** (format
-  `Rf`, axis permutation `qx=gx, qy=res-1-gz, qz=gy`); the editor-bake voxelwise comparison spike (§A.4)
-  must run before trusting modern collision response.
+  `Rf`, axis permutation `qx=gx, qy=res-1-gz, qz=gy`). Mode 2 above ran *collisionless* (the GameDemo path
+  doesn't build the SDF), so the encoding/collision response is unexercised; the editor-bake voxelwise
+  comparison spike (§A.4) must run before trusting modern collision response.
+- A minor non-fatal shutdown warning ("RID allocations … leaked at exit" / "RenderingServer … is null") —
+  the new MultiMesh/Texture3D RIDs aren't freed in `_ExitTree`; cleanup follow-up (no runtime effect).
 
 ## Validation still owed (planning §F — windowed)
 1. F.2: `--fx-demo` per mode → assert backend node types + log guards (`[Particles] backend=…`, `[ParticleSDF]`).

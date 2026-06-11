@@ -252,8 +252,10 @@ public static class ModernParticleShaders
 
         // --- process(): DP integration order (cl_particles.c:2958-3105) + §B.2 SDF response ---------------
         sb.Append("void process() {\n");
-        sb.Append("    if (RESTART) { return; }\n");          // the spawn frame is owned by start(); skip process()
-        sb.Append("    if (!ACTIVE) { return; }\n");
+        // process() forbids `return` (Godot particles) — guard the whole body instead. RESTART is the spawn
+        // frame (owned by start()); !ACTIVE is a free/dead slot. The kill-conditions inside set ACTIVE=false
+        // and fall through harmlessly (a dead particle isn't drawn).
+        sb.Append("    if (!RESTART && ACTIVE) {\n");
         sb.Append("    float dt = DELTA;\n");
         sb.Append("    float life = CUSTOM.w;\n");
         // No AGE builtin in particles shaders — track it ourselves in CUSTOM.y (seconds since spawn). DP kills on
@@ -285,7 +287,7 @@ public static class ModernParticleShaders
         sb.Append("    COLOR.a = max(0.0, (CUSTOM.z * 256.0 - alpha_fade * age) / 256.0);\n");
 
         // (5) deactivate on alpha<=0 || age>=life  (cl_particles.c:2966-2970 + die<=time).
-        sb.Append("    if (COLOR.a <= 0.0 || age >= life) { ACTIVE = false; return; }\n\n");
+        sb.Append("    if (COLOR.a <= 0.0 || age >= life) { ACTIVE = false; }\n\n");
 
         // Spin integration (rotate spin) — advance the stashed angle. CUSTOM.x is the live angle the draw reads.
         if (f.Spin)
@@ -327,7 +329,7 @@ public static class ModernParticleShaders
                 // emitter's sub-emitter; flags select which fields it inherits. (§B.2; the persistent decal stays
                 // CPU/faithful-side.) Returns a bool we don't need.
                 sb.Append("            emit_subparticle(splat, vec3(0.0), COLOR, CUSTOM, FLAG_EMIT_POSITION | FLAG_EMIT_ROT_SCALE | FLAG_EMIT_COLOR | FLAG_EMIT_CUSTOM);\n");
-                sb.Append("            ACTIVE = false; return;\n");
+                sb.Append("            ACTIVE = false;\n");
                 sb.Append("        }\n");
             }
             // bounce > 0: DP semantics — VELOCITY += n * dot(VELOCITY,n) * (-bounce). (1=kill normal comp, 2=mirror.)
@@ -338,7 +340,7 @@ public static class ModernParticleShaders
 
         // --- slow-kill (cl_particles.c:3057-3062): dot(vel,vel) < 0.03 -> spark dies, others freeze ------
         if (f.Spark)
-            sb.Append("    if (dot(VELOCITY, VELOCITY) < 0.03) { ACTIVE = false; return; }\n");
+            sb.Append("    if (dot(VELOCITY, VELOCITY) < 0.03) { ACTIVE = false; }\n");
         else
             sb.Append("    if (dot(VELOCITY, VELOCITY) < 0.03) { VELOCITY = vec3(0.0); }\n");
 
@@ -380,6 +382,7 @@ public static class ModernParticleShaders
             sb.Append("    }\n");
         }
 
+        sb.Append("    }\n");   // close the (!RESTART && ACTIVE) guard
         sb.Append("}\n");
         return sb.ToString();
     }
@@ -391,7 +394,7 @@ public static class ModernParticleShaders
     private static void AppendRandomHelpers(StringBuilder sb, in ProcessFeatures f)
     {
         // PCG-style hash → 32-bit.
-        sb.Append("uint hash(uint x) { x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16; return x; }\n");
+        sb.Append("uint hash(uint x) { x ^= x >> 16u; x *= 0x7feb352du; x ^= x >> 15u; x *= 0x846ca68bu; x ^= x >> 16u; return x; }\n");
         // advance seed, return 0..1 (inclusive-ish, DP uses (rand+0.5)/(RAND_MAX+1)).
         sb.Append("float randf(inout uint s) { s = hash(s); return (float(s & 0x00FFFFFFu) + 0.5) / 16777216.0; }\n");
         // static (non-threaded) variant keyed by an int, for per-particle constants reused in process().
@@ -462,17 +465,26 @@ public static class ModernParticleShaders
         {
             sb.Append("uniform int flip_hframes = 1;\n");
             sb.Append("uniform int flip_vframes = 1;\n");
+            // INSTANCE_CUSTOM is a VERTEX-only builtin — carry the lifetime phase to fragment() via a varying.
+            sb.Append("varying flat float v_phase;\n");
         }
         if (f.EmissiveBoost)
             sb.Append("uniform float emissive_boost = 1.0;\n");
         if (f.Soft)
+        {
             sb.Append("uniform float soft_distance = 24.0;\n"); // world units of depth fade
+            // DEPTH_TEXTURE was removed in Godot 4.x — sample the scene depth via a hint_depth_texture uniform.
+            sb.Append("uniform sampler2D depth_tex : hint_depth_texture, repeat_disable, filter_nearest;\n");
+        }
         sb.Append('\n');
 
         // ---- vertex(): billboard using the per-particle basis (column lengths = size), rotated by CUSTOM.x.
         // For SPARKS the process shader already wrote a velocity-aligned, length-stretched basis into the model
         // matrix, so we use it directly (no camera billboard) — exactly the DP spark streak.
         sb.Append("void vertex() {\n");
+        if (f.Flipbook)
+            // The process shader stores AGE in INSTANCE_CUSTOM.y and per-particle LIFE in .w (vertex-only).
+            sb.Append("    v_phase = clamp(INSTANCE_CUSTOM.y / max(1e-4, INSTANCE_CUSTOM.w), 0.0, 1.0);\n");
         if (f.Spark)
         {
             // Use the model basis as-is, only orienting it to face the camera about the stretch (Y) axis so the
@@ -499,9 +511,8 @@ public static class ModernParticleShaders
         sb.Append("    vec2 uv = UV;\n");
         if (f.Flipbook)
         {
-            // Advance the atlas cell by the lifetime phase across an hframes×vframes strip. The process shader
-            // stores AGE in INSTANCE_CUSTOM.y and per-particle LIFE in INSTANCE_CUSTOM.w; phase = age/life.
-            sb.Append("    float phase = clamp(INSTANCE_CUSTOM.y / max(1e-4, INSTANCE_CUSTOM.w), 0.0, 1.0);\n");
+            // Advance the atlas cell by the lifetime phase across an hframes×vframes strip (phase from vertex).
+            sb.Append("    float phase = v_phase;\n");
             sb.Append("    int frames = max(1, flip_hframes * flip_vframes);\n");
             sb.Append("    int cell = clamp(int(phase * float(frames)), 0, frames - 1);\n");
             sb.Append("    int cx = cell % max(1, flip_hframes);\n");
@@ -516,7 +527,7 @@ public static class ModernParticleShaders
         {
             // Soft particles: fade alpha as the billboard approaches the opaque depth behind it (no hard seam).
             // Sample DEPTH_TEXTURE, reconstruct linear view-space depth, compare to this fragment's depth.
-            sb.Append("    float scene_d = texture(DEPTH_TEXTURE, SCREEN_UV).r;\n");
+            sb.Append("    float scene_d = texture(depth_tex, SCREEN_UV).r;\n");
             sb.Append("    vec3 ndc = vec3(SCREEN_UV * 2.0 - 1.0, scene_d);\n");
             sb.Append("    vec4 vp = INV_PROJECTION_MATRIX * vec4(ndc, 1.0);\n");
             sb.Append("    float scene_view_z = -(vp.z / vp.w);\n");          // positive distance in front of camera
