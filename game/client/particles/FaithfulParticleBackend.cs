@@ -283,10 +283,12 @@ public sealed partial class FaithfulParticleBackend : Node3D
 
     public override void _Process(double delta)
     {
-        // Advance the faithful simulation to the current game time (the sim tracks its own clamped
-        // frametime from this; in tests a scripted time is passed instead).
-        float time = Api.Services is not null ? Api.Clock.Time : (float)delta;
-        _sim.Update(time);
+        // Advance the faithful simulation on RENDER delta (a client visual clock, like the GPU particles) —
+        // NOT Api.Clock.Time, which is the server sim clock and reads 0/paused on the render side, freezing
+        // the sim (particles never age → never die → leak). The sim clamps frametime internally, so a load
+        // hitch's large delta is bounded. Spawn (die) and update share this clock via ParticleSim.Now.
+        _clientTime += (float)delta;
+        _sim.Update(_clientTime);
 
         // View origin/forward in Quake space, from the active camera (GetViewport().GetCamera3D()). The
         // renderer culls/sorts against this and converts to Godot at the boundary.
@@ -304,4 +306,6 @@ public sealed partial class FaithfulParticleBackend : Node3D
 
         _renderer.Sync(_sim.Pool, _sim.HighWater, viewOrigin, viewForward);
     }
+
+    private float _clientTime;   // accumulating client render clock driving the sim
 }

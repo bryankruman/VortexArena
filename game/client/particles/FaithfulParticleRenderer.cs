@@ -70,6 +70,19 @@ public sealed partial class FaithfulParticleRenderer : Node3D
     private float _drawDistanceSq;       // 0 => disabled
     private float _nearClipMin = 4f;
 
+    // Cached depth-sort state — the alpha batch's back-to-front sort reads these instead of capturing a
+    // closure, so Sync allocates nothing per frame. _depthCmp is the delegate, allocated once.
+    private Particle[] _sortPool = Array.Empty<Particle>();
+    private NVec3 _sortVo;
+    private Comparison<int>? _depthCmp;
+
+    private int CompareDepthFarthestFirst(int ia, int ib)
+    {
+        NVec3 da = _sortPool[ia].Org - _sortVo, db = _sortPool[ib].Org - _sortVo;
+        float fa = NVec3.Dot(da, da), fb = NVec3.Dot(db, db);
+        return fb.CompareTo(fa); // farthest first
+    }
+
     public override void _Ready()
     {
         _alpha = MakeBatch("alpha", BlendKind.Mix);
@@ -358,16 +371,14 @@ public sealed partial class FaithfulParticleRenderer : Node3D
         }
 
         // 2) Sort the alpha batch back-to-front by squared distance to the view (2935+). Add/invmod are
-        //    order-independent, so they stay in pool order.
+        //    order-independent, so they stay in pool order. Use a CACHED comparison delegate (fields hold the
+        //    pool + view) so the per-frame sort allocates no closure.
         if (alpha.Indices.Count > 1)
         {
-            NVec3 vo = viewOrigin;
-            alpha.Indices.Sort((ia, ib) =>
-            {
-                NVec3 da = pool[ia].Org - vo, db = pool[ib].Org - vo;
-                float fa = NVec3.Dot(da, da), fb = NVec3.Dot(db, db);
-                return fb.CompareTo(fa); // farthest first
-            });
+            _sortPool = pool;
+            _sortVo = viewOrigin;
+            _depthCmp ??= CompareDepthFarthestFirst;
+            alpha.Indices.Sort(_depthCmp);
         }
 
         // 3) Pack + upload each batch.
@@ -385,9 +396,14 @@ public sealed partial class FaithfulParticleRenderer : Node3D
             return;
         }
 
+        // Reuse a grow-only buffer; InstanceCount tracks the buffer capacity and VisibleInstanceCount limits
+        // what's drawn, so the per-frame path allocates NOTHING (only a native marshal copy in the upload).
         int need = n * FloatsPerInstance;
         if (b.Buffer.Length < need)
+        {
             b.Buffer = new float[need];
+            b.Mesh.InstanceCount = b.Buffer.Length / FloatsPerInstance;
+        }
         float[] buf = b.Buffer;
 
         for (int k = 0; k < n; k++)
@@ -457,15 +473,12 @@ public sealed partial class FaithfulParticleRenderer : Node3D
             }
         }
 
-        if (b.Mesh.InstanceCount != n)
-            b.Mesh.InstanceCount = n;
-        b.Mesh.VisibleInstanceCount = n;
+        b.Mesh.VisibleInstanceCount = n;       // draw only the n filled instances (buffer may be larger)
         b.Count = n;
 
-        // One packed upload. MultimeshSetBuffer wants a PackedFloat32Array of exactly InstanceCount*stride.
-        var packed = new float[need];
-        Array.Copy(buf, packed, need);
-        RenderingServer.MultimeshSetBuffer(b.Mesh.GetRid(), packed);
+        // One upload of the reused buffer (length == InstanceCount*stride, the contract MultimeshSetBuffer
+        // requires). No managed allocation here — only the native marshal copy.
+        RenderingServer.MultimeshSetBuffer(b.Mesh.GetRid(), buf);
         b.Node.Visible = true;
     }
 

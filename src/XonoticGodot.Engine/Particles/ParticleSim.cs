@@ -61,6 +61,15 @@ public sealed class ParticleSim
     // cl.particles_updatetime at level start; the clamp to [time-1, time+1] bounds the first frametime to <=1.
     private float _updateTime;
 
+    // The single sim clock (DP cl.time) — the time both spawn (die = now + lifetime) and update (frametime)
+    // read. Driven by Update(time): the host advances it with render delta (a CLIENT visual clock, like the
+    // GPU particles), NOT the server sim clock (which can be 0/paused on the render side). Spawns between
+    // frames read the latest value — one-frame granularity, exactly as DP shares cl.time.
+    private float _currentTime;
+
+    /// <summary>The sim's current clock (last value passed to <see cref="Update"/>). Spawns use it for `die`.</summary>
+    public float Now => _currentTime;
+
     public ParticleSim(IParticleRng rng, int initialCapacity = 8192, int maxParticles = 1 << 18)
     {
         Rng = rng ?? throw new ArgumentNullException(nameof(rng));
@@ -113,7 +122,7 @@ public sealed class ParticleSim
         // cl_particles gate (1697) — also CL_NewParticle's own guard.
         if (!CvBool(ParticleCvars.Particles)) return;
 
-        float now = Api.Clock.Time;
+        float now = _currentTime;   // the sim clock (set by Update), NOT Api.Clock — see _currentTime.
         float quality = Cv(ParticleCvars.Quality);
 
         // VectorLerp(originmins, 0.5, originmaxs, center) (1600).
@@ -467,13 +476,15 @@ public sealed class ParticleSim
 
     /// <summary>
     /// R_DrawParticles per-frame integration (cl_particles.c:2907-3105): advance every live particle by the
-    /// clamped frametime derived from <paramref name="time"/> (the sim tracks its own updatetime). In game
-    /// pass <c>Api.Clock.Time</c>; in tests pass the scripted step time (variable dt is part of the contract).
+    /// clamped frametime derived from <paramref name="time"/> (the sim tracks its own updatetime) and publish
+    /// it as <see cref="Now"/> so spawns this frame share the clock. In game pass an ACCUMULATING client
+    /// render clock (sum of frame deltas) — NOT the server sim clock; in tests pass the scripted step time.
     /// </summary>
     public void Update(float time)
     {
         // frametime = bound(0, time - updatetime, 1); updatetime = bound(time-1, updatetime+frametime, time+1).
         // (cl_particles.c:2921-2922) — _updateTime starts at 0, so the first frametime is `time` clamped to 1.
+        _currentTime = time;   // publish the sim clock so spawns this frame read the same `now`
         float frametime = time - _updateTime;
         if (frametime < 0f) frametime = 0f; else if (frametime > 1f) frametime = 1f;
         float lo = time - 1f, hi = time + 1f;
