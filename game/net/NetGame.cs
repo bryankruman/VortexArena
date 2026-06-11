@@ -763,17 +763,27 @@ public sealed partial class NetGame : Node3D
             // Pass the loaded map name so external lm_NNNN lightmaps resolve (stock maps have no internal lump).
             AddChild(MapLoader.BuildMap(_bsp, _assets.Assets, _map, _droppedSubmodels));
 
-        // Chunked-SDF collision field for modern particles (planning/particles-dual-system.md §A). Built only
-        // when the renderer is in a modern-collision mode (cl_particles_modern 1/2) — mode 0 (the faithful
-        // default) needs no SDF, so the default load pays nothing. Generation is further gated/async inside the
-        // service (cl_particles_sdf_generate); a shipped/cached maps/<map>.psdf is just a fast file read.
-        if (_bsp is not null && _vfs is not null && _assets?.Assets is not null &&
-            XonoticGodot.Game.Menu.MenuState.Cvars.GetFloat(XonoticGodot.Engine.Particles.ParticleCvars.Modern) != 0f)
+        // Client-side collision world for the particle systems: decal splats conform to the real brush faces
+        // (DP R_DecalSystem — without it marks fall back to flat quads), and the chunked-SDF service builds
+        // from the same world. One build per map load (~100 ms, hidden by the load screen; the server world's
+        // collision is a separate instance inside GameWorld with no accessor — rebuilding keeps the seam clean).
+        if (_bsp is not null && _assets?.Assets is not null)
         {
-            string bspVpath = $"maps/{_map}.bsp";
-            byte[]? bspBytes = _vfs.Exists(bspVpath) ? _vfs.ReadBytes(bspVpath) : null;
-            if (bspBytes is not null)
-                _render.Effects.BuildSdfForMap(_map, bspBytes, MapLoader.BuildCollision(_bsp, _assets.Assets), _vfs);
+            CollisionWorld clientCollision = MapLoader.BuildCollision(_bsp, _assets.Assets);
+            _render.Effects.SetCollisionWorld(clientCollision);
+
+            // Chunked-SDF collision field for modern particles (planning/particles-dual-system.md §A). Built
+            // only in a modern-collision mode (cl_particles_modern 1/2) — mode 0 (the faithful default) needs
+            // no SDF, so the default load pays nothing beyond the shared collision build above. Generation is
+            // further gated/async inside the service (cl_particles_sdf_generate).
+            if (_vfs is not null &&
+                XonoticGodot.Game.Menu.MenuState.Cvars.GetFloat(XonoticGodot.Engine.Particles.ParticleCvars.Modern) != 0f)
+            {
+                string bspVpath = $"maps/{_map}.bsp";
+                byte[]? bspBytes = _vfs.Exists(bspVpath) ? _vfs.ReadBytes(bspVpath) : null;
+                if (bspBytes is not null)
+                    _render.Effects.BuildSdfForMap(_map, bspBytes, clientCollision, _vfs);
+            }
         }
 
         if (_client is not null)

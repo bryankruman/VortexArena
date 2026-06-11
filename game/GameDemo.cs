@@ -524,6 +524,14 @@ public partial class GameDemo : Node3D
     private void SetupClient()
     {
         _client = new ClientWorld { Name = "ClientWorld" };
+        // Decal splats conform to the real brush faces (DP R_DecalSystem) — wire the collision world the
+        // map build produced. Deferred one frame: Effects (and its DecalSplats child) is created in
+        // ClientWorld._Ready, which runs when _client enters the tree below.
+        Callable.From(() =>
+        {
+            if (GodotObject.IsInstanceValid(_client) && _client.Effects is not null)
+                _client.Effects.SetCollisionWorld(_world);
+        }).CallDeferred();
         // Resolve positional/loop sounds straight from the mounted content VFS (sound/*.ogg|wav) instead of
         // res://; the renderers keep the res:// convention as a fallback when no loader/sample is present.
         if (_assets is not null)

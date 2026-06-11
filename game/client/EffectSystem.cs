@@ -131,6 +131,20 @@ public partial class EffectSystem : Node3D
     /// <summary>Routes effectinfo spawns to the faithful/modern backend (§D.2). Null until _Ready.</summary>
     public ParticleRouter Router { get; private set; } = null!;
 
+    /// <summary>Faithful surface-splat decals (DP R_DecalSystem) — every particle mark draws here.</summary>
+    public DecalSplats Splats { get; private set; } = null!;
+
+    /// <summary>
+    /// Wire the map's static collision world so decal splats conform to the real brush faces (DP
+    /// R_DecalSystem clips the mark against the surfaces around the impact). Call after map load with the
+    /// world from <c>MapLoader.BuildCollision</c>; without it splats fall back to flat quads.
+    /// </summary>
+    public void SetCollisionWorld(CollisionWorld world)
+    {
+        if (Splats is not null)
+            Splats.World = world;
+    }
+
     /// <summary>
     /// Optional host-supplied model loader (e.g. <c>AssetLoader.LoadModel</c>) shared with the casing and
     /// gib systems so they can render the real brass/limb meshes from the mounted content. When unset they
@@ -170,6 +184,9 @@ public partial class EffectSystem : Node3D
         FaithfulParticles = new FaithfulParticleBackend { Name = "FaithfulParticles" };
         AddChild(FaithfulParticles);
         FaithfulParticles.SetCvars(clientCvars);
+        Splats = new DecalSplats { Name = "DecalSplats" };
+        AddChild(Splats);
+        FaithfulParticles.SetSplats(Splats);
         ModernParticles = new ModernParticleBackend { Name = "ModernParticles" };
         AddChild(ModernParticles);
         Sdf = new SdfCollisionService { Name = "SdfCollision", Cvars = clientCvars };
@@ -277,6 +294,8 @@ public partial class EffectSystem : Node3D
             FaithfulParticles.SetFont(Font);
             FaithfulParticles.SetDecals(Decals);
         }
+        if (Splats is not null)
+            Splats.Font = Font;
         if (ModernParticles is not null)
             ModernParticles.Font = Font;
         try { Styles.Load(VfsTextLoader); }

@@ -57,9 +57,13 @@ public readonly struct ParticleStainEvent
     /// <summary>Max ray distance for the projected form (effectinfo <c>originjitter[0]</c>); unused otherwise.</summary>
     public readonly float MaxDist;
 
+    /// <summary>True for a blood mark with no explicit staintex — the splat picks a random blooddecal cell
+    /// and applies DP's blood decal scale/alpha (cl_particles.c:3033).</summary>
+    public readonly bool IsBlood;
+
     public ParticleStainEvent(NVec3 origin, NVec3 direction, float radius,
         float colorR, float colorG, float colorB, float alpha, int decalTexNum,
-        bool projected = false, float maxDist = 0f)
+        bool projected = false, float maxDist = 0f, bool isBlood = false)
     {
         Origin = origin;
         Direction = direction;
@@ -69,6 +73,7 @@ public readonly struct ParticleStainEvent
         DecalTexNum = decalTexNum;
         Projected = projected;
         MaxDist = maxDist;
+        IsBlood = isBlood;
     }
 }
 
@@ -90,6 +95,13 @@ public sealed partial class FaithfulParticleBackend : Node3D
     /// <summary>The projected-decal subsystem — injected from EffectSystem.Decals. Receives stain events.</summary>
     public Decals? Decals { get; private set; }
 
+    /// <summary>The faithful surface-splat decal system (DP R_DecalSystem) — preferred over <see cref="Decals"/>
+    /// for every particle mark when wired (multiplicative, surface-conforming; see DecalSplats).</summary>
+    public DecalSplats? Splats { get; private set; }
+
+    /// <summary>Wire the splat decal system (orchestrator). Marks route here instead of the Godot-Decal path.</summary>
+    public void SetSplats(DecalSplats? splats) => Splats = splats;
+
     /// <summary>The live simulation (exposed for stats/HUD and the parity harness; do not mutate).</summary>
     public ParticleSim Sim => _sim;
 
@@ -110,8 +122,8 @@ public sealed partial class FaithfulParticleBackend : Node3D
             ev.Org, ev.Dir, ev.Size,
             ev.ColorR / 255f, ev.ColorG / 255f, ev.ColorB / 255f,
             ev.Alpha > 1.5f ? ev.Alpha / 255f : ev.Alpha,
-            ev.TexNum >= 0 ? ev.TexNum : 16,
-            ev.Projected, ev.MaxDist));
+            ev.TexNum,
+            ev.Projected, ev.MaxDist, ev.IsBlood));
     }
 
     /// <summary>Set the particlefont (orchestrator wiring). Rebuilds the renderer atlas if already ready.</summary>
@@ -273,31 +285,34 @@ public sealed partial class FaithfulParticleBackend : Node3D
     /// </summary>
     public void ForwardStain(ParticleStainEvent ev)
     {
-        Decals? decals = Decals;
-        if (decals is null)
+        DecalSplats? splats = Splats;
+        if (splats is null)
             return;
 
-        // The event color is the PERCEIVED mark color (the sim already converted DP's INVMOD removal
-        // amounts at each call site — see ParticleSim's StainEvent docs). Godot's Decal modulates toward
-        // its color, so it passes straight through — but the VISIBLE INTENSITY of a DP INVMOD mark is the
-        // removal magnitude (1 − perceived): a near-white staincolor removes almost nothing and is
-        // invisible in DP, so scale alpha by the removal luminance (white → skip entirely).
+        // The event color is the raw INVMOD REMOVAL amount, exactly what DP feeds
+        // R_DecalSystem_SplatEntities (the sim applies DP's per-path complements — see ParticleSim's
+        // StainEvent contract). The splat shader multiplies wall · (1 − tex·color), so a white removal
+        // darkens fully and a near-zero one is naturally invisible — no extra conversion here.
         var color = new Color(ev.ColorR, ev.ColorG, ev.ColorB);
-        float removal = 1f - (0.299f * ev.ColorR + 0.587f * ev.ColorG + 0.114f * ev.ColorB);
-        float alpha = Math.Clamp(ev.Alpha, 0f, 1f) * Math.Clamp(removal, 0f, 1f);
-        if (alpha < 0.02f)
-            return;
-        Texture2D? sprite = Font?.DecalCell(ev.DecalTexNum);
+        float alpha = Math.Clamp(ev.Alpha, 0f, 1f);
+        float size = ev.Radius;
+        int tex = ev.DecalTexNum;
+        if (ev.IsBlood && tex < 0)
+        {
+            // DP :3033: tex_blooddecal[rand()&7], size · lhrandom(scalemin 1.5, scalemax 2), alpha
+            // cl_particles_blood_decal_alpha·768 (saturates). Visual-only rolls — GD randomness keeps the
+            // sim's RNG stream untouched (golden-trace parity).
+            tex = 16 + (int)(GD.Randi() & 7);
+            size *= (float)GD.RandRange(1.5, 2.0);
+            alpha = 1f;
+        }
 
         if (ev.Projected)
-            // No explicit hit surface (point-effect type-decal / immediatebloodstain): let Decals raycast
-            // for the nearest surface (cl_particles.c CL_SpawnDecalParticleForPoint, :981). MaxDist comes
-            // from the emitter's originjitter[0], carried on the event.
-            decals.SpawnProjected(ev.Origin, ev.MaxDist, ev.Radius, color, alpha, sprite);
+            // Point-effect type-decal: search the nearest surface (CL_SpawnDecalParticleForPoint :981).
+            // MaxDist is the emitter's originjitter[0], carried on the event.
+            splats.SplatPoint(ev.Origin, ev.MaxDist, size, color, alpha, tex);
         else
-            // Collision stains carry the OUTWARD surface normal; Decals.Spawn projects ALONG the given
-            // direction, so feed the inward (-normal) — the mark projects INTO the surface it sits on.
-            decals.Spawn(ev.Origin, -ev.Direction, ev.Radius, color, alpha, sprite);
+            splats.Splat(ev.Origin, ev.Direction, size, color, alpha, tex);
     }
 
     // ---------------------------------------------------------------------------------------------
