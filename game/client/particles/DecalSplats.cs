@@ -56,9 +56,6 @@ public sealed partial class DecalSplats : Node3D
     /// multiplicative marks read at gameplay brightness.</summary>
     [Export] public float IntensityMultiplier { get; set; } = 2f;
 
-    /// <summary>Geometric push off the surface standing in for DP's GL_PolygonOffset (gl_rmain.c:9702).</summary>
-    private const float SurfaceBias = 0.3f;
-
     /// <summary>The static collision world supplying brush faces to conform to (wired at map load via
     /// <see cref="EffectSystem.SetCollisionWorld"/>). Null → flat-quad fallback.</summary>
     public CollisionWorld? World { get; set; }
@@ -89,8 +86,7 @@ public sealed partial class DecalSplats : Node3D
     /// </summary>
     public void Splat(NVec3 org, NVec3 dir, float halfSize, Color removal, float alpha, int texnum)
     {
-        alpha = Math.Clamp(alpha * IntensityMultiplier, 0f, 1f);
-        if (alpha <= 0.01f)
+        if (alpha <= 0.005f)
             return;
         // A near-zero removal color subtracts nothing — invisible in DP, skip the geometry work.
         if (removal.R + removal.G + removal.B < 0.02f)
@@ -106,16 +102,37 @@ public sealed partial class DecalSplats : Node3D
 
         var verts = new List<Vector3>(24);
         var uvs = new List<Vector2>(24);
+        var cols = new List<Color>(24);
+
+        // Per-vertex intensity (R_DecalSystem_SplatTriangle, gl_rmain.c:9292-9297): the mark fades with
+        // the vertex's distance from the impact plane ALONG the projection axis —
+        // f = clamp(alpha · (1 − |axial|) · intensitymultiplier). This both softens the splat-box clip
+        // boundary (no hard cutoff lines) and keeps far geometry inside the box from taking full marks.
+        var ctx = new SplatContext(org, n, right, up, halfSize, removal, alpha * IntensityMultiplier);
 
         if (World is not null)
-            ClipBrushFaces(org, n, right, up, halfSize, verts, uvs);
+            ClipBrushFaces(in ctx, verts, uvs, cols);
 
         // Fallback (no collision world, or the box clipped to nothing — e.g. a hit on an entity or a
         // displaced patch): one flat quad perpendicular to the axis, DP's pre-newsystem look.
         if (verts.Count == 0)
-            EmitQuad(org + n * SurfaceBias, right, up, halfSize, verts, uvs);
+            EmitQuad(in ctx, verts, uvs, cols);
 
-        AddSplatMesh(verts, uvs, removal, alpha, texnum);
+        AddSplatMesh(verts, uvs, cols, texnum);
+    }
+
+    /// <summary>Per-splat parameters threaded through the clip/emit helpers.</summary>
+    private readonly struct SplatContext
+    {
+        public readonly NVec3 Org, N, Right, Up;
+        public readonly float HalfSize;
+        public readonly Color Removal;
+        public readonly float Intensity;   // alpha · intensitymultiplier, pre-clamp (DP folds it into f)
+
+        public SplatContext(NVec3 org, NVec3 n, NVec3 right, NVec3 up, float halfSize, Color removal, float intensity)
+        {
+            Org = org; N = n; Right = right; Up = up; HalfSize = halfSize; Removal = removal; Intensity = intensity;
+        }
     }
 
     /// <summary>
@@ -162,9 +179,10 @@ public sealed partial class DecalSplats : Node3D
     //  Geometry — brush-face reconstruction + box clip (DP R_DecalSystem_SplatTriangle equivalent).
     // ---------------------------------------------------------------------------------------------
 
-    private void ClipBrushFaces(NVec3 org, NVec3 n, NVec3 right, NVec3 up, float halfSize,
-        List<Vector3> verts, List<Vector2> uvs)
+    private void ClipBrushFaces(in SplatContext ctx, List<Vector3> verts, List<Vector2> uvs, List<Color> cols)
     {
+        float halfSize = ctx.HalfSize;
+        NVec3 org = ctx.Org, n = ctx.N;
         var mins = new System.Numerics.Vector3(org.X - halfSize, org.Y - halfSize, org.Z - halfSize);
         var maxs = new System.Numerics.Vector3(org.X + halfSize, org.Y + halfSize, org.Z + halfSize);
         _brushScratch.Clear();
@@ -199,17 +217,17 @@ public sealed partial class DecalSplats : Node3D
                 WindAroundCentroid(_polyA, side.Normal);
 
                 // Clip against the splat's 6 box planes (DP clips each surface triangle the same way).
-                if (!ClipPolyAgainstBox(org, n, right, up, halfSize))
+                if (!ClipPolyAgainstBox(org, n, ctx.Right, ctx.Up, halfSize))
                     continue;
 
-                // Fan-triangulate; bias off the face along ITS normal (the polygon-offset stand-in) and
-                // project each vertex into the splat plane for UVs.
-                NVec3 push = side.Normal * SurfaceBias;
+                // Fan-triangulate ON the surface — NO geometric displacement. DP separates decals from the
+                // wall with GL_PolygonOffset only (gl_rmain.c:9702); a per-face push opens visible gaps at
+                // shared edges (adjacent faces displaced apart). The shader applies the depth bias instead.
                 for (int i = 2; i < _polyA.Count; i++)
                 {
-                    EmitVertex(_polyA[0] + push, org, right, up, halfSize, verts, uvs);
-                    EmitVertex(_polyA[i - 1] + push, org, right, up, halfSize, verts, uvs);
-                    EmitVertex(_polyA[i] + push, org, right, up, halfSize, verts, uvs);
+                    EmitVertex(_polyA[0], in ctx, verts, uvs, cols);
+                    EmitVertex(_polyA[i - 1], in ctx, verts, uvs, cols);
+                    EmitVertex(_polyA[i], in ctx, verts, uvs, cols);
                 }
             }
         }
@@ -273,35 +291,36 @@ public sealed partial class DecalSplats : Node3D
         });
     }
 
-    private static void EmitVertex(NVec3 p, NVec3 org, NVec3 right, NVec3 up, float halfSize,
-        List<Vector3> verts, List<Vector2> uvs)
+    private static void EmitVertex(NVec3 p, in SplatContext ctx, List<Vector3> verts, List<Vector2> uvs, List<Color> cols)
     {
         verts.Add(Coords.ToGodot(p));
-        // Project into the splat plane: [-halfSize, +halfSize] → [0,1] (DP texcoord projection).
-        float u = NVec3.Dot(p - org, right) / (2f * halfSize) + 0.5f;
-        float v = NVec3.Dot(p - org, up) / (2f * halfSize) + 0.5f;
+        // Project into the splat plane: [-halfSize, +halfSize] → [0,1] (DP texcoord projection :9290).
+        NVec3 d = p - ctx.Org;
+        float u = NVec3.Dot(d, ctx.Right) / (2f * ctx.HalfSize) + 0.5f;
+        float v = NVec3.Dot(d, ctx.Up) / (2f * ctx.HalfSize) + 0.5f;
         uvs.Add(new Vector2(u, v));
+        // DP per-vertex falloff (:9293): f = clamp(alpha · (1 − |axial|) · intensitymultiplier) — fades the
+        // mark with distance from the impact plane, so the splat-box clip boundary never shows a hard line.
+        float axial = MathF.Abs(NVec3.Dot(d, ctx.N)) / ctx.HalfSize;
+        float f = Math.Clamp(ctx.Intensity * (1f - axial), 0f, 1f);
+        cols.Add(new Color(ctx.Removal.R * f, ctx.Removal.G * f, ctx.Removal.B * f));
     }
 
-    private static void EmitQuad(NVec3 center, NVec3 right, NVec3 up, float halfSize,
-        List<Vector3> verts, List<Vector2> uvs)
+    private static void EmitQuad(in SplatContext ctx, List<Vector3> verts, List<Vector2> uvs, List<Color> cols)
     {
-        NVec3 r = right * halfSize, u = up * halfSize;
+        NVec3 r = ctx.Right * ctx.HalfSize, u = ctx.Up * ctx.HalfSize;
+        NVec3 center = ctx.Org;
         Span<NVec3> c = stackalloc NVec3[4] { center - r - u, center - r + u, center + r + u, center + r - u };
-        Span<Vector2> t = stackalloc Vector2[4] { new(0, 0), new(0, 1), new(1, 1), new(1, 0) };
         int[] fan = { 0, 1, 2, 0, 2, 3 };
         foreach (int i in fan)
-        {
-            verts.Add(Coords.ToGodot(c[i]));
-            uvs.Add(t[i]);
-        }
+            EmitVertex(c[i], in ctx, verts, uvs, cols);
     }
 
     // ---------------------------------------------------------------------------------------------
     //  Mesh + material + lifecycle
     // ---------------------------------------------------------------------------------------------
 
-    private void AddSplatMesh(List<Vector3> verts, List<Vector2> uvs, Color removal, float alpha, int texnum)
+    private void AddSplatMesh(List<Vector3> verts, List<Vector2> uvs, List<Color> cols, int texnum)
     {
         if (verts.Count < 3)
             return;
@@ -310,6 +329,7 @@ public sealed partial class DecalSplats : Node3D
         arrays.Resize((int)Mesh.ArrayType.Max);
         arrays[(int)Mesh.ArrayType.Vertex] = verts.ToArray();
         arrays[(int)Mesh.ArrayType.TexUV] = uvs.ToArray();
+        arrays[(int)Mesh.ArrayType.Color] = cols.ToArray();   // removal · per-vertex falloff (DP c4f)
         var mesh = new ArrayMesh();
         mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
 
@@ -319,10 +339,6 @@ public sealed partial class DecalSplats : Node3D
         Texture2D? cell = Font?.Cell(texnum);
 
         var mat = new ShaderMaterial { Shader = _shader ??= SplatShader(), RenderPriority = 2 };
-        mat.SetShaderParameter("splat_color", new Color(
-            Math.Clamp(removal.R * alpha, 0f, 1f),
-            Math.Clamp(removal.G * alpha, 0f, 1f),
-            Math.Clamp(removal.B * alpha, 0f, 1f)));
         mat.SetShaderParameter("fade", 1f);
         if (cell is not null)
             mat.SetShaderParameter("splat_tex", cell);
@@ -359,7 +375,10 @@ public sealed partial class DecalSplats : Node3D
     }
 
     /// <summary>DP's decal draw state (gl_rmain.c:9699-9706): GL_ZERO/ONE_MINUS_SRC_COLOR == blend_mul of
-    /// (1 − tex·color·fade), depth test on / write off, double-sided, unshaded.</summary>
+    /// (1 − tex·color·fade), depth test on / write off, double-sided, unshaded, GL_PolygonOffset. Godot
+    /// shaders have no polygon offset, so the vertex stage writes POSITION with a small constant NDC depth
+    /// nudge toward the viewer (Godot 4 uses reversed-Z: nearer = larger depth) — the splat triangles lie
+    /// EXACTLY on the surface geometrically (no per-face displacement → no gaps at shared edges).</summary>
     private static Shader SplatShader() => new()
     {
         Code =
@@ -367,11 +386,14 @@ public sealed partial class DecalSplats : Node3D
             "render_mode blend_mul, unshaded, cull_disabled, shadows_disabled, depth_draw_opaque;\n" +
             "uniform sampler2D splat_tex : source_color, filter_linear;\n" +
             "uniform bool has_tex = true;\n" +
-            "uniform vec3 splat_color = vec3(1.0);\n" +
             "uniform float fade = 1.0;\n" +
+            "void vertex() {\n" +
+            "    POSITION = PROJECTION_MATRIX * MODELVIEW_MATRIX * vec4(VERTEX, 1.0);\n" +
+            "    POSITION.z += 0.0004 * POSITION.w;   // polygon-offset stand-in (reversed-Z: toward viewer)\n" +
+            "}\n" +
             "void fragment() {\n" +
             "    vec3 t = has_tex ? texture(splat_tex, UV).rgb : vec3(1.0 - smoothstep(0.3, 0.5, distance(UV, vec2(0.5))));\n" +
-            "    ALBEDO = vec3(1.0) - t * splat_color * fade;\n" +
+            "    ALBEDO = vec3(1.0) - t * COLOR.rgb * fade;\n" +
             "    ALPHA = 1.0;\n" +
             "}\n",
     };
