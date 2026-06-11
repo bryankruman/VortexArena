@@ -131,7 +131,7 @@ public sealed class Porto : Weapon
         Vector3 aimAngles = (st.PortoVAngleHeld && !SecondaryEnabled) ? st.PortoVAngle : actor.Angles;
         QMath.AngleVectors(aimAngles, out Vector3 forward, out Vector3 right, out _);
         // Always shoot from the eye along v_forward (W_SetupShot then override w_shotdir = v_forward).
-        ShotInfo shot = WeaponFiring.SetupShot(actor, forward);
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, recoil: 4f);
         Vector3 origin = shot.Origin;
         Vector3 dir = forward;
 

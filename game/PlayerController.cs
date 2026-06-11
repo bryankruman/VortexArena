@@ -86,6 +86,10 @@ public partial class PlayerController : Node3D
     /// </summary>
     public float ZoomFraction => _view.ZoomFraction;
 
+    /// <summary>True while the event/death chase camera is engaged (QC <c>chase_active</c> / the death cam) — the
+    /// host uses it to suppress the zoom reticle in third person (QC <c>DrawReticle</c>'s chase gate).</summary>
+    public bool ChaseActive => _view.ChaseActive;
+
     /// <summary>
     /// The host-requested chase mode (QC user <c>chase_active</c> / spectator cam). Default first-person eye;
     /// set to <see cref="Client.FirstPersonView.ChaseMode.Chase"/> or <c>SpectatorFollow</c> for a pull-back
@@ -105,6 +109,12 @@ public partial class PlayerController : Node3D
     // qcsrc/client/view.qc and used by BOTH this (the GameDemo path) and NetGame (the menu play path). Fed an
     // Entity-backed ViewState each tick; the host reads back ZoomFraction / EyeContents / SensitivityScale.
     private readonly Client.FirstPersonView _view = new();
+
+    // The zoom scope reticle overlay (QC crosshair.qc DrawReticle), fed each tick in _PhysicsProcess from the
+    // active weapon + zoom state. Owned here (unlike ViewEffects, which GameDemo owns) because the reticle needs
+    // the per-tick active-weapon + button state that converges in this controller; NetGame owns its own symmetric
+    // instance. A CanvasLayer child renders full-screen regardless of this Node3D parent.
+    private Client.ReticleOverlay _reticle = null!;
 
     // Demo cosmetic weapon slot (index into GameDemo.DemoWeapons), advanced by weapon-select binds and reported
     // via WeaponSwitched. The bind layer issues weapon commands (weapnext/weapon_group_N/…); this tracks the
@@ -174,6 +184,11 @@ public partial class PlayerController : Node3D
         // Configure the shared view (eye height + base fov from this controller's Exports).
         _view.EyeHeight = EyeHeight;
         _view.BaseFov = BaseFov;
+
+        // Zoom scope reticle (QC DrawReticle): a CanvasLayer fed each tick (see _PhysicsProcess), added as a child
+        // so the demo path gets the scope without GameDemo plumbing.
+        _reticle = new Client.ReticleOverlay { Name = "Reticle" };
+        AddChild(_reticle);
 
         // Seed the zoom cvars so the zoom math reads authentic values even standalone (the real match loads the
         // full Xonotic cfg tree, which sets these; Register is idempotent so it never clobbers a loaded value).
@@ -324,9 +339,13 @@ public partial class PlayerController : Node3D
             Input.MouseMode = Input.MouseModeEnum.Captured;
 
         // QC button_zoom: held while the +zoom bind's key is down (BindTable, fed from binds-xonotic.cfg —
-        // MOUSE3 togglezoom / JOY7 +zoom; the user can rebind). Suppressed when dead so the view zooms out on
-        // death (QC cl_unpress_zoom_on_death) and while the console is open. Fed to the shared view.
-        _view.ZoomHeld = active && !IsDead && BindTable.ZoomHeld;
+        // MOUSE3 togglezoom / JOY7 +zoom; the user can rebind). PLUS the active weapon's secondary-fire zoom (QC
+        // view.qc IsZooming folds in each weapon's wr_zoomdir): the Vortex zooms while ATTACK2 is held and
+        // g_balance_vortex_secondary is 0 (the stock default). Suppressed when dead so the view zooms out on death
+        // (QC cl_unpress_zoom_on_death) and while the console is open. Fed to the shared view.
+        Weapon? activeWep = Inventory.CurrentWeapon(Player);
+        bool weaponZoom = activeWep is not null && activeWep.ZoomOnSecondary && BindTable.Attack2Held;
+        _view.ZoomHeld = active && !IsDead && (BindTable.ZoomHeld || weaponZoom);
 
         // --- gather wish-move from the bind table (cl_input.c kbutton model): Quake forward = X, side = Y ---
         // BindTable.Forward = +forward − +back; Side = +moveright − +moveleft; Up = +jump − +crouch. All ±1 here;
@@ -371,6 +390,12 @@ public partial class PlayerController : Node3D
         // zoom, applies the *0.75 fov, and samples EyeContents there — QC HUD_Contents reads
         // pointcontents(view_origin), the FINAL render origin (view.qc:1176).
         UpdateCamera((float)delta);
+
+        // Zoom scope reticle (QC DrawReticle): the generic +zoom reticle, or the active weapon's scope (the
+        // Vortex's gfx/reticle_nex) while zooming with it. Fed AFTER UpdateCamera so ZoomFraction is this frame's
+        // value; reuses activeWep/the button state computed for the zoom above.
+        _reticle.UpdateReticle(activeWep, BindTable.ZoomHeld, BindTable.Attack2Held,
+            _view.ZoomFraction, IsDead, spectating: false, _view.ChaseActive);
     }
 
     /// <summary>

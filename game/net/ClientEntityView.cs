@@ -150,6 +150,12 @@ public sealed partial class ClientEntityView : Node
         switch (s.Kind)
         {
             case NetEntityKind.Projectile:
+                // Client-side prediction (CSQC client-animated projectiles do NOT two-snapshot-interpolate):
+                // hand the ProjectileRenderer the RAW authoritative origin, not the lerp-delayed interpolated
+                // pose, so its predictor snaps to server truth and extrapolates locally by velocity. Using the
+                // interpolated (one-snapshot-stale) origin would reintroduce the very lag the predictor removes.
+                e.Origin = s.Origin;
+                e.OldOrigin = s.Origin;
                 // ClientWorld.IsProjectile routes this to the ProjectileRenderer (catalog-classified).
                 _render.OnEntityUpdate(e);
                 break;

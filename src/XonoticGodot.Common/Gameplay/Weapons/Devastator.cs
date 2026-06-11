@@ -138,7 +138,7 @@ public sealed class Devastator : Weapon
         actor.TakeResource(AmmoType, Cvars.Ammo);
 
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out _);
-        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, new Vector3(-3, -3, -3), new Vector3(3, 3, 3));
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, new Vector3(-3, -3, -3), new Vector3(3, 3, 3), recoil: 5f);
 
         Entity missile = Api.Entities.Spawn();
         missile.ClassName = "rocket";

@@ -63,6 +63,17 @@ gate — so the local predicted body kept sliding under input.
 Covered by `DeadPlayer_DoesNotMoveUnderForwardInput` /
 `AlivePlayer_MovesUnderForwardInput`.
 
+**Follow-up (death-cam shake over a void):** after the freeze, dying mid-fall left
+the corpse with the large downward velocity it died with. The server freezes the
+body but still networks that velocity, and [NetGame.UpdateCamera](game/net/NetGame.cs)
+extrapolates the eye by `PredictedVelocity * _inputAccum` each render frame — so
+the eye bobbed down and snapped back every input tic (only over a void, where the
+death velocity is large; on solid ground it's ~0). Fixed by (a) zeroing the
+corpse velocity in `PlayerPhysics.Move`'s dead-gate, and (b) treating the local
+player's velocity as zero in `UpdateCamera` while dead (no sub-tic eye
+extrapolation, no velocity-driven view bob/sway). Covered by
+`DeadPlayer_VelocityIsZeroed_SoTheDeathCamDoesNotShake`.
+
 > Known limitation (pre-existing, out of scope): the corpse doesn't fall/ragdoll —
 > `DeadPlayerThink` runs no corpse physics, so the body freezes at the death spot
 > (client now matches server). A faithful MOVETYPE_TOSS corpse is a follow-up.

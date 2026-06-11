@@ -150,7 +150,7 @@ public sealed class Mortar : Weapon
         actor.TakeResource(AmmoType, bal.Ammo);
 
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out Vector3 up);
-        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, new Vector3(-3, -3, -3), new Vector3(3, 3, 3));
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, new Vector3(-3, -3, -3), new Vector3(3, 3, 3), recoil: 4f);
         // w_shotdir = v_forward — no TrueAim for grenades.
         Vector3 dir = forward;
 

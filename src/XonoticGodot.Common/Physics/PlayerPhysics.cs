@@ -115,7 +115,15 @@ public sealed class PlayerPhysics : IPlayerPhysics
         // at the death spot; freezing the predicted/demo body here keeps client and server in lockstep. The dead
         // state is mirrored onto the prediction carrier each frame (NetGame) so this gate actually fires.
         if (player.DeadState != DeadFlag.No)
+        {
+            // Zero the corpse's velocity: the server freezes the body at the death spot, but it still networks the
+            // velocity it died WITH — over a void that's a large downward free-fall speed. Left on the carrier it
+            // feeds the render eye-extrapolation (NetGame.UpdateCamera) + stair feedforward, bobbing the death-cam
+            // down then snapping back every input tic (the "view shakes over a void" report). A frozen body has no
+            // velocity, so clear it here (prediction/demo only — the server never calls Move while dead).
+            player.Velocity = Vector3.Zero;
             return;
+        }
 
         // Per-player parameter resolution (T54): QC reads per-player STATs filled by Physics_UpdateStats —
         // preset-resolved when g_physics_clientselect is on. Resolve() consults the server's PresetProvider
@@ -311,6 +319,7 @@ public sealed class PlayerPhysics : IPlayerPhysics
         if (onConveyor)
             player.Velocity += player.ConveyorMoveDir;
         UpdateMovementSounds(player, mp, input.Predicted);
+        CheckPunch(player, dt, input.Predicted);
         player.LastFlags = player.Flags;
 
         // QC sys_phys_postupdate: `this.lastclassname = this.classname;` (physics.qc:194). The port tracks the
@@ -1538,6 +1547,34 @@ public sealed class PlayerPhysics : IPlayerPhysics
         if ((superContents & SuperContentsSlime) != 0) return (int)Contents.Slime;
         if ((superContents & SuperContentsWater) != 0) return (int)Contents.Water;
         return (int)Contents.Empty;
+    }
+
+    // --- view punch decay (QC PM_check_punch, common/physics/player.qc) ---
+
+    /// <summary>
+    /// Port of <c>PM_check_punch</c> (common/physics/player.qc, <c>#ifdef SVQC</c>): linearly bleed the view
+    /// punch toward zero each authoritative tick — <c>punchangle</c> by 10°/s, <c>punchvector</c> by 30 u/s,
+    /// preserving direction (magnitude − rate·dt, re-normalized). The punch is SET on firing
+    /// (<see cref="WeaponFiring.SetupShot"/>'s recoil → <c>punchangle.x = -recoil</c>) and networked to the
+    /// owner, which adds it to the rendered view angles. Server-authoritative only: suppressed on client
+    /// prediction replays (the value is networked, not predicted) so it isn't double-decayed.
+    /// </summary>
+    private static void CheckPunch(Entity player, float dt, bool predicted)
+    {
+        if (predicted)
+            return;
+        Vector3 pa = player.PunchAngle;
+        if (pa != Vector3.Zero)
+        {
+            float f = pa.Length() - 10f * dt;
+            player.PunchAngle = f > 0f ? Vector3.Normalize(pa) * f : Vector3.Zero;
+        }
+        Vector3 pv = player.PunchVector;
+        if (pv != Vector3.Zero)
+        {
+            float f = pv.Length() - 30f * dt;
+            player.PunchVector = f > 0f ? Vector3.Normalize(pv) * f : Vector3.Zero;
+        }
     }
 
     // --- movement sounds (QC PM_check_hitground / footsteps in sys_phys_postupdate) ---

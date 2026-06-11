@@ -268,4 +268,43 @@ public static class ProjectileCatalog
             if (hay.Contains(n, StringComparison.Ordinal)) return true;
         return false;
     }
+
+    // ============================================================================================
+    //  Client-side collision behaviour (ProjectilePredictor world trace)
+    // ============================================================================================
+
+    /// <summary>How a predicted projectile reacts to world geometry while extrapolating between snapshots.</summary>
+    public enum CollisionMode
+    {
+        /// <summary>Fly straight; let the authoritative snapshot/removal handle impact (no client trace).</summary>
+        None,
+        /// <summary>Stop at the surface (a detonate-on-impact FLY flier — the server's removal lands a moment later).</summary>
+        Stop,
+        /// <summary>Reflect off the surface and keep flying (an elastic, gravity-free <c>BOUNCEMISSILE</c>).</summary>
+        Bounce,
+    }
+
+    /// <summary>
+    /// The client-side collision behaviour for a projectile type. Only the cases where straight-line
+    /// extrapolation is geometrically exact opt in: <b>Stop</b> for detonate-on-impact <c>MOVETYPE_FLY</c>
+    /// fliers (rocket/blaster/crylink/hagar/seeker/…) so a fast bolt doesn't overrun a wall before the
+    /// server's removal arrives, and <b>Bounce</b> for gravity-free <c>MOVETYPE_BOUNCEMISSILE</c> projectiles
+    /// (bouncing crylink/arc/hagar, porto) whose wall reflections are planar. The gravity-affected bouncers
+    /// (grenade/mine/electro/hookbomb — <c>MOVETYPE_TOSS/BOUNCE</c>) stay <b>None</b> (straight + snapshot
+    /// correction, no regression) until client-side gravity integration lands — see the predictor remarks.
+    /// </summary>
+    public static CollisionMode CollisionFor(ProjectileType t) => t switch
+    {
+        ProjectileType.Rocket or ProjectileType.Rpc or ProjectileType.Blaster or ProjectileType.Crylink
+            or ProjectileType.Hagar or ProjectileType.Seeker or ProjectileType.Plasma or ProjectileType.Hlac
+            or ProjectileType.RocketMinstaLaser or ProjectileType.Fireball or ProjectileType.Flac
+            or ProjectileType.Tag or ProjectileType.SpiderRocket or ProjectileType.WakiRocket
+            or ProjectileType.WakiCannon or ProjectileType.BumbleGun or ProjectileType.MageSpike
+            or ProjectileType.GolemLightning => CollisionMode.Stop,
+
+        ProjectileType.CrylinkBouncing or ProjectileType.ArcBolt or ProjectileType.HagarBouncing
+            or ProjectileType.PortoRed or ProjectileType.PortoBlue => CollisionMode.Bounce,
+
+        _ => CollisionMode.None, // gravity TOSS/BOUNCE (grenade/mine/electro/hookbomb/firemine) + unknowns
+    };
 }

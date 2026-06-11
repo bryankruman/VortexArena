@@ -144,7 +144,7 @@ public sealed class Fireball : Weapon
     {
         // Fireball uses no ammo (wr_checkammo always true).
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out _);
-        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, new Vector3(-16, -16, -16), new Vector3(16, 16, 16));
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, new Vector3(-16, -16, -16), new Vector3(16, 16, 16), recoil: 2f);
 
         Entity proj = Api.Entities.Spawn();
         proj.ClassName = "plasma_prim";
@@ -287,7 +287,7 @@ public sealed class Fireball : Weapon
     private void Attack2(Entity actor, WeaponSlot slot)
     {
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out Vector3 up);
-        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, new Vector3(-4, -4, -4), new Vector3(4, 4, 4));
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, new Vector3(-4, -4, -4), new Vector3(4, 4, 4), recoil: 2f);
 
         Entity proj = Api.Entities.Spawn();
         proj.ClassName = "grenade";

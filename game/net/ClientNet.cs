@@ -95,6 +95,11 @@ public sealed class ClientNet : IDisposable
     public int Health { get; private set; }
     public int Armor { get; private set; }
 
+    /// <summary>QC view punch (<c>punchangle</c>): the weapon-recoil view kick the server applies on firing and
+    /// decays (PM_check_punch). Added to the rendered view angles ONLY (not the aim), so the gun kicks the
+    /// camera without skewing where shots go. Owner-replicated; zero while not recently fired.</summary>
+    public NVec3 PunchAngle { get; private set; }
+
     /// <summary>
     /// QC <c>STAT(RESPAWN_TIME)</c>: the absolute sim time the local player becomes/became respawnable while
     /// dead, NEGATED while a respawn is imminent (DEAD_RESPAWNING) and 0 while alive. The HUD shows the
@@ -359,6 +364,14 @@ public sealed class ClientNet : IDisposable
     public string LocalPlayerName { get; set; } = "player";
 
     /// <summary>
+    /// When true (cl_movement_perframe, driven by the host), the input frame is flagged so the server drains ALL
+    /// pending commands that tick and runs movement per command with each command's DeltaTime (DP-style variable
+    /// dt); false = the legacy one-command-per-tick consumption. Carried on the wire so client + server agree
+    /// without a shared cvar store. The host is responsible for stamping the matching per-frame DeltaTime.
+    /// </summary>
+    public bool PerFrameInput { get; set; }
+
+    /// <summary>
     /// Sample the local input this tick, push it to the input ring buffer, predict forward (replay from the
     /// last acked authoritative state), and send the redundant input tail to the server. Returns the seq
     /// stamped on this tick's command. No-op until the handshake is accepted.
@@ -399,6 +412,10 @@ public sealed class ClientNet : IDisposable
             // (receive-time − this echoed time = RTT), the faithful port of DP's cmd.receivetime − cmd.time
             // (sv_user.c) that feeds ANTILAG_LATENCY. 0 before the first snapshot (the server then measures nothing).
             _writer.WriteFloat(LatestServerTime);
+            // Per-frame (variable-dt) mode flag: tells the server to drain ALL pending commands this tick and run
+            // movement per command with each command's DeltaTime, instead of one-per-tick. Rides the wire so the
+            // two ends agree without a shared cvar store (and works for remote, not just the in-process listen path).
+            _writer.WriteByte(PerFrameInput ? (byte)1 : (byte)0);
             _inputBuffer.WriteRedundant(_writer, redundancy);
             _transport.SendToServer(_writer.WrittenSpan, reliable: false);
             // Flush this input onto the wire NOW (send-only) instead of letting it sit until the next Poll(): on
@@ -586,6 +603,7 @@ public sealed class ClientNet : IDisposable
         ActiveWeaponId = r.ReadShort(); // owner block — same order as ServerNet.WriteOwnerState (viewmodel selector)
         RespawnTimeStat = r.ReadFloat(); // QC STAT(RESPAWN_TIME): dead respawn countdown / "press fire" prompt
         SpectateeStatus = r.ReadShort(); // QC spectatee_status: 0 playing, own id observing, other id spectating
+        PunchAngle = r.ReadVector(NetPrecision.Float); // QC view punch (recoil kick) — added to the view angles
 
         // [T57 accuracy] — the owner's own per-weapon accuracy bytes (QC ENT_CLIENT_ACCURACY, owner-only), read
         // in lockstep with ServerNet.WriteOwnerState's append: the change generation, then a bool gate, and —

@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Godot;
 using XonoticGodot.Common.Gameplay;
@@ -6,52 +7,31 @@ namespace XonoticGodot.Game.Hud;
 
 /// <summary>
 /// The CSQC on-screen HUD root — the C# successor to QuakeC's <c>HUD_Main</c> / <c>HUD_Draw</c>
-/// (Base/.../qcsrc/client/hud/hud.qc), which each frame walked the registered <c>hud_panels</c> in
-/// <c>panel_order</c> and called every panel's <c>panel_draw</c>. Here a <see cref="CanvasLayer"/> hosts
-/// one child <see cref="HudPanel"/> <see cref="Control"/> per panel; Godot composites them over the 3D
-/// view automatically, so this manager only has to create the panels, lay them out against the viewport,
-/// hand them the local <see cref="Player"/>, and poke the dynamic ones to redraw.
+/// (Base/.../qcsrc/client/hud/hud.qc), which each frame walked the registered <c>hud_panels</c> and called
+/// every panel's draw. Here a <see cref="CanvasLayer"/> hosts one child <see cref="HudPanel"/> per panel; Godot
+/// composites them over the 3D view, so this manager creates the panels (now via reflection discovery —
+/// <see cref="HudRegistry"/>), hands them the local <see cref="Player"/>, resolves each panel's cvar-driven
+/// layout/skin each frame (<see cref="HudPanel.LoadConfig"/>), and pokes the dynamic ones to redraw.
 ///
-/// Attachment (mirrors how <see cref="PlayerController"/> owns the player <see cref="Common.Framework.Entity"/>):
-/// the lead adds a <see cref="Hud"/> to the scene — e.g. in <c>GameDemo._Ready</c> after the
-/// <see cref="PlayerController"/> is spawned — and calls <see cref="SetPlayer"/> with the
-/// <c>PlayerController.Player</c> cast to <see cref="Player"/>:
-/// <code>
-///   var hud = new Hud();
-///   AddChild(hud);
-///   hud.SetPlayer(player.Player as Player);     // the local player actor
-/// </code>
+/// Discovery replaces the old hand-maintained <c>new XxxPanel()</c> list: a panel exists by being a
+/// <see cref="HudPanel"/> subclass, so new panels drop in without editing this file. Strongly-typed handles the
+/// net/match layer feeds (<see cref="Scoreboard"/>, <see cref="CenterPrint"/>, …) are resolved from the
+/// discovered set via <see cref="Get{T}"/>.
 ///
-/// Net data-injection points (the panels read live local-player state themselves; everything that is a
-/// networked/server concern is fed through these settable surfaces by the net/match layer):
-/// <list type="bullet">
-///   <item><see cref="ScoreboardPanel.SetRows"/> / <see cref="ScoreboardPanel.SetTeamScores"/> — other
-///         players' name/score/deaths/ping + team totals (QC ent_cs + scores stats).</item>
-///   <item><see cref="CenterPrintPanel.Push(Common.Gameplay.Notification, string, float, int)"/> — MSG_CENTER
-///         notifications (countdowns/frag messages).</item>
-///   <item><see cref="NotifyPanel.PushDeath"/> — MSG_INFO obituaries for the kill feed.</item>
-///   <item><see cref="TimerPanel.MatchStartTime"/>/<see cref="TimerPanel.TimeLimitSeconds"/>/
-///         <see cref="TimerPanel.WarmupStage"/>/<see cref="TimerPanel.Overtime"/>/
-///         <see cref="TimerPanel.SetRound"/> — match clock + round timer (QC GAMESTARTTIME/TIMELIMIT).</item>
-///   <item><see cref="InfoMessagesPanel.IsSpectating"/>/<see cref="InfoMessagesPanel.CountdownSeconds"/>/
-///         <see cref="InfoMessagesPanel.SetSpectators"/> — spectator/warmup/countdown state.</item>
-///   <item><see cref="WeaponsPanel.SetAccuracy"/> — per-weapon accuracy stats; and the optional
-///         <see cref="CrosshairPanel.ChargeFraction"/>/<see cref="CrosshairPanel.HitFlash"/> for charge/hit
-///         feedback (per-slot weapon state is networked).</item>
-/// </list>
+/// Layout/look come from the <c>hud_panel_&lt;id&gt;_*</c> cvars (luma defaults baked in <see cref="HudLayoutDefaults"/>)
+/// resolved per-frame, NOT a hardcoded anchor table — so a console <c>set</c> or the menu HUD dialogs move/skin
+/// panels live.
 ///
-/// What is NOT ported: the in-game HUD editor and skin/cvar system (hud_config.qc), per-panel enable
-/// cvars, the dynamic-follow shake, and the registry hash handshake — none are needed to draw the HUD.
-///
-/// The class is named <see cref="Hud"/> (the file is HudManager.cs); the lead instantiates
-/// <c>new Hud()</c>.
+/// Port extras kept: <see cref="FpsPanel"/>/<see cref="PingPanel"/> (self-managing their own visibility — exempt
+/// from the gating loop), <see cref="MinigameRenderer"/>/<see cref="MinigameMenu"/> (click-capturing, added
+/// directly, not panels), the Pong key-drive, and the <c>FrameProfiler</c> scope.
 /// </summary>
 public partial class Hud : CanvasLayer
 {
     /// <summary>The local player whose state the HUD reflects (QC <c>spectatee</c> / the view player).</summary>
     public Player? Player { get; private set; }
 
-    // Strongly-typed handles to the panels that callers commonly feed data into.
+    // Strongly-typed handles the net/match layer commonly feeds data into (resolved from the registry).
     public HealthArmorPanel HealthArmor { get; private set; } = null!;
     public AmmoPanel Ammo { get; private set; } = null!;
     public WeaponsPanel Weapons { get; private set; } = null!;
@@ -63,9 +43,6 @@ public partial class Hud : CanvasLayer
     public TimerPanel Timer { get; private set; } = null!;
     public InfoMessagesPanel InfoMessages { get; private set; } = null!;
     public VehicleHud Vehicle { get; private set; } = null!;
-
-    // Match-critical panels (T10): race/checkpoints/vote/modicons/itemstime/physics/mapvote. Their gameplay
-    // state is networked, so the net/match layer feeds them through their settable members (see each panel).
     public RaceTimerPanel RaceTimer { get; private set; } = null!;
     public CheckpointsPanel Checkpoints { get; private set; } = null!;
     public VotePanel Vote { get; private set; } = null!;
@@ -73,145 +50,166 @@ public partial class Hud : CanvasLayer
     public ItemsTimePanel ItemsTime { get; private set; } = null!;
     public PhysicsPanel Physics { get; private set; } = null!;
     public MapVotePanel MapVote { get; private set; } = null!;
-
-    /// <summary>Bottom-right frames-per-second readout (DP <c>cl_showfps</c>/<c>showfps</c>); self-gating.</summary>
     public FpsPanel Fps { get; private set; } = null!;
-
-    /// <summary>Bottom-right round-trip "ping" readout, stacked just above <see cref="Fps"/>
-    /// (<c>cl_showping</c>/<c>showping</c>); self-gating, fed by the net layer via <see cref="PingPanel.PingProvider"/>.</summary>
     public PingPanel Ping { get; private set; } = null!;
 
-    /// <summary>The active-minigame board overlay (CSQC minigame board draw + click-to-move).</summary>
+    /// <summary>The active-minigame board overlay (CSQC minigame board draw + click-to-move). Not a HudPanel.</summary>
     public MinigameRenderer Minigame { get; private set; } = null!;
 
-    /// <summary>The in-game minigame menu (CSQC HUD_MinigameMenu_* — Create/Join/Current Game/Quit).</summary>
+    /// <summary>The in-game minigame menu (CSQC HUD_MinigameMenu_*). Not a HudPanel.</summary>
     public MinigameMenu MinigameMenu { get; private set; } = null!;
+
+    /// <summary>Scoreboard cross-fade (0 = not shown … 1 = fully up). The net/match layer drives it; non-WITH_SB
+    /// panels fade their alpha by <c>1 − ScoreboardFade</c> (QC <c>panel_fade_alpha</c>), without losing Visible.</summary>
+    public float ScoreboardFade { get; set; }
+
+    /// <summary>Global HUD fade (QC <c>hud_fade_alpha</c>; 1 = opaque). Settable by the host if it wants the HUD
+    /// to dim under a menu; defaults to fully on.</summary>
+    public float HudFadeAlpha { get; set; } = 1f;
 
     private readonly List<HudPanel> _panels = new();
 
+    // Panels that drive their OWN Visible + redraw in their own _Process (port extras) — the manager only
+    // refreshes their cvar layout, it never sets their Visible (else it would fight them frame-to-frame).
+    private static readonly HashSet<Type> SelfManaged = new() { typeof(FpsPanel), typeof(PingPanel) };
+
+    // Panels conditionally shown by the net/match layer or by a gameplay event (kept hidden until shown), and
+    // the newly-discovered Radar (no data wiring yet). Matches the old manager's `{ Visible = false }` set.
+    private static readonly HashSet<string> StartHiddenIds = new()
+    {
+        "racetimer", "checkpoints", "vote", "modicons", "itemstime", "physics", "mapvote",
+        "vehicle", "fps", "ping", "radar",
+    };
+
+    private string _skin = "luma";
+
     public override void _Ready()
     {
-        // Create every panel once and parent it under this CanvasLayer (QC registered them at load).
-        HealthArmor  = Add(new HealthArmorPanel());
-        Ammo         = Add(new AmmoPanel());
-        Weapons      = Add(new WeaponsPanel());
-        Powerups     = Add(new PowerupsPanel());
-        Scoreboard   = Add(new ScoreboardPanel());
-        CenterPrint  = Add(new CenterPrintPanel());
-        Notify       = Add(new NotifyPanel());
-        Crosshair    = Add(new CrosshairPanel());
-        Timer        = Add(new TimerPanel());
-        InfoMessages = Add(new InfoMessagesPanel());
-        Vehicle      = Add(new VehicleHud { Visible = false }); // shown only while driving a vehicle
+        // Discover + create every panel (QC registered them at load). Reflection runs once (HudRegistry).
+        foreach (Type t in HudRegistry.PanelTypes)
+            Add(HudRegistry.Create(t));
 
-        // Match-critical panels (T10). RaceTimer/Checkpoints/MapVote/Vote are off by default — the net/match
-        // layer shows them when their gametype/event is active; ModIcons/ItemsTime/Physics follow suit.
-        RaceTimer    = Add(new RaceTimerPanel  { Visible = false }); // race/CTS only
-        Checkpoints  = Add(new CheckpointsPanel { Visible = false }); // race/CTS only
-        Vote         = Add(new VotePanel       { Visible = false }); // shown while a callvote is active
-        ModIcons     = Add(new ModIconsPanel   { Visible = false }); // team-objective gametypes only
-        ItemsTime    = Add(new ItemsTimePanel  { Visible = false }); // shown when item timers are available
-        Physics      = Add(new PhysicsPanel    { Visible = false }); // speedo: off unless enabled
-        MapVote      = Add(new MapVotePanel    { Visible = false }); // intermission map/gametype vote
-        Fps          = Add(new FpsPanel        { Visible = false }); // showfps: self-enables (debug build / cvar)
-        Ping         = Add(new PingPanel       { Visible = false }); // showping: opt-in; net layer feeds PingProvider
+        // Resolve the strongly-typed handles the net/match layer feeds.
+        HealthArmor  = Get<HealthArmorPanel>();
+        Ammo         = Get<AmmoPanel>();
+        Weapons      = Get<WeaponsPanel>();
+        Powerups     = Get<PowerupsPanel>();
+        Scoreboard   = Get<ScoreboardPanel>();
+        CenterPrint  = Get<CenterPrintPanel>();
+        Notify       = Get<NotifyPanel>();
+        Crosshair    = Get<CrosshairPanel>();
+        Timer        = Get<TimerPanel>();
+        InfoMessages = Get<InfoMessagesPanel>();
+        Vehicle      = Get<VehicleHud>();
+        RaceTimer    = Get<RaceTimerPanel>();
+        Checkpoints  = Get<CheckpointsPanel>();
+        Vote         = Get<VotePanel>();
+        ModIcons     = Get<ModIconsPanel>();
+        ItemsTime    = Get<ItemsTimePanel>();
+        Physics      = Get<PhysicsPanel>();
+        MapVote      = Get<MapVotePanel>();
+        Fps          = Get<FpsPanel>();
+        Ping         = Get<PingPanel>();
 
-        // The minigame board overlay isn't a HudPanel (it captures clicks + manages its own redraw), so add it
-        // directly rather than through Add() (which forces MouseFilter.Ignore).
+        // Apply initial visibility (the conditionally-shown panels start hidden; net layer shows them).
+        foreach (HudPanel p in _panels)
+            if (StartHiddenIds.Contains(p.PanelId))
+                p.Visible = false;
+
+        // The minigame board overlay + menu aren't HudPanels (they capture clicks/keys) — add them directly.
         Minigame = new MinigameRenderer { Name = "Minigame" };
         AddChild(Minigame);
-
-        // The minigame menu (Create/Join/Current Game) — likewise a click-capturing Control, not a HudPanel.
-        // Added ABOVE the board so its entries sit on top of the board overlay (QC the MINIGAMEMENU panel).
         MinigameMenu = new MinigameMenu { Name = "MinigameMenu" };
         AddChild(MinigameMenu);
 
-        // Push the current player into the freshly-created panels.
+        SyncSkin();
         ApplyPlayer();
 
-        // Initial layout, and re-layout whenever the window resizes (QC rebuilt on vid_conwidth change).
-        GetViewport().SizeChanged += Layout;
-        Layout();
+        GetViewport().SizeChanged += OnViewportResized;
     }
 
-    /// <summary>
-    /// Point the HUD at the local player actor (QC: the entity referenced by <c>spectatee_status</c> /
-    /// the view player). Pass <c>null</c> to blank the HUD (e.g. before spawn or while observing).
-    /// </summary>
+    /// <summary>Point the HUD at the local player actor. Pass <c>null</c> to blank the HUD (pre-spawn/observing).</summary>
     public void SetPlayer(Player? player)
     {
         Player = player;
         ApplyPlayer();
     }
 
-    /// <summary>
-    /// Sink for Pong's paddle drive command (QC pong_hud_board: <c>minigame_cmd("move "+bits)</c> on a key
-    /// change). Wired by the net layer to send <c>cmd minigame move &lt;bits&gt;</c>. The bits are the QC
-    /// PONG_KEY bitset (1 = increase/down-right, 2 = decrease/up-left). Null = no Pong drive (no net path).
-    /// </summary>
+    /// <summary>Sink for Pong's paddle drive command (wired by the net layer). Bits = PONG_KEY bitset.</summary>
     public System.Action<int>? PongMoveSink { get; set; }
 
-    private int _pongKeys;        // current PONG_KEY bitset held this frame
-    private int _pongKeysOld = -1; // last sent bitset (-1 = nothing sent yet) — QC pong_keys_pressed_old
+    private int _pongKeys;
+    private int _pongKeysOld = -1;
 
     public override void _Process(double delta)
     {
-        using var _hudScope = XonoticGodot.Game.Client.FrameProfiler.Scope("hud.mgr"); // [profiling] HudManager per-frame
-        // QC redrew the entire HUD every frame; we only invalidate panels whose contents are live so
-        // static panels (scoreboard) repaint solely when their data is pushed via QueueRedraw.
+        using var _hudScope = XonoticGodot.Game.Client.FrameProfiler.Scope("hud.mgr");
+
+        SyncSkin();
+        Vector2 vp = GetViewport().GetVisibleRect().Size;
+        float fade = Mathf.Clamp(HudFadeAlpha, 0f, 1f);
+        float sbFade = Mathf.Clamp(ScoreboardFade, 0f, 1f);
+
         foreach (HudPanel p in _panels)
-            if (p.Visible && p.IsDynamic)
+        {
+            // Port extras own their visibility/redraw — just keep their cvar layout fresh (full-viewport).
+            if (SelfManaged.Contains(p.GetType()))
+            {
+                p.LoadConfig(vp, 1f, 1f);
+                continue;
+            }
+
+            if (!p.Visible) continue;
+
+            // Non-scoreboard panels fade out as the scoreboard fades in (QC panel_fade_alpha).
+            float panelFade = p.ShowFlags.HasFlag(PanelShow.WithScoreboard) ? 1f : 1f - sbFade;
+            p.LoadConfig(vp, fade, panelFade);
+
+            if (p.IsDynamic)
                 p.QueueRedraw();
+        }
 
         DrivePongKeys();
-    }
-
-    /// <summary>
-    /// QC pong_hud_board's key drive: while a Pong board is shown, sample the arrow keys into the PONG_KEY
-    /// bitset (UP/LEFT → DECREASE 0x02, DOWN/RIGHT → INCREASE 0x01) and, on a change, send <c>move &lt;bits&gt;</c>
-    /// to the server (the paddle moves while the key is held). No-op when no Pong board is shown or the menu
-    /// captures input. Grid games self-handle clicks in <see cref="MinigameRenderer"/>, so they need nothing here.
-    /// </summary>
-    private void DrivePongKeys()
-    {
-        bool pongShown = PongMoveSink is not null
-            && Minigame is { Visible: true, Session: { } s } && s.Game.NetName == "pong"
-            && (MinigameMenu is null || !MinigameMenu.Visible); // the open menu owns the cursor/keys
-
-        int keys = 0;
-        if (pongShown)
-        {
-            // PONG_KEY_DECREASE (up/left), PONG_KEY_INCREASE (down/right) — Godot physical-key state.
-            if (Input.IsKeyPressed(Key.Up) || Input.IsKeyPressed(Key.Left)) keys |= 0x02;
-            if (Input.IsKeyPressed(Key.Down) || Input.IsKeyPressed(Key.Right)) keys |= 0x01;
-        }
-        _pongKeys = keys;
-        if (_pongKeys != _pongKeysOld)
-        {
-            // Only emit once the board is shown (so hiding the board sends a final "0" to stop the paddle).
-            if (pongShown || _pongKeysOld > 0)
-                PongMoveSink?.Invoke(_pongKeys);
-            _pongKeysOld = _pongKeys;
-        }
     }
 
     // -------------------------------------------------------------------------------------------------
     //  Internals
     // -------------------------------------------------------------------------------------------------
 
-    private T Add<T>(T panel) where T : HudPanel
+    /// <summary>Apply the <c>hud_skin</c> cvar live: on change, point the skin folder at it + clear the texture
+    /// cache so panels reload art, and re-resolve every panel's config.</summary>
+    private void SyncSkin()
+    {
+        string skin = global::XonoticGodot.Game.Menu.MenuState.Cvars.GetString("hud_skin");
+        if (string.IsNullOrWhiteSpace(skin)) skin = "luma";
+        if (skin == _skin) return;
+        _skin = skin;
+        HudSkin.SkinName = skin;
+        TextureCache.Clear();
+        foreach (HudPanel p in _panels) p.InvalidateConfig();
+    }
+
+    private void OnViewportResized()
+    {
+        foreach (HudPanel p in _panels) p.InvalidateConfig();
+    }
+
+    private T Get<T>() where T : HudPanel
+    {
+        foreach (HudPanel p in _panels)
+            if (p is T match) return match;
+        return null!;
+    }
+
+    private void Add(HudPanel panel)
     {
         panel.MouseFilter = Control.MouseFilterEnum.Ignore; // HUD never eats input (QC hud_cursormode off)
         AddChild(panel);
         _panels.Add(panel);
-        return panel;
     }
 
     private void ApplyPlayer()
     {
-        // The gameplay-data panels read live state off the local player; centerprint/notify are fed by the
-        // notification layer (player-agnostic). The crosshair now also follows the player so it can tint to
-        // the active weapon and draw the charge ring.
         if (HealthArmor is null) return; // not built yet (SetPlayer called before _Ready)
         HealthArmor.Player = Player;
         Ammo.Player        = Player;
@@ -219,98 +217,28 @@ public partial class Hud : CanvasLayer
         Powerups.Player    = Player;
         InfoMessages.Player = Player;
         Crosshair.Player   = Player;
-        // The speedo reads live velocity off the view player (QC csqcplayer.velocity).
         Physics.Player     = Player;
-        // The scoreboard's local-player highlight also follows the view player.
         Scoreboard.LocalPlayer = Player;
     }
 
-    /// <summary>
-    /// Anchor every panel to a screen edge and size it relative to the viewport — the modernized stand-in
-    /// for the normalized <c>hud_panel_*_pos/_size</c> cvars (QC defaults roughly reproduced here).
-    /// </summary>
-    private void Layout()
+    private void DrivePongKeys()
     {
-        Vector2 vp = GetViewport().GetVisibleRect().Size;
-        float w = vp.X, h = vp.Y;
+        bool pongShown = PongMoveSink is not null
+            && Minigame is { Visible: true, Session: { } s } && s.Game.NetName == "pong"
+            && (MinigameMenu is null || !MinigameMenu.Visible);
 
-        // Bottom bar: health/armor (left) and ammo (right), like the default Xonotic layout.
-        var haSize = new Vector2(w * 0.22f, h * 0.10f);
-        HealthArmor.Configure(new Rect2(new Vector2(w * 0.02f, h - haSize.Y - h * 0.03f), haSize));
-
-        var ammoSize = new Vector2(w * 0.16f, h * 0.08f);
-        Ammo.Configure(new Rect2(new Vector2(w - ammoSize.X - w * 0.02f, h - ammoSize.Y - h * 0.03f), ammoSize));
-
-        // Weapons strip: bottom center.
-        var wepSize = new Vector2(w * 0.40f, h * 0.06f);
-        Weapons.Configure(new Rect2(new Vector2((w - wepSize.X) * 0.5f, h - wepSize.Y - h * 0.005f), wepSize));
-
-        // Powerups: just above the health bar, bottom-left.
-        var powSize = new Vector2(w * 0.22f, h * 0.04f);
-        Powerups.Configure(new Rect2(new Vector2(w * 0.02f, h - haSize.Y - h * 0.03f - powSize.Y - h * 0.01f), powSize));
-
-        // Timer: top center.
-        var timerSize = new Vector2(w * 0.12f, h * 0.06f);
-        Timer.Configure(new Rect2(new Vector2((w - timerSize.X) * 0.5f, h * 0.02f), timerSize));
-
-        // Killfeed (notify): top right.
-        var notifySize = new Vector2(w * 0.28f, h * 0.30f);
-        Notify.Configure(new Rect2(new Vector2(w - notifySize.X - w * 0.01f, h * 0.10f), notifySize));
-
-        // Info messages: top left.
-        var infoSize = new Vector2(w * 0.30f, h * 0.20f);
-        InfoMessages.Configure(new Rect2(new Vector2(w * 0.02f, h * 0.10f), infoSize));
-
-        // Center print: middle of the screen, upper third.
-        var cpSize = new Vector2(w * 0.60f, h * 0.35f);
-        CenterPrint.Configure(new Rect2(new Vector2((w - cpSize.X) * 0.5f, h * 0.18f), cpSize));
-
-        // Scoreboard: large centered overlay (shown on demand).
-        var sbSize = new Vector2(w * 0.60f, h * 0.70f);
-        Scoreboard.Configure(new Rect2(new Vector2((w - sbSize.X) * 0.5f, h * 0.12f), sbSize));
-
-        // Crosshair: fills the screen; it draws at the exact center itself.
-        Crosshair.Configure(new Rect2(Vector2.Zero, vp));
-
-        // Vehicle HUD: the frame sits bottom-center (QC Vehicles_drawHUD); the panel doesn't clip, so its
-        // auxiliary lock-on crosshairs still project across the whole screen.
-        var vehSize = new Vector2(w * 0.42f, h * 0.16f);
-        Vehicle.Configure(new Rect2(new Vector2((w - vehSize.X) * 0.5f, h - vehSize.Y), vehSize));
-
-        // --- match-critical panels (T10), placed against the default Xonotic layout edges ---
-
-        // Race timer: top center, just under the match timer (QC default hud_panel_racetimer pos).
-        var raceSize = new Vector2(w * 0.40f, h * 0.10f);
-        RaceTimer.Configure(new Rect2(new Vector2((w - raceSize.X) * 0.5f, h * 0.10f), raceSize));
-
-        // Checkpoints list: left side, mid-height (a vertical stack of stored splits).
-        var cpSize2 = new Vector2(w * 0.22f, h * 0.30f);
-        Checkpoints.Configure(new Rect2(new Vector2(w * 0.02f, h * 0.32f), cpSize2));
-
-        // Vote panel: bottom-left above the health bar (QC default mostly centered-left).
-        var voteSize = new Vector2(w * 0.26f, h * 0.16f);
-        Vote.Configure(new Rect2(new Vector2(w * 0.02f, h * 0.55f), voteSize));
-
-        // Mod icons (flags/keys/dom): top center, below the timer (QC default hud_panel_modicons).
-        var modSize = new Vector2(w * 0.18f, h * 0.10f);
-        ModIcons.Configure(new Rect2(new Vector2((w - modSize.X) * 0.5f, h * 0.10f), modSize));
-
-        // Items time: right edge, mid-height (a vertical column of respawn timers).
-        var itSize = new Vector2(w * 0.10f, h * 0.40f);
-        ItemsTime.Configure(new Rect2(new Vector2(w - itSize.X - w * 0.01f, h * 0.28f), itSize));
-
-        // Physics/speedo: bottom center, above the weapons strip.
-        var phySize = new Vector2(w * 0.16f, h * 0.08f);
-        Physics.Configure(new Rect2(new Vector2((w - phySize.X) * 0.5f, h - phySize.Y - h * 0.10f), phySize));
-
-        // Map vote: large centered overlay shown at intermission (QC spans most of the screen).
-        var mvSize = new Vector2(w * 0.84f, h * 0.80f);
-        MapVote.Configure(new Rect2(new Vector2((w - mvSize.X) * 0.5f, h * 0.10f), mvSize));
-
-        // FPS readout: full-viewport rect so it can right-align against the bottom-right edge itself (DP showfps).
-        Fps.Configure(new Rect2(Vector2.Zero, vp));
-
-        // Ping readout: same full-viewport rect; it positions itself on the row directly above the FPS line.
-        Ping.Configure(new Rect2(Vector2.Zero, vp));
+        int keys = 0;
+        if (pongShown)
+        {
+            if (Input.IsKeyPressed(Key.Up) || Input.IsKeyPressed(Key.Left)) keys |= 0x02;
+            if (Input.IsKeyPressed(Key.Down) || Input.IsKeyPressed(Key.Right)) keys |= 0x01;
+        }
+        _pongKeys = keys;
+        if (_pongKeys != _pongKeysOld)
+        {
+            if (pongShown || _pongKeysOld > 0)
+                PongMoveSink?.Invoke(_pongKeys);
+            _pongKeysOld = _pongKeys;
+        }
     }
 }

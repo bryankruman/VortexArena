@@ -46,6 +46,24 @@ public abstract partial class Weapon : IRegistered
 
     public string RegistryName => NetName;
 
+    // --- zoom / scope (CSQC view + reticle, view.qc IsZooming + crosshair.qc DrawReticle) -----------
+
+    /// <summary>
+    /// QC <c>w_reticle</c> (the CSQC weapon ATTRIB, e.g. vortex.qh <c>"gfx/reticle_nex"</c>): the weapon-specific
+    /// zoom "scope" overlay image drawn full-screen while zoomed with this weapon. <c>null</c> = no scope (most
+    /// weapons). Read client-side by the reticle overlay; the server ignores it.
+    /// </summary>
+    public virtual string? Reticle => null;
+
+    /// <summary>
+    /// QC <c>wr_zoomdir</c> / <c>wr_zoom</c> (vortex.qc:353/346 — the <c>button_attack2 &amp;&amp; !secondary</c>
+    /// predicate): does holding ATTACK2 zoom the view with this weapon right now? Drives BOTH the FOV zoom
+    /// (view.qc <c>IsZooming</c>) and the scope reticle (<c>DrawReticle</c>'s <c>wep_zoomed</c>). Default
+    /// <c>false</c> — ATTACK2 is an ordinary secondary fire. The Vortex returns <c>true</c> while
+    /// <c>g_balance_vortex_secondary</c> is 0 (the stock default, where secondary == zoom, not a fire mode).
+    /// </summary>
+    public virtual bool ZoomOnSecondary => false;
+
     /// <summary>QC <c>WEP_FLAG_SUPERWEAPON</c>: a timed superweapon (Vaporizer/Fireball/…) — held only while the
     /// Superweapon status effect lasts.</summary>
     public bool IsSuperWeapon => (SpawnFlags & WeaponFlags.SuperWeapon) != 0;

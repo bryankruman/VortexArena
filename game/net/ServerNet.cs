@@ -136,6 +136,10 @@ public sealed class ServerNet : IDisposable
         public readonly Queue<InputCommand> Pending = new();
         public InputCommand Last;       // last applied input (repeated if the queue starves — held keys)
         public bool HasLast;
+        // Per-frame (variable-dt) input mode for this client (set from the input-frame header): when true,
+        // ProvideInput drains ALL pending commands this tick and OnClientMove runs movement per command (each with
+        // its own DeltaTime) — DP's process-queued-client-moves; false = the legacy one-command-per-tick path.
+        public bool PerFrameInput;
 
         // The input resolved for the current sim tick + the sim time it was resolved at. GameWorld pulls
         // InputProvider TWICE per tick (movement + the W_WeaponFrame driver); we dequeue/ack only on the first
@@ -143,6 +147,10 @@ public sealed class ServerNet : IDisposable
         // LastProcessedSeq doesn't over-ack an input whose movement never ran.
         public IMovementInput? TickInput;
         public float TickInputTime = float.NaN;
+        // Per-frame mode: the per-command movement inputs drained for THIS tick (one per client render frame),
+        // iterated by OnClientMove so each integrates with its own dt. Reused (cleared) each tick; keyed live by
+        // TickInputTime == world time. Empty/stale → OnClientMove falls back to the single merged TickInput.
+        public readonly List<IMovementInput> TickBatch = new();
 
         /// <summary>QC PlayerUseKey is edge-driven (DP fires it once per +use press, not per tick): the
         /// RELEASED-&gt;PRESSED rising edge of the +use button (BIT(5)) triggers vehicle board/exit. Track the
@@ -206,6 +214,7 @@ public sealed class ServerNet : IDisposable
 
         // The world asks us for each client's movement input every tick; serve it from that client's queue.
         _world.InputProvider = ProvideInput;
+        _world.TickMovementBatch = TickMovementBatch;
 
         // Wire the NET sinks so server-emitted effects/notifications are serialized + broadcast (the
         // EffectEmitter/NotificationSystem "wire to netcode" TODOs). They capture into our per-frame queues;
@@ -715,6 +724,11 @@ public sealed class ServerNet : IDisposable
             else st.MeasuredRtt += (rtt - st.MeasuredRtt) * RttSmoothing; // 1st-order low-pass
         }
 
+        // Per-frame (variable-dt) input mode for this client (see PeerState.PerFrameInput). Client-authoritative
+        // for its own input cadence; the server still clamps each command's dt + caps the per-tick budget when it
+        // drains. Position on the wire matches ClientNet.SendInput: snapAck, echoedServerTime, THIS flag, count.
+        st.PerFrameInput = r.ReadByte() != 0;
+
         int count = r.ReadByte();
         for (int i = 0; i < count; i++)
         {
@@ -755,6 +769,11 @@ public sealed class ServerNet : IDisposable
         float now = _world.Time;
         if (st.TickInput is not null && st.TickInputTime == now)
             return st.TickInput;
+
+        // Per-frame (variable-dt) client: drain ALL pending commands this tick into the per-command movement batch
+        // + a merged once-per-tick input, instead of the legacy one-command-per-tick below.
+        if (st.PerFrameInput)
+            return ProvideInputPerFrame(st, p, now);
 
         InputCommand cmd;
         if (st.Pending.Count > 0)
@@ -815,6 +834,115 @@ public sealed class ServerNet : IDisposable
         st.TickInput = resolved;
         st.TickInputTime = now;
         return resolved;
+    }
+
+    // Per-frame (variable-dt) guardrails. The client already clamps each command's dt to the SAME bounds before
+    // stamping it (NetGame.MinInputDt/MaxInputDt) so re-clamping here is a no-op for an honest client and keeps
+    // client prediction in lockstep; it only tames a buggy/cheating client. The per-tick budget caps how much
+    // simulated time one server tick may drain (drain the rest next tick) so a flooded queue can't fast-forward.
+    private const float PerFrameMinCommandDt = 0.0005f;
+    private const float PerFrameMaxCommandDt = 0.05f;
+    private const float PerFrameTickBudget = 0.25f;
+
+    /// <summary>
+    /// Per-frame (variable-dt) input drain — DP's process-queued-client-moves. Dequeues ALL pending commands for
+    /// this tick (up to <see cref="PerFrameTickBudget"/> simulated seconds), building <see cref="PeerState.TickBatch"/>
+    /// (one movement input per command, integrated with its own clamped dt by OnClientMove) AND the MERGED
+    /// once-per-tick input the single-call readers use: the LATEST command's angles/wish-move with the OR of every
+    /// drained command's buttons (so a fire pressed in ANY sub-frame reaches this tick's weapon driver). Impulses
+    /// dispatch per command (rapid weapon switches); the +use edge + starve-repeat mirror the legacy path.
+    /// </summary>
+    private IMovementInput ProvideInputPerFrame(PeerState st, Player p, float now)
+    {
+        st.TickBatch.Clear();
+        InputButtons mergedButtons = InputButtons.None;
+        InputCommand last = default;
+        bool any = false;
+        float consumed = 0f;
+
+        while (st.Pending.Count > 0 && consumed < PerFrameTickBudget)
+        {
+            InputCommand cmd = st.Pending.Dequeue();
+            // Clamp this command's dt server-side (untrusted client); the client clamps to the same bounds, so an
+            // honest command is unchanged → prediction stays in lockstep.
+            float dt = cmd.DeltaTime;
+            dt = dt < PerFrameMinCommandDt ? PerFrameMinCommandDt : (dt > PerFrameMaxCommandDt ? PerFrameMaxCommandDt : dt);
+            cmd.DeltaTime = dt;
+            consumed += dt;
+
+            st.Last = cmd;
+            st.HasLast = true;
+            st.LastProcessedSeq = cmd.Seq;
+
+            // Impulse: dispatch once per command (the enqueue Seq-dedup already drops the redundant tail), then zero
+            // it on st.Last so the starve-repeat can't re-fire it — exactly the legacy path, per command. Observers
+            // keep the impulse on the dequeued cmd (it rides the batch entry into SpectatorControl's speed ladder).
+            if (cmd.Impulse != 0)
+            {
+                if (!p.IsObserver)
+                    _world.Commands.Execute($"impulse {cmd.Impulse}", isServerConsole: false, caller: p);
+                InputCommand z = st.Last; z.Impulse = 0; st.Last = z;
+            }
+
+            st.TickBatch.Add(ToMovementInput(cmd));
+            mergedButtons |= cmd.TypedButtons;
+            last = cmd;
+            any = true;
+        }
+
+        if (!any)
+        {
+            // Starved (packet loss / client hitch): repeat the last command so held keys keep the player moving —
+            // a single batch entry worth one tick of dt.
+            if (st.HasLast)
+            {
+                InputCommand rep = st.Last;
+                rep.DeltaTime = SimulationLoopTicRate;
+                st.TickBatch.Add(ToMovementInput(rep));
+                mergedButtons = rep.TypedButtons;
+                last = rep;
+            }
+            else
+            {
+                st.TickInput = ZeroInput;
+                st.TickInputTime = now;
+                return ZeroInput; // empty batch → OnClientMove uses the single ZeroInput
+            }
+        }
+
+        // MERGED once-per-tick input: the latest command's angles/wish-move (freshest aim + intent) carrying the OR
+        // of every drained command's buttons, at the tick frametime (the weapon driver/regen run once per tick).
+        // Drives p.Angles, the dead-respawn buttons, the vehicle input and W_WeaponFrame.
+        InputCommand mergedCmd = last;
+        mergedCmd.Buttons = (int)mergedButtons;
+        mergedCmd.Impulse = 0;
+        mergedCmd.DeltaTime = SimulationLoopTicRate;
+        IMovementInput merged = ToMovementInput(mergedCmd);
+
+        // +use rising edge from the merged state (once per tick, like the legacy path).
+        bool useDown = merged.ButtonUse;
+        if (useDown && !st.UsePrevDown)
+            VehicleBoarding.UseKey(p);
+        st.UsePrevDown = useDown;
+
+        st.TickInput = merged;
+        st.TickInputTime = now;
+        return merged;
+    }
+
+    /// <summary>
+    /// The per-command movement batch drained for <paramref name="p"/> THIS tick (per-frame mode) — one entry per
+    /// client render frame, each integrated with its own dt by OnClientMove. Null in legacy mode or when not
+    /// drained this tick (→ OnClientMove runs the single InputProvider command). Built by
+    /// <see cref="ProvideInputPerFrame"/>, which OnClientMove triggers via its first InputProvider call.
+    /// </summary>
+    private IReadOnlyList<IMovementInput>? TickMovementBatch(Player p)
+    {
+        if (!_byPlayer.TryGetValue(p, out PeerState? st))
+            return null;
+        if (!st.PerFrameInput || st.TickInputTime != _world.Time)
+            return null;
+        return st.TickBatch.Count > 0 ? st.TickBatch : null;
     }
 
     private static readonly MovementInput ZeroInput = new() { FrameTime = SimulationLoopTicRate };
@@ -1298,6 +1426,11 @@ public sealed class ServerNet : IDisposable
             spec = 0;                    // a live player
         p.SpectateeStatus = spec;
         w.WriteShort(spec);
+
+        // QC view punch (PM_check_punch): the weapon-recoil view kick, decayed server-side and applied to the
+        // owner's rendered view angles client-side. Owner-only (only the local player sees their own kick), so
+        // it rides the owner block, not the entity stream. Small + cheap; sent unconditionally for lockstep.
+        w.WriteVector(p.PunchAngle, XonoticGodot.Net.NetPrecision.Float);
 
         // [T57 accuracy] — the owner's own per-weapon accuracy bytes (QC ENT_CLIENT_ACCURACY, owner-only:
         // a.drawonlytoclient = e, accuracy.qc:54). One QC accuracy_byte per Registry<Weapon> id (0 = never fired,

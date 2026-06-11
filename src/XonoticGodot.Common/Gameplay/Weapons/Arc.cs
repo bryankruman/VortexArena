@@ -324,7 +324,7 @@ public sealed class Arc : Weapon
         actor.TakeResource(AmmoType, Bolt.Ammo);
 
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out _);
-        ShotInfo shot = WeaponFiring.SetupShot(actor, forward);
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, recoil: 2f); // QC arc.qc bolt recoil 2
 
         int count = Bolt.Count;
         if (count < 1) count = 1;
@@ -393,7 +393,10 @@ public sealed class Arc : Weapon
         WeaponSplash.RadiusDamage(self, self.Origin, Bolt.Damage, Bolt.EdgeDamage, Bolt.Radius,
             self.Owner, RegistryId, Bolt.Force);
         WeaponSplash.ImpactSound(self, "weapons/electro_impact.wav"); // QC SND_ARC_BOLT_IMPACT (wr_impacteffect)
-        EffectEmitter.Emit("ELECTRO_IMPACT", self.Origin);
+        // arc.qc: pointparticles(EFFECT_ELECTRO_IMPACT, org2, w_backoff * 1000, 1) — spray back along the impact
+        // normal; the reversed bolt flight direction is DP's w_backoff fallback (-force_dir).
+        Vector3 backoff = self.Velocity.LengthSquared() > 1e-6f ? -QMath.Normalize(self.Velocity) : Vector3.Zero;
+        EffectEmitter.Emit("ELECTRO_IMPACT", self.Origin, backoff * 1000f);
         Api.Entities.Remove(self);
     }
 

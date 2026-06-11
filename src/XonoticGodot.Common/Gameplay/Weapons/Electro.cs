@@ -197,7 +197,7 @@ public sealed class Electro : Weapon
         actor.TakeResource(AmmoType, Primary.Ammo);
 
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out _);
-        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, new Vector3(0, 0, -3), new Vector3(0, 0, -3));
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, new Vector3(0, 0, -3), new Vector3(0, 0, -3), recoil: 2f);
 
         Entity proj = Api.Entities.Spawn();
         proj.ClassName = "electro_bolt";
@@ -287,7 +287,7 @@ public sealed class Electro : Weapon
         actor.TakeResource(AmmoType, Secondary.Ammo);
 
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out Vector3 up);
-        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, new Vector3(-4, -4, -4), new Vector3(4, 4, 4));
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, new Vector3(-4, -4, -4), new Vector3(4, 4, 4), recoil: 2f);
         // w_shotdir = v_forward — no TrueAim for orbs.
         Vector3 dir = forward;
 

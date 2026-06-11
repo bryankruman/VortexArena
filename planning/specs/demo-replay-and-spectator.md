@@ -5,7 +5,9 @@ Implements / extends [ADR-0005](../decisions/ADR-0005-custom-netcode.md) (custom
 record/playback), `qcsrc/server/demo` glue, `qcsrc/client/main.qc` + `view.qc` (chase/spectate cam,
 `spectatee_status`), `qcsrc/menu/xonotic/dialog_media_demo.qc`.
 
-> **Status:** ☐ not started — design approved, implementation phased below.
+> **Status:** ☐ not started — design approved (refined 2026-06-10: always-on auto-record by default on both client
+> and server; menu = playback + video export). Implementation phased below. **Video capture** (the fixed-FPS
+> "perfect" render-to-file) is a companion spec: [`video-capture.md`](video-capture.md).
 
 ---
 
@@ -105,6 +107,30 @@ exactly the desired behavior.
 ---
 
 ## 4. Recording
+
+### Always-on by default — client *and* server (refined 2026-06-10)
+
+Recording is **on by default** on both sides, each gated by a single cvar so it can be turned off:
+
+- **Server** (`sv_autodemo`, default **1**) records the **omniscient full-state** demo for the whole match (the
+  source of free-cam replay) and **finalizes the `.xgd` to disk at every match boundary** — match end, level change,
+  `map`/`restart`, or shutdown — then opens the next one. This is the existing
+  [`DemoControl`](../../src/XonoticGodot.Server/DemoControl.cs) `OnMatchStart`/`OnMatchEnd` lifecycle, now with the
+  recorder backend wired and the default flipped on.
+- **Client** (`cl_autodemo`, default **1**) records the **stream it receives** and finalizes **when the session
+  ends** — match end, disconnect, or quit. A client demo holds only what the server networked to that one viewer
+  (**PVS-limited**), so its replay is **locked to the recording player's own first-person perspective** — you
+  re-watch exactly what they saw, with no free-cam and no following other players (the data for those views is simply
+  not in the file). For the all-players, switch-perspective experience, replay the **server** demo. Both use the
+  **same `.xgd` format and `DemoRecorder`** — the differences are the data source (the client taps its decoded
+  per-snapshot entity set instead of `ServerNet`'s `_entityScratch`) and the **playback perspective lock** (§8).
+
+> **Deliberate deviation from Base defaults.** DP ships `sv_autodemo 0` / `cl_autodemo 0`. We default **both to 1** as
+> a product decision (always have the replay), *not* a parity bug — flag it as intentional in the port headers so the
+> fidelity audit doesn't "correct" it. Disabling is a one-cvar opt-out.
+
+Finalize-at-boundary keeps each file a single coherent match and bounds its size; a crash loses only the in-progress
+match (mitigable later by periodically flushing the keyframe index).
 
 ### Where it hooks
 
@@ -237,6 +263,21 @@ replay.
 enum SpectatorMode { FreeFly, Follow, Director }
 ```
 
+### Perspective availability — server demo vs client demo (and during capture)
+
+- **Server demo (all three modes).** You **pick the starting perspective** when the replay opens (default: Director),
+  and **switch freely in real time while watching** — FreeFly anywhere, Follow/cycle any player (1st-person or chase),
+  or Director. This is the full experience.
+- **Client demo (locked).** A client demo holds only the recording player's own PVS stream, so playback is **locked
+  to that player's first-person perspective** — no FreeFly, no following others (the data isn't there). The control
+  bar's camera switches are disabled; only that one viewpoint plays back. (A self-chase 3rd-person of the *same*
+  player is the only conceivable relaxation, since it's still that player's data — default off.)
+- **During video capture (either demo).** The perspective is **fixed at capture start** and the recording follows it
+  for the whole render — there is **no interactive switching mid-capture** (a capture run has no live input; see
+  [`video-capture.md`](video-capture.md) §3). You choose the perspective (Director / Follow a chosen player /
+  first-person of a target) when you start the capture; it holds for the duration. A client-demo capture is, as
+  always, that player's first-person.
+
 1. **FreeFly** — the existing observer free-flight. Camera = the predicted observer eye (the viewer's own live
    spectator body). Nothing new beyond confirming the client predicts the `MOVETYPE_FLY` observer path (see §11).
 2. **Follow** — pick a recorded player net id; camera tracks that entity's interpolated origin.
@@ -273,13 +314,19 @@ enum SpectatorMode { FreeFly, Follow, Director }
 ## 10. Menu integration & launch path
 
 - **`DialogMediaDemo`** ([dialog](../../game/menu/dialogs/DialogMediaDemo.cs)) already has the Demos tab UI (filter,
-  list, Refresh, Play, Timedemo, `cl_autodemo`) wired but inert. Give it the backend: enumerate `demos/*.xgd`
-  via the VFS, populate the list, and on **Play** launch a replay.
+  list, Refresh, Play, Timedemo, `cl_autodemo`) wired but inert. Give it the backend. Because recording is now
+  **automatic** (§4), the menu's job is **playback + video export**, not manual record:
+  - Enumerate `demos/*.xgd` via the VFS (both server- and client-saved demos) and populate the filtered list.
+  - **Play** → launch a replay (`NetGame.ConfigureReplay`).
+  - **Record to video** → an FPS/resolution/format dialog that exports the selected demo to a video file via
+    [`video-capture.md`](video-capture.md) (the relaunch path). Replaces the inert "Timedemo" affordance.
+  - Keep the `cl_autodemo` checkbox as the always-on opt-out (now default-checked).
 - **`NetGame.ConfigureReplay(demoPath, vfs, …)`** — a third configuration beside `ConfigureClient` /
   `ConfigureListenServer`: boots a replay-mode `GameWorld` + `DemoPlayback` + `ServerNet` (loopback), self-connects
   a local observer `ClientNet`, reads the **map name from the demo header** so the client renders the right
   worldmodel, and adds the `SpectatorCamera` + `ReplayControlBar`. A `--playdemo <path>` CLI flag mirrors it.
-- **`cl_autodemo`** wires `DemoControl` → `DemoRecorder` so real matches record automatically.
+- **`cl_autodemo` / `sv_autodemo`** (both default on, §4) wire `DemoControl` → `DemoRecorder` so client and server
+  demos record automatically.
 
 ---
 
@@ -301,7 +348,10 @@ enum SpectatorMode { FreeFly, Follow, Director }
 - `src/XonoticGodot.Server/DemoControl.cs` — wire `StartRecording/StopRecording` to `DemoRecorder`.
 - `game/client/FirstPersonView.cs` — reuse chase cam for Follow 3rd-person.
 - `game/client/ClientWorld.cs` (+ `EffectSystem`, sound pools) — `ClearTransients()` for seek.
-- `game/menu/dialogs/DialogMediaDemo.cs` — enumerate + launch.
+- `game/net/ClientNet.cs` — client-side `DemoRecorder` tap (record the decoded per-snapshot entity set) + finalize on
+  disconnect/quit (the always-on `cl_autodemo` path, §4).
+- `game/menu/dialogs/DialogMediaDemo.cs` — enumerate + launch replay + "Record to video" export (see
+  [`video-capture.md`](video-capture.md)).
 - (fidelity) the player net-state path — record per-player **view angles** for faithful first-person follow.
 
 ---
@@ -323,16 +373,20 @@ enum SpectatorMode { FreeFly, Follow, Director }
 
 ## 13. Phasing
 
-- **Phase 0 — Format + recorder.** `DemoFormat` + `DemoRecorder` + `DemoControl` wiring + round-trip tests. No
-  playback yet. *Deliverable:* matches write real `.xgd` files; tests prove the round-trip.
+- **Phase 0 — Format + recorder (client + server, always-on).** `DemoFormat` + `DemoRecorder` + `DemoControl`
+  wiring + the client-side recorder tap + boundary finalize + defaults flipped on (§4) + round-trip tests. No
+  playback yet. *Deliverable:* real matches auto-write `.xgd` files on both sides; tests prove the round-trip.
 - **Phase 1 — Replay host (forward, free-fly).** `GameWorld.ReplayMode` + `DemoPlayback` + `ServerNet.ReplaySource`
   + `NetGame.ConfigureReplay` + `--playdemo`. *Deliverable:* fly around a recording at 1×.
 - **Phase 2 — Time control.** Two-clock model, pause/slow/fast/smooth-rewind/seek, keyframe seek, transient-clear +
   loop-sound reconstruction, `ReplayControlBar`. *Deliverable:* full scrub/slow-mo/rewind.
 - **Phase 3 — Camera modes.** Follow (1st-person + chase, target cycle) then the Director auto-cam. *Deliverable:*
   the three modes the user asked for.
-- **Phase 4 — Menu + polish.** `DialogMediaDemo` backend, `cl_autodemo`, timeline event markers, shared-replay
-  time-control commands (optional).
+- **Phase 4 — Menu + polish.** `DialogMediaDemo` backend (enumerate + Play + "Record to video"), timeline event
+  markers, shared-replay time-control commands (optional).
+- **Video capture** (the fixed-FPS "perfect" render-to-file the user asked for) is a **parallel track** in its own
+  companion spec — [`video-capture.md`](video-capture.md), Phases V0–V3 — and depends on Phase 1 (a playable replay)
+  before it is meaningful.
 
 ---
 

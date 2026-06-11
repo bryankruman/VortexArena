@@ -291,7 +291,7 @@ public sealed class Hook : Weapon
     {
         // QC leaves secondary ammo-free for now (WEAPONTODO), so no TakeResource here.
         Vector3 forward = QMath.Forward(actor.Angles);
-        ShotInfo shot = WeaponFiring.SetupShot(actor, forward);
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, recoil: 4f); // QC hook.qc hookbomb recoil 4
 
         Entity gren = Api.Entities.Spawn();
         gren.ClassName = "hookbomb";

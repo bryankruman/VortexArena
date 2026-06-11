@@ -45,8 +45,11 @@ public static class EffectsList
         Effects.Register("SHOTGUN_WOOSH", "shotgun_woosh");
 
         // ---- Arc beam family ----
-        Effects.Register("ARC_BEAM", "arc_beam");
-        Effects.Register("ARC_BEAM_HEAL", "arc_beam_heal");
+        // The arc/heal beams are drawn as TRAILS (arc_beam is a `type spark` trailspacing-10 effect; heal is a
+        // smoke trail) swept origin→hit-point, like VORTEX_BEAM. They MUST be isTrail so EffectEmitter.Emit
+        // doesn't drop the count-0 beam emission as an empty point effect, and so the client sweeps the segment.
+        Effects.Register("ARC_BEAM", "arc_beam", isTrail: true);
+        Effects.Register("ARC_BEAM_HEAL", "arc_beam_heal", isTrail: true);
         Effects.Register("ARC_BEAM_HEAL_IMPACT", "arc_beam_healimpact");
         Effects.Register("ARC_BEAM_HEAL_IMPACT2", "healray_impact");
         Effects.Register("ARC_OVERHEAT", "arc_overheat");

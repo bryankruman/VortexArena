@@ -29,7 +29,7 @@ public partial class Entity
 
     // --- spatial state (engine-maintained) ---
     public Vector3 Origin, OldOrigin, Velocity, Angles, AVelocity;
-    public Vector3 Mins, Maxs, Size, AbsMin, AbsMax, ViewOfs, PunchAngle;
+    public Vector3 Mins, Maxs, Size, AbsMin, AbsMax, ViewOfs, PunchAngle, PunchVector;
 
     // --- movement / physics ---
     public MoveType MoveType;

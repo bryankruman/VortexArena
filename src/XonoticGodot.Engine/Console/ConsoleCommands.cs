@@ -76,8 +76,10 @@ public sealed class ConsoleCommands
 
         _interp.RegisterCommand("cvar", CmdCvar);
         _interp.RegisterCommand("cvarlist", CmdCvarList);
+        _interp.RegisterCommand("cvar_orphans", CmdCvarOrphans);
         _interp.RegisterCommand("cmdlist", CmdCmdList);
         _interp.RegisterCommand("apropos", CmdApropos);
+        _interp.RegisterCommand("search", CmdApropos); // friendlier alias for apropos (search commands+cvars by substring)
         _interp.RegisterCommand("help", CmdHelp);
 
         _interp.RegisterCommand("bind", CmdBind);
@@ -174,6 +176,22 @@ public sealed class ConsoleCommands
         _print($"{n} cvar(s)");
     }
 
+    /// <summary>
+    /// <c>cvar_orphans</c> — list cvars that some code read while they were ABSENT from the store (never registered
+    /// nor set), so the read silently returned 0/"" and the name is hidden from <c>cvarlist</c>/<c>search</c> (the
+    /// <c>vid_vsync</c> class of bug). A diagnostic for "are all cvars registered?": run it after exercising the
+    /// client (open menus, join a match) to populate the read set. Some entries are legitimately optional cvars
+    /// (e.g. a mutator's per-feature toggle absent in this ruleset), so eyeball the list rather than treating every
+    /// line as a bug. Server-only cvars live in the listen server's private store, not this one.
+    /// </summary>
+    private void CmdCvarOrphans(IReadOnlyList<string> a)
+    {
+        var orphans = _cvars.UnregisteredReadNames.OrderBy(x => x, StringComparer.Ordinal).ToList();
+        foreach (string name in orphans)
+            _print(name);
+        _print($"{orphans.Count} cvar(s) read but never registered or set (default to 0/\"\", hidden from cvarlist).");
+    }
+
     private void CmdCmdList(IReadOnlyList<string> a)
     {
         string? filter = a.Count >= 2 ? a[1] : null;
@@ -188,7 +206,7 @@ public sealed class ConsoleCommands
 
     private void CmdApropos(IReadOnlyList<string> a)
     {
-        if (a.Count < 2) { _print("usage: apropos <substring>"); return; }
+        if (a.Count < 2) { _print($"usage: {a[0]} <substring>"); return; }
         string q = a[1];
         bool any = false;
         foreach (string name in AllCommandNames().OrderBy(x => x, StringComparer.Ordinal))
@@ -211,7 +229,7 @@ public sealed class ConsoleCommands
                 _print($"no command or cvar named \"{name}\"");
             return;
         }
-        _print("XonoticGodot console — type a command or `cvar value`. Try: cmdlist, cvarlist [filter], apropos <text>,");
+        _print("XonoticGodot console — type a command or `cvar value`. Try: cmdlist, cvarlist [filter], search <text>,");
         _print("bind <key> <command>, exec <file.cfg>, toggle <cvar>, connect <addr>, disconnect, quit.");
     }
 

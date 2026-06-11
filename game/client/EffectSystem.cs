@@ -551,7 +551,9 @@ public partial class EffectSystem : Node3D
             Gravity = new Vector3(0f, grav, 0f),
             ScaleMin = scale * 0.6f,
             ScaleMax = scale,
-            Color = tint.Color,
+            // T2: tint lives ONLY in the color ramp (ApplyColorRamp encodes it) + this White base avoids the
+            // base × ramp × albedo triple-multiply that darkened the heuristic bursts.
+            Color = Colors.White,
             EmissionShape = ParticleProcessMaterial.EmissionShapeEnum.Sphere,
             EmissionSphereRadius = kind == EffectClass.Smoke ? 6f : 2f,
         };
@@ -564,12 +566,12 @@ public partial class EffectSystem : Node3D
 
     private Node3D BuildTrail(EffectClass kind, Vector3 start, Vector3 end, Tint tint)
     {
-        // A trail is rendered as a short-lived emitter strung along the segment. We position the emitter at
-        // the midpoint and emit within a box covering the segment, biased toward the travel direction.
-        Vector3 mid = (start + end) * 0.5f;
+        // A trail (the heuristic fallback, used only for names absent from effectinfo) lays its particles
+        // stepped ALONG the segment in one frame (T1), like the effectinfo path — not scattered through the
+        // segment's bounding box over time. The emitter sits at `start` and the emission-point set places each
+        // particle down the line.
         Vector3 seg = end - start;
         float len = seg.Length();
-        Vector3 dir = len > 0.001f ? seg / len : Vector3.Up;
 
         (float life, float scale, float grav) = kind switch
         {
@@ -587,27 +589,36 @@ public partial class EffectSystem : Node3D
             Amount = n,
             Lifetime = life,
             OneShot = true,
-            Explosiveness = 0.1f, // spread emission across the segment over time
+            Explosiveness = 1.0f, // lay the whole line down this frame (the points distribute it in space)
             Emitting = true,
-            Position = mid,
+            Position = start,
+            VisibilityAabb = new Aabb(new Vector3(-len - 32f, -len - 32f, -len - 32f), new Vector3(2f * len + 64f, 2f * len + 64f, 2f * len + 64f)),
         };
 
         var mat = new ParticleProcessMaterial
         {
-            Direction = dir,
+            Direction = Vector3.Up,
             Spread = 12f,
             InitialVelocityMin = 0f,
             InitialVelocityMax = 20f,
             Gravity = new Vector3(0f, grav, 0f),
             ScaleMin = scale * 0.5f,
             ScaleMax = scale,
-            Color = tint.Color,
-            EmissionShape = ParticleProcessMaterial.EmissionShapeEnum.Box,
-            EmissionBoxExtents = new Vector3(
-                Math.Max(1f, Math.Abs(seg.X) * 0.5f),
-                Math.Max(1f, Math.Abs(seg.Y) * 0.5f),
-                Math.Max(1f, Math.Abs(seg.Z) * 0.5f)),
+            Color = Colors.White, // T2: tint via the color ramp only (see BuildBurst)
         };
+        // Emission points stepped along the segment (local to `start`), with a tiny jitter so a thick effect
+        // doesn't read as a perfectly straight pixel line.
+        var pointImg = Image.CreateEmpty(n, 1, false, Image.Format.Rgbf);
+        for (int i = 0; i < n; i++)
+        {
+            float t = (i + 0.5f) / n;
+            Vector3 p = seg * t + new Vector3(
+                (float)GD.RandRange(-1.0, 1.0), (float)GD.RandRange(-1.0, 1.0), (float)GD.RandRange(-1.0, 1.0));
+            pointImg.SetPixel(i, 0, new Color(p.X, p.Y, p.Z));
+        }
+        mat.EmissionShape = ParticleProcessMaterial.EmissionShapeEnum.Points;
+        mat.EmissionPointTexture = ImageTexture.CreateFromImage(pointImg);
+        mat.EmissionPointCount = n;
         ApplyColorRamp(mat, kind, tint.Color);
         particles.ProcessMaterial = mat;
         particles.DrawPass1 = BuildParticleMesh(kind, tint.Color);
@@ -647,7 +658,8 @@ public partial class EffectSystem : Node3D
             // to the 1×1 base quad and vanish.
             BillboardKeepScale = true,
             VertexColorUseAsAlbedo = true,
-            AlbedoColor = color,
+            // T2: White albedo — the tint is carried by the per-particle vertex COLOR (process material ramp).
+            AlbedoColor = Colors.White,
             // Use the particle billboard path; let the shader read per-particle color from the process mat.
             DisableReceiveShadows = true,
         };
@@ -906,8 +918,10 @@ public partial class EffectSystem : Node3D
             Amount = n,
             Lifetime = life,
             OneShot = true,
-            // A point burst is explosive (all at once); a trail spreads emission over the segment/time.
-            Explosiveness = isTrail ? 0.0f : 1.0f,
+            // Both a point burst and a (T1) line trail spawn ALL their particles this frame: the burst explodes
+            // outward, the trail lays its particles down the segment at once (the emission-point set below already
+            // distributes them in space, so there's nothing to spread over time — a beam must appear instantly).
+            Explosiveness = 1.0f,
             Emitting = true,
             // Pin a generous visibility box so a burst whose particles fly out far (velocityjitter up to 900) +
             // grow big isn't frustum-culled as a whole once the emitter point drifts off-screen (Godot's auto
@@ -927,18 +941,44 @@ public partial class EffectSystem : Node3D
             info.RelativeOriginOffset.X * fwd
             + info.RelativeOriginOffset.Y * right
             + info.RelativeOriginOffset.Z * up;
-        NVec3 spanCenterQ = (originMin + originMax) * 0.5f + relOrigin + info.OriginOffset;
-        NVec3 spanHalfQ = (originMax - originMin) * 0.5f;
-        // Convert the Quake-space jitter/half-extent magnitudes to Godot axes (abs, since extents are radii).
-        Vector3 jitterG = AbsToGodot(info.OriginJitter);
-        Vector3 spanHalfG = AbsToGodot(spanHalfQ);
-        Vector3 centerOffsetG = Coords.ToGodot(spanCenterQ - originMin); // parent is at originMin
-        mat.EmissionShape = ParticleProcessMaterial.EmissionShapeEnum.Box;
-        mat.EmissionBoxExtents = new Vector3(
-            MathF.Max(0.01f, spanHalfG.X + jitterG.X),
-            MathF.Max(0.01f, spanHalfG.Y + jitterG.Y),
-            MathF.Max(0.01f, spanHalfG.Z + jitterG.Z));
-        particles.Position = centerOffsetG;
+
+        if (isTrail && traillen > 0.001f)
+        {
+            // T1 — a trail lays its particles stepped ALONG the segment (DP cl_particles.c:1763-1780), each
+            // jittered by originjitter per axis, ALL this frame. We encode the per-particle spawn positions into
+            // a Godot emission-POINT texture (one RGB pixel = one local position) instead of spraying a box. This
+            // is what makes the vortex beam (nex_beam, 4 trail blocks) read as a crisp line of particles in the
+            // frame it fired, rather than a cloud fading in across the segment's bounding box over its lifetime.
+            NVec3 segStart = originMin + relOrigin + info.OriginOffset;
+            NVec3 segEnd = originMax + relOrigin + info.OriginOffset;
+            NVec3[] ptsQ = XonoticGodot.Engine.Effects.TrailGeometry.PointsAlongSegment(
+                segStart, segEnd, n, info.OriginJitter, () => (float)GD.RandRange(-1.0, 1.0));
+            var pointImg = Image.CreateEmpty(n, 1, false, Image.Format.Rgbf);
+            for (int i = 0; i < n; i++)
+            {
+                Vector3 g = Coords.ToGodot(ptsQ[i] - originMin); // local to the parent (which sits at originMin)
+                pointImg.SetPixel(i, 0, new Color(g.X, g.Y, g.Z));
+            }
+            mat.EmissionShape = ParticleProcessMaterial.EmissionShapeEnum.Points;
+            mat.EmissionPointTexture = ImageTexture.CreateFromImage(pointImg);
+            mat.EmissionPointCount = n;
+            particles.Position = Vector3.Zero;
+        }
+        else
+        {
+            NVec3 spanCenterQ = (originMin + originMax) * 0.5f + relOrigin + info.OriginOffset;
+            NVec3 spanHalfQ = (originMax - originMin) * 0.5f;
+            // Convert the Quake-space jitter/half-extent magnitudes to Godot axes (abs, since extents are radii).
+            Vector3 jitterG = AbsToGodot(info.OriginJitter);
+            Vector3 spanHalfG = AbsToGodot(spanHalfQ);
+            Vector3 centerOffsetG = Coords.ToGodot(spanCenterQ - originMin); // parent is at originMin
+            mat.EmissionShape = ParticleProcessMaterial.EmissionShapeEnum.Box;
+            mat.EmissionBoxExtents = new Vector3(
+                MathF.Max(0.01f, spanHalfG.X + jitterG.X),
+                MathF.Max(0.01f, spanHalfG.Y + jitterG.Y),
+                MathF.Max(0.01f, spanHalfG.Z + jitterG.Z));
+            particles.Position = centerOffsetG;
+        }
 
         // --- velocity: emitVel*velmult + velocityoffset + relativevelocityoffset(basis) + velocityjitter*rand
         // DP cl_particles.c:1752 adds relativevelocityoffset rotated into the velocity basis (F5).
@@ -1035,17 +1075,40 @@ public partial class EffectSystem : Node3D
         // (birth..death) straight into scale_min/scale_max: the burst spawns puffs across that range, reading
         // as an expanding cloud for positive sizeincrease (or holding the big birth size for the negative-
         // sizeincrease fire flash), and ALWAYS renders. We lose per-particle temporal growth; visibility wins.
-        float grow = info.SizeIncrease * 2f * life; // total edge-size change over the particle's life
-        float endMin = sizeMin + grow, endMax = sizeMax + grow;
-        mat.ScaleMin = MathF.Max(0.4f, MathF.Min(sizeMin, endMin));
-        mat.ScaleMax = MathF.Max(mat.ScaleMin, MathF.Max(sizeMax, endMax));
+        // T6: a billboard particle with a nonzero sizeincrease GROWS over its life in a custom draw shader
+        // (scaled by INSTANCE_CUSTOM.z = lifetime phase) — the muzzle flash pops then shrinks, the nex_impact
+        // shockwave ring expands, smoke billows. Sparks keep the baked span (they're velocity-aligned, not
+        // billboarded). When not growing, fall back to baking the size SPAN into scale_min/max (the proven
+        // always-renders path that sidesteps godot#75748's invisible-billboard scale-curve bug).
+        float? growRatio = ComputeGrowthRatio(info, sizeMin, sizeMax, life);
+        if (growRatio is not null)
+        {
+            mat.ScaleMin = sizeMin;
+            mat.ScaleMax = sizeMax;
+            EnableLifetimePhase(mat); // drive INSTANCE_CUSTOM.z 0→1 over life for the growth shader
+        }
+        else
+        {
+            float grow = info.SizeIncrease * 2f * life; // total edge-size change over the particle's life
+            float endMin = sizeMin + grow, endMax = sizeMax + grow;
+            mat.ScaleMin = MathF.Max(0.4f, MathF.Min(sizeMin, endMin));
+            mat.ScaleMax = MathF.Max(mat.ScaleMin, MathF.Max(sizeMax, endMax));
+        }
 
         // --- color + alpha over life (alphafade) ------------------------------------------------------
-        mat.Color = baseColor;
-        ApplyInfoColorRamp(mat, info, baseColor);
+        // CRITICAL (T2): the tint must be applied in exactly ONE place or it compounds. Godot multiplies the
+        // particle color through base Color × ColorRamp × ColorInitialRamp, then the draw mesh multiplies that
+        // vertex COLOR by its AlbedoColor. Setting the tint on ALL of them (the old bug) cubed it — a 0x808080
+        // smoke rendered at ~0.125 instead of 0.5. So: the ColorRamp carries ONLY the alpha fade (white RGB);
+        // the draw mesh's AlbedoColor is White (see the BuildInfoMesh call below); and the tint lives in EITHER
+        // ColorInitialRamp (per-particle random lerp, DP color[0]..color[1]) or the flat base Color.
+        bool perParticleColor = colorOverride is null && info.Color0 != info.Color1;
+        mat.Color = perParticleColor ? Colors.White : baseColor;
+        ApplyInfoColorRamp(mat, info);
         // Per-particle color randomization: DP picks a random lerp between color[0] and color[1] per particle.
-        // ColorInitialRamp assigns each particle a random tint sampled from the gradient at spawn time.
-        if (colorOverride is null && info.Color0 != info.Color1)
+        // ColorInitialRamp assigns each particle a random tint sampled from the gradient at spawn time. With the
+        // base Color White and the ramp white-RGB, this is the SOLE tint when it's set.
+        if (perParticleColor)
         {
             Color c0 = new Color(((info.Color0 >> 16) & 0xFF) / 255f, ((info.Color0 >> 8) & 0xFF) / 255f, (info.Color0 & 0xFF) / 255f);
             Color c1 = new Color(((info.Color1 >> 16) & 0xFF) / 255f, ((info.Color1 >> 8) & 0xFF) / 255f, (info.Color1 & 0xFF) / 255f);
@@ -1065,6 +1128,14 @@ public partial class EffectSystem : Node3D
             mat.AngularVelocityMax = spinMax;
         }
 
+        // T3 — velocity-aligned sparks. DP draws pt_spark / orientation=spark as a quad STRETCHED along the
+        // particle's velocity (cl_particles.c:2812-2825), not a camera-facing billboard. Godot's
+        // ZBillboardYToVelocity transform-align orients each particle's local +Y to its velocity while still
+        // facing the camera about that axis — exactly the spark streak. The elongated quad (its long axis = +Y)
+        // then reads as an outward-flying streak that falls with gravity, instead of a fixed screen-space sliver.
+        if (info.Orientation == EiOrientation.Spark)
+            particles.TransformAlign = GpuParticles3D.TransformAlignEnum.ZBillboardYToVelocity;
+
         particles.ProcessMaterial = mat;
         // Sprite: one representative atlas cell from the block's [tex0,tex1) range. DP randomises the cell PER
         // PARTICLE; we pick one PER EMITTER (CellInRange already randomises within the range, so repeated bursts
@@ -1074,8 +1145,277 @@ public partial class EffectSystem : Node3D
         // emitters (spark tex 40) drew fine. One static cell uses that same proven single-sprite path so the
         // fire and smoke puffs actually show, at the cost of per-particle cell variety (a fair trade).
         Texture2D? sprite = Font?.CellInRange(info.Tex0, info.Tex1);
-        particles.DrawPass1 = BuildInfoMesh(info, baseColor, sprite);
+        // T2: pass White as the mesh albedo — the tint already lives in the process material's color pipeline
+        // (mat.Color / ColorInitialRamp), read through as the per-particle vertex COLOR. (BuildEmitterMesh, the
+        // persistent-map-emitter caller, still passes its baseColor — its own pipeline is separate.)
+        particles.DrawPass1 = BuildInfoMesh(info, Colors.White, sprite,
+            sparkAspect: SparkAspect(info, baseSpeed, jitterSpeed), growRatio: growRatio);
         return particles;
+    }
+
+    // =================================================================================================
+    //  Projectile trails (T5) — effectinfo-driven CONTINUOUS emitters for a flying projectile
+    // =================================================================================================
+
+    /// <summary>
+    /// Build the per-block CONTINUOUS trail emitters for a named effectinfo trail (TR_ROCKET, TR_CRYLINKPLASMA,
+    /// FIREBALL, …) so the <see cref="ProjectileRenderer"/> can give a projectile its REAL layered trail instead
+    /// of one invented puff stream. Each non-underwater block that declares a <c>trailspacing</c> becomes a
+    /// world-space (LocalCoords=false) emitter whose per-second particle rate tracks the projectile's
+    /// speed / trailspacing — so a rocket smokes grey, streams an orange fire core BACKWARD (velocitymultiplier
+    /// -1.5) and throws bright sparks, exactly the DP layering. <paramref name="initialVelocityGodot"/> is the
+    /// projectile's spawn velocity (Godot space); velocitymultiplier blocks inherit it (baked at spawn —
+    /// projectiles fly ~straight, so this stays faithful without per-frame updates). The emitters are NOT yet
+    /// parented (the caller adds them as children of the projectile root). Returns null when effectinfo isn't
+    /// loaded or the name has no usable trail block — the caller then keeps its legacy single-emitter trail.
+    /// </summary>
+    public List<GpuParticles3D>? BuildProjectileTrailEmitters(
+        string trailEffectName, Vector3 initialVelocityGodot, Color? tint = null)
+    {
+        if (string.IsNullOrEmpty(trailEffectName))
+            return null;
+        EnsureInfoLoaded();
+        IReadOnlyList<EffectInfoEmitter>? blocks = LookupInfo(trailEffectName, ResolveEffect(trailEffectName));
+        if (blocks is null || blocks.Count == 0)
+            return null;
+
+        float speed = initialVelocityGodot.Length();
+        Vector3 velDir = speed > 0.001f ? initialVelocityGodot / speed : Vector3.Forward;
+        if (speed < 1f) speed = 1200f; // velocity not yet networked at spawn — assume a typical projectile speed
+
+        var emitters = new List<GpuParticles3D>();
+        foreach (EffectInfoEmitter info in blocks)
+        {
+            if (!info.Defined || info.Underwater) continue;        // skip placeholder + underwater-only blocks
+            if (info.TrailSpacing <= 0f) continue;                 // not a per-distance trail block
+            if (info.Type is EiType.Decal or EiType.RainDecal or EiType.EntityParticle) continue;
+            if (info.Orientation == EiOrientation.Beam) continue;  // beams aren't projectile trails
+
+            GpuParticles3D? e = BuildOneTrailEmitter(info, speed, velDir, tint);
+            if (e is not null) emitters.Add(e);
+        }
+        return emitters.Count > 0 ? emitters : null;
+    }
+
+    /// <summary>Configure one continuous world-space trail emitter from a parsed trail block (T5). Mirrors the
+    /// per-block physics/color/size of <see cref="BuildInfoBurst"/>, but emits per-distance at the projectile.</summary>
+    private GpuParticles3D? BuildOneTrailEmitter(EffectInfoEmitter info, float speed, Vector3 velDir, Color? tint)
+    {
+        float life = info.Lifetime();
+        // DP spawns one trail particle per `trailspacing` units of travel; the per-second rate is therefore
+        // speed/trailspacing. Godot's emit rate is Amount/Lifetime, so Amount = rate*life (× DensityScale).
+        float rate = (speed / info.TrailSpacing) * DensityScale;
+        int amount = Math.Clamp((int)MathF.Ceiling(rate * life), 2, 256);
+
+        var p = new GpuParticles3D
+        {
+            Name = $"trail_{info.Type}",
+            Amount = amount,
+            Lifetime = life,
+            OneShot = false,
+            Emitting = true,
+            LocalCoords = false, // particles stay in world space, left behind the moving projectile
+            Explosiveness = 0f,  // continuous stream
+            VisibilityAabb = new Aabb(new Vector3(-256f, -256f, -256f), new Vector3(512f, 512f, 512f)),
+        };
+
+        var mat = new ParticleProcessMaterial();
+        Color baseColor = InfoTintColor(info, tint);
+        bool perParticleColor = tint is null && info.Color0 != info.Color1;
+
+        // emission: a small box around the projectile origin; originjitter gives the trail its thickness.
+        Vector3 jitterG = AbsToGodot(info.OriginJitter);
+        mat.EmissionShape = ParticleProcessMaterial.EmissionShapeEnum.Box;
+        mat.EmissionBoxExtents = new Vector3(
+            MathF.Max(0.05f, jitterG.X), MathF.Max(0.05f, jitterG.Y), MathF.Max(0.05f, jitterG.Z));
+
+        // velocity: projectile velocity * velocitymultiplier + velocityoffset (world space). A velmult of -1.5
+        // (TR_ROCKET fire core) streams the particles BACKWARD out of the nozzle; the smoke layer's velmult≈0
+        // leaves them roughly stationary; velocityjitter sprays the sparks.
+        Vector3 baseVelG = velDir * (speed * info.VelocityMultiplier) + Coords.ToGodot(info.VelocityOffset);
+        float baseSpeed = baseVelG.Length();
+        if (baseSpeed > 0.001f)
+        {
+            mat.Direction = baseVelG / baseSpeed;
+            mat.InitialVelocityMin = baseSpeed;
+            mat.InitialVelocityMax = baseSpeed;
+        }
+        else
+        {
+            mat.Direction = Vector3.Up;
+            mat.InitialVelocityMin = 0f;
+            mat.InitialVelocityMax = 0f;
+        }
+        Vector3 vjG = AbsToGodot(info.VelocityJitter);
+        float jitterSpeed = (vjG.X + vjG.Y + vjG.Z) / 3f;
+        if (jitterSpeed > 0.001f)
+        {
+            mat.Spread = baseSpeed > 0.001f ? 45f : 180f;
+            mat.InitialVelocityMin = MathF.Max(0f, mat.InitialVelocityMin - jitterSpeed);
+            mat.InitialVelocityMax += jitterSpeed;
+        }
+
+        mat.Gravity = new Vector3(0f, -DpGravity * info.Gravity, 0f);
+
+        // air friction (same exponential→linear approximation as the burst path)
+        float k = info.AirFriction;
+        if (k > 0.0001f)
+        {
+            float decay = (1f - MathF.Exp(-k * life)) / MathF.Max(0.0001f, life);
+            float d = baseSpeed * decay;
+            mat.DampingMin = d;
+            mat.DampingMax = d;
+        }
+        else if (k < -0.0001f && baseSpeed > 0.001f)
+        {
+            float klife = -k * life;
+            float meanRatio = MathF.Min((MathF.Exp(klife) - 1f) / MathF.Max(0.0001f, klife), 8f);
+            mat.InitialVelocityMin *= meanRatio;
+            mat.InitialVelocityMax *= meanRatio;
+        }
+
+        // size + sizeincrease (T6: temporal growth via the draw shader when nonzero, else the baked span)
+        float sizeMin = MathF.Max(0.01f, info.SizeMin) * 2f;
+        float sizeMax = MathF.Max(0.01f, info.SizeMax) * 2f;
+        float? growRatio = ComputeGrowthRatio(info, sizeMin, sizeMax, life);
+        if (growRatio is not null)
+        {
+            mat.ScaleMin = sizeMin;
+            mat.ScaleMax = sizeMax;
+            EnableLifetimePhase(mat);
+        }
+        else
+        {
+            float grow = info.SizeIncrease * 2f * life;
+            mat.ScaleMin = MathF.Max(0.4f, MathF.Min(sizeMin, sizeMin + grow));
+            mat.ScaleMax = MathF.Max(mat.ScaleMin, MathF.Max(sizeMax, sizeMax + grow));
+        }
+
+        // color + alpha (de-compounded — the tint lives in exactly one place; see BuildInfoBurst/T2)
+        mat.Color = perParticleColor ? Colors.White : baseColor;
+        ApplyInfoColorRamp(mat, info);
+        if (perParticleColor)
+        {
+            Color c0 = new Color(((info.Color0 >> 16) & 0xFF) / 255f, ((info.Color0 >> 8) & 0xFF) / 255f, (info.Color0 & 0xFF) / 255f);
+            Color c1 = new Color(((info.Color1 >> 16) & 0xFF) / 255f, ((info.Color1 >> 8) & 0xFF) / 255f, (info.Color1 & 0xFF) / 255f);
+            var initGrad = new Gradient();
+            initGrad.SetColor(0, c0);
+            initGrad.SetColor(1, c1);
+            mat.ColorInitialRamp = new GradientTexture1D { Gradient = initGrad };
+        }
+
+        if (info.RotateSpinMin != 0f || info.RotateSpinMax != 0f || info.RotateBaseMax != info.RotateBaseMin)
+        {
+            mat.AngleMin = info.RotateBaseMin;
+            mat.AngleMax = info.RotateBaseMax;
+            mat.AngularVelocityMin = info.RotateSpinMin;
+            mat.AngularVelocityMax = info.RotateSpinMax;
+        }
+
+        if (info.Orientation == EiOrientation.Spark)
+            p.TransformAlign = GpuParticles3D.TransformAlignEnum.ZBillboardYToVelocity;
+
+        p.ProcessMaterial = mat;
+        Texture2D? sprite = Font?.CellInRange(info.Tex0, info.Tex1);
+        p.DrawPass1 = BuildInfoMesh(info, Colors.White, sprite,
+            sparkAspect: SparkAspect(info, baseSpeed, jitterSpeed), growRatio: growRatio);
+        return p;
+    }
+
+    // =================================================================================================
+    //  Temporal sizeincrease (T6) — grow/shrink each billboard particle over its life in a draw shader
+    // =================================================================================================
+
+    /// <summary>
+    /// The end:start size ratio for a billboard particle that grows/shrinks over its life (DP sizeincrease,
+    /// world units/sec). Returns null when there's no growth to animate (sizeincrease ~0) or the particle is a
+    /// velocity-aligned spark (those keep the baked span). <paramref name="sizeMin"/>/<paramref name="sizeMax"/>
+    /// are the spawn edge sizes (2*half-size). The shader lerps the quad scale 1→ratio over the lifetime phase.
+    /// </summary>
+    private static float? ComputeGrowthRatio(EffectInfoEmitter info, float sizeMin, float sizeMax, float life)
+    {
+        if (info.Orientation == EiOrientation.Spark || MathF.Abs(info.SizeIncrease) <= 0.0001f)
+            return null;
+        float avgEdge = MathF.Max(0.01f, (sizeMin + sizeMax) * 0.5f);
+        float endEdge = avgEdge + info.SizeIncrease * 2f * life; // sizeincrease is half-size/sec -> *2 edge/sec
+        return Math.Clamp(endEdge / avgEdge, 0.02f, 12f);
+    }
+
+    /// <summary>Drive <c>INSTANCE_CUSTOM.z</c> from 0 (birth) to 1 (death) over the particle's lifetime so the
+    /// growth draw shader can read the lifetime phase — anim_speed 1, no offset, no loop (the value isn't a
+    /// sprite frame here, just the phase ramp).</summary>
+    private static void EnableLifetimePhase(ParticleProcessMaterial mat)
+    {
+        mat.AnimSpeedMin = 1f;
+        mat.AnimSpeedMax = 1f;
+        mat.AnimOffsetMin = 0f;
+        mat.AnimOffsetMax = 0f;
+    }
+
+    // One compiled growth shader per blend mode (the render_mode is baked into the source), shared across
+    // every growing emitter; only the lightweight ShaderMaterial (grow + sprite uniforms) is per-emitter.
+    private static readonly Dictionary<BaseMaterial3D.BlendModeEnum, Shader> _growthShaders = new();
+
+    /// <summary>The cached growth shader for a blend mode: a camera-facing billboard (keeping per-particle scale
+    /// and rotation) that scales the quad by <c>mix(1, grow, lifetimePhase)</c>, reproducing DP's per-particle
+    /// sizeincrease. Built once per blend; the same Godot billboard-particle vertex math the StandardMaterial3D
+    /// path uses, plus the growth term — so it renders identically except for the temporal size.</summary>
+    private static Shader GrowthShader(BaseMaterial3D.BlendModeEnum blend)
+    {
+        if (_growthShaders.TryGetValue(blend, out Shader? cached))
+            return cached;
+        string blendMode = blend switch
+        {
+            BaseMaterial3D.BlendModeEnum.Add => "blend_add",
+            BaseMaterial3D.BlendModeEnum.Sub => "blend_sub",
+            _ => "blend_mix",
+        };
+        var shader = new Shader
+        {
+            Code =
+                "shader_type spatial;\n" +
+                // Keep depth TESTING on (walls occlude the particle) but depth WRITE off for transparency
+                // (depth_draw_opaque = transparent frags don't write depth). depth_test_disabled was the bug
+                // that let the rocket explosion / smoke draw THROUGH walls.
+                "render_mode " + blendMode + ", unshaded, cull_disabled, shadows_disabled, depth_draw_opaque;\n" +
+                "uniform sampler2D albedo_tex : source_color, filter_linear;\n" +
+                "uniform float grow = 1.0;\n" +
+                "void vertex() {\n" +
+                "    float angle = INSTANCE_CUSTOM.x;\n" +
+                "    float phase = clamp(INSTANCE_CUSTOM.z, 0.0, 1.0);\n" +
+                "    float gs = mix(1.0, grow, phase);\n" +
+                "    vec3 r = normalize(INV_VIEW_MATRIX[0].xyz) * (length(MODEL_MATRIX[0].xyz) * gs);\n" +
+                "    vec3 u = normalize(INV_VIEW_MATRIX[1].xyz) * (length(MODEL_MATRIX[1].xyz) * gs);\n" +
+                "    vec3 f = normalize(INV_VIEW_MATRIX[2].xyz);\n" +
+                "    mat4 bb = mat4(vec4(r, 0.0), vec4(u, 0.0), vec4(f, 0.0), MODEL_MATRIX[3]);\n" +
+                "    mat4 rot = mat4(vec4(cos(angle), -sin(angle), 0.0, 0.0), vec4(sin(angle), cos(angle), 0.0, 0.0), vec4(0.0, 0.0, 1.0, 0.0), vec4(0.0, 0.0, 0.0, 1.0));\n" +
+                "    MODELVIEW_MATRIX = VIEW_MATRIX * (bb * rot);\n" +
+                "}\n" +
+                "void fragment() {\n" +
+                "    vec4 t = texture(albedo_tex, UV);\n" +
+                "    ALBEDO = t.rgb * COLOR.rgb;\n" +
+                "    ALPHA = t.a * COLOR.a;\n" +
+                "}\n",
+        };
+        _growthShaders[blend] = shader;
+        return shader;
+    }
+
+    /// <summary>
+    /// The length:width aspect ratio for a velocity-stretched spark quad (T3). DP stretches a spark to
+    /// <c>len = max(stretch*0.04*speed, size*0.5)</c> along velocity with cross-width <c>size</c>
+    /// (cl_particles.c:2812-2825). Our quad is <c>(0.5, aspect)</c> scaled by ScaleMin/Max (≈2*size), so the
+    /// aspect is <c>stretch*0.04*speed / (size)</c>, clamped to a sane streak range. <paramref name="baseSpeed"/>
+    /// and <paramref name="jitterSpeed"/> are the emitter's directed + jitter speeds (the spark's expected speed).
+    /// </summary>
+    private static float SparkAspect(EffectInfoEmitter info, float baseSpeed, float jitterSpeed)
+    {
+        if (info.Orientation != EiOrientation.Spark)
+            return 8f;
+        float stretch = info.StretchFactor > 0f ? info.StretchFactor : 1f;
+        float expectedSpeed = baseSpeed + jitterSpeed;
+        float size = MathF.Max(0.5f, info.SizeMin + info.SizeMax); // ~2*avg half-size (the quad's scaled edge)
+        return Math.Clamp(stretch * 0.04f * expectedSpeed / size, 1f, 30f);
     }
 
     /// <summary>The representative tint for an emitter: the explicit emission override, else the color midpoint.</summary>
@@ -1110,8 +1450,10 @@ public partial class EffectSystem : Node3D
         return new Color(r, g, b);
     }
 
-    /// <summary>Fade alpha from the initial opacity to 0 over the particle life (DP alphafade), keeping hue.</summary>
-    private static void ApplyInfoColorRamp(ParticleProcessMaterial mat, EffectInfoEmitter info, Color baseColor)
+    /// <summary>Fade alpha from the initial opacity to 0 over the particle life (DP alphafade). The RGB is left
+    /// WHITE so this ramp carries ONLY the alpha curve — the tint comes from <c>mat.Color</c> / the initial ramp
+    /// (T2 single-application; multiplying a tinted ramp on top of a tinted base/albedo is what darkened bursts).</summary>
+    private static void ApplyInfoColorRamp(ParticleProcessMaterial mat, EffectInfoEmitter info)
     {
         float a0 = info.MidAlpha01();
         // alphafade is alpha-units/sec; over `life` seconds it drops a0 by (alphafade/256)*life. Clamp to 0.
@@ -1119,10 +1461,9 @@ public partial class EffectSystem : Node3D
         float a1 = Math.Clamp(a0 - (info.AlphaFade / 256f) * life, 0f, a0);
 
         var ramp = new Gradient();
-        ramp.SetColor(0, new Color(baseColor.R, baseColor.G, baseColor.B, a0));
+        ramp.SetColor(0, new Color(1f, 1f, 1f, a0));
         // For additive/blood, fade fully to transparent at the end so the burst dissipates cleanly.
-        Color end = new(baseColor.R, baseColor.G, baseColor.B, info.AlphaFade > 0f ? 0f : a1);
-        ramp.SetColor(1, end);
+        ramp.SetColor(1, new Color(1f, 1f, 1f, info.AlphaFade > 0f ? 0f : a1));
         mat.ColorRamp = new GradientTexture1D { Gradient = ramp };
     }
 
@@ -1130,12 +1471,18 @@ public partial class EffectSystem : Node3D
     /// textured with the particlefont sprite (<paramref name="sprite"/>, null => a flat tinted quad).
     /// <paramref name="cellCount"/> &gt; 1 enables sprite-sheet particle animation so AnimOffset can randomise
     /// the starting cell per particle (one cell of the horizontal strip per particle).</summary>
-    private static Mesh BuildInfoMesh(EffectInfoEmitter info, Color color, Texture2D? sprite, int cellCount = 1)
+    private static Mesh BuildInfoMesh(EffectInfoEmitter info, Color color, Texture2D? sprite, int cellCount = 1,
+        float sparkAspect = 8f, float? growRatio = null)
     {
-        // Sparks are velocity-stretched in DP; approximate with a thin elongated billboard quad (no velocity
-        // shader needed, but visually distinct from solid dots). Everything else is a 1×1 square quad.
+        // Sparks are velocity-stretched in DP (length = max(stretch*0.04*speed, size*0.5), width = size). The
+        // GpuParticles node aligns the quad's +Y to velocity (TransformAlign, set in BuildInfoBurst); here we
+        // shape the quad so width≈size and length≈aspect*size. The per-particle scale (ScaleMin/Max ≈ 2*size)
+        // multiplies both, so a (0.5,aspect) base quad gives world width 0.5*2*size=size and length aspect*size.
         bool isSpark = info.Orientation == EiOrientation.Spark;
-        var quad = new QuadMesh { Size = isSpark ? new Vector2(0.15f, 2.0f) : new Vector2(1f, 1f) };
+        var quad = new QuadMesh
+        {
+            Size = isSpark ? new Vector2(0.5f, MathF.Max(1f, sparkAspect)) : new Vector2(1f, 1f),
+        };
 
         BaseMaterial3D.BlendModeEnum blend = info.Blend switch
         {
@@ -1144,12 +1491,27 @@ public partial class EffectSystem : Node3D
             _ => BaseMaterial3D.BlendModeEnum.Mix,
         };
 
+        // T6: a growing billboard particle (sizeincrease != 0, not a spark) uses the custom growth shader so it
+        // expands/shrinks over its life. Only when an atlas sprite is present (the real game) — the no-atlas
+        // fallback keeps the flat StandardMaterial3D quad. Everything else uses the proven StandardMaterial3D.
+        if (growRatio is { } gr && !isSpark && sprite is not null)
+        {
+            var grow = new ShaderMaterial { Shader = GrowthShader(blend) };
+            grow.SetShaderParameter("grow", gr);
+            grow.SetShaderParameter("albedo_tex", sprite);
+            quad.Material = grow;
+            return quad;
+        }
+
         var mat = new StandardMaterial3D
         {
             ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
             Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
             BlendMode = blend,
-            BillboardMode = BaseMaterial3D.BillboardModeEnum.Particles,
+            // Sparks are oriented by the node's TransformAlign (Y→velocity); leave billboarding OFF so the mesh
+            // uses that velocity-aligned transform (which carries the per-particle scale). Everything else uses
+            // particle billboarding.
+            BillboardMode = isSpark ? BaseMaterial3D.BillboardModeEnum.Disabled : BaseMaterial3D.BillboardModeEnum.Particles,
             // CRITICAL: particle billboarding DISCARDS the per-particle scale (scale_min/max from the process
             // material) unless keep-scale is on (godotengine/godot#74897). Without this the big fire/smoke
             // puffs (scale 66-128) collapsed to their 1×1 base quad — a near-invisible dot — which is why only

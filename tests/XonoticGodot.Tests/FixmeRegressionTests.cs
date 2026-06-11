@@ -70,6 +70,18 @@ public class FixmeRegressionTests
         Assert.Equal(before, p.Origin); // the corpse must not slide / steer
     }
 
+    [Fact]
+    public void DeadPlayer_VelocityIsZeroed_SoTheDeathCamDoesNotShake()
+    {
+        // Dying mid-fall over a void: the body carries a large downward velocity. PlayerPhysics.Move must clear
+        // it (the corpse is frozen) — otherwise NetGame extrapolates the eye by it and the death-cam shakes.
+        var (p, phys) = BuildOnFloor();
+        p.DeadState = DeadFlag.Dead;
+        p.Velocity = new Vector3(120f, 0f, -800f); // free-fall + drift at the moment of death
+        phys.Move(p, Forward());
+        Assert.Equal(Vector3.Zero, p.Velocity);
+    }
+
     // ---- F04: flags render + ride the carrier -----------------------------------------------------
 
     private static Ctf BuildCtf()

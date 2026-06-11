@@ -149,7 +149,7 @@ public sealed class Hagar : Weapon
         actor.TakeResource(AmmoType, Primary.Ammo);
 
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out Vector3 up);
-        ShotInfo shot = WeaponFiring.SetupShot(actor, forward);
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, recoil: 2f);
 
         Entity missile = SpawnRocket(actor, shot.Origin, "missile", Primary.Health, MoveType.Fly);
         missile.Velocity = WeaponFiring.ProjectileVelocity(shot.Dir, up, Primary.Speed);
@@ -176,7 +176,7 @@ public sealed class Hagar : Weapon
         actor.TakeResource(AmmoType, Secondary.Ammo);
 
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out Vector3 up);
-        ShotInfo shot = WeaponFiring.SetupShot(actor, forward);
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, recoil: 2f);
 
         Entity missile = SpawnRocket(actor, shot.Origin, "missile", Secondary.Health, MoveType.BounceMissile);
         missile.Velocity = WeaponFiring.ProjectileVelocity(shot.Dir, up, Secondary.Speed, 0f, 0f, Secondary.Spread);
@@ -219,7 +219,7 @@ public sealed class Hagar : Weapon
         actor.TakeResource(AmmoType, Secondary.Ammo * shots);
 
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out Vector3 right, out Vector3 up);
-        ShotInfo shot = WeaponFiring.SetupShot(actor, forward);
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, recoil: 2f);
 
         // per-shot base spread: more shots -> less spread, biased by load_spread_bias.
         float perShot = (Secondary.LoadMax > 1f) ? (shots - 1) / (Secondary.LoadMax - 1f) : 0f;

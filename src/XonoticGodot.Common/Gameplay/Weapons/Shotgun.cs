@@ -160,7 +160,7 @@ public sealed class Shotgun : Weapon
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out Vector3 right, out Vector3 up);
         // fired credit: damage * bullets — the whole volley's potential (QC shotgun.qc:19-20).
         ShotInfo shot = WeaponFiring.SetupShot(actor, forward,
-            wep: this, maxDamage: Primary.Damage * Primary.Bullets);
+            wep: this, maxDamage: Primary.Damage * Primary.Bullets, recoil: 5f);
 
         int deathType = RegistryId;
         int pellets = (int)Primary.Bullets;
@@ -174,7 +174,9 @@ public sealed class Shotgun : Weapon
                 deathType, Primary.Spread, Primary.SolidPenetration, force: Primary.Force);
             Vector3 impEnd = shot.Origin + shot.Dir * WeaponFiring.MaxShotDistance;
             TraceResult impTr = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, impEnd, MoveFilter.WorldOnly, actor);
-            EffectEmitter.Emit("SHOTGUN_IMPACT", impTr.EndPos, -shot.Dir * 1000f);
+            // w_backoff = the impact surface normal (trace_plane_normal), -force_dir fallback when no hit.
+            Vector3 backoff = impTr.PlaneNormal.LengthSquared() > 1e-6f ? impTr.PlaneNormal : -shot.Dir;
+            EffectEmitter.Emit("SHOTGUN_IMPACT", impTr.EndPos, backoff * 1000f);
         }
 
         Api.Sound.Play(actor, SoundChannel.WeaponAuto, "weapons/shotgun_fire.wav");

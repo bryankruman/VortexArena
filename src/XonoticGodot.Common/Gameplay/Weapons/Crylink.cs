@@ -182,7 +182,7 @@ public sealed class Crylink : Weapon
         actor.TakeResource(AmmoType, bal.Ammo);
 
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out Vector3 right, out Vector3 up);
-        ShotInfo shot = WeaponFiring.SetupShot(actor, forward);
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, recoil: 2f);
 
         int shots = bal.Shots;
         float damage = bal.Damage, edge = bal.EdgeDamage, radius = bal.Radius, force = bal.Force;
@@ -232,7 +232,7 @@ public sealed class Crylink : Weapon
             proj.Think = self => Api.Entities.Remove(self);     // W_Crylink_Fadethink
             proj.NextThink = proj.MaxHealth + fadeTime;
             proj.Touch = (self, other) => OnTouch(self, other, damage, edge, radius, force, bounceFactor,
-                linkExplode, deathType, group);
+                linkExplode, deathType, group, secondary);
 
             // MUTATOR_CALLHOOK(EditProjectile, actor, proj) — fired per spike (crylink.qc).
             var ep = new MutatorHooks.EditProjectileArgs(actor, proj);
@@ -298,8 +298,11 @@ public sealed class Crylink : Weapon
     // W_Crylink_Touch — radius damage on contact (faded over lifetime); reduced damage on a bounce, until
     // bounces run out; chain-detonate the whole group when linkexplode says so. crylink.qc
     private void OnTouch(Entity self, Entity other, float damage, float edge, float radius, float force,
-        float bounceFactor, int linkExplode, int deathType, List<Entity> group)
+        float bounceFactor, int linkExplode, int deathType, List<Entity> group, bool secondary)
     {
+        // QC wr_impacteffect keys the impact sprite off HITTYPE_SECONDARY: secondary spikes use the smaller
+        // CRYLINK_IMPACT2, primary the bigger CRYLINK_IMPACT (both with '0 0 0' velocity).
+        string impact = secondary ? "CRYLINK_IMPACT2" : "CRYLINK_IMPACT";
         // a = fade scalar in [0,1]: 1 - (time - fade_time) * fade_rate.
         float a = QMath.Clamp(1f - (Api.Clock.Time - self.MaxHealth) * self.Health, 0f, 1f);
         bool finalHit = self.Count <= 0 || other.TakeDamage != DamageMode.No;
@@ -312,9 +315,9 @@ public sealed class Crylink : Weapon
         {
             // Chain-detonate the rest of the linked group (W_Crylink_LinkExplode) if enabled.
             if (linkExplode != 0)
-                LinkExplode(self, group, damage, edge, radius, force, deathType);
+                LinkExplode(self, group, damage, edge, radius, force, deathType, secondary);
             WeaponSplash.ImpactSound(self, "weapons/crylink_impact2.wav"); // QC SND_CRYLINK_IMPACT2 (wr_impacteffect)
-            EffectEmitter.Emit("CRYLINK_IMPACT", self.Origin);
+            EffectEmitter.Emit(impact, self.Origin);
             RemoveFromGroup(self, group);
             Api.Entities.Remove(self);
             return;
@@ -327,8 +330,9 @@ public sealed class Crylink : Weapon
 
     // W_Crylink_LinkExplode — detonate every other spike in the group at its current position.
     private void LinkExplode(Entity except, List<Entity> group, float damage, float edge, float radius,
-        float force, int deathType)
+        float force, int deathType, bool secondary)
     {
+        string impact = secondary ? "CRYLINK_IMPACT2" : "CRYLINK_IMPACT";
         Vector3 avgOrg = Vector3.Zero;
         int linkCount = 0;
         foreach (var e in group.ToArray())
@@ -337,7 +341,7 @@ public sealed class Crylink : Weapon
             float a = QMath.Clamp(1f - (Api.Clock.Time - e.MaxHealth) * e.Health, 0f, 1f);
             WeaponSplash.RadiusDamage(e, e.Origin, a * damage, a * edge, radius, e.Owner, deathType, a * force);
             WeaponSplash.ImpactSound(e, "weapons/crylink_impact2.wav"); // QC SND_CRYLINK_IMPACT2 (wr_impacteffect)
-            EffectEmitter.Emit("CRYLINK_IMPACT", e.Origin);
+            EffectEmitter.Emit(impact, e.Origin);
             avgOrg += e.Origin; ++linkCount;
             e.Touch = null; e.Think = null;
             Api.Entities.Remove(e);

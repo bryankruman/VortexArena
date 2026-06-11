@@ -69,6 +69,13 @@ public sealed class Vortex : Weapon
         ItemModel = "g_nex.md3";   // MDL_VORTEX_ITEM
     }
 
+    // QC vortex.qh w_reticle + vortex.qc wr_zoom/wr_zoomdir: while g_balance_vortex_secondary is 0 (the stock
+    // default — secondary is NOT a separate fire mode) holding ATTACK2 is the ZOOM ("the secondary fire zooms in
+    // when held, allowing for ease of aiming"), and the scope overlay is gfx/reticle_nex. With secondary enabled,
+    // ATTACK2 becomes a real (weaker) fire mode and the zoom is disabled (wr_zoomdir → false).
+    public override string? Reticle => "gfx/reticle_nex";
+    public override bool ZoomOnSecondary => !Cvars.Secondary;
+
     public override void Configure()
     {
         Cvars.Damage = Bal("g_balance_vortex_primary_damage", 80f);
@@ -265,7 +272,7 @@ public sealed class Vortex : Weapon
 
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out _);
         // QC vortex.qc:137: W_SetupShot(..., mydmg, dtype) — the fired credit is the POST-charge damage.
-        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, wep: this, maxDamage: mydmg);
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, wep: this, maxDamage: mydmg, recoil: 5f);
 
         Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/nexfire.wav");
         // Overcharge sound when charged past the anim limit (a louder zap the more overcharged it is).
@@ -284,7 +291,9 @@ public sealed class Vortex : Weapon
         TraceResult impTr = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, end, MoveFilter.WorldOnly, actor);
         EffectEmitter.Emit("VORTEX_BEAM", shot.Origin, impTr.EndPos, 0);
         WeaponSplash.ImpactSoundAt(impTr.EndPos, "weapons/neximpact.wav"); // QC SND_VORTEX_IMPACT (wr_impacteffect)
-        EffectEmitter.Emit("VORTEX_IMPACT", impTr.EndPos, -shot.Dir * 1000f);
+        // QC vortex wr_impacteffect: boxparticles(EFFECT_VORTEX_IMPACT, .., '0 0 0', '0 0 0', 1, ..) — the impact
+        // burst carries NO inherited velocity (its own velocityjitter/sizeincrease do the work).
+        EffectEmitter.Emit("VORTEX_IMPACT", impTr.EndPos);
         EffectEmitter.Emit("VORTEX_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
     }
 

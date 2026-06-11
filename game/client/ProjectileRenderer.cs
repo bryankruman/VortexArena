@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using Godot;
 using XonoticGodot.Common.Framework;
+using XonoticGodot.Net;
 using NVec3 = System.Numerics.Vector3;
 using PType = XonoticGodot.Game.Client.ProjectileCatalog.ProjectileType;
 using BodyFamily = XonoticGodot.Game.Client.ProjectileCatalog.BodyFamily;
@@ -34,11 +35,12 @@ public partial class ProjectileRenderer : Node3D
         public required Entity Entity;
         public required Node3D Root;          // follows the entity each frame
         public Node3D? Body;                  // the mesh/sprite that spins/tumbles (child of Root)
-        public GpuParticles3D? Trail;         // continuous exhaust/glow (null for trailless kinds)
+        public List<GpuParticles3D> Trails = new(); // continuous exhaust/glow layers (empty for trailless kinds)
         public OmniLight3D? Light;            // dynamic point light (rockets/plasma/fireball)
         public PType Type;
         public Vector3 SpinDegPerSec;         // local tumble/roll rate (QC avelocity / Projectile_Draw rot)
         public Vector3 LastPos;               // for velocity-from-motion when Entity.Velocity is unset
+        public ProjectilePredictor Predictor; // CSQC Projectile_Draw: snap-to-server + local velocity extrapolation
     }
 
     private readonly Dictionary<int, Visual> _visuals = new();
@@ -57,6 +59,15 @@ public partial class ProjectileRenderer : Node3D
 
     /// <summary>When true, attach a looping fly sound to projectiles that have one (rocket/electro/fireball/…).</summary>
     [Export] public bool LoopSounds { get; set; } = true;
+
+    /// <summary>
+    /// When true (default), each projectile is moved by the CSQC client-side predictor — it snaps to the latest
+    /// authoritative origin and extrapolates locally by velocity between snapshots, so a fired bolt leaves the
+    /// muzzle at full speed with no interpolation delay or ease-in. When false, fall back to the old behaviour
+    /// (exponentially ease the node toward the networked origin), kept for A/B feel-testing. Live-driven from
+    /// <c>cl_projectile_prediction</c> by <see cref="ClientWorld"/>.
+    /// </summary>
+    public bool Predict { get; set; } = true;
 
     /// <summary>
     /// Resolves a QC sound sample path (e.g. "weapons/rocket_fly") to a Godot audio resource path. Host-set
@@ -107,8 +118,11 @@ public partial class ProjectileRenderer : Node3D
             body.Scale = Vector3.One * desc.ModelScale;
         root.AddChild(body);
 
-        GpuParticles3D? trail = BuildTrail(desc);
-        if (trail is not null) root.AddChild(trail);
+        // Trail: the REAL layered effectinfo trail (smoke + fire core + sparks for a rocket) when the catalog
+        // names one and the atlas is mounted, else the legacy single hand-tuned emitter. World-space emitters
+        // (LocalCoords=false) parented to the root, so they ride the projectile yet leave their particles behind.
+        List<GpuParticles3D> trails = BuildTrails(desc, Coords.ToGodot(entity.Velocity));
+        foreach (GpuParticles3D tr in trails) root.AddChild(tr);
 
         OmniLight3D? light = (DynamicLights && desc.HasLight) ? BuildLight(desc) : null;
         if (light is not null) root.AddChild(light);
@@ -117,6 +131,11 @@ public partial class ProjectileRenderer : Node3D
         root.Position = startPos;
 
         AddChild(root);
+
+        // Seed the client-side predictor from the spawn snapshot (Quake-space origin+velocity) so the very
+        // first rendered frame is already at full speed (CSQC Projectile_ReceiveEntity sets origin+velocity).
+        var predictor = new ProjectilePredictor();
+        predictor.Spawn(entity.Origin, entity.Velocity);
         // Orient after entering the tree (LookAt works on the global transform).
         OrientToVelocity(root, entity);
 
@@ -129,11 +148,12 @@ public partial class ProjectileRenderer : Node3D
             Entity = entity,
             Root = root,
             Body = body,
-            Trail = trail,
+            Trails = trails,
             Light = light,
             Type = type,
             SpinDegPerSec = desc.SpinDegPerSec,
             LastPos = startPos,
+            Predictor = predictor,
         };
         _visuals[entity.Index] = visual;
 
@@ -170,14 +190,16 @@ public partial class ProjectileRenderer : Node3D
         if (!string.IsNullOrEmpty(fx))
             Effects?.Spawn(fx!, origin);
 
-        // Let an active trail finish emitting its tail before the node disappears (detach + linger).
-        if (v.Trail is not null && GodotObject.IsInstanceValid(v.Trail))
+        // Let each active trail layer finish emitting its tail before the node disappears (detach + linger).
+        foreach (GpuParticles3D trail in v.Trails)
         {
-            v.Trail.Emitting = false;
-            v.Trail.Reparent(this, keepGlobalTransform: true);
-            float linger = (float)v.Trail.Lifetime + 0.2f;
+            if (!GodotObject.IsInstanceValid(trail))
+                continue;
+            trail.Emitting = false;
+            trail.Reparent(this, keepGlobalTransform: true);
+            float linger = (float)trail.Lifetime + 0.2f;
             SceneTreeTimer t = GetTree().CreateTimer(linger);
-            GpuParticles3D trailRef = v.Trail;
+            GpuParticles3D trailRef = trail;
             t.Timeout += () => { if (GodotObject.IsInstanceValid(trailRef)) trailRef.QueueFree(); };
         }
 
@@ -222,13 +244,32 @@ public partial class ProjectileRenderer : Node3D
             if (!GodotObject.IsInstanceValid(v.Root))
                 continue;
 
-            Vector3 target = Coords.ToGodot(v.Entity.Origin);
-            // Smooth a touch to hide network jitter; snap if the jump is large (teleport/respawn).
-            float dist2 = v.Root.Position.DistanceSquaredTo(target);
-            if (dist2 > 256f * 256f)
-                v.Root.Position = target;
+            if (Predict)
+            {
+                // Client-side prediction (CSQC Projectile_Draw): snap to the latest authoritative origin and
+                // extrapolate locally by velocity between snapshots. v.Entity.Origin is the RAW server origin
+                // (ClientEntityView feeds projectiles the un-interpolated pose for exactly this), v.Entity.Velocity
+                // the networked velocity — both Quake-space. The result leaves the muzzle at full speed with no
+                // interpolation delay or ease-in. Per the catalog, a detonate-on-impact flier stops at a wall and
+                // a gravity-free BOUNCEMISSILE reflects off it (world-only sweep) so the bolt doesn't overrun.
+                ProjectileCatalog.CollisionMode mode = ProjectileCatalog.CollisionFor(v.Type);
+                NVec3 predicted = mode == ProjectileCatalog.CollisionMode.None
+                    ? v.Predictor.Step(v.Entity.Origin, v.Entity.Velocity, delta)
+                    : v.Predictor.Step(v.Entity.Origin, v.Entity.Velocity, delta, TraceWorldDelegate,
+                        bounce: mode == ProjectileCatalog.CollisionMode.Bounce, bounceFactor: 1f);
+                v.Root.Position = Coords.ToGodot(predicted);
+            }
             else
-                v.Root.Position = v.Root.Position.Lerp(target, Mathf.Clamp(delta * 30f, 0f, 1f));
+            {
+                // Fallback (cl_projectile_prediction 0): the old exponential ease toward the networked origin,
+                // kept for A/B feel-testing. Smooths jitter but trails the true position and eases in at spawn.
+                Vector3 target = Coords.ToGodot(v.Entity.Origin);
+                float dist2 = v.Root.Position.DistanceSquaredTo(target);
+                if (dist2 > 256f * 256f)
+                    v.Root.Position = target;
+                else
+                    v.Root.Position = v.Root.Position.Lerp(target, Mathf.Clamp(delta * 30f, 0f, 1f));
+            }
 
             OrientToVelocity(v.Root, v.Entity, v.Root.Position - v.LastPos);
             v.LastPos = v.Root.Position;
@@ -238,6 +279,23 @@ public partial class ProjectileRenderer : Node3D
             if (v.Body is not null && v.SpinDegPerSec != Vector3.Zero && GodotObject.IsInstanceValid(v.Body))
                 ApplySpin(v.Body, v.SpinDegPerSec, delta);
         }
+    }
+
+    /// <summary>Cached world sweep delegate fed to <see cref="XonoticGodot.Net.ProjectilePredictor.Step"/> so
+    /// predicted projectiles collide with the map. World-only (CSQC <c>move_nomonsters = MOVE_WORLDONLY</c>):
+    /// a point sweep against map geometry, ignoring entities. On a listen server this is the real BSP; on a
+    /// pure client (flat-floor stub / headless) <c>Api.Services</c> is null and it reports no hit (fly straight).</summary>
+    private static readonly XonoticGodot.Net.ProjectileWorldTrace TraceWorldDelegate = TraceWorld;
+
+    private static XonoticGodot.Net.ProjectileTraceHit TraceWorld(NVec3 start, NVec3 end)
+    {
+        if (XonoticGodot.Common.Services.Api.Services is null)
+            return new XonoticGodot.Net.ProjectileTraceHit(false, end, default);
+        XonoticGodot.Common.Services.TraceResult tr = XonoticGodot.Common.Services.Api.Trace.Trace(
+            start, NVec3.Zero, NVec3.Zero, end, MoveFilter.WorldOnly, null);
+        return tr.Fraction < 1f
+            ? new XonoticGodot.Net.ProjectileTraceHit(true, tr.EndPos, tr.PlaneNormal)
+            : new XonoticGodot.Net.ProjectileTraceHit(false, end, default);
     }
 
     private static void ApplySpin(Node3D body, Vector3 spinDegPerSec, float delta)
@@ -323,6 +381,29 @@ public partial class ProjectileRenderer : Node3D
     // allocations per projectile spawn (proc mat + gradient + ramp texture + quad + mesh material) in a firefight.
     private readonly System.Collections.Generic.Dictionary<PType, (ParticleProcessMaterial Proc, Mesh Mesh)> _trailResCache = new();
 
+    /// <summary>
+    /// The trail layers for a projectile (T5): the REAL effectinfo trail (a rocket's grey smoke + backward
+    /// orange fire core + sparks) when the catalog names one and the atlas is mounted, else the legacy single
+    /// hand-tuned emitter. <paramref name="initialVelocityGodot"/> seeds velocity-inheriting blocks (the fire
+    /// core that streams backward out of the nozzle).
+    /// </summary>
+    private List<GpuParticles3D> BuildTrails(ProjectileCatalog.Desc desc, Vector3 initialVelocityGodot)
+    {
+        // Prefer the faithful layered effectinfo trail. Pass no tint so the file's own per-layer colors win.
+        if (Effects is not null && !string.IsNullOrEmpty(desc.TrailEffect))
+        {
+            List<GpuParticles3D>? layers = Effects.BuildProjectileTrailEmitters(desc.TrailEffect!, initialVelocityGodot);
+            if (layers is { Count: > 0 })
+                return layers;
+        }
+        // Fallback: the legacy single emitter (also covers trail names absent from effectinfo, e.g. the Generic
+        // catch-all). Returns an empty list for trailless kinds (Blaster/HLAC).
+        var list = new List<GpuParticles3D>();
+        GpuParticles3D? legacy = BuildTrail(desc);
+        if (legacy is not null) list.Add(legacy);
+        return list;
+    }
+
     private GpuParticles3D? BuildTrail(ProjectileCatalog.Desc desc)
     {
         if (desc.Trail is not { } c)
@@ -356,7 +437,9 @@ public partial class ProjectileRenderer : Node3D
                 Gravity = new Vector3(0f, c.Gravity, 0f),
                 ScaleMin = c.Scale * 0.5f,
                 ScaleMax = c.Scale,
-                Color = c.Color,
+                // T2: the tint lives ONLY in the color ramp here; the base Color stays White so it isn't
+                // multiplied a second time (and the mesh AlbedoColor below is White too).
+                Color = Colors.White,
                 EmissionShape = ParticleProcessMaterial.EmissionShapeEnum.Point,
             };
             var ramp = new Gradient();
@@ -383,7 +466,7 @@ public partial class ProjectileRenderer : Node3D
                 // the trail puffs collapsed to a 1×1 dot and the rocket/grenade flew with no visible smoke.
                 BillboardKeepScale = true,
                 VertexColorUseAsAlbedo = true,
-                AlbedoColor = c.Color,
+                AlbedoColor = Colors.White, // T2: tint via the ramp/vertex color only (de-compounded)
             };
             if (sprite is not null)
             {
@@ -409,10 +492,13 @@ public partial class ProjectileRenderer : Node3D
     /// </summary>
     public void WarmupTrails()
     {
+        // A nominal forward velocity so the effectinfo path's velocity-inheriting blocks build their materials.
+        Vector3 nominal = new(0f, 0f, -1200f);
         foreach (PType t in System.Enum.GetValues<PType>())
         {
             ProjectileCatalog.Desc d = ProjectileCatalog.DescOf(t);
-            BuildTrail(d)?.QueueFree();
+            foreach (GpuParticles3D e in BuildTrails(d, nominal))
+                e.QueueFree();
         }
     }
 

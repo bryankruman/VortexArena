@@ -56,6 +56,16 @@ public partial class ClientWorld : Node3D
     /// <summary>The local player's first-person weapon view-model (optional; set by the host).</summary>
     public ViewModel? ViewModel { get; set; }
 
+    /// <summary>The listen-server host's own Player entity (set by NetGame). When <see cref="SuppressOwnFireEffects"/>
+    /// is on, the in-process effect mirror drops effects flagged <c>Except = </c> this player (their own muzzle
+    /// flash), so it isn't doubled with the locally-predicted one — remotes already get it via the server's
+    /// per-peer except pass. Null on a pure client (no in-process emission to mirror).</summary>
+    public XonoticGodot.Common.Gameplay.Player? LocalHostPlayer { get; set; }
+
+    /// <summary>cl_predictfire: when true, suppress the local host player's own in-process fire effects (they are
+    /// predicted locally). False = render them (the host sees the networked copy, e.g. cl_predictfire 0).</summary>
+    public bool SuppressOwnFireEffects { get; set; }
+
     /// <summary>Per-entity render nodes for non-projectile networked entities (players/monsters/items).</summary>
     private readonly Dictionary<int, EntityNode> _entityNodes = new();
 
@@ -859,6 +869,9 @@ public partial class ClientWorld : Node3D
         // testing path); when the strength cvars are 0 this is a couple of cheap reads and leaves the map/code
         // baseline in place. See XonoticGodot.Game.WorldTint.
         WorldTint.PollCvars();
+        // Live-poll the projectile client-side prediction toggle so a console `set cl_projectile_prediction 0`
+        // flips back to the old ease (A/B feel-testing) at once. Default on = CSQC-style snap+extrapolate.
+        Projectiles.Predict = CvarF("cl_projectile_prediction", 1f) != 0f;
         // Re-spatialize active sounds against the current listener (camera) — DP distance attenuation +
         // emitter-follow — so volume tracks how near/far you are even while you move past a fixed-point impact.
         // Refresh the attenuation cvars live so a runtime `set snd_attenuation_exponent N` takes effect at once.
@@ -1442,6 +1455,14 @@ public partial class ClientWorld : Node3D
         {
             Inner.Emit(request);                 // keep recording / networking behaviour intact
             if (!GodotObject.IsInstanceValid(_world))
+                return;
+
+            // Drop the local host player's OWN excepted effect (their muzzle flash) — it's predicted locally on the
+            // refire clock (cl_predictfire), so rendering the in-process copy here would double it. The networked
+            // path already excludes the shooter (Send_Effect_Except → ServerNet's per-peer pass), so remote players
+            // are unaffected; this only fixes the listen-server in-process mirror, which otherwise ignores Except.
+            if (_world.SuppressOwnFireEffects && request.Except is not null
+                && ReferenceEquals(request.Except, _world.LocalHostPlayer))
                 return;
 
             // Render on the client. Defer onto the node's thread — emission can come from a sim tick, and

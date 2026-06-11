@@ -114,6 +114,10 @@ public sealed partial class NetGame : Node3D
     // ViewState each frame; we read back EyeContents / ZoomFraction / SensitivityScale / ChaseActive.
     private readonly Client.FirstPersonView _view = new();
 
+    // The zoom scope reticle overlay (QC crosshair.qc DrawReticle), fed each frame in _Process from the networked
+    // active weapon (ClientNet.ActiveWeaponId) + the zoom/button state — the net-path twin of PlayerController's.
+    private Client.ReticleOverlay _reticle = null!;
+
     // The listen server's parsed map + its gametype-filtered dropped submodels, kept so SetupRender can build the
     // world render mesh from the SAME BSP + filter the collision was built from (the client renders the worldmodel
     // locally — DP VF_DRAWWORLD; the server ships no geometry). Null on a pure --connect client (no BSP yet).
@@ -135,6 +139,15 @@ public sealed partial class NetGame : Node3D
     // InputCommand and cleared, so a tap shorter than one 1/72 s input tick still reaches the server.
     private bool _attackLatch;
     private bool _attack2Latch;
+
+    // Local fire prediction (cl_predictfire, default on): a client-side refire clock that fires the view-model
+    // muzzle flash + a local fire SOUND on every shot the moment the player fires (not just the first), so
+    // sustained fire feels instant; the local player's own networked fire-sound/muzzle-flash is then suppressed
+    // so it isn't doubled. _fireClock is a monotonic frame accumulator; _nextFireTime is the next predicted shot.
+    private bool _predictFire = true;
+    private float _fireClock;
+    private bool _firePredictActive;
+    private float _nextFireTime;
     private bool _loggedAccept;
     private bool _cameraReady;                   // C5: false until the first snapshot seeds the predicted eye
     private int _prevHealth = -1;               // previous networked local health, for the damage red-flash edge
@@ -235,6 +248,17 @@ public sealed partial class NetGame : Node3D
     // is frame-rate independent). Capped so a frame hitch can't queue a huge input burst (spiral-of-death).
     private float _inputAccum;
     private const float MaxInputBacklog = 0.25f; // ≤ ~18 catch-up input ticks per frame
+
+    // Per-frame (variable-dt) input mode — cl_movement_perframe (DP-style: one command per rendered frame stamped
+    // with the real frame dt, the server drains all pending commands that tick). 0 (default) = the legacy fixed
+    // 1/72 s cadence above. Read live from the shared cvar store each frame so it A/B-toggles in-session.
+    private bool _perFrameInput;
+    // The DeltaTime stamped onto the next sampled InputCommand: TicRate in legacy mode, the clamped real frame dt
+    // in per-frame mode. Bounds mirror DP's per-move msec clamp (kills 0-dt paused frames + hitch spikes); the
+    // server re-clamps each command's dt since the client is untrusted.
+    private float _inputDeltaTime = XonoticGodot.Engine.Simulation.SimulationLoop.TicRate;
+    private const float MinInputDt = 0.0005f;
+    private const float MaxInputDt = 0.05f;
 
     // FPS eye height (Xonotic PL_VIEW_OFS '0 0 35'). Mouse-look sensitivity now reads the live `sensitivity`
     // cvar (LookSensitivity), not a hardcoded constant, so the input-settings dialog drives it.
@@ -834,7 +858,12 @@ public sealed partial class NetGame : Node3D
         // Bridge the HUD's texture cache to the mounted game data so weapon icons / crosshairs / kill-notify
         // icons draw the REAL Xonotic art instead of colored-box fallbacks (mirrors GameDemo.SetupHud).
         if (_assets is not null)
+        {
             XonoticGodot.Game.Hud.TextureCache.VfsResolver = _assets.LoadTexture;
+            // Xolonium HUD font (the menu skin font), so HUD text matches Xonotic instead of Godot's fallback.
+            XonoticGodot.Game.Hud.HudPanel.HudFont = _assets.GetFont("xolonium");
+            XonoticGodot.Game.Hud.HudSkin.BoldFont = _assets.GetFont("xolonium-bold");
+        }
 
         // The full CSQC HUD panel set on the net path (T34): weapon bar / ammo / kill-feed / centerprint / timer,
         // the SAME Hud GameDemo uses. It is its OWN CanvasLayer (Hud : CanvasLayer), added directly to the node
@@ -938,6 +967,11 @@ public sealed partial class NetGame : Node3D
         // CanvasLayer above the world/ViewEffects tint but below the HUD. Self-contained — it registers its own
         // cvars, reads them live, and self-drives; no per-frame feeding needed here.
         AddChild(new XonoticGodot.Game.Client.VignetteOverlay { Name = "Vignette" });
+
+        // Zoom scope reticle (QC crosshair.qc DrawReticle): a CanvasLayer below the HUD, fed each frame in
+        // _Process from the networked active weapon + zoom state (see the zoom block there).
+        _reticle = new XonoticGodot.Game.Client.ReticleOverlay { Name = "Reticle" };
+        AddChild(_reticle);
 
         // The loading screen (Shell's CanvasLayer 100) covers the viewport during the handshake and the
         // connect-as-observer window — the DP gfx/loading.tga + progress bar, replacing the old plain black
@@ -1367,11 +1401,13 @@ public sealed partial class NetGame : Node3D
                     int colorKey = Weapons.ByName(wn) is { } w ? w.RegistryId : -1;
                     _damageText.Add(ev, Coords.ToGodot(ev.Target.Origin), colorKey);
 
-                    // Hitsound: fire the hit-confirmation beep when the LOCAL player dealt the damage (not self-damage).
-                    if (_hitSound is not null && localPlayer is not null
-                        && ev.Attacker == localPlayer && ev.Target != localPlayer)
+                    // Hit confirmation when the LOCAL player dealt the damage (not self-damage): the hitsound
+                    // beep AND the crosshair hitmarker flash (QC HitSound + the crosshair hit indication). The
+                    // crosshair pulse is otherwise unfed — CrosshairPanel.HitFlash decays itself each frame.
+                    if (localPlayer is not null && ev.Attacker == localPlayer && ev.Target != localPlayer)
                     {
-                        _hitSound.OnHit(ev.Health + ev.Armor);
+                        _hitSound?.OnHit(ev.Health + ev.Armor);
+                        _fullHud.Crosshair.HitFlash = 1f;
                     }
                 }
             }
@@ -1457,42 +1493,57 @@ public sealed partial class NetGame : Node3D
             }
 
             // Local fire feedback runs EVERY render frame (before the input drain below), so the muzzle flash,
-            // recoil and HUD pulse pop the same frame as the click rather than waiting for the next 1/72 s input
-            // tick — the felt "snap" on high-refresh displays. It also latches the press for the next sampled
-            // command so a sub-tick tap can't be dropped.
-            UpdateLocalFireFeedback();
-
-            // Fixed-timestep input: emit exactly one InputCommand per 1/72 s of REAL time, independent of the
-            // display frame rate, so each command represents the dt it claims (DeltaTime = TicRate) and the
-            // server advances this player at true wall-clock speed (sending one-per-render-frame would make the
-            // player run faster at higher fps). Accumulate real delta and drain it in fixed quanta; cap the
-            // backlog so a hitch can't trigger a spiral-of-death.
-            const float tic = XonoticGodot.Engine.Simulation.SimulationLoop.TicRate;
-            _inputAccum += dt;
-            if (_inputAccum > MaxInputBacklog) _inputAccum = MaxInputBacklog;
-            float clock = _renderClock;
-            while (_inputAccum >= tic)
+            // recoil, sound and HUD pulse pop the same frame as the click rather than waiting for the next 1/72 s
+            // input tick — the felt "snap" on high-refresh displays. It also latches the press for the next sampled
+            // command so a sub-tick tap can't be dropped, and (cl_predictfire) drives the predicted refire clock.
+            // cl_predictfire defaults ON: unset GetString reads "" → treat anything but "0" as on.
+            _predictFire = (_sharedCvars?.GetString("cl_predictfire") ?? "") != "0";
+            // Tell the in-process effect mirror to drop the host's own muzzle flash (predicted locally) when on.
+            if (_render is not null && GodotObject.IsInstanceValid(_render))
             {
-                _inputAccum -= tic;
-                clock += tic;
-                // Sample WASD/mouse → InputCommand → push to the ring, predict forward, send the redundant tail.
-                _client.SendInput(clock);
-
-                // Teleporter view-snap (QC player.fixangle): the prediction tick above re-derives the carrier's
-                // .fixangle — true exactly on the tick the local player is predicted through a single-dest
-                // teleporter. Snap the accumulated view to the destination facing so the camera exits looking the
-                // way the mapper aimed (CSQC setproperty(VF_CL_VIEWANGLES)), then consume the flag; later mouse-look
-                // accumulates on top. Done INSIDE the tick loop so a second tick this frame samples the snapped
-                // view. Multi-dest teleporters aren't predicted (random exit), so they stay server-authoritative.
-                if (_carrier is not null && _carrier.FixAngle)
-                {
-                    _viewAngles = _carrier.FixAngleAngles;
-                    _viewAngles.X = Mathf.Clamp(_viewAngles.X, -89f, 89f);
-                    _carrier.FixAngle = false;
-                }
+                _render.SuppressOwnFireEffects = _predictFire;
+                _render.LocalHostPlayer = LocalServerPlayer;
             }
-            // Read the camera at the clock the last prediction ran with, so the eye and the predicted origin agree.
-            _renderClock = clock;
+            UpdateLocalFireFeedback(dt);
+
+            // Input cadence. The client tells the server which mode it's in (PerFrameInput rides the input-frame
+            // header) so the two ends agree without a shared cvar store. Read live so it A/B-toggles in-session.
+            _perFrameInput = _sharedCvars?.GetFloat("cl_movement_perframe") is float pf && pf != 0f;
+            _client.PerFrameInput = _perFrameInput;
+            if (_perFrameInput)
+            {
+                // PER-FRAME (DP-style variable-dt): emit ONE command per rendered frame stamped with the real
+                // clamped frame dt; the server drains all pending commands that tick, running movement per command
+                // with each dt. Removes the up-to-one-tick input quantization → snappier fire + aim. The player
+                // still advances at wall-clock speed because each command carries the dt it represents.
+                _inputDeltaTime = Mathf.Clamp(dt, MinInputDt, MaxInputDt);
+                _renderClock += _inputDeltaTime;
+                _client.SendInput(_renderClock);
+                ConsumePredictedFixAngle();
+                _inputAccum = 0f; // keep the legacy accumulator drained so a mid-session switch back can't burst
+            }
+            else
+            {
+                // LEGACY fixed-timestep: emit exactly one InputCommand per 1/72 s of REAL time, independent of the
+                // display frame rate (DeltaTime = TicRate), so the server advances this player at true wall-clock
+                // speed. Accumulate real delta and drain it in fixed quanta; cap the backlog so a hitch can't
+                // trigger a spiral-of-death.
+                const float tic = XonoticGodot.Engine.Simulation.SimulationLoop.TicRate;
+                _inputDeltaTime = tic;
+                _inputAccum += dt;
+                if (_inputAccum > MaxInputBacklog) _inputAccum = MaxInputBacklog;
+                float clock = _renderClock;
+                while (_inputAccum >= tic)
+                {
+                    _inputAccum -= tic;
+                    clock += tic;
+                    // Sample WASD/mouse → InputCommand → push to the ring, predict forward, send the redundant tail.
+                    _client.SendInput(clock);
+                    ConsumePredictedFixAngle(); // teleporter view-snap, inside the loop so a 2nd tick samples it
+                }
+                // Read the camera at the clock the last prediction ran with, so eye and predicted origin agree.
+                _renderClock = clock;
+            }
         }
 
         // Loading screen progress during the async handshake + spawn phase (DP's progress bar filling up
@@ -1548,11 +1599,17 @@ public sealed partial class NetGame : Node3D
             _prevAliveHealth = h;
         }
 
-        // QC button_zoom on the net path: held while the +zoom bind's key is down (BindTable). Suppressed when
-        // dead (QC cl_unpress_zoom_on_death — the view zooms out on death), paused, or the console is open. Fed to
-        // the shared view, which lerps current_viewzoom toward the target in UpdateView.
+        // QC button_zoom on the net path: held while the +zoom bind's key is down (BindTable). PLUS the active
+        // weapon's secondary-fire zoom (QC view.qc IsZooming folds in each weapon's wr_zoomdir): the Vortex zooms
+        // while ATTACK2 is held and g_balance_vortex_secondary is 0 (the stock default — the networked active
+        // weapon arrives as ClientNet.ActiveWeaponId). Suppressed when dead (QC cl_unpress_zoom_on_death — the
+        // view zooms out on death), paused, or the console is open. Fed to the shared view, which lerps
+        // current_viewzoom toward the target in UpdateView.
         bool zoomActive = !GetTree().Paused && !ConsoleState.IsOpen && _client.Accepted && _client.Health > 0;
-        _view.ZoomHeld = zoomActive && BindTable.ZoomHeld;
+        XonoticGodot.Common.Gameplay.Weapon? activeWep =
+            _client.ActiveWeaponId >= 0 ? XonoticGodot.Common.Gameplay.Weapons.ById(_client.ActiveWeaponId) : null;
+        bool weaponZoom = activeWep is not null && activeWep.ZoomOnSecondary && BindTable.Attack2Held;
+        _view.ZoomHeld = zoomActive && (BindTable.ZoomHeld || weaponZoom);
 
         // Place the first-person camera at the predicted eye each frame (smooth even between snapshots, since
         // SendInput re-predicts every tick). C5: held until the first snapshot seeds the carrier — before that
@@ -1562,6 +1619,12 @@ public sealed partial class NetGame : Node3D
         // (which reads SampleEyeContents = _view.EyeContents).
         if (_cameraReady)
             UpdateCamera(dt);
+
+        // Zoom scope reticle (QC DrawReticle): the generic +zoom reticle, or the active weapon's scope (the
+        // Vortex's gfx/reticle_nex) while zooming with it. Fed after UpdateCamera so ZoomFraction is this frame's
+        // value; reuses the active weapon resolved for the zoom above. Suppressed while dead / spectating / chase.
+        _reticle?.UpdateReticle(activeWep, BindTable.ZoomHeld, BindTable.Attack2Held,
+            _view.ZoomFraction, LocalDeadNow(), _client.SpectatingNetId != 0, _view.ChaseActive);
 
         // Feed the full HUD's player-bound panels (health/ammo/weapons/crosshair) the local server Player on a
         // listen server, so they reflect live local state as the spawn lands (QC the view player). A pure client
@@ -2011,40 +2074,136 @@ public sealed partial class NetGame : Node3D
         && ((_fullHud.MinigameMenu is { IsOpen: true }) || (_minigame is not null && _minigame.Active is not null));
 
     /// <summary>
-    /// Per-render-frame local fire feedback, decoupled from the 1/72 s input cadence: edge-detect +attack/+attack2
-    /// off the live bind state and, on a primary-fire press edge, fire the view-model muzzle flash + recoil and
-    /// pulse the HUD crosshair THIS frame (CSQC W_MuzzleFlash on the local attack). Each press edge also sets a
-    /// latch (<see cref="_attackLatch"/>/<see cref="_attack2Latch"/>) that <see cref="SampleInput"/> OR's into the
-    /// next command, so a tap shorter than one input tick still reaches the server. Inert while the in-game menu /
-    /// console / minigame menu owns input (matching <see cref="SampleInput"/>'s active gate).
+    /// Teleporter view-snap (QC player.fixangle): after a prediction tick re-derives the carrier's .fixangle —
+    /// true exactly on the tick the local player is predicted through a single-dest teleporter — snap the
+    /// accumulated view to the destination facing (CSQC setproperty(VF_CL_VIEWANGLES)) and consume the flag, so
+    /// the camera exits looking the way the mapper aimed; later mouse-look accumulates on top. Multi-dest
+    /// teleporters aren't predicted (random exit) and stay server-authoritative.
     /// </summary>
-    private void UpdateLocalFireFeedback()
+    private void ConsumePredictedFixAngle()
     {
+        if (_carrier is not null && _carrier.FixAngle)
+        {
+            _viewAngles = _carrier.FixAngleAngles;
+            _viewAngles.X = Mathf.Clamp(_viewAngles.X, -89f, 89f);
+            _carrier.FixAngle = false;
+        }
+    }
+
+    /// <summary>
+    /// Per-render-frame local fire prediction + feedback, decoupled from the 1/72 s input cadence. With
+    /// cl_predictfire (default on) a client-side REFIRE CLOCK fires the view-model muzzle flash + a local fire
+    /// SOUND on every shot the instant the player fires (first on the press edge, then every <c>refire</c> s while
+    /// held), gated on the active weapon / alive / ammo — so sustained fire feels instant; the local player's own
+    /// NETWORKED fire-sound + muzzle-flash are suppressed elsewhere so they aren't doubled. With cl_predictfire 0
+    /// it falls back to a single muzzle flash on the press edge (the networked sustained FX play). Either way each
+    /// press edge sets a sub-tick latch (<see cref="_attackLatch"/>) so a tap shorter than one input tick still
+    /// reaches the server. Inert while the in-game menu / console / minigame menu owns input.
+    /// </summary>
+    private void UpdateLocalFireFeedback(float dt)
+    {
+        _fireClock += dt;
+
         bool active = !GetTree().Paused && !ConsoleState.IsOpen && !MinigameMenuOpen;
         if (!active)
         {
-            // Input is owned elsewhere (in-game menu / console / minigame): drop the edge state and any pending
-            // tap latch so nothing fires on resume (matches SampleInput's in_releaseall on the inactive edge).
+            // Input is owned elsewhere (in-game menu / console / minigame): drop the edge state, the tap latch and
+            // the refire clock so nothing fires on resume (matches SampleInput's in_releaseall on the inactive edge).
             _attackHeld = _attack2Held = false;
             _attackLatch = _attack2Latch = false;
+            _firePredictActive = false;
             return;
         }
 
         bool a1 = BindTable.AttackHeld;
         if (a1 && !_attackHeld)
+            _attackLatch = true; // sub-tick latch for the server (independent of FX prediction)
+
+        if (_predictFire && a1 && TryActivePrimaryFire(out string fireSound, out float refire)
+            && !LocalDeadNow() && HasAmmoNow())
         {
-            _attackLatch = true;
-            _hud?.PulseFire();
-            _viewModel?.Fire(); // local viewmodel muzzle flash + recoil
+            // Refire clock: first shot the frame the button goes down (or whenever the clock catches up), then one
+            // shot per `refire` s while held. Bound the catch-up so a frame hitch can't burst a pile of shots.
+            if (!_firePredictActive)
+            {
+                _firePredictActive = true;
+                _nextFireTime = _fireClock; // fire immediately this frame
+            }
+            if (_fireClock >= _nextFireTime)
+            {
+                PredictFireShot(fireSound);
+                float step = Mathf.Max(refire, 0.02f);
+                _nextFireTime += step;
+                if (_nextFireTime < _fireClock - step) _nextFireTime = _fireClock; // don't accumulate a backlog
+            }
+        }
+        else
+        {
+            _firePredictActive = false;
+            // cl_predictfire off (or this weapon isn't predicted): a single muzzle flash on the press edge (Phase 1).
+            if (!_predictFire && a1 && !_attackHeld)
+            {
+                _hud?.PulseFire();
+                _viewModel?.Fire();
+            }
         }
         _attackHeld = a1;
 
-        // Secondary fire: latch the press so its tap reaches the server (the secondary muzzle flash still arrives
-        // via the networked effect path until fire-FX prediction lands; primary keeps the existing local flash).
+        // Secondary fire: latch the press so its tap reaches the server (secondary FX stay networked for now).
         bool a2 = BindTable.Attack2Held;
         if (a2 && !_attack2Held)
             _attack2Latch = true;
         _attack2Held = a2;
+    }
+
+    /// <summary>Play one predicted local shot: the view-model muzzle flash + recoil, the HUD crosshair pulse, and
+    /// the weapon's primary fire sound at the predicted eye (auto-stack channel so rapid fire doesn't cut off).
+    /// Source net-id = the local player so the matching networked copy is dropped in <see cref="OnSoundReceived"/>.</summary>
+    private void PredictFireShot(string fireSound)
+    {
+        _hud?.PulseFire();
+        _viewModel?.Fire();
+        if (!string.IsNullOrEmpty(fireSound) && _render is not null && _client is not null)
+            _render.OnSound(fireSound, _client.PredictedOrigin, 1f, 0.5f,
+                (int)XonoticGodot.Common.Services.SoundChannel.WeaponAuto, _client.LocalNetId, 1f);
+    }
+
+    /// <summary>The active weapon's primary fire sound + refire interval, or false when it can't be predicted (no
+    /// active weapon, or a loop/grapple weapon absent from <see cref="WeaponFireSounds"/> → its networked sound
+    /// plays normally and is NOT suppressed).</summary>
+    private bool TryActivePrimaryFire(out string fireSound, out float refire)
+    {
+        fireSound = "";
+        refire = 0.1f;
+        if (_client is null || _client.ActiveWeaponId < 0)
+            return false;
+        XonoticGodot.Common.Gameplay.Weapon w = XonoticGodot.Common.Gameplay.Weapons.ById(_client.ActiveWeaponId);
+        if (w is null)
+            return false;
+        fireSound = WeaponFireSounds.PrimaryFor(w.NetName);
+        if (string.IsNullOrEmpty(fireSound))
+            return false;
+        refire = w.RefireFor(XonoticGodot.Common.Gameplay.FireMode.Primary);
+        if (refire <= 0f) refire = 0.1f;
+        return true;
+    }
+
+    /// <summary>Whether the local player is dead (stop predicting fire). Listen server reads the host Player; a
+    /// pure client derives it from networked health after the first spawn (matching the death-cam gate).</summary>
+    private bool LocalDeadNow()
+        => LocalServerPlayer is { } self ? self.IsDead : (_everAlive && _client is { } c && c.Health <= 0);
+
+    /// <summary>Whether the active weapon has ammo to fire — else predicting would play phantom shots after the
+    /// magazine empties. Uses the listen-server host player's live resources; a pure remote client has no server
+    /// player here, so it skips the ammo gate (accepts a shot or two of over-prediction at ammo-out).</summary>
+    private bool HasAmmoNow()
+    {
+        if (LocalServerPlayer is not { } p || _client is null || _client.ActiveWeaponId < 0)
+            return true;
+        XonoticGodot.Common.Gameplay.Weapon w = XonoticGodot.Common.Gameplay.Weapons.ById(_client.ActiveWeaponId);
+        if (w is null || w.AmmoType == XonoticGodot.Common.Gameplay.ResourceType.None)
+            return true; // infinite-ammo weapon (e.g. blaster)
+        return XonoticGodot.Common.Gameplay.Resources.GetResource(p, w.AmmoType) > 0f;
     }
 
     private InputCommand SampleInput()
@@ -2114,7 +2273,8 @@ public sealed partial class NetGame : Node3D
             Up = up,
             Buttons = (int)buttons,
             Impulse = impulse,
-            DeltaTime = XonoticGodot.Engine.Simulation.SimulationLoop.TicRate,
+            // TicRate in legacy mode; the real clamped frame dt in per-frame mode (set before SendInput above).
+            DeltaTime = _inputDeltaTime,
         };
     }
 
@@ -2160,6 +2320,16 @@ public sealed partial class NetGame : Node3D
         float now = _renderClock; // the clock the reconciler armed the prediction-error decay with (see _Process)
         NVec3 predicted = _client.PredictedOrigin + _client.PredictionErrorOffset(now);
 
+        // A DEAD local player's body is frozen at the death spot (PlayerPhysics.Move bails on IS_DEAD). The server
+        // still networks the velocity it died with, so over a void that's a large downward speed — extrapolating
+        // the eye by it each render frame, then snapping back when the input tic drains, shakes the death-cam (the
+        // "view shakes over a void" report). The corpse isn't predicting movement, so treat its velocity as zero
+        // for all render purposes: no sub-tic eye extrapolation and no velocity-driven view effects while dead.
+        // (net path has no MaxHealth, so dead = Health<=0 — but ONLY after the first spawn, so the pre-spawn
+        // observer 0 doesn't engage the death-cam at the world origin.)
+        bool localDead = _everAlive && _client.Health <= 0;
+        NVec3 viewVelocity = localDead ? NVec3.Zero : _client.PredictedVelocity;
+
         // Sub-tic view smoothing (DP's partial final movement frame): the predicted origin only advances when an
         // input tic is drained, so it moves in discrete 1/72 s (~13.9 ms) steps while the camera renders at the
         // display rate. At any framerate that isn't a multiple of 72 the per-frame step count alternates (0/1, or
@@ -2169,8 +2339,9 @@ public sealed partial class NetGame : Node3D
         // post-slide-move value (its into-surface component already clipped by PushEntity), so extrapolating along
         // it slides parallel to walls/floors rather than poking through them, and the next real tic lands within a
         // few units of the extrapolated eye — so the error smoother never engages. Render-only: it does not touch
-        // the authoritative predicted state, the input ring, or anything the server/reconciler sees.
-        predicted += _client.PredictedVelocity * _inputAccum;
+        // the authoritative predicted state, the input ring, or anything the server/reconciler sees. Suppressed
+        // while dead (viewVelocity is zeroed above) so the frozen corpse's death-fall speed can't bob the eye.
+        predicted += viewVelocity * _inputAccum;
 
         // Subtract the stair-smooth Z so the camera glides over steps (cl_movement stairsmooth). Driven by the
         // REAL frame delta (dt), NOT the server-synced render clock — the rebasing clock's 1/72-quantized jumps
@@ -2188,12 +2359,11 @@ public sealed partial class NetGame : Node3D
         var st = new Client.FirstPersonView.ViewState
         {
             OriginQuake = predicted,
-            VelocityQuake = _client.PredictedVelocity,
-            ViewAnglesQuake = _viewAngles,
-            // net path has no MaxHealth, so dead = Health<=0 — but ONLY after the first spawn (_everAlive), so the
-            // pre-spawn observer 0 doesn't engage the death-cam at the world origin (the demo path uses
-            // MaxHealth>0 for the same fresh-spawn-at-0 guard).
-            IsDead = _everAlive && _client.Health <= 0,
+            VelocityQuake = viewVelocity, // zeroed while dead (see localDead above) so a frozen corpse has no bob/sway
+            // QC `view_angles += view_punchangle` (cl_player.qc): the recoil kick is added to the rendered VIEW
+            // only — _viewAngles (the aim sent to the server) stays unpunched so shots still land on the crosshair.
+            ViewAnglesQuake = _viewAngles + _client.PunchAngle,
+            IsDead = localDead,
             // Eye drops while crouched: the predicted carrier carries the live view offset (PlayerPhysics.UpdateCrouch
             // sets ViewOfs to the crouch/standing value each predicted tick, QC STAT(PL_CROUCH_VIEW_OFS)/PL_VIEW_OFS).
             EyeHeightZ = _carrier?.ViewOfs.Z ?? EyeHeight,
@@ -2240,6 +2410,16 @@ public sealed partial class NetGame : Node3D
     {
         if (_render is null || !GodotObject.IsInstanceValid(_render))
             return;
+
+        // Drop the local player's OWN primary fire sound (cl_predictfire): we already played it locally on the
+        // refire clock, so the networked echo would double it. Keyed by source net-id + a predicted fire sample so
+        // it never suppresses footsteps/pain/reload/secondary (other channels/samples), and remote players are
+        // unaffected (they don't match LocalNetId). A non-predicted weapon (loops/grapple) isn't in the set → its
+        // networked fire sound plays normally.
+        if (_predictFire && _client is not null && e.SourceNetId == _client.LocalNetId
+            && WeaponFireSounds.IsPredicted(e.Sample))
+            return;
+
         if (e.Stop)
         {
             // DP sound(e, ch, SND_Null): end the loop on this emitter+channel (the Arc beam on release/overheat).

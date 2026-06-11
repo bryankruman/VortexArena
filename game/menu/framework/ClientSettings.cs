@@ -27,10 +27,48 @@ public static class ClientSettings
         // store at boot, so they're visible/bindable in the menu and console before a match's overlay registers
         // them. Idempotent — keeps any value the user's config already set.
         Client.VignetteOverlay.RegisterDefaults(MenuState.Cvars);
+        Client.ReticleOverlay.RegisterDefaults(MenuState.Cvars); // zoom scope reticle (cl_reticle*)
         Client.FrameProfiler.RegisterDefaults(MenuState.Cvars);
+
+        // HUD skin + per-panel layout/behaviour cvar defaults (luma), so the menu HUD dialogs and the console
+        // can see/drive them and panels read the luma defaults until a config overrides them.
+        Hud.HudConfig.RegisterDefaults(MenuState.Cvars);
 
         RegisterTintDefaults(MenuState.Cvars);
         RegisterStairSmoothDefaults(MenuState.Cvars);
+        RegisterEngineClientDefaults(MenuState.Cvars);
+    }
+
+    /// <summary>
+    /// The stock Darkplaces CLIENT engine-cvar defaults that no .cfg line assigns and no other subsystem
+    /// registers — the same class as <see cref="RegisterEngineVideoDefaults"/> / <see cref="RegisterEngineAudioDefaults"/>.
+    /// These are read across the client (HUD panels, input, net, console) but, being engine cvars registered in
+    /// Darkplaces C (not the .cfg tree Xonotic ships), they never entered the cvar store — so they were invisible
+    /// to <c>cvarlist</c>/<c>search</c>/Tab-completion and read as a silent 0/"" default. Every default below is
+    /// stock-faithful AND preserves the port's current effective behaviour (so registering changes nothing but
+    /// visibility): the two read with the <c>!= "0"</c> idiom (absent → ON) are registered "1" to match.
+    /// </summary>
+    private static void RegisterEngineClientDefaults(CvarService c)
+    {
+        const CvarFlags save = CvarFlags.Save;
+        // FPS / ping HUD readouts — the showfps/showping checkboxes sit right under vid_vsync on the video dialog
+        // and were invisible for the identical reason. cl_show* are the DP-native fallbacks FpsPanel/PingPanel read.
+        c.Register("showfps", "0", save);
+        c.Register("showping", "0", save);
+        c.Register("cl_showfps", "0", save);
+        c.Register("cl_showping", "0", save);
+        // Mouse pitch (only its SIGN is used here, for invert-look); DP default 1 (non-inverted) = current behaviour.
+        c.Register("m_pitch", "1", save);
+        // Server-browser auto-refresh pause toggle (DP default 0).
+        c.Register("net_slist_pause", "0", save);
+        // Input cadence + local fire prediction (port extensions, read live from the shared store by NetGame).
+        c.Register("cl_movement_perframe", "0", save); // absent → off; keep off
+        c.Register("cl_predictfire", "1", save);       // intentionally default ON (NetGame: unset → on)
+        // Client-side projectile prediction (CSQC Projectile_Draw): snap+extrapolate vs the old ease. Default
+        // ON; `set cl_projectile_prediction 0` reverts for A/B feel-testing (ClientWorld polls it live).
+        c.Register("cl_projectile_prediction", "1", save);
+        // Console/diagnostics verbosity (DP CF_CLIENT, NOT archived — a debug toggle shouldn't persist).
+        c.Register("developer", "0");
     }
 
     /// <summary>
@@ -75,6 +113,7 @@ public static class ClientSettings
     public static void ApplyVideo()
     {
         CvarService c = MenuState.Cvars;
+        RegisterEngineVideoDefaults(c);
 
         bool fullscreen = c.GetFloat("vid_fullscreen") != 0f;
         bool borderless = c.GetFloat("vid_borderless") != 0f;
@@ -102,6 +141,26 @@ public static class ClientSettings
         // as micro-stutter. Honouring the cap lets the player pin a steady framerate (a multiple of 72 is ideal).
         int maxFps = (int)c.GetFloat("cl_maxfps");
         Godot.Engine.MaxFps = maxFps > 0 ? maxFps : 0;
+    }
+
+    /// <summary>
+    /// The stock Darkplaces video-cvar defaults (vid_shared.c). Like the audio cvars these are ENGINE cvars —
+    /// Darkplaces registers them in C, NOT in the .cfg tree Xonotic ships — so the port never picked up their
+    /// defaults and they never entered the cvar store. The siblings (<c>vid_fullscreen</c>, <c>vid_width</c>,
+    /// <c>vid_height</c>, …) only show up because xonotic-client.cfg happens to assign them as bare lines;
+    /// <c>vid_vsync</c> and <c>vid_borderless</c> are assigned NOWHERE, so they were invisible to the console
+    /// (cvarlist/apropos/Tab-completion all enumerate <see cref="CvarService.Names"/>) and <see cref="ApplyVideo"/>
+    /// only ever read them with <see cref="ICvarService.GetFloat"/> (which returns 0 for an absent cvar without
+    /// creating it — so vsync silently defaulted to OFF). Register them at boot (idempotent — keeps any value a
+    /// cfg or config.cfg already set) so they're visible/bindable and reset correctly. Defaults + the archive
+    /// flag (CF_ARCHIVE → Save) mirror vid_shared.c; "0" also preserves the current effective behaviour (vsync
+    /// off, which matters for input latency).
+    /// </summary>
+    private static void RegisterEngineVideoDefaults(CvarService c)
+    {
+        const CvarFlags save = CvarFlags.Save;
+        c.Register("vid_vsync", "0", save);
+        c.Register("vid_borderless", "0", save);
     }
 
     /// <summary>

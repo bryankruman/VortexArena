@@ -104,13 +104,20 @@ public static class WeaponFiring
     /// </summary>
     public static ShotInfo SetupShot(Entity actor, Vector3 forward, Vector3 mins, Vector3 maxs,
         float range = MaxShotDistance, bool penetrateWalls = false,
-        Weapon? wep = null, float maxDamage = 0f)
+        Weapon? wep = null, float maxDamage = 0f, float recoil = 0f)
     {
         // [T57] track max damage — the accuracy FIRED credit (QC tracing.qc:64-66): each weapon passes the
         // shot's potential damage (its QC W_SetupShot maxdamage arg) so the accuracy% denominator grows.
         // Zero maxDamage (porto/seeker missile) is filtered by accuracy_add's all-zero guard.
         if (wep is not null && (actor.Flags & EntFlags.Client) != 0 && WeaponAccuracyEvents.CanBeGoodDamage(actor))
             WeaponAccuracyEvents.Fired(actor, wep, maxDamage);
+
+        // QC W_SetupShot: `if (!autocvar_g_norecoil) ent.punchangle_x = -recoil;` — the view kicks UP on firing
+        // (pitch −recoil°), then decays via PM_check_punch (PlayerPhysics.CheckPunch, −10°/s). Players only (a
+        // non-client shooter has no view). The aim/shot direction is NOT punched — only the rendered view is.
+        if (recoil != 0f && (actor.Flags & EntFlags.Client) != 0
+            && !(Api.Services is not null && Api.Cvars.GetFloat("g_norecoil") != 0f))
+            actor.PunchAngle = new Vector3(-recoil, 0f, 0f);
 
         Vector3 eye = actor.Origin + actor.ViewOfs;
         Vector3 aimEnd = eye + forward * range;
@@ -161,8 +168,8 @@ public static class WeaponFiring
 
     /// <summary>W_SetupShot convenience overload (zero projectile size, v_forward direction).</summary>
     public static ShotInfo SetupShot(Entity actor, Vector3 forward, float range = MaxShotDistance,
-        bool penetrateWalls = false, Weapon? wep = null, float maxDamage = 0f)
-        => SetupShot(actor, forward, Vector3.Zero, Vector3.Zero, range, penetrateWalls, wep, maxDamage);
+        bool penetrateWalls = false, Weapon? wep = null, float maxDamage = 0f, float recoil = 0f)
+        => SetupShot(actor, forward, Vector3.Zero, Vector3.Zero, range, penetrateWalls, wep, maxDamage, recoil);
 
     /// <summary>
     /// Hitscan bullet (back-compat single-arg overload) — keeps existing call sites working.

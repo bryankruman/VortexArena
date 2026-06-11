@@ -123,7 +123,7 @@ public sealed class Minelayer : Weapon
         actor.TakeResource(AmmoType, Cvars.Ammo);
 
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out _);
-        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, new Vector3(-4, -4, -4), new Vector3(4, 4, 4));
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, new Vector3(-4, -4, -4), new Vector3(4, 4, 4), recoil: 5f);
 
         Entity mine = Api.Entities.Spawn();
         mine.ClassName = "mine";

@@ -22,6 +22,10 @@ namespace XonoticGodot.Common.Gameplay;
 /// </summary>
 public static class WeaponSplash
 {
+    /// <summary>QC <c>MAX_DAMAGEEXTRARADIUS</c> (server/damage.qh:127): the broadphase pad QC adds to the
+    /// findradius search so the precise per-target nearest-point test is what actually decides hits.</summary>
+    private const float MaxDamageExtraRadius = 16f;
+
     /// <summary>
     /// Full headless port of RadiusDamageForSource (server/damage.qc). Everything within
     /// <paramref name="radius"/> of <paramref name="center"/> takes damage interpolated from
@@ -58,13 +62,14 @@ public static class WeaponSplash
         // null (vehicles/monsters/breakables) means no credit, matching QC's DEATH_ISSPECIAL gate).
         float statDamageDone = 0f;
 
-        foreach (Entity e in Api.Entities.FindInRadius(center, radius))
+        // QC searches a padded radius (rad + MAX_DAMAGEEXTRARADIUS, damage.qc:746) so the per-target
+        // nearest-point check below — not the broadphase pre-filter — is the binding constraint.
+        foreach (Entity e in Api.Entities.FindInRadius(center, radius + MaxDamageExtraRadius))
         {
             if (e.TakeDamage == DamageMode.No) continue;
 
             // QC RadiusDamageForSource measures distance to the NEAREST POINT on the target's bbox (so a
-            // point-blank / direct hit takes full core damage — the bbox-center metric undershot close range),
-            // while the knockback still points at the bbox center.
+            // point-blank / direct hit takes full core damage — the bbox-center metric undershot close range).
             Vector3 targetCenter = e.Origin + (e.Mins + e.Maxs) * 0.5f;
             Vector3 nearest = Vector3.Clamp(center, e.Origin + e.Mins, e.Origin + e.Maxs);
             float dist = (nearest - center).Length();
@@ -74,12 +79,26 @@ public static class WeaponSplash
             float finalDmg = damage * frac + edgeDamage * (1f - frac);
             if (finalDmg <= 0f) continue;
 
-            // Knockback toward the victim's center, magnitude scaled by the damage falloff (QC formula).
+            // Knockback reference point (QC's RadiusDamageForSource `center`, gated by g_player_damageplayercenter):
+            // for a SELF-hit (blaster/rocket jump) the push is aimed from the blast toward the attacker's EYE,
+            // not the bbox center. The eye sits higher above a floor blast, so a shot at your own feet launches
+            // you more vertically — QC special-cases targ==attacker to CENTER_OR_VIEWOFS (origin+view_ofs). Other
+            // players use the bbox center (default damageplayercenter 1); with it 0, all players use the eye.
+            // (QC's extra movedir.z shot-origin nudge for self is deferred — a sub-unit refinement.)
+            Vector3 forceRef = targetCenter;
+            if ((e.Flags & EntFlags.Client) != 0)
+            {
+                bool useBoxCenterForOthers = Cvar("g_player_damageplayercenter", 1f) != 0f;
+                if (!useBoxCenterForOthers || ReferenceEquals(e, src))
+                    forceRef = e.Origin + e.ViewOfs;
+            }
+
+            // Knockback toward the reference point, magnitude scaled by the damage falloff (QC formula).
             Vector3 forceVec = Vector3.Zero;
             float denom = MathF.Max(damage, edgeDamage);
             if (force != 0f && denom > 0f)
             {
-                Vector3 dirDelta = targetCenter - center;
+                Vector3 dirDelta = forceRef - center;
                 float dirLen = dirDelta.Length();
                 Vector3 dir = dirLen > 0f ? dirDelta / dirLen : Vector3.UnitZ;
                 forceVec = dir * ((finalDmg / denom) * force);

@@ -669,7 +669,12 @@ public partial class GameDemo : Node3D
         // Bridge the HUD's texture cache to the mounted game data so weapon icons / crosshairs / kill-notify
         // icons draw the REAL Xonotic art (resolved via the asset pipeline) instead of colored-box fallbacks.
         if (_assets is not null)
+        {
             Hud.TextureCache.VfsResolver = _assets.LoadTexture;
+            // Xolonium HUD font (the menu skin font), so HUD text matches Xonotic instead of Godot's fallback.
+            Hud.HudPanel.HudFont = _assets.GetFont("xolonium");
+            Hud.HudSkin.BoldFont = _assets.GetFont("xolonium-bold");
+        }
 
         _hud = new Hud.Hud { Name = "Hud" };
         AddChild(_hud);
@@ -778,6 +783,15 @@ public partial class GameDemo : Node3D
         _client.Effects.Spawn(_fxDemoEffect!, floor);
         _client.Effects.Spawn(_fxDemoEffect!, eye + fwd * 110f + new NVec3(0f, 0f, 45f));
         _client.Effects.Spawn("machinegun_impact", floor + fwd * 30f, -fwd);
+
+        // If the configured effect is a TRAIL/beam (nex_beam, arc_beam, TR_ROCKET…), also sweep it across the
+        // view as a line so --screenshot can verify the T1 trail-along-the-segment fix (the vortex beam line).
+        XonoticGodot.Common.Gameplay.Effect? eff =
+            XonoticGodot.Common.Gameplay.Effects.ByEffectInfoName(_fxDemoEffect!)
+            ?? XonoticGodot.Common.Gameplay.Effects.ByName(_fxDemoEffect!);
+        if (eff?.IsTrail == true)
+            _client.Effects.Spawn(_fxDemoEffect!, eye + fwd * 20f + new NVec3(0f, 0f, 10f),
+                eye + fwd * 600f + new NVec3(0f, 0f, 10f));
     }
 
     /// <summary>

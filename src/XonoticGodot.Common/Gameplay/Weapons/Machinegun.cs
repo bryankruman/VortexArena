@@ -284,7 +284,11 @@ public sealed class Machinegun : Weapon
             RegistryId, spread, Cvars.SolidPenetration, force: force);
         Vector3 impEnd = shot.Origin + shot.Dir * WeaponFiring.MaxShotDistance;
         TraceResult impTr = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, impEnd, MoveFilter.WorldOnly, actor);
-        EffectEmitter.Emit("MACHINEGUN_IMPACT", impTr.EndPos, -shot.Dir * 1000f);
+        // QC: w_backoff * 1000 = the impact surface normal (trace_plane_normal), falling back to -force_dir when
+        // no surface was hit. impTr.PlaneNormal IS that surface normal — far more faithful than -shot.Dir for
+        // angled hits (the impact sprays off the wall, not straight back at the shooter).
+        Vector3 backoff = impTr.PlaneNormal.LengthSquared() > 1e-6f ? impTr.PlaneNormal : -shot.Dir;
+        EffectEmitter.Emit("MACHINEGUN_IMPACT", impTr.EndPos, backoff * 1000f);
         Api.Sound.Play(actor, SoundChannel.WeaponAuto, "weapons/uzi_fire.wav");
         EffectEmitter.Emit("MACHINEGUN_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
     }

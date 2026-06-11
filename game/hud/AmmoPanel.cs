@@ -130,7 +130,7 @@ public partial class AmmoPanel : HudPanel
             new Color(1f, 1f, 1f, 0.55f), labelSize);
     }
 
-    private static Color PoolColor(float amount, bool isCurrent)
+    private Color PoolColor(float amount, bool isCurrent)
     {
         if (amount <= 0f && !isCurrent) return new Color(0.5f, 0.5f, 0.5f, 0.4f);
         if (isCurrent)                  return new Color(0.2f, 0.95f, 0.2f, 0.95f);

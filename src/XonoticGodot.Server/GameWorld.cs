@@ -287,6 +287,15 @@ public sealed class GameWorld
     /// </summary>
     public Func<Player, IMovementInput> InputProvider { get; set; } = static _ => ZeroInput;
 
+    /// <summary>
+    /// Per-frame (variable-dt) mode: the per-command movement batch for this player THIS tick — one entry per
+    /// client render frame, each carrying its own dt — or null for the legacy one-command-per-tick path. When
+    /// non-null <see cref="OnClientMove"/> runs one <c>Movement.Move</c> per entry (DP's process-queued-client-
+    /// moves); null → a single Move with the <see cref="InputProvider"/> command. Installed by the net layer;
+    /// null on a host with no net layer (and for bots, which produce one command per tick).
+    /// </summary>
+    public Func<Player, IReadOnlyList<IMovementInput>?>? TickMovementBatch { get; set; }
+
     private static readonly MovementInput ZeroInput = new() { FrameTime = SimulationLoop.TicRate };
 
     /// <summary>
@@ -920,7 +929,19 @@ public sealed class GameWorld
 
         if (canMove)
         {
-            Movement.Move(p, input);
+            // Per-frame (variable-dt) mode: integrate one move per QUEUED client command (each with its own dt) —
+            // DP's process-queued-client-moves — so the player advances at wall-clock speed off the client's real
+            // frame cadence. Legacy mode (or bot, or no net layer) runs a single Move with this tick's one command.
+            IReadOnlyList<IMovementInput>? batch = p.IsBot ? null : TickMovementBatch?.Invoke(p);
+            if (batch is { Count: > 0 })
+            {
+                for (int i = 0; i < batch.Count; i++)
+                    Movement.Move(p, batch[i]);
+            }
+            else
+            {
+                Movement.Move(p, input);
+            }
 
             // QC anticheat_physics (ecs/systems/sv_physics): accumulate the statistical detectors for a real
             // client from this tick's view angles + movement input. Bots have no remote stream to cheat over.

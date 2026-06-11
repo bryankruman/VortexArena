@@ -65,6 +65,46 @@ public class WeaponBalanceTests
     }
 
     [Fact]
+    public void Vortex_Secondary_Is_Zoom_With_Stock_Balance()
+    {
+        // QC vortex.qc wr_zoomdir/wr_zoom + vortex.qh w_reticle: with g_balance_vortex_secondary 0 (the stock
+        // default — secondary is NOT a separate fire mode) holding ATTACK2 zooms, and the scope is gfx/reticle_nex.
+        Api.Services = new EngineServices(new CollisionWorld()); // empty store → stock fallbacks
+        var vortex = new Vortex();
+        vortex.Configure();
+        Assert.False(vortex.Cvars.Secondary, "stock g_balance_vortex_secondary is 0");
+        Assert.True(vortex.ZoomOnSecondary, "ATTACK2 must zoom while secondary is not a fire mode");
+        Assert.Equal("gfx/reticle_nex", vortex.Reticle);
+    }
+
+    [Fact]
+    public void Vortex_Secondary_Disables_Zoom_When_It_Is_A_Fire_Mode()
+    {
+        // g_balance_vortex_secondary 1 turns ATTACK2 into a real (weaker) fire mode, so the zoom is off
+        // (wr_zoomdir → false), exactly as in base.
+        var facade = new EngineServices(new CollisionWorld());
+        Api.Services = facade;
+        facade.Cvars.Set("g_balance_vortex_secondary", "1");
+
+        var vortex = new Vortex();
+        vortex.Configure();
+        Assert.True(vortex.Cvars.Secondary);
+        Assert.False(vortex.ZoomOnSecondary, "with secondary as a fire mode, ATTACK2 must NOT zoom");
+    }
+
+    [Fact]
+    public void Default_Weapon_Has_No_Zoom_Or_Reticle()
+    {
+        // The base Weapon contract: ordinary weapons don't zoom on secondary and have no scope (QC: only the
+        // Vortex/Vaporizer define wr_zoom/w_reticle). Guards against a stray override leaking the scope onto every gun.
+        Api.Services = new EngineServices(new CollisionWorld());
+        var blaster = new Blaster();
+        blaster.Configure();
+        Assert.False(blaster.ZoomOnSecondary);
+        Assert.Null(blaster.Reticle);
+    }
+
+    [Fact]
     public void Real_Balance_Config_Flows_Into_Weapon_Configure()
     {
         const string pk3 = @"C:\Users\Bryan\Projects\Xonotic\XonoticGodot\assets\data\xonotic-data.pk3dir";

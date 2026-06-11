@@ -1,4 +1,5 @@
 using System.Numerics;
+using XonoticGodot.Common.Diagnostics;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Services;
 using XonoticGodot.Engine.Collision;
@@ -189,9 +190,13 @@ public sealed class EntityService : IEntityService, TraceService.IEntityProvider
         {
             var e = _all[i];
             if (e.IsFreed) continue;
-            // DP findradius measures from the entity's box center (origin + (mins+maxs)/2).
-            Vector3 center = e.Origin + (e.Mins + e.Maxs) * 0.5f;
-            if ((center - origin).LengthSquared() <= r2)
+            // DP VM_SV_findradius with sv_gameplayfix_findradiusdistancetobox (default 1, svvm_cmds.c:1042):
+            // measure to the NEAREST POINT on the entity's bbox, not its box center, so tall/offset boxes
+            // aren't missed. The old box-center metric pushed the reference ~(mins+maxs)/2 off the surface —
+            // e.g. a player's center sits 34u above their feet, so a floor blast under a jumping player fell
+            // outside the blaster's 60u splash and dealt no damage/knockback (the blaster-jump 15% miss).
+            Vector3 nearest = Vector3.Clamp(origin, e.Origin + e.Mins, e.Origin + e.Maxs);
+            if ((nearest - origin).LengthSquared() <= r2)
                 yield return e;
         }
     }
@@ -280,14 +285,56 @@ public sealed class CvarService : ICvarService
     private readonly Dictionary<string, Var> _vars = new(StringComparer.Ordinal);
 
     /// <summary>
+    /// Names that some code <see cref="GetFloat"/>/<see cref="GetString"/>-read while ABSENT from the store —
+    /// i.e. cvars that were never registered nor set by a cfg, so the read silently returned 0/"" and the name
+    /// is invisible to <c>cvarlist</c>/<c>search</c> (the <c>vid_vsync</c> class of bug). Surfaced by the
+    /// <c>cvar_orphans</c> console command and (at <c>developer&gt;0</c>) logged once per name. A transiently
+    /// absent name that is later <see cref="Set"/> stays in this set but is filtered out by
+    /// <see cref="UnregisteredReadNames"/>, which only reports names still missing.
+    /// </summary>
+    private readonly HashSet<string> _unregisteredReads = new(StringComparer.Ordinal);
+
+    /// <summary>Reentrancy guard: emitting the "unregistered read" log itself reads cvars (e.g. <c>developer</c>),
+    /// which would recurse back into <see cref="NoteMissing"/> while that name is still absent.</summary>
+    private bool _noting;
+
+    /// <summary>
     /// Raised after a cvar's value actually changes (the name is the argument). Lets menu widgets re-read a
     /// cvar another widget/command just wrote, and drives <c>setDependent</c> enable/disable reactivity. Fired
     /// only on a real value change, so the bulk config load (no subscribers yet) costs nothing.
     /// </summary>
     public event Action<string>? Changed;
 
-    public float GetFloat(string name) => _vars.TryGetValue(name, out var v) ? v.FloatValue : 0f;
-    public string GetString(string name) => _vars.TryGetValue(name, out var v) ? v.Value : "";
+    public float GetFloat(string name)
+    {
+        if (_vars.TryGetValue(name, out var v)) return v.FloatValue;
+        NoteMissing(name);
+        return 0f;
+    }
+
+    public string GetString(string name)
+    {
+        if (_vars.TryGetValue(name, out var v)) return v.Value;
+        NoteMissing(name);
+        return "";
+    }
+
+    /// <summary>Record (and, at <c>developer&gt;0</c>, log once) a read of a cvar that isn't in the store.</summary>
+    private void NoteMissing(string name)
+    {
+        if (_noting) return;                    // read triggered by our own logging — ignore
+        if (!_unregisteredReads.Add(name)) return; // already noted this name
+        _noting = true;
+        try
+        {
+            // Log.Trace self-gates at developer>0, so this is silent in normal play. The set is still recorded
+            // either way, so `cvar_orphans` can dump the full list retroactively after turning developer on.
+            Log.Trace($"cvar \"{name}\" read but never registered or set — defaults to 0/\"\" and is hidden from " +
+                      "cvarlist/search. Register a default (e.g. ClientSettings.RegisterEngineClientDefaults) or " +
+                      "run `cvar_orphans`.");
+        }
+        finally { _noting = false; }
+    }
 
     public void Set(string name, string value)
     {
@@ -332,6 +379,22 @@ public sealed class CvarService : ICvarService
 
     /// <summary>Every known cvar name (for the cvar-list dialog / search).</summary>
     public IReadOnlyCollection<string> Names => _vars.Keys;
+
+    /// <summary>
+    /// Names read while absent and STILL absent now — the live "orphan" cvars (read but never registered/set).
+    /// Filters out any name that has since been <see cref="Set"/>, so transient pre-set reads don't show up.
+    /// Backs the <c>cvar_orphans</c> console command. Note: a listen server keeps its OWN private store, so
+    /// server-only cvars (<c>sv_*</c>, <c>g_*</c>) surface in that store's list / its developer-log, not this one.
+    /// </summary>
+    public IEnumerable<string> UnregisteredReadNames
+    {
+        get
+        {
+            foreach (string n in _unregisteredReads)
+                if (!_vars.ContainsKey(n))
+                    yield return n;
+        }
+    }
 
     /// <summary>The cvar's baseline default (registered default, or the first value a cfg set). "" if unknown.</summary>
     public string GetDefault(string name) => _vars.TryGetValue(name, out var v) ? v.Default : "";

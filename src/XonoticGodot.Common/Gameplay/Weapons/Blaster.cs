@@ -132,7 +132,7 @@ public sealed class Blaster : Weapon
         float shotAngle = Primary.ShotAngle * QMath.Deg2Rad;
         Vector3 sForward = forward * MathF.Cos(shotAngle) + up * MathF.Sin(shotAngle);
 
-        ShotInfo shot = WeaponFiring.SetupShot(actor, sForward);
+        ShotInfo shot = WeaponFiring.SetupShot(actor, sForward, recoil: 3f); // QC blaster.qc W_SetupShot_Dir recoil 3
 
         // entity missile = new(blasterbolt);
         Entity missile = Api.Entities.Spawn();
@@ -190,7 +190,11 @@ public sealed class Blaster : Weapon
             self.Owner, RegistryId, Primary.Force, forceZScale: Primary.ForceZScale, directHit: other);
 
         WeaponSplash.ImpactSound(self, "weapons/laserimpact.wav"); // QC SND_LASERIMPACT (wr_impacteffect)
-        EffectEmitter.Emit("BLASTER_IMPACT", center);
+        // QC: pointparticles(EFFECT_BLASTER_IMPACT, org2, w_backoff * 1000, 1) — the impact sprays back out of
+        // the surface along w_backoff (the impact plane normal). The bolt flew INTO the wall, so the reversed
+        // flight direction is the faithful w_backoff fallback (DP uses exactly -force_dir when no plane is hit).
+        Vector3 backoff = self.Velocity.LengthSquared() > 1e-6f ? -QMath.Normalize(self.Velocity) : Vector3.Zero;
+        EffectEmitter.Emit("BLASTER_IMPACT", center, backoff * 1000f);
         Api.Entities.Remove(self);
     }
 }

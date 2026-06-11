@@ -167,6 +167,48 @@ public class ConsoleTests
     }
 
     [Fact]
+    public void Search_IsAnAliasForApropos()
+    {
+        var (interp, cvars, output) = Make();
+        cvars.Set("sv_gravity", "800");
+        interp.ExecuteLine("search gravity");
+        // same output shape as apropos: a "cvar  <name> ..." line for the matching cvar.
+        Assert.Contains(output, s => s.Contains("cvar") && s.Contains("sv_gravity"));
+    }
+
+    [Fact]
+    public void Search_EchoesItsOwnNameInUsage()
+    {
+        var (interp, _, output) = Make();
+        interp.ExecuteLine("search"); // no argument → usage line, naming the invoked command
+        Assert.Contains(output, s => s.Contains("usage: search"));
+    }
+
+    [Fact]
+    public void CvarOrphans_ListsReadButNeverRegisteredOrSet()
+    {
+        var (interp, cvars, output) = Make();
+        cvars.GetFloat("nonexistent_cvar");   // a read of an absent cvar → recorded as an orphan
+        cvars.Set("real_cvar", "1");
+        _ = cvars.GetFloat("real_cvar");      // present → never an orphan
+        output.Clear();
+        interp.ExecuteLine("cvar_orphans");
+        Assert.Contains(output, s => s == "nonexistent_cvar");
+        Assert.DoesNotContain(output, s => s == "real_cvar");
+    }
+
+    [Fact]
+    public void CvarOrphans_DropsNamesOnceTheyAreSet()
+    {
+        var (interp, cvars, output) = Make();
+        _ = cvars.GetString("late_cvar");     // read while absent → orphan
+        cvars.Set("late_cvar", "x");          // now defined → no longer an orphan
+        output.Clear();
+        interp.ExecuteLine("cvar_orphans");
+        Assert.DoesNotContain(output, s => s == "late_cvar");
+    }
+
+    [Fact]
     public void Seta_MarksCvarArchived()
     {
         var (interp, cvars, _) = Make();

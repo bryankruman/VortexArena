@@ -222,7 +222,7 @@ public sealed class Rifle : Weapon
 
         // Penetrate-walls trueaim: aim at the body behind glass/walls (rifle has WEP_FLAG_PENETRATEWALLS).
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out _);
-        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, WeaponFiring.MaxShotDistance, penetrateWalls: true);
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, WeaponFiring.MaxShotDistance, penetrateWalls: true, recoil: 2f);
         // When zoomed QC re-aims straight from the eye (w_shotdir = v_forward) so the long-range shot is
         // pixel-accurate; the zoom button isn't part of the headless input, so we keep the trueaim origin.
 
@@ -237,7 +237,9 @@ public sealed class Rifle : Weapon
                 headshotMultiplier: bal.HeadshotMultiplier);
             Vector3 impEnd = shot.Origin + shot.Dir * WeaponFiring.MaxShotDistance;
             TraceResult impTr = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, impEnd, MoveFilter.WorldOnly, actor);
-            EffectEmitter.Emit("RIFLE_IMPACT", impTr.EndPos, -shot.Dir * 1000f);
+            // w_backoff = the impact surface normal (trace_plane_normal), -force_dir fallback when no hit.
+            Vector3 backoff = impTr.PlaneNormal.LengthSquared() > 1e-6f ? impTr.PlaneNormal : -shot.Dir;
+            EffectEmitter.Emit("RIFLE_IMPACT", impTr.EndPos, backoff * 1000f);
         }
 
         Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/campingrifle_fire.wav");

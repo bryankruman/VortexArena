@@ -190,7 +190,7 @@ public sealed class Seeker : Weapon
         actor.TakeResource(AmmoType, Missile.Ammo);
 
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out Vector3 up);
-        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, new Vector3(-4, -4, -4), new Vector3(4, 4, 4));
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, new Vector3(-4, -4, -4), new Vector3(4, 4, 4), recoil: 2f);
 
         Entity missile = Api.Entities.Spawn();
         missile.ClassName = "seeker_missile";
@@ -282,7 +282,7 @@ public sealed class Seeker : Weapon
         var st = actor.WeaponState(slot);
 
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out Vector3 right, out Vector3 up);
-        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, new Vector3(-2, -2, -2), new Vector3(2, 2, 2));
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, new Vector3(-2, -2, -2), new Vector3(2, 2, 2), recoil: 2f);
 
         // f_diff: a 4-position muzzle offset cycle (bulletcounter % 4) so the spray fans out side-to-side.
         Vector3 fdiff = (st.MiscBulletCounter & 3) switch
@@ -344,7 +344,7 @@ public sealed class Seeker : Weapon
         actor.TakeResource(AmmoType, Tag.Ammo);
 
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out _);
-        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, new Vector3(-2, -2, -2), new Vector3(2, 2, 2));
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, new Vector3(-2, -2, -2), new Vector3(2, 2, 2), recoil: 2f);
 
         Entity missile = Api.Entities.Spawn();
         missile.ClassName = "seeker_tag";
