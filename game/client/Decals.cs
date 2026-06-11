@@ -55,8 +55,10 @@ public sealed partial class Decals : Node3D
         // an arbitrary perpendicular for the in-plane axes; the mark is roughly radial so their roll is moot.
         Basis basis = BasisProjecting(gdir);
 
-        // Box: wide/tall to the decal radius, with depth to a thin slab so it grabs only the near surface.
-        float depth = MathF.Max(4f, radius * 0.5f);
+        // Box: wide/tall to the decal radius, depth a THIN slab so it grabs only the near surface. DP decals
+        // are flat quads ON the surface (zero wrap); a deep Godot box projects through whatever it overlaps,
+        // smearing the mark across corners and parallel geometry behind the wall.
+        float depth = Math.Clamp(radius * 0.25f, 2f, 8f);
 
         // Prefer the real particlefont decal SPRITE (scorch / blood splat shape) the effect declared; fall
         // back to a generated soft disc when the atlas isn't mounted. Modulate tints + fades either one.
@@ -68,6 +70,10 @@ public sealed partial class Decals : Node3D
             TextureAlbedo = sprite ?? SolidTexture(color),
             Modulate = new Color(color.R, color.G, color.B, Math.Clamp(alpha, 0f, 1f)),
             AlbedoMix = 1f,
+            // Fade the projection out on surfaces angled away from the projection axis — the box-projection
+            // equivalent of DP's flat surface quad: without it the mark wraps around corners/edges onto
+            // perpendicular faces inside the box.
+            NormalFade = 0.35f,
             // Bias upper distance fade so it stays visible at gameplay ranges (DP intensitymultiplier).
             DistanceFadeEnabled = false,
         };

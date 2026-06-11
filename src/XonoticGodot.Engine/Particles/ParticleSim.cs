@@ -28,6 +28,13 @@ namespace XonoticGodot.Engine.Particles;
 /// and CL_ImmediateBloodStain). The core sim stays pure — it never touches Godot — and instead raises this
 /// when a particle hits a surface (or an immediate blood stain is requested at spawn). Org/vel/size/alpha of
 /// the simulated particles are unaffected by whether a listener is attached.
+///
+/// COLOR CONTRACT: ColorR/G/B is the PERCEIVED mark color (what the wall should look like where the mark
+/// is). DP's decals render INVMOD (wall · (1 − tex·color), the color being the amount REMOVED), with the
+/// complement applied inconsistently per path — staintex stains pre-complement (cl_particles.c:3001
+/// <c>0xFFFFFF ^ staincolor</c>, so staincolor is already perceived), while pt_decal and blood decals pass
+/// the raw removal color. Each raise site below converts so the event always carries the perceived color;
+/// the host feeds it to an alpha-blend decal directly.
 /// </summary>
 public readonly struct StainEvent
 {
@@ -320,8 +327,16 @@ public sealed class ParticleSim
                 if (idx >= 0 && info.Type == ParticleType.Decal)
                 {
                     ref Particle pd = ref _pool[idx];
-                    OnStain?.Invoke(new StainEvent(pd.Org, up, pd.ColorR, pd.ColorG, pd.ColorB, pd.Size, pd.Alpha,
-                        pd.TexNum, isBlood: false, projected: true, maxDist: 48f));
+                    // pt_decal = DP CL_SpawnDecalParticleForPoint(center, originjitter[0], ...): the decal
+                    // searches for the nearest surface FROM THE EFFECT CENTER with the block's originjitter[0]
+                    // as the ray reach — the jitter is NOT applied to its position (the generic spawn above
+                    // rolled it into pd.Org, which can bury the origin inside the floor and kill the search).
+                    // Color: pt_decal renders INVMOD on the raw particle color (the REMOVAL amount: white =
+                    // full darkening) — complement to the perceived mark color (see StainEvent contract).
+                    OnStain?.Invoke(new StainEvent(center, up,
+                        (byte)(255 - pd.ColorR), (byte)(255 - pd.ColorG), (byte)(255 - pd.ColorB),
+                        pd.Size, pd.Alpha, pd.TexNum, isBlood: false, projected: true,
+                        maxDist: MathF.Max(info.OriginJitter.X, 4f)));
                     Kill(ref pd, idx);
                 }
                 else if (immediateBloodStain && idx >= 0)
@@ -604,8 +619,12 @@ public sealed class ParticleSim
                                     if ((tr.DpHitQ3SurfaceFlags & Q3SurfaceFlags.NoMarks) != 0) { Kill(ref p, i); continue; }
                                     if (p.StainTexNum == -1)
                                     {
+                                        // DP :3033: the blood decal renders INVMOD on the PARTICLE's color
+                                        // (the 0xA8FFFF family = "remove green/blue") — complement to the
+                                        // perceived dark-red mark for the event (see StainEvent contract).
                                         OnStain?.Invoke(new StainEvent(p.Org, tr.PlaneNormal,
-                                            64, 32, 32, p.Size, p.Alpha, -1, true));
+                                            (byte)(255 - p.ColorR), (byte)(255 - p.ColorG), (byte)(255 - p.ColorB),
+                                            p.Size, p.Alpha, -1, true));
                                     }
                                     Kill(ref p, i); continue;
                                 }

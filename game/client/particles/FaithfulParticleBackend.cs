@@ -277,18 +277,27 @@ public sealed partial class FaithfulParticleBackend : Node3D
         if (decals is null)
             return;
 
+        // The event color is the PERCEIVED mark color (the sim already converted DP's INVMOD removal
+        // amounts at each call site — see ParticleSim's StainEvent docs). Godot's Decal modulates toward
+        // its color, so it passes straight through — but the VISIBLE INTENSITY of a DP INVMOD mark is the
+        // removal magnitude (1 − perceived): a near-white staincolor removes almost nothing and is
+        // invisible in DP, so scale alpha by the removal luminance (white → skip entirely).
         var color = new Color(ev.ColorR, ev.ColorG, ev.ColorB);
-        float alpha = Math.Clamp(ev.Alpha, 0f, 1f);
+        float removal = 1f - (0.299f * ev.ColorR + 0.587f * ev.ColorG + 0.114f * ev.ColorB);
+        float alpha = Math.Clamp(ev.Alpha, 0f, 1f) * Math.Clamp(removal, 0f, 1f);
+        if (alpha < 0.02f)
+            return;
         Texture2D? sprite = Font?.DecalCell(ev.DecalTexNum);
 
         if (ev.Projected)
-            // No explicit hit surface (point-effect immediatebloodstain / scatter): let Decals raycast for
-            // the nearest surface (cl_particles.c CL_SpawnDecalParticleForPoint). MaxDist comes from the
-            // emitter's originjitter[0], carried on the event.
+            // No explicit hit surface (point-effect type-decal / immediatebloodstain): let Decals raycast
+            // for the nearest surface (cl_particles.c CL_SpawnDecalParticleForPoint, :981). MaxDist comes
+            // from the emitter's originjitter[0], carried on the event.
             decals.SpawnProjected(ev.Origin, ev.MaxDist, ev.Radius, color, alpha, sprite);
         else
-            // Collision already produced a hit point + direction; project straight along it.
-            decals.Spawn(ev.Origin, ev.Direction, ev.Radius, color, alpha, sprite);
+            // Collision stains carry the OUTWARD surface normal; Decals.Spawn projects ALONG the given
+            // direction, so feed the inward (-normal) — the mark projects INTO the surface it sits on.
+            decals.Spawn(ev.Origin, -ev.Direction, ev.Radius, color, alpha, sprite);
     }
 
     // ---------------------------------------------------------------------------------------------
