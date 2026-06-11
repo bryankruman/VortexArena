@@ -45,6 +45,14 @@ public static class CsqcModelEffects
         public string LastTrail = "";  // the trail name currently applied (so we only re-route on change)
         public int LastEffects;        // last frame's effect bits + ghost — so the caller re-runs once to RESET
                                        // render-flags (additive/fullbright/depthhack/shadow/visibility) on clear
+
+        // Cached flattened MeshInstance3D list for the current model node (3.2-2). The per-frame render-flag
+        // passes (ResetRenderFlags + each set-bit setter) used to each re-walk the tree via GetChildren(), which
+        // marshals a fresh Godot.Collections.Array (+ nested iterator allocs) per visited node — exactly during
+        // the busy frames a glowing/flaming/ghost model is on screen. Built once per model node and reused;
+        // rebuilt when the root node changes (a model swap, detected by instance id) or a cached mesh is freed.
+        public readonly List<MeshInstance3D> CachedMeshes = new();
+        public ulong CachedMeshesRootId;
     }
 
     /// <summary>One DP <c>adddynamiclight</c>: a unit position offset + range + (possibly &gt;1) color.</summary>
@@ -68,9 +76,13 @@ public static class CsqcModelEffects
         int eff = e.Effects & ~EFlags.CSQCMODEL_EF_RESPAWNGHOST;
         NVec3 origin = e.Origin;
 
+        // The model's flattened mesh list, cached on State and reused across frames (3.2-2) so the render-flag
+        // passes below don't each re-walk the tree via GetChildren().
+        List<MeshInstance3D> meshes = EnsureMeshCache(st, root);
+
         // QC clears renderflags/effects/traileffect FIRST each frame — reset our Godot equivalents so flags
         // don't accumulate (additive/fullbright/depthtest/noshadow visibility all back to the model defaults).
-        ResetRenderFlags(root);
+        ResetRenderFlags(meshes);
         // QC spawns an INDEPENDENT adddynamiclight per set light bit (csqcmodel_hooks.qc:557-593), so accumulate
         // one LightSpec per bit (not a single overwriting light) and drive N pooled lights below. Reuses the
         // shared scratch buffer (consumed by DriveLights before this returns) — no per-entity-per-frame alloc.
@@ -86,11 +98,11 @@ public static class CsqcModelEffects
         if ((eff & EFlags.EF_DIMLIGHT) != 0)    lights.Add(new LightSpec(200f, new Color(1.5f, 1.5f, 1.5f), NVec3.Zero));
         // EF_NODRAW or alpha<0 → drawmask 0 (hide). (The port has no per-entity alpha < 0; NODRAW is networked.)
         bool hidden = (eff & EFlags.EF_NODRAW) != 0;
-        if ((eff & EFlags.EF_ADDITIVE) != 0) SetAdditive(root, true);
+        if ((eff & EFlags.EF_ADDITIVE) != 0) SetAdditive(meshes, true);
         if ((eff & EFlags.EF_BLUE) != 0) lights.Add(new LightSpec(200f, new Color(0.15f, 0.15f, 1.5f), NVec3.Zero));
         if ((eff & EFlags.EF_RED) != 0)  lights.Add(new LightSpec(200f, new Color(1.5f, 0.15f, 0.15f), NVec3.Zero));
         // EF_NOGUNBOB ignored.
-        if ((eff & EFlags.EF_FULLBRIGHT) != 0) SetFullbright(root, true);
+        if ((eff & EFlags.EF_FULLBRIGHT) != 0) SetFullbright(meshes, true);
         // QC emits the EF_FLAME/EF_SHOCK/EF_STARDUST particles via boxparticles with dt = bound(0, frametime, 0.1);
         // a zero dt (paused frame) emits nothing, so gate the per-frame burst on frameTime > 0.
         bool emit = frameTime > 0f;
@@ -109,8 +121,8 @@ public static class CsqcModelEffects
         }
         if ((eff & EFlags.EF_STARDUST) != 0 && emit)
             fx?.Spawn("EF_STARDUST", origin, e.Velocity, 1);
-        if ((eff & EFlags.EF_NOSHADOW) != 0) SetCastShadow(root, false);
-        if ((eff & EFlags.EF_NODEPTHTEST) != 0) SetNoDepthTest(root, true);
+        if ((eff & EFlags.EF_NOSHADOW) != 0) SetCastShadow(meshes, false);
+        if ((eff & EFlags.EF_NODEPTHTEST) != 0) SetNoDepthTest(meshes, true);
         // EF_DOUBLESIDED / EF_NOSELFSHADOW / EF_DYNAMICMODELLIGHT: engine passthroughs (no port material analog).
 
         // MF_* → trail (csqcmodel_hooks.qc:611-632): the last matching flag wins. MF_ROTATE has no trail.
@@ -128,7 +140,7 @@ public static class CsqcModelEffects
 
         // RESPAWNGHOST → additive (csqcmodel_hooks.qc:641-642). Also handled in the glow path (ModelTint).
         if (isRespawnGhost)
-            SetAdditive(root, true);
+            SetAdditive(meshes, true);
 
         // Jetpack loop (csqcmodel_hooks.qc:645-660): MF_ROCKET on → start SND_JETPACK_FLY loop on CH_TRIGGER_SINGLE
         // once; off → stop it. Only reachable when modelFlags carries MF_ROCKET (the local jetpack), since MF_* is
@@ -178,40 +190,59 @@ public static class CsqcModelEffects
     //     material meshes; on shared/shader-material models they're a documented parity gap (no per-instance
     //     additive/fullbright/depthhack render path exists in the port yet).
 
-    private static void ResetRenderFlags(Node3D root)
+    /// <summary>Return the model's cached mesh list, rebuilding it when the model node changed (a swap, by
+    /// instance id) or a cached mesh was freed. The validity scan is O(meshes) of cheap native calls — no
+    /// GetChildren() marshaling, which is the whole point (3.2-2). Built once and reused otherwise.</summary>
+    private static List<MeshInstance3D> EnsureMeshCache(State st, Node3D root)
     {
-        SetAdditive(root, false);
-        SetFullbright(root, false);
-        SetNoDepthTest(root, false);
-        SetCastShadow(root, true);
+        ulong id = root.GetInstanceId();
+        bool stale = st.CachedMeshesRootId != id;
+        if (!stale)
+            for (int i = 0; i < st.CachedMeshes.Count; i++)
+                if (!GodotObject.IsInstanceValid(st.CachedMeshes[i])) { stale = true; break; }
+        if (stale)
+        {
+            st.CachedMeshes.Clear();
+            CollectMeshes(root, st.CachedMeshes);
+            st.CachedMeshesRootId = id;
+        }
+        return st.CachedMeshes;
+    }
+
+    private static void ResetRenderFlags(List<MeshInstance3D> meshes)
+    {
+        SetAdditive(meshes, false);
+        SetFullbright(meshes, false);
+        SetNoDepthTest(meshes, false);
+        SetCastShadow(meshes, true);
     }
 
     // True only for a material safe to mutate per-frame: a per-instance BaseMaterial3D set as MaterialOverride.
     // (SurfaceSetMaterial materials are shared/cached, so we never reach them via MaterialOverride.)
-    private static void SetAdditive(Node root, bool on)
+    private static void SetAdditive(List<MeshInstance3D> meshes, bool on)
     {
-        foreach (MeshInstance3D mi in Meshes(root))
+        foreach (MeshInstance3D mi in meshes)
             if (mi.MaterialOverride is BaseMaterial3D m)
                 m.BlendMode = on ? BaseMaterial3D.BlendModeEnum.Add : BaseMaterial3D.BlendModeEnum.Mix;
     }
 
-    private static void SetFullbright(Node root, bool on)
+    private static void SetFullbright(List<MeshInstance3D> meshes, bool on)
     {
-        foreach (MeshInstance3D mi in Meshes(root))
+        foreach (MeshInstance3D mi in meshes)
             if (mi.MaterialOverride is BaseMaterial3D m)
                 m.ShadingMode = on ? BaseMaterial3D.ShadingModeEnum.Unshaded : BaseMaterial3D.ShadingModeEnum.PerPixel;
     }
 
-    private static void SetNoDepthTest(Node root, bool on)
+    private static void SetNoDepthTest(List<MeshInstance3D> meshes, bool on)
     {
-        foreach (MeshInstance3D mi in Meshes(root))
+        foreach (MeshInstance3D mi in meshes)
             if (mi.MaterialOverride is BaseMaterial3D m)
                 m.NoDepthTest = on;
     }
 
-    private static void SetCastShadow(Node root, bool cast)
+    private static void SetCastShadow(List<MeshInstance3D> meshes, bool cast)
     {
-        foreach (MeshInstance3D mi in Meshes(root))
+        foreach (MeshInstance3D mi in meshes)
             mi.CastShadow = cast ? GeometryInstance3D.ShadowCastingSetting.On : GeometryInstance3D.ShadowCastingSetting.Off;
     }
 
@@ -270,12 +301,14 @@ public static class CsqcModelEffects
         return string.IsNullOrWhiteSpace(s) ? fallback : Api.Cvars.GetFloat(name);
     }
 
-    private static System.Collections.Generic.IEnumerable<MeshInstance3D> Meshes(Node node)
+    /// <summary>Recursively flatten every <see cref="MeshInstance3D"/> under <paramref name="node"/> into
+    /// <paramref name="into"/>. Called once per model node (then cached on <see cref="State"/>), so the
+    /// per-node GetChildren() marshaling happens at build time, not every frame (3.2-2).</summary>
+    private static void CollectMeshes(Node node, List<MeshInstance3D> into)
     {
         if (node is MeshInstance3D mi)
-            yield return mi;
+            into.Add(mi);
         foreach (Node child in node.GetChildren())
-            foreach (MeshInstance3D m in Meshes(child))
-                yield return m;
+            CollectMeshes(child, into);
     }
 }

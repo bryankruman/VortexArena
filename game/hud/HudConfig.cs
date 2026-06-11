@@ -56,6 +56,16 @@ public static class HudConfig
         c.Register("hud_progressbar_acceleration_color", "0.2 0.65 0.93", Save);
         c.Register("hud_progressbar_acceleration_neg_color", "0.86 0.35 0", Save);
         c.Register("hud_speed_unit", "1", Save);
+        // Named color-macro palette (QC hud_colorset_* → CCR()/HudText.Expand): which ^digit each ^F*/^K*/^BG maps
+        // to. Defaults are the hud_luma.cfg values; HudText reads them live so notification text colors stay faithful.
+        c.Register("hud_colorset_foreground_1", "2", Save);
+        c.Register("hud_colorset_foreground_2", "3", Save);
+        c.Register("hud_colorset_foreground_3", "4", Save);
+        c.Register("hud_colorset_foreground_4", "1", Save);
+        c.Register("hud_colorset_kill_1", "1", Save);
+        c.Register("hud_colorset_kill_2", "3", Save);
+        c.Register("hud_colorset_kill_3", "4", Save);
+        c.Register("hud_colorset_background", "7", Save);
 
         // ---- generic per-panel cvars, seeded from the luma table ----
         foreach (string id in HudLayoutDefaults.Ids)

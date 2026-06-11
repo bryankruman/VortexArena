@@ -171,4 +171,11 @@ public abstract partial class GameType : IRegistered
     public string RegistryName => NetName;
 
     public virtual void OnInit() { }
+
+    /// <summary>Rebuild this gametype's OBJECTIVE waypoint sprites (flags / control points / keys …) into
+    /// <paramref name="into"/> each server tick — the C# successor to the server's persistent
+    /// <c>WaypointSprite_*</c> objectives. (Transient, derived from live gametype state; player pings live in the
+    /// persistent <see cref="Waypoints.WaypointSprites"/> manager instead.) The net layer merges both, filters per
+    /// peer, and feeds the radar + the 3D in-world sprite layer. Default: none (DM/TDM have no objectives).</summary>
+    public virtual void CollectWaypoints(System.Collections.Generic.List<Waypoints.WaypointSprite> into) { }
 }

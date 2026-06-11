@@ -122,6 +122,21 @@ public struct MovementParameters
     /// <c>Physics_UpdateStats</c> but without the per-client overrides / high-speed modifier, which the
     /// caller can apply on top (see <see cref="ApplyHighSpeed"/>).
     /// </summary>
+    // The prefix+name cvar-name strings, interned once per (prefix, name) pair. FromCvars runs PER PLAYER MOVE
+    // (server tick × clients + every client-prediction replay), and a naive `prefix + "maxspeed"` concat on each
+    // of the ~45 reads below allocated ~2.5 KB per call — the dominant sim.move GC churn under bot load. The
+    // cache is tiny (one prefix in practice) and read on the sim thread only (single-threaded by contract,
+    // like the Prof scopes).
+    private static readonly Dictionary<(string Prefix, string Name), string> _cvarNameCache = new();
+
+    private static string N(string prefix, string name)
+    {
+        var key = (prefix, name);
+        if (!_cvarNameCache.TryGetValue(key, out string? full))
+            _cvarNameCache[key] = full = prefix + name;
+        return full;
+    }
+
     public static MovementParameters FromCvars(string prefix = "sv_")
     {
         MovementParameters p = Defaults;
@@ -129,56 +144,56 @@ public struct MovementParameters
         // Floats: read the cvar, keep the Xonotic default if the cvar is unset (GetFloat -> 0).
         // We treat 0 as "unset" only for variables whose Xonotic value is non-zero; the genuinely-zero
         // Xonotic defaults (e.g. aircontrol_penalty) are simply overwritten by GetFloat's 0 anyway.
-        p.MaxSpeed                  = Cvar(prefix + "maxspeed",                 p.MaxSpeed);
-        p.Accelerate                = Cvar(prefix + "accelerate",              p.Accelerate);
-        p.Friction                  = Cvar(prefix + "friction",                p.Friction);
-        p.FrictionSlick             = Cvar(prefix + "friction_slick",          p.FrictionSlick);
-        p.StopSpeed                 = Cvar(prefix + "stopspeed",               p.StopSpeed);
-        p.SlickAccelerate           = Cvar(prefix + "slickaccelerate",         p.SlickAccelerate);
-        p.FrictionOnLand            = CvarRaw(prefix + "friction_on_land",      p.FrictionOnLand);
+        p.MaxSpeed                  = Cvar(N(prefix, "maxspeed"),                 p.MaxSpeed);
+        p.Accelerate                = Cvar(N(prefix, "accelerate"),              p.Accelerate);
+        p.Friction                  = Cvar(N(prefix, "friction"),                p.Friction);
+        p.FrictionSlick             = Cvar(N(prefix, "friction_slick"),          p.FrictionSlick);
+        p.StopSpeed                 = Cvar(N(prefix, "stopspeed"),               p.StopSpeed);
+        p.SlickAccelerate           = Cvar(N(prefix, "slickaccelerate"),         p.SlickAccelerate);
+        p.FrictionOnLand            = CvarRaw(N(prefix, "friction_on_land"),      p.FrictionOnLand);
 
-        p.MaxAirSpeed               = Cvar(prefix + "maxairspeed",             p.MaxAirSpeed);
-        p.AirAccelerate             = Cvar(prefix + "airaccelerate",           p.AirAccelerate);
-        p.AirAccelQW                = CvarRaw(prefix + "airaccel_qw",           p.AirAccelQW);
-        p.AirStrafeAccelQW          = CvarRaw(prefix + "airstrafeaccel_qw",     p.AirStrafeAccelQW);
-        p.AirAccelQWStretchFactor   = Cvar(prefix + "airaccel_qw_stretchfactor", p.AirAccelQWStretchFactor);
-        p.AirSpeedLimitNonQW        = Cvar(prefix + "airspeedlimit_nonqw",     p.AirSpeedLimitNonQW);
-        p.AirAccelSidewaysFriction  = CvarRaw(prefix + "airaccel_sideways_friction", p.AirAccelSidewaysFriction);
-        p.MaxAirStrafeSpeed         = Cvar(prefix + "maxairstrafespeed",       p.MaxAirStrafeSpeed);
-        p.AirStrafeAccelerate       = Cvar(prefix + "airstrafeaccelerate",     p.AirStrafeAccelerate);
-        p.AirStopAccelerate         = Cvar(prefix + "airstopaccelerate",       p.AirStopAccelerate);
-        p.AirStopAccelerateFull     = CvarBool(prefix + "airstopaccelerate_full", p.AirStopAccelerateFull);
+        p.MaxAirSpeed               = Cvar(N(prefix, "maxairspeed"),             p.MaxAirSpeed);
+        p.AirAccelerate             = Cvar(N(prefix, "airaccelerate"),           p.AirAccelerate);
+        p.AirAccelQW                = CvarRaw(N(prefix, "airaccel_qw"),           p.AirAccelQW);
+        p.AirStrafeAccelQW          = CvarRaw(N(prefix, "airstrafeaccel_qw"),     p.AirStrafeAccelQW);
+        p.AirAccelQWStretchFactor   = Cvar(N(prefix, "airaccel_qw_stretchfactor"), p.AirAccelQWStretchFactor);
+        p.AirSpeedLimitNonQW        = Cvar(N(prefix, "airspeedlimit_nonqw"),     p.AirSpeedLimitNonQW);
+        p.AirAccelSidewaysFriction  = CvarRaw(N(prefix, "airaccel_sideways_friction"), p.AirAccelSidewaysFriction);
+        p.MaxAirStrafeSpeed         = Cvar(N(prefix, "maxairstrafespeed"),       p.MaxAirStrafeSpeed);
+        p.AirStrafeAccelerate       = Cvar(N(prefix, "airstrafeaccelerate"),     p.AirStrafeAccelerate);
+        p.AirStopAccelerate         = Cvar(N(prefix, "airstopaccelerate"),       p.AirStopAccelerate);
+        p.AirStopAccelerateFull     = CvarBool(N(prefix, "airstopaccelerate_full"), p.AirStopAccelerateFull);
 
-        p.AirControl                = Cvar(prefix + "aircontrol",              p.AirControl);
-        p.AirControlFlags           = (int)CvarRaw(prefix + "aircontrol_flags", p.AirControlFlags);
-        p.AirControlPower           = Cvar(prefix + "aircontrol_power",        p.AirControlPower);
-        p.AirControlPenalty         = CvarRaw(prefix + "aircontrol_penalty",    p.AirControlPenalty);
+        p.AirControl                = Cvar(N(prefix, "aircontrol"),              p.AirControl);
+        p.AirControlFlags           = (int)CvarRaw(N(prefix, "aircontrol_flags"), p.AirControlFlags);
+        p.AirControlPower           = Cvar(N(prefix, "aircontrol_power"),        p.AirControlPower);
+        p.AirControlPenalty         = CvarRaw(N(prefix, "aircontrol_penalty"),    p.AirControlPenalty);
 
-        p.WarsowBunnyTurnAccel      = CvarRaw(prefix + "warsowbunny_turnaccel", p.WarsowBunnyTurnAccel);
-        p.WarsowBunnyAirForwardAccel= Cvar(prefix + "warsowbunny_airforwardaccel", p.WarsowBunnyAirForwardAccel);
-        p.WarsowBunnyTopSpeed       = Cvar(prefix + "warsowbunny_topspeed",    p.WarsowBunnyTopSpeed);
-        p.WarsowBunnyAccel          = Cvar(prefix + "warsowbunny_accel",       p.WarsowBunnyAccel);
-        p.WarsowBunnyBackToSideRatio= Cvar(prefix + "warsowbunny_backtosideratio", p.WarsowBunnyBackToSideRatio);
+        p.WarsowBunnyTurnAccel      = CvarRaw(N(prefix, "warsowbunny_turnaccel"), p.WarsowBunnyTurnAccel);
+        p.WarsowBunnyAirForwardAccel= Cvar(N(prefix, "warsowbunny_airforwardaccel"), p.WarsowBunnyAirForwardAccel);
+        p.WarsowBunnyTopSpeed       = Cvar(N(prefix, "warsowbunny_topspeed"),    p.WarsowBunnyTopSpeed);
+        p.WarsowBunnyAccel          = Cvar(N(prefix, "warsowbunny_accel"),       p.WarsowBunnyAccel);
+        p.WarsowBunnyBackToSideRatio= Cvar(N(prefix, "warsowbunny_backtosideratio"), p.WarsowBunnyBackToSideRatio);
 
-        p.JumpVelocity              = Cvar(prefix + "jumpvelocity",            p.JumpVelocity);
-        p.JumpVelocityCrouch        = CvarRaw(prefix + "jumpvelocity_crouch",   p.JumpVelocityCrouch);
-        p.JumpSpeedCapMin           = CvarNan(prefix + "jumpspeedcap_min",      p.JumpSpeedCapMin);
-        p.JumpSpeedCapMax           = CvarNan(prefix + "jumpspeedcap_max",      p.JumpSpeedCapMax);
-        p.JumpSpeedCapMaxDisableOnRamps = CvarBool(prefix + "jumpspeedcap_max_disable_on_ramps", p.JumpSpeedCapMaxDisableOnRamps);
-        p.TrackCanJump              = CvarBool(prefix + "track_canjump",        p.TrackCanJump);
-        p.DoubleJump                = CvarBool(prefix + "doublejump",           p.DoubleJump);
-        p.JumpStep                  = CvarBool(prefix + "jumpstep",             p.JumpStep);
+        p.JumpVelocity              = Cvar(N(prefix, "jumpvelocity"),            p.JumpVelocity);
+        p.JumpVelocityCrouch        = CvarRaw(N(prefix, "jumpvelocity_crouch"),   p.JumpVelocityCrouch);
+        p.JumpSpeedCapMin           = CvarNan(N(prefix, "jumpspeedcap_min"),      p.JumpSpeedCapMin);
+        p.JumpSpeedCapMax           = CvarNan(N(prefix, "jumpspeedcap_max"),      p.JumpSpeedCapMax);
+        p.JumpSpeedCapMaxDisableOnRamps = CvarBool(N(prefix, "jumpspeedcap_max_disable_on_ramps"), p.JumpSpeedCapMaxDisableOnRamps);
+        p.TrackCanJump              = CvarBool(N(prefix, "track_canjump"),        p.TrackCanJump);
+        p.DoubleJump                = CvarBool(N(prefix, "doublejump"),           p.DoubleJump);
+        p.JumpStep                  = CvarBool(N(prefix, "jumpstep"),             p.JumpStep);
 
-        p.Gravity                   = Cvar(prefix + "gravity",                 p.Gravity);
+        p.Gravity                   = Cvar(N(prefix, "gravity"),                 p.Gravity);
 
-        p.StepHeight                = Cvar(prefix + "stepheight",              p.StepHeight);
-        p.StepDown                  = (int)CvarRaw(prefix + "gameplayfix_stepdown", p.StepDown);
-        p.StepDownMaxSpeed          = Cvar(prefix + "gameplayfix_stepdown_maxspeed", p.StepDownMaxSpeed);
-        p.WallFriction              = (int)CvarRaw(prefix + "wallfriction",     p.WallFriction);
+        p.StepHeight                = Cvar(N(prefix, "stepheight"),              p.StepHeight);
+        p.StepDown                  = (int)CvarRaw(N(prefix, "gameplayfix_stepdown"), p.StepDown);
+        p.StepDownMaxSpeed          = Cvar(N(prefix, "gameplayfix_stepdown_maxspeed"), p.StepDownMaxSpeed);
+        p.WallFriction              = (int)CvarRaw(N(prefix, "wallfriction"),     p.WallFriction);
         // EXISTS-gated (CvarRaw): a configured 0 is meaningful (scale 0 / max 0 both kill upward step velocity),
         // so an explicit 0 must read back as 0; only a genuinely-unset cvar falls back to the no-op default.
-        p.StepUpSpeedScale          = CvarRaw(prefix + "step_upspeed_scale",     p.StepUpSpeedScale);
-        p.StepUpSpeedMax            = CvarRaw(prefix + "step_upspeed_max",        p.StepUpSpeedMax);
+        p.StepUpSpeedScale          = CvarRaw(N(prefix, "step_upspeed_scale"),     p.StepUpSpeedScale);
+        p.StepUpSpeedMax            = CvarRaw(N(prefix, "step_upspeed_max"),        p.StepUpSpeedMax);
 
         // T54 breadth. g_movement_highspeed: unset must read 1, and a deliberate 0 must be honored (it would
         // freeze movement, but that's what the cvar says) — so gate on the STRING being present, not the float.
@@ -186,10 +201,10 @@ public struct MovementParameters
                                         ? p.HighSpeed
                                         : Api.Cvars.GetFloat("g_movement_highspeed");
         p.HighSpeedQ3Compat         = CvarBool("g_movement_highspeed_q3_compat", p.HighSpeedQ3Compat);
-        p.NudgeOutOfSolid           = Api.Cvars.GetString(prefix + "gameplayfix_nudgeoutofsolid") != "0"; // DP default ON
-        p.WallClip                  = (int)CvarRaw(prefix + "wallclip",          p.WallClip);
-        p.NoStep                    = CvarBool(prefix + "nostep",                p.NoStep);
-        p.SlickApplyGravity         = CvarBool(prefix + "slick_applygravity",    p.SlickApplyGravity);
+        p.NudgeOutOfSolid           = Api.Cvars.GetString(N(prefix, "gameplayfix_nudgeoutofsolid")) != "0"; // DP default ON
+        p.WallClip                  = (int)CvarRaw(N(prefix, "wallclip"),          p.WallClip);
+        p.NoStep                    = CvarBool(N(prefix, "nostep"),                p.NoStep);
+        p.SlickApplyGravity         = CvarBool(N(prefix, "slick_applygravity"),    p.SlickApplyGravity);
 
         // Hull: QC reads these from autocvar_sv_player_mins/maxs (vector cvars). We don't have a vector
         // cvar accessor on the facade, so the Xonotic hull is taken from Defaults. A host that wants to

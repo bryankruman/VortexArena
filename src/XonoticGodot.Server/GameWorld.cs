@@ -1,6 +1,7 @@
 using System.Numerics;
 using XonoticGodot.Common;
 using XonoticGodot.Common.Config;
+using XonoticGodot.Common.Diagnostics;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Gameplay;
 using XonoticGodot.Common.Physics;
@@ -425,6 +426,8 @@ public sealed class GameWorld
         Scores.SubscribeToDeaths(GameType?.TeamGame ?? false, ownsScore: false);
 
         // 5) activate the gametype's own scoring/round handler (FFA: Deathmatch; team: TDM/CA/...).
+        // Clear any waypoint sprites from a previous map (QC the level-change reset of the WaypointSprite list).
+        XonoticGodot.Common.Gameplay.Waypoints.WaypointSprites.Reset();
         ActivateGameType();
 
         // 5a′) bridge the gametype OBJECTIVE spawnfuncs (item_flag_*, dom_controlpoint, trigger_race_*,
@@ -769,6 +772,9 @@ public sealed class GameWorld
             _weaponBalanceDirty = true;
     }
 
+    /// <summary>Cached deferred-command executor (see OnStartFrame — avoids a per-tick closure).</summary>
+    private System.Action<string>? _deferredExec;
+
     private void OnStartFrame()
     {
         // Apply any runtime balance change (g_balance_* set via console/script/vote) before the tick reads weapon
@@ -789,14 +795,16 @@ public sealed class GameWorld
             GameStartTime = Warmup.GameStartTime;
 
         // QC StartFrame: the warmup limit check that ends warmup and restarts the match.
-        Warmup.Think();
+        using (Prof.Sample("start.warmup"))
+            Warmup.Think();
 
         // QC the timeout/timein pause state machine (server/command/common.qc timeout_handler_think).
         Timeout.Think();
 
         // [T39] QC bot_serverframe() (main.qc:372): population fill/trim, waypoint load-once, the strategy
         // token, skill resync — after the warmup check, before anticheat_startframe, matching the QC order.
-        Bots.ServerFrame();
+        using (Prof.Sample("start.bots"))
+            Bots.ServerFrame();
 
         // QC anticheat_startframe: advance the global evade phase walk (server/anticheat.qc).
         AntiCheat.StartFrame(Simulation.FrameTime);
@@ -807,18 +815,26 @@ public sealed class GameWorld
             CreatureFrameAll();
 
         // QC the in-match vote bus think (server/command/vote.qc VoteThink).
-        Voting.Think();
+        using (Prof.Sample("start.vote"))
+            Voting.Think();
 
         // [T56] DP Cbuf_Execute_Deferred: fire any `defer`-queued commands whose delay has elapsed (a passed
         // `restart` vote enqueues `defer 1 restart`). Pumped on the sim clock — without this it silently no-ops.
-        Commands.Deferred.Pump(Time, cmd => Commands.Execute(cmd, isServerConsole: true));
+        // The executor delegate is cached: an inline `cmd => Commands.Execute(...)` captures `this` and would
+        // allocate a fresh closure every tick.
+        _deferredExec ??= cmd => Commands.Execute(cmd, isServerConsole: true);
+        using (Prof.Sample("start.defer"))
+            Commands.Deferred.Pump(Time, _deferredExec);
 
         // QC MUTATOR_CALLHOOK(SV_StartFrame) — the per-frame server-mutator event point (round modes,
         // powerup respawn schedulers, etc. subscribe via ServerHooks.SvStartFrame).
-        ServerHooks.FireStartFrame(Time);
-        // The gameplay-layer (XonoticGodot.Common) mutators can't reach ServerHooks, so they subscribe to the
-        // mirrored MutatorHooks.SvStartFrame chain (T19 random_gravity et al.) — pump it from the same loop.
-        XonoticGodot.Common.Gameplay.MutatorHooks.FireStartFrame(Time);
+        using (Prof.Sample("start.hooks"))
+        {
+            ServerHooks.FireStartFrame(Time);
+            // The gameplay-layer (XonoticGodot.Common) mutators can't reach ServerHooks, so they subscribe to the
+            // mirrored MutatorHooks.SvStartFrame chain (T19 random_gravity et al.) — pump it from the same loop.
+            XonoticGodot.Common.Gameplay.MutatorHooks.FireStartFrame(Time);
+        }
     }
 
     /// <summary>True when the match is frozen (intermission, ended, or a timeout pause) — QC <c>game_stopped</c>.
@@ -856,7 +872,8 @@ public sealed class GameWorld
         // ---- PlayerPreThink (QC client.qc PlayerPreThink) ----
         // Fire the per-frame player hook (dodging/multijump/instagib drive their state machines here).
         var pre = new MutatorHooks.PlayerPreThinkArgs(p);
-        MutatorHooks.PlayerPreThink.Call(ref pre);
+        using (Prof.Sample("move.pre"))
+            MutatorHooks.PlayerPreThink.Call(ref pre);
 
         // Dead players don't move (QC: PlayerThink bails for IS_DEAD); they await the respawn driver. The
         // pre-match countdown freezes players (QC: time < game_starttime) — but WARMUP is freely playable, so
@@ -889,7 +906,9 @@ public sealed class GameWorld
         // like QC's sys_phys_ai (ecs/systems/physics.qc:28 → sv_physics.qc:41-46 → bot_think): the same tick's
         // PM_Main, DeadPlayerThink and weapon driver all consume the one produced command (cached per tick in
         // BotPopulation, mirroring ServerNet's per-tick cache for humans).
-        IMovementInput input = p.IsBot ? Bots.InputFor(p, Simulation.FrameTime) : InputProvider(p);
+        IMovementInput input;
+        using (Prof.Sample("move.in"))
+            input = p.IsBot ? Bots.InputFor(p, Simulation.FrameTime) : InputProvider(p);
 
         // ---- dead-player respawn state machine (QC PlayerThink dead branch) ----
         // A dead (non-observer) player doesn't move; it runs the DEAD_DYING→DEAD→RESPAWNABLE→RESPAWNING machine
@@ -928,6 +947,7 @@ public sealed class GameWorld
         }
 
         if (canMove)
+        using (Prof.Sample("move.pm"))
         {
             // Per-frame (variable-dt) mode: integrate one move per QUEUED client command (each with its own dt) —
             // DP's process-queued-client-moves — so the player advances at wall-clock speed off the client's real
@@ -950,7 +970,8 @@ public sealed class GameWorld
         }
 
         // ---- PlayerPostThink (QC client.qc PlayerPostThink) ----
-        OnPlayerPostThink(p);
+        using (Prof.Sample("move.post"))
+            OnPlayerPostThink(p);
     }
 
     /// <summary>
@@ -1053,6 +1074,9 @@ public sealed class GameWorld
         // [T38] QC pong_ball_think on sys_ticrate: advance real-time minigames (Pong) each frame, independent
         // of the match's game_stopped gate (a minigame runs regardless of the match state).
         Minigames.Tick(Simulation.FrameTime);
+
+        // Waypoint sprites (QC WaypointSprite_Think): expire deployed-ping lifetimes + advance build-progress bars.
+        XonoticGodot.Common.Gameplay.Waypoints.WaypointSprites.Think();
     }
 
     // === [T40] countdown announcer broadcasts (QC client/announcer.qc Announcer_Countdown), emitted server-side
@@ -2203,7 +2227,9 @@ public sealed class GameWorld
         string? cache = Read(".waypoints.cache");
         string? hardwired = Read(".waypoints.hardwired");
         var net = Bot.WaypointNetwork.ForMap(wp, Services.EntityTable.All, cache, hardwired);
-        XonoticGodot.Common.Diagnostics.Log.Trace(
+        // Info, not Trace: this is the one-shot "bots are live on this map" boot diagnostic — a dedicated
+        // server's log should show it at default verbosity, like [MapLoader] does for the world.
+        XonoticGodot.Common.Diagnostics.Log.Info(
             $"[bots] waypoints for '{MapName}': nodes={net.Count} (file={(wp is null ? "none/auto" : "loaded")}, cache={(cache is null ? "no" : "yes")})");
         return net;
     }

@@ -97,9 +97,11 @@ Existing mitigation: `NetGame.PrecacheWeaponModelsAsync` (~`NetGame.cs:1081-1150
 
 This is the judder you measured: **CPU and GPU mostly idle, but frames take 2–3× the refresh interval.**
 
-### 2.1 Vsync beat (CONFIRMED root cause of the investigated hitches)
+### 2.1 Vsync beat (hypothesised from early runs — SUPERSEDED for the bot-load case; see §9)
 
 With `vsync=Enabled`, `maxfps=0` on a ~160 Hz display, total frame work (~6 ms) sits right at the vblank budget (~6.25 ms). Any jitter (IDE overhead, a Gen0 GC, an unwarm pipeline) pushes the frame past the vblank → it waits for the *next* one → frame doubles/triples (the observed 12.5/16.7/20.4 ms frames with `rest` dominating).
+
+> **⚠ Wave-0 correction (2026-06-11, §9).** Measured empirically with bots: `rest` is **NOT** the vsync beat here. Turning vsync fully OFF (`vid_vsync 0`, confirmed applied) does **not** remove `rest`, and in an exported **release** build the steady-state `rest` is just normal GPU + present (~3.5 ms). The large `rest` in the original (Debug/editor, windowed) runs was Debug-assembly `proc` spillover + windowed-DWM pacing, not a fixable vsync beat. **Mailbox/B1 is therefore not the lever** for the felt bot-load hitching — keep it as a user option, but the real causes are the Debug build (§9) and a GC stall (§9), not pacing.
 
 **Plan B1:**
 1. **Expose and try `DisplayServer.VSyncMode.Mailbox`** (`vid_vsync 2`?) — on Vulkan this renders uncapped and presents the latest complete frame at vblank: no tearing, no beat-doubling. This is the single best pacing fix for high-refresh displays. Wire it in `ClientSettings.ApplyVideoSettings` (`game/menu/framework/ClientSettings.cs:134-142`).
@@ -300,3 +302,204 @@ Godot caches compiled shaders/pipelines on disk per driver. Don't disable it; no
 3. A/B each fix in a windowed run with a fixed scenario (same map, scripted fire of every weapon, `--host`): compare median frame, P99 frame, hitch count from the log.
 4. For the areagrid: extend the golden-trace movement suite with a grid-vs-linear differential test (identical trace results on recorded scenarios).
 5. Always confirm the final feel in an **exported release build** — editor/IDE runs misrepresent both pacing and C# perf (Debug assembly always loads there; verified).
+
+---
+
+## 8. Implementation status (2026-06-10)
+
+All 23 prioritized items were worked through in priority order. Build green; **1495 tests pass** (incl. new
+areagrid differential + analyzer suites); stormkeep windowed screenshots verify rendering parity at each phase.
+
+**Landed + verified:**
+- **P0** — A1 effect/projectile material+mesh caches (`EffectSystem._heurMeshCache`/`_infoMeshCache`,
+  `ProjectileRenderer._bodyResCache`); A2 offscreen GPU warm pass (`game/client/GpuWarmPass.cs`); A3 precache-all
+  (`cl_precache_all_weapons` default 1 → 24 weapons + 36 combat sounds + local/default player models);
+  B1 mailbox vsync (`vid_vsync` 0/1/**2**/3 in `ClientSettings.ApplyVideo` + the video dialog slider).
+- **P1** — A4 VFS `Exists`/`ResolveImage` pos+neg caches; 3.2-2 `CsqcModelEffects` cached mesh list; 3.2-3 HUD
+  `NeedsRedraw()` change-gating (Fps/Ping/Timer/RaceTimer); 3.2-4 `ServerNet._projKeyCache`; C1 `GCLatencyMode`
+  + csproj GC pin; B3 `SimulationLoop.MaxTicksPerFrame` soft-cap (interactive=4, drains backlog).
+- **P2** — **D1 entity area-grid** (`EntityAreaGrid.cs` → traces/PointContents/FindInRadius/TouchAreaGrid;
+  differential test + 1495-test parity); S1 `BackgroundAssetStreamer` + AssetLoader parse/build split (idle
+  player-model parse off-thread); S2 parallel bezier tessellation in `MapLoader.BuildMap`; S3 `IdleWarmer`
+  (long-tail sound/model warm); C3-T1 `StringApiAnalyzer` (**XG0001**, build error, 9 tests).
+- **P3** — C2 uniform names `const string`→`static readonly StringName` (LightmapShader/PlayerSkinShader/WorldTint
+  + VignetteOverlay) + standing-rule comment; C3-T2 `HotPathStringNameAnalyzer` (**XG0002**, 6 tests — caught +
+  fixed a real per-frame `SetMeta("cmd",…)` alloc in PauseMenu); A5 `PublishReadyToRun` (gated to ExportRelease);
+  3.3 skip unit-scale `SetBonePoseScale` interop in `PlayerModel.PushBones`.
+
+**Evaluated → no change warranted (the report's own gating / engine reality):**
+- **B2** `cl_movement_perframe` default-on — kept default 0: that's the parity-faithful default (stock DP = fixed
+  72 Hz input); flipping changes movement *feel* and needs the windowed feel-test the report gates it on (a user
+  step). Feature already cvar-exposed.
+- **S7** render `thread_model=2` — **not applicable to Godot 4.6**: the Godot-3-era `rendering/driver/threads/
+  thread_model` was removed in Godot 4, which already runs the RenderingServer on a separate thread via its
+  command queue. Setting the key is inert (ProjectSettings stores it unread); tested → reverted.
+
+**Deferred (conditional/high-risk per the report — gated on a manual measurement this automated pass can't run):**
+- **3.2-1** GpuParticles3D node pooling — §3.2-1 explicitly says "do A1 caching first, **measure**, pool *if node
+  churn still shows*". A1 removed the expensive resource churn; the residual *node* pooling carries Med
+  reset-semantics risk and its gate is a `dotnet-counters` per-frame alloc-rate read during a firefight (a manual
+  windowed step). Pool the heuristic single-node bursts first if that measurement justifies it.
+- **3.3 Tier-3** GPU vertex-shader MD3 morphing + off-screen pose-push skip — the §3.3 "optional big win (Tier-3)"
+  shader rewrite of `ModelAnimator` (Med risk) and a `VisibleOnScreenNotifier3D`-gated pose skip. The low-risk
+  skip-unit-scale win landed; the rewrite awaits a profile showing morph re-upload dominating.
+- **S5** server-sim worker thread — §5 S5 itself says "only worth it **if profiling shows server tick > ~2 ms in
+  real matches *after* the areagrid**" (now landed), and lists concrete race blockers (the ambient `Api.Services`
+  global, the shared↔server cvar bridge, `SoundService.Broadcast`). High effort / High risk with no profiling
+  justification yet — revisit only if a real-match server-tick profile demands it.
+
+**Manual steps left to the user (the report's §7 protocol):** the windowed FrameProfiler A/B (scripted weapon
+fire, median/P99/hitch deltas) and the `dotnet-counters` alloc-rate read in an **exported release build** — these
+are the gates for the three deferred items above and the final feel-confirmation for B1/B2.
+
+---
+
+## 9. Bot-load hitch investigation + Wave 0 ground truth (2026-06-11)
+
+After P0–P3 landed, the user still reported hitching **"especially with bots in the map,"** and observed that
+**GameDemo does not hitch the way NetGame does**. This section documents the dedicated investigation, what it
+disproved (including §2.1's vsync hypothesis), and what it found to be the real cause.
+
+### 9.1 The harness (reusable — this is the deliverable for iterating on bot-load perf)
+- **`tests/XonoticGodot.Tests/Perf/BotTickPerfBench.cs`** — boots a real `GameWorld` on a map, fills *N* bots
+  (it sets `bot_join_empty 1` + `bot_number N` and runs frames past the 2.5 s sentinel — calling `Bots.AddBot`
+  directly gets **trimmed** on a human-less server), lets them settle, then times `GameWorld.Frame` over many
+  ticks. It reports **median / P99 / MAX** tick (a hitch *is* the worst tick, not the mean), **per-scope time and
+  per-scope allocation**, and GC gen0/1/2 counts. Env-parameterised: `XG_BOTS` (default 6), `XG_MAP` (stormkeep),
+  `XG_TICKS`. Run: `XG_BOTS=12 dotnet test … --filter BotTickPerfBench -l "console;verbosity=detailed"`.
+- **`Prof` per-scope allocation tracking** — `ScopeToken` now diffs `GC.GetAllocatedBytesForCurrentThread()`, and
+  `SnapshotAndReset(scopes, counters, allocInto = null)` takes an optional 3rd arg to drain the byte buckets. Every
+  `Prof.Sample("x")` now reports **both ms and bytes** (FrameProfiler's existing 2-arg call is unaffected, and the
+  scopes are free when the profiler is off). New `bot.think` / `bot.path` scopes added in `BotBrain`.
+- **Diagnostics tooling added** (all reusable): repeatable **`--cvar NAME VALUE`** boot flag
+  (`Shell.ApplyCvarOverrides`, applied before `ClientSettings.ApplyAll`); a FrameProfiler **file sink** at
+  `user://frameprofile.log` plus `rest` in the mode-2 line (windowed/exported runs detach stdout — read the file);
+  a **`[video]` requested-vs-actual vsync log** in `ApplyVideo`; and a `cl_idle_warmup 0` A/B gate on the idle
+  warm. **Bug fixed along the way:** `FrameProfiler.Mode()`/`HitchFloorMs()` read `Api.Cvars` (the listen-server's
+  *private* store), but `cl_frameprofiler` is registered/set in `MenuState.Cvars` (the *shared* client store) — so
+  `set cl_frameprofiler 2` never took effect mid-`--host` match. Now reads `MenuState.Cvars`.
+
+### 9.2 Diagnosis — why NetGame and not GameDemo
+The **server tick** is the cost NetGame pays and GameDemo never does (GameDemo = one local player; no server, no
+net, no bots). In the bench, `sim.move` (per-client movement physics) dominates the worst tick and scales linearly
+with bot count: 6 bots → MAX ~5.9 ms, 12 bots → MAX ~11 ms — of which only ~0.9 ms is `bot.think` AI and ~0.3 ms
+`bot.path` A*; **the rest is movement physics × bots.** (Note: bot AI **is** wired into the live loop now via
+`BotController.Tick → BotBrain.Think` / `BotPopulation.ServerFrame` — correcting the older "BotBrain.Think has no
+caller" note.) The worst tick still fits the 72 Hz **sim** budget (13.9 ms), but a single ~6 ms server tick landing
+in the same frame as rendering 6 players overruns a 144/160 Hz **render-frame** budget (6.25–6.9 ms) → the hitch.
+
+**Allocation fixes landed** (the per-scope alloc readout pinned `Brush.FromBox` — a `Brush` + `Vector3[8]` +
+`BrushPlane[6]` ≈ 360 B allocated **per trace** — as the dominant `sim.move` churn):
+- `TraceService._boxCache` (`Dictionary<(mins,maxs),Brush>`): the moving trace box is the mover's hull, constant
+  across a slide-move's many traces → cache per hull. **−30 %** alloc (92.5 → 64 KB/tick @ 12 bots; gen0 16 → 11).
+- `Brush.RefillBox` (in-place, zero-alloc) + a pooled `TraceService._entBrush`: the per-candidate entity-AABB box
+  in `ClipToEntities` is refilled into one pooled brush (used immediately, never retained). Helps the clustered
+  worst tick most. **Cumulative 92.5 → 61.7 KB/tick (−33 %); gen0 16 → 10.** 1496 tests pass; headless `--host` clean.
+
+### 9.3 Wave 0 — release baseline + vsync A/B (DECISIVE)
+Run in an **exported release build** (`run-release.sh` → `dist/windows-client/XonoticGodot.exe`). Three findings,
+in order of impact:
+
+1. **Most of the felt hitching is the Debug build, not a bug.** Debug (editor/console) steady median degrades to
+   ~11.7 ms (85 fps), `proc` ~6 ms. **Release holds ~7.6 ms (130 fps), `proc` ~3 ms — halved** — with 6 bots. The
+   headless *sim* cost is Debug ≈ Release, but the **client** (prediction/render) code roughly halves in Release.
+   → **The single biggest win for felt smoothness is to play in a release build.**
+2. **`rest` is NOT the vsync beat** (this corrects §2.1). With `vid_vsync 0` (confirmed actually applied via the
+   new `[video]` log), `rest` does **not** go away; in Release steady-state `rest` ~3.5 ms is just normal GPU +
+   present. The large `rest` in the original Debug/windowed runs was Debug-`proc` spillover + windowed-DWM pacing.
+   **Mailbox/B1 is not the lever** — keep it as a user option, but stop attributing the bot hitch to pacing.
+3. **The real release hitch is a GC stall: a ~154 MB allocation burst right after self-connect → a 100–154 ms
+   all-thread gen2 freeze (a few times early in a match), which PERSISTS in release and is NetGame-only.** Root
+   cause: the client builds **all 6 bot player models at once on the first snapshot** (~25 MB per skeletal model —
+   IQM + skin/normal/gloss — × 6 ≈ 154 MB) → a full gen2 collection that suspends every thread. It is **not** the
+   idle warm (it persists with `cl_idle_warmup 0`). GameDemo builds **one** model, so it never triggers this — which
+   is exactly the user's "GameDemo doesn't hitch" observation.
+
+### 9.4 Reprioritized wave plan (supersedes the vsync-centric framing of §2)
+- **Wave 1 (next, highest impact):** **stagger live player-model builds.** Wire the existing S1
+  `BackgroundAssetStreamer` into the live player-model load path (`ClientWorld`/`ClientEntityView`) with a cheap
+  placeholder so the 6 models build **one per frame** instead of all at once — this kills the 154 MB gen2 burst,
+  the single worst release hitch. (S1 already proved the parse/build split off-thread for the *idle* warm; this
+  extends it to the on-demand path.) Plus finish the `sim.move` / `sim.integrate` allocation hunt with the
+  per-scope readout (suspects: `IMovementInput` boxing per bot/tick, per-client hook lists).
+- **Wave 2+ (structural, only if a real-match profile demands it):** **S5 — move the server sim onto a worker
+  thread**, so the per-tick movement-physics cost stops stealing the render-frame budget. This is the real
+  architectural answer to "GameDemo vs NetGame," but it is High effort / High risk (the ambient `Api.Services`
+  global, the shared↔server cvar bridge, and `SoundService.Broadcast` are the concrete race blockers named in §5),
+  and §5's own gate — server tick > ~2 ms in real matches *after* the areagrid — must be confirmed first.
+- **Out:** the vsync/`rest` track (§2.1) as a fix for the bot hitch — Wave 0 disproved it.
+
+**Bottom line for the user:** play in a **release** build (halves the felt cost and is free); the remaining true
+hitch is the 154 MB model-build stall, which Wave 1 targets directly. Vsync/mailbox is a comfort option, not the cure.
+
+---
+
+## 10. Wave 1 — implemented (2026-06-11)
+
+Both §9.4 Wave-1 items landed. Build green; **1496 tests pass**; verified live in a windowed `--host stormkeep
+--bots 6` run (screenshots + the `[stream]` log).
+
+### 10.1 Staggered live player-model builds (the 154 MB gen2 stall)
+
+`NetGame.ResolvePlayerModel` no longer parses+builds synchronously on first sight. It returns a
+`PlayerModel` **shell with a shared placeholder box** immediately and routes the load through the
+(`SetupRender`-owned, unconditional) `BackgroundAssetStreamer`: the IQM+sidecar parse runs on the thread pool
+(`AssetLoader.ParseSkeletalModel`), the Godot build (`BuildSkeletalModel` + `PlayerModel.Setup`) lands on the
+main thread under the streamer's 2 ms budget at **High** priority — so N bots arriving in one snapshot build
+**one model per frame** instead of all in that frame. Verified: 6 bots → 6 `[stream] player model … built …
+placeholder swapped` lines (a `developer 1` Log.Trace), real posed/tinted models in the capture.
+
+Pieces (all in place for reuse):
+- `PlayerModel.ShowPlaceholder()/ClearPlaceholder()` — shared mesh+material (no per-shell pipeline compile);
+  `Setup()` clears it. The placeholder is also **load-bearing for cache invalidation**: freeing it is what
+  makes `CsqcModelEffects`' cached mesh list stale so the late-added real meshes get collected.
+  `Setup()` also silences the `AnimationPlayer` BEFORE tree entry now (autoplay-after-entry is a no-op + warning).
+- `ClientWorld.RebuildEntityModel(entity)` — tears down the model children (nameplate survives), releases the
+  csqc effect state like `OnEntityRemove`, re-runs `TryAttachModel`. Used when an async resolve settles
+  "not skeletal" (memoized in `NetGame._nonSkeletalPlayerModels` → the resolver returns null → the old MD3/
+  static fall-through), or the entity's model changed mid-flight.
+- `ClientWorld.SeedAppearance(entity)` — immediate colormap tint at delivery (the per-frame pass keeps it fresh).
+- Delivery validates staleness (`pm` freed/queued, entity freed, model/skin changed) before touching the tree.
+- A failed parse is BOXED (`SkeletalParseBox`) because the streamer drops null off-thread results silently —
+  a miss must still deliver to trigger the fall-back attach.
+
+Residual (accepted): `BuildForcedPlayerModel` (cl_forceplayermodels) still loads synchronously — explicit user
+opt-in, and the forced model is typically the precached local model. `ModelTint.ApplyAppearance` still walks
+meshes per frame per player (client-side; pre-existing).
+
+### 10.2 sim.move / sim.integrate allocation hunt — **60.9 → 2.9 KB/tick (−95%)** @ 12 bots
+
+Method: `Prof` per-scope alloc attribution via `BotTickPerfBench` (`XG_BOTS=12`), with new permanent sub-scopes
+`move.pre/in/pm/post/link/touch` (GameWorld/SimulationLoop) and `start.warmup/bots/vote/defer/hooks`. Fixes, in
+found order (each confirmed by a bench re-run):
+
+| Fix | Scope | B/tick before → after |
+|-----|-------|----------------------|
+| `SimulationLoop`: cached `_runThink` delegate (the `RunThink` method-group arg allocated a `Func` **per entity per tick**) | sim.integrate | 19,475 → 185 |
+| `MovementParameters.FromCvars`: per-(prefix,name) cvar-name cache — ~45 `prefix + "name"` concats ran **per player move** (server ticks × clients + every prediction replay) | move.pm | 31,366 → 35 |
+| `ItemstimeMutator.Recompute` (runs every server frame): persistent accumulator + static `Note` (no closure) + prebuilt classname→key map (incl. `weapon_<superweapon>` names) + **single pass over `IEntityService.All`** (new default-interface member; `EntityService` already had it, `ServerEntityService` delegates; FindByClass fallback for fakes) — was a fresh Dictionary + closure + ~10 `FindByClass` iterators + concats per tick | start.hooks | 3,000 → ~0 |
+| `BuffsMutator.Buff()`: memoized `"buff_" + shortName` (g_buffs **-1** ⇒ enabled in stock; its PreThink calls `Active()` ×5 per player per tick) | move.pre | 2,500 → ~0 |
+| `BotPopulation.TickInput` now **implements IMovementInput** (returning the struct as the interface boxed per read ×2 readers × bots × ticks); `ZeroInput` boxed once (also in ServerNet) | move.in | −370 |
+| `BotBrain`: per-weapon balance-cvar name cache (3 `$"g_balance_{w.NetName}_primary_*"` interps per think) | bot.think | 2,412 → 2,041 |
+| `GameWorld.OnStartFrame`: cached `_deferredExec` delegate (the `Commands.Deferred.Pump` lambda captured `this` per tick) | start.defer | small |
+
+Result @ 12 bots / 2160 ticks: **alloc 60,926 → 2,907 B/tick** (125.5 → 6.0 MB per 30 s), **gen0 16 → 1**,
+gen2 0. Tick timing unchanged (med ~0.6 ms, MAX ~10 ms — the MAX is `move.post` weapon-fire bursts, real
+gameplay events). Remaining buckets: `bot.think` ~2.0 KB/tick (token-gated `FindInRadius`/`FindByClass`
+iterator allocs in goal rating — rare-path, diminishing returns), `move.post` ~0.6 KB (combat events).
+
+### 10.3 Verification + a pre-existing issue found
+
+- Bench: `XG_BOTS=12 dotnet test tests/XonoticGodot.Tests --filter BotTickPerfBench -l "console;verbosity=detailed"`.
+- Live: windowed `--host stormkeep --gametype dm --bots 6 --screenshot …` → models posed/tinted, no streamer
+  errors, no autoplay warnings; `--cvar developer 1` shows the six staggered `[stream]` builds.
+- **Pre-existing, NOT Wave 1** (reproduced identically on the pre-session tree): `--headless --host` never
+  loads the map — hangs or dies with a fatal CLR error in `Godot.DebuggingUtils` while formatting a script
+  error under the dummy renderer (suspect: the A2 `GpuWarmPass` SubViewport/`FramePostDraw` await). Windowed
+  is unaffected. Note for scripted runs: Windows `timeout` does NOT kill the Godot
+  child — orphans hold port 26000 and later runs fail with "Couldn't create an ENet host".
+  **FIXED (2026-06-11):** the hang was `Shell.WaitForFramePainted` awaiting `frame_post_draw`, which never
+  fires headless (the RenderingServer singleton exists, but the main loop never calls `draw()` when no window
+  can draw) — it now falls back to `process_frame` ticks under the headless DisplayServer, and `GpuWarmPass`
+  skips its SubViewport there (no GPU to warm). Guarded by the `ci/ci.sh` headless host smoke; scripted runs
+  can self-terminate via `--quit-after-seconds <s>`.

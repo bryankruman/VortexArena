@@ -522,6 +522,51 @@ public partial class ClientWorld : Node3D
         return null;
     }
 
+    /// <summary>
+    /// Tear down the entity's model visual(s) and re-run the attach. Used when an ASYNC player-model resolve
+    /// settles on a different outcome than first assumed (the streamed parse found a non-skeletal model → fall
+    /// back to the MD3/static path) or the entity's model changed while a resolve was in flight. The nameplate
+    /// survives; the freed model children invalidate the cached csqc mesh list on the next effects pass.
+    /// </summary>
+    public void RebuildEntityModel(Entity entity)
+    {
+        if (entity is null || entity.IsFreed)
+            return;
+        if (!_entityNodes.TryGetValue(entity.Index, out EntityNode? node) || !GodotObject.IsInstanceValid(node))
+            return;
+
+        // Release the per-entity render state exactly like OnEntityRemove, but keep the node + nameplate.
+        if (_csqc.Remove(entity.Index, out CsqcState? cs))
+            CsqcModelEffects.Release(entity, cs.Effects, Api.Services?.Sound);
+        _animators.Remove(entity.Index);
+        if (_playerModels.Remove(entity.Index, out PlayerModel? pm) && GodotObject.IsInstanceValid(pm))
+            pm.ReleaseSkeleton(); // the node itself is swept below
+
+        foreach (Node child in node.GetChildren())
+        {
+            if (child is Label3D)
+                continue; // the floating nameplate isn't part of the model
+            node.RemoveChild(child);
+            child.QueueFree();
+        }
+
+        TryAttachModel(entity, node);
+    }
+
+    /// <summary>
+    /// Run the appearance pass (colormap/forcecolors tint) for one entity NOW — a model whose meshes were
+    /// built after the attach (the streamed player-model path) would otherwise render a frame untinted before
+    /// the per-frame <c>DriveCsqcModelHooks</c> pass reaches it.
+    /// </summary>
+    public void SeedAppearance(Entity entity)
+    {
+        if (entity is null || entity.IsFreed)
+            return;
+        if (!_entityNodes.TryGetValue(entity.Index, out EntityNode? node) || !GodotObject.IsInstanceValid(node))
+            return;
+        ModelTint.ApplyAppearance(node, ResolveForcedColormap(entity), isDead: false, deathTime: 0f, isRespawnGhost: false);
+    }
+
     /// <summary>Resolve a model for a networked entity via the host's <see cref="ModelResolver"/> (or null).</summary>
     public XonoticGodot.Formats.Md3.Md3Data? ResolveModel(Entity e) => ModelResolver?.Invoke(e);
 

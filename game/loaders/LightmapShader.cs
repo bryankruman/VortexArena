@@ -45,52 +45,52 @@ namespace XonoticGodot.Game.Loaders;
 public static class LightmapShader
 {
     /// <summary>Uniform name for the surface albedo (diffuse) texture, sampled with <c>UV</c>.</summary>
-    public const string AlbedoUniform = "albedo_tex";
+    public static readonly StringName AlbedoUniform = "albedo_tex";
 
     /// <summary>Uniform name for the lightmap page texture, sampled with <c>UV2</c>.</summary>
-    public const string LightmapUniform = "lightmap_tex";
+    public static readonly StringName LightmapUniform = "lightmap_tex";
 
     /// <summary>Uniform name for the deluxemap (light-direction) page texture, sampled with <c>UV2</c>.</summary>
-    public const string DeluxemapUniform = "deluxemap_tex";
+    public static readonly StringName DeluxemapUniform = "deluxemap_tex";
 
     /// <summary>Uniform name for the flag that enables deluxemap directional re-modulation.</summary>
-    public const string UseDeluxemapUniform = "use_deluxemap";
+    public static readonly StringName UseDeluxemapUniform = "use_deluxemap";
 
     /// <summary>Uniform name for the flag that modulates by the per-vertex <c>COLOR</c> instead of a lightmap page.</summary>
-    public const string UseVertexColorUniform = "use_vertex_color";
+    public static readonly StringName UseVertexColorUniform = "use_vertex_color";
 
     /// <summary>Uniform name for the sRGB color-space flag (Xonotic <c>vid_sRGB</c>/<c>mod_q3bsp_sRGBlightmaps</c>).</summary>
-    public const string SrgbColorUniform = "srgb_color";
+    public static readonly StringName SrgbColorUniform = "srgb_color";
 
     /// <summary>Uniform name for a scalar lightmap brightness multiplier (Q3 overbright ≈ 2).</summary>
-    public const string LightmapScaleUniform = "lightmap_scale";
+    public static readonly StringName LightmapScaleUniform = "lightmap_scale";
 
     /// <summary>Uniform name for the alpha-test cutoff (0 disables the test).</summary>
-    public const string AlphaCutoffUniform = "alpha_cutoff";
+    public static readonly StringName AlphaCutoffUniform = "alpha_cutoff";
 
     /// <summary>Uniform name for the albedo-UV scale (Q3 <c>tcMod scale</c>; lightmap UV2 stays unscaled).</summary>
-    public const string AlbedoUvScaleUniform = "albedo_uv_scale";
+    public static readonly StringName AlbedoUvScaleUniform = "albedo_uv_scale";
 
     /// <summary>Uniform name for the self-illumination (<c>_glow</c>) texture, sampled with the albedo UV.</summary>
-    public const string GlowUniform = "glow_tex";
+    public static readonly StringName GlowUniform = "glow_tex";
 
     /// <summary>Uniform name for the flag that enables the fullbright glow add.</summary>
-    public const string UseGlowUniform = "use_glow";
+    public static readonly StringName UseGlowUniform = "use_glow";
 
     /// <summary>Uniform name for the additive glow scale (DP <c>Color_Glow</c>; ~1).</summary>
-    public const string GlowScaleUniform = "glow_scale";
+    public static readonly StringName GlowScaleUniform = "glow_scale";
 
     /// <summary>Uniform name for the per-pixel surface-normal (<c>_norm</c>) companion texture.</summary>
-    public const string NormalUniform = "normal_tex";
+    public static readonly StringName NormalUniform = "normal_tex";
 
     /// <summary>Uniform name for the flag that enables <c>_norm</c> per-pixel normal perturbation.</summary>
-    public const string UseNormalUniform = "use_normal";
+    public static readonly StringName UseNormalUniform = "use_normal";
 
     /// <summary>Uniform name for the specular (<c>_gloss</c>) companion texture.</summary>
-    public const string GlossUniform = "gloss_tex";
+    public static readonly StringName GlossUniform = "gloss_tex";
 
     /// <summary>Uniform name for the flag that enables the <c>_gloss</c> deluxe specular highlight.</summary>
-    public const string UseGlossUniform = "use_gloss";
+    public static readonly StringName UseGlossUniform = "use_gloss";
 
     /// <summary>
     /// The GDShader source. Unshaded so the baked lightmap is the only lighting term; the albedo is

@@ -24,6 +24,17 @@ public sealed partial class NetHud : Control
     /// <summary>The network source — the HUD reads the owner's replicated health/armor from it. Null draws only the crosshair.</summary>
     public ClientNet? Net { get; set; }
 
+    /// <summary>
+    /// When true, this lightweight HUD suppresses its OWN crosshair + health/armor readout, deferring to the
+    /// full skinned HUD's <see cref="XonoticGodot.Game.Hud.CrosshairPanel"/> / <see cref="XonoticGodot.Game.Hud.HealthArmorPanel"/>.
+    /// The net layer sets this true while a local server <c>Player</c> is present (a <c>--host</c> listen server),
+    /// so the skinned panels render instead — avoiding a DOUBLE crosshair/health. On a pure <c>--connect</c> client
+    /// (no local Player) it stays false so this remains the always-on fallback. The firing ring still pulses (it's
+    /// a transient confirmation that pairs with the predicted shot), but is also gated so the ring doesn't double
+    /// up with the skinned crosshair's own hit/fire feedback.
+    /// </summary>
+    public bool SuppressCrosshairAndHealth { get; set; }
+
     // ---- crosshair geometry (the vector fallback, in pixels — matches CrosshairPanel's defaults) ----
     private const float GapPixels = 5f;
     private const float TickLength = 8f;
@@ -65,8 +76,9 @@ public sealed partial class NetHud : Control
         if (_fireRing > 0f)
             _fireRing = Mathf.Max(0f, _fireRing - (float)delta / FireDecay);
 
-        // Position the stats label in the lower-left and refresh its text from the net stats.
-        if (Net is { Accepted: true })
+        // Position the stats label in the lower-left and refresh its text from the net stats. Suppressed while
+        // the skinned HealthArmorPanel owns the readout (a local Player is present) so the two don't stack.
+        if (Net is { Accepted: true } && !SuppressCrosshairAndHealth)
         {
             _stats.Text = $"♥ {Mathf.Max(0, Net.Health)}    ▩ {Mathf.Max(0, Net.Armor)}";
             _stats.Visible = true;
@@ -82,6 +94,11 @@ public sealed partial class NetHud : Control
 
     public override void _Draw()
     {
+        // When the skinned CrosshairPanel owns the reticle (a local Player is present), draw nothing here so
+        // there is no double crosshair / double firing ring — the full HUD's crosshair handles both.
+        if (SuppressCrosshairAndHealth)
+            return;
+
         Vector2 center = Size * 0.5f;
 
         // Vector crosshair: four ticks leaving a center gap, plus a center dot.

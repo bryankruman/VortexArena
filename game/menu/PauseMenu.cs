@@ -81,14 +81,18 @@ public partial class PauseMenu : MenuScreen
         if (campaign && _joinButton.Text == "Join!")
         {
             _joinButton.Text = "Restart level";
-            _joinButton.SetMeta("cmd", "resetmatch");
+            _joinButton.SetMeta(CmdMeta, "resetmatch");
         }
         else if (!campaign && _joinButton.Text == "Restart level")
         {
             _joinButton.Text = "Join!";
-            _joinButton.SetMeta("cmd", "join");
+            _joinButton.SetMeta(CmdMeta, "join");
         }
     }
+
+    // C2/C3: the SetMeta key is cached as a StringName so this _Process path mints no per-frame allocation
+    // (godot#105750) — the XG0002 analyzer flagged the former string literal.
+    private static readonly StringName CmdMeta = "cmd";
 
     // ---- button helpers (the QC makeXonoticCommandButton + COMMANDBUTTON_CLOSE flag) ----------------------
 

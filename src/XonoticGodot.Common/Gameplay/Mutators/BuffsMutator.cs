@@ -131,7 +131,16 @@ public sealed class BuffsMutator : MutatorBase
     }
 
     // Resolve a buff def by its short name (e.g. "resistance" -> the "buff_resistance" StatusEffectDef).
-    private static StatusEffectDef? Buff(string shortName) => StatusEffectsCatalog.ByName("buff_" + shortName);
+    // The full name is memoized: Active() runs five times per player per tick from the PreThink handler, and
+    // a per-call "buff_" + shortName concat was a steady ~2.5 KB/tick of GC churn at 12 players.
+    private static readonly Dictionary<string, string> _buffNameCache = new(StringComparer.Ordinal);
+
+    private static StatusEffectDef? Buff(string shortName)
+    {
+        if (!_buffNameCache.TryGetValue(shortName, out string? full))
+            _buffNameCache[shortName] = full = "buff_" + shortName;
+        return StatusEffectsCatalog.ByName(full);
+    }
 
     private static bool Active(Entity? e, string shortName)
     {

@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Text;
 using Godot;
+using XonoticGodot.Game.Menu;   // MenuState.Cvars — live hud_colorset_* for the CCR macro expansion
 
 namespace XonoticGodot.Game.Hud;
 
@@ -44,12 +45,47 @@ public static class HudText
     };
 
     /// <summary>
+    /// QC <c>CCR()</c> (Base/.../qcsrc/lib/string.qh) — expand Xonotic's NAMED color macros into engine
+    /// <c>^&lt;digit&gt;</c> codes before parsing, using the live <c>hud_colorset_*</c> cvars, and drop the
+    /// <c>^BOLD</c> font marker (a centerprint-only operator handled there, not a color). Notification /
+    /// kill-feed / centerprint strings carry these tags (<c>^F1</c>-<c>^F4</c> foreground, <c>^K1</c>-<c>^K3</c>
+    /// kill, <c>^BG</c> background, <c>^N</c> reset); without this pass they'd render as literal "^F1"/"^BOLD".
+    /// Idempotent and cheap (no-op when the string has no caret). Runs at the head of <see cref="Parse"/> and
+    /// <see cref="Strip"/> so every panel that renders/measures text via <see cref="HudText"/> is covered.
+    /// </summary>
+    public static string Expand(string? text)
+    {
+        if (string.IsNullOrEmpty(text) || text!.IndexOf('^') < 0) return text ?? "";
+        string s = text;
+        if (s.Contains("^BOLD")) s = s.Replace("^BOLD", "");   // font marker, not a color (centerprint reads it raw first)
+        if (s.IndexOf('^') < 0) return s;
+        // ^F1..^F4 foreground, ^K1..^K3 kill, ^BG background — cvar-backed (defaults match hud_luma.cfg).
+        s = s.Replace("^F1", "^" + Cset("hud_colorset_foreground_1", "2"));
+        s = s.Replace("^F2", "^" + Cset("hud_colorset_foreground_2", "3"));
+        s = s.Replace("^F3", "^" + Cset("hud_colorset_foreground_3", "4"));
+        s = s.Replace("^F4", "^" + Cset("hud_colorset_foreground_4", "1"));
+        s = s.Replace("^K1", "^" + Cset("hud_colorset_kill_1", "1"));
+        s = s.Replace("^K2", "^" + Cset("hud_colorset_kill_2", "3"));
+        s = s.Replace("^K3", "^" + Cset("hud_colorset_kill_3", "4"));
+        s = s.Replace("^BG", "^" + Cset("hud_colorset_background", "7"));
+        s = s.Replace("^N", "^7");   // "none" — reset to white
+        return s;
+    }
+
+    private static string Cset(string name, string def)
+    {
+        string v = MenuState.Cvars.GetString(name);
+        return string.IsNullOrEmpty(v) ? def : v;
+    }
+
+    /// <summary>
     /// Split <paramref name="text"/> into colored runs. <paramref name="baseColor"/> tints the leading
     /// (uncolored) run and supplies the alpha for every run (the codes only set RGB, like the engine).
     /// </summary>
     public static List<Run> Parse(string? text, Color baseColor)
     {
         var runs = new List<Run>();
+        text = Expand(text);
         if (string.IsNullOrEmpty(text)) return runs;
 
         Color cur = baseColor;
@@ -97,6 +133,7 @@ public static class HudText
     /// <summary>Remove all color codes, returning the plain text (QC <c>strdecolorize</c>).</summary>
     public static string Strip(string? text)
     {
+        text = Expand(text);
         if (string.IsNullOrEmpty(text)) return "";
         var sb = new StringBuilder(text!.Length);
         for (int i = 0; i < text.Length; i++)

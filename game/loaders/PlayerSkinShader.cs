@@ -25,38 +25,44 @@ namespace XonoticGodot.Game.Loaders;
 /// </summary>
 public static class PlayerSkinShader
 {
+    // C2 STANDING RULE (godot#105750 / PERFORMANCE_REPORT.md C2): the uniform names below are
+    // `static readonly StringName`, not `const string`. Godot's *ShaderParameter / GlobalShaderParameter APIs
+    // take a StringName, so a string literal there mints a StringName allocation per call — a GC treadmill if it
+    // ever lands in a per-frame path. NEVER pass a string literal to a StringName/NodePath Godot API from a hot
+    // path; cache it here. The XG0002 analyzer flags new violations inside _Process/_PhysicsProcess/_Draw.
+
     /// <summary>Uniform: the diffuse/albedo texture (sampled with UV).</summary>
-    public const string AlbedoUniform = "albedo_tex";
+    public static readonly StringName AlbedoUniform = "albedo_tex";
 
     /// <summary>Uniform: the <c>_shirt</c> greyscale mask.</summary>
-    public const string ShirtMaskUniform = "shirt_mask";
+    public static readonly StringName ShirtMaskUniform = "shirt_mask";
 
     /// <summary>Uniform: the <c>_pants</c> greyscale mask.</summary>
-    public const string PantsMaskUniform = "pants_mask";
+    public static readonly StringName PantsMaskUniform = "pants_mask";
 
     /// <summary>Uniform: the team shirt color (RGB). Default black = no contribution (DP no-colormap default).</summary>
-    public const string ShirtColorUniform = "shirt_color";
+    public static readonly StringName ShirtColorUniform = "shirt_color";
 
     /// <summary>Uniform: the team pants color (RGB). Default black = no contribution.</summary>
-    public const string PantsColorUniform = "pants_color";
+    public static readonly StringName PantsColorUniform = "pants_color";
 
     /// <summary>Uniform: the <c>_reflect</c> reflection mask (greyscale, modulates the environment reflection).</summary>
-    public const string ReflectMaskUniform = "reflect_mask";
+    public static readonly StringName ReflectMaskUniform = "reflect_mask";
 
     /// <summary>Uniform: optional explicit reflection cubemap (<c>dpreflectcube</c>); unbound → world environment.</summary>
-    public const string ReflectCubeUniform = "reflect_cube";
+    public static readonly StringName ReflectCubeUniform = "reflect_cube";
 
     /// <summary>Uniform: scalar reflection strength applied through the mask (0..1).</summary>
-    public const string ReflectStrengthUniform = "reflect_strength";
+    public static readonly StringName ReflectStrengthUniform = "reflect_strength";
 
     /// <summary>Uniform: the <c>_glow</c>/<c>_luma</c> emission map (added unlit).</summary>
-    public const string GlowUniform = "glow_tex";
+    public static readonly StringName GlowUniform = "glow_tex";
 
     /// <summary>Instance uniform: per-entity albedo tint (DP <c>colormod</c>); default white = identity.</summary>
-    public const string ColormodUniform = "colormod";
+    public static readonly StringName ColormodUniform = "colormod";
 
     /// <summary>Instance uniform: per-entity glow/emission tint (DP <c>glowmod</c>); default white.</summary>
-    public const string GlowmodUniform = "glowmod";
+    public static readonly StringName GlowmodUniform = "glowmod";
 
     /// <summary>
     /// The GDShader source. Lit (the skin reacts to scene lighting like a normal model surface), with the

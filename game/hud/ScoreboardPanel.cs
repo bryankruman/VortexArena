@@ -4,6 +4,7 @@ using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Gameplay;
 using XonoticGodot.Common.Gameplay.Scoring;
 using XonoticGodot.Common.Services;
+using XonoticGodot.Engine.Simulation;
 
 namespace XonoticGodot.Game.Hud;
 
@@ -77,8 +78,50 @@ public partial class ScoreboardPanel : HudPanel
     /// <summary>The match title shown atop the table (e.g. "Deathmatch"). Settable by the owner.</summary>
     public string Title { get; set; } = "Scoreboard";
 
+    /// <summary>QC <c>MapInfo_Type_ToText(gametype)</c>: the gametype name banner drawn big at the top-right of the
+    /// game-info section (e.g. "Deathmatch", "Capture the Flag"). Falls back to <see cref="Title"/> when empty.</summary>
+    public string GametypeName { get; set; } = "";
+
+    /// <summary>QC <c>GET_NEXTMAP()</c>: the next map shown ("Next map: …") above the gametype banner; "" = none.</summary>
+    public string NextMap { get; set; } = "";
+
+    /// <summary>QC <c>numplayers</c> / <c>srv_maxplayers</c>: the "N/M players" line in the game-info footer
+    /// (the map-info line). 0/0 = hidden (e.g. campaign).</summary>
+    public int PlayerCount { get; set; }
+    public int MaxPlayerCount { get; set; }
+
     /// <summary>True when the active gametype is teamplay (groups rows into team sections + shows team totals).</summary>
     public bool TeamPlay { get; set; }
+
+    // ---- spectator list (QC Scoreboard_Spectators_Draw) ----
+
+    /// <summary>One spectator entry (QC the NUM_SPECTATOR rows: name + ping). Fed via <see cref="SetSpectators"/>.</summary>
+    public readonly struct SpectatorRow
+    {
+        public readonly string Name;   // may carry ^N color codes
+        public readonly int Ping;      // ms; &lt; 0 = unknown (bot / not networked)
+        public SpectatorRow(string name, int ping = -1) { Name = name ?? ""; Ping = ping; }
+    }
+
+    private readonly List<SpectatorRow> _spectators = new();
+
+    // ---- fade in/out (QC scoreboard_fade_alpha + fadeinspeed/fadeoutspeed) ----
+
+    /// <summary>QC <c>scoreboard_active</c>: the owner sets this true while the scoreboard key is held (or on
+    /// the death/intermission scoreboard); the panel fades <see cref="_fadeAlpha"/> in/out toward it and hides
+    /// itself once fully faded out. Replaces the raw <see cref="Godot.CanvasItem.Visible"/> toggle so the
+    /// scoreboard cross-fades like QC instead of popping. The owner may still set Visible directly (legacy).</summary>
+    public bool Active
+    {
+        get => _active;
+        set { if (_active != value) { _active = value; if (value) Visible = true; QueueRedraw(); } }
+    }
+    private bool _active;
+    private float _fadeAlpha;        // 0..1 current fade (QC scoreboard_fade_alpha)
+
+    /// <summary>The current fade level 0..1 (QC scoreboard_fade_alpha) so the owner can also drive the manager's
+    /// non-scoreboard panel cross-fade if it wants. Read-only.</summary>
+    public float FadeAlpha => _fadeAlpha;
 
     // ---- header / footer settable surfaces (QC fraglimit/timelimit + map stats + respawn; networked) ----
 
@@ -153,13 +196,20 @@ public partial class ScoreboardPanel : HudPanel
             ScoreField? deathsF = GameScores.Field("DEATHS");
             foreach (XonoticGodot.Net.ScoreRowWire wr in wire.Rows)
             {
-                // expand the wire's NetworkedFields-ordered columns into a registry-indexed array.
-                var cols = new int[fieldCount];
-                int m = System.Math.Min(wr.Columns.Length, netFields.Count);
-                for (int i = 0; i < m; i++) cols[netFields[i].RegistryId] = wr.Columns[i];
+                // expand the wire's NetworkedFields-ordered columns into a registry-indexed array. fieldCount can
+                // be 0 before the score registry is populated, and wr.Columns may be null (the ScoreRowWire ctor
+                // doesn't guard it) — both would crash the foreach below, so clamp/null-coalesce here.
+                var cols = new int[System.Math.Max(0, fieldCount)];
+                int[] wireCols = wr.Columns ?? System.Array.Empty<int>();
+                int m = System.Math.Min(wireCols.Length, netFields.Count);
+                for (int i = 0; i < m; i++)
+                {
+                    int rid = netFields[i].RegistryId;
+                    if ((uint)rid < cols.Length) cols[rid] = wireCols[i];
+                }
 
-                int score = scoreF is not null ? cols[scoreF.RegistryId] : 0;
-                int deaths = deathsF is not null ? cols[deathsF.RegistryId] : -1;
+                int score = scoreF is not null && (uint)scoreF.RegistryId < cols.Length ? cols[scoreF.RegistryId] : 0;
+                int deaths = deathsF is not null && (uint)deathsF.RegistryId < cols.Length ? cols[deathsF.RegistryId] : -1;
                 _rows.Add(new ScoreRow(wr.Name, score, wr.Team, deaths, ping: -1,
                     isLocal: wr.NetId == localNetId, columns: cols,
                     // QC pl.eliminated (NET_HANDLE ENT_CLIENT_ELIMINATEDPLAYERS, client/main.qc:819): flag the
@@ -228,6 +278,23 @@ public partial class ScoreboardPanel : HudPanel
     {
         _accuracy.Clear();
         if (accuracy is not null) foreach (var kv in accuracy) _accuracy[kv.Key] = kv.Value;
+        QueueRedraw();
+    }
+
+    /// <summary>QC <c>Scoreboard_Spectators_Draw</c> source: replace the spectator list (NUM_SPECTATOR players —
+    /// the entcs slice with no/forfeit scores). Fed by the net layer; empty hides the section.</summary>
+    public void SetSpectators(IEnumerable<SpectatorRow> spectators)
+    {
+        _spectators.Clear();
+        if (spectators is not null) _spectators.AddRange(spectators);
+        QueueRedraw();
+    }
+
+    /// <summary>Convenience overload: feed spectator names only (ping unknown). Kept for simple callers.</summary>
+    public void SetSpectators(IEnumerable<string> names)
+    {
+        _spectators.Clear();
+        if (names is not null) foreach (string n in names) _spectators.Add(new SpectatorRow(n));
         QueueRedraw();
     }
 
@@ -551,74 +618,153 @@ public partial class ScoreboardPanel : HudPanel
     //  Draw
     // =====================================================================================
 
+    /// <summary>QC <c>scoreboard_fade_alpha</c> step: ramp the fade toward <see cref="Active"/> using the
+    /// fadein/fadeout speeds (per second), self-driving via <see cref="_Process"/> so the cross-fade animates
+    /// even though the panel is not <see cref="IsDynamic"/>. Hides the panel once fully faded out.</summary>
+    public override void _Process(double delta)
+    {
+        // QC: fade in at fadeinspeed when active, out at fadeoutspeed when not (0 speed => instant).
+        float target = _active ? 1f : 0f;
+        if (!Mathf.IsEqualApprox(_fadeAlpha, target))
+        {
+            float dt = (float)delta;
+            float speed = _active ? GlobalF("hud_panel_scoreboard_fadeinspeed", 10f)
+                                  : GlobalF("hud_panel_scoreboard_fadeoutspeed", 5f);
+            if (speed <= 0f || dt <= 0f) _fadeAlpha = target;
+            else if (_active) _fadeAlpha = Mathf.Min(1f, _fadeAlpha + dt * speed);
+            else _fadeAlpha = Mathf.Max(0f, _fadeAlpha - dt * speed);
+
+            if (_fadeAlpha <= 0f && !_active) Visible = false;
+            QueueRedraw();
+        }
+        else if (_active && !Visible)
+        {
+            Visible = true;
+            QueueRedraw();
+        }
+    }
+
+    /// <summary>The effective panel alpha this frame: the HUD fade × the scoreboard's own fade-in/out. When the
+    /// owner never sets <see cref="Active"/> (legacy Visible-toggle callers) <see cref="_fadeAlpha"/> stays 0, so
+    /// we treat a visible-but-never-faded panel as fully opaque (1) — i.e. fade is opt-in.</summary>
+    private float PanelFade()
+    {
+        float sb = _everActive ? _fadeAlpha : 1f;
+        return Mathf.Clamp(LiveFgAlpha / Mathf.Max(0.0001f, Cfg.FgAlpha), 0f, 1f) * sb;
+    }
+    private bool _everActive;
+
     protected override void DrawPanel()
     {
+        if (_active) _everActive = true;
+        float fade = PanelFade();
+        if (fade <= 0f) return; // QC: scoreboard_fade_alpha <= 0 → draw nothing
+
         EnsureColumns();
 
-        // Dim full-panel backdrop (QC scoreboard background).
-        DrawRect(new Rect2(Vector2.Zero, Size2), new Color(0.05f, 0.05f, 0.08f, 0.75f));
+        // QC HUD_Panel_DrawBg: the configured luma skin frame (border_default 9-slice, bg color "0 0.3 0.5"
+        // @ 0.7) — drawn via the base helper so the panel honors hud_panel_scoreboard_bg*/the live skin like
+        // every other panel (no-op when the panel's bg is "0"). LiveBgAlpha already carries the HUD fade.
+        DrawBackground();
+        // A faint inner darkening so the table reads over a busy world; at the scoreboard cross-fade alpha so
+        // it animates with the rest of the panel (the skin frame itself rides LiveBgAlpha).
+        DrawRect(new Rect2(Vector2.Zero, Size2), new Color(0.05f, 0.05f, 0.08f, 0.35f * fade));
 
         float pad = Padding * 2f;
         float x = pad;
         float w = Size2.X - pad * 2f;
         float y = pad;
 
-        // Title.
-        DrawTextCentered(new Vector2(x, y), w, Title, new Color(1f, 1f, 1f, 0.95f), 24);
-        y += 34f;
+        // A too-small panel (resolved size clamps to 8px; padding alone can exceed it) yields a non-positive
+        // content width. The bg darkening above already drew, but laying out columns / drawing text against a
+        // negative width produces off-panel garbage (and negative-width layout math), so stop here.
+        if (w <= 1f) return;
 
-        // Limits header (QC Scoreboard_Fraglimit_Draw): "<limit> <label>" / timelimit.
-        string limits = BuildLimitsHeader();
-        if (limits.Length != 0)
-        {
-            DrawTextCentered(new Vector2(x, y), w, limits, new Color(0.6f, 0.9f, 1f, 0.9f), 14);
-            y += 22f;
-        }
+        y = DrawGameInfoHeader(x, w, y, fade);
 
         // Team totals banner (teamplay only).
         if (TeamPlay && _teamScores.Count > 0)
-            y = DrawTeamTotals(x, w, y);
+            y = DrawTeamTotals(x, w, y, fade);
 
         // Column header + rows.
         var layout = ComputeLayout(x, w);
-        DrawHeader(layout, ref y);
+        DrawHeader(layout, ref y, fade);
 
         if (_rows.Count == 0)
         {
-            DrawTextCentered(new Vector2(x, y + 8f), w, "(no players)", new Color(1f, 1f, 1f, 0.4f), 16);
+            DrawTextCentered(new Vector2(x, y + 8f), w, "(no players)", new Color(1f, 1f, 1f, 0.4f * fade), 16);
         }
         else
         {
             const float rowH = 24f;
-            if (TeamPlay) DrawGroupedByTeam(layout, ref y, rowH);
-            else DrawFlat(layout, _rows, ref y, rowH, startRank: 1);
+            if (TeamPlay) DrawGroupedByTeam(layout, ref y, rowH, fade);
+            else DrawFlat(layout, _rows, ref y, rowH, startRank: 1, fade);
         }
 
-        // Footer blocks (QC map stats / respawn / accuracy / rankings / map name).
+        // Footer blocks (QC spectators / map stats / respawn / accuracy / rankings / map name).
         y += 8f;
-        y = DrawMapStats(x, w, y);
-        y = DrawRespawn(x, w, y);
-        y = DrawAccuracy(x, w, y);
-        y = DrawRankings(x, w, y);
-        DrawFooter(x, w);
+        y = DrawSpectators(x, w, y, fade);
+        y = DrawMapStats(x, w, y, fade);
+        y = DrawRespawn(x, w, y, fade);
+        y = DrawAccuracy(x, w, y, fade);
+        y = DrawRankings(x, w, y, fade);
+        DrawFooter(x, w, fade);
     }
 
-    /// <summary>QC Scoreboard_Fraglimit_Draw: the "<limit> points" / timelimit header line.</summary>
+    /// <summary>QC the Game Info Section (scoreboard.qc:2502-2581): "Next map: …", the big gametype banner
+    /// (right-aligned bold), then the limits line (right) + the "Map: … N/M players" line (left).</summary>
+    private float DrawGameInfoHeader(float x, float w, float y, float fade)
+    {
+        // Next map (drawn small, top-left, before the banner so a long name doesn't cover the title).
+        if (!string.IsNullOrEmpty(NextMap))
+        {
+            DrawColored(new Vector2(x, y), $"Next map: ^9{NextMap}", new Color(1f, 1f, 1f, 0.9f * fade), 13);
+        }
+
+        // Gametype banner (QC sb_gameinfo_type_fontsize = hud_fontsize * 2.5, right-aligned, bold).
+        string banner = !string.IsNullOrEmpty(GametypeName) ? GametypeName : Title;
+        DrawTextRight(x + w, y, w, HudText.Strip(banner), new Color(1f, 1f, 1f, 0.95f * fade), 24);
+        y += 30f;
+
+        // Limits line (QC right-aligned, ^3time / ^5frag-or-point limit).
+        string limits = BuildLimitsHeader();
+        if (limits.Length != 0)
+            DrawColoredRight(x + w, y, w, limits, new Color(0.6f, 0.9f, 1f, 0.9f * fade), 14);
+
+        // Map + player count line (QC left-aligned: "Map: <name>   N/M players").
+        string mapLine = "";
+        if (!string.IsNullOrEmpty(MapName)) mapLine = $"^7Map: ^2{MapName}";
+        if (PlayerCount > 0 || MaxPlayerCount > 0)
+        {
+            int max = MaxPlayerCount > 0 ? MaxPlayerCount : PlayerCount;
+            mapLine = (mapLine.Length != 0 ? mapLine + "    " : "") + $"^5{PlayerCount}^7/^5{max} ^7players";
+        }
+        if (mapLine.Length != 0)
+            DrawColored(new Vector2(x, y), mapLine, new Color(1f, 1f, 1f, 0.9f * fade), 14);
+        if (limits.Length != 0 || mapLine.Length != 0) y += 22f;
+
+        return y + 6f;
+    }
+
+    /// <summary>QC the limits line (scoreboard.qc:2542-2572): "^3&lt;minutes&gt;" then "^7 / " then the
+    /// <c>Scoreboard_Fraglimit_Draw</c> "^5&lt;limit&gt; &lt;label&gt;" (label = "points"/"" for score/fastest).
+    /// Color-coded for the right-aligned game-info line. Empty when no limits.</summary>
     private string BuildLimitsHeader()
     {
-        var parts = new List<string>();
+        string str = "";
+        if (TimeLimitMinutes > 0) str = $"^3{TimeLimitMinutes}";
         if (FragLimit > 0)
         {
-            // QC: the primary key's label; "score" → "points", "fastest" → "".
+            if (str.Length != 0) str += "^7 / ";
+            // QC Scoreboard_Fraglimit_Draw: the primary key's label; "score" → "points", "fastest" → "".
             ScoreField? primary = GameScores.Primary;
             string label = TeamPlay ? GameScores.TeamLabel(GameScores.TeamPrimarySlot) : (primary?.Label ?? "score");
             ScoreFlags flags = TeamPlay ? GameScores.TeamFlagsPrimary : (primary?.Flags ?? ScoreFlags.None);
             string limitStr = GameScores.ScoreString(flags, FragLimit);
             string unit = label == "score" ? "points" : label == "fastest" ? "" : label;
-            parts.Add($"{limitStr} {unit}".Trim());
+            str += $"^5{limitStr} {unit}".TrimEnd();
         }
-        if (TimeLimitMinutes > 0) parts.Add($"{TimeLimitMinutes} min");
-        return string.Join("   ", parts);
+        return str;
     }
 
     /// <summary>
@@ -635,7 +781,7 @@ public partial class ScoreboardPanel : HudPanel
         return r != 0 ? r : a - b; // QC the final team-id tiebreak
     }
 
-    private float DrawTeamTotals(float x, float w, float y)
+    private float DrawTeamTotals(float x, float w, float y, float fade)
     {
         // Sorted by the flag-aware team compare so the leading team shows first (QC TeamScore_Compare).
         var teams = new List<KeyValuePair<int, int>>(_teamScores);
@@ -645,9 +791,9 @@ public partial class ScoreboardPanel : HudPanel
         for (int i = 0; i < teams.Count; i++)
         {
             int team = teams[i].Key;
-            Color tc = TeamColor(team, 0.85f);
+            Color tc = TeamColor(team, 0.85f * fade);
             var box = new Rect2(x + i * colW + 2f, y, colW - 4f, 26f);
-            DrawRect(box, TeamColor(team, 0.22f));
+            DrawRect(box, TeamColor(team, 0.22f * fade));
             DrawText(new Vector2(box.Position.X + 6f, box.Position.Y + 3f), Teams.Name(team), tc, 16);
             DrawTextRight(box.Position.X + box.Size.X - 6f, box.Position.Y + 3f, colW,
                 teams[i].Value.ToString(), tc, 18);
@@ -655,44 +801,50 @@ public partial class ScoreboardPanel : HudPanel
         return y + 32f;
     }
 
-    private void DrawGroupedByTeam(Layout layout, ref float y, float rowH)
+    private void DrawGroupedByTeam(Layout layout, ref float y, float rowH, float fade)
     {
         var teamsSeen = new List<int>();
         foreach (ScoreRow r in _rows)
             if (r.Team != Teams.None && !teamsSeen.Contains(r.Team)) teamsSeen.Add(r.Team);
         teamsSeen.Sort((a, b) => CompareTeamTotals(b, a));
 
+        // QC ..._bg_teams_color_team: tint each team section's bg by the team color × factor (else a soft tint).
+        float teamBgFactor = TeamBgColorFactor();
+
         foreach (int team in teamsSeen)
         {
-            DrawRect(new Rect2(layout.X, y, layout.W, rowH), TeamColor(team, 0.18f));
-            DrawText(new Vector2(layout.X + 4f, y + 3f), Teams.Name(team), TeamColor(team, 0.95f), 16);
+            float sectBgA = (teamBgFactor > 0f ? 0.28f : 0.18f) * fade;
+            DrawRect(new Rect2(layout.X, y, layout.W, rowH), TeamColor(team, sectBgA));
+            DrawText(new Vector2(layout.X + 4f, y + 3f), Teams.Name(team), TeamColor(team, 0.95f * fade), 16);
             y += rowH + 2f;
 
             int rank = 1;
+            int rowParity = 0;
             foreach (ScoreRow r in _rows)
             {
                 if (r.Team != team) continue;
-                if (!DrawRow(layout, r, rank++, ref y, rowH)) return;
+                if (!DrawRow(layout, r, rank++, ref y, rowH, fade, rowParity++, team)) return;
             }
             y += 6f;
         }
 
         var loose = new List<ScoreRow>();
         foreach (ScoreRow r in _rows) if (r.Team == Teams.None) loose.Add(r);
-        if (loose.Count > 0) DrawFlat(layout, loose, ref y, rowH, startRank: 1);
+        if (loose.Count > 0) DrawFlat(layout, loose, ref y, rowH, startRank: 1, fade);
     }
 
-    private void DrawFlat(Layout layout, List<ScoreRow> rows, ref float y, float rowH, int startRank)
+    private void DrawFlat(Layout layout, List<ScoreRow> rows, ref float y, float rowH, int startRank, float fade)
     {
         int rank = startRank;
+        int rowParity = 0;
         foreach (ScoreRow r in rows)
-            if (!DrawRow(layout, r, rank++, ref y, rowH)) return;
+            if (!DrawRow(layout, r, rank++, ref y, rowH, fade, rowParity++, Teams.None)) return;
     }
 
     /// <summary>Draw the column header row (QC the sbt_field_title[] header).</summary>
-    private void DrawHeader(Layout layout, ref float y)
+    private void DrawHeader(Layout layout, ref float y, float fade)
     {
-        var headerColor = new Color(0.7f, 0.8f, 1f, 0.9f);
+        var headerColor = new Color(0.7f, 0.8f, 1f, 0.9f * fade);
         DrawText(new Vector2(layout.RankX, y), "#", headerColor, 14);
         for (int i = 0; i < _columns.Count; i++)
         {
@@ -704,35 +856,67 @@ public partial class ScoreboardPanel : HudPanel
                 DrawTextRight(layout.ColRight[i], y, layout.NumW, c.Title, headerColor, 14);
         }
         y += 22f;
-        DrawRect(new Rect2(layout.X, y, layout.W, 1f), new Color(1f, 1f, 1f, 0.25f));
+        DrawRect(new Rect2(layout.X, y, layout.W, 1f), new Color(1f, 1f, 1f, 0.25f * fade));
         y += 4f;
     }
 
-    /// <summary>QC <c>autocvar_hud_panel_scoreboard_table_highlight_alpha_eliminated</c> (scoreboard.qc:77,
-    /// default 0.6 — the luma skin also ships 0.6): the eliminated-row grey-out strength, cvar-read live with
-    /// the shipped default as fallback.</summary>
-    private static float EliminatedAlpha()
-    {
-        if (Api.Services is null) return 0.6f;
-        string s = Api.Cvars.GetString("hud_panel_scoreboard_table_highlight_alpha_eliminated");
-        if (string.IsNullOrEmpty(s)) return 0.6f;
-        return Mathf.Clamp(Api.Cvars.GetFloat("hud_panel_scoreboard_table_highlight_alpha_eliminated"), 0f, 1f);
-    }
+    // ---- live behavior cvars (QC autocvar_hud_panel_scoreboard_table_*; shared store via the base CvarF) ----
+
+    /// <summary>QC <c>..._table_highlight_alpha_eliminated</c> (scoreboard.qc:77, luma default 0.6): the
+    /// eliminated-row grey-out strength, read live from the shared store with the shipped default.</summary>
+    private float EliminatedAlpha() => Mathf.Clamp(CvarF("table_highlight_alpha_eliminated", 0.6f), 0f, 1f);
+
+    /// <summary>QC <c>..._table_highlight</c> (default on): alternate-row striping enabled.</summary>
+    private bool TableHighlight() => CvarF("table_highlight", 1f) != 0f;
+    /// <summary>QC <c>..._table_highlight_alpha</c> (0.2): alternate-row stripe strength.</summary>
+    private float TableHighlightAlpha() => Mathf.Clamp(CvarF("table_highlight_alpha", 0.2f), 0f, 1f);
+    /// <summary>QC <c>..._table_highlight_alpha_self</c> (0.4): the local player's row highlight strength.</summary>
+    private float SelfHighlightAlpha() => Mathf.Clamp(CvarF("table_highlight_alpha_self", 0.4f), 0f, 1f);
+    /// <summary>QC <c>..._table_fg_alpha_self</c> (1): the local player's row text alpha (vs ..._table_fg_alpha 0.9).</summary>
+    private float SelfFgAlpha() => Mathf.Clamp(CvarF("table_fg_alpha_self", 1f), 0f, 1f);
+    /// <summary>QC <c>..._table_fg_alpha</c> (0.9): the non-self row text alpha.</summary>
+    private float RowFgAlpha() => Mathf.Clamp(CvarF("table_fg_alpha", 0.9f), 0f, 1f);
+    /// <summary>QC <c>..._bg_teams_color_team</c> (0): tint a team section's bg by the team color × this factor.</summary>
+    private float TeamBgColorFactor() => CvarF("bg_teams_color_team", 0f);
+    /// <summary>QC <c>..._respawntime_decimals</c> (1): decimals shown in the respawn countdown (0 = whole sec).</summary>
+    private int RespawnDecimals() => (int)Mathf.Clamp(CvarF("respawntime_decimals", 1f), 0f, 3f);
+    /// <summary>QC <c>..._accuracy</c> (true): show the accuracy stats block.</summary>
+    private bool AccuracyEnabled() => CvarF("accuracy", 1f) != 0f;
+    /// <summary>QC <c>..._spectators_showping</c> (true): show ping next to spectator names.</summary>
+    private bool SpectatorsShowPing() => CvarF("spectators_showping", 1f) != 0f;
 
     /// <summary>Draw one player row across all columns; returns false once the panel is full.</summary>
-    private bool DrawRow(Layout layout, in ScoreRow r, int rank, ref float y, float rowH)
+    private bool DrawRow(Layout layout, in ScoreRow r, int rank, ref float y, float rowH,
+        float fade, int rowParity, int team)
     {
         if (y > Size2.Y - rowH) return false;
 
+        // QC scoreboard.qc:1531: alternate-row striping (sbt_highlight) on even rows, tinted by the team color
+        // (the row rgb passed into Scoreboard_DrawItem is the team color, '1 1 1' in FFA).
+        if (TableHighlight() && (rowParity % 2) == 0)
+        {
+            Color stripe = team != Teams.None ? TeamColor(team, TableHighlightAlpha() * fade)
+                                              : new Color(1f, 1f, 1f, TableHighlightAlpha() * fade);
+            DrawRect(new Rect2(layout.X, y, layout.W, rowH), stripe);
+        }
+
+        // QC ..._table_highlight_alpha_self: highlight the local player's row (drawn over the stripe).
         if (r.IsLocal)
-            DrawRect(new Rect2(layout.X, y, layout.W, rowH), new Color(0.3f, 0.5f, 0.9f, 0.30f));
+        {
+            Color selfHl = team != Teams.None ? TeamColor(team, SelfHighlightAlpha() * fade)
+                                              : new Color(0.3f, 0.5f, 0.9f, SelfHighlightAlpha() * fade);
+            DrawRect(new Rect2(layout.X, y, layout.W, rowH), selfHl);
+        }
 
         // QC scoreboard.qc:1519-1520: grey out an eliminated player's row (the eliminatedPlayers bitfield)
         // with a BLACK fill at hud_panel_scoreboard_table_highlight_alpha_eliminated (shipped luma skin: 0.6).
         if (r.Eliminated)
-            DrawRect(new Rect2(layout.X, y, layout.W, rowH), new Color(0f, 0f, 0f, EliminatedAlpha()));
+            DrawRect(new Rect2(layout.X, y, layout.W, rowH), new Color(0f, 0f, 0f, EliminatedAlpha() * fade));
 
-        DrawText(new Vector2(layout.RankX + 2f, y + 3f), rank.ToString(), r.IsLocal ? new Color(1f, 1f, 1f, 1f) : FgColor, 16);
+        // QC ..._table_fg_alpha / _self: self rows are brighter than the rest.
+        float rowAlpha = (r.IsLocal ? SelfFgAlpha() : RowFgAlpha()) * fade;
+        Color rowFg = new(1f, 1f, 1f, rowAlpha);
+        DrawText(new Vector2(layout.RankX + 2f, y + 3f), rank.ToString(), rowFg, 16);
 
         for (int i = 0; i < _columns.Count; i++)
         {
@@ -740,62 +924,129 @@ public partial class ScoreboardPanel : HudPanel
             if (c.Kind == ColumnKind.Separator) continue;
             FieldText ft = GetField(r, c);
             if (c.Kind == ColumnKind.Name)
-                DrawColored(new Vector2(layout.ColX[i], y + 3f), ft.Text, r.IsLocal ? new Color(1f, 1f, 1f, 1f) : FgColor, 16);
+                DrawColored(new Vector2(layout.ColX[i], y + 3f), ft.Text, rowFg, 16);
             else
-                DrawTextRight(layout.ColRight[i], y + 3f, layout.NumW, ft.Text, ft.Color, 16);
+                DrawTextRight(layout.ColRight[i], y + 3f, layout.NumW,
+                    ft.Text, new Color(ft.Color.R, ft.Color.G, ft.Color.B, ft.Color.A * rowAlpha), 16);
         }
 
         y += rowH;
         return true;
     }
 
-    // ---- map stats / respawn / accuracy / rankings footer (QC the footer draws) ----
+    // ---- spectators / map stats / respawn / accuracy / rankings footer (QC the footer draws) ----
 
-    private float DrawMapStats(float x, float w, float y)
+    /// <summary>QC <c>Scoreboard_Spectators_Draw</c> (scoreboard.qc:2364): a "Spectators (N)" bold header then
+    /// the spectator names (with ping when ..._spectators_showping), wrapped to the panel width.</summary>
+    private float DrawSpectators(float x, float w, float y, float fade)
+    {
+        if (_spectators.Count == 0) return y;
+        if (y > Size2.Y - 36f) return y;
+
+        DrawText(new Vector2(x, y), $"Spectators ({_spectators.Count})", new Color(1f, 1f, 1f, 0.95f * fade), 15);
+        y += 22f;
+
+        bool showPing = SpectatorsShowPing();
+        float cx = x + 6f;
+        float rowAlpha = RowFgAlpha() * fade;
+        const int sz = 14;
+        const float lineH = 18f;
+        foreach (SpectatorRow sp in _spectators)
+        {
+            // ping prefix (QC SP_PING field shown before the name when aligned-off / inline otherwise).
+            string pingTxt = (showPing && sp.Ping >= 0) ? (sp.Ping == 0 ? "N/A" : sp.Ping.ToString()) : "";
+            float pingW = pingTxt.Length != 0 ? MeasureText(pingTxt, sz) + 6f : 0f;
+            float nameW = MeasureText(HudText.Strip(sp.Name), sz);
+            float cellW = pingW + nameW + 16f;
+
+            if (cx + cellW > x + w - 6f && cx > x + 6f)
+            {
+                cx = x + 6f; y += lineH;
+                if (y > Size2.Y - lineH) break;
+            }
+            if (pingTxt.Length != 0)
+            {
+                DrawText(new Vector2(cx, y), pingTxt,
+                    new Color(PingColor(sp.Ping).R, PingColor(sp.Ping).G, PingColor(sp.Ping).B, rowAlpha), sz);
+                cx += pingW;
+            }
+            DrawColored(new Vector2(cx, y), sp.Name, new Color(1f, 1f, 1f, rowAlpha), sz);
+            cx += nameW + 16f;
+        }
+        return y + lineH + 6f;
+    }
+
+    private float DrawMapStats(float x, float w, float y, float fade)
     {
         bool hasMonsters = MonstersTotal > 0;
         bool hasSecrets = SecretsTotal > 0;
         if (!hasMonsters && !hasSecrets) return y;
         if (y > Size2.Y - 60f) return y;
 
-        DrawText(new Vector2(x, y), "Map stats:", new Color(1f, 1f, 1f, 0.9f), 14);
+        var head = new Color(1f, 1f, 1f, 0.9f * fade);
+        var body = new Color(1f, 1f, 1f, RowFgAlpha() * fade);
+        DrawText(new Vector2(x, y), "Map stats:", head, 14);
         y += 20f;
         if (hasMonsters)
         {
-            DrawText(new Vector2(x + 8f, y), "Monsters killed:", FgColor, 14);
-            DrawTextRight(x + w, y, w * 0.3f, $"{MonstersKilled}/{MonstersTotal}", FgColor, 14);
+            DrawText(new Vector2(x + 8f, y), "Monsters killed:", body, 14);
+            DrawTextRight(x + w, y, w * 0.3f, $"{MonstersKilled}/{MonstersTotal}", body, 14);
             y += 18f;
         }
         if (hasSecrets)
         {
-            DrawText(new Vector2(x + 8f, y), "Secrets found:", FgColor, 14);
-            DrawTextRight(x + w, y, w * 0.3f, $"{SecretsFound}/{SecretsTotal}", FgColor, 14);
+            DrawText(new Vector2(x + 8f, y), "Secrets found:", body, 14);
+            DrawTextRight(x + w, y, w * 0.3f, $"{SecretsFound}/{SecretsTotal}", body, 14);
             y += 18f;
         }
         return y + 6f;
     }
 
-    private float DrawRespawn(float x, float w, float y)
+    /// <summary>QC the respawn-status line (scoreboard.qc:2763-2796): "^1Respawning in ^3N^1..." (awaiting),
+    /// "You are dead, wait ^3N^7 before respawning" (cooldown), or "press jump to respawn" (ready). The decimals
+    /// shown follow ..._respawntime_decimals (QC count_seconds_decs vs count_seconds(ceil)).</summary>
+    private float DrawRespawn(float x, float w, float y, float fade)
     {
         if (RespawnRemaining < 0f) return y;
         if (y > Size2.Y - 24f) return y;
-        string s = RespawnRemaining <= 0f ? "Respawning..." : $"Respawning in {RespawnRemaining:0.0}s";
-        DrawTextCentered(new Vector2(x, y), w, s, new Color(1f, 0.9f, 0.4f, 0.95f), 16);
+        string s;
+        if (RespawnRemaining <= 0f)
+        {
+            s = "^2Respawning...";
+        }
+        else
+        {
+            int dec = RespawnDecimals();
+            string t = dec > 0
+                ? RespawnRemaining.ToString("0." + new string('0', dec),
+                    System.Globalization.CultureInfo.InvariantCulture)
+                : Mathf.CeilToInt(RespawnRemaining).ToString();
+            s = $"^1Respawning in ^3{t}^1...";
+        }
+        DrawTextCentered2(new Vector2(x, y), w, s, new Color(1f, 0.9f, 0.4f, 0.95f * fade), 16);
         return y + 22f;
     }
 
-    private float DrawAccuracy(float x, float w, float y)
+    private float DrawAccuracy(float x, float w, float y, float fade)
     {
-        if (_accuracy.Count == 0) return y; // not networked yet — block hidden (QC gates on weapon_accuracy data)
+        if (!AccuracyEnabled()) return y;             // QC ..._accuracy gate
+        if (_accuracy.Count == 0) return y;           // not networked yet — block hidden (QC gates on data)
         if (y > Size2.Y - 40f) return y;
-        DrawText(new Vector2(x, y), "Accuracy:", new Color(1f, 1f, 1f, 0.9f), 14);
+
+        // QC: "Accuracy stats (average %d%%)" header.
+        int sum = 0, n = 0;
+        foreach (var kv in _accuracy) if (kv.Value >= 0) { sum += kv.Value; n++; }
+        if (n == 0) return y;
+        int avg = sum / n;
+        DrawText(new Vector2(x, y), $"Accuracy stats (average {avg}%)", new Color(1f, 1f, 1f, 0.9f * fade), 14);
         y += 20f;
         float cx = x + 8f;
         foreach (var kv in _accuracy)
         {
             if (kv.Value < 0) continue; // weapon never fired (QC skips)
             string cell = $"{kv.Value}%";
-            DrawText(new Vector2(cx, y), cell, AccuracyColor(kv.Value), 14);
+            Color ac = AccuracyColor(kv.Value);
+            DrawText(new Vector2(cx, y), cell, new Color(ac.R, ac.G, ac.B, ac.A * fade), 14);
             cx += MeasureText(cell, 14) + 14f;
             if (cx > x + w - 40f) { cx = x + 8f; y += 18f; if (y > Size2.Y - 24f) break; }
         }
@@ -811,35 +1062,64 @@ public partial class ScoreboardPanel : HudPanel
             : new Color(Mathf.Lerp(1f, 0f, (f - 0.5f) * 2f), 1f, 0f, 1f);
     }
 
-    private float DrawRankings(float x, float w, float y)
+    private float DrawRankings(float x, float w, float y, float fade)
     {
         // QC Scoreboard_Rankings_Draw is race/CTS only; gate on the mode + data (records aren't networked yet).
         if (_rankings.Count == 0) return y;
         if (GameScores.Gametype != "rc" && GameScores.Gametype != "cts") return y;
         if (y > Size2.Y - 40f) return y;
-        DrawText(new Vector2(x, y), "Rankings:", new Color(1f, 1f, 1f, 0.9f), 14);
+        var body = new Color(1f, 1f, 1f, RowFgAlpha() * fade);
+        DrawText(new Vector2(x, y), "Rankings:", new Color(1f, 1f, 1f, 0.9f * fade), 14);
         y += 20f;
         for (int i = 0; i < _rankings.Count && y < Size2.Y - 20f; i++)
         {
             (int t, string holder) = _rankings[i];
-            DrawText(new Vector2(x + 8f, y), $"{i + 1}.", FgColor, 14);
-            DrawText(new Vector2(x + 36f, y), GameScores.TimeEncodedToString(t, compact: false), FgColor, 14);
-            DrawColored(new Vector2(x + 140f, y), holder, FgColor, 14);
+            DrawText(new Vector2(x + 8f, y), $"{i + 1}.", body, 14);
+            DrawText(new Vector2(x + 36f, y), GameScores.TimeEncodedToString(t, compact: false), body, 14);
+            DrawColored(new Vector2(x + 140f, y), holder, body, 14);
             y += 18f;
         }
         return y + 6f;
     }
 
-    private void DrawFooter(float x, float w)
+    private void DrawFooter(float x, float w, float fade)
     {
+        // QC the map name footer (the game-info line already shows the map at the top; keep a faint bottom
+        // echo as a stable anchor). Hidden when no map name.
         if (string.IsNullOrEmpty(MapName)) return;
-        DrawTextRight(x + w, Size2.Y - 24f, w, MapName, new Color(1f, 1f, 1f, 0.5f), 14);
+        DrawTextRight(x + w, Size2.Y - 24f, w, MapName, new Color(1f, 1f, 1f, 0.5f * fade), 14);
     }
 
     /// <summary>Draw a possibly color-coded string left-to-right starting at <paramref name="pos"/>.</summary>
     private void DrawColored(Vector2 pos, string text, Color baseColor, int size)
     {
         float cx = pos.X;
+        foreach (HudText.Run run in HudText.Parse(text, baseColor))
+        {
+            DrawText(new Vector2(cx, pos.Y), run.Text, run.Color, size);
+            cx += MeasureText(run.Text, size);
+        }
+    }
+
+    /// <summary>Draw a color-coded string ending at <paramref name="rightX"/> (right-aligned colored text).</summary>
+    private void DrawColoredRight(float rightX, float topY, float width, string text, Color baseColor, int size)
+    {
+        float total = 0f;
+        foreach (HudText.Run run in HudText.Parse(text, baseColor)) total += MeasureText(run.Text, size);
+        float cx = rightX - total;
+        foreach (HudText.Run run in HudText.Parse(text, baseColor))
+        {
+            DrawText(new Vector2(cx, topY), run.Text, run.Color, size);
+            cx += MeasureText(run.Text, size);
+        }
+    }
+
+    /// <summary>Draw a color-coded string horizontally centered within <paramref name="width"/>.</summary>
+    private void DrawTextCentered2(Vector2 pos, float width, string text, Color baseColor, int size)
+    {
+        float total = 0f;
+        foreach (HudText.Run run in HudText.Parse(text, baseColor)) total += MeasureText(run.Text, size);
+        float cx = pos.X + (width - total) * 0.5f;
         foreach (HudText.Run run in HudText.Parse(text, baseColor))
         {
             DrawText(new Vector2(cx, pos.Y), run.Text, run.Color, size);
@@ -912,5 +1192,40 @@ public partial class ScoreboardPanel : HudPanel
             }
         }
         return l;
+    }
+
+    // =====================================================================================
+    //  Behavior-cvar defaults (QC autocvar_hud_panel_scoreboard_*; HudConfig invokes this by reflection)
+    // =====================================================================================
+
+    /// <summary>Register the scoreboard's behavior-cvar defaults into the shared store (QC the
+    /// <c>autocvar_hud_panel_scoreboard_*</c> initializers, scoreboard.qc:66-105). Idempotent — keeps any
+    /// cfg/user value. Read live by the draw code so console/menu edits take effect immediately.</summary>
+    public static void RegisterDefaults(CvarService c)
+    {
+        // fade in/out (scoreboard.qc:66-67)
+        c.Register("hud_panel_scoreboard_fadeinspeed", "10", CvarFlags.Save);
+        c.Register("hud_panel_scoreboard_fadeoutspeed", "5", CvarFlags.Save);
+        // respawn timer decimals (scoreboard.qc:68)
+        c.Register("hud_panel_scoreboard_respawntime_decimals", "1", CvarFlags.Save);
+        // table look (scoreboard.qc:69-77)
+        c.Register("hud_panel_scoreboard_table_bg_alpha", "0", CvarFlags.Save);
+        c.Register("hud_panel_scoreboard_table_fg_alpha", "0.9", CvarFlags.Save);
+        c.Register("hud_panel_scoreboard_table_fg_alpha_self", "1", CvarFlags.Save);
+        c.Register("hud_panel_scoreboard_table_highlight", "1", CvarFlags.Save);
+        c.Register("hud_panel_scoreboard_table_highlight_alpha", "0.2", CvarFlags.Save);
+        c.Register("hud_panel_scoreboard_table_highlight_alpha_self", "0.4", CvarFlags.Save);
+        c.Register("hud_panel_scoreboard_table_highlight_alpha_eliminated", "0.6", CvarFlags.Save);
+        // team bg tint (scoreboard.qc:78)
+        c.Register("hud_panel_scoreboard_bg_teams_color_team", "0", CvarFlags.Save);
+        // accuracy block (scoreboard.qc:82-83)
+        c.Register("hud_panel_scoreboard_accuracy", "1", CvarFlags.Save);
+        c.Register("hud_panel_scoreboard_accuracy_doublerows", "0", CvarFlags.Save);
+        // item-stats block (scoreboard.qc:88-89)
+        c.Register("hud_panel_scoreboard_itemstats", "1", CvarFlags.Save);
+        c.Register("hud_panel_scoreboard_itemstats_doublerows", "0", CvarFlags.Save);
+        // spectator list (scoreboard.qc:80,99)
+        c.Register("hud_panel_scoreboard_spectators_position", "1", CvarFlags.Save);
+        c.Register("hud_panel_scoreboard_spectators_showping", "1", CvarFlags.Save);
     }
 }

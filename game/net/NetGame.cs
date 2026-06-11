@@ -80,6 +80,14 @@ public sealed partial class NetGame : Node3D
     private ServerNet? _server;                 // listen server only
     private ClientNet? _client;
     private ClientWorld _render = null!;
+    // The background parse/build queue (S1): the idle player-model warm AND the live on-demand player-model
+    // path (perf §9.4 Wave 1 — first sight of N bots streams one model build per frame instead of all at once).
+    private XonoticGodot.Game.Client.BackgroundAssetStreamer? _streamer;
+    // Player-model names whose async resolve settled as NOT skeletal (non-IQM / no skeleton): the resolver
+    // returns null for these so ClientWorld's MD3/static fall-through owns them — exactly the old synchronous
+    // path's outcome. Per session; model files can't change mid-run.
+    private readonly System.Collections.Generic.HashSet<string> _nonSkeletalPlayerModels =
+        new(System.StringComparer.OrdinalIgnoreCase);
     private ClientEntityView _entityView = null!;
     private Camera3D _camera = null!;
     private RadarPanel _radar = null!;
@@ -91,6 +99,7 @@ public sealed partial class NetGame : Node3D
     // player-agnostic panels (centerprint/killfeed) + the NetHud crosshair/health.
     private XonoticGodot.Game.Hud.Hud _fullHud = null!;
     private XonoticGodot.Game.Client.DamageTextLayer? _damageText; // [T51] floating damage numbers (cl_damagetext)
+    private XonoticGodot.Game.Client.WaypointSpriteLayer? _waypointLayer; // 3D in-world waypoint/objective markers
     private XonoticGodot.Game.Client.HitSound? _hitSound;          // client-side hit-confirmation beep (cl_hitsound modes 0-3)
     private XonoticGodot.Game.Hud.ScoreboardPanel _scoreboard = null!; // the networked scoreboard (held while +showscores)
     private XonoticGodot.Game.Hud.HudNotifications? _notifications; // notification router (centerprint/killfeed/announcer) on the net path
@@ -387,6 +396,19 @@ public sealed partial class NetGame : Node3D
         await PrecacheWeaponModelsAsync();
         if (!IsInsideTree()) return;
 
+        // Warm the combat-sound decode cache + common player models (A3) so the first shot/explosion and the
+        // first player render don't stall on an OGG decode / skeletal-model texture build mid-combat.
+        LoadingScreen?.BeginStage("Precaching sounds…", 0.87f, 1.5f);
+        await YieldForLoadingFrame();
+        if (!IsInsideTree()) return;
+        await PrecacheCombatSoundsAndModelsAsync();
+        if (!IsInsideTree()) return;
+
+        // S3: once the loading screen drops, a low-priority idle warmer mops up the long tail (announcer/pickup
+        // voices, the other stock player models) on a ~1.5 ms/frame budget so the WHOLE asset set goes hot within
+        // the first minute of play, without ever spiking a frame.
+        StartIdleWarmup();
+
         LoadingScreen?.BeginStage("Connecting…", 0.90f, 0.5f);
 
         // FPS mouse-look: capture the cursor (the Shell releases/recaptures it around the in-game menu).
@@ -444,6 +466,12 @@ public sealed partial class NetGame : Node3D
         //     server reads authentic balance/physics; a bare CLI host (no preloaded store) loads them too. ---
         System.Collections.Generic.IReadOnlyList<EntityDict>? mapEntities = bsp is not null ? BuildEntityDicts(bsp) : null;
         _serverWorld = new GameWorld(collision, mapEntities) { MapName = _map };
+        // B3: on the interactive client-hosted path (a windowed listen server), clamp the per-render-frame
+        // catch-up so a hitch isn't followed by a frame running 16× the sim — that second spike would miss
+        // another vblank. The small backlog drains over the next few frames instead. A headless dedicated host
+        // (no vblank) keeps the full cap and catches up fast.
+        if (DisplayServer.GetName() != "headless")
+            _serverWorld.Simulation.MaxTicksPerFrame = 4;
         if (built is not null)
             _serverWorld.BrushModels = built.Submodels; // moving SOLID_BSP brushes (doors/plats) clip correctly
         if (bsp is not null)
@@ -699,6 +727,12 @@ public sealed partial class NetGame : Node3D
         }
         AddChild(_render);
 
+        // The background asset streamer (S1) — created unconditionally (not just for the idle warm) because the
+        // LIVE player-model resolve streams through it: parse on the thread pool, Godot build under the per-frame
+        // budget. One node per NetGame; freed with the scene.
+        _streamer = new XonoticGodot.Game.Client.BackgroundAssetStreamer { Name = "AssetStreamer" };
+        AddChild(_streamer);
+
         // Networked projectiles draw their REAL model (rocket.md3 with its additive RocketThrust flame cone,
         // grenademodel.md3) through the same VFS loader the world/weapon models use. Set after AddChild since
         // ClientWorld._Ready (which built _render.Projectiles) ran synchronously on it.
@@ -713,6 +747,10 @@ public sealed partial class NetGame : Node3D
         // Likewise pre-build the shared per-type projectile-trail Resources so the first rocket/plasma/grenade
         // doesn't construct its trail material on its render frame (see ProjectileRenderer.WarmupTrails).
         _render.Projectiles.WarmupTrails();
+        // A2: render one hidden instance of every effect/projectile material family in a tiny offscreen viewport
+        // so the GPU compiles their shader pipelines NOW (during load) — the first real explosion/rocket/gib in
+        // play then hits a warm pipeline instead of stalling the frame. Self-frees after a few frames.
+        XonoticGodot.Game.Client.GpuWarmPass.Run(_render, _render.Effects, _render.Projectiles);
 
         // CSQC appearance context (FORCEMODEL/FORCECOLORS need the local player + gametype): read live each frame.
         _render.AppearanceProvider = BuildAppearanceContext;
@@ -873,13 +911,21 @@ public sealed partial class NetGame : Node3D
         // standalone _scoreboard owns the networked scoreboard, so we don't double it up.
         _fullHud = new XonoticGodot.Game.Hud.Hud { Name = "FullHud", Layer = 4 };
         AddChild(_fullHud);
-        // NetHud (below) is the always-on crosshair + health/armor on the net path; hide the full HUD's own copies
-        // so they don't render on top of each other (they default Visible=true and draw even with no local Player).
+        // The full HUD's skinned Crosshair + HealthArmor panels now render on the play path (goal 1). On a listen
+        // server (--host) UpdateFullHudPlayer feeds them the local server Player so they show the skinned art and
+        // suppresses NetHud's duplicate crosshair/health (NetHud.SuppressCrosshairAndHealth). On a pure --connect
+        // client (no local Player) UpdateFullHudPlayer hides the skinned Crosshair (it would otherwise draw a
+        // reticle even without a Player) and leaves NetHud un-suppressed as the fallback — so there's never a DOUBLE
+        // crosshair/health. HealthArmorPanel self-blanks with no Player (reads its resources), so it's left visible.
+        // Crosshair visibility is driven by UpdateFullHudPlayer (shown only when a local Player resolves). Start it
+        // HIDDEN so the pure-client baseline (no Player ever resolves → UpdateFullHudPlayer's null==null early-out
+        // never runs its body) leaves NetHud's crosshair as the sole reticle. The listen-server null→Player edge
+        // then shows it.
         _fullHud.Crosshair.Visible = false;
-        _fullHud.HealthArmor.Visible = false;
-        // The full HUD's Timer panel isn't fed the networked match clock yet, so it would show a wrong climbing
-        // time — hide it until it's wired (the scoreboard header already shows the time/frag limits).
-        _fullHud.Timer.Visible = false;
+        //
+        // The full HUD's Timer panel IS now fed: the server pushes the global match clock (NetControl.MatchState →
+        // ClientNet.HasMatchState/MatchStartTime/MatchTimeLimit/MatchWarmup), drained into the panel each frame by
+        // UpdateMatchClock(). It self-blanks (TimerPanel draws nothing until fed) until the first MatchState lands.
 
         // Ping readout (next to the FPS counter): feed it the live ENet round-trip estimate to the server. The
         // panel self-gates on cl_showping/showping and stays hidden until the cvar is set; the provider returns
@@ -938,16 +984,54 @@ public sealed partial class NetGame : Node3D
             // line is the SERVER command ("minigame move <bits>") — SendStringCommand IS the clc_stringcmd
             // forward channel, so it carries no extra "cmd " prefix (that's the DP local-console convention).
             _fullHud.PongMoveSink = bits => SendStringCommand($"minigame move {bits}");
+
+            // Chat (QC HUD panel #12): the port has no dedicated chat net channel — server chat is broadcast via
+            // ServerNet.BroadcastPrint and arrives on the SAME PrintReceived stream the minigame session-list
+            // parser reads. Forward every print line to the ChatPanel's scrollback (it self-blanks until fed); the
+            // panel honours con_chattime/con_chatsize and fades lines out. (Console output is also relayed to the
+            // in-game console via ConsolePrint elsewhere, so chat shows in both — matching DP, where chat lands in
+            // the console AND the chat HUD area.)
+            _client.PrintReceived += OnServerPrintForChat;
         }
+
+        // QuickMenu (QC HUD panel #QUICKMENU): point its command sink at the shared interpreter (RunCommand, wired
+        // by Shell) — the analogue of QC localcmd, the SAME single channel a bound key uses (RunBoundCommand). A
+        // picked toggle row (`toggle cl_hitsound`) hits the shared cvar store; a say/say_team/vcall row is forwarded
+        // to the server by the interpreter's own forward path, exactly like typing it in the console. The panel is
+        // toggled by the `quickmenu` bind (intercepted in RunBoundCommand → Toggle()); it self-blanks until opened.
+        // It grabs keyboard focus on open so the 1-9/0/Esc number-key navigation works; mouse-click navigation
+        // needs the cursor made visible (the gameplay path keeps it captured) — see the report's goal-8 note.
+        if (_fullHud.GetPanel<XonoticGodot.Game.Hud.QuickMenuPanel>() is { } quick)
+            quick.CommandSink = line => RunCommand?.Invoke(line);
 
         _radar = new RadarPanel
         {
             Name = "Radar",
             Net = _client,
-            Size = new Vector2(200, 200),
+            Size = new Vector2(256, 256),
             Position = new Vector2(24, 24),
         };
+        // Feed the real minimap: the map name (resolves gfx/<map>_mini.jpg inside the map pk3 via the VFS) + the
+        // map's world XY bounds (QC mi_min/mi_max = the BSP worldspawn model mins/maxs) so the image + blips align.
+        _radar.MapName = _map;
+        if (_bsp is { Models.Length: > 0 })
+        {
+            System.Numerics.Vector3 mins = _bsp.Models[0].Mins, maxs = _bsp.Models[0].Maxs;
+            _radar.MapMinXY = new Vector2(mins.X, mins.Y);
+            _radar.MapMaxXY = new Vector2(maxs.X, maxs.Y);
+        }
         hudLayer.AddChild(_radar);
+
+        // 3D in-world waypoint sprites (QC Draw_WaypointSprite): floating objective/ping markers projected through
+        // the first-person camera, on their OWN layer BELOW the HUD panels (Layer 3 < the HUD's 4/5) so the
+        // crosshair + panels draw over them. Fed the live waypoint list straight from ClientNet.
+        var waypointLayer = new CanvasLayer { Name = "Waypoints", Layer = 3 };
+        AddChild(waypointLayer);
+        _waypointLayer = new XonoticGodot.Game.Client.WaypointSpriteLayer { Name = "WaypointSprites", Camera = _camera };
+        _waypointLayer.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+        if (_client is not null)
+            _waypointLayer.Source = () => _client.Waypoints;
+        waypointLayer.AddChild(_waypointLayer);
 
         // Networked scoreboard (QC HUD panel #25 + the +showscores toggle). The real play path is NetGame, whose
         // NetHud has no scoreboard — so the per-player columns + team totals that ClientNet decodes
@@ -1103,6 +1187,12 @@ public sealed partial class NetGame : Node3D
         // any weapon a player might fire (including the lazy ones).
         System.Collections.Generic.HashSet<string> expected = ComputeExpectedWeapons();
 
+        // A3: warm EVERY weapon's v_ model by default (cl_precache_all_weapons 1), not just this match's
+        // expected loadout — the extra load cost is hidden by the loading screen and it removes the 30–300 ms
+        // stall the first time the player switches to / picks up / sees an unanticipated weapon. The smart
+        // expected-only path is still available (set cl_precache_all_weapons 0) for memory-constrained machines.
+        bool warmAll = (_sharedCvars?.GetFloat("cl_precache_all_weapons") ?? 1f) != 0f;
+
         // Spread the per-weapon load across frames so the loading bar visibly ticks instead of freezing on
         // this one stage. Yield every few weapons (not every one — the yield costs a frame each).
         const int YieldEveryNWeapons = 4;
@@ -1132,9 +1222,10 @@ public sealed partial class NetGame : Node3D
                     $"[muzzle] {w.NetName}: movedir=({so.X:0.0},{so.Y:0.0},{so.Z:0.0}) fwd/left/up from eye");
             }
 
-            // The heavy bit: full mesh + material/texture build of the v_ model, plus the hand rig. Only do
-            // it if this match is likely to need this weapon. An unanticipated pickup just lazy-loads.
-            if (expected.Contains(w.NetName))
+            // The heavy bit: full mesh + material/texture build of the v_ model, plus the hand rig. Warmed for
+            // every weapon by default (warmAll); the smart path restricts it to this match's expected loadout.
+            // An unanticipated pickup under the smart path just lazy-loads (one-frame hitch, then cached).
+            if (warmAll || expected.Contains(w.NetName))
             {
                 // Build once to fill the parse + material/texture caches, then discard the orphan node
                 // (never added to the tree → free it so it doesn't leak). A miss just caches the failure.
@@ -1156,6 +1247,109 @@ public sealed partial class NetGame : Node3D
             }
         }
         GD.Print($"[NetGame] precached {warmed} weapon models, skipped {skipped} (lazy), {muzzles} muzzle tags.");
+    }
+
+    /// <summary>
+    /// Warm the combat-sound decode cache + the common player models at map load (A3) so the first weapon fire /
+    /// impact / explosion doesn't stall the frame decoding its OGG (the report's 5–50 ms first-play cost), and
+    /// the first sight of a player doesn't stall building its skeletal IQM + textures (20–150 ms). Precaches
+    /// every registered sound under <c>sound/weapons/</c> (the per-weapon fire/impact/reload lists) and the local
+    /// + stock-default player models. Everything else (announcer voices, item-pickup cues, other players' model
+    /// picks) stays lazy — the idle-warmup queue (S3) mops up the long tail. Yields so the loading bar ticks.
+    /// </summary>
+    private async System.Threading.Tasks.Task PrecacheCombatSoundsAndModelsAsync()
+    {
+        if (_assets is null)
+            return;
+
+        int sounds = 0, i = 0;
+        foreach (XonoticGodot.Common.Gameplay.GameSound s in XonoticGodot.Common.Gameplay.Sounds.All)
+        {
+            // Combat sounds live under sound/weapons/ (rocket_fire, rocket_impact, …) — the report's per-weapon
+            // fire/impact lists. LoadSound fills _soundCache (and caches misses, so no re-probe on real play).
+            if (string.IsNullOrEmpty(s.Sample)
+                || !s.Sample.StartsWith("weapons/", System.StringComparison.OrdinalIgnoreCase))
+                continue;
+            _assets.LoadSound(s.Sample);
+            sounds++;
+            if (++i % 16 == 0)
+            {
+                await YieldForLoadingFrame();
+                if (!IsInsideTree()) return;
+            }
+        }
+
+        // Player models: warm the local player's chosen model (_cl_playermodel) + the stock default (erebus) so
+        // the first player render doesn't stall building the skeletal IQM's textures/materials (cached in
+        // _assets). The throwaway build node is freed — only the material/texture caches are the goal. Other
+        // players' picks stay lazy; precaching each connected client's model at join is a follow-up.
+        var models = new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase)
+        {
+            "models/player/erebus.iqm",
+        };
+        string local = _sharedCvars?.GetString("_cl_playermodel") ?? string.Empty;
+        if (!string.IsNullOrEmpty(local))
+            models.Add(local);
+        int modelsWarmed = 0;
+        foreach (string m in models)
+        {
+            AssetLoader.SkeletalModelParts? parts = _assets.LoadSkeletalModel(m, 0);
+            if (parts is not null)
+            {
+                parts.Root.QueueFree(); // warm the texture/material caches; discard the throwaway build node
+                modelsWarmed++;
+            }
+        }
+        GD.Print($"[NetGame] precached {sounds} combat sounds, {modelsWarmed} player models.");
+    }
+
+    /// <summary>The stock player models the idle warmer warms after load (the local + erebus default are already
+    /// eagerly precached by A3). Warming these in the background means the first sight of another player's chosen
+    /// model doesn't stall building its skeletal IQM + textures.</summary>
+    private static readonly string[] IdleWarmPlayerModels =
+    {
+        "models/player/megaerebus.iqm", "models/player/nyx.iqm",
+        "models/player/pyria.iqm", "models/player/seraphina.iqm", "models/player/umbra.iqm",
+    };
+
+    /// <summary>Spin up the idle-time asset warmer (S3): queue the long tail of sounds + the other stock player
+    /// models for background warming on a small per-frame budget, so the whole asset set is hot within the first
+    /// minute of play. The loaders cache, so anything the eager precache already warmed is a cheap no-op here.</summary>
+    private void StartIdleWarmup()
+    {
+        if (_assets is null)
+            return;
+        // `set cl_idle_warmup 0` disables the background warm (A/B switch — the concurrent player-model parse was
+        // implicated in an early gen2 GC stall). Unset/unregistered → on (only an explicit "0" disables).
+        if (_sharedCvars is not null && _sharedCvars.GetString("cl_idle_warmup") == "0")
+            return;
+        var warmer = new XonoticGodot.Game.Client.IdleWarmer { Name = "IdleWarmer" };
+        AddChild(warmer);
+
+        // Every registered sound (announcer/pickup/voice + the already-warm combat samples). LoadSound caches.
+        foreach (XonoticGodot.Common.Gameplay.GameSound s in XonoticGodot.Common.Gameplay.Sounds.All)
+        {
+            string sample = s.Sample;
+            if (!string.IsNullOrEmpty(sample))
+                warmer.Enqueue(() => _assets.LoadSound(sample));
+        }
+
+        // The other stock player models — streamed (S1): the IQM parse + sidecar reads run OFF the main thread
+        // (BackgroundAssetStreamer.Request), and only the Godot build (Skeleton3D + skinned mesh + materials) runs
+        // on the main thread, budgeted. Build then free the throwaway node (the texture/material caches persist).
+        // Low priority: a LIVE on-demand player-model resolve (ResolvePlayerModel) shares this streamer at High
+        // priority, so a visible player's model always builds before warm-only work.
+        if (_streamer is null)
+            return;
+        AssetLoader loader = _assets;
+        foreach (string model in IdleWarmPlayerModels)
+        {
+            string m = model;
+            _streamer.Request(
+                () => loader.ParseSkeletalModel(m, 0),                 // off-thread: pure-C# IQM + sidecar parse
+                parse => loader.BuildSkeletalModel(parse)?.Root.QueueFree(), // main: Godot build, then discard
+                XonoticGodot.Game.Client.BackgroundAssetStreamer.Priority.Low);
+        }
     }
 
     /// <summary>
@@ -1339,6 +1533,7 @@ public sealed partial class NetGame : Node3D
             _client.NotificationReceived -= OnNotificationReceived;
             _client.MinigameStateReceived -= OnMinigameStateReceived;
             _client.PrintReceived -= OnServerPrintForMinigame;
+            _client.PrintReceived -= OnServerPrintForChat;
         }
         if (_sharedCvarBridge is not null && _sharedCvars is not null)
         {
@@ -1664,6 +1859,9 @@ public sealed partial class NetGame : Node3D
         // team totals whenever a fresh LatestScoreboard arrives (the panel only repaints on data/toggle, so this
         // is cheap). BindTable.ShowScores is the held-button state set from the +showscores bind.
         UpdateScoreboard();
+        UpdateScore();
+        UpdateMatchClock();
+        UpdatePickupFeed();
         UpdateModIcons();
         UpdateAccuracy();
 
@@ -1672,7 +1870,7 @@ public sealed partial class NetGame : Node3D
         // pause menu/console own the cursor (the Shell drives those).
         if (!GetTree().Paused && !ConsoleState.IsOpen)
         {
-            bool ui = MinigameMenuOpen;
+            bool ui = UiOwnsCursor;
             if (ui != _minigameUiOwnedCursor)
             {
                 _minigameUiOwnedCursor = ui;
@@ -1712,6 +1910,80 @@ public sealed partial class NetGame : Node3D
         return string.IsNullOrWhiteSpace(gt) ? _gametype : gt;
     }
 
+    // ---- pickup feed (QC HUD_Pickup / STAT(LAST_PICKUP)) ----
+    // The port has no networked LAST_PICKUP stat, so on the listen server we detect pickups client-side off the
+    // local Player: a NEW weapon in the owned set is an unambiguous pickup, and a per-frame resource JUMP above a
+    // threshold regen never reaches is an item pickup. Baselines are (re)seeded silently on (re)spawn so the spawn
+    // grant isn't reported. (Pure --connect clients have no local Player → the feed stays empty; a faithful
+    // LAST_PICKUP stat would be the cross-client follow-up.)
+    private bool _pickupInit;
+    private XonoticGodot.Common.Gameplay.WepSet _pickupLastOwned;
+    private float _pickupHealth, _pickupArmor, _pickupShells, _pickupBullets, _pickupRockets, _pickupCells;
+
+    private void UpdatePickupFeed()
+    {
+        if (_fullHud is null)
+            return;
+        Player? p = LocalServerPlayer;
+        if (p is null || p.IsDead || p.IsObserver)
+        {
+            _pickupInit = false; // re-baseline on (re)spawn so the spawn loadout isn't shown as a pickup
+            return;
+        }
+
+        XonoticGodot.Common.Gameplay.WepSet owned = p.OwnedWeaponSet;
+        float health = p.GetResource(ResourceType.Health);
+        float armor = p.GetResource(ResourceType.Armor);
+        float shells = p.GetResource(ResourceType.Shells);
+        float bullets = p.GetResource(ResourceType.Bullets);
+        float rockets = p.GetResource(ResourceType.Rockets);
+        float cells = p.GetResource(ResourceType.Cells);
+
+        if (_pickupInit)
+        {
+            XonoticGodot.Game.Hud.PickupPanel? feed = _fullHud.GetPanel<XonoticGodot.Game.Hud.PickupPanel>();
+            if (feed is not null)
+            {
+                // New weapons — always a genuine pickup (never regen/spawn here, since spawn re-baselines).
+                foreach (XonoticGodot.Common.Gameplay.Weapon w in XonoticGodot.Common.Gameplay.Weapons.All)
+                    if (owned.Has(w) && !_pickupLastOwned.Has(w))
+                        feed.Push(string.IsNullOrEmpty(w.DisplayName) ? w.NetName : w.DisplayName,
+                                  XonoticGodot.Game.Hud.WeaponHud.IconName(w.NetName));
+
+                // Resource pickups — a per-frame jump above a threshold regen never reaches in one frame
+                // (health/armor regen is gradual; the 4 main ammo pools never regen).
+                if (health - _pickupHealth >= 3f) feed.Push("Health", "health");
+                if (armor - _pickupArmor >= 3f) feed.Push("Armor", "armor");
+                if (shells - _pickupShells >= 1f) feed.Push("Shells", "ammo_shells");
+                if (bullets - _pickupBullets >= 1f) feed.Push("Bullets", "ammo_bullets");
+                if (rockets - _pickupRockets >= 1f) feed.Push("Rockets", "ammo_rockets");
+                if (cells - _pickupCells >= 1f) feed.Push("Cells", "ammo_cells");
+            }
+        }
+
+        _pickupInit = true;
+        _pickupLastOwned = owned;
+        _pickupHealth = health; _pickupArmor = armor;
+        _pickupShells = shells; _pickupBullets = bullets; _pickupRockets = rockets; _pickupCells = cells;
+    }
+
+    /// <summary>Drain the networked match clock (NetControl.MatchState → ClientNet) into the TIMER panel each
+    /// frame: GAMESTARTTIME / TIMELIMIT*60 / warmup, with "now" on the same server clock (LatestServerTime).
+    /// The panel self-blanks until the first MatchState arrives, so this is safe to call every frame.</summary>
+    private void UpdateMatchClock()
+    {
+        if (_fullHud is null || _client is null || !_client.HasMatchState)
+            return;
+        TimerPanel t = _fullHud.Timer;
+        t.Now = _client.LatestServerTime;
+        t.MatchStartTime = _client.MatchStartTime;
+        t.TimeLimitSeconds = _client.MatchTimeLimit;
+        t.WarmupStage = _client.MatchWarmup;
+        t.WarmupTimeLimitSeconds = _client.MatchWarmupLimit;
+        if (_client.MatchIntermission)
+            t.IntermissionTime = _client.LatestServerTime;
+    }
+
     /// <summary>
     /// Point the full HUD's player-bound panels (health/ammo/weapons/crosshair/speedo) at the local actor: on a
     /// listen server that is <see cref="LocalServerPlayer"/> (resolved once the spawn lands); on a pure client
@@ -1727,6 +1999,27 @@ public sealed partial class NetGame : Node3D
             return;
         _lastHudPlayer = p;
         _fullHud.SetPlayer(p);
+
+        // With a local Player present the skinned Crosshair + HealthArmor panels render, so suppress NetHud's
+        // duplicate vector crosshair + textual health/armor (goal 1: no double crosshair/health). On a pure client
+        // (p == null) NetHud stays the always-on fallback.
+        bool havePlayer = p is not null;
+        if (_hud is not null && GodotObject.IsInstanceValid(_hud))
+            _hud.SuppressCrosshairAndHealth = havePlayer;
+
+        // HealthArmorPanel reads the Player's resources, so it self-blanks with no Player (safe to leave visible).
+        // CrosshairPanel, however, draws its reticle even without a Player (it doesn't gate on Player) — so on a
+        // pure client it would DOUBLE NetHud's crosshair. Show the skinned crosshair only when a local Player is
+        // present; otherwise NetHud (un-suppressed above) owns the reticle. No double crosshair in either case.
+        if (_fullHud.Crosshair.Visible != havePlayer)
+            _fullHud.Crosshair.Visible = havePlayer;
+
+        // StrafeHud (goal 3): point it at the local server Player (its velocity + view angles + onground drive the
+        // strafe bar). It self-blanks without a Player, so on a pure client this leaves it null = no draw. The
+        // optional WishDir/JumpHeld/OnSlick are not fed (the HUD degrades to the non-local W+A path), which keeps
+        // it useful without exposing the carrier's per-tick move-values to the client HUD layer.
+        if (_fullHud.GetPanel<XonoticGodot.Game.Hud.StrafeHudPanel>() is { } strafe)
+            strafe.Player = p;
     }
     private Player? _lastHudPlayer;
 
@@ -1806,6 +2099,108 @@ public sealed partial class NetGame : Node3D
     }
     private XonoticGodot.Net.ScoreboardWire? _lastFedScoreboard;
     private XonoticGodot.Net.GametypeStatusBlock.Decoded? _lastFedModeStatus;
+
+    // [Score panel] last-fed scoreboard reference, so the in-game Score overlay rebuilds only on a data change
+    // (the wire object is replaced per decode — identity by reference, like UpdateScoreboard).
+    private XonoticGodot.Net.ScoreboardWire? _lastScorePanelFed;
+
+    /// <summary>
+    /// Feed the in-game Score OVERLAY (#7 — the corner standing readout, distinct from the full scoreboard) from
+    /// the SAME networked source the scoreboard uses (<see cref="ClientNet.LatestScoreboard"/> +
+    /// <see cref="ClientNet.LocalNetId"/>). Best-effort feed (goal 7): own primary score + place, the rankings
+    /// leaderboard rows, and (teamplay) per-team scores. The panel self-blanks until fed (<c>HasData</c>), so a
+    /// pre-first-snapshot client draws nothing. Rebuilds only when the wire object changes (cheap per frame).
+    /// </summary>
+    private void UpdateScore()
+    {
+        if (_fullHud is null || _client is null)
+            return;
+        XonoticGodot.Game.Hud.ScorePanel? panel = _fullHud.GetPanel<XonoticGodot.Game.Hud.ScorePanel>();
+        if (panel is null)
+            return;
+
+        XonoticGodot.Net.ScoreboardWire? sb = _client.LatestScoreboard;
+        if (sb is null)
+            return; // no networked scores yet → panel self-blanks
+        if (ReferenceEquals(sb, _lastScorePanelFed))
+            return; // unchanged since last feed
+        _lastScorePanelFed = sb;
+
+        // Primary score column index within the wire's NetworkedFields order (QC scores_primary). Default 0
+        // (SP_SCORE) when no gametype refined it. The wire's Columns array is in NetworkedFields order.
+        var fields = XonoticGodot.Common.Gameplay.Scoring.GameScores.NetworkedFields;
+        XonoticGodot.Common.Gameplay.Scoring.ScoreField? primary =
+            XonoticGodot.Common.Gameplay.Scoring.GameScores.Primary;
+        int primaryIdx = 0;
+        if (primary is not null)
+            for (int i = 0; i < fields.Count; i++)
+                if (ReferenceEquals(fields[i], primary)) { primaryIdx = i; break; }
+        XonoticGodot.Common.Gameplay.Scoring.ScoreFlags primaryFlags =
+            primary?.Flags ?? XonoticGodot.Common.Gameplay.Scoring.ScoreFlags.None;
+
+        bool teamplay = XonoticGodot.Common.Gameplay.Scoring.GameScores.Teamplay;
+        bool spectating = _client.SpectateeStatus != 0 && _client.SpectateeStatus != _client.LocalNetId;
+
+        // ---- build a sorted (primary desc) snapshot of the rows ----
+        var sorted = new System.Collections.Generic.List<XonoticGodot.Net.ScoreRowWire>(sb.Rows);
+        int PrimaryOf(XonoticGodot.Net.ScoreRowWire r) =>
+            (r.Columns is not null && primaryIdx < r.Columns.Length) ? r.Columns[primaryIdx] : 0;
+        sorted.Sort((a, b) => PrimaryOf(b).CompareTo(PrimaryOf(a)));
+
+        // ---- own standing (place + primary score) ----
+        int localId = _client.LocalNetId;
+        int selfScoreVal = 0, selfPlace = 0;
+        bool haveSelf = false;
+        for (int i = 0; i < sorted.Count; i++)
+        {
+            if (sorted[i].NetId != localId) continue;
+            haveSelf = true;
+            selfPlace = i + 1; // 1-based
+            selfScoreVal = PrimaryOf(sorted[i]);
+            break;
+        }
+        if (haveSelf)
+            panel.SetSelf(
+                XonoticGodot.Common.Gameplay.Scoring.GameScores.ScoreString(primaryFlags, selfScoreVal),
+                selfPlace);
+
+        // FFA gap to the next player above/below (QC me.scores - pl.scores): the signed gap to the nearest rival.
+        if (haveSelf && !teamplay && sorted.Count > 1)
+        {
+            // Gap to the player immediately ahead (negative = behind), or to the one behind if leading.
+            int rivalVal = selfPlace > 1 ? PrimaryOf(sorted[selfPlace - 2]) : PrimaryOf(sorted[selfPlace]);
+            panel.SetSelfGap(selfScoreVal - rivalVal, hasGap: true);
+        }
+        else
+        {
+            panel.SetSelfGap(0f, hasGap: false);
+        }
+
+        // ---- rankings leaderboard rows ----
+        var rows = new System.Collections.Generic.List<XonoticGodot.Game.Hud.ScorePanel.RankRow>(sorted.Count);
+        foreach (XonoticGodot.Net.ScoreRowWire r in sorted)
+        {
+            string scoreStr = XonoticGodot.Common.Gameplay.Scoring.GameScores.ScoreString(primaryFlags, PrimaryOf(r));
+            rows.Add(new XonoticGodot.Game.Hud.ScorePanel.RankRow(r.Name, scoreStr, r.Team, r.NetId == localId));
+        }
+        panel.SetRankings(rows);
+
+        // ---- team scores (teamplay) ----
+        if (teamplay && sb.Teams.Count > 0)
+        {
+            int myTeam = LocalServerPlayer is { } lp ? (int)lp.Team : 0;
+            var teams = new System.Collections.Generic.List<XonoticGodot.Game.Hud.ScorePanel.TeamScore>(sb.Teams.Count);
+            foreach ((int team, int score) in sb.Teams)
+                teams.Add(new XonoticGodot.Game.Hud.ScorePanel.TeamScore(
+                    team, score.ToString(System.Globalization.CultureInfo.InvariantCulture), team == myTeam));
+            panel.SetTeamScores(teams);
+            panel.SetMode(XonoticGodot.Game.Hud.ScorePanel.ScoreMode.Team, spectating);
+        }
+        else
+        {
+            panel.SetMode(XonoticGodot.Game.Hud.ScorePanel.ScoreMode.FreeForAll, spectating);
+        }
+    }
 
     /// <summary>Feed + toggle the mod-icons panel (QC HUD_ModIcons_SetFunc → gametype.m_modicons) from the
     /// networked per-mode status (T53). Cheap: property writes + a Visible toggle; the panel repaints itself.</summary>
@@ -1981,6 +2376,16 @@ public sealed partial class NetGame : Node3D
         if (string.IsNullOrEmpty(command))
             return;
 
+        // QuickMenu (goal 8): the `quickmenu` bind (BindInput maps a key to "quickmenu") toggles the panel — the
+        // proper bind-driven hook (QC the quickmenu command). A bare `quickmenu` opens/closes; `quickmenu default
+        // <submenu>` would descend (left to the panel's Open overload). The panel grabs cursor/focus while open.
+        if (command.Equals("quickmenu", StringComparison.OrdinalIgnoreCase)
+            || command.StartsWith("quickmenu ", StringComparison.OrdinalIgnoreCase))
+        {
+            _fullHud?.GetPanel<XonoticGodot.Game.Hud.QuickMenuPanel>()?.Toggle();
+            return;
+        }
+
         int imp = WeaponCommandToImpulse(command);
         if (imp != 0)
         {
@@ -2073,6 +2478,15 @@ public sealed partial class NetGame : Node3D
         => _fullHud is not null
         && ((_fullHud.MinigameMenu is { IsOpen: true }) || (_minigame is not null && _minigame.Active is not null));
 
+    /// <summary>The quick-chat menu is showing its list (it owns the cursor like the minigame menu — mouse hover +
+    /// click select rows, so the cursor must be freed and gameplay look/fire suspended while open).</summary>
+    private bool QuickMenuOpen
+        => _fullHud?.GetPanel<XonoticGodot.Game.Hud.QuickMenuPanel>() is { IsOpen: true };
+
+    /// <summary>Any in-world HUD UI that should free the mouse cursor + suspend look/fire (minigame board/menu or
+    /// the quick-chat menu). The bind channel stays live so the toggling bind can still close the panel.</summary>
+    private bool UiOwnsCursor => MinigameMenuOpen || QuickMenuOpen;
+
     /// <summary>
     /// Teleporter view-snap (QC player.fixangle): after a prediction tick re-derives the carrier's .fixangle —
     /// true exactly on the tick the local player is predicted through a single-dest teleporter — snap the
@@ -2104,11 +2518,11 @@ public sealed partial class NetGame : Node3D
     {
         _fireClock += dt;
 
-        bool active = !GetTree().Paused && !ConsoleState.IsOpen && !MinigameMenuOpen;
+        bool active = !GetTree().Paused && !ConsoleState.IsOpen && !UiOwnsCursor;
         if (!active)
         {
-            // Input is owned elsewhere (in-game menu / console / minigame): drop the edge state, the tap latch and
-            // the refire clock so nothing fires on resume (matches SampleInput's in_releaseall on the inactive edge).
+            // Input is owned elsewhere (in-game menu / console / minigame / quickmenu): drop the edge state, the tap
+            // latch and the refire clock so nothing fires on resume (matches SampleInput's in_releaseall edge).
             _attackHeld = _attack2Held = false;
             _attackLatch = _attack2Latch = false;
             _firePredictActive = false;
@@ -2210,14 +2624,15 @@ public sealed partial class NetGame : Node3D
     {
         // Re-capture on click if the user released the mouse (e.g. after alt-tab); never while the tree is
         // paused (the in-game menu), the console is open, or the minigame menu is up — those own the cursor.
-        if (!GetTree().Paused && !ConsoleState.IsOpen && !MinigameMenuOpen
+        if (!GetTree().Paused && !ConsoleState.IsOpen && !UiOwnsCursor
             && Input.MouseMode != Input.MouseModeEnum.Captured && Input.IsMouseButtonPressed(MouseButton.Left))
             Input.MouseMode = Input.MouseModeEnum.Captured;
 
-        // Gameplay input is inert while the in-game menu is up (paused), the console is open, OR the minigame
-        // menu is open. On the edge into inactive, drop all held buttons (DP in_releaseall) so a key held at that
-        // moment doesn't stay down once input resumes. The view angles hold their last value, so the camera stays put.
-        bool active = !GetTree().Paused && !ConsoleState.IsOpen && !MinigameMenuOpen;
+        // Gameplay input is inert while the in-game menu is up (paused), the console is open, OR a cursor-owning
+        // HUD UI (minigame menu/board or the quick-chat menu) is open. On the edge into inactive, drop all held
+        // buttons (DP in_releaseall) so a key held at that moment doesn't stay down once input resumes. The view
+        // angles hold their last value, so the camera stays put.
+        bool active = !GetTree().Paused && !ConsoleState.IsOpen && !UiOwnsCursor;
         if (active != _inputActive)
         {
             _inputActive = active;
@@ -2467,13 +2882,39 @@ public sealed partial class NetGame : Node3D
     }
 
     /// <summary>A decoded minigame session snapshot (QC activate/deactivate_minigame) → drive the board overlay
-    /// + menu through the client coordinator.</summary>
-    private void OnMinigameStateReceived(MinigameNetState.Envelope env) => _minigame?.OnEnvelope(env);
+    /// + menu through the client coordinator, then refresh the MinigameHelp panel's active game (goal 4). The
+    /// coordinator sets <see cref="MinigameClient.Active"/> from the envelope first; we read its netname (e.g.
+    /// "ttt_3") into <see cref="XonoticGodot.Game.Hud.MinigameHelpPanel.ActiveMinigame"/>, which self-blanks the
+    /// help panel when null (no active game). The help panel only enters the draw set under PanelShow.Minigame.</summary>
+    private void OnMinigameStateReceived(MinigameNetState.Envelope env)
+    {
+        _minigame?.OnEnvelope(env);
+        if (_fullHud?.GetPanel<XonoticGodot.Game.Hud.MinigameHelpPanel>() is { } help)
+            help.ActiveMinigame = _minigame?.Active?.NetName;
+    }
 
     /// <summary>Feed each ServerPrint line to the minigame coordinator's session-list parser (the
     /// <c>cmd minigame list-sessions</c> reply populates the Join menu). Harmless for non-minigame prints — the
     /// coordinator only keeps single-token "&lt;game&gt;_&lt;n&gt;" lines.</summary>
     private void OnServerPrintForMinigame(string line) => _minigame?.NoteSessionListLine(line);
+
+    /// <summary>
+    /// Feed each ServerPrint line into the ChatPanel scrollback (QC HUD panel #12). The port has no dedicated chat
+    /// net channel: server chat (<c>say</c>/<c>say_team</c>) is broadcast via <c>ServerNet.BroadcastPrint</c> and
+    /// arrives here on the SAME print stream. Empty lines are ignored by <see cref="XonoticGodot.Game.Hud.ChatPanel.AddLine"/>;
+    /// the panel honours <c>con_chattime</c>/<c>con_chatsize</c> and self-blanks when empty. Drops the single-token
+    /// minigame session-list replies ("ttt_3") so they don't clutter the chat area.
+    /// </summary>
+    private void OnServerPrintForChat(string line)
+    {
+        if (string.IsNullOrWhiteSpace(line))
+            return;
+        // Skip the bare "<game>_<n>" session-list reply tokens (handled by OnServerPrintForMinigame).
+        string trimmed = line.Trim();
+        if (!trimmed.Contains(' ') && _minigame is not null && trimmed.IndexOf('_') > 0)
+            return;
+        _fullHud?.GetPanel<XonoticGodot.Game.Hud.ChatPanel>()?.AddLine(line);
+    }
 
     // =====================================================================================
     //  Asset resolution (shared with GameDemo's wiring; built per entity on first sight)
@@ -2484,13 +2925,96 @@ public sealed partial class NetGame : Node3D
         if (_assets is null || string.IsNullOrEmpty(e.Model)
             || e.Model.IndexOf("player", StringComparison.OrdinalIgnoreCase) < 0)
             return null;
-        AssetLoader.SkeletalModelParts? parts = _assets.LoadSkeletalModel(e.Model, (int)e.Skin);
-        if (parts is null)
+        // A model the async resolve already settled as non-skeletal: behave like the old sync path's null
+        // return so ClientWorld falls through to the MD3/static-prop attach.
+        if (_nonSkeletalPlayerModels.Contains(e.Model))
             return null;
+
+        // Wave 1 (perf report §9.4): do NOT parse+build synchronously here. The first snapshot of a bot match
+        // carries EVERY player at once, and building all ~25 MB skeletal models in that one frame was a
+        // ~154 MB allocation burst → a 100–150 ms blocking gen2 GC (the worst release-build hitch). Return a
+        // placeholder shell immediately; the IQM+sidecar parse runs on the thread pool and the Godot build
+        // lands under the streamer's per-frame budget — one model per frame, High priority (ahead of idle warm).
         var pm = new PlayerModel { Name = $"player#{e.Index}" };
-        pm.Setup(parts.Iqm, parts.Root, parts.Groups, parts.Info);
-        if (!pm.Active) { pm.QueueFree(); return null; }
+        pm.ShowPlaceholder();
+        if (_streamer is null || _assets is not { } assets)
+        {
+            // No streamer (shouldn't happen on the live path) — fall back to the old synchronous load.
+            AssetLoader.SkeletalModelParts? parts = _assets.LoadSkeletalModel(e.Model, (int)e.Skin);
+            if (parts is null) { pm.QueueFree(); return null; }
+            pm.Setup(parts.Iqm, parts.Root, parts.Groups, parts.Info);
+            if (!pm.Active) { pm.QueueFree(); return null; }
+            return pm;
+        }
+
+        string model = e.Model;
+        int skin = (int)e.Skin;
+        _streamer.Request(
+            // Off-thread: pure-C# parse. Boxed in a non-null wrapper because the streamer drops null results
+            // silently — but a FAILED parse must still reach the main thread to trigger the fall-back attach.
+            () => new SkeletalParseBox(assets.ParseSkeletalModel(model, skin)),
+            box => DeliverPlayerModel(pm, e, model, skin, box.Parse),
+            XonoticGodot.Game.Client.BackgroundAssetStreamer.Priority.High);
         return pm;
+    }
+
+    /// <summary>Non-null off-thread wrapper for a (possibly failed) skeletal parse — see ResolvePlayerModel.</summary>
+    private sealed record SkeletalParseBox(AssetLoader.SkeletalModelParse? Parse);
+
+    /// <summary>
+    /// Main-thread delivery of a streamed player-model parse (budgeted by the streamer — one heavy build per
+    /// frame): validate the request is still current, build the Godot scene, and fill the placeholder shell via
+    /// <see cref="PlayerModel.Setup"/>. A stale/failed resolve re-runs the attach through
+    /// <see cref="ClientWorld.RebuildEntityModel"/> so the entity ends up exactly where the old synchronous
+    /// path would have put it (the MD3/static fall-through, or a resolve of the changed model).
+    /// </summary>
+    private void DeliverPlayerModel(PlayerModel pm, Entity e, string model, int skin, AssetLoader.SkeletalModelParse? parse)
+    {
+        if (_assets is null)
+            return;
+        // The shell was torn down while the parse was in flight (entity removed / world reset / model rebuilt).
+        if (!GodotObject.IsInstanceValid(pm) || pm.IsQueuedForDeletion())
+            return;
+        if (e.IsFreed)
+            return; // entity gone — OnEntityRemove tears the node (and shell) down
+
+        // Model/skin changed while parsing: re-attach against the CURRENT model (issues a fresh resolve).
+        if (!string.Equals(e.Model, model, StringComparison.OrdinalIgnoreCase) || (int)e.Skin != skin)
+        {
+            _render.RebuildEntityModel(e);
+            return;
+        }
+
+        if (parse is null)
+        {
+            // Not an IQM (or unreadable): remember, then fall back to the MD3/static attach path.
+            _nonSkeletalPlayerModels.Add(model);
+            _render.RebuildEntityModel(e);
+            return;
+        }
+
+        AssetLoader.SkeletalModelParts? parts = _assets.BuildSkeletalModel(parse);
+        if (parts is null)
+        {
+            _nonSkeletalPlayerModels.Add(model);
+            _render.RebuildEntityModel(e);
+            return;
+        }
+
+        pm.Setup(parts.Iqm, parts.Root, parts.Groups, parts.Info);
+        if (!pm.Active)
+        {
+            // Parsed as IQM but no poseable skeleton — match the sync path's fall-through.
+            _nonSkeletalPlayerModels.Add(model);
+            _render.RebuildEntityModel(e);
+            return;
+        }
+
+        // Tint immediately (team colormap / forcecolors) — the per-frame appearance pass keeps it fresh, but
+        // seeding now avoids one untinted frame, mirroring TryAttachModel's eager seed.
+        _render.SeedAppearance(e);
+        XonoticGodot.Common.Diagnostics.Log.Trace(
+            $"[stream] player model '{model}' (skin {skin}) built for ent {e.Index} — placeholder swapped");
     }
 
     /// <summary>

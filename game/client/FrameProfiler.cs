@@ -198,7 +198,10 @@ public partial class FrameProfiler : CanvasLayer
             if (_summaryClock >= 1000.0)
             {
                 _summaryClock = 0.0;
-                Log.Info($"[frameprofile] med {_median:0.0}ms p99 {_p99:0.0}ms | proc {_procMs:0.0} rcpu {_renderCpuMs:0.0} gpu {_renderGpuMs:0.0} | {TopScopes(4)}{Markers()}");
+                // rest = the median frame time not spent in C# _Process or render submit ⇒ present/vsync wait or
+                // GPU wait. Big rest + small gpu ⇒ vsync pacing (try Mailbox); big rest + big gpu ⇒ GPU-bound.
+                double restMed = Math.Max(0.0, _median - _procMs - _renderCpuMs);
+                EmitProfile($"[frameprofile] med {_median:0.0}ms p99 {_p99:0.0}ms | proc {_procMs:0.0} rcpu {_renderCpuMs:0.0} gpu {_renderGpuMs:0.0} rest {restMed:0.0} | {TopScopes(4)}{Markers()}");
             }
         }
 
@@ -230,7 +233,30 @@ public partial class FrameProfiler : CanvasLayer
         // external (driver/OS) stall. Big rest + big gpu ⇒ GPU-bound (e.g. a first-draw shader compile);
         // big rest + small gpu ⇒ present/vsync or a stall outside Godot's measured sections.
         double rest = Math.Max(0.0, ms - _procMs - _renderCpuMs);
-        Log.Info($"[hitch] {ms:0.0}ms (med {_median:0.0}) | proc {_procMs:0.0} rcpu {_renderCpuMs:0.0} gpu {_renderGpuMs:0.0} phys {_physMs:0.0} rest {rest:0.0}{gc} | alloc {_dAllocBytes / 1024}KB{scopes}{marks}");
+        EmitProfile($"[hitch] {ms:0.0}ms (med {_median:0.0}) | proc {_procMs:0.0} rcpu {_renderCpuMs:0.0} gpu {_renderGpuMs:0.0} phys {_physMs:0.0} rest {rest:0.0}{gc} | alloc {_dAllocBytes / 1024}KB{scopes}{marks}");
+    }
+
+    // Mode-2 file sink: route hitch + per-second profile lines to user://frameprofile.log (in addition to the
+    // console) so a windowed or exported run's profile is capturable even when stdout is buffered/detached (the
+    // common case for the listen-server play phase). Flushed per line so a force-quit keeps the data.
+    private static Godot.FileAccess? _logFile;
+    private static bool _logOpenTried;
+
+    private static void EmitProfile(string line)
+    {
+        Log.Info(line);
+        if (Mode() < 2)
+            return;
+        if (_logFile is null && !_logOpenTried)
+        {
+            _logOpenTried = true;
+            _logFile = Godot.FileAccess.Open("user://frameprofile.log", Godot.FileAccess.ModeFlags.Write);
+        }
+        if (_logFile is not null)
+        {
+            _logFile.StoreLine(line);
+            _logFile.Flush();
+        }
     }
 
     /// <summary>This frame's numeric markers (e.g. "ticks 3") as a compact suffix; empty when none. Hitch-only.</summary>
@@ -325,11 +351,24 @@ public partial class FrameProfiler : CanvasLayer
     }
 
     // ---- cvars -----------------------------------------------------------------------------------------------
+    // cl_frameprofiler* lives in the SHARED CLIENT store (MenuState.Cvars) — where ClientSettings registers it,
+    // the console/menu set it, and the --cvar boot override writes it. Reading Api.Cvars was a bug: on a listen
+    // server Api.Cvars is the server's PRIVATE store, so `set cl_frameprofiler 2` (or --cvar) never reached the
+    // profiler mid-match. (Before MenuState.Boot the store is empty → fall back to the debug default.)
+    private static CvarService? ClientCvars()
+    {
+        CvarService cv = XonoticGodot.Game.Menu.MenuState.Cvars;
+        return cv is not null && cv.Has("cl_frameprofiler") ? cv : null;
+    }
+
     private void TryRegisterDefaults()
     {
-        if (_defaultsRegistered || Api.Services is null)
+        if (_defaultsRegistered)
             return;
-        RegisterDefaults(Api.Cvars);
+        CvarService cv = XonoticGodot.Game.Menu.MenuState.Cvars;
+        if (cv is null)
+            return;
+        RegisterDefaults(cv);
         _defaultsRegistered = true;
     }
 
@@ -344,13 +383,13 @@ public partial class FrameProfiler : CanvasLayer
     /// <summary>Effective mode: 0 off / 1 graph+hitch-log / 2 +per-frame trace. Debug-default-on like FpsPanel.</summary>
     private static int Mode()
     {
-        if (Api.Services is null)
+        CvarService? cv = ClientCvars();
+        if (cv is null)
             return OS.IsDebugBuild() ? 1 : 0;
-        ICvarService cv = Api.Cvars;
         int m = (int)cv.GetFloat("cl_frameprofiler");
         if (m != 0)
             return m;
-        if (OS.IsDebugBuild() && cv is CvarService cs && !cs.IsModified("cl_frameprofiler"))
+        if (OS.IsDebugBuild() && !cv.IsModified("cl_frameprofiler"))
             return 1;
         return 0;
     }

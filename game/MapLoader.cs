@@ -107,6 +107,12 @@ public static class MapLoader
         }
 
         // --- bucket bezier patches (tessellated) into the same surface keys ---
+        // S2: BezierPatch.Tessellate is pure CPU and independent per face (the patch-heavy load-time cost), so
+        // tessellate the patches in PARALLEL, then append the results SEQUENTIALLY in face order — the append
+        // touches the shared surface builders + the asset facade (not thread-safe), and the fixed order keeps the
+        // packed mesh byte-identical to the old serial build. The skip / texture / lightmap-key decisions stay on
+        // the main thread (they read the asset facade); only the math runs on the worker threads.
+        var patchJobs = new List<(int Fi, int TexIndex, int Lm)>();
         for (int fi = 0; fi < bsp.Faces.Length; fi++)
         {
             BspFace face = bsp.Faces[fi];
@@ -116,14 +122,21 @@ public static class MapLoader
                 continue; // gametype-filtered brush entity
             if (ShouldSkip(bsp, assets, face.TextureIndex))
                 continue;
-
-            BezierPatch.Tessellation? tess = BezierPatch.Tessellate(face, bsp.Vertices);
-            if (tess is null)
-                continue;
-
-            int lm = LightmapKeyForFace(bsp, assets, face);
-            SurfaceBuilder sb = GetSurface(surfaces, face.TextureIndex, lm);
-            AppendTessellation(sb, tess);
+            patchJobs.Add((fi, face.TextureIndex, LightmapKeyForFace(bsp, assets, face)));
+        }
+        if (patchJobs.Count > 0)
+        {
+            var tessResults = new BezierPatch.Tessellation?[patchJobs.Count];
+            System.Threading.Tasks.Parallel.For(0, patchJobs.Count, j =>
+                tessResults[j] = BezierPatch.Tessellate(bsp.Faces[patchJobs[j].Fi], bsp.Vertices));
+            for (int j = 0; j < patchJobs.Count; j++)
+            {
+                BezierPatch.Tessellation? tess = tessResults[j];
+                if (tess is null)
+                    continue;
+                SurfaceBuilder sb = GetSurface(surfaces, patchJobs[j].TexIndex, patchJobs[j].Lm);
+                AppendTessellation(sb, tess);
+            }
         }
 
         // --- pack each surface into the mesh and assign its material ---

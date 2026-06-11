@@ -327,6 +327,36 @@ public partial class ProjectileRenderer : Node3D
         return model;
     }
 
+    // Per-(family,color) cache of the procedural body's Mesh + StandardMaterial3D. Every projectile of a given
+    // type draws an IDENTICAL solid body (radius/color derive from the catalog Desc, nothing per-instance), so
+    // the heavy Resources are built once and SHARED across instances (Godot lets many MeshInstance3D reference
+    // the same Mesh/material) — only the lightweight MeshInstance3D node is per-projectile. Mirrors the
+    // _trailResCache / _glowTexture pattern; removes the CapsuleMesh/SphereMesh + StandardMaterial3D allocs per
+    // spawn (and the first-of-a-color pipeline compile churn) in a firefight.
+    private static readonly Dictionary<(BodyFamily, int), (Mesh Mesh, StandardMaterial3D Mat)> _bodyResCache = new();
+
+    /// <summary>Shared solid-body Mesh + material for a (family, color) — built once, reused across instances.</summary>
+    private static (Mesh Mesh, StandardMaterial3D Mat) BodyMeshRes(BodyFamily family, Color color)
+    {
+        var key = (family, ColorKey5(color));
+        if (_bodyResCache.TryGetValue(key, out (Mesh Mesh, StandardMaterial3D Mat) res))
+            return res;
+        // Rocket = elongated capsule along forward (Godot -Z); grenade = sphere.
+        bool rocket = family == BodyFamily.RocketMesh;
+        Mesh mesh = rocket
+            ? new CapsuleMesh { Radius = 2.0f, Height = 12f }
+            : new SphereMesh { Radius = 3f, Height = 6f };
+        var mat = new StandardMaterial3D { AlbedoColor = color, Metallic = 0.4f, Roughness = 0.6f };
+        res = (mesh, mat);
+        _bodyResCache[key] = res;
+        return res;
+    }
+
+    /// <summary>Quantise a color to a 5-bit-per-channel cache key (matches <c>Decals.SolidTexture</c>) so a
+    /// continuum of tints collapses to a bounded set of shared resources.</summary>
+    private static int ColorKey5(Color c)
+        => ((int)(c.R * 31) << 10) | ((int)(c.G * 31) << 5) | (int)(c.B * 31);
+
     private static Node3D BuildBody(ProjectileCatalog.Desc desc)
     {
         Color color = desc.GlowColor;
@@ -336,12 +366,9 @@ public partial class ProjectileRenderer : Node3D
             case BodyFamily.RocketMesh:
             case BodyFamily.GrenadeMesh:
             {
-                // A small solid body. Rocket = elongated capsule along forward (Godot -Z); grenade = sphere.
+                // A small solid body, built once per (family,color) and shared across instances.
                 bool rocket = desc.Body == BodyFamily.RocketMesh;
-                Mesh mesh = rocket
-                    ? new CapsuleMesh { Radius = 2.0f, Height = 12f }
-                    : new SphereMesh { Radius = 3f, Height = 6f };
-                var mat = new StandardMaterial3D { AlbedoColor = color, Metallic = 0.4f, Roughness = 0.6f };
+                (Mesh mesh, StandardMaterial3D mat) = BodyMeshRes(desc.Body, color);
                 var mi = new MeshInstance3D { Name = "Mesh", Mesh = mesh, MaterialOverride = mat };
                 if (!rocket)
                     return mi; // sphere: symmetric, spin acts directly on it
@@ -492,14 +519,33 @@ public partial class ProjectileRenderer : Node3D
     /// </summary>
     public void WarmupTrails()
     {
+        // Build the per-type warm instances to populate the shared Resource caches, then free them (the cache
+        // persists). The GPU warm pass (A2) instead RENDERS the same instances before freeing them.
+        foreach (Node3D n in BuildWarmupInstances())
+            n.QueueFree();
+    }
+
+    /// <summary>
+    /// Build one hidden body + trail-layer set per projectile type for the offscreen GPU warm pass (A2,
+    /// <see cref="GpuWarmPass"/>). Each references the SAME cached Resources a real projectile uses
+    /// (<c>_bodyResCache</c> / the effectinfo trail materials), so rendering them once offscreen compiles the
+    /// trail + body draw pipelines — the first rocket/plasma/grenade in play then hits a warm GPU. The procedural
+    /// body is used (not the real model, which is an asset-load concern handled separately). Nodes are NOT
+    /// parented here; the warm pass owns, renders, and frees them.
+    /// </summary>
+    public List<Node3D> BuildWarmupInstances()
+    {
         // A nominal forward velocity so the effectinfo path's velocity-inheriting blocks build their materials.
         Vector3 nominal = new(0f, 0f, -1200f);
+        var list = new List<Node3D>();
         foreach (PType t in System.Enum.GetValues<PType>())
         {
             ProjectileCatalog.Desc d = ProjectileCatalog.DescOf(t);
+            list.Add(BuildBody(d));
             foreach (GpuParticles3D e in BuildTrails(d, nominal))
-                e.QueueFree();
+                list.Add(e);
         }
+        return list;
     }
 
     private static OmniLight3D BuildLight(ProjectileCatalog.Desc desc)

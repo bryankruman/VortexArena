@@ -38,8 +38,24 @@ public partial class PingPanel : HudPanel
         bool show = ShowMode() != 0 && PingProvider is not null;
         if (show != Visible)
             Visible = show;
-        if (show)
+        // Redraw only when the displayed ping integer (or layout) changes — a new RTT measurement arrives far
+        // less often than once per rendered frame, so the every-frame redraw was wasted work (3.2-3).
+        if (show && NeedsRedraw())
             QueueRedraw();
+    }
+
+    private int _lastPing = int.MinValue;
+    private int _lastWidth, _lastHeight;
+
+    /// <summary>True only when the drawn ping value or the viewport size changed (3.2-3).</summary>
+    public override bool NeedsRedraw()
+    {
+        int ping = ShowMode() != 0 && PingProvider is not null ? PingProvider() : int.MinValue;
+        int w = (int)Size2.X, h = (int)Size2.Y;
+        if (ping == _lastPing && w == _lastWidth && h == _lastHeight)
+            return false;
+        _lastPing = ping; _lastWidth = w; _lastHeight = h;
+        return true;
     }
 
     /// <summary>The effective <c>cl_showping</c> mode: 0 = off, non-zero = show. Reads <c>showping</c> (the

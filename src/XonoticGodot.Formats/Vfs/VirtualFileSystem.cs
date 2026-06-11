@@ -38,6 +38,16 @@ public sealed class VirtualFileSystem : IDisposable
     private readonly object _mountLock = new();
     private bool _disposed;
 
+    // Resolved-path + negative lookup caches for the two hot extension-search paths (A4). Exists() linearly
+    // probes every mount, and ResolveImage() probes up to 11 candidate vpaths × every mount per call — many
+    // of which MISS by design (the _norm/_gloss/_glow/_reflect material-companion probes), repeating the full
+    // scan every time. These cache the result (a null/false value is a cached MISS so a known-absent name is
+    // never re-scanned), keyed by the normalized vpath (Exists) / stem (ResolveImage). Mounts happen at startup
+    // while reads are hot + concurrent thereafter, so a plain ConcurrentDictionary (lock-free reads) cleared on
+    // every mount change is sufficient and matches the class's stated threading model.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> _existsCache = new(StringComparer.Ordinal);
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string?> _resolveImageCache = new(StringComparer.Ordinal);
+
     /// <summary>Mount paths in priority order, highest first. Mainly for diagnostics/logging.</summary>
     public IReadOnlyList<string> MountedPaths => _mounts.Select(m => m.SourcePath).ToList();
 
@@ -133,6 +143,7 @@ public sealed class VirtualFileSystem : IDisposable
             var next = new List<IMount>(_mounts.Count + 1) { mount };
             next.AddRange(_mounts);
             _mounts = next;
+            ClearLookupCaches(); // a new mount can satisfy a previously-cached MISS — invalidate
         }
     }
 
@@ -151,7 +162,16 @@ public sealed class VirtualFileSystem : IDisposable
                 next.Add(batch[i]);
             next.AddRange(_mounts);
             _mounts = next;
+            ClearLookupCaches(); // new mounts can satisfy previously-cached MISSes — invalidate
         }
+    }
+
+    /// <summary>Drop the resolved-path + negative lookup caches (A4). Called under <see cref="_mountLock"/>
+    /// whenever the mount set changes, so a new mount can satisfy a previously-cached miss.</summary>
+    private void ClearLookupCaches()
+    {
+        _existsCache.Clear();
+        _resolveImageCache.Clear();
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -164,10 +184,13 @@ public sealed class VirtualFileSystem : IDisposable
         string key = AssetPaths.Normalize(vpath);
         if (key.Length == 0)
             return false;
+        if (_existsCache.TryGetValue(key, out bool cached))
+            return cached;
+        bool found = false;
         foreach (IMount m in _mounts)
-            if (m.Contains(key))
-                return true;
-        return false;
+            if (m.Contains(key)) { found = true; break; }
+        _existsCache[key] = found; // cache hits AND misses (the hot _norm/_gloss probes miss repeatedly)
+        return found;
     }
 
     /// <summary>
@@ -274,16 +297,21 @@ public sealed class VirtualFileSystem : IDisposable
         string stem = AssetPaths.Normalize(AssetPaths.StripImageExtension(baseNameNoExt));
         if (stem.Length == 0)
             return null;
+        if (_resolveImageCache.TryGetValue(stem, out string? cachedPath))
+            return cachedPath; // a cached null is a known MISS (avoids re-probing 11 candidates × mounts)
 
+        string? resolved = null;
         foreach (string candidate in ImageCandidates(stem))
         {
             foreach (IMount m in _mounts)
             {
-                if (m.Contains(candidate))
-                    return candidate;
+                if (m.Contains(candidate)) { resolved = candidate; break; }
             }
+            if (resolved != null)
+                break;
         }
-        return null;
+        _resolveImageCache[stem] = resolved;
+        return resolved;
     }
 
     /// <summary>The ordered candidate vpaths <see cref="ResolveImage"/> probes, for a normalized stem.</summary>

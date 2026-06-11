@@ -459,6 +459,8 @@ public sealed class ClientNet : IDisposable
             case NetControl.ReliableBundle: HandleReliableBundle(ref r); break;
             case NetControl.ServerPrint: HandleServerPrint(ref r); break;
             case NetControl.MinigameState: HandleMinigameState(ref r); break;
+            case NetControl.MatchState: HandleMatchState(ref r); break;
+            case NetControl.Waypoints: HandleWaypoints(ref r); break;
             default: break;
         }
     }
@@ -475,6 +477,81 @@ public sealed class ClientNet : IDisposable
         if (r.BadRead)
             return;
         MinigameStateReceived?.Invoke(env);
+    }
+
+    // ---- match clock (S2C NetControl.MatchState; QC STAT(GAMESTARTTIME)/TIMELIMIT/WARMUP) ----
+
+    /// <summary>True once the first <see cref="NetControl.MatchState"/> has arrived (the TIMER panel stays hidden
+    /// until then). The fields below are on the SAME clock as <see cref="LatestServerTime"/> (the server sim time).</summary>
+    public bool HasMatchState { get; private set; }
+
+    /// <summary>QC GAMESTARTTIME — absolute server time the match started (warmup-end). Elapsed = LatestServerTime − this.</summary>
+    public float MatchStartTime { get; private set; }
+
+    /// <summary>QC TIMELIMIT × 60 — the match time limit in seconds (0 = no limit).</summary>
+    public float MatchTimeLimit { get; private set; }
+
+    /// <summary>QC warmup_stage — true during the pre-match warmup phase.</summary>
+    public bool MatchWarmup { get; private set; }
+
+    /// <summary>QC warmup_limit — warmup duration in seconds (≤ 0 = until ready / no limit).</summary>
+    public float MatchWarmupLimit { get; private set; }
+
+    /// <summary>End-of-match intermission/scoreboard-freeze flag.</summary>
+    public bool MatchIntermission { get; private set; }
+
+    private void HandleMatchState(ref BitReader r)
+    {
+        float gameStart = r.ReadFloat();
+        float timeLimit = r.ReadFloat();
+        bool warmup = r.ReadBool();
+        float warmupLimit = r.ReadFloat();
+        bool intermission = r.ReadBool();
+        if (r.BadRead)
+            return;
+        MatchStartTime = gameStart;
+        MatchTimeLimit = timeLimit;
+        MatchWarmup = warmup;
+        MatchWarmupLimit = warmupLimit;
+        MatchIntermission = intermission;
+        HasMatchState = true;
+    }
+
+    // ---- waypoint sprites (S2C NetControl.Waypoints; QC the networked ENT_CLIENT_WAYPOINT entities) ----
+
+    private readonly List<XonoticGodot.Common.Gameplay.Waypoints.WaypointNet> _waypoints = new();
+
+    /// <summary>The live waypoint sprites for this client (gametype objectives + player pings), already
+    /// team/rule-filtered by the server. Drives the 3D in-world sprite layer + the radar icons. Replaced
+    /// wholesale each <see cref="NetControl.Waypoints"/> message; empty in waypoint-less modes (plain DM).</summary>
+    public IReadOnlyList<XonoticGodot.Common.Gameplay.Waypoints.WaypointNet> Waypoints => _waypoints;
+
+    private void HandleWaypoints(ref BitReader r)
+    {
+        int count = r.ReadByte();
+        // Decode into a temp so a truncated packet never leaves a half-updated list on screen.
+        var tmp = new List<XonoticGodot.Common.Gameplay.Waypoints.WaypointNet>(count);
+        for (int i = 0; i < count; i++)
+        {
+            int id = r.ReadLong();
+            float x = r.ReadFloat(), y = r.ReadFloat(), z = r.ReadFloat();
+            int team = r.ReadByte();
+            string sprite = r.ReadString();
+            int radarIcon = r.ReadByte();
+            float cr = r.ReadByte() / 255f, cg = r.ReadByte() / 255f, cb = r.ReadByte() / 255f;
+            float health = r.ReadFloat();
+            float fade = r.ReadFloat();
+            float helpme = r.ReadByte();
+            float maxDist = r.ReadFloat();
+            bool hideable = r.ReadBool();
+            tmp.Add(new XonoticGodot.Common.Gameplay.Waypoints.WaypointNet(
+                id, new NVec3(x, y, z), team, sprite, radarIcon, new NVec3(cr, cg, cb),
+                health, fade, helpme, maxDist, hideable));
+        }
+        if (r.BadRead)
+            return;
+        _waypoints.Clear();
+        _waypoints.AddRange(tmp);
     }
 
     /// <summary>Raised with a line of server console output (a reply to <see cref="SendStringCommand"/> or a

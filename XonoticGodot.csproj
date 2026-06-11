@@ -7,6 +7,27 @@
     <TargetFramework>net8.0</TargetFramework>
     <EnableDynamicLoading>true</EnableDynamicLoading>
     <RootNamespace>XonoticGodot</RootNamespace>
+    <!-- C1: pin the GC flavor explicitly so it isn't default-dependent (PERFORMANCE_REPORT.md C1).
+         Workstation (ServerGarbageCollection=false) + concurrent — short, non-blocking, background collections,
+         the right trade for the interactive client's render loop. Both values ARE the .NET default for a client
+         app, so pinning them changes nothing today; it documents intent and guards a future default shift. Do
+         NOT flip ServerGarbageCollection true without profiling — it trades client frame-pauses for dedicated
+         throughput (see PERFORMANCE_REPORT.md §7). LatencyMode (SustainedLowLatency) is set at boot in Main.cs. -->
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <!-- C3 Tier-1: the StringApiAnalyzer (XG0001) bans the never-used string-keyed Godot APIs that mint a
+         per-call marshaling allocation (godot#105750). Elevated to an ERROR here so a regression fails the host
+         build (zero current matches in game/, so zero false positives). Suppressible per-line with
+         #pragma warning disable XG0001. XG0002 (Tier-2) is reserved for the _Process-scope rule. -->
+    <WarningsAsErrors>$(WarningsAsErrors);XG0001</WarningsAsErrors>
+  </PropertyGroup>
+  <!-- A5: pre-compile game-code IL to native at EXPORT time (ReadyToRun) so a novel call path doesn't pay a
+       tier-0 JIT hitch the first time it runs mid-game. Gated to the release-export configuration (Godot's
+       ExportRelease, a RID-targeted `dotnet publish` — R2R needs a RID), so the editor/Debug build and the
+       tests are unaffected. Tiered compilation stays ON: R2R images are tier-0 quality and tiering re-JITs hot
+       methods to tier-1 in the background, so DON'T disable it globally (PERFORMANCE_REPORT.md A5/A1.4). -->
+  <PropertyGroup Condition="'$(Configuration)' == 'ExportRelease'">
+    <PublishReadyToRun>true</PublishReadyToRun>
   </PropertyGroup>
   <!-- Godot.NET.Sdk globs **/*.cs from the project root, which would double-compile the class
        libraries under src/ (and their obj/). The host compiles only its own code (root + game/). -->
@@ -24,5 +45,11 @@
     <ProjectReference Include="src\XonoticGodot.Net\XonoticGodot.Net.csproj" />
     <ProjectReference Include="src\XonoticGodot.Formats\XonoticGodot.Formats.csproj" />
     <ProjectReference Include="src\XonoticGodot.Server\XonoticGodot.Server.csproj" />
+  </ItemGroup>
+  <!-- C3: run the StringApiAnalyzer over game/ (where all the Godot interop lives). The analyzer is also an
+       Analyzer reference from XonoticGodot.Common; analyzers don't flow transitively through ProjectReference,
+       so the host needs its own. ReferenceOutputAssembly=false — we consume only its analyzers, not its API. -->
+  <ItemGroup>
+    <ProjectReference Include="src\XonoticGodot.SourceGen\XonoticGodot.SourceGen.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
   </ItemGroup>
 </Project>

@@ -165,7 +165,10 @@ public partial class Hud : CanvasLayer
             float panelFade = p.ShowFlags.HasFlag(PanelShow.WithScoreboard) ? 1f : 1f - sbFade;
             p.LoadConfig(vp, fade, panelFade);
 
-            if (p.IsDynamic)
+            // Re-record the canvas item only when the panel's displayed content actually changed (3.2-3) —
+            // most dynamic panels return true (animate every frame), but the value readouts (timer/race timer)
+            // gate on a once-per-second change so we don't re-run DrawPanel 160×/s for content that ticks 1×/s.
+            if (p.IsDynamic && p.NeedsRedraw())
                 p.QueueRedraw();
         }
 
@@ -199,6 +202,24 @@ public partial class Hud : CanvasLayer
         foreach (HudPanel p in _panels)
             if (p is T match) return match;
         return null!;
+    }
+
+    /// <summary>Public accessor for a discovered panel by type (the net/match layer feeds the newer panels —
+    /// Score/Pickup/Chat/StrafeHud/QuickMenu/PressedKeys/MinigameHelp — that have no dedicated typed handle).
+    /// Returns null if no such panel was discovered.</summary>
+    public T? GetPanel<T>() where T : HudPanel
+    {
+        foreach (HudPanel p in _panels)
+            if (p is T match) return match;
+        return null;
+    }
+
+    /// <summary>Force a panel visible/hidden regardless of the StartHidden default (net/match layer gate). The
+    /// per-frame loop preserves whatever Visible state callers set (it never seizes Visible for normal panels).</summary>
+    public void SetPanelVisible<T>(bool visible) where T : HudPanel
+    {
+        T? p = GetPanel<T>();
+        if (p is not null) p.Visible = visible;
     }
 
     private void Add(HudPanel panel)

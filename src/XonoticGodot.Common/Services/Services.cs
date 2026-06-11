@@ -59,6 +59,15 @@ public interface IEntityService
     void SetModel(Entity e, string model);
     IEnumerable<Entity> FindByClass(string className);
     IEnumerable<Entity> FindInRadius(Vector3 origin, float radius);
+
+    /// <summary>
+    /// The live NON-CLIENT entity table as an indexable list, for per-frame consumers that need ONE alloc-free
+    /// pass over every edict instead of repeated <see cref="FindByClass"/> iterator scans (each call allocates
+    /// an iterator and walks the whole table). On the server decorator this is the engine table only — player
+    /// edicts are NOT merged in (use <see cref="FindByClass"/>/<c>Players</c> for clients). Null (the default)
+    /// = the implementation doesn't expose one (minimal test fakes); callers must fall back to FindByClass.
+    /// </summary>
+    IReadOnlyList<Entity>? All => null;
 }
 
 [Flags]

@@ -175,8 +175,17 @@ public partial class DialogSettingsVideo : SettingsTab
             .Add("Unlimited", 0f);
         box.AddChild(Ui.Row("Idle limit:", idleFps));
 
-        box.AddChild(Widgets.CheckBox("vid_vsync", "Vertical Synchronization",
-            "Vsync prevents tearing, but increases latency and caps your fps at the screen refresh rate"));
+        // Vsync mode (vid_vsync): Mailbox is the recommended pacing fix on high-refresh displays — it renders
+        // uncapped and presents the latest complete frame each refresh, so there's no tearing AND no fps
+        // beat-doubling (the "drops to 60 from 160" judder). See ClientSettings.ApplyVideo / PERFORMANCE_REPORT B1.
+        box.AddChild(Ui.Row("Vertical Sync:", Widgets.TextSlider("vid_vsync",
+                "Off: no sync (tears, lowest latency). On: caps fps to the refresh rate, adds latency. "
+                + "Mailbox (recommended): uncapped render, latest frame each refresh — no tearing, no fps beat. "
+                + "Adaptive: vsync when fast enough, tears instead of stuttering when slow.")
+            .Add("Disabled", 0f)
+            .Add("On", 1f)
+            .Add("Mailbox", 2f)
+            .Add("Adaptive", 3f)));
         box.AddChild(Widgets.CheckBox("showfps", "Show frames per second",
             "Show your rendered frames per second"));
         box.AddChild(Widgets.CheckBox("showping", "Show ping",

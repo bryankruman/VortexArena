@@ -62,9 +62,17 @@ public static class NetProtocol
     ///         per the append-at-END lockstep contract; see the markers in ServerNet.WriteOwnerState and the
     ///         ClientNet owner read). Absent until T57's snippets land.</item>
     /// </list>
-    /// Any new top-level frame kind starts at <see cref="NetControl"/> id 18 (MinigameState=17 is the last used).
+    /// Any new top-level frame kind starts at <see cref="NetControl"/> id 20 (Waypoints=19 is the last used).
+    ///
+    /// v8: added the match-clock channel (<see cref="NetControl.MatchState"/>) — a global S2C push of
+    /// GAMESTARTTIME / TIMELIMIT / warmup so the TIMER panel works on the play path. Additive (old clients drop
+    /// the unknown frame), but the version bump keeps the parity hash honest.
+    ///
+    /// v9: added the waypoint-sprite channel (<see cref="NetControl.Waypoints"/>) — per-peer team/rule-filtered
+    /// waypoint sprites (CTF flags + player pings + objective markers) driving the 3D in-world sprite layer + the
+    /// radar icons (the C# port of QC's ENT_CLIENT_WAYPOINT entities).
     /// </summary>
-    public const uint ProtocolVersion = 7;
+    public const uint ProtocolVersion = 9;
 
     /// <summary>Ordered, reliable ENet channel — handshake, spawns/removes, notifications, scores.</summary>
     public const int ReliableChannel = 0;
@@ -168,4 +176,19 @@ public enum NetControl : byte
     /// bespoke Pong state, via <see cref="MinigameNetState.Encode"/>), sent to the session's participating peers
     /// when it changes. The client decodes it and drives the minigame board overlay + menu.</summary>
     MinigameState = 17,
+
+    // ---- match clock (the C# stand-in for QC STAT(GAMESTARTTIME)/TIMELIMIT/WARMUP) ----
+    /// <summary>Server → client (reliable): the global match-clock state — game start time, time limit, warmup
+    /// stage + warmup limit, intermission/overtime — so the TIMER panel can count up/down on the play path.
+    /// Broadcast to every accepted peer on change and ~1×/s (covers late joiners). Decoded into
+    /// <see cref="ClientNet"/>'s match fields; unknown to old clients (dispatch falls through harmlessly).</summary>
+    MatchState = 18,
+
+    // ---- waypoint sprites (the C# port of QC's networked ENT_CLIENT_WAYPOINT entities) ----
+    /// <summary>Server → client: the live waypoint sprites — gametype objectives (CTF flags, DOM points, KH
+    /// keys…) + player pings (HERE/DANGER/HELPME) + deployed markers. Drives BOTH the 3D in-world sprite layer
+    /// (icon/text + edge-arrow + health bar) and the radar icons. Sent per-peer (team/rule filtered) each network
+    /// tick on the unreliable channel (positions move with carriers). Each entry = id + origin + team + sprite
+    /// name + radar icon + color + health + fade + helpme + maxdist + hideable. Unknown to old clients.</summary>
+    Waypoints = 19,
 }

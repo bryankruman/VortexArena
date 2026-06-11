@@ -64,6 +64,10 @@ public sealed class ServerNet : IDisposable
     // --- snapshot delta-compression + movevar replication + teleport detection ---
     private ushort _snapshotSeq;                                     // global snapshot sequence (clients ack it)
     private readonly Dictionary<int, NetEntityState> _entityScratch = new(); // reused per-tick entity set
+    // Memoized "<classname> <netname>" catalog keys for model-less projectiles so BuildEntitySet doesn't
+    // allocate a fresh interpolated string per projectile per tick-frame (3.2-4). Keyed by (classname, netname)
+    // — both stable per projectile — so the set of distinct entries is tiny (one per projectile type).
+    private readonly Dictionary<(string, string), string> _projKeyCache = new();
 
     // Small stable per-player net ids (humans AND bots), decoupled from the large/random ENet peer id and kept
     // below EntityNetBase so the player and non-player id spaces never collide.
@@ -324,6 +328,8 @@ public sealed class ServerNet : IDisposable
         {
             BroadcastSnapshots();
             SendMinigameState(); // [T38] push per-peer minigame session snapshots (reliable channel)
+            SendMatchState();    // global match clock (GAMESTARTTIME/TIMELIMIT/warmup) → TIMER panel
+            SendWaypoints(); // per-peer waypoint sprites (CTF flags + player pings…) → 3D markers + radar icons
             FlushEventBundles();
         }
 
@@ -610,6 +616,113 @@ public sealed class ServerNet : IDisposable
             MinigameNetState.EncodeEnvelope(_scratchWriter, null, 0);
             _transport.Send(st.PeerId, _scratchWriter.WrittenSpan, reliable: true);
         }
+    }
+
+    private float _nextMatchStateSend;
+    private string _lastMatchStateKey = "";
+
+    /// <summary>Broadcast the GLOBAL match-clock state (QC STAT(GAMESTARTTIME)/TIMELIMIT/WARMUP) to every
+    /// accepted peer so the TIMER panel can count up/down on the play path. Sent immediately when a value
+    /// changes (warmup→live, overtime, timelimit edit) and otherwise ~1×/s so a late joiner gets it within a
+    /// second. Reliable + tiny (~18 bytes). Same field order as <see cref="ClientNet.HandleMatchState"/>.</summary>
+    private void SendMatchState()
+    {
+        float gameStart = _world.GameStartTime;
+        float timeLimitSec = _world.Services.Cvars.GetFloat("timelimit") * 60f;
+        bool warmup = _world.Warmup.WarmupStage;
+        float warmupLimit = _world.Warmup.WarmupLimit;
+        bool intermission = _world.Intermission.Running;
+
+        string key = $"{gameStart:F2}|{timeLimitSec:F1}|{(warmup ? 1 : 0)}|{warmupLimit:F1}|{(intermission ? 1 : 0)}";
+        if (key == _lastMatchStateKey && _world.Time < _nextMatchStateSend)
+            return;
+        _lastMatchStateKey = key;
+        _nextMatchStateSend = _world.Time + 1f;
+
+        _scratchWriter.Reset();
+        _scratchWriter.WriteByte((byte)NetControl.MatchState);
+        _scratchWriter.WriteFloat(gameStart);
+        _scratchWriter.WriteFloat(timeLimitSec);
+        _scratchWriter.WriteBool(warmup);
+        _scratchWriter.WriteFloat(warmupLimit);
+        _scratchWriter.WriteBool(intermission);
+
+        foreach (PeerState st in _peers.Values)   // real network peers (matches BroadcastSnapshots; excludes bots)
+            if (st.Accepted && st.Player is not null)
+                _transport.Send(st.PeerId, _scratchWriter.WrittenSpan, reliable: true);
+    }
+
+    private readonly System.Collections.Generic.List<XonoticGodot.Common.Gameplay.Waypoints.WaypointSprite> _wpScratch = new();
+    private readonly System.Collections.Generic.List<XonoticGodot.Common.Gameplay.Waypoints.WaypointSprite> _wpVisible = new();
+    private bool _wpWasNonEmpty;
+
+    /// <summary>Push the live waypoint sprites (QC the networked ENT_CLIENT_WAYPOINT entities) to each peer,
+    /// filtered to what that peer may see (team/rule/predicate). The set is the persistent
+    /// <see cref="XonoticGodot.Common.Gameplay.Waypoints.WaypointSprites"/> manager (player pings, deployed
+    /// markers) merged with the gametype's per-tick objective rebuild (flags/points/keys via
+    /// <c>GameType.CollectWaypoints</c>). Unreliable + small (positions move with carriers). Skipped for
+    /// waypoint-less modes except the single clearing message when a mode that HAD waypoints drops to none.</summary>
+    private void SendWaypoints()
+    {
+        var mgr = XonoticGodot.Common.Gameplay.Waypoints.WaypointSprites.Active;
+        _wpScratch.Clear();
+        _world.GameType?.CollectWaypoints(_wpScratch);
+
+        int total = mgr.Count + _wpScratch.Count;
+        if (total == 0 && !_wpWasNonEmpty)
+            return; // waypoint-less mode: never spam empty messages
+        _wpWasNonEmpty = total > 0;
+
+        float now = _world.Time;
+        foreach (PeerState st in _peers.Values)
+        {
+            if (!st.Accepted || st.Player is null)
+                continue;
+            Player peer = st.Player;
+
+            // Gather the peer-visible subset (manager persistents + gametype objectives), capped to a byte count.
+            _wpVisible.Clear();
+            foreach (var wp in mgr) if (WaypointVisible(wp, peer) && _wpVisible.Count < 255) _wpVisible.Add(wp);
+            foreach (var wp in _wpScratch) if (WaypointVisible(wp, peer) && _wpVisible.Count < 255) _wpVisible.Add(wp);
+
+            _scratchWriter.Reset();
+            _scratchWriter.WriteByte((byte)NetControl.Waypoints);
+            _scratchWriter.WriteByte((byte)_wpVisible.Count);
+            foreach (var wp in _wpVisible)
+            {
+                System.Numerics.Vector3 o = wp.Origin;
+                _scratchWriter.WriteLong(wp.Id);
+                _scratchWriter.WriteFloat(o.X);
+                _scratchWriter.WriteFloat(o.Y);
+                _scratchWriter.WriteFloat(o.Z);
+                _scratchWriter.WriteByte((byte)(wp.Team & 0xFF));
+                _scratchWriter.WriteString(wp.SpriteName);
+                _scratchWriter.WriteByte((byte)(wp.RadarIcon & 0xFF));
+                _scratchWriter.WriteByte(Clamp255(wp.Color.X));
+                _scratchWriter.WriteByte(Clamp255(wp.Color.Y));
+                _scratchWriter.WriteByte(Clamp255(wp.Color.Z));
+                _scratchWriter.WriteFloat(wp.Health);
+                _scratchWriter.WriteFloat(XonoticGodot.Common.Gameplay.Waypoints.WaypointSprites.FadeAlpha(wp));
+                _scratchWriter.WriteByte((byte)(wp.HelpmeUntil > now ? 1 : 0));
+                _scratchWriter.WriteFloat(wp.MaxDistance);
+                _scratchWriter.WriteBool(wp.Hideable);
+            }
+            _transport.Send(st.PeerId, _scratchWriter.WrittenSpan, reliable: false);
+        }
+    }
+
+    private static byte Clamp255(float c) => (byte)System.Math.Clamp((int)(c * 255f), 0, 255);
+
+    /// <summary>QC WaypointSprite_visible_for_player: a waypoint's team/rule/predicate gate for one viewer.</summary>
+    private static bool WaypointVisible(XonoticGodot.Common.Gameplay.Waypoints.WaypointSprite wp, Player peer)
+    {
+        if (wp.VisibleForPlayer is not null) return wp.VisibleForPlayer(peer);
+        return wp.Rule switch
+        {
+            XonoticGodot.Common.Gameplay.Waypoints.SpriteRule.Teamplay => wp.Team == 0 || wp.Team == (int)peer.Team,
+            XonoticGodot.Common.Gameplay.Waypoints.SpriteRule.Spectator => peer.IsObserver,
+            _ => true, // SPRITERULE_DEFAULT: visible to everyone
+        };
     }
 
     /// <summary>
@@ -945,7 +1058,9 @@ public sealed class ServerNet : IDisposable
         return st.TickBatch.Count > 0 ? st.TickBatch : null;
     }
 
-    private static readonly MovementInput ZeroInput = new() { FrameTime = SimulationLoopTicRate };
+    // Boxed once: typed as the interface so the hot ProvideInput paths return/store the same object instead of
+    // re-boxing the struct on every assignment to an IMovementInput-typed field/return.
+    private static readonly IMovementInput ZeroInput = new MovementInput { FrameTime = SimulationLoopTicRate };
 
     private static MovementInput ToMovementInput(in InputCommand c)
     {
@@ -1116,6 +1231,22 @@ public sealed class ServerNet : IDisposable
         }
     }
 
+    /// <summary>The memoized "&lt;classname&gt; &lt;netname&gt;" catalog key a model-less projectile networks in its
+    /// (otherwise unused) model field so the client's <c>ProjectileCatalog</c> picks the right type. Cached per
+    /// (classname, netname) so the per-tick entity build allocates no interpolated string (3.2-4).</summary>
+    private string ProjectileCatalogKey(string className, string netName)
+    {
+        if (string.IsNullOrEmpty(netName))
+            return className;
+        var key = (className, netName);
+        if (!_projKeyCache.TryGetValue(key, out string? combined))
+        {
+            combined = $"{className} {netName}";
+            _projKeyCache[key] = combined;
+        }
+        return combined;
+    }
+
     /// <summary>
     /// Build this tick's networked entity set (keyed by net id) from the player roster, stamping the teleport
     /// bit on any entity whose one-tick origin jump exceeds <see cref="TeleportTickDistance"/> (a teleport or
@@ -1217,7 +1348,7 @@ public sealed class ServerNet : IDisposable
             // model field. ProjectileRenderer ignores the model geometry, so this only feeds ProjectileCatalog.
             string netModel = e.Model;
             if (kind == NetEntityKind.Projectile && string.IsNullOrEmpty(netModel))
-                netModel = string.IsNullOrEmpty(e.NetName) ? e.ClassName : $"{e.ClassName} {e.NetName}";
+                netModel = ProjectileCatalogKey(e.ClassName, e.NetName);
 
             int netId = EntityNetBase + e.Index;
             if (netId > ushort.MaxValue)

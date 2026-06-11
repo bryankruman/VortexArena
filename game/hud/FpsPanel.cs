@@ -65,11 +65,37 @@ public partial class FpsPanel : HudPanel
             _frameRate = _frameCount / System.Math.Max(_clock - _lastTime, 1e-6);
 
         // Self-driven visibility + redraw (this panel owns no player, so it doesn't rely on Hud.SetPlayer).
+        // Redraw only when the displayed text actually changes (~1×/s, when _frameRate updates) — not every
+        // frame (3.2-3): re-recording the canvas + re-formatting the string 160×/s for a number that ticks
+        // once a second is the wasteful pattern the report flags.
         bool show = ShowMode() != 0;
         if (show != Visible)
             Visible = show;
-        if (show)
+        if (show && NeedsRedraw())
             QueueRedraw();
+    }
+
+    // Last-drawn snapshot for the change gate (alloc-free primitive compare, not a formatted string).
+    private int _lastMode = -1;
+    private int _lastShown = int.MinValue;
+    private int _lastWidth, _lastHeight;
+
+    /// <summary>True only when the drawn text or layout changed: the held rate (updated ~1×/s) crossing the
+    /// displayed-value boundary, a mode switch, or a viewport resize (3.2-3).</summary>
+    public override bool NeedsRedraw()
+    {
+        int mode = ShowMode();
+        // The integer the panel prints: fps (or spf when <1) for mode 1, mspf×1000 for mode 2 — both derived
+        // purely from _frameRate, which only changes at each 1-second window boundary.
+        double safe = System.Math.Max(_frameRate, 1e-6);
+        int shown = mode >= 2
+            ? (int)(1000.0 / safe * 1000.0)            // mspf to ~3-decimal resolution
+            : _frameRate < 1.0 ? -(int)(1.0 / safe + 0.5) : (int)(_frameRate + 0.5);
+        int w = (int)Size2.X, h = (int)Size2.Y;
+        if (mode == _lastMode && shown == _lastShown && w == _lastWidth && h == _lastHeight)
+            return false;
+        _lastMode = mode; _lastShown = shown; _lastWidth = w; _lastHeight = h;
+        return true;
     }
 
     /// <summary>

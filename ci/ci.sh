@@ -57,6 +57,29 @@ if $do_smoke; then
         grep -iE "XonoticGodot boot|GameDemo\]|loaded .* shaders|collision brushes|spawned" "$log" || true
         [ "${hard_errors:-1}" -eq 0 ] || { echo "--- $log ---"; tail -40 "$log"; fail "headless smoke had $hard_errors hard error(s)"; }
         rm -f "$log"
+
+        # Dedicated-server smoke (RUNNING.md 'Dedicated server'): the headless listen server must load the
+        # map, fill bots (waypoints load on the first frame with bots), and accept the self-connect — this
+        # exact path regressed silently once (a FramePostDraw await that never fires headless). Needs assets.
+        if [ -d "$ROOT/assets/data" ]; then
+            step "headless host smoke (--host stormkeep --bots 2, 20s)"
+            log="$(mktemp)"
+            timeout 240 "$GODOT" --headless --path "$ROOT" --host stormkeep --gametype dm --bots 2 \
+                --quit-after-seconds 20 > "$log" 2>&1 || true
+            # Belt-and-braces: Windows `timeout` can't kill the Godot child; a hung host would hold UDP 26000.
+            command -v powershell >/dev/null 2>&1 && \
+                powershell -Command "Get-Process Godot* -ErrorAction SilentlyContinue | Stop-Process -Force" >/dev/null 2>&1 || true
+            hard_errors=$(grep -cE '^ERROR:|SCRIPT ERROR|Unhandled exception' "$log" || true)
+            echo "hard errors: $hard_errors | warnings: $(grep -c 'WARNING:' "$log" || true)"
+            grep -aE "MapLoader|waypoints for|handshake accepted" "$log" || true
+            grep -aq "MapLoader"          "$log" || { tail -40 "$log"; fail "host smoke: map never loaded ([MapLoader] missing)"; }
+            grep -aq "waypoints for"      "$log" || { tail -40 "$log"; fail "host smoke: bots never filled ([bots] waypoints missing)"; }
+            grep -aq "handshake accepted" "$log" || { tail -40 "$log"; fail "host smoke: client never connected (handshake missing)"; }
+            [ "${hard_errors:-1}" -eq 0 ] || { echo "--- $log ---"; tail -40 "$log"; fail "host smoke had $hard_errors hard error(s)"; }
+            rm -f "$log"
+        else
+            echo "NOTE: assets/data missing — skipping the headless host smoke (needs the stormkeep map)."
+        fi
     else
         echo "NOTE: Godot not found at '$GODOT' — skipping the headless smoke (set GODOT= or pass --no-smoke to silence)."
     fi

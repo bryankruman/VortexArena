@@ -84,6 +84,12 @@ renderer (the same `NetGame` listen server `--host` uses; a true client-less hos
 "$GODOT" --path . --connect 127.0.0.1
 ```
 
+A healthy boot prints `[MapLoader] '<map>' surfaces: …`, `[bots] waypoints for '<map>': nodes=N` (once the
+bot fill kicks in at sim time 2.5 s), and `handshake accepted`. For scripted/CI runs add
+`--quit-after-seconds <s>` so the host exits on its own — Windows `timeout` does NOT kill the Godot child,
+and an orphaned host keeps UDP 26000 bound (the next run then fails with "Couldn't create an ENet host";
+clean up strays with `powershell "Get-Process Godot* | Stop-Process -Force"`).
+
 For a packaged install, `tools/run-dedicated.sh` (shipped beside the exported `linux-dedicated`
 binary by `tools/package.sh`) `cd`s to its own directory first, matching upstream's
 `xonotic-linux-dedicated.sh`. The exported build resolves `assets/data` relative to the **executable**

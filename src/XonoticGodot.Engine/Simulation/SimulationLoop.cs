@@ -25,12 +25,27 @@ public sealed class SimulationLoop
     /// <summary>sys_ticrate = 1/72 s ≈ 0.0138889 (sv_main.c:166). The fixed tick length.</summary>
     public const float TicRate = 1f / 72f;
 
-    /// <summary>DP sv_maxphysicsframesperserverframe-style cap: never run more than this many ticks per Advance.</summary>
+    /// <summary>DP sv_maxphysicsframesperserverframe-style HARD cap: never run more than this many ticks per
+    /// Advance, and the spiral-of-death backlog threshold past which the accumulator is dropped.</summary>
     public const int MaxTicksPerAdvance = 16;
+
+    /// <summary>
+    /// SOFT per-render-frame catch-up cap (B3). Defaults to the hard <see cref="MaxTicksPerAdvance"/>; the
+    /// interactive client-hosted path lowers it (e.g. 4) so a hitch isn't immediately FOLLOWED by a frame that
+    /// runs many ticks of sim work — itself a second missed vblank. With a lower cap the small backlog instead
+    /// drains over the next few render frames (a brief, near-invisible slow-motion) rather than spiking one
+    /// frame. Headless dedicated servers keep the full cap (no vblank to miss, catch up fast). Always clamped to
+    /// [1, MaxTicksPerAdvance].
+    /// </summary>
+    public int MaxTicksPerFrame { get; set; } = MaxTicksPerAdvance;
 
     private readonly EngineServices _services;
     private readonly EntityService _entities;
     private readonly PhysicsContext _physics;
+
+    /// <summary>Cached <see cref="RunThink"/> delegate — a method-group argument would allocate a fresh
+    /// <c>Func</c> per entity per tick (~19 KB/tick on a populated map).</summary>
+    private readonly Func<Entity, bool> _runThink;
 
     private float _accumulator;
 
@@ -74,10 +89,12 @@ public sealed class SimulationLoop
             FrameTime = TicRate,
             Gravity = 800f,
             Entities = () => _entities.All,
+            EntitiesInBox = _entities.EntitiesInBox, // D1: grid broadphase for the trigger-touch pass
             SetOriginEpoch = () => _entities.SetOriginEpoch,
             PlaySound = (e, ch, sample) => _services.SoundImpl.Play(e, ch, sample),
         };
         FrameTime = TicRate;
+        _runThink = RunThink;
     }
 
     /// <summary>Construct around an externally-built services facade (e.g. when the host owns it).</summary>
@@ -91,9 +108,11 @@ public sealed class SimulationLoop
             FrameTime = TicRate,
             Gravity = 800f,
             Entities = () => _entities.All,
+            EntitiesInBox = _entities.EntitiesInBox, // D1: grid broadphase for the trigger-touch pass
             SetOriginEpoch = () => _entities.SetOriginEpoch,
         };
         FrameTime = TicRate;
+        _runThink = RunThink;
     }
 
     /// <summary>Publish this loop's facade as the ambient <see cref="Api.Services"/> (one world per process).</summary>
@@ -119,16 +138,23 @@ public sealed class SimulationLoop
 
         _accumulator += realDelta;
 
+        // SOFT cap (B3): run at most MaxTicksPerFrame ticks this render frame, but DON'T drop the remainder —
+        // it drains over the next frames (clamped to the hard MaxTicksPerAdvance so a stale-default can't exceed
+        // the spiral guard). On the interactive path (cap 4) this turns a post-hitch 16-tick spike into a few
+        // calm frames; with the default cap it's the original behaviour.
+        int softLimit = System.Math.Clamp(MaxTicksPerFrame, 1, MaxTicksPerAdvance);
         int ticks = 0;
-        while (_accumulator >= TicRate && ticks < MaxTicksPerAdvance)
+        while (_accumulator >= TicRate && ticks < softLimit)
         {
             _accumulator -= TicRate;
             Tick();
             ticks++;
         }
 
-        // if we hit the cap, drop the backlog so we don't perpetually run behind
-        if (ticks >= MaxTicksPerAdvance && _accumulator > TicRate)
+        // Spiral-of-death guard: drop the backlog only when it has grown past the HARD cap's worth of ticks —
+        // i.e. the machine genuinely can't keep up, not a one-frame catch-up being smoothed by the soft cap.
+        // A backlog within MaxTicksPerAdvance is preserved and drained over the next render frames.
+        if (_accumulator > MaxTicksPerAdvance * TicRate)
             _accumulator = 0f;
 
         // The number of fixed ticks that ran this call (0 when the render rate outruns the tick rate). The caller
@@ -163,14 +189,16 @@ public sealed class SimulationLoop
                 {
                     ClientMove(c);
                     MoveTypePhysics.CheckVelocity(c);
-                    _entities.LinkEdict(c);
+                    using (Prof.Sample("move.link"))
+                        _entities.LinkEdict(c);
                     // SV_LinkEdict_TouchAreaGrid: the ported player physics (XonoticGodot.Common.PlayerPhysics) does
                     // its OWN slide-move and only dual-dispatches touch on the SOLID it collides with — it can't
                     // see SOLID_TRIGGER volumes (jumppads / teleporters / trigger_hurt / …), which are non-solid
                     // to the sweep. QC fires those via SV_TouchTriggers after the move; reproduce that here so a
                     // player walking through a trigger_push gets launched, a trigger_teleport relocates them, etc.
                     if (!c.IsFreed)
-                        _physics.TouchAreaGrid(c);
+                        using (Prof.Sample("move.touch"))
+                            _physics.TouchAreaGrid(c);
                 }
             }
         }
@@ -186,7 +214,7 @@ public sealed class SimulationLoop
             Entity e = all[i];
             if (e.IsFreed) continue;
             if (IsClient(e)) continue; // clients handled above
-            MoveTypePhysics.RunEntity(_physics, e, RunThink);
+            MoveTypePhysics.RunEntity(_physics, e, _runThink);
         }
 
         // 4) EndFrame

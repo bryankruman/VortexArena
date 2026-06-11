@@ -51,10 +51,10 @@ namespace XonoticGodot.Game;
 public static class WorldTint
 {
     /// <summary>Global-shader-parameter name the world shaders multiply their final colour by (vec3, default white).</summary>
-    public const string MapTintUniform = "map_tint";
+    public static readonly StringName MapTintUniform = "map_tint";
 
     /// <summary>Global-shader-parameter name the model/skin shaders multiply their albedo by (vec3, default white).</summary>
-    public const string EntityTintUniform = "entity_tint";
+    public static readonly StringName EntityTintUniform = "entity_tint";
 
     // The cvar names (registered with defaults in ClientSettings). Colours are "r g b" 0..1 (like worldspawn fog);
     // strength is 0..1 and doubles as the on/off switch for the live override.

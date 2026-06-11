@@ -168,12 +168,22 @@ public partial class VignetteOverlay : CanvasLayer
             posArr.Add(pos[i]);
         }
 
-        _material.SetShaderParameter("roundness", Mathf.Clamp(roundness, 0f, 1f));
-        _material.SetShaderParameter("stop_count", stopCount);
-        _material.SetShaderParameter("stop_color", colArr);
-        _material.SetShaderParameter("stop_pos", posArr);
+        _material.SetShaderParameter(URoundness, Mathf.Clamp(roundness, 0f, 1f));
+        _material.SetShaderParameter(UStopCount, stopCount);
+        _material.SetShaderParameter(UStopColor, colArr);
+        _material.SetShaderParameter(UStopPos, posArr);
         _rect.Visible = true;
     }
+
+    // C2: cached StringName uniform names. Apply is change-gated (only on a signature change), so these mint no
+    // StringName per frame today — but passing a string literal to SetShaderParameter (a StringName parameter)
+    // would, so they are cached here. STANDING RULE: never pass a string literal to a Godot API typed
+    // StringName/NodePath from a per-frame path — cache it as a static readonly StringName (see godot#105750 /
+    // PERFORMANCE_REPORT.md C2/C3). The XG0002 analyzer flags new violations inside _Process/_PhysicsProcess/_Draw.
+    private static readonly StringName URoundness = "roundness";
+    private static readonly StringName UStopCount = "stop_count";
+    private static readonly StringName UStopColor = "stop_color";
+    private static readonly StringName UStopPos = "stop_pos";
 
     /// <summary>
     /// Resolve the selected preset (or the custom cvars) into a roundness + an ordered band list (band 0 =

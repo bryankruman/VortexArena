@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using System.Numerics;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Gameplay;
@@ -177,6 +179,9 @@ public sealed class BotBrain
             return repeat; // QC: early return leaves the persisted movement/buttons in force
         }
 
+        // [profiling] the heavy think (past the throttle) — bot AI cost attribution for the hitch bench.
+        using var _thinkScope = XonoticGodot.Common.Diagnostics.Prof.Sample("bot.think");
+
         // QC bot_god → FL_GODMODE re-stamped every think.
         bot.Flags &= ~EntFlags.GodMode;
         if (Cvars.Bool("bot_god"))
@@ -248,7 +253,8 @@ public sealed class BotBrain
                     var g = _rater.Best;
                     // QC .ignoregoal: skip a goal that danger marked unreachable, for ignoregoal_timeout secs.
                     if (!(g.Target is not null && ReferenceEquals(g.Target, _ignoreGoal) && now < _ignoreGoalTime))
-                        Nav.SetGoal(bot.Origin, g.Position, Network, g.Target);
+                        using (XonoticGodot.Common.Diagnostics.Prof.Sample("bot.path")) // [profiling] A* route build
+                            Nav.SetGoal(bot.Origin, g.Position, Network, g.Target);
                 }
             }
             OnStrategyTokenUsed?.Invoke(); // QC bot_strategytoken_taken = true (used this frame)
@@ -539,7 +545,7 @@ public sealed class BotBrain
             return DefaultShotSpeed;
         if ((w.SpawnFlags & WeaponFlags.TypeHitscan) != 0)
             return 0f; // hitscan: aim straight at the target
-        float s = Api.Cvars.GetFloat($"g_balance_{w.NetName}_primary_speed");
+        float s = Api.Cvars.GetFloat(BalanceNames(w).Speed);
         return s > 0f ? s : DefaultShotSpeed;
     }
 
@@ -550,16 +556,31 @@ public sealed class BotBrain
         if (w is null) return false;
         // grenade/mortar-style splash weapons that aren't hitscan and have a gravity cvar set.
         if ((w.SpawnFlags & WeaponFlags.TypeHitscan) != 0) return false;
-        return Api.Cvars.GetFloat($"g_balance_{w.NetName}_primary_gravity") > 0f;
+        return Api.Cvars.GetFloat(BalanceNames(w).Gravity) > 0f;
     }
 
     /// <summary>The gravity acting on the chosen weapon's projectile (QC its gravity factor × sv_gravity).</summary>
     private float ProjectileGravity()
     {
         Weapon? w = ChosenWeapon;
-        float gravFactor = w is null ? 1f : Api.Cvars.GetFloat($"g_balance_{w.NetName}_primary_gravity");
+        float gravFactor = w is null ? 1f : Api.Cvars.GetFloat(BalanceNames(w).Gravity);
         if (gravFactor <= 0f) gravFactor = 1f;
         return gravFactor * Cvars.Gravity;
+    }
+
+    // Cached per-weapon balance-cvar names: the aim helpers above run inside EVERY bot think, and the
+    // $"g_balance_{netname}_primary_*" interpolations allocated a fresh string per call (a steady per-bot
+    // per-tick churn). Weapon registry names are fixed after boot, so the names are interned once. Shared by
+    // all brains; sim-thread only (single-threaded by contract, like the Prof scopes).
+    private static readonly Dictionary<string, (string Speed, string Gravity)> _balanceNameCache =
+        new(StringComparer.Ordinal);
+
+    private static (string Speed, string Gravity) BalanceNames(Weapon w)
+    {
+        if (!_balanceNameCache.TryGetValue(w.NetName, out (string Speed, string Gravity) names))
+            _balanceNameCache[w.NetName] = names =
+                ($"g_balance_{w.NetName}_primary_speed", $"g_balance_{w.NetName}_primary_gravity");
+        return names;
     }
 
     /// <summary>

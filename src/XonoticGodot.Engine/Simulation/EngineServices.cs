@@ -68,6 +68,11 @@ public sealed class EntityService : IEntityService, TraceService.IEntityProvider
     private readonly Queue<int> _freeSlots = new();
     private bool _solidDirty = true;
 
+    /// <summary>The dynamic-entity broadphase (D1) — DP's SV_AreaGrid. Kept in sync with the flat <see cref="_all"/>
+    /// list: every entity is linked on spawn + relinked on every <see cref="LinkEdict"/> + unlinked on free, so a
+    /// box query returns the same set the old flat scan did, with far fewer candidates.</summary>
+    private readonly Collision.EntityAreaGrid _grid = new();
+
     public IReadOnlyList<Entity> All => _all;
 
     /// <summary>
@@ -97,6 +102,7 @@ public sealed class EntityService : IEntityService, TraceService.IEntityProvider
             _all.Add(e);
         }
         _solidDirty = true;
+        _grid.Link(e); // link from spawn (at its default bounds) so the grid set == the flat _all set for FindInRadius
         return e;
     }
 
@@ -111,6 +117,7 @@ public sealed class EntityService : IEntityService, TraceService.IEntityProvider
         if (e.Index >= 0 && e.Index < _all.Count)
             _freeSlots.Enqueue(e.Index);
         _solidDirty = true;
+        _grid.Unlink(e);
     }
 
     // --- spatial builtins (relink bounds; DP SV_LinkEdict recomputes absmin/absmax) ---
@@ -158,20 +165,29 @@ public sealed class EntityService : IEntityService, TraceService.IEntityProvider
     }
 
     /// <summary>
-    /// SV_LinkEdict (sv_phys.c:804): recompute AbsMin/AbsMax from origin+mins/maxs and mark the solid
-    /// cache dirty so the broadphase candidate list is rebuilt. AbsMin/AbsMax are kept exact for traces;
-    /// the trigger touch test (<see cref="PhysicsContext.TouchAreaGrid"/>) applies DP's 1-unit areagrid
-    /// expansion itself. The static-brush broadphase grid is the CollisionWorld's; the entity broadphase
-    /// is the flat solid list (correct, and adequate at typical entity counts — a uniform-grid entity
-    /// index would only change performance, not behavior).
+    /// SV_LinkEdict (sv_phys.c:804): recompute AbsMin/AbsMax from origin+mins/maxs, relink into the entity
+    /// area-grid broadphase, and mark the solid cache dirty. AbsMin/AbsMax are kept exact for traces; the
+    /// trigger touch test (<see cref="PhysicsContext.TouchAreaGrid"/>) applies DP's 1-unit areagrid expansion
+    /// itself. The static-brush broadphase grid is the CollisionWorld's; the entity broadphase is the
+    /// <see cref="EntityAreaGrid"/> (D1) — DP's SV_AreaGrid, replacing the former flat O(n) solid scan.
     /// </summary>
     public void LinkEdict(Entity e)
     {
         if (e.IsFreed) return;
         e.AbsMin = e.Origin + e.Mins;
         e.AbsMax = e.Origin + e.Maxs;
+        _grid.Link(e);
         _solidDirty = true;
     }
+
+    /// <summary>
+    /// Gather every entity whose XY footprint overlaps [<paramref name="mins"/>,<paramref name="maxs"/>] into
+    /// <paramref name="results"/> (cleared first), de-duplicated — the entity-area-grid broadphase (D1, DP
+    /// <c>World_EntitiesInBox</c>). A conservative superset; the caller applies the precise per-entity test.
+    /// Replaces a flat scan of every entity at the trace / trigger / splash-radius call sites.
+    /// </summary>
+    public void EntitiesInBox(Vector3 mins, Vector3 maxs, List<Entity> results)
+        => _grid.EntitiesInBox(mins, maxs, results);
 
     public IEnumerable<Entity> FindByClass(string className)
     {
@@ -185,20 +201,41 @@ public sealed class EntityService : IEntityService, TraceService.IEntityProvider
 
     public IEnumerable<Entity> FindInRadius(Vector3 origin, float radius)
     {
+        // Compat path: materialize via the list-filling overload. Callers on the hot splash-damage path should
+        // prefer that overload to avoid this per-call list allocation (D1 / §3.2-6).
+        var results = new List<Entity>();
+        FindInRadius(origin, radius, results);
+        return results;
+    }
+
+    /// <summary>
+    /// Allocation-free, area-grid-accelerated <c>findradius</c> (D1): fills <paramref name="results"/> with every
+    /// entity within <paramref name="radius"/> of <paramref name="origin"/>, measured to the NEAREST POINT on
+    /// each entity's bbox (DP <c>sv_gameplayfix_findradiusdistancetobox</c>, default 1). The broadphase queries
+    /// only the grid cells overlapping the radius box instead of scanning every entity; the precise nearest-point
+    /// test then filters the candidates in place, so the result set is identical to the old flat scan.
+    /// </summary>
+    public void FindInRadius(Vector3 origin, float radius, List<Entity> results)
+    {
+        // Broadphase: gather candidates whose XY footprint overlaps the radius box (cleared + filled in results).
+        // An entity within radius (nearest-point) necessarily has its AABB overlap origin±radius, so the grid
+        // never misses one — it's a conservative superset the precise test below trims.
+        var r3 = new Vector3(radius, radius, radius);
+        _grid.EntitiesInBox(origin - r3, origin + r3, results);
+
         float r2 = radius * radius;
-        for (int i = 0; i < _all.Count; i++)
+        int w = 0;
+        for (int i = 0; i < results.Count; i++)
         {
-            var e = _all[i];
+            Entity e = results[i];
             if (e.IsFreed) continue;
-            // DP VM_SV_findradius with sv_gameplayfix_findradiusdistancetobox (default 1, svvm_cmds.c:1042):
-            // measure to the NEAREST POINT on the entity's bbox, not its box center, so tall/offset boxes
-            // aren't missed. The old box-center metric pushed the reference ~(mins+maxs)/2 off the surface —
-            // e.g. a player's center sits 34u above their feet, so a floor blast under a jumping player fell
-            // outside the blaster's 60u splash and dealt no damage/knockback (the blaster-jump 15% miss).
+            // Measure to the NEAREST POINT on the bbox, not its center (the blaster-jump 15%-miss fix): a
+            // jumping player's center sits ~34u above their feet, so a floor blast under them must still land.
             Vector3 nearest = Vector3.Clamp(origin, e.Origin + e.Mins, e.Origin + e.Maxs);
             if ((nearest - origin).LengthSquared() <= r2)
-                yield return e;
+                results[w++] = e;
         }
+        results.RemoveRange(w, results.Count - w);
     }
 
     // --- TraceService.IEntityProvider ---

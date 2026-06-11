@@ -58,6 +58,22 @@ public partial class Shell : Node
     private CanvasLayer? _loadingLayer;
     private LoadingScreen? _loadingScreen;
 
+    /// <summary>Apply any <c>--cvar NAME VALUE</c> command-line overrides into the shared store (repeatable; each
+    /// <c>--cvar</c> token consumes the next two args). For test/automation/A-B runs that need to pin a cvar at
+    /// boot — e.g. <c>vid_vsync</c> / <c>cl_frameprofiler</c> — without touching a config file.</summary>
+    private static void ApplyCvarOverrides()
+    {
+        string[] args = OS.GetCmdlineArgs();
+        for (int i = 0; i + 2 < args.Length; i++)
+        {
+            if (args[i] != "--cvar")
+                continue;
+            MenuState.Cvars.Set(args[i + 1], args[i + 2]);
+            XonoticGodot.Common.Diagnostics.Log.Info($"[shell] --cvar {args[i + 1]} = \"{args[i + 2]}\"");
+            i += 2;
+        }
+    }
+
     public override void _Ready()
     {
         // The shell (and, by inheritance, the menu layer) keeps processing while the tree is paused, so Escape
@@ -66,6 +82,10 @@ public partial class Shell : Node
 
         // --- one-time client bootstrap: mount assets, load the cvar config tree + user prefs, publish Api ---
         MenuState.Boot(DataPath);
+        // --cvar NAME VALUE (repeatable): pin a cvar at boot AFTER the config tree loads and BEFORE ApplyAll, so a
+        // test/automation/A-B run can force e.g. `--cvar vid_vsync 2 --cvar cl_frameprofiler 2` without editing a
+        // config. Overrides the loaded config.cfg value (last writer wins), exactly like a console `set` would.
+        ApplyCvarOverrides();
         ClientSettings.ApplyAll();
 
         WireCommandHooks();
@@ -518,13 +538,15 @@ public partial class Shell : Node
     /// Yield until the GPU has actually painted a frame (so any UI changes — e.g. the loading screen —
     /// are on screen before we hand control back to a synchronous, blocking caller). Uses
     /// <c>RenderingServer.frame_post_draw</c>, which fires after the renderer submits the frame.
-    /// Falls back to two <see cref="SceneTree.ProcessFrame"/> ticks if the renderer signal isn't
-    /// available (headless server or test runs).
+    /// Falls back to two <see cref="SceneTree.ProcessFrame"/> ticks under <c>--headless</c>: the
+    /// RenderingServer singleton still EXISTS there (dummy renderer), but the main loop never calls
+    /// <c>RenderingServer.draw()</c> when no window can draw — so <c>frame_post_draw</c> never fires
+    /// and awaiting it would hang the boot forever (the old "headless --host never loads the map" bug).
     /// </summary>
     private async System.Threading.Tasks.Task WaitForFramePainted()
     {
         var rs = RenderingServer.Singleton;
-        if (rs is not null)
+        if (rs is not null && DisplayServer.GetName() != "headless")
         {
             // Two cycles to be safe: the first may resume during the same iteration that scheduled the
             // await (depending on where in the main loop we were called from); the second is a guaranteed
@@ -534,7 +556,7 @@ public partial class Shell : Node
         }
         else
         {
-            // Headless: no renderer. Two process_frame ticks at least flushes one full iteration.
+            // Headless: nothing is ever painted. Two process_frame ticks at least flushes one full iteration.
             await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
             await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
         }

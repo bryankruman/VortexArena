@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 
@@ -23,6 +24,7 @@ public static class Prof
 
     private static readonly double MsPerTick = 1000.0 / Stopwatch.Frequency;
     private static readonly Dictionary<string, double> _bucket = new();   // accumulated ms per scope, this frame
+    private static readonly Dictionary<string, double> _alloc = new();     // accumulated bytes allocated per scope, this frame
     private static readonly Dictionary<string, double> _counters = new(); // per-frame numeric markers (e.g. tick count)
     private static long _frameStart;                                      // stamp at the first _Process of the frame
 
@@ -41,12 +43,21 @@ public static class Prof
     /// <summary>Per-frame total <c>_Process</c> span in ms (first node's _Process → this call). 0 when disabled.</summary>
     public static double FrameProcessMs() => Enabled ? (Stopwatch.GetTimestamp() - _frameStart) * MsPerTick : 0.0;
 
-    /// <summary>A timing scope; accumulates its elapsed time into the named bucket on Dispose. <c>default</c> = no-op.</summary>
+    /// <summary>A timing scope; accumulates its elapsed time AND bytes-allocated into the named buckets on
+    /// Dispose. <c>default</c> = no-op. The alloc delta uses the cheap thread-local
+    /// <see cref="GC.GetAllocatedBytesForCurrentThread"/> counter, so a scope reports both "how long" and "how
+    /// much garbage" — the attribution a GC-stutter hunt needs.</summary>
     public readonly struct ScopeToken : System.IDisposable
     {
         private readonly string? _name;
         private readonly long _start;
-        internal ScopeToken(string name) { _name = name; _start = Stopwatch.GetTimestamp(); }
+        private readonly long _startAlloc;
+        internal ScopeToken(string name)
+        {
+            _name = name;
+            _start = Stopwatch.GetTimestamp();
+            _startAlloc = GC.GetAllocatedBytesForCurrentThread();
+        }
         public void Dispose()
         {
             if (_name is null)
@@ -54,6 +65,9 @@ public static class Prof
             double ms = (Stopwatch.GetTimestamp() - _start) * MsPerTick;
             _bucket.TryGetValue(_name, out double cur);
             _bucket[_name] = cur + ms;
+            long bytes = GC.GetAllocatedBytesForCurrentThread() - _startAlloc;
+            _alloc.TryGetValue(_name, out double a);
+            _alloc[_name] = a + bytes;
         }
     }
 
@@ -76,7 +90,8 @@ public static class Prof
     /// internal accumulators for the next frame. Called once per frame by FrameProfiler. Capacity is retained, so
     /// the steady state allocates nothing.
     /// </summary>
-    public static void SnapshotAndReset(Dictionary<string, double> scopesInto, Dictionary<string, double> countersInto)
+    public static void SnapshotAndReset(Dictionary<string, double> scopesInto, Dictionary<string, double> countersInto,
+        Dictionary<string, double>? allocInto = null)
     {
         scopesInto.Clear();
         foreach (KeyValuePair<string, double> kv in _bucket)
@@ -87,5 +102,15 @@ public static class Prof
         foreach (KeyValuePair<string, double> kv in _counters)
             countersInto[kv.Key] = kv.Value;
         _counters.Clear();
+
+        // Per-scope allocation (bytes), for the GC-stutter attribution. Always drained so it can't accumulate
+        // across frames; copied out only when the caller asked for it (FrameProfiler's 2-arg call ignores it).
+        if (allocInto is not null)
+        {
+            allocInto.Clear();
+            foreach (KeyValuePair<string, double> kv in _alloc)
+                allocInto[kv.Key] = kv.Value;
+        }
+        _alloc.Clear();
     }
 }

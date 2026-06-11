@@ -67,6 +67,12 @@ public static class ClientSettings
         // Client-side projectile prediction (CSQC Projectile_Draw): snap+extrapolate vs the old ease. Default
         // ON; `set cl_projectile_prediction 0` reverts for A/B feel-testing (ClientWorld polls it live).
         c.Register("cl_projectile_prediction", "1", save);
+        // Precache ALL weapon view-models at map load (default ON) vs only this match's expected loadout.
+        // Warming all (~24) costs a little extra load time, hidden by the loading screen, but removes the
+        // 30–300 ms stall the first time the player switches to / picks up / sees an unanticipated weapon
+        // (PERFORMANCE_REPORT.md A3). `set cl_precache_all_weapons 0` restores the smart expected-only warm
+        // for memory-constrained machines (NetGame.PrecacheWeaponModelsAsync reads it).
+        c.Register("cl_precache_all_weapons", "1", save);
         // Console/diagnostics verbosity (DP CF_CLIENT, NOT archived — a debug toggle shouldn't persist).
         c.Register("developer", "0");
     }
@@ -132,13 +138,36 @@ public static class ClientSettings
         if (!fullscreen)
             DisplayServer.WindowSetFlag(DisplayServer.WindowFlags.Borderless, borderless);
 
-        DisplayServer.WindowSetVsyncMode(c.GetFloat("vid_vsync") != 0f
-            ? DisplayServer.VSyncMode.Enabled
-            : DisplayServer.VSyncMode.Disabled);
+        // Vsync mode (vid_vsync, extended beyond DP's 0/1 — PERFORMANCE_REPORT.md B1):
+        //   0 = off            — no sync; lowest latency, tears.
+        //   1 = on             — classic double-buffered vsync; on a high-refresh display the per-frame work sits
+        //                        right at the vblank budget, so any jitter pushes a frame past it → it waits for
+        //                        the NEXT vblank → the frame time DOUBLES (the measured "drops to 60 from 160"
+        //                        beat).
+        //   2 = mailbox        — triple-buffered: on Vulkan (Forward+) the GPU renders UNCAPPED and PRESENTS the
+        //                        latest complete frame at vblank. No tearing AND no beat-doubling — the single
+        //                        best pacing fix for high-refresh displays. Recommended.
+        //   3 = adaptive       — vsync when fast enough, off (tear) when a frame is late, instead of stuttering.
+        // Drivers that don't support a mode fall back gracefully.
+        DisplayServer.VSyncMode vsync = (int)c.GetFloat("vid_vsync") switch
+        {
+            <= 0 => DisplayServer.VSyncMode.Disabled,
+            1 => DisplayServer.VSyncMode.Enabled,
+            2 => DisplayServer.VSyncMode.Mailbox,
+            _ => DisplayServer.VSyncMode.Adaptive,
+        };
+        DisplayServer.WindowSetVsyncMode(vsync);
+        // Log the REQUESTED vs ACTUAL vsync mode — drivers can silently reject a mode (esp. Mailbox in windowed
+        // mode), and the FrameProfiler env banner reads the mode BEFORE this runs, so this is the authoritative line.
+        XonoticGodot.Common.Diagnostics.Log.Info(
+            $"[video] vid_vsync {(int)c.GetFloat("vid_vsync")} → requested {vsync}, actual {DisplayServer.WindowGetVsyncMode()}");
 
         // Framerate cap (DP cl_maxfps): 0 = unlimited. Previously read by the menu but never enforced, so the
         // game ran uncapped — variable frame times beat against the fixed 72 Hz input/prediction tick and showed
         // as micro-stutter. Honouring the cap lets the player pin a steady framerate (a multiple of 72 is ideal).
+        // Guidance (B1): with vsync off, a cap slightly UNDER the worst-case sustainable rate is smoother than
+        // uncapped, and it bounds the per-frame Godot-interop alloc rate (godot#105750) that an uncapped 300–600
+        // fps would multiply into a Gen0 GC treadmill. With vid_vsync 2 (mailbox) leave it at 0 (uncapped).
         int maxFps = (int)c.GetFloat("cl_maxfps");
         Godot.Engine.MaxFps = maxFps > 0 ? maxFps : 0;
     }
@@ -159,6 +188,8 @@ public static class ClientSettings
     private static void RegisterEngineVideoDefaults(CvarService c)
     {
         const CvarFlags save = CvarFlags.Save;
+        // vid_vsync is extended to a mode index (see ApplyVideo): 0 off / 1 on / 2 mailbox / 3 adaptive. Default
+        // 0 preserves the current low-latency behaviour; the video dialog recommends 2 (mailbox) for pacing.
         c.Register("vid_vsync", "0", save);
         c.Register("vid_borderless", "0", save);
     }

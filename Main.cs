@@ -17,6 +17,14 @@ public partial class Main : Node
 {
     public override void _Ready()
     {
+        // C1: bias the GC toward low frame-pause latency for the interactive client — SustainedLowLatency defers
+        // BLOCKING Gen2 collections (deferring the long pauses, not all collection), the right mode for a render
+        // loop. Gated to the windowed client: a headless/dedicated host keeps the default latency mode (a
+        // long-running server favours bounded memory + throughput over per-frame pauses). The GC FLAVOR
+        // (workstation + concurrent) is pinned in XonoticGodot.csproj. Set first so it spans the whole session.
+        if (DisplayServer.GetName() != "headless")
+            System.Runtime.GCSettings.LatencyMode = System.Runtime.GCLatencyMode.SustainedLowLatency;
+
         // Route the C# log facade (lib/log.qh successor, XonoticGodot.Common.Diagnostics.Log) to Godot's console so
         // every LOG_INFO/WARN/TRACE/DEBUG/SEVERE/FATAL is visible in the editor Output panel + the player
         // console — the verbosity gate is the `developer` cvar (set developer 1 → trace, 2 → debug). Wired
@@ -116,6 +124,18 @@ public partial class Main : Node
         // saves the rendered viewport to a PNG, and quits. Windowed only (headless renders blank — see
         // RUNNING.md "Visual capture"). An agent can then read the PNG to *see* the running game.
         MaybeCaptureScreenshot(args);
+
+        // `--quit-after-seconds <s>`: wall-clock self-quit for scripted/CI runs (the headless host smoke).
+        // Godot's own `--quit-after` counts FRAMES (wall-time varies wildly headless), and Windows `timeout`
+        // can't kill the Godot child — an orphaned host then holds UDP 26000 and later runs fail with
+        // "Couldn't create an ENet host". ProcessAlways (the default) so a paused tree still quits.
+        int q = Array.IndexOf(args, "--quit-after-seconds");
+        if (q >= 0 && q + 1 < args.Length && double.TryParse(args[q + 1],
+                System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture,
+                out double quitSecs) && quitSecs > 0)
+        {
+            GetTree().CreateTimer(quitSecs).Timeout += () => GetTree().Quit();
+        }
     }
 
     /// <summary>

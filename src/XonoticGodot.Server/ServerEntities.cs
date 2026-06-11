@@ -65,6 +65,10 @@ public sealed class ServerEntityService : IEntityService
 
     // ---- IEntityService: spawn/remove/spatial delegate straight to the engine table ----
 
+    /// <summary>The engine table as an indexable list (<see cref="IEntityService.All"/>). Per the interface
+    /// contract this is the NON-CLIENT table — players are not merged (they live in <see cref="Players"/>).</summary>
+    public IReadOnlyList<Entity>? All => _inner.All;
+
     public Entity Spawn() => _inner.Spawn();
 
     public void Remove(Entity e)

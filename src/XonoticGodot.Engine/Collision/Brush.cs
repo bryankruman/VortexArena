@@ -277,6 +277,42 @@ public sealed class Brush
     }
 
     /// <summary>
+    /// Refill an existing AABB box brush IN PLACE (no allocation) — the pooled-brush path for the per-candidate
+    /// entity box in <c>ClipToEntities</c>, which would otherwise allocate a fresh Brush + Vector3[8] +
+    /// BrushPlane[6] per solid entity per trace (the dominant sim.move GC churn under bot load). Requires
+    /// <paramref name="b"/> to already be a non-degenerate box brush (8 points, 6 planes — e.g. built once by
+    /// <see cref="FromBox"/>); it reuses those arrays. Mirrors FromBox's plane order/signs exactly, with no
+    /// surface flags / texture (an entity body box, like the moving trace box).
+    /// </summary>
+    public static void RefillBox(Brush b, Vector3 mins, Vector3 maxs, int contents)
+    {
+        Vector3[] p = b.Points;
+        p[0] = new Vector3(mins.X, mins.Y, mins.Z);
+        p[1] = new Vector3(maxs.X, mins.Y, mins.Z);
+        p[2] = new Vector3(mins.X, maxs.Y, mins.Z);
+        p[3] = new Vector3(maxs.X, maxs.Y, mins.Z);
+        p[4] = new Vector3(mins.X, mins.Y, maxs.Z);
+        p[5] = new Vector3(maxs.X, mins.Y, maxs.Z);
+        p[6] = new Vector3(mins.X, maxs.Y, maxs.Z);
+        p[7] = new Vector3(maxs.X, maxs.Y, maxs.Z);
+
+        BrushPlane[] s = b.Sides;
+        s[0] = new BrushPlane(new Vector3(-1, 0, 0), -mins.X, 0, contents, null);
+        s[1] = new BrushPlane(new Vector3( 1, 0, 0),  maxs.X, 0, contents, null);
+        s[2] = new BrushPlane(new Vector3( 0,-1, 0), -mins.Y, 0, contents, null);
+        s[3] = new BrushPlane(new Vector3( 0, 1, 0),  maxs.Y, 0, contents, null);
+        s[4] = new BrushPlane(new Vector3( 0, 0,-1), -mins.Z, 0, contents, null);
+        s[5] = new BrushPlane(new Vector3( 0, 0, 1),  maxs.Z, 0, contents, null);
+
+        b.Contents = contents;
+        b.SurfaceFlags = 0;
+        b.Texture = null;
+        b.IsAabb = true;
+        b.Mins = mins;   // an AABB box's bounds ARE its mins/maxs (skip the ComputeBounds scan)
+        b.Maxs = maxs;
+    }
+
+    /// <summary>
     /// Port of <c>Collision_TransformBrush</c> (collision.c:1411): return a copy of this brush with every
     /// plane / point / edge direction carried through <paramref name="m"/> (a rigid local→world or
     /// world→local transform). The result is no longer axis-aligned (DP clears <c>isaabb</c>/

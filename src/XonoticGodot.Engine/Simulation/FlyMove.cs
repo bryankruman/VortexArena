@@ -25,6 +25,19 @@ public sealed class PhysicsContext
     public Func<IReadOnlyList<Entity>> Entities { get; set; } = static () => System.Array.Empty<Entity>();
 
     /// <summary>
+    /// The entity-area-grid broadphase (D1): fill the supplied list with every entity whose XY footprint overlaps
+    /// the box. Wired by the loop to <c>EntityService.EntitiesInBox</c>; when set, <see cref="TouchAreaGrid"/>
+    /// queries only the triggers near the mover instead of scanning every entity. Null on a host that didn't wire
+    /// it (the touch pass falls back to the flat <see cref="Entities"/> scan — identical result, just slower).
+    /// </summary>
+    public Action<Vector3, Vector3, System.Collections.Generic.List<Entity>>? EntitiesInBox { get; set; }
+
+    // Re-entrancy-safe candidate-list pool for TouchAreaGrid: a trigger .touch can recursively move another
+    // entity (a nested TouchAreaGrid), so each call rents its own list (a distinct one when nested) and returns
+    // it on exit — alloc-free in steady state (the common non-nested case reuses one list).
+    private readonly System.Collections.Generic.Stack<System.Collections.Generic.List<Entity>> _touchListPool = new();
+
+    /// <summary>
     /// DP <c>PRVM_EDICT_MARK_SETORIGIN_CAUGHT</c> probe: a monotonically-increasing counter the entity
     /// service bumps whenever a QC touch/think calls setorigin. SV_Impact / SV_PushEntity compare it
     /// across a touch call to detect "the move was aborted because a touch teleported the entity".
@@ -177,7 +190,30 @@ public sealed class PhysicsContext
     /// <paramref name="ent"/> as other (SV_LinkEdict_TouchAreaGrid_Call sets a clean "just touched" trace).
     /// A SOLID_NOT entity never triggers touches (DP early-out).
     /// </summary>
-    public void TouchAreaGrid(Entity ent) => TriggerTouch.Run(Entities(), ent);
+    public void TouchAreaGrid(Entity ent)
+    {
+        if (EntitiesInBox is null)
+        {
+            TriggerTouch.Run(Entities(), ent); // no grid wired (test/host) — flat scan, identical result
+            return;
+        }
+        // Broadphase (D1): only the triggers whose footprint overlaps the mover's box (+ DP's 1-unit expansion).
+        // TriggerTouch.Run re-checks each with its own precise BoxesOverlap + Solid==Trigger filter, so the set
+        // of fired touches is identical to the flat scan. Rent a candidate list so a nested touch (a trigger that
+        // moves another entity) doesn't clobber this one.
+        System.Collections.Generic.List<Entity> cands =
+            _touchListPool.Count > 0 ? _touchListPool.Pop() : new System.Collections.Generic.List<Entity>(32);
+        try
+        {
+            EntitiesInBox(ent.AbsMin - Vector3.One, ent.AbsMax + Vector3.One, cands);
+            TriggerTouch.Run(cands, ent);
+        }
+        finally
+        {
+            cands.Clear();
+            _touchListPool.Push(cands);
+        }
+    }
 
     /// <summary>
     /// SV_NudgeOutOfSolid (sv_phys.c:1430 SV_NudgeOutOfSolid_PivotIsKnownGood): grow a known-good box

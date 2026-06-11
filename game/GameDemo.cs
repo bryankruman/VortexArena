@@ -544,6 +544,9 @@ public partial class GameDemo : Node3D
         // _client.Assets was set above (wires the loaders) and _client.Effects is live after AddChild.
         _client.Effects.Warmup();
         _client.Projectiles.WarmupTrails(); // pre-build shared per-type projectile-trail Resources (see ProjectileRenderer)
+        // A2: offscreen GPU pipeline warm pass — compile every effect/projectile material's pipeline during load
+        // so the first real effect in play hits a warm GPU (self-frees after a few frames; see GpuWarmPass).
+        XonoticGodot.Game.Client.GpuWarmPass.Run(_client, _client.Effects, _client.Projectiles);
 
         // Hang the first-person weapon view-model off the player camera (so it inherits view orientation).
         // Feed it live view state (velocity / angles / onground) so the gun sways (follow/lean/bob).
@@ -678,7 +681,15 @@ public partial class GameDemo : Node3D
 
         _hud = new Hud.Hud { Name = "Hud" };
         AddChild(_hud);
-        _hud.SetPlayer(_player.Player as XonoticGodot.Common.Gameplay.Player);
+        var localPlayer = _player.Player as XonoticGodot.Common.Gameplay.Player;
+        _hud.SetPlayer(localPlayer);
+
+        // StrafeHud (goal 3, --map path): point it at the local demo Player (velocity + view angles + onground
+        // drive the strafe bar). It self-blanks without a Player. The optional WishDir/JumpHeld/OnSlick are not fed
+        // here (the panel degrades to the non-local W+A path), which keeps it useful without the demo move-values.
+        // MinigameHelp has no minigame source on the --map path, so it self-blanks (left unfed) — not wired here.
+        if (_hud.GetPanel<Hud.StrafeHudPanel>() is { } strafe)
+            strafe.Player = localPlayer;
 
         _notifications = new Hud.HudNotifications(_hud);
         // Announcer voices play straight from the mounted content (sound/announcer/default/<snd>.ogg) via the

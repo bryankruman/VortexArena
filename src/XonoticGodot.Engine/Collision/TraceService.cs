@@ -26,6 +26,11 @@ public sealed class TraceService : ITraceService
     {
         IReadOnlyList<Entity> SolidEntities { get; }
 
+        /// <summary>The entity-area-grid broadphase (D1): fill <paramref name="results"/> with every entity whose
+        /// XY footprint overlaps [<paramref name="mins"/>,<paramref name="maxs"/>], de-duplicated. A conservative
+        /// superset of the entities the move could touch; the trace applies the precise per-entity test.</summary>
+        void EntitiesInBox(Vector3 mins, Vector3 maxs, List<Entity> results);
+
         /// <summary>
         /// For a SOLID_BSP entity, return its brush model's collision brushes in MODEL-LOCAL space (origin-
         /// relative) and the entity's local→world transform (origin + angles, scale 1). The trace clips the
@@ -52,8 +57,36 @@ public sealed class TraceService : ITraceService
     /// </summary>
     public XonoticGodot.Formats.Bsp.BspPvs? Pvs { get; set; }
 
-    // Scratch buffers reused across calls (the sim is single-threaded per world).
+    // Scratch buffers reused across calls (the sim is single-threaded per world; a trace fires no callbacks
+    // mid-sweep, so these are never re-entered within one Trace/PointContents call).
     private readonly List<Brush> _candidates = new(64);
+    private readonly List<Entity> _entCandidates = new(64);   // entity-area-grid broadphase result for the sweep (D1)
+    private readonly List<Entity> _pcCandidates = new(16);    // entity-area-grid broadphase result for PointContents (D1)
+
+    // The MOVING trace box is rebuilt every Trace via Brush.FromBox — a Brush + Vector3[8] + BrushPlane[6]
+    // allocation (~360 B) each call. But its shape is the mover's hull (mins/maxs), CONSTANT across the many
+    // traces a single slide-move tick fires and shared by every entity of a given hull size — and the box is
+    // READ-ONLY during the sweep (ClipToBrushModel's rotated case builds a fresh brush, never mutating this one).
+    // So cache it per (mins,maxs): a handful of distinct hulls (player standing/crouched, point projectiles)
+    // collapse the per-trace box allocation to one-time. This was the dominant sim.move GC churn under bot load.
+    private readonly Dictionary<(Vector3 Mins, Vector3 Maxs), Brush> _boxCache = new();
+
+    // A single pooled entity-AABB box brush, refilled in place per solid candidate in ClipToEntities (each
+    // candidate is used immediately + never retained), instead of allocating a fresh Brush per entity per trace.
+    // The dominant remaining sim.move allocation under bot/player clustering (many candidates per sweep).
+    private readonly Brush _entBrush = Brush.FromBox(new Vector3(-1f, -1f, -1f), Vector3.One);
+
+    /// <summary>The cached read-only moving-box brush for a hull (allocated once per distinct mins/maxs).</summary>
+    private Brush BoxBrush(Vector3 mins, Vector3 maxs)
+    {
+        var key = (mins, maxs);
+        if (!_boxCache.TryGetValue(key, out Brush? b))
+        {
+            b = Brush.FromBox(mins, maxs);
+            _boxCache[key] = b;
+        }
+        return b;
+    }
 
     // =============================================================================================
     // ITraceService
@@ -61,8 +94,8 @@ public sealed class TraceService : ITraceService
 
     public TraceResult Trace(Vector3 start, Vector3 mins, Vector3 maxs, Vector3 end, MoveFilter filter, Entity? ignore)
     {
-        // Build the moving trace box brush. For a point trace (mins==maxs) this is a point brush.
-        Brush box = Brush.FromBox(mins, maxs);
+        // The moving trace box brush (cached per hull — see _boxCache). For a point trace (mins==maxs) it's a point brush.
+        Brush box = BoxBrush(mins, maxs);
 
         // The SUPERCONTENTS this move clips against, derived from the moving entity exactly as DP's
         // SV_GenericHitSuperContentsMask(passedict) does (our 'ignore' IS DP's passedict). A walking player
@@ -99,7 +132,7 @@ public sealed class TraceService : ITraceService
                 entMins -= new Vector3(15f, 15f, 15f);
                 entMaxs += new Vector3(15f, 15f, 15f);
             }
-            Brush entBox = (entMins == mins && entMaxs == maxs) ? box : Brush.FromBox(entMins, entMaxs);
+            Brush entBox = (entMins == mins && entMaxs == maxs) ? box : BoxBrush(entMins, entMaxs);
 
             ClipToEntities(ref trace, entBox, start, end, sweepMins, sweepMaxs, filter, ignore, mins, maxs);
         }
@@ -130,7 +163,10 @@ public sealed class TraceService : ITraceService
         // OR in the contents of any local brush that contains it. (Bounding-box entities don't contribute.)
         if (_entities != null)
         {
-            var ents = _entities.SolidEntities;
+            // Broadphase (D1): only entities whose footprint overlaps the point, not every solid entity. The
+            // SOLID_BSP + overlap filters below are unchanged, so the OR'd contents are identical.
+            _entities.EntitiesInBox(point, point, _pcCandidates);
+            var ents = _pcCandidates;
             for (int i = 0; i < ents.Count; i++)
             {
                 Entity touch = ents[i];
@@ -161,7 +197,10 @@ public sealed class TraceService : ITraceService
         Vector3 sweepMins, Vector3 sweepMaxs, MoveFilter filter, Entity? ignore, Vector3 pointMins, Vector3 pointMaxs)
     {
         bool pointTrace = pointMins == pointMaxs;
-        var ents = _entities!.SolidEntities;
+        // Broadphase (D1): only the entities whose footprint overlaps the swept AABB, not every solid entity.
+        // The precise BoxesOverlap + Solid/filter tests below are unchanged, so the clipped set is identical.
+        _entities!.EntitiesInBox(sweepMins, sweepMaxs, _entCandidates);
+        var ents = _entCandidates;
         for (int i = 0; i < ents.Count; i++)
         {
             Entity touch = ents[i];
@@ -203,9 +242,18 @@ public sealed class TraceService : ITraceService
                 continue;
             }
 
-            // The touched entity's bounding box becomes a static brush at its world position.
+            // The touched entity's bounding box becomes a static brush at its world position — refilled into the
+            // pooled box brush (no per-candidate allocation), except a degenerate point entity which needs a
+            // point brush (kept as a rare fresh alloc).
             int bodyContents = touch.Solid == Solid.Corpse ? SuperContents.Corpse : SuperContents.Body;
-            Brush other = Brush.FromBox(absMin, absMax, bodyContents);
+            Brush other;
+            if (absMin == absMax)
+                other = Brush.FromBox(absMin, absMax, bodyContents);
+            else
+            {
+                Brush.RefillBox(_entBrush, absMin, absMax, bodyContents);
+                other = _entBrush;
+            }
 
             TraceBrushVsBrush(ref trace, box, start, end, other, worldBrush: false, hitEnt: touch);
         }

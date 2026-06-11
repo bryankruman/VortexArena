@@ -53,9 +53,29 @@ public sealed class BotPopulation
     private int _seedCounter = 1;
 
     // per-tick input cache (the both-readers-one-command seam; mirrors ServerNet's TickInputTime cache).
-    private sealed class TickInput { public float Time = -1f; public MovementInput Input; }
+    // TickInput implements IMovementInput by delegating to its struct field so InputFor can return the SAME
+    // long-lived object every call — returning the `MovementInput` struct as the interface would BOX it per
+    // read (movement step + weapon driver × every bot × every tick). ZeroInput is boxed once for the same reason.
+    private sealed class TickInput : IMovementInput
+    {
+        public float Time = -1f;
+        public MovementInput Input;
+
+        public Vector3 ViewAngles => Input.ViewAngles;
+        public Vector3 MoveValues => Input.MoveValues;
+        public float FrameTime => Input.FrameTime;
+        public bool ButtonJump => Input.ButtonJump;
+        public bool ButtonCrouch => Input.ButtonCrouch;
+        public bool ButtonUse => Input.ButtonUse;
+        public bool ButtonAttack1 => Input.ButtonAttack1;
+        public bool ButtonAttack2 => Input.ButtonAttack2;
+        public bool ButtonJetpack => Input.ButtonJetpack;
+        public bool Typing => Input.Typing;
+        public int Impulse => Input.Impulse;
+        public bool Predicted => Input.Predicted;
+    }
     private readonly Dictionary<Player, TickInput> _tickInputs = new();
-    private static readonly MovementInput ZeroInput = new() { FrameTime = Engine.Simulation.SimulationLoop.TicRate };
+    private static readonly IMovementInput ZeroInput = new MovementInput { FrameTime = Engine.Simulation.SimulationLoop.TicRate };
 
     /// <summary>The live brains, in connect order (QC bot_list). Exposed for tests/diagnostics.</summary>
     public IReadOnlyList<BotBrain> Brains => _brains;
@@ -189,7 +209,7 @@ public sealed class BotPopulation
             cache.Time = now;
             cache.Input = brain.ThinkProduce(p, dt);
         }
-        return cache.Input;
+        return cache; // the IMovementInput-implementing cache object itself — no per-read struct box
     }
 
     // =============================================================================================

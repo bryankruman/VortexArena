@@ -160,6 +160,54 @@ public partial class EffectSystem : Node3D
         }
     }
 
+    /// <summary>A curated set of the most common effectinfo effects to warm the GPU pipeline for (A2): every
+    /// weapon's explosion (the growth-shader fireball + smoke), a muzzleflash, a bullet/impact puff, sparks and
+    /// blood. Names absent from the mounted effectinfo are skipped silently.</summary>
+    private static readonly string[] WarmupEffectNames =
+    {
+        "rocket_explode", "grenade_explode", "hagar_explode", "electro_combo", "crylink_impact",
+        "rocketlauncher_muzzleflash", "machinegun_muzzleflash", "TR_ROCKET", "TR_NEXUIZPLASMA",
+        "bullet_impact", "spark_explode", "blood", "TE_EXPLOSION", "electro_impact",
+    };
+
+    /// <summary>
+    /// Build one representative HIDDEN instance per effect family — a heuristic burst per <see cref="EffectClass"/>
+    /// plus a curated set of common effectinfo bursts (<see cref="WarmupEffectNames"/>) — for the offscreen GPU
+    /// warm pass (A2, <see cref="GpuWarmPass"/>). Each instance references the SAME cached materials/meshes a real
+    /// burst uses (A1's <c>_heurMeshCache</c>/<c>_infoMeshCache</c>), so rendering them once offscreen compiles
+    /// every particle draw + process pipeline (incl. the growth ShaderMaterial and the Sub/InvMod blend) — the
+    /// first real explosion/muzzleflash/blood in play then hits a warm GPU. The returned nodes are NOT added to
+    /// this system's tree or live pool; the warm pass parents, renders, and frees them.
+    /// </summary>
+    public List<Node3D> BuildWarmupInstances()
+    {
+        EnsureInfoLoaded();
+        var list = new List<Node3D>();
+
+        // One heuristic burst per class (Explosiveness handled inside BuildBurst; a small forward velocity so the
+        // directional emitters build their cones). Covers the StandardMaterial3D mix/add draw pipelines.
+        foreach (EffectClass kind in System.Enum.GetValues<EffectClass>())
+        {
+            if (kind == EffectClass.Beam) continue; // beams draw via BeamRenderer, warmed separately
+            Tint tint = DefaultTint(kind, string.Empty);
+            list.Add(BuildBurst(kind, Vector3.Zero, new Vector3(0f, 50f, 0f), 1, tint));
+        }
+
+        // A curated set of real effectinfo bursts (detached) so their specific draw materials — the growth
+        // ShaderMaterial, the InvMod/Sub blend, velocity-aligned sparks — and process pipelines compile too.
+        foreach (string name in WarmupEffectNames)
+        {
+            Effect? eff = ResolveEffect(name);
+            IReadOnlyList<EffectInfoEmitter>? blocks = LookupInfo(name, eff);
+            if (blocks is null || blocks.Count == 0)
+                continue;
+            Node3D? built = BuildFromInfo(blocks, NVec3.Zero, NVec3.Zero, 1, null, isTrail: false, attach: false);
+            if (built is not null)
+                list.Add(built);
+        }
+        return list;
+    }
+
     /// <summary>Lazily load effectinfo.txt the first time we need it (so a TextLoader set after _Ready still applies).</summary>
     private void EnsureInfoLoaded()
     {
@@ -640,10 +688,24 @@ public partial class EffectSystem : Node3D
         mat.ColorRamp = tex;
     }
 
+    // Per-(class, sprite) cache of the heuristic draw mesh+material. The mesh+material is a pure function of
+    // (kind, sprite) — the albedo is always White (T2: the tint rides the per-particle vertex color, so the
+    // `color` arg never reaches the material) — so it's shareable across emitters exactly like _trailResCache.
+    // CellInRange still randomises the sprite cell per spawn, so keying by the RESOLVED sprite instance keeps
+    // the per-burst wisp/blob variety while sharing the QuadMesh + StandardMaterial3D (and its first-use
+    // pipeline compile). Removes 2 Godot Resource allocations per heuristic-burst spawn.
+    private readonly Dictionary<(EffectClass, ulong), Mesh> _heurMeshCache = new();
+
     /// <summary>The billboard mesh each particle draws: a small unshaded quad tinted to the class and (when the
-    /// atlas is mounted) textured with a representative particlefont sprite for that family.</summary>
+    /// atlas is mounted) textured with a representative particlefont sprite for that family. Cached + shared.</summary>
     private Mesh BuildParticleMesh(EffectClass kind, Color color)
     {
+        (int t0, int t1) = HeuristicTex(kind);
+        Texture2D? sprite = Font?.CellInRange(t0, t1);
+        var key = (kind, sprite is null ? 0UL : sprite.GetInstanceId());
+        if (_heurMeshCache.TryGetValue(key, out Mesh? cachedMesh))
+            return cachedMesh;
+
         var quad = new QuadMesh { Size = new Vector2(1f, 1f) };
         bool additive = kind is EffectClass.Explosion or EffectClass.MuzzleFlash or EffectClass.Spark
             or EffectClass.Electro or EffectClass.Fire or EffectClass.Beam or EffectClass.Teleport
@@ -663,11 +725,16 @@ public partial class EffectSystem : Node3D
             // Use the particle billboard path; let the shader read per-particle color from the process mat.
             DisableReceiveShadows = true,
         };
-        (int t0, int t1) = HeuristicTex(kind);
-        ApplySprite(mat, Font?.CellInRange(t0, t1));
+        ApplySprite(mat, sprite);
         quad.Material = mat;
+        _heurMeshCache[key] = quad;
         return quad;
     }
+
+    /// <summary>Quantise a color to a 5-bit-per-channel cache key (matches <c>Decals.SolidTexture</c>) so a
+    /// continuum of tints collapses to a bounded set of shared resources.</summary>
+    private static int ColorKey5(Color c)
+        => ((int)(c.R * 31) << 10) | ((int)(c.G * 31) << 5) | (int)(c.B * 31);
 
     /// <summary>A representative particlefont tex range for a heuristic class (the effectinfo-less fallback),
     /// using the same DP atlas bands the file does: smoke 0-7, fire/flame 48-55, blood particle 24-31,
@@ -715,7 +782,7 @@ public partial class EffectSystem : Node3D
     /// effect, or the trail END point for a trail effect (then the segment is origin..velocity).
     /// </summary>
     private Node3D? BuildFromInfo(IReadOnlyList<EffectInfoEmitter> blocks, NVec3 origin, NVec3 velocity,
-        int count, Color? colorOverride, bool isTrail)
+        int count, Color? colorOverride, bool isTrail, bool attach = true)
     {
         var parent = new Node3D { Name = "fx_info", Position = Coords.ToGodot(origin) };
         bool any = false;
@@ -776,6 +843,10 @@ public partial class EffectSystem : Node3D
             {
                 case EiType.Decal:
                 {
+                    // The offscreen GPU warm pass (attach:false) only needs the PARTICLE pipelines compiled; a
+                    // projected decal would raycast into the live map and leave a stray scorch mark, so skip it.
+                    if (!attach)
+                        break;
                     // pt_decal (DP cl_particles.c:1674-1681): fire 32 rays out to originjitter[0] and project
                     // onto the NEAREST surface using its NORMAL — the emit velocity plays NO role. DP first
                     // shifts the center by relativeoriginoffset rotated into the velocity basis.
@@ -826,7 +897,8 @@ public partial class EffectSystem : Node3D
                         // a stain on the nearest surface around the spawn (no surface in range => none, like blood
                         // sprayed into open air). Gated on p!=null so the stain rate tracks the (fractional-count)
                         // particle rate as DP does, not once per call. Non-blood bounce<0 leaves NO decal in DP.
-                        if (info.Type == EiType.Blood)
+                        // Skipped during the warm pass (attach:false) — a stain would raycast into the live map.
+                        if (attach && info.Type == EiType.Blood)
                             SpawnBloodSplat(info, center, colorOverride);
                     }
                     break;
@@ -839,6 +911,12 @@ public partial class EffectSystem : Node3D
             parent.QueueFree();
             return null;
         }
+
+        // attach:false — the offscreen GPU warm pass (A2) owns the node itself (parents it under its warm
+        // viewport, renders a couple of frames to compile the pipelines, then frees it); skip the live-pool
+        // bookkeeping so a warm burst never enters the visible scene or the MaxLiveEffects cull queue.
+        if (!attach)
+            return parent;
 
         AddChild(parent);
         ScheduleFree(parent, InfoParentLinger(blocks));
@@ -1467,11 +1545,22 @@ public partial class EffectSystem : Node3D
         mat.ColorRamp = new GradientTexture1D { Gradient = ramp };
     }
 
+    /// <summary>Composite cache key for <see cref="BuildInfoMesh"/>: everything that determines the mesh+material.</summary>
+    private readonly record struct InfoMeshKey(
+        ulong Sprite, int Blend, bool Spark, int SparkAspectQ, int GrowRatioQ, int ColorKey, int CellCount);
+
+    // Per-determinant cache of the effectinfo draw mesh+material (the PRIMARY effect path: every burst block and
+    // every projectile-trail emitter draws through here). The mesh+material is a pure function of the key below;
+    // CellInRange randomises the sprite cell per spawn, so keying by the resolved sprite instance KEEPS the
+    // per-emitter sprite variety while sharing the QuadMesh + (StandardMaterial3D | growth ShaderMaterial) and
+    // its first-use pipeline compile across emitters. Removes 2–3 Godot Resource allocations per emitter spawn.
+    private readonly Dictionary<InfoMeshKey, Mesh> _infoMeshCache = new();
+
     /// <summary>The billboard mesh for one emitter, blended per the parsed blend mode (add/alpha/invmod) and
     /// textured with the particlefont sprite (<paramref name="sprite"/>, null => a flat tinted quad).
     /// <paramref name="cellCount"/> &gt; 1 enables sprite-sheet particle animation so AnimOffset can randomise
-    /// the starting cell per particle (one cell of the horizontal strip per particle).</summary>
-    private static Mesh BuildInfoMesh(EffectInfoEmitter info, Color color, Texture2D? sprite, int cellCount = 1,
+    /// the starting cell per particle (one cell of the horizontal strip per particle). Cached + shared.</summary>
+    private Mesh BuildInfoMesh(EffectInfoEmitter info, Color color, Texture2D? sprite, int cellCount = 1,
         float sparkAspect = 8f, float? growRatio = null)
     {
         // Sparks are velocity-stretched in DP (length = max(stretch*0.04*speed, size*0.5), width = size). The
@@ -1479,16 +1568,25 @@ public partial class EffectSystem : Node3D
         // shape the quad so width≈size and length≈aspect*size. The per-particle scale (ScaleMin/Max ≈ 2*size)
         // multiplies both, so a (0.5,aspect) base quad gives world width 0.5*2*size=size and length aspect*size.
         bool isSpark = info.Orientation == EiOrientation.Spark;
-        var quad = new QuadMesh
-        {
-            Size = isSpark ? new Vector2(0.5f, MathF.Max(1f, sparkAspect)) : new Vector2(1f, 1f),
-        };
-
         BaseMaterial3D.BlendModeEnum blend = info.Blend switch
         {
             EiBlend.Add => BaseMaterial3D.BlendModeEnum.Add,
             EiBlend.InvMod => BaseMaterial3D.BlendModeEnum.Sub, // inverse-modulate ≈ subtractive darkening
             _ => BaseMaterial3D.BlendModeEnum.Mix,
+        };
+
+        var key = new InfoMeshKey(
+            sprite is null ? 0UL : sprite.GetInstanceId(),
+            (int)blend, isSpark,
+            isSpark ? (int)MathF.Round(MathF.Max(1f, sparkAspect)) : 0,   // spark quad length (mesh size)
+            growRatio is { } g0 ? (int)MathF.Round(g0 * 16f) : -1,        // growth-shader `grow` uniform (-1 = none)
+            ColorKey5(color), cellCount);
+        if (_infoMeshCache.TryGetValue(key, out Mesh? cached))
+            return cached;
+
+        var quad = new QuadMesh
+        {
+            Size = isSpark ? new Vector2(0.5f, MathF.Max(1f, sparkAspect)) : new Vector2(1f, 1f),
         };
 
         // T6: a growing billboard particle (sizeincrease != 0, not a spark) uses the custom growth shader so it
@@ -1500,37 +1598,39 @@ public partial class EffectSystem : Node3D
             grow.SetShaderParameter("grow", gr);
             grow.SetShaderParameter("albedo_tex", sprite);
             quad.Material = grow;
-            return quad;
         }
-
-        var mat = new StandardMaterial3D
+        else
         {
-            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
-            Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
-            BlendMode = blend,
-            // Sparks are oriented by the node's TransformAlign (Y→velocity); leave billboarding OFF so the mesh
-            // uses that velocity-aligned transform (which carries the per-particle scale). Everything else uses
-            // particle billboarding.
-            BillboardMode = isSpark ? BaseMaterial3D.BillboardModeEnum.Disabled : BaseMaterial3D.BillboardModeEnum.Particles,
-            // CRITICAL: particle billboarding DISCARDS the per-particle scale (scale_min/max from the process
-            // material) unless keep-scale is on (godotengine/godot#74897). Without this the big fire/smoke
-            // puffs (scale 66-128) collapsed to their 1×1 base quad — a near-invisible dot — which is why only
-            // the sparks (a 0.15×2 base quad that reads even at scale 1) showed. Keep the scale so they render.
-            BillboardKeepScale = true,
-            VertexColorUseAsAlbedo = true,
-            AlbedoColor = color,
-            DisableReceiveShadows = true,
-        };
-        // Sprite-sheet particle animation: each particle starts on a random frame (AnimOffset) so the burst
-        // shows a mix of smoke wisps / fire blobs / spark dots rather than identical copies.
-        if (cellCount > 1)
-        {
-            mat.ParticlesAnimHFrames = cellCount;
-            mat.ParticlesAnimVFrames = 1;
-            mat.ParticlesAnimLoop = false;
+            var mat = new StandardMaterial3D
+            {
+                ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+                Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+                BlendMode = blend,
+                // Sparks are oriented by the node's TransformAlign (Y→velocity); leave billboarding OFF so the mesh
+                // uses that velocity-aligned transform (which carries the per-particle scale). Everything else uses
+                // particle billboarding.
+                BillboardMode = isSpark ? BaseMaterial3D.BillboardModeEnum.Disabled : BaseMaterial3D.BillboardModeEnum.Particles,
+                // CRITICAL: particle billboarding DISCARDS the per-particle scale (scale_min/max from the process
+                // material) unless keep-scale is on (godotengine/godot#74897). Without this the big fire/smoke
+                // puffs (scale 66-128) collapsed to their 1×1 base quad — a near-invisible dot — which is why only
+                // the sparks (a 0.15×2 base quad that reads even at scale 1) showed. Keep the scale so they render.
+                BillboardKeepScale = true,
+                VertexColorUseAsAlbedo = true,
+                AlbedoColor = color,
+                DisableReceiveShadows = true,
+            };
+            // Sprite-sheet particle animation: each particle starts on a random frame (AnimOffset) so the burst
+            // shows a mix of smoke wisps / fire blobs / spark dots rather than identical copies.
+            if (cellCount > 1)
+            {
+                mat.ParticlesAnimHFrames = cellCount;
+                mat.ParticlesAnimVFrames = 1;
+                mat.ParticlesAnimLoop = false;
+            }
+            ApplySprite(mat, sprite);
+            quad.Material = mat;
         }
-        ApplySprite(mat, sprite);
-        quad.Material = mat;
+        _infoMeshCache[key] = quad;
         return quad;
     }
 

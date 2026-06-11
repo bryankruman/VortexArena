@@ -44,12 +44,56 @@ public partial class PlayerModel : Node3D
     /// <summary>The networked entity this model renders (set when attached; <c>ClientWorld._Process</c> poses it).</summary>
     public Entity? Bound { get; set; }
 
+    // --- streaming placeholder (perf §9.4 Wave 1) ---------------------------------------------------------
+    // While the skeletal model parses on the thread pool, the player renders as this shared gray box (the
+    // same one ClientWorld drops for an unresolvable model). Shared mesh+material: a per-shell
+    // StandardMaterial3D would compile a fresh pipeline per player. The box also matters for correctness:
+    // CsqcModelEffects caches the node's mesh list and re-collects when a cached mesh is FREED — clearing
+    // the placeholder is what invalidates that cache once the real meshes arrive.
+    private static readonly BoxMesh PlaceholderMesh = new() { Size = new Vector3(24f, 56f, 24f) };
+    private static readonly StandardMaterial3D PlaceholderMaterial = new() { AlbedoColor = new Color(0.6f, 0.6f, 0.65f) };
+    private MeshInstance3D? _placeholder;
+
+    /// <summary>Show the streaming placeholder box (no-op if already shown). Cleared by <see cref="Setup"/>.</summary>
+    public void ShowPlaceholder()
+    {
+        if (_placeholder is not null)
+            return;
+        _placeholder = new MeshInstance3D
+        {
+            Name = "Placeholder",
+            Mesh = PlaceholderMesh,
+            Position = new Vector3(0f, 28f, 0f),
+            MaterialOverride = PlaceholderMaterial,
+        };
+        AddChild(_placeholder);
+    }
+
+    /// <summary>Drop the streaming placeholder (the freed mesh is what re-triggers the csqc mesh-list collect).</summary>
+    public void ClearPlaceholder()
+    {
+        if (_placeholder is null)
+            return;
+        if (GodotObject.IsInstanceValid(_placeholder))
+            _placeholder.QueueFree();
+        _placeholder = null;
+    }
+
     /// <summary>
     /// Build the poser over an already-built IQM scene (<paramref name="iqmRoot"/>, the <see cref="IqmBuilder"/>
     /// output) parsed from <paramref name="iqm"/>, using its animation clips and skeletal parameters.
     /// </summary>
     public void Setup(IqmData iqm, Node3D iqmRoot, IReadOnlyList<FrameGroup>? groups, ModelInfo? info)
     {
+        ClearPlaceholder(); // the real model replaces the streaming box (even the non-skeletal static prop)
+
+        // The CPU poser owns the bones — silence the AnimationPlayer so it can't overwrite our per-frame
+        // poses. This must happen BEFORE the scene enters the tree: autoplay fires on tree entry, and setting
+        // Autoplay afterwards is a no-op (Godot warns). On the streamed path Setup runs on a shell that is
+        // ALREADY in the tree, so the AddChild below is the tree entry.
+        foreach (Node child in iqmRoot.GetChildren())
+            if (child is AnimationPlayer ap) { ap.Stop(); ap.Autoplay = ""; }
+
         AddChild(iqmRoot);
         Skeleton3D? skel = IqmBuilder.FindSkeleton(iqmRoot);
         if (skel is null || iqm.Joints.Length == 0)
@@ -68,10 +112,6 @@ public partial class PlayerModel : Node3D
         _player = new PlayerSkeleton(_mgr, model, cfg);
 
         BuildClipTable(iqm, groups);
-
-        // The CPU poser owns the bones now — silence the AnimationPlayer so it doesn't overwrite our poses.
-        foreach (Node child in iqmRoot.GetChildren())
-            if (child is AnimationPlayer ap) { ap.Stop(); ap.Autoplay = ""; }
 
         Active = true;
     }
@@ -103,10 +143,18 @@ public partial class PlayerModel : Node3D
         if (Active) { _player.Free(); Active = false; }
     }
 
+    // 3.3: per-bone flag — true when this bone currently has a NON-unit pose scale set. Player skeletons are
+    // rigid (every bone is unit-scale), so SetBonePoseScale is a pure-overhead interop call ~50-60×/player/frame;
+    // we skip it while the scale stays unit. The flag makes the skip safe for a model that DOES animate a bone's
+    // scale: when such a bone returns to unit we set it back to one (instead of leaving the stale scale).
+    private bool[]? _boneScaleNonUnit;
+
     /// <summary>Convert each CPU bone's posed model-space transform → Godot bone-local pose, parents first.</summary>
     private void PushBones()
     {
         int n = _skeleton.GetBoneCount();
+        if (_boneScaleNonUnit is null || _boneScaleNonUnit.Length != n)
+            _boneScaleNonUnit = new bool[n];
         Span<Transform3D> worldGodot = n <= 256 ? stackalloc Transform3D[n] : new Transform3D[n];
         for (int i = 0; i < n; i++)
         {
@@ -120,8 +168,29 @@ public partial class PlayerModel : Node3D
 
             _skeleton.SetBonePosePosition(i, local.Origin);
             _skeleton.SetBonePoseRotation(i, local.Basis.GetRotationQuaternion());
-            _skeleton.SetBonePoseScale(i, local.Basis.Scale);
+
+            // 3.3: skip the SetBonePoseScale interop while the scale is unit (the rigid-player common case);
+            // only touch it when this bone's scale is non-unit, or to reset a bone that just returned to unit.
+            Vector3 scale = local.Basis.Scale;
+            bool unit = IsUnitScale(scale);
+            if (!unit)
+            {
+                _skeleton.SetBonePoseScale(i, scale);
+                _boneScaleNonUnit[i] = true;
+            }
+            else if (_boneScaleNonUnit[i])
+            {
+                _skeleton.SetBonePoseScale(i, Vector3.One);
+                _boneScaleNonUnit[i] = false;
+            }
         }
+    }
+
+    /// <summary>True when a bone scale is unit within a small epsilon (so the scale interop can be skipped).</summary>
+    private static bool IsUnitScale(Vector3 s)
+    {
+        const float eps = 0.001f;
+        return MathF.Abs(s.X - 1f) < eps && MathF.Abs(s.Y - 1f) < eps && MathF.Abs(s.Z - 1f) < eps;
     }
 
     // A Quake-space BoneMatrix (Fwd/Left/Up columns + Origin) as a Godot Transform3D, still in Quake coords

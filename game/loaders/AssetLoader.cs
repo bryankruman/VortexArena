@@ -333,6 +333,24 @@ public sealed class AssetLoader
     /// </summary>
     public SkeletalModelParts? LoadSkeletalModel(string vpath, int skinIndex = 0)
     {
+        SkeletalModelParse? parse = ParseSkeletalModel(vpath, skinIndex);
+        return parse is null ? null : BuildSkeletalModel(parse);
+    }
+
+    /// <summary>The off-thread-safe product of <see cref="ParseSkeletalModel"/>: the parsed IQM + its sidecars,
+    /// all pure data (no Godot resources). <see cref="BuildSkeletalModel"/> turns it into the scene parts on the
+    /// main thread. This is the parse/build split the background asset streamer (S1) drives.</summary>
+    public sealed record SkeletalModelParse(
+        IqmData Iqm, IReadOnlyList<FrameGroup>? Groups, ModelInfo? Info, SkinFile? Skin);
+
+    /// <summary>
+    /// OFF-THREAD phase of a skeletal-model load (S1): read + parse the IQM and its <c>_N.txt</c>/skin/frame-group
+    /// sidecars. This is PURE C# over thread-safe VFS reads — NO Godot — so a background thread can run it while
+    /// the main thread keeps rendering. Returns null for a missing or non-IQM model. Pair with
+    /// <see cref="BuildSkeletalModel"/> on the main thread.
+    /// </summary>
+    public SkeletalModelParse? ParseSkeletalModel(string vpath, int skinIndex = 0)
+    {
         string key = AssetPaths.Normalize(vpath);
         if (key.Length == 0) return null;
         byte[] bytes;
@@ -344,13 +362,25 @@ public sealed class AssetLoader
         try
         {
             IqmData iqm = IqmReader.Read(bytes);
-            IReadOnlyList<FrameGroup>? groups = LoadFrameGroups(key);
-            ModelInfo? info = LoadModelInfo(vpath, skinIndex);
-            SkinFile? skin = LoadSkin(key, skinIndex);
-            Node3D root = IqmBuilder.Build(iqm, _assets, groups, skin);
-            return new SkeletalModelParts(iqm, root, groups, info);
+            return new SkeletalModelParse(iqm, LoadFrameGroups(key), LoadModelInfo(vpath, skinIndex), LoadSkin(key, skinIndex));
         }
-        catch (Exception ex) { GD.PrintErr($"[AssetLoader] skeletal model '{key}' build failed: {ex.Message}"); return null; }
+        catch (Exception ex) { GD.PrintErr($"[AssetLoader] skeletal model '{key}' parse failed: {ex.Message}"); return null; }
+    }
+
+    /// <summary>
+    /// MAIN-THREAD phase of a skeletal-model load (S1): turn an off-thread <see cref="ParseSkeletalModel"/> bundle
+    /// into the Godot scene parts (<see cref="IqmBuilder.Build"/> creates the Skeleton3D + skinned mesh +
+    /// materials, which is RenderingServer-backed and must stay on the main thread).
+    /// </summary>
+    public SkeletalModelParts? BuildSkeletalModel(SkeletalModelParse parse)
+    {
+        if (parse is null) return null;
+        try
+        {
+            Node3D root = IqmBuilder.Build(parse.Iqm, _assets, parse.Groups, parse.Skin);
+            return new SkeletalModelParts(parse.Iqm, root, parse.Groups, parse.Info);
+        }
+        catch (Exception ex) { GD.PrintErr($"[AssetLoader] skeletal model build failed: {ex.Message}"); return null; }
     }
 
     // =============================================================================================

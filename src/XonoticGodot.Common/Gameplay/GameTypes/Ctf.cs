@@ -303,6 +303,53 @@ public sealed class Ctf : GameType
     /// <summary>The flag whose home base is <paramref name="team"/>, or null if no such flag exists.</summary>
     public FlagState? FlagOf(int team) => Flags.TryGetValue(team, out var f) ? f : null;
 
+    /// <summary>Waypoint sprites: one per flag at its live position, with the state-resolved def (QC the CTF
+    /// WaypointSprite_SpawnFixed flag base / WP_FlagDropped* / WP_FlagCarrier* state machine). The flag entity's
+    /// origin follows its carrier when carried, so rebuilding from it each tick tracks the carrier. Shown to
+    /// everyone, colored by the flag's home team; drives both the 3D in-world "Flag" marker and the radar icon.</summary>
+    public override void CollectWaypoints(System.Collections.Generic.List<Waypoints.WaypointSprite> into)
+    {
+        foreach (FlagState f in Flags.Values)
+        {
+            Vector3 pos = f.Entity is { } e ? e.Origin : f.HomeOrigin;
+            string suffix = FlagSuffix(f.HomeTeam);
+            string sprite = f.Status switch
+            {
+                FlagStatus.Dropped => "FlagDropped" + suffix,
+                FlagStatus.Carried => "FlagCarrierEnemy" + suffix,
+                _ => "FlagBase" + suffix, // AtBase
+            };
+            into.Add(new Waypoints.WaypointSprite
+            {
+                // Color is the RADAR tint = the flag's team color (QC WaypointSprite_UpdateTeamRadar with the
+                // team palette color); the 3D in-world sprite uses the def's own color (tan/white) from the registry.
+                SpriteName = sprite, FixedOrigin = pos, Team = f.HomeTeam, Color = TeamRadarColor(f.HomeTeam),
+                RadarIcon = 1, Health = -1f,
+            });
+        }
+    }
+
+    /// <summary>Flag team → the def-name suffix (QC the per-team WP_Flag*Red/Blue/Yellow/Pink/Neutral split).</summary>
+    private static string FlagSuffix(int team) => team switch
+    {
+        Teams.Red => "Red",
+        Teams.Blue => "Blue",
+        Teams.Yellow => "Yellow",
+        Teams.Pink => "Pink",
+        _ => "Neutral",
+    };
+
+    /// <summary>Flag team → its radar tint (QC colormapPaletteColor(team-1); neutral → white). Matches the
+    /// client radar's Team_ColorRGB so flag icons read in the team color.</summary>
+    private static Vector3 TeamRadarColor(int team) => team switch
+    {
+        Teams.Red => new Vector3(1f, 0.0625f, 0.0625f),
+        Teams.Blue => new Vector3(0.0625f, 0.0625f, 1f),
+        Teams.Yellow => new Vector3(1f, 1f, 0.0625f),
+        Teams.Pink => new Vector3(1f, 0.0625f, 1f),
+        _ => new Vector3(1f, 1f, 1f),
+    };
+
     /// <summary>
     /// QC ctf_Handle_Pickup (PICKUP_BASE/DROPPED): <paramref name="player"/> takes the enemy flag
     /// <paramref name="flag"/>. The flag must not be the player's own and must be takeable (at base or

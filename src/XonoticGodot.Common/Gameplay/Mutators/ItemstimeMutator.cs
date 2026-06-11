@@ -86,6 +86,49 @@ public sealed class ItemstimeMutator : MutatorBase
         ["item_invincible"]  = "shield",       // alias
     };
 
+    // Recompute scratch state, persistent across ticks: this runs EVERY server frame (OnStartFrame), so a
+    // fresh accumulator dictionary + a capturing local function + per-superweapon "weapon_"+name concats +
+    // one FindByClass iterator per class (~10/tick) were a steady ~3 KB/tick of GC churn under load. The
+    // accumulator is reused (Clear keeps capacity) and the full classname→key map — timed items + superweapon
+    // pickups — is built once, so the steady-state pass allocates nothing.
+    private readonly Dictionary<string, (bool avail, float minT, bool hasMin, bool seen)> _acc =
+        new(System.StringComparer.Ordinal);
+    private Dictionary<string, string>? _classKey; // TimedItemClasses + "weapon_<superweapon>" → key
+    private int _classKeyWeaponCount = -1;         // rebuild guard (weapon registry is fixed after boot)
+
+    private Dictionary<string, string> ClassKeyMap()
+    {
+        IReadOnlyList<Weapon> weapons = Registry<Weapon>.All;
+        if (_classKey is not null && _classKeyWeaponCount == weapons.Count)
+            return _classKey;
+
+        var map = new Dictionary<string, string>(TimedItemClasses, System.StringComparer.Ordinal);
+        // Superweapon weapon-pickups → the single aggregate slot (QC WEPSET_SUPERWEAPONS). The pickup
+        // classname is "weapon_<netname>" (ItemSpawnFuncs SPAWNFUNC_WEAPON convention).
+        for (int i = 0; i < weapons.Count; i++)
+        {
+            Weapon w = weapons[i];
+            if (w.IsSuperWeapon)
+                map["weapon_" + w.NetName] = "superweapons";
+        }
+        _classKeyWeaponCount = weapons.Count;
+        return _classKey = map;
+    }
+
+    private static void Note(Dictionary<string, (bool avail, float minT, bool hasMin, bool seen)> acc,
+        float now, string key, Entity item)
+    {
+        if (item.IsFreed || (item.Flags & EntFlags.Item) == 0) return;
+        float t = item.ScheduledRespawnTime;
+        bool avail = t <= now; // a copy that is up / not on cooldown
+        if (!acc.TryGetValue(key, out var a))
+            a = (false, 0f, false, false);
+        if (avail) a.avail = true;
+        else if (!a.hasMin || t < a.minT) { a.minT = t; a.hasMin = true; }
+        a.seen = true;
+        acc[key] = a;
+    }
+
     /// <summary>
     /// Recompute <see cref="CurrentTimes"/> from the live world items. Mirrors QC's
     /// <c>Item_ItemsTime_SetTime</c> + <c>Item_ItemsTime_UpdateTime</c>: for each timed item key, take the
@@ -99,36 +142,29 @@ public sealed class ItemstimeMutator : MutatorBase
         if (Api.Cvars.GetFloat("sv_itemstime") == 0f) { _times.Clear(); return; }
 
         float now = Api.Clock.Time;
+        Dictionary<string, string> classKey = ClassKeyMap();
+        var acc = _acc;
+        acc.Clear();
 
-        // Accumulator per key: (anyAvailable, minScheduled, hasMin, seen). hasMin distinguishes "no cooldown
-        // copy recorded yet" from "min == 0" so the min isn't pinned at 0 by an available copy.
-        var acc = new Dictionary<string, (bool avail, float minT, bool hasMin, bool seen)>(System.StringComparer.Ordinal);
-
-        void Note(string key, Entity item)
+        // Accumulate per key: (anyAvailable, minScheduled, hasMin, seen) — hasMin distinguishes "no cooldown
+        // copy recorded yet" from "min == 0" so the min isn't pinned at 0 by an available copy. ONE pass over
+        // the entity table (items never live in the player registry, so the non-client list is the full set);
+        // the per-classname FindByClass fallback below serves IEntityService fakes without an All view —
+        // accumulation is order-independent (min/OR), so both produce the identical table.
+        if (Api.Entities.All is { } all)
         {
-            if (item.IsFreed || (item.Flags & EntFlags.Item) == 0) return;
-            float t = item.ScheduledRespawnTime;
-            bool avail = t <= now; // a copy that is up / not on cooldown
-            if (!acc.TryGetValue(key, out var a))
-                a = (false, 0f, false, false);
-            if (avail) a.avail = true;
-            else if (!a.hasMin || t < a.minT) { a.minT = t; a.hasMin = true; }
-            a.seen = true;
-            acc[key] = a;
+            for (int i = 0; i < all.Count; i++)
+            {
+                Entity e = all[i];
+                if (!e.IsFreed && classKey.TryGetValue(e.ClassName, out string? key))
+                    Note(acc, now, key, e);
+            }
         }
-
-        // Timed non-weapon items, scanned per known classname (exact-match FindByClass).
-        foreach (var kv in TimedItemClasses)
-            foreach (Entity e in Api.Entities.FindByClass(kv.Key))
-                Note(kv.Value, e);
-
-        // Superweapon weapon-pickups → the single aggregate slot (QC WEPSET_SUPERWEAPONS). The pickup
-        // classname is "weapon_<netname>" (ItemSpawnFuncs SPAWNFUNC_WEAPON convention).
-        foreach (Weapon w in Registry<Weapon>.All)
+        else
         {
-            if (!w.IsSuperWeapon) continue;
-            foreach (Entity e in Api.Entities.FindByClass("weapon_" + w.NetName))
-                Note("superweapons", e);
+            foreach (KeyValuePair<string, string> kv in classKey)
+                foreach (Entity e in Api.Entities.FindByClass(kv.Key))
+                    Note(acc, now, kv.Value, e);
         }
 
         _times.Clear();

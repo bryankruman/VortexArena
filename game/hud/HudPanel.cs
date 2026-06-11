@@ -88,6 +88,16 @@ public abstract partial class HudPanel : Control
     /// <summary>Whether contents change every frame (health/ammo/timer/crosshair/killfeed). Unchanged.</summary>
     public virtual bool IsDynamic => true;
 
+    /// <summary>
+    /// Whether this panel's DISPLAYED content actually changed since its last draw (3.2-3). A dynamic panel is
+    /// re-recorded (QueueRedraw) every frame by default, which re-runs <see cref="DrawPanel"/> (re-formatting
+    /// strings + re-recording canvas commands) even when nothing visible changed — wasteful for readouts whose
+    /// value updates ~1×/s (fps, timer, ping). Such panels override this to compare a cheap, alloc-free snapshot
+    /// of what they would draw against the last frame's, returning false to skip the redraw. The default (true)
+    /// preserves the every-frame redraw for panels that genuinely animate (health/ammo/crosshair/killfeed).
+    /// </summary>
+    public virtual bool NeedsRedraw() => true;
+
     // =================================================================================================
     //  Resolved per-frame config (QC HUD_Panel_LoadCvars → current_panel_*)
     // =================================================================================================
