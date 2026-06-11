@@ -308,7 +308,18 @@ public sealed class ParticleSim
                     (int)info.StainColor0, (int)info.StainColor1, staintex,
                     pstainalpha, pstainsize, pangle, pspin, tint);
 
-                if (immediateBloodStain && idx >= 0)
+                // pt_decal (DP CL_SpawnDecalParticleForSurface): project a FLAT decal onto the hit surface
+                // instead of drawing a free billboard. We raise a PROJECTED stain (the backend raycasts to the
+                // nearest surface via Decals.SpawnProjected) and deactivate the particle so it never renders as a
+                // misaligned quad. The decal sprite = the block's tex; color/size/alpha from the spawned particle.
+                if (idx >= 0 && info.Type == ParticleType.Decal)
+                {
+                    ref Particle pd = ref _pool[idx];
+                    OnStain?.Invoke(new StainEvent(pd.Org, up, pd.ColorR, pd.ColorG, pd.ColorB, pd.Size, pd.Alpha,
+                        pd.TexNum, isBlood: false, projected: true, maxDist: 48f));
+                    Kill(ref pd, idx);
+                }
+                else if (immediateBloodStain && idx >= 0)
                 {
                     immediateBloodStain = false;
                     ref Particle p = ref _pool[idx];
