@@ -318,7 +318,7 @@ public sealed partial class FaithfulParticleBackend : Node3D
             viewForward = Coords.ToQuake(gFwd);
         }
 
-        _renderer.Sync(_sim.Pool, _sim.HighWater, viewOrigin, viewForward);
+        _renderer.Sync(_sim.Pool, _sim.HighWater, viewOrigin, viewForward, _clientTime);
     }
 
     private float _clientTime;   // accumulating client render clock driving the sim

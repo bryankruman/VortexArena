@@ -231,6 +231,25 @@ public partial class GameDemo : Node3D
             int fm = System.Array.IndexOf(cl, "--fx-mode");
             if (fm >= 0 && fm + 1 < cl.Length && int.TryParse(cl[fm + 1], out int fmv))
                 _fxMode = System.Math.Clamp(fmv, 0, 2);
+            // `--fx-interval <seconds>` overrides the re-burst cadence (default 0.12s). The default stacks
+            // ~8 bursts/sec at one point — fine for pipeline warm/smoke tests, useless for judging one
+            // explosion's lifecycle (everything reads as a saturated ball). Use ~2 for visual A/B.
+            int fiv = System.Array.IndexOf(cl, "--fx-interval");
+            if (fiv >= 0 && fiv + 1 < cl.Length &&
+                float.TryParse(cl[fiv + 1], System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out float fivv))
+                _fxInterval = System.Math.Clamp(fivv, 0.05f, 10f);
+            // `--fx-still <ageSeconds>`: DETERMINISTIC lifecycle capture — fire ONE burst of the demo
+            // effect and hold the --screenshot until the burst is exactly that old (ScreenshotHook.Hold),
+            // so repeated runs photograph the same phase regardless of boot/load timing.
+            int fst = System.Array.IndexOf(cl, "--fx-still");
+            if (fst >= 0 && fst + 1 < cl.Length &&
+                float.TryParse(cl[fst + 1], System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out float fstv))
+            {
+                _fxStillAge = System.Math.Clamp(fstv, 0.0f, 10f);
+                ScreenshotHook.Hold = true;
+            }
             // `--proj-demo` repeatedly fires the equipped demo weapon's projectile straight ahead so a windowed
             // --screenshot captures a flying rocket/grenade with its model + trail (orientation/trail parity check).
             _projDemo = System.Array.IndexOf(cl, "--proj-demo") >= 0;
@@ -770,6 +789,10 @@ public partial class GameDemo : Node3D
     private float _fxDemoTimer;
     private int? _fxMode;          // --fx-mode forced cl_particles_modern for the demo
     private bool _fxModeApplied;
+    private float _fxInterval = 0.12f; // --fx-interval re-burst cadence (seconds)
+    private float? _fxStillAge;    // --fx-still: capture one burst at exactly this age
+    private float _fxStillClock;   // accumulating demo clock for the still mode
+    private float _fxStillFiredAt = -1f;
 
     /// <summary>
     /// Repeatedly fire the configured effect on the floor a short way in front of the spawn so a windowed
@@ -788,11 +811,37 @@ public partial class GameDemo : Node3D
             GD.Print($"[Particles] --fx-mode {mode} -> cl_particles_modern={mode}");
         }
 
+        // --fx-still: deterministic single-burst capture. Fire once (after a short shader-warm delay),
+        // then release the held screenshot when the burst reaches the requested age. No re-bursts, no
+        // machinegun side-effect — the photo shows exactly one lifecycle phase of the demo effect.
+        if (_fxStillAge is { } stillAge)
+        {
+            _fxStillClock += delta;
+            if (_fxStillFiredAt < 0f && _fxStillClock >= 0.6f)
+            {
+                _fxStillFiredAt = _fxStillClock;
+                FireFxBurst(includeImpact: false);
+            }
+            else if (_fxStillFiredAt >= 0f && _fxStillClock - _fxStillFiredAt >= stillAge)
+            {
+                ScreenshotHook.Hold = false;   // shoot now — the hook captures within a frame
+            }
+            return;
+        }
+
         _fxDemoTimer -= delta;
         if (_fxDemoTimer > 0f)
             return;
-        _fxDemoTimer = 0.12f; // re-burst cadence — frequent enough that a fresh burst is always on screen
+        _fxDemoTimer = _fxInterval; // re-burst cadence (default 0.12s; --fx-interval overrides)
 
+        FireFxBurst(includeImpact: true);
+    }
+
+    /// <summary>One demo burst of the configured effect: a floor burst (scorch decal lands on a real
+    /// surface) + an eye-level burst centered in view; optionally the machinegun-impact side burst (the
+    /// --fx-still lifecycle capture skips it so the photo shows only the effect under study).</summary>
+    private void FireFxBurst(bool includeImpact)
+    {
         if (_player.Player is null)
             return;
         NVec3 eye = _player.Player.Origin + new NVec3(0f, 0f, _player.EyeHeight);
@@ -810,7 +859,8 @@ public partial class GameDemo : Node3D
         // regardless of spawn orientation) + a bullet-impact burst (impact sprite/decal path).
         _client.Effects.Spawn(_fxDemoEffect!, floor);
         _client.Effects.Spawn(_fxDemoEffect!, eye + fwd * 110f + new NVec3(0f, 0f, 45f));
-        _client.Effects.Spawn("machinegun_impact", floor + fwd * 30f, -fwd);
+        if (includeImpact)
+            _client.Effects.Spawn("machinegun_impact", floor + fwd * 30f, -fwd);
 
         // If the configured effect is a TRAIL/beam (nex_beam, arc_beam, TR_ROCKET…), also sweep it across the
         // view as a line so --screenshot can verify the T1 trail-along-the-segment fix (the vortex beam line).

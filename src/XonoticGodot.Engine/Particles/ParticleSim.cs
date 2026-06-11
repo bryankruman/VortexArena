@@ -308,6 +308,11 @@ public sealed class ParticleSim
                     (int)info.StainColor0, (int)info.StainColor1, staintex,
                     pstainalpha, pstainsize, pangle, pspin, tint);
 
+                // DP passes the effect CENTER as every burst particle's sortorigin (1773 first arg) — the
+                // whole burst sorts as one group and composites in pool/spawn order within it.
+                if (idx >= 0)
+                    _pool[idx].SortOrg = center;
+
                 // pt_decal (DP CL_SpawnDecalParticleForSurface): project a FLAT decal onto the hit surface
                 // instead of drawing a free billboard. We raise a PROJECTED stain (the backend raycasts to the
                 // nearest surface via Decals.SpawnProjected) and deactivate the particle so it never renders as a
@@ -437,6 +442,7 @@ public sealed class ParticleSim
         ParticleRandom.VectorRandom(Rng);
         p.Org = new Vector3(px, py, pz);
         p.Vel = new Vector3(pvx, pvy, pvz);
+        p.SortOrg = p.Org;   // internal sub-spawns sort by their own org; SpawnEffect overrides to the effect center
 
         p.AirFriction = pairfriction;
         p.LiquidFriction = pliquidfriction;

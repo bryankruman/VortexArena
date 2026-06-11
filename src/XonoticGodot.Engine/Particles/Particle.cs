@@ -18,6 +18,9 @@ public struct Particle
     // --- rendering fields (org/vel/size/alpha/stretch + color) ---
     public Vector3 Org;            // world position (Quake units)
     public Vector3 Vel;            // velocity, or beam endpoint for beams
+    public Vector3 SortOrg;        // transparent-sort origin: the EFFECT's spawn center, not the particle org
+                                   // (particle_t.sortorigin — all particles of one burst share it, so they sort
+                                   // as a group and draw in pool/spawn order within it, cl_particles.c:3145)
     public float Size;             // world-unit half-size
     public float Alpha;            // 0..255
     public float Stretch;          // spark stretch factor (sparks only)

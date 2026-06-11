@@ -39,6 +39,7 @@ public static class ParticleCvars
     public const string DecalsBloodSmears = "cl_decals_newsystem_bloodsmears";
     public const string DrawDistance = "r_drawparticles_drawdistance";
     public const string NearClipMin = "r_drawparticles_nearclip_min";
+    public const string NearClipMax = "r_drawparticles_nearclip_max";
 
     /// <summary>(name, default, archived) for every particle cvar — registered at boot.</summary>
     public static readonly (string Name, string Default, bool Archived)[] Defaults =
@@ -69,7 +70,8 @@ public static class ParticleCvars
         (Decals, "1", true),
         (DecalsImmediateBloodStain, "2", true),
         (DecalsBloodSmears, "1", true),
-        (DrawDistance, "0", true),
+        (DrawDistance, "2000", true),   // DP stock r_drawparticles_drawdistance (gate scales by size², cl_particles.c:3158)
         (NearClipMin, "4", true),
+        (NearClipMax, "4", true),       // == min by default → hard clip, no fade band (DP stock)
     };
 }

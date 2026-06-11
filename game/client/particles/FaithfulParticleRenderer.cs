@@ -8,42 +8,53 @@ using NVec3 = System.Numerics.Vector3;
 namespace XonoticGodot.Game.Client.Particles;
 
 // =====================================================================================================
-//  Faithful particle RENDERER (planning/particles-dual-system.md §C.4). Draws the CPU-simulated pool
-//  (ParticleSim.Pool) as 3 MultiMesh batches keyed by blend mode over the SINGLE particlefont atlas:
+//  Faithful particle RENDERER — the draw-side mirror of DarkPlaces' R_DrawParticles /
+//  R_DrawParticle_TransparentCallback (Base/darkplaces/cl_particles.c:2624-3162). The CPU pool
+//  (ParticleSim.Pool) is drawn exactly the way DP draws it:
 //
-//      ParticleBlend.Alpha  -> blend_mix  (src-alpha)
-//      ParticleBlend.Add    -> blend_add  (glow)
-//      ParticleBlend.InvMod -> blend_sub  (DP's inverse-modulate; closest one-pass approximation)
+//  * ONE PREMULTIPLIED STREAM for alpha + additive particles. DP renders both through a single
+//    GL_ONE / GL_ONE_MINUS_SRC_ALPHA blend ("we can group these because we premultiplied the texture
+//    alpha", :2891): an alpha particle writes (rgb·a, a), an additive one writes (rgb·a, 0) — so one
+//    depth-sorted instance stream composites fire and smoke per particle, which is what gives a rocket
+//    explosion its dark-smoke-over-fire body. We replicate with one MultiMesh + blend_premul_alpha,
+//    premultiplying the vertex color CPU-side and the texture alpha in the fragment stage.
+//  * INVMOD exactly: GL_ZERO / GL_ONE_MINUS_SRC_COLOR == dst·(1−src) (:2877). Godot's blend_mul gives
+//    dst·src, so the shader outputs (1 − tex·color) — per-channel exact. Drawn as a second batch.
+//  * SORT KEY = the EFFECT's spawn center (particle_t.sortorigin, :3145 TRANSPARENTSORT_DISTANCE):
+//    every particle of one burst carries the same key, so the burst sorts as a group and its particles
+//    composite in POOL ORDER within it — i.e. effectinfo block order (fire first, black smoke on top,
+//    sparks last). Ties broken by pool index, exactly DP's queue-insertion order.
+//  * DP color math (:2643-2727): rgb = byte/256, alpha = min(1, alpha·cl_particles_alpha/256), the
+//    near-clip FADE band between r_drawparticles_nearclip_min..max, and draw-time spin
+//    angle + spin·(time − delayedspawn) (:2740) with stretch scaling the billboard X axis (:2752).
+//    Colors are sRGB bytes (DP draws into a gamma framebuffer); Godot's pipeline is linear, and the
+//    atlas is already sampled with source_color (sRGB→linear), so the vertex color is converted
+//    sRGB→linear too — otherwise the weak channels render 2-3× too bright and fire washes to white.
+//  * DP cull gates (:3134-3159): skip delayedspawn > time; hard near-clip at nearclip_min (fading up to
+//    nearclip_max when max > min); drawdistance² · size² (big particles visible farther).
 //
-//  Each batch is a MultiMeshInstance3D over a 1x1 QuadMesh + an INLINE ShaderMaterial that billboards
-//  in the vertex stage (same camera-facing math as EffectSystem's growth shader, EffectSystem.cs:1461-
-//  1471), applies the per-instance angle (Particle.Angle, already advanced by spin in the sim), and
-//  samples the correct atlas cell. Per-instance data is uploaded with one
-//  RenderingServer.MultimeshSetBuffer per batch: transform(12) + COLOR(4) + CUSTOM(4):
+//  Per-instance data is uploaded with one RenderingServer.MultimeshSetBuffer per batch:
+//  transform(12) + COLOR(4, premultiplied) + CUSTOM(4) = (cellSlot, angleRadians, sparkFlag, 0),
+//  where cellSlot indexes a uniform array of atlas UV-rects and sparkFlag means "the transform already
+//  carries a CPU-built basis (spark streak / oriented decal) — do NOT billboard".
 //
-//      CUSTOM = (cellSlot, angleRadians, sparkFlag, 0)
-//
-//  where cellSlot indexes a uniform array of atlas UV-rects (built from ParticleFont's cell table) the
-//  fragment stage reads, and sparkFlag != 0 means "the transform already carries a CPU-stretched spark
-//  basis — do NOT billboard" (cl_particles.c:2812-2825). Billboard particles upload an identity-ish
-//  transform (origin + uniform scale) and let the shader build the camera-facing quad.
-//
-//  Draw-time fidelity matches DP R_DrawParticles: size * cl_particles_size (cl_particles.c:2732),
-//  near-clip skip (2932), drawdistance^2 cull (2935), and the Alpha batch is CPU-sorted back-to-front
-//  (2935+; add/invmod are order-independent). Coordinate conversion to Godot happens here at the render
-//  boundary via Coords.ToGodot — the sim stays in Quake space.
+//  Coordinate conversion to Godot happens here at the render boundary — the sim stays in Quake space.
 // =====================================================================================================
 
-/// <summary>Renders the faithful CPU particle pool as 3 blend-keyed MultiMesh batches over the atlas.</summary>
+/// <summary>Renders the faithful CPU particle pool the way DP does: one sorted premultiplied stream
+/// (alpha+add) plus an exact-INVMOD multiply batch, over the particlefont atlas.</summary>
 public sealed partial class FaithfulParticleRenderer : Node3D
 {
     // 20 floats per instance: 12 transform + 4 color + 4 custom (Godot MultiMesh buffer layout when
     // TransformFormat=Transform3D, UseColors and UseCustomData are both enabled).
     private const int FloatsPerInstance = 20;
 
-    // The DP particlefont index ranges we pack into the render atlas: sprites 0-63 and the beam strips
-    // 200-205 (ParticleFont.cs class doc). Indices outside these slots draw the fallback (slot 0).
-    private static readonly (int Lo, int Hi)[] AtlasRanges = { (0, 64), (200, 206) };
+    // The DP particlefont index ranges packed into the render atlas: ALL sprite cells 0-95 (DP
+    // MAX_PARTICLETEXTURES=96 — effects use up to the 90s: nex 65, electro bolts 70-74, debris 66-68).
+    // The beam strips (200-205) are deliberately EXCLUDED: beams draw through the dedicated beam path
+    // (this renderer skips Orientation.Beam), and one ~2048px-wide strip in the uniform slot grid blew
+    // the atlas up to 32768px — past common GPU texture limits, corrupting every sprite sample.
+    private static readonly (int Lo, int Hi)[] AtlasRanges = { (0, 96) };
 
     private sealed class Batch
     {
@@ -52,13 +63,12 @@ public sealed partial class FaithfulParticleRenderer : Node3D
         public ShaderMaterial Material = null!;
         public float[] Buffer = Array.Empty<float>();
         public int Count;
-        // Scratch indices into the pool for this batch (filled each Sync, used by the alpha sort).
+        // Scratch indices into the pool for this batch (filled each Sync, sorted, then packed).
         public readonly List<int> Indices = new();
     }
 
-    private Batch? _alpha;
-    private Batch? _add;
-    private Batch? _sub;
+    private Batch? _premul;   // DP GL_ONE / GL_ONE_MINUS_SRC_ALPHA — alpha AND additive particles
+    private Batch? _invmod;   // DP GL_ZERO / GL_ONE_MINUS_SRC_COLOR — dst·(1−src) via blend_mul
 
     // The packed render atlas + per-cell normalized UV rects (slot index -> rect). texnum -> slot via _slotOf.
     private Texture2D? _atlasTex;
@@ -66,47 +76,45 @@ public sealed partial class FaithfulParticleRenderer : Node3D
     private Vector4[] _cellRects = Array.Empty<Vector4>();    // slot -> (u0, v0, du, dv) in atlas UV space
     private bool _built;
 
-    // Cached per-frame view plane (set in Sync) for the near-clip / drawdistance gates.
-    private float _drawDistanceSq;       // 0 => disabled
-    private float _nearClipMin = 4f;
+    /// <summary>The CLIENT cvar store for cl_particles_size/_alpha/draw-distance (set by the backend to
+    /// MenuState.Cvars). Null falls back to Api.Cvars.</summary>
+    public ICvarService? Cvars { get; set; }
 
-    // Cached depth-sort state — the alpha batch's back-to-front sort reads these instead of capturing a
-    // closure, so Sync allocates nothing per frame. _depthCmp is the delegate, allocated once.
+    // Cached depth-sort state — the comparator reads these instead of capturing a closure, so Sync
+    // allocates nothing per frame. Key: squared distance of the particle's SortOrg (the EFFECT center)
+    // from the view origin, farthest first; ties by pool index ascending (DP queue-insertion order).
     private Particle[] _sortPool = Array.Empty<Particle>();
     private NVec3 _sortVo;
     private Comparison<int>? _depthCmp;
 
     private int CompareDepthFarthestFirst(int ia, int ib)
     {
-        NVec3 da = _sortPool[ia].Org - _sortVo, db = _sortPool[ib].Org - _sortVo;
+        NVec3 da = _sortPool[ia].SortOrg - _sortVo, db = _sortPool[ib].SortOrg - _sortVo;
         float fa = NVec3.Dot(da, da), fb = NVec3.Dot(db, db);
-        return fb.CompareTo(fa); // farthest first
+        int c = fb.CompareTo(fa);                 // farthest first
+        return c != 0 ? c : ia.CompareTo(ib);     // tie: pool order (spawn/block order within a burst)
     }
 
     public override void _Ready()
     {
-        _alpha = MakeBatch("alpha", BlendKind.Mix);
-        _add = MakeBatch("add", BlendKind.Add);
-        _sub = MakeBatch("sub", BlendKind.Sub);
+        _premul = MakeBatch("premul", invmod: false);
+        _invmod = MakeBatch("invmod", invmod: true);
         // BuildAtlas may have run before _Ready (the backend builds the atlas as soon as it has the font,
         // which can precede this node entering the tree). If an atlas is already packed, apply it now that
         // the batch materials exist.
         if (_atlasTex is not null)
         {
-            ApplyAtlas(_alpha);
-            ApplyAtlas(_add);
-            ApplyAtlas(_sub);
+            ApplyAtlas(_premul);
+            ApplyAtlas(_invmod);
             _built = true;
         }
     }
-
-    private enum BlendKind { Mix, Add, Sub }
 
     // ---------------------------------------------------------------------------------------------
     //  Atlas build — pack ParticleFont cells into one texture + a UV-rect table the shader indexes.
     //  ParticleFont exposes only Cell(index) (a cropped ImageTexture per index); it does NOT surface
     //  the source atlas or rects. So we re-pack the cells we need into our own grid atlas and record
-    //  each cell's normalized rect. Done once per font (cheap: ~70 small blits).
+    //  each cell's normalized rect. Done once per font (cheap: ~100 small blits).
     // ---------------------------------------------------------------------------------------------
 
     /// <summary>Build the render atlas + UV table from the loaded <paramref name="font"/>. Safe to call
@@ -175,11 +183,10 @@ public sealed partial class FaithfulParticleRenderer : Node3D
 
         // Push the atlas + UV table into every batch material. If _Ready hasn't built the batches yet
         // (BuildAtlas can run before this node enters the tree), defer: _Ready re-applies once they exist.
-        if (_alpha is not null && _add is not null && _sub is not null)
+        if (_premul is not null && _invmod is not null)
         {
-            ApplyAtlas(_alpha);
-            ApplyAtlas(_add);
-            ApplyAtlas(_sub);
+            ApplyAtlas(_premul);
+            ApplyAtlas(_invmod);
             _built = true;
         }
     }
@@ -208,7 +215,7 @@ public sealed partial class FaithfulParticleRenderer : Node3D
     //  Batch + shader construction
     // ---------------------------------------------------------------------------------------------
 
-    private Batch MakeBatch(string name, BlendKind blend)
+    private Batch MakeBatch(string name, bool invmod)
     {
         // 1x1 quad centered on origin; the vertex shader scales/billboards it. Two-sided so back-facing
         // billboards (and oriented sparks) still draw.
@@ -223,7 +230,12 @@ public sealed partial class FaithfulParticleRenderer : Node3D
             InstanceCount = 0,
         };
 
-        var mat = new ShaderMaterial { Shader = BillboardShader(blend) };
+        var mat = new ShaderMaterial { Shader = ParticleShader(invmod) };
+        if (invmod)
+            // Multiplicative darkening composites over the premul stream (DP interleaves them in one
+            // queue; a separate later batch is the accepted approximation — blood marks want to darken
+            // what's under them).
+            mat.RenderPriority = 1;
 
         var node = new MultiMeshInstance3D
         {
@@ -242,19 +254,27 @@ public sealed partial class FaithfulParticleRenderer : Node3D
         return new Batch { Node = node, Mesh = mm, Material = mat };
     }
 
-    /// <summary>The inline billboard shader for a blend mode. Vertex: when CUSTOM.z (sparkFlag) is 0 it
-    /// builds a camera-facing quad from the instance origin + uniform scale (length of MODEL_MATRIX[0]),
-    /// rotates it by CUSTOM.y (angle); when sparkFlag != 0 it draws the instance transform verbatim (the
-    /// CPU already baked the velocity-stretched spark basis). Fragment: remap UV into the atlas cell
-    /// selected by CUSTOM.x, then modulate by COLOR.</summary>
-    private static Shader BillboardShader(BlendKind blend)
+    /// <summary>
+    /// The inline draw shader. Vertex: when CUSTOM.z (sparkFlag) is 0 it builds a camera-facing quad from
+    /// the instance origin + the X/Y basis lengths (X carries DP's stretch), rolled by CUSTOM.y (the
+    /// draw-time angle incl. spin); when sparkFlag != 0 it draws the instance transform verbatim (the CPU
+    /// baked the spark/oriented basis). Fragment replicates DP's PREMULTIPLIED particlefont
+    /// (cl_particles.c:2891 "we premultiplied the texture alpha"): tex.rgb·tex.a × COLOR, where COLOR was
+    /// premultiplied by particle alpha CPU-side (additive instances carry COLOR.a = 0).
+    ///   premul batch: blend_premul_alpha == GL_ONE / GL_ONE_MINUS_SRC_ALPHA (DP :2891).
+    ///   invmod batch: blend_mul outputs (1 − tex·COLOR) == GL_ZERO / GL_ONE_MINUS_SRC_COLOR (DP :2877).
+    /// </summary>
+    private static Shader ParticleShader(bool invmod)
     {
-        string blendMode = blend switch
-        {
-            BlendKind.Add => "blend_add",
-            BlendKind.Sub => "blend_sub",
-            _ => "blend_mix",
-        };
+        string blendMode = invmod ? "blend_mul" : "blend_premul_alpha";
+        string fragment = invmod
+            // dst·(1−src): blend_mul gives dst·ALBEDO, so output the inverse-modulate factor directly.
+            ? "    ALBEDO = vec3(1.0) - t.rgb * t.a * COLOR.rgb;\n" +
+              "    ALPHA = 1.0;\n"
+            // Premultiplied compositing: rgb is the full (already alpha-weighted) contribution; ALPHA only
+            // controls how much of the destination is occluded (0 for additive).
+            : "    ALBEDO = t.rgb * t.a * COLOR.rgb;\n" +
+              "    ALPHA = t.a * COLOR.a;\n";
         return new Shader
         {
             Code =
@@ -263,22 +283,20 @@ public sealed partial class FaithfulParticleRenderer : Node3D
                 // shader, EffectSystem.cs:1455-1458). Unshaded emissive sprites, two-sided.
                 "render_mode " + blendMode + ", unshaded, cull_disabled, shadows_disabled, depth_draw_opaque;\n" +
                 "uniform sampler2D albedo_tex : source_color, filter_linear;\n" +
-                "uniform vec4 cell_rects[256];\n" +   // slot -> (u0, v0, du, dv); 256 covers 0-63 + 200-205
+                "uniform vec4 cell_rects[256];\n" +   // slot -> (u0, v0, du, dv); covers 0-95 + 200-205
                 "uniform int cell_count = 0;\n" +
                 "varying flat int v_slot;\n" +
-                "varying flat int v_spark;\n" +
                 "void vertex() {\n" +
                 "    int slot = int(INSTANCE_CUSTOM.x + 0.5);\n" +
                 "    v_slot = clamp(slot, 0, max(cell_count - 1, 0));\n" +
                 "    float angle = INSTANCE_CUSTOM.y;\n" +
                 "    float spark = INSTANCE_CUSTOM.z;\n" +
-                "    v_spark = spark > 0.5 ? 1 : 0;\n" +
                 "    if (spark > 0.5) {\n" +
                 // Spark/oriented: the CPU baked the basis into MODEL_MATRIX; draw it directly.
                 "        MODELVIEW_MATRIX = VIEW_MATRIX * MODEL_MATRIX;\n" +
                 "    } else {\n" +
-                // Billboard: camera-facing axes scaled by the per-instance uniform scale, then rolled by
-                // the particle angle. Same construction as EffectSystem's growth shader (1461-1470).
+                // Billboard: camera-facing axes scaled by the per-instance X/Y edge lengths (X carries
+                // DP's stretch factor), then rolled by the draw-time angle (DP cl_particles.c:2740-2754).
                 "        float sx = length(MODEL_MATRIX[0].xyz);\n" +
                 "        float sy = length(MODEL_MATRIX[1].xyz);\n" +
                 "        vec3 r = normalize(INV_VIEW_MATRIX[0].xyz) * sx;\n" +
@@ -293,101 +311,97 @@ public sealed partial class FaithfulParticleRenderer : Node3D
                 "    vec4 rect = cell_rects[v_slot];\n" +     // (u0, v0, du, dv)
                 "    vec2 uv = rect.xy + UV * rect.zw;\n" +
                 "    vec4 t = texture(albedo_tex, uv);\n" +
-                "    ALBEDO = t.rgb * COLOR.rgb;\n" +
-                "    ALPHA = t.a * COLOR.a;\n" +
+                fragment +
                 "}\n",
         };
     }
 
     // ---------------------------------------------------------------------------------------------
-    //  Per-frame sync — cull, sort, pack, upload.
+    //  Per-frame sync — cull, sort (DP transparent-queue semantics), pack, upload.
     // ---------------------------------------------------------------------------------------------
 
     /// <summary>
-    /// Rebuild the 3 MultiMesh buffers from the live particles in <paramref name="pool"/> (scan
-    /// [0, <paramref name="highWater"/>)). Culls by the DP near-clip (cl_particles.c:2932) and
-    /// drawdistance^2 (2935) gates relative to the view, sorts the Alpha batch back-to-front (2935+),
-    /// and uploads each batch via RenderingServer.MultimeshSetBuffer. <paramref name="viewOrigin"/> and
-    /// <paramref name="viewForward"/> are in QUAKE space (the sim's space); conversion to Godot is done
-    /// here at the render boundary.
+    /// Rebuild the batches from the live particles in <paramref name="pool"/> (scan
+    /// [0, <paramref name="highWater"/>)). Replicates DP's queue gates (cl_particles.c:3134-3159):
+    /// skip delayed spawns, hard near-clip at nearclip_min (with the nearclip_max fade band), and the
+    /// size-scaled drawdistance² cull; sorts by effect center farthest-first with pool-order ties; packs
+    /// DP's premultiplied vertex colors. <paramref name="viewOrigin"/>/<paramref name="viewForward"/> are
+    /// QUAKE space; <paramref name="time"/> is the SIM clock (drives draw-time spin + the delayed gate).
     /// </summary>
-    public void Sync(Particle[] pool, int highWater, NVec3 viewOrigin, NVec3 viewForward)
+    public void Sync(Particle[] pool, int highWater, NVec3 viewOrigin, NVec3 viewForward, float time)
     {
-        Batch? alpha = _alpha, add = _add, sub = _sub;
-        if (!_built || alpha is null || add is null || sub is null || pool is null || highWater <= 0)
+        Batch? premul = _premul, invmod = _invmod;
+        if (!_built || premul is null || invmod is null || pool is null || highWater <= 0)
         {
-            ClearBatch(alpha);
-            ClearBatch(add);
-            ClearBatch(sub);
+            ClearBatch(premul);
+            ClearBatch(invmod);
             return;
         }
 
         // cl_particles_size scales every particle's drawn size (cl_particles.c:2732).
         float sizeScale = ReadCvar(ParticleCvars.Size, 1f);
         if (sizeScale <= 0f) sizeScale = 1f;
-        float alphaScale = Math.Clamp(ReadCvar(ParticleCvars.Alpha, 1f), 0f, 1f);
+        float alphaScale = MathF.Max(0f, ReadCvar(ParticleCvars.Alpha, 1f));
 
-        // Near-clip / drawdistance gates (cl_particles.c:2932, 2935).
-        _nearClipMin = ReadCvar(ParticleCvars.NearClipMin, 4f);
-        float drawDist = ReadCvar(ParticleCvars.DrawDistance, 0f);
-        _drawDistanceSq = drawDist > 0f ? drawDist * drawDist : 0f;
+        // Near-clip band + size-scaled drawdistance (cl_particles.c:2655-2656, 3158).
+        float nearMin = ReadCvar(ParticleCvars.NearClipMin, 4f);
+        float nearMax = ReadCvar(ParticleCvars.NearClipMax, 4f);
+        float drawDist = ReadCvar(ParticleCvars.DrawDistance, 2000f);
+        float drawDistSq = drawDist > 0f ? drawDist * drawDist : 0f;   // 0 keeps "disabled" semantics
         NVec3 fwd = Normalize(viewForward);
-        float viewPlane = NVec3.Dot(viewOrigin, fwd);   // dot(view.org, fwd); compared per particle (2932)
+        float planeStart = NVec3.Dot(viewOrigin, fwd) + nearMin;       // minparticledist_start
+        float planeEnd = NVec3.Dot(viewOrigin, fwd) + nearMax;         // minparticledist_end
+        bool doFade = planeStart < planeEnd;
 
-        alpha.Indices.Clear();
-        add.Indices.Clear();
-        sub.Indices.Clear();
+        premul.Indices.Clear();
+        invmod.Indices.Clear();
 
-        // 1) Cull + bucket by blend.
+        // 1) Cull + bucket by blend state (DP groups INVMOD apart from the shared premultiplied stream).
         for (int i = 0; i < highWater; i++)
         {
             ref Particle p = ref pool[i];
             if (!p.Active || p.Alpha <= 0f)
+                continue;
+            if (p.DelayedSpawn > time)          // not yet spawned visually (:3134)
                 continue;
             // Beams are drawn by the dedicated beam path; the faithful renderer handles billboard/spark/
             // oriented. Skip pure beams here (orientation == Beam) — they have no billboard form.
             if (p.Orientation == ParticleOrientation.Beam)
                 continue;
 
-            float r = p.Size * sizeScale;
-            // Near clip: skip if in front-of-plane distance is less than the view plane + nearclip_min,
-            // expanded by the particle radius so a big sprite straddling the plane still shows (2932).
             float along = NVec3.Dot(p.Org, fwd);
-            if (along < viewPlane + _nearClipMin - r)
+            if (along < planeStart)             // hard near cull (:3158, dot(org,fwd) >= start)
                 continue;
-            if (_drawDistanceSq > 0f)
+            if (drawDistSq > 0f)
             {
+                // DP: VectorDistance2(org, vieworg) < drawdist² · size² — big sprites stay visible farther.
                 NVec3 d = p.Org - viewOrigin;
-                if (NVec3.Dot(d, d) > _drawDistanceSq)
+                float size = MathF.Max(p.Size * sizeScale, 0.0001f);
+                if (NVec3.Dot(d, d) >= drawDistSq * size * size)
                     continue;
             }
 
-            switch (p.BlendMode)
-            {
-                case ParticleBlend.Add: add.Indices.Add(i); break;
-                case ParticleBlend.InvMod: sub.Indices.Add(i); break;
-                default: alpha.Indices.Add(i); break;
-            }
+            if (p.BlendMode == ParticleBlend.InvMod)
+                invmod.Indices.Add(i);
+            else
+                premul.Indices.Add(i);
         }
 
-        // 2) Sort the alpha batch back-to-front by squared distance to the view (2935+). Add/invmod are
-        //    order-independent, so they stay in pool order. Use a CACHED comparison delegate (fields hold the
-        //    pool + view) so the per-frame sort allocates no closure.
-        if (alpha.Indices.Count > 1)
-        {
-            _sortPool = pool;
-            _sortVo = viewOrigin;
-            _depthCmp ??= CompareDepthFarthestFirst;
-            alpha.Indices.Sort(_depthCmp);
-        }
+        // 2) Sort both streams the way DP's transparent queue does: farthest SortOrg (the effect center)
+        //    first, ties in pool order — a burst composites in its spawn/block order.
+        _sortPool = pool;
+        _sortVo = viewOrigin;
+        _depthCmp ??= CompareDepthFarthestFirst;
+        if (premul.Indices.Count > 1) premul.Indices.Sort(_depthCmp);
+        if (invmod.Indices.Count > 1) invmod.Indices.Sort(_depthCmp);
 
-        // 3) Pack + upload each batch.
-        PackAndUpload(alpha, pool, sizeScale, alphaScale, fwd);
-        PackAndUpload(add, pool, sizeScale, alphaScale, fwd);
-        PackAndUpload(sub, pool, sizeScale, alphaScale, fwd);
+        // 3) Pack + upload.
+        PackAndUpload(premul, pool, sizeScale, alphaScale, fwd, time, planeStart, planeEnd, doFade, invmod: false);
+        PackAndUpload(invmod, pool, sizeScale, alphaScale, fwd, time, planeStart, planeEnd, doFade, invmod: true);
     }
 
-    private void PackAndUpload(Batch b, Particle[] pool, float sizeScale, float alphaScale, NVec3 viewFwd)
+    private void PackAndUpload(Batch b, Particle[] pool, float sizeScale, float alphaScale, NVec3 viewFwd,
+        float time, float planeStart, float planeEnd, bool doFade, bool invmod)
     {
         int n = b.Indices.Count;
         if (n == 0)
@@ -412,26 +426,50 @@ public sealed partial class FaithfulParticleRenderer : Node3D
             int o = k * FloatsPerInstance;
 
             int slot = _slotOf.TryGetValue(p.TexNum, out int s) ? s : 0;
-            float angle = p.Angle * (MathF.PI / 180f); // sim stores degrees (particle_t.angle); shader wants rad
-            float alpha = Math.Clamp(p.Alpha / 255f * alphaScale, 0f, 1f);
-            Color col = new(p.ColorR / 255f, p.ColorG / 255f, p.ColorB / 255f, alpha);
+            // Draw-time spin (cl_particles.c:2740): angle + spin·(time − delayedspawn), degrees → radians.
+            float angle = (p.Angle + p.Spin * (time - p.DelayedSpawn)) * (MathF.PI / 180f);
+
+            // DP vertex color (:2643-2727): alpha = min(1, alpha·cl_particles_alpha/256) with the near
+            // fade band; rgb = byte/256, premultiplied by alpha. Colors are sRGB bytes (DP's gamma
+            // framebuffer) → convert to linear for Godot's pipeline (the atlas is converted by
+            // source_color already, so this keeps texture × color consistent).
+            float alphaNorm = p.Alpha * alphaScale * (1f / 256f);
+            if (doFade)
+            {
+                float along = NVec3.Dot(p.Org, viewFwd);
+                alphaNorm *= MathF.Min(1f, (along - planeStart) / (planeEnd - planeStart));
+            }
+            if (alphaNorm > 1f) alphaNorm = 1f;
+
+            float lr = SrgbToLinear(p.ColorR * (1f / 256f));
+            float lg = SrgbToLinear(p.ColorG * (1f / 256f));
+            float lb = SrgbToLinear(p.ColorB * (1f / 256f));
+
+            // Premultiply (DP :2683 ADD, :2727 ALPHA, :2680 INVMOD). Additive carries vertex alpha 0 so
+            // the premultiplied blend leaves the destination intact (pure add); invmod's COLOR is the
+            // darkening factor.
+            Color col;
+            if (invmod)
+                col = new Color(lr * alphaNorm, lg * alphaNorm, lb * alphaNorm, 1f);
+            else if (p.BlendMode == ParticleBlend.Add)
+                col = new Color(lr * alphaNorm, lg * alphaNorm, lb * alphaNorm, 0f);
+            else
+                col = new Color(lr * alphaNorm, lg * alphaNorm, lb * alphaNorm, alphaNorm);
 
             Vector3 gpos = Coords.ToGodot(p.Org);
 
             if (p.Orientation == ParticleOrientation.Spark)
             {
                 // Velocity-stretched spark (cl_particles.c:2812-2825): half-length along the CURRENT
-                // velocity = max(stretch * 0.04 * |vel|, size * 0.5); cross width = size. Build the basis
+                // velocity = max(stretch · 0.04 · |vel|, size · 0.5); cross width = size. Build the basis
                 // CPU-side so the shader draws it verbatim (sparkFlag = 1). The quad is 1x1 centered, so
-                // the X axis becomes the half-width*2 and Y the half-length*2 (full extents).
+                // the X axis becomes the full width and Y the full length.
                 float size = p.Size * sizeScale;
                 float speed = p.Vel.Length();
                 float stretch = p.Stretch > 0f ? p.Stretch : 1f;
                 float halfLen = MathF.Max(stretch * 0.04f * speed, size * 0.5f);
                 float width = MathF.Max(size, 0.001f);
 
-                // Length axis = velocity direction (Godot space); width axis = a screen-ish perpendicular
-                // using the view forward so the streak keeps some facing toward the camera.
                 Vector3 gvel = speed > 1e-4f ? Coords.ToGodot(p.Vel).Normalized() : Vector3.Up;
                 Vector3 gfwd = Coords.ToGodot(viewFwd);
                 Vector3 widthAxis = gvel.Cross(gfwd);
@@ -440,7 +478,7 @@ public sealed partial class FaithfulParticleRenderer : Node3D
                 widthAxis = widthAxis.Normalized();
                 Vector3 faceAxis = widthAxis.Cross(gvel).Normalized();
 
-                Vector3 xAxis = widthAxis * (width);        // full width across the streak
+                Vector3 xAxis = widthAxis * width;          // full width across the streak
                 Vector3 yAxis = gvel * (halfLen * 2f);      // full length along velocity
                 Vector3 zAxis = faceAxis;                   // unit normal (no scale needed)
                 WriteTransform(buf, o, xAxis, yAxis, zAxis, gpos);
@@ -463,11 +501,14 @@ public sealed partial class FaithfulParticleRenderer : Node3D
             }
             else
             {
-                // Billboard: upload origin + a uniform scale = full edge (2*half-size). The shader reads
-                // the scale from length(MODEL_MATRIX[0/1]) and builds the camera-facing quad.
-                float edge = MathF.Max(p.Size * sizeScale * 2f, 0.001f);
+                // Billboard: upload origin + the X/Y edge lengths. DP scales the X (right) axis by the
+                // particle's stretch factor (:2752 right = left · size · stretch) — elliptical sprites.
+                float size = p.Size * sizeScale;
+                float stretch = p.Stretch != 0f ? MathF.Abs(p.Stretch) : 1f;
+                float xEdge = MathF.Max(size * 2f * stretch, 0.001f);
+                float yEdge = MathF.Max(size * 2f, 0.001f);
                 WriteTransform(buf, o,
-                    new Vector3(edge, 0, 0), new Vector3(0, edge, 0), new Vector3(0, 0, edge), gpos);
+                    new Vector3(xEdge, 0, 0), new Vector3(0, yEdge, 0), new Vector3(0, 0, 1f), gpos);
                 WriteColor(buf, o, col);
                 WriteCustom(buf, o, slot, angle, sparkFlag: 0f);
             }
@@ -512,9 +553,12 @@ public sealed partial class FaithfulParticleRenderer : Node3D
         buf[o + 16] = slot; buf[o + 17] = angle; buf[o + 18] = sparkFlag; buf[o + 19] = 0f;
     }
 
-    /// <summary>The CLIENT cvar store for cl_particles_size/_alpha/draw-distance (set by the backend to
-    /// MenuState.Cvars). Null falls back to Api.Cvars.</summary>
-    public ICvarService? Cvars { get; set; }
+    /// <summary>Standard sRGB → linear (the inverse of Godot's output transfer). DP composes raw sRGB
+    /// bytes into a gamma framebuffer; converting here makes one particle on a dark background land on
+    /// the same displayed value through Godot's linear pipeline (the atlas already converts via
+    /// source_color, so texture × color stays consistent).</summary>
+    private static float SrgbToLinear(float c)
+        => c <= 0.04045f ? c * (1f / 12.92f) : MathF.Pow((c + 0.055f) * (1f / 1.055f), 2.4f);
 
     private float ReadCvar(string name, float fallback)
     {

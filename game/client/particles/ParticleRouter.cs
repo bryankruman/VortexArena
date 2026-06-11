@@ -104,22 +104,18 @@ public sealed class ParticleRouter
     private void SpawnFaithful(string effectName, IReadOnlyList<EffectInfoEmitter> blocks,
         EffectStyleEntry style, ModernPreset preset, NVec3 origin, NVec3 velocity, int count, bool isTrail, Color? color)
     {
-        // A modern-authored effect routed to the faithful backend (mode 0, or the nosdf=0 reroute) is
-        // translated to faithful-shaped blocks; an effectinfo-defined effect uses its real blocks verbatim.
-        IReadOnlyList<EffectInfoEmitter> faithBlocks = blocks;
-        if (style.Style == ParticleStyle.Modern)
-        {
-            IReadOnlyList<EffectInfoEmitter>? authored = null;
-            if (Registry is not null && Registry.TryGetOverlayBlocks(effectName, out var ab))
-                authored = ab;
-            faithBlocks = ParticleTranslation.ToFaithful(effectName, preset, authored);
-        }
-
+        // The blocks passed in are the effect's REAL effectinfo definition (Route is only called with a
+        // non-empty upstream lookup) — the faithful backend always renders those verbatim, even when the
+        // overlay styles the effect modern (§D.2 mode 0: the per-effect style only matters to the MODERN
+        // route; the modern→original translation, ParticleTranslation.ToFaithful, applies only to
+        // modern-ONLY effects that have no effectinfo definition — a spawn path the overlay-defined
+        // effects will use when wired). Translating a defined effect here replaced the authored fire/
+        // smoke blocks with synthesized defaults — white-dot explosions.
         uint tint = PackTint(color);
         if (isTrail)
-            Faithful!.Trail(faithBlocks, origin, velocity, NVec3.Zero, count, tint);
+            Faithful!.Trail(blocks, origin, velocity, NVec3.Zero, count, tint);
         else
-            Faithful!.Spawn(faithBlocks, origin, velocity, count, tint);
+            Faithful!.Spawn(blocks, origin, velocity, count, tint);
     }
 
     /// <summary>Resolve the backend per §D.2: mode 0 faithful, mode 2 modern, mode 1 by authored style.</summary>
