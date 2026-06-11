@@ -277,12 +277,15 @@ public partial class ClientWorld : Node3D
 
     /// <summary>
     /// Resolve a FORCED player model (QC <c>cl_forcemyplayermodel</c> / the <c>cl_forceplayermodels</c> →
-    /// <c>_cl_playermodel</c> swap) to a render node for an entity: given the forced model NAME + skin, build the
-    /// skeletal/MD3 node the same way <see cref="PlayerModelResolver"/>/<see cref="ModelResolver"/> would. Host-set
-    /// (NetGame); null → no force-model swap (the entity keeps its own networked model). Returns null when the
-    /// forced model can't be built (QC <c>fexists</c>-miss → keep own).
+    /// <c>_cl_playermodel</c> swap) to a render node for an entity: given the entity, the forced model NAME + skin,
+    /// build the skeletal/MD3 node the same way <see cref="PlayerModelResolver"/>/<see cref="ModelResolver"/> would.
+    /// The entity is passed so the async (streamed) build can validate staleness and re-attach via
+    /// <see cref="RebuildEntityModel"/> when the forced parse settles (a forced skeletal model returns a placeholder
+    /// shell immediately, exactly like <see cref="PlayerModelResolver"/>). Host-set (NetGame); null → no force-model
+    /// swap (the entity keeps its own networked model). Returns null when the forced model can't be built (QC
+    /// <c>fexists</c>-miss → keep own).
     /// </summary>
-    public Func<string, int, Node3D?>? ForcedModelResolver { get; set; }
+    public Func<Entity, string, int, Node3D?>? ForcedModelResolver { get; set; }
 
     // ---- delegate-style hooks (for net code that prefers Action wiring) ----
     public Action<string, NVec3, NVec3, int>? EffectHook;
@@ -900,12 +903,25 @@ public partial class ClientWorld : Node3D
         }
 
         // Skeletal player models: synthesize the four-pose split + aim each frame and push the CPU bones.
+        // 3.3 pose-cull (cl_pose_cull, default OFF): read the gate once per frame, plus the local-player id and
+        // the camera position, so off-screen / distant REMOTE models can skip the interop bone push. Coords is
+        // 1:1 (no meter scale) so Godot-space distance == Quake-unit distance; cl_pose_cull_distance is squared
+        // once here. ListenerPos() never returns null (it falls back to _lastListener), so distSq is NRE-safe.
+        bool poseCull = CvarF("cl_pose_cull", 0f) != 0f;
+        float cullDist = CvarF("cl_pose_cull_distance", 1500f);
+        float cullDistSq = poseCull ? cullDist * cullDist : 0f;
+        int localId = AppearanceProvider?.Invoke()?.LocalNetId ?? -1;
+        Godot.Vector3 viewG = ListenerPos();
         using (FrameProfiler.Scope("cw.players"))
         foreach (PlayerModel pm in _playerModels.Values)
         {
             Entity? e = pm.Bound;
             if (e is not null && !e.IsFreed && GodotObject.IsInstanceValid(pm))
-                pm.Pose(e, (float)delta);
+            {
+                bool isLocal = e.Index == localId;
+                float distSq = poseCull ? (pm.GlobalPosition - viewG).LengthSquared() : 0f;
+                pm.Pose(e, (float)delta, poseCull, isLocal, distSq, cullDistSq);
+            }
         }
 
         using (FrameProfiler.Scope("cw.csqc")) DriveCsqcModelHooks((float)delta);
@@ -967,7 +983,13 @@ public partial class ClientWorld : Node3D
                 bool ghost = (e.Effects & CsqcModelEffectFlags.CSQCMODEL_EF_RESPAWNGHOST) != 0;
                 // FORCECOLORS: the cl_forceplayercolors family can reassign this.colormap (else keep e.Team).
                 int colormap = ResolveForcedColormap(e);
-                ModelTint.ApplyAppearance(node, colormap, dead, st.DeathTime, ghost);
+                // Tint the CACHED, flattened mesh list (3.2-2) instead of re-walking node.GetChildren() every
+                // frame. This is the SAME cache the effects pass uses below (keyed on st.Effects + node), built
+                // once and invalidated on model swap / freed mesh (incl. the staggered placeholder→real swap), so
+                // the appearance and effects lists can never diverge. Only player models need it, so it's fetched
+                // inside this branch — a player model with zero effects never builds it for the effects pass.
+                List<MeshInstance3D> meshes = CsqcModelEffects.GetCachedMeshes(st.Effects, node);
+                ModelTint.ApplyAppearance(meshes, colormap, dead, st.DeathTime, ghost);
             }
 
             // (2) LOD: compute the index (faithful math) — see ApplyLod for the swap caveat.
@@ -1297,7 +1319,7 @@ public partial class ClientWorld : Node3D
         if (hasForceMy && isFriend)
         {
             int skin = (int)CvarF("cl_forcemyplayerskin", 0f);
-            if (ForcedModelResolver(forceMyModel, skin) is { } myNode)
+            if (ForcedModelResolver(entity, forceMyModel, skin) is { } myNode)
             {
                 AttachForcedNode(entity, node, myNode);
                 return true;
@@ -1307,7 +1329,7 @@ public partial class ClientWorld : Node3D
         {
             string allModel = Api.Services is null ? "" : Api.Cvars.GetString("_cl_playermodel");
             int allSkin = (int)CvarF("_cl_playerskin", 0f);
-            if (!string.IsNullOrEmpty(allModel) && ForcedModelResolver(allModel, allSkin) is { } allNode)
+            if (!string.IsNullOrEmpty(allModel) && ForcedModelResolver(entity, allModel, allSkin) is { } allNode)
             {
                 AttachForcedNode(entity, node, allNode);
                 return true;

@@ -78,6 +78,12 @@ public sealed partial class NetGame : Node3D
     // --- live pieces ---
     private GameWorld? _serverWorld;            // listen server only
     private ServerNet? _server;                 // listen server only
+    // S5 (sv_threaded, default OFF): the dedicated server-sim worker thread + the shared serialisation gate it
+    // and the main-thread prediction span lock against. BOTH null unless sv_threaded was 1 at StartListenServer on
+    // a non-headless host. When null, _Process drives _server.Tick directly on the main thread exactly as today —
+    // no thread, no lock — so the default path is byte-for-byte unchanged.
+    private ServerThread? _serverThread;        // listen server only, sv_threaded 1 only
+    private object? _simGate;                    // the shared lock; non-null iff _serverThread is non-null
     private ClientNet? _client;
     private ClientWorld _render = null!;
     // The background parse/build queue (S1): the idle player-model warm AND the live on-demand player-model
@@ -87,6 +93,12 @@ public sealed partial class NetGame : Node3D
     // returns null for these so ClientWorld's MD3/static fall-through owns them — exactly the old synchronous
     // path's outcome. Per session; model files can't change mid-run.
     private readonly System.Collections.Generic.HashSet<string> _nonSkeletalPlayerModels =
+        new(System.StringComparer.OrdinalIgnoreCase);
+    // FORCED player-model names+skins whose async resolve settled as NOT a poseable skeleton (non-IQM forced model
+    // → render via the cached LoadModel node, FORCEMODEL parity) OR a true VFS miss (LoadModel also null → fall
+    // through to the entity's own model). Keyed "model#skin" because a forced model is name+skin-specific. Checking
+    // this BEFORE re-streaming is what makes the RebuildEntityModel-driven re-attach terminate instead of looping.
+    private readonly System.Collections.Generic.HashSet<string> _unresolvableForcedModels =
         new(System.StringComparer.OrdinalIgnoreCase);
     private ClientEntityView _entityView = null!;
     private Camera3D _camera = null!;
@@ -259,8 +271,9 @@ public sealed partial class NetGame : Node3D
     private const float MaxInputBacklog = 0.25f; // ≤ ~18 catch-up input ticks per frame
 
     // Per-frame (variable-dt) input mode — cl_movement_perframe (DP-style: one command per rendered frame stamped
-    // with the real frame dt, the server drains all pending commands that tick). 0 (default) = the legacy fixed
-    // 1/72 s cadence above. Read live from the shared cvar store each frame so it A/B-toggles in-session.
+    // with the real frame dt, the server drains all pending commands that tick). DEFAULT 1 (on, user-approved per
+    // PERFORMANCE_REPORT.md B2); `set cl_movement_perframe 0` = the legacy fixed 1/72 s cadence above (kept for
+    // parity testing). Read live from the shared cvar store each frame so it A/B-toggles in-session.
     private bool _perFrameInput;
     // The DeltaTime stamped onto the next sampled InputCommand: TicRate in legacy mode, the clamped real frame dt
     // in per-frame mode. Bounds mirror DP's per-move msec clamp (kills 0-dt paused frames + hitch spikes); the
@@ -501,6 +514,19 @@ public sealed partial class NetGame : Node3D
         // is independent (DP keeps mapname as an engine cvar available to serverinfo).
         _serverWorld.Services.Cvars.Set("mapname", _map);
 
+        // S5: register sv_threaded (default 0) on the server store and resolve the host-side threading decision
+        // ONCE, here at boot (changing it mid-match is out of scope — a rehost/map-change re-reads it). The actual
+        // worker + gate are created further below, after ServerNet starts and the command sinks are wired. A
+        // console/menu override in the SHARED store wins over the world default (the menu writes there). Threading
+        // is GATED to non-headless hosts: a headless dedicated server already keeps the full catch-up cap and has
+        // no render frame to unblock, so it stays on the stock single-threaded drive even with sv_threaded 1.
+        _serverWorld.Services.Cvars.Register("sv_threaded", "0");
+        bool wantThreaded =
+            (_sharedCvars is not null && _sharedCvars.Has("sv_threaded")
+                ? _sharedCvars.GetFloat("sv_threaded")
+                : _serverWorld.Services.Cvars.GetFloat("sv_threaded")) != 0f
+            && DisplayServer.GetName() != "headless";
+
         // Create-a-match / `--host` is "host AND play": the local host should spawn straight into the match, not
         // sit as an observer. xonotic-server.cfg ships `sv_spectate 1` (spectating allowed) which — faithful to QC
         // PlayerPreThink (server/client.qc:2715: autojoin only when `!(sv_spectate||g_campaign||forced_spectator)`)
@@ -610,23 +636,65 @@ public sealed partial class NetGame : Node3D
         //     needed beyond cleaning ServerNet's per-player maps on removal (ForgetPlayer). ---
         Commands cmd = _serverWorld.Commands;
 
-        // player chat (say) → broadcast to everyone incl. the sender; server announcements (vote/ban/team) → same.
-        cmd.ChatHandler = (caller, msg, teamOnly) =>
-            _server?.BroadcastPrint($"{(teamOnly ? "(team) " : "")}{caller?.NetName ?? "server"}^7: {msg}");
-        cmd.ChatBroadcast = msg => _server?.BroadcastPrint(msg);
+        if (!wantThreaded)
+        {
+            // STOCK single-threaded sinks — byte-for-byte the pre-S5 wiring (exact synchronous return values, which
+            // the console feedback + the removebots loop depend on). This branch is what the default path uses.
 
-        // bot_add / setbots: spawn a brained bot through the live population (raises bot_number so the faithful
-        // fixcount keeps it); the snapshot loop networks it next tick. [T39]
-        cmd.AddBotHandler = (name, skill) => _serverWorld?.Bots.AddBot(name, skill) is not null;
+            // player chat (say) → broadcast to everyone incl. the sender; server announcements (vote/ban/team) → same.
+            cmd.ChatHandler = (caller, msg, teamOnly) =>
+                _server?.BroadcastPrint($"{(teamOnly ? "(team) " : "")}{caller?.NetName ?? "server"}^7: {msg}");
+            cmd.ChatBroadcast = msg => _server?.BroadcastPrint(msg);
 
-        // bot_remove / removebots: drop the newest matching bot via the population (lowers bot_number so
-        // fixcount doesn't re-add); the disconnect chain fires Bots.BotRemoved → ForgetPlayer clears ServerNet's
-        // id/antilag maps, and the next snapshot delta despawns it on clients. [T39]
-        cmd.RemoveBotHandler = name => _serverWorld?.Bots.RemoveBot(name) ?? false;
+            // bot_add / setbots: spawn a brained bot through the live population (raises bot_number so the faithful
+            // fixcount keeps it); the snapshot loop networks it next tick. [T39]
+            cmd.AddBotHandler = (name, skill) => _serverWorld?.Bots.AddBot(name, skill) is not null;
 
-        // map / gotomap / nextmap / map-vote / rotation / samelevel all funnel here (QC changelevel): record the
-        // target; the deferred emit in _Process reboots the listen server on it (preserving gametype + bots).
-        cmd.ChangeLevelHandler = RequestMapChange;
+            // bot_remove / removebots: drop the newest matching bot via the population (lowers bot_number so
+            // fixcount doesn't re-add); the disconnect chain fires Bots.BotRemoved → ForgetPlayer clears ServerNet's
+            // id/antilag maps, and the next snapshot delta despawns it on clients. [T39]
+            cmd.RemoveBotHandler = name => _serverWorld?.Bots.RemoveBot(name) ?? false;
+
+            // map / gotomap / nextmap / map-vote / rotation / samelevel all funnel here (QC changelevel): record the
+            // target; the deferred emit in _Process reboots the listen server on it (preserving gametype + bots).
+            cmd.ChangeLevelHandler = RequestMapChange;
+        }
+        else
+        {
+            // S5 THREADED sinks: these fire on the MAIN thread (console/menu input) but touch _server/_serverWorld,
+            // which the worker thread owns — route each through ServerNet.RunOnSimThread so it executes on the sim
+            // thread under the gate at the next tick top. The bot handlers can no longer return a synchronous
+            // success (the work runs later on the worker), so they report true and the result surfaces in the next
+            // snapshot — faithful to how a remote add/remove would behave. This branch is reached ONLY when
+            // sv_threaded 1 on a non-headless host, so it never affects the default path.
+            ServerNet s = _server!; // non-null here (the null-check above returned early)
+
+            cmd.ChatHandler = (caller, msg, teamOnly) =>
+                s.RunOnSimThread(() => _server?.BroadcastPrint($"{(teamOnly ? "(team) " : "")}{caller?.NetName ?? "server"}^7: {msg}"));
+            cmd.ChatBroadcast = msg => s.RunOnSimThread(() => _server?.BroadcastPrint(msg));
+            cmd.AddBotHandler = (name, skill) => { s.RunOnSimThread(() => _serverWorld?.Bots.AddBot(name, skill)); return true; };
+            cmd.RemoveBotHandler = name => { s.RunOnSimThread(() => _serverWorld?.Bots.RemoveBot(name)); return true; };
+            cmd.ChangeLevelHandler = map => s.RunOnSimThread(() => RequestMapChange(map));
+        }
+
+        // S5: spin up the dedicated server-sim worker now that ServerNet + the world + the sinks are all wired.
+        // Install the shared gate on ServerNet (its Tick locks it) and hand the SAME object to the main thread
+        // (_simGate) so _Process serialises its prediction span against the worker. Start LAST so no tick runs
+        // before the sinks/gate are in place. Headless hosts never reach here (wantThreaded gated it off).
+        if (wantThreaded)
+        {
+            _simGate = new object();
+            _server!.SimGate = _simGate;
+            // The music player's _Process scans the live server entity list (wired in SetupMusic, called earlier)
+            // on the main thread — hand it the SAME gate so that scan can't race the worker's spawn/relink. Stays
+            // null on the non-threaded default path, so its scan remains lock-free.
+            if (_musicPlayer is not null) _musicPlayer.SimGate = _simGate;
+            _serverThread = new ServerThread(
+                _serverWorld!, _server!,
+                static () => XonoticGodot.Engine.Simulation.SimulationLoop.TicRate);
+            _serverThread.Start();
+            GD.Print("[NetGame] sv_threaded 1 — server simulation running on a dedicated worker thread (XG-ServerSim).");
+        }
     }
 
     /// <summary>
@@ -678,6 +746,16 @@ public sealed partial class NetGame : Node3D
         if (Api.Services is null)
             return null;
         _world = Api.Services; // remember the facade so teardown removes the carrier from the right table
+        // S5: SpawnCarrier runs AFTER StartListenServer started the worker (boot order), so Api.Entities.Spawn()
+        // mutates the SAME entity table the worker ticks — take the gate around the spawn when threaded so it can't
+        // race a concurrent server-tick spawn/relink. No-op (no lock) when not threaded. The field-sets below act
+        // on the freshly-returned edict only; doing them under the gate too is harmless and keeps it simple.
+        object? simGate = _simGate;
+        bool taken = false;
+        try
+        {
+            if (simGate is not null)
+                System.Threading.Monitor.Enter(simGate, ref taken);
         Entity e = Api.Entities.Spawn();
         e.ClassName = "client_predict";
         e.MoveType = MoveType.Walk;
@@ -703,6 +781,12 @@ public sealed partial class NetGame : Node3D
         e.Maxs = HullMaxs;
         e.ViewOfs = new NVec3(0f, 0f, EyeHeight);
         return e;
+        }
+        finally
+        {
+            if (taken)
+                System.Threading.Monitor.Exit(simGate!);
+        }
     }
 
     private void SetupRender()
@@ -721,8 +805,11 @@ public sealed partial class NetGame : Node3D
             _render.ModelResolver = ResolveEntityModel;
             _render.EntityModelFactory = BuildEntityModel;
             // FORCEMODEL: resolve a forced player-model name+skin to a render node (the cl_forcemyplayermodel /
-            // cl_forceplayermodels swap). Reuses the skeletal path (LoadSkeletalModel), falling back to the
-            // format-agnostic loader (IQM/DPM/MD3) — null = the forced model doesn't exist (QC fexists-miss).
+            // cl_forceplayermodels swap). Streams the skeletal forced model through the same async placeholder path
+            // as the live player resolve (a forced-model snapshot never re-introduces the sync build stall); a
+            // non-IQM forced model still wins via the cached LoadModel node (FORCEMODEL parity), and only a genuine
+            // VFS miss returns null (QC fexists-miss → the entity keeps its own model). Receives the Entity so the
+            // async delivery can validate staleness + re-attach via RebuildEntityModel.
             _render.ForcedModelResolver = BuildForcedPlayerModel;
         }
         AddChild(_render);
@@ -1542,6 +1629,17 @@ public sealed partial class NetGame : Node3D
         }
         _minigame?.Dispose();
         _client?.Dispose();
+        // S5: join the server-sim worker BEFORE disposing ServerNet/the world, so the socket + world teardown is
+        // single-threaded and no in-flight tick races the Dispose (the worker holds the gate around its whole
+        // tick, so Join guarantees it's not mid-tick when we tear down). Clear the gate after the join so any
+        // late main-thread _Process this frame takes no lock. No-op when not threaded (both null).
+        _serverThread?.Dispose();
+        _serverThread = null;
+        if (_server is not null)
+            _server.SimGate = null;
+        if (_musicPlayer is not null && Godot.GodotObject.IsInstanceValid(_musicPlayer))
+            _musicPlayer.SimGate = null;   // gate released; music scan reverts to lock-free
+        _simGate = null;
         _server?.Dispose();
         // Free the carrier so a torn-down session doesn't leave a stray player edict in its facade. Use the
         // captured world (Api.Services may already have been swapped to the menu's empty facade by teardown).
@@ -1567,8 +1665,26 @@ public sealed partial class NetGame : Node3D
 
         // Drive the listen server (if any) by real elapsed time — it runs its fixed ticks, pulls each client's
         // queued input, simulates, and broadcasts snapshots.
-        using (XonoticGodot.Game.Client.FrameProfiler.Scope("server.tick"))
-            _server?.Tick(dt);
+        // S5: when threaded, the dedicated worker (XG-ServerSim) owns ServerNet.Tick — the main thread must NOT
+        // call it (that would double-drive the world AND race the worker). The "server.tick" main-thread scope
+        // then measures ~0, which is exactly the A/B metric this item targets. When NOT threaded, drive it here
+        // exactly as today.
+        if (_serverThread is null)
+            using (XonoticGodot.Game.Client.FrameProfiler.Scope("server.tick"))
+                _server?.Tick(dt);
+
+        // S5: from here to the end of _Process we read/mutate server-world state (the music/HUD feeds,
+        // LocalServerPlayer, the carrier reconcile) AND run the client prediction replay (inside _client.SendInput
+        // → EntityMovementStep.Step). When threaded, all of that must be serialised against the worker's
+        // ServerNet.Tick, so take the SAME gate the worker locks. A single try/finally spans the whole remainder
+        // (incl. the one early `return` at "_client is null") so the gate is always released. When NOT threaded
+        // (_simGate null) this is a plain pass-through with no lock — byte-for-byte the old path.
+        object? simGate = _simGate;
+        bool simGateTaken = false;
+        try
+        {
+            if (simGate is not null)
+                System.Threading.Monitor.Enter(simGate, ref simGateTaken);
 
         // Feed the music player the current server time so trigger_music touch freshness works.
         if (_musicPlayer is not null && _serverWorld is not null)
@@ -1899,6 +2015,14 @@ public sealed partial class NetGame : Node3D
                 campIdx = (int)_serverWorld.Services.Cvars.GetFloat("_campaign_index");
             }
             Callable.From(() => MapChangeRequested?.Invoke(map, gametype, bots, skill, campId, campIdx)).CallDeferred();
+        }
+        } // end try (S5 sim-gate span)
+        finally
+        {
+            // S5: release the sim gate taken at the top of _Process (no-op when not threaded). Always runs, incl.
+            // the early `_client is null` return and any throw in the body above.
+            if (simGateTaken)
+                System.Threading.Monitor.Exit(simGate!);
         }
     }
 
@@ -2935,31 +3059,46 @@ public sealed partial class NetGame : Node3D
         // ~154 MB allocation burst → a 100–150 ms blocking gen2 GC (the worst release-build hitch). Return a
         // placeholder shell immediately; the IQM+sidecar parse runs on the thread pool and the Godot build
         // lands under the streamer's per-frame budget — one model per frame, High priority (ahead of idle warm).
-        var pm = new PlayerModel { Name = $"player#{e.Index}" };
+        return StreamSkeletalInto(e, e.Model, (int)e.Skin, $"player#{e.Index}", forced: false);
+    }
+
+    /// <summary>
+    /// Shared async core for the live player-model path (the on-demand <see cref="ResolvePlayerModel"/> and the
+    /// FORCEMODEL <see cref="BuildForcedPlayerModel"/>): return a gray placeholder <see cref="PlayerModel"/> shell
+    /// immediately and stream the IQM parse off-thread + the Godot build under the streamer's per-frame budget,
+    /// filling the shell in <see cref="DeliverPlayerModel"/>. <paramref name="forced"/> routes the delivery's
+    /// fallback branches through the forced-miss memo (FORCEMODEL parity) instead of the own-model memo. When no
+    /// streamer/assets are wired (should not happen on the live path) it runs the old synchronous load and returns
+    /// the filled shell (or null on miss).
+    /// </summary>
+    private PlayerModel? StreamSkeletalInto(Entity e, string model, int skin, string shellName, bool forced)
+    {
+        var pm = new PlayerModel { Name = shellName };
         pm.ShowPlaceholder();
         if (_streamer is null || _assets is not { } assets)
         {
             // No streamer (shouldn't happen on the live path) — fall back to the old synchronous load.
-            AssetLoader.SkeletalModelParts? parts = _assets.LoadSkeletalModel(e.Model, (int)e.Skin);
+            AssetLoader.SkeletalModelParts? parts = _assets?.LoadSkeletalModel(model, skin);
             if (parts is null) { pm.QueueFree(); return null; }
             pm.Setup(parts.Iqm, parts.Root, parts.Groups, parts.Info);
             if (!pm.Active) { pm.QueueFree(); return null; }
             return pm;
         }
 
-        string model = e.Model;
-        int skin = (int)e.Skin;
         _streamer.Request(
             // Off-thread: pure-C# parse. Boxed in a non-null wrapper because the streamer drops null results
             // silently — but a FAILED parse must still reach the main thread to trigger the fall-back attach.
             () => new SkeletalParseBox(assets.ParseSkeletalModel(model, skin)),
-            box => DeliverPlayerModel(pm, e, model, skin, box.Parse),
+            box => DeliverPlayerModel(pm, e, model, skin, box.Parse, forced),
             XonoticGodot.Game.Client.BackgroundAssetStreamer.Priority.High);
         return pm;
     }
 
     /// <summary>Non-null off-thread wrapper for a (possibly failed) skeletal parse — see ResolvePlayerModel.</summary>
     private sealed record SkeletalParseBox(AssetLoader.SkeletalModelParse? Parse);
+
+    /// <summary>The "model#skin" memo key used by <see cref="_unresolvableForcedModels"/> for a forced model.</summary>
+    private static string ForcedKey(string model, int skin) => model + "#" + skin;
 
     /// <summary>
     /// Main-thread delivery of a streamed player-model parse (budgeted by the streamer — one heavy build per
@@ -2968,7 +3107,7 @@ public sealed partial class NetGame : Node3D
     /// <see cref="ClientWorld.RebuildEntityModel"/> so the entity ends up exactly where the old synchronous
     /// path would have put it (the MD3/static fall-through, or a resolve of the changed model).
     /// </summary>
-    private void DeliverPlayerModel(PlayerModel pm, Entity e, string model, int skin, AssetLoader.SkeletalModelParse? parse)
+    private void DeliverPlayerModel(PlayerModel pm, Entity e, string model, int skin, AssetLoader.SkeletalModelParse? parse, bool forced)
     {
         if (_assets is null)
             return;
@@ -2978,8 +3117,12 @@ public sealed partial class NetGame : Node3D
         if (e.IsFreed)
             return; // entity gone — OnEntityRemove tears the node (and shell) down
 
-        // Model/skin changed while parsing: re-attach against the CURRENT model (issues a fresh resolve).
-        if (!string.Equals(e.Model, model, StringComparison.OrdinalIgnoreCase) || (int)e.Skin != skin)
+        // Model/skin changed while parsing: re-attach against the CURRENT model (issues a fresh resolve). This gate
+        // keys on the entity's NETWORKED model, which is the right staleness check for the OWN-model resolve but
+        // intentionally differs from a FORCED name — so it is skipped for forced deliveries (whose live-ness is the
+        // pm-valid + e.IsFreed gates above; a mid-flight cl_forceplayermodels toggle is handled by RebuildEntityModel
+        // re-running TryAttachForcedModel, which re-reads the cvars).
+        if (!forced && (!string.Equals(e.Model, model, StringComparison.OrdinalIgnoreCase) || (int)e.Skin != skin))
         {
             _render.RebuildEntityModel(e);
             return;
@@ -2987,8 +3130,10 @@ public sealed partial class NetGame : Node3D
 
         if (parse is null)
         {
-            // Not an IQM (or unreadable): remember, then fall back to the MD3/static attach path.
-            _nonSkeletalPlayerModels.Add(model);
+            // Not an IQM (or unreadable): remember (so the rebuild's resolve doesn't re-stream), then fall back —
+            // own-model path for the live resolve, or the cached non-IQM forced node (FORCEMODEL parity) for a
+            // forced one. The memo is populated BEFORE RebuildEntityModel to terminate the re-attach loop.
+            ForgetSkeletal(model, skin, forced);
             _render.RebuildEntityModel(e);
             return;
         }
@@ -2996,7 +3141,7 @@ public sealed partial class NetGame : Node3D
         AssetLoader.SkeletalModelParts? parts = _assets.BuildSkeletalModel(parse);
         if (parts is null)
         {
-            _nonSkeletalPlayerModels.Add(model);
+            ForgetSkeletal(model, skin, forced);
             _render.RebuildEntityModel(e);
             return;
         }
@@ -3005,7 +3150,7 @@ public sealed partial class NetGame : Node3D
         if (!pm.Active)
         {
             // Parsed as IQM but no poseable skeleton — match the sync path's fall-through.
-            _nonSkeletalPlayerModels.Add(model);
+            ForgetSkeletal(model, skin, forced);
             _render.RebuildEntityModel(e);
             return;
         }
@@ -3014,32 +3159,47 @@ public sealed partial class NetGame : Node3D
         // seeding now avoids one untinted frame, mirroring TryAttachModel's eager seed.
         _render.SeedAppearance(e);
         XonoticGodot.Common.Diagnostics.Log.Trace(
-            $"[stream] player model '{model}' (skin {skin}) built for ent {e.Index} — placeholder swapped");
+            $"[stream] {(forced ? "forced " : "")}player model '{model}' (skin {skin}) built for ent {e.Index} — placeholder swapped");
+    }
+
+    /// <summary>
+    /// Record that a streamed skeletal resolve settled as non-skeletal/failed, in the memo the matching resolver
+    /// checks BEFORE re-streaming — so the <see cref="ClientWorld.RebuildEntityModel"/> re-attach terminates. For a
+    /// forced model the key is name+skin specific (the forced name differs from the entity's own model); for the
+    /// own-model resolve the key is the entity's model name (the existing Wave-1 scheme). Always invoked before
+    /// RebuildEntityModel in every forced fallback branch (the loop-prevention invariant).
+    /// </summary>
+    private void ForgetSkeletal(string model, int skin, bool forced)
+    {
+        if (forced)
+            _unresolvableForcedModels.Add(ForcedKey(model, skin));
+        else
+            _nonSkeletalPlayerModels.Add(model);
     }
 
     /// <summary>
     /// Build a FORCED player model (QC <c>cl_forcemyplayermodel</c> / <c>cl_forceplayermodels</c> swap) for
-    /// <see cref="ClientWorld.ForcedModelResolver"/>: resolve the forced model NAME+skin to a skeletal
-    /// <see cref="PlayerModel"/> (the IQM player path) when it parses, else fall back to the format-agnostic
-    /// loader (a plain MD3/DPM node). Returns null when the forced model doesn't exist (QC <c>fexists</c>-miss),
-    /// so the client keeps the entity's own model.
+    /// <see cref="ClientWorld.ForcedModelResolver"/>. Mirrors <see cref="ResolvePlayerModel"/>: a skeletal forced
+    /// model returns a gray placeholder <see cref="PlayerModel"/> shell immediately and streams the IQM parse+build
+    /// through the same High-priority <see cref="BackgroundAssetStreamer"/> path (no synchronous build stall on a
+    /// forced-model snapshot). Once the async resolve has settled a model as non-skeletal or a true miss, its
+    /// "model#skin" key lives in <see cref="_unresolvableForcedModels"/>: the next attach (driven by
+    /// <see cref="ClientWorld.RebuildEntityModel"/>) takes the memo branch and returns the cached non-IQM node via
+    /// <see cref="AssetLoader.LoadModel"/> (FORCEMODEL parity — a forced MD3/DPM still wins over the entity's own
+    /// model), or null on a genuine VFS miss (QC <c>fexists</c>-miss → the client keeps the entity's own model).
     /// </summary>
-    private Node3D? BuildForcedPlayerModel(string model, int skin)
+    private Node3D? BuildForcedPlayerModel(Entity e, string model, int skin)
     {
         if (_assets is null || string.IsNullOrEmpty(model))
             return null;
-        // Prefer the skeletal player path (matches ResolvePlayerModel) so the forced model still poses/animates.
-        AssetLoader.SkeletalModelParts? parts = _assets.LoadSkeletalModel(model, skin);
-        if (parts is not null)
-        {
-            var pm = new PlayerModel { Name = $"forced_{System.IO.Path.GetFileNameWithoutExtension(model)}" };
-            pm.Setup(parts.Iqm, parts.Root, parts.Groups, parts.Info);
-            if (pm.Active)
-                return pm;
-            pm.QueueFree();
-        }
-        // Non-IQM forced model (or skeletal setup failed): a plain textured/animated node.
-        return _assets.LoadModel(model, skin);
+        // Already settled as non-skeletal/miss: don't re-stream (that re-attach loop is the highest risk). Return
+        // the cached non-IQM forced node (FORCEMODEL parity) or null (true miss → entity's own model). LoadModel is
+        // cached (AssetLoader._modelCache), so the rebuild terminates here without rebuilding.
+        if (_unresolvableForcedModels.Contains(ForcedKey(model, skin)))
+            return _assets.LoadModel(model, skin);
+        // Otherwise stream the skeletal forced model exactly like the live player path: placeholder shell now,
+        // off-thread parse + budgeted main build, DeliverPlayerModel (forced) fills the shell or records the memo.
+        return StreamSkeletalInto(e, model, skin, $"forced_{System.IO.Path.GetFileNameWithoutExtension(model)}", forced: true);
     }
 
     /// <summary>

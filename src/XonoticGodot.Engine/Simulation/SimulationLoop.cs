@@ -116,6 +116,13 @@ public sealed class SimulationLoop
     }
 
     /// <summary>Publish this loop's facade as the ambient <see cref="Api.Services"/> (one world per process).</summary>
+    // S5 thread-affinity note: <see cref="Advance"/>/<see cref="Tick"/> are NOT internally synchronised — they
+    // assume a single owning thread mutating the entity table. On the listen/host path with sv_threaded 1, the
+    // ONLY thread that calls Advance/Tick is the dedicated server-sim worker (game/net/ServerThread.cs); the main
+    // thread's client prediction is serialised against the whole ServerNet.Tick via the host's single _simGate
+    // lock, so the two never touch this loop's state concurrently. With sv_threaded 0 (default) the host thread
+    // calls Advance/Tick directly with no lock — unchanged. InstallAsAmbient is unused on the listen path (the
+    // host wires Api.Services via GameWorld.Boot / Api.SetThreadServices instead).
     public void InstallAsAmbient() => Api.Services = _services;
 
     /// <summary>World gravity in u/s² (sv_gravity, default 800). Mirrors into the physics context.</summary>

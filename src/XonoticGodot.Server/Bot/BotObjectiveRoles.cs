@@ -26,6 +26,12 @@ public static class BotObjectiveRoles
     private const float RatingGenerator = 20000f;
     private const float RatingKey = 10000f;
 
+    /// <summary>Scratch buffer reused across the objective FindByClass scans (alloc-free, replaces a per-call
+    /// iterator). Bot roles run single-threaded under the strategy token and never re-enter, and every scan here
+    /// is fully consumed (return-on-match / accumulate into the rater) before the next reuses it — so one shared
+    /// static list is safe. Do NOT hold a reference to it across a second find.</summary>
+    private static readonly List<Entity> _scratch = new();
+
     // ============================================================================================
     // Capture the Flag (QC havocbot_role_ctf_* + havocbot_goalrating_ctf_*)
     // ============================================================================================
@@ -107,8 +113,9 @@ public static class BotObjectiveRoles
             _ => "",
         };
         if (cls.Length == 0) return null;
-        foreach (Entity e in Api.Entities.FindByClass(cls))
-            if (!e.IsFreed) return e;
+        Api.Entities.FindByClass(cls, _scratch);
+        for (int i = 0; i < _scratch.Count; i++)
+            if (!_scratch[i].IsFreed) return _scratch[i];
         return null;
     }
 
@@ -136,8 +143,10 @@ public static class BotObjectiveRoles
         if (Api.Services is null) return;
         var bot = brain.Bot;
         float radius2 = radius * radius;
-        foreach (Entity cp in Api.Entities.FindByClass("dom_controlpoint"))
+        Api.Entities.FindByClass("dom_controlpoint", _scratch);
+        for (int i = 0; i < _scratch.Count; i++)
         {
+            Entity cp = _scratch[i];
             if (cp.IsFreed) continue;
             Vector3 pos = (cp.AbsMin != cp.AbsMax) ? (cp.AbsMin + cp.AbsMax) * 0.5f : cp.Origin;
             if ((pos - org).LengthSquared() > radius2) continue;
@@ -163,14 +172,19 @@ public static class BotObjectiveRoles
         rater.Start();
         if (Api.Services is not null)
         {
-            foreach (Entity gen in Api.Entities.FindByClass("onslaught_generator"))
+            Api.Entities.FindByClass("onslaught_generator", _scratch);
+            for (int i = 0; i < _scratch.Count; i++)
             {
+                Entity gen = _scratch[i];
                 if (gen.IsFreed) continue;
                 if (gen.Team != 0f && (int)gen.Team == (int)bot.Team) continue; // ours: don't attack
                 rater.Rate(bot.Origin, gen, gen.Origin, RatingGenerator, 100000f);
             }
-            foreach (Entity cp in Api.Entities.FindByClass("onslaught_controlpoint"))
+            // The generator scan above is fully consumed before this one reuses _scratch.
+            Api.Entities.FindByClass("onslaught_controlpoint", _scratch);
+            for (int i = 0; i < _scratch.Count; i++)
             {
+                Entity cp = _scratch[i];
                 if (cp.IsFreed) continue;
                 if (cp.Team != 0f && (int)cp.Team == (int)bot.Team) continue;
                 rater.Rate(bot.Origin, cp, cp.Origin, RatingControlPoint, 30000f);
@@ -196,8 +210,10 @@ public static class BotObjectiveRoles
         rater.Start();
         if (Api.Services is not null)
         {
-            foreach (Entity key in Api.Entities.FindByClass("keyhunt_key"))
+            Api.Entities.FindByClass("keyhunt_key", _scratch);
+            for (int i = 0; i < _scratch.Count; i++)
             {
+                Entity key = _scratch[i];
                 if (key.IsFreed) continue;
                 // A carried key (key.Owner set) rates toward the carrier (ally to support, enemy to kill);
                 // a loose key rates toward its drop position.
@@ -258,8 +274,9 @@ public static class BotObjectiveRoles
     private static Entity? FindBall()
     {
         if (Api.Services is null) return null;
-        foreach (Entity e in Api.Entities.FindByClass("keepaway_ball"))
-            if (!e.IsFreed) return e;
+        Api.Entities.FindByClass("keepaway_ball", _scratch);
+        for (int i = 0; i < _scratch.Count; i++)
+            if (!_scratch[i].IsFreed) return _scratch[i];
         return null;
     }
 
@@ -301,8 +318,12 @@ public static class BotObjectiveRoles
     private static Entity? FindEnemyNexballGoal(Player bot)
     {
         if (Api.Services is null) return null;
-        foreach (Entity g in Api.Entities.FindByClass("nexball_goal"))
+        Api.Entities.FindByClass("nexball_goal", _scratch);
+        for (int i = 0; i < _scratch.Count; i++)
+        {
+            Entity g = _scratch[i];
             if (!g.IsFreed && g.GtHomeTeam != (int)bot.Team) return g; // score in the enemy team's goal
+        }
         return null;
     }
 
@@ -336,8 +357,10 @@ public static class BotObjectiveRoles
     {
         if (Api.Services is null) return null;
         Entity? best = null; float bestD2 = float.MaxValue;
-        foreach (Entity e in Api.Entities.FindByClass(className))
+        Api.Entities.FindByClass(className, _scratch);
+        for (int i = 0; i < _scratch.Count; i++)
         {
+            Entity e = _scratch[i];
             if (e.IsFreed) continue;
             float d2 = (e.Origin - from).LengthSquared();
             if (d2 < bestD2) { bestD2 = d2; best = e; }

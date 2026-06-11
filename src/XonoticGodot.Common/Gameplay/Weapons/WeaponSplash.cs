@@ -64,8 +64,16 @@ public static class WeaponSplash
 
         // QC searches a padded radius (rad + MAX_DAMAGEEXTRARADIUS, damage.qc:746) so the per-target
         // nearest-point check below — not the broadphase pre-filter — is the binding constraint.
-        foreach (Entity e in Api.Entities.FindInRadius(center, radius + MaxDamageExtraRadius))
+        // Snapshot into a method-LOCAL list (not a shared static): ApplyDamage below can spawn/free entities and
+        // re-enter RadiusDamage (damage → death → secondary explosion), so the buffer must be per-call. This
+        // still allocates one List per blast (as the old iterator implicitly did) but kills the per-entity
+        // enumerator/state-machine churn, and snapshotting is REQUIRED — the loop relinks the world via
+        // ApplyDamage, so iterating the live grid result would be unsafe (D1 residual).
+        List<Entity> hits = new();
+        Api.Entities.FindInRadius(center, radius + MaxDamageExtraRadius, hits);
+        for (int i = 0; i < hits.Count; i++)
         {
+            Entity e = hits[i];
             if (e.TakeDamage == DamageMode.No) continue;
 
             // QC RadiusDamageForSource measures distance to the NEAREST POINT on the target's bbox (so a

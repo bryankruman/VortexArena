@@ -48,6 +48,24 @@ public static class ModelTint
     }
 
     /// <summary>
+    /// Set the four tint instance-uniforms on an already-flattened, cached mesh list — the per-frame appearance
+    /// path. Same body as <see cref="Apply(Node,Color,Color,Color,Color)"/> but skips the recursive
+    /// <see cref="Meshes"/> tree-walk (the list comes pre-built from <see cref="CsqcModelEffects.GetCachedMeshes"/>,
+    /// 3.2-2). The list is non-null by construction; an empty list loops zero times (matches today's no-mesh case).
+    /// </summary>
+    public static void Apply(IReadOnlyList<MeshInstance3D> meshes, Color colormod, Color glowmod, Color shirt, Color pants)
+    {
+        for (int i = 0; i < meshes.Count; i++)
+        {
+            MeshInstance3D mi = meshes[i];
+            mi.SetInstanceShaderParameter(PlayerSkinShader.ColormodUniform, colormod);
+            mi.SetInstanceShaderParameter(PlayerSkinShader.GlowmodUniform, glowmod);
+            mi.SetInstanceShaderParameter(PlayerSkinShader.ShirtColorUniform, shirt);
+            mi.SetInstanceShaderParameter(PlayerSkinShader.PantsColorUniform, pants);
+        }
+    }
+
+    /// <summary>
     /// Apply a player's team/colormap tint: the team color drives the shirt + pants masks AND the glow
     /// (DP sets glowmod from the pants color). FFA / unknown (no team) leaves the model untinted with a
     /// white — i.e. native — glow. Colormod stays white (no per-entity darkening here).
@@ -71,10 +89,29 @@ public static class ModelTint
     /// </summary>
     public static void ApplyAppearance(Node root, int colormap, bool isDead, float deathTime, bool isRespawnGhost)
     {
+        if (root is null)
+            return;
+        // One-shot (attach-time) callers route through the Node walk; the per-frame caller uses the cached-list
+        // overload below so it never re-walks the tree. Flatten once, then share the identical math.
+        var meshes = new List<MeshInstance3D>();
+        foreach (MeshInstance3D mi in Meshes(root))
+            meshes.Add(mi);
+        ApplyAppearance(meshes, colormap, isDead, deathTime, isRespawnGhost);
+    }
+
+    /// <summary>
+    /// Cached-list overload of <see cref="ApplyAppearance(Node,int,bool,float,bool)"/> for the per-frame
+    /// appearance pass: identical glowmod + death-fade + respawn-ghost math, but it tints an already-flattened
+    /// mesh list (from <see cref="CsqcModelEffects.GetCachedMeshes"/>) instead of re-walking the tree every frame
+    /// (3.2-2). Bit-identical output to the Node overload for the same meshes/cvars. The list is non-null by
+    /// construction; an empty list tints nothing (matches today's no-mesh case).
+    /// </summary>
+    public static void ApplyAppearance(IReadOnlyList<MeshInstance3D> meshes, int colormap, bool isDead, float deathTime, bool isRespawnGhost)
+    {
         // RESPAWNGHOST early-out: (csqcmodel_effects & CSQCMODEL_EF_RESPAWNGHOST) && !keepcolors → black, colormap 0.
         if (isRespawnGhost && Cvar("cl_respawn_ghosts_keepcolors", 1f) == 0f)
         {
-            Apply(root, White, Black, Black, Black); // glowmod '0 0 0', no shirt/pants, colormap 0
+            Apply(meshes, White, Black, Black, Black); // glowmod '0 0 0', no shirt/pants, colormap 0
             return;
         }
 
@@ -108,7 +145,7 @@ public static class ModelTint
 
         // Shirt = high-nibble color, pants = low-nibble color (distinct for a packed/forced colormap; equal for a
         // plain team id; FFA/untinted = black masks).
-        Apply(root, White, glow, hasColor ? shirt : Black, hasColor ? pants : Black);
+        Apply(meshes, White, glow, hasColor ? shirt : Black, hasColor ? pants : Black);
     }
 
     /// <summary>

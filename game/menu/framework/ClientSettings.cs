@@ -62,7 +62,7 @@ public static class ClientSettings
         // Server-browser auto-refresh pause toggle (DP default 0).
         c.Register("net_slist_pause", "0", save);
         // Input cadence + local fire prediction (port extensions, read live from the shared store by NetGame).
-        c.Register("cl_movement_perframe", "0", save); // absent → off; keep off
+        c.Register("cl_movement_perframe", "1", save); // absent → ON (DP-style per-frame variable-dt input; PERFORMANCE_REPORT.md B2, user-approved). `set cl_movement_perframe 0` restores the legacy fixed 72 Hz cadence.
         c.Register("cl_predictfire", "1", save);       // intentionally default ON (NetGame: unset → on)
         // Client-side projectile prediction (CSQC Projectile_Draw): snap+extrapolate vs the old ease. Default
         // ON; `set cl_projectile_prediction 0` reverts for A/B feel-testing (ClientWorld polls it live).
@@ -73,6 +73,15 @@ public static class ClientSettings
         // (PERFORMANCE_REPORT.md A3). `set cl_precache_all_weapons 0` restores the smart expected-only warm
         // for memory-constrained machines (NetGame.PrecacheWeaponModelsAsync reads it).
         c.Register("cl_precache_all_weapons", "1", save);
+        // Off-screen / distant pose-cull for skeletal player models (3.3): when ON, PlayerModel.PushBones is
+        // skipped for a REMOTE player whose model is off-screen, and distant on-screen players refresh the
+        // Skeleton3D at half rate. The CPU locomotion clock keeps running every frame, so a model going
+        // on-screen mid-stride shows a fresh (not stale) pose. Default OFF preserves the port's current
+        // behaviour byte-for-byte; it's a perf opt-in (the local player's own model is NEVER skipped).
+        c.Register("cl_pose_cull", "0", save);            // master toggle, default OFF = current behaviour
+        // Quake units: beyond this an ON-SCREEN remote player refreshes at half rate (a per-model phase stagger
+        // spreads the work). 0 disables the distance half-rate, keeping only the off-screen skip.
+        c.Register("cl_pose_cull_distance", "1500", save);
         // Console/diagnostics verbosity (DP CF_CLIENT, NOT archived — a debug toggle shouldn't persist).
         c.Register("developer", "0");
     }

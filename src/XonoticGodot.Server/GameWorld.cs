@@ -319,10 +319,25 @@ public sealed class GameWorld
     /// callbacks, and subscribes the score table to the obituary bus. Idempotent.
     /// </summary>
     /// <param name="gameTypeName">The gametype NetName to run (e.g. "dm", "tdm", "ca"); falls back to "dm".</param>
-    public void Boot(string? gameTypeName = null)
+    /// <param name="installAmbient">
+    /// S5 (sv_threaded): whether this Boot LEAVES <see cref="Api.Services"/> set to this world's
+    /// <see cref="ServerServices"/> as the PROCESS-WIDE ambient (the default, true — every caller today). The whole
+    /// Boot body reads <see cref="Api"/>.Cvars/Services, so the ambient is installed for the DURATION of Boot
+    /// regardless; the flag only decides whether the process-wide value is RESTORED to its prior value when Boot
+    /// returns. A host that wants the main thread to keep a DIFFERENT ambient (the two-world prediction split)
+    /// passes false; the lock-fallback host (one shared world) keeps the default true. Inert for every current
+    /// caller (defaults to the old behavior: install and leave installed).
+    /// </param>
+    public void Boot(string? gameTypeName = null, bool installAmbient = true)
     {
         if (Booted)
             return;
+
+        // S5: capture the prior process-wide ambient so we can restore it when installAmbient is false (the
+        // two-world split keeps the main thread on its own facade). GameInit.Boot below unconditionally sets
+        // Api.Services = ServerServices, which the rest of this Boot body REQUIRES (its Api.Cvars/Services reads),
+        // so we always install during Boot and only optionally revert at the end. Inert when installAmbient is true.
+        IEngineServices? priorAmbient = installAmbient ? null : Api.Services;
 
         // 1) publish the ambient facade and install the gameplay systems + registries (QC progs init).
         //    We publish a ServerServices wrapper (not the bare engine facade) so the find/radius builtins
@@ -502,6 +517,13 @@ public sealed class GameWorld
         // maplist_reply/lsmaps_reply/monsterlist_reply/…). The reply commands also recompute lazily on read,
         // so this is a faithful warm-up matching QC's "precompute once".
         Commands.Replies.Recompute();
+
+        // S5: the two-world prediction split wants the MAIN thread's ambient left untouched — restore the value
+        // we captured before GameInit.Boot clobbered it. No-op for every current caller (installAmbient defaults
+        // to true → priorAmbient is null → Api.Services stays this world's ServerServices, as today). The
+        // server-sim worker installs ServerServices via Api.SetThreadServices on its own thread instead.
+        if (!installAmbient)
+            Api.Services = priorAmbient!;
 
         Booted = true;
     }

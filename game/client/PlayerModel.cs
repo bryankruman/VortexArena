@@ -38,6 +38,17 @@ public partial class PlayerModel : Node3D
     private float _legsTime;     // seconds the legs clip has been playing (advances with the active locomotion)
     private LocomotionBlend.Locomotion _lastLoco = (LocomotionBlend.Locomotion)(-1);
 
+    // 3.3: off-screen / distant pose-cull state (gated by cl_pose_cull at the call site). The notifier tracks
+    // whether this model is on-screen; when culling is enabled we skip the interop pose PUSH for an off-screen
+    // remote player and refresh distant on-screen players at half rate. The CPU pose (FromFrames) still runs
+    // every frame, so a regain shows a fresh pose, never a stale one. NEVER active for the local player.
+    private VisibleOnScreenNotifier3D? _visNotifier;
+    private bool _onScreen = true;   // assume visible until the notifier says otherwise (no stale first frame)
+    private bool _forcePush = true;  // push a fresh pose the next call (set on visibility regain + first frame)
+    private int _farPhase;           // per-model parity bit for the distance half-rate stagger
+    private int _frameTick;          // running Pose-call counter, parity-matched against _farPhase
+    private static int _farPhaseSeq; // running counter to spread the phase across models
+
     /// <summary>True once the skeleton + poser are wired (a non-skeletal IQM stays a static prop).</summary>
     public bool Active { get; private set; }
 
@@ -114,13 +125,35 @@ public partial class PlayerModel : Node3D
         BuildClipTable(iqm, groups);
 
         Active = true;
+
+        // 3.3: attach a visibility notifier so the off-screen pose-cull (cl_pose_cull) can skip the interop
+        // push when this model isn't on-screen. Use a FIXED player-hull AABB in Godot space (do NOT use the
+        // skinned mesh AABB — it's the rest-pose bind box and can be tiny/empty for a CPU-posed skeleton), sized
+        // generously (ducked..standing with margin so a mid-air or limb-extended player isn't culled early).
+        // In a headless/smoke context (no viewport) the notifier never fires ScreenExited, so _onScreen stays
+        // true and nothing is skipped; combined with cl_pose_cull defaulting OFF this is doubly safe.
+        var aabb = new Aabb(new Vector3(-32f, -8f, -32f), new Vector3(64f, 88f, 64f));
+        _visNotifier = new VisibleOnScreenNotifier3D { Name = "PoseCull", Aabb = aabb };
+        _visNotifier.ScreenEntered += () => { _onScreen = true; _forcePush = true; };
+        _visNotifier.ScreenExited += () => { _onScreen = false; };
+        _farPhase = (_farPhaseSeq++) & 1;
+        AddChild(_visNotifier);
     }
 
     /// <summary>
     /// Pose the skeleton for this frame from the entity's movement + view pitch. <paramref name="dt"/> advances
     /// the legs clip. Call once per rendered frame from <c>ClientWorld._Process</c>.
+    /// <para>
+    /// 3.3 pose-cull: when <paramref name="cullEnabled"/> is set (cl_pose_cull) the interop bone PUSH is skipped
+    /// for an off-screen REMOTE player and halved for distant on-screen players (<paramref name="distSqToView"/>
+    /// beyond <paramref name="cullDistSq"/>). The CPU locomotion pose below ALWAYS runs every frame, so the
+    /// model's logical pose stays current; only how often the <see cref="Skeleton3D"/> is refreshed changes.
+    /// <paramref name="isLocal"/> forces a full push (the local player's own model is never culled). The hints
+    /// default so existing callers (the <c>--skeleton-smoke</c> test) keep cull OFF and push every frame.
+    /// </para>
     /// </summary>
-    public void Pose(Entity e, float dt)
+    public void Pose(Entity e, float dt, bool cullEnabled = false, bool isLocal = false,
+        float distSqToView = 0f, float cullDistSq = 0f)
     {
         if (!Active) return;
 
@@ -134,7 +167,21 @@ public partial class PlayerModel : Node3D
         FrameGroup legs = _legClips[(int)loco];
         SkeletonAnim anim = LocomotionBlend.Split(legs, _legsTime, _torsoClip, 0f);
         _player.FromFrames(anim, e.Angles.X, dead);
-        PushBones();
+
+        // 3.3: decide whether to PUSH the posed bones onto the Skeleton3D this frame. The synthesis above always
+        // ran, so the skip never produces a stale logical pose — only a delayed visual refresh. Order matters:
+        // OFF / local / forced always push; an off-screen remote skips (only when the notifier is wired);
+        // a distant on-screen remote pushes on parity-matched frames; near players always push.
+        bool doPush;
+        if (!cullEnabled || isLocal) doPush = true;
+        else if (_forcePush) doPush = true;
+        else if (_visNotifier is not null && !_onScreen) doPush = false;
+        else if (cullDistSq > 0f && distSqToView > cullDistSq) doPush = ((_frameTick & 1) == _farPhase);
+        else doPush = true;
+        _frameTick++;
+        // Clear _forcePush only after a successful push, so a regain that lands on an off-screen-again frame
+        // still pushes once it's actually drawn.
+        if (doPush) { PushBones(); _forcePush = false; }
     }
 
     /// <summary>Release the CPU skeleton handle (QC <c>skel_delete</c>). Call before freeing the node.</summary>

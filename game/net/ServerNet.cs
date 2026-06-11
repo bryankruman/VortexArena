@@ -45,6 +45,31 @@ public sealed class ServerNet : IDisposable
     private readonly GameWorld _world;
     private readonly string _serverName;
 
+    // S5 (sv_threaded, default OFF): the cross-thread serialisation gate for the listen/host worker-thread path.
+    // NULL by default (single-threaded) — when null Tick runs with NO lock, byte-for-byte as today. The host
+    // installs a shared lock object here AND takes the SAME object around the main thread's prediction span in
+    // NetGame._Process; the ServerThread worker's Tick then locks it, so the sim and the main-thread prediction
+    // never touch the shared world concurrently. Set ONCE at StartListenServer when sv_threaded is on.
+    private object? _simGate;
+
+    /// <summary>S5: install (or clear) the cross-thread serialisation gate. Set by the host when sv_threaded is on,
+    /// BEFORE the ServerThread starts; the SAME object is taken by the main thread around its prediction span.</summary>
+    public object? SimGate { get => _simGate; set => _simGate = value; }
+
+    // S5: main→server one-way command handoff. When threaded, console/menu sinks (chat / bot_add / bot_remove /
+    // changelevel) fire on the MAIN thread but must run on the worker that owns the world — they're enqueued here
+    // and drained at the top of Tick (under the gate). When NOT threaded (_simGate == null) Enqueue runs the
+    // action inline immediately, so the single-threaded path keeps its exact synchronous behavior.
+    private readonly System.Collections.Concurrent.ConcurrentQueue<Action> _inbound = new();
+
+    /// <summary>S5: run <paramref name="action"/> on the sim thread. Threaded: enqueue for the worker to drain at the
+    /// next tick top (under the gate). Single-threaded: invoke inline now (unchanged synchronous behavior).</summary>
+    public void RunOnSimThread(Action action)
+    {
+        if (_simGate is null) action();
+        else _inbound.Enqueue(action);
+    }
+
     /// <summary>The transport's connection cap — the browser's slots fallback when g_maxplayers is unset.</summary>
     private int _maxClients = 32;
 
@@ -300,6 +325,25 @@ public sealed class ServerNet : IDisposable
     /// seconds, then broadcast a snapshot to each client and flush the captured effect/notification bundles.
     /// </summary>
     public void Tick(float realDelta)
+    {
+        // S5: when threaded, the WHOLE tick runs under the host's shared gate so it can't race the main thread's
+        // prediction span (NetGame._Process takes the same gate). When _simGate is null (the default) there is NO
+        // lock and the inbound queue is always empty (RunOnSimThread ran inline) — byte-for-byte the old path.
+        if (_simGate is null)
+        {
+            TickInternal(realDelta);
+            return;
+        }
+        lock (_simGate)
+        {
+            // Drain main→server commands (chat / bot_add/remove / changelevel) FIRST so Commands.Execute runs on
+            // the thread that owns the world, before this tick reads/mutates it.
+            while (_inbound.TryDequeue(out Action? a)) a();
+            TickInternal(realDelta);
+        }
+    }
+
+    private void TickInternal(float realDelta)
     {
         // 1) receive: handshakes + input frames (fills each peer's input queue).
         using (Prof.Sample("net.poll")) _transport.Poll();

@@ -130,6 +130,18 @@ public sealed class ServerEntityService : IEntityService
         }
     }
 
+    /// <summary>Allocation-free <see cref="FindByClass(string)"/>: the inner call clears + fills
+    /// <paramref name="results"/> from the engine table, then matching registered players are appended.</summary>
+    public void FindByClass(string className, List<Entity> results)
+    {
+        _inner.FindByClass(className, results); // clears + fills from the engine table (alloc-free)
+        for (int i = 0; i < _players.Count; i++)
+        {
+            Player p = _players[i];
+            if (!p.IsFreed && p.ClassName == className) results.Add(p);
+        }
+    }
+
     /// <summary>
     /// QC <c>findradius(org, r)</c>: every non-freed engine-table entity within the radius (measured from
     /// the entity's box center, like DP) PLUS every registered player within range. Lets splash damage,
@@ -147,6 +159,22 @@ public sealed class ServerEntityService : IEntityService
             Vector3 center = p.Origin + (p.Mins + p.Maxs) * 0.5f;
             if ((center - origin).LengthSquared() <= r2)
                 yield return p;
+        }
+    }
+
+    /// <summary>Allocation-free <see cref="FindInRadius(Vector3, float)"/>: the inner call clears + fills
+    /// <paramref name="results"/> (area-grid, nearest-point metric), then in-range players are appended using
+    /// the SAME box-CENTER metric the iterator overload uses — do not switch to nearest-point (parity).</summary>
+    public void FindInRadius(Vector3 origin, float radius, List<Entity> results)
+    {
+        _inner.FindInRadius(origin, radius, results); // clears + fills (nearest-point metric, area-grid backed)
+        float r2 = radius * radius;
+        for (int i = 0; i < _players.Count; i++)
+        {
+            Player p = _players[i];
+            if (p.IsFreed) continue;
+            Vector3 center = p.Origin + (p.Mins + p.Maxs) * 0.5f;
+            if ((center - origin).LengthSquared() <= r2) results.Add(p);
         }
     }
 }

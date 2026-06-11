@@ -70,6 +70,15 @@ public sealed partial class MusicPlayer : Node
     /// <summary>Current server time (for trigger_music touch freshness check).</summary>
     public float ServerTime { get; set; }
 
+    /// <summary>
+    /// S5 (sv_threaded): the host's shared sim gate, set by NetGame ONLY when the listen server runs its
+    /// simulation on a dedicated worker thread. <see cref="EntityList"/> is then the live server entity table
+    /// the worker mutates, so the per-frame scan in <see cref="EvaluateMusicSources"/> must hold this gate to
+    /// avoid racing a concurrent spawn/relink. Null on the default single-threaded path → no lock is taken and
+    /// the scan is byte-for-byte the old behaviour.
+    /// </summary>
+    public object? SimGate { get; set; }
+
     // ---- constants ----
     private const string MusicBus = "Music";
     private const float TouchFreshnessWindow = 0.2f; // a trigger_music is "active" if touched within this many seconds
@@ -91,7 +100,19 @@ public sealed partial class MusicPlayer : Node
         float dt = (float)delta;
 
         // --- evaluate the priority stack to find the best music source ---
-        EvaluateMusicSources(out string bestTrack, out float bestVolume, out float fadeIn, out float fadeOut);
+        // S5: the scan reads the live server entity list; when sv_threaded the host hands us its gate so this
+        // can't race the worker's spawn/relink. SimGate is null on the default path → no lock, byte-identical.
+        string bestTrack;
+        float bestVolume, fadeIn, fadeOut;
+        if (SimGate is not null)
+        {
+            lock (SimGate)
+                EvaluateMusicSources(out bestTrack, out bestVolume, out fadeIn, out fadeOut);
+        }
+        else
+        {
+            EvaluateMusicSources(out bestTrack, out bestVolume, out fadeIn, out fadeOut);
+        }
 
         // --- if the best track changed, start a crossfade ---
         // The OUTGOING track fades on ITS OWN fade_rate (captured when it started — QC TargetMusic_Advance

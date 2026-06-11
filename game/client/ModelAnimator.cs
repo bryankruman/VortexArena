@@ -4,6 +4,7 @@ using Godot;
 using XonoticGodot.Formats.Md3;
 using XonoticGodot.Formats.Sidecars;
 using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Services;
 using XonoticGodot.Engine.Simulation;
 using XonoticGodot.Game.Loaders;
 
@@ -56,13 +57,32 @@ public partial class ModelAnimator : Node3D
     {
         public required Md3Surface Surface;
         public required Material? Material;
-        public required Vector3[] Positions;   // mutated + re-uploaded each frame
-        public required Vector3[] Normals;     // mutated + re-uploaded each frame
+        public required Vector3[] Positions;   // mutated + re-uploaded each frame (CPU path) / on bracket change (GPU)
+        public required Vector3[] Normals;     // mutated + re-uploaded each frame (CPU path) / on bracket change (GPU)
         public required Godot.Collections.Array Arrays; // holds the static UV/Index Variants across frames
+
+        // --- GPU vertex-morph path (cl_gpu_morph, item 3.3 Tier-3) -----------------------------------------
+        // Only populated when this surface uses GPU morph (Gpu==true). Then frameA lives in Positions/Normals
+        // (ARRAY_VERTEX/ARRAY_NORMAL) and frameB in two RgbaFloat custom channels (CUSTOM0=pos, CUSTOM1=nrm),
+        // both refreshed only when the (frameA,frameB) bracket changes; per render frame only morph_amount moves.
+        public bool Gpu;
+        public ShaderMaterial? MorphMaterial; // the wrapping Md3Morph material (replicates the StandardMaterial3D look)
+        public float[]? CustomB0;             // CUSTOM0: frameB position, 4 floats/vertex (.w unused)
+        public float[]? CustomB1;             // CUSTOM1: frameB normal,   4 floats/vertex (.w unused)
     }
     private readonly List<SurfaceBuffers> _surfaceBuffers = new();
     private ArrayMesh? _morphMesh;   // single persistent mesh — surfaces are updated in place, never reassigned
     private bool _morphInit;
+
+    // GPU vertex-morph (cl_gpu_morph, item 3.3 Tier-3). All-or-nothing per model: GPU only when EVERY visible
+    // surface resolved to a StandardMaterial3D/null (so the mesh never mixes a persistent GPU surface with the
+    // CPU ClearSurfaces churn). Read once at build time; default 0 keeps the CPU path byte-identical. When on,
+    // the surfaces are uploaded ONCE (with the custom-channel format) and thereafter only morph_amount is set
+    // each frame — the streams refresh only when the (frameA,frameB) bracket changes (~frame-rate, not render-
+    // rate). _lastBracketA/_lastBracketB track the last uploaded bracket so a t-only change skips the re-upload.
+    private bool _gpuMorph;
+    private bool _gpuSurfacesUploaded;
+    private int _lastBracketA = int.MinValue, _lastBracketB = int.MinValue;
 
     // The morph output (surface buffers + tag poses) is a pure function of (frameA, frameB, t), so when those
     // inputs are byte-identical to the last applied frame — a static pickup, a weapon at rest, a clip parked on
@@ -323,7 +343,17 @@ public partial class ModelAnimator : Node3D
     {
         _morphInit = true;
         _haveLastFrame = false;   // a (re)build must re-apply the current frame even if its inputs match the cache
+        _gpuSurfacesUploaded = false;
+        _lastBracketA = int.MinValue; _lastBracketB = int.MinValue;
         _morphMesh = new ArrayMesh { ResourceName = "Md3Morph" };
+
+        // GPU vertex-morph gate (cl_gpu_morph), read ONCE here — default 0 keeps the CPU path byte-identical.
+        // All-or-nothing per model: only enable GPU morph when EVERY visible drawable surface resolved to a
+        // StandardMaterial3D (or null). A surface backed by a custom ShaderMaterial (PlayerSkinShader / a
+        // generated animated stage) can't carry a vertex() morph and must stay on the CPU upload — and mixing a
+        // persistent GPU surface with the CPU ClearSurfaces path on one mesh is incompatible, so any such
+        // surface drops the WHOLE model back to CPU. (Live-toggling the cvar needs a rebuild; see Advance.)
+        _gpuMorph = CvarF("cl_gpu_morph", 0f) != 0f && AllSurfacesGpuEligible();
 
         foreach ((Md3Surface surface, Material? material, bool visible) in _surfaces)
         {
@@ -352,20 +382,98 @@ public partial class ModelAnimator : Node3D
             arrays[(int)Mesh.ArrayType.TexUV] = uvs;
             arrays[(int)Mesh.ArrayType.Index] = indices;
 
-            _surfaceBuffers.Add(new SurfaceBuffers
+            var sb = new SurfaceBuffers
             {
                 Surface = surface,
                 Material = material,
                 Positions = new Vector3[vcount],
                 Normals = new Vector3[vcount],
                 Arrays = arrays,
-            });
+            };
+
+            if (_gpuMorph)
+            {
+                // Wrap the resolved StandardMaterial3D (or null) into the Md3Morph shader material and pre-size
+                // the two custom-channel float buffers (4 floats/vertex, RgbaFloat). Frame data is filled in
+                // ApplyFrame on the first apply / bracket change.
+                sb.Gpu = true;
+                sb.MorphMaterial = BuildMorphMaterial(material as StandardMaterial3D);
+                sb.CustomB0 = new float[vcount * 4];
+                sb.CustomB1 = new float[vcount * 4];
+            }
+
+            _surfaceBuffers.Add(sb);
         }
 
         // Assign the persistent mesh to the instance once; from here on we mutate its surfaces in place so
         // the MeshInstance is never re-pointed at a new resource (which would re-trigger render setup).
         // MaterialOverride lives on the MeshInstance, not the mesh, so it survives in-place surface rebuilds.
         _mesh.Mesh = _morphMesh;
+    }
+
+    /// <summary>
+    /// True when EVERY visible, drawable surface resolved to a <see cref="StandardMaterial3D"/> (or null). A
+    /// custom <see cref="ShaderMaterial"/> surface (PlayerSkinShader / generated animated stage) cannot carry a
+    /// vertex() morph, so its presence disqualifies the whole model from the GPU path (all-or-nothing rule).
+    /// </summary>
+    private bool AllSurfacesGpuEligible()
+    {
+        foreach ((Md3Surface surface, Material? material, bool visible) in _surfaces)
+        {
+            if (!visible)
+                continue;
+            if (surface.VertexCount <= 0 || surface.Triangles.Length == 0 || surface.FrameVertices.Length == 0)
+                continue;
+            if (material is not null and not StandardMaterial3D)
+                return false;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Wrap a resolved <see cref="StandardMaterial3D"/> (or null) into an <see cref="Md3MorphShader"/> material:
+    /// a GPU vertex-morph shader whose <c>fragment()</c> replicates the StandardMaterial3D look the CPU path
+    /// draws (albedo + optional gloss→roughness / glow→emission). Mirrors how <see cref="PlayerSkinShader"/>
+    /// replaces a StandardMaterial3D it can't express. Normal maps are intentionally NOT bound (has_normal stays
+    /// false) to match today's morph look — the CPU StandardMaterial3D path supplies no tangents either, so a
+    /// bound normal map would shift the look rather than preserve it (see the tangents note in the spec).
+    /// </summary>
+    private static ShaderMaterial BuildMorphMaterial(StandardMaterial3D? source)
+    {
+        var mat = new ShaderMaterial { Shader = Md3MorphShader.Shader };
+        if (source is not null)
+        {
+            mat.SetShaderParameter(Md3MorphShader.AlbedoUniform, source.AlbedoTexture);
+
+            // gloss→roughness: WireCompanions feeds the gloss map as the StandardMaterial3D RoughnessTexture
+            // (grayscale, scalar Roughness 1.0); the shader samples .g and inverts it. Treat a bound roughness
+            // texture as the gloss map (the only way the plain-material path sets one).
+            if (source.RoughnessTexture is not null)
+            {
+                mat.SetShaderParameter(Md3MorphShader.GlossUniform, source.RoughnessTexture);
+                mat.SetShaderParameter(Md3MorphShader.HasGlossUniform, true);
+            }
+
+            // glow→emission: WireCompanions sets EmissionTexture (+ black base emission) for the _glow companion.
+            if (source.EmissionEnabled && source.EmissionTexture is not null)
+            {
+                mat.SetShaderParameter(Md3MorphShader.GlowUniform, source.EmissionTexture);
+                mat.SetShaderParameter(Md3MorphShader.HasGlowUniform, true);
+            }
+        }
+        return mat;
+    }
+
+    /// <summary>
+    /// Read a float cvar once with a fallback default (copied from <c>CsqcModelEffects.CvarF</c>). Guards a null
+    /// service container (editor / headless / tests where <see cref="Api.Services"/> isn't wired) by returning
+    /// the fallback, so the GPU gate defaults to OFF (current CPU behavior) when cvars are unavailable.
+    /// </summary>
+    private static float CvarF(string name, float fallback)
+    {
+        if (Api.Services is null) return fallback;
+        string s = Api.Cvars.GetString(name);
+        return string.IsNullOrWhiteSpace(s) ? fallback : Api.Cvars.GetFloat(name);
     }
 
     /// <summary>
@@ -388,7 +496,72 @@ public partial class ModelAnimator : Node3D
 
         if (_morphMesh is not null && _surfaceBuffers.Count > 0)
         {
-            _morphMesh.ClearSurfaces();
+            if (_gpuMorph)
+                ApplyFrameGpu(frameA, frameB, t);
+            else
+                ApplyFrameCpu(frameA, frameB, t);
+        }
+
+        PoseTags(frameA, frameB, t);
+    }
+
+    /// <summary>
+    /// The CPU morph path (default, <c>cl_gpu_morph 0</c>): lerp every vertex on the CPU and re-upload both
+    /// morphing streams each tick. Byte-identical to the legacy single-method implementation — DarkPlaces'
+    /// R_AliasLerpVerts done host-side.
+    /// </summary>
+    private void ApplyFrameCpu(int frameA, int frameB, float t)
+    {
+        _morphMesh!.ClearSurfaces();
+        int surfaceIndex = 0;
+        foreach (SurfaceBuffers sb in _surfaceBuffers)
+        {
+            Md3Surface surface = sb.Surface;
+            int vcount = surface.VertexCount;
+            int fa = Math.Clamp(frameA, 0, surface.FrameVertices.Length - 1);
+            int fb = Math.Clamp(frameB, 0, surface.FrameVertices.Length - 1);
+            Md3Vertex[] va = surface.FrameVertices[fa];
+            Md3Vertex[] vb = surface.FrameVertices[fb];
+            if (va.Length < vcount || vb.Length < vcount)
+                continue;
+
+            Vector3[] positions = sb.Positions;
+            Vector3[] normals = sb.Normals;
+            for (int v = 0; v < vcount; v++)
+            {
+                // Lerp in Quake space, then convert — equivalent to lerping the converted values.
+                System.Numerics.Vector3 p = System.Numerics.Vector3.Lerp(va[v].Position, vb[v].Position, t);
+                System.Numerics.Vector3 nrm = System.Numerics.Vector3.Lerp(va[v].Normal, vb[v].Normal, t);
+                positions[v] = Coords.ToGodot(p);
+                Vector3 gn = Coords.ToGodot(nrm);
+                normals[v] = gn.LengthSquared() > 1e-8f ? gn.Normalized() : Vector3.Up;
+            }
+
+            // Only the morphing streams are re-uploaded; UV + index Variants stay as set in BuildMorphBuffers.
+            sb.Arrays[(int)Mesh.ArrayType.Vertex] = positions;
+            sb.Arrays[(int)Mesh.ArrayType.Normal] = normals;
+            _morphMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, sb.Arrays);
+            if (sb.Material is not null)
+                _morphMesh.SurfaceSetMaterial(surfaceIndex, sb.Material);
+            surfaceIndex++;
+        }
+    }
+
+    /// <summary>
+    /// The GPU vertex-morph path (<c>cl_gpu_morph 1</c>, all StandardMaterial3D/null surfaces). frameA lives in
+    /// ARRAY_VERTEX/ARRAY_NORMAL and frameB in two RgbaFloat custom channels (CUSTOM0=pos, CUSTOM1=nrm); the
+    /// Md3Morph shader's vertex() lerps them by <c>morph_amount</c>. Those two streams refresh only when the
+    /// (frameA,frameB) bracket changes — at ~frame-rate, not render-rate — so the steady-state per-render-frame
+    /// cost of a smoothly-playing clip is a single <c>morph_amount</c> uniform set per surface (the item-3.3 win).
+    /// </summary>
+    private void ApplyFrameGpu(int frameA, int frameB, float t)
+    {
+        // The streams (frameA + the frameB customs) only depend on the bracket; refresh them when it moves. The
+        // model is all-or-nothing GPU, so a full ClearSurfaces + re-add is safe here (no CPU surface to preserve).
+        bool bracketChanged = !_gpuSurfacesUploaded || frameA != _lastBracketA || frameB != _lastBracketB;
+        if (bracketChanged)
+        {
+            _morphMesh!.ClearSurfaces();
             int surfaceIndex = 0;
             foreach (SurfaceBuffers sb in _surfaceBuffers)
             {
@@ -401,29 +574,64 @@ public partial class ModelAnimator : Node3D
                 if (va.Length < vcount || vb.Length < vcount)
                     continue;
 
-                Vector3[] positions = sb.Positions;
-                Vector3[] normals = sb.Normals;
+                Vector3[] positions = sb.Positions; // ARRAY_VERTEX = frameA (Godot space)
+                Vector3[] normals = sb.Normals;      // ARRAY_NORMAL = frameA (Godot space)
+                float[] cb0 = sb.CustomB0!;          // CUSTOM0 = frameB position, RgbaFloat (4 floats/vertex)
+                float[] cb1 = sb.CustomB1!;          // CUSTOM1 = frameB normal,   RgbaFloat (4 floats/vertex)
                 for (int v = 0; v < vcount; v++)
                 {
-                    // Lerp in Quake space, then convert — equivalent to lerping the converted values.
-                    System.Numerics.Vector3 p = System.Numerics.Vector3.Lerp(va[v].Position, vb[v].Position, t);
-                    System.Numerics.Vector3 nrm = System.Numerics.Vector3.Lerp(va[v].Normal, vb[v].Normal, t);
-                    positions[v] = Coords.ToGodot(p);
-                    Vector3 gn = Coords.ToGodot(nrm);
-                    normals[v] = gn.LengthSquared() > 1e-8f ? gn.Normalized() : Vector3.Up;
+                    // frameA into the standard streams (same Quake->Godot conversion as the CPU path).
+                    positions[v] = Coords.ToGodot(va[v].Position);
+                    Vector3 gnA = Coords.ToGodot(va[v].Normal);
+                    normals[v] = gnA.LengthSquared() > 1e-8f ? gnA.Normalized() : Vector3.Up;
+
+                    // frameB into the custom channels (already Godot space; the shader mixes A->B by morph_amount,
+                    // equivalent to lerping Quake values then converting — see Md3MorphShader). Normalize to match.
+                    Vector3 pB = Coords.ToGodot(vb[v].Position);
+                    Vector3 gnB = Coords.ToGodot(vb[v].Normal);
+                    Vector3 nB = gnB.LengthSquared() > 1e-8f ? gnB.Normalized() : Vector3.Up;
+                    int o = v * 4;
+                    cb0[o] = pB.X; cb0[o + 1] = pB.Y; cb0[o + 2] = pB.Z; cb0[o + 3] = 0f;
+                    cb1[o] = nB.X; cb1[o + 1] = nB.Y; cb1[o + 2] = nB.Z; cb1[o + 3] = 0f;
                 }
 
-                // Only the morphing streams are re-uploaded; UV + index Variants stay as set in BuildMorphBuffers.
                 sb.Arrays[(int)Mesh.ArrayType.Vertex] = positions;
                 sb.Arrays[(int)Mesh.ArrayType.Normal] = normals;
-                _morphMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, sb.Arrays);
-                if (sb.Material is not null)
-                    _morphMesh.SurfaceSetMaterial(surfaceIndex, sb.Material);
+                sb.Arrays[(int)Mesh.ArrayType.Custom0] = cb0;
+                sb.Arrays[(int)Mesh.ArrayType.Custom1] = cb1;
+
+                // Declare the two custom channels' format in the surface flags: one ArrayCustomFormat code per
+                // channel, left-shifted into that channel's FormatCustomN shift, OR'd with the channel presence
+                // bit. RgbaFloat => the Custom array is a float[] of 4 floats/vertex (verified against the Godot
+                // 4.6 GodotSharp.xml docs for AddSurfaceFromArrays / ArrayType.Custom0/Custom1).
+                const uint customFmt =
+                    ((uint)Mesh.ArrayCustomFormat.RgbaFloat << (int)Mesh.ArrayFormat.FormatCustom0Shift)
+                    | (uint)Mesh.ArrayFormat.FormatCustom0
+                    | ((uint)Mesh.ArrayCustomFormat.RgbaFloat << (int)Mesh.ArrayFormat.FormatCustom1Shift)
+                    | (uint)Mesh.ArrayFormat.FormatCustom1;
+
+                // Pass blendShapes/lods explicitly null (positional) so the custom-format flags reach the 5th
+                // arg regardless of the binding's parameter naming.
+                _morphMesh.AddSurfaceFromArrays(
+                    Mesh.PrimitiveType.Triangles, sb.Arrays,
+                    null, null, (Mesh.ArrayFormat)customFmt);
+                if (sb.MorphMaterial is not null)
+                {
+                    sb.MorphMaterial.SetShaderParameter(Md3MorphShader.MorphAmountUniform, t);
+                    _morphMesh.SurfaceSetMaterial(surfaceIndex, sb.MorphMaterial);
+                }
                 surfaceIndex++;
             }
+            _gpuSurfacesUploaded = true;
+            _lastBracketA = frameA;
+            _lastBracketB = frameB;
         }
-
-        PoseTags(frameA, frameB, t);
+        else
+        {
+            // Steady state: same bracket, only t moved. The single cheap interop call per surface (the win).
+            foreach (SurfaceBuffers sb in _surfaceBuffers)
+                sb.MorphMaterial?.SetShaderParameter(Md3MorphShader.MorphAmountUniform, t);
+        }
     }
 
     /// <summary>Re-pose each attachment tag marker by interpolating its transform between the two frames.</summary>

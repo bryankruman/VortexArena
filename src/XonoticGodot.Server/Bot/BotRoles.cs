@@ -39,6 +39,12 @@ public sealed class GoalRater
     public bool HasGoal => _has;
     public GoalRating Best => _best;
 
+    /// <summary>Scratch buffer reused across this rater's FindInRadius/FindByClass scans (sim-thread, token-gated,
+    /// so never re-entered): one List per brain instead of an iterator per goal-rating call. The list overloads
+    /// clear it on entry, so each scan must be fully consumed before the next reuses it (none here nest a find
+    /// while iterating it).</summary>
+    internal readonly List<Entity> Scratch = new();
+
     public void Start()
     {
         _best = default;
@@ -131,8 +137,12 @@ public static class BotRoles
         bool timeItems = Cvars.Bool("bot_ai_timeitems");
         float minRespawnDelay = System.Math.Max(11f, Cvars.FloatOr("bot_ai_timeitems_minrespawndelay", 11f));
 
-        foreach (var it in Api.Entities.FindInRadius(org, radius))
+        // Fill the rater's reused scratch (alloc-free) instead of allocating a findradius iterator each call.
+        // The body only reads/rates (no spawn/free), so index-iterating the snapshot directly is safe.
+        Api.Entities.FindInRadius(org, radius, rater.Scratch);
+        for (int si = 0; si < rater.Scratch.Count; si++)
         {
+            Entity it = rater.Scratch[si];
             if (it.IsFreed || ReferenceEquals(it, bot)) continue;
             if ((it.Flags & EntFlags.Item) == 0) continue;
 

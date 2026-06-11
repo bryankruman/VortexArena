@@ -190,6 +190,15 @@ public static class CsqcModelEffects
     //     material meshes; on shared/shader-material models they're a documented parity gap (no per-instance
     //     additive/fullbright/depthhack render path exists in the port yet).
 
+    /// <summary>
+    /// Expose the per-model cached, flattened mesh list (rebuilding it on a swap / freed mesh exactly like the
+    /// effects pass) so the per-frame appearance pass (<see cref="ModelTint.ApplyAppearance(System.Collections.Generic.IReadOnlyList{MeshInstance3D},int,bool,float,bool)"/>)
+    /// can reuse the SAME cache keyed on the SAME <paramref name="root"/> — no second tree-walk and no risk of
+    /// the two lists diverging (3.2-2). Routes through <see cref="EnsureMeshCache"/> so invalidation (instance-id
+    /// change + freed-mesh validity scan, incl. the staggered placeholder→real swap) stays identical.
+    /// </summary>
+    public static List<MeshInstance3D> GetCachedMeshes(State st, Node3D root) => EnsureMeshCache(st, root);
+
     /// <summary>Return the model's cached mesh list, rebuilding it when the model node changed (a swap, by
     /// instance id) or a cached mesh was freed. The validity scan is O(meshes) of cheap native calls — no
     /// GetChildren() marshaling, which is the whole point (3.2-2). Built once and reused otherwise.</summary>

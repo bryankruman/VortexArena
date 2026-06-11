@@ -64,7 +64,30 @@ public partial class EffectSystem : Node3D
     /// <summary>Hard cap on simultaneous one-shot effect nodes; oldest are culled past this (cheap GC guard).</summary>
     [Export] public int MaxLiveEffects { get; set; } = 256;
 
+    /// <summary>
+    /// (3.2-1) When set, the single-node heuristic bursts from <see cref="BuildBurst"/> are reused from a
+    /// free-list instead of <c>new</c>+<c>QueueFree</c>'d per spawn — killing the GpuParticles3D node /
+    /// native-handle / finalizer / tree churn in firefights. Default FALSE: every code path then falls
+    /// through to today's allocate-and-free behavior, so default visuals/allocation are byte-identical.
+    /// Flipping this changes ONLY allocation behavior, not visuals — the same cached mesh + freshly-built
+    /// ParticleProcessMaterial are carried by the reused node. Only the heuristic <see cref="BuildBurst"/>
+    /// path participates; trails, the effectinfo fx_info tree, attached muzzle flashes and the GPU warm pass
+    /// stay on QueueFree.
+    /// </summary>
+    [Export] public bool PoolBurstNodes { get; set; } = false;
+
     private readonly Queue<Node3D> _live = new();
+
+    // (3.2-1) Per-(class, 5-bit tint bucket) free-list of idle one-shot burst nodes, ready to re-emit. A
+    // released burst is detached from the tree (no parent) and parked here; AcquireBurst pops one (skipping
+    // any Godot freed out from under us) and ConfigureBurst fully re-sets it. Managed-side dictionaries (NOT
+    // SetMeta) so we never convert a string literal to a StringName on the hot path (XG0002 analyzer).
+    private readonly Dictionary<(EffectClass, int), Stack<GpuParticles3D>> _burstPool = new();
+    // Reverse lookup: a tracked/armed burst node -> its pool key, so ReleaseBurst can re-file it. Membership
+    // also marks "this node is a live pooled burst": ReleaseBurst removes it (a second release becomes a
+    // no-op) and Track's cull consults it to release rather than free an early-culled burst.
+    private readonly Dictionary<GpuParticles3D, (EffectClass, int)> _burstKey = new();
+    private const int MaxPooledPerKey = 24; // cap idle nodes retained per (class,tint) bucket
 
     // =================================================================================================
     //  effectinfo.txt-driven path (T20): the real parsed catalog and the decal/casing sub-systems.
@@ -297,14 +320,21 @@ public partial class EffectSystem : Node3D
         else
         {
             int n = Math.Max(1, (int)MathF.Round(count * DensityScale));
-            node = BuildBurst(kind, godotOrigin, Coords.ToGodot(velocity), n, tint);
+            // (3.2-1) Only the world-space burst path opts into node pooling (attached muzzleflashes / warm-pass
+            // instances pass pool:false and keep their QueueFree lifecycle). Default PoolBurstNodes=false => new.
+            node = BuildBurst(kind, godotOrigin, Coords.ToGodot(velocity), n, tint, pool: PoolBurstNodes);
         }
 
         AddChild(node);
         // Now that the node is in the tree, schedule its self-removal once the one-shot burst finishes.
         // GpuParticles3D.Lifetime is the per-particle life; add a margin for the last particles to fade.
         float linger = (float)(node is GpuParticles3D gp ? gp.Lifetime : 1f) + 0.5f;
-        ScheduleFree(node, linger);
+        // (3.2-1) A pooled burst is returned to the free-list (not freed) when it finishes; otherwise QueueFree.
+        // _burstKey membership marks the node as a live pooled burst (populated in ConfigureBurst when pooling).
+        if (node is GpuParticles3D burst && _burstKey.ContainsKey(burst))
+            ScheduleRelease(burst, linger);
+        else
+            ScheduleFree(node, linger);
         Track(node);
         return node;
     }
@@ -556,7 +586,29 @@ public partial class EffectSystem : Node3D
     //  Particle factories — one per class. Each returns a self-freeing node.
     // =================================================================================================
 
-    private Node3D BuildBurst(EffectClass kind, Vector3 pos, Vector3 vel, int count, Tint tint)
+    /// <summary>
+    /// Build (or, when <paramref name="pool"/>, reuse) a single one-shot heuristic burst node and configure it.
+    /// <paramref name="pool"/> is honored ONLY by the world-space <see cref="Spawn"/> burst path (it passes
+    /// <see cref="PoolBurstNodes"/>); the attached-muzzleflash and GPU-warm callers leave it false so their
+    /// nodes are freshly <c>new</c>'d and never enter the pool (different ownership/lifecycle — see those
+    /// callers). When false this is byte-identical to the original <c>new GpuParticles3D</c> + configure.
+    /// </summary>
+    private Node3D BuildBurst(EffectClass kind, Vector3 pos, Vector3 vel, int count, Tint tint, bool pool = false)
+    {
+        GpuParticles3D particles = pool ? AcquireBurst(kind, tint) : new GpuParticles3D();
+        ConfigureBurst(particles, kind, pos, vel, count, tint, pool);
+        return particles;
+    }
+
+    /// <summary>
+    /// Apply the per-class heuristic burst preset onto <paramref name="particles"/>. This doubles as the RESET
+    /// path for a pooled node: it stops any leftover emission, reassigns every sizing/timing/material property,
+    /// <c>Restart()</c>s to drop particles from a prior burst, then re-arms emission — so a reused node carries
+    /// nothing stale from its previous use. On a freshly-<c>new</c>'d node the extra reset steps are cheap no-ops,
+    /// keeping a single divergence-free code path. When <paramref name="pool"/> the node's pool key is recorded
+    /// in <see cref="_burstKey"/> so it can later be re-filed by <see cref="ReleaseBurst"/>.
+    /// </summary>
+    private void ConfigureBurst(GpuParticles3D particles, EffectClass kind, Vector3 pos, Vector3 vel, int count, Tint tint, bool pool = false)
     {
         // Per-class burst tuning: (baseCount, lifetime, speedMin, speedMax, scale, gravityZ, spread).
         (int baseCount, float life, float vMin, float vMax, float scale, float grav, float spread) = kind switch
@@ -578,17 +630,20 @@ public partial class EffectSystem : Node3D
 
         int n = Math.Clamp(Math.Max(baseCount, count), 1, 1024);
 
-        var particles = new GpuParticles3D
-        {
-            Name = $"fx_{kind}",
-            Amount = n,
-            Lifetime = life,
-            OneShot = true,
-            Explosiveness = kind == EffectClass.MuzzleFlash ? 1f : 0.85f,
-            Emitting = true,
-            Position = pos,
-            // Directional emitters (muzzle/blood/spark) bias along the velocity; otherwise spherical.
-        };
+        // (3.2-1) RESET-FIRST: stop any leftover emission before re-arming a reused node (no-op on a fresh one).
+        particles.Emitting = false;
+        particles.Name = $"fx_{kind}";
+        particles.Amount = n;
+        particles.Lifetime = life;
+        particles.OneShot = true;
+        particles.Explosiveness = kind == EffectClass.MuzzleFlash ? 1f : 0.85f;
+        particles.Position = pos;
+        // Directional emitters (muzzle/blood/spark) bias along the velocity; otherwise spherical.
+        // Defense-in-depth for a reused node: a prior life as some other class could have left these set even
+        // though BuildBurst never sets them itself (only BuildInfoBurst does — and that path isn't pooled yet).
+        particles.LocalCoords = false;
+        particles.TransformAlign = GpuParticles3D.TransformAlignEnum.Disabled;
+        particles.Visible = true; // a released node was hidden (see ReleaseBurst)
 
         var mat = new ParticleProcessMaterial
         {
@@ -607,9 +662,59 @@ public partial class EffectSystem : Node3D
         };
         // Fade alpha over life and cool the color toward dark for fire/explosion.
         ApplyColorRamp(mat, kind, tint.Color);
+        // Reassigning ProcessMaterial/DrawPass1 REPLACES the prior emission shape/velocity/ramp + mesh.
         particles.ProcessMaterial = mat;
         particles.DrawPass1 = BuildParticleMesh(kind, tint.Color);
-        return particles;
+        // Clear any still-live particles from a prior burst (GPU buffer) AFTER mat/mesh are assigned and BEFORE
+        // re-arming emission, so a reused node never spits leftover particles from its previous direction.
+        particles.Restart();
+        particles.Emitting = true; // arm LAST
+
+        if (pool)
+            _burstKey[particles] = (kind, ColorKey5(tint.Color));
+    }
+
+    /// <summary>(3.2-1) Pop an idle burst node for (class, 5-bit tint) from the free-list, or build a fresh one
+    /// when the bucket is empty. Skips any pooled node Godot freed out from under us (e.g. on tree exit).</summary>
+    private GpuParticles3D AcquireBurst(EffectClass kind, Tint tint)
+    {
+        var key = (kind, ColorKey5(tint.Color));
+        if (_burstPool.TryGetValue(key, out Stack<GpuParticles3D>? stack))
+        {
+            while (stack.Count > 0)
+            {
+                GpuParticles3D n = stack.Pop();
+                if (GodotObject.IsInstanceValid(n))
+                    return n;
+            }
+        }
+        return new GpuParticles3D();
+    }
+
+    /// <summary>(3.2-1) Return a finished burst node to its free-list instead of freeing it. Idempotent: a node
+    /// that's already been released (no longer in <see cref="_burstKey"/>) is a no-op, so the timer-release and
+    /// the Track-cull release of the same node can't double-handle it. Detaches the node from the tree, hides it
+    /// and drops its live particles so a parked node holds nothing on the GPU.</summary>
+    private void ReleaseBurst(GpuParticles3D p)
+    {
+        if (!GodotObject.IsInstanceValid(p))
+            return;
+        // Not currently a live tracked burst (already pooled / never pooled) -> nothing to do.
+        if (!_burstKey.Remove(p, out (EffectClass, int) key))
+            return;
+
+        p.Emitting = false;
+        p.Visible = false;
+        p.Restart(); // drop any in-flight particles so the parked node renders nothing
+        p.GetParent()?.RemoveChild(p); // detach but DO NOT free
+
+        Stack<GpuParticles3D> stack = _burstPool.TryGetValue(key, out Stack<GpuParticles3D>? s)
+            ? s
+            : (_burstPool[key] = new Stack<GpuParticles3D>());
+        if (stack.Count < MaxPooledPerKey)
+            stack.Push(p);
+        else
+            p.QueueFree(); // bucket full — let this one go
     }
 
     private Node3D BuildTrail(EffectClass kind, Vector3 start, Vector3 end, Tint tint)
@@ -1713,7 +1818,13 @@ public partial class EffectSystem : Node3D
         _live.Enqueue(node);
         while (_live.Count > MaxLiveEffects && _live.TryDequeue(out Node3D? old))
         {
-            if (GodotObject.IsInstanceValid(old))
+            if (!GodotObject.IsInstanceValid(old))
+                continue;
+            // (3.2-1) An early-culled pooled burst is still reusable — return it to the free-list rather than
+            // free it (ReleaseBurst is a no-op if it already finished via its timer). All other nodes free.
+            if (old is GpuParticles3D burst && _burstKey.ContainsKey(burst))
+                ReleaseBurst(burst);
+            else
                 old.QueueFree();
         }
     }
@@ -1735,5 +1846,39 @@ public partial class EffectSystem : Node3D
             if (GodotObject.IsInstanceValid(node))
                 node.QueueFree();
         };
+    }
+
+    /// <summary>(3.2-1) Like <see cref="ScheduleFree"/> but returns the finished burst to the pool instead of
+    /// freeing it. Mirrors ScheduleFree's SceneTreeTimer mechanism; the timeout calls <see cref="ReleaseBurst"/>,
+    /// which is idempotent so a node already released by the Track-cull is handled harmlessly.</summary>
+    private void ScheduleRelease(GpuParticles3D node, float seconds)
+    {
+        SceneTree? tree = IsInsideTree() ? GetTree() : node.GetTree();
+        if (tree is null)
+        {
+            // No tree to time against — fall back to the pooled release immediately (still better than a free).
+            ReleaseBurst(node);
+            return;
+        }
+        SceneTreeTimer timer = tree.CreateTimer(seconds);
+        timer.Timeout += () => ReleaseBurst(node);
+    }
+
+    /// <summary>(3.2-1) On teardown, free every idle node still parked in the burst pool. Pooled idle nodes are
+    /// detached (no parent) and not in <see cref="_live"/>, so without this they'd leak as orphaned handles when
+    /// the system leaves the tree (map change / shutdown).</summary>
+    public override void _ExitTree()
+    {
+        foreach (Stack<GpuParticles3D> stack in _burstPool.Values)
+        {
+            while (stack.Count > 0)
+            {
+                GpuParticles3D n = stack.Pop();
+                if (GodotObject.IsInstanceValid(n))
+                    n.QueueFree();
+            }
+        }
+        _burstPool.Clear();
+        _burstKey.Clear();
     }
 }

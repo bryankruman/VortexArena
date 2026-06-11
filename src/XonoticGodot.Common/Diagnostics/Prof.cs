@@ -13,9 +13,13 @@ namespace XonoticGodot.Common.Diagnostics;
 ///
 /// <para>Usage at a call site: <c>using (Prof.Sample("sim.move")) { ... }</c>. When <see cref="Enabled"/> is false
 /// (a real dedicated server, or the profiler turned off) <see cref="Sample"/> returns a no-op <c>default</c> token
-/// that never reads the clock — so the instrumentation is free in production. Single-threaded by contract: scopes
-/// run on the frame/tick thread (the listen server simulates on the Godot main thread); the dedicated-server path
-/// leaves <see cref="Enabled"/> false so nothing touches the shared dictionaries.</para>
+/// that never reads the clock — so the instrumentation is free in production. When <see cref="Enabled"/> is false
+/// nothing ever touches the shared dictionaries (and never takes the gate), so the production path is byte-for-byte
+/// the original no-op. When profiling IS on, the accumulators are guarded by <see cref="_gate"/>: normally scopes
+/// run on a single frame/tick thread (the listen server simulates on the Godot main thread), but the S5
+/// <c>sv_threaded</c> path runs the sim scopes (sim.move, bot.think, …) on the dedicated worker thread WHILE the
+/// main thread records its own scopes — measuring S5 needs the profiler on while threaded, so the drain/accumulate
+/// must be thread-safe. The lock is uncontended (and negligible) in the common single-threaded profiling case.</para>
 /// </summary>
 public static class Prof
 {
@@ -23,6 +27,7 @@ public static class Prof
     public static bool Enabled;
 
     private static readonly double MsPerTick = 1000.0 / Stopwatch.Frequency;
+    private static readonly object _gate = new();                         // guards the three accumulators (only taken when Enabled)
     private static readonly Dictionary<string, double> _bucket = new();   // accumulated ms per scope, this frame
     private static readonly Dictionary<string, double> _alloc = new();     // accumulated bytes allocated per scope, this frame
     private static readonly Dictionary<string, double> _counters = new(); // per-frame numeric markers (e.g. tick count)
@@ -62,12 +67,16 @@ public static class Prof
         {
             if (_name is null)
                 return;
+            // Compute outside the lock so the lock cost is NOT charged to this scope's measured time.
             double ms = (Stopwatch.GetTimestamp() - _start) * MsPerTick;
-            _bucket.TryGetValue(_name, out double cur);
-            _bucket[_name] = cur + ms;
             long bytes = GC.GetAllocatedBytesForCurrentThread() - _startAlloc;
-            _alloc.TryGetValue(_name, out double a);
-            _alloc[_name] = a + bytes;
+            lock (_gate)
+            {
+                _bucket.TryGetValue(_name, out double cur);
+                _bucket[_name] = cur + ms;
+                _alloc.TryGetValue(_name, out double a);
+                _alloc[_name] = a + bytes;
+            }
         }
     }
 
@@ -82,7 +91,8 @@ public static class Prof
     public static void Mark(string name, double value)
     {
         if (Enabled)
-            _counters[name] = value;
+            lock (_gate)
+                _counters[name] = value;
     }
 
     /// <summary>
@@ -93,24 +103,29 @@ public static class Prof
     public static void SnapshotAndReset(Dictionary<string, double> scopesInto, Dictionary<string, double> countersInto,
         Dictionary<string, double>? allocInto = null)
     {
-        scopesInto.Clear();
-        foreach (KeyValuePair<string, double> kv in _bucket)
-            scopesInto[kv.Key] = kv.Value;
-        _bucket.Clear();
-
-        countersInto.Clear();
-        foreach (KeyValuePair<string, double> kv in _counters)
-            countersInto[kv.Key] = kv.Value;
-        _counters.Clear();
-
-        // Per-scope allocation (bytes), for the GC-stutter attribution. Always drained so it can't accumulate
-        // across frames; copied out only when the caller asked for it (FrameProfiler's 2-arg call ignores it).
-        if (allocInto is not null)
+        // Drain atomically vs. the scope accumulators: under S5 sv_threaded the worker thread may be writing a
+        // sim scope while the main-thread collector drains here. Uncontended (negligible) single-threaded.
+        lock (_gate)
         {
-            allocInto.Clear();
-            foreach (KeyValuePair<string, double> kv in _alloc)
-                allocInto[kv.Key] = kv.Value;
+            scopesInto.Clear();
+            foreach (KeyValuePair<string, double> kv in _bucket)
+                scopesInto[kv.Key] = kv.Value;
+            _bucket.Clear();
+
+            countersInto.Clear();
+            foreach (KeyValuePair<string, double> kv in _counters)
+                countersInto[kv.Key] = kv.Value;
+            _counters.Clear();
+
+            // Per-scope allocation (bytes), for the GC-stutter attribution. Always drained so it can't accumulate
+            // across frames; copied out only when the caller asked for it (FrameProfiler's 2-arg call ignores it).
+            if (allocInto is not null)
+            {
+                allocInto.Clear();
+                foreach (KeyValuePair<string, double> kv in _alloc)
+                    allocInto[kv.Key] = kv.Value;
+            }
+            _alloc.Clear();
         }
-        _alloc.Clear();
     }
 }
