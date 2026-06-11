@@ -146,6 +146,19 @@ public partial class EffectSystem : Node3D
     }
 
     /// <summary>
+    /// Wire the map's RENDER geometry for decal splats (DP's R_DecalSystem clips marks against the visible
+    /// surface triangles, not the collision brushes — the difference shows on bevelled trim and patches,
+    /// where a brush-clipped mark stops at the wrong edge). Call after map load with the loaded BSP.
+    /// </summary>
+    public void SetDecalGeometry(XonoticGodot.Formats.Bsp.BspData bsp)
+    {
+        if (Splats is null || bsp is null)
+            return;
+        try { Splats.SetGeometry(bsp); }
+        catch (Exception ex) { GD.PushWarning($"[DecalSplats] SetGeometry failed: {ex.Message}"); }
+    }
+
+    /// <summary>
     /// Optional host-supplied model loader (e.g. <c>AssetLoader.LoadModel</c>) shared with the casing and
     /// gib systems so they can render the real brass/limb meshes from the mounted content. When unset they
     /// fall back to generated placeholder meshes. Setting this late (after _Ready) is fine.

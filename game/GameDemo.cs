@@ -76,6 +76,7 @@ public partial class GameDemo : Node3D
     public XonoticGodot.Engine.Simulation.CvarService? SharedCvars { get; set; }
 
     private CollisionWorld _world = null!;
+    private BspData? _bspForDecals;   // render geometry for decal splats (wired in SetupClient)
     private PlayerController _player = null!;
 
     // --- asset pipeline (VFS + unified loader) ---
@@ -117,6 +118,7 @@ public partial class GameDemo : Node3D
         MountAssets();
 
         BspData? bsp = TryLoadMap();
+        _bspForDecals = bsp;   // splat decal geometry (SetupClient wires it deferred)
 
         // The shared material/texture resolver the map + model builders use. Always non-null once the VFS
         // mounted; null only if mounting failed entirely (then we run on the bare test floor).
@@ -524,13 +526,17 @@ public partial class GameDemo : Node3D
     private void SetupClient()
     {
         _client = new ClientWorld { Name = "ClientWorld" };
-        // Decal splats conform to the real brush faces (DP R_DecalSystem) — wire the collision world the
-        // map build produced. Deferred one frame: Effects (and its DecalSplats child) is created in
-        // ClientWorld._Ready, which runs when _client enters the tree below.
+        // Decal splats conform to the real surfaces (DP R_DecalSystem) — wire the collision world + the
+        // BSP render geometry the map build produced. Deferred one frame: Effects (and its DecalSplats
+        // child) is created in ClientWorld._Ready, which runs when _client enters the tree below.
+        XonoticGodot.Formats.Bsp.BspData? decalBsp = _bspForDecals;
         Callable.From(() =>
         {
-            if (GodotObject.IsInstanceValid(_client) && _client.Effects is not null)
-                _client.Effects.SetCollisionWorld(_world);
+            if (!GodotObject.IsInstanceValid(_client) || _client.Effects is null)
+                return;
+            _client.Effects.SetCollisionWorld(_world);
+            if (decalBsp is not null)
+                _client.Effects.SetDecalGeometry(decalBsp);
         }).CallDeferred();
         // Resolve positional/loop sounds straight from the mounted content VFS (sound/*.ogg|wav) instead of
         // res://; the renderers keep the res:// convention as a fallback when no loader/sample is present.

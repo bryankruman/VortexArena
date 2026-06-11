@@ -771,6 +771,9 @@ public sealed partial class NetGame : Node3D
         {
             CollisionWorld clientCollision = MapLoader.BuildCollision(_bsp, _assets.Assets);
             _render.Effects.SetCollisionWorld(clientCollision);
+            // Splats clip against the RENDER triangles (DP's actual target) — marks roll over visible
+            // trim/patch edges the collision brushes don't model.
+            _render.Effects.SetDecalGeometry(_bsp);
 
             // Chunked-SDF collision field for modern particles (planning/particles-dual-system.md §A). Built
             // only in a modern-collision mode (cl_particles_modern 1/2) — mode 0 (the faithful default) needs

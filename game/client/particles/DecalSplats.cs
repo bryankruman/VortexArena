@@ -57,8 +57,130 @@ public sealed partial class DecalSplats : Node3D
     [Export] public float IntensityMultiplier { get; set; } = 2f;
 
     /// <summary>The static collision world supplying brush faces to conform to (wired at map load via
-    /// <see cref="EffectSystem.SetCollisionWorld"/>). Null → flat-quad fallback.</summary>
+    /// <see cref="EffectSystem.SetCollisionWorld"/>). Secondary geometry source — the render-triangle soup
+    /// from <see cref="SetGeometry"/> is preferred (DP splats the RENDER surfaces; collision brushes diverge
+    /// on bevelled trim/patches/detail and the mark then stops at the wrong edge).</summary>
     public CollisionWorld? World { get; set; }
+
+    // ---------------------------------------------------------------------------------------------
+    //  Render-triangle soup — DP's actual splat target (R_DecalSystem_SplatEntities iterates the model's
+    //  render surfaces). Built once per map from the BSP's worldspawn faces (incl. tessellated patches),
+    //  indexed by a uniform grid for the per-splat AABB query.
+    // ---------------------------------------------------------------------------------------------
+
+    private const float GridCell = 256f;          // qu per grid cell
+    private float[]? _tris;                       // 9 floats per triangle (Quake space)
+    private readonly Dictionary<long, List<int>> _grid = new();
+    private int[] _triStamp = Array.Empty<int>(); // per-tri visited stamp (dedup across cells)
+    private int _stamp;
+
+    /// <summary>
+    /// Build the splat geometry from the map's RENDER surfaces (worldspawn model 0: flat/mesh faces +
+    /// tessellated bezier patches) — the same triangles DP's decal system clips against. Faces whose
+    /// texture is NOMARKS / sky / nodraw never take marks. Call once at map load.
+    /// </summary>
+    public void SetGeometry(BspData bsp)
+    {
+        var tris = new List<float>(65536);
+        if (bsp.Models.Length > 0)
+        {
+            BspModel world = bsp.Models[0];
+            int faceEnd = world.FirstFace + world.FaceCount;
+            for (int fi = world.FirstFace; fi < faceEnd && fi < bsp.Faces.Length; fi++)
+            {
+                BspFace face = bsp.Faces[fi];
+                if (SkipMarks(bsp, face.TextureIndex))
+                    continue;
+
+                if (face.Type is BspFaceType.Flat or BspFaceType.Mesh)
+                {
+                    int end = face.FirstIndex + face.IndexCount;
+                    for (int e = face.FirstIndex; e + 2 < end + 0 && e + 2 < bsp.Triangles.Length; e += 3)
+                    {
+                        AddTri(tris, bsp, face, e);
+                    }
+                }
+                else if (face.Type == BspFaceType.Patch)
+                {
+                    BezierPatch.Tessellation? tess = BezierPatch.Tessellate(face, bsp.Vertices);
+                    if (tess is null)
+                        continue;
+                    for (int i = 0; i + 2 < tess.Indices.Count; i += 3)
+                    {
+                        AddVec(tris, tess.Vertices[tess.Indices[i]].Position);
+                        AddVec(tris, tess.Vertices[tess.Indices[i + 1]].Position);
+                        AddVec(tris, tess.Vertices[tess.Indices[i + 2]].Position);
+                    }
+                }
+            }
+        }
+
+        _tris = tris.ToArray();
+        int triCount = _tris.Length / 9;
+        _triStamp = new int[triCount];
+        _stamp = 0;
+        _grid.Clear();
+        for (int t = 0; t < triCount; t++)
+        {
+            int o = t * 9;
+            float minX = MathF.Min(_tris[o], MathF.Min(_tris[o + 3], _tris[o + 6]));
+            float maxX = MathF.Max(_tris[o], MathF.Max(_tris[o + 3], _tris[o + 6]));
+            float minY = MathF.Min(_tris[o + 1], MathF.Min(_tris[o + 4], _tris[o + 7]));
+            float maxY = MathF.Max(_tris[o + 1], MathF.Max(_tris[o + 4], _tris[o + 7]));
+            float minZ = MathF.Min(_tris[o + 2], MathF.Min(_tris[o + 5], _tris[o + 8]));
+            float maxZ = MathF.Max(_tris[o + 2], MathF.Max(_tris[o + 5], _tris[o + 8]));
+            ForEachCell(minX, minY, minZ, maxX, maxY, maxZ, key =>
+            {
+                if (!_grid.TryGetValue(key, out List<int>? list))
+                    _grid[key] = list = new List<int>(8);
+                list.Add(t);
+            });
+        }
+        GD.Print($"[DecalSplats] geometry: {triCount} render triangles, {_grid.Count} grid cells");
+    }
+
+    private static void AddTri(List<float> tris, BspData bsp, BspFace face, int e)
+    {
+        for (int k = 0; k < 3; k++)
+        {
+            int idx = e + k;
+            int local = idx >= 0 && idx < bsp.Triangles.Length ? bsp.Triangles[idx] : 0;
+            int src = face.FirstVertex + local;
+            if (src < 0 || src >= bsp.Vertices.Length) src = 0;
+            AddVec(tris, bsp.Vertices[src].Position);
+        }
+    }
+
+    private static void AddVec(List<float> tris, System.Numerics.Vector3 v)
+    {
+        tris.Add(v.X);
+        tris.Add(v.Y);
+        tris.Add(v.Z);
+    }
+
+    /// <summary>Faces that never take decals: NOMARKS, sky, nodraw (DP filters hit surfaceflags).</summary>
+    private static bool SkipMarks(BspData bsp, int textureIndex)
+    {
+        if (textureIndex < 0 || textureIndex >= bsp.Textures.Length)
+            return false;
+        int sf = bsp.Textures[textureIndex].SurfaceFlags;
+        return (sf & (Q3SurfaceFlags.NoMarks | Q3SurfaceFlags.Sky | Q3SurfaceFlags.NoDraw)) != 0;
+    }
+
+    private static void ForEachCell(float minX, float minY, float minZ, float maxX, float maxY, float maxZ,
+        Action<long> visit)
+    {
+        int x0 = (int)MathF.Floor(minX / GridCell), x1 = (int)MathF.Floor(maxX / GridCell);
+        int y0 = (int)MathF.Floor(minY / GridCell), y1 = (int)MathF.Floor(maxY / GridCell);
+        int z0 = (int)MathF.Floor(minZ / GridCell), z1 = (int)MathF.Floor(maxZ / GridCell);
+        for (int x = x0; x <= x1; x++)
+            for (int y = y0; y <= y1; y++)
+                for (int z = z0; z <= z1; z++)
+                    visit(CellKey(x, y, z));
+    }
+
+    private static long CellKey(int x, int y, int z)
+        => ((long)(x & 0x1FFFFF) << 42) | ((long)(y & 0x1FFFFF) << 21) | (long)(z & 0x1FFFFF);
 
     /// <summary>The particlefont atlas — splat textures are its raw cells (DP samples the same cells; the
     /// black background contributes zero removal under the multiplicative blend, so no alpha is needed).</summary>
@@ -110,11 +232,13 @@ public sealed partial class DecalSplats : Node3D
         // boundary (no hard cutoff lines) and keeps far geometry inside the box from taking full marks.
         var ctx = new SplatContext(org, n, right, up, halfSize, removal, alpha * IntensityMultiplier);
 
-        if (World is not null)
+        // Preferred geometry: the map's RENDER triangles (what DP clips against). Brush faces are the
+        // secondary source (collision geometry diverges on trim/patches/detail); a flat quad is the last
+        // resort (no world wired, or a hit on an entity).
+        if (_tris is not null && _tris.Length > 0)
+            ClipSoupTriangles(in ctx, verts, uvs, cols);
+        if (verts.Count == 0 && World is not null)
             ClipBrushFaces(in ctx, verts, uvs, cols);
-
-        // Fallback (no collision world, or the box clipped to nothing — e.g. a hit on an entity or a
-        // displaced patch): one flat quad perpendicular to the axis, DP's pre-newsystem look.
         if (verts.Count == 0)
             EmitQuad(in ctx, verts, uvs, cols);
 
@@ -178,6 +302,49 @@ public sealed partial class DecalSplats : Node3D
     // ---------------------------------------------------------------------------------------------
     //  Geometry — brush-face reconstruction + box clip (DP R_DecalSystem_SplatTriangle equivalent).
     // ---------------------------------------------------------------------------------------------
+
+    /// <summary>Clip the RENDER triangles overlapping the splat box (DP R_DecalSystem_SplatTriangle,
+    /// gl_rmain.c:9240-9300: clip each surface triangle by the 6 box planes, emit what survives). No
+    /// edge-on cull — DP keeps every surviving sliver; the axial falloff fades them naturally.</summary>
+    private void ClipSoupTriangles(in SplatContext ctx, List<Vector3> verts, List<Vector2> uvs, List<Color> cols)
+    {
+        float h = ctx.HalfSize;
+        NVec3 org = ctx.Org;
+        _stamp++;
+        int stamp = _stamp;
+        float[] tris = _tris!;
+
+        int x0 = (int)MathF.Floor((org.X - h) / GridCell), x1 = (int)MathF.Floor((org.X + h) / GridCell);
+        int y0 = (int)MathF.Floor((org.Y - h) / GridCell), y1 = (int)MathF.Floor((org.Y + h) / GridCell);
+        int z0 = (int)MathF.Floor((org.Z - h) / GridCell), z1 = (int)MathF.Floor((org.Z + h) / GridCell);
+        for (int x = x0; x <= x1; x++)
+            for (int y = y0; y <= y1; y++)
+                for (int z = z0; z <= z1; z++)
+                {
+                    if (!_grid.TryGetValue(CellKey(x, y, z), out List<int>? cell))
+                        continue;
+                    foreach (int t in cell)
+                    {
+                        if (_triStamp[t] == stamp)
+                            continue;       // already processed via another overlapped cell
+                        _triStamp[t] = stamp;
+
+                        int o = t * 9;
+                        _polyA.Clear();
+                        _polyA.Add(new NVec3(tris[o], tris[o + 1], tris[o + 2]));
+                        _polyA.Add(new NVec3(tris[o + 3], tris[o + 4], tris[o + 5]));
+                        _polyA.Add(new NVec3(tris[o + 6], tris[o + 7], tris[o + 8]));
+                        if (!ClipPolyAgainstBox(org, ctx.N, ctx.Right, ctx.Up, h))
+                            continue;
+                        for (int i = 2; i < _polyA.Count; i++)
+                        {
+                            EmitVertex(_polyA[0], in ctx, verts, uvs, cols);
+                            EmitVertex(_polyA[i - 1], in ctx, verts, uvs, cols);
+                            EmitVertex(_polyA[i], in ctx, verts, uvs, cols);
+                        }
+                    }
+                }
+    }
 
     private void ClipBrushFaces(in SplatContext ctx, List<Vector3> verts, List<Vector2> uvs, List<Color> cols)
     {
@@ -338,7 +505,9 @@ public sealed partial class DecalSplats : Node3D
         // without the atlas.
         Texture2D? cell = Font?.Cell(texnum);
 
-        var mat = new ShaderMaterial { Shader = _shader ??= SplatShader(), RenderPriority = 2 };
+        // Draw BEFORE the particle batches (priority 0/1): DP renders decals during the per-surface pass,
+        // ahead of the sorted transparent particles — smoke and fire composite OVER the marks, never under.
+        var mat = new ShaderMaterial { Shader = _shader ??= SplatShader(), RenderPriority = -1 };
         mat.SetShaderParameter("fade", 1f);
         if (cell is not null)
             mat.SetShaderParameter("splat_tex", cell);
