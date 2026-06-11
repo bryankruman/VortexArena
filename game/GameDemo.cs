@@ -226,6 +226,11 @@ public partial class GameDemo : Node3D
             int fi = System.Array.IndexOf(cl, "--fx-demo");
             if (fi >= 0)
                 _fxDemoEffect = (fi + 1 < cl.Length && !cl[fi + 1].StartsWith("--")) ? cl[fi + 1] : "rocket_explode";
+            // `--fx-mode <0|1|2>` forces the particle renderer mode for the demo (0=original/faithful,
+            // 1=mixed, 2=modern) so a --screenshot A/B can compare backends on the same burst (planning §F.5).
+            int fm = System.Array.IndexOf(cl, "--fx-mode");
+            if (fm >= 0 && fm + 1 < cl.Length && int.TryParse(cl[fm + 1], out int fmv))
+                _fxMode = System.Math.Clamp(fmv, 0, 2);
             // `--proj-demo` repeatedly fires the equipped demo weapon's projectile straight ahead so a windowed
             // --screenshot captures a flying rocket/grenade with its model + trail (orientation/trail parity check).
             _projDemo = System.Array.IndexOf(cl, "--proj-demo") >= 0;
@@ -763,6 +768,8 @@ public partial class GameDemo : Node3D
     // --- dev visual fx preview (--fx-demo) ---------------------------------------------------------------
     private string? _fxDemoEffect;
     private float _fxDemoTimer;
+    private int? _fxMode;          // --fx-mode forced cl_particles_modern for the demo
+    private bool _fxModeApplied;
 
     /// <summary>
     /// Repeatedly fire the configured effect on the floor a short way in front of the spawn so a windowed
@@ -771,6 +778,16 @@ public partial class GameDemo : Node3D
     /// </summary>
     private void DriveFxDemo(float delta)
     {
+        // Apply the forced renderer mode once, now that the engine services (Api.Cvars) are live — the router
+        // reads cl_particles_modern per spawn, so this redirects the demo bursts to the chosen backend.
+        if (_fxMode is { } mode && !_fxModeApplied && XonoticGodot.Common.Services.Api.Services is not null)
+        {
+            _fxModeApplied = true;
+            XonoticGodot.Common.Services.Api.Cvars.Set(
+                XonoticGodot.Engine.Particles.ParticleCvars.Modern, mode.ToString());
+            GD.Print($"[Particles] --fx-mode {mode} -> cl_particles_modern={mode}");
+        }
+
         _fxDemoTimer -= delta;
         if (_fxDemoTimer > 0f)
             return;

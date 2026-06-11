@@ -5,6 +5,8 @@ using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Gameplay;
 using XonoticGodot.Common.Services;
 using XonoticGodot.Engine.Collision;
+using XonoticGodot.Engine.Particles;
+using XonoticGodot.Game.Client.Particles;
 using NVec3 = System.Numerics.Vector3;
 
 namespace XonoticGodot.Game.Client;
@@ -107,6 +109,28 @@ public partial class EffectSystem : Node3D
     /// <summary>Real model-gib bursts (player death / robot chunks). Created on first add to the tree.</summary>
     public ModelGibs Gibs { get; private set; } = null!;
 
+    // =================================================================================================
+    //  Dual particle system (planning/particles-dual-system.md). The router resolves each effectinfo
+    //  spawn to the faithful CPU backend (mode 0 default) or the modern GPU backend (mode 2), per the
+    //  cl_particles_modern cvar + per-effect authored style + SDF coverage. Created as children in _Ready;
+    //  Font/Decals/style-registry are wired in EnsureInfoLoaded once the atlas + VFS loaders are ready.
+    // =================================================================================================
+
+    /// <summary>The faithful CPU particle backend (perfect-parity MultiMesh path; the mode-0 default).</summary>
+    public FaithfulParticleBackend FaithfulParticles { get; private set; } = null!;
+
+    /// <summary>The modern GPU particle backend (custom shader_type particles + SDF collision; mode 2).</summary>
+    public ModernParticleBackend ModernParticles { get; private set; } = null!;
+
+    /// <summary>The chunked-SDF collision service (built at map load via <see cref="BuildSdfForMap"/>).</summary>
+    public SdfCollisionService Sdf { get; private set; } = null!;
+
+    /// <summary>Per-effect authored style/preset overlay (effectinfo_xg.txt). Drives mode-1 routing.</summary>
+    public EffectStyleRegistry Styles { get; } = new();
+
+    /// <summary>Routes effectinfo spawns to the faithful/modern backend (§D.2). Null until _Ready.</summary>
+    public ParticleRouter Router { get; private set; } = null!;
+
     /// <summary>
     /// Optional host-supplied model loader (e.g. <c>AssetLoader.LoadModel</c>) shared with the casing and
     /// gib systems so they can render the real brass/limb meshes from the mounted content. When unset they
@@ -133,6 +157,16 @@ public partial class EffectSystem : Node3D
         AddChild(Casings);
         Gibs = new ModelGibs { Name = "Gibs", ModelLoader = _modelLoader };
         AddChild(Gibs);
+
+        // Dual particle backends + SDF service live as children (shared transform/lifetime). Font/Decals and
+        // the style overlay are wired lazily in EnsureInfoLoaded (after the atlas + VFS loaders are present).
+        FaithfulParticles = new FaithfulParticleBackend { Name = "FaithfulParticles" };
+        AddChild(FaithfulParticles);
+        ModernParticles = new ModernParticleBackend { Name = "ModernParticles" };
+        AddChild(ModernParticles);
+        Sdf = new SdfCollisionService { Name = "SdfCollision" };
+        AddChild(Sdf);
+        Router = new ParticleRouter(FaithfulParticles, ModernParticles, Styles, Sdf);
     }
 
     /// <summary>
@@ -227,8 +261,42 @@ public partial class EffectSystem : Node3D
         try { Font = ParticleFont.Load(TextureLoader, VfsTextLoader); }
         catch { Font = null; }
 
+        // Wire the dual particle backends now that the atlas + decal subsystem exist. Idempotent (shares this
+        // method's _infoLoadAttempted guard). The per-effect style overlay (effectinfo_xg.txt) is parsed from
+        // the same VFS text loader; absent => every effect resolves to ParticleStyle.Auto (faithful by default).
+        if (FaithfulParticles is not null)
+        {
+            FaithfulParticles.SetFont(Font);
+            FaithfulParticles.SetDecals(Decals);
+        }
+        if (ModernParticles is not null)
+            ModernParticles.Font = Font;
+        try { Styles.Load(VfsTextLoader); }
+        catch { /* no overlay => Auto everywhere */ }
+
+        int mode = Api.Services is not null ? (int)Api.Cvars.GetFloat(ParticleCvars.Modern) : 0;
+        string modeName = mode switch { 0 => "original", 2 => "modern", _ => "mixed" };
         GD.Print($"[EffectSystem] effectinfo: {Info.Count} effects, particlefont atlas: " +
-                 (Font?.Loaded == true ? "loaded" : "MISSING (solid-quad fallback)"));
+                 (Font?.Loaded == true ? "loaded" : "MISSING (solid-quad fallback)") +
+                 $", style overlay: {Styles.Count} effects");
+        // Headless regression / mode-matrix guard (planning §F.2): the active particle backend per cl_particles_modern.
+        GD.Print($"[Particles] backend={modeName} (cl_particles_modern={mode})");
+    }
+
+    /// <summary>
+    /// Build the chunked-SDF collision field for the loaded map (planning §A). The host (NetGame/GameDemo)
+    /// calls this once after <c>MapLoader.BuildCollision</c> returns — it has the raw BSP bytes (for the cache
+    /// hash), the static <see cref="CollisionWorld"/>, and the mounted VFS. Cheap when a cache/shipped .psdf
+    /// exists; otherwise generates asynchronously on a worker (cl_particles_sdf_generate gates generation).
+    /// Only meaningful for modern-collision (cl_particles_modern 1/2); harmless in mode 0 (default).
+    /// </summary>
+    public void BuildSdfForMap(string mapName, byte[] bspBytes, CollisionWorld collision,
+        XonoticGodot.Formats.Vfs.VirtualFileSystem vfs)
+    {
+        if (Sdf is null || collision is null || bspBytes is null)
+            return;
+        try { Sdf.BuildForMap(mapName, bspBytes, collision, vfs); }
+        catch (Exception ex) { GD.PushWarning($"[ParticleSDF] BuildForMap failed: {ex.Message}"); }
     }
 
     // =================================================================================================
@@ -275,6 +343,13 @@ public partial class EffectSystem : Node3D
         IReadOnlyList<EffectInfoEmitter>? blocks = LookupInfo(effectName, effect);
         if (blocks is not null && blocks.Count > 0)
         {
+            // Dual particle system (§D.2): route to the faithful (mode 0 default) or modern (mode 2) backend
+            // per cl_particles_modern + the effect's authored style. The backend owns the spawn (the faithful
+            // pool / modern emitter is persistent, not a per-call node), so a handled route returns null. Only
+            // an unwired backend falls through to the legacy GpuParticles3D path below.
+            if (Router is not null && Router.Route(effectName, blocks, origin, velocity, count, isTrail, color))
+                return null;
+
             Node3D? built = BuildFromInfo(blocks, origin, velocity, count, color, isTrail);
             if (built is not null)
                 return built;

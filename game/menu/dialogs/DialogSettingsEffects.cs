@@ -189,6 +189,21 @@ public partial class DialogSettingsEffects : SettingsTab
         // --- Particles --------------------------------------------------------------------------------------
         box.AddChild(Widgets.CheckBox("cl_particles", "Particles"));
 
+        // Dual particle system (planning/particles-dual-system.md §D.3): the renderer-mode dropdown
+        // (Original = faithful CPU parity backend, Mixed = per-effect, Modern = GPU custom-shader backend)
+        // and the SDF collision-field generation toggle. Both bind the engine cvars the router reads.
+        var particleMode = Widgets.TextSlider("cl_particles_modern",
+                "Particle renderer: Original = faithful Darkplaces look; Modern = GPU shader with soft particles & collision; Mixed = per-effect")
+            .Add("Original", 0).Add("Mixed", 1).Add("Modern", 2);
+        var particleModeRow = Ui.Row("Particles renderer:", particleMode);
+        box.AddChild(particleModeRow);
+        Dependent.Bind(particleModeRow, "cl_particles", 1, 1);
+
+        var sdfGen = Widgets.CheckBox("cl_particles_sdf_generate", "Generate collision fields",
+            "Generate signed-distance collision fields at map load so modern particles bounce off and stain world geometry");
+        box.AddChild(sdfGen);
+        Dependent.Bind(sdfGen, "cl_particles", 1, 1);
+
         // QC makeMulti(e, "cl_spawn_event_particles"): also sets that cvar — primary bound here.
         var spawnFx = Widgets.CheckBox("cl_spawn_point_particles", "Spawnpoint effects",
             "Particle effects at all spawn points and whenever a player spawns");

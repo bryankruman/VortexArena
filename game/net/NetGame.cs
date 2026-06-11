@@ -763,6 +763,19 @@ public sealed partial class NetGame : Node3D
             // Pass the loaded map name so external lm_NNNN lightmaps resolve (stock maps have no internal lump).
             AddChild(MapLoader.BuildMap(_bsp, _assets.Assets, _map, _droppedSubmodels));
 
+        // Chunked-SDF collision field for modern particles (planning/particles-dual-system.md §A). Built only
+        // when the renderer is in a modern-collision mode (cl_particles_modern 1/2) — mode 0 (the faithful
+        // default) needs no SDF, so the default load pays nothing. Generation is further gated/async inside the
+        // service (cl_particles_sdf_generate); a shipped/cached maps/<map>.psdf is just a fast file read.
+        if (_bsp is not null && _vfs is not null && _assets?.Assets is not null &&
+            XonoticGodot.Game.Menu.MenuState.Cvars.GetFloat(XonoticGodot.Engine.Particles.ParticleCvars.Modern) != 0f)
+        {
+            string bspVpath = $"maps/{_map}.bsp";
+            byte[]? bspBytes = _vfs.Exists(bspVpath) ? _vfs.ReadBytes(bspVpath) : null;
+            if (bspBytes is not null)
+                _render.Effects.BuildSdfForMap(_map, bspBytes, MapLoader.BuildCollision(_bsp, _assets.Assets), _vfs);
+        }
+
         if (_client is not null)
         {
             _entityView = new ClientEntityView(_client, _render);

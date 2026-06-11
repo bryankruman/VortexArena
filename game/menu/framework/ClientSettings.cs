@@ -1,5 +1,6 @@
 using Godot;
 using XonoticGodot.Common.Services;
+using XonoticGodot.Engine.Particles;
 using XonoticGodot.Engine.Simulation;
 
 namespace XonoticGodot.Game.Menu;
@@ -37,6 +38,21 @@ public static class ClientSettings
         RegisterTintDefaults(MenuState.Cvars);
         RegisterStairSmoothDefaults(MenuState.Cvars);
         RegisterEngineClientDefaults(MenuState.Cvars);
+        RegisterParticleDefaults(MenuState.Cvars);
+    }
+
+    /// <summary>
+    /// The dual particle system cvars (planning/particles-dual-system.md §overview): the renderer-mode control
+    /// (<c>cl_particles_modern</c> 0/1/2, <c>cl_particles_sdf_*</c>) plus the stock Darkplaces particle/decal
+    /// mirrors the faithful backend reads (<c>cl_particles</c>, <c>cl_particles_quality</c>, the per-type gates,
+    /// <c>cl_decals_*</c>, <c>r_drawparticles_*</c>). Names + defaults are centralised in <see cref="ParticleCvars"/>;
+    /// registering here makes them visible/bindable (the Effects dialog binds the renderer dropdown + SDF
+    /// checkbox) and live before the first spawn. Idempotent — keeps any value a cfg already set.
+    /// </summary>
+    private static void RegisterParticleDefaults(CvarService c)
+    {
+        foreach ((string name, string def, bool archived) in ParticleCvars.Defaults)
+            c.Register(name, def, archived ? CvarFlags.Save : CvarFlags.None);
     }
 
     /// <summary>
