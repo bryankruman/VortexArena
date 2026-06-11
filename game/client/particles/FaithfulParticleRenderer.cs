@@ -512,8 +512,15 @@ public sealed partial class FaithfulParticleRenderer : Node3D
         buf[o + 16] = slot; buf[o + 17] = angle; buf[o + 18] = sparkFlag; buf[o + 19] = 0f;
     }
 
-    private static float ReadCvar(string name, float fallback)
-        => Api.Services is null ? fallback : Api.Cvars.GetFloat(name);
+    /// <summary>The CLIENT cvar store for cl_particles_size/_alpha/draw-distance (set by the backend to
+    /// MenuState.Cvars). Null falls back to Api.Cvars.</summary>
+    public ICvarService? Cvars { get; set; }
+
+    private float ReadCvar(string name, float fallback)
+    {
+        ICvarService? c = Cvars ?? (Api.Services is not null ? Api.Cvars : null);
+        return c is null ? fallback : c.GetFloat(name);
+    }
 
     private static NVec3 Normalize(NVec3 v)
     {

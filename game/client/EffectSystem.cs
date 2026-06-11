@@ -160,13 +160,21 @@ public partial class EffectSystem : Node3D
 
         // Dual particle backends + SDF service live as children (shared transform/lifetime). Font/Decals and
         // the style overlay are wired lazily in EnsureInfoLoaded (after the atlas + VFS loaders are present).
+        //
+        // CLIENT CVAR STORE: the cl_particles* gates/quality/mode are CLIENT cvars the console/menu write into
+        // MenuState.Cvars. The faithful sim, renderer, router and SDF service MUST read them from there — NOT
+        // the ambient Api.Cvars, which on a listen server is the SERVER store (it lacks the client particle
+        // cvars, so cl_particles reads 0 and every spawn is gated off → nothing renders). See SetCvars.
+        ICvarService clientCvars = XonoticGodot.Game.Menu.MenuState.Cvars;
+
         FaithfulParticles = new FaithfulParticleBackend { Name = "FaithfulParticles" };
         AddChild(FaithfulParticles);
+        FaithfulParticles.SetCvars(clientCvars);
         ModernParticles = new ModernParticleBackend { Name = "ModernParticles" };
         AddChild(ModernParticles);
-        Sdf = new SdfCollisionService { Name = "SdfCollision" };
+        Sdf = new SdfCollisionService { Name = "SdfCollision", Cvars = clientCvars };
         AddChild(Sdf);
-        Router = new ParticleRouter(FaithfulParticles, ModernParticles, Styles, Sdf);
+        Router = new ParticleRouter(FaithfulParticles, ModernParticles, Styles, Sdf) { Cvars = clientCvars };
     }
 
     /// <summary>
@@ -274,7 +282,7 @@ public partial class EffectSystem : Node3D
         try { Styles.Load(VfsTextLoader); }
         catch { /* no overlay => Auto everywhere */ }
 
-        int mode = Api.Services is not null ? (int)Api.Cvars.GetFloat(ParticleCvars.Modern) : 0;
+        int mode = (int)XonoticGodot.Game.Menu.MenuState.Cvars.GetFloat(ParticleCvars.Modern);
         string modeName = mode switch { 0 => "original", 2 => "modern", _ => "mixed" };
         GD.Print($"[EffectSystem] effectinfo: {Info.Count} effects, particlefont atlas: " +
                  (Font?.Loaded == true ? "loaded" : "MISSING (solid-quad fallback)") +

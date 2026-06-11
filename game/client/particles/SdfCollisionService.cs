@@ -113,6 +113,11 @@ public sealed partial class SdfCollisionService : Node3D
         Name = "SdfCollisionService";
     }
 
+    /// <summary>The CLIENT cvar store (MenuState.Cvars) for the cl_particles_sdf_* cvars; null falls back to
+    /// Api.Cvars. MUST be the client store on a listen server (Api.Cvars there is the server store).</summary>
+    public ICvarService? Cvars { get; set; }
+    private float Cv(string name) => (Cvars ?? Api.Cvars).GetFloat(name);
+
     // =============================================================================================
     //  Public API
     // =============================================================================================
@@ -165,7 +170,7 @@ public sealed partial class SdfCollisionService : Node3D
         // (3) Generate, if allowed. The cache miss above already covers "stale" (a bspHash/paramsHash
         //     mismatch fails validation -> falls through to here), so regeneration-on-stale is implicit and
         //     happens exactly once per BuildForMap call.
-        if (Api.Cvars.GetFloat(ParticleCvars.SdfGenerate) == 0f)
+        if (Cv(ParticleCvars.SdfGenerate) == 0f)
         {
             // Generation disabled and nothing on disk: no colliders. Modern particles run collisionless
             // (cl_particles_modern_nosdf 1) or reroute to faithful (0) — HasCoverage() returns false.
@@ -481,7 +486,7 @@ public sealed partial class SdfCollisionService : Node3D
 
         AddChild(node);
 
-        if (Api.Cvars.GetFloat(ParticleCvars.SdfDebug) != 0f)
+        if (Cv(ParticleCvars.SdfDebug) != 0f)
             record.DebugBox = AddDebugBox(cellCenterQ, chunkSize);
 
         lock (_chunksLock)
@@ -634,8 +639,8 @@ public sealed partial class SdfCollisionService : Node3D
     private SdfGenParams ResolveParams()
     {
         var p = new SdfGenParams();
-        float chunk = Api.Cvars.GetFloat(ParticleCvars.SdfChunk);
-        float voxel = Api.Cvars.GetFloat(ParticleCvars.SdfVoxel);
+        float chunk = Cv(ParticleCvars.SdfChunk);
+        float voxel = Cv(ParticleCvars.SdfVoxel);
         if (chunk > 0f)
             p.ChunkSize = chunk;
         if (voxel > 0f)

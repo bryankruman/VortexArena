@@ -95,9 +95,16 @@ public sealed class ParticleSim
     /// <summary>Renderer hook for stains/decals raised on surface impact (and immediate blood stains).</summary>
     public Action<StainEvent>? OnStain;
 
-    // Whether cl_particles_collisions is on (read once per Update; spawn reads cl_particles).
-    private static float Cv(string name) => Api.Cvars.GetFloat(name);
-    private static bool CvBool(string name) => Api.Cvars.GetFloat(name) != 0f;
+    /// <summary>
+    /// The CLIENT cvar store for the cl_particles* gates/quality. MUST be set to the client store
+    /// (game: MenuState.Cvars) — on a listen server the ambient <c>Api.Cvars</c> is the SERVER store, which
+    /// does NOT carry the client particle cvars, so cl_particles reads 0 and every spawn is gated off. Null
+    /// (tests) falls back to <c>Api.Cvars</c>, which tests populate via Api.Services.
+    /// </summary>
+    public ICvarService? Cvars { get; set; }
+
+    private float Cv(string name) => (Cvars ?? Api.Cvars).GetFloat(name);
+    private bool CvBool(string name) => (Cvars ?? Api.Cvars).GetFloat(name) != 0f;
 
     // -----------------------------------------------------------------------------------------------------
     //  Spawn — CL_NewParticlesFromEffectinfo (1569-1788), non-trail/non-beam path.
@@ -694,7 +701,7 @@ public sealed class ParticleSim
     }
 
     // sv_gravity default 800 (DP cl.movevars_gravity). Read from the cvar if present, else stock 800.
-    private static float SvGravity()
+    private float SvGravity()
     {
         float g = Cv("sv_gravity");
         return g != 0f ? g : 800f;

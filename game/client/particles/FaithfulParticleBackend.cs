@@ -96,6 +96,8 @@ public sealed partial class FaithfulParticleBackend : Node3D
     public override void _Ready()
     {
         _renderer = new FaithfulParticleRenderer { Name = "FaithfulRenderer" };
+        if (_pendingCvars is not null)
+            _renderer.Cvars = _pendingCvars;
         AddChild(_renderer);
         if (Font is not null)
             _renderer.BuildAtlas(Font);
@@ -122,6 +124,18 @@ public sealed partial class FaithfulParticleBackend : Node3D
 
     /// <summary>Set the projected-decal subsystem (orchestrator wiring) for stain forwarding.</summary>
     public void SetDecals(Decals? decals) => Decals = decals;
+
+    /// <summary>Set the CLIENT cvar store (MenuState.Cvars) the sim + renderer read cl_particles* from. MUST
+    /// be the client store — on a listen server Api.Cvars is the server store and cl_particles reads 0, which
+    /// gates every spawn off (no particles render at all). Propagates to the sim and the renderer.</summary>
+    public void SetCvars(XonoticGodot.Common.Services.ICvarService cvars)
+    {
+        _pendingCvars = cvars;
+        _sim.Cvars = cvars;
+        if (_renderer is not null)
+            _renderer.Cvars = cvars;
+    }
+    private XonoticGodot.Common.Services.ICvarService? _pendingCvars;
 
     // ---------------------------------------------------------------------------------------------
     //  Spawn API

@@ -34,6 +34,13 @@ public sealed class ParticleRouter
     public EffectStyleRegistry? Registry { get; set; }
     public SdfCollisionService? Sdf { get; set; }
 
+    /// <summary>The CLIENT cvar store for cl_particles_modern / _modern_nosdf (set by EffectSystem to
+    /// MenuState.Cvars). MUST be the client store: on a listen server Api.Cvars is the SERVER store, which
+    /// lacks these client cvars (cl_particles_modern reads 0, so the console could never switch modes).</summary>
+    public ICvarService? Cvars { get; set; }
+
+    private float Cv(string name) => (Cvars ?? Api.Cvars).GetFloat(name);
+
     public ParticleRouter(FaithfulParticleBackend? faithful, ModernParticleBackend? modern,
         EffectStyleRegistry? registry, SdfCollisionService? sdf)
     {
@@ -56,7 +63,7 @@ public sealed class ParticleRouter
         if (blocks is null || blocks.Count == 0)
             return false;
 
-        int mode = (int)Api.Cvars.GetFloat(ParticleCvars.Modern);
+        int mode = (int)Cv(ParticleCvars.Modern);
         EffectStyleEntry style = Registry?.GetStyle(effectName) ?? EffectStyleEntry.Default;
         ParticleBackendKind kind = ResolveKind(mode, style.Style);
 
@@ -66,7 +73,7 @@ public sealed class ParticleRouter
 
             // §A.6 nosdf gate: no covering chunk + nosdf 0 => reroute this spawn to the faithful backend.
             bool coverage = Sdf?.HasCoverage(origin) ?? false;
-            bool nosdf = Api.Cvars.GetFloat(ParticleCvars.ModernNoSdf) != 0f;
+            bool nosdf = Cv(ParticleCvars.ModernNoSdf) != 0f;
             if (!coverage && !nosdf && Faithful is not null)
             {
                 SpawnFaithful(effectName, blocks, style, preset, origin, velocity, count, isTrail, color);
