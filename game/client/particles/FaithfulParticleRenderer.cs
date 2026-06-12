@@ -111,10 +111,12 @@ public sealed partial class FaithfulParticleRenderer : Node3D
     }
 
     // ---------------------------------------------------------------------------------------------
-    //  Atlas build — pack ParticleFont cells into one texture + a UV-rect table the shader indexes.
-    //  ParticleFont exposes only Cell(index) (a cropped ImageTexture per index); it does NOT surface
-    //  the source atlas or rects. So we re-pack the cells we need into our own grid atlas and record
-    //  each cell's normalized rect. Done once per font (cheap: ~100 small blits).
+    //  Atlas build — point the shader at one texture + a UV-rect table it indexes by slot.
+    //  PREFERRED: ParticleFont surfaces its OWN source atlas (AtlasTexture) plus per-cell normalized rects
+    //  (TryGetCellUv), so we sample the font's atlas directly — one shared texture, no per-cell crops or
+    //  blits, exactly how DP keeps particlefont resident and samples cells by texcoord. We only build the
+    //  texnum->slot table. LEGACY FALLBACK (a font predating that API, AtlasTexture null): re-pack the cells
+    //  we need into our own grid atlas (~100 small blits) and record each cell's normalized rect.
     // ---------------------------------------------------------------------------------------------
 
     /// <summary>Build the render atlas + UV table from the loaded <paramref name="font"/>. Safe to call
@@ -126,6 +128,12 @@ public sealed partial class FaithfulParticleRenderer : Node3D
         _atlasTex = null;
         _cellRects = Array.Empty<Vector4>();
         if (font is null || !font.Loaded)
+            return;
+
+        // Preferred path: sample the font's own atlas directly via its new AtlasTexture/TryGetCellUv API,
+        // skipping the per-cell crops + blits below. Falls through to the re-pack only when that API yields
+        // nothing (older font, or no resolvable cells in our ranges).
+        if (TryBuildFromSharedAtlas(font))
             return;
 
         // Gather the cell images we can resolve, in a stable slot order.
@@ -189,6 +197,54 @@ public sealed partial class FaithfulParticleRenderer : Node3D
             ApplyAtlas(_invmod);
             _built = true;
         }
+    }
+
+    /// <summary>
+    /// Preferred atlas build: bind the shader to the font's OWN atlas (<see cref="ParticleFont.AtlasTexture"/>)
+    /// and fill the texnum->slot table from <see cref="ParticleFont.TryGetCellUv"/>, so the renderer samples
+    /// cells straight out of the shared atlas — no per-cell crop/blit re-pack. Returns false (caller falls back
+    /// to the re-pack) when the font predates this API or resolves no cells in <see cref="AtlasRanges"/>.
+    /// </summary>
+    private bool TryBuildFromSharedAtlas(ParticleFont font)
+    {
+        Texture2D? shared = font.AtlasTexture;
+        if (shared is null)
+            return false;
+        float aw = shared.GetWidth(), ah = shared.GetHeight();
+        if (aw <= 0f || ah <= 0f)
+            return false;
+
+        var rects = new List<Vector4>();
+        foreach ((int lo, int hi) in AtlasRanges)
+            for (int i = lo; i < hi; i++)
+            {
+                if (!font.TryGetCellUv(i, out Rect2 uv) || uv.Size.X <= 0f || uv.Size.Y <= 0f)
+                    continue;
+                // Inset the sampled rect by a half texel so bilinear never reaches a neighbouring cell: the
+                // shared atlas packs cells edge-to-edge (no 1px padding gutter the re-pack inserts). Same
+                // half-texel inset the re-pack path bakes into its rects.
+                float u0 = uv.Position.X + 0.5f / aw;
+                float v0 = uv.Position.Y + 0.5f / ah;
+                float du = uv.Size.X - 1f / aw;
+                float dv = uv.Size.Y - 1f / ah;
+                _slotOf[i] = rects.Count;
+                rects.Add(new Vector4(u0, v0, du, dv));
+            }
+        if (rects.Count == 0)
+            return false;
+
+        _atlasTex = shared;
+        _cellRects = rects.ToArray();
+
+        // Push into the batch materials if _Ready has built them; otherwise _Ready re-applies (same deferral
+        // the re-pack path relies on when BuildAtlas runs before this node enters the tree).
+        if (_premul is not null && _invmod is not null)
+        {
+            ApplyAtlas(_premul);
+            ApplyAtlas(_invmod);
+            _built = true;
+        }
+        return true;
     }
 
     private void ApplyAtlas(Batch b)
