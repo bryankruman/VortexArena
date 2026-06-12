@@ -1481,15 +1481,26 @@ public sealed partial class NetGame : Node3D
         return set;
     }
 
-    /// <summary>The muzzle-flash effect name for a weapon (QC m_muzzleeffect = EFFECT_&lt;WEP&gt;_MUZZLEFLASH),
-    /// derived from the weapon NetName to mirror the EffectsList registrations; defaults to the blaster flash
-    /// (an unregistered name simply yields no flash, never an error).</summary>
+    /// <summary>The muzzle-flash effect name for a weapon — the QC <c>m_muzzleeffect</c> attrib of each
+    /// weapon's .qh (e.g. electro.qh:29 EFFECT_ELECTRO_MUZZLEFLASH, devastator.qh:28 EFFECT_ROCKET_MUZZLEFLASH,
+    /// minelayer.qh:30 EFFECT_ROCKET_MUZZLEFLASH, vaporizer.qh:26 EFFECT_VORTEX_MUZZLEFLASH). Defaults to the
+    /// blaster flash (an unregistered name simply yields no flash, never an error).</summary>
     private static string MuzzleEffectFor(XonoticGodot.Common.Gameplay.Weapon w) => w.NetName switch
     {
-        "vortex" => "VORTEX_MUZZLEFLASH",
-        "devastator" => "ROCKET_MUZZLEFLASH",
+        "vortex" or "vaporizer" => "VORTEX_MUZZLEFLASH",
+        "devastator" or "minelayer" => "ROCKET_MUZZLEFLASH",
         "mortar" => "GRENADE_MUZZLEFLASH",
         "machinegun" => "MACHINEGUN_MUZZLEFLASH",
+        "electro" => "ELECTRO_MUZZLEFLASH",
+        "crylink" => "CRYLINK_MUZZLEFLASH",
+        "shotgun" => "SHOTGUN_MUZZLEFLASH",
+        "hagar" => "HAGAR_MUZZLEFLASH",
+        "arc" => "ARC_MUZZLEFLASH",
+        "rifle" => "RIFLE_MUZZLEFLASH",
+        "seeker" => "SEEKER_MUZZLEFLASH",
+        "hook" => "HOOK_MUZZLEFLASH",
+        "hlac" => "GREEN_HLAC_MUZZLEFLASH",
+        "fireball" => "FIREBALL_MUZZLEFLASH",
         _ => "BLASTER_MUZZLEFLASH",
     };
 

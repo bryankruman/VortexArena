@@ -198,13 +198,14 @@ public partial class ProjectileRenderer : Node3D
         if (!_visuals.Remove(index, out Visual? v))
             return;
 
-        // Impact effect (the CSQC wr_impacteffect): the explicit one if the caller passed it (demo path), else
-        // the projectile type's default boom. No PVS culling runs on the entity stream, so the live net path only
-        // removes a projectile when the server FREED it (it detonated / expired) — so drawing the explosion here
-        // is correct, not a false positive from going out of view.
-        string? fx = !string.IsNullOrEmpty(impactEffect) ? impactEffect : ImpactEffectFor(v.Type);
-        if (!string.IsNullOrEmpty(fx))
-            Effects?.Spawn(fx!, origin);
+        // Impact effect: ONLY the explicit one a caller passes (the offline demo driver, which has no server
+        // feeding it effects). On the live net path the SERVER is authoritative for impacts — every ported
+        // projectile weapon emits its wr_impacteffect equivalent (ROCKET_EXPLODE, ELECTRO_IMPACT, …) through
+        // EffectEmitter, networked to every client including the listen-server local one. A type-default spawn
+        // here too played every impact TWICE (and "exploded" projectiles culled by round cleanup, which never
+        // explode upstream).
+        if (!string.IsNullOrEmpty(impactEffect))
+            Effects?.Spawn(impactEffect!, origin);
 
         // Let each active trail layer finish emitting its tail before the node disappears (detach + linger).
         foreach (GpuParticles3D trail in v.Trails)
@@ -640,26 +641,6 @@ public partial class ProjectileRenderer : Node3D
         }
         return ImageTexture.CreateFromImage(img);
     }
-
-    /// <summary>
-    /// The explosion/impact effect a projectile type leaves when it's removed (detonates) — the CSQC
-    /// <c>wr_impacteffect</c> mapping. Splash weapons leave a real explosion; energy bolts a small burst; pure
-    /// gibs/none return null (no effect). Names resolve through <see cref="EffectSystem.Spawn(string,NVec3,NVec3,int,Color?)"/>.
-    /// </summary>
-    private static string? ImpactEffectFor(PType t) => t switch
-    {
-        PType.Rocket or PType.Rpc or PType.SpiderRocket or PType.WakiRocket => "ROCKET_EXPLODE",
-        PType.Fireball => "FIREBALL_EXPLODE",
-        PType.Grenade or PType.GrenadeBouncing or PType.Mine => "GRENADE_EXPLODE",
-        PType.Firemine => "GRENADE_EXPLODE",
-        PType.Hagar or PType.HagarBouncing or PType.Seeker or PType.Flac or PType.Tag => "HAGAR_EXPLODE",
-        PType.Electro or PType.ElectroBeam => "ELECTRO_BALLEXPLODE",
-        PType.Crylink or PType.CrylinkBouncing => "CRYLINK_IMPACT",
-        PType.Blaster or PType.RocketMinstaLaser => "BLASTER_IMPACT",
-        PType.Hlac => "GREEN_HLAC_IMPACT",
-        PType.GolemLightning or PType.MageSpike or PType.ArcBolt or PType.Plasma => "ELECTRO_IMPACT",
-        _ => null,
-    };
 
     /// <summary>
     /// Aim the root so the body's NOSE (Godot +X — see <see cref="BuildModelBody"/>) points down the entity's
