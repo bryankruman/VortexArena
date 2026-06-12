@@ -89,6 +89,11 @@ public static class ClientSettings
         // (PERFORMANCE_REPORT.md A3). `set cl_precache_all_weapons 0` restores the smart expected-only warm
         // for memory-constrained machines (NetGame.PrecacheWeaponModelsAsync reads it).
         c.Register("cl_precache_all_weapons", "1", save);
+        // Spawn-point idle glow + player-spawn flash (Xonotic QC autocvars; the Effects dialog binds the
+        // first, makeMulti pokes the second). Stock defaults ON — SpawnPointParticles / the SPAWN effect
+        // read these (absent → 0 would silently disable both).
+        c.Register("cl_spawn_point_particles", "1", save);
+        c.Register("cl_spawn_event_particles", "1", save);
         // Console/diagnostics verbosity (DP CF_CLIENT, NOT archived — a debug toggle shouldn't persist).
         c.Register("developer", "0");
     }

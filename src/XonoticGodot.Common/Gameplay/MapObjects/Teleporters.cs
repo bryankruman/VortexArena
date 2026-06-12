@@ -176,7 +176,17 @@ public static class Teleporters
         // QC: locout = dest.origin + '0 0 1' * (1 - player.mins.z - 24)  — clear the floor by the hull height.
         Vector3 locout = dest.Origin + new Vector3(0f, 0f, 1f - player.Mins.Z - 24f);
 
+        // QC TeleportPlayer (teleporters.qc:100-115, TELEPORT_FLAG_PARTICLES): the teleport flash fires at
+        // BOTH ends — the entry point the player vanished from and the exit they appear at. Server-side only
+        // (the client prediction pass must not double-emit).
+        Vector3 entryOrigin = player.Origin;
+        if (!predicted)
+            EffectEmitter.Emit("TELEPORT", entryOrigin);
+
         TeleportPlayer(teleporter, player, locout, dest.MAngle, outVel, predicted);
+
+        if (!predicted)
+            EffectEmitter.Emit("TELEPORT", player.Origin);
         return dest;
     }
 

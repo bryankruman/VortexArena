@@ -146,6 +146,36 @@ public partial class EffectSystem : Node3D
     }
 
     /// <summary>
+    /// True when projectile trails should spawn through the faithful per-segment path (DP CL_ParticleTrail)
+    /// instead of the legacy continuous GpuParticles emitters: the faithful backend exists and the renderer
+    /// is not in all-modern mode. Read per projectile spawn (live mode switches apply to new projectiles).
+    /// </summary>
+    public bool UseFaithfulTrails =>
+        FaithfulParticles is not null &&
+        (int)XonoticGodot.Game.Menu.MenuState.Cvars.GetFloat(ParticleCvars.Modern) != 2;
+
+    /// <summary>
+    /// DP CL_ParticleTrail: spawn one trail segment of <paramref name="effectName"/> along
+    /// <paramref name="from"/> → <paramref name="to"/> (Quake space) with the projectile's
+    /// <paramref name="velocity"/> as the emit velocity (trail blocks apply their velocitymultiplier to it —
+    /// e.g. the electro trail's −0.1 backward drift). The faithful sim steps each trailspacing block along
+    /// the segment with the shared fractional accumulator, so per-frame calls compose into a continuous,
+    /// speed-independent trail exactly like DP. Returns false when the faithful path is off (mode 2).
+    /// </summary>
+    public bool SpawnTrailSegment(string effectName, NVec3 from, NVec3 to, NVec3 velocity)
+    {
+        if (!UseFaithfulTrails)
+            return false;
+        EnsureInfoLoaded();
+        Effect? effect = ResolveEffect(effectName);
+        IReadOnlyList<EffectInfoEmitter>? blocks = LookupInfo(effectName, effect);
+        if (blocks is null || blocks.Count == 0)
+            return false;
+        FaithfulParticles.Trail(blocks, from, to, velocity, 1);
+        return true;
+    }
+
+    /// <summary>
     /// Wire the map's RENDER geometry for decal splats (DP's R_DecalSystem clips marks against the visible
     /// surface triangles, not the collision brushes — the difference shows on bevelled trim and patches,
     /// where a brush-clipped mark stops at the wrong edge). Call after map load with the loaded BSP.

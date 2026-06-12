@@ -591,6 +591,12 @@ public static class SpawnSystem
         // QC: "don't reset back to last position even if new position is stuck in solid".
         p.OldOrigin = p.Origin;
 
+        // Spawn-event particle flash (QC PutClientInServer → the ENT_CLIENT_SPAWNEVENT entity each client
+        // renders via boxparticles(EFFECT_SPAWN, ...), client/spawnpoints.qc:60). Networking a plain effect
+        // burst is the port's simpler equivalent — the client-side cl_spawn_event_particles gating collapses
+        // to the effect either rendering or not.
+        EffectEmitter.Emit("SPAWN", p.Origin);
+
         // --- spawn shield (QC PutPlayerInServer ~659/674: StatusEffects_apply(SpawnShield, this, shieldtime)) ---
         // The damage pipeline reads the shield off Entity.SpawnShieldExpire (an absolute sim time), so set it
         // here to now + g_spawnshieldtime. Firing a weapon clears it (handled by the weapon/damage side).

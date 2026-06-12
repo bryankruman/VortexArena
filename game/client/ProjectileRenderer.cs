@@ -41,6 +41,8 @@ public partial class ProjectileRenderer : Node3D
         public Vector3 SpinDegPerSec;         // local tumble/roll rate (QC avelocity / Projectile_Draw rot)
         public Vector3 LastPos;               // for velocity-from-motion when Entity.Velocity is unset
         public ProjectilePredictor Predictor; // CSQC Projectile_Draw: snap-to-server + local velocity extrapolation
+        public string? SegmentTrail;          // faithful per-segment trail effect (DP CL_ParticleTrail); null = legacy emitters
+        public NVec3 TrailPos;                // Quake-space tail of the last emitted trail segment
     }
 
     private readonly Dictionary<int, Visual> _visuals = new();
@@ -118,11 +120,23 @@ public partial class ProjectileRenderer : Node3D
             body.Scale = Vector3.One * desc.ModelScale;
         root.AddChild(body);
 
-        // Trail: the REAL layered effectinfo trail (smoke + fire core + sparks for a rocket) when the catalog
-        // names one and the atlas is mounted, else the legacy single hand-tuned emitter. World-space emitters
-        // (LocalCoords=false) parented to the root, so they ride the projectile yet leave their particles behind.
-        List<GpuParticles3D> trails = BuildTrails(desc, Coords.ToGodot(entity.Velocity));
-        foreach (GpuParticles3D tr in trails) root.AddChild(tr);
+        // Trail. Preferred: the FAITHFUL per-segment path (DP CL_ParticleTrail) — each frame the follow loop
+        // feeds the flight segment to the faithful sim, whose trailspacing stepping + shared accumulator
+        // reproduce DP's exact trail density (the electro plasma line is one particle every 2qu — a rate-based
+        // GPU emitter can't make that). Falls back to the legacy continuous GpuParticles emitters in
+        // all-modern mode (cl_particles_modern 2) or when the effect isn't in the catalog.
+        List<GpuParticles3D> trails;
+        string? segmentTrail = null;
+        if (!string.IsNullOrEmpty(desc.TrailEffect) && Effects?.UseFaithfulTrails == true)
+        {
+            segmentTrail = desc.TrailEffect;
+            trails = new List<GpuParticles3D>();
+        }
+        else
+        {
+            trails = BuildTrails(desc, Coords.ToGodot(entity.Velocity));
+            foreach (GpuParticles3D tr in trails) root.AddChild(tr);
+        }
 
         OmniLight3D? light = (DynamicLights && desc.HasLight) ? BuildLight(desc) : null;
         if (light is not null) root.AddChild(light);
@@ -154,6 +168,8 @@ public partial class ProjectileRenderer : Node3D
             SpinDegPerSec = desc.SpinDegPerSec,
             LastPos = startPos,
             Predictor = predictor,
+            SegmentTrail = segmentTrail,
+            TrailPos = entity.Origin,
         };
         _visuals[entity.Index] = visual;
 
@@ -273,6 +289,20 @@ public partial class ProjectileRenderer : Node3D
 
             OrientToVelocity(v.Root, v.Entity, v.Root.Position - v.LastPos);
             v.LastPos = v.Root.Position;
+
+            // Faithful trail segment (DP CL_ParticleTrail): feed this frame's flight segment to the sim —
+            // its trailspacing stepping + shared accumulator make the per-frame calls compose into the
+            // exact DP trail density regardless of frame rate or projectile speed.
+            if (v.SegmentTrail is not null)
+            {
+                NVec3 cur = Coords.ToQuake(v.Root.Position);
+                NVec3 seg = cur - v.TrailPos;
+                if (NVec3.Dot(seg, seg) > 0.01f)
+                {
+                    Effects?.SpawnTrailSegment(v.SegmentTrail, v.TrailPos, cur, v.Entity.Velocity);
+                    v.TrailPos = cur;
+                }
+            }
 
             // Spin/tumble the body locally on top of the velocity-aligned root (QC Projectile_Draw rot /
             // avelocity): rocket rolls (z), bouncing grenade tumbles sideways (y), hookbomb pitches (x), …
