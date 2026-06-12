@@ -416,12 +416,11 @@ in order of impact:
    is exactly the user's "GameDemo doesn't hitch" observation.
 
 ### 9.4 Reprioritized wave plan (supersedes the vsync-centric framing of §2)
-- **Wave 1 (next, highest impact):** **stagger live player-model builds.** Wire the existing S1
-  `BackgroundAssetStreamer` into the live player-model load path (`ClientWorld`/`ClientEntityView`) with a cheap
-  placeholder so the 6 models build **one per frame** instead of all at once — this kills the 154 MB gen2 burst,
-  the single worst release hitch. (S1 already proved the parse/build split off-thread for the *idle* warm; this
-  extends it to the on-demand path.) Plus finish the `sim.move` / `sim.integrate` allocation hunt with the
-  per-scope readout (suspects: `IMovementInput` boxing per bot/tick, per-client hook lists).
+- **Wave 1 — ✅ LANDED (2026-06-11, see §10 for the full write-up):** **stagger live player-model builds** +
+  **finish the `sim.move`/`sim.integrate` allocation hunt.** The player-model path now returns a placeholder
+  shell and streams the build one-per-frame through the S1 `BackgroundAssetStreamer` (kills the 154 MB gen2
+  burst); the alloc hunt landed seven fixes for **60.9 → 2.9 KB/tick at 12 bots** (the report's named suspects
+  — `IMovementInput` boxing, per-tick concats — were real and are fixed). 1496 tests pass; verified live.
 - **Wave 2+ (structural, only if a real-match profile demands it):** **S5 — move the server sim onto a worker
   thread**, so the per-tick movement-physics cost stops stealing the render-frame budget. This is the real
   architectural answer to "GameDemo vs NetGame," but it is High effort / High risk (the ambient `Api.Services`
@@ -488,18 +487,37 @@ gen2 0. Tick timing unchanged (med ~0.6 ms, MAX ~10 ms — the MAX is `move.post
 gameplay events). Remaining buckets: `bot.think` ~2.0 KB/tick (token-gated `FindInRadius`/`FindByClass`
 iterator allocs in goal rating — rare-path, diminishing returns), `move.post` ~0.6 KB (combat events).
 
-### 10.3 Verification + a pre-existing issue found
+### 10.3 Verification
 
 - Bench: `XG_BOTS=12 dotnet test tests/XonoticGodot.Tests --filter BotTickPerfBench -l "console;verbosity=detailed"`.
 - Live: windowed `--host stormkeep --gametype dm --bots 6 --screenshot …` → models posed/tinted, no streamer
   errors, no autoplay warnings; `--cvar developer 1` shows the six staggered `[stream]` builds.
-- **Pre-existing, NOT Wave 1** (reproduced identically on the pre-session tree): `--headless --host` never
-  loads the map — hangs or dies with a fatal CLR error in `Godot.DebuggingUtils` while formatting a script
-  error under the dummy renderer (suspect: the A2 `GpuWarmPass` SubViewport/`FramePostDraw` await). Windowed
-  is unaffected. Note for scripted runs: Windows `timeout` does NOT kill the Godot
-  child — orphans hold port 26000 and later runs fail with "Couldn't create an ENet host".
-  **FIXED (2026-06-11):** the hang was `Shell.WaitForFramePainted` awaiting `frame_post_draw`, which never
-  fires headless (the RenderingServer singleton exists, but the main loop never calls `draw()` when no window
-  can draw) — it now falls back to `process_frame` ticks under the headless DisplayServer, and `GpuWarmPass`
-  skips its SubViewport there (no GPU to warm). Guarded by the `ci/ci.sh` headless host smoke; scripted runs
-  can self-terminate via `--quit-after-seconds <s>`.
+- **Headless `--host` works** (verified this session: `--headless --host stormkeep --bots 2
+  --quit-after-seconds 20` → exit 0, `[MapLoader]` loads stormkeep, waypoints load). An earlier draft of this
+  section wrongly called it broken — that was a self-inflicted test artifact: Windows `timeout` does NOT kill
+  the Godot child, so an orphaned host kept UDP 26000 and the *next* run failed with "Couldn't create an ENet
+  host" / a fatal CLR error. **Use `--quit-after-seconds <s>` (not `timeout`) and kill orphaned Godot processes
+  between scripted runs.** The FramePostDraw hang that genuinely broke this path was already fixed in a prior
+  session: `Shell.WaitForFramePainted` awaited `frame_post_draw`, which never fires headless (the main loop
+  never calls `draw()` with no window), so it now falls back to `process_frame` ticks under the headless
+  DisplayServer and `GpuWarmPass` skips its SubViewport there. Guarded by the `ci/ci.sh` headless host smoke.
+
+### 10.4 Remaining / todos
+
+- **Wave 1 acceptance gate (USER step, not automatable here):** confirm the early-match ~154 MB gen2 freeze is
+  actually gone *as felt* in an **exported release build** with bots (`run-release.sh`, then `--host … --bots`).
+  The bench proves the per-tick allocation collapse and the staggered build is verified in a windowed run, but
+  the original symptom was measured in §9.3 on a release build — close the loop there. (§7 protocol.)
+- **Residual server-tick alloc (~2 KB/tick, LOW):** `bot.think` token-gated `FindInRadius`/`FindByClass`
+  iterator allocs in goal rating, and `move.post` combat-event allocs. Diminishing returns vs. the −95% already
+  banked; revisit only if a real-match profile shows GC pressure climbing with more bots.
+- **Residual sync model loads (LOW):** `BuildForcedPlayerModel` (`cl_forceplayermodels`) still loads
+  synchronously (explicit opt-in, usually the precached local model); `ModelTint.ApplyAppearance` still walks a
+  player's meshes each frame (client-side, pre-existing). Stream/cache these only if a forced-model match or a
+  high player count shows them in a profile.
+- **Wave 2+ (structural, gated):** **S5 — server sim on a worker thread** (§9.4). The real architectural answer
+  to "GameDemo vs NetGame," but High effort / High risk (the `Api.Services` ambient global, the shared↔server
+  cvar bridge, and `SoundService.Broadcast` are the named race blockers) and gated on a real-match profile
+  showing server tick > ~2 ms *after* the areagrid. Do **not** start it without that profile.
+- **Still deferred from §8** (unchanged, gated on a manual `dotnet-counters` measurement): GpuParticles3D node
+  pooling (3.2-1), GPU vertex-shader MD3 morphing (3.3 Tier-3). See §8 "Deferred."

@@ -312,8 +312,10 @@ public sealed class Devastator : Weapon
         self.ProjectileDamage = null;
         if (owner.WeaponState(new WeaponSlot(0)) is { } s0 && ReferenceEquals(s0.LastRocket, self)) s0.LastRocket = null;
 
+        // QC's remote blast goes through the plain RadiusDamage wrapper (forcexyzscale '1 1 1') — only the
+        // CONTACT explosion (W_Devastator_Explode) applies force_xyscale, so no force shaping here.
         WeaponSplash.RadiusDamage(self, self.Origin, Cvars.RemoteDamage, Cvars.RemoteEdgeDamage,
-            Cvars.RemoteRadius, owner, RegistryId, Cvars.RemoteForce, forceZScale: Cvars.ForceXyScale);
+            Cvars.RemoteRadius, owner, RegistryId, Cvars.RemoteForce);
         WeaponSplash.ImpactSound(self, "weapons/rocket_impact.wav"); // QC SND_ROCKET_IMPACT (wr_impacteffect)
         EffectEmitter.Emit("ROCKET_EXPLODE", self.Origin);
         Api.Entities.Remove(self);
@@ -330,10 +332,11 @@ public sealed class Devastator : Weapon
         self.TakeDamage = DamageMode.No;
         self.ProjectileDamage = null;
 
-        // QC scales the horizontal knockback by force_xyscale (defaults to 1 in xonotic balance, so the
-        // blast is the unmodified RadiusDamage); the direct-hit entity skips the LOS reduction.
+        // QC scales the HORIZONTAL knockback by force_xyscale (force_xyzscale.x/.y, devastator.qc:29-31;
+        // Z stays 1); the direct-hit entity skips the LOS reduction.
         WeaponSplash.RadiusDamage(self, self.Origin, Cvars.Damage, Cvars.EdgeDamage, Cvars.Radius,
-            self.Owner, RegistryId, Cvars.Force, directHit: directHit);
+            self.Owner, RegistryId, Cvars.Force,
+            forceScale: new Vector3(Cvars.ForceXyScale, Cvars.ForceXyScale, 1f), directHit: directHit);
 
         WeaponSplash.ImpactSound(self, "weapons/rocket_impact.wav"); // QC SND_ROCKET_IMPACT (wr_impacteffect)
         EffectEmitter.Emit("ROCKET_EXPLODE", self.Origin);
