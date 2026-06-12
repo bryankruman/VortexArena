@@ -16,9 +16,8 @@ namespace XonoticGodot.Common.Gameplay;
 /// Devastator, Crylink, Electro and Hagar share one faithful blast model instead of each copying the
 /// Blaster's private version. The Blaster keeps its own equivalent private method; behaviour matches.
 ///
-/// Deferred vs QC (same gaps the Blaster flags): line-of-sight occlusion, the energy-conserving knockback
-/// cubic (lives in the damage pipeline, DamageSystem.cs), self-damage radius scaling, force_zscale shaping,
-/// and Damage_DamageInfo blast networking.
+/// Deferred vs QC (same gaps the Blaster flags): the energy-conserving knockback cubic (lives in the damage
+/// pipeline, DamageSystem.cs), self-damage radius scaling, and Damage_DamageInfo blast networking.
 /// </summary>
 public static class WeaponSplash
 {
@@ -35,8 +34,9 @@ public static class WeaponSplash
     /// <item>knockback direction points from the blast toward the victim's bbox/view center (not from the
     /// victim's origin), and its magnitude is <c>(finaldmg / max(core, edge)) * force</c> — i.e. it tracks
     /// the damage falloff exactly, as QC does;</item>
-    /// <item><paramref name="forceZScale"/> scales the vertical knockback component (QC force_xyzscale.z,
-    /// e.g. the Blaster's force_zscale launch boost);</item>
+    /// <item><paramref name="forceScale"/> shapes the knockback per axis (QC force_xyzscale, damage.qc:831-836
+    /// — a zero component leaves that axis unscaled): the Blaster's force_zscale launch boost rides Z, the
+    /// Devastator's force_xyscale rides X/Y;</item>
     /// <item>line-of-sight: if a wall blocks the blast from the victim, damage and force are reduced by the
     /// through-floor factors (QC g_throughfloor_damage / _force) — a single LOS trace stands in for QC's
     /// multi-sample box test;</item>
@@ -47,7 +47,7 @@ public static class WeaponSplash
     /// The Damage_DamageInfo blast-effect networking is the only deferred piece (client render).
     /// </summary>
     public static void RadiusDamage(Entity inflictor, Vector3 center, float damage, float edgeDamage,
-        float radius, Entity? attacker, int deathType, float force = 0f, float forceZScale = 1f,
+        float radius, Entity? attacker, int deathType, float force = 0f, Vector3? forceScale = null,
         Entity? directHit = null, Weapon? accuracyWeapon = null)
     {
         if (Api.Services is null || radius <= 0f) return;
@@ -102,7 +102,13 @@ public static class WeaponSplash
                 float dirLen = dirDelta.Length();
                 Vector3 dir = dirLen > 0f ? dirDelta / dirLen : Vector3.UnitZ;
                 forceVec = dir * ((finalDmg / denom) * force);
-                if (forceZScale != 1f) forceVec.Z *= forceZScale;
+                if (forceScale is { } s)
+                {
+                    // QC damage.qc:831-836: each axis only scales when its component is non-zero.
+                    if (s.X != 0f) forceVec.X *= s.X;
+                    if (s.Y != 0f) forceVec.Y *= s.Y;
+                    if (s.Z != 0f) forceVec.Z *= s.Z;
+                }
             }
 
             // Line of sight: the direct-hit target is always fully hit; for others, a blocked trace reduces
