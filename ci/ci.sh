@@ -33,6 +33,25 @@ done
 step()  { printf '\n\033[1;34m== %s ==\033[0m\n' "$*"; }
 fail()  { printf '\033[1;31mFAIL:\033[0m %s\n' "$*" >&2; exit 1; }
 
+# ── 0. on non-Windows, drop the Windows-only 'godot-editor' NuGet source ──────
+# nuget.config adds the dev machine's local Godot editor nupkgs folder as a package source (key
+# "godot-editor", a C:\ path). That path exists only on the Windows dev box; on Linux/macOS NuGet AND
+# the Godot.NET.Sdk MSBuild SDK resolver hard-fail on the missing local source — so the host build below
+# can't even resolve its SDK. Mirror what .github/workflows/ci.yml does: remove the source first. We back
+# nuget.config up (to $TMPDIR) and restore it on exit, so the working tree is left byte-identical.
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*|Windows_NT) ;;   # real Windows dev box: the local source exists — keep it
+    *)
+        if grep -q godot-editor "$ROOT/nuget.config" 2>/dev/null; then
+            step "drop the Windows-only 'godot-editor' NuGet source (non-Windows host)"
+            _nuget_bak="$(mktemp)"
+            cp "$ROOT/nuget.config" "$_nuget_bak"
+            trap 'cp -f "$_nuget_bak" "$ROOT/nuget.config"; rm -f "$_nuget_bak"' EXIT
+            dotnet nuget remove source godot-editor --configfile "$ROOT/nuget.config" >/dev/null
+        fi
+        ;;
+esac
+
 # ── 1. libraries + tests build (plain .NET SDK, no Godot) ─────────────────────
 step "build libraries + tests"
 dotnet build "$ROOT/tests/XonoticGodot.Tests/XonoticGodot.Tests.csproj" -c Debug --nologo

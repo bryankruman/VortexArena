@@ -1,6 +1,6 @@
 # XonoticGodot
 
-[![CI](https://github.com/bryankruman/XonoticGodot/actions/workflows/ci.yml/badge.svg)](https://github.com/bryankruman/XonoticGodot/actions/workflows/ci.yml)
+[![Tests](https://github.com/bryankruman/XonoticGodot/actions/workflows/ci.yml/badge.svg)](https://github.com/bryankruman/XonoticGodot/actions/workflows/ci.yml)
 [![Release](https://github.com/bryankruman/XonoticGodot/actions/workflows/release.yml/badge.svg)](https://github.com/bryankruman/XonoticGodot/actions/workflows/release.yml)
 
 **XonoticGodot** is a work-in-progress port of [Xonotic](https://xonotic.org) — the free, open-source arena
