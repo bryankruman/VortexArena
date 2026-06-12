@@ -334,8 +334,59 @@ public partial class CrosshairPanel : HudPanel
         c.Register("crosshair_ring_reload_alpha", "0.2", save);
     }
 
+    // -------------------------------------------------------------------------------------------------
+    //  (§11 R11) Per-frame cvar cache. _Process consulted up to 5 crosshair_* cvars every frame through
+    //  GlobalF (2 dictionary lookups each). They're user config — refreshed only when the shared store
+    //  raises Changed for a crosshair_* name (console/menu sets are instant; the hot path does zero lookups).
+    // -------------------------------------------------------------------------------------------------
+
+    private bool _cvarCacheHooked;
+    private Action<string>? _cvarCacheHook;
+    private float _cvEnabled = 1f;
+    private float _cvEffectTime;
+    private float _cvColorSpecial;
+    private float _cvHitIndicationSpeed = 5f;
+    private float _cvPickupSpeed = 4f;
+
+    private void EnsureCvarCache()
+    {
+        if (_cvarCacheHooked)
+            return;
+        _cvarCacheHooked = true;
+        RefreshCvarCache();
+        _cvarCacheHook = name =>
+        {
+            if (name.StartsWith("crosshair_", StringComparison.OrdinalIgnoreCase))
+                RefreshCvarCache();
+        };
+        Menu.MenuState.Cvars.Changed += _cvarCacheHook;
+    }
+
+    private void RefreshCvarCache()
+    {
+        _cvEnabled = GlobalF("crosshair_enabled", 1f);
+        _cvEffectTime = Mathf.Abs(GlobalF("crosshair_effect_time", EffectTime));
+        _cvColorSpecial = GlobalF("crosshair_color_special", PerWeaponColor ? 1f : 0f);
+        _cvHitIndicationSpeed = GlobalF("crosshair_hitindication_speed", 5f);
+        _cvPickupSpeed = GlobalF("crosshair_pickup_speed", 4f);
+    }
+
+    public override void _ExitTree()
+    {
+        base._ExitTree();   // HudPanel unsubscribes its own config hook there
+        // The cvar store is session-static; drop the hook so a freed panel (HUD rebuild) doesn't leak.
+        if (_cvarCacheHook is not null)
+        {
+            Menu.MenuState.Cvars.Changed -= _cvarCacheHook;
+            _cvarCacheHook = null;
+            _cvarCacheHooked = false;
+        }
+    }
+
     public override void _Process(double delta)
     {
+        EnsureCvarCache();
+
         _localClock += delta;
         _lastDelta = delta > 0.0 ? delta : _lastDelta;
         float dt = (float)_lastDelta;
@@ -353,14 +404,14 @@ public partial class CrosshairPanel : HudPanel
         }
         if (_hitIndSize > 0f)
         {
-            _hitIndSize = Mathf.Max(0f, _hitIndSize - GlobalF("crosshair_hitindication_speed", 5f) * dt);
+            _hitIndSize = Mathf.Max(0f, _hitIndSize - _cvHitIndicationSpeed * dt);
             dirty = true;
         }
 
         // QC pickup block: PulsePickup() sets _pickupSize=1, then it ramps down by crosshair_pickup_speed*frametime.
         if (_pickupSize > 0f)
         {
-            _pickupSize = Mathf.Max(0f, _pickupSize - GlobalF("crosshair_pickup_speed", 4f) * dt);
+            _pickupSize = Mathf.Max(0f, _pickupSize - _cvPickupSpeed * dt);
             dirty = true;
         }
 
@@ -373,7 +424,7 @@ public partial class CrosshairPanel : HudPanel
         // True-aim classification (QC: run TrueAimCheck every frame while the crosshair is live). Gated on the
         // master toggle so the two forward traces don't fire when the crosshair is disabled (QC runs TrueAimCheck
         // only inside the HUD_Crosshair draw guard, after the crosshair_enabled check).
-        ShotType newShot = GlobalF("crosshair_enabled", 1f) != 0f ? ComputeShotType() : ShotType.HitWorld;
+        ShotType newShot = _cvEnabled != 0f ? ComputeShotType() : ShotType.HitWorld;
         if (newShot != ShotResult)
         {
             ShotResult = newShot;
@@ -437,11 +488,16 @@ public partial class CrosshairPanel : HudPanel
     //  Cvar reads (engine crosshair_* cvars; properties remain the fallback for non-cvar-wired callers)
     // -------------------------------------------------------------------------------------------------
 
-    private float EffectTimeCvar() => Mathf.Abs(GlobalF("crosshair_effect_time", EffectTime));
+    private float EffectTimeCvar()
+    {
+        EnsureCvarCache();
+        return _cvEffectTime;
+    }
 
     private ColorMode ColorModeCvar()
     {
-        int v = (int)GlobalF("crosshair_color_special", PerWeaponColor ? 1f : 0f);
+        EnsureCvarCache();
+        int v = (int)_cvColorSpecial;
         return v switch { 1 => ColorMode.Weapon, 2 => ColorMode.Health, _ => ColorMode.Fixed };
     }
 

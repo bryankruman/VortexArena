@@ -628,6 +628,62 @@ public sealed class ServerNet : IDisposable
                 _transport.Send(st.PeerId, _scratchWriter.WrittenSpan, reliable: true);
     }
 
+    // =============================================================================================
+    // [T46] chat delivery — per-player sprint + team/private routing with ignore filtering. The chat engine
+    // (Chat.Say) does the routing/ignore/flood logic over ClientManager.Players; these are the net send paths.
+    // A host wires Commands.ChatToPlayer to SendChatToPlayer so each routed recipient gets a reliable svc_print.
+    // =============================================================================================
+
+    /// <summary>QC <c>sprint(client, text)</c>: send one chat line to a single player's console (DP svc_print over
+    /// the reliable channel). No-op if the player has no accepted peer (a bot, or a not-yet-handshaked client).</summary>
+    public void SendChatToPlayer(Player player, string text)
+    {
+        if (player is null || string.IsNullOrEmpty(text))
+            return;
+        if (!_byPlayer.TryGetValue(player, out PeerState? st) || !st.Accepted)
+            return;
+        SendPrint(st.PeerId, text);
+    }
+
+    /// <summary>
+    /// QC the say_team FOREACH_CLIENT branch (chat.qc:328): deliver <paramref name="text"/> to every real client
+    /// on <paramref name="team"/> who has not ignored <paramref name="sender"/>. Append-only convenience for a
+    /// host that prefers ServerNet to own team routing; <see cref="Chat.Say"/> already routes per-player through
+    /// <see cref="SendChatToPlayer"/>, so this is an alternative entry, not on the default path.
+    /// </summary>
+    public void SendTeamChat(Player? sender, int team, string text)
+    {
+        if (string.IsNullOrEmpty(text))
+            return;
+        foreach (Player p in _world.Clients.Players)
+        {
+            if (p.IsBot || p.IsObserver || (int)p.Team != team)
+                continue;
+            if (ReferenceEquals(p, sender))
+                continue;
+            if (sender is not null && IgnorePlayerInList(p, sender))
+                continue;
+            SendChatToPlayer(p, text);
+        }
+    }
+
+    /// <summary>
+    /// QC the private (tell) delivery (chat.qc:295-307): deliver <paramref name="text"/> to <paramref name="target"/>
+    /// only, suppressed if the target has ignored <paramref name="sender"/>. Append-only convenience entry.
+    /// </summary>
+    public void SendPrivateChat(Player? sender, Player target, string text)
+    {
+        if (target is null || string.IsNullOrEmpty(text))
+            return;
+        if (sender is not null && IgnorePlayerInList(target, sender))
+            return; // sender is ignored by target — drop it
+        SendChatToPlayer(target, text);
+    }
+
+    /// <summary>QC <c>ignore_playerinlist(this, other)</c>: is <paramref name="other"/> on <paramref name="self"/>'s
+    /// ignore list? Delegates to the chat engine's PersistentId-keyed check.</summary>
+    public static bool IgnorePlayerInList(Player self, Player other) => Chat.IgnorePlayerInList(self, other);
+
     /// <summary>[T38] Push each changed minigame session's snapshot to its participating peers (QC
     /// <c>minigame_resend</c> + <c>minigame_CheckSend</c>), each carrying that peer's own team; and an empty
     /// envelope to anyone who just left / whose session ended (QC the per-entity removal → CSQC
@@ -932,6 +988,33 @@ public sealed class ServerNet : IDisposable
         if (st.PerFrameInput)
             return ProvideInputPerFrame(st, p, now);
 
+        // LEGACY queue bound (DP sv_clmovement_inputtimeout). Producer and consumer both pace at exactly
+        // 72 Hz, so the queue length never shrinks on its own — a client hitch's burst (up to 18 commands
+        // per long frame, while the sim's B3 soft-cap + spiral guard run/drop FEWER catch-up ticks) would
+        // otherwise become PERMANENT input latency (fire/jump executing queue-length ticks late for the
+        // rest of the match, compounding with every further hitch — the felt "projectile leaves 0.5 s after
+        // the click"). Past the abnormal-depth trigger, discard the OLDEST commands down to a small jitter
+        // floor: dropped seqs still ack (client prediction stops replaying them — both ends agree the
+        // movement never happened, the same brief reconcile warp DP shows), and their one-shot impulses
+        // still dispatch so a hitch can't eat a weapon switch.
+        if (st.Pending.Count > InputQueuePolicy.MaxLegacyQueuedCommands)
+        {
+            _droppedImpulseScratch.Clear();
+            int before = st.Pending.Count;
+            uint highestDropped = InputQueuePolicy.Trim(st.Pending,
+                InputQueuePolicy.MaxLegacyQueuedCommands, InputQueuePolicy.LegacyTrimResidual,
+                _droppedImpulseScratch);
+            if (highestDropped > st.LastProcessedSeq)
+                st.LastProcessedSeq = highestDropped;
+            if (!p.IsObserver)
+                foreach (int imp in _droppedImpulseScratch)
+                    _world.Commands.Execute($"impulse {imp}", isServerConsole: false, caller: p);
+            if (Log.WillTrace)
+                Log.Trace($"[ServerNet] input backlog trimmed for '{p.NetName}': {before} -> {st.Pending.Count} " +
+                          "(client hitch burst; surplus consumed unsimulated)");
+            Prof.Event($"net: input backlog trimmed {before} -> {st.Pending.Count} ({p.NetName})");
+        }
+
         InputCommand cmd;
         if (st.Pending.Count > 0)
         {
@@ -1105,6 +1188,10 @@ public sealed class ServerNet : IDisposable
     // Boxed once: typed as the interface so the hot ProvideInput paths return/store the same object instead of
     // re-boxing the struct on every assignment to an IMovementInput-typed field/return.
     private static readonly IMovementInput ZeroInput = new MovementInput { FrameTime = SimulationLoopTicRate };
+
+    // Scratch for the legacy input-queue trim (one-shot impulses carried by dropped commands); ProvideInput
+    // runs on the sim thread only, so one shared buffer is safe.
+    private readonly List<int> _droppedImpulseScratch = new(4);
 
     private static MovementInput ToMovementInput(in InputCommand c)
     {

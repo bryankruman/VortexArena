@@ -95,6 +95,42 @@ public static class Prof
                 _counters[name] = value;
     }
 
+    // ---- one-shot events (hitch forensics) --------------------------------------------------------------------
+    // Markers (above) are per-frame NUMBERS; events are timestamped one-shot STRINGS for the things that
+    // correlate with hitches but happen between frames or rarely: "player model built", "input backlog trimmed",
+    // "sim backlog dropped", "MultiMesh capacity grew". The collector drains them each frame and stamps them with
+    // the frame id, so a hitch dump can say "this 40 ms frame is the one where the model build landed". Bounded
+    // ring (drops oldest on overflow), thread-safe (the sim worker + streamer pool threads raise events too).
+
+    private const int MaxPendingEvents = 64;
+    private static readonly Queue<string> _events = new();
+
+    /// <summary>Raise a one-shot forensic event (e.g. <c>"stream: built player model X"</c>). Cheap no-op when
+    /// the profiler is off; bounded, so an event storm can't grow memory. Callable from any thread.</summary>
+    public static void Event(string label)
+    {
+        if (!Enabled)
+            return;
+        lock (_gate)
+        {
+            if (_events.Count >= MaxPendingEvents)
+                _events.Dequeue();
+            _events.Enqueue(label);
+        }
+    }
+
+    /// <summary>Collector hook: drain the pending one-shot events into <paramref name="into"/> (appended).</summary>
+    public static void DrainEvents(List<string> into)
+    {
+        if (_events.Count == 0)
+            return; // racy read is fine: a just-raised event is picked up next frame
+        lock (_gate)
+        {
+            while (_events.Count > 0)
+                into.Add(_events.Dequeue());
+        }
+    }
+
     /// <summary>
     /// Collector hook: copy this frame's accumulated scopes + markers into the supplied dictionaries and clear the
     /// internal accumulators for the next frame. Called once per frame by FrameProfiler. Capacity is retained, so

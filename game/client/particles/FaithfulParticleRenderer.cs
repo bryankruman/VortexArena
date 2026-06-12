@@ -65,7 +65,18 @@ public sealed partial class FaithfulParticleRenderer : Node3D
         public int Count;
         // Scratch indices into the pool for this batch (filled each Sync, sorted, then packed).
         public readonly List<int> Indices = new();
+        // (§11 R6) Capacity-decay bookkeeping: the upload is always the FULL capacity buffer (the
+        // MultimeshSetBuffer contract), so capacity must track the RECENT peak, not the all-session peak.
+        public int PeakSinceCheck;
+        public float NextDecayAt;
     }
+
+    // (§11 R6) Batch capacity policy: pre-size so a typical first burst never grows mid-burst, grow in
+    // power-of-two steps (one realloc per doubling instead of one per new highwater), and every
+    // DecaySeconds shrink back toward the recent peak so the steady-state per-frame upload (capacity ×
+    // 80 B) tracks actual usage after a heavy firefight instead of staying at the session maximum.
+    private const int InitialInstances = 512;
+    private const float DecaySeconds = 10f;
 
     private Batch? _premul;   // DP GL_ONE / GL_ONE_MINUS_SRC_ALPHA — alpha AND additive particles
     private Batch? _invmod;   // DP GL_ZERO / GL_ONE_MINUS_SRC_COLOR — dst·(1−src) via blend_mul
@@ -271,6 +282,53 @@ public sealed partial class FaithfulParticleRenderer : Node3D
     //  Batch + shader construction
     // ---------------------------------------------------------------------------------------------
 
+    /// <summary>
+    /// Standalone MultiMesh instances for the offscreen GPU warm pass (§11 R1): one node per live batch
+    /// (premul + invmod) sharing that batch's exact <see cref="ShaderMaterial"/>, each carrying one
+    /// billboard and one spark-flagged instance so both vertex-stage paths render. Drawing them in the
+    /// warm viewport compiles the same pipelines the first real explosion needs — without this, faithful
+    /// mode (the default) paid a first-use pipeline compile mid-play. Empty before <see cref="_Ready"/>.
+    /// The warm pass parents, renders, and frees the returned nodes; the shared materials survive.
+    /// </summary>
+    public List<Node3D> BuildWarmupInstances()
+    {
+        var list = new List<Node3D>(2);
+        foreach (Batch? b in new[] { _premul, _invmod })
+        {
+            if (b is null)
+                continue;
+            var mm = new MultiMesh
+            {
+                TransformFormat = MultiMesh.TransformFormatEnum.Transform3D,
+                UseColors = true,
+                UseCustomData = true,
+                Mesh = new QuadMesh { Size = new Vector2(1f, 1f) },
+                InstanceCount = 2,
+            };
+            var buf = new float[2 * FloatsPerInstance];
+            // Instance 0: billboard (sparkFlag 0); instance 1: spark basis drawn verbatim (sparkFlag 1).
+            WriteTransform(buf, 0, new Vector3(4f, 0, 0), new Vector3(0, 4f, 0), new Vector3(0, 0, 1f), Vector3.Zero);
+            WriteColor(buf, 0, new Color(0.5f, 0.5f, 0.5f, 0.5f));
+            WriteCustom(buf, 0, slot: 0, angle: 0.3f, sparkFlag: 0f);
+            WriteTransform(buf, FloatsPerInstance, new Vector3(1f, 0, 0), new Vector3(0, 8f, 0), new Vector3(0, 0, 1f),
+                new Vector3(6f, 0f, 0f));
+            WriteColor(buf, FloatsPerInstance, new Color(0.5f, 0.5f, 0.5f, 0f));   // additive-style (alpha 0)
+            WriteCustom(buf, FloatsPerInstance, slot: 0, angle: 0f, sparkFlag: 1f);
+            RenderingServer.MultimeshSetBuffer(mm.GetRid(), buf);
+
+            list.Add(new MultiMeshInstance3D
+            {
+                Name = "warm_" + b.Node.Name,
+                Multimesh = mm,
+                MaterialOverride = b.Material,
+                CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+                GIMode = GeometryInstance3D.GIModeEnum.Disabled,
+                CustomAabb = new Aabb(new Vector3(-100f, -100f, -100f), new Vector3(200f, 200f, 200f)),
+            });
+        }
+        return list;
+    }
+
     private Batch MakeBatch(string name, bool invmod)
     {
         // 1x1 quad centered on origin; the vertex shader scales/billboards it. Two-sided so back-facing
@@ -283,7 +341,10 @@ public sealed partial class FaithfulParticleRenderer : Node3D
             UseColors = true,
             UseCustomData = true,
             Mesh = quad,
-            InstanceCount = 0,
+            // (§11 R6) Pre-size so the GPU buffer exists before the first burst (no mid-burst realloc) —
+            // VisibleInstanceCount 0 keeps the uninitialized instances from drawing until the first Sync.
+            InstanceCount = InitialInstances,
+            VisibleInstanceCount = 0,
         };
 
         var mat = new ShaderMaterial { Shader = ParticleShader(invmod) };
@@ -466,13 +527,34 @@ public sealed partial class FaithfulParticleRenderer : Node3D
             return;
         }
 
-        // Reuse a grow-only buffer; InstanceCount tracks the buffer capacity and VisibleInstanceCount limits
+        // Reuse the buffer; InstanceCount tracks the buffer capacity and VisibleInstanceCount limits
         // what's drawn, so the per-frame path allocates NOTHING (only a native marshal copy in the upload).
+        // Capacity grows in power-of-two steps and decays toward the recent peak (§11 R6, fields above).
         int need = n * FloatsPerInstance;
         if (b.Buffer.Length < need)
         {
-            b.Buffer = new float[need];
-            b.Mesh.InstanceCount = b.Buffer.Length / FloatsPerInstance;
+            int cap = Math.Max(InitialInstances, (int)System.Numerics.BitOperations.RoundUpToPowerOf2((uint)n));
+            b.Buffer = new float[cap * FloatsPerInstance];
+            b.Mesh.InstanceCount = cap;
+            XonoticGodot.Common.Diagnostics.Prof.Event($"particles: {b.Node.Name} capacity -> {cap} (GPU realloc)");
+        }
+        b.PeakSinceCheck = Math.Max(b.PeakSinceCheck, n);
+        if (time + DecaySeconds < b.NextDecayAt)
+            b.NextDecayAt = time + DecaySeconds;   // sim clock went backwards (map change) — re-arm
+        if (time >= b.NextDecayAt)
+        {
+            int capInst = b.Buffer.Length / FloatsPerInstance;
+            int target = Math.Max(InitialInstances,
+                (int)System.Numerics.BitOperations.RoundUpToPowerOf2((uint)Math.Max(1, b.PeakSinceCheck)));
+            if (target < capInst)
+            {
+                // One quiet realloc back to the recent peak's tier; PeakSinceCheck ≥ n, so target fits n.
+                b.Buffer = new float[target * FloatsPerInstance];
+                b.Mesh.InstanceCount = target;
+                XonoticGodot.Common.Diagnostics.Prof.Event($"particles: {b.Node.Name} capacity decay -> {target}");
+            }
+            b.PeakSinceCheck = 0;
+            b.NextDecayAt = time + DecaySeconds;
         }
         float[] buf = b.Buffer;
 

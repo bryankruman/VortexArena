@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Godot;
+using XonoticGodot.Common.Diagnostics;
 using XonoticGodot.Formats.Iqm;
 using XonoticGodot.Formats.Sidecars;
 using SN = System.Numerics;
@@ -99,12 +100,17 @@ public static class IqmBuilder
         var root = new Node3D { Name = "IqmModel" };
 
         // ---- 1. Skeleton (bones + Godot-space rests) -------------------------------------------------
-        Skeleton3D skeleton = BuildSkeleton(iqm);
-        root.AddChild(skeleton);
+        Skeleton3D skeleton;
+        using (Prof.Sample("iqm.skeleton"))
+        {
+            skeleton = BuildSkeleton(iqm);
+            root.AddChild(skeleton);
+        }
 
         // ---- 2. Skinned mesh -------------------------------------------------------------------------
         var meshInstance = new MeshInstance3D { Name = "Mesh" };
-        meshInstance.Mesh = BuildMesh(iqm, assets, skin);
+        using (Prof.Sample("iqm.mesh"))
+            meshInstance.Mesh = BuildMesh(iqm, assets, skin);
 
         // Skin: bind poses = rest_global^-1 for each bone, generated from the rests we just set. This is the
         // canonical Godot binding and matches our world-conjugated rests exactly (no manual inverse).
@@ -123,7 +129,10 @@ public static class IqmBuilder
         // not the skeleton itself. RootNode must therefore be the model root (= the player's parent).
         player.RootNode = player.GetPathTo(root);
 
-        AnimationLibrary library = BuildAnimations(iqm, skeleton, framegroups, out string? defaultClip);
+        AnimationLibrary library;
+        string? defaultClip;
+        using (Prof.Sample("iqm.anims"))
+            library = BuildAnimations(iqm, skeleton, framegroups, out defaultClip);
         player.AddAnimationLibrary(LibraryName, library);
 
         // Auto-play a sensible default (idle if present, else the first clip) so a freshly built model moves.
@@ -302,9 +311,13 @@ public static class IqmBuilder
             // Resolve and attach the surface material from the (possibly skin-remapped) shader name. If a
             // remap resolved to the magenta fallback (a variant-only name with no shader/texture), keep the
             // baked material so a bad remap can't blank an otherwise-valid surface.
-            Material? material = ResolveMaterialSafe(assets, materialName);
-            if (remapped && material is not null && ReferenceEquals(material, assets.FallbackMaterial()))
-                material = ResolveMaterialSafe(assets, sub.Material);
+            Material? material;
+            using (Prof.Sample("iqm.materials"))   // texture decode + upload live in here (skin/_norm/_gloss)
+            {
+                material = ResolveMaterialSafe(assets, materialName);
+                if (remapped && material is not null && ReferenceEquals(material, assets.FallbackMaterial()))
+                    material = ResolveMaterialSafe(assets, sub.Material);
+            }
             if (material is not null)
                 mesh.SurfaceSetMaterial(surfaceIndex, material);
 

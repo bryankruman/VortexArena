@@ -270,6 +270,18 @@ ToS/welcome/team-select, tools, confirms). Architecture:
   *Allocation Rate* / *% Time in GC* / gen0 counts while playing. **Do not** flip GC modes
   (`ServerGarbageCollection` etc.) in `XonoticGodot.csproj` without counter evidence — client frame-pauses
   trade against dedicated throughput.
+- **Hitch forensics (FrameProfiler, 2026-06-12):** `cl_frameprofiler 1` = overlay graph + hitch log,
+  `2` = also a per-second breakdown + the file sink `user://frameprofile.log`. Every frame is recorded into a
+  240-frame forensic ring (full per-scope ms+alloc table, GC counts + **pause ms**, draw calls, **pipeline-compile
+  deltas** — a nonzero `pipe +N` mid-play is a first-use shader compile slipping past the warm pass), and a hitch
+  emits a multi-line dump: `[hitch] scopes:` (top 12 with per-scope KB), `gpu:`, `gc:`, `events:`, and `prev:`
+  (the 8-frame run-up). **Events** are one-shot forensic markers any layer can raise via
+  `Prof.Event("...")` — wired today: streamer main-thread builds (with ms), GPU warm-pass completion, sim
+  backlog drops, server input-queue trims, faithful-particle capacity changes. Read a hitch as: events name the
+  culprit; `scopes` attribute the C# time; `pipe/gpu` attribute the GPU; `gc pause` the GC.
+  `set cl_frameprofiler_dump 1` (console, mid-play, after a stutter) writes the whole ring to
+  `user://frameprofile_ring.csv` (Excel/pandas-ready) and re-arms. Add new `Prof.Event` call sites freely —
+  they're free when the profiler is off, bounded when on, thread-safe everywhere.
 - **Dedicated/headless server:** v1 is the headless listen server (`--headless --host`, see the section
   above + `tools/run-dedicated.sh`); the `linux-dedicated` export preset uses Godot's "export as dedicated
   server" mode (`OS.HasFeature("dedicated_server")` is the feature-tag branch point). The

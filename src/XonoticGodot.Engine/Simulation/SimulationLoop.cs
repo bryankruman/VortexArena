@@ -162,7 +162,13 @@ public sealed class SimulationLoop
         // i.e. the machine genuinely can't keep up, not a one-frame catch-up being smoothed by the soft cap.
         // A backlog within MaxTicksPerAdvance is preserved and drained over the next render frames.
         if (_accumulator > MaxTicksPerAdvance * TicRate)
+        {
+            // Forensics: a drop means sim time just fell permanently behind wall clock — the event that (pre-fix)
+            // turned a client input burst into standing input latency (see InputQueuePolicy). Visible in hitch dumps.
+            XonoticGodot.Common.Diagnostics.Prof.Event(
+                $"sim: backlog dropped ({_accumulator * 1000f:0}ms behind)");
             _accumulator = 0f;
+        }
 
         // The number of fixed ticks that ran this call (0 when the render rate outruns the tick rate). The caller
         // uses this to avoid network/broadcast work on a frame where the world didn't actually advance.

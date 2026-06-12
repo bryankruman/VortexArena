@@ -1461,7 +1461,8 @@ public sealed partial class NetGame : Node3D
             _streamer.Request(
                 () => loader.ParseSkeletalModel(m, 0),                 // off-thread: pure-C# IQM + sidecar parse
                 parse => loader.BuildSkeletalModel(parse)?.Root.QueueFree(), // main: Godot build, then discard
-                XonoticGodot.Game.Client.BackgroundAssetStreamer.Priority.Low);
+                XonoticGodot.Game.Client.BackgroundAssetStreamer.Priority.Low,
+                label: $"idle-warm {m}");
         }
     }
 
@@ -1664,6 +1665,8 @@ public sealed partial class NetGame : Node3D
             _sharedCvars.Changed -= _sharedCvarBridge;   // shared store outlives this match; don't leak the hook
             _sharedCvarBridge = null;
         }
+        if (_processCvarsHooked && _sharedCvars is not null)
+            _sharedCvars.Changed -= OnProcessCvarChanged;   // same store-outlives-match reasoning (§11 R11)
         _minigame?.Dispose();
         _client?.Dispose();
         // S5: join the server-sim worker BEFORE disposing ServerNet/the world, so the socket + world teardown is
@@ -1688,6 +1691,40 @@ public sealed partial class NetGame : Node3D
     //  Per-frame drive (the heart: server tick → client poll → send input → camera)
     // =====================================================================================
 
+    // (§11 R11) The three cvars _Process consults every frame, cached so the hot path does zero dictionary
+    // lookups: seeded on first frame, refreshed only when the shared store raises Changed for one of them.
+    // With no shared store (bare CLI client) the seeds match the old per-frame defaults.
+    private bool _processCvarsHooked;
+    private float _bgmVolumeCv = 0.7f;
+    private bool _predictFireCv = true;
+    private bool _perFrameInputCv;
+
+    private void EnsureProcessCvarCache()
+    {
+        if (_processCvarsHooked)
+            return;
+        _processCvarsHooked = true;
+        RefreshProcessCvars();
+        if (_sharedCvars is not null)
+            _sharedCvars.Changed += OnProcessCvarChanged;
+    }
+
+    private void OnProcessCvarChanged(string name)
+    {
+        if (name.Equals("bgmvolume", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("cl_predictfire", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("cl_movement_perframe", StringComparison.OrdinalIgnoreCase))
+            RefreshProcessCvars();
+    }
+
+    private void RefreshProcessCvars()
+    {
+        _bgmVolumeCv = _sharedCvars?.GetFloat("bgmvolume") ?? 0.7f;
+        // cl_predictfire defaults ON: unset GetString reads "" → treat anything but "0" as on.
+        _predictFireCv = (_sharedCvars?.GetString("cl_predictfire") ?? "") != "0";
+        _perFrameInputCv = _sharedCvars?.GetFloat("cl_movement_perframe") is float pf && pf != 0f;
+    }
+
     public override void _Process(double delta)
     {
         using var _ngScope = XonoticGodot.Game.Client.FrameProfiler.Scope("ng.process"); // [profiling] whole-method cost
@@ -1697,6 +1734,8 @@ public sealed partial class NetGame : Node3D
         // its own animation, and the handshake state machine doesn't matter yet (no _client).
         if (!_readyComplete)
             return;
+
+        EnsureProcessCvarCache();   // (§11 R11) hot-path cvar values are cached; refreshed on Changed
 
         float dt = (float)delta;
 
@@ -1727,8 +1766,9 @@ public sealed partial class NetGame : Node3D
         if (_musicPlayer is not null && _serverWorld is not null)
         {
             _musicPlayer.ServerTime = _serverWorld.Time;
-            // Keep bgmvolume in sync (the cvar may change at runtime via the menu or console).
-            float bgm = _sharedCvars?.GetFloat("bgmvolume") ?? _serverWorld.Services.Cvars.GetFloat("bgmvolume");
+            // Keep bgmvolume in sync (cached; the Changed hook refreshes it on a menu/console set). Only the
+            // no-shared-store path still reads the server store live (rare: bare CLI host).
+            float bgm = _sharedCvars is not null ? _bgmVolumeCv : _serverWorld.Services.Cvars.GetFloat("bgmvolume");
             if (bgm > 0f) _musicPlayer.BgmVolume = bgm;
         }
 
@@ -1844,8 +1884,8 @@ public sealed partial class NetGame : Node3D
             // recoil, sound and HUD pulse pop the same frame as the click rather than waiting for the next 1/72 s
             // input tick — the felt "snap" on high-refresh displays. It also latches the press for the next sampled
             // command so a sub-tick tap can't be dropped, and (cl_predictfire) drives the predicted refire clock.
-            // cl_predictfire defaults ON: unset GetString reads "" → treat anything but "0" as on.
-            _predictFire = (_sharedCvars?.GetString("cl_predictfire") ?? "") != "0";
+            // cl_predictfire defaults ON (cached; refreshed via the Changed hook).
+            _predictFire = _predictFireCv;
             // Tell the in-process effect mirror to drop the host's own muzzle flash (predicted locally) when on.
             if (_render is not null && GodotObject.IsInstanceValid(_render))
             {
@@ -1855,8 +1895,9 @@ public sealed partial class NetGame : Node3D
             UpdateLocalFireFeedback(dt);
 
             // Input cadence. The client tells the server which mode it's in (PerFrameInput rides the input-frame
-            // header) so the two ends agree without a shared cvar store. Read live so it A/B-toggles in-session.
-            _perFrameInput = _sharedCvars?.GetFloat("cl_movement_perframe") is float pf && pf != 0f;
+            // header) so the two ends agree without a shared cvar store. Cached value still A/B-toggles
+            // in-session (the Changed hook refreshes it the frame the cvar is set).
+            _perFrameInput = _perFrameInputCv;
             _client.PerFrameInput = _perFrameInput;
             if (_perFrameInput)
             {
@@ -2486,6 +2527,17 @@ public sealed partial class NetGame : Node3D
 
     public override void _UnhandledInput(InputEvent @event)
     {
+        // HUD configure-mode editor (QC HUD_Panel_InputEvent, main.qc:504): while `_hud_configure 1` the editor
+        // intercepts mouse/keyboard for panel drag/resize/keyboard-edit. It self-gates (no-op + returns false
+        // when not configuring), so this costs nothing in normal play. When it consumes the event we mark it
+        // handled so it doesn't fall through to gameplay binds / mouse-look below. Console-open still wins (the
+        // console overlay handles its own keys first; this runs only on events it didn't consume).
+        if (!ConsoleState.IsOpen && _fullHud?.ConfigEditor is { } editor && editor.HandleInput(@event))
+        {
+            GetViewport().SetInputAsHandled();
+            return;
+        }
+
         // Minigame menu toggle (QC the +minigamemenu bind — no default key in Base; we bind 'M'). Opens/closes
         // the in-game Create/Join/Current-Game menu. Active even during play (so you can start a game), but not
         // while the console is open. When the menu is open it captures the cursor so the player can click it.
@@ -3127,7 +3179,8 @@ public sealed partial class NetGame : Node3D
             // silently — but a FAILED parse must still reach the main thread to trigger the fall-back attach.
             () => new SkeletalParseBox(assets.ParseSkeletalModel(model, skin)),
             box => DeliverPlayerModel(pm, e, model, skin, box.Parse, forced),
-            XonoticGodot.Game.Client.BackgroundAssetStreamer.Priority.High);
+            XonoticGodot.Game.Client.BackgroundAssetStreamer.Priority.High,
+            label: $"player model {model}");
         return pm;
     }
 

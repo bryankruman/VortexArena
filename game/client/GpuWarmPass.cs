@@ -81,6 +81,9 @@ public partial class GpuWarmPass : Node
     public override void _Process(double delta)
     {
         if (--_framesLeft <= 0)
+        {
+            XonoticGodot.Common.Diagnostics.Prof.Event($"warm: GPU warm pass done ({_instances.Count} instances)");
             QueueFree(); // frees the SubViewport, camera, and every warm instance
+        }
     }
 }

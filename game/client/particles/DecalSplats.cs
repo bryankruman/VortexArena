@@ -186,7 +186,6 @@ public sealed partial class DecalSplats : Node3D
     /// black background contributes zero removal under the multiplicative blend, so no alpha is needed).</summary>
     public ParticleFont? Font { get; set; }
 
-    private readonly Queue<MeshInstance3D> _live = new();
     private Shader? _shader;
 
     // Scratch buffers reused per splat (single-threaded scene calls).
@@ -291,12 +290,12 @@ public sealed partial class DecalSplats : Node3D
             Splat(bestPos, bestNormal, halfSize, removal, alpha, texnum);
     }
 
-    /// <summary>Remove every live splat (map change).</summary>
+    /// <summary>Remove every live splat (map change). Pooled nodes survive for the next map.</summary>
     public void Clear()
     {
-        while (_live.TryDequeue(out MeshInstance3D? m))
-            if (GodotObject.IsInstanceValid(m))
-                m.QueueFree();
+        for (int i = 0; i < _liveSlots.Count; i++)
+            ReleaseSlot(_liveSlots[i]);
+        _liveSlots.Clear();
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -484,35 +483,39 @@ public sealed partial class DecalSplats : Node3D
     }
 
     // ---------------------------------------------------------------------------------------------
-    //  Mesh + material + lifecycle
+    //  Mesh + material + lifecycle — pooled (PERFORMANCE_REPORT §11 R2). A splat acquires a pooled
+    //  MeshInstance3D + ArrayMesh + ShaderMaterial slot (the mesh is rebuilt in place via ClearSurfaces +
+    //  AddSurfaceFromArrays) and ONE _Process ager drives every live splat's hold/fade/release. Replaces
+    //  the per-splat ArrayMesh/ShaderMaterial/MeshInstance3D/Tween allocation + QueueFree churn that made
+    //  a rocket volley a node-churn spike (each impact splats several marks in one frame).
     // ---------------------------------------------------------------------------------------------
 
-    private void AddSplatMesh(List<Vector3> verts, List<Vector2> uvs, List<Color> cols, int texnum)
+    // Shader uniform names cached per the §3.4 standing rule: never pass a string literal to a
+    // StringName-typed Godot API from a per-frame path (_Process below pushes "fade" while splats decay).
+    private static readonly StringName FadeParam = "fade";
+    private static readonly StringName SplatTexParam = "splat_tex";
+    private static readonly StringName HasTexParam = "has_tex";
+
+    /// <summary>One pooled splat: the node plus its permanently-owned mesh/material, and the live age.</summary>
+    private sealed class Slot
     {
-        if (verts.Count < 3)
-            return;
+        public MeshInstance3D Node = null!;
+        public ArrayMesh Mesh = null!;
+        public ShaderMaterial Mat = null!;
+        public float Age;
+    }
 
-        var arrays = new Godot.Collections.Array();
-        arrays.Resize((int)Mesh.ArrayType.Max);
-        arrays[(int)Mesh.ArrayType.Vertex] = verts.ToArray();
-        arrays[(int)Mesh.ArrayType.TexUV] = uvs.ToArray();
-        arrays[(int)Mesh.ArrayType.Color] = cols.ToArray();   // removal · per-vertex falloff (DP c4f)
+    private readonly List<Slot> _liveSlots = new();   // append order == age order (oldest first)
+    private readonly Queue<Slot> _freeSlots = new();
+
+    private Slot AcquireSlot()
+    {
+        if (_freeSlots.TryDequeue(out Slot? pooled))
+            return pooled;
         var mesh = new ArrayMesh();
-        mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
-
-        // The raw particlefont cell — under (1 − tex·color) its black background removes nothing, exactly
-        // DP's "the particlefont does not need alpha on most textures". Solid fallback keeps marks alive
-        // without the atlas.
-        Texture2D? cell = Font?.Cell(texnum);
-
         // Draw BEFORE the particle batches (priority 0/1): DP renders decals during the per-surface pass,
         // ahead of the sorted transparent particles — smoke and fire composite OVER the marks, never under.
         var mat = new ShaderMaterial { Shader = _shader ??= SplatShader(), RenderPriority = -1 };
-        mat.SetShaderParameter("fade", 1f);
-        if (cell is not null)
-            mat.SetShaderParameter("splat_tex", cell);
-        mat.SetShaderParameter("has_tex", cell is not null);
-
         var node = new MeshInstance3D
         {
             Name = "splat",
@@ -520,27 +523,104 @@ public sealed partial class DecalSplats : Node3D
             MaterialOverride = mat,
             CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
             GIMode = GeometryInstance3D.GIModeEnum.Disabled,
+            Visible = false,
         };
         AddChild(node);
+        return new Slot { Node = node, Mesh = mesh, Mat = mat };
+    }
 
-        // Hold, fade the multiplicative factor to nothing, free — cl_decals_time/_fadetime.
-        var tween = node.CreateTween();
-        tween.TweenInterval(DecalTime);
-        tween.TweenMethod(Callable.From((float f) =>
-        {
-            if (GodotObject.IsInstanceValid(mat))
-                mat.SetShaderParameter("fade", f);
-        }), 1f, 0f, FadeTime);
-        tween.TweenCallback(Callable.From(() =>
-        {
-            if (GodotObject.IsInstanceValid(node))
-                node.QueueFree();
-        }));
+    private void ReleaseSlot(Slot s)
+    {
+        s.Node.Visible = false;
+        s.Mesh.ClearSurfaces();   // drop the GPU vertex buffer while parked
+        _freeSlots.Enqueue(s);
+    }
 
-        _live.Enqueue(node);
-        while (_live.Count > MaxSplats && _live.TryDequeue(out MeshInstance3D? old))
-            if (GodotObject.IsInstanceValid(old))
-                old.QueueFree();
+    private void AddSplatMesh(List<Vector3> verts, List<Vector2> uvs, List<Color> cols, int texnum)
+    {
+        if (verts.Count < 3)
+            return;
+
+        Slot s = AcquireSlot();
+
+        var arrays = new Godot.Collections.Array();
+        arrays.Resize((int)Mesh.ArrayType.Max);
+        arrays[(int)Mesh.ArrayType.Vertex] = verts.ToArray();
+        arrays[(int)Mesh.ArrayType.TexUV] = uvs.ToArray();
+        arrays[(int)Mesh.ArrayType.Color] = cols.ToArray();   // removal · per-vertex falloff (DP c4f)
+        s.Mesh.ClearSurfaces();
+        s.Mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+
+        // The raw particlefont cell — under (1 − tex·color) its black background removes nothing, exactly
+        // DP's "the particlefont does not need alpha on most textures". Solid fallback keeps marks alive
+        // without the atlas.
+        Texture2D? cell = Font?.Cell(texnum);
+        s.Mat.SetShaderParameter(FadeParam, 1f);
+        if (cell is not null)
+            s.Mat.SetShaderParameter(SplatTexParam, cell);
+        s.Mat.SetShaderParameter(HasTexParam, cell is not null);
+
+        s.Age = 0f;
+        s.Node.Visible = true;
+        _liveSlots.Add(s);
+
+        // Hard cap (DP cl_decals_max): retire the oldest. RemoveAt(0) is O(n) but n ≤ MaxSplats and this
+        // only runs while saturated.
+        while (_liveSlots.Count > MaxSplats)
+        {
+            ReleaseSlot(_liveSlots[0]);
+            _liveSlots.RemoveAt(0);
+        }
+    }
+
+    /// <summary>The one splat ager — hold for <see cref="DecalTime"/>, fade the multiplicative factor over
+    /// <see cref="FadeTime"/>, release to the pool (cl_decals_time/_fadetime). During the hold nothing is
+    /// pushed to the GPU (fade stays 1), so a screen full of fresh marks costs zero uniform traffic.</summary>
+    public override void _Process(double delta)
+    {
+        int count = _liveSlots.Count;
+        if (count == 0)
+            return;
+        float dt = (float)delta;
+        for (int i = count - 1; i >= 0; i--)
+        {
+            Slot s = _liveSlots[i];
+            s.Age += dt;
+            if (s.Age <= DecalTime)
+                continue;   // full strength — fade uniform already 1
+            float fade = FadeTime > 0f ? 1f - (s.Age - DecalTime) / FadeTime : 0f;
+            if (fade <= 0f)
+            {
+                ReleaseSlot(s);
+                _liveSlots.RemoveAt(i);
+                continue;
+            }
+            s.Mat.SetShaderParameter(FadeParam, fade);
+        }
+    }
+
+    /// <summary>A standalone one-triangle splat for the offscreen GPU warm pass (§11 R1) sharing the SAME
+    /// splat <see cref="Shader"/> the live pool uses, so the blend_mul splat pipeline compiles at map load
+    /// instead of on the first impact mark. The warm pass parents, renders, and frees it.</summary>
+    public MeshInstance3D BuildWarmupInstance()
+    {
+        var arrays = new Godot.Collections.Array();
+        arrays.Resize((int)Mesh.ArrayType.Max);
+        arrays[(int)Mesh.ArrayType.Vertex] = new Vector3[] { new(0f, 0f, 0f), new(8f, 0f, 0f), new(0f, 8f, 0f) };
+        arrays[(int)Mesh.ArrayType.TexUV] = new Vector2[] { new(0f, 0f), new(1f, 0f), new(0f, 1f) };
+        arrays[(int)Mesh.ArrayType.Color] = new Color[] { new(0.5f, 0.5f, 0.5f), new(0.5f, 0.5f, 0.5f), new(0.5f, 0.5f, 0.5f) };
+        var mesh = new ArrayMesh();
+        mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+        var mat = new ShaderMaterial { Shader = _shader ??= SplatShader(), RenderPriority = -1 };
+        mat.SetShaderParameter(HasTexParam, false);
+        return new MeshInstance3D
+        {
+            Name = "warm_splat",
+            Mesh = mesh,
+            MaterialOverride = mat,
+            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+            GIMode = GeometryInstance3D.GIModeEnum.Disabled,
+        };
     }
 
     /// <summary>DP's decal draw state (gl_rmain.c:9699-9706): GL_ZERO/ONE_MINUS_SRC_COLOR == blend_mul of

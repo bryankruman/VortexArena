@@ -521,3 +521,215 @@ iterator allocs in goal rating — rare-path, diminishing returns), `move.post` 
   showing server tick > ~2 ms *after* the areagrid. Do **not** start it without that profile.
 - **Still deferred from §8** (unchanged, gated on a manual `dotnet-counters` measurement): GpuParticles3D node
   pooling (3.2-1), GPU vertex-shader MD3 morphing (3.3 Tier-3). See §8 "Deferred."
+
+---
+
+## 11. Rendering-pipeline audit (2026-06-12) — post-particle-merge
+
+**Context:** user still reports stuttering/hitching after Waves 0–1. The dual particle system (faithful CPU
+MultiMesh backend, now the DEFAULT for effectinfo effects) merged 2026-06-12 — **after** every prior audit — so
+this pass re-examined the rendering pipeline end-to-end. Method: 4 parallel code audits (particle/effects render
+path, entity render feed, GPU/scene config, full `_Process` inventory); every HIGH/MED claim below was then
+re-verified by reading the cited code directly. Two agent claims were **disproved** and are recorded at the
+bottom so they don't resurface.
+
+### 11.1 HIGH — new since the particle merge (likely the felt regression)
+
+**R1. GpuWarmPass does not warm the faithful particle path (first-explosion pipeline compile).**
+`game/client/GpuWarmPass.cs` warms `effects.BuildWarmupInstances()` — the legacy GpuParticles3D burst materials —
+but has zero coverage (verified: no faithful/splat references) of:
+- the FaithfulParticleRenderer **premul** and **invmod** MultiMesh ShaderMaterials (`FaithfulParticleRenderer.cs:~100`),
+  including the spark/oriented/billboard shader behavior driven via INSTANCE_CUSTOM;
+- the **DecalSplats** ShaderMaterial (`DecalSplats.cs:510`, `_shader ??= SplatShader()`);
+- the routed-path **fx_light** OmniLight3D (a new clustered-light pipeline state on first use).
+Since faithful mode is now the default, the FIRST rocket/electro impact of a session compiles 2–3 pipelines
+mid-play — exactly the §1.1 class of stall the warm pass was built to kill, regressed by the merge.
+**Fix:** during warmup, spawn one 2-particle faithful effect of each archetype (one premul incl. a spark-flagged
+instance, one invmod) through `FaithfulParticles.Spawn` + one `DecalSplats.Splat` + one `fx_light` into the warm
+viewport, run the existing 2-frame FramePostDraw wait. ~30 lines, zero visual risk.
+
+**R2. Per-splat node/resource churn in DecalSplats.** Every stain (each bouncing blood/bounce-particle impact
+fires `OnStain`) builds a fresh `ArrayMesh` + `ShaderMaterial` + `MeshInstance3D` + `Tween`
+(`DecalSplats.cs:490-544` AddSplatMesh), preceded by a synchronous brush query + Sutherland–Hodgman clip of every
+overlapping brush face (`DecalSplats.cs:349-443`). A rocket volley splats dozens of marks across a few frames →
+node + native-handle churn on top of the clip CPU. The shader is cached (good); everything else is per-splat.
+**Fix:** pool MeshInstance3D+ShaderMaterial pairs (the 256-style ring `Decals.cs` already uses); reuse one
+scratch ArrayMesh per pooled instance via `ClearSurfaces`+`AddSurfaceFromArrays`; replace the per-splat Tween
+with one `_Process` fade ager over the live ring (one node, zero Tween allocs). Clip cost itself is bounded and
+event-shaped — leave it unless profiling says otherwise.
+
+**R3. Per-explosion OmniLight3D + SceneTree Tween churn.** `EffectSystem.SpawnInfoLight`
+(`EffectSystem.cs:1970-2005`) creates an OmniLight3D + a SceneTree tween + QueueFree **per lightradius>0 block
+per spawn** (explosions are often multiple blocks). No shadows (Godot default off — fine), but in a firefight
+this is constant light-node create/free churn plus clustered-light count spikes.
+**Fix:** pool ~16 fx lights (the `CsqcModelEffects` per-entity light pool at :263-290 is the in-repo pattern);
+fade them in the EffectSystem's own per-frame pass instead of one Tween per light.
+
+### 11.2 HIGH — sustained GPU baseline (shrinks the headroom that absorbs spikes)
+
+**R4. The whole map is ONE MeshInstance3D and it casts directional shadows.** `MapLoader.BuildMap` packs every
+surface into a single ArrayMesh on one node (`MapLoader.cs:187-188`), and `NetGame.AddLight` (:3381) adds the Sun
+with `ShadowEnabled = true`. Consequences: (a) **zero frustum culling** — every surface of the map is drawn every
+frame; (b) the **entire map re-renders into every directional shadow cascade every frame** (the dominant
+multiplier: map × 4 cascades). The map's sun shadows are already baked into the lightmaps, so the realtime
+cascade pass mostly re-derives them (DP itself runs r_shadow_realtime_world OFF by default — the current setup is
+*less* faithful and more expensive).
+**Fix (cheap, fidelity-positive):** set the world `MeshInstance3D.CastShadow = Off` (and likewise brush
+submodels) — dynamic models still receive and cast shadows, static shadowing stays lightmap-authoritative, and
+the cascade pass drops to just dynamic geometry. **Fix (bigger, later):** split the world mesh by BSP leaf-cluster
+or a coarse grid into ~10-50 MeshInstance3Ds for real frustum culling; keep the texture+lightmap surface keying.
+
+**R5. Surface = texture × lightmap-page split (draw-call multiplier).** `SurfaceKey(TextureIndex, LightmapIndex)`
+(`MapLoader.cs:39`) splits same-texture faces across lightmap pages into separate surfaces/materials. With
+per-page 128×128 lightmaps this multiplies draw calls and material binds on page-heavy maps.
+**Fix:** atlas the lightmap pages into one texture at load (pages are tiny — even 64 pages = 1024×1024) and fold
+the page offset into UV2 → surfaces key on texture alone. Load-time work only; pairs with the R4 mesh split.
+
+### 11.3 MED — per-frame costs worth trimming
+
+**R6. FaithfulParticleRenderer uploads the full grown capacity every frame.** The grow-only buffer design is
+right (zero managed alloc — verified), but `MultimeshSetBuffer` requires the full `InstanceCount × stride` array,
+so after a 5k-particle peak every later frame re-marshals the whole ~400 KB buffer even for 10 live particles
+(`FaithfulParticleRenderer.cs:471-476, 578`). Growth itself also reallocates the GPU buffer mid-burst.
+**Fix:** pre-size to a sane default (e.g. 4096 instances) at build, and decay the highwater (halve InstanceCount
+after ~10 s below 25 % occupancy) so steady-state upload tracks actual usage. Both changes are invisible.
+
+**R7. MusicPlayer scans the whole entity list every frame.** `EvaluateMusicSources` (`MusicPlayer.cs:142-235`)
+walks ALL entities (×3 passes worst case) with per-entity string `ClassName` compares, every render frame, under
+the SimGate lock when sv_threaded. **Fix:** maintain a small registered list of trigger_music/target_music
+entities (populated at spawn/remove) and scan only that.
+
+**R8. ModelTint pushes 4 `SetInstanceShaderParameter`s per mesh per player per frame** (`ModelTint.cs:56-66`)
+even when colors are unchanged (the common case). **Fix:** stash the last-applied 4-color struct per entity and
+early-out on equality; appearance changes are rare events.
+
+**R9. Fading/ghost items re-walk their node tree every frame.** `ClientWorld.SetTreeTransparency`
+(`ClientWorld.cs:1084-1092`) recurses `GetChild(i)` per fading item per frame (despawn fades, ghost items).
+**Fix:** reuse the `CsqcModelEffects.GetCachedMeshes` flattened-list pattern keyed on the entity node.
+
+**R10. ParticleSim bounce traces.** One `Api.Trace.Trace` per bouncing particle per frame
+(`ParticleSim.cs:601`+) — this is exactly DP's model and the traces are pure-C# areagrid (fast), so it's
+**faithful by design**; flagged here only as the expected scaling knob if profiles ever show `particles.sim`
+dominating with thousands of live bounce particles (cl_particles_quality is the faithful lever, not code).
+
+**R11. Misc steady trims (each small, all easy):**
+- `NetGame._Process` re-reads `bgmvolume` / `cl_predictfire` / `cl_movement_perframe` via dictionary lookup every
+  frame (`NetGame.cs:1731/1847/1859`) — cache + `Changed` subscription (MusicPlayer:107 is the pattern).
+- `CrosshairPanel._Process` reads ~9 cvars/frame through `GlobalF` (2 lookups each, `HudPanel.cs:245-248`) —
+  cache per-frame or on change. (The 2 true-aim traces/frame are QC-faithful — keep.)
+- `PoolBurstNodes` (`EffectSystem.cs:79`) still default false — the §3.2-1 pooling exists and is opt-in; flip it
+  on and A/B (the legacy GpuParticles3D path still serves trails/map emitters even in faithful mode).
+- `WaypointSpriteLayer`/`RadarPanel` `QueueRedraw()` unconditionally (`WaypointSpriteLayer.cs:36`,
+  `RadarPanel.cs:108`) — both genuinely repaint with the camera, so low value; gate only if canvas re-record
+  shows up in a profile.
+
+### 11.4 Disproved during verification (do NOT act on these if re-reported)
+
+- **"Effect lights cast shadows by default" — FALSE.** Godot 4's `Light3D.shadow_enabled` defaults to **false**;
+  no effect/projectile light enables it (grep-verified — only the Sun at `NetGame.cs:3381` and GameDemo's). The
+  6-face-cubemap-per-frame claim does not apply.
+- **"Faithful renderer allocates/sorts wastefully" — mostly FALSE.** The depth sort uses a cached
+  `Comparison<int>` (no per-frame alloc), the pack loop is alloc-free, batches hide cleanly at zero particles.
+  Only the R6 full-capacity upload + growth realloc are real.
+
+### 11.5 Suggested order
+
+| Pri | Item | Why first |
+|-----|------|-----------|
+| P0 | R1 warm the faithful path | new first-use stall, regression-shaped, ~30 lines |
+| P0 | R4 world `CastShadow = Off` | one line; removes map×4-cascade redraw; fidelity-positive |
+| P1 | R2 splat pooling + R3 fx-light pooling | firefight node churn (the felt combat hitches) |
+| P1 | R6 buffer pre-size + decay | removes mid-burst GPU realloc spike |
+| P2 | R7/R8/R9/R11 steady trims | one cleanup pass, all low-risk |
+| P3 | R5 lightmap atlas + world mesh split (with R4 learnings) | draw-call/culling structure; biggest but slowest |
+
+Verify per §7: `cl_frameprofiler 1`, exported release build, fixed scenario (first-shot-of-each-weapon for R1;
+sustained firefight for R2/R3/R6; map fly-through for R4/R5).
+
+### 11.6 Implementation status (2026-06-12) — P0/P1/P2 LANDED
+
+All of R1–R4, R6–R9, R11 implemented in one pass. Build green; **1519/1519 tests pass**; windowed smokes verified
+(`--fx-demo rocket_explode` renders the faithful explosion correctly; `--host stormkeep --bots 4` renders the full
+match path — world lighting unchanged by R4, exactly as predicted since the LightmapShader is unshaded).
+
+- **R1** — `FaithfulParticleRenderer.BuildWarmupInstances()` (one billboard + one spark instance per batch,
+  sharing the LIVE batch materials), `DecalSplats.BuildWarmupInstance()` (shares the live splat Shader), plus a
+  representative OmniLight — all appended in `EffectSystem.BuildWarmupInstances()` so the existing GpuWarmPass
+  compiles them at map load. The warm BuildFromInfo bursts also seed the R3 light pool during the loading screen.
+- **R2** — `DecalSplats` pools Slot{MeshInstance3D+ArrayMesh+ShaderMaterial}; mesh rebuilt in place
+  (ClearSurfaces+AddSurfaceFromArrays); ONE `_Process` ager replaces per-splat Tweens (uniform pushed only during
+  the fade window, via a cached `StringName`). `Clear()` releases to the pool (nodes survive map change).
+- **R3** — `EffectSystem.SpawnInfoLight` is pool-backed (`MaxFxLights` 24, saturation recycles the oldest);
+  one `_Process` fade pass replaces the per-flash SceneTree Tween + QueueFree; the routed-path holder node is
+  gone. Lights are absolute-positioned (a flash is a positional snapshot — DP CL_AllocLightFlash semantics).
+- **R4** — world `MeshInstance3D.CastShadow = Off` (MapLoader). Only dynamic models render into the sun cascades
+  now. Accepted trade-off (documented in-code): dynamic shadows aren't occluded by world geometry.
+- **R6** — batches pre-size to 512 instances at build (no mid-burst first realloc), grow in power-of-two steps,
+  and decay capacity toward the 10 s rolling peak (the full-capacity upload now tracks recent usage, not the
+  session max). Backwards-clock guard re-arms the decay timer on map change.
+- **R7** — `MusicPlayer` scans a cached trigger_music/target_music list (rebuilt on EntityList change + 5 s
+  safety rescan) instead of 3 passes over every entity per frame under the sv_threaded gate.
+- **R8** — `ModelTint.ApplyAppearance(..., ref TintCache)`: per-entity last-applied snapshot
+  (`CsqcModelEffects.State.Tint`); the 4×meshes `SetInstanceShaderParameter` pushes only run when the computed
+  colors or the mesh list changed (mesh-list identity = count + first instance id, so a placeholder→real swap
+  re-seeds).
+- **R9** — `SetTreeTransparency` now pushes through the shared 3.2-2 cached mesh list with a change gate
+  (`ItemFadeApplied`/`ItemFadeMeshCount`) — the constant ghost fade is one push, not one per frame per item.
+- **R11** — NetGame `_Process` cvars (bgmvolume / cl_predictfire / cl_movement_perframe) cached + refreshed via
+  `Changed` (unhooked in Shutdown); CrosshairPanel per-frame cvars cached the same way (unhooked in `_ExitTree`,
+  which now also calls `base._ExitTree()` for HudPanel's own hook); `PoolBurstNodes` default → **true**.
+- **R5** (lightmap atlas + world-mesh split for frustum culling) — NOT in this pass; it's the remaining P3
+  structural item.
+
+**Manual gate left (user, per §7):** the felt A/B in an exported release build — first-shot-per-weapon (R1),
+sustained bot firefight (R2/R3/R6), and confirm no visual regressions in dynamic-model shadows indoors (R4).
+
+---
+
+## 12. Hitch-forensics profiler + input-latency fix (2026-06-12)
+
+### 12.1 The legacy input-queue latency bug (FIXED — the felt "0.5 s fire delay")
+
+Symptom: projectile leaves ~0.5 s after the click (muzzle flash instant — it's predicted), movement mushy.
+**Not S5** (sv_threaded absent → the gate-null path is byte-identical; verified). Root cause, two halves:
+- The legacy input mode (`cl_movement_perframe 0` — Bryan's saved config pins it; the B2 default flip doesn't
+  apply over a seta) produces exactly one command per 1/72 s and the server consumes exactly one per tick — the
+  queue length NEVER shrinks on its own. After a hitch the client bursts its accumulated commands (≤18/frame).
+- Meanwhile `SimulationLoop.Advance` soft-caps catch-up at 4 ticks/frame and DROPS the sim backlog past 16
+  ticks — so across consecutive long frames the server runs fewer ticks than the client queued commands.
+  Net: every rough stretch permanently added ~0.2-0.5 s of queued input = standing fire/movement latency.
+
+**Fix:** `InputQueuePolicy` (src/XonoticGodot.Net) + the trim in `ServerNet.ProvideInput` — DP
+`sv_clmovement_inputtimeout` semantics: past an abnormal-depth trigger (7 commands; healthy slow-client batching
+never reaches it) the oldest surplus is consumed UNSIMULATED down to a 2-command jitter floor. Dropped seqs still
+ack (client prediction stays consistent — the brief DP-style reconcile warp), dropped one-shot impulses still
+dispatch (a hitch can't eat a weapon switch). 4 regression tests. The per-frame input mode needs no trim (its
+0.25 s/tick drain budget self-heals). **Verified live by §12.2's event stream:** `net: input backlog trimmed
+10 -> 2` firing right after `sim: backlog dropped (236ms behind)` during an early-match model build.
+
+### 12.2 The forensics system (FrameProfiler v2)
+
+Every frame now lands in a 240-frame ring: full per-scope **time + allocation** table, GC counts + **pause ms**
+(`GC.GetTotalPauseDuration` delta), draw calls, **pipeline-compile deltas** (RenderingServer counters — a nonzero
+`pipe +N` mid-play is a first-use compile slipping past the warm pass, the §11 R1 class caught red-handed), and
+one-shot **events** (`Prof.Event`, thread-safe/bounded/free-when-off) stamped onto the frame they landed on.
+A hitch emits a rate-limited multi-line dump: `scopes:` (top 12, with KB), `gpu:`, `gc:`, `events:` (this frame +
+the 7 before), `prev:` (8-frame run-up). `set cl_frameprofiler_dump 1` mid-play writes the whole ring to
+`user://frameprofile_ring.csv`. Overlay gained a `draws/pipe/pause` line. Event sites wired: streamer main-thread
+builds (named, with ms), GPU warm-pass completion, sim backlog drops, input-queue trims, faithful-particle
+capacity changes. Docs in RUNNING.md §Tricks.
+
+**Gotcha it exposed immediately:** Godot's `_Process` delta UNDER-REPORTS long stalls (a 746 ms `stream.build`
+scope inside a "51 ms" frame) — trust the scope table and events for stall magnitude, not the frame delta.
+
+### 12.3 New empirical findings (next targets, by felt impact)
+
+1. **Player-model main-thread builds are ~600-750 ms / ~180 MB alloc EACH** (Debug; §9 measured Release ≈ half).
+   Wave 1 staggered them one-per-frame — but each one is still a monolithic `BuildSkeletalModel` stall, the
+   dominant early-match hitch in the forensic log. Next lever: split the Godot-side build into budgeted
+   sub-steps (per-surface mesh commit across frames) or move texture upload off the delivery frame.
+2. **Mid-play pipeline compiles still occur** (`pipe +1..+3` on model delivery frames — the model's own new
+   materials; expected first-sight cost the warm pass can't precompile for arbitrary player models). Watch the
+   `uber` slice: nonzero means the ubershader fallback is compiling, which Godot hides poorly on some drivers.
+3. The input trim + sim-backlog-drop event pair is the canary for any future "feels laggy" report — if trims
+   fire steadily (not just at match start), something is hitching repeatedly upstream; read the events.

@@ -76,7 +76,10 @@ public partial class EffectSystem : Node3D
     /// path participates; trails, the effectinfo fx_info tree, attached muzzle flashes and the GPU warm pass
     /// stay on QueueFree.
     /// </summary>
-    [Export] public bool PoolBurstNodes { get; set; } = false;
+    // (§11 R11) Default ON since the rendering-pipeline pass: the pooled lifecycle (ScheduleRelease →
+    // free-list) replaces the per-burst new GpuParticles3D + QueueFree node churn in firefights. The
+    // attached-muzzleflash and GPU-warm callers still pass pool:false and keep their QueueFree lifecycle.
+    [Export] public bool PoolBurstNodes { get; set; } = true;
 
     private readonly Queue<Node3D> _live = new();
 
@@ -330,6 +333,21 @@ public partial class EffectSystem : Node3D
             if (built is not null)
                 list.Add(built);
         }
+
+        // (§11 R1) The FAITHFUL path's pipelines — the default backend since the dual-system merge, and
+        // entirely separate resources from the legacy bursts above: the premul/invmod MultiMesh shaders
+        // (incl. the spark vertex path) and the DecalSplats blend_mul shader. Without these the first real
+        // explosion/impact mark compiled 2-3 pipelines mid-play.
+        if (FaithfulParticles is not null)
+            list.AddRange(FaithfulParticles.BuildWarmupInstances());
+        if (Splats is not null)
+            list.Add(Splats.BuildWarmupInstance());
+
+        // One representative effect flash so the warm viewport renders with a clustered OmniLight active.
+        // (The live fx-light pool itself is seeded by the BuildFromInfo warm bursts above — their
+        // lightradius blocks route through the pooled SpawnInfoLight during the loading screen.)
+        list.Add(new OmniLight3D { Name = "warm_fx_light", OmniRange = 60f, LightEnergy = 2f });
+
         return list;
     }
 
@@ -1092,7 +1110,7 @@ public partial class EffectSystem : Node3D
             // like TE_SMALLFLASH / grapple_muzzleflash / jumppad_activate) keeps the parent that holds the light.
             if (info.LightRadius > 0f)
             {
-                SpawnInfoLight(parent, info, originMax, colorOverride);
+                SpawnInfoLight(info, originMax, colorOverride);
                 any = true;
             }
 
@@ -1911,13 +1929,11 @@ public partial class EffectSystem : Node3D
     /// sprites/decals). Mirrors the DP block loop's light section (cl_particles.c:1631-1652): per defined
     /// block with <c>lightradius</c> &gt; 0 — after the underwater gates, independent of any particle gating —
     /// place the flash at the trail END (originmaxs) for trail-class spawns, else at the effect center.
-    /// The lights self-free via <see cref="SpawnInfoLight"/>'s tween; the holder node lingers past the
-    /// longest possible flash (~1.5s clamp) then frees.
+    /// The flashes are pool-backed (§11 R3) and fade/recycle via this system's <see cref="_Process"/>.
     /// </summary>
     private void SpawnRoutedBlockLights(IReadOnlyList<EffectInfoEmitter> blocks, NVec3 origin, NVec3 velocity,
         bool isTrail, Color? colorOverride)
     {
-        Node3D? holder = null;
         NVec3 end = isTrail && velocity != default ? velocity : origin;
         NVec3 center = (origin + end) * 0.5f;
         bool underwater = false, underwaterKnown = false;
@@ -1938,13 +1954,7 @@ public partial class EffectSystem : Node3D
                 if (info.NotUnderwater && underwater) continue;
             }
 
-            if (holder is null)
-            {
-                holder = new Node3D { Name = "fx_lights", Position = Coords.ToGodot(origin) };
-                AddChild(holder);
-                ScheduleFree(holder, 2f);
-            }
-            SpawnInfoLight(holder, info, isTrail ? end : center, colorOverride);
+            SpawnInfoLight(info, isTrail ? end : center, colorOverride);
         }
     }
 
@@ -1966,8 +1976,47 @@ public partial class EffectSystem : Node3D
         return null;
     }
 
-    /// <summary>Spawn the OmniLight3D an effectinfo block requests (lightradius/lightcolor/lightradiusfade).</summary>
-    private void SpawnInfoLight(Node3D parent, EffectInfoEmitter info, NVec3 atQuake, Color? colorOverride)
+    // ---------------------------------------------------------------------------------------------
+    //  (§11 R3) Pooled effect flash lights. Every lightradius>0 block used to create an OmniLight3D +
+    //  a SceneTree Tween + QueueFree per spawn — constant node churn in a firefight (explosions are
+    //  several blocks each). The flashes are short (≤1.5 s) and DP itself recycles a fixed dlight slot
+    //  array, so a small reused pool + one per-frame fade pass replaces all of it; saturation steals
+    //  the OLDEST (most-faded) flash. Lights are absolute-positioned children of this system — a flash
+    //  is a positional snapshot (DP CL_AllocLightFlash), it never follows a mover.
+    // ---------------------------------------------------------------------------------------------
+
+    private sealed class FxLight
+    {
+        public OmniLight3D Node = null!;
+        public float Age;
+        public float Duration;
+        public float Energy0;
+    }
+
+    /// <summary>Hard cap on simultaneously-live effect flashes (the oldest is recycled past this).</summary>
+    private const int MaxFxLights = 24;
+
+    private readonly List<FxLight> _liveFxLights = new();   // append order == age order (oldest first)
+    private readonly Queue<FxLight> _freeFxLights = new();
+
+    private FxLight AcquireFxLight()
+    {
+        if (_freeFxLights.TryDequeue(out FxLight? pooled))
+            return pooled;
+        if (_liveFxLights.Count >= MaxFxLights)
+        {
+            FxLight oldest = _liveFxLights[0];
+            _liveFxLights.RemoveAt(0);
+            return oldest;
+        }
+        var node = new OmniLight3D { Name = "fx_light", Visible = false };
+        AddChild(node);
+        return new FxLight { Node = node };
+    }
+
+    /// <summary>Light the flash an effectinfo block requests (lightradius/lightcolor/lightradiusfade) at an
+    /// absolute Quake-space position. Pool-backed; faded and recycled by <see cref="_Process"/>.</summary>
+    private void SpawnInfoLight(EffectInfoEmitter info, NVec3 atQuake, Color? colorOverride)
     {
         // DP color scales lightcolor by the tint; we use the parsed lightcolor (or the override hue) directly.
         Color lcol = colorOverride is { } c
@@ -1975,32 +2024,43 @@ public partial class EffectSystem : Node3D
             : new Color(info.LightColor.X, info.LightColor.Y, info.LightColor.Z);
         // lightcolor components routinely exceed 1 (e.g. "8 4 1"); normalise into a unit hue + energy.
         float maxc = MathF.Max(1f, MathF.Max(lcol.R, MathF.Max(lcol.G, lcol.B)));
-        var light = new OmniLight3D
-        {
-            Name = "fx_light",
-            Position = Coords.ToGodot(atQuake) - parent.Position,
-            OmniRange = Math.Clamp(info.LightRadius, 1f, 2000f),
-            LightColor = new Color(lcol.R / maxc, lcol.G / maxc, lcol.B / maxc),
-            LightEnergy = MathF.Min(8f, maxc),
-        };
-        parent.AddChild(light);
 
+        FxLight l = AcquireFxLight();
+        l.Node.Position = Coords.ToGodot(atQuake);
+        l.Node.OmniRange = Math.Clamp(info.LightRadius, 1f, 2000f);
+        l.Node.LightColor = new Color(lcol.R / maxc, lcol.G / maxc, lcol.B / maxc);
+        l.Energy0 = MathF.Min(8f, maxc);
+        l.Node.LightEnergy = l.Energy0;
+        l.Node.Visible = true;
         // Fade the flash: lightradiusfade is radius-units/sec, so the flash lasts ~radius/fade seconds.
-        float dur = info.LightRadiusFade > 0f
+        l.Duration = info.LightRadiusFade > 0f
             ? Math.Clamp(info.LightRadius / info.LightRadiusFade, 0.05f, 1.5f)
             : 0.15f;
-        SceneTree? tree = IsInsideTree() ? GetTree() : parent.GetTree();
-        if (tree is not null)
+        l.Age = 0f;
+        _liveFxLights.Add(l);
+    }
+
+    /// <summary>The one fx-light ager: linear energy fade over each flash's duration, then release to the
+    /// pool. Replaces the per-flash SceneTree Tween + QueueFree.</summary>
+    public override void _Process(double delta)
+    {
+        int count = _liveFxLights.Count;
+        if (count == 0)
+            return;
+        float dt = (float)delta;
+        for (int i = count - 1; i >= 0; i--)
         {
-            // Create the tween from the SceneTree, not the light: the light's parent isn't AddChild'd until after
-            // this block loop, so light.CreateTween() would fail ("not inside the SceneTree") and return null,
-            // NRE-ing every lightradius>0 effect (all explosions). The callback below guards the light's validity.
-            var tween = tree.CreateTween();
-            tween.TweenProperty(light, "light_energy", 0f, dur).From(light.LightEnergy);
-            tween.TweenCallback(Callable.From(() =>
+            FxLight l = _liveFxLights[i];
+            l.Age += dt;
+            float frac = l.Duration > 0f ? 1f - l.Age / l.Duration : 0f;
+            if (frac <= 0f)
             {
-                if (GodotObject.IsInstanceValid(light)) light.QueueFree();
-            }));
+                l.Node.Visible = false;
+                _liveFxLights.RemoveAt(i);
+                _freeFxLights.Enqueue(l);
+                continue;
+            }
+            l.Node.LightEnergy = l.Energy0 * frac;
         }
     }
 

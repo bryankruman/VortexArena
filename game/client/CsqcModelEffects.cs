@@ -53,6 +53,10 @@ public static class CsqcModelEffects
         // rebuilt when the root node changes (a model swap, detected by instance id) or a cached mesh is freed.
         public readonly List<MeshInstance3D> CachedMeshes = new();
         public ulong CachedMeshesRootId;
+
+        // (§11 R8) Last tint pushed by the per-frame appearance pass — ModelTint.ApplyAppearance skips the
+        // 4×meshes SetInstanceShaderParameter interop when neither the colors nor the mesh list changed.
+        public ModelTint.TintCache Tint;
     }
 
     /// <summary>One DP <c>adddynamiclight</c>: a unit position offset + range + (possibly &gt;1) color.</summary>

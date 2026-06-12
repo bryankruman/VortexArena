@@ -105,6 +105,10 @@ public sealed partial class FaithfulParticleBackend : Node3D
     /// <summary>The live simulation (exposed for stats/HUD and the parity harness; do not mutate).</summary>
     public ParticleSim Sim => _sim;
 
+    /// <summary>Warm-pass nodes for the renderer's MultiMesh pipelines (§11 R1) — empty before _Ready.</summary>
+    public System.Collections.Generic.List<Node3D> BuildWarmupInstances()
+        => _renderer is not null ? _renderer.BuildWarmupInstances() : new System.Collections.Generic.List<Node3D>();
+
     public override void _Ready()
     {
         _renderer = new FaithfulParticleRenderer { Name = "FaithfulRenderer" };

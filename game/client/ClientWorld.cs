@@ -101,6 +101,8 @@ public partial class ClientWorld : Node3D
         public bool IsPlayerModel;    // a skeletal/MD3 player model (gets the appearance/deathglow pass)
         public ItemDespawnFx? Despawn; // loot despawn animation (lazily created when ITS_EXPIRING first seen)
         public bool ItemFaded;        // a despawn/ghost transparency is currently applied (reset to opaque on the way back)
+        public float ItemFadeApplied; // last transparency pushed (§11 R9 change gate; 0 = opaque, the node default)
+        public int ItemFadeMeshCount; // mesh-list size at last push (re-push after a cache rebuild)
     }
     private readonly Dictionary<int, CsqcState> _csqc = new();
 
@@ -992,7 +994,9 @@ public partial class ClientWorld : Node3D
                 // the appearance and effects lists can never diverge. Only player models need it, so it's fetched
                 // inside this branch — a player model with zero effects never builds it for the effects pass.
                 List<MeshInstance3D> meshes = CsqcModelEffects.GetCachedMeshes(st.Effects, node);
-                ModelTint.ApplyAppearance(meshes, colormap, dead, st.DeathTime, ghost);
+                // Change-gated (§11 R8): the uniform pushes only happen when the computed colors or the mesh
+                // list changed (colors only move while dead-fading or on a rainbow palette nibble).
+                ModelTint.ApplyAppearance(meshes, colormap, dead, st.DeathTime, ghost, ref st.Effects.Tint);
             }
 
             // (2) LOD: compute the index (faithful math) — see ApplyLod for the swap caveat.
@@ -1024,13 +1028,13 @@ public partial class ClientWorld : Node3D
             }
             else if (!e.ItemAvailable)
             {
-                DriveItemGhostFx(node);
+                DriveItemGhostFx(node, st);
                 st.ItemFaded = true;
             }
             else if (st.ItemFaded)
             {
                 // Back to available (respawned) — undo the prior ghost/despawn fade exactly once (no per-frame churn).
-                SetTreeTransparency(node, 0f);
+                SetTreeTransparency(node, st, 0f);
                 node.Visible = true;
                 st.ItemFaded = false;
             }
@@ -1044,10 +1048,10 @@ public partial class ClientWorld : Node3D
     /// <c>'-1 -1 -1'</c> = no tint) is left for a follow-up. Reuses the per-instance transparency the despawn fade
     /// uses (never touches the shared/cached item materials); the bob+spin keeps running (driven in EntityNode).
     /// </summary>
-    private void DriveItemGhostFx(EntityNode node)
+    private void DriveItemGhostFx(EntityNode node, CsqcState st)
     {
         float ghost = Mathf.Clamp(CvarF("cl_ghost_items", 0.45f), 0f, 1f); // QC autocvar_cl_ghost_items default 0.45
-        SetTreeTransparency(node, 1f - ghost);
+        SetTreeTransparency(node, st, 1f - ghost);
         node.Visible = ghost > 0.001f;
     }
 
@@ -1065,7 +1069,7 @@ public partial class ClientWorld : Node3D
 
         // QC: this.alpha *= (wait - time)/IT_DESPAWNFX_TIME — apply as a per-instance transparency on the model
         // (bit 2). Bit 2 clear → Tick returns 1, so this is a no-op (item stays opaque, just particles).
-        SetTreeTransparency(node, 1f - alpha);
+        SetTreeTransparency(node, st, 1f - alpha);
         node.Visible = alpha > 0.001f; // hidden once fully faded (QC drawmask 0); transparency handles the gradient
 
         // QC: pointparticles(EFFECT_ITEM_DESPAWN, this.origin + '0 0 16', '0 0 0', 1) — same client path the
@@ -1075,20 +1079,24 @@ public partial class ClientWorld : Node3D
     }
 
     /// <summary>
-    /// Apply a whole-model transparency (0 = opaque, 1 = invisible) to every <see cref="GeometryInstance3D"/> in a
-    /// node's subtree — the render-side analogue of QC's per-entity <c>.alpha</c>. Uses
-    /// <see cref="GeometryInstance3D.Transparency"/> (a per-instance property, NOT a material edit) so it never
-    /// mutates the shared/cached item materials. Child <c>Visible</c> is left untouched (other systems own it);
-    /// the caller hides the root node outright once fully faded.
+    /// Apply a whole-model transparency (0 = opaque, 1 = invisible) to every mesh of an item node — the
+    /// render-side analogue of QC's per-entity <c>.alpha</c>. Uses <see cref="GeometryInstance3D.Transparency"/>
+    /// (a per-instance property, NOT a material edit) so it never mutates the shared/cached item materials.
+    /// (§11 R9) Pushes through the SAME cached flattened mesh list the appearance/effects passes use
+    /// (3.2-2) instead of a recursive <c>GetChild</c> walk per fading item per frame, and change-gates on the
+    /// last-applied value (the ghost fade is a constant — one push, not one per frame). Child <c>Visible</c> is
+    /// left untouched (other systems own it); the caller hides the root node outright once fully faded.
     /// </summary>
-    private static void SetTreeTransparency(Node node, float transparency)
+    private static void SetTreeTransparency(EntityNode node, CsqcState st, float transparency)
     {
         transparency = Mathf.Clamp(transparency, 0f, 1f);
-        if (node is GeometryInstance3D gi)
-            gi.Transparency = transparency;
-        int childCount = node.GetChildCount();
-        for (int i = 0; i < childCount; i++)
-            SetTreeTransparency(node.GetChild(i), transparency);
+        List<MeshInstance3D> meshes = CsqcModelEffects.GetCachedMeshes(st.Effects, node);
+        if (st.ItemFadeApplied == transparency && st.ItemFadeMeshCount == meshes.Count)
+            return;
+        for (int i = 0; i < meshes.Count; i++)
+            meshes[i].Transparency = transparency;
+        st.ItemFadeApplied = transparency;
+        st.ItemFadeMeshCount = meshes.Count;
     }
 
     /// <summary>

@@ -184,7 +184,17 @@ public static class MapLoader
                  (nTrans > 0 ? $" translucent={nTrans}" : string.Empty) +
                  $" glow={nGlow} normalMapped={nNormal} (deluxe={deluxe}, internalPages={bsp.Lightmaps.Length})");
 
-        var mi = new MeshInstance3D { Name = "Geometry", Mesh = mesh };
+        // The world never casts realtime shadows: static shadowing is lightmap-authoritative (the
+        // LightmapShader is unshaded, so the sun's cascades can't change the world's own look anyway), and
+        // keeping the map out of the directional shadow pass saves re-rendering every surface into every
+        // cascade each frame. Trade-off: dynamic-model shadows are no longer occluded by world geometry
+        // (a player indoors keeps a sun shadow — consistent with the sun already lighting models indoors).
+        var mi = new MeshInstance3D
+        {
+            Name = "Geometry",
+            Mesh = mesh,
+            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+        };
         root.AddChild(mi);
         return root;
     }
