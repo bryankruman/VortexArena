@@ -20,6 +20,14 @@ public partial class ScreenshotHook : Node
     /// <summary>Idle frames to spin before capturing, so streaming assets + shadows settle.</summary>
     public int WarmupFrames { get; init; } = 90;
 
+    /// <summary>
+    /// Deterministic-capture gate: while true, the hook keeps waiting (after its warmup) instead of
+    /// capturing. A demo driver that wants the frame at an exact moment (GameDemo's <c>--fx-still</c>:
+    /// one effect burst captured at a precise age) sets this at boot and clears it at the moment to
+    /// shoot — the capture then lands within a frame, independent of boot/load timing.
+    /// </summary>
+    public static volatile bool Hold;
+
     public override async void _Ready()
     {
         if (string.IsNullOrWhiteSpace(OutPath))
@@ -30,6 +38,10 @@ public partial class ScreenshotHook : Node
 
         // Let the scene settle (asset streaming, shadow/SSAO convergence, the player dropping to the floor).
         for (int i = 0; i < WarmupFrames; i++)
+            await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+
+        // Deterministic-capture gate (--fx-still): wait for the demo driver to release at the exact moment.
+        while (Hold)
             await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
 
         // Capture only AFTER the GPU has drawn the frame, or the viewport image is stale/blank.

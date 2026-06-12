@@ -122,12 +122,16 @@ public static class ProjectileCatalog
         var t = new System.Collections.Generic.Dictionary<ProjectileType, Desc>();
         void Add(Desc d) => t[d.Type] = d;
 
-        // EFFECT_TR_NEXUIZPLASMA, electro_fly loop, bounce (projectile.qc:346,405)
+        // SECONDARY orb: MDL_PROJECTILE_ELECTRO = models/ebomb.mdl (all.inc:50 — MD3 content despite the
+        // extension), EFFECT_TR_NEXUIZPLASMA, electro_fly loop, bounce (projectile.qc:346,405).
         Add(new Desc { Type = ProjectileType.Electro, TrailEffect = "TR_NEXUIZPLASMA", Trail = BluePlasma,
-            Body = BodyFamily.GlowSprite, GlowColor = ElectroBlue, HasLight = true, LoopSound = "weapons/electro_fly" });
-        // EFFECT_TR_NEXUIZPLASMA (electro beam / secondary orb)
+            Body = BodyFamily.GlowSprite, ModelPath = "models/ebomb.mdl",
+            GlowColor = ElectroBlue, HasLight = true, LoopSound = "weapons/electro_fly" });
+        // PRIMARY bolt: MDL_PROJECTILE_ELECTRO_BEAM = models/elaser.mdl (all.inc:51), EFFECT_TR_NEXUIZPLASMA,
+        // no fly loop (projectile.qc:350).
         Add(new Desc { Type = ProjectileType.ElectroBeam, TrailEffect = "TR_NEXUIZPLASMA", Trail = BluePlasma,
-            Body = BodyFamily.GlowSprite, GlowColor = ElectroBlue, HasLight = true });
+            Body = BodyFamily.GlowSprite, ModelPath = "models/elaser.mdl",
+            GlowColor = ElectroBlue, HasLight = true });
         // EFFECT_TR_ROCKET, MDL_PROJECTILE_ROCKET, scale 2, roll 720 about the nose, devastator_fly loop
         // (projectile.qc:347,138-140,415). QC rot '0 0 720' = roll about forward; the nose is the body's local
         // +X (see OrientToVelocity), so the spin is on X, not Z.
@@ -237,7 +241,10 @@ public static class ProjectileCatalog
         if (Has(s, "wakizashi_rocket", "wakirocket", "racer_rocket")) return ProjectileType.WakiRocket;
         if (Has(s, "raptorcannon")) return ProjectileType.WakiCannon;
 
-        if (Has(s, "electro_orb", "electro_bolt", "electro")) return ProjectileType.Electro;
+        // electro_bolt is the PRIMARY (PROJECTILE_ELECTRO_BEAM: elaser model, no fly loop, electro_impact);
+        // electro_orb the SECONDARY ball (PROJECTILE_ELECTRO: ebomb model, electro_fly loop, ballexplode).
+        if (Has(s, "electro_bolt", "elaser")) return ProjectileType.ElectroBeam;
+        if (Has(s, "electro_orb", "electro")) return ProjectileType.Electro;
         if (Has(s, "devastator", "rocket")) return ProjectileType.Rocket;
         if (Has(s, "rpc")) return ProjectileType.Rpc;
         if (Has(s, "spike", "crylink")) return ProjectileType.Crylink;
@@ -300,7 +307,7 @@ public static class ProjectileCatalog
             or ProjectileType.RocketMinstaLaser or ProjectileType.Fireball or ProjectileType.Flac
             or ProjectileType.Tag or ProjectileType.SpiderRocket or ProjectileType.WakiRocket
             or ProjectileType.WakiCannon or ProjectileType.BumbleGun or ProjectileType.MageSpike
-            or ProjectileType.GolemLightning => CollisionMode.Stop,
+            or ProjectileType.GolemLightning or ProjectileType.ElectroBeam => CollisionMode.Stop,
 
         ProjectileType.CrylinkBouncing or ProjectileType.ArcBolt or ProjectileType.HagarBouncing
             or ProjectileType.PortoRed or ProjectileType.PortoBlue => CollisionMode.Bounce,

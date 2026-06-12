@@ -850,6 +850,32 @@ public sealed partial class NetGame : Node3D
             // Pass the loaded map name so external lm_NNNN lightmaps resolve (stock maps have no internal lump).
             AddChild(MapLoader.BuildMap(_bsp, _assets.Assets, _map, _droppedSubmodels));
 
+        // Client-side collision world for the particle systems: decal splats conform to the real brush faces
+        // (DP R_DecalSystem — without it marks fall back to flat quads), and the chunked-SDF service builds
+        // from the same world. One build per map load (~100 ms, hidden by the load screen; the server world's
+        // collision is a separate instance inside GameWorld with no accessor — rebuilding keeps the seam clean).
+        if (_bsp is not null && _assets?.Assets is not null)
+        {
+            CollisionWorld clientCollision = MapLoader.BuildCollision(_bsp, _assets.Assets);
+            _render.Effects.SetCollisionWorld(clientCollision);
+            // Splats clip against the RENDER triangles (DP's actual target) — marks roll over visible
+            // trim/patch edges the collision brushes don't model.
+            _render.Effects.SetDecalGeometry(_bsp);
+
+            // Chunked-SDF collision field for modern particles (planning/particles-dual-system.md §A). Built
+            // only in a modern-collision mode (cl_particles_modern 1/2) — mode 0 (the faithful default) needs
+            // no SDF, so the default load pays nothing beyond the shared collision build above. Generation is
+            // further gated/async inside the service (cl_particles_sdf_generate).
+            if (_vfs is not null &&
+                XonoticGodot.Game.Menu.MenuState.Cvars.GetFloat(XonoticGodot.Engine.Particles.ParticleCvars.Modern) != 0f)
+            {
+                string bspVpath = $"maps/{_map}.bsp";
+                byte[]? bspBytes = _vfs.Exists(bspVpath) ? _vfs.ReadBytes(bspVpath) : null;
+                if (bspBytes is not null)
+                    _render.Effects.BuildSdfForMap(_map, bspBytes, clientCollision, _vfs);
+            }
+        }
+
         if (_client is not null)
         {
             _entityView = new ClientEntityView(_client, _render);
@@ -1542,15 +1568,26 @@ public sealed partial class NetGame : Node3D
         return set;
     }
 
-    /// <summary>The muzzle-flash effect name for a weapon (QC m_muzzleeffect = EFFECT_&lt;WEP&gt;_MUZZLEFLASH),
-    /// derived from the weapon NetName to mirror the EffectsList registrations; defaults to the blaster flash
-    /// (an unregistered name simply yields no flash, never an error).</summary>
+    /// <summary>The muzzle-flash effect name for a weapon — the QC <c>m_muzzleeffect</c> attrib of each
+    /// weapon's .qh (e.g. electro.qh:29 EFFECT_ELECTRO_MUZZLEFLASH, devastator.qh:28 EFFECT_ROCKET_MUZZLEFLASH,
+    /// minelayer.qh:30 EFFECT_ROCKET_MUZZLEFLASH, vaporizer.qh:26 EFFECT_VORTEX_MUZZLEFLASH). Defaults to the
+    /// blaster flash (an unregistered name simply yields no flash, never an error).</summary>
     private static string MuzzleEffectFor(XonoticGodot.Common.Gameplay.Weapon w) => w.NetName switch
     {
-        "vortex" => "VORTEX_MUZZLEFLASH",
-        "devastator" => "ROCKET_MUZZLEFLASH",
+        "vortex" or "vaporizer" => "VORTEX_MUZZLEFLASH",
+        "devastator" or "minelayer" => "ROCKET_MUZZLEFLASH",
         "mortar" => "GRENADE_MUZZLEFLASH",
         "machinegun" => "MACHINEGUN_MUZZLEFLASH",
+        "electro" => "ELECTRO_MUZZLEFLASH",
+        "crylink" => "CRYLINK_MUZZLEFLASH",
+        "shotgun" => "SHOTGUN_MUZZLEFLASH",
+        "hagar" => "HAGAR_MUZZLEFLASH",
+        "arc" => "ARC_MUZZLEFLASH",
+        "rifle" => "RIFLE_MUZZLEFLASH",
+        "seeker" => "SEEKER_MUZZLEFLASH",
+        "hook" => "HOOK_MUZZLEFLASH",
+        "hlac" => "GREEN_HLAC_MUZZLEFLASH",
+        "fireball" => "FIREBALL_MUZZLEFLASH",
         _ => "BLASTER_MUZZLEFLASH",
     };
 

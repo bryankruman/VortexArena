@@ -330,6 +330,9 @@ public partial class ClientWorld : Node3D
         AddChild(Lasers);
         MapEmitters = new MapParticleEmitters { Name = "MapEmitters", Effects = Effects };
         AddChild(MapEmitters);
+
+        // Spawn-point idle glow (CSQC Spawn_Draw, gated by cl_spawn_point_particles).
+        AddChild(new SpawnPointParticles { Name = "SpawnPointFx", Effects = Effects });
         Weather = new WeatherSystem { Name = "Weather", ViewOriginProvider = () => ViewOrigin() };
         AddChild(Weather);
 

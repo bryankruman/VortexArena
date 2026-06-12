@@ -5,6 +5,8 @@ using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Gameplay;
 using XonoticGodot.Common.Services;
 using XonoticGodot.Engine.Collision;
+using XonoticGodot.Engine.Particles;
+using XonoticGodot.Game.Client.Particles;
 using NVec3 = System.Numerics.Vector3;
 
 namespace XonoticGodot.Game.Client;
@@ -130,6 +132,85 @@ public partial class EffectSystem : Node3D
     /// <summary>Real model-gib bursts (player death / robot chunks). Created on first add to the tree.</summary>
     public ModelGibs Gibs { get; private set; } = null!;
 
+    // =================================================================================================
+    //  Dual particle system (planning/particles-dual-system.md). The router resolves each effectinfo
+    //  spawn to the faithful CPU backend (mode 0 default) or the modern GPU backend (mode 2), per the
+    //  cl_particles_modern cvar + per-effect authored style + SDF coverage. Created as children in _Ready;
+    //  Font/Decals/style-registry are wired in EnsureInfoLoaded once the atlas + VFS loaders are ready.
+    // =================================================================================================
+
+    /// <summary>The faithful CPU particle backend (perfect-parity MultiMesh path; the mode-0 default).</summary>
+    public FaithfulParticleBackend FaithfulParticles { get; private set; } = null!;
+
+    /// <summary>The modern GPU particle backend (custom shader_type particles + SDF collision; mode 2).</summary>
+    public ModernParticleBackend ModernParticles { get; private set; } = null!;
+
+    /// <summary>The chunked-SDF collision service (built at map load via <see cref="BuildSdfForMap"/>).</summary>
+    public SdfCollisionService Sdf { get; private set; } = null!;
+
+    /// <summary>Per-effect authored style/preset overlay (effectinfo_xg.txt). Drives mode-1 routing.</summary>
+    public EffectStyleRegistry Styles { get; } = new();
+
+    /// <summary>Routes effectinfo spawns to the faithful/modern backend (§D.2). Null until _Ready.</summary>
+    public ParticleRouter Router { get; private set; } = null!;
+
+    /// <summary>Faithful surface-splat decals (DP R_DecalSystem) — every particle mark draws here.</summary>
+    public DecalSplats Splats { get; private set; } = null!;
+
+    /// <summary>
+    /// Wire the map's static collision world so decal splats conform to the real brush faces (DP
+    /// R_DecalSystem clips the mark against the surfaces around the impact). Call after map load with the
+    /// world from <c>MapLoader.BuildCollision</c>; without it splats fall back to flat quads.
+    /// </summary>
+    public void SetCollisionWorld(CollisionWorld world)
+    {
+        if (Splats is not null)
+            Splats.World = world;
+    }
+
+    /// <summary>
+    /// True when projectile trails should spawn through the faithful per-segment path (DP CL_ParticleTrail)
+    /// instead of the legacy continuous GpuParticles emitters: the faithful backend exists and the renderer
+    /// is not in all-modern mode. Read per projectile spawn (live mode switches apply to new projectiles).
+    /// </summary>
+    public bool UseFaithfulTrails =>
+        FaithfulParticles is not null &&
+        (int)XonoticGodot.Game.Menu.MenuState.Cvars.GetFloat(ParticleCvars.Modern) != 2;
+
+    /// <summary>
+    /// DP CL_ParticleTrail: spawn one trail segment of <paramref name="effectName"/> along
+    /// <paramref name="from"/> → <paramref name="to"/> (Quake space) with the projectile's
+    /// <paramref name="velocity"/> as the emit velocity (trail blocks apply their velocitymultiplier to it —
+    /// e.g. the electro trail's −0.1 backward drift). The faithful sim steps each trailspacing block along
+    /// the segment with the shared fractional accumulator, so per-frame calls compose into a continuous,
+    /// speed-independent trail exactly like DP. Returns false when the faithful path is off (mode 2).
+    /// </summary>
+    public bool SpawnTrailSegment(string effectName, NVec3 from, NVec3 to, NVec3 velocity)
+    {
+        if (!UseFaithfulTrails)
+            return false;
+        EnsureInfoLoaded();
+        Effect? effect = ResolveEffect(effectName);
+        IReadOnlyList<EffectInfoEmitter>? blocks = LookupInfo(effectName, effect);
+        if (blocks is null || blocks.Count == 0)
+            return false;
+        FaithfulParticles.Trail(blocks, from, to, velocity, 1);
+        return true;
+    }
+
+    /// <summary>
+    /// Wire the map's RENDER geometry for decal splats (DP's R_DecalSystem clips marks against the visible
+    /// surface triangles, not the collision brushes — the difference shows on bevelled trim and patches,
+    /// where a brush-clipped mark stops at the wrong edge). Call after map load with the loaded BSP.
+    /// </summary>
+    public void SetDecalGeometry(XonoticGodot.Formats.Bsp.BspData bsp)
+    {
+        if (Splats is null || bsp is null)
+            return;
+        try { Splats.SetGeometry(bsp); }
+        catch (Exception ex) { GD.PushWarning($"[DecalSplats] SetGeometry failed: {ex.Message}"); }
+    }
+
     /// <summary>
     /// Optional host-supplied model loader (e.g. <c>AssetLoader.LoadModel</c>) shared with the casing and
     /// gib systems so they can render the real brass/limb meshes from the mounted content. When unset they
@@ -156,6 +237,27 @@ public partial class EffectSystem : Node3D
         AddChild(Casings);
         Gibs = new ModelGibs { Name = "Gibs", ModelLoader = _modelLoader };
         AddChild(Gibs);
+
+        // Dual particle backends + SDF service live as children (shared transform/lifetime). Font/Decals and
+        // the style overlay are wired lazily in EnsureInfoLoaded (after the atlas + VFS loaders are present).
+        //
+        // CLIENT CVAR STORE: the cl_particles* gates/quality/mode are CLIENT cvars the console/menu write into
+        // MenuState.Cvars. The faithful sim, renderer, router and SDF service MUST read them from there — NOT
+        // the ambient Api.Cvars, which on a listen server is the SERVER store (it lacks the client particle
+        // cvars, so cl_particles reads 0 and every spawn is gated off → nothing renders). See SetCvars.
+        ICvarService clientCvars = XonoticGodot.Game.Menu.MenuState.Cvars;
+
+        FaithfulParticles = new FaithfulParticleBackend { Name = "FaithfulParticles" };
+        AddChild(FaithfulParticles);
+        FaithfulParticles.SetCvars(clientCvars);
+        Splats = new DecalSplats { Name = "DecalSplats" };
+        AddChild(Splats);
+        FaithfulParticles.SetSplats(Splats);
+        ModernParticles = new ModernParticleBackend { Name = "ModernParticles" };
+        AddChild(ModernParticles);
+        Sdf = new SdfCollisionService { Name = "SdfCollision", Cvars = clientCvars };
+        AddChild(Sdf);
+        Router = new ParticleRouter(FaithfulParticles, ModernParticles, Styles, Sdf) { Cvars = clientCvars };
     }
 
     /// <summary>
@@ -250,8 +352,44 @@ public partial class EffectSystem : Node3D
         try { Font = ParticleFont.Load(TextureLoader, VfsTextLoader); }
         catch { Font = null; }
 
+        // Wire the dual particle backends now that the atlas + decal subsystem exist. Idempotent (shares this
+        // method's _infoLoadAttempted guard). The per-effect style overlay (effectinfo_xg.txt) is parsed from
+        // the same VFS text loader; absent => every effect resolves to ParticleStyle.Auto (faithful by default).
+        if (FaithfulParticles is not null)
+        {
+            FaithfulParticles.SetFont(Font);
+            FaithfulParticles.SetDecals(Decals);
+        }
+        if (Splats is not null)
+            Splats.Font = Font;
+        if (ModernParticles is not null)
+            ModernParticles.Font = Font;
+        try { Styles.Load(VfsTextLoader); }
+        catch { /* no overlay => Auto everywhere */ }
+
+        int mode = (int)XonoticGodot.Game.Menu.MenuState.Cvars.GetFloat(ParticleCvars.Modern);
+        string modeName = mode switch { 0 => "original", 2 => "modern", _ => "mixed" };
         GD.Print($"[EffectSystem] effectinfo: {Info.Count} effects, particlefont atlas: " +
-                 (Font?.Loaded == true ? "loaded" : "MISSING (solid-quad fallback)"));
+                 (Font?.Loaded == true ? "loaded" : "MISSING (solid-quad fallback)") +
+                 $", style overlay: {Styles.Count} effects");
+        // Headless regression / mode-matrix guard (planning §F.2): the active particle backend per cl_particles_modern.
+        GD.Print($"[Particles] backend={modeName} (cl_particles_modern={mode})");
+    }
+
+    /// <summary>
+    /// Build the chunked-SDF collision field for the loaded map (planning §A). The host (NetGame/GameDemo)
+    /// calls this once after <c>MapLoader.BuildCollision</c> returns — it has the raw BSP bytes (for the cache
+    /// hash), the static <see cref="CollisionWorld"/>, and the mounted VFS. Cheap when a cache/shipped .psdf
+    /// exists; otherwise generates asynchronously on a worker (cl_particles_sdf_generate gates generation).
+    /// Only meaningful for modern-collision (cl_particles_modern 1/2); harmless in mode 0 (default).
+    /// </summary>
+    public void BuildSdfForMap(string mapName, byte[] bspBytes, CollisionWorld collision,
+        XonoticGodot.Formats.Vfs.VirtualFileSystem vfs)
+    {
+        if (Sdf is null || collision is null || bspBytes is null)
+            return;
+        try { Sdf.BuildForMap(mapName, bspBytes, collision, vfs); }
+        catch (Exception ex) { GD.PushWarning($"[ParticleSDF] BuildForMap failed: {ex.Message}"); }
     }
 
     // =================================================================================================
@@ -298,6 +436,20 @@ public partial class EffectSystem : Node3D
         IReadOnlyList<EffectInfoEmitter>? blocks = LookupInfo(effectName, effect);
         if (blocks is not null && blocks.Count > 0)
         {
+            // Dual particle system (§D.2): route to the faithful (mode 0 default) or modern (mode 2) backend
+            // per cl_particles_modern + the effect's authored style. The backend owns the spawn (the faithful
+            // pool / modern emitter is persistent, not a per-call node), so a handled route returns null. Only
+            // an unwired backend falls through to the legacy GpuParticles3D path below.
+            if (Router is not null && Router.Route(effectName, blocks, origin, velocity, count, isTrail, color))
+            {
+                // DP spawns each block's dlight INDEPENDENT of the particles (cl_particles.c:1631-1652, before
+                // the spawnparticles gate) — the routed backend draws only sprites, so the light flash that
+                // sells an explosion (electro_impact's blue 'lightcolor 3.1 4.4 10' room-wash, the muzzle
+                // flashes, the combo's radius-400 burst) still belongs to this layer.
+                SpawnRoutedBlockLights(blocks, origin, velocity, isTrail, color);
+                return null;
+            }
+
             Node3D? built = BuildFromInfo(blocks, origin, velocity, count, color, isTrail);
             if (built is not null)
                 return built;
@@ -1752,6 +1904,66 @@ public partial class EffectSystem : Node3D
             return;
         mat.AlbedoTexture = sprite;
         mat.TextureFilter = BaseMaterial3D.TextureFilterEnum.Linear;
+    }
+
+    /// <summary>
+    /// The dlight pass for spawns the dual-system ROUTER handled (the faithful/modern backends draw only
+    /// sprites/decals). Mirrors the DP block loop's light section (cl_particles.c:1631-1652): per defined
+    /// block with <c>lightradius</c> &gt; 0 — after the underwater gates, independent of any particle gating —
+    /// place the flash at the trail END (originmaxs) for trail-class spawns, else at the effect center.
+    /// The lights self-free via <see cref="SpawnInfoLight"/>'s tween; the holder node lingers past the
+    /// longest possible flash (~1.5s clamp) then frees.
+    /// </summary>
+    private void SpawnRoutedBlockLights(IReadOnlyList<EffectInfoEmitter> blocks, NVec3 origin, NVec3 velocity,
+        bool isTrail, Color? colorOverride)
+    {
+        Node3D? holder = null;
+        NVec3 end = isTrail && velocity != default ? velocity : origin;
+        NVec3 center = (origin + end) * 0.5f;
+        bool underwater = false, underwaterKnown = false;
+
+        foreach (EffectInfoEmitter info in blocks)
+        {
+            if (!info.Defined || info.LightRadius <= 0f)
+                continue;
+            if (info.Underwater || info.NotUnderwater)
+            {
+                if (!underwaterKnown) // probe lazily; most blocks carry no water gate
+                {
+                    underwater = Api.Services is not null
+                        && (Api.Trace.PointContents(center) & (SuperContents.Water | SuperContents.Slime)) != 0;
+                    underwaterKnown = true;
+                }
+                if (info.Underwater && !underwater) continue;
+                if (info.NotUnderwater && underwater) continue;
+            }
+
+            if (holder is null)
+            {
+                holder = new Node3D { Name = "fx_lights", Position = Coords.ToGodot(origin) };
+                AddChild(holder);
+                ScheduleFree(holder, 2f);
+            }
+            SpawnInfoLight(holder, info, isTrail ? end : center, colorOverride);
+        }
+    }
+
+    /// <summary>
+    /// The light block a trail effect would attach to its mover, for the projectile renderer's flight glow —
+    /// DP re-adds a per-frame rtlight at the trail head from any lightradius block with no fade
+    /// (cl_particles.c:1645-1651 "glowing entity"); a persistent OmniLight on the projectile is the stable
+    /// equivalent. Returns the first defined block with lightradius &gt; 0, as (radius, lightcolor).
+    /// </summary>
+    public (float Radius, NVec3 Color)? TrailLightFor(string effectName)
+    {
+        EnsureInfoLoaded();
+        IReadOnlyList<EffectInfoEmitter>? blocks = LookupInfo(effectName, ResolveEffect(effectName));
+        if (blocks is null)
+            return null;
+        foreach (EffectInfoEmitter info in blocks)
+            if (info.Defined && info.LightRadius > 0f)
+                return (info.LightRadius, info.LightColor);
+        return null;
     }
 
     /// <summary>Spawn the OmniLight3D an effectinfo block requests (lightradius/lightcolor/lightradiusfade).</summary>
