@@ -628,62 +628,6 @@ public sealed class ServerNet : IDisposable
                 _transport.Send(st.PeerId, _scratchWriter.WrittenSpan, reliable: true);
     }
 
-    // =============================================================================================
-    // [T46] chat delivery — per-player sprint + team/private routing with ignore filtering. The chat engine
-    // (Chat.Say) does the routing/ignore/flood logic over ClientManager.Players; these are the net send paths.
-    // A host wires Commands.ChatToPlayer to SendChatToPlayer so each routed recipient gets a reliable svc_print.
-    // =============================================================================================
-
-    /// <summary>QC <c>sprint(client, text)</c>: send one chat line to a single player's console (DP svc_print over
-    /// the reliable channel). No-op if the player has no accepted peer (a bot, or a not-yet-handshaked client).</summary>
-    public void SendChatToPlayer(Player player, string text)
-    {
-        if (player is null || string.IsNullOrEmpty(text))
-            return;
-        if (!_byPlayer.TryGetValue(player, out PeerState? st) || !st.Accepted)
-            return;
-        SendPrint(st.PeerId, text);
-    }
-
-    /// <summary>
-    /// QC the say_team FOREACH_CLIENT branch (chat.qc:328): deliver <paramref name="text"/> to every real client
-    /// on <paramref name="team"/> who has not ignored <paramref name="sender"/>. Append-only convenience for a
-    /// host that prefers ServerNet to own team routing; <see cref="Chat.Say"/> already routes per-player through
-    /// <see cref="SendChatToPlayer"/>, so this is an alternative entry, not on the default path.
-    /// </summary>
-    public void SendTeamChat(Player? sender, int team, string text)
-    {
-        if (string.IsNullOrEmpty(text))
-            return;
-        foreach (Player p in _world.Clients.Players)
-        {
-            if (p.IsBot || p.IsObserver || (int)p.Team != team)
-                continue;
-            if (ReferenceEquals(p, sender))
-                continue;
-            if (sender is not null && IgnorePlayerInList(p, sender))
-                continue;
-            SendChatToPlayer(p, text);
-        }
-    }
-
-    /// <summary>
-    /// QC the private (tell) delivery (chat.qc:295-307): deliver <paramref name="text"/> to <paramref name="target"/>
-    /// only, suppressed if the target has ignored <paramref name="sender"/>. Append-only convenience entry.
-    /// </summary>
-    public void SendPrivateChat(Player? sender, Player target, string text)
-    {
-        if (target is null || string.IsNullOrEmpty(text))
-            return;
-        if (sender is not null && IgnorePlayerInList(target, sender))
-            return; // sender is ignored by target — drop it
-        SendChatToPlayer(target, text);
-    }
-
-    /// <summary>QC <c>ignore_playerinlist(this, other)</c>: is <paramref name="other"/> on <paramref name="self"/>'s
-    /// ignore list? Delegates to the chat engine's PersistentId-keyed check.</summary>
-    public static bool IgnorePlayerInList(Player self, Player other) => Chat.IgnorePlayerInList(self, other);
-
     /// <summary>[T38] Push each changed minigame session's snapshot to its participating peers (QC
     /// <c>minigame_resend</c> + <c>minigame_CheckSend</c>), each carrying that peer's own team; and an empty
     /// envelope to anyone who just left / whose session ended (QC the per-entity removal → CSQC

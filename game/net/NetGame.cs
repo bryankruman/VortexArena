@@ -2527,17 +2527,6 @@ public sealed partial class NetGame : Node3D
 
     public override void _UnhandledInput(InputEvent @event)
     {
-        // HUD configure-mode editor (QC HUD_Panel_InputEvent, main.qc:504): while `_hud_configure 1` the editor
-        // intercepts mouse/keyboard for panel drag/resize/keyboard-edit. It self-gates (no-op + returns false
-        // when not configuring), so this costs nothing in normal play. When it consumes the event we mark it
-        // handled so it doesn't fall through to gameplay binds / mouse-look below. Console-open still wins (the
-        // console overlay handles its own keys first; this runs only on events it didn't consume).
-        if (!ConsoleState.IsOpen && _fullHud?.ConfigEditor is { } editor && editor.HandleInput(@event))
-        {
-            GetViewport().SetInputAsHandled();
-            return;
-        }
-
         // Minigame menu toggle (QC the +minigamemenu bind — no default key in Base; we bind 'M'). Opens/closes
         // the in-game Create/Join/Current-Game menu. Active even during play (so you can start a game), but not
         // while the console is open. When the menu is open it captures the cursor so the player can click it.
