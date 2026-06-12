@@ -53,8 +53,9 @@ public static class WeaponSplash
         if (Api.Services is null || radius <= 0f) return;
         Entity src = attacker ?? inflictor;
 
-        float throughFloorDmg = Cvar("g_throughfloor_damage", 0.5f);
-        float throughFloorForce = Cvar("g_throughfloor_force", 0.7f);
+        // balance-xonotic.cfg:200-201 — both 0.75 (the old 0.5/0.7 fallbacks matched neither balance nor QC).
+        float throughFloorDmg = Cvar("g_throughfloor_damage", 0.75f);
+        float throughFloorForce = Cvar("g_throughfloor_force", 0.75f);
 
         // [T57] QC stat_damagedone (damage.qc:909-914): the splash accuracy-hit tally. The weapon explosion
         // call sites pass their Weapon as accuracyWeapon (QC derives it via DEATH_WEAPONOF(deathtype); the
@@ -105,18 +106,51 @@ public static class WeaponSplash
                 if (forceZScale != 1f) forceVec.Z *= forceZScale;
             }
 
-            // Line of sight: the direct-hit target is always fully hit; for others, a blocked trace reduces
-            // damage + force by the through-floor factors (QC's multi-sample box test collapsed to one ray).
+            // Line of sight (QC damage.qc:838-905): the direct-hit target is always fully hit; for others,
+            // trace from the blast to MULTIPLE points on the victim's box — the NEAREST point first (QC seeds
+            // the loop with its running `nearest`), then uniformly random box points — and BLEND damage/force
+            // by the visible fraction: factor = throughfloor + (1 - throughfloor) * hitratio. The sample count
+            // is adaptive from the allowed result stddev (xonotic-server.cfg:309-314: max stddev 2 dmg /
+            // 10 force, steps bounded 1..100 player / 1..10 other), so a big rocket blast on a player samples
+            // ~75 points while a grazing hit samples once. This replaces the previous single-ray-to-CENTER
+            // BINARY check, whose full-force-or-0.7x coin flip whenever the one ray nicked a stair lip / ramp
+            // edge made blaster-jump knockback inconsistent (the splash-duplication bug used to mask it).
+            Vector3 hitLoc = nearest; // QC hitloc: the nearest box point (mean of visible samples below)
             if (!ReferenceEquals(e, directHit))
             {
-                TraceResult los = Api.Trace.Trace(center, Vector3.Zero, Vector3.Zero, targetCenter,
-                    MoveFilter.NoMonsters, inflictor);
-                bool blocked = los.Fraction < 1f && !ReferenceEquals(los.Ent, e);
-                if (blocked)
+                // QC: n = (1 / (2 * max stddev))^2 -> total = 0.25 * (max(mininv_f, mininv_d))^2
+                float mininvD = finalDmg * (1f - throughFloorDmg) / Cvar("g_throughfloor_damage_max_stddev", 2f);
+                float mininvF = forceVec.Length() * (1f - throughFloorForce) / Cvar("g_throughfloor_force_max_stddev", 10f);
+                bool isPlayer = (e.Flags & EntFlags.Client) != 0;
+                float steps = 0.25f * MathF.Pow(MathF.Max(mininvD, mininvF), 2f);
+                float minSteps = Cvar(isPlayer ? "g_throughfloor_min_steps_player" : "g_throughfloor_min_steps_other", 1f);
+                float maxSteps = Cvar(isPlayer ? "g_throughfloor_max_steps_player" : "g_throughfloor_max_steps_other", isPlayer ? 100f : 10f);
+                int total = (int)MathF.Ceiling(QMath.Clamp(steps, minSteps, maxSteps));
+
+                int hits = 0;
+                Vector3 sample = nearest;
+                Vector3 visibleAccum = Vector3.Zero;
+                for (int c = 0; c < total; c++)
                 {
-                    finalDmg *= throughFloorDmg;
-                    forceVec *= throughFloorForce;
+                    TraceResult los = Api.Trace.Trace(center, Vector3.Zero, Vector3.Zero, sample,
+                        MoveFilter.NoMonsters, inflictor);
+                    if (los.Fraction >= 1f || ReferenceEquals(los.Ent, e))
+                    {
+                        ++hits;
+                        visibleAccum += sample;
+                    }
+                    // next sample: a uniform random point inside the victim's bbox (QC random() -> Prandom,
+                    // the deterministic PRNG every other weapon-spread call site uses, ADR-0010).
+                    sample = new Vector3(
+                        e.Origin.X + e.Mins.X + Prandom.Float() * (e.Maxs.X - e.Mins.X),
+                        e.Origin.Y + e.Mins.Y + Prandom.Float() * (e.Maxs.Y - e.Mins.Y),
+                        e.Origin.Z + e.Mins.Z + Prandom.Float() * (e.Maxs.Z - e.Mins.Z));
                 }
+                float hitRatio = (float)hits / total;
+                finalDmg *= QMath.Clamp(throughFloorDmg + (1f - throughFloorDmg) * hitRatio, 0f, 1f);
+                forceVec *= QMath.Clamp(throughFloorForce + (1f - throughFloorForce) * hitRatio, 0f, 1f);
+                if (hits > 0)
+                    hitLoc = visibleAccum / hits; // QC: hitloc = the mean visible sample
             }
 
             // [T57] accumulate the accuracy tally BEFORE Damage (QC damage.qc:911-914, iscreature → the
@@ -128,8 +162,9 @@ public static class WeaponSplash
             // DamageSystem.Apply (QC damage.qc:614-615 — only Damage() scales it; RadiusDamageForSource does
             // NOT). Scaling it here too double-applied it (0.65^2 ≈ 0.42×), making rocket/blaster/electro-jumps
             // ~35% too cheap. The pipeline is now the single source of truth (DMG1).
+            // QC passes `nearest` (the nearest/mean-visible box point) as hitloc, not the box center.
             WeaponFiring.ApplyDamage(e, src, finalDmg, deathType, inflictor: inflictor, force: forceVec,
-                hitLoc: targetCenter);
+                hitLoc: hitLoc);
         }
 
         // [T57] ONE hit credit per blast, capped at one blast's max damage (QC damage.qc:928-929:
