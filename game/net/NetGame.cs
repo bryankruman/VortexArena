@@ -1459,10 +1459,15 @@ public sealed partial class NetGame : Node3D
         {
             string m = model;
             _streamer.Request(
-                () => loader.ParseSkeletalModel(m, 0),                 // off-thread: pure-C# IQM + sidecar parse
-                parse => loader.BuildSkeletalModel(parse)?.Root.QueueFree(), // main: Godot build, then discard
+                () => loader.ParseSkeletalModel(m, 0),                 // off-thread: IQM + sidecars + anims
+                // (§12.3-1) Stage the texture pipeline like the live path — the idle warm previously paid the
+                // same multi-hundred-ms monolithic build; now its decode runs on the worker and each upload is
+                // its own budgeted job. The final assembly warms the full build path, then discards the node.
+                parse => EnqueueStagedSkeletalBuild(loader, parse,
+                    XonoticGodot.Game.Client.BackgroundAssetStreamer.Priority.Low, $"idle-warm {m}",
+                    () => loader.BuildSkeletalModel(parse)?.Root.QueueFree()),
                 XonoticGodot.Game.Client.BackgroundAssetStreamer.Priority.Low,
-                label: $"idle-warm {m}");
+                label: $"idle-warm {m} (parse)");
         }
     }
 
@@ -1668,6 +1673,9 @@ public sealed partial class NetGame : Node3D
         if (_processCvarsHooked && _sharedCvars is not null)
             _sharedCvars.Changed -= OnProcessCvarChanged;   // same store-outlives-match reasoning (§11 R11)
         _minigame?.Dispose();
+        // Drop any unconsumed predecoded texture images (a model whose staged build never completed —
+        // entity died mid-stream / map change) so decoded pixels don't outlive the session.
+        _assets?.Assets.ClearPredecodedImages();
         _client?.Dispose();
         // S5: join the server-sim worker BEFORE disposing ServerNet/the world, so the socket + world teardown is
         // single-threaded and no in-flight tick races the Dispose (the worker holds the gate around its whole
@@ -3164,17 +3172,66 @@ public sealed partial class NetGame : Node3D
         }
 
         _streamer.Request(
-            // Off-thread: pure-C# parse. Boxed in a non-null wrapper because the streamer drops null results
-            // silently — but a FAILED parse must still reach the main thread to trigger the fall-back attach.
+            // Off-thread: pure-C# parse (now incl. the animation library, §12.3-1). Boxed in a non-null wrapper
+            // because the streamer drops null results silently — but a FAILED parse must still reach the main
+            // thread to trigger the fall-back attach.
             () => new SkeletalParseBox(assets.ParseSkeletalModel(model, skin)),
-            box => DeliverPlayerModel(pm, e, model, skin, box.Parse, forced),
+            box =>
+            {
+                if (box.Parse is null)
+                {
+                    DeliverPlayerModel(pm, e, model, skin, null, forced);   // miss → fall-back attach, as before
+                    return;
+                }
+                // (§12.3-1) Stage the texture pipeline BEFORE the delivery: one streamer job per material
+                // (worker pre-decodes its images, main thread only uploads), then the now-cheap assembly.
+                // The old single delivery paid ~395 ms of synchronous decode+upload in one frame.
+                EnqueueStagedSkeletalBuild(assets, box.Parse,
+                    XonoticGodot.Game.Client.BackgroundAssetStreamer.Priority.High, $"player model {model}",
+                    () => DeliverPlayerModel(pm, e, model, skin, box.Parse, forced));
+            },
             XonoticGodot.Game.Client.BackgroundAssetStreamer.Priority.High,
-            label: $"player model {model}");
+            label: $"player model {model} (parse)");
         return pm;
     }
 
     /// <summary>Non-null off-thread wrapper for a (possibly failed) skeletal parse — see ResolvePlayerModel.</summary>
     private sealed record SkeletalParseBox(AssetLoader.SkeletalModelParse? Parse);
+
+    /// <summary>
+    /// (§12.3-1) Enqueue the staged main-thread half of a skeletal-model build: one streamer job per effective
+    /// material — its worker phase pre-decodes the material's images (<see cref="AssetSystem.PredecodeMaterialTextures"/>),
+    /// its main phase resolves the material (now upload-only) — then <paramref name="onAllMaterialsReady"/> runs
+    /// the final (cheap) assembly. The streamer's budget naturally spreads the jobs across frames, so the old
+    /// ~600-750 ms monolithic delivery becomes a series of ~5-30 ms stages. Job order is irrelevant
+    /// (ResolveMaterial caches by name); the count-down gate fires the assembly exactly once, on the main thread.
+    /// </summary>
+    private void EnqueueStagedSkeletalBuild(AssetLoader loader, AssetLoader.SkeletalModelParse parse,
+        XonoticGodot.Game.Client.BackgroundAssetStreamer.Priority priority, string label, Action onAllMaterialsReady)
+    {
+        List<string> mats = AssetLoader.EffectiveMaterials(parse);
+        if (_streamer is null || mats.Count == 0)
+        {
+            onAllMaterialsReady();
+            return;
+        }
+        int remaining = mats.Count;
+        foreach (string mat in mats)
+        {
+            string m = mat;
+            _streamer.Request(
+                () => { loader.Assets.PredecodeMaterialTextures(m); return m; },   // worker: VFS read + decode
+                _ =>
+                {
+                    using (XonoticGodot.Game.Client.FrameProfiler.Scope("iqm.materials"))
+                        loader.Assets.ResolveMaterial(m);                          // main: upload + material build
+                    if (--remaining == 0)
+                        onAllMaterialsReady();
+                },
+                priority,
+                label: $"{label} tex {m}");
+        }
+    }
 
     /// <summary>The "model#skin" memo key used by <see cref="_unresolvableForcedModels"/> for a forced model.</summary>
     private static string ForcedKey(string model, int skin) => model + "#" + skin;

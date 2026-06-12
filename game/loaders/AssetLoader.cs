@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Godot;
+using XonoticGodot.Common.Diagnostics;
 using XonoticGodot.Formats.Bsp;
 using XonoticGodot.Formats.Dpm;
 using XonoticGodot.Formats.Iqm;
@@ -337,16 +338,19 @@ public sealed class AssetLoader
         return parse is null ? null : BuildSkeletalModel(parse);
     }
 
-    /// <summary>The off-thread-safe product of <see cref="ParseSkeletalModel"/>: the parsed IQM + its sidecars,
-    /// all pure data (no Godot resources). <see cref="BuildSkeletalModel"/> turns it into the scene parts on the
-    /// main thread. This is the parse/build split the background asset streamer (S1) drives.</summary>
+    /// <summary>The off-thread product of <see cref="ParseSkeletalModel"/>: the parsed IQM + its sidecars
+    /// (pure data) plus the pre-built <see cref="AnimationLibrary"/> (§12.3-1 — a Resource built on the worker
+    /// and handed to the main thread once, the supported Godot threading pattern; ~130 ms of track-key work a
+    /// player-model build no longer pays on the main thread). <see cref="BuildSkeletalModel"/> turns it into
+    /// the scene parts on the main thread. This is the parse/build split the background asset streamer drives.</summary>
     public sealed record SkeletalModelParse(
-        IqmData Iqm, IReadOnlyList<FrameGroup>? Groups, ModelInfo? Info, SkinFile? Skin);
+        IqmData Iqm, IReadOnlyList<FrameGroup>? Groups, ModelInfo? Info, SkinFile? Skin,
+        AnimationLibrary? Anims = null, string? DefaultClip = null);
 
     /// <summary>
     /// OFF-THREAD phase of a skeletal-model load (S1): read + parse the IQM and its <c>_N.txt</c>/skin/frame-group
-    /// sidecars. This is PURE C# over thread-safe VFS reads — NO Godot — so a background thread can run it while
-    /// the main thread keeps rendering. Returns null for a missing or non-IQM model. Pair with
+    /// sidecars (pure C# over thread-safe VFS reads), then pre-build the animation library (worker-safe, see
+    /// <see cref="IqmBuilder.BuildAnimationLibrary"/>). Returns null for a missing or non-IQM model. Pair with
     /// <see cref="BuildSkeletalModel"/> on the main thread.
     /// </summary>
     public SkeletalModelParse? ParseSkeletalModel(string vpath, int skinIndex = 0)
@@ -362,22 +366,46 @@ public sealed class AssetLoader
         try
         {
             IqmData iqm = IqmReader.Read(bytes);
-            return new SkeletalModelParse(iqm, LoadFrameGroups(key), LoadModelInfo(vpath, skinIndex), LoadSkin(key, skinIndex));
+            IReadOnlyList<FrameGroup>? groups = LoadFrameGroups(key);
+            AnimationLibrary anims;
+            string? defaultClip;
+            using (Prof.Sample("iqm.anims"))   // attribution: this now costs the WORKER, not the frame
+                anims = IqmBuilder.BuildAnimationLibrary(iqm, groups, out defaultClip);
+            return new SkeletalModelParse(iqm, groups, LoadModelInfo(vpath, skinIndex), LoadSkin(key, skinIndex),
+                anims, defaultClip);
         }
         catch (Exception ex) { GD.PrintErr($"[AssetLoader] skeletal model '{key}' parse failed: {ex.Message}"); return null; }
     }
 
     /// <summary>
+    /// The material names a parsed model's build will resolve (post skin-remap, nodraw meshes skipped) —
+    /// the work-list for the staged texture predecode/upload jobs (§12.3-1). Off-thread-safe (pure data).
+    /// </summary>
+    public static List<string> EffectiveMaterials(SkeletalModelParse parse)
+    {
+        var mats = new List<string>(4);
+        foreach (XonoticGodot.Formats.Iqm.IqmMesh sub in parse.Iqm.Meshes)
+        {
+            string? name = IqmBuilder.EffectiveMaterialName(sub, parse.Skin, out _);
+            if (name is not null && !mats.Contains(name))
+                mats.Add(name);
+        }
+        return mats;
+    }
+
+    /// <summary>
     /// MAIN-THREAD phase of a skeletal-model load (S1): turn an off-thread <see cref="ParseSkeletalModel"/> bundle
     /// into the Godot scene parts (<see cref="IqmBuilder.Build"/> creates the Skeleton3D + skinned mesh +
-    /// materials, which is RenderingServer-backed and must stay on the main thread).
+    /// materials, which is RenderingServer-backed and must stay on the main thread). The animation library
+    /// arrives pre-built from the parse.
     /// </summary>
     public SkeletalModelParts? BuildSkeletalModel(SkeletalModelParse parse)
     {
         if (parse is null) return null;
         try
         {
-            Node3D root = IqmBuilder.Build(parse.Iqm, _assets, parse.Groups, parse.Skin);
+            Node3D root = IqmBuilder.Build(parse.Iqm, _assets, parse.Groups, parse.Skin,
+                parse.Anims, parse.DefaultClip);
             return new SkeletalModelParts(parse.Iqm, root, parse.Groups, parse.Info);
         }
         catch (Exception ex) { GD.PrintErr($"[AssetLoader] skeletal model build failed: {ex.Message}"); return null; }

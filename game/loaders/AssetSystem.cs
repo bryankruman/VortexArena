@@ -487,9 +487,88 @@ public sealed class AssetSystem
         return vpath == null ? null : LoadImageFromVpath(vpath);
     }
 
+    // -------------------------------------------------------------------------------------------------
+    //  (§12.3-1) Decoded-image handoff — the off-thread half of a texture load. A model build's dominant
+    //  cost was the SYNCHRONOUS texture pipeline (VFS read + TGA/DDS decode + GPU upload, ~395 ms of a
+    //  ~750 ms player-model build, measured). The read+decode half is pure C# plus thread-tolerant Image
+    //  creation (§5: "decode into an Image off-thread is what Godot's own threaded loader does"), so a
+    //  worker pre-decodes into this handoff and the main-thread LoadTexture consumes it — leaving only
+    //  the ImageTexture.CreateFromImage upload on the main thread.
+    // -------------------------------------------------------------------------------------------------
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, Image> _predecodedImages =
+        new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// OFF-THREAD-SAFE: resolve + decode one texture into the handoff so the next main-thread
+    /// <see cref="LoadTexture"/> of the same name skips the read+decode. Idempotent; a miss is a no-op.
+    /// (Worst case — the texture was already GPU-cached — the entry sits unused until consumed or
+    /// <see cref="ClearPredecodedImages"/>.)
+    /// </summary>
+    public void PredecodeTexture(string baseNameNoExt)
+    {
+        if (string.IsNullOrEmpty(baseNameNoExt) || baseNameNoExt[0] == '$')
+            return;
+        string? vpath = _vfs.ResolveImage(baseNameNoExt);   // ConcurrentDictionary-cached (thread-safe)
+        if (vpath is null || _predecodedImages.ContainsKey(vpath))
+            return;
+        Image? img = LoadImageFromVpath(vpath);
+        if (img is not null)
+            _predecodedImages.TryAdd(vpath, img);
+    }
+
+    /// <summary>
+    /// OFF-THREAD-SAFE: pre-decode every texture a material build will probe. For a plain texture material:
+    /// the base + the channel-suffix companions (<c>_norm/_gloss/_glow/_reflect</c> + the skin-shader masks
+    /// <c>_shirt/_pants</c>). For a Q3 <em>shader</em> material (the path the first staged-build measurement
+    /// missed — a 434 ms main-thread decode): every stage's <c>map</c>/<c>animMap</c> frame, each with the
+    /// same companion probes (mirroring ShaderCompiler's CompanionBase wiring). Misses are cheap (the VFS
+    /// resolve cache short-circuits them); <c>_shaders</c> is immutable after construction, so reading it
+    /// from the worker is safe.
+    /// </summary>
+    public void PredecodeMaterialTextures(string materialName)
+    {
+        if (string.IsNullOrEmpty(materialName))
+            return;
+        string key = StripShaderExtension(materialName);
+
+        if (_shaders.TryGetValue(key, out ShaderDef? def))
+        {
+            foreach (ShaderStage stage in def.Stages)
+            {
+                if (!stage.IsLightmap && !stage.IsWhiteImage && !string.IsNullOrEmpty(stage.MapTexture))
+                    PredecodeWithCompanions(stage.MapTexture);
+                if (stage.AnimMap is { Frames.Length: > 0 } anim)
+                    foreach (string frame in anim.Frames)
+                        PredecodeWithCompanions(frame);
+            }
+            return;
+        }
+
+        PredecodeWithCompanions(key);
+    }
+
+    private void PredecodeWithCompanions(string textureName)
+    {
+        string baseName = AssetPaths.StripImageExtension(textureName);
+        PredecodeTexture(baseName);
+        PredecodeTexture(baseName + "_norm");
+        PredecodeTexture(baseName + "_gloss");
+        PredecodeTexture(baseName + "_glow");
+        PredecodeTexture(baseName + "_reflect");
+        PredecodeTexture(baseName + "_shirt");
+        PredecodeTexture(baseName + "_pants");
+    }
+
+    /// <summary>Drop any unconsumed predecoded images (map change — don't hold decoded pixels for a world
+    /// that's gone).</summary>
+    public void ClearPredecodedImages() => _predecodedImages.Clear();
+
     private Texture2D? LoadTextureFromVpath(string vpath)
     {
-        Image? image = LoadImageFromVpath(vpath);
+        // Consume the off-thread predecode when one is parked for this vpath (removed so memory is freed).
+        if (!_predecodedImages.TryRemove(vpath, out Image? image))
+            image = LoadImageFromVpath(vpath);
         if (image == null)
             return null;
 

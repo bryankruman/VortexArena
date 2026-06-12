@@ -728,6 +728,17 @@ scope inside a "51 ms" frame) — trust the scope table and events for stall mag
    Wave 1 staggered them one-per-frame — but each one is still a monolithic `BuildSkeletalModel` stall, the
    dominant early-match hitch in the forensic log. Next lever: split the Godot-side build into budgeted
    sub-steps (per-surface mesh commit across frames) or move texture upload off the delivery frame.
+   **→ FIXED (§12.4, 2026-06-12): staged build landed.** Measured split was materials ≈ 395 ms (texture
+   decode+upload — 99.8 % of the "mesh" cost), anims ≈ 130 ms, skeleton+mesh ≈ 3 ms. Landed: (a) the
+   animation library builds OFF-THREAD in the parse phase (`IqmBuilder.BuildAnimationLibrary` needs no live
+   skeleton — bone names derive from the IQM joints); (b) texture read+decode moved to the worker via the
+   `AssetSystem` predecoded-image handoff (`PredecodeMaterialTextures`, covering plain textures + companions
+   AND Q3 shader-def stage maps — the first measurement missed the shader path and paid a 434 ms main-thread
+   decode); (c) each material is its own streamer job (worker decode → main upload-only), with a count-down
+   gate firing the now-cheap (~3 ms) assembly. A/B (same 3-bot scenario, Debug): monolithic 600-750 ms
+   deliveries → 12-23 ms/job typical, 55 ms worst (one big multi-texture material); `pipe +0` on staged
+   frames. Residual: a single 2048² upload can still cost tens of ms — split per-texture jobs or pre-generate
+   mipmaps off-thread if a profile demands.
 2. **Mid-play pipeline compiles still occur** (`pipe +1..+3` on model delivery frames — the model's own new
    materials; expected first-sight cost the warm pass can't precompile for arbitrary player models). Watch the
    `uber` slice: nonzero means the ubershader fallback is compiling, which Godot hides poorly on some drivers.
