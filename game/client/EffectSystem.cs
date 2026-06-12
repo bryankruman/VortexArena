@@ -418,7 +418,14 @@ public partial class EffectSystem : Node3D
             // pool / modern emitter is persistent, not a per-call node), so a handled route returns null. Only
             // an unwired backend falls through to the legacy GpuParticles3D path below.
             if (Router is not null && Router.Route(effectName, blocks, origin, velocity, count, isTrail, color))
+            {
+                // DP spawns each block's dlight INDEPENDENT of the particles (cl_particles.c:1631-1652, before
+                // the spawnparticles gate) — the routed backend draws only sprites, so the light flash that
+                // sells an explosion (electro_impact's blue 'lightcolor 3.1 4.4 10' room-wash, the muzzle
+                // flashes, the combo's radius-400 burst) still belongs to this layer.
+                SpawnRoutedBlockLights(blocks, origin, velocity, isTrail, color);
                 return null;
+            }
 
             Node3D? built = BuildFromInfo(blocks, origin, velocity, count, color, isTrail);
             if (built is not null)
@@ -1792,6 +1799,66 @@ public partial class EffectSystem : Node3D
             return;
         mat.AlbedoTexture = sprite;
         mat.TextureFilter = BaseMaterial3D.TextureFilterEnum.Linear;
+    }
+
+    /// <summary>
+    /// The dlight pass for spawns the dual-system ROUTER handled (the faithful/modern backends draw only
+    /// sprites/decals). Mirrors the DP block loop's light section (cl_particles.c:1631-1652): per defined
+    /// block with <c>lightradius</c> &gt; 0 — after the underwater gates, independent of any particle gating —
+    /// place the flash at the trail END (originmaxs) for trail-class spawns, else at the effect center.
+    /// The lights self-free via <see cref="SpawnInfoLight"/>'s tween; the holder node lingers past the
+    /// longest possible flash (~1.5s clamp) then frees.
+    /// </summary>
+    private void SpawnRoutedBlockLights(IReadOnlyList<EffectInfoEmitter> blocks, NVec3 origin, NVec3 velocity,
+        bool isTrail, Color? colorOverride)
+    {
+        Node3D? holder = null;
+        NVec3 end = isTrail && velocity != default ? velocity : origin;
+        NVec3 center = (origin + end) * 0.5f;
+        bool underwater = false, underwaterKnown = false;
+
+        foreach (EffectInfoEmitter info in blocks)
+        {
+            if (!info.Defined || info.LightRadius <= 0f)
+                continue;
+            if (info.Underwater || info.NotUnderwater)
+            {
+                if (!underwaterKnown) // probe lazily; most blocks carry no water gate
+                {
+                    underwater = Api.Services is not null
+                        && (Api.Trace.PointContents(center) & (SuperContents.Water | SuperContents.Slime)) != 0;
+                    underwaterKnown = true;
+                }
+                if (info.Underwater && !underwater) continue;
+                if (info.NotUnderwater && underwater) continue;
+            }
+
+            if (holder is null)
+            {
+                holder = new Node3D { Name = "fx_lights", Position = Coords.ToGodot(origin) };
+                AddChild(holder);
+                ScheduleFree(holder, 2f);
+            }
+            SpawnInfoLight(holder, info, isTrail ? end : center, colorOverride);
+        }
+    }
+
+    /// <summary>
+    /// The light block a trail effect would attach to its mover, for the projectile renderer's flight glow —
+    /// DP re-adds a per-frame rtlight at the trail head from any lightradius block with no fade
+    /// (cl_particles.c:1645-1651 "glowing entity"); a persistent OmniLight on the projectile is the stable
+    /// equivalent. Returns the first defined block with lightradius &gt; 0, as (radius, lightcolor).
+    /// </summary>
+    public (float Radius, NVec3 Color)? TrailLightFor(string effectName)
+    {
+        EnsureInfoLoaded();
+        IReadOnlyList<EffectInfoEmitter>? blocks = LookupInfo(effectName, ResolveEffect(effectName));
+        if (blocks is null)
+            return null;
+        foreach (EffectInfoEmitter info in blocks)
+            if (info.Defined && info.LightRadius > 0f)
+                return (info.LightRadius, info.LightColor);
+        return null;
     }
 
     /// <summary>Spawn the OmniLight3D an effectinfo block requests (lightradius/lightcolor/lightradiusfade).</summary>

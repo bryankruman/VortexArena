@@ -579,8 +579,26 @@ public partial class ProjectileRenderer : Node3D
         return list;
     }
 
-    private static OmniLight3D BuildLight(ProjectileCatalog.Desc desc)
-        => new()
+    private OmniLight3D BuildLight(ProjectileCatalog.Desc desc)
+    {
+        // DP attaches the trail effect's no-fade light block to the mover every frame (cl_particles.c:1645
+        // "glowing entity") — e.g. TR_NEXUIZPLASMA carries 'lightradius 90, lightcolor 1.5 3 6', the tight
+        // saturated blue glow that paints the walls as an electro bolt flies. Use those exact values when the
+        // effectinfo defines them (same HDR mapping as EffectSystem.SpawnInfoLight: unit hue × energy); the
+        // catalog GlowColor stays the fallback for trailless/unparsed types.
+        if (!string.IsNullOrEmpty(desc.TrailEffect) && Effects?.TrailLightFor(desc.TrailEffect) is { } tl)
+        {
+            float maxc = MathF.Max(1f, MathF.Max(tl.Color.X, MathF.Max(tl.Color.Y, tl.Color.Z)));
+            return new OmniLight3D
+            {
+                Name = "Light",
+                LightColor = new Color(tl.Color.X / maxc, tl.Color.Y / maxc, tl.Color.Z / maxc),
+                LightEnergy = MathF.Min(8f, maxc),
+                OmniRange = Math.Clamp(tl.Radius, 1f, 2000f),
+                ShadowEnabled = false,
+            };
+        }
+        return new OmniLight3D
         {
             Name = "Light",
             LightColor = desc.GlowColor,
@@ -588,6 +606,7 @@ public partial class ProjectileRenderer : Node3D
             OmniRange = desc.Body == BodyFamily.FireSprite ? 220f : 160f,
             ShadowEnabled = false,
         };
+    }
 
     /// <summary>Attach a looping spatial fly sound to the projectile root (QC <c>loopsound</c>). Graceful miss.</summary>
     private void AttachLoopSound(Node3D root, string sample)
