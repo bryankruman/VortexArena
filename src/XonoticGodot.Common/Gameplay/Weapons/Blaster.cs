@@ -187,7 +187,8 @@ public sealed class Blaster : Weapon
 
         Vector3 center = self.Origin + (self.Mins + self.Maxs) * 0.5f;
         WeaponSplash.RadiusDamage(self, center, Primary.Damage, Primary.EdgeDamage, Primary.Radius,
-            self.Owner, RegistryId, Primary.Force, forceZScale: Primary.ForceZScale, directHit: other);
+            self.Owner, RegistryId, Primary.Force,
+            forceScale: new Vector3(1f, 1f, Primary.ForceZScale), directHit: other); // QC force_xyzscale.z
 
         WeaponSplash.ImpactSound(self, "weapons/laserimpact.wav"); // QC SND_LASERIMPACT (wr_impacteffect)
         // QC: pointparticles(EFFECT_BLASTER_IMPACT, org2, w_backoff * 1000, 1) — the impact sprays back out of
