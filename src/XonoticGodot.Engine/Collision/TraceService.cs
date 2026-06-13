@@ -51,6 +51,18 @@ public sealed class TraceService : ITraceService
     }
 
     /// <summary>
+    /// [T45] Wire this world's warpzone manager (QC global <c>g_warpzones</c>) so the warpzone-aware trace
+    /// extensions (<see cref="XonoticGodot.Common.Gameplay.WarpzoneManager"/> via
+    /// <c>ITraceService.TraceLineWarpzone</c>/<c>TraceBoxWarpzone</c>) can recurse hitscan/projectile traces
+    /// through linked portals. Call once after the map's zones are linked (GameWorld.Boot, after InitMapZones).
+    /// Passing <c>null</c> (a map with no warpzones, or teardown) reverts every warpzone-aware trace to a plain
+    /// trace. Forwarded via <see cref="TraceServiceWarpzoneBridge"/> to the Common-side ambient the warpzone
+    /// trace extensions (<c>ITraceService.TraceLineWarpzone</c>/<c>TraceBoxWarpzone</c>) resolve.
+    /// </summary>
+    public void SetWarpzoneManager(XonoticGodot.Common.Gameplay.WarpzoneManager? manager)
+        => TraceServiceWarpzoneBridge.Publish(manager);
+
+    /// <summary>
     /// The map's compiled visibility set (DP Mod_Q3BSP vis), backing <see cref="CheckPvs"/>. Set by the host
     /// that loaded the BSP (via <c>new BspPvs(bsp)</c>); null on a non-BSP/test world, where every PVS query is
     /// conservatively visible.

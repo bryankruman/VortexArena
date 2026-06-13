@@ -736,6 +736,42 @@ public sealed class DamageSystem : IDamageSystem
     private static bool HasStatusFrozen(Entity e)
         => StatusEffectsCatalog.Frozen is { } f && StatusEffectsCatalog.Has(e, f);
 
+    // ===============================================================================================
+    //  status-effect application seams (QC StatusEffects_apply for frozen/burning + StatusEffects_update).
+    //  These are the single points damage-driven freeze/burn go through so the networked overlay
+    //  (ENT_CLIENT_STATUSEFFECTS) gets dirty-marked exactly once per application — the T61 status-effect
+    //  network wiring lives HERE (in DamageSystem) rather than in GameWorld.cs (owned elsewhere this wave).
+    // ===============================================================================================
+
+    /// <summary>
+    /// QC <c>StatusEffects_apply(STATUSEFFECT_Frozen, e, …)</c>: freeze <paramref name="e"/> for
+    /// <paramref name="duration"/> seconds (0 = until thawed). Routes through
+    /// <see cref="StatusEffectsCatalog.Apply"/> (which sets the ACTIVE flag and marks the entity dirty via
+    /// <see cref="StatusEffectsCatalog.Update"/> so the frozen overlay networks). No-op if the frozen def
+    /// isn't registered. Returns true if the effect was applied.
+    /// </summary>
+    public static bool ApplyFrozen(Entity e, float duration, Entity? source = null)
+    {
+        if (StatusEffectsCatalog.Frozen is not { } def) return false;
+        StatusEffectsCatalog.Apply(e, def, duration, 1f, source);
+        StatusEffectsCatalog.Update(e); // explicit StatusEffects_update — dirty-mark for ENT_CLIENT_STATUSEFFECTS
+        return true;
+    }
+
+    /// <summary>
+    /// QC <c>StatusEffects_apply(STATUSEFFECT_Burning, e, …)</c>: ignite <paramref name="e"/> for
+    /// <paramref name="duration"/> seconds at <paramref name="strength"/> burn rate. Routes through
+    /// <see cref="StatusEffectsCatalog.Apply"/> and marks the entity dirty so the burning overlay networks.
+    /// No-op if the burning def isn't registered. Returns true if the effect was applied.
+    /// </summary>
+    public static bool ApplyBurning(Entity e, float duration, float strength = 1f, Entity? source = null)
+    {
+        if (StatusEffectsCatalog.Burning is not { } def) return false;
+        StatusEffectsCatalog.Apply(e, def, duration, strength, source);
+        StatusEffectsCatalog.Update(e); // explicit StatusEffects_update — dirty-mark for ENT_CLIENT_STATUSEFFECTS
+        return true;
+    }
+
     /// <summary>QC <c>STAT(FROZEN, e)</c> — the gametype freeze stat (Freeze Tag / CA ice).</summary>
     private static bool IsFrozenStat(Entity e) => e.FrozenStat != 0 || HasStatusFrozen(e);
 

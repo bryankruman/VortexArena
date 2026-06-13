@@ -65,23 +65,32 @@ public static class WeaponSplash
 
         // QC searches a padded radius (rad + MAX_DAMAGEEXTRARADIUS, damage.qc:746) so the per-target
         // nearest-point check below — not the broadphase pre-filter — is the binding constraint.
-        // Snapshot into a method-LOCAL list (not a shared static): ApplyDamage below can spawn/free entities and
-        // re-enter RadiusDamage (damage → death → secondary explosion), so the buffer must be per-call. This
-        // still allocates one List per blast (as the old iterator implicitly did) but kills the per-entity
-        // enumerator/state-machine churn, and snapshotting is REQUIRED — the loop relinks the world via
-        // ApplyDamage, so iterating the live grid result would be unsafe (D1 residual).
-        List<Entity> targets = new();
-        Api.Entities.FindInRadius(center, radius + MaxDamageExtraRadius, targets);
+        // [T45] WARPZONE-AWARE find (QC RadiusDamageForSource calls WarpZone_FindRadius): the result reaches
+        // victims through linked portals, each tagged with the blast origin in ITS OWN frame (hit.LocalBlastOrigin)
+        // so distance/falloff/LOS for a far-side victim are measured from the portal-shifted blast point. With no
+        // warpzones in the world this is exactly the plain findradius with identity transforms (every hit's
+        // LocalBlastOrigin == center). Snapshot into a method-LOCAL list (not a shared static): ApplyDamage below
+        // can spawn/free entities and re-enter RadiusDamage (damage → death → secondary explosion), so the buffer
+        // must be per-call; iterating the live grid result would be unsafe (the loop relinks the world).
+        List<WarpzoneRadiusHit> targets = new();
+        WarpzoneRadiusQuery.FindRadiusWarpzone(WarpzoneTrace.AmbientManager, center,
+            radius + MaxDamageExtraRadius, targets);
         for (int i = 0; i < targets.Count; i++)
         {
-            Entity e = targets[i];
+            WarpzoneRadiusHit hit = targets[i];
+            Entity e = hit.Entity;
             if (e.TakeDamage == DamageMode.No) continue;
+
+            // The blast origin in THIS victim's frame (QC WarpZone_findradius_findorigin): the original center for
+            // a same-room victim, or the portal-shifted origin for one reached through a warpzone. All of this
+            // victim's distance/force/LOS math below is measured from blastOrg, in the victim's own world frame.
+            Vector3 blastOrg = hit.LocalBlastOrigin;
 
             // QC RadiusDamageForSource measures distance to the NEAREST POINT on the target's bbox (so a
             // point-blank / direct hit takes full core damage — the bbox-center metric undershot close range).
             Vector3 targetCenter = e.Origin + (e.Mins + e.Maxs) * 0.5f;
-            Vector3 nearest = Vector3.Clamp(center, e.Origin + e.Mins, e.Origin + e.Maxs);
-            float dist = (nearest - center).Length();
+            Vector3 nearest = Vector3.Clamp(blastOrg, e.Origin + e.Mins, e.Origin + e.Maxs);
+            float dist = (nearest - blastOrg).Length();
             if (dist > radius) continue;
 
             float frac = 1f - dist / radius;                 // in [0,1] since dist <= radius
@@ -107,7 +116,7 @@ public static class WeaponSplash
             float denom = MathF.Max(damage, edgeDamage);
             if (force != 0f && denom > 0f)
             {
-                Vector3 dirDelta = forceRef - center;
+                Vector3 dirDelta = forceRef - blastOrg;
                 float dirLen = dirDelta.Length();
                 Vector3 dir = dirLen > 0f ? dirDelta / dirLen : Vector3.UnitZ;
                 forceVec = dir * ((finalDmg / denom) * force);
@@ -146,8 +155,11 @@ public static class WeaponSplash
                 Vector3 visibleAccum = Vector3.Zero;
                 for (int c = 0; c < total; c++)
                 {
-                    TraceResult los = Api.Trace.Trace(center, Vector3.Zero, Vector3.Zero, sample,
-                        MoveFilter.NoMonsters, inflictor);
+                    // [T45] LOS from the (portal-shifted) blast origin, warpzone-aware (QC RadiusDamageForSource
+                    // traces with WarpZone_TraceLine). For a same-room victim this is the plain LOS trace; for a
+                    // far-side victim blastOrg already sits in the victim's frame so the trace stays local.
+                    TraceResult los = Api.Trace.TraceLineWarpzone(blastOrg, sample,
+                        MoveFilter.NoMonsters, inflictor).Trace;
                     if (los.Fraction >= 1f || ReferenceEquals(los.Ent, e))
                     {
                         ++hits;

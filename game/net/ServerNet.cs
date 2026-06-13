@@ -224,6 +224,18 @@ public sealed class ServerNet : IDisposable
         public float MeasuredRtt;
         public bool HasRtt;
 
+        /// <summary>[T47] QC <c>CS(this).cmd_floodtime</c> (server/command/cmd.qc): the per-client command-flood
+        /// bucket cursor — the absolute sim time the client's command budget is "used up to". A new command is
+        /// rejected when <c>frameStart + count*time &lt; CmdFloodTime</c>; otherwise the cursor advances by
+        /// <c>antispam_time</c> from <c>max(frameStart, CmdFloodTime)</c> (exponential backoff under sustained
+        /// spam). Initialized to 0; the count*time headroom means a fresh client never trips on its first burst.</summary>
+        public float CmdFloodTime;
+
+        /// <summary>[T47] QC <c>.ban_checked</c> (server/ipban.qc <c>Ban_MaybeEnforceBanOnce</c>): the ban gate runs
+        /// at most once per client. Once set, the per-command ban check short-circuits to "not banned" (the QC
+        /// once-guard) — a banned client is dropped on its first command, so re-checking is pointless.</summary>
+        public bool BanChecked;
+
         /// <summary>The session challenge issued to this client and whether its identity is verified (SessionAuth).</summary>
         public byte[]? AuthChallenge;
         public byte[]? PendingPublicKey;   // the client's identity key, held until it signs the challenge
@@ -595,11 +607,71 @@ public sealed class ServerNet : IDisposable
             || string.IsNullOrWhiteSpace(line))
             return;
 
+        // [T47] SV_ParseClientCommand's three pre-dispatch gates (server/command/cmd.qc:1170-1251), run in QC
+        // order BEFORE any command executes. Any gate that returns drops the command silently (QC `return`):
+        //
+        // GATE 1 — UTF-8 round-trip validation (cmd.qc:1172-1178): QC re-encodes the command char-by-char through
+        // chr2str(str2chr(...)) and drops it if it doesn't round-trip. Malformed input never reaches the parser.
+        if (!ClientCommandRegistry.IsValidUtf8Command(line))
+            return;
+
+        // GATE 2 — Ban_MaybeEnforceBanOnce (cmd.qc:1180-1181 → ipban.qc): if the client is banned, tell+drop them
+        // and don't parse the command. Runs at most once per client (the QC .ban_checked once-guard).
+        if (!st.BanChecked)
+        {
+            st.BanChecked = true;
+            if (_world.Bans.MaybeEnforceBan(st.Player))
+                return; // banned → dropped by the wired Bans.DropClient pipeline; command discarded
+        }
+
+        // GATE 3 — per-client command flood bucket (cmd.qc:1191-1251): exponential-backoff anti-spam on the
+        // common command stream, exempting the engine/server/chat-handled verbs (begin/download/prespawn/spawn/
+        // sentcvar/pause/say/say_team/tell/minigame-non-common/…). A flooded command is rejected with a notice.
+        // The exemption test + budget math live in ClientCommandRegistry (the testable Server assembly); this
+        // method supplies the per-client cursor, the sim frame-start time, and the antispam cvar reads.
+        string verb = FirstToken(line);
+        if (!ClientCommandRegistry.IsCommandFloodExempt(verb, SecondToken(line)))
+        {
+            float antispamTime = Cvars.FloatOr("sv_clientcommand_antispam_time", 1f);
+            float antispamCount = Cvars.FloatOr("sv_clientcommand_antispam_count", 8f);
+            // QC uses gettime(GETTIME_FRAMESTART); _world.Time (the sim clock, constant within a tick) is the
+            // faithful equivalent of that frame-start time. Capture the pre-update cursor for the wait notice.
+            float floodBefore = st.CmdFloodTime;
+            if (!ClientCommandRegistry.TryPassFlood(ref st.CmdFloodTime, _world.Time, antispamCount, antispamTime))
+            {
+                float wait = floodBefore - (_world.Time + antispamCount * antispamTime); // QC: cmd_floodtime - mod_time
+                SendPrint(peerId, $"^3CMD FLOOD CONTROL: wait ^1{wait:0.######}^3 seconds, command was: {line}");
+                return;
+            }
+        }
+
         CommandContext ctx = _world.Commands.Execute(line, isServerConsole: false, caller: st.Player);
         string output = ctx.Output;
         if (string.IsNullOrEmpty(output))
             return;
         SendPrint(peerId, output.TrimEnd('\n', '\r'));
+    }
+
+    /// <summary>The lowercased first whitespace-delimited token of <paramref name="line"/> (QC <c>strtolower(argv(0))</c>).</summary>
+    private static string FirstToken(string line)
+    {
+        int i = 0;
+        while (i < line.Length && char.IsWhiteSpace(line[i])) i++;
+        int start = i;
+        while (i < line.Length && !char.IsWhiteSpace(line[i])) i++;
+        return line.Substring(start, i - start).ToLowerInvariant();
+    }
+
+    /// <summary>The second whitespace-delimited token of <paramref name="line"/> (QC <c>argv(1)</c>), "" if absent.</summary>
+    private static string SecondToken(string line)
+    {
+        int i = 0;
+        while (i < line.Length && char.IsWhiteSpace(line[i])) i++;
+        while (i < line.Length && !char.IsWhiteSpace(line[i])) i++;          // skip argv(0)
+        while (i < line.Length && char.IsWhiteSpace(line[i])) i++;
+        int start = i;
+        while (i < line.Length && !char.IsWhiteSpace(line[i])) i++;
+        return start < line.Length ? line.Substring(start, i - start) : "";
     }
 
     /// <summary>Send one console line to a single peer (DP <c>svc_print</c>).</summary>
@@ -1439,6 +1511,7 @@ public sealed class ServerNet : IDisposable
                 // OnGround flag below) the bot is frozen in a single pose. (QC csqcmodel networks .velocity.)
                 Velocity = p.Velocity,
                 Health = (int)p.Health,
+                Armor = (int)p.ArmorValue, // [T68] networked entcs armor → teammate shownames armor sub-bar
                 Colormap = (int)p.Team,
                 Weapon = p.ActiveWeaponId, // renders the remote player's held weapon (QC wepent)
                 Model = p.Model,           // QC .model (playermodel) — the client loads the skeletal IQM by name

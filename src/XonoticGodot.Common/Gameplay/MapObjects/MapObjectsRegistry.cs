@@ -160,6 +160,26 @@ public static class MapObjectsRegistry
         SpawnFuncs.Register("func_train", MovingBrushes.TrainSetup);
         SpawnFuncs.Register("path_corner", MovingBrushes.PathCornerSetup); // func_train waypoints (misc/corner.qc)
 
+        // ---- map-object long tail (T59): seven rare server-side entities ----
+        //   common/mapobjects/func/stardust.qc        — func_stardust (EF_STARDUST sparkle prop, 0.25s heartbeat)
+        //   common/mapobjects/misc/dynlight.qc        — dynlight (static / path / follow / tag-attach + toggle)
+        //   common/mapobjects/trigger/viewloc.qc      — trigger_viewlocation + target_viewlocation_start/_end
+        //   common/mapobjects/misc/follow.qc          — misc_follow (attach/follow at INITPRIO_FINDTARGET)
+        //   common/mapobjects/func/fourier.qc         — func_fourier (sum-of-sines mover)
+        //   common/mapobjects/func/vectormamamam.qc   — func_vectormamamam (4-reference projected mover)
+        //   common/mapobjects/target/voicescript.qc   — target_voicescript (scripted voice-line sequence)
+        // The follow/tag/path/reference lookups run at INITPRIO_FINDTARGET — drained in RunPostSpawn (below).
+        SpawnFuncs.Register("func_stardust", Stardust.StardustSetup);
+        SpawnFuncs.Register("dynlight", DynamicLight.DynlightSetup);
+        SpawnFuncs.Register("trigger_viewlocation", ViewLocation.TriggerViewLocationSetup);
+        SpawnFuncs.Register("target_viewlocation_start", ViewLocation.StartSetup);
+        SpawnFuncs.Register("target_viewlocation_end", ViewLocation.EndSetup);
+        SpawnFuncs.Register("target_viewlocation", ViewLocation.CompatSetup); // compat alias → _start
+        SpawnFuncs.Register("misc_follow", Follow.FollowSetup);
+        SpawnFuncs.Register("func_fourier", AdvancedMovers.FourierSetup);
+        SpawnFuncs.Register("func_vectormamamam", AdvancedMovers.VectormamamamSetup);
+        SpawnFuncs.Register("target_voicescript", VoiceScript.VoiceScriptSetup);
+
         // ---- breakables (func/breakable.qc) ----
         // Keep the map's classname so the Combat.Death break hook matches either spelling.
         SpawnFuncs.Register("func_breakable", e => { e.ClassName = "func_breakable"; Breakable.BreakableSetup(e); });
@@ -280,6 +300,14 @@ public static class MapObjectsRegistry
     public static void RunPostSpawn()
     {
         Doors.RunDeferredLinks();
+
+        // T59 INITPRIO_FINDTARGET pass — run AFTER the door-link pass (mirrors QC's priority ordering): resolve
+        // the follow/tag/path/reference lookups of the long-tail entities now that the whole BSP lump has
+        // spawned (and door targetnames are settled). Each family drains its own pending-init queue.
+        DynamicLight.RunDeferredInit();
+        ViewLocation.RunDeferredInit();
+        Follow.RunDeferredInit();
+        AdvancedMovers.RunDeferredInit();
     }
 }
 

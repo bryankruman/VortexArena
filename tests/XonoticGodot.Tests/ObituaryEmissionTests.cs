@@ -113,6 +113,36 @@ public class ObituaryEmissionTests : IDisposable
         Assert.Equal("DEATH_MURDER_TELEFRAG", DeathMessages.SelectSpecial(DeathTypes.Telefrag, murder: true));
     }
 
+    /// <summary>
+    /// [A5 #4] QC Obituary_SpecialDeath reads the REGISTERED death_msgself/death_msgmurder per deathtype
+    /// (deathtypes/all.inc). A category death must NOT fall back to the generic FRAG/GENERIC line: a monster
+    /// murder is the shared DEATH_MURDER_MONSTER with a per-monster DEATH_SELF_MON_* self line; a turret murder
+    /// is the shared DEATH_MURDER_CHEAT with a per-turret DEATH_SELF_TURRET_* self line; a vehicle carries its
+    /// own per-vehicle self+murder line. SelectSpecial must consult the category registry, not the flat switch.
+    /// </summary>
+    [Fact]
+    public void SelectSpecial_Monster_Turret_Vehicle_UseCategoryRegisteredMessages()
+    {
+        // Monster: shared murder, per-monster self (all.inc rows 15-22).
+        Assert.Equal("DEATH_MURDER_MONSTER", DeathMessages.SelectSpecial(DeathTypes.MonsterSpider, murder: true));
+        Assert.Equal("DEATH_SELF_MON_SPIDER", DeathMessages.SelectSpecial(DeathTypes.MonsterSpider, murder: false));
+        Assert.Equal("DEATH_MURDER_MONSTER", DeathMessages.SelectSpecial(DeathTypes.MonsterMage, murder: true));
+        Assert.Equal("DEATH_SELF_MON_MAGE", DeathMessages.SelectSpecial(DeathTypes.MonsterMage, murder: false));
+
+        // Turret: shared DEATH_MURDER_CHEAT murder, per-turret self (all.inc rows 36-48). Bare turret -> bare self.
+        Assert.Equal("DEATH_MURDER_CHEAT", DeathMessages.SelectSpecial("turret_mlrs", murder: true));
+        Assert.Equal("DEATH_SELF_TURRET_MLRS", DeathMessages.SelectSpecial("turret_mlrs", murder: false));
+        Assert.Equal("DEATH_MURDER_CHEAT", DeathMessages.SelectSpecial(DeathTypes.Turret, murder: true));
+        Assert.Equal("DEATH_SELF_TURRET", DeathMessages.SelectSpecial(DeathTypes.Turret, murder: false));
+
+        // Vehicle: per-vehicle self AND murder (all.inc rows 49-61).
+        Assert.Equal("DEATH_MURDER_VH_WAKI_ROCKET", DeathMessages.SelectSpecial("vh_waki_rocket", murder: true));
+        Assert.Equal("DEATH_SELF_VH_WAKI_ROCKET", DeathMessages.SelectSpecial("vh_waki_rocket", murder: false));
+        // A vehicle GUN registers murder-only (death_msgself == NULL) -> generic self fallback.
+        Assert.Equal("DEATH_MURDER_VH_WAKI_GUN", DeathMessages.SelectSpecial("vh_waki_gun", murder: true));
+        Assert.Equal("DEATH_SELF_GENERIC", DeathMessages.SelectSpecial("vh_waki_gun", murder: false));
+    }
+
     // ---- the obituary emission over the death bus --------------------------------------------------
 
     private Scores SubscribedScores(bool teamGame)

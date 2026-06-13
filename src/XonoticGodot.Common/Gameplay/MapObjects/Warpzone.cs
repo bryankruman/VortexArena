@@ -68,6 +68,28 @@ public readonly struct WarpzoneTransform
     public WarpzoneTransform Inverse() => new(_outOrigin, AnglesOf(_outFwd, _outUp), _inOrigin, AnglesOf(_inFwd, _inUp));
 
     private static Vector3 AnglesOf(Vector3 fwd, Vector3 up) => QMath.FixedVecToAngles(fwd); // roll from up not modeled
+
+    /// <summary>
+    /// [T45] Decompose this transform into its affine form <c>p → R·p + shift</c> for the trace/radius
+    /// recursion accumulator (<see cref="WarpzoneTransformChain"/>). The rotation rows are emitted so
+    /// that <c>(R·v)[k] == Dot(rowK, v)</c>; <paramref name="shift"/> is <c>outOrigin − R·inOrigin</c>. This is
+    /// the explicit-basis equivalent of QC's <c>warpzone_transform</c>/<c>warpzone_shift</c> pair
+    /// (lib/warpzone/common.qc), composed by the chain exactly as <c>WarpZone_Accumulator_AddTransform</c> does.
+    /// </summary>
+    public void GetAffine(out Vector3 row0, out Vector3 row1, out Vector3 row2, out Vector3 shift)
+    {
+        // Rotate(v) = -outFwd*(inFwd·v) - outRight*(inRight·v) + outUp*(inUp·v) (see Rotate above); so the k-th
+        // output component is Dot(rowK, v) with rowK = -outFwd[k]*inFwd - outRight[k]*inRight + outUp[k]*inUp.
+        row0 = -_outFwd.X * _inFwd - _outRight.X * _inRight + _outUp.X * _inUp;
+        row1 = -_outFwd.Y * _inFwd - _outRight.Y * _inRight + _outUp.Y * _inUp;
+        row2 = -_outFwd.Z * _inFwd - _outRight.Z * _inRight + _outUp.Z * _inUp;
+        // shift = outOrigin - R·inOrigin (so TransformPoint(inOrigin) == outOrigin), matching TransformOrigin.
+        Vector3 rotIn = new(
+            Vector3.Dot(row0, _inOrigin),
+            Vector3.Dot(row1, _inOrigin),
+            Vector3.Dot(row2, _inOrigin));
+        shift = _outOrigin - rotIn;
+    }
 }
 
 /// <summary>
@@ -116,11 +138,15 @@ public sealed class WarpzoneManager
     /// </summary>
     public void Link()
     {
+        // [T45] QC sv_warpzone_allow_selftarget (lib/warpzone/server.qc WarpZone_InitStep_FindTarget, default 0):
+        // a zone never selects ITSELF as its partner unless the cvar is set. Read once per link pass.
+        bool allowSelfTarget = Api.Services is not null && Api.Cvars.GetFloat("sv_warpzone_allow_selftarget") != 0f;
+
         // Forward pass: each zone carrying a .target links to that partner (the symmetric common case where
         // both zones name each other).
         foreach (Warpzone wz in _zones)
         {
-            Warpzone? partner = FindByTargetName(wz.Target);
+            Warpzone? partner = FindByTargetName(wz.Target, allowSelfTarget ? null : wz);
             if (partner is not null) LinkOneWay(wz, partner);
         }
         // Reverse pass — QC's two-way `this.enemy = e2; e2.enemy = this`: a zone that carries no .target but IS
@@ -140,11 +166,14 @@ public sealed class WarpzoneManager
         wz.Transform = new WarpzoneTransform(wz.InOrigin, wz.InAngles, partner.InOrigin, partner.InAngles);
     }
 
-    private Warpzone? FindByTargetName(string name)
+    private Warpzone? FindByTargetName(string name, Warpzone? excludeSelf = null)
     {
         if (string.IsNullOrEmpty(name)) return null;
         foreach (Warpzone wz in _zones)
+        {
+            if (ReferenceEquals(wz, excludeSelf)) continue; // QC !sv_warpzone_allow_selftarget: never self-link
             if (wz.TargetName == name) return wz;
+        }
         return null;
     }
 

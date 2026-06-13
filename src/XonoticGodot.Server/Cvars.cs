@@ -92,6 +92,11 @@ public static class Cvars
         new("sv_step_upspeed_scale", "1", "step-up upward-velocity multiplier (1 = vanilla launch, 0 = step up without launching)"),
         new("sv_step_upspeed_max", "-1", "step-up upward-velocity hard cap in u/s (-1 = disabled/uncapped)"),
 
+        // [T45] warpzone self-targeting (lib/warpzone/server.qc WarpZone_InitStep_FindTarget). Behaviour is already
+        // correct without this entry (Warpzone.cs reads it via Api.Cvars.GetFloat, which returns 0 when unset), but
+        // registering it makes it visible to cvarlist/the menu and lets the listen-server `set` bridge apply changes.
+        new("sv_warpzone_allow_selftarget", "0", Save, "1 = a warpzone may target itself (default 0: never self-link)"),
+
         // ---- match flow / limits (mapinfo + xonotic-server.cfg) ----
         new("timelimit", "20", Notify, "match time limit in minutes (0 = none)"),
         new("fraglimit", "0", Notify, "score limit (0 = none)"),

@@ -133,8 +133,13 @@ public static class WeaponFiring
         }
         else
         {
-            TraceResult aim = Api.Trace.Trace(eye, Vector3.Zero, Vector3.Zero, aimEnd, MoveFilter.NoMonsters, actor);
-            shotEnd = aim.EndPos;
+            // [T45] trueaim through warpzones (QC W_SetupShot uses WarpZone_TraceLine): the centered shot may aim
+            // at a target seen through a portal. If the aim crossed a portal the endpoint lives in the far frame,
+            // so the shot DIRECTION (computed in the firing frame below) keeps the straight aimEnd — the fired
+            // bullet/projectile re-warps through the same portal itself. With no portal crossed this is the plain
+            // trueaim trace exactly as before.
+            WarpzoneTraceResult aim = Api.Trace.TraceLineWarpzone(eye, aimEnd, MoveFilter.NoMonsters, actor);
+            shotEnd = aim.ZonesCrossed > 0 ? aimEnd : aim.Trace.EndPos;
         }
 
         // Nudge the muzzle origin so it never sits inside a wall (QC tracebox of the projectile size).
@@ -220,9 +225,21 @@ public static class WeaponFiring
 
         for (int guard = 0; guard < 32; ++guard)
         {
-            TraceResult tr = Api.Trace.Trace(cur, Vector3.Zero, Vector3.Zero, end, MoveFilter.Normal, actor);
+            // [T45] warpzone-aware sweep (QC fireBullet uses WarpZone_TraceLine): the segment crosses any linked
+            // portals, so a bullet fired at a portal mouth continues out of the linked portal and hits a far-side
+            // target. On a non-warpzone map this is exactly the plain trace. After a crossing, the running aim
+            // direction and the segment end are rotated into the far-side frame so the penetration loop continues
+            // straight on the far side (the accumulated transform is the C# WarpZone_trace_transform).
+            WarpzoneTraceResult wzr = Api.Trace.TraceLineWarpzone(cur, end, MoveFilter.Normal, actor);
+            TraceResult tr = wzr.Trace;
             cur = tr.EndPos;
             Entity? hit = tr.Ent;
+            if (wzr.ZonesCrossed > 0)
+            {
+                // carry the aim direction + the remaining segment end into the frame the trace ended in.
+                dir = QMath.Normalize(wzr.Transform.TransformDirection(dir));
+                end = wzr.Transform.TransformPoint(end);
+            }
 
             if (tr.Fraction >= 1f) break;                          // hit nothing -> done
             if ((tr.DpHitQ3SurfaceFlags & Q3SurfaceFlagSky) != 0) break; // sky stops the bullet
@@ -330,19 +347,35 @@ public static class WeaponFiring
         Entity? first = null;
         bool headshot = false; // QC FireRailgunBullet: one of the pierced targets was a headshot
         Vector3 cur = start;
+        Vector3 beamStart = start; // QC headshot uses the original start/end; updated into the far frame on a cross
+        Vector3 beamEnd = end;
         for (int guard = 0; guard < 64; ++guard)
         {
-            TraceResult tr = Api.Trace.Trace(cur, Vector3.Zero, Vector3.Zero, end, MoveFilter.Normal, actor);
+            // [T45] warpzone-aware beam sweep (QC FireRailgunBullet uses WarpZone_TraceLine): the beam continues
+            // through linked portals so the rail can pierce a target on the far side. Plain trace on a non-warpzone
+            // map. After a crossing the beam's running start/end + direction move into the far-side frame so the
+            // headshot box test and the next pierce segment stay in one consistent frame.
+            WarpzoneTraceResult wzr = Api.Trace.TraceLineWarpzone(cur, end, MoveFilter.Normal, actor);
+            TraceResult tr = wzr.Trace;
             Entity? hit = tr.Ent;
+            if (wzr.ZonesCrossed > 0)
+            {
+                dir = QMath.Normalize(wzr.Transform.TransformDirection(dir));
+                end = wzr.Transform.TransformPoint(end);
+                beamStart = wzr.Transform.TransformPoint(beamStart);
+                beamEnd = wzr.Transform.TransformPoint(beamEnd);
+            }
 
             if (hit is null || tr.Fraction >= 1f) break; // hit world / nothing -> stop
 
-            // Head-AABB headshot against the full beam (QC tracing.qc:267-268 uses the original start/end).
-            if (headshotNotify && !headshot && Headshot(hit, actor, start, end))
+            // Head-AABB headshot against the full beam (QC tracing.qc:267-268 uses the original start/end —
+            // in the hit's frame after any portal crossing).
+            if (headshotNotify && !headshot && Headshot(hit, actor, beamStart, beamEnd))
                 headshot = true;
 
-            // Record and make non-solid so the next trace passes through.
-            pierced.Add((hit, tr.EndPos, (tr.EndPos - start).Length(), hit.Solid));
+            // Record and make non-solid so the next trace passes through. Distance is measured along the beam in
+            // the hit's frame (beamStart), so a far-side pierce gets a sensible falloff distance.
+            pierced.Add((hit, tr.EndPos, (tr.EndPos - beamStart).Length(), hit.Solid));
             first ??= hit;
 
             if (hit.Solid == Solid.Bsp) break; // a world brush ends the beam

@@ -186,6 +186,24 @@ public static class DeathMessages
     /// </summary>
     public static string SelectSpecial(string? deathType, bool murder)
     {
+        // QC Obituary_SpecialDeath reads the REGISTERED death_msgself / death_msgmurder off the deathtype entity
+        // (server/damage.qc:142-143). The categorized monster/turret/vehicle rows (deathtypes/all.inc) carry
+        // category-specific names that do NOT follow the shared-suffix scheme below: a monster murder is the
+        // generic DEATH_MURDER_MONSTER, a turret murder is DEATH_MURDER_CHEAT, a vehicle death has per-vehicle
+        // self+murder lines, and each monster/turret has its own DEATH_SELF_MON_*/DEATH_SELF_TURRET_* self line.
+        // Consult the registry first so those categories resolve to their registered notification (matching Base);
+        // a NULL-registered message for that direction falls through to the generic name (QC: death_message NULL →
+        // Obituary sends nothing, but for the port's flat selector we emit the generic family as the closest send).
+        var def = DeathTypes.Lookup(deathType);
+        if (def is not null && def.Category != DeathCategory.None)
+        {
+            string? registered = murder ? def.MurderMessage : def.SelfMessage;
+            if (!string.IsNullOrEmpty(registered))
+                return registered;
+            // No registered message for this direction (e.g. a vehicle GUN has no self line): generic fallback.
+            return murder ? "DEATH_MURDER_FRAG" : "DEATH_SELF_GENERIC";
+        }
+
         string b = DeathTypes.BaseOf(deathType);
         // QC: the special deathtypes share the SAME suffix in both families (DEATH_SELF_FALL / DEATH_MURDER_FALL).
         string name = b switch

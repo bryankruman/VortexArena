@@ -53,17 +53,47 @@ public sealed class HudNotifications
     private AudioStreamPlayer? _announcer;
     private INotificationSink? _previousSink;
 
-    // ---- Announcer queue + anti-spam (QC cl_announcer_antispam) ----
+    // ---- Announcer queue + anti-spam (Port of Base/.../common/notifications/all.qc
+    //      Local_Notification_sound / Local_Notification_Queue_Add / _Process) ----
 
-    /// <summary>Anti-spam window in seconds: if the same sound is requested within this interval, skip it.</summary>
+    /// <summary>
+    /// Anti-spam window in seconds — QC <c>autocvar_cl_announcer_antispam</c> (announcer.qh:4, shipped 2):
+    /// if the SAME sound is requested within this interval of its previous play, it is skipped
+    /// (Local_Notification_sound, all.qc:987).
+    /// </summary>
     public float AntiSpamInterval { get; set; } = 2f;
 
-    /// <summary>Maximum queued announcer sounds (prevents buildup in extreme cases).</summary>
-    private const int MaxQueueSize = 5;
+    /// <summary>QC <c>NOTIF_QUEUE_MAX</c> (notifications/all.qh:383): the deepest the announcer queue grows.</summary>
+    private const int MaxQueueSize = 10;
 
-    private readonly List<string> _announcerQueue = new();
+    /// <summary>One queued announcer play (QC notif_queue_entity/type/time parallel arrays, all.qh:384-386).</summary>
+    private readonly struct QueuedAnnce
+    {
+        public QueuedAnnce(string sound, double scheduledTime) { Sound = sound; ScheduledTime = scheduledTime; }
+        /// <summary>The announcer sound name to play (QC the queued notif's nent_snd).</summary>
+        public string Sound { get; }
+        /// <summary>Engine time this entry is scheduled to fire (QC notif_queue_time[i]).</summary>
+        public double ScheduledTime { get; }
+    }
+
+    private readonly List<QueuedAnnce> _announcerQueue = new();
+
+    /// <summary>QC <c>notif_queue_next_time</c> (all.qh:388): the time the NEXT queued play may fire.</summary>
+    private double _queueNextTime;
+
+    // QC Local_Notification_sound dedup state: the last sound played and when (prev_soundfile/prev_soundtime).
     private string _lastAnnouncerSound = "";
     private double _lastAnnouncerTime = -100.0;
+
+    /// <summary>
+    /// Optional sound-length lookup (QC <c>soundlength(AnnouncerFilename(snd))</c>) used to derive the queue
+    /// spacing when a notification's queuetime is 0. Host-set; returns the sample duration in seconds, or a
+    /// non-positive value if unknown (then a small default spacing is used). Mirrors QC guessing the length.
+    /// </summary>
+    public Func<string, float>? SoundLength { get; set; }
+
+    /// <summary>Fallback queue spacing (seconds) when neither a notification queuetime nor a sound length is known.</summary>
+    private const double DefaultQueueSpacing = 1.0;
 
     public HudNotifications(Hud hud) => _hud = hud ?? throw new ArgumentNullException(nameof(hud));
 
@@ -89,8 +119,9 @@ public sealed class HudNotifications
                 ShowInfo(notif, text, strs);
                 break;
             case MsgType.Annce:
-                // The announcer "text" is the sound name (the server sent notif.Sound as the text).
-                PlayAnnouncer(!string.IsNullOrEmpty(text) ? text : notif?.Sound ?? "");
+                // The announcer "text" is the sound name (the server sent notif.Sound as the text). The
+                // notification's queuetime governs the queue spacing (QC notif.nent_queuetime).
+                PlayAnnouncer(!string.IsNullOrEmpty(text) ? text : notif?.Sound ?? "", notif?.Queuetime ?? 0f);
                 break;
             default:
                 // MSG_MULTI/MSG_CHOICE are fanned out server-side into INFO/CENTER/ANNCE before the wire, so
@@ -155,48 +186,82 @@ public sealed class HudNotifications
     //  MSG_ANNCE  (announcer voice)
     // =====================================================================================
 
-    /// <summary>Play an announcer voice sample by its bare name (QC <c>announcer_play</c>). No-op if missing.
-    /// Applies anti-spam (same sound within <see cref="AntiSpamInterval"/> is skipped) and queues if the
-    /// announcer is already playing (up to <see cref="MaxQueueSize"/> entries).</summary>
-    public void PlayAnnouncer(string soundName)
+    /// <summary>
+    /// Queue an announcer voice sample by its bare name — QC <c>Local_Notification_Queue_Add</c>
+    /// (notifications/all.qc:1131). <paramref name="queueTime"/> is the notification's queuetime (QC
+    /// nent_queuetime): 0 guesses the spacing from the sample length (<see cref="SoundLength"/>); -1 plays
+    /// immediately without occupying a queue slot. When the queue is free (<c>time &gt; queue_next_time</c>)
+    /// the sound runs now and reserves the next slot at <c>now + queue_time</c>; otherwise it is appended at
+    /// the running <c>queue_next_time</c> (dropped if the queue is at <see cref="MaxQueueSize"/>).
+    /// </summary>
+    public void PlayAnnouncer(string soundName, float queueTime = 0f)
     {
         if (string.IsNullOrWhiteSpace(soundName) || AnnouncerVolume <= 0f)
             return;
 
-        // Anti-spam: skip if the same sound was requested within the anti-spam window.
         double now = Time.GetTicksMsec() / 1000.0;
-        if (soundName == _lastAnnouncerSound && (now - _lastAnnouncerTime) < AntiSpamInterval)
-            return;
 
-        // If the announcer is currently playing, queue the new sound (capped).
-        EnsureAnnouncer();
-        if (_announcer!.Playing)
+        // QC: if (queue_time == 0) queue_time = soundlength(AnnouncerFilename(notif.nent_snd)).
+        double spacing = queueTime;
+        if (queueTime == 0f)
         {
-            if (_announcerQueue.Count < MaxQueueSize)
-                _announcerQueue.Add(soundName);
+            float len = SoundLength?.Invoke(soundName) ?? 0f;
+            spacing = len > 0f ? len : DefaultQueueSpacing;
+        }
+
+        // QC: if (queue_time == -1 || time > notif_queue_next_time) -> run immediately, reserve next slot.
+        if (queueTime == -1f || now > _queueNextTime)
+        {
+            QueueRun(soundName, now);
+            _queueNextTime = now + (queueTime == -1f ? 0.0 : spacing);
             return;
         }
 
-        PlayAnnouncerImmediate(soundName);
+        // Otherwise enqueue at the running next-time (QC notif_queue_time[len] = notif_queue_next_time).
+        if (_announcerQueue.Count >= MaxQueueSize)
+            return;
+        _announcerQueue.Add(new QueuedAnnce(soundName, _queueNextTime));
+        _queueNextTime += spacing;
     }
 
-    /// <summary>Advance the announcer queue: if the player finished and the queue is not empty, dequeue and play.</summary>
+    /// <summary>
+    /// Advance the announcer queue — QC <c>Local_Notification_Queue_Process()</c> (notifications/all.qc:1158):
+    /// if the front entry's scheduled time has arrived, run it and shift the queue left. Call once per frame
+    /// (the host drives this from the HUD update tick).
+    /// </summary>
     public void ProcessAnnouncerQueue()
     {
-        if (_announcer is null || !GodotObject.IsInstanceValid(_announcer))
+        if (_announcerQueue.Count == 0)
             return;
-        if (_announcer.Playing || _announcerQueue.Count == 0)
+        double now = Time.GetTicksMsec() / 1000.0;
+        // QC: if (!notif_queue_length || notif_queue_time[0] > time) return;
+        if (_announcerQueue[0].ScheduledTime > now)
             return;
 
-        string next = _announcerQueue[0];
-        _announcerQueue.RemoveAt(0);
-        PlayAnnouncerImmediate(next);
+        QueuedAnnce front = _announcerQueue[0];
+        _announcerQueue.RemoveAt(0);   // QC shift-left
+        QueueRun(front.Sound, now);
     }
 
-    /// <summary>Immediately start playing an announcer sound (no queue check, no anti-spam check).</summary>
-    private void PlayAnnouncerImmediate(string soundName)
+    /// <summary>
+    /// QC <c>Local_Notification_Queue_Run</c> -&gt; <c>Local_Notification_sound</c> (all.qc:1121/985): play the
+    /// sound, applying the dedup anti-spam — skip if it matches the previous sound AND falls inside the
+    /// <see cref="AntiSpamInterval"/> window (QC <c>soundfile != prev_soundfile || time &gt;= prev_soundtime +
+    /// antispam</c>). On a play, record it as the new prev_soundfile/prev_soundtime.
+    /// </summary>
+    private void QueueRun(string soundName, double now)
     {
+        // QC Local_Notification_sound antispam: same file inside the window -> blocked.
+        if (soundName == _lastAnnouncerSound && now < _lastAnnouncerTime + AntiSpamInterval)
+            return;
+
         AudioStream? stream = LoadAnnouncerStream(soundName);
+
+        // Record prev_soundfile/prev_soundtime even when the sample is missing: QC sets these whenever the
+        // antispam check passes (it strcpy's before the _sound call would no-op on a bad sample).
+        _lastAnnouncerSound = soundName;
+        _lastAnnouncerTime = now;
+
         if (stream is null)
             return;
 
@@ -204,9 +269,6 @@ public sealed class HudNotifications
         _announcer!.Stream = stream;
         _announcer.VolumeDb = Mathf.LinearToDb(Mathf.Clamp(AnnouncerVolume, 0.001f, 1f));
         _announcer.Play();
-
-        _lastAnnouncerSound = soundName;
-        _lastAnnouncerTime = Time.GetTicksMsec() / 1000.0;
     }
 
     /// <summary>

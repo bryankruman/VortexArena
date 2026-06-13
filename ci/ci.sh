@@ -104,7 +104,29 @@ if $do_smoke; then
     fi
 fi
 
-# ── 5. optional: the two export presets (untested path — see ADR-0014) ────────
+# ── 5. Visual QA (headless assertions only) ───────────────────────────────────
+# T5 (Wave A5). Godot's headless renderer (dummy_video) renders NOTHING, so NO rendered-frame / pixel
+# correctness can run in CI — see tools/visual-qa.sh + RUNNING.md "Visual QA" for the WINDOWED manual half.
+# What CI *can* assert is structural: every stock map parses with renderable+collidable geometry, every model
+# loads with a valid bone parent-chain; IQM models are additionally validated for a non-singular bind pose (unit
+# bind quat + non-zero scales), while DPM and MD3 deliberately PERMIT singular/non-unit-scale content per the
+# shipped DP baselines (DPM ships zero-scale helper bones; MD3 tag axes carry non-unit scale). Every .shader
+# script compiles (parses) with no hard failure. VisualQaTests already ran inside step 2's full suite; this re-runs JUST that filter for a
+# focused, greppable per-asset summary (and self-skips without assets/data, exactly like the other real-data
+# tests). It needs no Godot — pure xUnit over the parsed asset structures.
+step "Visual QA (headless assertions only): VisualQa map/model/shader sweep"
+vqa_log="$(mktemp)"
+dotnet test "$ROOT/tests/XonoticGodot.Tests/XonoticGodot.Tests.csproj" -c Debug --no-build --nologo \
+    --filter "FullyQualifiedName~VisualQa" > "$vqa_log" 2>&1 || { cat "$vqa_log"; rm -f "$vqa_log"; fail "Visual QA headless assertions failed"; }
+grep -E "Passed!|Failed!|Passed:|Failed:|Skipped:|Total tests" "$vqa_log" || true
+if [ -d "$ROOT/assets/data" ]; then
+    echo "Visual QA (headless): asserted load + structure for every stock map/model/shader; pixel correctness is the WINDOWED tools/visual-qa.sh checklist (RUNNING.md)."
+else
+    echo "NOTE: assets/data missing — VisualQa theories self-skipped (run download-assets.sh for the full map/model/shader sweep)."
+fi
+rm -f "$vqa_log"
+
+# ── 6. optional: the two export presets (untested path — see ADR-0014) ────────
 if $do_export; then
     [ -f "$GODOT" ] || fail "--export needs Godot (set GODOT=)"
     step "export windows-client + linux-client + linux-dedicated (macos-client is CI-only — needs a Mac)"

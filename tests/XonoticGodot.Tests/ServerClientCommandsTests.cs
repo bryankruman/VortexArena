@@ -271,13 +271,27 @@ public class ServerClientCommandsTests
     [Fact]
     public void Voice_LivePlayer_EmitsSound()
     {
+        // [A5 #5] CmdVoice now routes through SoundSystem.GlobalSound -> _GlobalSound (QC VoiceMessage), so the
+        // taunt reaches the connected-client ROSTER (FOREACH_CLIENT) on CH_VOICE (= SoundChannel.VoiceAuto), not
+        // just the emitter on the wrong channel. Connect+join a live player so they're in Clients.Players, open
+        // the taunt gate (sv_taunt 1, sv_gentle 0), then voice a taunt and assert it broadcasts on VoiceAuto.
         var world = NewWorld();
-        Player p = NewCaller();
-        Api.Entities.SetOrigin(p, new Vector3(0, 0, 0)); // give it a real edict slot so the sound emits
+        world.Services.Cvars.Set("sv_taunt", "1");
+        world.Services.Cvars.Set("sv_gentle", "0");
+        // Connect a client so it lands in Clients.Players (the FOREACH_CLIENT recipient roster), then mark it live
+        // directly — Join()/Spawn() needs a map spawnpoint the headless test harness doesn't load, but the voice
+        // route only needs a non-observer roster member to broadcast to.
+        ClientManager.ClientInfo info = world.Clients.ClientConnect(isBot: false, netName: "p");
+        Player p = info.Player;
+        p.IsObserver = false;
+        p.FragsStatus = Player.FragsPlayer;
+        Api.Entities.SetOrigin(p, new Vector3(0, 0, 0));
+
         var sounds = new List<SoundEvent>();
         world.Services.SoundImpl.Broadcast += sounds.Add;
         world.Commands.Execute("voice taunt", isServerConsole: false, caller: p);
-        Assert.Contains(sounds, s => s.Channel == SoundChannel.Voice);
+        // QC CH_VOICE is the stacking voice channel (-2 = VoiceAuto); the taunt reaches the live roster player.
+        Assert.Contains(sounds, s => s.Channel == SoundChannel.VoiceAuto);
     }
 
     // ============================================================================== suggestmap

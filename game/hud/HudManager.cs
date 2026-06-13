@@ -76,6 +76,19 @@ public partial class Hud : CanvasLayer
     /// to dim under a menu; defaults to fully on.</summary>
     public float HudFadeAlpha { get; set; } = 1f;
 
+    /// <summary>QC <c>intermission</c> — true at the end-of-match screen. Fed by the host; gates off new damage
+    /// shakes (QC <c>Hud_Dynamic_Frame</c> only triggers a shake when <c>!intermission</c>). Defaults false
+    /// (normal play), so the effect works without any host wire-up.</summary>
+    public bool Intermission { get; set; }
+
+    /// <summary>The damage-keyed whole-HUD shake (QC <c>Hud_Dynamic_Frame</c> shake block + <c>Hud_Shake_Update</c>).
+    /// Driven each frame in <see cref="_Process"/> from the local player's health + the HUD clock.</summary>
+    private readonly HudDynamicShake _dynamicShake = new();
+
+    /// <summary>The HUD clock (QC <c>time</c>) the shake decays against. The full HUD has no slaved sim clock
+    /// here, so — as <see cref="HealthArmorPanel"/> does for its timed effects — we accumulate real frame delta.</summary>
+    private double _shakeClock;
+
     private readonly List<HudPanel> _panels = new();
 
     // Panels that drive their OWN Visible + redraw in their own _Process (port extras) — the manager only
@@ -146,6 +159,11 @@ public partial class Hud : CanvasLayer
     /// <summary>Point the HUD at the local player actor. Pass <c>null</c> to blank the HUD (pre-spawn/observing).</summary>
     public void SetPlayer(Player? player)
     {
+        // A view change (respawn / spectatee switch) jumps health discontinuously; QC suppressed the shake for the
+        // next frame in that case (HUD_Reset / main.qc:750 set hud_dynamic_shake_factor = -1). Mirror that so the
+        // jump from 0/old-health to the new player's health doesn't trigger a spurious whole-HUD shake.
+        if (!ReferenceEquals(player, Player))
+            _dynamicShake.RequestReset();
         Player = player;
         ApplyPlayer();
     }
@@ -164,6 +182,17 @@ public partial class Hud : CanvasLayer
         Vector2 vp = GetViewport().GetVisibleRect().Size;
         float fade = Mathf.Clamp(HudFadeAlpha, 0f, 1f);
         float sbFade = Mathf.Clamp(ScoreboardFade, 0f, 1f);
+
+        // Damage-keyed whole-HUD shake (QC Hud_Dynamic_Frame): nudge the HUD root by the per-frame shake offset.
+        // QC added hud_dynamic_shake_realofs to hud_shift_current, which every panel's draw applied to its origin;
+        // here the equivalent is shifting the whole CanvasLayer via its Offset (one move, all panels follow).
+        // Read STAT(HEALTH) off the local player (HealthArmorPanel reads the same RES_HEALTH); with no player
+        // (pre-spawn/observing) pass 0 — RequestReset() on (re)spawn masks the resulting health jump.
+        _shakeClock += delta;
+        float health = Player is { } pl ? pl.GetResource(ResourceType.Health) : 0f;
+        System.Numerics.Vector2 shake = _dynamicShake.Update(
+            health, (float)_shakeClock, new System.Numerics.Vector2(vp.X, vp.Y), Intermission);
+        Offset = new Vector2(shake.X, shake.Y);
 
         foreach (HudPanel p in _panels)
         {

@@ -112,6 +112,7 @@ public sealed partial class NetGame : Node3D
     private XonoticGodot.Game.Hud.Hud _fullHud = null!;
     private XonoticGodot.Game.Client.DamageTextLayer? _damageText; // [T51] floating damage numbers (cl_damagetext)
     private XonoticGodot.Game.Client.WaypointSpriteLayer? _waypointLayer; // 3D in-world waypoint/objective markers
+    private XonoticGodot.Game.Client.ShowNamesLayer? _shownamesLayer; // [T68] floating player name + health/armor tags
     private XonoticGodot.Game.Client.HitSound? _hitSound;          // client-side hit-confirmation beep (cl_hitsound modes 0-3)
     private XonoticGodot.Game.Hud.ScoreboardPanel _scoreboard = null!; // the networked scoreboard (held while +showscores)
     private XonoticGodot.Game.Hud.HudNotifications? _notifications; // notification router (centerprint/killfeed/announcer) on the net path
@@ -1158,6 +1159,16 @@ public sealed partial class NetGame : Node3D
             _waypointLayer.Source = () => _client.Waypoints;
         waypointLayer.AddChild(_waypointLayer);
 
+        // [T68] Floating player name + health/armor tags (QC client/shownames.qc Draw_ShowNames_All): a 3D
+        // in-world overlay projected through the first-person camera, on the SAME low layer as the waypoint
+        // sprites (below the HUD panels). Fed each frame in _Process from ClientNet's remote player slice + the
+        // scoreboard name slice. The display NAME comes from the networked scoreboard rows (the port's faithful
+        // entcs_GetName stand-in — there is no separate entcs name stream).
+        _shownamesLayer = new XonoticGodot.Game.Client.ShowNamesLayer { Name = "ShowNames", Camera = _camera, Net = _client };
+        _shownamesLayer.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+        _shownamesLayer.NameResolver = ResolveScoreboardName;
+        waypointLayer.AddChild(_shownamesLayer);
+
         // Networked scoreboard (QC HUD panel #25 + the +showscores toggle). The real play path is NetGame, whose
         // NetHud has no scoreboard — so the per-player columns + team totals that ClientNet decodes
         // (LatestScoreboard) had nowhere to go. Add the panel here, sized to a centered slab, hidden until the
@@ -2067,6 +2078,17 @@ public sealed partial class NetGame : Node3D
         if (_radar is not null)
             _radar.LocalYawDegrees = _viewAngles.Y;
 
+        // [T68] Shownames overlay (QC Draw_ShowNames_All): feed the per-frame view context — the local client's
+        // team (the sameteam gate), whether we're in chase (the own-name gate), and our net id. The team is the
+        // local server Player's on a listen server, else the local scoreboard row's team (the port's entcs team
+        // slice). The Camera is set once at SetupCameraAndHud; the layer reads ClientNet directly for the rest.
+        if (_shownamesLayer is not null)
+        {
+            _shownamesLayer.LocalNetId = _client.LocalNetId;
+            _shownamesLayer.ChaseActive = _view.ChaseActive;
+            _shownamesLayer.LocalTeam = LocalShownamesTeam();
+        }
+
         // Scoreboard (QC +showscores): show while the scoreboard key is held, and feed it the networked rows +
         // team totals whenever a fresh LatestScoreboard arrives (the panel only repaints on data/toggle, so this
         // is cheap). BindTable.ShowScores is the held-button state set from the +showscores bind.
@@ -2200,6 +2222,11 @@ public sealed partial class NetGame : Node3D
         t.TimeLimitSeconds = _client.MatchTimeLimit;
         t.WarmupStage = _client.MatchWarmup;
         t.WarmupTimeLimitSeconds = _client.MatchWarmupLimit;
+        // [T69] feed the dynamic HUD shake's intermission gate: Base suppresses the low-health screen shake on the
+        // end-of-match (intermission) screen. Mirror the live flag each frame (clears back to false when the next
+        // match leaves intermission). Without this the shake still works in normal play but keeps shaking on the
+        // scoreboard screen.
+        _fullHud.Intermission = _client.MatchIntermission;
         if (_client.MatchIntermission)
             t.IntermissionTime = _client.LatestServerTime;
     }
@@ -2319,6 +2346,38 @@ public sealed partial class NetGame : Node3D
     }
     private XonoticGodot.Net.ScoreboardWire? _lastFedScoreboard;
     private XonoticGodot.Net.GametypeStatusBlock.Decoded? _lastFedModeStatus;
+
+    /// <summary>[T68] Resolve a player net id to its display name — the port's faithful <c>entcs_GetName</c>
+    /// stand-in for the shownames overlay. The port has no separate entcs name stream, so the name comes from the
+    /// networked scoreboard rows (each carries netId → name; see <see cref="XonoticGodot.Net.ScoreRowWire"/>).
+    /// Returns "" when no row is known yet (the tag then shows only the status bar, like QC's blank entcs name).</summary>
+    private string ResolveScoreboardName(int netId)
+    {
+        XonoticGodot.Net.ScoreboardWire? sb = _client?.LatestScoreboard;
+        if (sb is null)
+            return "";
+        foreach (XonoticGodot.Net.ScoreRowWire row in sb.Rows)
+            if (row.NetId == netId)
+                return row.Name ?? "";
+        return "";
+    }
+
+    /// <summary>[T68] The local client's team for the shownames <c>sameteam</c> gate — the C# stand-in for the
+    /// local <c>entcs</c> team. A listen server reads the local server <see cref="Player"/>'s team directly; a
+    /// pure client falls back to the local scoreboard row's team (the networked entcs team slice). 0 (no team /
+    /// FFA) means no player is "sameteam", matching QC where a teamless local has only enemy tags.</summary>
+    private int LocalShownamesTeam()
+    {
+        if (LocalServerPlayer is { } self)
+            return (int)self.Team;
+        XonoticGodot.Net.ScoreboardWire? sb = _client?.LatestScoreboard;
+        int localId = _client?.LocalNetId ?? 0;
+        if (sb is not null)
+            foreach (XonoticGodot.Net.ScoreRowWire row in sb.Rows)
+                if (row.NetId == localId)
+                    return row.Team;
+        return Teams.None;
+    }
 
     // [Score panel] last-fed scoreboard reference, so the in-game Score overlay rebuilds only on a data change
     // (the wire object is replaced per decode — identity by reference, like UpdateScoreboard).

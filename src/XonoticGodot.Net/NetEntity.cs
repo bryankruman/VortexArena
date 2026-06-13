@@ -65,6 +65,11 @@ public enum EntityField : ushort
     // same delta as the rest of the owner's state; they are 0 on every non-owner entity (so they cost nothing on
     // the wire for remote players / projectiles, where the mask bit stays clear).
     Feedback = 1 << 14, // the HitsoundDamageDealtTotal + objective-ring fractions (NadeTimer/Capture/Revive)
+
+    // [T68] the QC entcs ARMOR slice (ent_cs.qc ENTCS_PROP_RESOURCE(ARMOR, …)). Networked alongside Health for the
+    // shownames teammate status bar (Draw_ShowNames reads RES_ARMOR off the entcs entity for same-team players).
+    // 0 on non-player entities / when armor is unchanged, so it costs nothing on the wire when the bit stays clear.
+    Armor = 1 << 15, // a player's armor value (the entcs private ARMOR slice — shownames teammate status bar)
 }
 
 /// <summary>
@@ -89,6 +94,7 @@ public struct NetEntityState
     public int Effects;          // EF_* render flags bitfield
     public int Colormap;         // player colors (top/bottom) or team tint
     public int Health;           // for nameplates / the owner HUD (0 when not applicable)
+    public int Armor;            // [T68] QC entcs RES_ARMOR slice — the shownames teammate status bar (0 when N/A)
     public NetEntityFlags Flags;
     public int Owner;            // owning player's entnum (view-models / nameplates / projectiles); 0 = none
     public int Weapon;           // active/held weapon registry id (−1 = none) — renders a remote player's weapon
@@ -123,6 +129,7 @@ public struct NetEntityState
         if (baseline.Effects != current.Effects) m |= EntityField.Effects;
         if (baseline.Colormap != current.Colormap) m |= EntityField.Colormap;
         if (baseline.Health != current.Health) m |= EntityField.Health;
+        if (baseline.Armor != current.Armor) m |= EntityField.Armor;
         if (baseline.Flags != current.Flags) m |= EntityField.Flags;
         if (baseline.Owner != current.Owner) m |= EntityField.Owner;
         if (baseline.Weapon != current.Weapon) m |= EntityField.Weapon;
@@ -160,6 +167,7 @@ public static class EntityStateCodec
         if ((mask & EntityField.Effects) != 0) w.WriteLong(current.Effects);
         if ((mask & EntityField.Colormap) != 0) w.WriteByte(current.Colormap & 0xFF);
         if ((mask & EntityField.Health) != 0) w.WriteShort(current.Health);
+        if ((mask & EntityField.Armor) != 0) w.WriteShort(current.Armor);
         if ((mask & EntityField.Flags) != 0) w.WriteByte((byte)current.Flags);
         if ((mask & EntityField.Owner) != 0) w.WriteUShort(current.Owner);
         if ((mask & EntityField.Weapon) != 0) w.WriteShort(current.Weapon);
@@ -190,6 +198,7 @@ public static class EntityStateCodec
         if ((mask & EntityField.Effects) != 0) s.Effects = r.ReadLong();
         if ((mask & EntityField.Colormap) != 0) s.Colormap = r.ReadByte();
         if ((mask & EntityField.Health) != 0) s.Health = r.ReadShort();
+        if ((mask & EntityField.Armor) != 0) s.Armor = r.ReadShort();
         if ((mask & EntityField.Flags) != 0) s.Flags = (NetEntityFlags)r.ReadByte();
         if ((mask & EntityField.Owner) != 0) s.Owner = r.ReadUShort();
         if ((mask & EntityField.Weapon) != 0) s.Weapon = r.ReadShort();

@@ -189,6 +189,74 @@ public sealed class Commands
         "cl_jetpack_jump",
     };
 
+    /// <summary>QC <c>notification_CHOICE_*</c> REPLICATE prefix (notifications/all.qh:884 ReplicateVars). The full
+    /// set is data-driven (one cvar per registered MSG_CHOICE notification), so the gate matches the prefix and
+    /// then confirms the trailing name resolves to a registered choice cvar before accepting — never an arbitrary
+    /// <c>notification_*</c> string (privilege-separation: an attacker-controlled wire name must reach only the
+    /// per-client choice store, never the world cvar table).</summary>
+    private const string ChoiceCvarPrefix = "notification_";
+
+    /// <summary>True if <paramref name="name"/> is a registered MSG_CHOICE replication cvar (QC the per-choice
+    /// <c>notification_&lt;CHOICE_NAME&gt;</c> the client pushes via ReplicateVars). Built lazily from the
+    /// notification registry so it tracks exactly the choices that exist.</summary>
+    private static bool IsRegisteredChoiceCvar(string name)
+    {
+        if (!name.StartsWith(ChoiceCvarPrefix, StringComparison.Ordinal))
+            return false;
+        return RegisteredChoiceCvarNames.Contains(name);
+    }
+
+    // The set of notification_<CHOICE> cvar names, one per registered MSG_CHOICE notification (team variants
+    // collapse to one shared cvar via ChoiceCvarName). Built LAZILY on first use — the notification registry is
+    // populated by Notifications.RegisterAll() at GameInit, which is guaranteed to run before any client can send
+    // a sentcvar, but AFTER this type may be statically touched; a static-init build would capture an empty set.
+    private static HashSet<string>? _registeredChoiceCvarNames;
+    private static HashSet<string> RegisteredChoiceCvarNames
+    {
+        get
+        {
+            // Rebuild if the registry has grown since we last cached (covers tests that register late).
+            if (_registeredChoiceCvarNames is null)
+            {
+                var s = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var n in Notifications.All)
+                    if (n.Type == MsgType.Choice)
+                        s.Add(ChoiceCvarPrefix + NotificationChoiceState.ChoiceCvarName(n));
+                _registeredChoiceCvarNames = s;
+            }
+            return _registeredChoiceCvarNames;
+        }
+    }
+
+    /// <summary>QC <c>CS(caller).msg_choice_choices[]</c> (notifications/all.qh:720): each client's replicated
+    /// MSG_CHOICE selections, populated by the <c>sentcvar notification_CHOICE_*</c> receive leg. The host reads
+    /// this (via <see cref="GetChoiceState"/>) to feed the per-recipient notification dispatch. Dropped in
+    /// <see cref="ForgetPlayer"/> on disconnect.</summary>
+    private readonly Dictionary<Player, NotificationChoiceState> _choiceState = new();
+
+    /// <summary>The replicated MSG_CHOICE selections for a client (QC <c>CS(p).msg_choice_choices</c>), or null
+    /// if the client has sent none. Lets the host drive the notification dispatch from per-client preferences.</summary>
+    public NotificationChoiceState? GetChoiceState(Player p)
+        => _choiceState.TryGetValue(p, out var st) ? st : null;
+
+    /// <summary>Store a received <c>notification_&lt;CHOICE&gt;</c> value into the caller's per-client choice array
+    /// (QC <c>CS(this).msg_choice_choices[it.nent_choice_idx] = …</c>). Resolves the choice index by matching the
+    /// cvar name to the registered choice's collapsed cvar name.</summary>
+    private void StoreChoiceCvar(Player p, string cvarName, string value)
+    {
+        if (!_choiceState.TryGetValue(p, out var st))
+            _choiceState[p] = st = new NotificationChoiceState();
+        int v = int.TryParse(value, System.Globalization.NumberStyles.Integer,
+            System.Globalization.CultureInfo.InvariantCulture, out int parsed)
+            ? parsed : NotificationChoiceState.OptionA;
+        foreach (var n in Notifications.All)
+        {
+            if (n.Type != MsgType.Choice) continue;
+            if (cvarName == ChoiceCvarPrefix + NotificationChoiceState.ChoiceCvarName(n))
+                st.Set(n.ChoiceIdx, v);
+        }
+    }
+
     /// <summary>QC <c>mapvote_suggestions</c>: maps players suggested for the end-of-match ballot (the <c>suggestmap</c>
     /// command). Kept here (the port's <see cref="MapVoting"/> defers the suggestion array); deduped, order kept.</summary>
     private readonly List<string> _mapSuggestions = new();
@@ -230,6 +298,7 @@ public sealed class Commands
         _clientCvars.Remove(p);
         _autoswitch.Remove(p);
         _clientVersion.Remove(p);
+        _choiceState.Remove(p);
     }
 
     public Commands(GameWorld world)
@@ -237,6 +306,7 @@ public sealed class Commands
         _world = world;
         Replies = new CommandReplies(world);
         Chat = new Chat(world); // [T46] the chat engine (registers its g_chat_* cvar defaults on construction)
+        RegisterClientCommandCvars();
         RegisterBuiltins();
 
         // Per-client weapon priority (T54): point the selection code's per-player priority source at this
@@ -245,6 +315,19 @@ public sealed class Commands
         // global cvar read, so a player that never replicated behaves exactly as before. Static: the latest
         // world's Commands owns it (a torn-down world's players simply read "" → fallback).
         Inventory.PriorityProvider = e => e is Player p ? GetClientCvar(p, "cl_weaponpriority", "") : null;
+    }
+
+    /// <summary>
+    /// [T47] Register the per-client command-flood antispam cvar defaults (port of commands.cfg:155-156, read in
+    /// server/command/cmd.qc SV_ParseClientCommand as <c>autocvar_sv_clientcommand_antispam_time</c> /
+    /// <c>_count</c>). Idempotent through <see cref="Cvars.Register"/> (an already-set value is kept), the same
+    /// boot-time pattern <see cref="Chat"/> uses for its g_chat_* defaults. Defaults match Base exactly:
+    /// time 1.0s, count 8.
+    /// </summary>
+    private static void RegisterClientCommandCvars()
+    {
+        Cvars.Register("sv_clientcommand_antispam_time", "1");
+        Cvars.Register("sv_clientcommand_antispam_count", "8");
     }
 
     /// <summary>The registered commands (read-only), e.g. for a <c>help</c>/completion dump.</summary>
@@ -275,6 +358,27 @@ public sealed class Commands
         var ctx = new CommandContext(argv, isServerConsole, caller);
         if (argv.Length == 0)
             return ctx;
+
+        // [T47] Privilege separation (port of SV_ParseClientCommand's SERVER_COMMANDS vs CLIENT_COMMANDS split,
+        // server/command/cmd.qc + reg.qh). A REMOTE-client-issued command — the SV_ParseClientCommand path: a
+        // non-console source (!isServerConsole) carrying a caller — may ONLY invoke a verb in the CLIENT_COMMANDS /
+        // client-reachable common / cheat allowlist. The admin SERVER_COMMANDS (kick/ban/map/gotomap/endmatch/
+        // settemp/set/seta/toggle/rcon-style verbs) and the generic cvar-reflection family are server-console/rcon
+        // only; reject them when a client tries, matching QC where SV_ParseClientCommand never routes a client
+        // through the SERVER_COMMAND / generic registries.
+        //
+        // The boundary is isServerConsole (the rcon/console-trust flag), NOT merely a non-null caller: the local
+        // listen-server OPERATOR is the server console and runs with full privilege while still carrying its
+        // LocalServerPlayer as caller (so kill/say/team act on the host's player). The remote-client net path
+        // (ServerNet.HandleClientCommand) passes isServerConsole:false, so it is gated; the host console must pass
+        // isServerConsole:true to keep admin power (see the integrationContract host wire-up note). The server's
+        // own caller-bearing internal invocations (impulse on the input path, sentcvar) are allowlisted, so they
+        // pass either way.
+        if (!isServerConsole && caller is not null && !ClientCommandRegistry.IsClientCallable(argv[0]))
+        {
+            ctx.Print($"Unknown command \"{argv[0]}\"");
+            return ctx;
+        }
 
         if (_commands.TryGetValue(argv[0], out ConsoleCommand? cmd))
         {
@@ -1560,10 +1664,15 @@ public sealed class Commands
         if (p.IsDead) return true;                                   // QC: dead can't taunt (silent)
         if (p.IsObserver || p.FragsStatus == Player.FragsSpectator) return true; // no body to play from (silent)
 
-        // QC VoiceMessage(caller, e, msg): play the taunt. The port emits a by-name sound from the player on the
-        // Voice channel (the HUD/announcer text + per-taunt sample selection are a follow-up).
+        // QC VoiceMessage(caller, e, msg) -> _GlobalSound: route the voice message through the full VOICETYPE
+        // dispatch so it reaches the correct recipients with the right gates/attenuation — TEAMRADIO goes to the
+        // emitter's team, TAUNT/AUTOTAUNT honour sv_taunt/sv_autotaunt/sv_gentle, LASTATTACKER hits the last
+        // attacker. VoiceMessages.VoiceTypeOf resolves the routing from the bare id (an id not in the voice-message
+        // catalog defaults to TAUNT, matching QC's _GetPlayerSoundSampleField fallback to playersound_taunt). The
+        // live real-client roster (Clients.Players) is the recipient set QC iterates via FOREACH_CLIENT. Previously
+        // this played only on the emitter, so all recipient routing/gates were dead.
         if (Api.Services is not null)
-            Api.Sound.Play(p, XonoticGodot.Common.Services.SoundChannel.Voice, $"sound/player/voice/{voiceType}", 1f, 1f);
+            SoundSystem.GlobalSound(p, voiceType, _world.Clients.Players);
         return true;
     }
 
@@ -1708,7 +1817,8 @@ public sealed class Commands
         }
 
         string name = ctx.Arg(1);
-        if (!SentCvarAllowlist.Contains(name))
+        bool isChoice = IsRegisteredChoiceCvar(name);
+        if (!SentCvarAllowlist.Contains(name) && !isChoice)
             return true; // unknown REPLICATE field → stored nowhere (QC writes no field), silently consumed
 
         string value = ctx.Arg(2);
@@ -1737,6 +1847,14 @@ public sealed class Commands
         // Bridges into the pre-existing T56 per-client state, so both write paths share one source of truth.
         if (name == "cl_autoswitch")
             _autoswitch[ctx.Caller] = InterpretBoolean(value);
+
+        // QC the SVQC REPLICATE leg for notification_CHOICE_*: store the client's selection in its per-client
+        // msg_choice_choices array (CS(this).msg_choice_choices[idx]). The cvar's int value is 1=A / 2=B /
+        // 0=suppress (notifications/all.qh:720). We walk the registered choices to find the index this cvar drives
+        // (team variants share ONE cvar + idx — ChoiceCvarName collapses the color suffix). The host reads this
+        // back via GetChoiceState to feed the per-recipient notification dispatch.
+        if (isChoice)
+            StoreChoiceCvar(ctx.Caller, name, value);
 
         // QC prints nothing on the happy path.
         return true;

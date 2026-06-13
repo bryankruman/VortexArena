@@ -528,6 +528,12 @@ public sealed class GameWorld
         //     orientation) and link the pairs. No-op when the map has no warpzones.
         Warpzones.InitMapZones();
 
+        // 6a″) [T45] wire this match's warpzone manager onto the trace service (QC global g_warpzones) so
+        //       hitscan/projectile traces and radius-damage queries recurse through linked portals — a rocket or
+        //       bullet fired at one portal mouth continues out of the linked portal and damages a far-side target
+        //       (lib/warpzone/common.qc WarpZone_TraceBox/_FindRadius). No-op on a map with no warpzones.
+        Services.TraceImpl.SetWarpzoneManager(Warpzones);
+
         // 6b) campaign: apply the per-level frag/time limits now the gametype + map are validated
         //     (QC CampaignPostInit, called later in worldspawn).
         if (Cvars.Bool("g_campaign") && !Campaign.Aborted)
@@ -1076,6 +1082,14 @@ public sealed class GameWorld
             // QC the per-frame weapon driver (W_WeaponFrame): run the full fire state machine for the player.
             WeaponThink(p);
         }
+
+        // QC PlayerPreThink tail (client.qc:2762): target_voicescript_next(this) — advance the player's active
+        // scripted voice-line sequence one step per tick (play the next line, schedule the following). QC calls
+        // this unconditionally at the end of the per-client frame; VoiceScript.Next carries its own IS_PLAYER /
+        // game_stopped / voiceend gates, so it is safe to drive here regardless of the dead/gameStopped state
+        // above (a latched script on a now-dead player simply no-ops until it re-arms). Without this pump a
+        // target_voicescript latches on .use (first line plays) but never advances — the feature was dead.
+        VoiceScript.Next(p);
     }
 
     /// <summary>
