@@ -59,6 +59,15 @@ public partial class Hud : CanvasLayer
     /// <summary>The in-game minigame menu (CSQC HUD_MinigameMenu_*). Not a HudPanel.</summary>
     public MinigameMenu MinigameMenu { get; private set; } = null!;
 
+    /// <summary>The HUD configure-mode editor overlay (CSQC <c>hud_config.qc</c>). Active while
+    /// <c>_hud_configure 1</c>; drives panel drag/resize/keyboard editing + the grid/highlight draw. Not a
+    /// HudPanel (it reads input via <see cref="HudConfigEditor.HandleInput"/>, routed from the net layer).</summary>
+    public HudConfigEditor ConfigEditor { get; private set; } = null!;
+
+    /// <summary>Read-only view of the live panels (for the configure-mode editor, which hit-tests + drag/resizes
+    /// them via their <c>hud_panel_&lt;id&gt;_*</c> cvars). Mirrors QC's <c>hud_panels</c> registry walk.</summary>
+    public IReadOnlyList<HudPanel> Panels => _panels;
+
     /// <summary>Scoreboard cross-fade (0 = not shown … 1 = fully up). The net/match layer drives it; non-WITH_SB
     /// panels fade their alpha by <c>1 − ScoreboardFade</c> (QC <c>panel_fade_alpha</c>), without losing Visible.</summary>
     public float ScoreboardFade { get; set; }
@@ -123,6 +132,12 @@ public partial class Hud : CanvasLayer
         AddChild(MinigameMenu);
 
         SyncSkin();
+
+        // The HUD configure-mode editor overlay (QC hud_config.qc). Added last so it draws over every panel
+        // (QC HUD_Configure_PostDraw runs after the panel draws). Input is routed in from NetGame._UnhandledInput.
+        ConfigEditor = new HudConfigEditor(this);
+        AddChild(ConfigEditor);
+
         ApplyPlayer();
 
         GetViewport().SizeChanged += OnViewportResized;
@@ -171,6 +186,10 @@ public partial class Hud : CanvasLayer
             if (p.IsDynamic && p.NeedsRedraw())
                 p.QueueRedraw();
         }
+
+        // Tick the configure-mode editor (QC HUD_Configure_Frame + HUD_Panel_Mouse + the PostDraw scheduling).
+        // Runs after the panel loop so it sees this frame's resolved layout; it self-gates on _hud_configure.
+        ConfigEditor.Update(vp, fade);
 
         DrivePongKeys();
     }

@@ -14,9 +14,8 @@ namespace XonoticGodot.Common.Gameplay;
 ///
 /// Identity/attributes from hlac.qh; balance from bal-wep-xonotic.cfg (g_balance_hlac_*).
 /// This port covers the primary single bolt with held-fire spread accumulation (misc_bulletcounter ->
-/// spread_add, capped at spread_max), the random per-bolt secondary burst, recoil punchangle, and the
-/// splash damage. Only the crouch spread modifier (needs the duck input flag) and client muzzle effects
-/// are left out.
+/// spread_add, capped at spread_max), the random per-bolt secondary burst, the crouch spread modifier
+/// (spread *= spread_crouchmod when ducked AND grounded), recoil punchangle, and the splash damage.
 /// </summary>
 [Weapon]
 public sealed class Hlac : Weapon
@@ -139,6 +138,14 @@ public sealed class Hlac : Weapon
     public override float RefireFor(FireMode fire) => fire == FireMode.Secondary ? Secondary.Refire : Primary.Refire;
     public override float AnimtimeFor(FireMode fire) => fire == FireMode.Secondary ? Secondary.Animtime : Primary.Animtime;
 
+    /// <summary>
+    /// QC IS_DUCKED(actor) &amp;&amp; IS_ONGROUND(actor) → spread *= spread_crouchmod (hlac.qc:33-34 primary,
+    /// 79-80 secondary). Mirrors Machinegun.CrouchSpreadMod (machinegun.cs ~261-262); takes the per-mode
+    /// crouchmod (Primary.SpreadCrouchmod / Secondary.SpreadCrouchmod) so one helper serves both call sites.
+    /// </summary>
+    private static float CrouchSpreadMod(Entity actor, float crouchmod)
+        => (actor.IsDucked && actor.OnGround) ? crouchmod : 1f;
+
     // W_HLAC_Attack — one rapid bolt; spread grows with the held-fire counter. hlac.qc
     private void Attack(Entity actor, WeaponSlot slot, WeaponSlotState st)
     {
@@ -146,7 +153,9 @@ public sealed class Hlac : Weapon
 
         // spread = spread_min + spread_add*misc_bulletcounter, capped at spread_max.
         float spread = MathF.Min(Primary.SpreadMin + Primary.SpreadAdd * st.MiscBulletCounter, Primary.SpreadMax);
-        // (crouch reduces spread by spread_crouchmod when ducked+grounded — needs the crouch input flag.)
+        // QC hlac.qc:33-34 — if (IS_DUCKED && IS_ONGROUND) spread *= spread_crouchmod, AFTER all other
+        // spread calc and before projectile setup.
+        spread *= CrouchSpreadMod(actor, Primary.SpreadCrouchmod);
 
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out _);
         ShotInfo shot = WeaponFiring.SetupShot(actor, forward);
@@ -164,6 +173,11 @@ public sealed class Hlac : Weapon
     {
         actor.TakeResource(AmmoType, Secondary.Ammo);
 
+        // spread = WEP_CVAR_SEC(spread); QC hlac.qc:79-80 — if (IS_DUCKED && IS_ONGROUND) spread *=
+        // spread_crouchmod, before the per-bolt projectile loop (the gate is actor-state, not per-bolt).
+        float spread = Secondary.Spread;
+        spread *= CrouchSpreadMod(actor, Secondary.SpreadCrouchmod);
+
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out _);
         ShotInfo shot = WeaponFiring.SetupShot(actor, forward);
         Recoil(actor);
@@ -172,9 +186,9 @@ public sealed class Hlac : Weapon
         if (shots < 1) shots = 1;
         for (int j = 0; j < shots; ++j)
         {
-            // Each bolt is an independent W_SetupProjVelocity_Basic with the full secondary spread.
+            // Each bolt is an independent W_SetupProjVelocity_Basic with the (crouch-adjusted) secondary spread.
             SpawnBolt(actor, shot.Origin, shot.Dir, Secondary.Speed, Secondary.Lifetime,
-                Secondary.Damage, Secondary.EdgeDamage, Secondary.Radius, Secondary.Force, Secondary.Spread);
+                Secondary.Damage, Secondary.EdgeDamage, Secondary.Radius, Secondary.Force, spread);
         }
 
         Api.Sound.Play(actor, SoundChannel.WeaponAuto, "weapons/lasergun_fire.wav");

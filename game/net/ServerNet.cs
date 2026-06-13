@@ -1445,6 +1445,15 @@ public sealed class ServerNet : IDisposable
                 Flags = (p.OnGround ? NetEntityFlags.OnGround : 0)
                       | (p.IsDead ? NetEntityFlags.Dead : 0)
                       | (p.IsDucked ? NetEntityFlags.Crouched : 0), // QC FL_DUCKED → remote crouch anim/hull
+                // [T41/T46] the Feedback stats the client diffs/draws (view.qc HitSound + objective rings):
+                //   - HitDamageDealtTotal: cumulative damage dealt — the client diffs it to fire the hit sound.
+                //   - NadeTimer: 0..1 held-nade charge — drives the nade objective ring.
+                //   - ReviveProgress: 0..1 Freeze-Tag thaw — drives the thaw ring (mirrored from FrozenState).
+                // CaptureProgress is intentionally left 0: the stat is networked + rendered but no gametype sets
+                // it (matches Base QC — an unfinished CTF/Assault ring producer; see NetEntity.cs).
+                HitDamageDealtTotal = p.HitsoundDamageDealtTotal,
+                NadeTimer = p.NadeTimer,
+                ReviveProgress = p.ReviveProgress,
             };
             if (teleported)
                 s.Flags |= NetEntityFlags.Teleported;

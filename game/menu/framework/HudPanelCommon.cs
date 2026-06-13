@@ -26,6 +26,17 @@ public static class HudPanelCommon
     public static string Percent(float v) => $"{Mathf.RoundToInt(v * 100f)}%";
 
     /// <summary>
+    /// HUD skin-list backend hook (QC <c>makeXonoticHUDSkinList</c> / <c>HUD_Panel_ExportCfg</c>, which scan +
+    /// write <c>data/data/hud_*.cfg</c>). The configure-mode editor (T27, <see cref="Game.Hud.HudConfigEditor"/>)
+    /// exports the live skin via Ctrl+S → the <c>hud save</c> command; the menu-side skin LIST that enumerates
+    /// the saved <c>.cfg</c> files for <see cref="DialogHudSetupExit"/> has no file-scan backend yet. When that
+    /// backend lands, point this delegate at it and the dialog's list/Refresh/Set/Save route through it; until
+    /// then it stays null and the dialog renders the honest "pending" note. Intentionally deferred (T27 scope is
+    /// the in-HUD editor, not the menu skin-list enumeration).
+    /// </summary>
+    public static System.Func<System.Collections.Generic.IEnumerable<string>>? SkinListProvider { get; set; }
+
+    /// <summary>
     /// Emit the common panel block into <paramref name="box"/> for HUD panel <paramref name="panel"/>: the
     /// Enable mode (when <paramref name="includeEnable"/>) then the Background group. Panels that declare their
     /// own enable control first (physics, radar, pressedkeys, strafehud, itemstime, quickmenu) pass

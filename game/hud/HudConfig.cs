@@ -67,6 +67,26 @@ public static class HudConfig
         c.Register("hud_colorset_kill_3", "4", Save);
         c.Register("hud_colorset_background", "7", Save);
 
+        // ---- HUD configure-mode (editor) cvars — the C# successor to the `_hud_common.cfg` block (Base
+        // /.../_hud_common.cfg:2-7) plus the grid cvars whose numeric defaults the loaded skin (luma) seeds.
+        // T27 ports the configure-mode editor (HudConfigEditor) over these; registering them here guarantees they
+        // exist (and are menu-bindable) even on a headless/test run that never exec'd the HUD cfg tree.
+        // NOTE: `_hud_configure` is a `set` (non-archived) in Base — a transient toggle, not a saved pref — so
+        // it is registered WITHOUT Save; everything else is `seta` (archived) and keeps the Save flag.
+        c.Register("_hud_configure", "0");                                   // set _hud_configure 0
+        c.Register("hud_configure_teamcolorforced", "0", Save);             // seta … 0
+        // Base ships `hud_configure_checkcollisions 0` (collision snapping OFF by default — _hud_common.cfg:4).
+        // The recon brief said "=1"; the SHIPPED Base default is 0 and parity wins, so 0 it is.
+        c.Register("hud_configure_checkcollisions", "0", Save);             // seta … 0
+        c.Register("hud_configure_bg_minalpha", "0.25", Save);             // seta … 0.25
+        c.Register("hud_configure_grid_alpha", "0.15", Save);             // seta … 0.15
+        c.Register("hud_configure_vertical_lines", "0.5", Save);         // seta … "0.5"
+        // Grid snap defaults come from the loaded skin in Base (hud_luma.cfg: grid 1, xsize/ysize 0.005;
+        // _hud_descriptions.cfg leaves them ""). We seed the luma values so the grid works out of the box.
+        c.Register("hud_configure_grid", "1", Save);                     // hud_luma.cfg: seta … 1
+        c.Register("hud_configure_grid_xsize", "0.005", Save);         // hud_luma.cfg: seta … 0.005
+        c.Register("hud_configure_grid_ysize", "0.005", Save);         // hud_luma.cfg: seta … 0.005
+
         // ---- generic per-panel cvars, seeded from the luma table ----
         foreach (string id in HudLayoutDefaults.Ids)
         {

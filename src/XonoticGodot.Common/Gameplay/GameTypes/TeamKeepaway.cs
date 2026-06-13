@@ -245,6 +245,11 @@ public sealed class TeamKeepaway : GameType
     /// <summary>The current score for a team color code (QC teamscores(team, ST_SCORE); 0 if none).</summary>
     public int ScoreFor(int team) => GS.TeamScore(team, GS.TeamSlotScore);
 
+    /// <summary>QC team equality (server/scores.qc:500): the top two teams are tied on team points (ST_SCORE),
+    /// so a tied timed Team Keepaway enters overtime instead of drawing (server/world.qc).</summary>
+    public override bool ReportsTie(IReadOnlyList<Player> roster)
+        => TeamTie.TopTwoTied(GS.LeaderTeam(), GS.SecondTeam(), ScoreFor);
+
     /// <summary>
     /// The obituary handler — QC keepaway PlayerDies scoring, applied per-team for TKA. A frag only scores if
     /// the attacker's team currently holds the ball: the attacker's team gains <c>g_keepaway_score_killac</c>

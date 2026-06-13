@@ -60,6 +60,13 @@ public sealed class Deathmatch : GameType
         TeamGame = false;
     }
 
+    /// <summary>
+    /// QC <c>WinningConditionHelper_equality</c> for FFA (server/scores.qc:537): the top two players are tied
+    /// on the primary score (SP_SCORE — the fraglimit key). A tie at the time/score limit must enter overtime
+    /// rather than declare a draw (server/world.qc), so this drives the overtime cascade for tied timed DM.
+    /// </summary>
+    public override bool ReportsTie(IReadOnlyList<Player> roster) => FfaTie.TopTwoTied(roster);
+
     /// <summary>QC INIT(Deathmatch) gametype_init: identity is set in the ctor; kept for parity / future cvar seeding.</summary>
     public override void OnInit()
     {
@@ -246,4 +253,61 @@ public sealed class Deathmatch : GameType
         value = Api.Cvars.GetFloat(name);
         return true;
     }
+}
+
+/// <summary>
+/// Shared equality (tie) reporters for the <see cref="GameType.ReportsTie"/> hook — the Godot-free essence of
+/// QC <c>WinningConditionHelper_equality</c> (server/scores.qc:500/537). Two flavors:
+///   • <see cref="FfaTie.TopTwoTied"/> — non-teamplay: the top two players' primary scores are equal;
+///   • <see cref="TeamTie.TopTwoTied"/> — teamplay: the top two teams' primary scores (by the gametype's
+///     ranking slot) are equal.
+/// A tie at the time/score limit must enter overtime instead of declaring a draw (server/world.qc
+/// <c>GetWinningCode</c> → STARTSUDDENDEATHOVERTIME). Lives in this file (the DM gametype) so the helper is
+/// shared across the gametype namespace without a new translation unit; the team modes call it via their own
+/// primary-slot getter.
+/// </summary>
+public static class FfaTie
+{
+    /// <summary>
+    /// QC FFA equality: scan the roster for the top two non-spectator players by primary score (SP_SCORE) and
+    /// report whether they are tied. Fewer than two scoring players → not a tie (a sole leader or empty server
+    /// is decisive). Mirrors PlayerScore_Compare(winner, second, strict=false) == 0.
+    /// </summary>
+    public static bool TopTwoTied(IReadOnlyList<Player> roster)
+    {
+        bool haveTop = false, haveSecond = false;
+        int topScore = 0, secondScore = 0;
+        for (int i = 0; i < roster.Count; i++)
+        {
+            Player p = roster[i];
+            if (Scoring.GameScores.IsSpectator(p))
+                continue; // QC nospectators: a spectator never ranks
+            int s = Scoring.GameScores.PrimaryScore(p);
+            if (!haveTop || s > topScore)
+            {
+                secondScore = topScore; haveSecond = haveTop;
+                topScore = s; haveTop = true;
+            }
+            else if (!haveSecond || s > secondScore)
+            {
+                secondScore = s; haveSecond = true;
+            }
+        }
+        return haveTop && haveSecond && topScore == secondScore;
+    }
+}
+
+/// <summary>
+/// Shared team equality (tie) reporter — QC <c>WinningConditionHelper_equality</c> for teamplay
+/// (server/scores.qc:500): the top two teams are tied on the gametype's ranking slot. Each team mode passes
+/// its leader/runner-up (from <c>GameScores.LeaderTeam()</c>/<c>SecondTeam()</c>) and a getter for the
+/// primary score it ranks by (ST_SCORE for TDM/Dom/KH/TeamMayhem/TeamKeepaway, ST_CTF_CAPS for CTF,
+/// ST_NEXBALL_GOALS for Nexball).
+/// </summary>
+public static class TeamTie
+{
+    /// <summary>True when both teams exist and their ranking-slot scores are equal.</summary>
+    public static bool TopTwoTied(int leaderTeam, int secondTeam, System.Func<int, int> scoreOf)
+        => leaderTeam != Teams.None && secondTeam != Teams.None
+           && scoreOf(leaderTeam) == scoreOf(secondTeam);
 }

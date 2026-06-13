@@ -460,6 +460,13 @@ public partial class CreateGameScreen : MenuScreen
             var row = new MapRowButton(map, info.Title, info.Author, included.Contains(map), _mapGroup);
             row.Pressed += () => _selectedMap = map;
             row.ToggleIncludeRequested += () => ToggleInclude(map);
+            // QC XonoticMapList_doubleClickListBoxItem: double-clicking the row opens the map info dialog for it
+            // (using the create-game screen's currently selected gametype as the preferred "Play" gametype).
+            row.MapInfoRequested += () =>
+            {
+                _selectedMap = map;
+                Menu?.Push(new DialogCreateGameMapInfo(map, SelectedGametype()));
+            };
             _mapRows.AddChild(row);
             _mapRowButtons.Add(row);
             if (map.Equals(_selectedMap, StringComparison.OrdinalIgnoreCase))
@@ -595,6 +602,10 @@ internal partial class MapRowButton : Button
     /// <summary>Raised when the user clicks the preview zone (toggle this map in g_maplist).</summary>
     public event Action? ToggleIncludeRequested;
 
+    /// <summary>Raised when the user double-clicks the name column (QC XonoticMapList_doubleClickListBoxItem →
+    /// pop up the map info dialog).</summary>
+    public event Action? MapInfoRequested;
+
     private readonly Control _content;
     private readonly TextureRect _checkmark;
     private bool _included;
@@ -686,11 +697,22 @@ internal partial class MapRowButton : Button
 
         GuiInput += ev =>
         {
+            if (ev is not InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.Left } mb)
+                return;
+
             // QC clickListBoxItem: a click within the preview column toggles g_maplist inclusion.
-            if (ev is InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.Left } mb
-                && mb.Position.X <= ThumbWidth + 6)
+            if (mb.Position.X <= ThumbWidth + 6)
             {
                 ToggleIncludeRequested?.Invoke();
+                AcceptEvent();
+                return;
+            }
+
+            // QC XonoticMapList_doubleClickListBoxItem: a double-click on the name column (outside the preview)
+            // pops up the map info dialog.
+            if (mb.DoubleClick)
+            {
+                MapInfoRequested?.Invoke();
                 AcceptEvent();
             }
         };

@@ -346,6 +346,11 @@ public sealed class KeyHunt : GameType
 
     public int GetTeamScore(int team) => Scoring.GameScores.TeamScore(team, Scoring.GameScores.TeamSlotScore);
 
+    /// <summary>QC team equality (server/scores.qc:500): the top two teams are tied on team points (ST_SCORE),
+    /// so a tied timed KeyHunt enters overtime instead of drawing (server/world.qc).</summary>
+    public override bool ReportsTie(IReadOnlyList<Player> roster)
+        => TeamTie.TopTwoTied(Scoring.GameScores.LeaderTeam(), Scoring.GameScores.SecondTeam(), GetTeamScore);
+
     // ============================================================================================
     //  Controller + round loop (QC kh_Controller_Think / kh_WaitForPlayers / kh_StartRound)
     // ============================================================================================

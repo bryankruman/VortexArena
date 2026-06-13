@@ -69,6 +69,10 @@ public sealed class Duel : GameType
         // engine/map-pool concerns.
     }
 
+    /// <summary>QC FFA equality (server/scores.qc:537): the two duelists are tied on the primary score. Duel
+    /// is timed (pointlimit=0), so a tie at the time limit is the canonical overtime trigger (server/world.qc).</summary>
+    public override bool ReportsTie(IReadOnlyList<Player> roster) => FfaTie.TopTwoTied(roster);
+
     /// <summary>QC autocvar_g_duel_with_powerups: when set, powerups are allowed in duel (off by default).</summary>
     public bool WithPowerups => Api.Services is not null && Api.Cvars.GetFloat("g_duel_with_powerups") != 0f;
 

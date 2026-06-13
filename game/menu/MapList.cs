@@ -64,6 +64,31 @@ public static class MapList
         return Fallback;
     }
 
+    /// <summary>
+    /// The bsp name (file stem) at list index <paramref name="i"/> in the sorted <see cref="Available"/>
+    /// catalog — the C# successor to QC <c>MapInfo_BSPName_ByID(i)</c> (mapinfo.qc), which the create-game
+    /// map-info dialog uses to resolve the double-clicked row to a map (QC <c>MapInfo_Get_ByID</c>). Returns
+    /// null when <paramref name="i"/> is out of range.
+    /// </summary>
+    public static string? ByIndex(int i)
+    {
+        IReadOnlyList<string> maps = Available();
+        return (i >= 0 && i < maps.Count) ? maps[i] : null;
+    }
+
+    /// <summary>
+    /// The index of <paramref name="bspName"/> in the sorted <see cref="Available"/> catalog, or -1 — the C#
+    /// successor to the QC maplist index lookup (used to seed the map-info dialog's currentMapIndex).
+    /// </summary>
+    public static int IndexOf(string bspName)
+    {
+        IReadOnlyList<string> maps = Available();
+        for (int i = 0; i < maps.Count; ++i)
+            if (string.Equals(maps[i], bspName, StringComparison.OrdinalIgnoreCase))
+                return i;
+        return -1;
+    }
+
     /// <summary>Add every <c>*.bsp</c> stem under <paramref name="dir"/> to <paramref name="into"/>.</summary>
     private static void ScanDir(string dir, ISet<string> into)
     {

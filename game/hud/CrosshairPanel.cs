@@ -171,6 +171,31 @@ public partial class CrosshairPanel : HudPanel
     /// fraction for the rail family. &lt; 0 = no chargepool (inner ring falls back to the charge moving-average).</summary>
     public float ChargePool { get; set; } = -1f;
 
+    // -------------------------------------------------------------------------------------------------
+    //  [T41] Objective rings (QC view.qc HUD_Draw 1006-1022) — the NADE_TIMER / CAPTURE_PROGRESS /
+    //  REVIVE_PROGRESS [0,1] fill rendered via DrawCircleClippedPic, in that strict priority (only one draws).
+    //  Fed by the net layer from the local player's STATs; 0 = inactive (ring hidden). These are independent of
+    //  the weapon-stat rings above and draw whatever the active weapon is (they're match-state, not weapon-state).
+    // -------------------------------------------------------------------------------------------------
+
+    /// <summary>QC <c>STAT(NADE_TIMER)</c>: 0..1 held-nade charge — the TOP-priority objective ring (life-or-death).
+    /// 0 = no held nade (ring hidden). Fed from the local player each frame.</summary>
+    public float NadeTimer { get; set; }
+
+    /// <summary>QC <c>STAT(CAPTURE_PROGRESS)</c>: 0..1 objective-capture progress — 2nd-priority ring. 0 = inactive.</summary>
+    public float CaptureProgress { get; set; }
+
+    /// <summary>QC <c>STAT(REVIVE_PROGRESS)</c>: 0..1 freeze-tag thaw progress — 3rd-priority ring. 0 = inactive.</summary>
+    public float ReviveProgress { get; set; }
+
+    /// <summary>QC <c>autocvar_cl_nade_timer</c> gate for the nade ring (0 = off, 1 = ring only, 2 = ring + label).
+    /// Mirrors the property fallback; the live cvar (when present) wins via <c>GlobalF</c>.</summary>
+    public int NadeTimerMode { get; set; } = 1;
+
+    /// <summary>Radius of the objective rings, in pixels (QC <c>0.1 * vid_conheight</c> — a large ring around the
+    /// crosshair; this port centers them on the crosshair panel rather than at QC's 0.6·height screen anchor).</summary>
+    public float ObjectiveRingRadius { get; set; } = 64f;
+
     // ---- T21: true-aim coloring (QC autocvar_crosshair_hittest + the SHOTTYPE coloring) ----
 
     /// <summary>
@@ -453,6 +478,11 @@ public partial class CrosshairPanel : HudPanel
         if (HasAnyRing())
             dirty = true;
 
+        // [T41] objective rings track live match state (held-nade charge / capture / thaw), so keep repainting
+        // while any of them is non-zero so the fill animates smoothly as the stat updates.
+        if (NadeTimer > 0f || CaptureProgress > 0f || ReviveProgress > 0f)
+            dirty = true;
+
         // Health-based color animates (over-100 flash / low-health pulse) so keep painting in that mode.
         if (ColorModeCvar() == ColorMode.Health)
             dirty = true;
@@ -503,10 +533,16 @@ public partial class CrosshairPanel : HudPanel
 
     protected override void DrawPanel()
     {
+        Vector2 center = Size2 * 0.5f;
+
+        // [T41] objective rings (QC view.qc HUD_Draw 1006-1022): NADE_TIMER > CAPTURE_PROGRESS > REVIVE_PROGRESS,
+        // drawn FIRST so they're independent of the crosshair master toggle below — in QC these live in HUD_Draw,
+        // not HUD_Crosshair, so a hidden crosshair (crosshair_enabled 0) still shows the life-or-death nade ring.
+        DrawObjectiveRings(center);
+
         // QC: crosshair_enabled is the master toggle; crosshair "0" / size 0 / alpha 0 hide it.
         if (GlobalF("crosshair_enabled", 1f) == 0f) return;
 
-        Vector2 center = Size2 * 0.5f;
         Weapon? weapon = ActiveWeapon();
 
         float baseAlpha = GlobalF("crosshair_alpha", Color.A);
@@ -752,6 +788,50 @@ public partial class CrosshairPanel : HudPanel
             DrawRing(center, r, 1f, new Color(crossColor.R, crossColor.G, crossColor.B, FiringRing * crossColor.A),
                 segments: 40);
         }
+    }
+
+    /// <summary>
+    /// [T41] Port of the QC objective-ring block (view.qc HUD_Draw 1006-1022): draw exactly ONE ring around
+    /// <paramref name="center"/> — the held-nade charge (NADE_TIMER), else the objective-capture progress
+    /// (CAPTURE_PROGRESS), else the freeze-tag thaw (REVIVE_PROGRESS) — using the <c>gfx/crosshair_ring</c> art
+    /// clipped to the [0,1] fill (<see cref="DrawRingPic"/> == QC <c>DrawCircleClippedPic</c>). The nade ring's
+    /// colour shifts from cyan toward red as it charges (QC <c>'0.25 0.90 1' + vec3(t,-t,-t)</c>); capture/revive
+    /// use the flat cyan. The QC <c>autocvar_cl_nade_timer</c> gate hides the nade ring when 0. Alpha is
+    /// <c>hud_colorflash_alpha</c> (QC), defaulting to 1.
+    /// </summary>
+    private void DrawObjectiveRings(Vector2 center)
+    {
+        float alpha = GlobalF("hud_colorflash_alpha", 1f);
+        if (alpha <= 0f) alpha = 1f;
+        float radius = ObjectiveRingRadius;
+
+        // NADE_TIMER — top priority (a matter of life and death). Gated on cl_nade_timer like QC.
+        float nade = Mathf.Clamp(NadeTimer, 0f, 1f);
+        int nadeMode = (int)GlobalF("cl_nade_timer", NadeTimerMode);
+        if (nade > 0f && nadeMode != 0)
+        {
+            // QC: col = '0.25 0.90 1' + vec3(t, -t, -t) — cyan that reddens as the fuse burns down.
+            var col = new Color(
+                Mathf.Clamp(0.25f + nade, 0f, 1f),
+                Mathf.Clamp(0.90f - nade, 0f, 1f),
+                Mathf.Clamp(1.00f - nade, 0f, 1f),
+                alpha);
+            DrawRingPic(center, radius, nade, "gfx/crosshair_ring", col);
+            return;
+        }
+
+        // CAPTURE_PROGRESS — 2nd priority. Flat cyan.
+        float capture = Mathf.Clamp(CaptureProgress, 0f, 1f);
+        if (capture > 0f)
+        {
+            DrawRingPic(center, radius, capture, "gfx/crosshair_ring", new Color(0.25f, 0.90f, 1f, alpha));
+            return;
+        }
+
+        // REVIVE_PROGRESS — 3rd priority. Flat cyan.
+        float revive = Mathf.Clamp(ReviveProgress, 0f, 1f);
+        if (revive > 0f)
+            DrawRingPic(center, radius, revive, "gfx/crosshair_ring", new Color(0.25f, 0.90f, 1f, alpha));
     }
 
     private bool DrawStatRing(Vector2 center, Weapon weapon, Color crossColor, float baseAlpha, float drawScale,

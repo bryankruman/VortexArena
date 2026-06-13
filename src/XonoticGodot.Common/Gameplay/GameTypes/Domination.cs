@@ -427,6 +427,12 @@ public sealed class Domination : GameType
 
     public int GetTeamScore(int team) => Scoring.GameScores.TeamScore(team, Scoring.GameScores.TeamSlotScore);
 
+    /// <summary>QC team equality (server/scores.qc:500): the top two teams are tied on the ranking primary
+    /// (ST_SCORE / ST_DOM_TICKS, read via GetTeamScore), so a tied timed Domination enters overtime instead of
+    /// drawing (server/world.qc).</summary>
+    public override bool ReportsTie(IReadOnlyList<Player> roster)
+        => TeamTie.TopTwoTied(Scoring.GameScores.LeaderTeam(), Scoring.GameScores.SecondTeam(), GetTeamScore);
+
     public void UpdateLeaderAndCheckLimit()
     {
         // QC: Dom teams rank by the team primary slot (ST_SCORE, or ST_DOM_TICKS when disable_frags). LeaderTeam /

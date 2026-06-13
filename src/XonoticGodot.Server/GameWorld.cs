@@ -108,6 +108,29 @@ public sealed class GameWorld
     public Intermission Intermission { get; } = new();
 
     /// <summary>
+    /// [T42] The global overtime / sudden-death win layer (QC the CheckRules_World overtime cascade). Holds the
+    /// per-match checkrules state and the InitiateSuddenDeath/InitiateOvertime/GetWinningCode logic. Driven by
+    /// <see cref="CheckRulesAndIntermission"/>. The sinks below route QC's <c>cvar_set("timelimit", ...)</c> and
+    /// the CENTER_OVERTIME_* notifications into the live cvar store + NotificationSystem.
+    /// </summary>
+    public OverTimeManager OverTime { get; } = new()
+    {
+        SetTimeLimitCvar = newLimit => Cvars.Set("timelimit", newLimit),                 // QC cvar_set("timelimit", ...)
+        OnOvertimeStarted = seconds =>                                                    // QC CENTER_OVERTIME_TIME (seconds)
+            NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Center, "OVERTIME_TIME", seconds),
+        OnSuddenDeathStarted = () =>                                                      // QC CENTER_OVERTIME_FRAG
+            NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Center, "OVERTIME_FRAG"),
+    };
+
+    /// <summary>
+    /// [T41] The server-side announcer driver (QC client/announcer.qc <c>Announcer_Time</c>). Fires the
+    /// "5 minutes remain" / "1 minute remains" map-time announcements with the QC hysteresis latches. Ticked
+    /// from <see cref="OnStartFrame"/>; its context sinks are wired in <see cref="Boot"/>. The pre-match /
+    /// round-start countdown announcer is T40's job (<see cref="WarmupController.OnCountdownTick"/>).
+    /// </summary>
+    public AnnouncerController Announcer { get; } = new();
+
+    /// <summary>
     /// The warmup + ready-restart flow (QC warmup_stage / ReadyRestart). Drives the pre-match phase and the
     /// match restart countdown; created at <see cref="Boot"/>. <see cref="GameStartTime"/> is kept in sync.
     /// </summary>
@@ -420,6 +443,11 @@ public sealed class GameWorld
         GameType = ResolveGameType(gameTypeName);
         GameType?.OnInit();
 
+        // [T52] wire the CTS gate the Q3-compat target_score / target_fragsFilter spawnfuncs read (QC g_cts):
+        //       outside CTS both entities self-delete (quake3.qc:198,231). Unwired this defaults to false, so
+        //       those entities would be deleted even on a CTS map — point it at the live gametype here.
+        CompatRemaps.IsCtsActive = () => GameType is Cts;
+
         // 3) match-loop glue + team manager + client roster.
         Match = new MatchController();
         Teamplay = new Teamplay(GameType?.TeamGame ?? false, TeamCountFor(GameType), Scores);
@@ -550,6 +578,17 @@ public sealed class GameWorld
         Warmup.Roster = () => Clients.Players;
         Warmup.ResetMap = ResetMap;
         Warmup.OnCountdownTick = BroadcastGameStartCountdown; // [T40] game-start countdown announcer/center
+
+        // [T41] wire the time-remaining announcer's context to the live match state (QC Announcer_Time reads
+        // STAT(GAMESTARTTIME)/warmup_stage/STAT(WARMUP_TIMELIMIT)/STAT(TIMELIMIT)/intermission + the per-client
+        // cl_announcer_maptime; the port broadcasts globally off the server config value, default 3 = both).
+        Announcer.Now = () => Time;
+        Announcer.GameStartTime = () => GameStartTime;
+        Announcer.WarmupStage = () => Warmup.WarmupStage;
+        Announcer.WarmupTimeLimitSeconds = () => Warmup.WarmupLimit > 0f ? Warmup.WarmupLimit : 0f;
+        Announcer.TimeLimitMinutes = () => Cvars.TimeLimitMinutes;
+        Announcer.Intermission = () => Intermission.Running;
+        Announcer.AnnouncerMapTime = () => (int)Cvars.FloatOr("cl_announcer_maptime", 3f);
 
         // Honor a host-set start time: if the host raised GameStartTime before Boot (a custom countdown) or
         // warmup is enabled, run the warmup/countdown flow; otherwise keep the immediate-start default (0) so
@@ -857,6 +896,11 @@ public sealed class GameWorld
             // mirrored MutatorHooks.SvStartFrame chain (T19 random_gravity et al.) — pump it from the same loop.
             XonoticGodot.Common.Gameplay.MutatorHooks.FireStartFrame(Time);
         }
+
+        // [T41] QC client/announcer.qc Announcer_Time: the "5/1 minutes remain" map-time announcements with the
+        // hysteresis latches, driven server-side (the port has no CSQC announcer timer). Self-gates on
+        // intermission + the per-minute latches, so it costs one cheap pass per frame and fires once per crossing.
+        Announcer.Tick();
     }
 
     /// <summary>True when the match is frozen (intermission, ended, or a timeout pause) — QC <c>game_stopped</c>.
@@ -1501,7 +1545,13 @@ public sealed class GameWorld
                 ons.Tick();                                             // QC: drive the round handler + overtime generator-decay
                 break;
             case KeyHunt kh: kh.Tick(); break;
-            case FreezeTag ft: ft.CheckRound(Clients.Players); break;
+            case FreezeTag ft:
+                // QC PlayerPreThink revive loop: feed the live roster, then accumulate/decay revive progress and
+                // auto-thaw frozen players each frame (without this the thaw ring never fills + nobody is revived).
+                ft.SetRoster(Clients.Players);
+                ft.ReviveTick(Simulation.FrameTime);
+                ft.CheckRound(Clients.Players);
+                break;
             case TeamKeepaway tka: tka.CheckPointLimit(); break;
             case Nexball nb: nb.CheckGoalLimit(); break;
             case Keepaway ka: ka.Tick(Simulation.FrameTime); break;
@@ -1647,18 +1697,11 @@ public sealed class GameWorld
 
     private void CheckRulesAndIntermission()
     {
+        // [T42] QC CheckRules_World (server/world.qc:1725-1861): the global overtime / sudden-death win layer.
+        // A tied timed match enters overtime/sudden-death instead of drawing; a decided match (or an expired
+        // sudden death) ends. Runs only while the match is live (QC returns early if intermission_running).
         if (!Intermission.Running)
-        {
-            // has a gametype declared the match over? (QC checkrules latch on each gametype.)
-            if (MatchHasEnded(out Player? winner, out int winnerTeam))
-            {
-                int playerCount = Clients.PlayerCount;
-                if (winnerTeam != Teams.None)
-                    Intermission.BeginTeam(winnerTeam, playerCount);
-                else
-                    Intermission.Begin(winner, playerCount);
-            }
-        }
+            RunCheckRulesWorld();
 
         // QC NextLevel: fire the once-per-match end hooks the moment intermission begins (winners, event log,
         // player-stats report, campaign decision, demo stop).
@@ -1674,6 +1717,113 @@ public sealed class GameWorld
 
         if (Intermission.ReadyToChangeLevel)
             DriveEndOfMatchMapFlow();
+    }
+
+    /// <summary>
+    /// [T42] QC <c>CheckRules_World</c> body (server/world.qc:1741-1860): the overtime / sudden-death cascade.
+    /// Computes the effective timelimit (warmup/campaign/start-aware), then drives the timelimit→overtime→
+    /// sudden-death decision via <see cref="OverTime"/>, resolving the gametype's limit-reached latch
+    /// (<see cref="MatchHasEnded"/>) × tie report (<see cref="GameType.ReportsTie"/>) into a
+    /// <see cref="WinningCode"/>. Enters intermission only once a winner is truly decided (a tie keeps playing).
+    /// </summary>
+    private void RunCheckRulesWorld()
+    {
+        // --- compute the effective limits (QC world.qc:1741-1763) -------------------------------------
+        // timelimit/fraglimit are disabled during warmup or before game start; campaign uses the same reads.
+        float timelimitMinutes = Cvars.TimeLimitMinutes;   // QC autocvar_timelimit (minutes)
+        float timelimit = timelimitMinutes * 60f;          // QC timelimit = autocvar_timelimit * 60 (seconds)
+
+        if (Warmup.WarmupStage || Time <= GameStartTime)   // QC: <= to avoid a glitch on the very start tic
+            timelimit = 0f;                                // timelimit is not made for warmup / the pre-game window
+
+        // QC: endmatch / negative timelimit ends the match immediately (handled by EndMatch elsewhere); a
+        // positive timelimit is offset by game_starttime so it counts from the real match start.
+        if (timelimit > 0f)
+            timelimit += GameStartTime;
+
+        // --- the cascade (QC world.qc:1765-1860) ------------------------------------------------------
+        int overtimesPrev = OverTime.Overtimes;            // QC overtimes_prev
+        bool wantOvertime = false;                         // QC wantovertime
+
+        if (OverTime.InSuddenDeath)
+        {
+            // QC: emit the one-shot "Overtime has begun!" warning the first tick sudden death is armed.
+            OverTime.TickSuddenDeathWarning();
+        }
+        else if (timelimit != 0f && Time >= timelimit)
+        {
+            // QC: the time limit elapsed with no latched winner → try to add an overtime (true) or arm
+            // sudden death (false). The race/qualifying branch is omitted (those modes don't reach here).
+            wantOvertime |= OverTime.InitiateSuddenDeath(Time);
+        }
+
+        // QC: sudden death ran out → the match is decided; end it now.
+        if (OverTime.InSuddenDeath && Time >= OverTime.SuddenDeathEnd)
+        {
+            EnterIntermissionWithLeader();
+            return;
+        }
+
+        // QC WinningCondition_Scores: limit_reached (the gametype's MatchEnded latch) × equality (its tie
+        // report) → a winning code. RanOutOfSpawns / the CheckRules_World mutator hook are not ported here.
+        bool limitReached = MatchHasEnded(out Player? winner, out int winnerTeam);
+        bool equality = GameType is not null && GameType.ReportsTie(Clients.Players);
+        WinningCode status = OverTimeManager.ResolveWinningCode(limitReached, equality);
+
+        // QC world.qc:1827-1832: a tie AT the limit starts sudden-death overtime now.
+        if (status == WinningCode.StartSuddenDeathOvertime)
+        {
+            status = WinningCode.Never;
+            OverTime.ArmSuddenDeathDecision();             // QC checkrules_overtimesadded = -1
+            wantOvertime |= OverTime.InitiateSuddenDeath(Time);
+        }
+
+        // QC world.qc:1838-1844: if an overtime was requested, either extend the timelimit (still tied) or
+        // declare the win (a decisive condition fired this tick).
+        if (wantOvertime)
+        {
+            if (status == WinningCode.Never)
+                OverTime.InitiateOvertime(timelimitMinutes); // QC InitiateOvertime() (extends timelimit)
+            else
+                status = WinningCode.Yes;
+        }
+
+        // QC world.qc:1846-1848: while in sudden death, any non-tie (or the timer expiring) ends the match.
+        if (OverTime.InSuddenDeath)
+            if (status != WinningCode.Never || Time >= OverTime.SuddenDeathEnd)
+                status = WinningCode.Yes;
+
+        // QC world.qc:1850-1860: a decided match ends. If sudden death had only just begun this tick, revert
+        // it so the win lands cleanly; then go to intermission.
+        if (status == WinningCode.Yes)
+        {
+            OverTime.RevertSuddenDeathIfJustBegun(overtimesPrev);
+            EnterIntermission(winner, winnerTeam);
+        }
+    }
+
+    /// <summary>Enter intermission with the gametype's decided winner/team (QC NextLevel's winner latch).</summary>
+    private void EnterIntermission(Player? winner, int winnerTeam)
+    {
+        int playerCount = Clients.PlayerCount;
+        if (winnerTeam != Teams.None)
+            Intermission.BeginTeam(winnerTeam, playerCount);
+        else
+            Intermission.Begin(winner, playerCount);
+    }
+
+    /// <summary>Enter intermission crediting the current score leader / leading team (QC the timelimit-end path,
+    /// where no fraglimit winner is latched — the top of the board wins).</summary>
+    private void EnterIntermissionWithLeader()
+    {
+        if (MatchHasEnded(out Player? winner, out int winnerTeam) && (winner is not null || winnerTeam != Teams.None))
+        {
+            EnterIntermission(winner, winnerTeam);
+            return;
+        }
+        Player? leader = Scores.Leader;
+        int leadTeam = Teamplay.IsTeamGame ? Scores.LeaderTeam : Teams.None;
+        EnterIntermission(leadTeam != Teams.None ? null : leader, leadTeam);
     }
 
     /// <summary>
@@ -1999,6 +2149,12 @@ public sealed class GameWorld
         if (f.TryGetValue("team", out var tm) && float.TryParse(tm,
                 System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float tmf))
             e.Team = tmf;
+        // [T52] target_fragsFilter's gate threshold (QC reads this.frags; quake3.qc:233-234 defaults it to 1 when
+        //       unset). Without promoting the map's `frags` key, a mapper-set custom threshold (e.g. `frags "5"`)
+        //       is silently lost and the filter falls back to 1, breaking CTS frag gates.
+        if (f.TryGetValue("frags", out var fr) && float.TryParse(fr,
+                System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float frf))
+            e.Frags = frf;
 
         // NPC keys (T14): the monster/turret/vehicle spawnfuncs + the monster_spawner read these off the edict.
         // `.skin` drives the random monster-skin override; `.spawnmob`/`.count`/`.monster_moveflags` configure a
@@ -2121,6 +2277,7 @@ public sealed class GameWorld
     public void RestartMatch()
     {
         Intermission.Reset();
+        OverTime.Reset(); // [T42] clear the overtime / sudden-death checkrules state for the fresh match
         // re-arm the end-of-match flow + the per-match infrastructure so a fresh match runs clean.
         _nextLevelFired = _mapFlowStarted = _mapChangeApplied = false;
         SelectedNextMap = "";

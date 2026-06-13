@@ -891,6 +891,11 @@ public sealed class Ctf : GameType
 
     public int GetTeamCaps(int team) => Scoring.GameScores.TeamScore(team, Scoring.GameScores.TeamSlotSecondary);
 
+    /// <summary>QC team equality (server/scores.qc:500): the top two teams are tied on captures (ST_CTF_CAPS,
+    /// CTF's ranking primary), so a tied timed CTF enters overtime instead of drawing (server/world.qc).</summary>
+    public override bool ReportsTie(IReadOnlyList<Player> roster)
+        => TeamTie.TopTwoTied(Scoring.GameScores.LeaderTeam(), Scoring.GameScores.SecondTeam(), GetTeamCaps);
+
     /// <summary>QC <c>GameRules_scoring_add_team(player, SCORE, delta)</c>'s team side: add to a team's ST_SCORE
     /// total (GameScores team slot 0). CTF tracks this as the team secondary (stprio=0 in ctf_ScoreRules).</summary>
     public void AddTeamScore(float team, int delta)

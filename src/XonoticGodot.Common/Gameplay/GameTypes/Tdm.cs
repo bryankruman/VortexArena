@@ -243,6 +243,11 @@ public sealed class Tdm : GameType
     /// <summary>Read a team's running frag total (0 if the team has never scored).</summary>
     public int GetTeamScore(int team) => Scoring.GameScores.TeamScore(team, Scoring.GameScores.TeamSlotScore);
 
+    /// <summary>QC team equality (server/scores.qc:500): the top two teams are tied on team points (ST_SCORE),
+    /// so a tied timed TDM enters overtime instead of drawing (server/world.qc).</summary>
+    public override bool ReportsTie(IReadOnlyList<Player> roster)
+        => TeamTie.TopTwoTied(Scoring.GameScores.LeaderTeam(), Scoring.GameScores.SecondTeam(), GetTeamScore);
+
     /// <summary>QC calculate_respawntime reduced: respawn_time = time + small delay (g_respawn_delay_small, 2s).</summary>
     public void ScheduleRespawn(Player victim)
     {

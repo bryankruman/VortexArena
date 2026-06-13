@@ -172,6 +172,20 @@ public abstract partial class GameType : IRegistered
 
     public virtual void OnInit() { }
 
+    /// <summary>
+    /// QC <c>WinningConditionHelper_equality</c> (server/scores.qc:500/537): are the top two contenders
+    /// currently <em>tied</em> on this gametype's primary win key? The overtime/sudden-death cascade
+    /// (server/world.qc <c>WinningCondition_Scores</c> → <c>GetWinningCode</c>) routes a tie at the time/score
+    /// limit into overtime instead of declaring a draw. The base returns <c>false</c> (objective-latched modes
+    /// — Onslaught/Assault/Nexball latch a single winning team, and the round-based modes ClanArena/FreezeTag
+    /// are out of T42 scope — never report a tie); the timed score modes override it to compare their top two
+    /// players/teams on the primary score:
+    ///   • FFA score modes (DM/Mayhem/Duel/Keepaway) — top two players' primary score equal;
+    ///   • team score modes (TDM/CTF/Dom/KH/TeamMayhem/TeamKeepaway) — top two teams' primary score equal.
+    /// <paramref name="roster"/> is the current player list (the FFA modes scan it; team modes read GameScores).
+    /// </summary>
+    public virtual bool ReportsTie(System.Collections.Generic.IReadOnlyList<Player> roster) => false;
+
     /// <summary>Rebuild this gametype's OBJECTIVE waypoint sprites (flags / control points / keys …) into
     /// <paramref name="into"/> each server tick — the C# successor to the server's persistent
     /// <c>WaypointSprite_*</c> objectives. (Transient, derived from live gametype state; player pings live in the

@@ -9,25 +9,16 @@ namespace XonoticGodot.Game.Menu;
 /// "Set skin" / "Set language" command buttons and the same dependencies (the gentle sub-options grey out
 /// while full gentle mode is on).
 ///
-/// Two widgets are approximated because their QC counterparts are data-driven list boxes
-/// (<c>makeXonoticSkinList</c> / <c>makeXonoticLanguageList</c>) that scan files at runtime:
-///   * the skin list (binds <c>menu_skin</c> from gfx/menu/*/skinvalues.txt) becomes a TextSlider over a
-///     representative set of stock skin names — same cvar, approximate option set;
-///   * the language list (binds <c>_menu_prvm_language</c> from languages.txt) becomes a TextSlider over a
-///     representative set of locales — same cvar, approximate option set, and inert until a localization
-///     backend exists (the "Set language" button still issues the same console command).
+/// The skin list (QC <c>makeXonoticSkinList</c>) is the faithful data-driven backend
+/// <see cref="DialogMediaSkinList"/>, embedded directly here (it scans gfx/menu/*/skinvalues.txt and binds
+/// <c>menu_skin</c>, exactly like the QC list box).
+///
+/// The language list is approximated: its QC counterpart (<c>makeXonoticLanguageList</c>) is a data-driven
+/// list box; here it is a TextSlider populated from languages.txt (same cvar <c>_menu_prvm_language</c>),
+/// inert until a localization backend exists (the "Set language" button still issues the same console command).
 /// </summary>
 public partial class DialogSettingsUser : SettingsTab
 {
-    // Representative stock menu skins (QC reads names from gfx/menu/*/skinvalues.txt at runtime).
-    // Approximate option set; same cvar (menu_skin). "luma" is the default in 0.8.x.
-    private static readonly (string Label, string Value)[] Skins =
-    {
-        ("luma", "luma"),
-        ("luminos", "luminos"),
-        ("xolonium", "xolonium"),
-    };
-
     // Fallback locale set, used only when languages.txt can't be read (no content repo). The live picker is now
     // data-driven from languages.txt via Localization.LoadLanguages() (QC makeXonoticLanguageList), so this is a
     // headless-only floor; same cvar (_menu_prvm_language), IDs match Xonotic's language codes.
@@ -46,17 +37,12 @@ public partial class DialogSettingsUser : SettingsTab
     protected override void Fill(VBoxContainer box)
     {
         // --- Menu Skin (QC makeXonoticHeaderLabel("Menu Skin") + makeXonoticSkinList + "Set skin" button) ---
-        box.AddChild(Ui.Header("Menu Skin"));
-
-        // QC makeXonoticSkinList -> menu_skin. APPROXIMATION: data-driven list box replaced by a TextSlider
-        // over a representative set of stock skins (see Skins above).
-        var skin = Widgets.TextSlider("menu_skin");
-        foreach ((string label, string value) in Skins)
-            skin.Add(label, value);
-        box.AddChild(Ui.Row("Skin:", skin));
-
-        // QC makeXonoticButton("Set skin") -> SetSkin_Click -> menu_restart; menu_cmd skinselect.
-        box.AddChild(Widgets.CommandButton("Set skin", "menu_restart; menu_cmd skinselect"));
+        // The data-driven skin list box (qcsrc/menu/xonotic/skinlist.qc, embedded in dialog_settings_user.qc:16-31):
+        // DialogMediaSkinList is the faithful file-scan backend (its own "Menu Skin" header, the gfx/menu/*/skinvalues.txt
+        // list, and the "Set skin" button). It supersedes the old 3-name TextSlider approximation. Falls back to the
+        // TextSlider only with no VFS — but the dialog itself renders an honest "no skins found" note in that case, so
+        // we just embed it directly (matching QC, which embeds makeXonoticSkinList here).
+        box.AddChild(new DialogMediaSkinList { SizeFlagsHorizontal = SizeFlags.ExpandFill });
 
         box.AddChild(Ui.Spacer());
 

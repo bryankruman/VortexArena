@@ -24,9 +24,13 @@ namespace XonoticGodot.Game.Menu;
 public partial class DialogServerInfo : MenuScreen
 {
     // The address of the selected server. QC stores this in me.currentServerCName (host-cache SLIST_FIELD_CNAME)
-    // and Join_Click runs `connect <that address>`. With no server browser wired in there is no live address,
-    // so it stays empty and Join! is inert (noted). A future selection backend would set this before Push().
+    // and Join_Click runs `connect <that address>`. Populated from the create/multiplayer screen's selected row.
     private readonly string _serverAddress;
+
+    // The selected server's row, resolved from the shared ServerBrowser model by address (the C# stand-in for
+    // the QC host-cache entry the serverinfo dialog reads via gethostcachestring/number). Null when the address
+    // was typed manually (never queried), or no server browser is active — then the rows show placeholders.
+    private readonly ServerEntry? _entry;
 
     public DialogServerInfo() : this("") { }
 
@@ -34,6 +38,9 @@ public partial class DialogServerInfo : MenuScreen
     public DialogServerInfo(string serverAddress)
     {
         _serverAddress = serverAddress ?? "";
+        // Read the selected row from the shared browser model (append-only lookup). This is the
+        // XonoticGodot.Net ServerEntry the LAN/master probes already filled in (PopulateFromInfo).
+        _entry = MultiplayerScreen.Browser.FindByAddress(_serverAddress);
     }
 
     protected override void BuildUi()
@@ -52,8 +59,11 @@ public partial class DialogServerInfo : MenuScreen
 
         root.AddChild(MakeTitle("Server Information"));
 
-        // Honest note: there is no live selected-server data source behind these rows yet.
-        var note = MakeLabel("(no server selected — details show placeholders; server browser / host-cache backend pending)");
+        // Note reflects whether a live row was resolved from the server browser. When a row IS present the
+        // detail rows below carry its real fields (name/address/gametype/map/player counts).
+        var note = MakeLabel(_entry is not null
+            ? $"(showing details for the selected server: {_serverAddress})"
+            : "(no selected server row — type-an-address path: details show placeholders until the server is queried)");
         note.AddThemeColorOverride("font_color", new Color(0.70f, 0.72f, 0.78f));
         root.AddChild(note);
 
@@ -109,33 +119,43 @@ public partial class DialogServerInfo : MenuScreen
         box.AddThemeConstantOverride("separation", 6);
         pad.AddChild(box);
 
+        // Resolve the displayable fields from the selected ServerEntry (the QC gethostcache* reads). Fields the
+        // browser doesn't carry (mod/version/encryption/identity/stats) stay as honest placeholders.
+        ServerEntry? e = _entry;
+        int humans = e is null ? 0 : System.Math.Max(0, e.Players - e.Bots);
+        int freeSlots = e is null ? 0 : System.Math.Max(0, e.MaxPlayers - e.Players);
+
         // Left block of the QC tab: hostname, address, then a gap, then gametype/map/mod/version/settings,
         // a gap, then player counts.
-        box.AddChild(DetailRow("Hostname:", "_nameLabel"));
-        box.AddChild(DetailRow("Address:", "_cnameLabel"));
+        box.AddChild(DetailRow("Hostname:", "nameLabel", Decolorize(e?.Name)));         // SLIST_FIELD_NAME
+        box.AddChild(DetailRow("Address:", "cnameLabel", e?.Address ?? _serverAddress)); // SLIST_FIELD_CNAME
         box.AddChild(Ui.Spacer(8));
-        box.AddChild(DetailRow("Gametype:", "_typeLabel"));
-        box.AddChild(DetailRow("Map:", "_mapLabel"));
-        box.AddChild(DetailRow("Mod:", "_modLabel"));
-        box.AddChild(DetailRow("Version:", "_versionLabel"));
-        box.AddChild(DetailRow("Settings:", "_pureLabel"));
+        box.AddChild(DetailRow("Gametype:", "typeLabel", e?.Gametype));                  // QC MapInfo_Type_ToText(typestr)
+        box.AddChild(DetailRow("Map:", "mapLabel", e?.Map));                             // SLIST_FIELD_MAP
+        box.AddChild(DetailRow("Mod:", "modLabel"));                                     // SLIST_FIELD_MOD — not carried
+        box.AddChild(DetailRow("Version:", "versionLabel"));                            // QCSTATUS version field — not carried
+        box.AddChild(DetailRow("Settings:", "pureLabel"));                              // QCSTATUS pure flag — not carried
         box.AddChild(Ui.Spacer(8));
-        box.AddChild(DetailRow("Players:", "_numPlayersLabel"));
-        box.AddChild(DetailRow("Bots:", "_numBotsLabel"));
-        box.AddChild(DetailRow("Free slots:", "_numFreeSlotsLabel"));
+        box.AddChild(DetailRow("Players:", "numPlayersLabel",
+            e is null ? "" : $"{humans}/{e.MaxPlayers}"));                               // sprintf("%d/%d", numh, maxp)
+        box.AddChild(DetailRow("Bots:", "numBotsLabel", e is null ? "" : e.Bots.ToString())); // SLIST_FIELD_NUMBOTS
+        box.AddChild(DetailRow("Free slots:", "numFreeSlotsLabel",
+            e is null ? "" : freeSlots.ToString()));                                    // maxp - numh - numb
         box.AddChild(Ui.Spacer(8));
 
-        // Right block of the QC tab (encryption/identity/stats). Laid out as further rows here.
-        box.AddChild(DetailRow("Encryption:", "_encryptLabel",
+        // Right block of the QC tab (encryption/identity/stats). The browser doesn't carry the crypto / stats
+        // fields (they come from QCSTATUS / crypto_get* in the QC), so these stay as placeholders.
+        box.AddChild(DetailRow("Encryption:", "encryptLabel", null,
             "Use the `crypto_aeslevel` cvar to change your preferences")); // QC setZonedTooltip
-        box.AddChild(DetailRow("ID:", "_keyLabel"));   // QC labels these crossed: keyLabel under "ID:"
-        box.AddChild(DetailRow("Key:", "_idLabel"));   // and idLabel under "Key:" (faithful to the QC source).
-        box.AddChild(DetailRow("Stats:", "_statsLabel"));
+        box.AddChild(DetailRow("ID:", "keyLabel"));   // QC labels these crossed: keyLabel under "ID:"
+        box.AddChild(DetailRow("Key:", "idLabel"));   // and idLabel under "Key:" (faithful to the QC source).
+        box.AddChild(DetailRow("Stats:", "statsLabel"));
 
         // QC also shows a "Players:" header + a live player list (makeXonoticPlayerList, from SLIST_FIELD_PLAYERS).
+        // The browser carries only counts, not the per-player roster, so this remains an honest note.
         box.AddChild(Ui.Spacer(8));
         box.AddChild(Ui.Header("Players"));
-        var playerList = MakeLabel("(player list — server browser / host-cache backend pending)");
+        var playerList = MakeLabel("(per-player roster — SLIST_FIELD_PLAYERS not carried by the browser model)");
         playerList.AddThemeColorOverride("font_color", new Color(0.70f, 0.72f, 0.78f));
         box.AddChild(playerList);
 
@@ -143,20 +163,21 @@ public partial class DialogServerInfo : MenuScreen
     }
 
     /// <summary>
-    /// A "Label:" + value row mirroring one QC <c>TR</c> of the info tab (a TextLabel followed by an
-    /// initially-empty value TextLabel). The value label is empty (no live host-cache data); names match the
-    /// QC field names in comments so the mapping is traceable. <paramref name="fieldComment"/> only documents
-    /// which QC <c>me.*Label</c> this stands in for.
+    /// A "Label:" + value row mirroring one QC <c>TR</c> of the info tab (a TextLabel followed by a value
+    /// TextLabel). <paramref name="value"/> carries the selected row's field (QC <c>gethostcache*</c>); null/empty
+    /// leaves it blank (the field the browser doesn't carry). <paramref name="fieldName"/> names the value node
+    /// after the QC <c>me.*Label</c> field for traceability.
     /// </summary>
-    private static HBoxContainer DetailRow(string label, string fieldComment, string tooltip = "")
+    private static HBoxContainer DetailRow(string label, string fieldName, string? value = null, string tooltip = "")
     {
-        // Empty value placeholder (QC fills this from gethostcache*; no backend → left blank).
-        var value = MakeLabel("");
-        value.Name = fieldComment.TrimStart('_'); // e.g. "nameLabel" — traceability to the QC entity field.
-        value.TooltipText = tooltip;
-        var row = MakeRow(label, value);
-        return row;
+        var valueLabel = MakeLabel(value ?? "");
+        valueLabel.Name = fieldName; // e.g. "nameLabel" — traceability to the QC entity field.
+        valueLabel.TooltipText = tooltip;
+        return MakeRow(label, valueLabel);
     }
+
+    /// <summary>Strip Quake <c>^</c> color codes from a server name for the plain Label (QC names are decolorized in the UI).</summary>
+    private static string Decolorize(string? s) => MenuColorCodes.Strip(s);
 
     // -----------------------------------------------------------------------------------------------------
     //  "Terms of Service" tab — port of XonoticServerToSTab_fill (dialog_multiplayer_join_termsofservice.qc).

@@ -298,6 +298,26 @@ public sealed class AssetLoader
             return null;
         }
 
+        // ── FORMAL CUT: MDL / MD2 / ZYM / PSK importers (Wave A4 T24) ───────────────────────────────
+        // Darkplaces dispatches model loads by leading magic (model_shared.c:45-65): "IDPO"→MDL,
+        // "IDP2"→MD2, "ZYMOTICMODEL"→ZYM, "ACTRHEAD"→PSK, plus "IDP3"→MD3 and "INTERQUAKEMODEL"→IQM and
+        // "DARKPLACESMODEL"→DPM. This port deliberately implements ONLY the last three (the magic chain
+        // above); the other four are intentionally NOT ported. Audit of the shipped Base content:
+        //   • MDL ("IDPO"): 19 files ship (xonotic-data.pk3dir/models, common/models/all.inc), but only
+        //     TWO ever reach THIS loader, and both already render via a deliberate fallback that needs
+        //     no MDL importer: casing_shell.mdl → ShellCasings.GeneratedCasing (ShellCasings.cs:84, which
+        //     relies on this method returning null), and gibs/chunk.mdl → ModelGibs.GeneratedChunk
+        //     (ModelGibs.cs:107, which skips .mdl by extension). The other 17 MDL entries in all.inc are
+        //     projectile/effect/waypoint models drawn by the particle/effect/sprite systems (generated or
+        //     glow-sprite bodies), not by AssetLoader.LoadModel — they never hit this path.
+        //   • ZYM ("ZYMOTICMODEL"): the only 2 shipped (pomp.zym, train.zym) live in xonotic-maps.pk3dir
+        //     as map-exclusive addon geometry, absent from the shipped base game and unreferenced by QC.
+        //   • MD2 ("IDP2") and PSK ("ACTRHEAD"): ZERO shipped content of either format.
+        // An MDL clause would slot here as `if (magic.StartsWith("IDPO", ...))`; implementing all four
+        // (~2000 LOC, ≈500/format) buys nothing for shipped content, so they are cut. Any such file (or
+        // any future custom ZYM/PSK map) falls through to the null+log below and the caller's placeholder
+        // — the same gib-splash fallback precedent QC already follows. Re-add an importer only if real
+        // shipped content in that format appears.
         GD.PrintErr($"[AssetLoader] '{key}' is not a known model (magic \"{Printable(magic)}\").");
         return null;
     }

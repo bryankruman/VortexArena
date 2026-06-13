@@ -131,13 +131,24 @@ public partial class DialogMultiplayerProfile : MenuScreen
         right.AddChild(uidranking);
         Dependent.Bind(uidranking, "cl_allow_uidtracking", 1, 1);
 
-        // QC makeXonoticStatsList() — server-fed; honest empty area until the stats backend exists.
-        var statsNote = Ui.Label("(player statistics — backend pending)");
+        // QC makeXonoticStatsList() — an XonoticStatsList drained from the per-player stats DB (PS_D_IN_DB),
+        // populated ASYNCHRONOUSLY by PlayerStats_PlayerDetail_CheckUpdate (an HTTP fetch to the stats server,
+        // statslist.qc:295-298). The port has no playerstats DB / urllib fetch, so the list stays an honest
+        // "pending" placeholder; we still kick the (inert) update on show, mirroring the QC showNotify hook.
+        var statsList = new ItemList
+        {
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            SizeFlagsVertical = SizeFlags.ExpandFill,
+            CustomMinimumSize = new Vector2(0, 160),
+            FocusMode = FocusModeEnum.None,
+        };
+        right.AddChild(statsList);
+        var statsNote = Ui.Label("(player statistics fetched from the stats server — fetch backend pending)");
         statsNote.HorizontalAlignment = HorizontalAlignment.Center;
-        statsNote.SizeFlagsVertical = SizeFlags.ExpandFill;
-        statsNote.VerticalAlignment = VerticalAlignment.Center;
         statsNote.Modulate = new Color(1, 1, 1, 0.5f);
         right.AddChild(statsNote);
+        // QC XonoticStatsList_showNotify → PlayerStats_PlayerDetail_CheckUpdate(); inert until T50 defines it.
+        MenuCommand.Run("menu_cmd playerstats_update");
 
         // QC: "Select language..." centred at half width near the bottom of the right half.
         var langRow = new HBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };

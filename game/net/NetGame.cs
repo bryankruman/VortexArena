@@ -646,6 +646,14 @@ public sealed partial class NetGame : Node3D
                 _server?.BroadcastPrint($"{(teamOnly ? "(team) " : "")}{caller?.NetName ?? "server"}^7: {msg}");
             cmd.ChatBroadcast = msg => _server?.BroadcastPrint(msg);
 
+            // [T46] per-player chat delivery: Chat.Say routes team/private/spectator/public lines through sprint()
+            //       → Commands.ChatToPlayer; wire it to the reliable per-peer svc_print so each routed recipient
+            //       (and only that recipient) gets the line. Without this every routed sprint() silently no-ops.
+            cmd.ChatToPlayer = (player, text) => _server?.SendChatToPlayer(player, text);
+            // [T46] QC dedicated_print(): echo every delivered chat line to the SERVER's own console, independent
+            //       of client delivery (a baseline feature for the host operator). Routes to stdout via GD.Print.
+            cmd.ChatConsole = text => GD.Print(text);
+
             // bot_add / setbots: spawn a brained bot through the live population (raises bot_number so the faithful
             // fixcount keeps it); the snapshot loop networks it next tick. [T39]
             cmd.AddBotHandler = (name, skill) => _serverWorld?.Bots.AddBot(name, skill) is not null;
@@ -672,6 +680,10 @@ public sealed partial class NetGame : Node3D
             cmd.ChatHandler = (caller, msg, teamOnly) =>
                 s.RunOnSimThread(() => _server?.BroadcastPrint($"{(teamOnly ? "(team) " : "")}{caller?.NetName ?? "server"}^7: {msg}"));
             cmd.ChatBroadcast = msg => s.RunOnSimThread(() => _server?.BroadcastPrint(msg));
+            // [T46] per-player chat + server-console echo on the threaded path: the send touches _server (worker-owned),
+            //       so route the per-peer delivery through the sim thread; the console echo is GD.Print-only (thread-safe).
+            cmd.ChatToPlayer = (player, text) => s.RunOnSimThread(() => _server?.SendChatToPlayer(player, text));
+            cmd.ChatConsole = text => GD.Print(text);
             cmd.AddBotHandler = (name, skill) => { s.RunOnSimThread(() => _serverWorld?.Bots.AddBot(name, skill)); return true; };
             cmd.RemoveBotHandler = name => { s.RunOnSimThread(() => _serverWorld?.Bots.RemoveBot(name)); return true; };
             cmd.ChangeLevelHandler = map => s.RunOnSimThread(() => RequestMapChange(map));
@@ -1804,6 +1816,12 @@ public sealed partial class NetGame : Node3D
                 _fullHud.ItemsTime.Visible = true;
                 _fullHud.ItemsTime.SetItemTimes(itm.CurrentTimes);
             }
+
+            // [T41] objective rings (QC view.qc HUD_Draw NADE_TIMER > CAPTURE_PROGRESS > REVIVE_PROGRESS): feed
+            // the crosshair panel the local player's held-nade charge each frame (host path; the local Player
+            // carries STAT(NADE_TIMER) live). CAPTURE/REVIVE producers aren't wired yet (no capture/freeze stat on
+            // the local Player), so they stay 0 here — the panel hides those rings until a gametype feeds them.
+            _fullHud.Crosshair.NadeTimer = LocalServerPlayer?.NadeTimer ?? 0f;
         }
 
         // Advance the announcer queue (play the next queued voice if the current one finished).

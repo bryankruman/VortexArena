@@ -108,6 +108,27 @@ public sealed class Commands
     /// </summary>
     public Action<string>? ChatBroadcast { get; set; }
 
+    /// <summary>
+    /// [T46] Optional per-player chat delivery sink — QC <c>sprint(client, text)</c>. The chat engine
+    /// (<see cref="Chat"/>) routes each recipient's line through this so team/private/spectator/ignore filtering
+    /// happens BEFORE delivery (the routing is in <see cref="Chat.Say"/>, not the net layer). The host wires it to
+    /// <c>ServerNet.SendChatToPlayer</c>. When unwired, <see cref="Chat.Say"/> still computes routing (and the
+    /// public-say case falls back to <see cref="ChatHandler"/> so a bare host without the per-player wire keeps
+    /// broadcasting public chat as before — see <see cref="DeliverChatLine"/>).
+    /// </summary>
+    public Action<Player, string>? ChatToPlayer { get; set; }
+
+    /// <summary>[T46] Optional server-console echo sink — QC <c>dedicated_print(text)</c>. The chat engine echoes
+    /// each delivered public/team/private line to the SERVER console through this (distinct from a client print).</summary>
+    public Action<string>? ChatConsole { get; set; }
+
+    /// <summary>
+    /// [T46] The server chat engine (port of server/chat.qc <c>Say</c>) — owns formatmessage, per-say-type flood,
+    /// recipient routing and ignore/mute handling. The say/say_team/tell/ignore/unignore/clear_ignores commands
+    /// route through it. Created lazily in the ctor (it needs the live <see cref="GameWorld"/>).
+    /// </summary>
+    public Chat Chat { get; }
+
     /// <summary>Optional sink the host wires to add bots (QC bot_cmd add). Args: name, skill.</summary>
     public Func<string?, float?, bool>? AddBotHandler { get; set; }
 
@@ -215,6 +236,7 @@ public sealed class Commands
     {
         _world = world;
         Replies = new CommandReplies(world);
+        Chat = new Chat(world); // [T46] the chat engine (registers its g_chat_* cvar defaults on construction)
         RegisterBuiltins();
 
         // Per-client weapon priority (T54): point the selection code's per-player priority source at this
@@ -321,6 +343,12 @@ public sealed class Commands
         // ---- players / chat (QC GameCommand kick + the say bus) ----
         Register("kick", "kick <player> [reason] — remove a player from the server", CmdKick);
         Register("say", "say <message> — broadcast a chat message", CmdSay);
+        // [T46] the chat family (QC server/command/cmd.qc ClientCommand_say_team/tell/ignore/unignore/clear_ignores).
+        Register("say_team", "say_team <message> — send a chat message to your teammates", CmdSayTeam);
+        Register("tell", "tell <client> <message> — send a private message to a player", CmdTell);
+        Register("ignore", "ignore <client> — keep a player's messages out of your chat log", CmdIgnore);
+        Register("unignore", "unignore <client> — stop ignoring a player", CmdUnignore);
+        Register("clear_ignores", "clear_ignores — remove all of your ignores", CmdClearIgnores);
 
         // ---- voting (QC server/command/vote.qc the vote command family) ----
         Register("vote", "vote <call|yes|no|abstain|stop|status|master|help> [args] — match/map voting", CmdVote);
@@ -382,8 +410,8 @@ public sealed class Commands
         Register("kickban", "kickban <player> [bantime] [masksize] [reason] — kick + ban a player", CmdKickBan);
         Register("unban", "unban <banid> — lift a ban by its banlist index", CmdUnban);
         Register("banlist", "banlist — list the active bans", CmdBanList);
-        Register("mute", "mute <player> — mute a player in chat", ctx => CmdListAdd(ctx, "g_chatban_list", "muted"));
-        Register("unmute", "unmute <player> — unmute a player", ctx => CmdListRemove(ctx, "g_chatban_list", "unmuted"));
+        Register("mute", "mute <player> — mute a player in chat", CmdMute);
+        Register("unmute", "unmute <player> — unmute a player", CmdUnmute);
         Register("playban", "playban <player> — force a player to spectate", CmdPlayBan);
         Register("unplayban", "unplayban <player> — allow a play-banned player to join", ctx => CmdListRemove(ctx, "g_playban_list", "unplaybanned"));
         Register("voteban", "voteban <player> — ban a player from voting", ctx => CmdListAdd(ctx, "g_voteban_list", "voteban"));
@@ -562,10 +590,19 @@ public sealed class Commands
 
     private bool CmdSay(CommandContext ctx)
     {
+        // QC ClientCommand_say: argc >= 2 → Say(caller, false, NULL, msg, 1). [T46]
         string msg = ctx.ArgTail(1);
         if (string.IsNullOrEmpty(msg))
             return true;
-        if (ChatHandler is not null)
+
+        // Prefer the per-player chat engine (faithful routing/flood/ignore). When the host has NOT wired the
+        // per-player delivery sink (ChatToPlayer) — a bare host or a test with only the legacy broadcast — fall
+        // back to the old ChatHandler broadcast so a public `say` still reaches every client's console as before.
+        if (ChatToPlayer is not null)
+        {
+            Chat.Say(ctx.Caller, /*teamsay*/ 0, /*privatesay*/ null, msg, /*floodcontrol*/ true);
+        }
+        else if (ChatHandler is not null)
         {
             // A broadcast pipeline is wired: the message reaches EVERYONE (incl. the sender) through it, so do
             // NOT also echo to ctx.Output — on a listen server the host is its own client and would see it twice.
@@ -576,6 +613,117 @@ public sealed class Commands
             // No pipeline (a bare test / a host with no chat relay): echo locally so `say` isn't silent.
             ctx.Print($"{(ctx.Caller?.NetName ?? "server")}: {msg}");
         }
+        return true;
+    }
+
+    /// <summary>QC <c>ClientCommand_say_team</c> (cmd.qc:661): argc >= 2 → Say(caller, true, NULL, msg, 1). [T46]</summary>
+    private bool CmdSayTeam(CommandContext ctx)
+    {
+        if (ctx.Caller is null) { ctx.Print("say_team is a client command"); return true; }
+        string msg = ctx.ArgTail(1);
+        if (string.IsNullOrEmpty(msg))
+            return true;
+        Chat.Say(ctx.Caller, /*teamsay*/ 1, /*privatesay*/ null, msg, /*floodcontrol*/ true);
+        return true;
+    }
+
+    /// <summary>
+    /// QC <c>ClientCommand_tell</c> (cmd.qc:931): argc >= 3 → resolve the target client, then
+    /// Say(caller, false, tell_to, msg, true). A connecting caller, a self-tell, or an unresolvable target each
+    /// print the QC error string. The message is argv(2..) (the target token is argv(1)). [T46]
+    /// </summary>
+    private bool CmdTell(CommandContext ctx)
+    {
+        if (ctx.Caller is null) { ctx.Print("tell is a client command"); return true; }
+        if (ctx.ArgCount < 3)
+        {
+            ctx.Print("Usage:^3 cmd tell <client> <message>");
+            return true;
+        }
+        Player? target = FindPlayerByNameOrId(ctx.Arg(1));
+        if (target is null)
+        {
+            ctx.Print($"tell: could not find a player matching \"{ctx.Arg(1)}\".");
+            return true;
+        }
+        if (ReferenceEquals(target, ctx.Caller))
+        {
+            ctx.Print("You can't ^2tell^7 a message to yourself.");
+            return true;
+        }
+        Chat.Say(ctx.Caller, /*teamsay*/ 0, /*privatesay*/ target, ctx.ArgTail(2), /*floodcontrol*/ true);
+        return true;
+    }
+
+    /// <summary>
+    /// QC <c>ClientCommand_ignore</c> (cmd.qc:452): add the named/numbered target to the caller's ignore list. The
+    /// QC gate cascade: empty arg, unresolvable target, self-ignore, already-ignored, then add (and the
+    /// list-full case). Keyed by PersistentId in the port — a target without one can't be ignored. [T46]
+    /// </summary>
+    private bool CmdIgnore(CommandContext ctx)
+    {
+        if (ctx.Caller is null) { ctx.Print("ignore is a client command"); return true; }
+        if (ctx.ArgCount < 2 || ctx.Arg(1) == "")
+        {
+            ctx.Print("This command requires an argument. Use a player's name or their ID from the ^2status^7 command.");
+            return true;
+        }
+        Player? target = FindPlayerByNameOrId(ctx.Arg(1));
+        if (target is null || target.IsBot)
+        {
+            ctx.Print($"ignore: could not find a real player matching \"{ctx.Arg(1)}\".");
+            return true;
+        }
+        if (ReferenceEquals(target, ctx.Caller))
+        {
+            ctx.Print("You can't ^2ignore^7 yourself.");
+            return true;
+        }
+        if (Chat.IgnorePlayerInList(ctx.Caller, target))
+        {
+            ctx.Print($"{target.NetName} ^7is already ignored!");
+            return true;
+        }
+        int r = Chat.IgnoreAddPlayer(ctx.Caller, target);
+        if (r == 0)
+            ctx.Print($"You may only ignore up to {Chat.IgnoreMaxPlayers} players, remove one before trying again.");
+        else
+            ctx.Print($"You will no longer receive messages from {target.NetName}^7 for this match, use ^2unignore^7 to hear them again.");
+        return true;
+    }
+
+    /// <summary>QC <c>ClientCommand_unignore</c> (cmd.qc:988): remove the named/numbered target from the caller's
+    /// ignore list. [T46]</summary>
+    private bool CmdUnignore(CommandContext ctx)
+    {
+        if (ctx.Caller is null) { ctx.Print("unignore is a client command"); return true; }
+        if (ctx.ArgCount < 2 || ctx.Arg(1) == "")
+        {
+            ctx.Print("This command requires an argument. Use a player's name or their ID from the ^2status^7 command.");
+            return true;
+        }
+        Player? target = FindPlayerByNameOrId(ctx.Arg(1));
+        if (target is null || target.IsBot)
+        {
+            ctx.Print($"unignore: could not find a real player matching \"{ctx.Arg(1)}\".");
+            return true;
+        }
+        if (ReferenceEquals(target, ctx.Caller))
+        {
+            ctx.Print("You can't ^2unignore^7 yourself.");
+            return true;
+        }
+        Chat.IgnoreRemovePlayer(ctx.Caller, target);
+        ctx.Print($"You can now receive messages from {target.NetName} ^7again.");
+        return true;
+    }
+
+    /// <summary>QC <c>ClientCommand_clear_ignores</c> (cmd.qc:226): clear the caller's whole ignore list. [T46]</summary>
+    private bool CmdClearIgnores(CommandContext ctx)
+    {
+        if (ctx.Caller is null) { ctx.Print("clear_ignores is a client command"); return true; }
+        Chat.IgnoreClearAll(ctx.Caller);
+        ctx.Print("All ignores cleared!");
         return true;
     }
 
@@ -1152,6 +1300,29 @@ public sealed class Commands
         if (target is null) { ctx.Print($"no player matching \"{ctx.Arg(1)}\""); return true; }
         Bans.AddToList(target, listCvar);
         ctx.Print($"{verb} {target.NetName}");
+        return true;
+    }
+
+    /// <summary>QC <c>mute</c> (the chatban admin verb): add the player to the chatban list AND set the live
+    /// <see cref="Player.Muted"/> fake-accept flag (server/chat.qc:255 — a muted player's chat is faked). [T46]</summary>
+    private bool CmdMute(CommandContext ctx)
+    {
+        Player? target = FindPlayerByName(ctx.Arg(1));
+        if (target is null) { ctx.Print($"no player matching \"{ctx.Arg(1)}\""); return true; }
+        Bans.AddToList(target, "g_chatban_list");
+        target.Muted = true;
+        ctx.Print($"muted {target.NetName}");
+        return true;
+    }
+
+    /// <summary>QC <c>unmute</c>: remove from the chatban list AND clear <see cref="Player.Muted"/>. [T46]</summary>
+    private bool CmdUnmute(CommandContext ctx)
+    {
+        Player? target = FindPlayerByName(ctx.Arg(1));
+        if (target is null) { ctx.Print($"no player matching \"{ctx.Arg(1)}\""); return true; }
+        Bans.RemoveFromList(target, "g_chatban_list");
+        target.Muted = false;
+        ctx.Print($"unmuted {target.NetName}");
         return true;
     }
 

@@ -375,6 +375,15 @@ public sealed class FreezeTag : GameType
                 }
             }
         }
+
+        // Mirror each roster player's per-player FrozenState.ReviveProgress onto the networkable entity field so
+        // the player snapshot (NetEntityState.ReviveProgress) can ship the thaw ring to clients (QC STAT(REVIVE_
+        // PROGRESS)). Frozen players carry their accumulated 0..1; everyone else reads 0 (Unfreeze reset it).
+        for (int i = 0; i < _roster.Count; i++)
+        {
+            Player p = _roster[i];
+            p.ReviveProgress = Frozen.TryGetValue(p, out var fs) ? fs.ReviveProgress : 0f;
+        }
         return thawed;
     }
 

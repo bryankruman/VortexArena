@@ -24,6 +24,14 @@ public static class MapObjectsRegistry
         // [Item] pickups + the Weapon registry); GameInit calls RegisterAll after Bootstrap, so this is safe here.
         ItemSpawnFuncs.Register();
 
+        // ---- Q3DF target_* compat entities (T52: server/compat/quake3.qc:119-295) ----
+        // The Q3/QL/CPMA/Q1/Q2/WoP weapon/item/ammo classname remaps live in ItemSpawnFuncs.Register() above
+        // (they share the item/weapon spawn paths); this installs the four DeFRaG target_* entities
+        // (target_init / target_score / target_fragsFilter / target_print / target_smallprint). Must run after
+        // ItemSpawnFuncs.Register so a map's target_* doesn't clobber a real item classname (it can't — disjoint
+        // names — but the ordering matches the recon seam).
+        CompatRemaps.Register();
+
         // ---- doors (func/door.qc, door_rotating.qc) ----
         SpawnFuncs.Register("func_door", Doors.DoorSetup);
         SpawnFuncs.Register("func_door_rotating", Doors.DoorRotatingSetup);

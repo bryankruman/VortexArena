@@ -97,6 +97,10 @@ public sealed class Keepaway : GameType
     /// <summary>Keepaway is free-for-all; there are no teams (a single ball, individual scoring).</summary>
     public int TeamCount => 0;
 
+    /// <summary>QC FFA equality (server/scores.qc:537): the top two players are tied on the primary score, so a
+    /// tied timed Keepaway enters overtime instead of drawing (server/world.qc).</summary>
+    public override bool ReportsTie(IReadOnlyList<Player> roster) => FfaTie.TopTwoTied(roster);
+
     /// <summary>Point limit in force (g_keepaway_point_limit, else fraglimit, else 30). 0 == unlimited.</summary>
     public float PointLimit
     {

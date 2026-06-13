@@ -81,6 +81,68 @@ public static class ItemSpawnFuncs
         AliasItem("item_health100", "health_mega");
         AliasItem("item_health_large", "health_big");
 
+        // ---- Q3/QL/CPMA/Q1/Q2/WoP compat ITEM remaps (T52: server/compat/{quake3,quake,quake2,wop}.qc) ----
+        // Each is a SPAWNFUNC_ITEM(classname, ITEM_X) in the compat .qc; the def is the matching [Item] NetName.
+        // quake3.qc:102-115 — armor / powerups / medkit.
+        AliasItem("item_armor_body", "armor_mega");       // ITEM_ArmorMega
+        AliasItem("item_armor_combat", "armor_big");      // ITEM_ArmorBig
+        AliasItem("item_armor_shard", "armor_small");     // ITEM_ArmorSmall
+        AliasItem("item_armor_green", "armor_medium");    // ITEM_ArmorMedium (CCTF)
+        AliasItem("item_quad", "strength");               // ITEM_Strength
+        AliasItem("item_enviro", "invincible");           // ITEM_Shield (ShieldItem.NetName == "invincible")
+        AliasItem("item_haste", "speed");                 // ITEM_Speed
+        AliasItem("item_invis", "invisibility");          // ITEM_Invisibility
+        AliasItem("holdable_medkit", "armor_big");        // ITEM_ArmorBig (we have no holdables)
+        // quake2.qc:9-11 — Q2 / CPMA armor + invuln.
+        AliasItem("item_armor_jacket", "armor_medium");   // ITEM_ArmorMedium
+        AliasItem("item_invulnerability", "invincible");  // ITEM_Shield
+        // quake.qc:17-20 — Q1 ammo box / armors / health (the health branches on spawnflag 2).
+        AliasItem("item_spikes", "bullets");              // ITEM_Bullets
+        AliasItem("item_armor2", "armor_mega");           // ITEM_ArmorMega
+        AliasItem("item_armorInv", "armor_mega");         // ITEM_ArmorMega
+        // QC: item_health -> this.spawnflags & 2 ? ITEM_HealthMega : ITEM_HealthMedium
+        SpawnFuncs.Register("item_health",
+            e => ItemSpawn(e, (e.SpawnFlags & 2) != 0 ? "health_mega" : "health_medium"));
+        // wop.qc:18-42 — World of Padman items + ammo boxes (weapons are in the compat-weapon block below).
+        AliasItem("item_padpower", "strength");           // ITEM_Strength
+        AliasItem("item_climber", "invincible");          // ITEM_Shield
+        AliasItem("item_speedy", "speed");                // spawnfunc_item_speed
+        AliasItem("item_visionless", "invisibility");     // spawnfunc_item_invisibility
+        AliasItem("item_armor_padshield", "armor_mega");  // ITEM_ArmorMega
+        AliasItem("holdable_floater", "jetpack");         // ITEM_Jetpack
+        AliasItem("ammo_pumper", "shells");               // ITEM_Shells (WoP ammo are plain ammo items, no scaling)
+        AliasItem("ammo_nipper", "bullets");              // ITEM_Bullets
+        AliasItem("ammo_balloony", "rockets");            // ITEM_Rockets
+        AliasItem("ammo_bubbleg", "rockets");             // ITEM_Rockets
+        AliasItem("ammo_boaster", "cells");               // ITEM_Cells
+        AliasItem("ammo_betty", "rockets");               // ITEM_Rockets
+        AliasItem("ammo_imperius", "cells");              // ITEM_Cells
+
+        // ---- Q3/QL/CPMA/Q1/WoP compat WEAPON remaps (T52: SPAWNFUNC_Q3WEAPON / SPAWNFUNC_WEAPON) ----
+        // The weapon is resolved at SPAWN time (CompatRemaps.WeaponForClassname), like QC's per-spawn macro
+        // body, so the cvar-dependent picks (nailgun / plasmagun / bfg) honour the live cvars. WoP's
+        // weapon_punchy / _nipper / etc. are SPAWNFUNC_WEAPON too and resolve through the same table.
+        foreach (string cls in CompatWeaponClassnames)
+        {
+            string c = cls; // capture
+            SpawnFuncs.Register(c, e =>
+            {
+                Weapon? w = CompatRemaps.WeaponForClassname(c);
+                if (w is null) { MapMover.RemoveEntity(e); return; }
+                WeaponSpawn(e, w);
+            });
+        }
+
+        // ---- Q3 compat AMMO remaps (T52: SPAWNFUNC_Q3AMMO) ----
+        // Each Q3 ammo classname seeds the matching resource from rint(.count * GetAmmoConsumption(weapon)),
+        // scaled by the SPAWNFUNC_Q3 multiplier, then spawns the ammo item (or deletes if the weapon is
+        // ammo-less). Resolved at spawn time so the cvar-branching pairs (nails/cells/bfg) stay live.
+        foreach (string cls in CompatAmmoClassnames)
+        {
+            string c = cls; // capture
+            SpawnFuncs.Register(c, e => AmmoSpawn(e, c));
+        }
+
         // ---- weapon_* (QC weapon_defaultspawnfunc): one spawnfunc per Weapon registry entry ----
         foreach (Weapon w in Weapons.All)
         {
@@ -103,6 +165,45 @@ public static class ItemSpawnFuncs
     // Register an ALIAS classname pointing at the same def (does NOT override the canonical classname).
     private static void AliasItem(string className, string netName)
         => SpawnFuncs.Register(className, e => ItemSpawn(e, netName));
+
+    // The compat WEAPON classnames (SPAWNFUNC_Q3WEAPON in quake3.qc + SPAWNFUNC_WEAPON in quake.qc / wop.qc).
+    // Resolved per-spawn via CompatRemaps.WeaponForClassname so the cvar-branching picks stay live.
+    private static readonly string[] CompatWeaponClassnames =
+    {
+        // Q3 / QL / CPMA / Team Arena (quake3.qc)
+        "weapon_shotgun", "weapon_machinegun", "weapon_grenadelauncher", "weapon_prox_launcher",
+        "weapon_chaingun", "weapon_hmg", "weapon_nailgun", "weapon_lightning", "weapon_plasmagun",
+        "weapon_railgun", "weapon_bfg", "weapon_grapplinghook", "weapon_rocketlauncher", "weapon_gauntlet",
+        // Q1 (quake.qc)
+        "weapon_supernailgun", "weapon_supershotgun",
+        // World of Padman (wop.qc)
+        "weapon_punchy", "weapon_nipper", "weapon_pumper", "weapon_boaster", "weapon_splasher",
+        "weapon_bubbleg", "weapon_balloony", "weapon_betty", "weapon_imperius",
+    };
+
+    // The Q3 compat AMMO classnames (the SPAWNFUNC_Q3AMMO half of each SPAWNFUNC_Q3 in quake3.qc).
+    private static readonly string[] CompatAmmoClassnames =
+    {
+        "ammo_shells", "ammo_bullets", "ammo_grenades", "ammo_mines", "ammo_belt", "ammo_hmg",
+        "ammo_nails", "ammo_lightning", "ammo_cells", "ammo_slugs", "ammo_bfg", "ammo_rockets",
+    };
+
+    // ---- the Q3 ammo spawnfunc (QC SPAWNFUNC_Q3AMMO body, quake3.qh:18-25) ----
+    private static void AmmoSpawn(Entity e, string className)
+    {
+        CompatRemaps.AmmoRemap? remap = CompatRemaps.AmmoForClassname(className);
+        if (remap is null) { MapMover.RemoveEntity(e); return; } // unmapped (weapon registry missing) -> delete
+
+        // QC: scale .count + seed the resource (CompatRemaps.ApplyAmmoRemap), then SPAWNFUNC_BODY the ammo item.
+        // A null Pickup means the weapon is ammo-less (FIREBALL): QC's SPAWNFUNC_BODY deletes the entity.
+        Pickup? def = CompatRemaps.ApplyAmmoRemap(e, remap.Value);
+        if (def is null || !def.ItemDef.IsAllowed)
+        {
+            MapMover.RemoveEntity(e); // QC SPAWNFUNC_BODY else-branch: startitem_failed = true; delete(this).
+            return;
+        }
+        StartItem.Spawn(e, def);
+    }
 
     /// <summary>QC <c>m_canonical_spawnfunc</c> for a def — the classname StartItem assigns to this.classname.</summary>
     public static string CanonicalSpawnFunc(Pickup def)

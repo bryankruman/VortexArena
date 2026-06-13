@@ -343,6 +343,10 @@ public sealed class Mayhem : GameType
         // (USEPOINTS) and map-size gating are engine/map-pool concerns.
     }
 
+    /// <summary>QC FFA equality (server/scores.qc:537): the top two players are tied on the primary score, so a
+    /// tied timed Mayhem enters overtime instead of drawing (server/world.qc).</summary>
+    public override bool ReportsTie(IReadOnlyList<Player> roster) => FfaTie.TopTwoTied(roster);
+
     /// <summary>The resolved scoring config (weights + spawn HP/armor divisor) for the FFA cvars.</summary>
     public MayhemScoring.Config Scoring => MayhemScoring.GetConfig(Prefix);
 
