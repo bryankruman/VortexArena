@@ -325,6 +325,10 @@ public sealed partial class FaithfulParticleBackend : Node3D
 
     public override void _Process(double delta)
     {
+        // [profiling] the faithful sim+sync was the largest UNSCOPED per-frame cost (showed only as
+        // proc:other in hitch dumps) — scope it so combat-frame attribution names it directly.
+        using var _scope = XonoticGodot.Common.Diagnostics.Prof.Sample("particles.cpu");
+
         // Advance the faithful simulation on RENDER delta (a client visual clock, like the GPU particles) —
         // NOT Api.Clock.Time, which is the server sim clock and reads 0/paused on the render side, freezing
         // the sim (particles never age → never die → leak). The sim clamps frametime internally, so a load

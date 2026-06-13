@@ -521,6 +521,10 @@ public sealed partial class NetGame : Node3D
         // console/menu override in the SHARED store wins over the world default (the menu writes there). Threading
         // is GATED to non-headless hosts: a headless dedicated server already keeps the full catch-up cap and has
         // no render frame to unblock, so it stays on the stock single-threaded drive even with sv_threaded 1.
+        // (§13.5) Default OFF (user choice, 2026-06-12). The transport-split fix made a PLAYED threaded
+        // session clean — 0 PREDICTION DESYNC events over ~3 min, 0 errors — so `sv_threaded 1` is now SAFE to
+        // experiment with (it moves the 4-12 ms server tick off the render thread). Kept default-off for now;
+        // flip to 1 to enable. See §13.5.
         _serverWorld.Services.Cvars.Register("sv_threaded", "0");
         bool wantThreaded =
             (_sharedCvars is not null && _sharedCvars.Has("sv_threaded")
@@ -702,6 +706,12 @@ public sealed partial class NetGame : Node3D
             // on the main thread — hand it the SAME gate so that scan can't race the worker's spawn/relink. Stays
             // null on the non-threaded default path, so its scan remains lock-free.
             if (_musicPlayer is not null) _musicPlayer.SimGate = _simGate;
+            // The trace service keeps shared mutable scratch and reads the live areagrid — MAIN-thread traces
+            // (faithful-particle bounces, crosshair true-aim, projectile prediction; none run inside this
+            // class's gated _Process span) raced the worker's sim ticks and corrupted both ends (the first
+            // threaded soak's NRE storm). Gate every trace entry point on the SAME object; the worker holds it
+            // around its whole tick (Monitor is reentrant), the single-threaded default path stays lock-free.
+            _serverWorld!.Services.TraceImpl.ConcurrencyGate = _simGate;
             _serverThread = new ServerThread(
                 _serverWorld!, _server!,
                 static () => XonoticGodot.Engine.Simulation.SimulationLoop.TicRate);
@@ -1482,10 +1492,22 @@ public sealed partial class NetGame : Node3D
         {
             string m = model;
             _streamer.Request(
-                () => loader.ParseSkeletalModel(m, 0),                 // off-thread: pure-C# IQM + sidecar parse
-                parse => loader.BuildSkeletalModel(parse)?.Root.QueueFree(), // main: Godot build, then discard
+                () => loader.ParseSkeletalModel(m, 0),                 // off-thread: IQM + sidecars + anims
+                // (§12.3-1) Stage the texture pipeline like the live path — the idle warm previously paid the
+                // same multi-hundred-ms monolithic build; now its decode runs on the worker and each upload is
+                // its own budgeted job. (§12.6) The built model then RENDERS offscreen for a few frames before
+                // it's freed: a built-but-never-drawn model never compiled its material variants' pipelines,
+                // so the first player wearing it on screen paid the compile (`pipe +N` mid-fight).
+                parse => EnqueueStagedSkeletalBuild(loader, parse,
+                    XonoticGodot.Game.Client.BackgroundAssetStreamer.Priority.Low, $"idle-warm {m}",
+                    () =>
+                    {
+                        if (loader.BuildSkeletalModel(parse)?.Root is { } warmRoot)
+                            XonoticGodot.Game.Client.GpuWarmPass.WarmNodes(this,
+                                new List<Node3D> { warmRoot }, () => warmRoot.QueueFree());
+                    }),
                 XonoticGodot.Game.Client.BackgroundAssetStreamer.Priority.Low,
-                label: $"idle-warm {m}");
+                label: $"idle-warm {m} (parse)");
         }
     }
 
@@ -1691,6 +1713,9 @@ public sealed partial class NetGame : Node3D
         if (_processCvarsHooked && _sharedCvars is not null)
             _sharedCvars.Changed -= OnProcessCvarChanged;   // same store-outlives-match reasoning (§11 R11)
         _minigame?.Dispose();
+        // Drop any unconsumed predecoded texture images (a model whose staged build never completed —
+        // entity died mid-stream / map change) so decoded pixels don't outlive the session.
+        _assets?.Assets.ClearPredecodedImages();
         _client?.Dispose();
         // S5: join the server-sim worker BEFORE disposing ServerNet/the world, so the socket + world teardown is
         // single-threaded and no in-flight tick races the Dispose (the worker holds the gate around its whole
@@ -1702,6 +1727,8 @@ public sealed partial class NetGame : Node3D
             _server.SimGate = null;
         if (_musicPlayer is not null && Godot.GodotObject.IsInstanceValid(_musicPlayer))
             _musicPlayer.SimGate = null;   // gate released; music scan reverts to lock-free
+        if (_serverWorld is not null)
+            _serverWorld.Services.TraceImpl.ConcurrencyGate = null;   // traces revert to lock-free
         _simGate = null;
         _server?.Dispose();
         // Free the carrier so a torn-down session doesn't leave a stray player edict in its facade. Use the
@@ -1784,6 +1811,14 @@ public sealed partial class NetGame : Node3D
         {
             if (simGate is not null)
                 System.Threading.Monitor.Enter(simGate, ref simGateTaken);
+
+        // S5 (§13.5): when threaded, the worker runs ONLY the pure-C# sim — the MAIN thread services the Godot
+        // ENet transport here (receive the client input the worker's next step consumes; send the snapshot of
+        // the worker's latest sim state). Done under the gate, before the world reads below. The client's own
+        // transport (_client.Poll, further down) then receives that snapshot the SAME frame.
+        if (_serverThread is not null)
+            using (XonoticGodot.Game.Client.FrameProfiler.Scope("server.tick"))
+                _server?.PumpTransportThreaded(dt);
 
         // Feed the music player the current server time so trigger_music touch freshness works.
         if (_musicPlayer is not null && _serverWorld is not null)
@@ -3252,17 +3287,82 @@ public sealed partial class NetGame : Node3D
         }
 
         _streamer.Request(
-            // Off-thread: pure-C# parse. Boxed in a non-null wrapper because the streamer drops null results
-            // silently — but a FAILED parse must still reach the main thread to trigger the fall-back attach.
+            // Off-thread: pure-C# parse (now incl. the animation library, §12.3-1). Boxed in a non-null wrapper
+            // because the streamer drops null results silently — but a FAILED parse must still reach the main
+            // thread to trigger the fall-back attach.
             () => new SkeletalParseBox(assets.ParseSkeletalModel(model, skin)),
-            box => DeliverPlayerModel(pm, e, model, skin, box.Parse, forced),
+            box =>
+            {
+                if (box.Parse is null)
+                {
+                    DeliverPlayerModel(pm, e, model, skin, null, forced);   // miss → fall-back attach, as before
+                    return;
+                }
+                // (§12.3-1) Stage the texture pipeline BEFORE the delivery: one streamer job per material
+                // (worker pre-decodes its images, main thread only uploads), then the now-cheap assembly.
+                // The old single delivery paid ~395 ms of synchronous decode+upload in one frame.
+                EnqueueStagedSkeletalBuild(assets, box.Parse,
+                    XonoticGodot.Game.Client.BackgroundAssetStreamer.Priority.High, $"player model {model}",
+                    () => DeliverPlayerModel(pm, e, model, skin, box.Parse, forced));
+            },
             XonoticGodot.Game.Client.BackgroundAssetStreamer.Priority.High,
-            label: $"player model {model}");
+            label: $"player model {model} (parse)");
         return pm;
     }
 
     /// <summary>Non-null off-thread wrapper for a (possibly failed) skeletal parse — see ResolvePlayerModel.</summary>
     private sealed record SkeletalParseBox(AssetLoader.SkeletalModelParse? Parse);
+
+    /// <summary>
+    /// (§12.3-1/§12.6) Enqueue the staged main-thread half of a skeletal-model build: one streamer job per
+    /// TEXTURE the model's materials will probe — its worker phase pre-decodes that image
+    /// (<see cref="AssetSystem.PredecodeTexture"/>), its main phase is the GPU upload only — then
+    /// <paramref name="onAllMaterialsReady"/> resolves the materials (pure cache hits by then) and runs the
+    /// final (cheap) assembly. Per-texture granularity caps a single stage at ONE upload (~5-10 ms) — the
+    /// earlier per-MATERIAL jobs still spiked to ~50 ms when one material carried 6 big textures. The
+    /// streamer's budget spreads the jobs across frames; the count-down gate fires exactly once, on main.
+    /// </summary>
+    private void EnqueueStagedSkeletalBuild(AssetLoader loader, AssetLoader.SkeletalModelParse parse,
+        XonoticGodot.Game.Client.BackgroundAssetStreamer.Priority priority, string label, Action onAllMaterialsReady)
+    {
+        List<string> mats = AssetLoader.EffectiveMaterials(parse);
+        Action finish = () =>
+        {
+            // Materials assemble from already-uploaded textures (cache hits) — sub-ms each.
+            using (XonoticGodot.Game.Client.FrameProfiler.Scope("iqm.materials"))
+                foreach (string m in mats)
+                    loader.Assets.ResolveMaterial(m);
+            onAllMaterialsReady();
+        };
+
+        var textures = new List<string>();
+        foreach (string m in mats)
+            foreach (string t in loader.Assets.EnumerateMaterialTextureNames(m))
+                if (!textures.Contains(t))
+                    textures.Add(t);
+        if (_streamer is null || textures.Count == 0)
+        {
+            finish();
+            return;
+        }
+
+        int remaining = textures.Count;
+        foreach (string tex in textures)
+        {
+            string t = tex;
+            _streamer.Request(
+                () => { loader.Assets.PredecodeTexture(t); return t; },     // worker: VFS read + decode
+                _ =>
+                {
+                    using (XonoticGodot.Game.Client.FrameProfiler.Scope("iqm.materials"))
+                        loader.Assets.LoadTexture(t);                       // main: ONE GPU upload (or a cheap miss)
+                    if (--remaining == 0)
+                        finish();
+                },
+                priority,
+                label: $"{label} tex {t}");
+        }
+    }
 
     /// <summary>The "model#skin" memo key used by <see cref="_unresolvableForcedModels"/> for a forced model.</summary>
     private static string ForcedKey(string model, int skin) => model + "#" + skin;

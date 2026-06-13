@@ -338,3 +338,7 @@ ToS/welcome/team-select, tools, confirms). Architecture:
   above + `tools/run-dedicated.sh`); the `linux-dedicated` export preset uses Godot's "export as dedicated
   server" mode (`OS.HasFeature("dedicated_server")` is the feature-tag branch point). The
   `XonoticGodot.Server` lib is Godot-free so a plain console host remains possible later.
+- **Smoothest-play settings (PERFORMANCE_REPORT §12.7):** `vid_fullscreen 2` (exclusive — compositor out of
+  the present path), `vid_vsync 2` (mailbox — no FIFO cascade on a missed present), `sys_priority_boost 1`
+  (default — AboveNormal process priority). Hitch lines tagged `EXTERNAL?` are the machine (compositor/
+  driver/background load), not the game — check what else is running before profiling the repo.

@@ -214,6 +214,12 @@ public sealed class Reconciler
         _movement = movement;
     }
 
+    /// <summary>(§13.4) Origin error past which a reconcile counts as a real desync (normal corrections are
+    /// 0-15 u; a teleport raises one one-shot event). Latched + re-raised every 72 reconciles while sustained.</summary>
+    private const float DesyncEventQu = 64f;
+    private bool _desyncLatched;
+    private int _desyncRepeat;
+
     /// <summary>
     /// Run one reconciliation: re-apply all unacked inputs on top of the authoritative
     /// <paramref name="serverState"/> (valid as of <paramref name="ackedSeq"/>), measure the prediction
@@ -263,6 +269,28 @@ public sealed class Reconciler
         Vector3 oErr = previousPredictionAtAck.Origin - s.Origin;
         Vector3 vErr = previousPredictionAtAck.Velocity - s.Velocity;
         SetPredictionError(oErr, vErr, now);
+
+        // (§13.4) Prediction-desync detector: a healthy predictor measures ~0-15 u corrections (teleports
+        // excepted, one-shot); a SUSTAINED large error means client prediction and server authority have
+        // genuinely diverged — the "camera through walls / projectiles fire from somewhere else" class the
+        // sv_threaded real-play test hit, which no idle-client soak can catch. Latched with periodic
+        // re-raise so the forensic log shows both the onset and the persistence.
+        float errLen = oErr.Length();
+        if (errLen > DesyncEventQu)
+        {
+            if (!_desyncLatched || ++_desyncRepeat >= 72)
+            {
+                _desyncLatched = true;
+                _desyncRepeat = 0;
+                XonoticGodot.Common.Diagnostics.Prof.Event(
+                    $"net: PREDICTION DESYNC {errLen:0}qu (predicted vs acked-replay origin)");
+            }
+        }
+        else if (errLen < DesyncEventQu * 0.5f)
+        {
+            _desyncLatched = false;
+            _desyncRepeat = 0;
+        }
 
         // Stair smoothing is no longer measured here per-tick (the old per-tick delta model perpetually re-armed
         // on slopes); it is driven per RENDER FRAME from the live predicted Z in GetStairSmoothOffset.

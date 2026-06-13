@@ -58,7 +58,8 @@ public partial class FrameProfiler : CanvasLayer
     // Whole-node _Process scopes (distinct nodes ⇒ non-overlapping); summed to compute "proc:other". Nested
     // sub-scopes (server.tick, sim.*, net.*, cw.*) are intentionally NOT here so they don't double-count.
     private static readonly string[] TopLevelNodeScopes =
-        { "ng.process", "cw.process", "md3.morph", "entitynode", "hud.mgr", "proj", "viewmodel", "nethud" };
+        { "ng.process", "cw.process", "md3.morph", "entitynode", "hud.mgr", "proj", "viewmodel", "nethud",
+          "stream.build", "particles.cpu" };
 
     /// <summary>
     /// Open a named timing scope: <c>using (FrameProfiler.Scope("name")) { ... }</c> (or as a one-statement
@@ -187,16 +188,6 @@ public partial class FrameProfiler : CanvasLayer
         // The 3-arg form also drains per-scope ALLOCATION, so every hitch row reads "how long AND how much garbage".
         Prof.SnapshotAndReset(_lastScopes, _lastCounters, _allocScratch);
 
-        // "Everything else": the per-frame _Process span not attributed to a named WHOLE-NODE scope ⇒ time in
-        // nodes we haven't wrapped (each HUD panel, weather/radar/particles, music, gibs, …) plus Godot's
-        // per-node dispatch. A big proc:other ⇒ scope more nodes; a small one with a still-large frame ⇒ the time
-        // is in `rest` (present/vsync/stall), not _Process. The summed keys are distinct nodes (non-overlapping);
-        // nested scopes (server.tick, sim.*, net.*, cw.*) are deliberately excluded so nothing double-counts.
-        double accounted = 0.0;
-        foreach (string k in TopLevelNodeScopes)
-            if (_lastScopes.TryGetValue(k, out double v)) accounted += v;
-        _lastScopes["proc:other"] = Math.Max(0.0, _procMs - accounted);
-
         // Engine-level breakdown: the Prof scopes only cover the C# logic we wrapped — the REST of a frame is the
         // other _Process nodes, physics, and (usually the big one on a hitch) rendering, none of which live in a
         // C# scope. Pull those from Godot so a hitch line accounts for the WHOLE frame: TIME_PROCESS is the sum of
@@ -222,6 +213,19 @@ public partial class FrameProfiler : CanvasLayer
         // The _Process span can never exceed the whole frame — clamping kills the first-frame artifact where the
         // fence hadn't stamped yet (Prof.Enabled flips on mid-frame) and FrameProcessMs reads a garbage epoch.
         if (_procMs > ms) _procMs = ms;
+
+        // "Everything else": the per-frame _Process span not attributed to a named WHOLE-NODE scope ⇒ time in
+        // nodes we haven't wrapped (each HUD panel, weather/radar, music, gibs, …) plus Godot's per-node
+        // dispatch. A big proc:other ⇒ scope more nodes; a small one with a still-large frame ⇒ the time is in
+        // `rest` (present/vsync/stall), not _Process. The summed keys are distinct nodes (non-overlapping);
+        // nested scopes (server.tick, sim.*, net.*, cw.*) are deliberately excluded so nothing double-counts.
+        // Computed AFTER this frame's _procMs refresh+clamp — it used to difference THIS frame's scopes
+        // against LAST frame's _procMs, which printed impossible rows (proc:other > proc) on hitch frames.
+        double accounted = 0.0;
+        foreach (string k in TopLevelNodeScopes)
+            if (_lastScopes.TryGetValue(k, out double v)) accounted += v;
+        _lastScopes["proc:other"] = Math.Max(0.0, _procMs - accounted);
+
         _ring[_ringHead] = ms;
 
         // ---- forensic record for THIS frame (same ring slot as _ring) ----------------------------------------
@@ -291,7 +295,7 @@ public partial class FrameProfiler : CanvasLayer
                 // rest = the median frame time not spent in C# _Process or render submit ⇒ present/vsync wait or
                 // GPU wait. Big rest + small gpu ⇒ vsync pacing (try Mailbox); big rest + big gpu ⇒ GPU-bound.
                 double restMed = Math.Max(0.0, _median - _procMs - _renderCpuMs);
-                EmitProfile($"[frameprofile] med {_median:0.0}ms p99 {_p99:0.0}ms | proc {_procMs:0.0} rcpu {_renderCpuMs:0.0} gpu {_renderGpuMs:0.0} rest {restMed:0.0} | {TopScopes(4)}{Markers()}");
+                EmitProfile($"[frameprofile] med {_median:0.0}ms p99 {_p99:0.0}ms | proc {_procMs:0.0} rcpu {_renderCpuMs:0.0} gpu {_renderGpuMs:0.0} rest {restMed:0.0} | draws {(RecordAt(1) is { } r ? r.DrawCalls : 0):0} | {TopScopes(4)}{Markers()}");
             }
         }
 
@@ -323,7 +327,14 @@ public partial class FrameProfiler : CanvasLayer
         // external (driver/OS) stall. Big rest + big gpu ⇒ GPU-bound (e.g. a first-draw shader compile);
         // big rest + small gpu ⇒ present/vsync or a stall outside Godot's measured sections.
         double rest = Math.Max(0.0, ms - _procMs - _renderCpuMs);
-        EmitProfile($"[hitch] {ms:0.0}ms (med {_median:0.0}) | proc {_procMs:0.0} rcpu {_renderCpuMs:0.0} gpu {_renderGpuMs:0.0} phys {_physMs:0.0} rest {rest:0.0}{gc} | alloc {_dAllocBytes / 1024}KB{scopes}{marks}");
+        // [external?] (§12.6c): the stall lived almost entirely in `rest` with quiet game-side numbers (no
+        // pipeline compile, no gen2, small proc/gpu) ⇒ compositor/driver/OS, not game code. Resistors:
+        // vid_fullscreen 2 (exclusive — compositor out of the present path), sys_priority_boost (default on),
+        // vid_vsync 2 (a missed present costs one late frame, not a cascade). Don't chase these in the repo.
+        bool external = ms >= 25.0 && rest >= ms * 0.7 && _procMs <= ms * 0.3
+                        && rec.PipeCompiles == 0 && rec.G2 == 0 && _renderGpuMs <= ms * 0.3;
+        string tag = external ? " | EXTERNAL? (rest-dominated; OS/compositor/driver)" : "";
+        EmitProfile($"[hitch] {ms:0.0}ms (med {_median:0.0}) | proc {_procMs:0.0} rcpu {_renderCpuMs:0.0} gpu {_renderGpuMs:0.0} phys {_physMs:0.0} rest {rest:0.0}{gc} | alloc {_dAllocBytes / 1024}KB{scopes}{marks}{tag}");
 
         // Multi-line forensic block (rate-limited so a hitch storm logs one block, not a wall): the FULL scope
         // table with per-scope allocation, the GPU compile/draw counters, GC pause, the one-shot events that
@@ -457,7 +468,10 @@ public partial class FrameProfiler : CanvasLayer
         }
         if (_logFile is not null)
         {
-            _logFile.StoreLine(line);
+            // Wall-clock stamp on the FILE lines only (console stays clean): the [external?] stall class
+            // survives exclusive fullscreen (§12.7), so the remaining diagnosis is CORRELATION — matching
+            // stall times against system events (WLAN scan period, AV activity, driver ops) needs real time.
+            _logFile.StoreLine($"{DateTime.Now:HH:mm:ss.fff} {line}");
             _logFile.Flush();
         }
     }

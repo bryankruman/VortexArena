@@ -728,8 +728,226 @@ scope inside a "51 ms" frame) — trust the scope table and events for stall mag
    Wave 1 staggered them one-per-frame — but each one is still a monolithic `BuildSkeletalModel` stall, the
    dominant early-match hitch in the forensic log. Next lever: split the Godot-side build into budgeted
    sub-steps (per-surface mesh commit across frames) or move texture upload off the delivery frame.
+   **→ FIXED (§12.4, 2026-06-12): staged build landed.** Measured split was materials ≈ 395 ms (texture
+   decode+upload — 99.8 % of the "mesh" cost), anims ≈ 130 ms, skeleton+mesh ≈ 3 ms. Landed: (a) the
+   animation library builds OFF-THREAD in the parse phase (`IqmBuilder.BuildAnimationLibrary` needs no live
+   skeleton — bone names derive from the IQM joints); (b) texture read+decode moved to the worker via the
+   `AssetSystem` predecoded-image handoff (`PredecodeMaterialTextures`, covering plain textures + companions
+   AND Q3 shader-def stage maps — the first measurement missed the shader path and paid a 434 ms main-thread
+   decode); (c) each material is its own streamer job (worker decode → main upload-only), with a count-down
+   gate firing the now-cheap (~3 ms) assembly. A/B (same 3-bot scenario, Debug): monolithic 600-750 ms
+   deliveries → 12-23 ms/job typical, 55 ms worst (one big multi-texture material); `pipe +0` on staged
+   frames. Residual: a single 2048² upload can still cost tens of ms — split per-texture jobs or pre-generate
+   mipmaps off-thread if a profile demands.
 2. **Mid-play pipeline compiles still occur** (`pipe +1..+3` on model delivery frames — the model's own new
    materials; expected first-sight cost the warm pass can't precompile for arbitrary player models). Watch the
    `uber` slice: nonzero means the ubershader fallback is compiling, which Godot hides poorly on some drivers.
 3. The input trim + sim-backlog-drop event pair is the canary for any future "feels laggy" report — if trims
    fire steadily (not just at match start), something is hitching repeatedly upstream; read the events.
+
+### 12.5 R5 LANDED — world-mesh spatial split + lightmap atlas (2026-06-12)
+
+§11 R5, both halves, implemented as a PACK-TIME REGROUP (face bucketing/appends untouched — pure repack):
+- **R5a split:** triangles bin by centroid into 1024-qu cells (`WorldCellSize`), one ArrayMesh +
+  MeshInstance3D per cell (CastShadow=Off per R4) → real frustum culling; the old single "Geometry" node drew
+  every surface every frame. Vertex sharing preserved per (source, cell); border tris land in exactly one
+  cell (no seams — geometry unchanged, only grouping).
+- **R5b atlas:** every USED lightmap page (+ its deluxe pair, identical layout) packs into one
+  gutter-padded atlas (`AtlasGutter` 2 px of replicated edge texels = the standalone page's CLAMP sampling —
+  no cross-page bleed); UV2s remap per page during the regroup; lightmapped surfaces collapse onto ONE
+  SurfaceKey per texture (`AtlasLitKey`) sharing one material bound to the atlas. Missing-page surfaces and
+  no-atlas maps keep today's per-page/degrade path; a defensively-missing deluxe cell is filled with the
+  neutral up-direction (128,128,255) so the shader's directional rescale is exactly 1 there.
+- Materials are shared instances across cells (one per merged key); the load log now reports
+  `materials/atlas/cells/surfaces` (e.g. stormkeep: 48 materials, atlas=1p, cells=31, surfaces=388).
+
+**Verified:** build green; 1523/1523 tests; visual parity (same spawn captures, pixel-equivalent) on
+stormkeep (deluxemapped external, 1 page), boil (2 pages), and dance (**9 pages** — the multi-page remap
+path; the platform's baked floor shadow renders exactly, no seams/page-swaps). Culling measured live on
+dance: 602 total surfaces, 339 drawn in an open-sky view (`pipe +0`), more culled indoors. Note stormkeep's
+standing draw count is similar to pre-R5 (it was already 1 page; its win is the cull, which shows on
+geometry-dense angles), while multi-page maps ALSO collapse their per-page material splits.
+
+### 12.6 Post-playtest hitch census + refinements (2026-06-12, user-reported residual hitches)
+
+150 s instrumented bot matches (Debug, mode-2 file sink). Baseline census: 27 hitches, worst 49.6 ms, three
+classes — all addressed:
+1. **Per-material texture jobs spiked to ~50 ms** when one material carried 6 big textures → staging is now
+   per-TEXTURE (`EnumerateMaterialTextureNames`, shared with the predecode): one upload per job, measured
+   2.5-3.3 ms typical; materials assemble from cache hits in the final stage.
+2. **`pipe +N` first-sight compiles**: the idle warmer built models and freed them WITHOUT ever rendering —
+   pipelines never compiled, so the first player wearing the model on screen paid it. Built warm models now
+   render offscreen for a few frames via `GpuWarmPass.WarmNodes` before freeing. Verification run: ZERO
+   mid-match pipeline compiles on hitch frames.
+3. **`proc:other` tail attribution**: the faithful particle backend was the largest unscoped _Process — now
+   `particles.cpu` (measured: 1-2 ms steady, exonerated). Also fixed a profiler bug: `proc:other` was
+   differenced against the PREVIOUS frame's `_procMs` (printed impossible `proc:other > proc` rows).
+
+**Remaining, honestly classified:** (a) a 12-20 ms missed-vblank tail (Debug `proc` ~5-12 ms vs a ~7 ms
+vblank budget — halves in Release; mailbox vsync is the user-side option); (b) occasional 30-70 ms frames
+correlated with 50-160 MB worker-side parse/decode allocation bursts driving gen0/gen1 pauses (bounded,
+early-match; pool decode buffers if a release-build profile still shows them); (c) rare environment stalls
+(huge `rest`, near-zero proc/alloc — compositor/driver/OS; one such cluster showed a 2.3 s blocked
+MultiMesh upload attributed to `particles.cpu` — if that EVER recurs without rest-class neighbors,
+investigate MultimeshSetBuffer, otherwise treat as external). Worker-side scopes (`iqm.anims`) appear in
+frame tables with worker-sized values — they cost the POOL, not the frame; read alongside `proc`.
+
+### 12.7 OS-stall resistance (2026-06-12)
+
+The §12.6c [external?] class (rest-dominated ~100-140 ms frames, quiet game-side numbers) is the
+compositor/driver/OS — not fixable in the repo, but RESISTIBLE:
+- **`vid_fullscreen 2` (NEW)** — exclusive fullscreen: the desktop compositor leaves the present path on
+  Windows (composited stalls were the user's worst felt hitches). 0/1 keep their stock meanings.
+- **`sys_priority_boost` (NEW, default 1)** — the process runs ABOVE_NORMAL so background work (AV scans,
+  indexer, browsers) can't preempt the main/render threads mid-frame. Deliberately not High (starves
+  audio/driver threads). Verified live: game process BasePriority 10. `0` opts out; denial is logged.
+- **`vid_vsync 2` (existing)** — mailbox: a missed present costs one late frame instead of a FIFO cascade.
+- The hitch log now appends `EXTERNAL? (rest-dominated; OS/compositor/driver)` when a hitch matches the
+  class (≥25 ms, rest ≥ 70 %, proc/gpu ≤ 30 %, no pipeline compile, no gen2) — so future logs separate
+  "the machine did it" from "the repo did it" at a glance.
+- Knock-on hardening already in place from earlier waves: the sim's catch-up soft-cap (B3), the input-queue
+  trim (§12.1), and snapshot snap-on-stale mean a stall costs ONE visual gap — it no longer compounds into
+  standing input latency or a tick spiral.
+- User-side (not repo): GPU driver "prefer maximum performance" for the game, and on dev boxes exclude the
+  repo/Godot dirs from real-time AV scanning (builds + asset churn trigger scans that land mid-play).
+
+### 12.8 Lossless GPU wins: texture mipmaps + PVS cell culling (2026-06-12)
+
+Prompted by "can we improve rendering perf without losing visual quality?" — two findings, both landed:
+
+1. **World/model textures had NO mipmaps** (no loader ever called GenerateMipmaps) while every material
+   samples with a `*_mipmap_anisotropic` filter — so distant/oblique surfaces sampled level 0: visible
+   aliasing/shimmer (WORSE than DP, which mipmaps everything) AND texture-cache thrash at minification.
+   `AssetSystem.EnsureMipmaps` now generates mips at decode (on the WORKER for streamed models — zero main
+   cost), excluding `lm_NNNN` lightmap/deluxe pages (DP samples those unmipped — kept byte-exact) and
+   already-mipped/compressed images. This is a fidelity fix AND a GPU win: verified visually (distant brick
+   noise gone, near detail unchanged). Costs some load time + ~33% texture VRAM (the mip chain).
+
+2. **PVS-driven cell visibility** (`WorldPvsCuller` + per-cell cluster sets recorded in the §12.5 regroup):
+   each frame the camera's BSP cluster is found (one tree descent, re-applied only on cluster CHANGE) and a
+   world cell shows iff ANY of its clusters is potentially visible — the map compiler's own conservative
+   occlusion, the exact data DP culls with (BspPvs was already parsed+tested, just unused for rendering).
+   Strictly lossless (per-cell union ⊇ DP's per-face vis). `r_pvs_cull 0` = escape hatch. Measured at the
+   open GameDemo vantage: ~5% draws (282 vs 298 stormkeep, 563 vs 578 dance — open maps intervis heavily);
+   the real benefit is INSIDE rooms/corridors where PVS hides everything beyond the walls. 1024-qu cell
+   granularity dilutes it (a wall-spanning cell unions both sides); halve WorldCellSize if a profile asks.
+
+Also answered: **`r_map_tint` has effectively ZERO perf impact** — the CPU side is change-gated
+(`WorldTint.PushMap` only touches `GlobalShaderParameterSet` when the value changes) and the GPU side is one
+unconditional vec3 multiply (`combined *= map_tint`) that executes identically whether the tint is white or
+not — orders of magnitude below the texture fetches in the same shader. Per-second profile lines now carry
+`draws N` for cheap culling A/Bs.
+
+---
+
+## 13. Optimization ledger, default flips, and backlog (2026-06-12, end of the rendering-perf arc)
+
+### 13.1 Ledger — everything landed in this arc (chronological; detail in the cited sections)
+
+| Item | What | Where |
+|---|---|---|
+| §11 R1 | Warm pass covers the faithful particle path (premul/invmod MultiMesh, splat shader, fx light) | GpuWarmPass / FaithfulParticleRenderer.BuildWarmupInstances |
+| §11 R4 | World mesh CastShadow=Off (lightmaps are shadow-authoritative) | MapLoader |
+| §11 R2/R3 | DecalSplats + fx-light pooling, single _Process agers (no per-spawn node/Tween churn) | DecalSplats / EffectSystem |
+| §11 R6 | Faithful MultiMesh buffers: pre-size, pow2 growth, 10 s highwater decay | FaithfulParticleRenderer |
+| §11 R7-R9, R11 | MusicPlayer entity-list cache; ModelTint + item-fade change gates; NetGame/Crosshair cvar caches; PoolBurstNodes ON | various |
+| §12.1 | Legacy input-queue trim (DP sv_clmovement_inputtimeout) — the "0.5 s fire delay" fix | InputQueuePolicy + ServerNet |
+| §12.2 | Hitch-forensics profiler: frame ring, scope+alloc tables, GC pause, pipeline-compile deltas, events, CSV dump, timestamps, EXTERNAL? tagging | FrameProfiler / Prof |
+| §12.4 | Staged skeletal-model builds: off-thread anims + texture decode, per-texture upload jobs, warm-by-render for idle-warmed models | AssetLoader / AssetSystem / IqmBuilder / NetGame / GpuWarmPass |
+| §12.5 | World split into 1024-qu cells (frustum culling) + gutter-padded lightmap/deluxe atlas | MapLoader |
+| §12.7 | OS-stall resistance: vid_fullscreen 2 (exclusive), sys_priority_boost, external-stall classifier | ClientSettings / FrameProfiler |
+| §12.8 | Texture mipmaps (fidelity + GPU win); PVS-driven world-cell culling (r_pvs_cull) | AssetSystem / WorldPvsCuller |
+| §13.2 | Default flips: cl_gpu_morph 1, cl_pose_cull 1, sv_threaded 1 (after the trace-gate fix below) | ClientSettings / ModelAnimator / NetGame |
+| §13.2 | TraceService.ConcurrencyGate — ALL trace entry points serialize vs the threaded sim worker | TraceService / NetGame |
+
+### 13.2 Default flips (this pass) + their verification
+
+- **cl_gpu_morph 1** (now registered; was fallback-only): animated MD3s morph in the vertex shader instead of
+  per-frame CPU re-upload. A/B screenshots pixel-identical on stormkeep; ineligible models auto-fall back.
+- **cl_pose_cull 1**: off-screen remote players skip bone-pose interop; distant on-screen refresh half-rate;
+  local player never culled. (On-screen behavior unchanged by design.)
+- **sv_threaded 1** (windowed listen servers; headless stays single-threaded): the FIRST 180 s soak failed
+  loudly — 327 NREs + 10 range errors — because MAIN-thread traces (faithful-particle bounces, crosshair
+  true-aim, projectile prediction; all outside NetGame._Process's gated span) raced the worker's sim ticks in
+  TraceService's shared scratch/areagrid. Fixed with **TraceService.ConcurrencyGate**: every public trace
+  entry point locks the host's SimGate when installed (Monitor is reentrant → the worker, which holds the
+  gate around its whole tick, passes through; the single-threaded path stays lock-free). Re-soak: 180 s @
+  6 bots, ZERO errors, worker signature confirmed (worker sim.move present, main server.tick absent).
+- **Release export verified end-to-end** (templates present; exported from this branch): 120 s @ 6 bots →
+  **5 hitches total, one ≥20 ms, p99 ~11 ms** (vs 85-179 hitches with a 12-20 ms tail in Debug) — confirming
+  the Debug-tax analysis and closing the §10.4/§12.6 release-verification gate.
+
+### 13.3 Backlog (called out, NOT implemented — ranked)
+
+1. **AnimationLibrary cache per (model, skin)** — every bot wearing the same model re-runs a 100-360 ms
+   worker clip-build for identical data; Animations are shareable Resources. Also shrinks worker GC bursts.
+2. **Pool parse/decode buffers** (ArrayPool in IqmReader + TGA/DDS) — the 50-160 MB per-model worker
+   allocation bursts → reused buffers (the remaining 30-70 ms GC-pause class).
+3. **Client-side PVS culling for ENTITIES** — players/items behind walls still pose+draw; reuse BspPvs per
+   entity (DP-faithful, conservative). Pairs with cl_pose_cull.
+4. **Off-thread texture UPLOAD spike** — the remaining 5-10 ms/job main-thread cost; Godot's threaded loader
+   pattern, needs its own verification pass.
+5. **Cluster-aligned (or smaller) world cells** — sharpens PVS culling; benefit indoor-map dependent.
+6. **Godot occlusion culling (OccluderInstance3D)** — would also cull models/particles; pop-in risk if
+   occluders are over-aggressive; ranked behind #3.
+7. **Strip constant/unit animation tracks + Animation.Compress()** — IQM clips key pos+rot+scale per bone per
+   frame; AnimationPlayer samples every track every frame per player (~195 tracks). Dropping unit-scale /
+   constant tracks (build-time, off-thread) cuts per-player sampling + memory. Lossless.
+8. **AnimationPlayer-vs-PushBones double-drive audit** — net players are CPU-posed every frame AND carry an
+   autoplaying AnimationPlayer; if both tick, one is pure waste (possible free per-player win).
+9. **VRAM lifecycle across map changes** — vram climbed 2451→2672 MB within one session; the texture/material
+   caches never evict. Map-scoped eviction prevents long-session VRAM pressure stalls.
+10. **World-texture predecode at map load** — reuse the §12.4 worker pipeline for MAP materials (load-time win).
+11. **Gib/casing physics burst cap** — one phys 29.8 ms spike observed (gib shower of RigidBodies).
+12. **net.send buffer pooling** (17-49 KB/frame on combat frames) — micro.
+
+**Quality-tradeoff options (NOT lossless; user-facing settings, not defaults):** VRAM texture compression
+(BC1/BC3 offline cache), MSAA step-down (currently 4x), shadow-cascade count, pickup-item CastShadow off.
+
+**Watchlist:** the one-off 2.3 s blocked MultimeshSetBuffer (only investigate if it recurs WITHOUT the
+external-stall signature); EXTERNAL? stalls (~135 ms, a few per session) are machine-level — correlate the
+now-timestamped log against system events (WLAN scan / AV / driver) before touching the repo.
+
+### 13.4 sv_threaded default REVERTED to 0 (2026-06-12, real-play desync)
+
+The brief default-ON (§13.2) was wrong — reverted same day. Real play on the threaded release build
+desynced the LOCAL player: camera through walls, projectiles firing from the server's idea of the player.
+The 180 s bot soak that gated the flip had a fatal blind spot: an IDLE client — local-player prediction
+barely executes without input, so the prediction-vs-worker interleave was never exercised. The per-trace
+ConcurrencyGate (kept — it fixed a genuine crash storm and protects all main-thread traces) makes individual
+operations atomic but cannot serialize the LOGICAL interleaving of worker ticks with the main thread's
+prediction replay — §5 S5's original "ambient world shared by prediction and sim" blocker, surfacing as
+wrong data instead of crashes.
+
+**Landed with the revert:** a prediction-desync detector in `Reconciler.Reconcile` — sustained origin error
+> 64 qu (normal corrections are 0-15 u) raises a latched, periodically re-raised `net: PREDICTION DESYNC`
+forensic event. This converts the failure class from "feel" into log lines.
+
+**Re-enabling sv_threaded requires:** a PLAYED threaded session (or scripted-input soak) with zero
+PREDICTION DESYNC events — or the real architectural fix (the §5 two-world split: prediction on a private
+facade, the loopback transport as the only contact surface). Soak protocol updated: any S5 retry must
+include live player movement, not just bots.
+
+### 13.5 S5 threaded desync — ROOT CAUSE + fix (transport stays on main) (2026-06-12)
+
+The §13.4 revert blamed "logical interleaving the gate can't serialize." Deeper investigation found the
+actual root cause: **the worker ran the Godot ENet transport, not just the sim.** `ServerNet.Tick` bundled
+three things — `_transport.Poll()` (receive), `BroadcastSnapshots()`→`_transport.Send()`, `_transport.Flush()`
+— with `_world.Frame()` (the sim). Godot's `ENetMultiplayerPeer`/`PacketPeerUDP` are created on the MAIN
+thread and are main-thread-affine; servicing them from the worker mis-delivered/garbled snapshots. The client
+then reconciled against CORRUPT authoritative state → runaway prediction (camera through walls, projectiles
+from the server's stale position). The per-trace `ConcurrencyGate` (§13.2) correctly fixed the sim-side crash
+storm but is powerless against a corrupt-snapshot problem — the transport was the real culprit, and the
+idle-client soak never sent enough real input to expose it.
+
+**Fix (the proper S5 split):** the worker runs ONLY `GameWorld.Frame` — the heavy pure-C# 4-12 ms sim S5
+exists to move off the render thread — via `ServerNet.StepSimThreaded`. ALL Godot transport stays on the MAIN
+thread via `ServerNet.PumpTransportThreaded` (receive client input → the worker's next step consumes it; send
+the snapshot of the worker's latest sim state). Both sides still serialize every shared-world access on
+`_simGate`, so it's race-free; only WHICH thread touches the Godot objects changed. `ServerNet.Tick` is kept
+intact (and byte-identical) for the single-threaded default and the loopback/test harnesses.
+
+**Verified:** 1523/1523 tests; windowed threaded bot smoke (worker confirmed running, ZERO errors, ZERO
+PREDICTION DESYNC events, 12 ms median). The decisive test is a PLAYED session — the §13.4 detector stays live
+to confirm the local-player path. If a played session is clean, sv_threaded can default ON; otherwise the
+detector data names the residual.

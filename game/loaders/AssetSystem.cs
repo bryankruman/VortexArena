@@ -487,11 +487,129 @@ public sealed class AssetSystem
         return vpath == null ? null : LoadImageFromVpath(vpath);
     }
 
+    // -------------------------------------------------------------------------------------------------
+    //  (§12.3-1) Decoded-image handoff — the off-thread half of a texture load. A model build's dominant
+    //  cost was the SYNCHRONOUS texture pipeline (VFS read + TGA/DDS decode + GPU upload, ~395 ms of a
+    //  ~750 ms player-model build, measured). The read+decode half is pure C# plus thread-tolerant Image
+    //  creation (§5: "decode into an Image off-thread is what Godot's own threaded loader does"), so a
+    //  worker pre-decodes into this handoff and the main-thread LoadTexture consumes it — leaving only
+    //  the ImageTexture.CreateFromImage upload on the main thread.
+    // -------------------------------------------------------------------------------------------------
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, Image> _predecodedImages =
+        new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// OFF-THREAD-SAFE: resolve + decode one texture into the handoff so the next main-thread
+    /// <see cref="LoadTexture"/> of the same name skips the read+decode. Idempotent; a miss is a no-op.
+    /// (Worst case — the texture was already GPU-cached — the entry sits unused until consumed or
+    /// <see cref="ClearPredecodedImages"/>.)
+    /// </summary>
+    public void PredecodeTexture(string baseNameNoExt)
+    {
+        if (string.IsNullOrEmpty(baseNameNoExt) || baseNameNoExt[0] == '$')
+            return;
+        string? vpath = _vfs.ResolveImage(baseNameNoExt);   // ConcurrentDictionary-cached (thread-safe)
+        if (vpath is null || _predecodedImages.ContainsKey(vpath))
+            return;
+        Image? img = LoadImageFromVpath(vpath);
+        if (img is not null)
+        {
+            EnsureMipmaps(vpath, img);   // on the WORKER — the main-thread upload then includes mips for free
+            _predecodedImages.TryAdd(vpath, img);
+        }
+    }
+
+    /// <summary>
+    /// (§12.8) Generate mipmaps on a decoded texture image. DP mipmaps every world/model texture (its GL
+    /// texture default), but the port uploaded level-0-only images while every material samples with a
+    /// <c>*_mipmap_anisotropic</c> filter — so distant/oblique surfaces aliased and shimmered (WORSE than DP)
+    /// and minified sampling thrashed the texture cache. Generating mips is therefore BOTH a fidelity fix and
+    /// a GPU win. Lightmap pages (<c>lm_NNNN</c>) are excluded — DP samples lightmaps unmipped; keep them
+    /// byte-exact. No-op when mips already exist (DDS files can carry them) or the format can't (compressed).
+    /// </summary>
+    private static void EnsureMipmaps(string vpath, Image image)
+    {
+        if (image.HasMipmaps() || image.IsCompressed())
+            return;
+        int slash = vpath.LastIndexOf('/');
+        string file = slash >= 0 ? vpath[(slash + 1)..] : vpath;
+        if (file.StartsWith("lm_", StringComparison.OrdinalIgnoreCase))
+            return; // lightmap/deluxe page — sampled unmipped, exactly like DP
+        if (image.GenerateMipmaps() != Error.Ok)
+            GD.Print($"[AssetSystem] mipmap generation skipped for '{vpath}' (unsupported format)");
+    }
+
+    /// <summary>
+    /// OFF-THREAD-SAFE: pre-decode every texture a material build will probe. For a plain texture material:
+    /// the base + the channel-suffix companions (<c>_norm/_gloss/_glow/_reflect</c> + the skin-shader masks
+    /// <c>_shirt/_pants</c>). For a Q3 <em>shader</em> material (the path the first staged-build measurement
+    /// missed — a 434 ms main-thread decode): every stage's <c>map</c>/<c>animMap</c> frame, each with the
+    /// same companion probes (mirroring ShaderCompiler's CompanionBase wiring). Misses are cheap (the VFS
+    /// resolve cache short-circuits them); <c>_shaders</c> is immutable after construction, so reading it
+    /// from the worker is safe.
+    /// </summary>
+    public void PredecodeMaterialTextures(string materialName)
+    {
+        foreach (string name in EnumerateMaterialTextureNames(materialName))
+            PredecodeTexture(name);
+    }
+
+    /// <summary>
+    /// OFF-THREAD-SAFE: every texture base-name a material build will probe (the base/stage maps + the
+    /// channel-suffix companions). The single source for both the worker-side predecode and the per-texture
+    /// upload staging (§12.6) — names that don't resolve are cheap no-ops downstream.
+    /// </summary>
+    public List<string> EnumerateMaterialTextureNames(string materialName)
+    {
+        var names = new List<string>(8);
+        if (string.IsNullOrEmpty(materialName))
+            return names;
+        string key = StripShaderExtension(materialName);
+
+        if (_shaders.TryGetValue(key, out ShaderDef? def))
+        {
+            foreach (ShaderStage stage in def.Stages)
+            {
+                if (!stage.IsLightmap && !stage.IsWhiteImage && !string.IsNullOrEmpty(stage.MapTexture))
+                    AddWithCompanions(names, stage.MapTexture);
+                if (stage.AnimMap is { Frames.Length: > 0 } anim)
+                    foreach (string frame in anim.Frames)
+                        AddWithCompanions(names, frame);
+            }
+            return names;
+        }
+
+        AddWithCompanions(names, key);
+        return names;
+    }
+
+    private static void AddWithCompanions(List<string> names, string textureName)
+    {
+        string baseName = AssetPaths.StripImageExtension(textureName);
+        if (names.Contains(baseName))
+            return;
+        names.Add(baseName);
+        names.Add(baseName + "_norm");
+        names.Add(baseName + "_gloss");
+        names.Add(baseName + "_glow");
+        names.Add(baseName + "_reflect");
+        names.Add(baseName + "_shirt");
+        names.Add(baseName + "_pants");
+    }
+
+    /// <summary>Drop any unconsumed predecoded images (map change — don't hold decoded pixels for a world
+    /// that's gone).</summary>
+    public void ClearPredecodedImages() => _predecodedImages.Clear();
+
     private Texture2D? LoadTextureFromVpath(string vpath)
     {
-        Image? image = LoadImageFromVpath(vpath);
+        // Consume the off-thread predecode when one is parked for this vpath (removed so memory is freed).
+        if (!_predecodedImages.TryRemove(vpath, out Image? image))
+            image = LoadImageFromVpath(vpath);
         if (image == null)
             return null;
+        EnsureMipmaps(vpath, image);   // no-op when the worker predecode already generated them
 
         try
         {

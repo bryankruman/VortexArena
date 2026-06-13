@@ -90,16 +90,17 @@ internal sealed class ServerThread : IDisposable
                 float realDelta = (float)((now - lastTicks) / tickFreq);
                 lastTicks = now;
 
-                // ServerNet.Tick takes the SimGate internally (installed by the host when threaded), so this is
-                // the serialisation point against the main thread's prediction span. A throw must NOT kill the
-                // thread silently — log and keep going so one bad tick doesn't freeze the server.
+                // (§13.5) The worker runs ONLY the pure-C# sim (StepSimThreaded takes the SimGate internally) —
+                // NOT the Godot ENet transport, which is main-thread-affine and is pumped by the main thread via
+                // ServerNet.PumpTransportThreaded. This is the serialisation point against the main thread's
+                // prediction span. A throw must NOT kill the thread silently — log and keep going.
                 try
                 {
-                    _net.Tick(realDelta);
+                    _net.StepSimThreaded(realDelta);
                 }
                 catch (Exception ex)
                 {
-                    GD.PrintErr($"[ServerThread] tick threw: {ex}");
+                    GD.PrintErr($"[ServerThread] sim step threw: {ex}");
                 }
 
                 // Pace to roughly the sim period. We don't need sub-ms precision — Advance() absorbs jitter via its

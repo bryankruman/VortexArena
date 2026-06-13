@@ -353,7 +353,9 @@ public partial class ModelAnimator : Node3D
         // generated animated stage) can't carry a vertex() morph and must stay on the CPU upload — and mixing a
         // persistent GPU surface with the CPU ClearSurfaces path on one mesh is incompatible, so any such
         // surface drops the WHOLE model back to CPU. (Live-toggling the cvar needs a rebuild; see Advance.)
-        _gpuMorph = CvarF("cl_gpu_morph", 0f) != 0f && AllSurfacesGpuEligible();
+        // Default ON since the §13 flip (registered "1" in ClientSettings; the fallback here matches for
+        // store-less contexts). `cl_gpu_morph 0` restores the CPU upload path.
+        _gpuMorph = CvarF("cl_gpu_morph", 1f) != 0f && AllSurfacesGpuEligible();
 
         foreach ((Md3Surface surface, Material? material, bool visible) in _surfaces)
         {
