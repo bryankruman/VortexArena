@@ -10,7 +10,7 @@
 #   linux-client      dist/linux-client/XonoticGodot.x86_64           → XonoticGodot-<ver>-linux-x86_64.zip
 #   linux-dedicated   dist/linux-dedicated/xonoticgodot-dedicated.*   → XonoticGodot-<ver>-linux-dedicated-x86_64.zip
 #   macos-client      dist/macos-client/XonoticGodot.app              → XonoticGodot-<ver>-macos-universal.zip
-#       (macOS keeps its data INSIDE the bundle at Contents/Resources/assets/data — GameDemo.ResolveDataPath
+#       (macOS keeps its data INSIDE the bundle at Contents/Resources/assets/data — DataPaths.Resolve
 #        probes ../Resources relative to the executable, so a double-clicked .app finds it.)
 #
 # Usage:

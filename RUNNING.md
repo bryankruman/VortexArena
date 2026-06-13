@@ -14,7 +14,7 @@ Operational reference for building, running, and smoke-testing the port. A scrat
 | Godot bundled C# packages | `C:\Program Files\Godot\GodotSharp\Tools\nupkgs` | Holds `Godot.NET.Sdk 4.6.3` etc. `XonoticGodot/nuget.config` adds this folder as a package source (exact editor parity + offline builds). The 4.6.3 packages **are** also on public NuGet (verified 2026-06) — CI removes this source and restores from nuget.org (see `.github/workflows/ci.yml`). |
 | .NET SDK | `dotnet --version` → 9.0.308 (builds the `net8.0` targets) | net8.0 ref pack auto-restores. |
 | Project root | `C:\Users\Bryan\Projects\Xonotic\XonoticGodot` | `project.godot` + `XonoticGodot.csproj` (the Godot host) live here. |
-| Xonotic asset data | `assets/data/` (in-tree, gitignored) | Downloaded by `download-assets.sh` from the upstream Xonotic GitLab repos + official release. The VFS mounts this at runtime (see `GameDemo.DataPath`, default `res://assets/data`). **`Base/` is only the historical port source — the game no longer reads it.** |
+| Xonotic asset data | `assets/data/` (in-tree, gitignored) | Downloaded by `download-assets.sh` from the upstream Xonotic GitLab repos + official release. The VFS mounts this at runtime (see `Shell.DataPath` / the `--data` flag, default `res://assets/data`). **`Base/` is only the historical port source — the game no longer reads it.** |
 
 **Tip — set an env var once per shell** so commands/tests are short:
 ```bash
@@ -93,7 +93,7 @@ clean up strays with `powershell "Get-Process Godot* | Stop-Process -Force"`).
 For a packaged install, `tools/run-dedicated.sh` (shipped beside the exported `linux-dedicated`
 binary by `tools/package.sh`) `cd`s to its own directory first, matching upstream's
 `xonotic-linux-dedicated.sh`. The exported build resolves `assets/data` relative to the **executable**
-(`GameDemo.ResolveDataPath` — exe-dir, plus the macOS `../Resources` bundle path), so the data just has
+(`DataPaths.Resolve` — exe-dir, plus the macOS `../Resources` bundle path), so the data just has
 to sit beside the binary; the launcher is a convenience, not a requirement (`--data <path>` overrides).
 
 ---
@@ -117,20 +117,19 @@ cd C:/Users/Bryan/Projects/Xonotic/XonoticGodot && \
 dotnet build XonoticGodot.csproj -c Debug --nologo -v q | grep -E "Build succeeded|error" && \
 timeout 180 "$GODOT" --headless --path "$PWD" --quit-after 200 > /tmp/run.log 2>&1 ; \
 echo "hard errors: $(grep -cE '^ERROR:|SCRIPT ERROR|Unhandled exception' /tmp/run.log) | warnings: $(grep -c 'WARNING:' /tmp/run.log)" ; \
-grep -iE "XonoticGodot boot|GameDemo\]|loaded .* shaders|collision brushes|spawned" /tmp/run.log
+grep -iE "XonoticGodot boot|MenuState\]|NetGame\]|loaded .* shaders|collision brushes|spawned" /tmp/run.log
 ```
 
-**Expected clean output** (hard errors: 0, warnings: 0):
+**Expected clean output** (hard errors: 0, warnings: 0). With no boot flag the host comes up at the **main menu**
+(the lightest smoke), so you get the registry banner + the config load — no match is started:
 ```
 === XonoticGodot boot ===
-[AssetSystem] loaded 2439 shaders from 185 scripts.
-[GameDemo] mounted '.../assets/data' (9 search paths, 2439 shaders).
-[GameDemo] config: 4593 cvars from 16 cfg files (105 aliases, 0 missing).
-[GameDemo] spawned sample model 'models/player/erebus.iqm'.
-[GameDemo] map 'maps/stormkeep.bsp' loaded: 5234 collision brushes.
+Weapons:   24
+[MenuState] config: 6462 cvars from 25 cfg files (374 aliases, 0 missing).
 ```
-(`Main.cs` now defaults the demo to the real `maps/stormkeep.bsp`; set it back to `maps/_init/_init.bsp`
-for the lightest possible smoke test.)
+Add `--map stormkeep` (or `--host stormkeep --bots 2`) to boot a 0-bot listen server on a real map instead —
+that adds `[NetGame] listen server on 127.0.0.1:26000 …`, `[AssetSystem] loaded … shaders`, the map's
+`collision brushes`, and `handshake accepted` to the log (the heavier smoke; needs `assets/data`).
 Error patterns to grep for: `^ERROR:`, `SCRIPT ERROR`, `Unhandled exception`, `WARNING:`, `at XonoticGodot.` (managed
 stack frames). Godot prints managed exceptions with a `WARNING:`/`ERROR:` banner + a C# stack trace.
 
@@ -142,7 +141,7 @@ Headless doesn't render. To walk around the scene:
 
 1. Launch `Godot_v4.6.3-stable_mono_win64.exe` → **Import** → pick `XonoticGodot/project.godot`.
 2. Top-right **Build** (🔨) to compile the C# solution, then **Play** (F5) → runs `Main.tscn`.
-3. Controls: **WASD** move, **mouse** look, **Space** jump, attack key fires the blaster. (See `game/PlayerController.cs`.)
+3. Controls: **WASD** move, **mouse** look, **Space** jump, attack key fires. (Input is sampled in `game/net/NetGame.cs`.)
 4. Or from CLI, windowed: `"$GODOT" --path "C:/Users/Bryan/Projects/Xonotic/XonoticGodot"` (omit `--headless`).
 5. For an **automated frame an agent/CI can inspect**, add `--screenshot <path>` (writes a PNG then quits) —
    see Tricks → *Visual capture* below.
@@ -171,6 +170,12 @@ ToS/welcome/team-select, tools, confirms). Architecture:
 - *(default)* → main menu.
 - `--map <vpath>` → boot straight into a match on that map (the smoke test; bypasses the menu).
   `--gametype <short>` selects the boot gametype (dm/ctf/…).
+- `--model <name>` → boot the no-net player-model viewer on `models/player/<name>.iqm` (a turntable contact
+  sheet — the model at several angles, bind pose), for visual-QA capture. e.g.:
+  ```bash
+  "$GODOT" --path . --model erebus --resolution 1280x720 --screenshot "$PWD/screenshots/model_erebus.png"
+  ```
+  `tools/visual-qa.sh --models` drives the full per-model sweep. (Headless renders blank — run windowed.)
 - `--menu-screen <id>` → open one dialog for a screenshot. ids: `settings` (or `settings:Audio` to pick a tab),
   `media` (or `media:Demos`), `multiplayer`, `singleplayer`, `create`, `credits`, `pause`, `profile`,
   `mutators`, `serverinfo`, `teamselect`, `firstrun`, `tos`, `welcome`, `hudpanels`, `hudweapons`, `cvarlist`,
@@ -184,12 +189,14 @@ ToS/welcome/team-select, tools, confirms). Architecture:
 
 ## Configuration knobs
 
-- **`Main.cs`** constructs `GameDemo` with `MapPath` + `SampleModelPath` (currently `maps/stormkeep.bsp` +
-  `models/player/erebus.iqm`). Change these to load a different map/model — any of the 31 official maps in
-  `xonotic-20230620-maps.pk3` (e.g. `maps/solarium.bsp`, `maps/afterslime.bsp`) now resolves.
-- **`GameDemo` `[Export]`s**: `DataPath` (the content mount; default `res://assets/data`, resolved
-  project-relative — a `res://`/`user://` or absolute OS path also works), `MapPath` (VFS vpath; empty → flat
-  test floor), `SampleModelPath`. Exposed in the inspector once `GameDemo` is a scene node (today it's created in code).
+- **`Main.cs`** parses the boot flags (above) and constructs the `Shell`, which owns the menu↔match lifecycle.
+  `--map <name>` boots a match on any of the 31 official maps in `xonotic-20230620-maps.pk3` (e.g. `solarium`,
+  `afterslime`); `--model <name>` boots the model viewer on `models/player/<name>.iqm`.
+- **`--data <dir>`** overrides the content mount (default `res://assets/data`, resolved project-relative — a
+  `res://`/`user://` or absolute OS path also works). Mainly an escape hatch for a packaged build whose data dir
+  isn't beside the binary, or to point a dev build at an external gamedir.
+- **`ModelViewer.ModelName`** (`game/ModelViewer.cs`) is the model-viewer's settable seam — the bare hero name
+  (`erebus`) or an explicit `models/...iqm` vpath, fed from the `--model` flag.
 - **`nuget.config`** adds the editor's bundled package source — needed for `dotnet` to restore `Godot.NET.Sdk
   4.6.3`. If you upgrade Godot, bump the SDK version in `XonoticGodot.csproj` **and** the path/version here.
 
@@ -224,12 +231,13 @@ ToS/welcome/team-select, tools, confirms). Architecture:
   "did my change break runtime startup / asset loading" check without a GPU.
 - **Frame budget:** `--quit-after <frames>` (frames, not seconds). ~200 frames is plenty to hit `_Ready` + a few
   `_Process` ticks. Bump it to exercise more of the per-frame sim.
-- **Pick what to load:** point `Main.cs`/`GameDemo` at any VFS vpath — e.g. a `*.iqm`/`*.dpm`/`*.md3` to stress a
-  model builder, or a map to stress BSP. Watch the log for `[GameDemo]`/`[AssetSystem]` prints + warnings.
-- **Config load signal:** the boot log line `[GameDemo] config: <N> cvars from <M> cfg files (… aliases, <K> missing)`
-  reports the `ConfigInterpreter` run (`ConfigLoader.LoadServerConfig` execs `xonotic-server.cfg`'s whole chain into
-  the live cvar store). Healthy = `~4593 cvars, 16 files, 0 missing`. A non-zero `missing` count or a much smaller
-  cvar total means the VFS didn't mount the data dir (check `DataPath`). The gameplay layer's ~461 live `GetFloat`
+- **Pick what to load:** `--map <name>` boots a 0-bot listen server on that map (stress BSP/collision/render);
+  `--model <name>` boots the model viewer on a player IQM (stress the model builder). Watch the log for
+  `[NetGame]`/`[ModelViewer]`/`[AssetSystem]` prints + warnings.
+- **Config load signal:** the boot log line `[MenuState] config: <N> cvars from <M> cfg files (… aliases, <K> missing)`
+  reports the `ConfigInterpreter` run (`ConfigLoader` execs the client+server cfg chain into the shared cvar store at
+  menu boot). Healthy = `~6462 cvars, 25 files, 0 missing`. A non-zero `missing` count or a much smaller cvar total
+  means the VFS didn't mount the data dir (check the `--data` path). The gameplay layer's ~461 live `GetFloat`
   reads (movement physics, regen, gametype limits, mutator/monster balance) depend on this — a low number = stale
   defaults. Unit-test the parser headlessly via `dotnet test` (`ConfigTests.cs`, incl. 4 real-data assertions).
 - **Managed exceptions** surface as a `WARNING:`/`ERROR:` banner followed by a `at XonoticGodot.…` C# stack trace in
@@ -245,8 +253,8 @@ ToS/welcome/team-select, tools, confirms). Architecture:
            --resolution 1280x720 --screenshot "$PWD/screenshots/stormkeep.png"
   # success → stdout has: [Screenshot] wrote 1280x720 -> .../screenshots/stormkeep.png
   ```
-  The window opens for ~1.5 s and self-quits. Point `Main.cs`/`GameDemo` at a different map/model to capture
-  other scenes; bump `--screenshot-frames` if assets/shadows need longer to settle. Write captures into
+  The window opens for ~1.5 s and self-quits. Use `--map <name>` or `--model <name>` to capture a different
+  scene; bump `--screenshot-frames` if assets/shadows need longer to settle. Write captures into
   `screenshots/` (or `_scratch/` for general throwaway test files) — **not** the project root: both dirs carry a
   `.gdignore` so the Godot editor skips them and never spams the tree with `*.import` sidecars, and both are
   git-ignored. A root-level capture (`_*.png`) is git-ignored too but Godot will still generate a stray

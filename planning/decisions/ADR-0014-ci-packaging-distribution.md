@@ -59,7 +59,7 @@ Two presets mirror the upstream two-binary topology:
 
 **The assets-beside-binary CWD contract:** game data is *not* packed into the pck (the presets
 exclude `assets/*`; the in-repo tree is `.gdignore`d anyway). In an exported build
-`ProjectSettings.GlobalizePath("res://")` returns `""`, so `GameDemo.ResolveDataPath` resolves the
+`ProjectSettings.GlobalizePath("res://")` returns `""`, so `DataPaths.Resolve` resolves the
 default `res://assets/data` to the **CWD-relative** `assets/data`. Packaging therefore lays
 `assets/data/` beside each binary, and `run-dedicated.sh` `cd`s to its own directory before
 exec'ing — exactly the upstream launcher shape. (`tools/package.sh` assembles dist dirs + zips;
@@ -138,7 +138,7 @@ The on-demand `export` job (CI artifacts only, binary-only) is superseded by a d
   `chickensoft-games/setup-godot@v2`; release upload via `softprops/action-gh-release@v2`
   (`permissions: contents: write`). `ci.yml` keeps only the lean per-push gate (test + build-host).
 - **The assets-beside-binary contract is now executable-relative, not CWD-relative.**
-  `GameDemo.ResolveDataPath`, in an exported build (`GlobalizePath("res://") == ""`), resolves `assets/data`
+  `DataPaths.Resolve`, in an exported build (`GlobalizePath("res://") == ""`), resolves `assets/data`
   against `OS.GetExecutablePath()`'s directory, probing `<exe-dir>/assets/data` then the macOS
   `<exe-dir>/../Resources/assets/data`. This closes the "launched from the wrong CWD → silent blank world"
   sharp edge for ALL platforms (the deferred fix from §2) and is what makes a double-clicked macOS `.app`

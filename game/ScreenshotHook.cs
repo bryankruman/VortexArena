@@ -28,9 +28,23 @@ public partial class ScreenshotHook : Node
             return;
         }
 
-        // Let the scene settle (asset streaming, shadow/SSAO convergence, the player dropping to the floor).
+        // Wait until the active scene reports it's ready to capture (a NetGame listen server's connect→spawn
+        // handshake — the --map path — flips CaptureGate; the ModelViewer flips it as soon as it's built), then
+        // settle a few more frames for asset streaming + shadow/SSAO convergence. Capped at WarmupFrames so a
+        // scene that never signals (e.g. a --menu-screen dialog) still captures at the old fixed budget, and a
+        // headless run never blocks forever.
+        const int settleAfterReady = 45;
+        int readyAt = -1;
         for (int i = 0; i < WarmupFrames; i++)
+        {
             await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+            if (!CaptureGate.Ready)
+                continue;
+            if (readyAt < 0)
+                readyAt = i;
+            if (i - readyAt >= settleAfterReady)
+                break;
+        }
 
         // Capture only AFTER the GPU has drawn the frame, or the viewport image is stale/blank.
         await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);

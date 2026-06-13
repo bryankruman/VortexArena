@@ -78,6 +78,8 @@ public partial class Main : Node
         {
             // The application shell: boots into the main menu front-end and owns the menu↔match lifecycle.
             // `--map <vpath>` boots straight into a no-net local match on that map, bypassing the menu (CI/dev/smoke).
+            // `--model <name>` boots the no-net player-model viewer (turntable of models/player/<name>.iqm) for
+            //   windowed visual-QA capture; pair with `--screenshot` (tools/visual-qa.sh drives the model sweep).
             // `--connect <addr>` joins a REAL networked server (host[:port], default 26000) — the full predicted
             //   client + render + camera + HUD (NetGame, client mode).
             // `--host [map]` boots a listen server (ServerNet on a GameWorld) and self-connects a networked client;
@@ -95,6 +97,11 @@ public partial class Main : Node
             int m = Array.IndexOf(args, "--map");
             if (m >= 0 && m + 1 < args.Length)
                 shell.BootMap = args[m + 1];
+            // `--model <name>` boots the no-net player-model viewer (visual-QA capture of one hero model from
+            // several angles), parallel to `--map`. A bare name resolves to models/player/<name>.iqm.
+            int mdl = Array.IndexOf(args, "--model");
+            if (mdl >= 0 && mdl + 1 < args.Length)
+                shell.BootModel = args[mdl + 1];
             int gt = Array.IndexOf(args, "--gametype");
             if (gt >= 0 && gt + 1 < args.Length)
                 shell.BootGametype = args[gt + 1];

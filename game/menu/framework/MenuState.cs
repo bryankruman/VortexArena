@@ -74,7 +74,7 @@ public static class MenuState
         try
         {
             var vfs = new VirtualFileSystem();
-            if (vfs.MountGameDir(GameDemo.ResolveDataPath(dataPath)))
+            if (vfs.MountGameDir(DataPaths.Resolve(dataPath)))
                 _vfs = vfs;
             else
                 XonoticGodot.Common.Diagnostics.Log.Warn($"[MenuState] data dir '{dataPath}' not found — menu runs on registered cvar defaults only.");

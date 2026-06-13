@@ -50,9 +50,9 @@ namespace XonoticGodot.Game.Net;
 /// client and server share the one ambient <see cref="Api.Services"/> collision world, so prediction is exact.</para>
 ///
 /// <para>This is the bring-up the <c>OnConnect</c>/<c>StartMap</c> stubs deferred: the menu's server browser
-/// (or <c>--connect &lt;addr&gt;</c>) builds a client NetGame; a host (Create Game / <c>--host [map]</c>)
-/// builds a listen-server NetGame. The <c>--net-loopback</c>, <c>--map</c> (local <see cref="GameDemo"/>) and
-/// menu flows are unchanged.</para>
+/// (or <c>--connect &lt;addr&gt;</c>) builds a client NetGame; a host (Create Game / <c>--host [map]</c>, and
+/// <c>--map</c> for a quick 0-bot local match) builds a listen-server NetGame. The no-net GameDemo demo is gone —
+/// this is the single play path now; the <c>--net-loopback</c> and menu flows are unchanged.</para>
 /// </summary>
 public sealed partial class NetGame : Node3D
 {
@@ -80,6 +80,7 @@ public sealed partial class NetGame : Node3D
     private ServerNet? _server;                 // listen server only
     private ClientNet? _client;
     private ClientWorld _render = null!;
+    private DevHarness? _devHarness;            // dev capture (--fx-demo), inert unless a dev flag was passed
     // The background parse/build queue (S1): the idle player-model warm AND the live on-demand player-model
     // path (perf §9.4 Wave 1 — first sight of N bots streams one model build per frame instead of all at once).
     private XonoticGodot.Game.Client.BackgroundAssetStreamer? _streamer;
@@ -111,6 +112,7 @@ public sealed partial class NetGame : Node3D
     private int _equippedWeaponId = int.MinValue; // weapon id currently in the viewmodel; rebuild only on a change
     private bool _weaponsPrecached;             // PrecacheWeaponModels ran once (warm the per-weapon asset caches)
     private bool _readyComplete;                // _Ready finished — _Process can run its full body (before this, fields are half-built)
+    private bool _captureMarked;                // one-shot guard: CaptureGate.MarkReady() fired at first spawn (--screenshot)
     private HandshakeStage _handshakeStage;     // last sub-stage announced to the LoadingScreen (so we only BeginStage on a transition)
 
     /// <summary>Sub-stages of the post-_Ready handshake/spawn phase, used by <see cref="_Process"/> to drive
@@ -377,6 +379,21 @@ public sealed partial class NetGame : Node3D
         // hasn't completed yet still has somewhere to draw once snapshots flow.
         SetupRender();
         SetupCameraAndHud();
+
+        // Dev capture: `--fx-demo [effect]` rides on the live ClientWorld to burst a named effect in front of the
+        // player each frame for an effect-parity --screenshot (the survivor of GameDemo's inline dev flags; see
+        // DevHarness). Inert unless the flag is present, so it's cheap to wire on every boot.
+        {
+            string[] cmd = OS.GetCmdlineArgs();
+            int fi = System.Array.IndexOf(cmd, "--fx-demo");
+            if (fi >= 0)
+            {
+                string fx = (fi + 1 < cmd.Length && !cmd[fi + 1].StartsWith("--")) ? cmd[fi + 1] : "rocket_explode";
+                _devHarness = new DevHarness { Name = "DevHarness", Render = _render, FxDemoEffect = fx };
+                AddChild(_devHarness);
+                GD.Print($"[NetGame] --fx-demo: bursting '{fx}' in front of the player for capture.");
+            }
+        }
 
         LoadingScreen?.BeginStage("Starting music…", 0.62f, 0.3f);
         await YieldForLoadingFrame();
@@ -1137,10 +1154,10 @@ public sealed partial class NetGame : Node3D
         // Weapon.WorldModel is the bare "v_laser.md3", so prefix the directory; a missing model → placeholder bar.
         // Base-faithful selection (CL_WeaponEntity_SetModel): full-model DPM rigs (rl/gl/crylink/electro/hagar/
         // ok_*) render the h_ HAND RIG itself; invisible-hand IQM rigs render the v_ model attached to the rig's
-        // "weapon" bone. BuildViewModelEquip is the single source of truth shared with the GameDemo equip path.
+        // "weapon" bone. ViewModelEquip.Build is the single source of truth for first-person weapon construction.
         XonoticGodot.Common.Gameplay.Weapon w = XonoticGodot.Common.Gameplay.Weapons.ById(id);
         string vModel = WeaponVModelPath(w);
-        GameDemo.ViewModelEquip eq = GameDemo.BuildViewModelEquip(_assets, vModel);
+        ViewModelEquip eq = ViewModelEquip.Build(_assets, vModel);
         _viewModel.SetWeaponModel(eq.Model, MuzzleEffectFor(w), "tag_shot", eq.Attach);
         _viewModel.Visible = true;
         // Raise the new gun into view instead of popping the model in (Xonotic viewmodel_draw raise; pairs with
@@ -1232,7 +1249,7 @@ public sealed partial class NetGame : Node3D
                 _assets.LoadModel(vModel)?.QueueFree();
                 // The hand rig is loaded by WeaponAttachTransform on each switch; warm it too (it builds +
                 // frees its own throwaway node internally and caches the attach transform's model).
-                GameDemo.WeaponAttachTransform(_assets, vModel);
+                ViewModelEquip.WeaponAttachTransform(_assets, vModel);
                 warmed++;
             }
             else
@@ -1741,6 +1758,15 @@ public sealed partial class NetGame : Node3D
             }
         }
 
+        // Capture readiness: a windowed --screenshot waits on this so it lands on the spawned world, not the
+        // loading screen or a from-origin pre-spawn frame (CaptureGate). One-shot at first spawn, independent of
+        // the loading-screen block below (which a bare CLI host may not have).
+        if (!_captureMarked && _cameraReady && _client.Health > 0)
+        {
+            _captureMarked = true;
+            CaptureGate.MarkReady();
+        }
+
         // Loading screen progress during the async handshake + spawn phase (DP's progress bar filling up
         // while connecting/joining). The loading screen is owned by Shell; we BeginStage on each transition
         // (NOT every frame — that would reset the asymptote and stall the bar) and dismiss it via
@@ -1814,6 +1840,14 @@ public sealed partial class NetGame : Node3D
         // (which reads SampleEyeContents = _view.EyeContents).
         if (_cameraReady)
             UpdateCamera(dt);
+
+        // Dev capture (--fx-demo): burst the configured effect from the predicted eye along the aim. Inert (a
+        // single null check) unless --fx-demo was passed; only runs once the eye is seeded (_cameraReady).
+        if (_devHarness is { Active: true } && _cameraReady)
+        {
+            NVec3 eye = _client.PredictedOrigin + new NVec3(0f, 0f, EyeHeight);
+            _devHarness.Drive(dt, eye, QMath.Forward(_viewAngles));
+        }
 
         // Zoom scope reticle (QC DrawReticle): the generic +zoom reticle, or the active weapon's scope (the
         // Vortex's gfx/reticle_nex) while zooming with it. Fed after UpdateCamera so ZoomFraction is this frame's

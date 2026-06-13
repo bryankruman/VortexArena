@@ -31,7 +31,7 @@ Unzip and play; nothing else to fetch.
 | `XonoticGodot-<ver>-macos-universal.zip` | `XonoticGodot.app` (data inside `Contents/Resources/`) | double-click — see macOS note below |
 | `SHA256SUMS-<ver>.txt` | checksums for the above | — |
 
-The game finds its data **relative to the executable** (`GameDemo.ResolveDataPath`), so the zips work no
+The game finds its data **relative to the executable** (`DataPaths.Resolve`), so the zips work no
 matter the working directory — a double-clicked binary, a file-manager launch, or a macOS `.app` (CWD `/`)
 all resolve `assets/data` correctly. Keep the files together when you unzip.
 

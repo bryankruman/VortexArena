@@ -32,7 +32,7 @@ fi
 [ "$rc" -ne 0 ] && echo "[run-release] note: godot exited $rc but produced the binary (benign export warnings) — continuing."
 
 # Launch from the project root so the exported build's asset resolver finds the in-tree assets/data
-# (GameDemo.ResolveDataPath falls back to a CWD-relative 'assets/data' in an exported build; a packaged
+# (DataPaths.Resolve falls back to a CWD-relative 'assets/data' in an exported build; a packaged
 # zip instead carries assets beside the binary). Without this a release run boots into an empty world.
 echo "[run-release] launching: $OUT $*"
 cd "$PROJ"

@@ -2,7 +2,7 @@
 # Launcher for the packaged Linux desktop client — the analogue of Base/xonotic-linux-sdl.sh.
 # Shipped INSIDE dist/linux-client/ next to the binary + assets/data/ (tools/package.sh puts it there).
 #
-# The exported game now resolves `assets/data` relative to the EXECUTABLE (GameDemo.ResolveDataPath),
+# The exported game now resolves `assets/data` relative to the EXECUTABLE (DataPaths.Resolve),
 # so the client already finds its data no matter the CWD. This script is still the friendly entry point:
 # it cd's to its own directory first (matching the upstream launcher shape) and forwards any extra args
 # (e.g. `--map atelier`, `--connect host:port`, `--host stormkeep --bots 4`).

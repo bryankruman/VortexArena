@@ -83,7 +83,7 @@ public sealed class EffectInfo
             catch { /* fall through to disk */ }
         }
 
-        // 2) direct disk read from the resolved content directory. We mirror GameDemo.ResolveDataPath's
+        // 2) direct disk read from the resolved content directory. We mirror DataPaths.Resolve's
         //    convention (res:// rooted at the project dir) so the in-tree assets/ dir is found.
         foreach (string abs in CandidateDiskPaths(vpath))
         {

@@ -54,7 +54,7 @@ if $do_smoke; then
         timeout 180 "$GODOT" --headless --path "$ROOT" --quit-after 200 > "$log" 2>&1 || true
         hard_errors=$(grep -cE '^ERROR:|SCRIPT ERROR|Unhandled exception' "$log" || true)
         echo "hard errors: $hard_errors | warnings: $(grep -c 'WARNING:' "$log" || true)"
-        grep -iE "XonoticGodot boot|GameDemo\]|loaded .* shaders|collision brushes|spawned" "$log" || true
+        grep -iE "XonoticGodot boot|MenuState\]|NetGame\]|loaded .* shaders|collision brushes|spawned" "$log" || true
         [ "${hard_errors:-1}" -eq 0 ] || { echo "--- $log ---"; tail -40 "$log"; fail "headless smoke had $hard_errors hard error(s)"; }
         rm -f "$log"
 

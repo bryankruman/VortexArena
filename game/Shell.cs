@@ -13,9 +13,10 @@ namespace XonoticGodot.Game;
 /// <summary>
 /// The application shell — the C# successor to the engine's menu/client lifecycle (DP <c>menu_restart</c> +
 /// the <c>CL_</c> connect/disconnect flow). It owns the single front-end <see cref="MenuRoot"/> and the live
-/// match (<see cref="GameDemo"/>), and switches between them: boot into the main menu, start a local match
-/// from the Create/Singleplayer screens, drop the in-game menu on Escape (Xonotic's behavior), and tear the
-/// match down on Disconnect. It also performs the one-time client bootstrap (<see cref="MenuState.Boot"/>),
+/// match (<see cref="XonoticGodot.Game.Net.NetGame"/> — a listen server or a remote client), and switches
+/// between them: boot into the main menu, start a match from the Create/Singleplayer screens, drop the in-game
+/// menu on Escape (Xonotic's behavior), and tear the match down on Disconnect. It also performs the one-time
+/// client bootstrap (<see cref="MenuState.Boot"/>),
 /// applies the saved settings to the engine, and wires the <see cref="MenuCommand"/> host hooks + the menu's
 /// StartGame/Connect callbacks to real actions.
 ///
@@ -31,6 +32,10 @@ public partial class Shell : Node
 
     /// <summary>If set at boot, skip the menu and start straight into this map (CI/dev; the smoke test uses it).</summary>
     public string? BootMap { get; set; }
+
+    /// <summary>If set at boot (CLI <c>--model &lt;name&gt;</c>), skip the menu and open the no-net player-model
+    /// viewer on that hero model (windowed visual-QA capture; <c>tools/visual-qa.sh</c> drives the sweep).</summary>
+    public string? BootModel { get; set; }
 
     /// <summary>The gametype short code to boot <see cref="BootMap"/> with (drives the per-gametype map-entity
     /// filter — which conditional walls appear). Defaults to Deathmatch.</summary>
@@ -51,7 +56,7 @@ public partial class Shell : Node
 
     private CanvasLayer _menuLayer = null!;
     private MenuRoot _menu = null!;
-    private GameDemo? _game;
+    private ModelViewer? _viewer;
     private XonoticGodot.Game.Net.NetGame? _netGame;
     private ConsoleOverlay _console = null!;
     private bool _paused;
@@ -135,7 +140,12 @@ public partial class Shell : Node
         else if (BootHost)
             StartListenServer(new MatchConfig { Map = BootMap ?? "", Gametype = BootGametype, BotCount = BootBots }); // --host [map]
         else if (!string.IsNullOrWhiteSpace(BootMap))
-            StartLocalGame(new MatchConfig { Map = BootMap!, Gametype = BootGametype }); // --map: no-net local demo
+            // --map: a quick local match on the chosen map — a 0-bot listen server (the SAME bring-up Create
+            // Game / --host use, just unattended + bot-free). The old no-net GameDemo path is gone; one entry
+            // path now, so a test/capture run exercises exactly what real play does.
+            StartListenServer(new MatchConfig { Map = BootMap!, Gametype = BootGametype, BotCount = 0 });
+        else if (!string.IsNullOrWhiteSpace(BootModel))
+            StartModelViewer(BootModel!);                   // --model: no-net player-model viewer (visual QA)
         else if (!string.IsNullOrWhiteSpace(DebugScreen))
             OpenDebugScreen(DebugScreen!);
     }
@@ -272,8 +282,8 @@ public partial class Shell : Node
     /// <summary>
     /// The single owner of the Escape→pause-menu toggle. Handled in <see cref="_UnhandledKeyInput"/> (Godot
     /// dispatches this BEFORE <c>_unhandled_input</c>) and the event is CONSUMED, so the gameplay bind path in
-    /// <see cref="XonoticGodot.Game.Net.NetGame"/>/<see cref="PlayerController"/> — which runs in
-    /// <c>_unhandled_input</c> and would otherwise also fire the <c>togglemenu</c> bind — never sees this Escape.
+    /// <see cref="XonoticGodot.Game.Net.NetGame"/> — which runs in <c>_unhandled_input</c> and would otherwise
+    /// also fire the <c>togglemenu</c> bind — never sees this Escape.
     /// Earlier-stage handlers still win: the console (<c>_Input</c>) eats Escape while open, and the key-rebind
     /// capture button (<c>_GuiInput</c>) eats it while capturing.
     ///
@@ -344,37 +354,30 @@ public partial class Shell : Node
     }
 
     /// <summary>
-    /// Tear down any running match and start a fresh one on the chosen map, reusing the shared VFS + cvar store
-    /// so it inherits the menu's settings. Hides the menu, captures the mouse, unpauses. Bots/gametype from the
-    /// config aren't spawned yet (that's the server layer); the map + shared config are what make it playable.
+    /// Open the no-net <see cref="ModelViewer"/> on a hero player model (CLI <c>--model &lt;name&gt;</c>): a thin
+    /// scene that loads the model through the real skeletal path and lays out a turntable contact sheet for a
+    /// windowed visual-QA screenshot. Reuses the menu's shared VFS (no second mount). Pair with
+    /// <c>--screenshot</c> to capture and quit; <c>tools/visual-qa.sh</c> drives the per-model sweep.
     /// </summary>
-    public void StartLocalGame(MatchConfig config)
+    public void StartModelViewer(string modelName)
     {
         TeardownGame();
-        ShowLoadingScreen(config.Map ?? "");
 
-        _game = new GameDemo
+        _viewer = new ModelViewer
         {
-            Name = "Match",
-            ProcessMode = ProcessModeEnum.Pausable, // freezes when the in-game menu pauses the tree
-            MapPath = string.IsNullOrWhiteSpace(config.Map) ? "" : config.Map,
-            // Drives the per-gametype map-entity filter (conditional walls): the chosen gametype's short code.
-            Gametype = string.IsNullOrWhiteSpace(config.Gametype) ? "dm" : config.Gametype,
+            Name = "ModelViewer",
+            ProcessMode = ProcessModeEnum.Pausable,
+            ModelName = string.IsNullOrWhiteSpace(modelName) ? "erebus" : modelName,
             SharedVfs = MenuState.Vfs,
-            SharedCvars = MenuState.Cvars,
         };
-        // Apply the chosen match limits to the shared cvars so gameplay reads them (bots/gametype: future).
-        if (config.TimeLimit > 0) MenuState.Cvars.Set("timelimit", config.TimeLimit.ToString());
-        if (config.FragLimit > 0) MenuState.Cvars.Set("fraglimit", config.FragLimit.ToString());
-        AddChild(_game);
+        AddChild(_viewer);
 
-        // GameDemo loads synchronously in _Ready — dismiss the loading screen now.
-        DismissLoadingScreen();
-
+        // The viewer builds synchronously in _Ready; just reveal the stage (mouse stays free — there's no
+        // gameplay to capture the pointer for).
         _menu.Visible = false;
         _paused = false;
         GetTree().Paused = false;
-        Input.MouseMode = Input.MouseModeEnum.Captured;
+        Input.MouseMode = Input.MouseModeEnum.Visible;
     }
 
     /// <summary>Open the in-game menu: show the pause screen over the frozen match and free the mouse.</summary>
@@ -398,8 +401,9 @@ public partial class Shell : Node
         Input.MouseMode = Input.MouseModeEnum.Captured;
     }
 
-    /// <summary>True while any match — a local <see cref="GameDemo"/> or a networked <see cref="XonoticGodot.Game.Net.NetGame"/> — is live.</summary>
-    private bool MatchRunning => _game is not null || _netGame is not null;
+    /// <summary>True while a networked match (<see cref="XonoticGodot.Game.Net.NetGame"/> — listen server or
+    /// remote client) is live. The no-net <see cref="ModelViewer"/> is intentionally NOT a "match" (no pause menu).</summary>
+    private bool MatchRunning => _netGame is not null;
 
     /// <summary>Disconnect: tear the match down, persist preferences, and show the main menu again.</summary>
     private void ReturnToMainMenu()
@@ -421,10 +425,10 @@ public partial class Shell : Node
 
     private void TeardownGame()
     {
-        if (_game is not null)
+        if (_viewer is not null)
         {
-            _game.QueueFree();
-            _game = null;
+            _viewer.QueueFree();
+            _viewer = null;
         }
         if (_netGame is not null)
         {
@@ -488,8 +492,8 @@ public partial class Shell : Node
     /// <summary>
     /// Host a LISTEN SERVER for the chosen config — boot a <see cref="XonoticGodot.Server.GameWorld"/> + a
     /// <see cref="XonoticGodot.Game.Net.ServerNet"/> in-process (filled with the config's bots), then self-connect a
-    /// networked client to 127.0.0.1. This is the "Create Game" / <c>map</c> path: a real playable server, not
-    /// the no-net <see cref="StartLocalGame"/> demo. Reuses the menu's shared VFS + cvar store.
+    /// networked client to 127.0.0.1. This is the "Create Game" / <c>map</c> path, and also the boot path for
+    /// <c>--map</c> (a 0-bot listen server — the consolidated local-match path). Reuses the menu's shared VFS + cvar store.
     /// </summary>
     public async void StartListenServer(MatchConfig config)
     {
