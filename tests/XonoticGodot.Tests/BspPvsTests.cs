@@ -48,6 +48,39 @@ public class BspPvsTests
         Assert.Equal(1, pvs.LeafCluster(pvs.FindLeaf(Back)));
     }
 
+    /// <summary>
+    /// Regression for the §12.8 world-cell PVS culler: <see cref="BspPvs.FindLeaf"/> descends the tree in
+    /// QUAKE space (Z-up), so a point expressed in Godot axes (Y-up) must be converted back first. The map
+    /// loader recorded each cell's clusters from its mesh centroids — which live in Godot space — and was
+    /// feeding them to FindLeaf RAW, so the Y/Z swap mislabeled every cell and the culler hid geometry that
+    /// was actually visible (world surfaces vanishing as the camera crossed clusters). This locks the
+    /// contract: the Godot-axis form lands in the WRONG leaf; converting to Quake first lands in the right one.
+    /// </summary>
+    [Fact]
+    public void FindLeaf_Needs_Quake_Axes_Not_Godot_Axes()
+    {
+        // A Y-split tree so the Quake↔Godot Y/Z swap actually flips the side: front (Quake y≥0) = cluster 0.
+        var bsp = new BspData
+        {
+            Planes = new[] { new BspPlane(new Vector3(0, 1, 0), 0f) },
+            Nodes = new[] { new BspNode(0, -1, -2) },
+            Leafs = new[] { new BspLeaf(0, 0, 0, 0, 0, 0), new BspLeaf(1, 0, 0, 0, 0, 0) },
+            Vis = new BspVis(2, 1, new byte[] { 0b0000_0001, 0b0000_0010 }),
+        };
+        var pvs = new BspPvs(bsp);
+
+        // A surface centroid in QUAKE space, genuinely in front (y=10 ≥ 0 → cluster 0).
+        var quake = new Vector3(0, 10, -5);
+        // Coords.ToGodot mirror (game-side, Godot-coupled, so replicated here): godot = (q.X, q.Z, -q.Y).
+        var godot = new Vector3(quake.X, quake.Z, -quake.Y);
+        // Coords.ToQuake mirror: quake = (g.X, -g.Z, g.Y) — the exact inverse, what the fix applies.
+        var roundTripped = new Vector3(godot.X, -godot.Z, godot.Y);
+
+        Assert.Equal(0, pvs.LeafCluster(pvs.FindLeaf(quake)));            // truth: cluster 0
+        Assert.Equal(1, pvs.LeafCluster(pvs.FindLeaf(godot)));           // BUG: raw Godot axes → wrong cluster
+        Assert.Equal(0, pvs.LeafCluster(pvs.FindLeaf(roundTripped)));    // FIX: convert back to Quake → correct
+    }
+
     [Fact]
     public void IsInPvs_Honors_The_Cluster_Bitset_Both_Directions()
     {
