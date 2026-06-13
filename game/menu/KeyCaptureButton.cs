@@ -17,6 +17,11 @@ public partial class KeyCaptureButton : Button
     private string _bind;
     private bool _capturing;
 
+    /// <summary>True while ANY keybind button is in "press a key" capture mode. A global hotkey owner (the
+    /// screenshot service's F12 handler) checks this so that rebinding an action TO that key is captured by the
+    /// menu instead of being eaten by the live hotkey.</summary>
+    public static bool Capturing { get; private set; }
+
     /// <summary>The action id this button binds (config key, e.g. "forward").</summary>
     public string ActionId { get; }
 
@@ -49,6 +54,7 @@ public partial class KeyCaptureButton : Button
         if (_capturing)
             return;
         _capturing = true;
+        Capturing = true;
         Text = "< press a key >";
         // Take focus so _GuiInput receives the next press, and so the user sees which row is arming.
         GrabFocus();
@@ -57,6 +63,7 @@ public partial class KeyCaptureButton : Button
     private void EndCapture()
     {
         _capturing = false;
+        Capturing = false;
         UpdateLabel();
     }
 
