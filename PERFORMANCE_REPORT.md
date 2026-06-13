@@ -927,3 +927,27 @@ forensic event. This converts the failure class from "feel" into log lines.
 PREDICTION DESYNC events — or the real architectural fix (the §5 two-world split: prediction on a private
 facade, the loopback transport as the only contact surface). Soak protocol updated: any S5 retry must
 include live player movement, not just bots.
+
+### 13.5 S5 threaded desync — ROOT CAUSE + fix (transport stays on main) (2026-06-12)
+
+The §13.4 revert blamed "logical interleaving the gate can't serialize." Deeper investigation found the
+actual root cause: **the worker ran the Godot ENet transport, not just the sim.** `ServerNet.Tick` bundled
+three things — `_transport.Poll()` (receive), `BroadcastSnapshots()`→`_transport.Send()`, `_transport.Flush()`
+— with `_world.Frame()` (the sim). Godot's `ENetMultiplayerPeer`/`PacketPeerUDP` are created on the MAIN
+thread and are main-thread-affine; servicing them from the worker mis-delivered/garbled snapshots. The client
+then reconciled against CORRUPT authoritative state → runaway prediction (camera through walls, projectiles
+from the server's stale position). The per-trace `ConcurrencyGate` (§13.2) correctly fixed the sim-side crash
+storm but is powerless against a corrupt-snapshot problem — the transport was the real culprit, and the
+idle-client soak never sent enough real input to expose it.
+
+**Fix (the proper S5 split):** the worker runs ONLY `GameWorld.Frame` — the heavy pure-C# 4-12 ms sim S5
+exists to move off the render thread — via `ServerNet.StepSimThreaded`. ALL Godot transport stays on the MAIN
+thread via `ServerNet.PumpTransportThreaded` (receive client input → the worker's next step consumes it; send
+the snapshot of the worker's latest sim state). Both sides still serialize every shared-world access on
+`_simGate`, so it's race-free; only WHICH thread touches the Godot objects changed. `ServerNet.Tick` is kept
+intact (and byte-identical) for the single-threaded default and the loopback/test harnesses.
+
+**Verified:** 1523/1523 tests; windowed threaded bot smoke (worker confirmed running, ZERO errors, ZERO
+PREDICTION DESYNC events, 12 ms median). The decisive test is a PLAYED session — the §13.4 detector stays live
+to confirm the local-player path. If a played session is clean, sv_threaded can default ON; otherwise the
+detector data names the residual.

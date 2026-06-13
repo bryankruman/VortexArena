@@ -520,16 +520,9 @@ public sealed partial class NetGame : Node3D
         // console/menu override in the SHARED store wins over the world default (the menu writes there). Threading
         // is GATED to non-headless hosts: a headless dedicated server already keeps the full catch-up cap and has
         // no render frame to unblock, so it stays on the stock single-threaded drive even with sv_threaded 1.
-        // (§13.4) Default OFF — REVERTED 2026-06-12 after a real-play desync. The 180 s bot soak (which
-        // gated the brief default-ON) had a fatal blind spot: an IDLE local client — prediction barely runs
-        // without input. Real play on the threaded build desynced the LOCAL player (camera through walls,
-        // projectiles firing from the server's idea of the player): worker ticks interleave with the
-        // main-thread prediction replay at arbitrary points, corrupting the prediction baseline in ways the
-        // per-trace ConcurrencyGate (which DID fix the crash storm) cannot serialize — this is §5 S5's
-        // original "ambient world shared by prediction and sim" blocker showing up as data, not crashes.
-        // Re-enabling needs the §13.4 prediction-desync detector green during a PLAYED threaded session
-        // (or the real fix: the two-world split / prediction-table isolation). `sv_threaded 1` to experiment.
-        _serverWorld.Services.Cvars.Register("sv_threaded", "0");
+        // (§13.5) Under active investigation — temporarily default ON to reproduce + verify the desync fix
+        // with the §13.4 PREDICTION DESYNC detector live. Reverts to 0 if a played session still desyncs.
+        _serverWorld.Services.Cvars.Register("sv_threaded", "1");
         bool wantThreaded =
             (_sharedCvars is not null && _sharedCvars.Has("sv_threaded")
                 ? _sharedCvars.GetFloat("sv_threaded")
@@ -1793,6 +1786,14 @@ public sealed partial class NetGame : Node3D
         {
             if (simGate is not null)
                 System.Threading.Monitor.Enter(simGate, ref simGateTaken);
+
+        // S5 (§13.5): when threaded, the worker runs ONLY the pure-C# sim — the MAIN thread services the Godot
+        // ENet transport here (receive the client input the worker's next step consumes; send the snapshot of
+        // the worker's latest sim state). Done under the gate, before the world reads below. The client's own
+        // transport (_client.Poll, further down) then receives that snapshot the SAME frame.
+        if (_serverThread is not null)
+            using (XonoticGodot.Game.Client.FrameProfiler.Scope("server.tick"))
+                _server?.PumpTransportThreaded(dt);
 
         // Feed the music player the current server time so trigger_music touch freshness works.
         if (_musicPlayer is not null && _serverWorld is not null)

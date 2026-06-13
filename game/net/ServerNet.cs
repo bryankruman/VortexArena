@@ -326,49 +326,92 @@ public sealed class ServerNet : IDisposable
     /// </summary>
     public void Tick(float realDelta)
     {
-        // S5: when threaded, the WHOLE tick runs under the host's shared gate so it can't race the main thread's
-        // prediction span (NetGame._Process takes the same gate). When _simGate is null (the default) there is NO
-        // lock and the inbound queue is always empty (RunOnSimThread ran inline) — byte-for-byte the old path.
-        if (_simGate is null)
-        {
-            TickInternal(realDelta);
-            return;
-        }
+        // Single-threaded path (sv_threaded 0, the default): everything runs inline on the caller's thread,
+        // exactly as before — receive, sim, send. _simGate is null so no lock and the inbound queue is empty.
+        TransportReceive();
+        int ticksRan = StepWorld(realDelta);
+        TransportSend(realDelta, ticksRan > 0);
+    }
+
+    // =====================================================================================
+    //  (§13.5) S5 thread split — the ROOT-CAUSE fix for the threaded prediction desync.
+    //
+    //  The first S5 design ran the WHOLE Tick (transport + sim) on the worker. But the Godot ENet transport
+    //  (ENetMultiplayerPeer / PacketPeerUDP, created on the MAIN thread in ServerNet.Start) is main-thread-
+    //  affine — servicing it from the worker mis-delivered/garbled snapshots, so the client reconciled against
+    //  corrupt authoritative state and prediction ran away (camera through walls, projectiles from the server's
+    //  stale position). The per-trace ConcurrencyGate fixed the sim-side crash storm but could never fix a
+    //  CORRUPT-SNAPSHOT problem — the transport was the real culprit.
+    //
+    //  Fix: the worker runs ONLY the pure-C# sim (GameWorld.Frame — the heavy 4-12 ms cost S5 exists to move
+    //  off the render thread); ALL Godot transport (receive/send/flush) stays on the MAIN thread. Every
+    //  shared-world access on both sides is still serialised by _simGate, so it's race-free; we only changed
+    //  WHICH thread touches the Godot objects. This is strictly more faithful to S5's stated intent.
+    // =====================================================================================
+
+    /// <summary>WORKER thread: advance the authoritative sim under the gate. NO Godot transport here.</summary>
+    public void StepSimThreaded(float realDelta)
+    {
+        if (_simGate is null) { StepWorld(realDelta); return; } // defensive; threaded path always has the gate
         lock (_simGate)
         {
-            // Drain main→server commands (chat / bot_add/remove / changelevel) FIRST so Commands.Execute runs on
-            // the thread that owns the world, before this tick reads/mutates it.
+            // Drain main→server commands (chat / bot_add/remove / changelevel) on the thread that owns the world.
             while (_inbound.TryDequeue(out Action? a)) a();
-            TickInternal(realDelta);
+            int ticksRan = StepWorld(realDelta);
+            if (ticksRan > 0) _pendingBroadcast = true; // main's PumpTransportThreaded sends the fresh state
         }
     }
 
-    private void TickInternal(float realDelta)
+    /// <summary>MAIN thread (threaded path): service the Godot transport under the gate — receive input the
+    /// worker's next StepSim will consume, and send the snapshot of whatever the worker last produced.</summary>
+    public void PumpTransportThreaded(float realDelta)
     {
-        // 1) receive: handshakes + input frames (fills each peer's input queue).
-        using (Prof.Sample("net.poll")) _transport.Poll();
+        if (_simGate is null) return;
+        lock (_simGate) // reentrant: NetGame._Process already holds it across the prediction span
+        {
+            TransportReceive();
+            bool advanced = _pendingBroadcast;
+            _pendingBroadcast = false;
+            TransportSend(realDelta, advanced);
+        }
+    }
 
-        // 2) simulate: the world runs its fixed ticks, pulling each client's queued input via ProvideInput
-        //    and firing effect/notification emissions into our sinks. ticksRan == 0 when the host renders faster
-        //    than the 72 Hz sim — those frames leave the world byte-identical to the last broadcast.
+    private bool _pendingBroadcast; // worker sets when the sim advanced; main consumes when it sends. Gate-guarded.
+
+    /// <summary>Receive handshakes + input frames (fills each peer's input queue). GODOT TRANSPORT — main thread
+    /// only on the threaded path.</summary>
+    private void TransportReceive()
+    {
+        using (Prof.Sample("net.poll")) _transport.Poll();
+    }
+
+    /// <summary>Step the authoritative world by <paramref name="realDelta"/> + drive observer joins. PURE C# —
+    /// safe on the worker. Returns the number of fixed sim ticks that ran.</summary>
+    private int StepWorld(float realDelta)
+    {
+        // The world runs its fixed ticks, pulling each client's queued input via ProvideInput and firing
+        // effect/notification emissions into our sinks. ticksRan == 0 when the host renders faster than 72 Hz.
         int ticksRan = _world.Frame(realDelta);
         Prof.Mark("ticks", ticksRan); // >1 ⇒ a server.tick spike is catch-up amortizing a prior stall, not new work
 
-        // 2b) observer/join lifecycle: a human connects as an OBSERVER (ClientConnect → TRANSMUTE(Observer)) and
-        //     only enters the match via Join — on +jump/+attack or the delayed autojoin (server/client.qc
-        //     ObserverOrSpectatorThink / PlayerPreThink). The headless world doesn't drive this on the real-client
-        //     path, so we run it here per accepted peer from its last input. (Bots autojoined at connect.)
+        // Observer/join lifecycle: a human connects as an OBSERVER (ClientConnect → TRANSMUTE(Observer)) and only
+        // enters the match via Join — on +jump/+attack or the delayed autojoin. The headless world doesn't drive
+        // this on the real-client path, so we run it here per accepted peer from its last input. (Bots autojoin.)
         DriveObserverJoins();
+        return ticksRan;
+    }
 
-        // 3) send: one snapshot per client + the shared event bundles — but ONLY on a frame where the world
-        //    actually advanced. The sim is a fixed 72 Hz accumulator, so when the render rate outruns it many
-        //    frames run 0 ticks and the world (and _world.Time) is identical to the last broadcast: rebuilding the
-        //    entity set + scoreboard and re-encoding a duplicate snapshot per peer is pure waste, and it's the
-        //    dominant per-frame server cost at high refresh. Gating on ticksRan sends at the sim rate (DP networks
-        //    at sys_ticrate, not the render rate) and lets a 0-tick frame after a hitch recover a frame sooner.
-        //    Events/minigame state are only produced inside a tick, so on a 0-tick frame they're empty too.
+    /// <summary>Broadcast the snapshot (when the world advanced) + master-server pump + flush. GODOT TRANSPORT —
+    /// main thread only on the threaded path. Reads world state, which the gate keeps consistent vs the worker.</summary>
+    private void TransportSend(float realDelta, bool worldAdvanced)
+    {
+        // Send one snapshot per client + the shared event bundles, but ONLY when the world actually advanced.
+        // The sim is a fixed 72 Hz accumulator, so when the render rate outruns it many frames run 0 ticks and
+        // the world is identical to the last broadcast: re-encoding a duplicate snapshot per peer is pure waste.
+        // Sending at the sim rate (DP networks at sys_ticrate, not the render rate) also lets a 0-tick frame
+        // after a hitch recover a frame sooner. Events/minigame state are only produced inside a tick.
         using (Prof.Sample("net.send"))
-        if (ticksRan > 0)
+        if (worldAdvanced)
         {
             BroadcastSnapshots();
             SendMinigameState(); // [T38] push per-peer minigame session snapshots (reliable channel)
@@ -377,13 +420,12 @@ public sealed class ServerNet : IDisposable
             FlushEventBundles();
         }
 
-        // 4) master-server registration: answer browser probes + re-heartbeat periodically.
+        // Master-server registration: answer browser probes + re-heartbeat periodically.
         PumpMasterServer(realDelta);
 
-        // 5) flush: push the snapshots/bundles queued above onto the wire NOW (send-only) instead of letting them
-        //    wait for the next tick's Poll(). On the in-process listen loop the client's Poll() later this SAME
-        //    frame then receives the snapshot, so the fire/knockback the server just simulated reconciles a render-
-        //    frame sooner — the return leg of the input→fire→feedback latency (pairs with the client send flush).
+        // Flush: push the snapshots/bundles queued above onto the wire NOW (send-only) instead of letting them
+        // wait for the next Poll(). On the in-process listen loop the client's Poll() later this SAME frame then
+        // receives the snapshot, so the fire/knockback the server just simulated reconciles a render-frame sooner.
         using (Prof.Sample("net.flush")) _transport.Flush();
     }
 
