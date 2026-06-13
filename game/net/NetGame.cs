@@ -520,13 +520,16 @@ public sealed partial class NetGame : Node3D
         // console/menu override in the SHARED store wins over the world default (the menu writes there). Threading
         // is GATED to non-headless hosts: a headless dedicated server already keeps the full catch-up cap and has
         // no render frame to unblock, so it stays on the stock single-threaded drive even with sv_threaded 1.
-        // (§13 flip, 2026-06-12) Default ON for windowed listen servers: the per-tick movement-physics cost
-        // (4-12 ms with bots, the §9 "GameDemo vs NetGame" gap) leaves the render thread entirely. Gated to
-        // non-headless below (a dedicated server has no render frame to protect). Soaked 180 s @ 6 bots after
-        // the TraceService.ConcurrencyGate fix (the first soak's NRE storm — main-thread particle/crosshair/
-        // prediction traces racing worker ticks — zero recurrences). `sv_threaded 0` restores the
-        // single-threaded drive.
-        _serverWorld.Services.Cvars.Register("sv_threaded", "1");
+        // (§13.4) Default OFF — REVERTED 2026-06-12 after a real-play desync. The 180 s bot soak (which
+        // gated the brief default-ON) had a fatal blind spot: an IDLE local client — prediction barely runs
+        // without input. Real play on the threaded build desynced the LOCAL player (camera through walls,
+        // projectiles firing from the server's idea of the player): worker ticks interleave with the
+        // main-thread prediction replay at arbitrary points, corrupting the prediction baseline in ways the
+        // per-trace ConcurrencyGate (which DID fix the crash storm) cannot serialize — this is §5 S5's
+        // original "ambient world shared by prediction and sim" blocker showing up as data, not crashes.
+        // Re-enabling needs the §13.4 prediction-desync detector green during a PLAYED threaded session
+        // (or the real fix: the two-world split / prediction-table isolation). `sv_threaded 1` to experiment.
+        _serverWorld.Services.Cvars.Register("sv_threaded", "0");
         bool wantThreaded =
             (_sharedCvars is not null && _sharedCvars.Has("sv_threaded")
                 ? _sharedCvars.GetFloat("sv_threaded")

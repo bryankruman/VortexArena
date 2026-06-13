@@ -907,3 +907,23 @@ not — orders of magnitude below the texture fetches in the same shader. Per-se
 **Watchlist:** the one-off 2.3 s blocked MultimeshSetBuffer (only investigate if it recurs WITHOUT the
 external-stall signature); EXTERNAL? stalls (~135 ms, a few per session) are machine-level — correlate the
 now-timestamped log against system events (WLAN scan / AV / driver) before touching the repo.
+
+### 13.4 sv_threaded default REVERTED to 0 (2026-06-12, real-play desync)
+
+The brief default-ON (§13.2) was wrong — reverted same day. Real play on the threaded release build
+desynced the LOCAL player: camera through walls, projectiles firing from the server's idea of the player.
+The 180 s bot soak that gated the flip had a fatal blind spot: an IDLE client — local-player prediction
+barely executes without input, so the prediction-vs-worker interleave was never exercised. The per-trace
+ConcurrencyGate (kept — it fixed a genuine crash storm and protects all main-thread traces) makes individual
+operations atomic but cannot serialize the LOGICAL interleaving of worker ticks with the main thread's
+prediction replay — §5 S5's original "ambient world shared by prediction and sim" blocker, surfacing as
+wrong data instead of crashes.
+
+**Landed with the revert:** a prediction-desync detector in `Reconciler.Reconcile` — sustained origin error
+> 64 qu (normal corrections are 0-15 u) raises a latched, periodically re-raised `net: PREDICTION DESYNC`
+forensic event. This converts the failure class from "feel" into log lines.
+
+**Re-enabling sv_threaded requires:** a PLAYED threaded session (or scripted-input soak) with zero
+PREDICTION DESYNC events — or the real architectural fix (the §5 two-world split: prediction on a private
+facade, the loopback transport as the only contact surface). Soak protocol updated: any S5 retry must
+include live player movement, not just bots.
