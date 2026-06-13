@@ -58,7 +58,8 @@ public partial class FrameProfiler : CanvasLayer
     // Whole-node _Process scopes (distinct nodes ⇒ non-overlapping); summed to compute "proc:other". Nested
     // sub-scopes (server.tick, sim.*, net.*, cw.*) are intentionally NOT here so they don't double-count.
     private static readonly string[] TopLevelNodeScopes =
-        { "ng.process", "cw.process", "md3.morph", "entitynode", "hud.mgr", "proj", "viewmodel", "nethud" };
+        { "ng.process", "cw.process", "md3.morph", "entitynode", "hud.mgr", "proj", "viewmodel", "nethud",
+          "stream.build", "particles.cpu" };
 
     /// <summary>
     /// Open a named timing scope: <c>using (FrameProfiler.Scope("name")) { ... }</c> (or as a one-statement
@@ -187,16 +188,6 @@ public partial class FrameProfiler : CanvasLayer
         // The 3-arg form also drains per-scope ALLOCATION, so every hitch row reads "how long AND how much garbage".
         Prof.SnapshotAndReset(_lastScopes, _lastCounters, _allocScratch);
 
-        // "Everything else": the per-frame _Process span not attributed to a named WHOLE-NODE scope ⇒ time in
-        // nodes we haven't wrapped (each HUD panel, weather/radar/particles, music, gibs, …) plus Godot's
-        // per-node dispatch. A big proc:other ⇒ scope more nodes; a small one with a still-large frame ⇒ the time
-        // is in `rest` (present/vsync/stall), not _Process. The summed keys are distinct nodes (non-overlapping);
-        // nested scopes (server.tick, sim.*, net.*, cw.*) are deliberately excluded so nothing double-counts.
-        double accounted = 0.0;
-        foreach (string k in TopLevelNodeScopes)
-            if (_lastScopes.TryGetValue(k, out double v)) accounted += v;
-        _lastScopes["proc:other"] = Math.Max(0.0, _procMs - accounted);
-
         // Engine-level breakdown: the Prof scopes only cover the C# logic we wrapped — the REST of a frame is the
         // other _Process nodes, physics, and (usually the big one on a hitch) rendering, none of which live in a
         // C# scope. Pull those from Godot so a hitch line accounts for the WHOLE frame: TIME_PROCESS is the sum of
@@ -222,6 +213,19 @@ public partial class FrameProfiler : CanvasLayer
         // The _Process span can never exceed the whole frame — clamping kills the first-frame artifact where the
         // fence hadn't stamped yet (Prof.Enabled flips on mid-frame) and FrameProcessMs reads a garbage epoch.
         if (_procMs > ms) _procMs = ms;
+
+        // "Everything else": the per-frame _Process span not attributed to a named WHOLE-NODE scope ⇒ time in
+        // nodes we haven't wrapped (each HUD panel, weather/radar, music, gibs, …) plus Godot's per-node
+        // dispatch. A big proc:other ⇒ scope more nodes; a small one with a still-large frame ⇒ the time is in
+        // `rest` (present/vsync/stall), not _Process. The summed keys are distinct nodes (non-overlapping);
+        // nested scopes (server.tick, sim.*, net.*, cw.*) are deliberately excluded so nothing double-counts.
+        // Computed AFTER this frame's _procMs refresh+clamp — it used to difference THIS frame's scopes
+        // against LAST frame's _procMs, which printed impossible rows (proc:other > proc) on hitch frames.
+        double accounted = 0.0;
+        foreach (string k in TopLevelNodeScopes)
+            if (_lastScopes.TryGetValue(k, out double v)) accounted += v;
+        _lastScopes["proc:other"] = Math.Max(0.0, _procMs - accounted);
+
         _ring[_ringHead] = ms;
 
         // ---- forensic record for THIS frame (same ring slot as _ring) ----------------------------------------

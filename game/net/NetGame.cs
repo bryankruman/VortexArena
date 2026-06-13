@@ -1462,10 +1462,17 @@ public sealed partial class NetGame : Node3D
                 () => loader.ParseSkeletalModel(m, 0),                 // off-thread: IQM + sidecars + anims
                 // (§12.3-1) Stage the texture pipeline like the live path — the idle warm previously paid the
                 // same multi-hundred-ms monolithic build; now its decode runs on the worker and each upload is
-                // its own budgeted job. The final assembly warms the full build path, then discards the node.
+                // its own budgeted job. (§12.6) The built model then RENDERS offscreen for a few frames before
+                // it's freed: a built-but-never-drawn model never compiled its material variants' pipelines,
+                // so the first player wearing it on screen paid the compile (`pipe +N` mid-fight).
                 parse => EnqueueStagedSkeletalBuild(loader, parse,
                     XonoticGodot.Game.Client.BackgroundAssetStreamer.Priority.Low, $"idle-warm {m}",
-                    () => loader.BuildSkeletalModel(parse)?.Root.QueueFree()),
+                    () =>
+                    {
+                        if (loader.BuildSkeletalModel(parse)?.Root is { } warmRoot)
+                            XonoticGodot.Game.Client.GpuWarmPass.WarmNodes(this,
+                                new List<Node3D> { warmRoot }, () => warmRoot.QueueFree());
+                    }),
                 XonoticGodot.Game.Client.BackgroundAssetStreamer.Priority.Low,
                 label: $"idle-warm {m} (parse)");
         }
@@ -3199,37 +3206,53 @@ public sealed partial class NetGame : Node3D
     private sealed record SkeletalParseBox(AssetLoader.SkeletalModelParse? Parse);
 
     /// <summary>
-    /// (§12.3-1) Enqueue the staged main-thread half of a skeletal-model build: one streamer job per effective
-    /// material — its worker phase pre-decodes the material's images (<see cref="AssetSystem.PredecodeMaterialTextures"/>),
-    /// its main phase resolves the material (now upload-only) — then <paramref name="onAllMaterialsReady"/> runs
-    /// the final (cheap) assembly. The streamer's budget naturally spreads the jobs across frames, so the old
-    /// ~600-750 ms monolithic delivery becomes a series of ~5-30 ms stages. Job order is irrelevant
-    /// (ResolveMaterial caches by name); the count-down gate fires the assembly exactly once, on the main thread.
+    /// (§12.3-1/§12.6) Enqueue the staged main-thread half of a skeletal-model build: one streamer job per
+    /// TEXTURE the model's materials will probe — its worker phase pre-decodes that image
+    /// (<see cref="AssetSystem.PredecodeTexture"/>), its main phase is the GPU upload only — then
+    /// <paramref name="onAllMaterialsReady"/> resolves the materials (pure cache hits by then) and runs the
+    /// final (cheap) assembly. Per-texture granularity caps a single stage at ONE upload (~5-10 ms) — the
+    /// earlier per-MATERIAL jobs still spiked to ~50 ms when one material carried 6 big textures. The
+    /// streamer's budget spreads the jobs across frames; the count-down gate fires exactly once, on main.
     /// </summary>
     private void EnqueueStagedSkeletalBuild(AssetLoader loader, AssetLoader.SkeletalModelParse parse,
         XonoticGodot.Game.Client.BackgroundAssetStreamer.Priority priority, string label, Action onAllMaterialsReady)
     {
         List<string> mats = AssetLoader.EffectiveMaterials(parse);
-        if (_streamer is null || mats.Count == 0)
+        Action finish = () =>
         {
+            // Materials assemble from already-uploaded textures (cache hits) — sub-ms each.
+            using (XonoticGodot.Game.Client.FrameProfiler.Scope("iqm.materials"))
+                foreach (string m in mats)
+                    loader.Assets.ResolveMaterial(m);
             onAllMaterialsReady();
+        };
+
+        var textures = new List<string>();
+        foreach (string m in mats)
+            foreach (string t in loader.Assets.EnumerateMaterialTextureNames(m))
+                if (!textures.Contains(t))
+                    textures.Add(t);
+        if (_streamer is null || textures.Count == 0)
+        {
+            finish();
             return;
         }
-        int remaining = mats.Count;
-        foreach (string mat in mats)
+
+        int remaining = textures.Count;
+        foreach (string tex in textures)
         {
-            string m = mat;
+            string t = tex;
             _streamer.Request(
-                () => { loader.Assets.PredecodeMaterialTextures(m); return m; },   // worker: VFS read + decode
+                () => { loader.Assets.PredecodeTexture(t); return t; },     // worker: VFS read + decode
                 _ =>
                 {
                     using (XonoticGodot.Game.Client.FrameProfiler.Scope("iqm.materials"))
-                        loader.Assets.ResolveMaterial(m);                          // main: upload + material build
+                        loader.Assets.LoadTexture(t);                       // main: ONE GPU upload (or a cheap miss)
                     if (--remaining == 0)
-                        onAllMaterialsReady();
+                        finish();
                 },
                 priority,
-                label: $"{label} tex {m}");
+                label: $"{label} tex {t}");
         }
     }
 

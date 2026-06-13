@@ -528,8 +528,20 @@ public sealed class AssetSystem
     /// </summary>
     public void PredecodeMaterialTextures(string materialName)
     {
+        foreach (string name in EnumerateMaterialTextureNames(materialName))
+            PredecodeTexture(name);
+    }
+
+    /// <summary>
+    /// OFF-THREAD-SAFE: every texture base-name a material build will probe (the base/stage maps + the
+    /// channel-suffix companions). The single source for both the worker-side predecode and the per-texture
+    /// upload staging (§12.6) — names that don't resolve are cheap no-ops downstream.
+    /// </summary>
+    public List<string> EnumerateMaterialTextureNames(string materialName)
+    {
+        var names = new List<string>(8);
         if (string.IsNullOrEmpty(materialName))
-            return;
+            return names;
         string key = StripShaderExtension(materialName);
 
         if (_shaders.TryGetValue(key, out ShaderDef? def))
@@ -537,27 +549,30 @@ public sealed class AssetSystem
             foreach (ShaderStage stage in def.Stages)
             {
                 if (!stage.IsLightmap && !stage.IsWhiteImage && !string.IsNullOrEmpty(stage.MapTexture))
-                    PredecodeWithCompanions(stage.MapTexture);
+                    AddWithCompanions(names, stage.MapTexture);
                 if (stage.AnimMap is { Frames.Length: > 0 } anim)
                     foreach (string frame in anim.Frames)
-                        PredecodeWithCompanions(frame);
+                        AddWithCompanions(names, frame);
             }
-            return;
+            return names;
         }
 
-        PredecodeWithCompanions(key);
+        AddWithCompanions(names, key);
+        return names;
     }
 
-    private void PredecodeWithCompanions(string textureName)
+    private static void AddWithCompanions(List<string> names, string textureName)
     {
         string baseName = AssetPaths.StripImageExtension(textureName);
-        PredecodeTexture(baseName);
-        PredecodeTexture(baseName + "_norm");
-        PredecodeTexture(baseName + "_gloss");
-        PredecodeTexture(baseName + "_glow");
-        PredecodeTexture(baseName + "_reflect");
-        PredecodeTexture(baseName + "_shirt");
-        PredecodeTexture(baseName + "_pants");
+        if (names.Contains(baseName))
+            return;
+        names.Add(baseName);
+        names.Add(baseName + "_norm");
+        names.Add(baseName + "_gloss");
+        names.Add(baseName + "_glow");
+        names.Add(baseName + "_reflect");
+        names.Add(baseName + "_shirt");
+        names.Add(baseName + "_pants");
     }
 
     /// <summary>Drop any unconsumed predecoded images (map change — don't hold decoded pixels for a world

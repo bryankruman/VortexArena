@@ -767,3 +767,27 @@ path; the platform's baked floor shadow renders exactly, no seams/page-swaps). C
 dance: 602 total surfaces, 339 drawn in an open-sky view (`pipe +0`), more culled indoors. Note stormkeep's
 standing draw count is similar to pre-R5 (it was already 1 page; its win is the cull, which shows on
 geometry-dense angles), while multi-page maps ALSO collapse their per-page material splits.
+
+### 12.6 Post-playtest hitch census + refinements (2026-06-12, user-reported residual hitches)
+
+150 s instrumented bot matches (Debug, mode-2 file sink). Baseline census: 27 hitches, worst 49.6 ms, three
+classes — all addressed:
+1. **Per-material texture jobs spiked to ~50 ms** when one material carried 6 big textures → staging is now
+   per-TEXTURE (`EnumerateMaterialTextureNames`, shared with the predecode): one upload per job, measured
+   2.5-3.3 ms typical; materials assemble from cache hits in the final stage.
+2. **`pipe +N` first-sight compiles**: the idle warmer built models and freed them WITHOUT ever rendering —
+   pipelines never compiled, so the first player wearing the model on screen paid it. Built warm models now
+   render offscreen for a few frames via `GpuWarmPass.WarmNodes` before freeing. Verification run: ZERO
+   mid-match pipeline compiles on hitch frames.
+3. **`proc:other` tail attribution**: the faithful particle backend was the largest unscoped _Process — now
+   `particles.cpu` (measured: 1-2 ms steady, exonerated). Also fixed a profiler bug: `proc:other` was
+   differenced against the PREVIOUS frame's `_procMs` (printed impossible `proc:other > proc` rows).
+
+**Remaining, honestly classified:** (a) a 12-20 ms missed-vblank tail (Debug `proc` ~5-12 ms vs a ~7 ms
+vblank budget — halves in Release; mailbox vsync is the user-side option); (b) occasional 30-70 ms frames
+correlated with 50-160 MB worker-side parse/decode allocation bursts driving gen0/gen1 pauses (bounded,
+early-match; pool decode buffers if a release-build profile still shows them); (c) rare environment stalls
+(huge `rest`, near-zero proc/alloc — compositor/driver/OS; one such cluster showed a 2.3 s blocked
+MultiMesh upload attributed to `particles.cpu` — if that EVER recurs without rest-class neighbors,
+investigate MultimeshSetBuffer, otherwise treat as external). Worker-side scopes (`iqm.anims`) appear in
+frame tables with worker-sized values — they cost the POOL, not the frame; read alongside `proc`.
