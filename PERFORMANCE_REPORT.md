@@ -810,3 +810,30 @@ compositor/driver/OS — not fixable in the repo, but RESISTIBLE:
   standing input latency or a tick spiral.
 - User-side (not repo): GPU driver "prefer maximum performance" for the game, and on dev boxes exclude the
   repo/Godot dirs from real-time AV scanning (builds + asset churn trigger scans that land mid-play).
+
+### 12.8 Lossless GPU wins: texture mipmaps + PVS cell culling (2026-06-12)
+
+Prompted by "can we improve rendering perf without losing visual quality?" — two findings, both landed:
+
+1. **World/model textures had NO mipmaps** (no loader ever called GenerateMipmaps) while every material
+   samples with a `*_mipmap_anisotropic` filter — so distant/oblique surfaces sampled level 0: visible
+   aliasing/shimmer (WORSE than DP, which mipmaps everything) AND texture-cache thrash at minification.
+   `AssetSystem.EnsureMipmaps` now generates mips at decode (on the WORKER for streamed models — zero main
+   cost), excluding `lm_NNNN` lightmap/deluxe pages (DP samples those unmipped — kept byte-exact) and
+   already-mipped/compressed images. This is a fidelity fix AND a GPU win: verified visually (distant brick
+   noise gone, near detail unchanged). Costs some load time + ~33% texture VRAM (the mip chain).
+
+2. **PVS-driven cell visibility** (`WorldPvsCuller` + per-cell cluster sets recorded in the §12.5 regroup):
+   each frame the camera's BSP cluster is found (one tree descent, re-applied only on cluster CHANGE) and a
+   world cell shows iff ANY of its clusters is potentially visible — the map compiler's own conservative
+   occlusion, the exact data DP culls with (BspPvs was already parsed+tested, just unused for rendering).
+   Strictly lossless (per-cell union ⊇ DP's per-face vis). `r_pvs_cull 0` = escape hatch. Measured at the
+   open GameDemo vantage: ~5% draws (282 vs 298 stormkeep, 563 vs 578 dance — open maps intervis heavily);
+   the real benefit is INSIDE rooms/corridors where PVS hides everything beyond the walls. 1024-qu cell
+   granularity dilutes it (a wall-spanning cell unions both sides); halve WorldCellSize if a profile asks.
+
+Also answered: **`r_map_tint` has effectively ZERO perf impact** — the CPU side is change-gated
+(`WorldTint.PushMap` only touches `GlobalShaderParameterSet` when the value changes) and the GPU side is one
+unconditional vec3 multiply (`combined *= map_tint`) that executes identically whether the tint is white or
+not — orders of magnitude below the texture fetches in the same shader. Per-second profile lines now carry
+`draws N` for cheap culling A/Bs.

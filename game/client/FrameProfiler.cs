@@ -295,7 +295,7 @@ public partial class FrameProfiler : CanvasLayer
                 // rest = the median frame time not spent in C# _Process or render submit ⇒ present/vsync wait or
                 // GPU wait. Big rest + small gpu ⇒ vsync pacing (try Mailbox); big rest + big gpu ⇒ GPU-bound.
                 double restMed = Math.Max(0.0, _median - _procMs - _renderCpuMs);
-                EmitProfile($"[frameprofile] med {_median:0.0}ms p99 {_p99:0.0}ms | proc {_procMs:0.0} rcpu {_renderCpuMs:0.0} gpu {_renderGpuMs:0.0} rest {restMed:0.0} | {TopScopes(4)}{Markers()}");
+                EmitProfile($"[frameprofile] med {_median:0.0}ms p99 {_p99:0.0}ms | proc {_procMs:0.0} rcpu {_renderCpuMs:0.0} gpu {_renderGpuMs:0.0} rest {restMed:0.0} | draws {(RecordAt(1) is { } r ? r.DrawCalls : 0):0} | {TopScopes(4)}{Markers()}");
             }
         }
 

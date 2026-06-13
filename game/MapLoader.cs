@@ -178,11 +178,16 @@ public static class MapLoader
         // --- (§12.5 R5a+b) regroup: split every triangle into a spatial CELL (frustum culling — the old
         // single MeshInstance3D drew the whole map every frame) and merge the per-page lightmap buckets onto
         // the atlas (UV2 remapped per page). Appends above stay byte-identical; this is a pure repack.
-        var cells = RegroupIntoCells(surfaces, atlas);
+        // (§12.8) The regroup also records each cell's visibility clusters so the PVS culler below can hide
+        // cells the map compiler PROVED can't be seen from the camera's cluster (occlusion the frustum can't).
+        var pvs = new XonoticGodot.Formats.Bsp.BspPvs(bsp);
+        var cells = RegroupIntoCells(surfaces, atlas, pvs.HasVis ? pvs : null,
+            out Dictionary<CellKey, HashSet<int>> cellClusters);
 
         // --- pack each cell into its own ArrayMesh + MeshInstance3D, sharing materials across cells ---
         int nLit = 0, nLitMissing = 0, nVtx = 0, nPlain = 0, nGlow = 0, nTrans = 0, nNormal = 0; // surface-material tally (logged below)
         var materialCache = new Dictionary<SurfaceKey, Material>();
+        var pvsCells = new List<(MeshInstance3D Node, int[] Clusters)>();
         int cellCount = 0, drawSurfaces = 0;
         foreach (var cellKv in cells)
         {
@@ -239,14 +244,23 @@ public static class MapLoader
             // keeping the map out of the directional shadow pass saves re-rendering every surface into every
             // cascade each frame. Trade-off: dynamic-model shadows are no longer occluded by world geometry
             // (a player indoors keeps a sun shadow — consistent with the sun already lighting models indoors).
-            root.AddChild(new MeshInstance3D
+            var cellInstance = new MeshInstance3D
             {
                 Name = $"Geometry_{cellKv.Key.X}_{cellKv.Key.Y}_{cellKv.Key.Z}",
                 Mesh = cellMesh,
                 CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
-            });
+            };
+            root.AddChild(cellInstance);
+            cellClusters.TryGetValue(cellKv.Key, out HashSet<int>? clusters);
+            pvsCells.Add((cellInstance, clusters is { Count: > 0 } ? System.Linq.Enumerable.ToArray(clusters) : System.Array.Empty<int>()));
             cellCount++;
         }
+
+        // (§12.8) PVS-driven cell visibility: the map's own precomputed vis hides cells behind walls — true
+        // occlusion culling, conservative by construction (q3map2 vis is a superset of real visibility),
+        // exactly the data DP culls with. Only wired when the map actually carries vis.
+        if (pvs.HasVis && pvsCells.Count > 0)
+            root.AddChild(new WorldPvsCuller(pvs, pvsCells));
 
         // Surface-material summary — guards the external-lightmap wiring (lightmapped=0 or a non-zero
         // lightmapMissing on a stock map means lightmaps stopped binding; see LoadLightmap / the map-name thread).
@@ -668,10 +682,12 @@ public static class MapLoader
     /// Surfaces whose page missed the atlas (or when there is no atlas) keep their original key/UVs.
     /// </summary>
     private static Dictionary<CellKey, Dictionary<SurfaceKey, SurfaceBuilder>> RegroupIntoCells(
-        Dictionary<SurfaceKey, SurfaceBuilder> surfaces, LightmapAtlas? atlas)
+        Dictionary<SurfaceKey, SurfaceBuilder> surfaces, LightmapAtlas? atlas,
+        XonoticGodot.Formats.Bsp.BspPvs? pvs, out Dictionary<CellKey, HashSet<int>> cellClusters)
     {
         var cells = new Dictionary<CellKey, Dictionary<SurfaceKey, SurfaceBuilder>>();
         var remap = new Dictionary<(CellKey Cell, int OldIndex), int>();   // vertex dedup per source bucket
+        cellClusters = new Dictionary<CellKey, HashSet<int>>();
 
         foreach (var kv in surfaces)
         {
@@ -704,6 +720,24 @@ public static class MapLoader
                     cells[cell] = cellSurfaces = new Dictionary<SurfaceKey, SurfaceBuilder>();
                 if (!cellSurfaces.TryGetValue(targetKey, out SurfaceBuilder? dst))
                     cellSurfaces[targetKey] = dst = new SurfaceBuilder();
+
+                // (§12.8) Record which visibility clusters this cell's geometry occupies — the per-frame PVS
+                // culler shows a cell iff ANY of its clusters is potentially visible from the camera's
+                // cluster (the map compiler's own conservative vis; per-cell union = strictly MORE
+                // conservative than DP's per-face culling, so nothing DP would draw is ever hidden).
+                // A centroid in solid / outside the tree contributes nothing; a cell with NO clusters at
+                // all is treated always-visible by the culler.
+                if (pvs is not null)
+                {
+                    int cluster = pvs.LeafCluster(pvs.FindLeaf(
+                        new System.Numerics.Vector3(centroid.X, centroid.Y, centroid.Z)));
+                    if (cluster >= 0)
+                    {
+                        if (!cellClusters.TryGetValue(cell, out HashSet<int>? set))
+                            cellClusters[cell] = set = new HashSet<int>();
+                        set.Add(cluster);
+                    }
+                }
 
                 dst.Indices.Add(CopyVertex(src, dst, a, cell, remap, uv, hasColor));
                 dst.Indices.Add(CopyVertex(src, dst, b, cell, remap, uv, hasColor));

@@ -514,7 +514,30 @@ public sealed class AssetSystem
             return;
         Image? img = LoadImageFromVpath(vpath);
         if (img is not null)
+        {
+            EnsureMipmaps(vpath, img);   // on the WORKER — the main-thread upload then includes mips for free
             _predecodedImages.TryAdd(vpath, img);
+        }
+    }
+
+    /// <summary>
+    /// (§12.8) Generate mipmaps on a decoded texture image. DP mipmaps every world/model texture (its GL
+    /// texture default), but the port uploaded level-0-only images while every material samples with a
+    /// <c>*_mipmap_anisotropic</c> filter — so distant/oblique surfaces aliased and shimmered (WORSE than DP)
+    /// and minified sampling thrashed the texture cache. Generating mips is therefore BOTH a fidelity fix and
+    /// a GPU win. Lightmap pages (<c>lm_NNNN</c>) are excluded — DP samples lightmaps unmipped; keep them
+    /// byte-exact. No-op when mips already exist (DDS files can carry them) or the format can't (compressed).
+    /// </summary>
+    private static void EnsureMipmaps(string vpath, Image image)
+    {
+        if (image.HasMipmaps() || image.IsCompressed())
+            return;
+        int slash = vpath.LastIndexOf('/');
+        string file = slash >= 0 ? vpath[(slash + 1)..] : vpath;
+        if (file.StartsWith("lm_", StringComparison.OrdinalIgnoreCase))
+            return; // lightmap/deluxe page — sampled unmipped, exactly like DP
+        if (image.GenerateMipmaps() != Error.Ok)
+            GD.Print($"[AssetSystem] mipmap generation skipped for '{vpath}' (unsupported format)");
     }
 
     /// <summary>
@@ -586,6 +609,7 @@ public sealed class AssetSystem
             image = LoadImageFromVpath(vpath);
         if (image == null)
             return null;
+        EnsureMipmaps(vpath, image);   // no-op when the worker predecode already generated them
 
         try
         {
