@@ -744,3 +744,26 @@ scope inside a "51 ms" frame) — trust the scope table and events for stall mag
    `uber` slice: nonzero means the ubershader fallback is compiling, which Godot hides poorly on some drivers.
 3. The input trim + sim-backlog-drop event pair is the canary for any future "feels laggy" report — if trims
    fire steadily (not just at match start), something is hitching repeatedly upstream; read the events.
+
+### 12.5 R5 LANDED — world-mesh spatial split + lightmap atlas (2026-06-12)
+
+§11 R5, both halves, implemented as a PACK-TIME REGROUP (face bucketing/appends untouched — pure repack):
+- **R5a split:** triangles bin by centroid into 1024-qu cells (`WorldCellSize`), one ArrayMesh +
+  MeshInstance3D per cell (CastShadow=Off per R4) → real frustum culling; the old single "Geometry" node drew
+  every surface every frame. Vertex sharing preserved per (source, cell); border tris land in exactly one
+  cell (no seams — geometry unchanged, only grouping).
+- **R5b atlas:** every USED lightmap page (+ its deluxe pair, identical layout) packs into one
+  gutter-padded atlas (`AtlasGutter` 2 px of replicated edge texels = the standalone page's CLAMP sampling —
+  no cross-page bleed); UV2s remap per page during the regroup; lightmapped surfaces collapse onto ONE
+  SurfaceKey per texture (`AtlasLitKey`) sharing one material bound to the atlas. Missing-page surfaces and
+  no-atlas maps keep today's per-page/degrade path; a defensively-missing deluxe cell is filled with the
+  neutral up-direction (128,128,255) so the shader's directional rescale is exactly 1 there.
+- Materials are shared instances across cells (one per merged key); the load log now reports
+  `materials/atlas/cells/surfaces` (e.g. stormkeep: 48 materials, atlas=1p, cells=31, surfaces=388).
+
+**Verified:** build green; 1523/1523 tests; visual parity (same spawn captures, pixel-equivalent) on
+stormkeep (deluxemapped external, 1 page), boil (2 pages), and dance (**9 pages** — the multi-page remap
+path; the platform's baked floor shadow renders exactly, no seams/page-swaps). Culling measured live on
+dance: 602 total surfaces, 339 drawn in an open-sky view (`pipe +0`), more culled indoors. Note stormkeep's
+standing draw count is similar to pre-R5 (it was already 1 page; its win is the cull, which shows on
+geometry-dense angles), while multi-page maps ALSO collapse their per-page material splits.

@@ -46,6 +46,37 @@ public static class MapLoader
     /// </summary>
     private const int VertexLitKey = -2;
 
+    /// <summary>
+    /// Sentinel <see cref="SurfaceKey.LightmapIndex"/> for a lightmapped surface AFTER the atlas regroup
+    /// (§12.5 R5b): every per-page bucket merges onto this one key per texture (UV2s already remapped into
+    /// atlas space), so lightmapped materials/draw-surfaces no longer multiply by page count.
+    /// </summary>
+    private const int AtlasLitKey = -4;
+
+    /// <summary>
+    /// World-space cell edge (Quake units) for the frustum-culling split (§12.5 R5a). 1024 qu ≈ a large room:
+    /// big enough that cells×materials stays in the low hundreds of draw surfaces, small enough that looking
+    /// at a wall culls most of the map. Triangles are binned by centroid; a tri spanning a border lands in
+    /// exactly one cell (no seams — geometry is unchanged, only its mesh grouping).
+    /// </summary>
+    private const float WorldCellSize = 1024f;
+
+    /// <summary>One spatial cell of the split world mesh, keyed by floor(centroid / WorldCellSize).</summary>
+    private readonly record struct CellKey(int X, int Y, int Z);
+
+    /// <summary>
+    /// The packed lightmap (+ deluxe) atlas (§12.5 R5b): one texture holding every USED page in a uniform
+    /// grid with replicated-edge gutters (bilinear sampling at a page border reads the same texels the
+    /// standalone page's CLAMP would — no bleed between unrelated pages), plus each page's UV2 transform.
+    /// </summary>
+    private sealed class LightmapAtlas
+    {
+        public Texture2D Lightmap = null!;
+        public Texture2D? Deluxe;
+        public readonly Dictionary<int, (Vector2 Offset, Vector2 Scale)> PageUv = new();
+        public int PageCount => PageUv.Count;
+    }
+
     /// <summary>Per-surface accumulation buffers (Quake-space positions; converted at pack time).</summary>
     private sealed class SurfaceBuilder
     {
@@ -75,7 +106,6 @@ public static class MapLoader
         IReadOnlySet<int>? droppedSubmodels = null)
     {
         var root = new Node3D { Name = "Map" };
-        var mesh = new ArrayMesh();
 
         var surfaces = new Dictionary<SurfaceKey, SurfaceBuilder>();
 
@@ -139,63 +169,93 @@ public static class MapLoader
             }
         }
 
-        // --- pack each surface into the mesh and assign its material ---
-        int surfaceIndex = 0;
+        // --- (§12.5 R5b) lightmap atlas: pack every USED page (+ its deluxe pair) into one gutter-padded
+        // texture so lightmapped surfaces no longer split per page — materials (and with the regroup below,
+        // draw calls) collapse from textures × pages to just textures. Null when the map has no loadable
+        // pages; lit keys then degrade exactly like today's null-lightmap path.
+        LightmapAtlas? atlas = BuildLightmapAtlas(bsp, assets, mapName, deluxe, surfaces.Keys);
+
+        // --- (§12.5 R5a+b) regroup: split every triangle into a spatial CELL (frustum culling — the old
+        // single MeshInstance3D drew the whole map every frame) and merge the per-page lightmap buckets onto
+        // the atlas (UV2 remapped per page). Appends above stay byte-identical; this is a pure repack.
+        var cells = RegroupIntoCells(surfaces, atlas);
+
+        // --- pack each cell into its own ArrayMesh + MeshInstance3D, sharing materials across cells ---
         int nLit = 0, nLitMissing = 0, nVtx = 0, nPlain = 0, nGlow = 0, nTrans = 0, nNormal = 0; // surface-material tally (logged below)
-        foreach (var kv in surfaces)
+        var materialCache = new Dictionary<SurfaceKey, Material>();
+        int cellCount = 0, drawSurfaces = 0;
+        foreach (var cellKv in cells)
         {
-            SurfaceBuilder sb = kv.Value;
-            if (sb.Indices.Count == 0 || sb.Positions.Count == 0)
+            var cellMesh = new ArrayMesh();
+            int surfaceIndex = 0;
+            foreach (var kv in cellKv.Value)
+            {
+                SurfaceBuilder sb = kv.Value;
+                if (sb.Indices.Count == 0 || sb.Positions.Count == 0)
+                    continue;
+
+                bool lightmapped = kv.Key.LightmapIndex >= 0 || kv.Key.LightmapIndex == AtlasLitKey;
+                bool vertexLit = kv.Key.LightmapIndex == VertexLitKey;
+                // The lightmap shader reads a per-surface tangent frame for the deluxemap directional diffuse term
+                // (DP MODE_LIGHTDIRECTIONMAP_MODELSPACE). Generate tangents for every lightmapped surface so that
+                // shader's TANGENT/BINORMAL inputs are always backed by real mesh data; on a non-deluxemapped map
+                // they go unused (use_deluxemap is off) for only a little load-time work. Vertex-lit surfaces carry
+                // a COLOR array instead (their modulation source); lightmapped surfaces carry UV2.
+                PackSurface(cellMesh, sb, lightmapped, withTangents: lightmapped, withColor: vertexLit);
+
+                // One material per MERGED key, shared across every cell (same instance → shared GPU state).
+                if (!materialCache.TryGetValue(kv.Key, out Material? mat))
+                {
+                    mat = kv.Key.LightmapIndex == AtlasLitKey
+                        ? ResolveAtlasSurfaceMaterial(bsp, assets, kv.Key.TextureIndex, atlas!)
+                        : ResolveSurfaceMaterial(bsp, assets, kv.Key, mapName, deluxe);
+                    materialCache[kv.Key] = mat;
+
+                    // Tally ONCE per unique material (the per-page split is gone, so this now counts the
+                    // user-meaningful number: distinct lightmapped/vertex-lit/plain material families).
+                    bool onLightmapShader = mat is ShaderMaterial sm && LightmapShader.IsLightmapShader(sm.Shader);
+                    if (vertexLit) nVtx++;
+                    else if (lightmapped) { if (onLightmapShader) nLit++; else nLitMissing++; }
+                    else nPlain++;
+                    if (onLightmapShader && mat is ShaderMaterial g &&
+                        g.GetShaderParameter(LightmapShader.UseGlowUniform).AsBool()) nGlow++;
+                    // _norm-mapped surfaces (per-pixel relief under the deluxe light). A regression that drops the
+                    // LightmapDiffuse.Normal thread or the companion lookup takes this to 0 on a normal-mapped map.
+                    if (onLightmapShader && mat is ShaderMaterial nmm &&
+                        nmm.GetShaderParameter(LightmapShader.UseNormalUniform).AsBool()) nNormal++;
+                    // Translucent (alpha-blended) lightmap surfaces — glass etc. (Q3 blendFunc blend). A regression
+                    // that re-opaques these (e.g. losing the LightmapDiffuse.Translucent thread) drops this to 0.
+                    if (mat is ShaderMaterial tr && tr.Shader == LightmapShader.TranslucentShader) nTrans++;
+                }
+                cellMesh.SurfaceSetMaterial(surfaceIndex, mat); // facade never returns null (checkerboard fallback)
+                surfaceIndex++;
+                drawSurfaces++;
+            }
+            if (surfaceIndex == 0)
                 continue;
 
-            bool lightmapped = kv.Key.LightmapIndex >= 0;
-            bool vertexLit = kv.Key.LightmapIndex == VertexLitKey;
-            // The lightmap shader reads a per-surface tangent frame for the deluxemap directional diffuse term
-            // (DP MODE_LIGHTDIRECTIONMAP_MODELSPACE). Generate tangents for every lightmapped surface so that
-            // shader's TANGENT/BINORMAL inputs are always backed by real mesh data; on a non-deluxemapped map
-            // they go unused (use_deluxemap is off) for only a little load-time work. Vertex-lit surfaces carry
-            // a COLOR array instead (their modulation source); lightmapped surfaces carry UV2.
-            PackSurface(mesh, sb, lightmapped, withTangents: lightmapped, withColor: vertexLit);
-            Material mat = ResolveSurfaceMaterial(bsp, assets, kv.Key, mapName, deluxe);
-            mesh.SurfaceSetMaterial(surfaceIndex, mat); // facade never returns null (checkerboard fallback)
-            surfaceIndex++;
-
-            // Tally for the load-time log: a surface keyed lightmapped that did NOT come back on the lightmap
-            // shader means its page failed to load (the regression signature of the external-lightmap bug).
-            bool onLightmapShader = mat is ShaderMaterial sm && LightmapShader.IsLightmapShader(sm.Shader);
-            if (vertexLit) nVtx++;
-            else if (lightmapped) { if (onLightmapShader) nLit++; else nLitMissing++; }
-            else nPlain++;
-            if (onLightmapShader && mat is ShaderMaterial g &&
-                g.GetShaderParameter(LightmapShader.UseGlowUniform).AsBool()) nGlow++;
-            // _norm-mapped surfaces (per-pixel relief under the deluxe light). A regression that drops the
-            // LightmapDiffuse.Normal thread or the companion lookup takes this to 0 on a normal-mapped map.
-            if (onLightmapShader && mat is ShaderMaterial nmm &&
-                nmm.GetShaderParameter(LightmapShader.UseNormalUniform).AsBool()) nNormal++;
-            // Translucent (alpha-blended) lightmap surfaces — glass etc. (Q3 blendFunc blend). A regression
-            // that re-opaques these (e.g. losing the LightmapDiffuse.Translucent thread) drops this to 0.
-            if (mat is ShaderMaterial tr && tr.Shader == LightmapShader.TranslucentShader) nTrans++;
+            // The world never casts realtime shadows: static shadowing is lightmap-authoritative (the
+            // LightmapShader is unshaded, so the sun's cascades can't change the world's own look anyway), and
+            // keeping the map out of the directional shadow pass saves re-rendering every surface into every
+            // cascade each frame. Trade-off: dynamic-model shadows are no longer occluded by world geometry
+            // (a player indoors keeps a sun shadow — consistent with the sun already lighting models indoors).
+            root.AddChild(new MeshInstance3D
+            {
+                Name = $"Geometry_{cellKv.Key.X}_{cellKv.Key.Y}_{cellKv.Key.Z}",
+                Mesh = cellMesh,
+                CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+            });
+            cellCount++;
         }
 
         // Surface-material summary — guards the external-lightmap wiring (lightmapped=0 or a non-zero
         // lightmapMissing on a stock map means lightmaps stopped binding; see LoadLightmap / the map-name thread).
-        GD.Print($"[MapLoader] '{mapName}' surfaces: lightmapped={nLit} vertexLit={nVtx} plain={nPlain}" +
+        GD.Print($"[MapLoader] '{mapName}' materials: lightmapped={nLit} vertexLit={nVtx} plain={nPlain}" +
                  (nLitMissing > 0 ? $" lightmapMissing={nLitMissing}" : string.Empty) +
                  (nTrans > 0 ? $" translucent={nTrans}" : string.Empty) +
-                 $" glow={nGlow} normalMapped={nNormal} (deluxe={deluxe}, internalPages={bsp.Lightmaps.Length})");
+                 $" glow={nGlow} normalMapped={nNormal} (deluxe={deluxe}, internalPages={bsp.Lightmaps.Length}" +
+                 $", atlas={(atlas is not null ? $"{atlas.PageCount}p" : "none")}, cells={cellCount}, surfaces={drawSurfaces})");
 
-        // The world never casts realtime shadows: static shadowing is lightmap-authoritative (the
-        // LightmapShader is unshaded, so the sun's cascades can't change the world's own look anyway), and
-        // keeping the map out of the directional shadow pass saves re-rendering every surface into every
-        // cascade each frame. Trade-off: dynamic-model shadows are no longer occluded by world geometry
-        // (a player indoors keeps a sun shadow — consistent with the sun already lighting models indoors).
-        var mi = new MeshInstance3D
-        {
-            Name = "Geometry",
-            Mesh = mesh,
-            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
-        };
-        root.AddChild(mi);
         return root;
     }
 
@@ -440,6 +500,253 @@ public static class MapLoader
         }
 
         return assets.ResolveMaterial(shaderName);
+    }
+
+    // =================================================================================================
+    //  (§12.5 R5) Lightmap atlas + spatial regroup
+    // =================================================================================================
+
+    /// <summary>Gutter width (px) around each atlas cell, filled with replicated page edges.</summary>
+    private const int AtlasGutter = 2;
+
+    /// <summary>
+    /// Pack every lightmap page the bucketed surfaces actually reference (plus, on a deluxemapped map, the
+    /// paired light-direction pages into a SECOND atlas with the identical layout) and record each page's
+    /// UV2 offset+scale. Returns null when no page loads (the caller then keeps today's degrade path).
+    /// </summary>
+    private static LightmapAtlas? BuildLightmapAtlas(BspData bsp, AssetSystem assets, string mapName,
+        bool deluxe, IEnumerable<SurfaceKey> usedKeys)
+    {
+        // Distinct used pages, ordered for a deterministic layout.
+        var pages = new List<int>();
+        foreach (SurfaceKey key in usedKeys)
+            if (key.LightmapIndex >= 0 && !pages.Contains(key.LightmapIndex))
+                pages.Add(key.LightmapIndex);
+        if (pages.Count == 0)
+            return null;
+        pages.Sort();
+
+        // Load every page as a CPU Image (internal lump bytes or the external lm_NNNN file).
+        var pageImages = new Dictionary<int, Image>();
+        var deluxeImages = new Dictionary<int, Image>();
+        int maxW = 0, maxH = 0;
+        foreach (int k in pages)
+        {
+            Image? img = LoadLightmapImage(bsp, assets, k, mapName, deluxe);
+            if (img is null)
+                continue; // a missing page keeps its surfaces on the degrade path below
+            if (img.GetFormat() != Image.Format.Rgb8)
+                img.Convert(Image.Format.Rgb8);
+            pageImages[k] = img;
+            maxW = Math.Max(maxW, img.GetWidth());
+            maxH = Math.Max(maxH, img.GetHeight());
+
+            if (deluxe && LoadDeluxemapImage(bsp, assets, k, mapName) is { } dimg)
+            {
+                if (dimg.GetFormat() != Image.Format.Rgb8)
+                    dimg.Convert(Image.Format.Rgb8);
+                deluxeImages[k] = dimg;
+            }
+        }
+        if (pageImages.Count == 0)
+            return null;
+
+        int cols = (int)Math.Ceiling(Math.Sqrt(pageImages.Count));
+        int rows = (int)Math.Ceiling(pageImages.Count / (double)cols);
+        int cellW = maxW + 2 * AtlasGutter, cellH = maxH + 2 * AtlasGutter;
+        int atlasW = cols * cellW, atlasH = rows * cellH;
+
+        Image atlasImg = Image.CreateEmpty(atlasW, atlasH, false, Image.Format.Rgb8);
+        // Deluxe atlas (same layout). Cells with no deluxe page stay at the NEUTRAL "straight up" direction
+        // (128,128,255 → unit +Z) so the shader's 1/max(0.25, z) rescale is exactly 1 there — a defensively
+        // missing deluxe page must not brighten or darken its surfaces.
+        Image? deluxeImg = null;
+        if (deluxe && deluxeImages.Count > 0)
+        {
+            deluxeImg = Image.CreateEmpty(atlasW, atlasH, false, Image.Format.Rgb8);
+            deluxeImg.Fill(new Color(128f / 255f, 128f / 255f, 1f));
+        }
+
+        var atlas = new LightmapAtlas();
+        int slot = 0;
+        foreach (int k in pages)
+        {
+            if (!pageImages.TryGetValue(k, out Image? img))
+                continue;
+            int cx = slot % cols, cy = slot / cols;
+            int x = cx * cellW + AtlasGutter, y = cy * cellH + AtlasGutter;
+            int w = img.GetWidth(), h = img.GetHeight();
+
+            BlitWithGutter(atlasImg, img, x, y, w, h);
+            if (deluxeImg is not null && deluxeImages.TryGetValue(k, out Image? dimg))
+                BlitWithGutter(deluxeImg, dimg, x, y, w, h);
+
+            atlas.PageUv[k] = (new Vector2((float)x / atlasW, (float)y / atlasH),
+                               new Vector2((float)w / atlasW, (float)h / atlasH));
+            slot++;
+        }
+
+        atlas.Lightmap = ImageTexture.CreateFromImage(atlasImg);
+        if (deluxeImg is not null)
+            atlas.Deluxe = ImageTexture.CreateFromImage(deluxeImg);
+        return atlas;
+    }
+
+    /// <summary>Blit a page at (x, y) and fill the <see cref="AtlasGutter"/> ring around it with replicated
+    /// edge texels (rows/columns/corners) — bilinear CLAMP semantics across cell borders.</summary>
+    private static void BlitWithGutter(Image atlas, Image page, int x, int y, int w, int h)
+    {
+        atlas.BlitRect(page, new Rect2I(0, 0, w, h), new Vector2I(x, y));
+        for (int g = 1; g <= AtlasGutter; g++)
+        {
+            atlas.BlitRect(page, new Rect2I(0, 0, w, 1), new Vector2I(x, y - g));          // top edge
+            atlas.BlitRect(page, new Rect2I(0, h - 1, w, 1), new Vector2I(x, y + h + g - 1)); // bottom
+            atlas.BlitRect(page, new Rect2I(0, 0, 1, h), new Vector2I(x - g, y));          // left
+            atlas.BlitRect(page, new Rect2I(w - 1, 0, 1, h), new Vector2I(x + w + g - 1, y)); // right
+        }
+        for (int gy = 1; gy <= AtlasGutter; gy++)
+            for (int gx = 1; gx <= AtlasGutter; gx++)
+            {
+                atlas.BlitRect(page, new Rect2I(0, 0, 1, 1), new Vector2I(x - gx, y - gy));                  // corners
+                atlas.BlitRect(page, new Rect2I(w - 1, 0, 1, 1), new Vector2I(x + w + gx - 1, y - gy));
+                atlas.BlitRect(page, new Rect2I(0, h - 1, 1, 1), new Vector2I(x - gx, y + h + gy - 1));
+                atlas.BlitRect(page, new Rect2I(w - 1, h - 1, 1, 1), new Vector2I(x + w + gx - 1, y + h + gy - 1));
+            }
+    }
+
+    /// <summary>The CPU <see cref="Image"/> for a de-interleaved lightmap slot (internal bytes or the
+    /// external <c>lm_NNNN</c> file) — the atlas-side mirror of <see cref="LoadLightmap"/>.</summary>
+    private static Image? LoadLightmapImage(BspData bsp, AssetSystem assets, int lightmapIndex, string mapName, bool deluxe)
+    {
+        if (bsp.Lightmaps.Length > 0)
+        {
+            if (lightmapIndex < 0 || lightmapIndex >= bsp.Lightmaps.Length)
+                return null;
+            return PageToImage(bsp.Lightmaps[lightmapIndex], bsp.LightmapWidth, bsp.LightmapHeight);
+        }
+        if (!string.IsNullOrEmpty(mapName))
+        {
+            int fileIndex = deluxe ? lightmapIndex * 2 : lightmapIndex;
+            return assets.LoadImage($"maps/{ExternalLightmapBaseName(mapName)}/lm_{fileIndex:0000}");
+        }
+        return null;
+    }
+
+    /// <summary>The CPU <see cref="Image"/> for a slot's deluxe pair — the atlas-side mirror of
+    /// <see cref="LoadDeluxemap"/> (call only on a deluxemapped map).</summary>
+    private static Image? LoadDeluxemapImage(BspData bsp, AssetSystem assets, int lightmapIndex, string mapName)
+    {
+        if (bsp.Deluxemaps.Length > 0)
+        {
+            if (lightmapIndex < 0 || lightmapIndex >= bsp.Deluxemaps.Length)
+                return null;
+            byte[]? page = bsp.Deluxemaps[lightmapIndex];
+            return page is null ? null : PageToImage(page, bsp.LightmapWidth, bsp.LightmapHeight);
+        }
+        if (!string.IsNullOrEmpty(mapName))
+            return assets.LoadImage($"maps/{ExternalLightmapBaseName(mapName)}/lm_{lightmapIndex * 2 + 1:0000}");
+        return null;
+    }
+
+    /// <summary>Raw tightly-packed RGB page bytes → an <see cref="Image"/> (pad/clip defensively).</summary>
+    private static Image PageToImage(byte[] page, int width, int height)
+    {
+        int needed = width * height * 3;
+        byte[] data = page;
+        if (page.Length != needed)
+        {
+            data = new byte[needed];
+            Array.Copy(page, data, Math.Min(page.Length, needed));
+        }
+        return Image.CreateFromData(width, height, false, Image.Format.Rgb8, data);
+    }
+
+    /// <summary>
+    /// Repack the bucketed surfaces into spatial cells (R5a) while merging per-page lightmap buckets onto the
+    /// atlas key (R5b, UV2 remapped per page). Pure data movement — appends upstream are untouched, geometry
+    /// is unchanged; triangles bin by centroid; vertex sharing is preserved per (source, target) pair.
+    /// Surfaces whose page missed the atlas (or when there is no atlas) keep their original key/UVs.
+    /// </summary>
+    private static Dictionary<CellKey, Dictionary<SurfaceKey, SurfaceBuilder>> RegroupIntoCells(
+        Dictionary<SurfaceKey, SurfaceBuilder> surfaces, LightmapAtlas? atlas)
+    {
+        var cells = new Dictionary<CellKey, Dictionary<SurfaceKey, SurfaceBuilder>>();
+        var remap = new Dictionary<(CellKey Cell, int OldIndex), int>();   // vertex dedup per source bucket
+
+        foreach (var kv in surfaces)
+        {
+            SurfaceBuilder src = kv.Value;
+            if (src.Indices.Count == 0)
+                continue;
+
+            // Merge lightmapped pages onto the atlas key when this page made it into the atlas.
+            SurfaceKey targetKey = kv.Key;
+            (Vector2 Offset, Vector2 Scale) uv = (Vector2.Zero, Vector2.One);
+            if (atlas is not null && kv.Key.LightmapIndex >= 0
+                && atlas.PageUv.TryGetValue(kv.Key.LightmapIndex, out var pageUv))
+            {
+                targetKey = new SurfaceKey(kv.Key.TextureIndex, AtlasLitKey);
+                uv = pageUv;
+            }
+
+            remap.Clear();
+            bool hasColor = src.Colors.Count > 0;
+            for (int i = 0; i + 2 < src.Indices.Count; i += 3)
+            {
+                int a = src.Indices[i], b = src.Indices[i + 1], c = src.Indices[i + 2];
+                Vector3 centroid = (src.Positions[a] + src.Positions[b] + src.Positions[c]) / 3f;
+                var cell = new CellKey(
+                    (int)MathF.Floor(centroid.X / WorldCellSize),
+                    (int)MathF.Floor(centroid.Y / WorldCellSize),
+                    (int)MathF.Floor(centroid.Z / WorldCellSize));
+
+                if (!cells.TryGetValue(cell, out Dictionary<SurfaceKey, SurfaceBuilder>? cellSurfaces))
+                    cells[cell] = cellSurfaces = new Dictionary<SurfaceKey, SurfaceBuilder>();
+                if (!cellSurfaces.TryGetValue(targetKey, out SurfaceBuilder? dst))
+                    cellSurfaces[targetKey] = dst = new SurfaceBuilder();
+
+                dst.Indices.Add(CopyVertex(src, dst, a, cell, remap, uv, hasColor));
+                dst.Indices.Add(CopyVertex(src, dst, b, cell, remap, uv, hasColor));
+                dst.Indices.Add(CopyVertex(src, dst, c, cell, remap, uv, hasColor));
+            }
+        }
+        return cells;
+    }
+
+    /// <summary>Copy one vertex from a source bucket into a cell's target builder (memoized per
+    /// (cell, source index)), remapping UV2 into atlas space on the way.</summary>
+    private static int CopyVertex(SurfaceBuilder src, SurfaceBuilder dst, int index, CellKey cell,
+        Dictionary<(CellKey, int), int> remap, (Vector2 Offset, Vector2 Scale) uv, bool hasColor)
+    {
+        if (remap.TryGetValue((cell, index), out int mapped))
+            return mapped;
+        int n = dst.Positions.Count;
+        dst.Positions.Add(src.Positions[index]);
+        dst.Normals.Add(src.Normals[index]);
+        dst.Uvs.Add(src.Uvs[index]);
+        if (index < src.Uv2.Count)
+        {
+            Vector2 v = src.Uv2[index];
+            dst.Uv2.Add(uv.Offset + new Vector2(v.X * uv.Scale.X, v.Y * uv.Scale.Y));
+        }
+        if (hasColor && index < src.Colors.Count)
+            dst.Colors.Add(src.Colors[index]);
+        remap[(cell, index)] = n;
+        return n;
+    }
+
+    /// <summary>The shared material for an atlas-merged lightmapped surface family (one per texture): the
+    /// regular lightmap-shader build, but bound to the ATLAS textures instead of a single page.</summary>
+    private static Material ResolveAtlasSurfaceMaterial(BspData bsp, AssetSystem assets, int textureIndex,
+        LightmapAtlas atlas)
+    {
+        string shaderName = (textureIndex >= 0 && textureIndex < bsp.Textures.Length)
+            ? bsp.Textures[textureIndex].ShaderName
+            : string.Empty;
+        AssetSystem.LightmapDiffuse diffuse = assets.ResolveLightmapDiffuse(shaderName);
+        return LightmapShader.MakeMaterial(diffuse.Texture, atlas.Lightmap, deluxemap: atlas.Deluxe,
+            albedoUvScale: diffuse.UvScale, alphaCutoff: diffuse.AlphaCutoff, glow: diffuse.Glow,
+            translucent: diffuse.Translucent, normal: diffuse.Normal, gloss: diffuse.Gloss);
     }
 
     /// <summary>
