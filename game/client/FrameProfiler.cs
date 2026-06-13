@@ -422,10 +422,11 @@ public partial class FrameProfiler : CanvasLayer
     /// for plotting a stutter pattern offline.</summary>
     private void DumpRingCsv()
     {
-        using var f = Godot.FileAccess.Open("user://frameprofile_ring.csv", Godot.FileAccess.ModeFlags.Write);
+        string ringPath = UserPaths.Resolve("frameprofile_ring.csv");
+        using var f = Godot.FileAccess.Open(ringPath, Godot.FileAccess.ModeFlags.Write);
         if (f is null)
         {
-            Log.Info("[frameprofiler] ring dump FAILED (couldn't open user://frameprofile_ring.csv)");
+            Log.Info($"[frameprofiler] ring dump FAILED (couldn't open {ringPath})");
             return;
         }
         f.StoreLine("frame,ms,proc_ms,rcpu_ms,gpu_ms,phys_ms,rest_ms,alloc_kb,gc0,gc1,gc2,gc_pause_ms," +
@@ -444,7 +445,7 @@ public partial class FrameProfiler : CanvasLayer
                         $"{r.DrawCalls:0},{r.PipeCompiles},{r.PipeCompilesUber},{t1},{t2},{t3}," +
                         Csv(string.Join("; ", r.Events)));
         }
-        Log.Info($"[frameprofiler] ring dumped: {_ringCount} frames -> user://frameprofile_ring.csv");
+        Log.Info($"[frameprofiler] ring dumped: {_ringCount} frames -> {ringPath}");
     }
 
     private static string Csv(string s)
@@ -464,7 +465,7 @@ public partial class FrameProfiler : CanvasLayer
         if (_logFile is null && !_logOpenTried)
         {
             _logOpenTried = true;
-            _logFile = Godot.FileAccess.Open("user://frameprofile.log", Godot.FileAccess.ModeFlags.Write);
+            _logFile = Godot.FileAccess.Open(UserPaths.Resolve("frameprofile.log"), Godot.FileAccess.ModeFlags.Write);
         }
         if (_logFile is not null)
         {

@@ -1,0 +1,2461 @@
+# Console Variables (cvars) — inventory & conventions
+
+> **This document is regenerated, not hand-maintained.** The full inventory at the
+> bottom is produced by [`tools/find-cvars.py`](tools/find-cvars.py), a source
+> scanner. Regenerate the whole "Full inventory" section with:
+>
+> ```sh
+> python tools/find-cvars.py --markdown          # the inventory block below
+> python tools/find-cvars.py                      # grouped text report + cross-boundary/unregistered
+> python tools/find-cvars.py --json               # machine-readable (name → group, scopes, locations)
+> python tools/find-cvars.py --show-rejects       # audit: names filtered out of a cvar context
+> python tools/find-cvars.py --include-tests       # also scan tests/
+> ```
+>
+> The analysis sections above the inventory are hand-written; update them when a
+> convention changes. The scanner reads `src/` and `game/` (`.cs` only), skips
+> `.claude/`, `.godot/`, `obj/`, `bin/`, and the worktree copies.
+
+As of the last run: **2208 distinct cvars**. The count is high because the weapon /
+monster / turret / vehicle **balance** corpus (`g_balance_*`, `g_monsters_*`, …) is
+read by the gameplay code as string literals (e.g.
+[`Vortex.cs`](src/XonoticGodot.Common/Gameplay/Weapons/Vortex.cs),
+[`Arc.cs`](src/XonoticGodot.Common/Gameplay/Weapons/Arc.cs)) — those reads are
+counted even though most of those cvars are never `Register()`-ed in C# (their
+values come from the shipped `.cfg` tree).
+
+## How cvars live here
+
+There is **no single registry**. Defaults are stamped from several places, and most
+cvars are merely *read* through one facade (`Api.Cvars` / the `Cvars.*` helpers →
+`ICvarService`, [Services.cs](src/XonoticGodot.Common/Services/Services.cs)):
+
+| Site | What it registers |
+|---|---|
+| [`Cvars.Defaults`](src/XonoticGodot.Server/Cvars.cs) (`new("name", …)` table) | core server / match / bot / item defaults |
+| [`ParticleCvars`](src/XonoticGodot.Engine/Particles/ParticleCvars.cs) + [`ClientSettings`](game/menu/framework/ClientSettings.cs) | particle, video, audio, and stock engine-client cvars |
+| ~30 per-subsystem `RegisterDefaults` | every HUD panel, `crosshair_*`, vignette, reticle, chat, frame-profiler, … |
+| read-only (no registration) | the balance corpus + many `sv_*` movement tunables — values come from `.cfg` or `MovementParameters` fallbacks |
+
+**1498 of the 2208 are read but never registered in C#.** Most are intentional (the
+balance corpus and the per-tick `sv_*` movement tunables, whose single source of
+truth is [`MovementParameters.FromCvars`](src/XonoticGodot.Common/Physics/MovementParameters.cs)
+fallbacks + the shipped cfgs). `--show-rejects` and the "read but never registered"
+list in the text report are the audit tools for finding genuinely *invisible* ones.
+
+## What each prefix means (and should mean)
+
+The central rule: **a prefix denotes which side is *authoritative* for the value —
+not which process's code reads it.** A server-owned cvar read on the client (for
+prediction/HUD) and a client-owned cvar read on the server (per-client preference)
+are both normal; see [Cross-boundary cvars](#cross-boundary-cvars).
+
+| Prefix | Meaning / should-mean | Authority | Count | Example |
+|---|---|---|---|---|
+| `g_` | **Gameplay logic** — match rules, balance, mutators, items/powerups, bans, chat policy, maplist | Server | 1278 | `g_balance_*`, `g_instagib`, `g_maplist`, `g_friendlyfire` |
+| `hud_panel_` | Per-panel HUD layout/behaviour (`hud_panel_<id>_*`) | Client | 214 | `hud_panel_physics_speed_max` |
+| `cl_` | **Client settings / preferences / feel** | Client | 200 | `cl_particles`, `cl_zoomfactor`, `cl_weaponpriority` |
+| `sv_` | **Server settings + movement physics** | Server | 140 | `sv_gravity`, `sv_maxspeed`, `sv_vote_*` |
+| `hud_` | Global HUD config (skin, dock, colorset, progressbars) | Client | 75 | `hud_skin`, `hud_progressbar_alpha` |
+| `crosshair_` | Crosshair appearance/behaviour | Client | 48 | `crosshair_ring_vortex` |
+| `bot_` | Bot management & AI tuning | Server | 48 | `bot_number`, `bot_ai_thinkinterval` |
+| `menu_` | Menu / server-browser UI state | Client | 46 | `menu_slist_showfull`, `menu_skin` |
+| `r_` | Renderer | Client | 37 | `r_drawparticles_*`, `r_map_tint` |
+| `snd_` | Sound mixer / spatialization | Client | 20 | `snd_channel0volume`, `snd_attenuation_exponent` |
+| `vid_` | Video / display mode | Client | 9 | `vid_fullscreen`, `vid_vsync` |
+| `scr_` | Screen / screenshot | Client | 8 | `scr_screenshot_jpeg` |
+| `con_` | Console (chat overlay) | Client | 5 | `con_chatsize` |
+| `in_` | Input bindings | Client | 5 | `in_bind`, `in_pitch_min` |
+| `m_` | Mouse input | Client | 5 | `m_pitch` |
+| `gl_` | OpenGL / texture quality | Client | 4 | `gl_picmip`, `gl_texturecompression` |
+| `sys_` | System / OS | Client | 4 | `sys_priority_boost` |
+| `net_` | Networking | Both | 3 | `net_slist_pause` |
+| `music_` | Media-player playlist | Client | 2 | `music_playlist_list0` |
+| `joy_` | Joystick | Client | 2 | `joy_enable` |
+| `prvm_` | QuakeC VM | Engine | 1 | `prvm_language` |
+| `_`-leading | **Private / internal / transient** — set by code, not user-facing | Either | 16 | `_cl_name`, `_hud_configure`, `_campaign_index` |
+| *(bare)* | **Legacy Quake-era** cvars predating the prefix convention | Mixed | 38 | `timelimit`, `teamplay`, `skill`, `fov`, `developer` |
+
+## The authority model & the two replication paths
+
+Cvars cross the client/server line through two deliberate mechanisms:
+
+- **`sv_*` physics flows DOWN.** [`MovementParameters.FromCvars`](src/XonoticGodot.Common/Physics/MovementParameters.cs)
+  reads ~45 `sv_*` movement cvars and runs on **both** the authoritative server tick
+  *and* the client's prediction replay. The server's live values are replicated to
+  the client each snapshot via
+  [`MoveVarsBlock`](src/XonoticGodot.Net/MoveVarsBlock.cs) (`MovementCvars` is the
+  wire list), so the client predicts with identical inputs. The StrafeHUD
+  ([`StrafeHudPanel.cs`](game/hud/StrafeHudPanel.cs)) reads the same set to draw its
+  guide. Server-authoritative; client mirrors a replicated copy.
+- **`cl_*` preferences flow UP.** The `sentcvar` system
+  ([`Commands.cs`](src/XonoticGodot.Server/Commands.cs)) lets a client push an
+  **allowlisted** `cl_*` cvar to the server, stored **per-client** (never the world
+  store — privilege separation, see
+  [`CvarReplicationTests`](tests/XonoticGodot.Tests/CvarReplicationTests.cs)). The
+  allowlist is `cl_weaponpriority`(`0`–`9`), `cl_autoswitch`(`_cts`), `cl_noantilag`,
+  `cl_physics`, `cl_movement_track_canjump`, `cl_jetpack_jump`, plus the
+  `notification_<CHOICE>` set. Client-authoritative; server reads a replicated copy.
+
+## Cross-boundary cvars
+
+The scanner flags **71** cvars read in *both* a client-only dir
+(`game/client|hud|menu|console`) and a server/shared dir
+(`src/XonoticGodot.Server|Common|Engine`). They decompose into by-design patterns,
+not violations:
+
+1. **`sv_*` movement → client** (StrafeHUD + prediction): `sv_maxspeed`,
+   `sv_accelerate`, `sv_airaccel_qw`, `sv_aircontrol*`, `sv_friction*`, `sv_gravity`,
+   … — replicated **down** via `MoveVarsBlock`. ✔ by design.
+2. **`cl_*` preferences → server** (`sentcvar`): `cl_weaponpriority`,
+   `cl_autoswitch(_cts)`, `cl_autotaunt`, `cl_weaponimpulsemode`,
+   `cl_movement_track_canjump`, `cl_jetpack_jump` — replicated **up**, per-client. ✔
+3. **`g_*` gameplay set by the menu** (`CreateGameScreen`, `DialogMutators`):
+   `g_instagib`, `g_dodging`, `g_grappling_hook`, `g_*_teams_override`, `g_maplist`,
+   … On a listen server the menu *is* the server's setup UI writing to the shared
+   store; the server reads them as authoritative. ✔ by design.
+4. **Menu-configures-server scalars**: `skill`, `bot_number`, `bot_vs_human`,
+   `g_campaign(_skill)`, `sv_gravity` (mutator dialog). ✔ same pattern as (3).
+5. **Tooling caveat (not real cross-boundary)**: `cl_particles*`, `cl_decals`,
+   `r_drawparticles_drawdistance` flag because the particle sim lives in
+   `XonoticGodot.Engine` (bucketed "shared"), but that code is **client-side
+   rendering** — these are client-authoritative. The scanner's dir→scope mapping
+   can't tell client-rendering-in-Engine from server-sim-in-Engine.
+
+## Outliers & inconsistencies
+
+**Genuine fix candidate**
+- **`cl_announcer_maptime`** is read from the server's **global** store
+  ([`GameWorld.cs`](src/XonoticGodot.Server/GameWorld.cs)) via `Cvars.FloatOr`, unlike
+  every other `cl_*` the server consumes (which go per-client through `sentcvar`).
+  Either route it per-client, or — if the server truly owns the announcement cadence
+  — it shouldn't wear a `cl_` prefix.
+
+**Historical, stock-faithful (don't rename — fidelity with upstream Xonotic configs)**
+- Bare gameplay/match cvars that are `g_`/`sv_` in spirit: `timelimit*`, `fraglimit`,
+  `leadlimit`, `teamplay(_mode)`, `skill(_auto)`, `samelevel`, `lastlevel`,
+  `minplayers(_per_team)`, `pausable`.
+- `crosshair_*` (48) and `fov` sit outside `cl_`; audio is split across bare
+  `volume`/`bgmvolume`/`mastervolume` and the `snd_*` family.
+
+**Minor**
+- `g_maxspeed` (shooting-star kill speed) vs `sv_maxspeed` (movement) — one letter
+  apart, both correct but a footgun.
+- `developer` is registered twice (server defaults + `ClientSettings`); harmless
+  (registration is idempotent).
+
+## The rule for new cvars
+
+> Ask **"who decides the authoritative value?"**
+> - Server decides & the match depends on it → `sv_` (engine/physics) or `g_`
+>   (gameplay rule). *The client may still read a replicated copy.*
+> - The player/client decides → `cl_` (or its client sub-families
+>   `crosshair_`/`hud_`/`r_`/`snd_`/`vid_`/`m_`/`scr_`/`gl_`). *The server may read a
+>   per-client replicated copy via the `sentcvar` allowlist.*
+> - Internal/transient, set by code not users → leading `_`.
+>
+> **Do not** introduce a `shared_`/`common_` prefix for cross-read cvars: "used on
+> both sides" is the replication system working, not a fourth ownership class, and a
+> neutral prefix would *erase* the authority signal. If a port-only cvar genuinely
+> needs to advertise shared/ambiguous authority, reserve **`xn_`** (the port
+> namespace) for it — but today that set is empty.
+
+## Completeness notes
+
+- **Dynamically-named families** can't be enumerated as static literals; they are not
+  individually listed below (the scanner expands `snd_channel{N}volume` → `0..9` as a
+  convenience):
+  - `g_physics_<set>_<var>` — physics-preset overrides (e.g. `g_physics_cpma_maxspeed`),
+    built in [`PhysicsPreset`](src/XonoticGodot.Common/Physics/PhysicsPreset.cs).
+  - `notification_<CHOICE>` — one per kill-message choice.
+- **Scope buckets** used for the cross-boundary signal: `client` =
+  `game/client|hud|menu|console`; `server` = `src/.Server`; `shared` =
+  `src/.Common|.Engine|.Formats`; `net` = `game/net` + `src/.Net`; everything else
+  under `game/` = `host` (the Godot boot/asset layer, excluded from the signal).
+
+---
+
+## Full inventory
+
+<!-- BEGIN GENERATED: python tools/find-cvars.py --markdown -->
+_Generated by `python tools/find-cvars.py` - 2208 distinct cvars._
+
+### `g_` (1278)
+
+- `g_allow_checkpoints`
+- `g_antilag`  _( unregistered )_
+- `g_antilag_nudge`  _( unregistered )_
+- `g_balance_arc_beam_ammo`  _( unregistered )_
+- `g_balance_arc_beam_animtime`  _( unregistered )_
+- `g_balance_arc_beam_damage`  _( unregistered )_
+- `g_balance_arc_beam_degreespersegment`  _( unregistered )_
+- `g_balance_arc_beam_distancepersegment`  _( unregistered )_
+- `g_balance_arc_beam_falloff_halflifedist`  _( unregistered )_
+- `g_balance_arc_beam_falloff_maxdist`  _( unregistered )_
+- `g_balance_arc_beam_falloff_mindist`  _( unregistered )_
+- `g_balance_arc_beam_force`  _( unregistered )_
+- `g_balance_arc_beam_healing_amax`  _( unregistered )_
+- `g_balance_arc_beam_healing_aps`  _( unregistered )_
+- `g_balance_arc_beam_healing_hmax`  _( unregistered )_
+- `g_balance_arc_beam_healing_hps`  _( unregistered )_
+- `g_balance_arc_beam_heat`  _( unregistered )_
+- `g_balance_arc_beam_maxangle`  _( unregistered )_
+- `g_balance_arc_beam_nonplayerdamage`  _( unregistered )_
+- `g_balance_arc_beam_range`  _( unregistered )_
+- `g_balance_arc_beam_refire`  _( unregistered )_
+- `g_balance_arc_beam_returnspeed`  _( unregistered )_
+- `g_balance_arc_beam_tightness`  _( unregistered )_
+- `g_balance_arc_bolt`  _( unregistered )_
+- `g_balance_arc_bolt_ammo`  _( unregistered )_
+- `g_balance_arc_bolt_bounce_count`  _( unregistered )_
+- `g_balance_arc_bolt_bounce_explode`  _( unregistered )_
+- `g_balance_arc_bolt_bounce_lifetime`  _( unregistered )_
+- `g_balance_arc_bolt_count`  _( unregistered )_
+- `g_balance_arc_bolt_damage`  _( unregistered )_
+- `g_balance_arc_bolt_damageforcescale`  _( unregistered )_
+- `g_balance_arc_bolt_edgedamage`  _( unregistered )_
+- `g_balance_arc_bolt_force`  _( unregistered )_
+- `g_balance_arc_bolt_health`  _( unregistered )_
+- `g_balance_arc_bolt_lifetime`  _( unregistered )_
+- `g_balance_arc_bolt_radius`  _( unregistered )_
+- `g_balance_arc_bolt_refire`  _( unregistered )_
+- `g_balance_arc_bolt_refire2`  _( unregistered )_
+- `g_balance_arc_bolt_speed`  _( unregistered )_
+- `g_balance_arc_bolt_spread`  _( unregistered )_
+- `g_balance_arc_burst_ammo`  _( unregistered )_
+- `g_balance_arc_burst_damage`  _( unregistered )_
+- `g_balance_arc_burst_healing_aps`  _( unregistered )_
+- `g_balance_arc_burst_healing_hps`  _( unregistered )_
+- `g_balance_arc_burst_heat`  _( unregistered )_
+- `g_balance_arc_cooldown`  _( unregistered )_
+- `g_balance_arc_cooldown_release`  _( unregistered )_
+- `g_balance_arc_overheat_max`  _( unregistered )_
+- `g_balance_arc_overheat_min`  _( unregistered )_
+- `g_balance_armor_blockpercent`
+- `g_balance_armor_limit`
+- `g_balance_armor_regen`
+- `g_balance_armor_regenlinear`
+- `g_balance_armor_regenstable`
+- `g_balance_armor_rot`
+- `g_balance_armor_rotlinear`
+- `g_balance_armor_rotstable`
+- `g_balance_armor_start`
+- `g_balance_blaster_primary_animtime`  _( unregistered )_
+- `g_balance_blaster_primary_damage`  _( unregistered )_
+- `g_balance_blaster_primary_delay`  _( unregistered )_
+- `g_balance_blaster_primary_edgedamage`  _( unregistered )_
+- `g_balance_blaster_primary_force`  _( unregistered )_
+- `g_balance_blaster_primary_force_zscale`  _( unregistered )_
+- `g_balance_blaster_primary_lifetime`  _( unregistered )_
+- `g_balance_blaster_primary_radius`  _( unregistered )_
+- `g_balance_blaster_primary_refire`  _( unregistered )_
+- `g_balance_blaster_primary_shotangle`  _( unregistered )_
+- `g_balance_blaster_primary_speed`  _( unregistered )_
+- `g_balance_blaster_primary_spread`  _( unregistered )_
+- `g_balance_blaster_weaponstartoverride`  _( unregistered )_
+- `g_balance_cloaked_alpha`  _( unregistered )_
+- `g_balance_contents_damagerate`
+- `g_balance_contents_drowndelay`
+- `g_balance_contents_playerdamage_drowning`
+- `g_balance_contents_playerdamage_lava`
+- `g_balance_contents_playerdamage_lava_burn`
+- `g_balance_contents_playerdamage_lava_burn_time`
+- `g_balance_contents_playerdamage_slime`
+- `g_balance_contents_projectiledamage`
+- `g_balance_crylink_primary_ammo`  _( unregistered )_
+- `g_balance_crylink_primary_animtime`  _( unregistered )_
+- `g_balance_crylink_primary_bouncedamagefactor`  _( unregistered )_
+- `g_balance_crylink_primary_bounces`  _( unregistered )_
+- `g_balance_crylink_primary_damage`  _( unregistered )_
+- `g_balance_crylink_primary_edgedamage`  _( unregistered )_
+- `g_balance_crylink_primary_force`  _( unregistered )_
+- `g_balance_crylink_primary_joindelay`  _( unregistered )_
+- `g_balance_crylink_primary_joinspread`  _( unregistered )_
+- `g_balance_crylink_primary_linkexplode`  _( unregistered )_
+- `g_balance_crylink_primary_middle_lifetime`  _( unregistered )_
+- `g_balance_crylink_primary_other_lifetime`  _( unregistered )_
+- `g_balance_crylink_primary_radius`  _( unregistered )_
+- `g_balance_crylink_primary_refire`  _( unregistered )_
+- `g_balance_crylink_primary_shots`  _( unregistered )_
+- `g_balance_crylink_primary_speed`  _( unregistered )_
+- `g_balance_crylink_primary_spread`  _( unregistered )_
+- `g_balance_crylink_secondary`  _( unregistered )_
+- `g_balance_crylink_secondary_ammo`  _( unregistered )_
+- `g_balance_crylink_secondary_animtime`  _( unregistered )_
+- `g_balance_crylink_secondary_bouncedamagefactor`  _( unregistered )_
+- `g_balance_crylink_secondary_bounces`  _( unregistered )_
+- `g_balance_crylink_secondary_damage`  _( unregistered )_
+- `g_balance_crylink_secondary_edgedamage`  _( unregistered )_
+- `g_balance_crylink_secondary_force`  _( unregistered )_
+- `g_balance_crylink_secondary_joindelay`  _( unregistered )_
+- `g_balance_crylink_secondary_joinspread`  _( unregistered )_
+- `g_balance_crylink_secondary_linkexplode`  _( unregistered )_
+- `g_balance_crylink_secondary_middle_lifetime`  _( unregistered )_
+- `g_balance_crylink_secondary_other_lifetime`  _( unregistered )_
+- `g_balance_crylink_secondary_radius`  _( unregistered )_
+- `g_balance_crylink_secondary_refire`  _( unregistered )_
+- `g_balance_crylink_secondary_shots`  _( unregistered )_
+- `g_balance_crylink_secondary_speed`  _( unregistered )_
+- `g_balance_crylink_secondary_spread`  _( unregistered )_
+- `g_balance_crylink_secondary_spreadtype`  _( unregistered )_
+- `g_balance_damagepush_speedfactor`
+- `g_balance_devastator_ammo`  _( unregistered )_
+- `g_balance_devastator_animtime`  _( unregistered )_
+- `g_balance_devastator_damage`  _( unregistered )_
+- `g_balance_devastator_damageforcescale`  _( unregistered )_
+- `g_balance_devastator_detonatedelay`  _( unregistered )_
+- `g_balance_devastator_edgedamage`  _( unregistered )_
+- `g_balance_devastator_force`  _( unregistered )_
+- `g_balance_devastator_force_xyscale`  _( unregistered )_
+- `g_balance_devastator_guidedelay`  _( unregistered )_
+- `g_balance_devastator_guidegoal`  _( unregistered )_
+- `g_balance_devastator_guiderate`  _( unregistered )_
+- `g_balance_devastator_guideratedelay`  _( unregistered )_
+- `g_balance_devastator_guidestop`  _( unregistered )_
+- `g_balance_devastator_health`  _( unregistered )_
+- `g_balance_devastator_lifetime`  _( unregistered )_
+- `g_balance_devastator_radius`  _( unregistered )_
+- `g_balance_devastator_refire`  _( unregistered )_
+- `g_balance_devastator_remote_damage`  _( unregistered )_
+- `g_balance_devastator_remote_edgedamage`  _( unregistered )_
+- `g_balance_devastator_remote_force`  _( unregistered )_
+- `g_balance_devastator_remote_radius`  _( unregistered )_
+- `g_balance_devastator_speed`  _( unregistered )_
+- `g_balance_devastator_speedaccel`  _( unregistered )_
+- `g_balance_devastator_speedstart`  _( unregistered )_
+- `g_balance_electro_combo_comboradius`  _( unregistered )_
+- `g_balance_electro_combo_damage`  _( unregistered )_
+- `g_balance_electro_combo_edgedamage`  _( unregistered )_
+- `g_balance_electro_combo_force`  _( unregistered )_
+- `g_balance_electro_combo_radius`  _( unregistered )_
+- `g_balance_electro_primary_ammo`  _( unregistered )_
+- `g_balance_electro_primary_animtime`  _( unregistered )_
+- `g_balance_electro_primary_comboradius`  _( unregistered )_
+- `g_balance_electro_primary_damage`  _( unregistered )_
+- `g_balance_electro_primary_edgedamage`  _( unregistered )_
+- `g_balance_electro_primary_force`  _( unregistered )_
+- `g_balance_electro_primary_lifetime`  _( unregistered )_
+- `g_balance_electro_primary_midaircombo_explode`  _( unregistered )_
+- `g_balance_electro_primary_midaircombo_radius`  _( unregistered )_
+- `g_balance_electro_primary_radius`  _( unregistered )_
+- `g_balance_electro_primary_refire`  _( unregistered )_
+- `g_balance_electro_primary_speed`  _( unregistered )_
+- `g_balance_electro_secondary_ammo`  _( unregistered )_
+- `g_balance_electro_secondary_animtime`  _( unregistered )_
+- `g_balance_electro_secondary_bouncefactor`  _( unregistered )_
+- `g_balance_electro_secondary_bouncestop`  _( unregistered )_
+- `g_balance_electro_secondary_count`  _( unregistered )_
+- `g_balance_electro_secondary_damage`  _( unregistered )_
+- `g_balance_electro_secondary_damageforcescale`  _( unregistered )_
+- `g_balance_electro_secondary_edgedamage`  _( unregistered )_
+- `g_balance_electro_secondary_force`  _( unregistered )_
+- `g_balance_electro_secondary_health`  _( unregistered )_
+- `g_balance_electro_secondary_lifetime`  _( unregistered )_
+- `g_balance_electro_secondary_radius`  _( unregistered )_
+- `g_balance_electro_secondary_refire`  _( unregistered )_
+- `g_balance_electro_secondary_refire2`  _( unregistered )_
+- `g_balance_electro_secondary_speed`  _( unregistered )_
+- `g_balance_electro_secondary_speed_up`  _( unregistered )_
+- `g_balance_electro_secondary_touchexplode`  _( unregistered )_
+- `g_balance_falldamage_deadminspeed`
+- `g_balance_falldamage_factor`
+- `g_balance_falldamage_maxdamage`
+- `g_balance_falldamage_minspeed`
+- `g_balance_falldamage_onlyvertical`
+- `g_balance_fireball_primary_animtime`  _( unregistered )_
+- `g_balance_fireball_primary_bfgdamage`  _( unregistered )_
+- `g_balance_fireball_primary_bfgforce`  _( unregistered )_
+- `g_balance_fireball_primary_bfgradius`  _( unregistered )_
+- `g_balance_fireball_primary_damage`  _( unregistered )_
+- `g_balance_fireball_primary_damageforcescale`  _( unregistered )_
+- `g_balance_fireball_primary_edgedamage`  _( unregistered )_
+- `g_balance_fireball_primary_force`  _( unregistered )_
+- `g_balance_fireball_primary_health`  _( unregistered )_
+- `g_balance_fireball_primary_laserburntime`  _( unregistered )_
+- `g_balance_fireball_primary_laserdamage`  _( unregistered )_
+- `g_balance_fireball_primary_laseredgedamage`  _( unregistered )_
+- `g_balance_fireball_primary_laserradius`  _( unregistered )_
+- `g_balance_fireball_primary_lifetime`  _( unregistered )_
+- `g_balance_fireball_primary_radius`  _( unregistered )_
+- `g_balance_fireball_primary_refire`  _( unregistered )_
+- `g_balance_fireball_primary_refire2`  _( unregistered )_
+- `g_balance_fireball_primary_speed`  _( unregistered )_
+- `g_balance_fireball_primary_spread`  _( unregistered )_
+- `g_balance_fireball_secondary_animtime`  _( unregistered )_
+- `g_balance_fireball_secondary_damage`  _( unregistered )_
+- `g_balance_fireball_secondary_damageforcescale`  _( unregistered )_
+- `g_balance_fireball_secondary_damagetime`  _( unregistered )_
+- `g_balance_fireball_secondary_laserburntime`  _( unregistered )_
+- `g_balance_fireball_secondary_laserdamage`  _( unregistered )_
+- `g_balance_fireball_secondary_laseredgedamage`  _( unregistered )_
+- `g_balance_fireball_secondary_laserradius`  _( unregistered )_
+- `g_balance_fireball_secondary_lifetime`  _( unregistered )_
+- `g_balance_fireball_secondary_refire`  _( unregistered )_
+- `g_balance_fireball_secondary_speed`  _( unregistered )_
+- `g_balance_fireball_secondary_speed_up`  _( unregistered )_
+- `g_balance_fireball_secondary_speed_z`  _( unregistered )_
+- `g_balance_fireball_secondary_spread`  _( unregistered )_
+- `g_balance_fuel_limit`
+- `g_balance_fuel_regen`
+- `g_balance_fuel_regenlinear`
+- `g_balance_fuel_regenstable`
+- `g_balance_fuel_rot`
+- `g_balance_fuel_rotlinear`
+- `g_balance_fuel_rotstable`
+- `g_balance_hagar_primary_ammo`  _( unregistered )_
+- `g_balance_hagar_primary_damage`  _( unregistered )_
+- `g_balance_hagar_primary_edgedamage`  _( unregistered )_
+- `g_balance_hagar_primary_force`  _( unregistered )_
+- `g_balance_hagar_primary_health`  _( unregistered )_
+- `g_balance_hagar_primary_lifetime`  _( unregistered )_
+- `g_balance_hagar_primary_radius`  _( unregistered )_
+- `g_balance_hagar_primary_refire`  _( unregistered )_
+- `g_balance_hagar_primary_speed`  _( unregistered )_
+- `g_balance_hagar_secondary`  _( unregistered )_
+- `g_balance_hagar_secondary_ammo`  _( unregistered )_
+- `g_balance_hagar_secondary_damage`  _( unregistered )_
+- `g_balance_hagar_secondary_edgedamage`  _( unregistered )_
+- `g_balance_hagar_secondary_force`  _( unregistered )_
+- `g_balance_hagar_secondary_health`  _( unregistered )_
+- `g_balance_hagar_secondary_lifetime_min`  _( unregistered )_
+- `g_balance_hagar_secondary_lifetime_rand`  _( unregistered )_
+- `g_balance_hagar_secondary_load_max`  _( unregistered )_
+- `g_balance_hagar_secondary_load_spread`  _( unregistered )_
+- `g_balance_hagar_secondary_load_spread_bias`  _( unregistered )_
+- `g_balance_hagar_secondary_radius`  _( unregistered )_
+- `g_balance_hagar_secondary_refire`  _( unregistered )_
+- `g_balance_hagar_secondary_speed`  _( unregistered )_
+- `g_balance_hagar_secondary_spread`  _( unregistered )_
+- `g_balance_health_limit`
+- `g_balance_health_regen`
+- `g_balance_health_regenlinear`
+- `g_balance_health_regenstable`
+- `g_balance_health_rot`
+- `g_balance_health_rotlinear`
+- `g_balance_health_rotstable`
+- `g_balance_health_start`
+- `g_balance_hlac_primary_ammo`  _( unregistered )_
+- `g_balance_hlac_primary_animtime`  _( unregistered )_
+- `g_balance_hlac_primary_damage`  _( unregistered )_
+- `g_balance_hlac_primary_edgedamage`  _( unregistered )_
+- `g_balance_hlac_primary_force`  _( unregistered )_
+- `g_balance_hlac_primary_lifetime`  _( unregistered )_
+- `g_balance_hlac_primary_radius`  _( unregistered )_
+- `g_balance_hlac_primary_refire`  _( unregistered )_
+- `g_balance_hlac_primary_speed`  _( unregistered )_
+- `g_balance_hlac_primary_spread_add`  _( unregistered )_
+- `g_balance_hlac_primary_spread_crouchmod`  _( unregistered )_
+- `g_balance_hlac_primary_spread_max`  _( unregistered )_
+- `g_balance_hlac_primary_spread_min`  _( unregistered )_
+- `g_balance_hlac_secondary`  _( unregistered )_
+- `g_balance_hlac_secondary_ammo`  _( unregistered )_
+- `g_balance_hlac_secondary_animtime`  _( unregistered )_
+- `g_balance_hlac_secondary_damage`  _( unregistered )_
+- `g_balance_hlac_secondary_edgedamage`  _( unregistered )_
+- `g_balance_hlac_secondary_force`  _( unregistered )_
+- `g_balance_hlac_secondary_lifetime`  _( unregistered )_
+- `g_balance_hlac_secondary_radius`  _( unregistered )_
+- `g_balance_hlac_secondary_refire`  _( unregistered )_
+- `g_balance_hlac_secondary_shots`  _( unregistered )_
+- `g_balance_hlac_secondary_speed`  _( unregistered )_
+- `g_balance_hlac_secondary_spread`  _( unregistered )_
+- `g_balance_hlac_secondary_spread_crouchmod`  _( unregistered )_
+- `g_balance_hook_primary_ammo`  _( unregistered )_
+- `g_balance_hook_primary_animtime`  _( unregistered )_
+- `g_balance_hook_primary_hooked_ammo`  _( unregistered )_
+- `g_balance_hook_primary_hooked_time_free`  _( unregistered )_
+- `g_balance_hook_primary_hooked_time_max`  _( unregistered )_
+- `g_balance_hook_primary_refire`  _( unregistered )_
+- `g_balance_hook_secondary_animtime`  _( unregistered )_
+- `g_balance_hook_secondary_damage`  _( unregistered )_
+- `g_balance_hook_secondary_damageforcescale`  _( unregistered )_
+- `g_balance_hook_secondary_duration`  _( unregistered )_
+- `g_balance_hook_secondary_edgedamage`  _( unregistered )_
+- `g_balance_hook_secondary_force`  _( unregistered )_
+- `g_balance_hook_secondary_gravity`  _( unregistered )_
+- `g_balance_hook_secondary_health`  _( unregistered )_
+- `g_balance_hook_secondary_lifetime`  _( unregistered )_
+- `g_balance_hook_secondary_power`  _( unregistered )_
+- `g_balance_hook_secondary_radius`  _( unregistered )_
+- `g_balance_hook_secondary_refire`  _( unregistered )_
+- `g_balance_hook_secondary_speed`  _( unregistered )_
+- `g_balance_keyhunt_delay_collect`  _( unregistered )_
+- `g_balance_keyhunt_delay_return`  _( unregistered )_
+- `g_balance_keyhunt_delay_round`  _( unregistered )_
+- `g_balance_keyhunt_maxdist`  _( unregistered )_
+- `g_balance_keyhunt_score_capture`  _( unregistered )_
+- `g_balance_keyhunt_score_carrierfrag`  _( unregistered )_
+- `g_balance_keyhunt_score_collect`  _( unregistered )_
+- `g_balance_machinegun_burst`  _( unregistered )_
+- `g_balance_machinegun_burst_ammo`  _( unregistered )_
+- `g_balance_machinegun_burst_animtime`  _( unregistered )_
+- `g_balance_machinegun_burst_refire`  _( unregistered )_
+- `g_balance_machinegun_burst_refire2`  _( unregistered )_
+- `g_balance_machinegun_burst_spread`  _( unregistered )_
+- `g_balance_machinegun_first_ammo`  _( unregistered )_
+- `g_balance_machinegun_first_damage`  _( unregistered )_
+- `g_balance_machinegun_first_force`  _( unregistered )_
+- `g_balance_machinegun_first_refire`  _( unregistered )_
+- `g_balance_machinegun_first_spread`  _( unregistered )_
+- `g_balance_machinegun_mode`  _( unregistered )_
+- `g_balance_machinegun_reload_ammo`  _( unregistered )_
+- `g_balance_machinegun_reload_time`  _( unregistered )_
+- `g_balance_machinegun_solidpenetration`  _( unregistered )_
+- `g_balance_machinegun_spread_add`  _( unregistered )_
+- `g_balance_machinegun_spread_cold_damagemultiplier`  _( unregistered )_
+- `g_balance_machinegun_spread_crouchmod`  _( unregistered )_
+- `g_balance_machinegun_spread_decay`  _( unregistered )_
+- `g_balance_machinegun_spread_heat_damagemultiplier`  _( unregistered )_
+- `g_balance_machinegun_spread_max`  _( unregistered )_
+- `g_balance_machinegun_spread_min`  _( unregistered )_
+- `g_balance_machinegun_sustained_ammo`  _( unregistered )_
+- `g_balance_machinegun_sustained_damage`  _( unregistered )_
+- `g_balance_machinegun_sustained_force`  _( unregistered )_
+- `g_balance_machinegun_sustained_refire`  _( unregistered )_
+- `g_balance_machinegun_sustained_spread`  _( unregistered )_
+- `g_balance_minelayer_ammo`  _( unregistered )_
+- `g_balance_minelayer_animtime`  _( unregistered )_
+- `g_balance_minelayer_damage`  _( unregistered )_
+- `g_balance_minelayer_damageforcescale`  _( unregistered )_
+- `g_balance_minelayer_detonatedelay`  _( unregistered )_
+- `g_balance_minelayer_edgedamage`  _( unregistered )_
+- `g_balance_minelayer_force`  _( unregistered )_
+- `g_balance_minelayer_health`  _( unregistered )_
+- `g_balance_minelayer_lifetime`  _( unregistered )_
+- `g_balance_minelayer_lifetime_countdown`  _( unregistered )_
+- `g_balance_minelayer_limit`  _( unregistered )_
+- `g_balance_minelayer_proximity_radius`  _( unregistered )_
+- `g_balance_minelayer_proximity_time_core`  _( unregistered )_
+- `g_balance_minelayer_proximity_time_edge`  _( unregistered )_
+- `g_balance_minelayer_radius`  _( unregistered )_
+- `g_balance_minelayer_refire`  _( unregistered )_
+- `g_balance_minelayer_remote_damage`  _( unregistered )_
+- `g_balance_minelayer_remote_edgedamage`  _( unregistered )_
+- `g_balance_minelayer_remote_force`  _( unregistered )_
+- `g_balance_minelayer_remote_radius`  _( unregistered )_
+- `g_balance_minelayer_speed`  _( unregistered )_
+- `g_balance_mortar_bouncefactor`  _( unregistered )_
+- `g_balance_mortar_bouncestop`  _( unregistered )_
+- `g_balance_mortar_primary_ammo`  _( unregistered )_
+- `g_balance_mortar_primary_animtime`  _( unregistered )_
+- `g_balance_mortar_primary_damage`  _( unregistered )_
+- `g_balance_mortar_primary_damageforcescale`  _( unregistered )_
+- `g_balance_mortar_primary_edgedamage`  _( unregistered )_
+- `g_balance_mortar_primary_force`  _( unregistered )_
+- `g_balance_mortar_primary_health`  _( unregistered )_
+- `g_balance_mortar_primary_lifetime`  _( unregistered )_
+- `g_balance_mortar_primary_radius`  _( unregistered )_
+- `g_balance_mortar_primary_refire`  _( unregistered )_
+- `g_balance_mortar_primary_speed`  _( unregistered )_
+- `g_balance_mortar_primary_speed_up`  _( unregistered )_
+- `g_balance_mortar_primary_type`  _( unregistered )_
+- `g_balance_mortar_secondary_ammo`  _( unregistered )_
+- `g_balance_mortar_secondary_animtime`  _( unregistered )_
+- `g_balance_mortar_secondary_damage`  _( unregistered )_
+- `g_balance_mortar_secondary_damageforcescale`  _( unregistered )_
+- `g_balance_mortar_secondary_edgedamage`  _( unregistered )_
+- `g_balance_mortar_secondary_force`  _( unregistered )_
+- `g_balance_mortar_secondary_health`  _( unregistered )_
+- `g_balance_mortar_secondary_lifetime`  _( unregistered )_
+- `g_balance_mortar_secondary_lifetime_bounce`  _( unregistered )_
+- `g_balance_mortar_secondary_radius`  _( unregistered )_
+- `g_balance_mortar_secondary_refire`  _( unregistered )_
+- `g_balance_mortar_secondary_speed`  _( unregistered )_
+- `g_balance_mortar_secondary_speed_up`  _( unregistered )_
+- `g_balance_mortar_secondary_type`  _( unregistered )_
+- `g_balance_nix_ammo_cells`  _( unregistered )_
+- `g_balance_nix_ammo_fuel`  _( unregistered )_
+- `g_balance_nix_ammo_nails`  _( unregistered )_
+- `g_balance_nix_ammo_rockets`  _( unregistered )_
+- `g_balance_nix_ammo_shells`  _( unregistered )_
+- `g_balance_nix_ammoincr_cells`  _( unregistered )_
+- `g_balance_nix_ammoincr_fuel`  _( unregistered )_
+- `g_balance_nix_ammoincr_nails`  _( unregistered )_
+- `g_balance_nix_ammoincr_rockets`  _( unregistered )_
+- `g_balance_nix_ammoincr_shells`  _( unregistered )_
+- `g_balance_nix_incrtime`  _( unregistered )_
+- `g_balance_nix_roundtime`  _( unregistered )_
+- `g_balance_okhmg_primary_ammo`  _( unregistered )_
+- `g_balance_okhmg_primary_damage`  _( unregistered )_
+- `g_balance_okhmg_primary_force`  _( unregistered )_
+- `g_balance_okhmg_primary_refire`  _( unregistered )_
+- `g_balance_okhmg_primary_solidpenetration`  _( unregistered )_
+- `g_balance_okhmg_primary_spread_add`  _( unregistered )_
+- `g_balance_okhmg_primary_spread_max`  _( unregistered )_
+- `g_balance_okhmg_primary_spread_min`  _( unregistered )_
+- `g_balance_okhmg_reload_ammo`  _( unregistered )_
+- `g_balance_okhmg_reload_time`  _( unregistered )_
+- `g_balance_okhmg_secondary_refire_type`  _( unregistered )_
+- `g_balance_okmachinegun_primary_ammo`  _( unregistered )_
+- `g_balance_okmachinegun_primary_damage`  _( unregistered )_
+- `g_balance_okmachinegun_primary_force`  _( unregistered )_
+- `g_balance_okmachinegun_primary_refire`  _( unregistered )_
+- `g_balance_okmachinegun_primary_solidpenetration`  _( unregistered )_
+- `g_balance_okmachinegun_primary_spread_add`  _( unregistered )_
+- `g_balance_okmachinegun_primary_spread_max`  _( unregistered )_
+- `g_balance_okmachinegun_primary_spread_min`  _( unregistered )_
+- `g_balance_okmachinegun_reload_ammo`  _( unregistered )_
+- `g_balance_okmachinegun_reload_time`  _( unregistered )_
+- `g_balance_okmachinegun_secondary_refire_type`  _( unregistered )_
+- `g_balance_oknex_charge`  _( unregistered )_
+- `g_balance_oknex_charge_limit`  _( unregistered )_
+- `g_balance_oknex_charge_mindmg`  _( unregistered )_
+- `g_balance_oknex_charge_rate`  _( unregistered )_
+- `g_balance_oknex_charge_shot_multiplier`  _( unregistered )_
+- `g_balance_oknex_charge_start`  _( unregistered )_
+- `g_balance_oknex_primary_ammo`  _( unregistered )_
+- `g_balance_oknex_primary_animtime`  _( unregistered )_
+- `g_balance_oknex_primary_damage`  _( unregistered )_
+- `g_balance_oknex_primary_force`  _( unregistered )_
+- `g_balance_oknex_primary_refire`  _( unregistered )_
+- `g_balance_oknex_reload_ammo`  _( unregistered )_
+- `g_balance_oknex_reload_time`  _( unregistered )_
+- `g_balance_oknex_secondary_refire_type`  _( unregistered )_
+- `g_balance_okrpc_primary_ammo`  _( unregistered )_
+- `g_balance_okrpc_primary_animtime`  _( unregistered )_
+- `g_balance_okrpc_primary_damage`  _( unregistered )_
+- `g_balance_okrpc_primary_damage2`  _( unregistered )_
+- `g_balance_okrpc_primary_damageforcescale`  _( unregistered )_
+- `g_balance_okrpc_primary_edgedamage`  _( unregistered )_
+- `g_balance_okrpc_primary_force`  _( unregistered )_
+- `g_balance_okrpc_primary_health`  _( unregistered )_
+- `g_balance_okrpc_primary_lifetime`  _( unregistered )_
+- `g_balance_okrpc_primary_radius`  _( unregistered )_
+- `g_balance_okrpc_primary_refire`  _( unregistered )_
+- `g_balance_okrpc_primary_speed`  _( unregistered )_
+- `g_balance_okrpc_primary_speedaccel`  _( unregistered )_
+- `g_balance_okrpc_reload_ammo`  _( unregistered )_
+- `g_balance_okrpc_reload_time`  _( unregistered )_
+- `g_balance_okrpc_secondary_refire_type`  _( unregistered )_
+- `g_balance_okshotgun_primary_ammo`  _( unregistered )_
+- `g_balance_okshotgun_primary_animtime`  _( unregistered )_
+- `g_balance_okshotgun_primary_bullets`  _( unregistered )_
+- `g_balance_okshotgun_primary_damage`  _( unregistered )_
+- `g_balance_okshotgun_primary_force`  _( unregistered )_
+- `g_balance_okshotgun_primary_refire`  _( unregistered )_
+- `g_balance_okshotgun_primary_solidpenetration`  _( unregistered )_
+- `g_balance_okshotgun_primary_spread`  _( unregistered )_
+- `g_balance_okshotgun_reload_ammo`  _( unregistered )_
+- `g_balance_okshotgun_reload_time`  _( unregistered )_
+- `g_balance_okshotgun_secondary_refire_type`  _( unregistered )_
+- `g_balance_pause_armor_rot`
+- `g_balance_pause_armor_rot_spawn`
+- `g_balance_pause_fuel_regen`
+- `g_balance_pause_fuel_rot`
+- `g_balance_pause_fuel_rot_spawn`
+- `g_balance_pause_health_regen`
+- `g_balance_pause_health_regen_spawn`
+- `g_balance_pause_health_rot`
+- `g_balance_pause_health_rot_spawn`
+- `g_balance_porto_primary_animtime`  _( unregistered )_
+- `g_balance_porto_primary_lifetime`  _( unregistered )_
+- `g_balance_porto_primary_refire`  _( unregistered )_
+- `g_balance_porto_primary_speed`  _( unregistered )_
+- `g_balance_porto_secondary`  _( unregistered )_
+- `g_balance_porto_secondary_animtime`  _( unregistered )_
+- `g_balance_porto_secondary_lifetime`  _( unregistered )_
+- `g_balance_porto_secondary_refire`  _( unregistered )_
+- `g_balance_porto_secondary_speed`  _( unregistered )_
+- `g_balance_powerup_invincible_takedamage`  _( unregistered )_
+- `g_balance_powerup_invincible_takeforce`  _( unregistered )_
+- `g_balance_powerup_invincible_time`
+- `g_balance_powerup_invisibility_alpha`  _( unregistered )_
+- `g_balance_powerup_invisibility_time`
+- `g_balance_powerup_speed_attack_time_multiplier`  _( unregistered )_
+- `g_balance_powerup_speed_highspeed`  _( unregistered )_
+- `g_balance_powerup_speed_time`
+- `g_balance_powerup_strength_damage`  _( unregistered )_
+- `g_balance_powerup_strength_force`  _( unregistered )_
+- `g_balance_powerup_strength_selfdamage`  _( unregistered )_
+- `g_balance_powerup_strength_selfforce`  _( unregistered )_
+- `g_balance_powerup_strength_time`
+- `g_balance_rifle_bursttime`  _( unregistered )_
+- `g_balance_rifle_primary_ammo`  _( unregistered )_
+- `g_balance_rifle_primary_animtime`  _( unregistered )_
+- `g_balance_rifle_primary_bullethail`  _( unregistered )_
+- `g_balance_rifle_primary_burstcost`  _( unregistered )_
+- `g_balance_rifle_primary_damage`  _( unregistered )_
+- `g_balance_rifle_primary_force`  _( unregistered )_
+- `g_balance_rifle_primary_headshot_multiplier`  _( unregistered )_
+- `g_balance_rifle_primary_refire`  _( unregistered )_
+- `g_balance_rifle_primary_shots`  _( unregistered )_
+- `g_balance_rifle_primary_solidpenetration`  _( unregistered )_
+- `g_balance_rifle_primary_spread`  _( unregistered )_
+- `g_balance_rifle_primary_tracer`  _( unregistered )_
+- `g_balance_rifle_secondary`  _( unregistered )_
+- `g_balance_rifle_secondary_ammo`  _( unregistered )_
+- `g_balance_rifle_secondary_animtime`  _( unregistered )_
+- `g_balance_rifle_secondary_bullethail`  _( unregistered )_
+- `g_balance_rifle_secondary_burstcost`  _( unregistered )_
+- `g_balance_rifle_secondary_damage`  _( unregistered )_
+- `g_balance_rifle_secondary_force`  _( unregistered )_
+- `g_balance_rifle_secondary_headshot_multiplier`  _( unregistered )_
+- `g_balance_rifle_secondary_refire`  _( unregistered )_
+- `g_balance_rifle_secondary_shots`  _( unregistered )_
+- `g_balance_rifle_secondary_solidpenetration`  _( unregistered )_
+- `g_balance_rifle_secondary_spread`  _( unregistered )_
+- `g_balance_rifle_secondary_tracer`  _( unregistered )_
+- `g_balance_seeker_flac_ammo`  _( unregistered )_
+- `g_balance_seeker_flac_animtime`  _( unregistered )_
+- `g_balance_seeker_flac_damage`  _( unregistered )_
+- `g_balance_seeker_flac_edgedamage`  _( unregistered )_
+- `g_balance_seeker_flac_force`  _( unregistered )_
+- `g_balance_seeker_flac_lifetime`  _( unregistered )_
+- `g_balance_seeker_flac_lifetime_rand`  _( unregistered )_
+- `g_balance_seeker_flac_radius`  _( unregistered )_
+- `g_balance_seeker_flac_refire`  _( unregistered )_
+- `g_balance_seeker_flac_speed`  _( unregistered )_
+- `g_balance_seeker_flac_speed_up`  _( unregistered )_
+- `g_balance_seeker_flac_spread`  _( unregistered )_
+- `g_balance_seeker_missile_accel`  _( unregistered )_
+- `g_balance_seeker_missile_ammo`  _( unregistered )_
+- `g_balance_seeker_missile_animtime`  _( unregistered )_
+- `g_balance_seeker_missile_count`  _( unregistered )_
+- `g_balance_seeker_missile_damage`  _( unregistered )_
+- `g_balance_seeker_missile_damageforcescale`  _( unregistered )_
+- `g_balance_seeker_missile_decel`  _( unregistered )_
+- `g_balance_seeker_missile_delay`  _( unregistered )_
+- `g_balance_seeker_missile_edgedamage`  _( unregistered )_
+- `g_balance_seeker_missile_force`  _( unregistered )_
+- `g_balance_seeker_missile_health`  _( unregistered )_
+- `g_balance_seeker_missile_lifetime`  _( unregistered )_
+- `g_balance_seeker_missile_radius`  _( unregistered )_
+- `g_balance_seeker_missile_refire`  _( unregistered )_
+- `g_balance_seeker_missile_speed`  _( unregistered )_
+- `g_balance_seeker_missile_speed_max`  _( unregistered )_
+- `g_balance_seeker_missile_speed_up`  _( unregistered )_
+- `g_balance_seeker_missile_turnrate`  _( unregistered )_
+- `g_balance_seeker_tag_ammo`  _( unregistered )_
+- `g_balance_seeker_tag_animtime`  _( unregistered )_
+- `g_balance_seeker_tag_damageforcescale`  _( unregistered )_
+- `g_balance_seeker_tag_health`  _( unregistered )_
+- `g_balance_seeker_tag_lifetime`  _( unregistered )_
+- `g_balance_seeker_tag_refire`  _( unregistered )_
+- `g_balance_seeker_tag_speed`  _( unregistered )_
+- `g_balance_seeker_tag_spread`  _( unregistered )_
+- `g_balance_seeker_tag_tracker_lifetime`  _( unregistered )_
+- `g_balance_seeker_type`  _( unregistered )_
+- `g_balance_selfdamagepercent`
+- `g_balance_shotgun_primary_ammo`  _( unregistered )_
+- `g_balance_shotgun_primary_animtime`  _( unregistered )_
+- `g_balance_shotgun_primary_bullets`  _( unregistered )_
+- `g_balance_shotgun_primary_damage`  _( unregistered )_
+- `g_balance_shotgun_primary_force`  _( unregistered )_
+- `g_balance_shotgun_primary_refire`  _( unregistered )_
+- `g_balance_shotgun_primary_solidpenetration`  _( unregistered )_
+- `g_balance_shotgun_primary_spread`  _( unregistered )_
+- `g_balance_shotgun_secondary`  _( unregistered )_
+- `g_balance_shotgun_secondary_animtime`  _( unregistered )_
+- `g_balance_shotgun_secondary_damage`  _( unregistered )_
+- `g_balance_shotgun_secondary_force`  _( unregistered )_
+- `g_balance_shotgun_secondary_melee_blockedbyfiring`  _( unregistered )_
+- `g_balance_shotgun_secondary_melee_delay`  _( unregistered )_
+- `g_balance_shotgun_secondary_melee_multihit`  _( unregistered )_
+- `g_balance_shotgun_secondary_melee_nonplayerdamage`  _( unregistered )_
+- `g_balance_shotgun_secondary_melee_range`  _( unregistered )_
+- `g_balance_shotgun_secondary_melee_swing_side`  _( unregistered )_
+- `g_balance_shotgun_secondary_melee_swing_up`  _( unregistered )_
+- `g_balance_shotgun_secondary_melee_time`  _( unregistered )_
+- `g_balance_shotgun_secondary_melee_traces`  _( unregistered )_
+- `g_balance_shotgun_secondary_refire`  _( unregistered )_
+- `g_balance_superweapons_time`
+- `g_balance_teams`
+- `g_balance_teams_prevent_imbalance`
+- `g_balance_teams_skill`
+- `g_balance_tuba_animtime`  _( unregistered )_
+- `g_balance_tuba_attenuation`  _( unregistered )_
+- `g_balance_tuba_damage`  _( unregistered )_
+- `g_balance_tuba_edgedamage`  _( unregistered )_
+- `g_balance_tuba_force`  _( unregistered )_
+- `g_balance_tuba_radius`  _( unregistered )_
+- `g_balance_tuba_refire`  _( unregistered )_
+- `g_balance_vaporizer_primary_ammo`  _( unregistered )_
+- `g_balance_vaporizer_primary_animtime`  _( unregistered )_
+- `g_balance_vaporizer_primary_damage`  _( unregistered )_
+- `g_balance_vaporizer_primary_force`  _( unregistered )_
+- `g_balance_vaporizer_primary_refire`  _( unregistered )_
+- `g_balance_vortex_charge`  _( unregistered )_
+- `g_balance_vortex_charge_always`  _( unregistered )_
+- `g_balance_vortex_charge_animlimit`  _( unregistered )_
+- `g_balance_vortex_charge_limit`  _( unregistered )_
+- `g_balance_vortex_charge_maxspeed`  _( unregistered )_
+- `g_balance_vortex_charge_mindmg`  _( unregistered )_
+- `g_balance_vortex_charge_minspeed`  _( unregistered )_
+- `g_balance_vortex_charge_rate`  _( unregistered )_
+- `g_balance_vortex_charge_rot_pause`  _( unregistered )_
+- `g_balance_vortex_charge_shot_multiplier`  _( unregistered )_
+- `g_balance_vortex_charge_start`  _( unregistered )_
+- `g_balance_vortex_charge_velocity_rate`  _( unregistered )_
+- `g_balance_vortex_primary_ammo`  _( unregistered )_
+- `g_balance_vortex_primary_animtime`  _( unregistered )_
+- `g_balance_vortex_primary_damage`  _( unregistered )_
+- `g_balance_vortex_primary_force`  _( unregistered )_
+- `g_balance_vortex_primary_refire`  _( unregistered )_
+- `g_balance_vortex_reload_ammo`  _( unregistered )_
+- `g_balance_vortex_secondary`  _( unregistered )_
+- `g_balance_vortex_secondary_ammo`  _( unregistered )_
+- `g_balance_vortex_secondary_animtime`  _( unregistered )_
+- `g_balance_vortex_secondary_chargepool`  _( unregistered )_
+- `g_balance_vortex_secondary_chargepool_pause_regen`  _( unregistered )_
+- `g_balance_vortex_secondary_chargepool_regen`  _( unregistered )_
+- `g_balance_vortex_secondary_damage`  _( unregistered )_
+- `g_balance_vortex_secondary_force`  _( unregistered )_
+- `g_balance_vortex_secondary_refire`  _( unregistered )_
+- `g_ballistics_density_corpse`  _( unregistered )_
+- `g_ban_default_bantime`
+- `g_ban_default_masksize`
+- `g_ban_telluser`
+- `g_banned_list`
+- `g_banned_list_idmode`
+- `g_bloodloss`  _( unregistered, cross-boundary )_
+- `g_breakablehook`  _( unregistered )_
+- `g_breakablehook_owner`  _( unregistered )_
+- `g_buffs`  _( unregistered, cross-boundary )_
+- `g_buffs_bash_force`  _( unregistered )_
+- `g_buffs_bash_force_self`  _( unregistered )_
+- `g_buffs_cooldown_respawn`  _( unregistered )_
+- `g_buffs_disability_slowtime`  _( unregistered )_
+- `g_buffs_disability_speed`  _( unregistered )_
+- `g_buffs_invisible_alpha`  _( unregistered )_
+- `g_buffs_jump_velocity`  _( unregistered )_
+- `g_buffs_luck_chance`  _( unregistered )_
+- `g_buffs_luck_damagemultiplier`  _( unregistered )_
+- `g_buffs_magnet_range_buff`  _( unregistered )_
+- `g_buffs_magnet_range_item`  _( unregistered )_
+- `g_buffs_medic_max`  _( unregistered )_
+- `g_buffs_medic_regen`  _( unregistered )_
+- `g_buffs_medic_survive_chance`  _( unregistered )_
+- `g_buffs_medic_survive_health`  _( unregistered )_
+- `g_buffs_pickup_delay`  _( unregistered )_
+- `g_buffs_resistance_blockpercent`  _( unregistered )_
+- `g_buffs_spawn_count`  _( unregistered )_
+- `g_buffs_speed_rate`  _( unregistered )_
+- `g_buffs_speed_speed`  _( unregistered )_
+- `g_buffs_vampire_damage_steal`  _( unregistered )_
+- `g_buffs_vengeance_damage_multiplier`  _( unregistered )_
+- `g_bugrigs`  _( unregistered )_
+- `g_bugrigs_accel`  _( unregistered )_
+- `g_bugrigs_air_steering`  _( unregistered )_
+- `g_bugrigs_angle_smoothing`  _( unregistered )_
+- `g_bugrigs_friction_air`  _( unregistered )_
+- `g_bugrigs_friction_brake`  _( unregistered )_
+- `g_bugrigs_friction_floor`  _( unregistered )_
+- `g_bugrigs_planar_movement`  _( unregistered )_
+- `g_bugrigs_planar_movement_car_jumping`  _( unregistered )_
+- `g_bugrigs_reverse_speeding`  _( unregistered )_
+- `g_bugrigs_reverse_spinning`  _( unregistered )_
+- `g_bugrigs_reverse_stopping`  _( unregistered )_
+- `g_bugrigs_speed_pow`  _( unregistered )_
+- `g_bugrigs_speed_ref`  _( unregistered )_
+- `g_bugrigs_steer`  _( unregistered )_
+- `g_ca_damage2score`  _( unregistered )_
+- `g_ca_point_leadlimit`  _( unregistered )_
+- `g_ca_point_limit`  _( unregistered )_
+- `g_ca_prevent_stalemate`  _( unregistered )_
+- `g_ca_round_enddelay`  _( unregistered )_
+- `g_ca_round_timelimit`  _( unregistered )_
+- `g_ca_start_ammo_cells`  _( unregistered )_
+- `g_ca_start_ammo_fuel`  _( unregistered )_
+- `g_ca_start_ammo_nails`  _( unregistered )_
+- `g_ca_start_ammo_rockets`  _( unregistered )_
+- `g_ca_start_ammo_shells`  _( unregistered )_
+- `g_ca_start_armor`  _( unregistered )_
+- `g_ca_start_health`  _( unregistered )_
+- `g_ca_team_spawns`  _( unregistered )_
+- `g_ca_teams`  _( unregistered )_
+- `g_ca_teams_override`  _( unregistered, cross-boundary )_
+- `g_ca_warmup`  _( unregistered )_
+- `g_campaign`  _( cross-boundary )_
+- `g_campaign_forceteam`
+- `g_campaign_name`  _( unregistered )_
+- `g_campaign_skill`  _( cross-boundary )_
+- `g_campcheck`  _( unregistered )_
+- `g_campcheck_damage`  _( unregistered )_
+- `g_campcheck_distance`  _( unregistered )_
+- `g_campcheck_interval`  _( unregistered )_
+- `g_changeteam_bantime`
+- `g_chat_allowed`
+- `g_chat_flood_burst`
+- `g_chat_flood_burst_team`
+- `g_chat_flood_burst_tell`
+- `g_chat_flood_lmax`
+- `g_chat_flood_lmax_team`
+- `g_chat_flood_lmax_tell`
+- `g_chat_flood_notify_flooder`
+- `g_chat_flood_spl`
+- `g_chat_flood_spl_team`
+- `g_chat_flood_spl_tell`
+- `g_chat_nospectators`
+- `g_chat_private_allowed`
+- `g_chat_show_playerid`
+- `g_chat_spectator_allowed`
+- `g_chat_team_allowed`
+- `g_chat_teamcolors`
+- `g_chat_tellprivacy`
+- `g_chatban_list`
+- `g_cloaked`  _( unregistered, cross-boundary )_
+- `g_configversion`  _( unregistered )_
+- `g_ctf_flag_collect_delay`  _( unregistered )_
+- `g_ctf_flag_return_time`  _( unregistered )_
+- `g_ctf_oneflag_reverse`  _( unregistered )_
+- `g_ctf_pass`  _( unregistered )_
+- `g_ctf_pass_radius`  _( unregistered )_
+- `g_ctf_pass_request`  _( unregistered )_
+- `g_ctf_pass_timelimit`  _( unregistered )_
+- `g_ctf_pass_turnrate`  _( unregistered )_
+- `g_ctf_pass_velocity`  _( unregistered )_
+- `g_ctf_pass_wait`  _( unregistered )_
+- `g_ctf_score_capture`  _( unregistered )_
+- `g_ctf_score_kill`  _( unregistered )_
+- `g_ctf_score_penalty_drop`  _( unregistered )_
+- `g_ctf_score_penalty_returned`  _( unregistered )_
+- `g_ctf_score_pickup_base`  _( unregistered )_
+- `g_ctf_score_return`  _( unregistered )_
+- `g_ctf_shield_force`  _( unregistered )_
+- `g_ctf_shield_max_ratio`  _( unregistered )_
+- `g_ctf_shield_min_negscore`  _( unregistered )_
+- `g_ctf_throw`  _( unregistered )_
+- `g_ctf_throw_angle_max`  _( unregistered )_
+- `g_ctf_throw_angle_min`  _( unregistered )_
+- `g_ctf_throw_punish_count`  _( unregistered )_
+- `g_ctf_throw_punish_delay`  _( unregistered )_
+- `g_ctf_throw_punish_time`  _( unregistered )_
+- `g_ctf_throw_strengthmultiplier`  _( unregistered )_
+- `g_ctf_throw_velocity_forward`  _( unregistered )_
+- `g_ctf_throw_velocity_up`  _( unregistered )_
+- `g_cts_finish_kill_delay`  _( unregistered )_
+- `g_dm`  _( unregistered )_
+- `g_dmlimit`  _( unregistered )_
+- `g_dodging`  _( unregistered, cross-boundary )_
+- `g_domination_default_teams`  _( unregistered )_
+- `g_domination_disable_frags`  _( unregistered )_
+- `g_domination_point_amt`  _( unregistered )_
+- `g_domination_point_limit`  _( unregistered )_
+- `g_domination_point_rate`  _( unregistered )_
+- `g_domination_roundbased`  _( unregistered )_
+- `g_domination_teams_override`  _( unregistered, cross-boundary )_
+- `g_duel_with_powerups`  _( unregistered )_
+- `g_duellimit`  _( unregistered )_
+- `g_dynamic_handicap`  _( unregistered )_
+- `g_dynamic_handicap_exponent`  _( unregistered )_
+- `g_dynamic_handicap_max`  _( unregistered )_
+- `g_dynamic_handicap_min`  _( unregistered )_
+- `g_dynamic_handicap_scale`  _( unregistered )_
+- `g_forced_respawn`
+- `g_freezetag_frozen_maxtime`  _( unregistered )_
+- `g_freezetag_revive_clearspeed`  _( unregistered )_
+- `g_freezetag_revive_extra_size`  _( unregistered )_
+- `g_freezetag_revive_nade`  _( unregistered )_
+- `g_freezetag_revive_speed`  _( unregistered )_
+- `g_freezetag_round_enddelay`  _( unregistered )_
+- `g_freezetag_round_timelimit`  _( unregistered )_
+- `g_freezetag_team_spawns`  _( unregistered )_
+- `g_freezetag_teams`  _( unregistered )_
+- `g_freezetag_teams_override`  _( unregistered, cross-boundary )_
+- `g_freezetag_warmup`  _( unregistered )_
+- `g_friendlyfire`
+- `g_friendlyfire_virtual`
+- `g_friendlyfire_virtual_force`
+- `g_ft_start_ammo_cells`  _( unregistered )_
+- `g_ft_start_ammo_fuel`  _( unregistered )_
+- `g_ft_start_ammo_nails`  _( unregistered )_
+- `g_ft_start_ammo_rockets`  _( unregistered )_
+- `g_ft_start_ammo_shells`  _( unregistered )_
+- `g_ft_start_armor`  _( unregistered )_
+- `g_ft_start_health`  _( unregistered )_
+- `g_game_stopped`  _( unregistered )_
+- `g_globalforces`  _( unregistered )_
+- `g_globalforces_noself`  _( unregistered )_
+- `g_globalforces_range`  _( unregistered )_
+- `g_globalforces_self`  _( unregistered )_
+- `g_grab_range`
+- `g_grappling_hook`  _( unregistered, cross-boundary )_
+- `g_grappling_hook_useammo`  _( unregistered )_
+- `g_instagib`  _( unregistered, cross-boundary )_
+- `g_instagib_ammo_start`  _( unregistered )_
+- `g_instagib_blaster_keepdamage`  _( unregistered )_
+- `g_instagib_blaster_keepforce`  _( unregistered )_
+- `g_instagib_extralives`  _( unregistered )_
+- `g_instagib_mirrordamage`  _( unregistered )_
+- `g_invasion_monster_count`  _( unregistered )_
+- `g_invasion_point_limit`  _( unregistered )_
+- `g_invasion_rounds`  _( unregistered )_
+- `g_invasion_spawn_delay`  _( unregistered )_
+- `g_invasion_type`  _( unregistered )_
+- `g_invincible_projectiles`  _( unregistered, cross-boundary )_
+- `g_items_dropped_lifetime`
+- `g_jetpack`  _( unregistered, cross-boundary )_
+- `g_jetpack_fuel`  _( unregistered )_
+- `g_keepaway_ballcarrier_damage`  _( unregistered )_
+- `g_keepaway_ballcarrier_force`  _( unregistered )_
+- `g_keepaway_noncarrier_damage`  _( unregistered )_
+- `g_keepaway_noncarrier_force`  _( unregistered )_
+- `g_keepaway_point_limit`  _( unregistered )_
+- `g_keepaway_score_bckill`  _( unregistered )_
+- `g_keepaway_score_killac`  _( unregistered )_
+- `g_keepaway_score_timepoints`  _( unregistered )_
+- `g_keepawayball_respawntime`  _( unregistered )_
+- `g_keyhunt_point_leadlimit`  _( unregistered )_
+- `g_keyhunt_point_limit`  _( unregistered )_
+- `g_keyhunt_team_spawns`  _( unregistered )_
+- `g_keyhunt_teams`  _( unregistered )_
+- `g_keyhunt_teams_override`  _( unregistered, cross-boundary )_
+- `g_kick_teamkiller_lower_limit`  _( unregistered )_
+- `g_kick_teamkiller_rate`  _( unregistered )_
+- `g_kick_teamkiller_severity`  _( unregistered )_
+- `g_lms_dynamic_respawn_delay`  _( unregistered )_
+- `g_lms_dynamic_respawn_delay_base`  _( unregistered )_
+- `g_lms_dynamic_respawn_delay_increase`  _( unregistered )_
+- `g_lms_dynamic_respawn_delay_max`  _( unregistered )_
+- `g_lms_extra_lives`  _( unregistered )_
+- `g_lms_join_anytime`  _( unregistered )_
+- `g_lms_last_join`  _( unregistered )_
+- `g_lms_leader_lives_diff`  _( unregistered )_
+- `g_lms_leader_minpercent`  _( unregistered )_
+- `g_lms_lives`  _( unregistered )_
+- `g_lms_lives_override`  _( unregistered, cross-boundary )_
+- `g_maplist`  _( cross-boundary )_
+- `g_maplist_index`
+- `g_maplist_mostrecent`
+- `g_maplist_mostrecent_count`
+- `g_maplist_selectrandom`
+- `g_maplist_shuffle`
+- `g_maplist_votable`
+- `g_maplist_votable_abstain`
+- `g_maplist_votable_keeptwotime`
+- `g_maplist_votable_suggestions`
+- `g_maplist_votable_suggestions_override_mostrecent`
+- `g_maplist_votable_timeout`
+- `g_max_info_autoscreenshot`
+- `g_maxplayers`
+- `g_maxpushtime`
+- `g_maxspeed`
+- `g_mayhem`  _( unregistered )_
+- `g_mayhem_point_leadlimit`  _( unregistered )_
+- `g_mayhem_point_limit`  _( unregistered )_
+- `g_melee_only`  _( unregistered )_
+- `g_midair`  _( unregistered, cross-boundary )_
+- `g_midair_damageforcescale`  _( unregistered )_
+- `g_midair_damagemultiplier`  _( unregistered )_
+- `g_midair_shieldtime`  _( unregistered )_
+- `g_mirrordamage`
+- `g_mirrordamage_onlyweapons`
+- `g_mirrordamage_virtual`
+- `g_mod_balance`  _( unregistered )_
+- `g_monster_golem_damageforcescale`  _( unregistered )_
+- `g_monster_golem_loot`  _( unregistered )_
+- `g_monster_golem_speed_run`  _( unregistered )_
+- `g_monster_golem_speed_stop`  _( unregistered )_
+- `g_monster_golem_speed_walk`  _( unregistered )_
+- `g_monster_mage_attack_spike_accel`  _( unregistered )_
+- `g_monster_mage_attack_spike_decel`  _( unregistered )_
+- `g_monster_mage_attack_spike_smart`  _( unregistered )_
+- `g_monster_mage_attack_spike_smart_mindist`  _( unregistered )_
+- `g_monster_mage_attack_spike_smart_trace_max`  _( unregistered )_
+- `g_monster_mage_attack_spike_smart_trace_min`  _( unregistered )_
+- `g_monster_mage_attack_spike_speed_max`  _( unregistered )_
+- `g_monster_mage_attack_spike_turnrate`  _( unregistered )_
+- `g_monster_mage_damageforcescale`  _( unregistered )_
+- `g_monster_mage_loot`  _( unregistered )_
+- `g_monster_mage_shield_blockpercent`  _( unregistered )_
+- `g_monster_mage_shield_delay`  _( unregistered )_
+- `g_monster_mage_shield_time`  _( unregistered )_
+- `g_monster_mage_speed_run`  _( unregistered )_
+- `g_monster_mage_speed_stop`  _( unregistered )_
+- `g_monster_mage_speed_walk`  _( unregistered )_
+- `g_monster_spider_attack_web_damagetime`  _( unregistered )_
+- `g_monster_spider_attack_web_speed_up`  _( unregistered )_
+- `g_monster_spider_damageforcescale`  _( unregistered )_
+- `g_monster_spider_loot`  _( unregistered )_
+- `g_monster_spider_speed_run`  _( unregistered )_
+- `g_monster_spider_speed_stop`  _( unregistered )_
+- `g_monster_spider_speed_walk`  _( unregistered )_
+- `g_monster_wyvern_attack_fireball_damagetime`  _( unregistered )_
+- `g_monster_wyvern_damageforcescale`  _( unregistered )_
+- `g_monster_wyvern_loot`  _( unregistered )_
+- `g_monster_wyvern_speed_run`  _( unregistered )_
+- `g_monster_wyvern_speed_stop`  _( unregistered )_
+- `g_monster_wyvern_speed_walk`  _( unregistered )_
+- `g_monster_zombie_attack_leap_damage`  _( unregistered )_
+- `g_monster_zombie_attack_leap_delay`  _( unregistered )_
+- `g_monster_zombie_attack_leap_force`  _( unregistered )_
+- `g_monster_zombie_attack_leap_speed`  _( unregistered )_
+- `g_monster_zombie_attack_melee_damage`  _( unregistered )_
+- `g_monster_zombie_attack_melee_delay`  _( unregistered )_
+- `g_monster_zombie_damageforcescale`  _( unregistered )_
+- `g_monster_zombie_loot`  _( unregistered )_
+- `g_monster_zombie_speed_run`  _( unregistered )_
+- `g_monster_zombie_speed_stop`  _( unregistered )_
+- `g_monster_zombie_speed_walk`  _( unregistered )_
+- `g_monsters`  _( unregistered )_
+- `g_monsters_armor_blockpercent`  _( unregistered )_
+- `g_monsters_attack_range`  _( unregistered )_
+- `g_monsters_damageforcescale`  _( unregistered )_
+- `g_monsters_drop_time`  _( unregistered )_
+- `g_monsters_edit`
+- `g_monsters_lineofsight`  _( unregistered )_
+- `g_monsters_max`
+- `g_monsters_max_perplayer`
+- `g_monsters_miniboss_chance`  _( unregistered )_
+- `g_monsters_miniboss_healthboost`  _( unregistered )_
+- `g_monsters_miniboss_loot`  _( unregistered )_
+- `g_monsters_owners`  _( unregistered )_
+- `g_monsters_respawn`  _( unregistered )_
+- `g_monsters_respawn_delay`  _( unregistered )_
+- `g_monsters_score_kill`  _( unregistered )_
+- `g_monsters_score_spawned`  _( unregistered )_
+- `g_monsters_skill`  _( unregistered )_
+- `g_monsters_spawnshieldtime`  _( unregistered )_
+- `g_monsters_target_infront`  _( unregistered )_
+- `g_monsters_target_infront_2d`  _( unregistered )_
+- `g_monsters_target_infront_range`  _( unregistered )_
+- `g_monsters_target_range`  _( unregistered )_
+- `g_monsters_teams`  _( unregistered )_
+- `g_movement_highspeed`  _( unregistered )_
+- `g_movement_highspeed_q3_compat`  _( unregistered )_
+- `g_multijump`  _( unregistered )_
+- `g_multijump_add`  _( unregistered )_
+- `g_multijump_dodging`  _( unregistered )_
+- `g_multijump_maxspeed`  _( unregistered )_
+- `g_multijump_speed`  _( unregistered )_
+- `g_nades`  _( unregistered )_
+- `g_nades_ammo`  _( unregistered )_
+- `g_nades_ammo_clip_empty_rate`  _( unregistered )_
+- `g_nades_ammo_foe`  _( unregistered )_
+- `g_nades_ammo_friend`  _( unregistered )_
+- `g_nades_ammo_radius`  _( unregistered )_
+- `g_nades_ammo_rate`  _( unregistered )_
+- `g_nades_ammo_time`  _( unregistered )_
+- `g_nades_bonus`  _( unregistered )_
+- `g_nades_bonus_max`  _( unregistered )_
+- `g_nades_bonus_only`  _( unregistered )_
+- `g_nades_bonus_onstrength`  _( unregistered )_
+- `g_nades_bonus_score_max`  _( unregistered )_
+- `g_nades_bonus_score_medium`  _( unregistered )_
+- `g_nades_bonus_score_minor`  _( unregistered )_
+- `g_nades_bonus_score_spree`  _( unregistered )_
+- `g_nades_bonus_score_time`  _( unregistered )_
+- `g_nades_bonus_type`  _( unregistered )_
+- `g_nades_darkness`  _( unregistered )_
+- `g_nades_darkness_explode`  _( unregistered )_
+- `g_nades_darkness_radius`  _( unregistered )_
+- `g_nades_darkness_teamcheck`  _( unregistered )_
+- `g_nades_darkness_time`  _( unregistered )_
+- `g_nades_entrap`  _( unregistered )_
+- `g_nades_entrap_radius`  _( unregistered )_
+- `g_nades_entrap_speed`  _( unregistered )_
+- `g_nades_entrap_strength`  _( unregistered )_
+- `g_nades_entrap_time`  _( unregistered )_
+- `g_nades_heal`  _( unregistered )_
+- `g_nades_heal_armor_rate`  _( unregistered )_
+- `g_nades_heal_foe`  _( unregistered )_
+- `g_nades_heal_friend`  _( unregistered )_
+- `g_nades_heal_radius`  _( unregistered )_
+- `g_nades_heal_rate`  _( unregistered )_
+- `g_nades_heal_time`  _( unregistered )_
+- `g_nades_ice`  _( unregistered )_
+- `g_nades_ice_explode`  _( unregistered )_
+- `g_nades_ice_freeze_time`  _( unregistered )_
+- `g_nades_ice_radius`  _( unregistered )_
+- `g_nades_ice_teamcheck`  _( unregistered )_
+- `g_nades_nade_damage`  _( unregistered )_
+- `g_nades_nade_edgedamage`  _( unregistered )_
+- `g_nades_nade_force`  _( unregistered )_
+- `g_nades_nade_health`  _( unregistered )_
+- `g_nades_nade_lifetime`  _( unregistered )_
+- `g_nades_nade_maxforce`  _( unregistered )_
+- `g_nades_nade_minforce`  _( unregistered )_
+- `g_nades_nade_newton_style`  _( unregistered )_
+- `g_nades_nade_radius`  _( unregistered )_
+- `g_nades_nade_refire`  _( unregistered )_
+- `g_nades_nade_small`  _( unregistered )_
+- `g_nades_nade_type`  _( unregistered )_
+- `g_nades_napalm`  _( unregistered )_
+- `g_nades_napalm_ball_count`  _( unregistered )_
+- `g_nades_napalm_ball_damage`  _( unregistered )_
+- `g_nades_napalm_ball_lifetime`  _( unregistered )_
+- `g_nades_napalm_ball_radius`  _( unregistered )_
+- `g_nades_napalm_ball_spread`  _( unregistered )_
+- `g_nades_napalm_burntime`  _( unregistered )_
+- `g_nades_napalm_fountain_damage`  _( unregistered )_
+- `g_nades_napalm_fountain_delay`  _( unregistered )_
+- `g_nades_napalm_fountain_edgedamage`  _( unregistered )_
+- `g_nades_napalm_fountain_lifetime`  _( unregistered )_
+- `g_nades_napalm_fountain_radius`  _( unregistered )_
+- `g_nades_napalm_selfdamage`  _( unregistered )_
+- `g_nades_onspawn`  _( unregistered )_
+- `g_nades_pickup`  _( unregistered )_
+- `g_nades_pickup_time`  _( unregistered )_
+- `g_nades_pokenade`  _( unregistered )_
+- `g_nades_pokenade_monster_type`  _( unregistered )_
+- `g_nades_spawn`  _( unregistered )_
+- `g_nades_spawn_count`  _( unregistered )_
+- `g_nades_spawn_destroy_damage`  _( unregistered )_
+- `g_nades_spawn_health_respawn`  _( unregistered )_
+- `g_nades_spread`  _( unregistered )_
+- `g_nades_throw_offset`  _( unregistered )_
+- `g_nades_translocate`  _( unregistered )_
+- `g_nades_translocate_destroy_damage`  _( unregistered )_
+- `g_nades_veil`  _( unregistered )_
+- `g_nades_veil_radius`  _( unregistered )_
+- `g_nades_veil_time`  _( unregistered )_
+- `g_new_toys`  _( unregistered, cross-boundary )_
+- `g_new_toys_autoreplace`  _( unregistered, cross-boundary )_
+- `g_nexball_goallimit`  _( unregistered, cross-boundary )_
+- `g_nix`  _( unregistered, cross-boundary )_
+- `g_nix_with_blaster`  _( unregistered, cross-boundary )_
+- `g_nix_with_healtharmor`  _( unregistered )_
+- `g_nix_with_powerups`  _( unregistered )_
+- `g_norecoil`  _( unregistered )_
+- `g_offhand_blaster`  _( unregistered )_
+- `g_onslaught_cp_buildhealth`  _( unregistered )_
+- `g_onslaught_cp_buildtime`  _( unregistered )_
+- `g_onslaught_cp_health`  _( unregistered )_
+- `g_onslaught_cp_regen`  _( unregistered )_
+- `g_onslaught_gen_health`  _( unregistered )_
+- `g_onslaught_round_timelimit`  _( unregistered )_
+- `g_onslaught_warmup`  _( unregistered )_
+- `g_overkill`  _( unregistered )_
+- `g_overkill_blaster_keepdamage`  _( unregistered )_
+- `g_overkill_blaster_keepforce`  _( unregistered )_
+- `g_overkill_loot_player`  _( unregistered )_
+- `g_overkill_loot_player_time`  _( unregistered )_
+- `g_physical_items`  _( unregistered )_
+- `g_physical_items_damageforcescale`  _( unregistered )_
+- `g_physical_items_reset`  _( unregistered )_
+- `g_physics_clientselect`
+- `g_physics_clientselect_default`  _( unregistered )_
+- `g_physics_clientselect_options`
+- `g_pickup_armorbig`
+- `g_pickup_armorbig_max`
+- `g_pickup_armormedium`
+- `g_pickup_armormedium_max`
+- `g_pickup_armormega`
+- `g_pickup_armormega_max`
+- `g_pickup_armorsmall`
+- `g_pickup_armorsmall_max`
+- `g_pickup_cells`
+- `g_pickup_cells_max`
+- `g_pickup_fuel`
+- `g_pickup_fuel_jetpack`
+- `g_pickup_fuel_max`
+- `g_pickup_healthbig`
+- `g_pickup_healthbig_max`
+- `g_pickup_healthmedium`
+- `g_pickup_healthmedium_max`
+- `g_pickup_healthmega`
+- `g_pickup_healthmega_max`
+- `g_pickup_healthsmall`
+- `g_pickup_healthsmall_max`
+- `g_pickup_items`
+- `g_pickup_nails`
+- `g_pickup_nails_max`
+- `g_pickup_respawntime_ammo`
+- `g_pickup_respawntime_armor_big`
+- `g_pickup_respawntime_armor_medium`
+- `g_pickup_respawntime_armor_mega`
+- `g_pickup_respawntime_armor_small`
+- `g_pickup_respawntime_health_big`
+- `g_pickup_respawntime_health_medium`
+- `g_pickup_respawntime_health_mega`
+- `g_pickup_respawntime_health_small`
+- `g_pickup_respawntime_initial_random`  _( unregistered )_
+- `g_pickup_respawntime_powerup`
+- `g_pickup_respawntime_scaling_linear`  _( unregistered )_
+- `g_pickup_respawntime_scaling_offset`  _( unregistered )_
+- `g_pickup_respawntime_scaling_reciprocal`  _( unregistered )_
+- `g_pickup_respawntime_superweapon`
+- `g_pickup_respawntime_weapon`
+- `g_pickup_rockets`
+- `g_pickup_rockets_max`
+- `g_pickup_shells`
+- `g_pickup_shells_max`
+- `g_pickup_weapons_anyway`
+- `g_pinata`  _( unregistered, cross-boundary )_
+- `g_pinata_offhand`  _( unregistered )_
+- `g_playban_list`
+- `g_playban_minigames`
+- `g_player_damageforcescale`
+- `g_player_damageplayercenter`  _( unregistered )_
+- `g_playerstats_gamereport_uri`
+- `g_playerstats_gametype`  _( unregistered )_
+- `g_powerups`
+- `g_powerups_fuelregen`
+- `g_powerups_invisibility`
+- `g_powerups_jetpack`
+- `g_powerups_shield`
+- `g_powerups_speed`
+- `g_powerups_stack`
+- `g_powerups_strength`
+- `g_race_laps_limit`  _( unregistered, cross-boundary )_
+- `g_race_qualifying`  _( unregistered )_
+- `g_race_respawn_delay`  _( unregistered )_
+- `g_race_teams`  _( unregistered )_
+- `g_random_gravity`  _( unregistered )_
+- `g_random_gravity_delay`  _( unregistered )_
+- `g_random_gravity_max`  _( unregistered )_
+- `g_random_gravity_min`  _( unregistered )_
+- `g_random_gravity_negative`  _( unregistered )_
+- `g_random_gravity_negative_chance`  _( unregistered )_
+- `g_random_gravity_positive`  _( unregistered )_
+- `g_random_items`  _( unregistered )_
+- `g_random_loot`  _( unregistered )_
+- `g_random_loot_max`  _( unregistered )_
+- `g_random_loot_min`  _( unregistered )_
+- `g_random_loot_spread`  _( unregistered )_
+- `g_random_loot_time`  _( unregistered )_
+- `g_random_start_bullets`  _( unregistered )_
+- `g_random_start_cells`  _( unregistered )_
+- `g_random_start_rockets`  _( unregistered )_
+- `g_random_start_shells`  _( unregistered )_
+- `g_random_start_weapons`  _( unregistered )_
+- `g_random_start_weapons_count`  _( unregistered )_
+- `g_require_stats`  _( unregistered )_
+- `g_respawn_delay_forced`
+- `g_respawn_delay_large`
+- `g_respawn_delay_large_count`
+- `g_respawn_delay_max`
+- `g_respawn_delay_small`
+- `g_respawn_delay_small_count`
+- `g_respawn_ghosts`
+- `g_respawn_waves`
+- `g_rm`  _( unregistered )_
+- `g_rm_damage`  _( unregistered )_
+- `g_rm_edgedamage`  _( unregistered )_
+- `g_rm_force`  _( unregistered )_
+- `g_rm_laser`  _( unregistered )_
+- `g_rm_laser_count`  _( unregistered )_
+- `g_rm_laser_damage`  _( unregistered )_
+- `g_rm_laser_force`  _( unregistered )_
+- `g_rm_laser_lifetime`  _( unregistered )_
+- `g_rm_laser_radius`  _( unregistered )_
+- `g_rm_laser_refire`  _( unregistered )_
+- `g_rm_laser_speed`  _( unregistered )_
+- `g_rm_laser_spread`  _( unregistered )_
+- `g_rm_laser_zspread`  _( unregistered )_
+- `g_rm_radius`  _( unregistered )_
+- `g_rocket_flying`  _( unregistered, cross-boundary )_
+- `g_rocket_flying_disabledelays`  _( unregistered )_
+- `g_running_guns`  _( unregistered )_
+- `g_smneg`  _( unregistered )_
+- `g_smneg_bonus`  _( unregistered )_
+- `g_smneg_bonus_asymptote`  _( unregistered )_
+- `g_smneg_cooldown_factor`  _( unregistered )_
+- `g_spawn_alloweffects`
+- `g_spawn_furthest`
+- `g_spawn_near_teammate`  _( unregistered )_
+- `g_spawn_near_teammate_distance`  _( unregistered )_
+- `g_spawn_near_teammate_ignore_spawnpoint`  _( unregistered )_
+- `g_spawn_near_teammate_ignore_spawnpoint_check_health`  _( unregistered )_
+- `g_spawn_near_teammate_ignore_spawnpoint_closetodeath`  _( unregistered )_
+- `g_spawn_near_teammate_ignore_spawnpoint_delay`  _( unregistered )_
+- `g_spawn_near_teammate_ignore_spawnpoint_delay_death`  _( unregistered )_
+- `g_spawn_near_teammate_ignore_spawnpoint_max`  _( unregistered )_
+- `g_spawn_unique`  _( unregistered )_
+- `g_spawn_useallspawns`
+- `g_spawnshield_blockdamage`
+- `g_spawnshieldtime`
+- `g_start_ammo_cells`  _( unregistered )_
+- `g_start_ammo_fuel`  _( unregistered )_
+- `g_start_ammo_nails`  _( unregistered )_
+- `g_start_ammo_rockets`  _( unregistered )_
+- `g_start_ammo_shells`  _( unregistered )_
+- `g_start_items`  _( unregistered )_
+- `g_start_weapon_okhmg`  _( unregistered )_
+- `g_start_weapon_okrpc`  _( unregistered )_
+- `g_survival_hunter_count`  _( unregistered )_
+- `g_survival_reward_survival`  _( unregistered )_
+- `g_survival_round_enddelay`  _( unregistered )_
+- `g_survival_round_timelimit`  _( unregistered )_
+- `g_survival_warmup`  _( unregistered )_
+- `g_tdm_point_leadlimit`  _( unregistered )_
+- `g_tdm_point_limit`  _( unregistered )_
+- `g_tdm_team_spawns`  _( unregistered )_
+- `g_tdm_teams`  _( unregistered )_
+- `g_tdm_teams_override`  _( unregistered, cross-boundary )_
+- `g_teamdamage_resetspeed`
+- `g_teamdamage_threshold`
+- `g_telefrags`  _( unregistered )_
+- `g_telefrags_teamplay`  _( unregistered )_
+- `g_throughfloor_damage`  _( unregistered )_
+- `g_throughfloor_damage_max_stddev`  _( unregistered )_
+- `g_throughfloor_force`  _( unregistered )_
+- `g_throughfloor_force_max_stddev`  _( unregistered )_
+- `g_throughfloor_max_steps_other`  _( unregistered )_
+- `g_throughfloor_max_steps_player`  _( unregistered )_
+- `g_throughfloor_min_steps_other`  _( unregistered )_
+- `g_throughfloor_min_steps_player`  _( unregistered )_
+- `g_tka_point_limit`  _( unregistered )_
+- `g_tka_team_spawns`  _( unregistered )_
+- `g_tka_teams`  _( unregistered )_
+- `g_tka_teams_override`  _( unregistered, cross-boundary )_
+- `g_tmayhem`  _( unregistered )_
+- `g_tmayhem_point_leadlimit`  _( unregistered )_
+- `g_tmayhem_point_limit`  _( unregistered )_
+- `g_tmayhem_team_spawns`  _( unregistered )_
+- `g_tmayhem_teams`  _( unregistered )_
+- `g_tmayhem_teams_override`  _( unregistered, cross-boundary )_
+- `g_touchexplode`  _( unregistered, cross-boundary )_
+- `g_touchexplode_damage`  _( unregistered )_
+- `g_touchexplode_edgedamage`  _( unregistered )_
+- `g_touchexplode_force`  _( unregistered )_
+- `g_touchexplode_radius`  _( unregistered )_
+- `g_triggerimpulse_accel_multiplier`  _( unregistered )_
+- `g_triggerimpulse_accel_power`  _( unregistered )_
+- `g_triggerimpulse_directional_multiplier`  _( unregistered )_
+- `g_triggerimpulse_radial_multiplier`  _( unregistered )_
+- `g_turrets`  _( unregistered )_
+- `g_use_ammunition`  _( unregistered )_
+- `g_vampire`  _( unregistered, cross-boundary )_
+- `g_vampire_factor`  _( unregistered )_
+- `g_vampire_use_total_damage`  _( unregistered )_
+- `g_vampirehook`  _( unregistered )_
+- `g_vampirehook_damage`  _( unregistered )_
+- `g_vampirehook_damagerate`  _( unregistered )_
+- `g_vampirehook_health_steal`  _( unregistered )_
+- `g_vampirehook_teamheal`  _( unregistered )_
+- `g_vehicles_allow_bots`  _( unregistered )_
+- `g_vehicles_enter`  _( unregistered )_
+- `g_vehicles_enter_radius`  _( unregistered )_
+- `g_vehicles_exit_attempts`  _( unregistered )_
+- `g_vehicles_machinegun_damagerate`  _( unregistered )_
+- `g_vehicles_rifle_damagerate`  _( unregistered )_
+- `g_vehicles_steal`  _( unregistered )_
+- `g_vehicles_tag_damagerate`  _( unregistered )_
+- `g_vehicles_vaporizer_damagerate`  _( unregistered )_
+- `g_vehicles_vortex_damagerate`  _( unregistered )_
+- `g_vehicles_weapon_damagerate`  _( unregistered )_
+- `g_voteban_list`
+- `g_walljump`  _( unregistered )_
+- `g_walljump_delay`  _( unregistered )_
+- `g_walljump_force`  _( unregistered )_
+- `g_walljump_velocity_xy_factor`  _( unregistered )_
+- `g_walljump_velocity_z_factor`  _( unregistered )_
+- `g_warmup`
+- `g_warmup_allguns`
+- `g_warmup_allow_timeout`
+- `g_warmup_limit`
+- `g_warmup_majority_factor`
+- `g_warmup_start_ammo_cells`
+- `g_warmup_start_ammo_fuel`
+- `g_warmup_start_ammo_nails`
+- `g_warmup_start_ammo_rockets`
+- `g_warmup_start_ammo_shells`
+- `g_warmup_start_armor`
+- `g_warmup_start_health`
+- `g_waypointsprite_alpha`  _( unregistered )_
+- `g_waypointsprite_crosshairfadealpha`  _( unregistered )_
+- `g_waypointsprite_edgeoffset_bottom`  _( unregistered )_
+- `g_waypointsprite_fontsize`  _( unregistered )_
+- `g_waypointsprite_text`  _( unregistered )_
+- `g_weapon_overkill_hmg_weaponstart`  _( unregistered )_
+- `g_weapon_overkill_rpc_weaponstart`  _( unregistered )_
+- `g_weapon_stay`  _( cross-boundary )_
+- `g_weapon_throwable`  _( unregistered )_
+- `g_weaponarena`  _( unregistered, cross-boundary )_
+- `g_weaponarena_random`  _( unregistered )_
+- `g_weaponarena_random_with_blaster`  _( unregistered )_
+- `g_weapondamagefactor`
+- `g_weaponforcefactor`
+- `g_weaponratefactor`  _( unregistered )_
+- `g_weaponspeedfactor`  _( unregistered )_
+- `g_weaponspreadfactor`  _( unregistered )_
+
+### `hud_panel` (214)
+
+- `hud_panel_ammo_iconalign`
+- `hud_panel_ammo_maxammo`
+- `hud_panel_ammo_noncurrent_alpha`
+- `hud_panel_ammo_noncurrent_scale`
+- `hud_panel_ammo_onlycurrent`
+- `hud_panel_ammo_progressbar`
+- `hud_panel_ammo_progressbar_name`
+- `hud_panel_ammo_progressbar_xoffset`
+- `hud_panel_ammo_text`
+- `hud_panel_bg`
+- `hud_panel_bg_alpha`
+- `hud_panel_bg_border`
+- `hud_panel_bg_color`
+- `hud_panel_bg_color_team`
+- `hud_panel_bg_padding`
+- `hud_panel_centerprint_align`
+- `hud_panel_centerprint_fade_in`
+- `hud_panel_centerprint_fade_minfontsize`
+- `hud_panel_centerprint_fade_out`
+- `hud_panel_centerprint_fade_subsequent`
+- `hud_panel_centerprint_fade_subsequent_passone`
+- `hud_panel_centerprint_fade_subsequent_passone_minalpha`
+- `hud_panel_centerprint_fade_subsequent_passtwo`
+- `hud_panel_centerprint_fade_subsequent_passtwo_minalpha`
+- `hud_panel_centerprint_flip`
+- `hud_panel_centerprint_fontscale`
+- `hud_panel_centerprint_fontscale_bold`
+- `hud_panel_centerprint_fontscale_title`
+- `hud_panel_centerprint_time`
+- `hud_panel_checkpoints_align`
+- `hud_panel_checkpoints_flip`
+- `hud_panel_checkpoints_fontscale`
+- `hud_panel_engineinfo_fps_decimals`  _( unregistered )_
+- `hud_panel_engineinfo_fps_movingaverage`  _( unregistered )_
+- `hud_panel_fg_alpha`
+- `hud_panel_healtharmor_baralign`
+- `hud_panel_healtharmor_combined`
+- `hud_panel_healtharmor_flip`
+- `hud_panel_healtharmor_fuelbar_startalpha`
+- `hud_panel_healtharmor_hide_ondeath`
+- `hud_panel_healtharmor_iconalign`
+- `hud_panel_healtharmor_maxarmor`
+- `hud_panel_healtharmor_maxhealth`
+- `hud_panel_healtharmor_oxygenbar_startalpha`
+- `hud_panel_healtharmor_progressbar`
+- `hud_panel_healtharmor_progressbar_armor`
+- `hud_panel_healtharmor_progressbar_gfx`
+- `hud_panel_healtharmor_progressbar_gfx_damage`
+- `hud_panel_healtharmor_progressbar_gfx_lowhealth`
+- `hud_panel_healtharmor_progressbar_gfx_smooth`
+- `hud_panel_healtharmor_progressbar_health`
+- `hud_panel_healtharmor_text`
+- `hud_panel_infomessages_flip`
+- `hud_panel_infomessages_group0`
+- `hud_panel_infomessages_group_fadetime`
+- `hud_panel_infomessages_group_time`
+- `hud_panel_itemstime`  _( unregistered )_
+- `hud_panel_itemstime_dynamicsize`
+- `hud_panel_itemstime_hidebig`  _( unregistered )_
+- `hud_panel_itemstime_hidespawned`
+- `hud_panel_itemstime_iconalign`
+- `hud_panel_itemstime_progressbar`
+- `hud_panel_itemstime_progressbar_maxtime`
+- `hud_panel_itemstime_progressbar_name`
+- `hud_panel_itemstime_progressbar_reduced`
+- `hud_panel_itemstime_ratio`
+- `hud_panel_itemstime_text`
+- `hud_panel_mapvote_highlight_border`
+- `hud_panel_minigamehelp_align`
+- `hud_panel_modicons_ca_layout`
+- `hud_panel_modicons_dom_layout`
+- `hud_panel_modicons_dynamichud`
+- `hud_panel_modicons_freezetag_layout`
+- `hud_panel_notify_fadetime`
+- `hud_panel_notify_flip`
+- `hud_panel_notify_fontsize`
+- `hud_panel_notify_icon_aspect`
+- `hud_panel_notify_time`
+- `hud_panel_physics`  _( unregistered )_
+- `hud_panel_physics_acceleration_max`
+- `hud_panel_physics_acceleration_max_slick`
+- `hud_panel_physics_acceleration_movingaverage`
+- `hud_panel_physics_acceleration_progressbar_mode`
+- `hud_panel_physics_acceleration_progressbar_nonlinear`
+- `hud_panel_physics_acceleration_progressbar_scale`
+- `hud_panel_physics_acceleration_vertical`
+- `hud_panel_physics_baralign`
+- `hud_panel_physics_flip`
+- `hud_panel_physics_force_layout`
+- `hud_panel_physics_jumpspeed`
+- `hud_panel_physics_jumpspeed_time`
+- `hud_panel_physics_progressbar`
+- `hud_panel_physics_speed_colored`
+- `hud_panel_physics_speed_max`
+- `hud_panel_physics_speed_unit_show`
+- `hud_panel_physics_speed_vertical`
+- `hud_panel_physics_text`
+- `hud_panel_physics_text_scale`
+- `hud_panel_physics_topspeed`
+- `hud_panel_physics_topspeed_time`
+- `hud_panel_physics_update_interval`
+- `hud_panel_pickup_fade_out`
+- `hud_panel_pickup_iconsize`
+- `hud_panel_pickup_showtimer`
+- `hud_panel_pickup_time`
+- `hud_panel_powerups_baralign`
+- `hud_panel_powerups_dynamichud`
+- `hud_panel_powerups_hide_ondeath`
+- `hud_panel_powerups_iconalign`
+- `hud_panel_powerups_progressbar`
+- `hud_panel_powerups_text`
+- `hud_panel_pressedkeys`
+- `hud_panel_pressedkeys_aspect`
+- `hud_panel_pressedkeys_attack`
+- `hud_panel_quickmenu_align`
+- `hud_panel_quickmenu_server_is_default`
+- `hud_panel_quickmenu_time`
+- `hud_panel_quickmenu_translatecommands`
+- `hud_panel_racetimer_dynamichud`
+- `hud_panel_radar`  _( unregistered )_
+- `hud_panel_radar_foreground_alpha`  _( unregistered )_
+- `hud_panel_radar_maximized_rotation`  _( unregistered )_
+- `hud_panel_radar_maximized_scale`  _( unregistered )_
+- `hud_panel_radar_maximized_zoommode`  _( unregistered )_
+- `hud_panel_radar_rotation`  _( unregistered )_
+- `hud_panel_radar_scale`  _( unregistered )_
+- `hud_panel_radar_zoommode`  _( unregistered )_
+- `hud_panel_score_rankings`
+- `hud_panel_scoreboard_accuracy`
+- `hud_panel_scoreboard_accuracy_doublerows`
+- `hud_panel_scoreboard_bg_alpha`  _( unregistered )_
+- `hud_panel_scoreboard_bg_teams_color_team`
+- `hud_panel_scoreboard_fadeinspeed`
+- `hud_panel_scoreboard_fadeoutspeed`
+- `hud_panel_scoreboard_itemstats`
+- `hud_panel_scoreboard_itemstats_doublerows`
+- `hud_panel_scoreboard_respawntime_decimals`
+- `hud_panel_scoreboard_spectators_position`
+- `hud_panel_scoreboard_spectators_showping`
+- `hud_panel_scoreboard_table_bg_alpha`
+- `hud_panel_scoreboard_table_fg_alpha`
+- `hud_panel_scoreboard_table_fg_alpha_self`
+- `hud_panel_scoreboard_table_highlight`
+- `hud_panel_scoreboard_table_highlight_alpha`
+- `hud_panel_scoreboard_table_highlight_alpha_eliminated`
+- `hud_panel_scoreboard_table_highlight_alpha_self`
+- `hud_panel_scoreboard_team_size_position`  _( unregistered )_
+- `hud_panel_strafehud`  _( unregistered )_
+- `hud_panel_strafehud_angle_accel_color`  _( unregistered )_
+- `hud_panel_strafehud_angle_alpha`  _( unregistered )_
+- `hud_panel_strafehud_angle_neutral_color`  _( unregistered )_
+- `hud_panel_strafehud_angle_overturn_color`  _( unregistered )_
+- `hud_panel_strafehud_bar_accel_alpha`  _( unregistered )_
+- `hud_panel_strafehud_bar_accel_color`  _( unregistered )_
+- `hud_panel_strafehud_bar_neutral_alpha`  _( unregistered )_
+- `hud_panel_strafehud_bar_neutral_color`  _( unregistered )_
+- `hud_panel_strafehud_bar_overturn_alpha`  _( unregistered )_
+- `hud_panel_strafehud_bar_overturn_color`  _( unregistered )_
+- `hud_panel_strafehud_bestangle`  _( unregistered )_
+- `hud_panel_strafehud_bestangle_alpha`  _( unregistered )_
+- `hud_panel_strafehud_bestangle_color`  _( unregistered )_
+- `hud_panel_strafehud_demo`  _( unregistered )_
+- `hud_panel_strafehud_mode`  _( unregistered )_
+- `hud_panel_strafehud_range`  _( unregistered )_
+- `hud_panel_strafehud_style`  _( unregistered )_
+- `hud_panel_strafehud_switch`  _( unregistered )_
+- `hud_panel_strafehud_switch_alpha`  _( unregistered )_
+- `hud_panel_strafehud_switch_color`  _( unregistered )_
+- `hud_panel_strafehud_wturn`  _( unregistered )_
+- `hud_panel_strafehud_wturn_alpha`  _( unregistered )_
+- `hud_panel_strafehud_wturn_color`  _( unregistered )_
+- `hud_panel_timer_dynamichud`
+- `hud_panel_timer_increment`
+- `hud_panel_timer_secondary`
+- `hud_panel_timer_unbound`
+- `hud_panel_timer_warning_red`
+- `hud_panel_timer_warning_relative`
+- `hud_panel_timer_warning_relative_red`
+- `hud_panel_timer_warning_relative_yellow`
+- `hud_panel_timer_warning_yellow`
+- `hud_panel_update_interval`
+- `hud_panel_vote_alreadyvoted_alpha`
+- `hud_panel_vote_dynamichud`
+- `hud_panel_weapons_accuracy`
+- `hud_panel_weapons_ammo`
+- `hud_panel_weapons_ammo_alpha`
+- `hud_panel_weapons_ammo_color`
+- `hud_panel_weapons_ammo_full_cells`
+- `hud_panel_weapons_ammo_full_fuel`
+- `hud_panel_weapons_ammo_full_nails`
+- `hud_panel_weapons_ammo_full_rockets`
+- `hud_panel_weapons_ammo_full_shells`
+- `hud_panel_weapons_aspect`
+- `hud_panel_weapons_complainbubble`
+- `hud_panel_weapons_complainbubble_color_donthave`
+- `hud_panel_weapons_complainbubble_color_outofammo`
+- `hud_panel_weapons_complainbubble_color_unavailable`
+- `hud_panel_weapons_complainbubble_fadetime`
+- `hud_panel_weapons_complainbubble_padding`
+- `hud_panel_weapons_complainbubble_time`
+- `hud_panel_weapons_label`
+- `hud_panel_weapons_label_scale`
+- `hud_panel_weapons_noncurrent_alpha`
+- `hud_panel_weapons_noncurrent_scale`
+- `hud_panel_weapons_onlyowned`
+- `hud_panel_weapons_orderbyimpulse`
+- `hud_panel_weapons_selection_radius`
+- `hud_panel_weapons_selection_speed`
+- `hud_panel_weapons_timeout`
+- `hud_panel_weapons_timeout_effect`
+- `hud_panel_weapons_timeout_fadebgmin`
+- `hud_panel_weapons_timeout_fadefgmin`
+- `hud_panel_weapons_timeout_speed_in`
+- `hud_panel_weapons_timeout_speed_out`
+
+### `hud` (75)
+
+- `hud_colorflash_alpha`  _( unregistered )_
+- `hud_colorset_background`
+- `hud_colorset_foreground_1`
+- `hud_colorset_foreground_2`
+- `hud_colorset_foreground_3`
+- `hud_colorset_foreground_4`
+- `hud_colorset_kill_1`
+- `hud_colorset_kill_2`
+- `hud_colorset_kill_3`
+- `hud_configure_bg_minalpha`
+- `hud_configure_checkcollisions`
+- `hud_configure_grid`
+- `hud_configure_grid_alpha`
+- `hud_configure_grid_xsize`
+- `hud_configure_grid_ysize`
+- `hud_configure_teamcolorforced`
+- `hud_configure_vertical_lines`
+- `hud_contents_fadeintime`  _( unregistered )_
+- `hud_contents_fadeouttime`  _( unregistered )_
+- `hud_contents_lava_alpha`  _( unregistered )_
+- `hud_contents_slime_alpha`  _( unregistered )_
+- `hud_contents_water_alpha`  _( unregistered )_
+- `hud_damage`  _( unregistered )_
+- `hud_damage_color`  _( unregistered )_
+- `hud_damage_factor`  _( unregistered )_
+- `hud_damage_fade_rate`  _( unregistered )_
+- `hud_damage_maxalpha`  _( unregistered )_
+- `hud_damage_pain_threshold`  _( unregistered )_
+- `hud_damage_pain_threshold_lower`  _( unregistered )_
+- `hud_damage_pain_threshold_lower_health`  _( unregistered )_
+- `hud_damage_pain_threshold_pulsating_min`  _( unregistered )_
+- `hud_damage_pain_threshold_pulsating_period`  _( unregistered )_
+- `hud_dock`
+- `hud_dock_alpha`
+- `hud_dock_color`
+- `hud_dock_color_team`
+- `hud_dynamic_follow`  _( unregistered )_
+- `hud_dynamic_shake`  _( unregistered )_
+- `hud_dynamic_shake_damage_max`  _( unregistered )_
+- `hud_dynamic_shake_damage_min`  _( unregistered )_
+- `hud_dynamic_shake_scale`  _( unregistered )_
+- `hud_fontsize`
+- `hud_postprocessing_maxbluralpha`  _( unregistered )_
+- `hud_progressbar_acceleration_color`
+- `hud_progressbar_acceleration_neg_color`
+- `hud_progressbar_alpha`
+- `hud_progressbar_armor_color`
+- `hud_progressbar_fuel_color`
+- `hud_progressbar_health_color`
+- `hud_progressbar_oxygen_color`
+- `hud_progressbar_shield_color`
+- `hud_progressbar_speed_color`
+- `hud_progressbar_strength_color`
+- `hud_shownames`
+- `hud_shownames_alpha`
+- `hud_shownames_antioverlap`
+- `hud_shownames_antioverlap_minalpha`
+- `hud_shownames_aspect`
+- `hud_shownames_crosshairdistance`
+- `hud_shownames_crosshairdistance_antioverlap`
+- `hud_shownames_crosshairdistance_time`
+- `hud_shownames_decolorize`
+- `hud_shownames_enemies`
+- `hud_shownames_fontsize`
+- `hud_shownames_maxdistance`
+- `hud_shownames_mindistance`
+- `hud_shownames_offset`
+- `hud_shownames_resize`
+- `hud_shownames_self`
+- `hud_shownames_status`
+- `hud_shownames_statusbar_height`
+- `hud_shownames_statusbar_highlight`
+- `hud_skin`
+- `hud_speed_unit`
+- `hud_width`
+
+### `crosshair` (48)
+
+- `crosshair_alpha`
+- `crosshair_color`
+- `crosshair_color_special`
+- `crosshair_color_special_rainbow_brightness`
+- `crosshair_color_special_rainbow_delay`
+- `crosshair_dot`
+- `crosshair_dot_alpha`
+- `crosshair_dot_color`
+- `crosshair_dot_color_custom`
+- `crosshair_dot_size`
+- `crosshair_effect_scalefade`
+- `crosshair_effect_time`
+- `crosshair_enabled`
+- `crosshair_hitindication`
+- `crosshair_hitindication_color`
+- `crosshair_hitindication_per_weapon_color`
+- `crosshair_hitindication_speed`
+- `crosshair_hittest`
+- `crosshair_hittest_blur_teammate`
+- `crosshair_hittest_blur_wall`
+- `crosshair_hittest_showimpact`
+- `crosshair_per_weapon`
+- `crosshair_pickup`
+- `crosshair_pickup_speed`
+- `crosshair_ring`
+- `crosshair_ring_alpha`
+- `crosshair_ring_arc`
+- `crosshair_ring_arc_cold_alpha`
+- `crosshair_ring_arc_hot_alpha`
+- `crosshair_ring_arc_hot_color`
+- `crosshair_ring_hagar`
+- `crosshair_ring_hagar_alpha`
+- `crosshair_ring_inner`
+- `crosshair_ring_minelayer`
+- `crosshair_ring_minelayer_alpha`
+- `crosshair_ring_reload`
+- `crosshair_ring_reload_alpha`
+- `crosshair_ring_reload_size`
+- `crosshair_ring_size`
+- `crosshair_ring_vortex`
+- `crosshair_ring_vortex_alpha`
+- `crosshair_ring_vortex_currentcharge_movingavg_rate`
+- `crosshair_ring_vortex_currentcharge_scale`
+- `crosshair_ring_vortex_inner_alpha`
+- `crosshair_ring_vortex_inner_color_blue`
+- `crosshair_ring_vortex_inner_color_green`
+- `crosshair_ring_vortex_inner_color_red`
+- `crosshair_size`
+
+### `snd` (20)
+
+- `snd_attenuation_decibel`
+- `snd_attenuation_exponent`
+- `snd_channel0volume`
+- `snd_channel1volume`
+- `snd_channel2volume`
+- `snd_channel3volume`
+- `snd_channel4volume`
+- `snd_channel5volume`
+- `snd_channel6volume`
+- `snd_channel7volume`
+- `snd_channel8volume`
+- `snd_channel9volume`
+- `snd_channels`
+- `snd_mutewhenidle`
+- `snd_restart`  _( unregistered )_
+- `snd_soundradius`
+- `snd_spatialization_control`
+- `snd_speed`
+- `snd_staticvolume`
+- `snd_swapstereo`
+
+### `r` (37)
+
+- `r_ambient`  _( unregistered )_
+- `r_bloom`  _( unregistered )_
+- `r_coronas`  _( unregistered )_
+- `r_coronas_occlusionquery`  _( unregistered )_
+- `r_depthfirst`  _( unregistered )_
+- `r_drawdecals_drawdistance`  _( unregistered )_
+- `r_drawparticles_drawdistance`  _( unregistered, cross-boundary )_
+- `r_drawparticles_nearclip_max`  _( unregistered )_
+- `r_drawparticles_nearclip_min`  _( unregistered )_
+- `r_drawviewmodel`  _( unregistered )_
+- `r_glsl_deluxemapping`  _( unregistered )_
+- `r_glsl_offsetmapping`  _( unregistered )_
+- `r_glsl_offsetmapping_reliefmapping`  _( unregistered )_
+- `r_glsl_saturation`  _( unregistered )_
+- `r_hdr_glowintensity`  _( unregistered )_
+- `r_hdr_scenebrightness`  _( unregistered )_
+- `r_map_tint`
+- `r_map_tint_strength`
+- `r_motionblur`  _( unregistered )_
+- `r_pvs_cull`
+- `r_scene_tint`
+- `r_scene_tint_strength`
+- `r_shadow_gloss`  _( unregistered )_
+- `r_shadow_realtime_dlight`  _( unregistered )_
+- `r_shadow_realtime_dlight_shadows`  _( unregistered )_
+- `r_shadow_realtime_world`  _( unregistered )_
+- `r_shadow_realtime_world_shadows`  _( unregistered )_
+- `r_shadow_shadowmapping`  _( unregistered )_
+- `r_shadow_usenormalmap`  _( unregistered )_
+- `r_showsurfaces`  _( unregistered )_
+- `r_sky`  _( unregistered )_
+- `r_stereo_redcyan`  _( unregistered )_
+- `r_subdivisions_tolerance`  _( unregistered )_
+- `r_textshadow`  _( unregistered )_
+- `r_viewfbo`  _( unregistered )_
+- `r_water`  _( unregistered )_
+- `r_water_resolutionmultiplier`  _( unregistered )_
+
+### `menu` (46)
+
+- `menu_animations`  _( unregistered )_
+- `menu_cdtrack`  _( unregistered )_
+- `menu_create_show_all`  _( unregistered )_
+- `menu_cvarlist_descriptions`  _( unregistered )_
+- `menu_cvarlist_onlymodified`  _( unregistered )_
+- `menu_maxplayers`  _( unregistered )_
+- `menu_monsters_edit_movetarget`  _( unregistered )_
+- `menu_monsters_edit_skin`  _( unregistered )_
+- `menu_monsters_edit_spawn`  _( unregistered )_
+- `menu_mouse_absolute`  _( unregistered )_
+- `menu_restart`  _( unregistered )_
+- `menu_sandbox_attach_bone`  _( unregistered )_
+- `menu_sandbox_edit_alpha`  _( unregistered )_
+- `menu_sandbox_edit_color_glow`  _( unregistered )_
+- `menu_sandbox_edit_color_main`  _( unregistered )_
+- `menu_sandbox_edit_force`  _( unregistered )_
+- `menu_sandbox_edit_frame`  _( unregistered )_
+- `menu_sandbox_edit_material`  _( unregistered )_
+- `menu_sandbox_edit_physics`  _( unregistered )_
+- `menu_sandbox_edit_scale`  _( unregistered )_
+- `menu_sandbox_edit_skin`  _( unregistered )_
+- `menu_sandbox_edit_solidity`  _( unregistered )_
+- `menu_sandbox_spawn_model`  _( unregistered )_
+- `menu_screenshotviewer_next`  _( unregistered )_
+- `menu_screenshotviewer_prev`  _( unregistered )_
+- `menu_screenshotviewer_slideshow`  _( unregistered )_
+- `menu_screenshotviewer_zoomin`  _( unregistered )_
+- `menu_screenshotviewer_zoomout`  _( unregistered )_
+- `menu_screenshotviewer_zoomreset`  _( unregistered )_
+- `menu_showcvarsdialog`  _( unregistered )_
+- `menu_showhudexit`  _( unregistered )_
+- `menu_showhudoptions`  _( unregistered )_
+- `menu_showhudpanels`  _( unregistered )_
+- `menu_showquitdialog`  _( unregistered )_
+- `menu_showscreenshotviewer`  _( unregistered )_
+- `menu_skin`  _( unregistered, cross-boundary )_
+- `menu_slist_categories`  _( unregistered )_
+- `menu_slist_maxping`  _( unregistered )_
+- `menu_slist_showempty`  _( unregistered )_
+- `menu_slist_showfull`  _( unregistered )_
+- `menu_slist_showlaggy`  _( unregistered )_
+- `menu_snd_attenuation_method`
+- `menu_sounds`  _( unregistered )_
+- `menu_tooltips`  _( unregistered )_
+- `menu_vid_scale`  _( unregistered )_
+- `menu_weaponarena`  _( unregistered )_
+
+### `vid` (9)
+
+- `vid_borderless`
+- `vid_dgamouse`  _( unregistered )_
+- `vid_fullscreen`  _( unregistered )_
+- `vid_gl20`  _( unregistered )_
+- `vid_height`  _( unregistered )_
+- `vid_restart`  _( unregistered )_
+- `vid_samples`  _( unregistered )_
+- `vid_vsync`
+- `vid_width`  _( unregistered )_
+
+### `con` (5)
+
+- `con_chatsize`
+- `con_chatsound`
+- `con_chattime`
+- `con_closeontoggleconsole`  _( unregistered )_
+- `con_notify`  _( unregistered )_
+
+### `net` (3)
+
+- `net_address`  _( unregistered )_
+- `net_address_ipv6`  _( unregistered )_
+- `net_slist_pause`
+
+### `m` (5)
+
+- `m_accelerate`  _( unregistered )_
+- `m_accelerate_maxspeed`  _( unregistered )_
+- `m_accelerate_minspeed`  _( unregistered )_
+- `m_filter`  _( unregistered )_
+- `m_pitch`
+
+### `sys` (4)
+
+- `sys_colortranslation`  _( unregistered )_
+- `sys_priority_boost`
+- `sys_specialcharactertranslation`  _( unregistered )_
+- `sys_ticrate`  _( unregistered )_
+
+### `music` (2)
+
+- `music_playlist_list0`  _( unregistered )_
+- `music_playlist_random0`  _( unregistered )_
+
+### `prvm` (1)
+
+- `prvm_language`  _( unregistered, cross-boundary )_
+
+### `gl` (4)
+
+- `gl_finish`  _( unregistered )_
+- `gl_picmip`  _( unregistered )_
+- `gl_texture_anisotropy`  _( unregistered )_
+- `gl_texturecompression`  _( unregistered )_
+
+### `scr` (8)
+
+- `scr_screenshot_alpha`
+- `scr_screenshot_gammaboost`
+- `scr_screenshot_jpeg`
+- `scr_screenshot_jpeg_quality`
+- `scr_screenshot_name`
+- `scr_screenshot_name_in_mapdir`
+- `scr_screenshot_png`
+- `scr_screenshot_timestamp`
+
+### `in` (5)
+
+- `in_bind`  _( unregistered )_
+- `in_bindmap`  _( unregistered )_
+- `in_pitch_max`  _( unregistered )_
+- `in_pitch_min`  _( unregistered )_
+- `in_releaseall`  _( unregistered )_
+
+### `joy` (2)
+
+- `joy_detected`  _( unregistered )_
+- `joy_enable`  _( unregistered )_
+
+### `_ (private/internal)` (16)
+
+- `_campaign_index`
+- `_campaign_name`
+- `_campaign_testrun`
+- `_cl_color`  _( unregistered )_
+- `_cl_name`  _( unregistered, cross-boundary )_
+- `_cl_playermodel`  _( unregistered )_
+- `_cl_playerskin`  _( unregistered )_
+- `_hud_configure`
+- `_hud_panel_strafehud_demo`  _( unregistered )_
+- `_hud_panelorder`  _( unregistered )_
+- `_menu_alpha`  _( unregistered )_
+- `_menu_prvm_language`  _( unregistered )_
+- `_menu_vid_height`  _( unregistered )_
+- `_menu_vid_width`  _( unregistered )_
+- `_teams_available`  _( unregistered )_
+- `_termsofservice_accepted`  _( unregistered )_
+
+### `(bare / no prefix)` (38)
+
+- `bgmvolume`
+- `crosshair`  _( unregistered )_
+- `developer`  _( cross-boundary )_
+- `fov`
+- `fraglimit`
+- `fraglimit_override`  _( unregistered )_
+- `gametype`  _( unregistered )_
+- `hostname`
+- `lastlevel`
+- `leadlimit`
+- `leadlimit_and_fraglimit`
+- `mapname`  _( unregistered )_
+- `mastervolume`
+- `minplayers`
+- `minplayers_per_team`
+- `modname`  _( unregistered )_
+- `name`  _( unregistered )_
+- `nextmap`
+- `pausable`  _( unregistered )_
+- `samelevel`
+- `sensitivity`  _( unregistered )_
+- `showdate`  _( unregistered )_
+- `showfps`
+- `showping`
+- `skill`  _( cross-boundary )_
+- `skill_auto`
+- `teamplay`
+- `teamplay_mode`
+- `timelimit`
+- `timelimit_decrement`
+- `timelimit_increment`
+- `timelimit_max`
+- `timelimit_min`
+- `timelimit_override`  _( unregistered )_
+- `timelimit_overtime`
+- `timelimit_overtimes`
+- `timelimit_suddendeath`
+- `volume`
+
+### `sv` (140)
+
+- `sv_accelerate`  _( unregistered, cross-boundary )_
+- `sv_adminnick`  _( unregistered )_
+- `sv_airaccel_qw`  _( unregistered, cross-boundary )_
+- `sv_airaccel_qw_stretchfactor`  _( unregistered )_
+- `sv_airaccel_sideways_friction`  _( unregistered )_
+- `sv_airaccelerate`  _( unregistered, cross-boundary )_
+- `sv_aircontrol`  _( unregistered, cross-boundary )_
+- `sv_aircontrol_flags`  _( unregistered, cross-boundary )_
+- `sv_aircontrol_penalty`  _( unregistered, cross-boundary )_
+- `sv_aircontrol_power`  _( unregistered, cross-boundary )_
+- `sv_airspeedlimit_nonqw`  _( unregistered )_
+- `sv_airstopaccelerate`  _( unregistered, cross-boundary )_
+- `sv_airstopaccelerate_full`  _( unregistered )_
+- `sv_airstrafeaccel_qw`  _( unregistered )_
+- `sv_airstrafeaccelerate`  _( unregistered, cross-boundary )_
+- `sv_autodemo`
+- `sv_autodemo_perclient`
+- `sv_autodemo_perclient_discardable`
+- `sv_autoscreenshot`  _( unregistered )_
+- `sv_autotaunt`  _( unregistered )_
+- `sv_cheats`
+- `sv_clientcommand_antispam_count`
+- `sv_clientcommand_antispam_time`
+- `sv_clones`
+- `sv_damagetext`  _( unregistered )_
+- `sv_dedicated`
+- `sv_defaultplayermodel`  _( unregistered )_
+- `sv_defaultplayerskin`  _( unregistered )_
+- `sv_dodging_air_dodging`  _( unregistered )_
+- `sv_dodging_air_maxspeed`  _( unregistered )_
+- `sv_dodging_delay`  _( unregistered )_
+- `sv_dodging_height_threshold`  _( unregistered )_
+- `sv_dodging_horiz_force_fastest`  _( unregistered )_
+- `sv_dodging_horiz_force_slowest`  _( unregistered )_
+- `sv_dodging_horiz_speed_max`  _( unregistered )_
+- `sv_dodging_horiz_speed_min`  _( unregistered )_
+- `sv_dodging_maxspeed`  _( unregistered )_
+- `sv_dodging_ramp_time`  _( unregistered )_
+- `sv_dodging_sound`  _( unregistered )_
+- `sv_dodging_up_speed`  _( unregistered )_
+- `sv_dodging_wall_distance_threshold`  _( unregistered )_
+- `sv_dodging_wall_dodging`  _( unregistered )_
+- `sv_doublejump`  _( unregistered )_
+- `sv_eventlog`
+- `sv_eventlog_console`
+- `sv_eventlog_files`
+- `sv_eventlog_files_counter`
+- `sv_eventlog_files_nameprefix`
+- `sv_eventlog_files_namesuffix`
+- `sv_eventlog_files_timestamps`
+- `sv_eventlog_ipv6_delimiter`
+- `sv_fog`  _( unregistered )_
+- `sv_friction`  _( unregistered, cross-boundary )_
+- `sv_friction_on_land`  _( unregistered )_
+- `sv_friction_slick`  _( unregistered, cross-boundary )_
+- `sv_gameplayfix_nudgeoutofsolid`  _( unregistered )_
+- `sv_gameplayfix_stepdown`  _( unregistered )_
+- `sv_gameplayfix_stepdown_maxspeed`  _( unregistered )_
+- `sv_gentle`
+- `sv_gibhealth`
+- `sv_gravity`  _( cross-boundary )_
+- `sv_heartbeatperiod`  _( unregistered )_
+- `sv_itemstime`  _( unregistered )_
+- `sv_jumpspeedcap_max`  _( unregistered )_
+- `sv_jumpspeedcap_max_disable_on_ramps`  _( unregistered )_
+- `sv_jumpspeedcap_min`  _( unregistered )_
+- `sv_jumpstep`  _( unregistered )_
+- `sv_jumpvelocity`  _( unregistered )_
+- `sv_jumpvelocity_crouch`  _( unregistered )_
+- `sv_mapchange_delay`
+- `sv_mapformat_is_quake2`  _( unregistered )_
+- `sv_mapformat_is_quake3`  _( unregistered )_
+- `sv_maxairspeed`  _( unregistered, cross-boundary )_
+- `sv_maxairstrafespeed`  _( unregistered, cross-boundary )_
+- `sv_maxclients`  _( unregistered )_
+- `sv_maxspeed`  _( unregistered, cross-boundary )_
+- `sv_minigames`  _( unregistered )_
+- `sv_minigames_observer`  _( unregistered )_
+- `sv_motd`  _( unregistered )_
+- `sv_nostep`  _( unregistered )_
+- `sv_public`  _( unregistered )_
+- `sv_ready_restart`
+- `sv_ready_restart_after_countdown`
+- `sv_ready_restart_repeatable`
+- `sv_slick_applygravity`  _( unregistered )_
+- `sv_slickaccelerate`  _( unregistered )_
+- `sv_spectate`
+- `sv_spectator_speed_multiplier`  _( unregistered )_
+- `sv_spectator_speed_multiplier_max`  _( unregistered )_
+- `sv_spectator_speed_multiplier_min`  _( unregistered )_
+- `sv_startdownload`  _( unregistered )_
+- `sv_step_upspeed_max`
+- `sv_step_upspeed_scale`
+- `sv_stepheight`  _( unregistered )_
+- `sv_stopspeed`  _( unregistered, cross-boundary )_
+- `sv_taunt`  _( unregistered )_
+- `sv_teamnagger`  _( unregistered )_
+- `sv_termsofservice_url`  _( unregistered )_
+- `sv_threaded`
+- `sv_timeout`
+- `sv_timeout_leadtime`
+- `sv_timeout_length`
+- `sv_timeout_number`
+- `sv_timeout_resumetime`
+- `sv_track_canjump`  _( unregistered )_
+- `sv_vote_call`
+- `sv_vote_change`
+- `sv_vote_commands`
+- `sv_vote_debug`
+- `sv_vote_gamestart`
+- `sv_vote_gametype`
+- `sv_vote_gametype_options`
+- `sv_vote_gametype_timeout`
+- `sv_vote_limit`
+- `sv_vote_majority_factor`
+- `sv_vote_majority_factor_of_voted`
+- `sv_vote_master`
+- `sv_vote_master_callable`
+- `sv_vote_master_commands`
+- `sv_vote_master_ids`  _( unregistered )_
+- `sv_vote_master_password`
+- `sv_vote_master_playerlimit`
+- `sv_vote_no_stops_vote`
+- `sv_vote_nospectators`
+- `sv_vote_override_mostrecent`
+- `sv_vote_singlecount`
+- `sv_vote_stop`
+- `sv_vote_timeout`
+- `sv_vote_wait`
+- `sv_wallclip`  _( unregistered )_
+- `sv_wallfriction`  _( unregistered )_
+- `sv_warpzone_allow_selftarget`
+- `sv_warsowbunny_accel`  _( unregistered )_
+- `sv_warsowbunny_airforwardaccel`  _( unregistered )_
+- `sv_warsowbunny_backtosideratio`  _( unregistered )_
+- `sv_warsowbunny_topspeed`  _( unregistered )_
+- `sv_warsowbunny_turnaccel`  _( unregistered )_
+- `sv_world`  _( unregistered )_
+- `sv_worldauthor`  _( unregistered )_
+- `sv_worldmessage`  _( unregistered )_
+
+### `cl` (200)
+
+- `cl_allow_uid2name`  _( unregistered )_
+- `cl_allow_uidranking`  _( unregistered )_
+- `cl_allow_uidtracking`  _( unregistered )_
+- `cl_announcer_maptime`  _( unregistered, cross-boundary )_
+- `cl_autodemo`  _( unregistered )_
+- `cl_autoscreenshot`  _( unregistered )_
+- `cl_autoswitch`  _( unregistered, cross-boundary )_
+- `cl_autoswitch_cts`  _( unregistered, cross-boundary )_
+- `cl_autotaunt`  _( unregistered, cross-boundary )_
+- `cl_bob`  _( unregistered )_
+- `cl_bob2`  _( unregistered )_
+- `cl_bobfall`  _( unregistered )_
+- `cl_bobmodel`  _( unregistered )_
+- `cl_clippedspectating`  _( unregistered )_
+- `cl_curl_maxdownloads`  _( unregistered )_
+- `cl_curl_maxspeed`  _( unregistered )_
+- `cl_damageeffect`  _( unregistered )_
+- `cl_damagetext`  _( unregistered )_
+- `cl_damagetext_2d`  _( unregistered )_
+- `cl_damagetext_2d_alpha_lifetime`  _( unregistered )_
+- `cl_damagetext_2d_alpha_start`  _( unregistered )_
+- `cl_damagetext_2d_close_range`  _( unregistered )_
+- `cl_damagetext_2d_out_of_view`  _( unregistered )_
+- `cl_damagetext_2d_overlap_offset`  _( unregistered )_
+- `cl_damagetext_2d_pos`  _( unregistered )_
+- `cl_damagetext_2d_size_lifetime`  _( unregistered )_
+- `cl_damagetext_2d_velocity`  _( unregistered )_
+- `cl_damagetext_accumulate_alpha_rel`  _( unregistered )_
+- `cl_damagetext_accumulate_lifetime`  _( unregistered )_
+- `cl_damagetext_alpha_lifetime`  _( unregistered )_
+- `cl_damagetext_alpha_start`  _( unregistered )_
+- `cl_damagetext_color`  _( unregistered )_
+- `cl_damagetext_color_per_weapon`  _( unregistered )_
+- `cl_damagetext_format`  _( unregistered )_
+- `cl_damagetext_format_hide_redundant`  _( unregistered )_
+- `cl_damagetext_format_verbose`  _( unregistered )_
+- `cl_damagetext_friendlyfire`  _( unregistered )_
+- `cl_damagetext_friendlyfire_color`  _( unregistered )_
+- `cl_damagetext_lifetime`  _( unregistered )_
+- `cl_damagetext_offset_screen`  _( unregistered )_
+- `cl_damagetext_offset_world`  _( unregistered )_
+- `cl_damagetext_size_max`  _( unregistered )_
+- `cl_damagetext_size_max_damage`  _( unregistered )_
+- `cl_damagetext_size_min`  _( unregistered )_
+- `cl_damagetext_size_min_damage`  _( unregistered )_
+- `cl_damagetext_velocity_screen`  _( unregistered )_
+- `cl_damagetext_velocity_world`  _( unregistered )_
+- `cl_deathglow`  _( unregistered )_
+- `cl_deathglow_min`  _( unregistered )_
+- `cl_decals`  _( unregistered, cross-boundary )_
+- `cl_decals_fadetime`  _( unregistered )_
+- `cl_decals_models`  _( unregistered )_
+- `cl_decals_newsystem_bloodsmears`  _( unregistered )_
+- `cl_decals_newsystem_immediatebloodstain`  _( unregistered )_
+- `cl_dodging_timeout`  _( unregistered )_
+- `cl_eventchase_death`
+- `cl_eventchase_distance`
+- `cl_eventchase_speed`
+- `cl_followmodel`  _( unregistered )_
+- `cl_forcemyplayercolors`  _( unregistered )_
+- `cl_forcemyplayermodel`  _( unregistered )_
+- `cl_forcemyplayerskin`  _( unregistered )_
+- `cl_forceplayercolors`  _( unregistered )_
+- `cl_forceplayermodels`  _( unregistered )_
+- `cl_forceuniqueplayercolors`  _( unregistered )_
+- `cl_frameprofiler`
+- `cl_frameprofiler_dump`
+- `cl_frameprofiler_hitchms`
+- `cl_gentle`  _( unregistered )_
+- `cl_gentle_damage`  _( unregistered )_
+- `cl_gentle_gibs`  _( unregistered )_
+- `cl_gentle_messages`  _( unregistered )_
+- `cl_ghost_items`  _( unregistered )_
+- `cl_ghost_items_color`  _( unregistered )_
+- `cl_gpu_morph`
+- `cl_gunalign`  _( unregistered )_
+- `cl_hidewaypoints`  _( unregistered )_
+- `cl_hitsound`  _( unregistered )_
+- `cl_idle_warmup`  _( unregistered )_
+- `cl_items_animate`  _( unregistered )_
+- `cl_jetpack_attenuation`  _( unregistered )_
+- `cl_jetpack_jump`  _( unregistered, cross-boundary )_
+- `cl_leanmodel`  _( unregistered )_
+- `cl_loddistance1`  _( unregistered )_
+- `cl_loddistance2`  _( unregistered )_
+- `cl_maxfps`  _( unregistered )_
+- `cl_maxidlefps`  _( unregistered )_
+- `cl_minfps`  _( unregistered )_
+- `cl_modeldetailreduction`  _( unregistered )_
+- `cl_movement`  _( unregistered )_
+- `cl_movement_errorcompensation`
+- `cl_movement_errorcompensation_force_time`
+- `cl_movement_perframe`
+- `cl_movement_track_canjump`  _( unregistered, cross-boundary )_
+- `cl_nade_timer`  _( unregistered )_
+- `cl_netrepeatinput`  _( unregistered )_
+- `cl_noantilag`  _( unregistered )_
+- `cl_nogibs`  _( unregistered )_
+- `cl_particles`  _( unregistered, cross-boundary )_
+- `cl_particles_alpha`  _( unregistered )_
+- `cl_particles_blood`  _( unregistered )_
+- `cl_particles_blood_alpha`  _( unregistered )_
+- `cl_particles_bubbles`  _( unregistered )_
+- `cl_particles_bulletimpacts`  _( unregistered )_
+- `cl_particles_collisions`  _( unregistered )_
+- `cl_particles_modern`  _( unregistered, cross-boundary )_
+- `cl_particles_modern_nosdf`  _( unregistered )_
+- `cl_particles_quality`  _( unregistered, cross-boundary )_
+- `cl_particles_rain`  _( cross-boundary )_
+- `cl_particles_sdf_chunk`  _( unregistered )_
+- `cl_particles_sdf_debug`  _( unregistered )_
+- `cl_particles_sdf_generate`  _( unregistered, cross-boundary )_
+- `cl_particles_sdf_voxel`  _( unregistered )_
+- `cl_particles_size`  _( unregistered )_
+- `cl_particles_smoke`  _( unregistered )_
+- `cl_particles_smoke_alpha`  _( unregistered )_
+- `cl_particles_smoke_alphafade`  _( unregistered )_
+- `cl_particles_snow`  _( cross-boundary )_
+- `cl_particles_sparks`  _( unregistered )_
+- `cl_physics`  _( unregistered )_
+- `cl_playerdetailreduction`  _( unregistered )_
+- `cl_pose_cull`
+- `cl_pose_cull_distance`
+- `cl_precache_all_weapons`
+- `cl_predictfire`
+- `cl_projectile_prediction`
+- `cl_race_cptimes_namesize`
+- `cl_race_cptimes_showself`
+- `cl_race_cptimes_showspeed`
+- `cl_race_cptimes_showspeed_unit`
+- `cl_rainsnow_maxdrawdist`
+- `cl_respawn_ghosts_keepcolors`  _( unregistered )_
+- `cl_reticle`
+- `cl_reticle_chase`
+- `cl_reticle_normal`
+- `cl_reticle_normal_alpha`
+- `cl_reticle_stretch`
+- `cl_reticle_weapon`
+- `cl_reticle_weapon_alpha`
+- `cl_showfps`
+- `cl_showping`
+- `cl_simple_items`  _( unregistered )_
+- `cl_smoothviewheight`  _( unregistered )_
+- `cl_spawn_event_particles`
+- `cl_spawn_near_teammate`  _( unregistered )_
+- `cl_spawn_point_particles`
+- `cl_spawnzoom`
+- `cl_spawnzoom_factor`
+- `cl_spawnzoom_speed`
+- `cl_stairsmooth_catchuptime`
+- `cl_stairsmooth_snapspeed`
+- `cl_stairsmoothspeed`
+- `cl_tracers_teamcolor`  _( unregistered )_
+- `cl_unpress_attack_on_weapon_switch`  _( unregistered )_
+- `cl_unpress_zoom_on_death`  _( unregistered )_
+- `cl_unpress_zoom_on_spawn`  _( unregistered )_
+- `cl_unpress_zoom_on_weapon_switch`  _( unregistered )_
+- `cl_velocityzoom_enabled`  _( unregistered )_
+- `cl_velocityzoom_factor`  _( unregistered )_
+- `cl_velocityzoom_type`  _( unregistered )_
+- `cl_viewmodel_alpha`  _( unregistered )_
+- `cl_vignette`
+- `cl_vignette_band1_alpha`
+- `cl_vignette_band1_color`
+- `cl_vignette_band1_thickness`
+- `cl_vignette_band2_alpha`
+- `cl_vignette_band2_color`
+- `cl_vignette_band2_thickness`
+- `cl_vignette_band3_alpha`
+- `cl_vignette_band3_color`
+- `cl_vignette_band3_thickness`
+- `cl_vignette_band4_alpha`
+- `cl_vignette_band4_color`
+- `cl_vignette_band4_thickness`
+- `cl_vignette_bands`
+- `cl_vignette_preset`
+- `cl_vignette_roundness`
+- `cl_voice_directional`  _( unregistered )_
+- `cl_voice_directional_taunt_attenuation`  _( unregistered )_
+- `cl_weapon_switch_fallback_to_impulse`  _( unregistered )_
+- `cl_weapon_switch_reload`  _( unregistered )_
+- `cl_weaponimpulsemode`  _( unregistered, cross-boundary )_
+- `cl_weaponpriority`  _( unregistered, cross-boundary )_
+- `cl_weaponpriority0`  _( unregistered )_
+- `cl_weaponpriority1`  _( unregistered )_
+- `cl_weaponpriority2`  _( unregistered )_
+- `cl_weaponpriority3`  _( unregistered )_
+- `cl_weaponpriority4`  _( unregistered )_
+- `cl_weaponpriority5`  _( unregistered )_
+- `cl_weaponpriority6`  _( unregistered )_
+- `cl_weaponpriority7`  _( unregistered )_
+- `cl_weaponpriority8`  _( unregistered )_
+- `cl_weaponpriority9`  _( unregistered )_
+- `cl_weaponpriority_useforcycling`  _( unregistered )_
+- `cl_zoomfactor`
+- `cl_zoomscroll`  _( unregistered )_
+- `cl_zoomscroll_scale`  _( unregistered )_
+- `cl_zoomscroll_speed`  _( unregistered )_
+- `cl_zoomsensitivity`
+- `cl_zoomspeed`
+
+### `bot` (48)
+
+- `bot_add`
+- `bot_ai_aimskill_blendrate`
+- `bot_ai_aimskill_firetolerance`
+- `bot_ai_aimskill_fixedrate`
+- `bot_ai_aimskill_mouse`
+- `bot_ai_aimskill_offset`
+- `bot_ai_aimskill_think`
+- `bot_ai_bunnyhop_dir_deviation_max`
+- `bot_ai_bunnyhop_downward_pitch_max`
+- `bot_ai_bunnyhop_skilloffset`
+- `bot_ai_bunnyhop_turn_angle_max`
+- `bot_ai_bunnyhop_turn_angle_min`
+- `bot_ai_bunnyhop_turn_angle_reduction`
+- `bot_ai_chooseweaponinterval`
+- `bot_ai_custom_weapon_priority_close`
+- `bot_ai_custom_weapon_priority_distances`
+- `bot_ai_custom_weapon_priority_far`
+- `bot_ai_custom_weapon_priority_mid`
+- `bot_ai_dangerdetectioninterval`
+- `bot_ai_dangerdetectionupdates`
+- `bot_ai_enemydetectioninterval`
+- `bot_ai_enemydetectioninterval_stickingtoenemy`
+- `bot_ai_enemydetectionradius`
+- `bot_ai_friends_aware_pickup_radius`
+- `bot_ai_ignoregoal_timeout`
+- `bot_ai_keyboard_distance`
+- `bot_ai_keyboard_threshold`
+- `bot_ai_strategyinterval`
+- `bot_ai_strategyinterval_movingtarget`
+- `bot_ai_thinkinterval`
+- `bot_ai_timeitems`
+- `bot_ai_timeitems_minrespawndelay`
+- `bot_ai_weapon_combo`
+- `bot_ai_weapon_combo_threshold`
+- `bot_config_file`
+- `bot_god`
+- `bot_ignore_bots`
+- `bot_join_empty`
+- `bot_navigation_ignoreplayers`
+- `bot_nofire`
+- `bot_number`  _( cross-boundary )_
+- `bot_prefix`
+- `bot_remove`
+- `bot_suffix`
+- `bot_typefrag`
+- `bot_usemodelnames`
+- `bot_vs_human`  _( cross-boundary )_
+- `bot_wander_enable`
+
+
+<!-- END GENERATED -->

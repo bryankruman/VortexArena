@@ -323,15 +323,28 @@ public sealed class GameWorld
     private static readonly MovementInput ZeroInput = new() { FrameTime = SimulationLoop.TicRate };
 
     /// <summary>
-    /// Construct the world around a built collision world and (optionally) the parsed map entities. Does not
-    /// boot — call <see cref="Boot"/>. The simulation owns a fresh <see cref="EngineServices"/> over the
-    /// collision world; <see cref="Boot"/> publishes it as the ambient facade.
+    /// True when this world runs on the process-wide SHARED cvar store (the menu/console/client store handed in
+    /// by the listen-server host) instead of a private one — DP's single engine cvar table, so a setting changed
+    /// anywhere is live in the match. The menu has already exec'd the full stock cfg tree into that store, so
+    /// <see cref="Boot"/> must NOT re-load the tree (it would reset every server cvar to its cfg default and wipe
+    /// the user's overrides). False (default) → a private per-world store Boot loads from the cfg tree itself
+    /// (tests, the loopback path, and the sv_threaded host which keeps store isolation across threads).
     /// </summary>
-    public GameWorld(CollisionWorld collision, IReadOnlyList<EntityDict>? mapEntities = null)
+    private readonly bool _usingSharedStore;
+
+    /// <summary>
+    /// Construct the world around a built collision world and (optionally) the parsed map entities. Does not
+    /// boot — call <see cref="Boot"/>. When <paramref name="sharedCvars"/> is non-null the simulation runs on
+    /// THAT store (the shared menu cvar store — DP's one engine table); otherwise it owns a fresh private store.
+    /// <see cref="Boot"/> publishes the facade as the ambient and, for a private store only, loads the cfg tree.
+    /// </summary>
+    public GameWorld(CollisionWorld collision, IReadOnlyList<EntityDict>? mapEntities = null,
+        CvarService? sharedCvars = null)
     {
         Collision = collision;
         _mapEntities = mapEntities ?? System.Array.Empty<EntityDict>();
-        Services = new EngineServices(collision);
+        _usingSharedStore = sharedCvars is not null;
+        Services = new EngineServices(collision, sharedCvars);
         Simulation = new SimulationLoop(Services, collision);
     }
 
@@ -385,12 +398,22 @@ public sealed class GameWorld
         // 1c) if a config reader is wired (assets are mounted), load the REAL Xonotic cfg tree over the defaults
         //     (QC the engine exec'ing default.cfg → xonotic-server.cfg → balance/physics/gametypes/...). This
         //     replaces hardcoded baselines with authentic values for the many live cvar reads. Never fatal.
-        if (ConfigReader is not null)
+        //     ...but ONLY for a PRIVATE store. When this world runs on the SHARED store (listen-server host) the
+        //     menu already exec'd the same tree into it at boot AND layered the user's saved/console overrides on
+        //     top; re-loading here would reset every server cvar to its cfg default and silently wipe those
+        //     overrides — the very thing the old two-store build's BackfillModified pass existed to undo, now moot
+        //     because the store is never reloaded out from under the user.
+        bool loadedTree = false;
+        if (ConfigReader is not null && !_usingSharedStore)
         {
             LoadedConfig = ConfigLoader.LoadServerConfig(Api.Cvars, ConfigReader);
-            // Re-seed weapon balance from the loaded g_balance_* cvars (registration used stock fallbacks).
-            Weapons.ConfigureAll();
+            loadedTree = true;
         }
+        // Re-derive the cached weapon-balance block whenever the store holds authentic g_balance_* values: either
+        // we just loaded the cfg tree, or we're on the shared store the menu already loaded it into. (A private
+        // store with no ConfigReader — most tests — keeps the registration-time fallback balance, as before.)
+        if (loadedTree || _usingSharedStore)
+            Weapons.ConfigureAll();
 
         // QC autocvars are read live; our weapons cache their balance block in a struct (Weapon.Configure), so a
         // runtime change to a g_balance_* cvar (a console `set`, a script/cfg `exec`, or a ruleset vote) must
@@ -842,6 +865,18 @@ public sealed class GameWorld
     {
         if (name.StartsWith("g_balance", System.StringComparison.Ordinal))
             _weaponBalanceDirty = true;
+    }
+
+    /// <summary>
+    /// Tear down this world's external subscriptions. Critical when running on the SHARED cvar store: the
+    /// <see cref="OnServerCvarChanged"/> hook is attached to a store that OUTLIVES the world (a map change builds
+    /// a fresh world on the same store), so it must be detached or every retired world keeps re-deriving balance
+    /// on every cvar change. Idempotent and harmless for a private store (it dies with the world anyway). The
+    /// listen-server host calls this from its teardown (NetGame.Shutdown) before building the next map's world.
+    /// </summary>
+    public void Shutdown()
+    {
+        Services.CvarsImpl.Changed -= OnServerCvarChanged;
     }
 
     /// <summary>Cached deferred-command executor (see OnStartFrame — avoids a per-tick closure).</summary>

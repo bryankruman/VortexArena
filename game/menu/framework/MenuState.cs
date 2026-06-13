@@ -27,8 +27,9 @@ namespace XonoticGodot.Game.Menu;
 /// </summary>
 public static class MenuState
 {
-    /// <summary>Where the menu persists the user's archived (DP <c>seta</c>) preferences.</summary>
-    public const string UserConfigPath = "user://config.cfg";
+    /// <summary>Where the menu persists the user's archived (DP <c>seta</c>) preferences
+    /// (under <see cref="UserPaths.BaseDir"/>, i.e. <c>~/XonData/config.cfg</c> by default).</summary>
+    public static string UserConfigPath => UserPaths.Resolve("config.cfg");
 
     private static CvarService? _cvars;
     private static VirtualFileSystem? _vfs;
@@ -67,6 +68,10 @@ public static class MenuState
         if (_booted)
             return;
         _booted = true;
+
+        // One-time relocation of the user's data out of Godot's hidden user:// dir into ~/XonData (no-op after
+        // the first run). Must run before LoadUserConfig below, or the migrated config.cfg wouldn't be seen.
+        UserPaths.MigrateLegacyUserData();
 
         _cvars ??= new CvarService();
 
@@ -127,6 +132,12 @@ public static class MenuState
         // the thin KeyBindings.Defaults so the game is still playable. With a data dir the cfg already filled it.
         if (!XonoticGodot.Engine.Console.BindTable.List().Any())
             BindInput.SeedFromActions(KeyBindings.Defaults);
+
+        // Lock the shipped baseline NOW — the full stock cfg tree is loaded but the user's saved overrides are
+        // not yet applied. This is DP's Cvar_LockDefaults: it freezes each cvar's current value as its default so
+        // SaveUserConfig can persist only what the user actually moved off-default (and so a cvar that only ever
+        // appears via user/console `seta` — never in the stock tree — is treated as always-save, not "at default").
+        _cvars.LockDefaults();
 
         // --- the user's saved preferences win over the stock defaults (incl. their saved `bind` lines) ---
         LoadUserConfig();
@@ -207,8 +218,12 @@ public static class MenuState
     }
 
     /// <summary>
-    /// Write every archived cvar to <c>user://config.cfg</c> as <c>seta NAME "VALUE"</c> (DP's config.cfg
-    /// archive dump). Called when the user applies settings or leaves the menu. Never throws.
+    /// Write the user's changed preferences to <c>user://config.cfg</c> as <c>seta NAME "VALUE"</c> lines —
+    /// DP's config.cfg rule (<c>Cvar_WriteVariables</c>): only archived cvars whose value differs from the
+    /// locked default (plus user/console-created cvars that have no locked default), via
+    /// <see cref="CvarService.ArchivedNamesToPersist"/>. Settings left at (or reset to) their shipped default
+    /// are omitted, so the file stays a lean diff rather than a full dump. Called when the user applies settings
+    /// or leaves the menu. Never throws.
     /// </summary>
     public static void SaveUserConfig()
     {
@@ -216,7 +231,7 @@ public static class MenuState
             return;
         var sb = new StringBuilder();
         sb.Append("// XonoticGodot — saved menu preferences (archived cvars + keybinds). Auto-generated; edits may be overwritten.\n");
-        foreach (string name in _cvars.ArchivedNames.OrderBy(n => n, StringComparer.Ordinal))
+        foreach (string name in _cvars.ArchivedNamesToPersist.OrderBy(n => n, StringComparer.Ordinal))
             sb.Append($"seta {name} \"{Escape(_cvars.GetString(name))}\"\n");
 
         // Dump the runtime keybind table (DP Key_WriteBindings) as `bind "KEY" "cmd"` lines so the user's

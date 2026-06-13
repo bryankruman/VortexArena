@@ -500,7 +500,24 @@ public sealed partial class NetGame : Node3D
         //     the world origin with no items. Reuse the menu's shared cvar store via the config reader so the
         //     server reads authentic balance/physics; a bare CLI host (no preloaded store) loads them too. ---
         System.Collections.Generic.IReadOnlyList<EntityDict>? mapEntities = bsp is not null ? BuildEntityDicts(bsp) : null;
-        _serverWorld = new GameWorld(collision, mapEntities) { MapName = _map };
+
+        // Resolve the threading decision NOW — before the world is built — because it selects the CVAR-STORE MODEL,
+        // and the worker/gate setup further below must agree with that choice (so it's decided once, here).
+        //   • Default (sv_threaded 0): UNIFY — the world runs directly on the shared menu/console/client store
+        //     (DP's one engine cvar table). A host's console `set g_balance_…`/physics tweak is then live in the
+        //     match with no bridge, and client prediction (also on the shared store) and server authority read
+        //     identical values. The menu already loaded the cfg tree into it, so GameWorld.Boot skips the reload.
+        //   • sv_threaded 1 (experimental, non-headless only): keep a PRIVATE per-world store, isolated from the
+        //     main-thread menu/console writes and fed one-way by the bridge below — the sim runs on a worker
+        //     thread, so a shared mutable store would race. sv_threaded is read from the shared store (where the
+        //     menu/console writes it); with no shared store we stay single-threaded + private.
+        bool wantThreaded =
+            (_sharedCvars is not null && _sharedCvars.Has("sv_threaded") ? _sharedCvars.GetFloat("sv_threaded") : 0f) != 0f
+            && DisplayServer.GetName() != "headless";
+        bool unifyStore = _sharedCvars is not null && !wantThreaded;
+
+        _serverWorld = new GameWorld(collision, mapEntities,
+            sharedCvars: unifyStore ? _sharedCvars : null) { MapName = _map };
         // B3: on the interactive client-hosted path (a windowed listen server), clamp the per-render-frame
         // catch-up so a hitch isn't followed by a frame running 16× the sim — that second spike would miss
         // another vblank. The small backlog drains over the next few frames instead. A headless dedicated host
@@ -547,11 +564,8 @@ public sealed partial class NetGame : Node3D
         // experiment with (it moves the 4-12 ms server tick off the render thread). Kept default-off for now;
         // flip to 1 to enable. See §13.5.
         _serverWorld.Services.Cvars.Register("sv_threaded", "0");
-        bool wantThreaded =
-            (_sharedCvars is not null && _sharedCvars.Has("sv_threaded")
-                ? _sharedCvars.GetFloat("sv_threaded")
-                : _serverWorld.Services.Cvars.GetFloat("sv_threaded")) != 0f
-            && DisplayServer.GetName() != "headless";
+        // wantThreaded + unifyStore were resolved above (before the world was built) since they pick the
+        // cvar-store model; the worker/gate setup below reuses that one decision so the two never disagree.
 
         // Create-a-match / `--host` is "host AND play": the local host should spawn straight into the match, not
         // sit as an observer. xonotic-server.cfg ships `sv_spectate 1` (spectating allowed) which — faithful to QC
@@ -587,33 +601,32 @@ public sealed partial class NetGame : Node3D
             }
         }
 
-        // Carry the chosen match limits onto the hosted world's own cvar store (GameWorld keeps a private store,
-        // so the values the menu wrote into MenuState.Cvars don't reach it automatically). Read them from the
-        // shared store the menu populated; only override when set (>0), else the cfg-loaded defaults stand.
-        // In campaign mode the limits are authored by the file (CampaignPostInit set them during Boot), so the
-        // menu's leftover timelimit/fraglimit must NOT clobber them.
-        if (_sharedCvars is not null && string.IsNullOrEmpty(_campaignName))
+        // Carry the chosen match limits onto the hosted world's own cvar store. ONLY needed on the threaded
+        // (private-store) path: there GameWorld keeps a separate store, so the values the menu wrote into
+        // MenuState.Cvars don't reach it automatically. When unified the world IS running on the shared store the
+        // menu populated (Shell already wrote timelimit/fraglimit there), so there's nothing to copy. In campaign
+        // mode the limits are authored by the file (CampaignPostInit set them during Boot), so the menu's leftover
+        // timelimit/fraglimit must NOT clobber them.
+        if (_sharedCvars is not null && !unifyStore && string.IsNullOrEmpty(_campaignName))
         {
             CopyCvarIfSet(_sharedCvars, _serverWorld.Services.Cvars, "timelimit");
             CopyCvarIfSet(_sharedCvars, _serverWorld.Services.Cvars, "fraglimit");
         }
 
-        // Bridge runtime cvar changes from the shared (console/menu) store into the listen server's PRIVATE store.
-        // The in-game console writes `set`/`seta`/bare assignments to the shared MenuState.Cvars, but GameWorld
-        // keeps its own store (loaded from the cfg tree at Boot), so without this a console `set g_balance_…` — or
-        // any server-cvar tweak — never reaches the live match. Mirror only cvars the server already knows (Has)
-        // so we don't pollute its store with client-only cvars; the server's own Changed event then re-derives any
-        // cached state (GameWorld re-runs Weapons.ConfigureAll on a g_balance_* change). One-way, idempotent
-        // (Set skips no-op writes), so the campaign progress mirror above can't feed back into a loop.
-        if (_sharedCvars is not null)
+        // THREADED PATH ONLY: bridge runtime cvar changes from the shared (console/menu) store into the listen
+        // server's PRIVATE store. Under sv_threaded the world keeps its own store (isolated from the main thread),
+        // so without this a console `set g_balance_…` — or any server-cvar tweak — never reaches the live match.
+        // The DEFAULT (unified) path doesn't need this at all: the world runs ON the shared store, so a console
+        // write IS the server's value (and its own Changed hook re-derives weapon balance). Mirror only cvars the
+        // server already knows (Has); one-way + idempotent so the campaign progress mirror above can't loop.
+        if (_sharedCvars is not null && !unifyStore)
         {
-            // INITIAL BACKFILL (fixes "console-set server cvar lost on map change / new server"): a new map boots a
-            // fresh GameWorld whose private store reloads from the cfg tree, so a sv_*/g_* the user changed in the
-            // console (shared store) reverts to its cfg default even though the console still shows the user's value
-            // (the two-store split). The bridge below only forwards FUTURE Changed events, so re-apply the user's
-            // CURRENT overrides now. Skip in campaign mode (the level file authors the cvars, like the limits copy
-            // above). BackfillModifiedCvars only touches cvars the user actually changed AND the server Has, so it
-            // never clobbers a map/ruleset value the user didn't set.
+            // INITIAL BACKFILL (private-store only): a new map boots a fresh GameWorld whose private store reloads
+            // from the cfg tree, so a sv_*/g_* the user changed in the console (shared store) would revert to its
+            // cfg default. Re-apply the user's CURRENT overrides now (the bridge only forwards FUTURE changes).
+            // Skip in campaign mode (the level file authors the cvars). BackfillModified only touches cvars the
+            // user actually changed AND the server Has, so it never clobbers a map/ruleset value they didn't set.
+            // (The unified path needs none of this — its store is never reloaded out from under the user.)
             if (string.IsNullOrEmpty(_campaignName))
                 XonoticGodot.Engine.Simulation.CvarService.BackfillModified(
                     _sharedCvars, _serverWorld.Services.CvarsImpl, BootAuthoredCvars);
@@ -1457,6 +1470,18 @@ public sealed partial class NetGame : Node3D
         string local = _sharedCvars?.GetString("_cl_playermodel") ?? string.Empty;
         if (!string.IsNullOrEmpty(local))
             models.Add(local);
+
+        // (perf §9.4) Hosting bots → warm the bot roster's candidate models NOW, under the loading screen,
+        // instead of letting them stream in during the opening seconds of play. Each cold IQM otherwise decodes
+        // + GPU-uploads its textures one-per-frame as the bots first render (`stream: idle-warm … tex … built
+        // (~20ms)`), and that storm lands while the player is spawned and moving — the glitchy match start. The
+        // candidate set is the distinct models the active bots.txt can assign; warming them fills the
+        // texture/material caches so the in-play skeletal build (StreamSkeletalInto) is a cache hit. erebus/local
+        // are already in `models`, so duplicates self-skip via the HashSet.
+        if (_isListenServer && _botCount > 0 && _serverWorld is not null)
+            foreach (string bm in _serverWorld.Bots.CandidateModelPaths())
+                models.Add(bm);
+
         int modelsWarmed = 0;
         foreach (string m in models)
         {
@@ -1466,6 +1491,10 @@ public sealed partial class NetGame : Node3D
                 parts.Root.QueueFree(); // warm the texture/material caches; discard the throwaway build node
                 modelsWarmed++;
             }
+            // Yield per model so the loading bar animates and one cold IQM's decode+upload doesn't monopolize the
+            // frame — the load-screen analogue of the streamer's per-frame budget on the live path.
+            await YieldForLoadingFrame();
+            if (!IsInsideTree()) return;
         }
         GD.Print($"[NetGame] precached {sounds} combat sounds, {modelsWarmed} player models.");
     }
@@ -1749,7 +1778,13 @@ public sealed partial class NetGame : Node3D
         if (_musicPlayer is not null && Godot.GodotObject.IsInstanceValid(_musicPlayer))
             _musicPlayer.SimGate = null;   // gate released; music scan reverts to lock-free
         if (_serverWorld is not null)
+        {
+            // Detach the world's cvar hook BEFORE dropping the world. Critical on the unified path, where that hook
+            // lives on the SHARED store which OUTLIVES this match (the next map builds a fresh world on it): leave
+            // it attached and every retired world would keep re-deriving weapon balance on every future cvar change.
+            _serverWorld.Shutdown();
             _serverWorld.Services.TraceImpl.ConcurrencyGate = null;   // traces revert to lock-free
+        }
         _simGate = null;
         _server?.Dispose();
         // Free the carrier so a torn-down session doesn't leave a stray player edict in its facade. Use the
@@ -2305,6 +2340,9 @@ public sealed partial class NetGame : Node3D
         // match leaves intermission). Without this the shake still works in normal play but keeps shaking on the
         // scoreboard screen.
         _fullHud.Intermission = _client.MatchIntermission;
+        // Free-fly observer gate for the physics/strafehud "even observing" show-modes (hud_panel_<id> 1/3 hide
+        // while observing, 2/4 keep showing). QC spectatee_status == -1 → IsObserving (not following anyone).
+        _fullHud.Observing = _client.IsObserving;
         if (_client.MatchIntermission)
             t.IntermissionTime = _client.LatestServerTime;
     }

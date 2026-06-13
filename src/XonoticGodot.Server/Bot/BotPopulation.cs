@@ -536,6 +536,28 @@ public sealed class BotPopulation
 
     private readonly Random _nameRng = new(12345);
 
+    /// <summary>
+    /// The distinct, non-empty player-model paths the active bot config (bots.txt) can assign — the roster's
+    /// candidate set. The client precaches exactly these under the loading screen (NetGame, perf §9.4) so the
+    /// bots' models are texture-cache-hot when they first render, instead of decoding+uploading their IQM
+    /// textures one-per-frame during the opening seconds of play (the match-start hitch storm). Parsed via the
+    /// same <see cref="ParseBotFile"/> cache + <c>models/player/&lt;model&gt;.iqm</c> transform as
+    /// <see cref="PickNameAndModel"/>, so the set is exactly what the picks can draw from.
+    /// </summary>
+    public IReadOnlyList<string> CandidateModelPaths()
+    {
+        _botRows ??= ParseBotFile();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var models = new List<string>();
+        foreach ((string Name, string Model) row in _botRows)
+        {
+            if (string.IsNullOrEmpty(row.Model)) continue;
+            string path = $"models/player/{row.Model}.iqm";   // QC appends .iqm (matches PickNameAndModel)
+            if (seen.Add(path)) models.Add(path);
+        }
+        return models;
+    }
+
     /// <summary>Parse bot_config_file (bots.txt) rows via the world's ConfigReader; comments (// #) skipped.</summary>
     private List<(string Name, string Model)> ParseBotFile()
     {

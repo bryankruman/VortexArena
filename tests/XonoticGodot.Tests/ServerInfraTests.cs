@@ -91,6 +91,56 @@ public class ServerInfraTests
         Assert.False(server.Has("cl_local_only"));                  // client-only cvar never leaked into the server
     }
 
+    // ============================================================== config-save rule (DP Cvar_WriteVariables)
+
+    [Fact]
+    public void ArchivedNamesToPersist_WritesOnlyUserChangesOffTheLockedDefault()
+    {
+        // Mirrors MenuState.Boot's order: load the stock tree (via `set`, as the interpreter does), LockDefaults,
+        // then apply the user's menu/console changes (MarkArchived == DP's seta/CVAR_SAVE bit). The save then
+        // writes only what the user actually moved off the shipped default — DP's config.cfg rule — not a dump.
+        var cvars = new CvarService();
+        cvars.Set("crosshair", "3");      // shipped default
+        cvars.Set("sensitivity", "6");    // shipped default
+        cvars.Set("fov", "90");           // shipped default
+        cvars.LockDefaults();
+
+        cvars.Set("crosshair", "12");
+        cvars.MarkArchived("crosshair");  // changed off default + archived → MUST persist
+        cvars.Set("sensitivity", "6");    // re-set to the SAME locked default
+        cvars.MarkArchived("sensitivity");// archived but == default → MUST be omitted (lean diff, not full dump)
+        // fov never touched → not archived → omitted
+
+        var persist = new HashSet<string>(cvars.ArchivedNamesToPersist, System.StringComparer.Ordinal);
+        Assert.Contains("crosshair", persist);
+        Assert.DoesNotContain("sensitivity", persist);
+        Assert.DoesNotContain("fov", persist);
+    }
+
+    [Fact]
+    public void ArchivedNamesToPersist_KeepsUserCreatedAndLateRegisteredCvars_NotDroppedAsDefault()
+    {
+        // The ordering trap the !DefaultLocked escape (DP CF_ALLOCATED & !CF_DEFAULTSET) guards against: a cvar
+        // that does NOT exist at LockDefaults time — a console-created `seta`, or a port-extension cl_* registered
+        // only once a match starts — has its saved value become its inferred "default", so a naive value!=default
+        // test would treat it as unchanged and silently drop it on the next save. It must persist regardless.
+        var cvars = new CvarService();
+        cvars.Set("crosshair", "3");
+        cvars.LockDefaults();             // my_pref / cl_vignette absent here
+
+        cvars.Set("my_pref", "1");        // user created it in the console after the lock
+        cvars.MarkArchived("my_pref");
+
+        cvars.Set("cl_vignette", "2");    // user-config value applied first (first-seen → inferred default "2")...
+        cvars.MarkArchived("cl_vignette");
+        cvars.Register("cl_vignette", "1", CvarFlags.Save); // ...then the overlay registers its real default later
+
+        Assert.False(cvars.IsModified("cl_vignette")); // inferred default == value → "modified" alone would drop it
+        var persist = new HashSet<string>(cvars.ArchivedNamesToPersist, System.StringComparer.Ordinal);
+        Assert.Contains("my_pref", persist);
+        Assert.Contains("cl_vignette", persist);
+    }
+
     // =========================================================================================== bans
 
     [Fact]

@@ -115,6 +115,12 @@ public partial class StrafeHudPanel : HudPanel
 
     private float Now() => Api.Services is not null ? (float)Api.Clock.Time : (float)_localClock;
 
+    /// <summary>QC <c>HUD_StrafeHUD</c> top gate: <c>hud_panel_strafehud</c> is a multi-value show-mode
+    /// (0 off / 1 on / 2 on incl. observing / 3 Race·CTS only / 4 Race·CTS incl. observing), matching the physics
+    /// panel. Default 3 — Race/CTS only. (Base strafehud.qc.)</summary>
+    public override bool ResolveVisible(in HudShowContext ctx)
+        => ctx.Configuring || ResolveShowMode(ShowModeCvar(), ctx);
+
     // -------------------------------------------------------------------------------------------------
     //  Behaviour-cvar defaults (HudConfig invokes this by reflection). Mirrors strafehud.qh defaults.
     // -------------------------------------------------------------------------------------------------

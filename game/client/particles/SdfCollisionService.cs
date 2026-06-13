@@ -663,10 +663,11 @@ public sealed partial class SdfCollisionService : Node3D
         return s;
     }
 
-    /// <summary>Globalize <c>user://sdfcache/&lt;file&gt;</c> to an absolute OS path. The cache is a user-side
-    /// artifact (regenerable), so it lives under <c>user://</c>, not the VFS pk3 search path.</summary>
+    /// <summary>Resolve <c>sdfcache/&lt;file&gt;</c> to an absolute OS path under <see cref="UserPaths.BaseDir"/>
+    /// (<c>~/XonData/sdfcache/…</c>). The cache is a user-side artifact (regenerable), so it lives in the user
+    /// data dir, not the VFS pk3 search path.</summary>
     private static string UserCacheAbsolutePath(string cacheVpath)
-        => ProjectSettings.GlobalizePath("user://" + cacheVpath);
+        => UserPaths.Resolve(cacheVpath);
 
     private static bool HashesEqual(byte[] a, byte[] b)
     {

@@ -211,11 +211,17 @@ ToS/welcome/team-select, tools, confirms). Architecture:
 - **Shared cvar store.** Every menu widget binds an engine cvar via the toolkit in `game/menu/framework/`
   (`Widgets.CheckBox/Slider/TextSlider/RadioButton/InputBox/CommandButton`, `Dependent.Bind`/`BindNot` =
   QC `setDependent`). `MenuState` (boot) mounts the VFS once, loads `xonotic-client.cfg`+`xonotic-server.cfg`
-  into one process-wide `CvarService`, layers `user://config.cfg` on top, and hands that store + VFS to each
+  into one process-wide `CvarService`, layers `~/XonData/config.cfg` on top, and hands that store + VFS to each
   match (so a setting changed in the menu is live in-game and persists). Apply/restart buttons route through
   `MenuCommand`.
 - **Dialogs** live in `game/menu/dialogs/` (one C# file per QC `dialog_*.qc`); `DialogSettingsAudio.cs` is the
-  reference pattern. Settings persist to `user://config.cfg` on Back/Apply.
+  reference pattern. Settings persist to `~/XonData/config.cfg` on Back/Apply.
+- **User data dir.** All writable per-user data — `config.cfg` (cvars + keybinds), `settings.cfg`,
+  `favorites.cfg`, the `sdfcache/`, and the profiler dumps — lives under **`~/XonData/`** (resolved by
+  `game/UserPaths.cs`, the writable-side counterpart to `DataPaths`), *not* Godot's hidden `user://` dir. Set
+  the `XONOTIC_USERDIR` env var to an absolute path to override it (tests/CI use this to keep `~` clean).
+  `MenuState.Boot` does a one-time copy of an existing `user://` `config.cfg`/`settings.cfg`/`favorites.cfg`
+  into `~/XonData` on first run, so an upgrade keeps the player's saved prefs.
 - **In-game:** Escape opens the pause menu (`Shell` pauses the tree; Disconnect returns to the main menu).
 
 **Boot / capture flags** (on the windowed run):
@@ -331,7 +337,7 @@ ToS/welcome/team-select, tools, confirms). Architecture:
   (`ServerGarbageCollection` etc.) in `XonoticGodot.csproj` without counter evidence — client frame-pauses
   trade against dedicated throughput.
 - **Hitch forensics (FrameProfiler, 2026-06-12):** `cl_frameprofiler 1` = overlay graph + hitch log,
-  `2` = also a per-second breakdown + the file sink `user://frameprofile.log`. Every frame is recorded into a
+  `2` = also a per-second breakdown + the file sink `~/XonData/frameprofile.log`. Every frame is recorded into a
   240-frame forensic ring (full per-scope ms+alloc table, GC counts + **pause ms**, draw calls, **pipeline-compile
   deltas** — a nonzero `pipe +N` mid-play is a first-use shader compile slipping past the warm pass), and a hitch
   emits a multi-line dump: `[hitch] scopes:` (top 12 with per-scope KB), `gpu:`, `gc:`, `events:`, and `prev:`
@@ -340,7 +346,7 @@ ToS/welcome/team-select, tools, confirms). Architecture:
   backlog drops, server input-queue trims, faithful-particle capacity changes. Read a hitch as: events name the
   culprit; `scopes` attribute the C# time; `pipe/gpu` attribute the GPU; `gc pause` the GC.
   `set cl_frameprofiler_dump 1` (console, mid-play, after a stutter) writes the whole ring to
-  `user://frameprofile_ring.csv` (Excel/pandas-ready) and re-arms. Add new `Prof.Event` call sites freely —
+  `~/XonData/frameprofile_ring.csv` (Excel/pandas-ready) and re-arms. Add new `Prof.Event` call sites freely —
   they're free when the profiler is off, bounded when on, thread-safe everywhere.
 - **Dedicated/headless server:** v1 is the headless listen server (`--headless --host`, see the section
   above + `tools/run-dedicated.sh`); the `linux-dedicated` export preset uses Godot's "export as dedicated

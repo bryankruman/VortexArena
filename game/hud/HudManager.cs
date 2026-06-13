@@ -81,6 +81,11 @@ public partial class Hud : CanvasLayer
     /// (normal play), so the effect works without any host wire-up.</summary>
     public bool Intermission { get; set; }
 
+    /// <summary>QC <c>spectatee_status == -1</c>: the local view is a free-fly observer (not playing, not
+    /// following anyone). Fed by the host each frame; gates the physics/strafehud "even observing" show-modes
+    /// (their <c>hud_panel_&lt;id&gt;</c> 1/3 hide while observing, 2/4 keep showing). Defaults false (normal play).</summary>
+    public bool Observing { get; set; }
+
     /// <summary>The damage-keyed whole-HUD shake (QC <c>Hud_Dynamic_Frame</c> shake block + <c>Hud_Shake_Update</c>).
     /// Driven each frame in <see cref="_Process"/> from the local player's health + the HUD clock.</summary>
     private readonly HudDynamicShake _dynamicShake = new();
@@ -97,9 +102,11 @@ public partial class Hud : CanvasLayer
 
     // Panels conditionally shown by the net/match layer or by a gameplay event (kept hidden until shown), and
     // the newly-discovered Radar (no data wiring yet). Matches the old manager's `{ Visible = false }` set.
+    // NOTE: "physics" is NOT here — it is a cvar-gated always-evaluated panel (QC HUD_Physics), so the per-frame
+    // loop below owns its Visible via ResolveVisible (hud_panel_physics show-mode), not the net layer.
     private static readonly HashSet<string> StartHiddenIds = new()
     {
-        "racetimer", "checkpoints", "vote", "modicons", "itemstime", "physics", "mapvote",
+        "racetimer", "checkpoints", "vote", "modicons", "itemstime", "mapvote",
         "vehicle", "fps", "ping", "radar",
     };
 
@@ -194,6 +201,17 @@ public partial class Hud : CanvasLayer
             health, (float)_shakeClock, new System.Numerics.Vector2(vp.X, vp.Y), Intermission);
         Offset = new Vector2(shake.X, shake.Y);
 
+        // hud_panel_<id> show gate (QC HUD_Panel_CheckFlags + each panel's top-of-draw enable test): resolve the
+        // live gametype/observer/configure context once, then let each user-toggleable panel decide whether its
+        // cvar permits drawing. The manager OWNS Visible for the always-on panels — so `set hud_panel_<id> 0` or
+        // the physics/strafehud Race/CTS show-modes hide/show them live — while net/event-gated panels
+        // (StartHiddenIds) keep their data-driven Visible but are still force-hidden when their cvar disables them.
+        string gametype = XonoticGodot.Common.Gameplay.Scoring.GameScores.Gametype;
+        var showCtx = new HudShowContext(
+            RaceOrCts: gametype is "rc" or "cts",
+            Observing: Observing,
+            Configuring: global::XonoticGodot.Game.Menu.MenuState.Cvars.GetFloat("_hud_configure") != 0f);
+
         foreach (HudPanel p in _panels)
         {
             // Port extras own their visibility/redraw — just keep their cvar layout fresh (full-viewport).
@@ -201,6 +219,20 @@ public partial class Hud : CanvasLayer
             {
                 p.LoadConfig(vp, 1f, 1f);
                 continue;
+            }
+
+            // Apply the cvar show gate to user-toggleable panels (PANEL_CONFIG_CANBEOFF).
+            if (p.ConfigFlags.HasFlag(PanelConfig.CanBeOff))
+            {
+                if (!p.ResolveVisible(showCtx))
+                {
+                    if (p.Visible) p.Visible = false; // cvar / show-mode says off → hide, regardless of data
+                    continue;
+                }
+                // cvar permits showing: assert Visible for the always-on panels; net/event-gated panels keep the
+                // net layer's data-driven Visible (it runs this frame in the parent's _Process, before this child's).
+                if (!StartHiddenIds.Contains(p.PanelId) && !p.Visible)
+                    p.Visible = true;
             }
 
             if (!p.Visible) continue;

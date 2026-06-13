@@ -155,6 +155,12 @@ public partial class PhysicsPanel : HudPanel
         c.Register("hud_panel_physics_update_interval", "0.015625", save);
     }
 
+    /// <summary>QC <c>HUD_Physics</c> top gate: <c>hud_panel_physics</c> is a multi-value show-mode
+    /// (0 off / 1 on / 2 on incl. observing / 3 Race·CTS only / 4 Race·CTS incl. observing). Default 3, so the
+    /// speedo only appears in Race/CTS unless the player opts in. (Base physics.qc:HUD_Physics.)</summary>
+    public override bool ResolveVisible(in HudShowContext ctx)
+        => ctx.Configuring || ResolveShowMode(ShowModeCvar(), ctx);
+
     public override void _Process(double delta)
     {
         _localClock += delta;

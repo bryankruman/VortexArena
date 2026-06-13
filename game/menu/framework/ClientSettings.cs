@@ -30,6 +30,7 @@ public static class ClientSettings
         Client.VignetteOverlay.RegisterDefaults(MenuState.Cvars);
         Client.ReticleOverlay.RegisterDefaults(MenuState.Cvars); // zoom scope reticle (cl_reticle*)
         Client.FrameProfiler.RegisterDefaults(MenuState.Cvars);
+        Client.ScreenshotService.RegisterDefaults(MenuState.Cvars); // scr_screenshot_* (the F12 screenshot command)
 
         // HUD skin + per-panel layout/behaviour cvar defaults (luma), so the menu HUD dialogs and the console
         // can see/drive them and panels read the luma defaults until a config overrides them.

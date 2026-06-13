@@ -602,7 +602,16 @@ public sealed class ParticleSim
                     {
                         int hitmask = SuperContents.Solid |
                             ((p.TypeIndex == ParticleType.Rain || p.TypeIndex == ParticleType.Snow) ? SuperContents.LiquidsMask : 0);
-                        TraceResult tr = Api.Trace.Trace(oldorg, Vector3.Zero, Vector3.Zero, p.Org, MoveFilter.Normal, null);
+                        // DP's per-frame bounce trace (cl_particles.c:2984) is CL_TraceLine(..., MOVE_NORMAL, ...,
+                        // hitnetworkbrushmodels=true, hitnetworkplayers=false, hitcsqcentities=false) — i.e. it clips
+                        // ONLY against the world BSP + brush-model entities (func_door/plat/breakable), never players,
+                        // items, monsters or projectiles. MoveFilter.NoMonsters is exactly that (world + Solid.Bsp
+                        // entities; bbox entities are skipped). Using MoveFilter.Normal here was both unfaithful
+                        // (particles bounced off players/items) and the dominant combat-frame cost — on a listen server
+                        // Api.Trace is the server world, so every bouncing spark/ember was box-swept against every
+                        // live player, dropped item, and in-flight projectile each frame. Matches the spawn-time rain
+                        // pre-trace above, which already uses NoMonsters.
+                        TraceResult tr = Api.Trace.Trace(oldorg, Vector3.Zero, Vector3.Zero, p.Org, MoveFilter.NoMonsters, null);
                         // Honor only the requested hitmask: a SOLID-only particle ignores a liquid surface.
                         bool hitWanted = (tr.DpHitContents & hitmask) != 0 || tr.StartSolid;
                         if (tr.Fraction < 1f && !hitWanted)

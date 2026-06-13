@@ -115,6 +115,15 @@ public partial class Shell : Node
         // the runtime hook: release all held buttons whenever the console opens (DP in_releaseall).
         BindInput.Install();
 
+        // The client-side `screenshot` command (DP CF_CLIENT, bound to F12 by binds-xonotic.cfg): a Godot node that
+        // grabs the next rendered frame and writes it to user://screenshots/. Registered on the SHARED interpreter
+        // so both the F12 bind (NetGame.RunBoundCommand → RunCommand → ExecuteLine) and a console-typed `screenshot`
+        // reach it — and, being a registered command, it's caught client-side before the server router (never
+        // forwarded, like DP). The cvar defaults were seeded above by ClientSettings.ApplyAll.
+        var screenshots = new Client.ScreenshotService { Name = "ScreenshotService" };
+        AddChild(screenshots);
+        screenshots.RegisterCommand(MenuState.Interp!, MenuState.Cvars);
+
         // Dev/CI: `--menu-screen nexposee:<Title>` opens that panel inside the nexposee on boot (vs the plain
         // `--menu-screen settings` which pushes a framed dialog). Consumed by MainMenu; clear it so the
         // OpenDebugScreen path below doesn't also try to push an unknown screen.

@@ -329,6 +329,10 @@ public sealed class CvarService : ICvarService
         public string Default = "";
         public bool HasDefault;
         public bool Archived;
+        // DP CF_DEFAULTSET: the Default has been snapshotted as the authoritative shipped baseline (LockDefaults).
+        // A cvar that first appeared AFTER LockDefaults (a console seta, a user-config line, a late client
+        // Register) has this false and is therefore always persisted — DP's CF_ALLOCATED & !CF_DEFAULTSET case.
+        public bool DefaultLocked;
     }
 
     private readonly Dictionary<string, Var> _vars = new(StringComparer.Ordinal);
@@ -497,6 +501,48 @@ public sealed class CvarService : ICvarService
             foreach (var kv in _vars)
                 if (kv.Value.Archived || (kv.Value.Flags & CvarFlags.Save) != 0)
                     yield return kv.Key;
+        }
+    }
+
+    /// <summary>
+    /// DP <c>Cvar_LockDefaults</c>: snapshot every cvar's CURRENT value as its authoritative default. Call this
+    /// once after the stock cfg tree has loaded but BEFORE layering the user's saved overrides, so
+    /// <see cref="IsModified"/> and <see cref="ArchivedNamesToPersist"/> measure deltas against the shipped
+    /// baseline rather than against whatever value the user happened to set last session.
+    /// </summary>
+    public void LockDefaults()
+    {
+        foreach (var v in _vars.Values)
+        {
+            v.Default = v.Value;
+            v.HasDefault = true;
+            v.DefaultLocked = true;
+        }
+    }
+
+    /// <summary>
+    /// The archived cvars that should be written to <c>user://config.cfg</c> — DP <c>Cvar_WriteVariables</c>'s
+    /// exact rule: archived AND (its value differs from the locked default OR it has no locked default at all).
+    /// That second clause is DP's "always save an allocated cvar whose default was never locked" — it keeps a
+    /// user-created or late-registered preference (a console <c>seta</c>, or a port-extension <c>cl_*</c> cvar
+    /// registered only once a match starts, after <see cref="LockDefaults"/>) from being silently dropped just
+    /// because its inferred default happens to equal its value. The net effect: a setting the user moved off the
+    /// shipped default is saved; one they left at (or reset to) the default is not — instead of dumping every
+    /// touched cvar regardless.
+    /// </summary>
+    public IEnumerable<string> ArchivedNamesToPersist
+    {
+        get
+        {
+            foreach (var kv in _vars)
+            {
+                var v = kv.Value;
+                if (!(v.Archived || (v.Flags & CvarFlags.Save) != 0))
+                    continue;
+                bool modified = v.HasDefault && !string.Equals(v.Value, v.Default, StringComparison.Ordinal);
+                if (modified || !v.DefaultLocked)
+                    yield return kv.Key;
+            }
         }
     }
 

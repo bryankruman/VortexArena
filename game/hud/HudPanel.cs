@@ -28,6 +28,14 @@ namespace XonoticGodot.Game.Hud;
 ///         Xolonium <see cref="HudFont"/>.</item>
 /// </list>
 /// </summary>
+/// <summary>The live HUD show context the manager resolves once per frame and feeds to
+/// <see cref="HudPanel.ResolveVisible"/>, so panels can honour the gametype- and observer-sensitive show-modes
+/// (the physics/strafehud <c>hud_panel_&lt;id&gt;</c> 1/2/3/4 modes).</summary>
+/// <param name="RaceOrCts">The active gametype is Race or CTS (QC <c>ISGAMETYPE(RACE) || ISGAMETYPE(CTS)</c>).</param>
+/// <param name="Observing">The local view is a free-fly observer (QC <c>spectatee_status == -1</c>).</param>
+/// <param name="Configuring">The HUD configure editor is active (QC <c>autocvar__hud_configure</c>).</param>
+public readonly record struct HudShowContext(bool RaceOrCts, bool Observing, bool Configuring);
+
 public abstract partial class HudPanel : Control
 {
     // ---- font (Xolonium), wired by the host where TextureCache.VfsResolver is set ----
@@ -70,6 +78,42 @@ public abstract partial class HudPanel : Control
 
     /// <summary>QC <c>PANEL_CONFIG_*</c> — whether the user may disable / the editor may move it.</summary>
     public virtual PanelConfig ConfigFlags => HudLayoutDefaults.For(PanelId).Config;
+
+    /// <summary>The integer value of this panel's master <c>hud_panel_&lt;id&gt;</c> show cvar (0 = off). For the
+    /// physics/strafehud panels this is a multi-value show-mode (see <see cref="ResolveShowMode"/>); for the rest
+    /// it is a plain 0/1 toggle.</summary>
+    protected int ShowModeCvar() => Mathf.RoundToInt(GlobalF("hud_panel_" + PanelId, 0f));
+
+    /// <summary>
+    /// QC per-panel show gate — does <c>hud_panel_&lt;id&gt;</c> (plus any multi-value show-mode) permit this panel
+    /// to draw right now? The <see cref="Hud"/> manager calls this each frame for user-toggleable panels
+    /// (<see cref="PanelConfig.CanBeOff"/>) and drives <see cref="CanvasItem.Visible"/> from it, so a console/menu
+    /// edit hides or shows the panel live. Default: the plain on/off master toggle (always-permitted for
+    /// non-CANBEOFF panels); the HUD configure editor (<c>_hud_configure</c>) forces every panel on so it can be
+    /// dragged. <see cref="PhysicsPanel"/> and <see cref="StrafeHudPanel"/> override this to add the QC race/cts +
+    /// observing show-modes.
+    /// </summary>
+    public virtual bool ResolveVisible(in HudShowContext ctx)
+    {
+        if (ctx.Configuring) return true;
+        if (!ConfigFlags.HasFlag(PanelConfig.CanBeOff)) return true;
+        return ShowModeCvar() != 0;
+    }
+
+    /// <summary>
+    /// The QC physics.qc / strafehud.qc <c>hud_panel_&lt;id&gt;</c> multi-value show-mode: 0 = off; 1 = on (hidden
+    /// while a free-fly observer); 2 = on, including while observing; 3 = Race/CTS only (hidden while observing);
+    /// 4 = Race/CTS only, including while observing. Any other positive value is treated as a plain "on".
+    /// </summary>
+    protected static bool ResolveShowMode(int mode, in HudShowContext ctx) => mode switch
+    {
+        0 => false,
+        1 => !ctx.Observing,
+        2 => true,
+        3 => ctx.RaceOrCts && !ctx.Observing,
+        4 => ctx.RaceOrCts,
+        _ => mode != 0,
+    };
 
     /// <summary>Normalized 0..1 default pos/size (QC <c>hud_panel_&lt;id&gt;_pos/_size</c>). Defaults to luma.</summary>
     public virtual PanelLayoutDefault DefaultLayout(Vector2 viewport)

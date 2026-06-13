@@ -75,8 +75,8 @@ public sealed class MatchConfig
 /// </summary>
 public sealed class ServerBrowser : IDisposable
 {
-    /// <summary>Favorites persist alongside the menu settings file.</summary>
-    private const string FavoritesPath = "user://favorites.cfg";
+    /// <summary>Favorites persist alongside the menu settings file (<c>~/XonData/favorites.cfg</c> by default).</summary>
+    private static string FavoritesPath => UserPaths.Resolve("favorites.cfg");
 
     /// <summary>The default XonoticGodot game port (DP <c>port</c> 26000) — the Connect default.</summary>
     public const int LanDiscoveryPort = 26000;
