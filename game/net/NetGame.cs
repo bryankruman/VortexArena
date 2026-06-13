@@ -520,9 +520,11 @@ public sealed partial class NetGame : Node3D
         // console/menu override in the SHARED store wins over the world default (the menu writes there). Threading
         // is GATED to non-headless hosts: a headless dedicated server already keeps the full catch-up cap and has
         // no render frame to unblock, so it stays on the stock single-threaded drive even with sv_threaded 1.
-        // (§13.5) Under active investigation — temporarily default ON to reproduce + verify the desync fix
-        // with the §13.4 PREDICTION DESYNC detector live. Reverts to 0 if a played session still desyncs.
-        _serverWorld.Services.Cvars.Register("sv_threaded", "1");
+        // (§13.5) Default OFF (user choice, 2026-06-12). The transport-split fix made a PLAYED threaded
+        // session clean — 0 PREDICTION DESYNC events over ~3 min, 0 errors — so `sv_threaded 1` is now SAFE to
+        // experiment with (it moves the 4-12 ms server tick off the render thread). Kept default-off for now;
+        // flip to 1 to enable. See §13.5.
+        _serverWorld.Services.Cvars.Register("sv_threaded", "0");
         bool wantThreaded =
             (_sharedCvars is not null && _sharedCvars.Has("sv_threaded")
                 ? _sharedCvars.GetFloat("sv_threaded")
