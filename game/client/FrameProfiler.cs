@@ -468,7 +468,10 @@ public partial class FrameProfiler : CanvasLayer
         }
         if (_logFile is not null)
         {
-            _logFile.StoreLine(line);
+            // Wall-clock stamp on the FILE lines only (console stays clean): the [external?] stall class
+            // survives exclusive fullscreen (§12.7), so the remaining diagnosis is CORRELATION — matching
+            // stall times against system events (WLAN scan period, AV activity, driver ops) needs real time.
+            _logFile.StoreLine($"{DateTime.Now:HH:mm:ss.fff} {line}");
             _logFile.Flush();
         }
     }
