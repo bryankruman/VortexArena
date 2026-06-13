@@ -443,7 +443,8 @@ public sealed class Raptor : Vehicle
         if (vehicle.Owner is not null)
             VehicleCommon.ExitVehicle(vehicle, vehicle.Owner, VehicleExitFlag.Normal);
 
-        WeaponSplash.RadiusDamage(vehicle, vehicle.Origin, 250f, 15f, 250f, vehicle.Enemy, RegistryId, 250f);
+        // raptor.qc raptor_blowup: the death blast is DEATH_VH_RAPT_DEATH.
+        WeaponSplash.RadiusDamage(vehicle, vehicle.Origin, 250f, 15f, 250f, vehicle.Enemy, 0, 250f, deathTag: DeathTypes.VhRaptDeath);
 
         vehicle.MoveType = MoveType.None;
         vehicle.Solid = Solid.Not;
@@ -477,7 +478,7 @@ public sealed class Raptor : Vehicle
 
         VehicleCommon.SpawnProjectile(vehicle, player, org, vel,
             CannonDamage, CannonRadius, CannonForce, size: 0f,
-            DeathTypes.FromWeapon("raptorcannon"), RegistryId, health: 0f, lifetime: 0f,
+            DeathTypes.VhRaptCannon, health: 0f, lifetime: 0f, // raptor_weapons.qc: DEATH_VH_RAPT_CANNON
             fireSound: "vehicles/lasergun_fire.wav");
         // TODO(port,client): EFFECT_RAPTOR_MUZZLEFLASH + CSQCProjectile visual.
     }
@@ -534,8 +535,9 @@ public sealed class Raptor : Vehicle
                 void Boom(Entity b)
                 {
                     b.Touch = null; b.Think = null;
+                    // raptor_weapons.qc raptor_bomblet_boom: DEATH_VH_RAPT_BOMB.
                     WeaponSplash.RadiusDamage(b, b.Origin, BombletDamage, BombletEdgeDamage, BombletRadius,
-                        b.DmgInflictor, RegistryId, BombletForce);
+                        b.DmgInflictor, 0, BombletForce, deathTag: DeathTypes.VhRaptBomb);
                     Api.Entities.Remove(b);
                 }
                 bomblet.Touch = (b, other) => { if (other != b.Owner) Boom(b); };

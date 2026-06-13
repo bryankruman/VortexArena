@@ -360,7 +360,8 @@ public sealed class Spiderbot : Vehicle
         {
             if (Time >= when)
             {
-                WeaponSplash.RadiusDamage(self, self.Origin, 250f, 15f, 250f, self.Enemy, RegistryId, 250f);
+                // spiderbot.qc spiderbot_blowup: the final death blast is DEATH_VH_SPID_DEATH.
+                WeaponSplash.RadiusDamage(self, self.Origin, 250f, 15f, 250f, self.Enemy, 0, 250f, deathTag: DeathTypes.VhSpidDeath);
                 self.DeadState = DeadFlag.Dead;
                 self.MoveType = MoveType.None;
                 self.Solid = Solid.Not;
@@ -415,8 +416,9 @@ public sealed class Spiderbot : Vehicle
             if (tr.Ent is not null && tr.Ent.TakeDamage != DamageMode.No)
             {
                 QMath.AngleVectors(QMath.VecToAngles(d), out Vector3 fwd, out _, out _);
-                WeaponFiring.ApplyDamage(tr.Ent, attacker, damage, RegistryId, inflictor: attacker,
-                    force: fwd * MinigunForce, hitLoc: tr.EndPos);
+                // spiderbot.qc minigun fireBullet: DEATH_VH_SPID_MINIGUN (special "vehicle" deathtype, not a weapon id).
+                Combat.Damage(tr.Ent, attacker, attacker, damage, DeathTypes.VhSpidMinigun,
+                    tr.EndPos, fwd * MinigunForce);
             }
             if (tr.Fraction == 1f) break;
             // Try to continue through the surface within the penetration budget.
@@ -480,7 +482,7 @@ public sealed class Spiderbot : Vehicle
                 Vector3 vel = Prandom.Spread(forward, right, up, RocketSpread) * RocketSpeed;
                 rocket = VehicleCommon.SpawnProjectile(vehicle, player, v, vel,
                     RocketDamage, RocketRadius, RocketForce, size: 1f,
-                    DeathTypes.FromWeapon("spiderbot"), RegistryId, health: RocketHealth, lifetime: RocketLifetime,
+                    DeathTypes.VhSpidRocket, health: RocketHealth, lifetime: RocketLifetime,
                     fireSound: "vehicles/spiderbot_rocket_fire.wav");
                 float distApprox = Prandom.Range(0f, RocketRadius) + QMath.VLen(v - ct.EndPos) - Prandom.Range(0f, RocketRadius);
                 // Detonate at the computed time (QC vehicles_projectile_explode_think).
@@ -488,7 +490,7 @@ public sealed class Spiderbot : Vehicle
                 {
                     self.Touch = null; self.Think = null; self.TakeDamage = DamageMode.No;
                     WeaponSplash.RadiusDamage(self, self.Origin, RocketDamage, 0f, RocketRadius,
-                        self.DmgInflictor, RegistryId, RocketForce);
+                        self.DmgInflictor, 0, RocketForce, deathTag: DeathTypes.VhSpidRocket);
                     Api.Entities.Remove(self);
                 };
                 rocket.NextThink = Time + MathF.Max(distApprox / RocketSpeed, 0f);
@@ -498,7 +500,7 @@ public sealed class Spiderbot : Vehicle
             case 2: // SBRM_GUIDE — homes toward the pilot's crosshair
                 rocket = VehicleCommon.SpawnProjectile(vehicle, player, v, QMath.Normalize(forward) * RocketSpeed,
                     RocketDamage, RocketRadius, RocketForce, size: 1f,
-                    DeathTypes.FromWeapon("spiderbot"), RegistryId, health: RocketHealth, lifetime: RocketLifetime,
+                    DeathTypes.VhSpidRocket, health: RocketHealth, lifetime: RocketLifetime,
                     fireSound: "vehicles/spiderbot_rocket_fire.wav");
                 rocket.VehGuideTarget = ct.EndPos;
                 rocket.VehGuideMode = (int)VehiclePhysics.GuideMode.SpiderGuided;
@@ -508,7 +510,7 @@ public sealed class Spiderbot : Vehicle
             {
                 rocket = VehicleCommon.SpawnProjectile(vehicle, player, v, QMath.Normalize(forward) * RocketSpeed,
                     RocketDamage, RocketRadius, RocketForce, size: 1f,
-                    DeathTypes.FromWeapon("spiderbot"), RegistryId, health: RocketHealth, lifetime: RocketLifetime,
+                    DeathTypes.VhSpidRocket, health: RocketHealth, lifetime: RocketLifetime,
                     fireSound: "vehicles/spiderbot_rocket_fire.wav");
                 Vector3 target = ct.EndPos + Prandom.Vec() * (0.75f * RocketRadius);
                 target.Z = ct.EndPos.Z;
@@ -570,7 +572,7 @@ public sealed class Spiderbot : Vehicle
             if (detonate)
             {
                 WeaponSplash.RadiusDamage(self, self.Origin, RocketDamage, 0f, RocketRadius,
-                    self.DmgInflictor, RegistryId, RocketForce);
+                    self.DmgInflictor, 0, RocketForce, deathTag: DeathTypes.VhSpidRocket);
                 Api.Entities.Remove(self);
             }
         };

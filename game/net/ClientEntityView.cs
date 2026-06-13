@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using Godot;
 using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Gameplay;
 using XonoticGodot.Game.Client;
 using XonoticGodot.Net;
 using NVec3 = System.Numerics.Vector3;
@@ -145,6 +146,10 @@ public sealed partial class ClientEntityView : Node
         // checks Health, but the proxy carries no MaxHealth, so drive the dead state straight off the networked
         // flag so a killed remote player poses dead instead of idling.
         e.DeadState = (s.Flags & NetEntityFlags.Dead) != 0 ? DeadFlag.Dead : DeadFlag.No;
+        // QC ENT_CLIENT_STATUSEFFECTS read: decode the networked status-effect bitmap onto the proxy so a remote
+        // entity carries the same frozen/burning/buff set the server has — the data ClientWorld's overlay pass
+        // (and any consumer of Entity.StatusEffects) reads to draw the burning particles / frozen tint.
+        ApplyStatusEffects(e, s.StatusEffects);
         ApplyIdentity(e, s);
 
         switch (s.Kind)
@@ -219,6 +224,32 @@ public sealed partial class ClientEntityView : Node
             NetEntityKind.Nameplate => "nameplate",
             _ => e.ClassName,
         };
+    }
+
+    /// <summary>
+    /// Decode the networked status-effect bitmap (QC <c>ENT_CLIENT_STATUSEFFECTS</c>) onto a proxy entity: rebuild
+    /// its <see cref="Entity.StatusEffects"/> list from the full snapshot the server packed. The blob is the full
+    /// bitmap each time it's networked (delta-resent only on change), so a clear-and-refill is correct — a null or
+    /// empty blob (the "no effects" / "effects cleared" case) leaves the list empty. The per-effect
+    /// <c>Strength</c> isn't networked (the QC wire carries only time + flags), so it's defaulted; the overlays
+    /// only need the effect's PRESENCE + timer, which round-trip exactly.
+    /// </summary>
+    private static void ApplyStatusEffects(Entity e, byte[]? blob)
+    {
+        List<ActiveStatusEffect> list = e.StatusEffects;
+        if (list.Count == 0 && (blob is null || blob.Length == 0))
+            return; // common case: no effects either side — nothing to do
+        list.Clear();
+        if (blob is null || blob.Length == 0)
+            return;
+        foreach (KeyValuePair<int, (float Time, StatusEffectFlags Flags)> kv in StatusEffectsCatalog.Read(blob))
+            list.Add(new ActiveStatusEffect
+            {
+                DefId = kv.Key,
+                ExpireTime = kv.Value.Time,
+                Flags = kv.Value.Flags,
+                Strength = 1f,
+            });
     }
 
     private Entity GetOrCreateProxy(int id)

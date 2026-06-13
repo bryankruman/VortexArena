@@ -1,5 +1,6 @@
 using System.Numerics;
 using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Gameplay.Damage;
 using XonoticGodot.Common.Math;
 using XonoticGodot.Common.Services;
 
@@ -83,7 +84,7 @@ public class PlasmaTurret : Turret  // non-sealed: PlasmaDualTurret derives from
         {
             // QC: FireRailgunBullet(it, ..., 800 damage, 0 force, no spread) — an instant hitscan beam.
             TurretCombat.FireBullet(turret, st.ShotOrg, dir, spread: 0f,
-                damage: InstagibRailDamage, force: 0f, RegistryId);
+                damage: InstagibRailDamage, force: 0f, DeathTypes.TurretPlasma);
             if (Api.Services is not null)
                 Api.Sound.Play(turret, SoundChannel.Weapon, "weapons/electro_fire.wav");
             // NOTE (client-render): EFFECT_VORTEX_MUZZLEFLASH + the team-coloured EFFECT_VAPORIZER_BEAM hit beam.
@@ -91,7 +92,7 @@ public class PlasmaTurret : Turret  // non-sealed: PlasmaDualTurret derives from
         else
         {
             TurretSpawn.Projectile(turret, st.ShotOrg, dir, ShotSpeed, size: 1f, health: 0f,
-                ShotDamage, edgeDamage: 0f, ShotRadius, ShotForce, RegistryId, spread: ShotSpread);
+                ShotDamage, edgeDamage: 0f, ShotRadius, ShotForce, DeathTypes.TurretPlasma, spread: ShotSpread);
 
             if (Api.Services is not null)
                 Api.Sound.Play(turret, SoundChannel.Weapon, "weapons/hagar_fire.wav");

@@ -25,7 +25,7 @@ public static class TurretCombat
     /// Returns the entity hit (or null).
     /// </summary>
     public static Entity? FireBullet(Entity turret, Vector3 start, Vector3 dir, float spread,
-        float damage, float force, int deathType)
+        float damage, float force, string deathType)
     {
         if (Api.Services is null) return null;
 
@@ -35,8 +35,7 @@ public static class TurretCombat
 
         Entity? hit = tr.Ent;
         if (hit is not null && hit.TakeDamage != DamageMode.No)
-            Combat.Damage(hit, turret, turret, damage, DeathTypes.FromWeapon(turret.NetName),
-                tr.EndPos, shotDir * force);
+            Combat.Damage(hit, turret, turret, damage, deathType, tr.EndPos, shotDir * force);
         return hit;
     }
 

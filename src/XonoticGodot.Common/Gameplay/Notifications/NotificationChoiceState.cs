@@ -67,6 +67,21 @@ public sealed class NotificationChoiceState
     }
 
     /// <summary>
+    /// Seed every choice slot with <paramref name="value"/> (default <see cref="OptionA"/>, the terse phrasing).
+    /// The SERVER uses this to initialize a fresh per-client state so a choice the client never replicated takes
+    /// the QC cfg default (the <c>notification_CHOICE_*</c> cvars ship 1) rather than the zero-init
+    /// <see cref="Suppress"/>: QC's client always replicates the cfg-seeded default, but this port's client skips
+    /// pushing unset/unchanged choice cvars (ClientNet.PushReplicatedSet drops a "" read), so the server must
+    /// supply the default QC would have sent. A later explicit <see cref="Set"/> overrides it — including an
+    /// explicit 0 (the user disabling that centerprint).
+    /// </summary>
+    public void FillDefault(int value = OptionA)
+    {
+        for (int i = 0; i < _choices.Length; i++)
+            _choices[i] = value;
+    }
+
+    /// <summary>
     /// QC <c>ReplicateVars</c> (notifications/all.qh:884): for every MSG_CHOICE notification (one per
     /// <see cref="Notification.ChoiceIdx"/> — team variants share an idx), read the client's
     /// <c>notification_CHOICE_&lt;cvarname&gt;</c> cvar and store it in the per-index array. The supplied

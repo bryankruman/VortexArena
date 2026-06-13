@@ -572,6 +572,11 @@ public sealed class GameWorld
     {
         Commands = new Commands(this);
 
+        // [A5 #8] Resolve each frag/typefrag centerprint's MSG_CHOICE option (terse A / verbose B) from the
+        // RECIPIENT's own replicated notification_CHOICE_* preference (QC CS(recipient).msg_choice_choices). The
+        // per-client selections land in Commands via the sentcvar receive leg; point the obituary dispatch at them.
+        Scores.ChoiceStateProvider = Commands.GetChoiceState;
+
         // [T38] QC sv_minigames.qc: the minigame session manager (create/join/part/end). The `minigame` command
         // (Commands.cs) reads this. Cvar gates use the shared facade; observer-forcing is left unwired for P0
         // (sv_minigames_observer ships 0 = don't force, so it's a no-op; the spectator hooks are T44's domain).

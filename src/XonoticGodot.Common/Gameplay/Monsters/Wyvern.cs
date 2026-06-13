@@ -94,7 +94,8 @@ public sealed class Wyvern : Monster
         float burnTime = MonsterAI.Cvar("g_monster_wyvern_attack_fireball_damagetime", FireballDamageTime);
         float skill = MonsterAI.SkillMod(st);
         Entity owner = e;
-        string deathType = DeathTypes.FromWeapon(NetName);
+        // wyvern.qc M_Wyvern_Attack_Fireball: the blast + the post-impact burn are DEATH_MONSTER_WYVERN.
+        string deathType = DeathTypes.MonsterWyvern;
 
         Entity missile = MonsterAI.SpawnProjectile(e, st, dir, FireballSpeed,
             damage: FireballDamage, edgeDamage: FireballEdgeDamage, radius: FireballRadius,

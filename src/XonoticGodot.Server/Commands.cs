@@ -245,7 +245,14 @@ public sealed class Commands
     private void StoreChoiceCvar(Player p, string cvarName, string value)
     {
         if (!_choiceState.TryGetValue(p, out var st))
+        {
             _choiceState[p] = st = new NotificationChoiceState();
+            // QC's client replicates EVERY notification_CHOICE_* cvar (cfg-seeded default 1); this port's client
+            // skips pushing unset/unchanged ones, so seed the QC default (option A / terse) here. Choices the
+            // client never pushes then resolve to A instead of the zero-init suppress — without this a client who
+            // customized only some choices would have the rest silently suppressed during warmup.
+            st.FillDefault(NotificationChoiceState.OptionA);
+        }
         int v = int.TryParse(value, System.Globalization.NumberStyles.Integer,
             System.Globalization.CultureInfo.InvariantCulture, out int parsed)
             ? parsed : NotificationChoiceState.OptionA;

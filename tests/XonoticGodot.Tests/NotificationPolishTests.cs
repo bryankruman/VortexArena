@@ -4,6 +4,7 @@ using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Gameplay;
 using XonoticGodot.Common.Gameplay.Damage;
 using XonoticGodot.Common.Services;
+using XonoticGodot.Net;
 using Xunit;
 
 namespace XonoticGodot.Tests;
@@ -241,6 +242,111 @@ public class NotificationPolishTests : IDisposable
         // an entity with no pending update flushes null.
         StatusEffectsCatalog.Flush(e);
         Assert.Null(StatusEffectsCatalog.Flush(e));
+    }
+
+    // --------------------------------------------------------------------------------------------
+    //  (3b) ENT_CLIENT_STATUSEFFECTS over the entity-delta wire (A5 #3/#7): the remote channel that
+    //       carries an entity's status-effect bitmap so the client drives the burning/frozen overlays.
+    //       The isolated bitmap Write/Read is covered above; these pin the NetEntityState delta field
+    //       and the full server→client snapshot round-trip (the seam ServerNet/ClientNet actually use).
+    // --------------------------------------------------------------------------------------------
+
+    [Fact]
+    public void StatusEffects_Blob_RoundTrips_Through_The_Entity_Delta_Codec()
+    {
+        var e = new Entity();
+        var burning = StatusEffectsCatalog.Burning!;
+        StatusEffectsCatalog.Apply(e, burning, duration: 5f, strength: 2f); // ExpireTime = 105
+
+        // A spawn delta (baseline = Empty) carrying the status-effect blob.
+        var baseline = NetEntityState.Empty(7);
+        var current = baseline;
+        current.Kind = NetEntityKind.Player;
+        current.StatusEffects = StatusEffectsCatalog.Write(e);
+
+        var w = new BitWriter();
+        EntityField mask = EntityStateCodec.WriteDelta(w, baseline, current);
+        // The widened (bit 16) StatusEffects field is in the mask — proving the uint mask carries a >15 bit.
+        Assert.True(mask.HasFlag(EntityField.StatusEffects));
+
+        var r = new BitReader(w.WrittenSpan);
+        NetEntityState got = EntityStateCodec.ReadDelta(ref r, baseline);
+        Assert.False(r.BadRead);
+        // The blob survived the wire and decodes back to the burning effect with its timer.
+        var decoded = StatusEffectsCatalog.Read(got.StatusEffects!);
+        Assert.True(decoded.ContainsKey(burning.RegistryId));
+        Assert.Equal(105f, decoded[burning.RegistryId].Time, 3);
+        Assert.True(decoded[burning.RegistryId].Flags.HasFlag(StatusEffectFlags.Active));
+    }
+
+    [Fact]
+    public void StatusEffects_Blob_Stays_Off_The_Wire_When_Unchanged()
+    {
+        var e = new Entity();
+        StatusEffectsCatalog.Apply(e, StatusEffectsCatalog.Burning!, duration: 5f);
+        byte[] blob = StatusEffectsCatalog.Write(e);
+
+        // Same effect bitmap CONTENT both frames (a distinct array with identical bytes — not the same reference),
+        // only the origin moved: the delta must NOT re-send the blob (it's compared by content, not reference).
+        var baseline = new NetEntityState { EntNum = 7, Kind = NetEntityKind.Player, StatusEffects = blob };
+        var moved = baseline;
+        moved.StatusEffects = (byte[])blob.Clone();
+        moved.Origin = new Vector3(8f, 0f, 0f);
+
+        var w = new BitWriter();
+        EntityField mask = EntityStateCodec.WriteDelta(w, baseline, moved);
+        Assert.Equal(EntityField.Origin, mask);
+        Assert.False(mask.HasFlag(EntityField.StatusEffects));
+    }
+
+    [Fact]
+    public void Remote_Player_Marked_Burning_On_The_Server_Shows_Burning_Client_Side()
+    {
+        var burning = StatusEffectsCatalog.Burning!;
+        const int netId = 7;
+
+        // Server side: a remote player is set burning; BuildEntitySet would pack its bitmap into the snapshot.
+        var p = new Entity();
+        StatusEffectsCatalog.Apply(p, burning, duration: 5f, strength: 1f);
+
+        var server = new ServerSnapshotHistory();
+        var client = new ClientSnapshotHistory();
+
+        var burningSnap = new NetEntityState
+        {
+            EntNum = netId, Kind = NetEntityKind.Player, StatusEffects = StatusEffectsCatalog.Write(p),
+        };
+        var set1 = new Dictionary<int, NetEntityState> { [netId] = burningSnap };
+
+        // Encode on the server, decode on the client — the exact ServerNet/ClientNet snapshot seam.
+        var w1 = new BitWriter();
+        server.EncodeSnapshot(w1, set1, snapshotSeq: 1);
+        var r1 = new BitReader(w1.WrittenSpan);
+        IReadOnlyDictionary<int, NetEntityState>? dec1 = client.DecodeSnapshot(ref r1);
+
+        Assert.NotNull(dec1);
+        NetEntityState got = dec1![netId];
+        var decodedEffects = StatusEffectsCatalog.Read(got.StatusEffects!);
+        // The client sees the remote player as burning — the whole point of the channel.
+        Assert.True(decodedEffects.ContainsKey(burning.RegistryId));
+
+        // ...and when the server clears the effects, the client drops them too (the delta carries the clear as an
+        // empty bitmap against the acked baseline). The client acks seq 1, then the server sends a cleared seq 2.
+        server.Ack(1);
+        var clearedSnap = burningSnap;
+        clearedSnap.StatusEffects = null; // ServerNet's NormalizeStatusBlob collapses "no effects" to null
+        var set2 = new Dictionary<int, NetEntityState> { [netId] = clearedSnap };
+
+        var w2 = new BitWriter();
+        server.EncodeSnapshot(w2, set2, snapshotSeq: 2);
+        var r2 = new BitReader(w2.WrittenSpan);
+        IReadOnlyDictionary<int, NetEntityState>? dec2 = client.DecodeSnapshot(ref r2);
+
+        Assert.NotNull(dec2);
+        NetEntityState gotCleared = dec2![netId];
+        // The field was present in the delta (cleared) → an empty bitmap → no burning client-side.
+        var afterClear = StatusEffectsCatalog.Read(gotCleared.StatusEffects ?? System.Array.Empty<byte>());
+        Assert.False(afterClear.ContainsKey(burning.RegistryId));
     }
 
     // ============================================================================================

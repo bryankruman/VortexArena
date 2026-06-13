@@ -692,8 +692,9 @@ public static class TurretAI
         // Go boom: a blast scaled by the remaining ammo (QC turret_die commented variant; applied as death FX).
         float boom = System.Math.Min(st.Ammo, 50f);
         if (boom > 0f)
+            // QC turret_die death blast (sv_turrets.qc:182): DEATH_TURRET (the generic turret deathtype).
             WeaponSplash.RadiusDamage(turret, turret.Origin, boom, boom * 0.25f, 250f, null,
-                DeathTypeId(turret), boom * 5f);
+                0, boom * 5f, deathTag: DeathTypes.Turret);
 
         st.OnDeathFx?.Invoke(turret);
 
@@ -767,13 +768,6 @@ public static class TurretAI
 
     /// <summary>QC DIFF_TEAM: on different teams (treating either being teamless as "different").</summary>
     public static bool DiffTeam(Entity a, Entity b) => a.Team != b.Team;
-
-    /// <summary>Map a turret's NetName to the int deathtype id its blasts carry (DEATH_TURRET).</summary>
-    private static int DeathTypeId(Entity turret)
-    {
-        Turret? def = Turrets.ByName(turret.NetName);
-        return def?.RegistryId ?? 0;
-    }
 }
 
 /// <summary>

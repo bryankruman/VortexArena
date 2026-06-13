@@ -139,7 +139,8 @@ public sealed class TeslaTurret : Turret
         {
             // te_csqc_lightningarc(from, target.origin) — the visible high-voltage arc to this hop's target.
             EffectEmitter.TeCsqcLightningArc(from, target.Origin);
-            Combat.Damage(target, turret, turret, damage, DeathTypes.FromWeapon(NetName),
+            // tesla_weapon.qc: each arc hop is DEATH_TURRET_TESLA.
+            Combat.Damage(target, turret, turret, damage, DeathTypes.TurretTesla,
                 target.Origin, dir(from, target) * ShotForce);
             hitAlready.Add(target);
         }

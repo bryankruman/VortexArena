@@ -1,5 +1,6 @@
 using System.Numerics;
 using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Gameplay.Damage;
 using XonoticGodot.Common.Math;
 using XonoticGodot.Common.Services;
 
@@ -146,7 +147,7 @@ public sealed class EWheelTurret : Turret
         if (dir == Vector3.Zero) dir = QMath.Forward(TurretAI.HeadWorldAngles(turret));
 
         TurretSpawn.Projectile(turret, st.ShotOrg, dir, ShotSpeed, size: 1f, health: 0f,
-            ShotDamage, edgeDamage: 0f, ShotRadius, ShotForce, RegistryId, spread: ShotSpread);
+            ShotDamage, edgeDamage: 0f, ShotRadius, ShotForce, DeathTypes.TurretEwheel, spread: ShotSpread);
 
         if (Api.Services is not null)
             Api.Sound.Play(turret, SoundChannel.Weapon, "weapons/lasergun_fire.wav");

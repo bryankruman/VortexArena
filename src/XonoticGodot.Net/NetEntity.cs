@@ -39,11 +39,14 @@ public enum NetEntityFlags : byte
 
 /// <summary>
 /// Which fields of a <see cref="NetEntityState"/> are present in a delta — the C# successor to QC's
-/// <c>SendFlags</c>/<c>ReadFlags</c> change mask (csqcmodel <c>ALLPROPERTIES</c>). A 16-bit mask leads each
+/// <c>SendFlags</c>/<c>ReadFlags</c> change mask (csqcmodel <c>ALLPROPERTIES</c>). A 32-bit mask leads each
 /// entity's delta; only the set fields follow on the wire, so an idle entity (mask 0) costs just its id.
+/// (Widened from 16-bit to 32-bit when <see cref="StatusEffects"/> was added — bit 16 overflowed the old
+/// <c>ushort</c>; <see cref="EntityStateCodec.WriteDelta"/>/<see cref="EntityStateCodec.ReadDelta"/> carry the
+/// mask as a 32-bit value accordingly.)
 /// </summary>
 [Flags]
-public enum EntityField : ushort
+public enum EntityField : uint
 {
     None = 0,
     Kind = 1 << 0,
@@ -70,6 +73,13 @@ public enum EntityField : ushort
     // shownames teammate status bar (Draw_ShowNames reads RES_ARMOR off the entcs entity for same-team players).
     // 0 on non-player entities / when armor is unchanged, so it costs nothing on the wire when the bit stays clear.
     Armor = 1 << 15, // a player's armor value (the entcs private ARMOR slice — shownames teammate status bar)
+
+    // [A5 #3/#7] the QC ENT_CLIENT_STATUSEFFECTS channel (status_effects.qh StatusEffects_Write/Send). Carries an
+    // entity's full status-effect bitmap (frozen/burning/buffs/powerups — the grouped major/minor + per-effect
+    // time+flags blob produced by StatusEffectsCatalog.Write) so the client drives the remote burning/frozen
+    // overlays. Bit 16 — this is the field that pushed the mask past 16 bits and widened EntityField to uint. The
+    // blob is null/empty on every entity with no networked effects, so the bit stays clear and costs nothing.
+    StatusEffects = 1 << 16,
 }
 
 /// <summary>
@@ -112,6 +122,15 @@ public struct NetEntityState
     /// <summary>QC STAT(REVIVE_PROGRESS): 0..1 freeze-tag thaw progress — the 3rd-priority ring (view.qc:1017).</summary>
     public float ReviveProgress;
 
+    /// <summary>
+    /// [A5 #3/#7] QC <c>ENT_CLIENT_STATUSEFFECTS</c> blob — the entity's full status-effect bitmap as produced by
+    /// <c>StatusEffectsCatalog.Write</c> (the grouped major/minor mask + per-effect time+flags). <c>null</c> (or an
+    /// empty array) means "no networked effects": the <see cref="EntityField.StatusEffects"/> bit stays clear so it
+    /// costs nothing on the wire. The full bitmap is re-sent only on the tick it changes (the delta compares it by
+    /// content); the client decodes it with <c>StatusEffectsCatalog.Read</c> to drive the burning/frozen overlays.
+    /// </summary>
+    public byte[]? StatusEffects;
+
     /// <summary>A fresh state carrying just an id (the implicit baseline for a never-seen entity — a "spawn").</summary>
     public static NetEntityState Empty(int entNum) => new() { EntNum = entNum };
 
@@ -138,7 +157,21 @@ public struct NetEntityState
             || baseline.NadeTimer != current.NadeTimer
             || baseline.CaptureProgress != current.CaptureProgress
             || baseline.ReviveProgress != current.ReviveProgress) m |= EntityField.Feedback;
+        // The status-effect blob is a byte[]; compare by CONTENT (not reference) so the full bitmap is re-sent only
+        // when it actually changes. null and empty both mean "no effects" and compare equal.
+        if (!StatusBlobEqual(baseline.StatusEffects, current.StatusEffects)) m |= EntityField.StatusEffects;
         return m;
+    }
+
+    /// <summary>Content equality for the status-effect blob, treating <c>null</c> and an empty array as equal.</summary>
+    internal static bool StatusBlobEqual(byte[]? a, byte[]? b)
+    {
+        int la = a is null ? 0 : a.Length;
+        int lb = b is null ? 0 : b.Length;
+        if (la != lb) return false;
+        for (int i = 0; i < la; i++)
+            if (a![i] != b![i]) return false;
+        return true;
     }
 }
 
@@ -155,7 +188,8 @@ public static class EntityStateCodec
     public static EntityField WriteDelta(BitWriter w, in NetEntityState baseline, in NetEntityState current)
     {
         EntityField mask = NetEntityState.Diff(baseline, current);
-        w.WriteUShort((int)mask);
+        // 32-bit mask (widened from ushort when EntityField.StatusEffects = bit 16 was added).
+        w.WriteULong((uint)mask);
 
         if ((mask & EntityField.Kind) != 0) w.WriteByte((byte)current.Kind);
         if ((mask & EntityField.ModelIndex) != 0) w.WriteUShort(current.ModelIndex);
@@ -179,6 +213,15 @@ public static class EntityStateCodec
             w.WriteFloat(current.CaptureProgress);
             w.WriteFloat(current.ReviveProgress);
         }
+        if ((mask & EntityField.StatusEffects) != 0)
+        {
+            // Length-prefixed blob (the SessionAuth pattern). A 0 length is a valid value — it means "effects just
+            // cleared", so the client reads an empty bitmap and drops the entity's effects.
+            byte[]? blob = current.StatusEffects;
+            int n = blob is null ? 0 : blob.Length;
+            w.WriteUShort(n);
+            if (n > 0) w.WriteBytes(blob);
+        }
         return mask;
     }
 
@@ -186,7 +229,7 @@ public static class EntityStateCodec
     public static NetEntityState ReadDelta(ref BitReader r, in NetEntityState baseline)
     {
         NetEntityState s = baseline;
-        var mask = (EntityField)r.ReadUShort();
+        var mask = (EntityField)r.ReadULong();
 
         if ((mask & EntityField.Kind) != 0) s.Kind = (NetEntityKind)r.ReadByte();
         if ((mask & EntityField.ModelIndex) != 0) s.ModelIndex = r.ReadUShort();
@@ -209,6 +252,13 @@ public static class EntityStateCodec
             s.NadeTimer = r.ReadFloat();
             s.CaptureProgress = r.ReadFloat();
             s.ReviveProgress = r.ReadFloat();
+        }
+        if ((mask & EntityField.StatusEffects) != 0)
+        {
+            int n = r.ReadUShort();
+            // n == 0 (effects cleared) decodes to an empty array so the client distinguishes "field present, now
+            // empty" (clear the list) from "field absent" (keep the baseline's blob).
+            s.StatusEffects = n > 0 ? r.ReadBytes(n).ToArray() : System.Array.Empty<byte>();
         }
         return s;
     }

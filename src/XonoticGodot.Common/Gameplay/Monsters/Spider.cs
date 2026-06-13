@@ -72,8 +72,9 @@ public sealed class Spider : Monster
         {
             // MONSTER_ATTACK_MELEE -> bite.
             st.Anim = MonsterAI.MonsterAnim.Attack;
+            // spider.qc M_Spider_Attack melee: the bite is DEATH_MONSTER_SPIDER.
             MonsterAI.MeleeAttack(e, st, BiteDamage, st.AttackRange, BiteDelay,
-                DeathTypes.FromWeapon(NetName));
+                DeathTypes.MonsterSpider);
         }
         else if (dist <= WebRange && MonsterAI.Now >= st.AttackDelay)
         {
@@ -98,7 +99,7 @@ public sealed class Spider : Monster
         // The web does no direct impact damage (radius 0 damage); its effect is the Webbed slow on contact.
         // It bounces (bouncefactor 0.3 / bouncestop 0.05) until it hits something and pops.
         Entity web = MonsterAI.SpawnProjectile(e, st, dir, WebSpeed, damage: 0f, edgeDamage: 0f,
-            radius: 25f, force: 0f, deathType: DeathTypes.FromWeapon(NetName),
+            radius: 25f, force: 0f, deathType: DeathTypes.MonsterSpider, // spider.qc: DEATH_MONSTER_SPIDER
             moveType: MoveType.Bounce, lifetime: 5f,
             bounceFactor: 0.3f, bounceStop: 0.05f,
             makeTrigger: true,              // spider.qc:134 PROJECTILE_MAKETRIGGER

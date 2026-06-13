@@ -48,7 +48,7 @@ public static class WeaponSplash
     /// </summary>
     public static void RadiusDamage(Entity inflictor, Vector3 center, float damage, float edgeDamage,
         float radius, Entity? attacker, int deathType, float force = 0f, Vector3? forceScale = null,
-        Entity? directHit = null, Weapon? accuracyWeapon = null)
+        Entity? directHit = null, Weapon? accuracyWeapon = null, string? deathTag = null)
     {
         if (Api.Services is null || radius <= 0f) return;
         Entity src = attacker ?? inflictor;
@@ -189,8 +189,15 @@ public static class WeaponSplash
             // NOT). Scaling it here too double-applied it (0.65^2 ≈ 0.42×), making rocket/blaster/electro-jumps
             // ~35% too cheap. The pipeline is now the single source of truth (DMG1).
             // QC passes `nearest` (the nearest/mean-visible box point) as hitloc, not the box center.
-            WeaponFiring.ApplyDamage(e, src, finalDmg, deathType, inflictor: inflictor, force: forceVec,
-                hitLoc: hitLoc);
+            // A non-null deathTag is a SPECIAL deathtype string (monster/turret/vehicle blast) the int
+            // weapon-id path cannot encode (it maps to a weapon NetName or Generic); route it straight to
+            // the pipeline so the obituary picks the monster/turret/vehicle line. Otherwise keep the legacy
+            // int weapon-id path (ApplyDamage maps the id to the weapon's deathtype tag).
+            if (deathTag is not null)
+                Damage.Combat.Damage(e, inflictor ?? src, src, finalDmg, deathTag, hitLoc, forceVec);
+            else
+                WeaponFiring.ApplyDamage(e, src, finalDmg, deathType, inflictor: inflictor, force: forceVec,
+                    hitLoc: hitLoc);
         }
 
         // [T57] ONE hit credit per blast, capped at one blast's max damage (QC damage.qc:928-929:

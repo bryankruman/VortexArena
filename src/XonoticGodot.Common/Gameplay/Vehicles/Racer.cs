@@ -468,8 +468,9 @@ public sealed class Racer : Vehicle
         if (vehicle.Owner is not null)
             VehicleCommon.ExitVehicle(vehicle, vehicle.Owner, VehicleExitFlag.Normal);
 
+        // racer.qc racer_blowup: the death blast is DEATH_VH_WAKI_DEATH (the Racer is QC's "waki").
         WeaponSplash.RadiusDamage(vehicle, vehicle.Origin, BlowupCoreDamage, BlowupEdgeDamage,
-            BlowupRadius, vehicle.Enemy, RegistryId, BlowupForce);
+            BlowupRadius, vehicle.Enemy, 0, BlowupForce, deathTag: DeathTypes.VhWakiDeath);
 
         vehicle.MoveType = MoveType.None;
         vehicle.Solid = Solid.Not;
@@ -504,7 +505,7 @@ public sealed class Racer : Vehicle
 
         VehicleCommon.SpawnProjectile(vehicle, player, org, vel,
             CannonDamage, CannonRadius, CannonForce, size: 0f,
-            DeathTypes.FromWeapon("racercannon"), RegistryId, health: 0f, lifetime: 0f,
+            DeathTypes.VhWakiGun, health: 0f, lifetime: 0f, // racer_weapon.qc: DEATH_VH_WAKI_GUN
             fireSound: "vehicles/lasergun_fire.wav");
         // TODO(port,client): EFFECT_RACER_MUZZLEFLASH muzzle effect + CSQCProjectile visual.
     }
@@ -518,7 +519,7 @@ public sealed class Racer : Vehicle
 
         Entity rocket = VehicleCommon.SpawnProjectile(vehicle, player, org, vel,
             RocketDamage, RocketRadius, RocketForce, size: 3f,
-            DeathTypes.FromWeapon("racercannon"), RegistryId, health: 20f, lifetime: 15f,
+            DeathTypes.VhWakiRocket, health: 20f, lifetime: 15f, // racer_weapon.qc: DEATH_VH_WAKI_ROCKET
             fireSound: "vehicles/rocket_fire.wav");
         rocket.ClassName = "racer_rocket";
 

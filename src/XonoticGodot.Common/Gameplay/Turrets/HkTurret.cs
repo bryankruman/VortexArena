@@ -1,5 +1,6 @@
 using System.Numerics;
 using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Gameplay.Damage;
 using XonoticGodot.Common.Math;
 using XonoticGodot.Common.Services;
 
@@ -81,7 +82,7 @@ public sealed class HkTurret : Turret
         // QC launches at shot_speed * 0.75; the guidance brings it up toward shot_speed_max.
         GuidedProjectile.Launch(turret, enemy, st.ShotOrg, dir, GuidedProjectile.Mode.Hk,
             launchSpeed: ShotSpeed * 0.75f, speedMax: ShotSpeedMax, speedGain: 1f, turnRate: ShotTurnRate,
-            size: 6f, health: 10f, ShotDamage, ShotRadius, ShotForce, RegistryId, ttl: 30f);
+            size: 6f, health: 10f, ShotDamage, ShotRadius, ShotForce, DeathTypes.TurretHk, ttl: 30f);
 
         if (Api.Services is not null)
             Api.Sound.Play(turret, SoundChannel.Weapon, "weapons/rocket_fire.wav");

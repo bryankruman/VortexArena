@@ -128,7 +128,8 @@ public sealed class PhaserTurret : Turret
             Entity? hit = tr.Ent;
             if (hit is not null && hit.TakeDamage != DamageMode.No)
             {
-                Combat.Damage(hit, turret, turret, perTickDamage, DeathTypes.FromWeapon(NetName),
+                // phaser_weapon.qc: the beam tick is DEATH_TURRET_PHASER.
+                Combat.Damage(hit, turret, turret, perTickDamage, DeathTypes.TurretPhaser,
                     tr.EndPos, dir * ShotForce);
                 hit.Velocity *= VelFactor;     // QC FireImoBeam slow
                 ApplySlow(hit);                // optional status-effect layer

@@ -388,7 +388,8 @@ public sealed class Bumblebee : Vehicle
         {
             if (Time >= when)
             {
-                WeaponSplash.RadiusDamage(self, self.Origin, 500f, 100f, 500f, self.Enemy, RegistryId, 600f);
+                // bumblebee.qc bumblebee_blowup: the death blast is DEATH_VH_BUMB_DEATH.
+                WeaponSplash.RadiusDamage(self, self.Origin, 500f, 100f, 500f, self.Enemy, 0, 600f, deathTag: DeathTypes.VhBumbDeath);
                 self.DeadState = DeadFlag.Dead;
                 if (Api.Services is not null) Api.Entities.SetOrigin(self, self.SpawnPos);
                 self.NextThink = Time + RespawnTime;
@@ -550,7 +551,7 @@ public sealed class Bumblebee : Vehicle
 
         VehicleCommon.SpawnProjectile(vehicle, gunner, org, vel,
             CannonDamage, CannonRadius, CannonForce, size: 0f,
-            DeathTypes.FromWeapon("bumblebee"), RegistryId, health: 0f, lifetime: 0f,
+            DeathTypes.VhBumbGun, health: 0f, lifetime: 0f, // bumblebee_weapons.qc: DEATH_VH_BUMB_GUN
             fireSound: "vehicles/bumblebee_fire.wav");
         // TODO(port,client): EFFECT_BIGPLASMA_MUZZLEFLASH + CSQCProjectile visual.
     }

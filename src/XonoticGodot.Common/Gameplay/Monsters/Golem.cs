@@ -89,7 +89,8 @@ public sealed class Golem : Monster
             // MONSTER_ATTACK_MELEE -> a combo of 1..3 claw swings, 0.5s apart (QC Monster_Delay swing_cnt).
             if (MonsterAI.Now < st.AttackFinished) return;
             int swings = System.Math.Clamp((int)MathF.Floor(MonsterRandom.Next() * 4f), 1, 3);
-            MonsterAI.QueueCombo(e, st, swings, ClawDamage);
+            // golem.qc M_Golem_Attack_Swing: each claw swing is DEATH_MONSTER_GOLEM_CLAW.
+            MonsterAI.QueueCombo(e, st, swings, ClawDamage, DeathTypes.MonsterGolemClaw);
         }
         else
         {
@@ -119,8 +120,9 @@ public sealed class Golem : Monster
         {
             Vector3 forward = QMath.Forward(self.Angles);
             Vector3 loc = self.Origin + forward * 50f;
+            // golem.qc M_Golem_Attack_Smash: the ground-pound blast is DEATH_MONSTER_GOLEM_SMASH.
             WeaponSplash.RadiusDamage(self, loc, SmashDamage * skill, SmashDamage * skill * 0.5f, SmashRange,
-                self, 0, SmashForce);
+                self, 0, SmashForce, deathTag: DeathTypes.MonsterGolemSmash);
             Api.Sound.Play(self, SoundChannel.Weapon, "weapons/rocket_impact.wav");
         });
     }
@@ -133,7 +135,8 @@ public sealed class Golem : Monster
     {
         st.AttackDelay = MonsterAI.Now + 3f + MonsterRandom.Next() * 1.5f; // golem_lastattack
         float skill = MonsterAI.SkillMod(st);
-        string zapDeath = DeathTypes.FromWeapon(NetName);
+        // golem.qc: the thrown chunk's projectiledeathtype + its chained zaps are DEATH_MONSTER_GOLEM_ZAP.
+        string zapDeath = DeathTypes.MonsterGolemZap;
 
         MonsterAI.QueueDelayedAttack(e, st, windUp: 0.6f, totalLock: 1.1f, action: self =>
         {

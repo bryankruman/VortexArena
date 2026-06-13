@@ -1,5 +1,6 @@
 using System.Numerics;
 using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Gameplay.Damage;
 using XonoticGodot.Common.Math;
 using XonoticGodot.Common.Services;
 
@@ -78,7 +79,7 @@ public sealed class FlacTurret : Turret
         if (dir == Vector3.Zero) dir = QMath.Forward(TurretAI.HeadWorldAngles(turret));
 
         Entity shell = TurretSpawn.Projectile(turret, st.ShotOrg, dir, ShotSpeed, size: 5f, health: 0f,
-            ShotDamage, edgeDamage: ShotDamage, ShotRadius, ShotForce, RegistryId, spread: ShotSpread);
+            ShotDamage, edgeDamage: ShotDamage, ShotRadius, ShotForce, DeathTypes.TurretFlac, spread: ShotSpread);
 
         // Timed fuse: detonate at the predicted intercept (QC nextthink = time + tur_impacttime + jitter). At
         // detonation, if the enemy is within shot_radius*3, snap the burst point onto it + a random offset so
@@ -100,7 +101,7 @@ public sealed class FlacTurret : Turret
             self.Touch = null;
             self.TakeDamage = DamageMode.No;
             WeaponSplash.RadiusDamage(self, self.Origin, ShotDamage, ShotDamage, ShotRadius, owner,
-                RegistryId, ShotForce);
+                0, ShotForce, deathTag: DeathTypes.TurretFlac);
             if (Api.Services is not null) Api.Entities.Remove(self);
             TurretAI.Forget(self);
         };

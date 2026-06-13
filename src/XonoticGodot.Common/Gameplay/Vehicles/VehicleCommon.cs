@@ -507,7 +507,7 @@ namespace XonoticGodot.Common.Gameplay
         /// visual networking and muzzle effect are out of scope (NOTE: client/net).
         /// </summary>
         public static Entity SpawnProjectile(Entity owner, Entity pilot, Vector3 origin, Vector3 velocity,
-            float damage, float radius, float force, float size, string deathType, int registryId,
+            float damage, float radius, float force, float size, string deathType,
             float health, float lifetime, string? fireSound = null)
         {
             Entity proj = Api.Entities.Spawn();
@@ -541,7 +541,9 @@ namespace XonoticGodot.Common.Gameplay
                 self.Touch = null;
                 self.Think = null;
                 self.TakeDamage = DamageMode.No;
-                WeaponSplash.RadiusDamage(self, self.Origin, damage, 0f, radius, self.DmgInflictor, registryId, force);
+                // Carry the per-vehicle special deathtype (vh_*_gun/_rocket/…) through the blast so a kill
+                // routes to the vehicle obituary line, not a generic weapon line.
+                WeaponSplash.RadiusDamage(self, self.Origin, damage, 0f, radius, self.DmgInflictor, 0, force, deathTag: deathType);
                 Api.Entities.Remove(self);
             }
 

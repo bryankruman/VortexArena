@@ -228,6 +228,51 @@ public class ObituaryEmissionTests : IDisposable
         Assert.DoesNotContain(_rec.Log, d => d.Notification.RegistryName == "INFO_WEAPON_VORTEX_MURDER");
     }
 
+    /// <summary>
+    /// [A5 #8] The FRAG centerprint is a MSG_CHOICE resolved PER RECIPIENT (QC Send_Notification_Core reads
+    /// CS(recipient).msg_choice_choices[idx] in its send loop). Two attackers with different
+    /// notification_CHOICE_FRAG preferences must each receive THEIR option: the terse picker gets
+    /// CENTER_DEATH_MURDER_FRAG (A), the verbose picker gets CENTER_DEATH_MURDER_FRAG_VERBOSE (B) — never crossed.
+    /// FRAG is challow=Warmup, so the per-client value is only honoured during warmup.
+    /// </summary>
+    [Fact]
+    public void EnemyFrag_Resolves_FragChoice_PerRecipient_TerseVsVerbose()
+    {
+        var s = SubscribedScores(teamGame: false);
+
+        var fragChoice = Notifications.ByName(MsgType.Choice, "FRAG")!;
+        // Two attacker preferences, seeded with the QC defaults the server would hold (FillDefault = option A),
+        // then the verbose attacker overrides FRAG to option B — exactly what Commands.GetChoiceState yields.
+        var terse = new NotificationChoiceState();
+        terse.FillDefault(NotificationChoiceState.OptionA);
+        var verbose = new NotificationChoiceState();
+        verbose.FillDefault(NotificationChoiceState.OptionA);
+        verbose.Set(fragChoice.ChoiceIdx, NotificationChoiceState.OptionB);
+
+        var aTerse = NewPlayer("Terse");
+        var aVerbose = NewPlayer("Verbose");
+        // wire the per-recipient resolver the way GameWorld wires Commands.GetChoiceState.
+        s.ChoiceStateProvider = p =>
+            ReferenceEquals(p, aTerse) ? terse :
+            ReferenceEquals(p, aVerbose) ? verbose : null;
+
+        NotificationSystem.WarmupStage = true; // FRAG is challow=Warmup → the choice is honoured
+
+        var v1 = NewPlayer("V1");
+        var v2 = NewPlayer("V2");
+        s.Register(aTerse); s.Register(aVerbose); s.Register(v1); s.Register(v2);
+
+        FireDeath(v1, aTerse, DeathTypes.FromWeapon("vortex"));
+        FireDeath(v2, aVerbose, DeathTypes.FromWeapon("vortex"));
+
+        // each attacker received THEIR option …
+        Assert.Contains(_rec.Log, d => d.Notification.RegistryName == "CENTER_DEATH_MURDER_FRAG" && ReferenceEquals(d.Target, aTerse));
+        Assert.Contains(_rec.Log, d => d.Notification.RegistryName == "CENTER_DEATH_MURDER_FRAG_VERBOSE" && ReferenceEquals(d.Target, aVerbose));
+        // … and NOT the other's.
+        Assert.DoesNotContain(_rec.Log, d => d.Notification.RegistryName == "CENTER_DEATH_MURDER_FRAG_VERBOSE" && ReferenceEquals(d.Target, aTerse));
+        Assert.DoesNotContain(_rec.Log, d => d.Notification.RegistryName == "CENTER_DEATH_MURDER_FRAG" && ReferenceEquals(d.Target, aVerbose));
+    }
+
     [Fact]
     public void KillStreak_Announces_03_Then_05_At_The_Milestones()
     {

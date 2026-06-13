@@ -149,6 +149,9 @@ public static class MonsterAI
         /// <summary>Damage per queued combo swing.</summary>
         public float ComboSwingDamage;
 
+        /// <summary>Deathtype each queued combo swing carries (QC golem claw = DEATH_MONSTER_GOLEM_CLAW).</summary>
+        public string ComboDeathType = DeathTypes.Generic;
+
         /// <summary>A deferred attack action that lands after a wind-up (QC Monster_Delay).</summary>
         public Action<Entity>? DelayedAction;
 
@@ -1018,7 +1021,7 @@ public static class MonsterAI
             {
                 FaceTarget(self, self.Enemy);
                 MeleeAttack(self, st, st.ComboSwingDamage, st.AttackRange, 0.5f,
-                    DeathTypes.FromWeapon(st.Def.NetName), freeze: false);
+                    st.ComboDeathType, freeze: false);
             }
         }
     }
@@ -1161,12 +1164,13 @@ public static class MonsterAI
     /// monster for the combo duration and land <paramref name="swings"/> melee hits 0.5s apart, handled in
     /// <see cref="RunDelayedActions"/>.
     /// </summary>
-    public static void QueueCombo(Entity self, MonsterState st, int swings, float perSwingDamage)
+    public static void QueueCombo(Entity self, MonsterState st, int swings, float perSwingDamage, string deathType)
     {
         swings = System.Math.Clamp(swings, 1, 3);
         st.State = MonsterState_AttackMelee;
         st.ComboSwings = swings;
         st.ComboSwingDamage = perSwingDamage;
+        st.ComboDeathType = deathType;
         st.NextComboSwing = Now + 0.5f;
         st.AttackFinished = Now + 0.5f * swings;
         st.AnimFinished = st.AttackFinished;
@@ -1232,7 +1236,9 @@ public static class MonsterAI
             exploded = true;
             p.Touch = null;
             p.Think = null;
-            WeaponSplash.RadiusDamage(p, p.Origin, damage, edgeDamage, radius, p.Owner, 0, force);
+            // Carry the projectile's special deathtype (mage spike / wyvern fireball / spider web / golem zap)
+            // through the blast so a kill routes to the monster obituary line, not a generic weapon line.
+            WeaponSplash.RadiusDamage(p, p.Origin, damage, edgeDamage, radius, p.Owner, 0, force, deathTag: deathType);
             onExplode?.Invoke(p); // burning / web slow / chained zaps (per-monster)
             // Drop the owner's one-spike-at-a-time reference if this was it (QC .mage_spike = NULL).
             var os = StateOf(p.Owner!);

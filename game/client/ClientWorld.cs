@@ -997,6 +997,18 @@ public partial class ClientWorld : Node3D
                 // Change-gated (§11 R8): the uniform pushes only happen when the computed colors or the mesh
                 // list changed (colors only move while dead-fading or on a rainbow palette nibble).
                 ModelTint.ApplyAppearance(meshes, colormap, dead, st.DeathTime, ghost, ref st.Effects.Tint);
+
+                // QC ENT_CLIENT_STATUSEFFECTS frozen overlay: a frozen player renders icy-blue (the remote analogue
+                // of the freeze tint). Multiply the model's colormod toward ice ON TOP of the team appearance just
+                // applied, and invalidate the appearance change-gate so the model repaints its real colormod the
+                // first frame after it thaws (otherwise the blue would stick, since ApplyAppearance would see its
+                // cached White == computed White and skip the push). The status effects are decoded onto the proxy
+                // by ClientEntityView from the networked bitmap.
+                if (HasStatusEffect(e, StatusEffectsCatalog.Frozen))
+                {
+                    ModelTint.SetColormod(meshes, FrozenColormod);
+                    st.Effects.Tint.Valid = false;
+                }
             }
 
             // (2) LOD: compute the index (faithful math) — see ApplyLod for the swap caveat.
@@ -1038,6 +1050,13 @@ public partial class ClientWorld : Node3D
                 node.Visible = true;
                 st.ItemFaded = false;
             }
+
+            // (5) STATUS-EFFECT BURNING (QC ENT_CLIENT_STATUSEFFECTS): a burning entity emits a fire particle burst
+            //     at the model each frame — the remote analogue of the local Fire flames. Gated on frameTime>0 like
+            //     the EF_FLAME burst above so a paused frame emits nothing. (The frozen tint rides the appearance
+            //     pass above; this is the only status-effect visual that's a per-frame emission.)
+            if (frameTime > 0f && HasStatusEffect(e, StatusEffectsCatalog.Burning))
+                Effects.Spawn("EF_FLAME", e.Origin + new NVec3(0f, 0f, 20f), e.Velocity, 1);
         }
     }
 
@@ -1189,6 +1208,15 @@ public partial class ClientWorld : Node3D
     }
 
     private static float Now() => Api.Services?.Clock?.Time ?? 0f;
+
+    /// <summary>Icy-blue colormod for the frozen overlay (QC ENT_CLIENT_STATUSEFFECTS frozen tint): tilts the whole
+    /// model toward cold blue (blue &gt; 1 so it reads bright/frosted, red+green pulled down).</summary>
+    private static readonly Color FrozenColormod = new(0.45f, 0.65f, 1.15f);
+
+    /// <summary>True when <paramref name="e"/> currently carries the given networked status effect (decoded onto the
+    /// proxy by ClientEntityView). Null-def safe — returns false if the effect isn't registered on this client.</summary>
+    private static bool HasStatusEffect(Entity e, StatusEffectDef? def)
+        => def is not null && StatusEffectsCatalog.Has(e, def);
 
     private static float CvarF(string name, float fallback)
     {

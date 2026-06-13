@@ -222,7 +222,8 @@ public sealed class WalkerTurret : Turret
                 {
                     if (ReferenceEquals(victim, w) || ReferenceEquals(victim.Owner, w)) continue;
                     if (!TurretAI.ValidTarget(w, victim, Select, TargetRangeMin, TargetRange)) continue;
-                    Combat.Damage(victim, w, w, MeleeDamage, DeathTypes.FromWeapon(NetName),
+                    // walker.qc: the melee bite is DEATH_TURRET_WALK_MELEE.
+                    Combat.Damage(victim, w, w, MeleeDamage, DeathTypes.TurretWalkMelee,
                         victim.Origin, f * MeleeForce);
                 }
             }
@@ -239,7 +240,7 @@ public sealed class WalkerTurret : Turret
 
         GuidedProjectile.Launch(turret, enemy, st.ShotOrg, dir, GuidedProjectile.Mode.WalkerRocket,
             launchSpeed: RocketSpeed, speedMax: RocketSpeed, speedGain: 1f, turnRate: RocketTurnRate,
-            size: 6f, health: 25f, RocketDamage, RocketRadius, RocketForce, RegistryId, ttl: 9f);
+            size: 6f, health: 25f, RocketDamage, RocketRadius, RocketForce, DeathTypes.TurretWalkRocket, ttl: 9f);
 
         if (Api.Services is not null)
             Api.Sound.Play(turret, SoundChannel.Weapon, "weapons/rocket_fire.wav");
@@ -253,7 +254,8 @@ public sealed class WalkerTurret : Turret
         Vector3 dir = QMath.Normalize(st.AimPos - st.ShotOrg);
         if (dir == Vector3.Zero) dir = QMath.Forward(TurretAI.HeadWorldAngles(turret));
 
-        TurretCombat.FireBullet(turret, st.ShotOrg, dir, ShotSpread, ShotDamage, ShotForce, RegistryId);
+        // walker_weapon.qc: fireBullet with DEATH_TURRET_WALK_GUN.
+        TurretCombat.FireBullet(turret, st.ShotOrg, dir, ShotSpread, ShotDamage, ShotForce, DeathTypes.TurretWalkGun);
 
         if (Api.Services is not null)
             Api.Sound.Play(turret, SoundChannel.Weapon, "weapons/uzi_fire.wav");

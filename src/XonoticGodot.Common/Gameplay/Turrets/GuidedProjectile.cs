@@ -54,7 +54,7 @@ public static class GuidedProjectile
     /// </summary>
     public static Entity Launch(Entity turret, Entity? enemy, Vector3 origin, Vector3 dir, Mode mode,
         float launchSpeed, float speedMax, float speedGain, float turnRate, float size, float health,
-        float damage, float radius, float force, int deathType, float ttl)
+        float damage, float radius, float force, string deathType, float ttl)
     {
         Entity m = Api.Entities.Spawn();
         m.ClassName = "turret_guided";
@@ -82,7 +82,7 @@ public static class GuidedProjectile
             self.Touch = null;
             self.Think = null;
             self.TakeDamage = DamageMode.No;
-            WeaponSplash.RadiusDamage(self, self.Origin, damage, 0f, radius, self.Owner, deathType, force);
+            WeaponSplash.RadiusDamage(self, self.Origin, damage, 0f, radius, self.Owner, 0, force, deathTag: deathType);
             Forget(self);
             Api.Entities.Remove(self);
         }

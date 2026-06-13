@@ -297,7 +297,34 @@ public sealed class Scores
     /// <summary>True once <see cref="SubscribeToDeaths"/> wired the obituary handler (mirrors QC scores_initialized).</summary>
     public bool Subscribed { get; private set; }
 
+    /// <summary>
+    /// [A5 #8] Per-recipient MSG_CHOICE resolution source — the C# successor to QC reading
+    /// <c>CS(recipient).msg_choice_choices[idx]</c> inside <c>Send_Notification_Core</c>'s per-client send loop.
+    /// The host wires this to <see cref="Commands.GetChoiceState"/> so each <see cref="NotifBroadcast.One"/>
+    /// frag/typefrag centerprint resolves option A (terse) vs option B (verbose) from THAT recipient's replicated
+    /// <c>notification_CHOICE_*</c> preference rather than a single global value. Null (standalone tests / an
+    /// unwired host) → the dispatch falls back to <see cref="NotificationSystem.DefaultChoiceValue"/>.
+    /// </summary>
+    public Func<Player, NotificationChoiceState?>? ChoiceStateProvider { get; set; }
+
     private HookHandler<DeathEvent>? _deathHandler;
+
+    /// <summary>
+    /// [A5 #8] Send a MSG_CHOICE notification to a single recipient, resolving its option A/B from THAT
+    /// recipient's replicated choice preferences first — QC <c>Send_Notification_Core</c> reads
+    /// <c>CS(recipient).msg_choice_choices[idx]</c> per recipient inside the FOREACH_CLIENT send loop. The static
+    /// <see cref="NotificationSystem"/> dispatch keys its <see cref="NotificationSystem.ChoiceValues"/> map by the
+    /// choice's RegistryName, so prime that map from the recipient's <see cref="NotificationChoiceState"/> (via
+    /// <see cref="ChoiceStateProvider"/>) immediately before the <see cref="NotifBroadcast.One"/> Send. When no
+    /// per-client state exists the map is cleared, so the dispatch falls back to
+    /// <see cref="NotificationSystem.DefaultChoiceValue"/> (option A) — the pre-A5#8 behavior.
+    /// </summary>
+    private void SendChoiceToOne(Player recipient, string name, params object[] args)
+    {
+        NotificationSystem.ChoiceValues.Clear();
+        ChoiceStateProvider?.Invoke(recipient)?.ApplyTo(NotificationSystem.ChoiceValues);
+        NotificationSystem.Send(NotifBroadcast.One, recipient, MsgType.Choice, name, args);
+    }
 
     // ---------------------------------------------------------------------------------------------
     // roster registration (QC PlayerScore_Attach / _Detach)
@@ -589,29 +616,26 @@ public sealed class Scores
             float victimPing = victim.IsBot ? -1f : 0f;
             float attackerPing = attacker.IsBot ? -1f : 0f;
 
+            // Each centerprint is a MSG_CHOICE resolved PER RECIPIENT (A5 #8): the attacker's line from the
+            // attacker's notification_CHOICE_* preference, the victim's from the victim's (QC reads
+            // CS(recipient).msg_choice_choices[idx] for each). SendChoiceToOne primes the dispatch accordingly.
             if (victim.IsTypeFrag)
             {
                 // CHOICE_TYPEFRAG to attacker (s1=victim, f1=spree_cen=kill_count_to_attacker, f2=ping).
-                NotificationSystem.Send(NotifBroadcast.One, attacker, MsgType.Choice, "TYPEFRAG",
-                    victimName, killCountToAttacker, victimPing);
+                SendChoiceToOne(attacker, "TYPEFRAG", victimName, killCountToAttacker, victimPing);
                 // CHOICE_TYPEFRAGGED to victim (s1=attacker, f1=spree_cen=kill_count_to_target, f2=health, f3=armor, f4=ping).
-                NotificationSystem.Send(NotifBroadcast.One, victim, MsgType.Choice, "TYPEFRAGGED",
-                    attackerName, killCountToTarget, attackerHealth, attackerArmor, attackerPing);
+                SendChoiceToOne(victim, "TYPEFRAGGED", attackerName, killCountToTarget, attackerHealth, attackerArmor, attackerPing);
             }
             else if (DeathTypes.BaseOf(deathType) == DeathTypes.Fire)
             {
                 // QC frag_centermessage_override: DEATH_FIRE -> CHOICE_FRAG_FIRE / CHOICE_FRAGGED_FIRE.
-                NotificationSystem.Send(NotifBroadcast.One, attacker, MsgType.Choice, "FRAG_FIRE",
-                    victimName, killCountToAttacker, victimPing);
-                NotificationSystem.Send(NotifBroadcast.One, victim, MsgType.Choice, "FRAGGED_FIRE",
-                    attackerName, killCountToTarget, attackerHealth, attackerArmor, attackerPing);
+                SendChoiceToOne(attacker, "FRAG_FIRE", victimName, killCountToAttacker, victimPing);
+                SendChoiceToOne(victim, "FRAGGED_FIRE", attackerName, killCountToTarget, attackerHealth, attackerArmor, attackerPing);
             }
             else
             {
-                NotificationSystem.Send(NotifBroadcast.One, attacker, MsgType.Choice, "FRAG",
-                    victimName, killCountToAttacker, victimPing);
-                NotificationSystem.Send(NotifBroadcast.One, victim, MsgType.Choice, "FRAGGED",
-                    attackerName, killCountToTarget, attackerHealth, attackerArmor, attackerPing);
+                SendChoiceToOne(attacker, "FRAG", victimName, killCountToAttacker, victimPing);
+                SendChoiceToOne(victim, "FRAGGED", attackerName, killCountToTarget, attackerHealth, attackerArmor, attackerPing);
             }
 
             // QC the kill feed (server/damage.qc:418): Obituary_WeaponDeath, falling back to Obituary_SpecialDeath.

@@ -107,8 +107,9 @@ public sealed class Zombie : Monster
             st.Anim = MonsterAI.MonsterAnim.Attack;
             float meleeDamage = MonsterAI.Cvar("g_monster_zombie_attack_melee_damage", MeleeDamage);
             float meleeDelay = MonsterAI.Cvar("g_monster_zombie_attack_melee_delay", MeleeDelay);
+            // zombie.qc M_Zombie_Attack melee: DEATH_MONSTER_ZOMBIE_MELEE.
             MonsterAI.MeleeAttack(e, st, meleeDamage, st.AttackRange, meleeDelay,
-                DeathTypes.FromWeapon(NetName));
+                DeathTypes.MonsterZombieMelee);
         }
         else
         {
@@ -138,7 +139,8 @@ public sealed class Zombie : Monster
             Vector3 face = QMath.Normalize(QMath.VecToAngles((st?.MoveTo ?? other.Origin) - self.Origin))
                            * leapForce;
             float dmg = leapDamage * MonsterAI.SkillMod(st!);
-            Combat.Damage(other, self, self, dmg, DeathTypes.FromWeapon(NetName), other.Origin, face);
+            // zombie.qc M_Zombie_Attack_Leap_Touch: the leap contact hit is DEATH_MONSTER_ZOMBIE_JUMP.
+            Combat.Damage(other, self, self, dmg, DeathTypes.MonsterZombieJump, other.Origin, face);
             self.Touch = (s, o) => MonsterAI.Touch(s, o); // instantly off to stop damage spam (QC Monster_Touch)
             if (st is not null) st.State = 0;
         }

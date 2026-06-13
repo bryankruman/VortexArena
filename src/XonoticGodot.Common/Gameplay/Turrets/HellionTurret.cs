@@ -1,5 +1,6 @@
 using System.Numerics;
 using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Gameplay.Damage;
 using XonoticGodot.Common.Math;
 using XonoticGodot.Common.Services;
 
@@ -80,7 +81,7 @@ public sealed class HellionTurret : Turret
         // QC: shot_radius is bumped to 500 on the missile (used as the proximity-detonate / stray basis).
         GuidedProjectile.Launch(turret, enemy, st.ShotOrg, dir, GuidedProjectile.Mode.Hellion,
             launchSpeed: ShotSpeed, speedMax: ShotSpeedMax, speedGain: ShotSpeedGain, turnRate: 0.35f,
-            size: 6f, health: 10f, ShotDamage, radius: 500f, ShotForce, RegistryId, ttl: 9f);
+            size: 6f, health: 10f, ShotDamage, radius: 500f, ShotForce, DeathTypes.TurretHellion, ttl: 9f);
 
         if (Api.Services is not null)
             Api.Sound.Play(turret, SoundChannel.Weapon, "weapons/rocket_fire.wav");

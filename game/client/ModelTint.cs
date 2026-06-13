@@ -66,6 +66,19 @@ public static class ModelTint
     }
 
     /// <summary>
+    /// Override ONLY the <c>colormod</c> instance-uniform on a cached mesh list, leaving glow/shirt/pants as a
+    /// prior <see cref="ApplyAppearance(IReadOnlyList{MeshInstance3D},int,bool,float,bool)"/> set them. Used by the
+    /// frozen overlay to multiply a player's whole model toward icy-blue without disturbing its team colors (QC
+    /// ENT_CLIENT_STATUSEFFECTS frozen tint). Pair with invalidating the appearance change-gate so the model
+    /// repaints its real colormod the frame it thaws.
+    /// </summary>
+    public static void SetColormod(IReadOnlyList<MeshInstance3D> meshes, Color colormod)
+    {
+        for (int i = 0; i < meshes.Count; i++)
+            meshes[i].SetInstanceShaderParameter(PlayerSkinShader.ColormodUniform, colormod);
+    }
+
+    /// <summary>
     /// Apply a player's team/colormap tint: the team color drives the shirt + pants masks AND the glow
     /// (DP sets glowmod from the pants color). FFA / unknown (no team) leaves the model untinted with a
     /// white — i.e. native — glow. Colormod stays white (no per-entity darkening here).

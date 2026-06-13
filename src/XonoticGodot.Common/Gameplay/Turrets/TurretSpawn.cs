@@ -98,7 +98,7 @@ public static class TurretSpawn
     /// flac / hellion / hk / ewheel turrets (each tweaks the result). Returns the projectile entity.
     /// </summary>
     public static Entity Projectile(Entity turret, Vector3 origin, Vector3 dir, float speed, float size,
-        float health, float damage, float edgeDamage, float radius, float force, int deathType,
+        float health, float damage, float edgeDamage, float radius, float force, string deathType,
         float spread = 0f)
     {
         Entity proj = Api.Entities.Spawn();
@@ -128,7 +128,7 @@ public static class TurretSpawn
             self.Touch = null;
             self.Think = null;
             self.TakeDamage = DamageMode.No;
-            WeaponSplash.RadiusDamage(self, self.Origin, damage, edgeDamage, radius, self.Owner, deathType, force);
+            WeaponSplash.RadiusDamage(self, self.Origin, damage, edgeDamage, radius, self.Owner, 0, force, deathTag: deathType);
             _shootdown.Remove(self);
             Api.Entities.Remove(self);
             TurretAI.Forget(self);

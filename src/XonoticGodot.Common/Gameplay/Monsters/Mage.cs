@@ -140,7 +140,7 @@ public sealed class Mage : Monster
         float deathTime = MonsterAI.Now + 7f; // QC missile.ltime = time + 7
         Entity spike = MonsterAI.SpawnProjectile(e, st, dir, 400f, // QC spike launches at 400, accelerates to max
             damage: SpikeDamage, edgeDamage: SpikeDamage * 0.5f, radius: SpikeRadius,
-            force: 0f, deathType: DeathTypes.FromWeapon(NetName),
+            force: 0f, deathType: DeathTypes.MonsterMage, // mage.qc M_Mage_Attack_Spike: DEATH_MONSTER_MAGE
             moveType: MoveType.FlyMissile, lifetime: 7f,
             sizeMin: Vector3.Zero, sizeMax: Vector3.Zero,
             onThink: p =>
@@ -166,8 +166,9 @@ public sealed class Mage : Monster
         st.State = MonsterAI.MonsterState_AttackMelee;
         st.Anim = MonsterAI.MonsterAnim.Attack;
 
+        // mage.qc M_Mage_Attack_Push: the explosive shove is DEATH_MONSTER_MAGE.
         WeaponSplash.RadiusDamage(e, e.Origin, PushDamage, PushDamage, PushRadius,
-            e, 0, PushForce);
+            e, 0, PushForce, deathTag: DeathTypes.MonsterMage);
 
         Api.Sound.Play(e, SoundChannel.Weapon, "weapons/tagexp1.wav");
     }

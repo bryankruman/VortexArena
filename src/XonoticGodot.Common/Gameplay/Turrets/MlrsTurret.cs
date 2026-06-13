@@ -1,5 +1,6 @@
 using System.Numerics;
 using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Gameplay.Damage;
 using XonoticGodot.Common.Math;
 using XonoticGodot.Common.Services;
 
@@ -79,7 +80,7 @@ public sealed class MlrsTurret : Turret
         if (dir == Vector3.Zero) dir = QMath.Forward(TurretAI.HeadWorldAngles(turret));
 
         Entity rocket = TurretSpawn.Projectile(turret, st.ShotOrg, dir, ShotSpeed, size: 6f, health: 10f,
-            ShotDamage, edgeDamage: 0f, ShotRadius, ShotForce, RegistryId, spread: ShotSpread);
+            ShotDamage, edgeDamage: 0f, ShotRadius, ShotForce, DeathTypes.TurretMlrs, spread: ShotSpread);
 
         // QC: nextthink = time + max(tur_impacttime, (shot_radius*2)/shot_speed) — detonate near the target.
         float impactTime = ShotSpeed > 0f ? st.DistAimPos / ShotSpeed : 0f;
