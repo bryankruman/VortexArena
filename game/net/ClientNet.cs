@@ -114,6 +114,11 @@ public sealed class ClientNet : IDisposable
     /// </summary>
     public int SpectateeStatus { get; private set; }
 
+    /// <summary>QC STAT(MOVEVARS_HIGHSPEED) per-player: the server's resolved top-speed multiplier for the local
+    /// player (Speed powerup / speed·disability buffs / entrap nade folded in). 1 while none are active. The host
+    /// mirrors this onto the prediction carrier each frame so client prediction scales speed like authority.</summary>
+    public float LocalSpeedMultiplier { get; private set; } = 1f;
+
     /// <summary>True when the local client is observing (free-fly) and not following any specific player.</summary>
     public bool IsObserving => SpectateeStatus != 0 && SpectateeStatus == LocalNetId;
 
@@ -186,6 +191,23 @@ public sealed class ClientNet : IDisposable
 
     /// <summary>The prediction-error smoothing offset to add to the rendered origin (decays to zero).</summary>
     public NVec3 PredictionErrorOffset(float now) => _reconciler.GetPredictionErrorOrigin(now);
+
+    /// <summary>The prediction-error smoothing offset to add to the rendered VELOCITY (decays to zero) — QC
+    /// <c>this.velocity += CSQCPlayer_GetPredictionErrorV()</c> (cl_player.qc). Feeds the view-effect velocity
+    /// (bob/sway + sub-tic eye extrapolation) so a smoothed correction — notably a damage-knockback shove
+    /// (<see cref="Reconciler.ForceSmoothWindow"/>) — ramps the rendered velocity instead of snapping it.</summary>
+    public NVec3 PredictionVelocityErrorOffset(float now) => _reconciler.GetPredictionErrorVelocity(now);
+
+    /// <summary>Push the live prediction-error smoothing knobs into the reconciler: <paramref name="errorComp"/>
+    /// (<c>cl_movement_errorcompensation</c>) — the smoothing strength, 0 = snap to truth (no view smoothing) — and
+    /// <paramref name="forceWindow"/> (<c>cl_movement_errorcompensation_force_time</c>) — the longer knockback-shove
+    /// glide window. Cheap (two field writes); call once per render frame so a live cvar edit (or the settings-menu
+    /// checkbox) takes effect immediately, alongside <see cref="ConfigureStairSmoothing"/>.</summary>
+    public void ConfigureErrorSmoothing(float errorComp, float forceWindow)
+    {
+        _reconciler.ErrorCompensation = errorComp;
+        _reconciler.ForceSmoothWindow = forceWindow;
+    }
 
     // ---- renderer-facing events ----
 
@@ -714,6 +736,7 @@ public sealed class ClientNet : IDisposable
         RespawnTimeStat = r.ReadFloat(); // QC STAT(RESPAWN_TIME): dead respawn countdown / "press fire" prompt
         SpectateeStatus = r.ReadShort(); // QC spectatee_status: 0 playing, own id observing, other id spectating
         PunchAngle = r.ReadVector(NetPrecision.Float); // QC view punch (recoil kick) — added to the view angles
+        LocalSpeedMultiplier = r.ReadFloat(); // QC STAT(MOVEVARS_HIGHSPEED) — mirrored onto the prediction carrier
 
         // [T57 accuracy] — the owner's own per-weapon accuracy bytes (QC ENT_CLIENT_ACCURACY, owner-only), read
         // in lockstep with ServerNet.WriteOwnerState's append: the change generation, then a bool gate, and —

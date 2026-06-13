@@ -112,6 +112,13 @@ public sealed class ServerNet : IDisposable
     private uint _scoreInfoHash;
     private readonly Dictionary<Player, NVec3> _lastSnapOrigin = new(ReferenceEqualityComparer.Instance);
 
+    // [A5 #3/#7] ENT_CLIENT_STATUSEFFECTS: the last full status-effect bitmap encoded for each player (or null when
+    // the player has no networked effects). StatusEffectsCatalog.Flush(p) re-encodes a player ONLY on the tick its
+    // effects change (QC SendFlags); this side-table holds the CURRENT blob between those ticks so every snapshot
+    // carries the authoritative state — without it a late joiner (or a client deltaing against an old baseline)
+    // would never receive an effect applied before it connected. Cleared on disconnect (mirrors _lastSnapOrigin).
+    private readonly Dictionary<Player, byte[]?> _statusBlob = new(ReferenceEqualityComparer.Instance);
+
     // --- lag compensation: a per-player position history rewound at hitscan/projectile fire (antilag.qc) ---
     private readonly Dictionary<Player, AntilagBuffer> _antilag = new(ReferenceEqualityComparer.Instance);
 
@@ -165,6 +172,17 @@ public sealed class ServerNet : IDisposable
         public readonly Queue<InputCommand> Pending = new();
         public InputCommand Last;       // last applied input (repeated if the queue starves — held keys)
         public bool HasLast;
+
+        // Legacy gentle-drain state (fix for the 3–7-deep "dead zone" the hard Trim leaves untouched). A client
+        // HITCH can leave the queue sitting a few commands deep FOREVER — producer + consumer both pace at 72 Hz,
+        // so 1-in-1-out preserves whatever depth a burst settled at, below the hard-trim trigger = permanent input
+        // latency. We detect a PERSISTENT floor (the queue's recent MINIMUM depth never reaches the jitter floor)
+        // over a trailing window and bleed one extra command per tick until it does. A healthy LOW-FPS client
+        // (whose bursts fully drain between packets) periodically empties toward the floor, so its recent-min stays
+        // low and it is NEVER drained — only a stuck post-hitch backlog is. (Per-frame mode drains fully, so unused.)
+        public int LegacyMinDepth = int.MaxValue;   // min Pending.Count seen in the current window
+        public int LegacyDepthSamples;              // ticks elapsed in the current window
+        public int LegacyPersistentFloor;           // last window's measured min (> residual ⇒ a standing backlog)
         // Per-frame (variable-dt) input mode for this client (set from the input-frame header): when true,
         // ProvideInput drains ALL pending commands this tick and OnClientMove runs movement per command (each with
         // its own DeltaTime) — DP's process-queued-client-moves; false = the legacy one-command-per-tick path.
@@ -592,6 +610,7 @@ public sealed class ServerNet : IDisposable
             _byPlayer.Remove(st.Player);
             _antilag.Remove(st.Player);
             _lastSnapOrigin.Remove(st.Player);
+            _statusBlob.Remove(st.Player);
             _playerNetIds.Remove(st.Player);
             _world.Commands.ForgetPlayer(st.Player); // drop the per-client replicated-cvar/autoswitch tables
             _world.Clients.ClientDisconnect(st.Player);
@@ -951,6 +970,7 @@ public sealed class ServerNet : IDisposable
         _byPlayer.Remove(p);
         _antilag.Remove(p);
         _lastSnapOrigin.Remove(p);
+        _statusBlob.Remove(p);
         _world.Commands.ForgetPlayer(p); // per-client replicated-cvar/autoswitch tables
     }
 
@@ -1101,6 +1121,34 @@ public sealed class ServerNet : IDisposable
         // + a merged once-per-tick input, instead of the legacy one-command-per-tick below.
         if (st.PerFrameInput)
             return ProvideInputPerFrame(st, p, now);
+
+        // Persistent-backlog gentle drain (complements the hard Trim below — it closes the 3–7-deep "dead zone"
+        // the trim's >7 trigger leaves untouched). Sample the queue depth's recent MINIMUM over a trailing window;
+        // if even the minimum stays above the jitter floor, a client hitch left a STANDING backlog (1-in-1-out
+        // preserves it forever = permanent input latency). Bleed ONE command per tick until the floor is reached. A
+        // healthy low-fps client drains its bursts to ~empty between packets, so its recent-min is low and it is
+        // NEVER bled — only a stuck post-hitch backlog is. A bled command acks + dispatches its impulse unsimulated,
+        // exactly the Trim contract (both ends agree the move never ran — a brief reconcile warp, like DP).
+        const int backlogWindowTicks = 36; // ~0.5 s at 72 Hz — long enough that a healthy client hits its low min
+        st.LegacyMinDepth = Math.Min(st.LegacyMinDepth, st.Pending.Count);
+        if (++st.LegacyDepthSamples >= backlogWindowTicks)
+        {
+            st.LegacyPersistentFloor = st.LegacyMinDepth == int.MaxValue ? 0 : st.LegacyMinDepth;
+            st.LegacyMinDepth = int.MaxValue;
+            st.LegacyDepthSamples = 0;
+        }
+        if (st.LegacyPersistentFloor > InputQueuePolicy.LegacyTrimResidual
+            && st.Pending.Count > InputQueuePolicy.LegacyTrimResidual)
+        {
+            InputCommand bleed = st.Pending.Dequeue();
+            if (bleed.Seq > st.LastProcessedSeq)
+                st.LastProcessedSeq = bleed.Seq;       // ack unsimulated → client stops replaying it
+            if (bleed.Impulse != 0 && !p.IsObserver)
+                _world.Commands.Execute($"impulse {bleed.Impulse}", isServerConsole: false, caller: p);
+            st.LegacyPersistentFloor--;                // account for the bleed so we drain ~1 command/tick to the floor
+            if (Log.WillTrace)
+                Log.Trace($"[ServerNet] standing input backlog bled for '{p.NetName}': now {st.Pending.Count} (post-hitch latency drain)");
+        }
 
         // LEGACY queue bound (DP sv_clmovement_inputtimeout). Producer and consumer both pace at exactly
         // 72 Hz, so the queue length never shrinks on its own — a client hitch's burst (up to 18 commands
@@ -1574,6 +1622,16 @@ public sealed class ServerNet : IDisposable
                 s.Flags |= NetEntityFlags.Teleported;
             _lastSnapOrigin[p] = p.Origin;
 
+            // [A5 #3/#7] ENT_CLIENT_STATUSEFFECTS: consume this player's status-effect dirty mark (QC SendFlags) —
+            // Flush re-encodes the full bitmap only on a tick its effects changed, else returns null. Cache the
+            // current blob (null = no effects, the "all clear" majorBits-only byte normalized away) so EVERY
+            // snapshot — including a late joiner's full delta — carries the authoritative state; the delta then
+            // re-sends the bytes only when they actually change (NetEntityState.Diff compares them by content).
+            byte[]? flushed = StatusEffectsCatalog.Flush(p);
+            if (flushed is not null)
+                _statusBlob[p] = NormalizeStatusBlob(flushed);
+            s.StatusEffects = _statusBlob.TryGetValue(p, out byte[]? cachedBlob) ? cachedBlob : null;
+
             _entityScratch[netId] = s;
         }
 
@@ -1643,6 +1701,15 @@ public sealed class ServerNet : IDisposable
         // independent of render-eligibility — a monster/nade is recorded whether or not it made the snapshot set.
         RecordAntilagEntities(all, altime);
     }
+
+    /// <summary>
+    /// Normalize a freshly-flushed status-effect bitmap to the wire representation of "no effects": an entity with
+    /// no active effects encodes to a single <c>majorBits = 0</c> byte (length 1) — collapse that (and any
+    /// empty/null) to <c>null</c> so the delta treats it identically to a never-touched entity (the mask bit stays
+    /// clear instead of shipping a 1-byte "nothing here" blob every snapshot). Any real effect set is ≥ 7 bytes.
+    /// </summary>
+    private static byte[]? NormalizeStatusBlob(byte[]? blob)
+        => (blob is null || blob.Length <= 1) ? null : blob;
 
     /// <summary>
     /// Port of the monster + nade half of the <c>world.qc:EndFrame</c> antilag record loop
@@ -1817,6 +1884,14 @@ public sealed class ServerNet : IDisposable
         // owner's rendered view angles client-side. Owner-only (only the local player sees their own kick), so
         // it rides the owner block, not the entity stream. Small + cheap; sent unconditionally for lockstep.
         w.WriteVector(p.PunchAngle, XonoticGodot.Net.NetPrecision.Float);
+
+        // QC STAT(MOVEVARS_HIGHSPEED) per-player (Physics_UpdateStats): the RESOLVED top-speed multiplier this tick
+        // — the Speed powerup ×, the speed/disability buffs ×, the entrap nade × all folded into player.SpeedMultiplier
+        // by the PlayerPhysics hooks and applied in PlayerPhysics.Move. The client-prediction carrier has none of
+        // those status effects, so it can't recompute this; replicate it (owner-only) so the predicted leg
+        // (PlayerPhysics: input.Predicted → adopt SpeedMultiplierPredicted) scales identically to authority. Sent
+        // unconditionally for lockstep (steady state 1.0); cheap.
+        w.WriteFloat(p.SpeedMultiplier);
 
         // [T57 accuracy] — the owner's own per-weapon accuracy bytes (QC ENT_CLIENT_ACCURACY, owner-only:
         // a.drawonlytoclient = e, accuracy.qc:54). One QC accuracy_byte per Registry<Weapon> id (0 = never fired,

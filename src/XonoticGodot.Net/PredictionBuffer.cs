@@ -163,8 +163,21 @@ public sealed class Reconciler
     /// <summary>cl_movement_errorcompensation: 0 disables smoothing (snap to truth). Mirrors the autocvar.</summary>
     public float ErrorCompensation = 0f;
 
-    /// <summary>Server tick rate (Hz) used to scale the error-decay factor (QC <c>ticrate</c>).</summary>
+    /// <summary>Server tick rate (Hz) used to scale the error-decay factor. QC computes the factor as
+    /// <c>errorcompensation / ticrate</c> where <c>ticrate</c> is the tick PERIOD in seconds (<c>sys_ticrate</c>);
+    /// since this field is the rate in Hz (= 1/period), the port MULTIPLIES by it (see <see cref="SetPredictionError"/>).
+    /// The resulting decay window is one tick (≈13.9 ms at 72 Hz), matching QC — NOT 72 s (the old divide-by-Hz bug
+    /// that left every correction lingering near-forever).</summary>
     public float TickRate = 72f;
+
+    /// <summary>PORT EXTENSION (<c>cl_movement_errorcompensation_force_time</c>, default 0.12 s): the longer, gentler
+    /// decay window used when a prediction error looks like DAMAGE KNOCKBACK (a big velocity spike with a still-
+    /// plausible origin delta). Stock Xonotic SKIPS those (CSQCPlayer_SetPredictionError's <c>vdist(v,&gt;,192)</c>
+    /// guard) because jumppads/teleporters — the other causes of a big velocity spike — weren't predicted; this
+    /// port predicts both (<c>EntityMovementStep</c>), so the remaining spike is an explosion shove, and smoothing
+    /// it over ~0.12 s glides the view instead of popping it. The velocity itself still applies immediately (only
+    /// the VIEW is eased). Set to 0 to fall back to the normal one-tick window even for knockback.</summary>
+    public float ForceSmoothWindow = 0.12f;
 
     /// <summary>cl_stairsmoothing ENABLE toggle: &gt;0 = stair smoothing on (the reference has no time window — the
     /// blend rate is <see cref="StairSmoothSpeed"/>); 0 = off (the camera follows the predicted Z exactly).</summary>
@@ -200,10 +213,17 @@ public sealed class Reconciler
     /// the fixed floor speed only (the old behaviour).</summary>
     public float StairCatchupTime = 0.1f;
 
-    // Thresholds from CSQCPlayer_SetPredictionError: errors larger than these are assumed to be a
-    // teleport / jumppad / jump-timing disagreement and are ignored rather than smoothed.
+    // Thresholds from CSQCPlayer_SetPredictionError: an origin jump past MaxErrorOrigin is a teleport (snap), and a
+    // velocity jump past MaxErrorVelocity is a "spike" QC discarded. The port reinterprets the spike: with jumppads
+    // and teleporters now predicted, a spike with an origin delta still within MaxForceOrigin is damage knockback —
+    // smoothed over ForceSmoothWindow rather than discarded. A bigger origin delta is a real teleport, so snap.
     private const float MaxErrorOrigin = 32f;    // vdist(o, >, 32)
     private const float MaxErrorVelocity = 192f;  // vdist(v, >, 192)
+
+    // Knockback's origin delta = the in-flight velocity spike integrated over the unacked-command window (a few
+    // ticks); even a strong rocket-jump stays well under this. A genuine cross-map teleport dwarfs it, so a spike
+    // with an origin jump past this is a teleport (snap), not a shove to smooth.
+    private const float MaxForceOrigin = 250f;
 
     // Fallback step-height clamp when StairStepHeight is left unset/0 (keep in sync with MovementParameters.StepHeight).
     private const float MaxStairStepFallback = 31f;
@@ -326,48 +346,64 @@ public sealed class Reconciler
     }
 
     /// <summary>
-    /// Accumulate a prediction error into the decaying smoother, ignoring errors too large to be anything
-    /// but a teleport/jumppad. Port of <c>CSQCPlayer_SetPredictionError</c>.
+    /// Accumulate a prediction error into the decaying smoother. Port of <c>CSQCPlayer_SetPredictionError</c>,
+    /// extended: where stock QC DISCARDS a big velocity spike, this smooths it as damage knockback (see
+    /// <see cref="ForceSmoothWindow"/>). A teleport-sized origin jump still snaps.
     /// </summary>
     public void SetPredictionError(Vector3 originError, Vector3 velocityError, float now)
     {
-        // A position error too big to be anything but a TELEPORT / RESPAWN / spawn (origin discontinuity): SNAP,
-        // and CLEAR any accumulated smoothing so the camera jumps cleanly to the destination instead of dragging
-        // a stale offset that floats it away. This is the port's equivalent of csqcmodel's csqcmodel_teleported
-        // clearing the view smoothing on a networked teleport (lib/csqcmodel/cl_player.qc) — QC gets that flag
-        // from the server; we infer the teleport from the origin jump. Without this, the small per-snapshot error
-        // the predictor accumulates while the local player is a FROZEN observer (the client predicts gravity, the
-        // server holds it still) survives the observer→player spawn and floats the camera thousands of units up.
-        if (originError.Length() > MaxErrorOrigin)
+        float oLen = originError.Length();
+        float vLen = velocityError.Length();
+
+        // A big VELOCITY spike with a still-plausible ORIGIN delta is damage knockback (a rocket/blaster shove):
+        // jumppads and teleporters — the other things that produce a >192 u/s spike — are now client-predicted
+        // (EntityMovementStep.PredictJumppadsAmbient / PredictTeleportsAmbient), so they no longer reach this path.
+        // Stock QC discarded the spike (vdist(v,>,192)); we instead SMOOTH it (over ForceSmoothWindow) so the shove
+        // glides the view rather than popping it. Capped at MaxForceOrigin so a genuine cross-map teleport (whose
+        // origin delta dwarfs any knockback's few-tick in-flight drift) still snaps below.
+        bool isForce = vLen > MaxErrorVelocity && oLen <= MaxForceOrigin;
+
+        // A position error too big to be knockback is a TELEPORT / RESPAWN / spawn (origin discontinuity) — OR a
+        // genuine desync: SNAP, and CLEAR any accumulated smoothing so the camera jumps cleanly to the destination
+        // instead of dragging a stale offset that floats it away. The port's equivalent of csqcmodel's
+        // csqcmodel_teleported clearing the view smoothing on a networked teleport (lib/csqcmodel/cl_player.qc) —
+        // QC reads a flag from the server; we infer the teleport from the origin jump. Without this, the small
+        // per-snapshot error the predictor accumulates while the local player is a FROZEN observer (client predicts
+        // gravity, server holds still) survives the observer→player spawn and floats the camera thousands of u up.
+        if (oLen > MaxErrorOrigin && !isForce)
         {
             // Diagnostic: a position correction this large is a teleport/respawn — OR a genuine desync (the
             // client predicted somewhere the server didn't follow, e.g. a server-side stuck). Repeated lines
             // here while moving normally are the signature of a rubberband. Developer-gated (QC Con_DPrintf).
             if (Log.WillTrace)
-                Log.Trace($"[reconcile] origin SNAP {originError.Length():0.0}u (>{MaxErrorOrigin}) — teleport/respawn or desync; smoothing reset");
+                Log.Trace($"[reconcile] origin SNAP {oLen:0.0}u (>{MaxErrorOrigin}) — teleport/respawn or desync; smoothing reset");
             ResetError();
-            return;
-        }
-        // A velocity-only spike with a small origin delta is a JUMPPAD / jump-time disagreement, NOT a teleport —
-        // ignore it but DON'T reset (let any residual origin error keep decaying), faithful to QC's vdist(v,>,192).
-        if (velocityError.Length() > MaxErrorVelocity)
-        {
-            if (Log.WillTrace)
-                Log.Trace($"[reconcile] velocity spike {velocityError.Length():0}u/s (>{MaxErrorVelocity}) ignored (jumppad/jump-timing)");
             return;
         }
 
         if (ErrorCompensation == 0f)
         {
+            // Smoothing disabled (cl_movement_errorcompensation 0): snap to truth. A knockback then pops, as it
+            // does in stock QC with the cvar off — the user asked for raw corrections.
             _errorFactor = 0f;
             return;
         }
 
-        // accumulate on top of any residual error still decaying, then (re)start the decay window.
+        // Accumulate on top of any residual error still decaying, then (re)start the decay window. A knockback uses
+        // the longer ForceSmoothWindow; a normal residual uses QC's one-tick window — errorcompensation / ticrate,
+        // i.e. errorcompensation × TickRate(Hz) (the units fix: stock divides by the tick PERIOD in seconds, so the
+        // port multiplies by the rate). Never SHORTEN an already-active (longer) window: the tiny residual the tick
+        // AFTER a knockback must not truncate the force glide into a fast zip, so keep the later of the two expiries
+        // and recompute the factor so the (re)accumulated error still decays to zero exactly at that expiry.
+        if (Log.WillTrace && isForce)
+            Log.Trace($"[reconcile] knockback shove {vLen:0}u/s (origin {oLen:0.0}u) — smoothing over {ForceSmoothWindow * 1000f:0}ms");
         _errorOrigin = GetPredictionErrorOrigin(now) + originError;
         _errorVelocity = GetPredictionErrorVelocity(now) + velocityError;
-        _errorFactor = ErrorCompensation / (TickRate > 0f ? TickRate : 1f);
-        _errorUntilTime = now + 1f / _errorFactor;
+        float residualWindow = 1f / (ErrorCompensation * (TickRate > 0f ? TickRate : 1f));
+        float newWindow = isForce && ForceSmoothWindow > 0f ? ForceSmoothWindow : residualWindow;
+        float activeUntil = _errorUntilTime > now ? _errorUntilTime : now;
+        _errorUntilTime = MathF.Max(activeUntil, now + newWindow);
+        _errorFactor = 1f / (_errorUntilTime - now);
     }
 
     /// <summary>Current decaying origin offset to add to the rendered position. Port of

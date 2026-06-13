@@ -188,6 +188,16 @@ public sealed class PlayerPhysics : IPlayerPhysics
         var pp = new MutatorHooks.PlayerPhysicsArgs(player, dt);
         MutatorHooks.PlayerPhysics.Call(ref pp);
 
+        // ----- CLIENT-PREDICTION speed parity (QC replicates STAT(MOVEVARS_HIGHSPEED) per-player) -----
+        // The prediction carrier has none of the powerup/buff/nade status effects the PlayerPhysics hook above
+        // reads, so on the predicted leg the hook left SpeedMultiplier at its HighSpeed seed (line 181) — the
+        // carrier would predict BASE speed while a Speed powerup / speed buff / entrap slow is active, and every
+        // tick would reconcile-pop. Adopt the server-replicated resolved multiplier (set on the carrier by NetGame
+        // from the owner snapshot) so prediction scales identically to authority. A value <= 0 means "not yet
+        // replicated" → leave the seed untouched. SVQC is unaffected (input.Predicted is false there).
+        if (input.Predicted && player.SpeedMultiplierPredicted > 0f)
+            player.SpeedMultiplier = player.SpeedMultiplierPredicted;
+
         // ----- honour the per-player top-speed multiplier set by the PlayerPhysics handlers (QC
         //       Physics_UpdateStats: STAT(MOVEVARS_HIGHSPEED) drives g_movement_highspeed). The Speed powerup
         //       (×1.5), the entrap nade (×0.5) and the speed/disability buffs all ride player.SpeedMultiplier;
@@ -877,7 +887,13 @@ public sealed class PlayerPhysics : IPlayerPhysics
         vel.Z += mjumpheight;
         player.Velocity = vel;
 
-        if (Api.Services is not null)
+        // QC plays the jump sound under #ifdef SVQC (common/physics/player.qc:491-495 PlayerSound) — the
+        // authoritative server tick only. Suppress it on CLIENT-SIDE PREDICTION (and its reconcile replays): the
+        // sound is networked from the server, and a predicted jump would re-fire it on every render-frame replay of
+        // the in-flight jump input (and a mispredicted jump would play a phantom one). Mirrors the footstep/landing
+        // and punch-decay gates (UpdateMovementSounds / CheckPunch) — those #ifdef SVQC cues were already gated; the
+        // jump sound was the one that slipped through.
+        if (!input.Predicted && Api.Services is not null)
             Api.Sound.Play(player, SoundChannel.Body, "player/jump.wav");
 
         player.Flags &= ~EntFlags.OnGround;     // UNSET_ONGROUND

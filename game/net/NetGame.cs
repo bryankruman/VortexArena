@@ -264,7 +264,11 @@ public sealed partial class NetGame : Node3D
     // Render clock used to drive the prediction (Predict/SendInput) AND read the decaying stair/error offsets.
     // The reconciler arms those decays stamped with the SERVER time (in HandleSnapshot), so the clock we read
     // them with must track server time — but advance smoothly BETWEEN snapshots (a snapshot only lands every
-    // few frames). So we accumulate real delta each frame and rebase to LatestServerTime on each new snapshot.
+    // few frames). So we advance it by real delta ONCE per frame (the `_renderClock += dt` in _Process) and
+    // rebase to LatestServerTime on each new snapshot. The input cadence (per-frame / legacy drain) reads this
+    // clock but MUST NOT advance it again — doing so ran it at ~2x wall time between rebases, which (once the
+    // error-decay window was corrected to one tick) made the prediction-error offset read as already-expired
+    // every frame, silently disabling the smoothing. Single advance point keeps the decay clock truthful.
     private float _renderClock;
     private float _lastSeenServerTime = -1f;
 
@@ -1945,6 +1949,11 @@ public sealed partial class NetGame : Node3D
             {
                 bool localDead = LocalServerPlayer is { } self ? self.IsDead : (_everAlive && _client.Health <= 0);
                 _carrier.DeadState = localDead ? DeadFlag.Dead : DeadFlag.No;
+
+                // Mirror the server-resolved per-player speed multiplier (Speed powerup / speed·disability buffs /
+                // entrap nade) onto the prediction carrier so PlayerPhysics' predicted leg scales the top speed like
+                // authority (the carrier has none of those status effects to recompute it). 1 while none active.
+                _carrier.SpeedMultiplierPredicted = _client.LocalSpeedMultiplier;
             }
 
             // F03 (re)spawn view snap (QC PutPlayerInServer: self.fixangle = true; self.angles = spot.angles). The
@@ -1985,9 +1994,10 @@ public sealed partial class NetGame : Node3D
                 // PER-FRAME (DP-style variable-dt): emit ONE command per rendered frame stamped with the real
                 // clamped frame dt; the server drains all pending commands that tick, running movement per command
                 // with each dt. Removes the up-to-one-tick input quantization → snappier fire + aim. The player
-                // still advances at wall-clock speed because each command carries the dt it represents.
+                // still advances at wall-clock speed because each command carries the dt it represents. The render
+                // clock was already advanced by real dt at the top of _Process — do NOT add _inputDeltaTime here too
+                // (that double-advance is the bug fix), just send at the current clock.
                 _inputDeltaTime = Mathf.Clamp(dt, MinInputDt, MaxInputDt);
-                _renderClock += _inputDeltaTime;
                 _client.SendInput(_renderClock);
                 ConsumePredictedFixAngle();
                 _inputAccum = 0f; // keep the legacy accumulator drained so a mid-session switch back can't burst
@@ -2002,17 +2012,16 @@ public sealed partial class NetGame : Node3D
                 _inputDeltaTime = tic;
                 _inputAccum += dt;
                 if (_inputAccum > MaxInputBacklog) _inputAccum = MaxInputBacklog;
-                float clock = _renderClock;
                 while (_inputAccum >= tic)
                 {
                     _inputAccum -= tic;
-                    clock += tic;
                     // Sample WASD/mouse → InputCommand → push to the ring, predict forward, send the redundant tail.
-                    _client.SendInput(clock);
+                    // Send at the current render clock (already advanced by real dt once at the top of _Process); the
+                    // drained tics share that timestamp, which the redundant-send + cvar-pump pacing tolerate. Do NOT
+                    // advance _renderClock per drained tic here — that was the ~2x double-advance (see _renderClock).
+                    _client.SendInput(_renderClock);
                     ConsumePredictedFixAngle(); // teleporter view-snap, inside the loop so a 2nd tick samples it
                 }
-                // Read the camera at the clock the last prediction ran with, so eye and predicted origin agree.
-                _renderClock = clock;
             }
         }
 
@@ -3102,7 +3111,12 @@ public sealed partial class NetGame : Node3D
         // (net path has no MaxHealth, so dead = Health<=0 — but ONLY after the first spawn, so the pre-spawn
         // observer 0 doesn't engage the death-cam at the world origin.)
         bool localDead = _everAlive && _client.Health <= 0;
-        NVec3 viewVelocity = localDead ? NVec3.Zero : _client.PredictedVelocity;
+        // Live: the rendered velocity is the predicted velocity PLUS the decaying velocity-error offset (QC
+        // `this.velocity += CSQCPlayer_GetPredictionErrorV()`). It is normally ~0; after a smoothed correction —
+        // above all a damage-knockback shove (Reconciler force smoothing) — it ramps the rendered velocity from the
+        // old value up to the new over the smoothing window, so the view bob/sway and the sub-tic eye extrapolation
+        // below ease into the shove instead of the velocity snapping. Zeroed while dead (frozen corpse has no bob).
+        NVec3 viewVelocity = localDead ? NVec3.Zero : _client.PredictedVelocity + _client.PredictionVelocityErrorOffset(now);
 
         // Sub-tic view smoothing (DP's partial final movement frame): the predicted origin only advances when an
         // input tic is drained, so it moves in discrete 1/72 s (~13.9 ms) steps while the camera renders at the
@@ -3128,6 +3142,13 @@ public sealed partial class NetGame : Node3D
             stepHeight:  CvarOr(cv, "sv_stepheight", 31f),
             snapSpeed:   CvarOr(cv, "cl_stairsmooth_snapspeed", 30f),
             catchupTime: CvarOr(cv, "cl_stairsmooth_catchuptime", 0.1f));
+        // Prediction-error view smoothing, read live so the cvars (and the settings-menu checkbox) tune in-session:
+        //   cl_movement_errorcompensation       — strength; 0 = snap to truth (smoothing off), the stock toggle.
+        //   cl_movement_errorcompensation_force_time — how long an explosion/blaster shove glides (port extension;
+        //                                              0 falls back to the one-tick residual window, knockback pops).
+        _client.ConfigureErrorSmoothing(
+            errorComp:   CvarOr(cv, "cl_movement_errorcompensation", 1f),
+            forceWindow: CvarOr(cv, "cl_movement_errorcompensation_force_time", 0.12f));
         predicted.Z -= _client.PredictedStairOffset(dt);
 
         var st = new Client.FirstPersonView.ViewState

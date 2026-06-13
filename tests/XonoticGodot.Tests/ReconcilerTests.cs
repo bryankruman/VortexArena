@@ -80,19 +80,61 @@ public class ReconcilerTests
     }
 
     [Fact]
-    public void SetPredictionError_VelocityOnlySpike_DoesNotClearResidualSmoothing()
+    public void SetPredictionError_KnockbackSpike_SmoothsAsForce_NotDiscarded()
     {
-        Reconciler rec = NewReconciler();
+        // PORT EXTENSION (diverges from stock QC's vdist(v,>,192) discard): jumppads + teleporters are now client-
+        // predicted, so a big VELOCITY spike with a SMALL origin delta is damage KNOCKBACK (a rocket/blaster shove),
+        // not a jumppad/teleport to discard. The smoother arms it over the longer ForceSmoothWindow so the shove
+        // glides the view, accumulating onto — never clearing — any residual origin smoothing already in flight.
+        var rec = new Reconciler(new PredictionBuffer(), new NoOpStep())
+            { ErrorCompensation = 100f, TickRate = 72f, ForceSmoothWindow = 0.12f };
 
         rec.SetPredictionError(new Vector3(0f, 0f, 5f), Vector3.Zero, now: 0f);
         float before = rec.GetPredictionErrorOrigin(0f).Length();
-        Assert.True(before > 0.5f, "precondition: the smoother is armed");
+        Assert.True(before > 0.5f, "precondition: the residual smoother is armed");
 
-        // A big VELOCITY-only spike (jumppad / jump-time disagreement) with a small origin delta is NOT a
-        // teleport — ignore it (QC vdist(v,>,192)) and leave the residual origin smoothing intact (still decaying).
+        // Knockback signature: |v| > 192 with a small origin delta. Smoothed (force), not discarded.
         rec.SetPredictionError(new Vector3(0f, 0f, 1f), new Vector3(0f, 0f, 500f), now: 0f);
-        float after = rec.GetPredictionErrorOrigin(0f).Length();
-        Assert.True(after >= before - 1e-3f, $"a velocity spike must not clear origin smoothing (before={before}, after={after})");
+        Assert.True(rec.GetPredictionErrorOrigin(0f).Length() >= before - 1e-3f,
+            "a knockback shove must accumulate onto (never clear) residual origin smoothing");
+        Assert.True(rec.GetPredictionErrorVelocity(0f).Length() > 1f,
+            "a knockback shove must arm the velocity-error smoother so the rendered velocity ramps into the shove");
+
+        // The force window (~0.12 s) is far longer than the tiny errorcomp=100 residual window (~0.14 ms): the offset
+        // is still decaying well into it (proof it took the force path, not the one-tick residual path)...
+        Assert.True(rec.GetPredictionErrorOrigin(0.05f).Length() > 0.1f,
+            "the knockback glide must persist across the ~0.12 s force window, not the sub-ms residual window");
+        // ...and fully decays once the force window elapses.
+        Assert.True(rec.GetPredictionErrorOrigin(0.2f).Length() < 1e-3f,
+            "the knockback glide must fully decay once the force window elapses");
+    }
+
+    [Fact]
+    public void SetPredictionError_TeleportWithVelocityChange_StillSnaps()
+    {
+        // A genuine cross-map teleport whose exit ALSO redirects velocity (>192) must NOT be mistaken for knockback
+        // and smoothed: the origin jump dwarfs MaxForceOrigin (250 u), so it snaps + clears like any teleport.
+        Reconciler rec = NewReconciler();
+        rec.SetPredictionError(new Vector3(0f, 0f, 5f), Vector3.Zero, now: 0f);
+        Assert.True(rec.GetPredictionErrorOrigin(0f).Length() > 0.5f, "precondition: the smoother is armed");
+
+        rec.SetPredictionError(new Vector3(1000f, 0f, 0f), new Vector3(0f, 0f, 400f), now: 1f / 72f);
+        Assert.True(rec.GetPredictionErrorOrigin(1f / 72f).Length() < 1e-3f,
+            "a teleport-sized origin jump (even with a velocity change) must snap, not smooth as knockback");
+    }
+
+    [Fact]
+    public void SetPredictionError_ResidualDecayWindow_IsOneTick_NotSeconds()
+    {
+        // Fix #1 (units): QC's factor is errorcompensation / ticrate where ticrate is the tick PERIOD in seconds, so
+        // the decay window is ONE TICK. The port multiplies by TickRate(Hz). With errorcomp=1 @ 72 Hz the window is
+        // ~13.9 ms: a small residual is fully decayed by 2 ticks — NOT lingering for ~72 s (the old divide-by-Hz bug).
+        var rec = new Reconciler(new PredictionBuffer(), new NoOpStep()) { ErrorCompensation = 1f, TickRate = 72f };
+        rec.SetPredictionError(new Vector3(0f, 0f, 5f), Vector3.Zero, now: 0f);
+        Assert.True(rec.GetPredictionErrorOrigin(0f).Length() > 4f, "armed at full magnitude at t=0");
+        Assert.True(rec.GetPredictionErrorOrigin(0.5f / 72f).Length() > 0.1f, "still decaying mid-tick");
+        Assert.True(rec.GetPredictionErrorOrigin(2f / 72f).Length() < 1e-3f,
+            "a residual must fully decay within one tick (~13.9 ms), not linger for seconds");
     }
 
     // ---- Stair-step view smoothing ------------------------------------------------------------------

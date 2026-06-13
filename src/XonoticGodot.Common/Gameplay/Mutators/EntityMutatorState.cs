@@ -158,6 +158,12 @@ namespace XonoticGodot.Common.Framework
         public float JumpVelocityOverride;
         /// <summary>QC STAT(MOVEVARS_HIGHSPEED) — per-player top-speed multiplier (1 = unscaled).</summary>
         public float SpeedMultiplier = 1f;
+        /// <summary>The server's resolved <see cref="SpeedMultiplier"/> replicated to the local CLIENT-PREDICTION
+        /// carrier (owner snapshot). The carrier has none of the powerup/buff/nade status effects that the
+        /// PlayerPhysics speed hook reads, so it can't recompute the multiplier itself — it adopts this each
+        /// predicted tick so a Speed powerup / speed buff / entrap slow reaches the same top speed as authority
+        /// (QC replicates STAT(MOVEVARS_HIGHSPEED) per-player). 1 = unscaled; only the predicted leg reads it.</summary>
+        public float SpeedMultiplierPredicted = 1f;
     }
 
     /// <summary>

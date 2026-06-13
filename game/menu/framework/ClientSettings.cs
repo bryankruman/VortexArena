@@ -83,6 +83,13 @@ public static class ClientSettings
         // Client-side projectile prediction (CSQC Projectile_Draw): snap+extrapolate vs the old ease. Default
         // ON; `set cl_projectile_prediction 0` reverts for A/B feel-testing (ClientWorld polls it live).
         c.Register("cl_projectile_prediction", "1", save);
+        // Prediction-error view smoothing strength (stock DP/Xonotic cvar; the Settings→Misc checkbox binds it).
+        // 1 = smooth corrections (default), 0 = snap to truth. Read live by NetGame via ConfigureErrorSmoothing.
+        c.Register("cl_movement_errorcompensation", "1", save);
+        // Knockback view-smoothing window, seconds (PORT EXTENSION, read live by NetGame via ConfigureErrorSmoothing):
+        // how long an explosion/blaster shove glides the view instead of popping it. Stock Xonotic discards the spike
+        // (it predates predicted jumppads/teleporters); this port smooths it. 0 = pop like stock. See Reconciler.
+        c.Register("cl_movement_errorcompensation_force_time", "0.12", save);
         // Precache ALL weapon view-models at map load (default ON) vs only this match's expected loadout.
         // Warming all (~24) costs a little extra load time, hidden by the loading screen, but removes the
         // 30–300 ms stall the first time the player switches to / picks up / sees an unanticipated weapon
