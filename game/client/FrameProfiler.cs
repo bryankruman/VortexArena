@@ -327,7 +327,14 @@ public partial class FrameProfiler : CanvasLayer
         // external (driver/OS) stall. Big rest + big gpu ⇒ GPU-bound (e.g. a first-draw shader compile);
         // big rest + small gpu ⇒ present/vsync or a stall outside Godot's measured sections.
         double rest = Math.Max(0.0, ms - _procMs - _renderCpuMs);
-        EmitProfile($"[hitch] {ms:0.0}ms (med {_median:0.0}) | proc {_procMs:0.0} rcpu {_renderCpuMs:0.0} gpu {_renderGpuMs:0.0} phys {_physMs:0.0} rest {rest:0.0}{gc} | alloc {_dAllocBytes / 1024}KB{scopes}{marks}");
+        // [external?] (§12.6c): the stall lived almost entirely in `rest` with quiet game-side numbers (no
+        // pipeline compile, no gen2, small proc/gpu) ⇒ compositor/driver/OS, not game code. Resistors:
+        // vid_fullscreen 2 (exclusive — compositor out of the present path), sys_priority_boost (default on),
+        // vid_vsync 2 (a missed present costs one late frame, not a cascade). Don't chase these in the repo.
+        bool external = ms >= 25.0 && rest >= ms * 0.7 && _procMs <= ms * 0.3
+                        && rec.PipeCompiles == 0 && rec.G2 == 0 && _renderGpuMs <= ms * 0.3;
+        string tag = external ? " | EXTERNAL? (rest-dominated; OS/compositor/driver)" : "";
+        EmitProfile($"[hitch] {ms:0.0}ms (med {_median:0.0}) | proc {_procMs:0.0} rcpu {_renderCpuMs:0.0} gpu {_renderGpuMs:0.0} phys {_physMs:0.0} rest {rest:0.0}{gc} | alloc {_dAllocBytes / 1024}KB{scopes}{marks}{tag}");
 
         // Multi-line forensic block (rate-limited so a hitch storm logs one block, not a wall): the FULL scope
         // table with per-scope allocation, the GPU compile/draw counters, GC pause, the one-shot events that

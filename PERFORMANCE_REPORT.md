@@ -791,3 +791,22 @@ early-match; pool decode buffers if a release-build profile still shows them); (
 MultiMesh upload attributed to `particles.cpu` — if that EVER recurs without rest-class neighbors,
 investigate MultimeshSetBuffer, otherwise treat as external). Worker-side scopes (`iqm.anims`) appear in
 frame tables with worker-sized values — they cost the POOL, not the frame; read alongside `proc`.
+
+### 12.7 OS-stall resistance (2026-06-12)
+
+The §12.6c [external?] class (rest-dominated ~100-140 ms frames, quiet game-side numbers) is the
+compositor/driver/OS — not fixable in the repo, but RESISTIBLE:
+- **`vid_fullscreen 2` (NEW)** — exclusive fullscreen: the desktop compositor leaves the present path on
+  Windows (composited stalls were the user's worst felt hitches). 0/1 keep their stock meanings.
+- **`sys_priority_boost` (NEW, default 1)** — the process runs ABOVE_NORMAL so background work (AV scans,
+  indexer, browsers) can't preempt the main/render threads mid-frame. Deliberately not High (starves
+  audio/driver threads). Verified live: game process BasePriority 10. `0` opts out; denial is logged.
+- **`vid_vsync 2` (existing)** — mailbox: a missed present costs one late frame instead of a FIFO cascade.
+- The hitch log now appends `EXTERNAL? (rest-dominated; OS/compositor/driver)` when a hitch matches the
+  class (≥25 ms, rest ≥ 70 %, proc/gpu ≤ 30 %, no pipeline compile, no gen2) — so future logs separate
+  "the machine did it" from "the repo did it" at a glance.
+- Knock-on hardening already in place from earlier waves: the sim's catch-up soft-cap (B3), the input-queue
+  trim (§12.1), and snapshot snap-on-stale mean a stall costs ONE visual gap — it no longer compounds into
+  standing input latency or a tick spiral.
+- User-side (not repo): GPU driver "prefer maximum performance" for the game, and on dev boxes exclude the
+  repo/Godot dirs from real-time AV scanning (builds + asset churn trigger scans that land mid-play).

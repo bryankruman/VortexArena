@@ -151,14 +151,24 @@ public static class ClientSettings
         CvarService c = MenuState.Cvars;
         RegisterEngineVideoDefaults(c);
 
-        bool fullscreen = c.GetFloat("vid_fullscreen") != 0f;
+        // vid_fullscreen is extended to a mode index (like vid_vsync): 0 windowed / 1 fullscreen (Godot's
+        // composited borderless — the desktop compositor stays in the present path) / 2 EXCLUSIVE fullscreen.
+        // (§12.7) Exclusive takes the compositor OUT of the present path on Windows, which removes the
+        // biggest OS-stall class the forensics tag [external?] (rest-dominated ~100 ms frames with quiet
+        // game-side numbers — DWM hiccups). Trade-offs are the classic ones: slower alt-tab, overlays may
+        // flicker. 0/1 keep their stock DP meaning, so existing configs are unaffected.
+        int fsMode = (int)c.GetFloat("vid_fullscreen");
+        bool fullscreen = fsMode != 0;
         bool borderless = c.GetFloat("vid_borderless") != 0f;
         int w = (int)c.GetFloat("vid_width");
         int h = (int)c.GetFloat("vid_height");
 
-        DisplayServer.WindowMode mode = fullscreen
-            ? DisplayServer.WindowMode.Fullscreen
-            : DisplayServer.WindowMode.Windowed;
+        DisplayServer.WindowMode mode = fsMode switch
+        {
+            <= 0 => DisplayServer.WindowMode.Windowed,
+            1 => DisplayServer.WindowMode.Fullscreen,
+            _ => DisplayServer.WindowMode.ExclusiveFullscreen,
+        };
         DisplayServer.WindowSetMode(mode);
 
         if (!fullscreen && w > 0 && h > 0)
@@ -200,6 +210,30 @@ public static class ClientSettings
         // fps would multiply into a Gen0 GC treadmill. With vid_vsync 2 (mailbox) leave it at 0 (uncapped).
         int maxFps = (int)c.GetFloat("cl_maxfps");
         Godot.Engine.MaxFps = maxFps > 0 ? maxFps : 0;
+
+        // (§12.7) OS-stall resistance: lift the process to ABOVE_NORMAL so background work (AV scans, the
+        // indexer, browsers) can't preempt the game's main/render threads mid-frame — the CPU-side half of
+        // the [external?] rest-stall class (the compositor half is vid_fullscreen 2). Deliberately NOT High:
+        // High can starve audio/driver threads and feels worse, not better. sys_priority_boost 0 opts out.
+        // Idempotent per apply; silently ignored where the OS denies it.
+        try
+        {
+            var proc = System.Diagnostics.Process.GetCurrentProcess();
+            var want = c.GetFloat("sys_priority_boost") != 0f
+                ? System.Diagnostics.ProcessPriorityClass.AboveNormal
+                : System.Diagnostics.ProcessPriorityClass.Normal;
+            if (proc.PriorityClass != want)
+            {
+                proc.PriorityClass = want;
+                XonoticGodot.Common.Diagnostics.Log.Info($"[video] process priority → {want} (sys_priority_boost)");
+            }
+        }
+        catch (Exception ex)
+        {
+            // Sandboxed / job-object-restricted environments can deny the change — run at stock priority,
+            // but say so (an invisible no-op here would read as "the boost is on" when it isn't).
+            XonoticGodot.Common.Diagnostics.Log.Info($"[video] process priority boost unavailable: {ex.Message}");
+        }
     }
 
     /// <summary>
@@ -222,6 +256,8 @@ public static class ClientSettings
         // 0 preserves the current low-latency behaviour; the video dialog recommends 2 (mailbox) for pacing.
         c.Register("vid_vsync", "0", save);
         c.Register("vid_borderless", "0", save);
+        // (§12.7) AboveNormal process priority by default — see ApplyVideo's priority block. 0 = stock priority.
+        c.Register("sys_priority_boost", "1", save);
     }
 
     /// <summary>
