@@ -92,7 +92,29 @@ public sealed class TraceService : ITraceService
     // ITraceService
     // =============================================================================================
 
+    /// <summary>
+    /// (S5 sv_threaded) The host's cross-thread serialisation gate. NULL (the default, and always on the
+    /// single-threaded path) = no lock, byte-for-byte today's behaviour. When the listen server runs its sim
+    /// on the worker thread, the host installs the SAME object ServerNet.Tick locks — because this service
+    /// keeps shared mutable scratch (_candidates/_pcCandidates/_boxCache/_entBrush) and reads the live entity
+    /// areagrid, a MAIN-thread trace (faithful-particle bounces, crosshair true-aim, projectile prediction —
+    /// none of which run inside NetGame._Process's gated span) racing a worker tick corrupted both ends
+    /// (NREs in TraceBrushVsBrush / Movement.Move — caught by the first 180 s threaded soak). Monitor is
+    /// reentrant, so the worker (already holding the gate around its whole tick) passes straight through;
+    /// main-thread callers serialize against the tick boundary.
+    /// </summary>
+    public object? ConcurrencyGate;
+
     public TraceResult Trace(Vector3 start, Vector3 mins, Vector3 maxs, Vector3 end, MoveFilter filter, Entity? ignore)
+    {
+        object? gate = ConcurrencyGate;
+        if (gate is null)
+            return TraceUnlocked(start, mins, maxs, end, filter, ignore);
+        lock (gate)
+            return TraceUnlocked(start, mins, maxs, end, filter, ignore);
+    }
+
+    private TraceResult TraceUnlocked(Vector3 start, Vector3 mins, Vector3 maxs, Vector3 end, MoveFilter filter, Entity? ignore)
     {
         // The moving trace box brush (cached per hull — see _boxCache). For a point trace (mins==maxs) it's a point brush.
         Brush box = BoxBrush(mins, maxs);
@@ -144,6 +166,15 @@ public sealed class TraceService : ITraceService
     public bool CheckPvs(Vector3 viewpoint, Vector3 target) => Pvs?.IsInPvs(viewpoint, target) ?? true;
 
     public int PointContents(Vector3 point)
+    {
+        object? gate = ConcurrencyGate;
+        if (gate is null)
+            return PointContentsUnlocked(point);
+        lock (gate)
+            return PointContentsUnlocked(point);
+    }
+
+    private int PointContentsUnlocked(Vector3 point)
     {
         int contents = 0;
 

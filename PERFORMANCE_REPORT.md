@@ -837,3 +837,73 @@ Also answered: **`r_map_tint` has effectively ZERO perf impact** — the CPU sid
 unconditional vec3 multiply (`combined *= map_tint`) that executes identically whether the tint is white or
 not — orders of magnitude below the texture fetches in the same shader. Per-second profile lines now carry
 `draws N` for cheap culling A/Bs.
+
+---
+
+## 13. Optimization ledger, default flips, and backlog (2026-06-12, end of the rendering-perf arc)
+
+### 13.1 Ledger — everything landed in this arc (chronological; detail in the cited sections)
+
+| Item | What | Where |
+|---|---|---|
+| §11 R1 | Warm pass covers the faithful particle path (premul/invmod MultiMesh, splat shader, fx light) | GpuWarmPass / FaithfulParticleRenderer.BuildWarmupInstances |
+| §11 R4 | World mesh CastShadow=Off (lightmaps are shadow-authoritative) | MapLoader |
+| §11 R2/R3 | DecalSplats + fx-light pooling, single _Process agers (no per-spawn node/Tween churn) | DecalSplats / EffectSystem |
+| §11 R6 | Faithful MultiMesh buffers: pre-size, pow2 growth, 10 s highwater decay | FaithfulParticleRenderer |
+| §11 R7-R9, R11 | MusicPlayer entity-list cache; ModelTint + item-fade change gates; NetGame/Crosshair cvar caches; PoolBurstNodes ON | various |
+| §12.1 | Legacy input-queue trim (DP sv_clmovement_inputtimeout) — the "0.5 s fire delay" fix | InputQueuePolicy + ServerNet |
+| §12.2 | Hitch-forensics profiler: frame ring, scope+alloc tables, GC pause, pipeline-compile deltas, events, CSV dump, timestamps, EXTERNAL? tagging | FrameProfiler / Prof |
+| §12.4 | Staged skeletal-model builds: off-thread anims + texture decode, per-texture upload jobs, warm-by-render for idle-warmed models | AssetLoader / AssetSystem / IqmBuilder / NetGame / GpuWarmPass |
+| §12.5 | World split into 1024-qu cells (frustum culling) + gutter-padded lightmap/deluxe atlas | MapLoader |
+| §12.7 | OS-stall resistance: vid_fullscreen 2 (exclusive), sys_priority_boost, external-stall classifier | ClientSettings / FrameProfiler |
+| §12.8 | Texture mipmaps (fidelity + GPU win); PVS-driven world-cell culling (r_pvs_cull) | AssetSystem / WorldPvsCuller |
+| §13.2 | Default flips: cl_gpu_morph 1, cl_pose_cull 1, sv_threaded 1 (after the trace-gate fix below) | ClientSettings / ModelAnimator / NetGame |
+| §13.2 | TraceService.ConcurrencyGate — ALL trace entry points serialize vs the threaded sim worker | TraceService / NetGame |
+
+### 13.2 Default flips (this pass) + their verification
+
+- **cl_gpu_morph 1** (now registered; was fallback-only): animated MD3s morph in the vertex shader instead of
+  per-frame CPU re-upload. A/B screenshots pixel-identical on stormkeep; ineligible models auto-fall back.
+- **cl_pose_cull 1**: off-screen remote players skip bone-pose interop; distant on-screen refresh half-rate;
+  local player never culled. (On-screen behavior unchanged by design.)
+- **sv_threaded 1** (windowed listen servers; headless stays single-threaded): the FIRST 180 s soak failed
+  loudly — 327 NREs + 10 range errors — because MAIN-thread traces (faithful-particle bounces, crosshair
+  true-aim, projectile prediction; all outside NetGame._Process's gated span) raced the worker's sim ticks in
+  TraceService's shared scratch/areagrid. Fixed with **TraceService.ConcurrencyGate**: every public trace
+  entry point locks the host's SimGate when installed (Monitor is reentrant → the worker, which holds the
+  gate around its whole tick, passes through; the single-threaded path stays lock-free). Re-soak: 180 s @
+  6 bots, ZERO errors, worker signature confirmed (worker sim.move present, main server.tick absent).
+- **Release export verified end-to-end** (templates present; exported from this branch): 120 s @ 6 bots →
+  **5 hitches total, one ≥20 ms, p99 ~11 ms** (vs 85-179 hitches with a 12-20 ms tail in Debug) — confirming
+  the Debug-tax analysis and closing the §10.4/§12.6 release-verification gate.
+
+### 13.3 Backlog (called out, NOT implemented — ranked)
+
+1. **AnimationLibrary cache per (model, skin)** — every bot wearing the same model re-runs a 100-360 ms
+   worker clip-build for identical data; Animations are shareable Resources. Also shrinks worker GC bursts.
+2. **Pool parse/decode buffers** (ArrayPool in IqmReader + TGA/DDS) — the 50-160 MB per-model worker
+   allocation bursts → reused buffers (the remaining 30-70 ms GC-pause class).
+3. **Client-side PVS culling for ENTITIES** — players/items behind walls still pose+draw; reuse BspPvs per
+   entity (DP-faithful, conservative). Pairs with cl_pose_cull.
+4. **Off-thread texture UPLOAD spike** — the remaining 5-10 ms/job main-thread cost; Godot's threaded loader
+   pattern, needs its own verification pass.
+5. **Cluster-aligned (or smaller) world cells** — sharpens PVS culling; benefit indoor-map dependent.
+6. **Godot occlusion culling (OccluderInstance3D)** — would also cull models/particles; pop-in risk if
+   occluders are over-aggressive; ranked behind #3.
+7. **Strip constant/unit animation tracks + Animation.Compress()** — IQM clips key pos+rot+scale per bone per
+   frame; AnimationPlayer samples every track every frame per player (~195 tracks). Dropping unit-scale /
+   constant tracks (build-time, off-thread) cuts per-player sampling + memory. Lossless.
+8. **AnimationPlayer-vs-PushBones double-drive audit** — net players are CPU-posed every frame AND carry an
+   autoplaying AnimationPlayer; if both tick, one is pure waste (possible free per-player win).
+9. **VRAM lifecycle across map changes** — vram climbed 2451→2672 MB within one session; the texture/material
+   caches never evict. Map-scoped eviction prevents long-session VRAM pressure stalls.
+10. **World-texture predecode at map load** — reuse the §12.4 worker pipeline for MAP materials (load-time win).
+11. **Gib/casing physics burst cap** — one phys 29.8 ms spike observed (gib shower of RigidBodies).
+12. **net.send buffer pooling** (17-49 KB/frame on combat frames) — micro.
+
+**Quality-tradeoff options (NOT lossless; user-facing settings, not defaults):** VRAM texture compression
+(BC1/BC3 offline cache), MSAA step-down (currently 4x), shadow-cascade count, pickup-item CastShadow off.
+
+**Watchlist:** the one-off 2.3 s blocked MultimeshSetBuffer (only investigate if it recurs WITHOUT the
+external-stall signature); EXTERNAL? stalls (~135 ms, a few per session) are machine-level — correlate the
+now-timestamped log against system events (WLAN scan / AV / driver) before touching the repo.

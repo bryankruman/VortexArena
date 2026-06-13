@@ -520,7 +520,13 @@ public sealed partial class NetGame : Node3D
         // console/menu override in the SHARED store wins over the world default (the menu writes there). Threading
         // is GATED to non-headless hosts: a headless dedicated server already keeps the full catch-up cap and has
         // no render frame to unblock, so it stays on the stock single-threaded drive even with sv_threaded 1.
-        _serverWorld.Services.Cvars.Register("sv_threaded", "0");
+        // (§13 flip, 2026-06-12) Default ON for windowed listen servers: the per-tick movement-physics cost
+        // (4-12 ms with bots, the §9 "GameDemo vs NetGame" gap) leaves the render thread entirely. Gated to
+        // non-headless below (a dedicated server has no render frame to protect). Soaked 180 s @ 6 bots after
+        // the TraceService.ConcurrencyGate fix (the first soak's NRE storm — main-thread particle/crosshair/
+        // prediction traces racing worker ticks — zero recurrences). `sv_threaded 0` restores the
+        // single-threaded drive.
+        _serverWorld.Services.Cvars.Register("sv_threaded", "1");
         bool wantThreaded =
             (_sharedCvars is not null && _sharedCvars.Has("sv_threaded")
                 ? _sharedCvars.GetFloat("sv_threaded")
@@ -689,6 +695,12 @@ public sealed partial class NetGame : Node3D
             // on the main thread — hand it the SAME gate so that scan can't race the worker's spawn/relink. Stays
             // null on the non-threaded default path, so its scan remains lock-free.
             if (_musicPlayer is not null) _musicPlayer.SimGate = _simGate;
+            // The trace service keeps shared mutable scratch and reads the live areagrid — MAIN-thread traces
+            // (faithful-particle bounces, crosshair true-aim, projectile prediction; none run inside this
+            // class's gated _Process span) raced the worker's sim ticks and corrupted both ends (the first
+            // threaded soak's NRE storm). Gate every trace entry point on the SAME object; the worker holds it
+            // around its whole tick (Monitor is reentrant), the single-threaded default path stays lock-free.
+            _serverWorld!.Services.TraceImpl.ConcurrencyGate = _simGate;
             _serverThread = new ServerThread(
                 _serverWorld!, _server!,
                 static () => XonoticGodot.Engine.Simulation.SimulationLoop.TicRate);
@@ -1694,6 +1706,8 @@ public sealed partial class NetGame : Node3D
             _server.SimGate = null;
         if (_musicPlayer is not null && Godot.GodotObject.IsInstanceValid(_musicPlayer))
             _musicPlayer.SimGate = null;   // gate released; music scan reverts to lock-free
+        if (_serverWorld is not null)
+            _serverWorld.Services.TraceImpl.ConcurrencyGate = null;   // traces revert to lock-free
         _simGate = null;
         _server?.Dispose();
         // Free the carrier so a torn-down session doesn't leave a stray player edict in its facade. Use the

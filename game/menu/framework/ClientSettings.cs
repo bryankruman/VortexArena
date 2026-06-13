@@ -94,10 +94,18 @@ public static class ClientSettings
         // Skeleton3D at half rate. The CPU locomotion clock keeps running every frame, so a model going
         // on-screen mid-stride shows a fresh (not stale) pose. Default OFF preserves the port's current
         // behaviour byte-for-byte; it's a perf opt-in (the local player's own model is NEVER skipped).
-        c.Register("cl_pose_cull", "0", save);            // master toggle, default OFF = current behaviour
+        // (§13 flip, 2026-06-12) Default ON: off-screen remote players skip the ~50-60 bone-pose interop
+        // calls/frame and distant on-screen ones refresh at half rate; the local player is never culled and
+        // the locomotion clock always runs (fresh pose on re-entry). `cl_pose_cull 0` restores full-rate.
+        c.Register("cl_pose_cull", "1", save);
         // Quake units: beyond this an ON-SCREEN remote player refreshes at half rate (a per-model phase stagger
         // spreads the work). 0 disables the distance half-rate, keeping only the off-screen skip.
         c.Register("cl_pose_cull_distance", "1500", save);
+        // (§13 flip, 2026-06-12) Default ON: animated MD3s morph in a vertex shader (2 uniforms/frame)
+        // instead of re-uploading lerped vertex+normal buffers every frame (the 3.3 Tier-3 item). Eligible
+        // models only (StandardMaterial3D surfaces — others keep the CPU path automatically); visual parity
+        // verified on the stormkeep item set. `cl_gpu_morph 0` restores the CPU path.
+        c.Register("cl_gpu_morph", "1", save);
         // Spawn-point idle glow + player-spawn flash (Xonotic QC autocvars; the Effects dialog binds the
         // first, makeMulti pokes the second). Stock defaults ON — SpawnPointParticles / the SPAWN effect
         // read these (absent → 0 would silently disable both).
