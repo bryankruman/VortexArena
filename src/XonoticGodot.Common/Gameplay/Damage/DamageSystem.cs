@@ -4,7 +4,8 @@ using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Gameplay;
 using XonoticGodot.Common.Services;
 
-namespace XonoticGodot.Common.Gameplay.Damage;
+namespace XonoticGodot.Common.Gameplay.Damage
+{
 
 /// <summary>
 /// The damage pipeline — a faithful, Godot-free port of the server <c>Damage(...)</c> dispatcher
@@ -267,6 +268,16 @@ public sealed class DamageSystem : IDamageSystem
         // QC dh/da: the health + armor actually removed this call (hit feedback / scoring upstream).
         float dh = baseHealth - MathF.Max(targ.GetResource(ResourceType.Health), 0f);
         float da = baseArmor  - MathF.Max(targ.GetResource(ResourceType.Armor), 0f);
+
+        // [T41] hit-confirmation stat (QC server/damage.qc ~618 / common/notifications: the attacker's
+        // STAT(HITSOUND_DAMAGE_DEALT_TOTAL) accumulates the (health + armor) actually removed, ONLY for a hit on
+        // another player — never on self-damage). view.qc UpdateDamage/HitSound diffs this stat on the client to
+        // fire the pitch-shifted hit sound. attackerSave is the pre-teamplay attacker (mirror re-entry passes
+        // DEATH_MIRRORDAMAGE with attacker==target, so the self guard excludes it). Non-player attackers (world /
+        // turrets) don't get a hit sound. Gated on a real removal so a fully-blocked/0-damage hit doesn't beep.
+        if (!_inMirror && (dh + da) > 0f && IsPlayer(attackerSave) && !ReferenceEquals(attackerSave, targ))
+            attackerSave!.HitsoundDamageDealtTotal += dh + da;
+
         return dh + da;
     }
 
@@ -725,6 +736,42 @@ public sealed class DamageSystem : IDamageSystem
     private static bool HasStatusFrozen(Entity e)
         => StatusEffectsCatalog.Frozen is { } f && StatusEffectsCatalog.Has(e, f);
 
+    // ===============================================================================================
+    //  status-effect application seams (QC StatusEffects_apply for frozen/burning + StatusEffects_update).
+    //  These are the single points damage-driven freeze/burn go through so the networked overlay
+    //  (ENT_CLIENT_STATUSEFFECTS) gets dirty-marked exactly once per application — the T61 status-effect
+    //  network wiring lives HERE (in DamageSystem) rather than in GameWorld.cs (owned elsewhere this wave).
+    // ===============================================================================================
+
+    /// <summary>
+    /// QC <c>StatusEffects_apply(STATUSEFFECT_Frozen, e, …)</c>: freeze <paramref name="e"/> for
+    /// <paramref name="duration"/> seconds (0 = until thawed). Routes through
+    /// <see cref="StatusEffectsCatalog.Apply"/> (which sets the ACTIVE flag and marks the entity dirty via
+    /// <see cref="StatusEffectsCatalog.Update"/> so the frozen overlay networks). No-op if the frozen def
+    /// isn't registered. Returns true if the effect was applied.
+    /// </summary>
+    public static bool ApplyFrozen(Entity e, float duration, Entity? source = null)
+    {
+        if (StatusEffectsCatalog.Frozen is not { } def) return false;
+        StatusEffectsCatalog.Apply(e, def, duration, 1f, source);
+        StatusEffectsCatalog.Update(e); // explicit StatusEffects_update — dirty-mark for ENT_CLIENT_STATUSEFFECTS
+        return true;
+    }
+
+    /// <summary>
+    /// QC <c>StatusEffects_apply(STATUSEFFECT_Burning, e, …)</c>: ignite <paramref name="e"/> for
+    /// <paramref name="duration"/> seconds at <paramref name="strength"/> burn rate. Routes through
+    /// <see cref="StatusEffectsCatalog.Apply"/> and marks the entity dirty so the burning overlay networks.
+    /// No-op if the burning def isn't registered. Returns true if the effect was applied.
+    /// </summary>
+    public static bool ApplyBurning(Entity e, float duration, float strength = 1f, Entity? source = null)
+    {
+        if (StatusEffectsCatalog.Burning is not { } def) return false;
+        StatusEffectsCatalog.Apply(e, def, duration, strength, source);
+        StatusEffectsCatalog.Update(e); // explicit StatusEffects_update — dirty-mark for ENT_CLIENT_STATUSEFFECTS
+        return true;
+    }
+
     /// <summary>QC <c>STAT(FROZEN, e)</c> — the gametype freeze stat (Freeze Tag / CA ice).</summary>
     private static bool IsFrozenStat(Entity e) => e.FrozenStat != 0 || HasStatusFrozen(e);
 
@@ -868,3 +915,29 @@ public sealed class DamageSystem : IDamageSystem
 
 // Lead wires this in GameInit:
 // Combat.System = new DamageSystem();
+
+} // namespace XonoticGodot.Common.Gameplay.Damage
+
+namespace XonoticGodot.Common.Framework
+{
+    /// <summary>
+    /// [T41] The hit-confirmation accumulator (QC <c>STAT(HITSOUND_DAMAGE_DEALT_TOTAL)</c>). Lives on the
+    /// attacker entity; the damage pipeline (<see cref="XonoticGodot.Common.Gameplay.Damage.DamageSystem.Apply"/>)
+    /// adds the (health + armor) actually removed from a *different* player to it on every hit. The owner
+    /// snapshot networks it (<c>NetEntityState.HitDamageDealtTotal</c>) and the client diffs it across updates to
+    /// fire the pitch-shifted hit sound (view.qc <c>UpdateDamage</c>/<c>HitSound</c>). Added on this partial in an
+    /// already-owned file rather than the shared <c>DamageEntityState.cs</c>, per the task's edit constraint.
+    /// </summary>
+    public partial class Entity
+    {
+        /// <summary>QC <c>STAT(HITSOUND_DAMAGE_DEALT_TOTAL)</c>: cumulative damage this entity has dealt to other
+        /// players (health + armor removed). Monotonically increasing within a life; the client diffs it.</summary>
+        public float HitsoundDamageDealtTotal;
+
+        /// <summary>QC <c>STAT(REVIVE_PROGRESS)</c>: 0..1 Freeze-Tag thaw progress, mirrored each frame from the
+        /// per-player <c>FrozenState.ReviveProgress</c> by <c>FreezeTag.ReviveTick</c> so the player snapshot
+        /// (<c>NetEntityState.ReviveProgress</c>) can network it to the client's thaw objective ring
+        /// (view.qc HUD_Draw). Stays 0 outside Freeze Tag.</summary>
+        public float ReviveProgress;
+    }
+}

@@ -101,6 +101,8 @@ public partial class ClientWorld : Node3D
         public bool IsPlayerModel;    // a skeletal/MD3 player model (gets the appearance/deathglow pass)
         public ItemDespawnFx? Despawn; // loot despawn animation (lazily created when ITS_EXPIRING first seen)
         public bool ItemFaded;        // a despawn/ghost transparency is currently applied (reset to opaque on the way back)
+        public float ItemFadeApplied; // last transparency pushed (§11 R9 change gate; 0 = opaque, the node default)
+        public int ItemFadeMeshCount; // mesh-list size at last push (re-push after a cache rebuild)
     }
     private readonly Dictionary<int, CsqcState> _csqc = new();
 
@@ -277,12 +279,15 @@ public partial class ClientWorld : Node3D
 
     /// <summary>
     /// Resolve a FORCED player model (QC <c>cl_forcemyplayermodel</c> / the <c>cl_forceplayermodels</c> →
-    /// <c>_cl_playermodel</c> swap) to a render node for an entity: given the forced model NAME + skin, build the
-    /// skeletal/MD3 node the same way <see cref="PlayerModelResolver"/>/<see cref="ModelResolver"/> would. Host-set
-    /// (NetGame); null → no force-model swap (the entity keeps its own networked model). Returns null when the
-    /// forced model can't be built (QC <c>fexists</c>-miss → keep own).
+    /// <c>_cl_playermodel</c> swap) to a render node for an entity: given the entity, the forced model NAME + skin,
+    /// build the skeletal/MD3 node the same way <see cref="PlayerModelResolver"/>/<see cref="ModelResolver"/> would.
+    /// The entity is passed so the async (streamed) build can validate staleness and re-attach via
+    /// <see cref="RebuildEntityModel"/> when the forced parse settles (a forced skeletal model returns a placeholder
+    /// shell immediately, exactly like <see cref="PlayerModelResolver"/>). Host-set (NetGame); null → no force-model
+    /// swap (the entity keeps its own networked model). Returns null when the forced model can't be built (QC
+    /// <c>fexists</c>-miss → keep own).
     /// </summary>
-    public Func<string, int, Node3D?>? ForcedModelResolver { get; set; }
+    public Func<Entity, string, int, Node3D?>? ForcedModelResolver { get; set; }
 
     // ---- delegate-style hooks (for net code that prefers Action wiring) ----
     public Action<string, NVec3, NVec3, int>? EffectHook;
@@ -327,6 +332,9 @@ public partial class ClientWorld : Node3D
         AddChild(Lasers);
         MapEmitters = new MapParticleEmitters { Name = "MapEmitters", Effects = Effects };
         AddChild(MapEmitters);
+
+        // Spawn-point idle glow (CSQC Spawn_Draw, gated by cl_spawn_point_particles).
+        AddChild(new SpawnPointParticles { Name = "SpawnPointFx", Effects = Effects });
         Weather = new WeatherSystem { Name = "Weather", ViewOriginProvider = () => ViewOrigin() };
         AddChild(Weather);
 
@@ -900,12 +908,25 @@ public partial class ClientWorld : Node3D
         }
 
         // Skeletal player models: synthesize the four-pose split + aim each frame and push the CPU bones.
+        // 3.3 pose-cull (cl_pose_cull, default OFF): read the gate once per frame, plus the local-player id and
+        // the camera position, so off-screen / distant REMOTE models can skip the interop bone push. Coords is
+        // 1:1 (no meter scale) so Godot-space distance == Quake-unit distance; cl_pose_cull_distance is squared
+        // once here. ListenerPos() never returns null (it falls back to _lastListener), so distSq is NRE-safe.
+        bool poseCull = CvarF("cl_pose_cull", 0f) != 0f;
+        float cullDist = CvarF("cl_pose_cull_distance", 1500f);
+        float cullDistSq = poseCull ? cullDist * cullDist : 0f;
+        int localId = AppearanceProvider?.Invoke()?.LocalNetId ?? -1;
+        Godot.Vector3 viewG = ListenerPos();
         using (FrameProfiler.Scope("cw.players"))
         foreach (PlayerModel pm in _playerModels.Values)
         {
             Entity? e = pm.Bound;
             if (e is not null && !e.IsFreed && GodotObject.IsInstanceValid(pm))
-                pm.Pose(e, (float)delta);
+            {
+                bool isLocal = e.Index == localId;
+                float distSq = poseCull ? (pm.GlobalPosition - viewG).LengthSquared() : 0f;
+                pm.Pose(e, (float)delta, poseCull, isLocal, distSq, cullDistSq);
+            }
         }
 
         using (FrameProfiler.Scope("cw.csqc")) DriveCsqcModelHooks((float)delta);
@@ -967,7 +988,15 @@ public partial class ClientWorld : Node3D
                 bool ghost = (e.Effects & CsqcModelEffectFlags.CSQCMODEL_EF_RESPAWNGHOST) != 0;
                 // FORCECOLORS: the cl_forceplayercolors family can reassign this.colormap (else keep e.Team).
                 int colormap = ResolveForcedColormap(e);
-                ModelTint.ApplyAppearance(node, colormap, dead, st.DeathTime, ghost);
+                // Tint the CACHED, flattened mesh list (3.2-2) instead of re-walking node.GetChildren() every
+                // frame. This is the SAME cache the effects pass uses below (keyed on st.Effects + node), built
+                // once and invalidated on model swap / freed mesh (incl. the staggered placeholder→real swap), so
+                // the appearance and effects lists can never diverge. Only player models need it, so it's fetched
+                // inside this branch — a player model with zero effects never builds it for the effects pass.
+                List<MeshInstance3D> meshes = CsqcModelEffects.GetCachedMeshes(st.Effects, node);
+                // Change-gated (§11 R8): the uniform pushes only happen when the computed colors or the mesh
+                // list changed (colors only move while dead-fading or on a rainbow palette nibble).
+                ModelTint.ApplyAppearance(meshes, colormap, dead, st.DeathTime, ghost, ref st.Effects.Tint);
             }
 
             // (2) LOD: compute the index (faithful math) — see ApplyLod for the swap caveat.
@@ -999,13 +1028,13 @@ public partial class ClientWorld : Node3D
             }
             else if (!e.ItemAvailable)
             {
-                DriveItemGhostFx(node);
+                DriveItemGhostFx(node, st);
                 st.ItemFaded = true;
             }
             else if (st.ItemFaded)
             {
                 // Back to available (respawned) — undo the prior ghost/despawn fade exactly once (no per-frame churn).
-                SetTreeTransparency(node, 0f);
+                SetTreeTransparency(node, st, 0f);
                 node.Visible = true;
                 st.ItemFaded = false;
             }
@@ -1019,10 +1048,10 @@ public partial class ClientWorld : Node3D
     /// <c>'-1 -1 -1'</c> = no tint) is left for a follow-up. Reuses the per-instance transparency the despawn fade
     /// uses (never touches the shared/cached item materials); the bob+spin keeps running (driven in EntityNode).
     /// </summary>
-    private void DriveItemGhostFx(EntityNode node)
+    private void DriveItemGhostFx(EntityNode node, CsqcState st)
     {
         float ghost = Mathf.Clamp(CvarF("cl_ghost_items", 0.45f), 0f, 1f); // QC autocvar_cl_ghost_items default 0.45
-        SetTreeTransparency(node, 1f - ghost);
+        SetTreeTransparency(node, st, 1f - ghost);
         node.Visible = ghost > 0.001f;
     }
 
@@ -1040,7 +1069,7 @@ public partial class ClientWorld : Node3D
 
         // QC: this.alpha *= (wait - time)/IT_DESPAWNFX_TIME — apply as a per-instance transparency on the model
         // (bit 2). Bit 2 clear → Tick returns 1, so this is a no-op (item stays opaque, just particles).
-        SetTreeTransparency(node, 1f - alpha);
+        SetTreeTransparency(node, st, 1f - alpha);
         node.Visible = alpha > 0.001f; // hidden once fully faded (QC drawmask 0); transparency handles the gradient
 
         // QC: pointparticles(EFFECT_ITEM_DESPAWN, this.origin + '0 0 16', '0 0 0', 1) — same client path the
@@ -1050,20 +1079,24 @@ public partial class ClientWorld : Node3D
     }
 
     /// <summary>
-    /// Apply a whole-model transparency (0 = opaque, 1 = invisible) to every <see cref="GeometryInstance3D"/> in a
-    /// node's subtree — the render-side analogue of QC's per-entity <c>.alpha</c>. Uses
-    /// <see cref="GeometryInstance3D.Transparency"/> (a per-instance property, NOT a material edit) so it never
-    /// mutates the shared/cached item materials. Child <c>Visible</c> is left untouched (other systems own it);
-    /// the caller hides the root node outright once fully faded.
+    /// Apply a whole-model transparency (0 = opaque, 1 = invisible) to every mesh of an item node — the
+    /// render-side analogue of QC's per-entity <c>.alpha</c>. Uses <see cref="GeometryInstance3D.Transparency"/>
+    /// (a per-instance property, NOT a material edit) so it never mutates the shared/cached item materials.
+    /// (§11 R9) Pushes through the SAME cached flattened mesh list the appearance/effects passes use
+    /// (3.2-2) instead of a recursive <c>GetChild</c> walk per fading item per frame, and change-gates on the
+    /// last-applied value (the ghost fade is a constant — one push, not one per frame). Child <c>Visible</c> is
+    /// left untouched (other systems own it); the caller hides the root node outright once fully faded.
     /// </summary>
-    private static void SetTreeTransparency(Node node, float transparency)
+    private static void SetTreeTransparency(EntityNode node, CsqcState st, float transparency)
     {
         transparency = Mathf.Clamp(transparency, 0f, 1f);
-        if (node is GeometryInstance3D gi)
-            gi.Transparency = transparency;
-        int childCount = node.GetChildCount();
-        for (int i = 0; i < childCount; i++)
-            SetTreeTransparency(node.GetChild(i), transparency);
+        List<MeshInstance3D> meshes = CsqcModelEffects.GetCachedMeshes(st.Effects, node);
+        if (st.ItemFadeApplied == transparency && st.ItemFadeMeshCount == meshes.Count)
+            return;
+        for (int i = 0; i < meshes.Count; i++)
+            meshes[i].Transparency = transparency;
+        st.ItemFadeApplied = transparency;
+        st.ItemFadeMeshCount = meshes.Count;
     }
 
     /// <summary>
@@ -1297,7 +1330,7 @@ public partial class ClientWorld : Node3D
         if (hasForceMy && isFriend)
         {
             int skin = (int)CvarF("cl_forcemyplayerskin", 0f);
-            if (ForcedModelResolver(forceMyModel, skin) is { } myNode)
+            if (ForcedModelResolver(entity, forceMyModel, skin) is { } myNode)
             {
                 AttachForcedNode(entity, node, myNode);
                 return true;
@@ -1307,7 +1340,7 @@ public partial class ClientWorld : Node3D
         {
             string allModel = Api.Services is null ? "" : Api.Cvars.GetString("_cl_playermodel");
             int allSkin = (int)CvarF("_cl_playerskin", 0f);
-            if (!string.IsNullOrEmpty(allModel) && ForcedModelResolver(allModel, allSkin) is { } allNode)
+            if (!string.IsNullOrEmpty(allModel) && ForcedModelResolver(entity, allModel, allSkin) is { } allNode)
             {
                 AttachForcedNode(entity, node, allNode);
                 return true;

@@ -277,7 +277,9 @@ public sealed class Electro : Weapon
         WeaponSplash.RadiusDamage(self, self.Origin, Primary.Damage, Primary.EdgeDamage, Primary.Radius,
             self.Owner, RegistryId, Primary.Force);
 
-        EffectEmitter.Emit("ELECTRO_BALLEXPLODE", self.Origin);
+        // wr_impacteffect (electro.qc:741): the plain PRIMARY impact is EFFECT_ELECTRO_IMPACT — the expanding
+        // blue shockwave ring. ELECTRO_BALLEXPLODE belongs to the secondary orb (HITTYPE_SECONDARY, :726).
+        EffectEmitter.Emit("ELECTRO_IMPACT", self.Origin);
         Api.Entities.Remove(self);
     }
 

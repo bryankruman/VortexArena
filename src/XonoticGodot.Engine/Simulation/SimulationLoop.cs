@@ -116,6 +116,13 @@ public sealed class SimulationLoop
     }
 
     /// <summary>Publish this loop's facade as the ambient <see cref="Api.Services"/> (one world per process).</summary>
+    // S5 thread-affinity note: <see cref="Advance"/>/<see cref="Tick"/> are NOT internally synchronised — they
+    // assume a single owning thread mutating the entity table. On the listen/host path with sv_threaded 1, the
+    // ONLY thread that calls Advance/Tick is the dedicated server-sim worker (game/net/ServerThread.cs); the main
+    // thread's client prediction is serialised against the whole ServerNet.Tick via the host's single _simGate
+    // lock, so the two never touch this loop's state concurrently. With sv_threaded 0 (default) the host thread
+    // calls Advance/Tick directly with no lock — unchanged. InstallAsAmbient is unused on the listen path (the
+    // host wires Api.Services via GameWorld.Boot / Api.SetThreadServices instead).
     public void InstallAsAmbient() => Api.Services = _services;
 
     /// <summary>World gravity in u/s² (sv_gravity, default 800). Mirrors into the physics context.</summary>
@@ -155,7 +162,13 @@ public sealed class SimulationLoop
         // i.e. the machine genuinely can't keep up, not a one-frame catch-up being smoothed by the soft cap.
         // A backlog within MaxTicksPerAdvance is preserved and drained over the next render frames.
         if (_accumulator > MaxTicksPerAdvance * TicRate)
+        {
+            // Forensics: a drop means sim time just fell permanently behind wall clock — the event that (pre-fix)
+            // turned a client input burst into standing input latency (see InputQueuePolicy). Visible in hitch dumps.
+            XonoticGodot.Common.Diagnostics.Prof.Event(
+                $"sim: backlog dropped ({_accumulator * 1000f:0}ms behind)");
             _accumulator = 0f;
+        }
 
         // The number of fixed ticks that ran this call (0 when the render rate outruns the tick rate). The caller
         // uses this to avoid network/broadcast work on a frame where the world didn't actually advance.

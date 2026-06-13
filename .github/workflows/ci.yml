@@ -17,7 +17,7 @@
 # same config. Every job therefore removes that source FIRST. Godot.NET.Sdk 4.6.3 / GodotSharp 4.6.3
 # are published on nuget.org (verified 2026-06), so everything restores from there.
 
-name: CI
+name: Tests
 
 on:
   push:

@@ -75,7 +75,25 @@ public static class StartItem
         // def.ItemInit — here we leave the carried weapon set as ItemInit set it.)
         item.Flags |= EntFlags.Item;
 
-        // QC: MUTATOR_CALLHOOK(FilterItem, this) — no FilterItem hook chain in the port; the common path proceeds.
+        // QC: MUTATOR_CALLHOOK(FilterItem, this) (items.qc:1031) — after the items/weapon/flags seeding (1018-1026)
+        // and BEFORE the have-pickup gate (1037). Handlers inspect the def (instanceOfHealth/Armor/Powerup) and
+        // return true to forbid the spawn; on true the item is deleted and the function returns early (failure).
+        //
+        // DEVIATION (port mechanics, not Base behavior): QC sets this.netname = def.m_name LATER (items.qc:1190),
+        // AFTER the hook, because its handlers read def.instanceOf* directly. The port has no item-class registry,
+        // so its FilterItem subscribers (MeleeOnly/Hook) stand in via the edict's ClassName/NetName tags — so the
+        // NetName must already be live when the hook fires. ClassName is set above (line 66); assign NetName here,
+        // before the hook, so those classname/netname checks see the real value. (The QC tail still re-assigns the
+        // same def.m_name; here it's simply hoisted to the hook seam — same end state, no Base-behavior change.)
+        item.NetName = def.NetName;
+        var filterArgs = new MutatorHooks.FilterItemDefinitionArgs(item);
+        if (MutatorHooks.FilterItemDefinition.Call(ref filterArgs))
+        {
+            // QC: delete(this); return; — the item is forbidden, so remove the edict and report the spawn failed
+            // (LastSpawnFailed is already true from the top of the method). Returns null like the QC early return.
+            ItemPickupRules.RemoveItem(item);
+            return null;
+        }
 
         // QC: set model + bbox BEFORE droptofloor / spawnshield (so the touch-area-grid has a real volume).
         // The defs carry the BARE model name (the QC Item_Model/W_Model macro argument); build the full VFS
@@ -111,7 +129,8 @@ public static class StartItem
 
         // QC tail: settouch(Item_Touch); netname; skin; colormap for weapons; then Item_Reset (or Item_FindTeam).
         item.Touch = ItemPickupRules.ItemTouch;
-        item.NetName = def.NetName;
+        item.NetName = def.NetName; // QC this.netname = def.m_name (items.qc:1190) — already hoisted before the
+                                    // FilterItem hook above; re-assigning the same value here keeps the tail faithful.
 
         // QC: if(team) Item_FindTeam else Item_Reset(this). The port has no team-item random-select group here;
         // a non-teamed item resets normally. (Teamed map items are a gametype concern, wired separately.)

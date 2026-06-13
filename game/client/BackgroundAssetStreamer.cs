@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using Godot;
+using XonoticGodot.Common.Diagnostics;
 
 namespace XonoticGodot.Game.Client;
 
@@ -34,7 +35,7 @@ public partial class BackgroundAssetStreamer : Node
     [Export] public double BudgetMs { get; set; } = 2.0;
 
     private readonly object _lock = new();
-    private readonly List<(Priority Prio, long Seq, Action Build)> _ready = new(); // off-thread done, awaiting main build
+    private readonly List<(Priority Prio, long Seq, Action Build, string? Label)> _ready = new(); // off-thread done, awaiting main build
     private long _seq;
     private int _inFlight; // off-thread phases still running (diagnostics)
 
@@ -42,8 +43,11 @@ public partial class BackgroundAssetStreamer : Node
     /// Queue an asset for streaming: run <paramref name="offThread"/> on the thread pool, then hand its result to
     /// <paramref name="onMain"/> on the main thread within the per-frame budget. <paramref name="offThread"/> must
     /// be pure C# (no Godot RenderingServer/scene-tree calls); a null result is dropped.
+    /// <paramref name="label"/> (optional) names the asset in the profiler's forensic event stream, so a hitch
+    /// frame can be read as "this is the frame the model build landed on".
     /// </summary>
-    public void Request<T>(Func<T?> offThread, Action<T> onMain, Priority priority = Priority.Low) where T : class
+    public void Request<T>(Func<T?> offThread, Action<T> onMain, Priority priority = Priority.Low,
+        string? label = null) where T : class
     {
         Interlocked.Increment(ref _inFlight);
         long seq = Interlocked.Increment(ref _seq);
@@ -56,7 +60,7 @@ public partial class BackgroundAssetStreamer : Node
             if (result is not null)
             {
                 lock (_lock)
-                    _ready.Add((priority, seq, () => onMain(result)));
+                    _ready.Add((priority, seq, () => onMain(result), label));
             }
             Interlocked.Decrement(ref _inFlight);
         });
@@ -71,10 +75,12 @@ public partial class BackgroundAssetStreamer : Node
                 return;
         }
 
+        using var _scope = FrameProfiler.Scope("stream.build");   // attribute the drain instead of proc:other
         var sw = Stopwatch.StartNew();
         while (true)
         {
             Action? build = null;
+            string? label = null;
             lock (_lock)
             {
                 if (_ready.Count > 0)
@@ -90,13 +96,17 @@ public partial class BackgroundAssetStreamer : Node
                             best = i;
                     }
                     build = _ready[best].Build;
+                    label = _ready[best].Label;
                     _ready.RemoveAt(best);
                 }
             }
             if (build is null)
                 break;
+            double t0 = sw.Elapsed.TotalMilliseconds;
             try { build(); }
             catch (Exception ex) { GD.PrintErr($"[Streamer] main-thread build failed: {ex.Message}"); }
+            if (label is not null)
+                Prof.Event($"stream: {label} built ({sw.Elapsed.TotalMilliseconds - t0:0.0}ms)");
             if (sw.Elapsed.TotalMilliseconds >= BudgetMs)
                 break; // budget spent — finish the rest next frame
         }

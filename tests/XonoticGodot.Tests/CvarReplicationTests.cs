@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Numerics;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Gameplay;
@@ -91,6 +92,40 @@ public class CvarReplicationTests
         Assert.True(world.Commands.GetAutoswitch(p));
         world.Commands.Execute("sentcvar cl_autoswitch 0", isServerConsole: false, caller: p);
         Assert.False(world.Commands.GetAutoswitch(p));
+    }
+
+    // ===================================================================== sentcvar: notification_CHOICE_* (A5 #8)
+
+    /// <summary>
+    /// [A5 #8] QC ReplicateVars replicates each <c>notification_&lt;CHOICE&gt;</c> cvar (the client's verbose/terse
+    /// kill-message preference) into <c>CS(this).msg_choice_choices[idx]</c>. The port's gate must ACCEPT a
+    /// registered choice cvar (so the preference reaches the server's per-client choice array) while still
+    /// REJECTING an unregistered <c>notification_*</c> string (privilege separation — never the world store).
+    /// </summary>
+    [Fact]
+    public void Sentcvar_NotificationChoice_AcceptedAndStoredPerClient_ButUnregisteredRejected()
+    {
+        Notifications.RegisterAll(); // ensure the choice registry + indices exist
+        var world = NewWorld();
+        Player p = NewCaller();
+
+        // Resolve a real registered choice + its replicated cvar name the way both ends build it.
+        var frag = Notifications.All.First(n => n.Type == MsgType.Choice && n.Name == "FRAG");
+        string cvar = "notification_" + NotificationChoiceState.ChoiceCvarName(frag);
+
+        // option B (verbose) — accepted, lands in the per-client store AND the choice array.
+        world.Commands.Execute($"sentcvar {cvar} 2", isServerConsole: false, caller: p);
+        Assert.Equal("2", world.Commands.GetClientCvar(p, cvar));
+        NotificationChoiceState? st = world.Commands.GetChoiceState(p);
+        Assert.NotNull(st);
+        Assert.Equal(NotificationChoiceState.OptionB, st!.Get(frag.ChoiceIdx));
+
+        // an unregistered notification_* name is a non-allowlisted REPLICATE field → stored nowhere (T47).
+        world.Commands.Execute("sentcvar notification_NOT_A_REAL_CHOICE 2", isServerConsole: false, caller: p);
+        Assert.Equal("", world.Commands.GetClientCvar(p, "notification_NOT_A_REAL_CHOICE"));
+
+        // and it must never have reached the world cvar store either.
+        Assert.Equal("", world.Services.Cvars.GetString("notification_NOT_A_REAL_CHOICE"));
     }
 
     // ============================================================================== weapon priority fixup

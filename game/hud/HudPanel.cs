@@ -88,6 +88,17 @@ public abstract partial class HudPanel : Control
     /// <summary>Whether contents change every frame (health/ammo/timer/crosshair/killfeed). Unchanged.</summary>
     public virtual bool IsDynamic => true;
 
+    // ---- HUD configure-mode (editor) flags — set by HudConfigEditor, read for the editor's overlay draw ----
+
+    /// <summary>QC <c>panel == highlightedPanel</c>: this panel is the one the editor's cursor/keyboard is acting
+    /// on (drawn with the highlight border + center-line guide). Set live by <see cref="HudConfigEditor"/>; the
+    /// editor renders the chrome itself, so this is the queryable flag a panel/test can read.</summary>
+    public bool IsHighlighted { get; set; }
+
+    /// <summary>QC <c>panel == tab_panel</c>: this panel is the current Ctrl+Tab cycle candidate (drawn with the
+    /// dim fill preview before Ctrl is released to commit the selection). Set live by <see cref="HudConfigEditor"/>.</summary>
+    public bool IsTabSelected { get; set; }
+
     /// <summary>
     /// Whether this panel's DISPLAYED content actually changed since its last draw (3.2-3). A dynamic panel is
     /// re-recorded (QueueRedraw) every frame by default, which re-runs <see cref="DrawPanel"/> (re-formatting

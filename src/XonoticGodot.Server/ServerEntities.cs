@@ -56,12 +56,11 @@ public sealed class ServerEntityService : IEntityService
     /// <summary>Unregister a player (QC ClientDisconnect removes the edict from the list).</summary>
     public void UnregisterPlayer(Player p) => _players.Remove(p);
 
-    /// <summary>Recompute a player's AbsMin/AbsMax (QC SV_LinkEdict) so radius/box queries stay accurate.</summary>
-    public void LinkPlayer(Player p)
-    {
-        p.AbsMin = p.Origin + p.Mins;
-        p.AbsMax = p.Origin + p.Maxs;
-    }
+    /// <summary>Recompute a player's AbsMin/AbsMax and relink it into the engine broadphase (QC SV_LinkEdict).
+    /// Routing through the engine's LinkEdict keeps the area-grid footprint in step with the player on a
+    /// teleport/spawn SetOrigin — the sim only relinks clients once per tick (after ClientMove), so without
+    /// this a same-tick radius/box query would still find the player in its OLD cells.</summary>
+    public void LinkPlayer(Player p) => _inner.LinkEdict(p);
 
     // ---- IEntityService: spawn/remove/spatial delegate straight to the engine table ----
 
@@ -130,23 +129,66 @@ public sealed class ServerEntityService : IEntityService
         }
     }
 
+    /// <summary>Allocation-free <see cref="FindByClass(string)"/>: the inner call clears + fills
+    /// <paramref name="results"/> from the engine table, then matching registered players are appended.</summary>
+    public void FindByClass(string className, List<Entity> results)
+    {
+        _inner.FindByClass(className, results); // clears + fills from the engine table (alloc-free)
+        for (int i = 0; i < _players.Count; i++)
+        {
+            Player p = _players[i];
+            if (!p.IsFreed && p.ClassName == className) results.Add(p);
+        }
+    }
+
     /// <summary>
-    /// QC <c>findradius(org, r)</c>: every non-freed engine-table entity within the radius (measured from
-    /// the entity's box center, like DP) PLUS every registered player within range. Lets splash damage,
-    /// item triggers, and bot scans hit clients.
+    /// QC <c>findradius(org, r)</c>: every non-freed engine-table entity within the radius PLUS every
+    /// registered player within range. Lets splash damage, item triggers, and bot scans hit clients.
+    ///
+    /// IMPORTANT (the splash-damage-multiplication fix): since the D1 area-grid broadphase, the ENGINE query
+    /// already returns the live players — the sim links every client into the entity grid each tick
+    /// (<c>SimulationLoop</c>: <c>LinkEdict(c)</c> after ClientMove). Re-yielding such a player from
+    /// <see cref="_players"/> made RadiusDamage apply the same blast to them twice (on top of the grid's own
+    /// negative-index dedup bug — see <c>EntityAreaGrid.Slot</c> — players took 2-5x damage/knockback per
+    /// blast). The merge below now only adds a player the engine results don't already contain (covers a
+    /// freshly registered player the grid hasn't linked yet), using the same nearest-point-on-bbox metric as
+    /// the engine query (DP <c>sv_gameplayfix_findradiusdistancetobox</c>).
     /// </summary>
     public IEnumerable<Entity> FindInRadius(Vector3 origin, float radius)
     {
-        foreach (Entity e in _inner.FindInRadius(origin, radius))
-            yield return e;
+        var results = new List<Entity>();
+        _inner.FindInRadius(origin, radius, results);
         float r2 = radius * radius;
         for (int i = 0; i < _players.Count; i++)
         {
             Player p = _players[i];
             if (p.IsFreed) continue;
-            Vector3 center = p.Origin + (p.Mins + p.Maxs) * 0.5f;
-            if ((center - origin).LengthSquared() <= r2)
-                yield return p;
+            Vector3 nearest = Vector3.Clamp(origin, p.Origin + p.Mins, p.Origin + p.Maxs);
+            if ((nearest - origin).LengthSquared() > r2) continue;
+            if (!results.Contains(p))
+                results.Add(p);
+        }
+        return results;
+    }
+
+    /// <summary>Allocation-free <see cref="FindInRadius(Vector3, float)"/>: the inner call clears + fills
+    /// <paramref name="results"/> from the engine area grid (nearest-point metric), then registered players the
+    /// engine results don't already contain are appended using the SAME nearest-point-on-bbox metric AND the
+    /// same <c>!results.Contains</c> dedup as the iterator overload — so this alloc-free path returns the
+    /// identical set, including the splash single-application fix (a player already linked into the grid is NOT
+    /// added a second time, which previously made RadiusDamage apply a blast 2-5x).</summary>
+    public void FindInRadius(Vector3 origin, float radius, List<Entity> results)
+    {
+        _inner.FindInRadius(origin, radius, results); // clears + fills (nearest-point metric, area-grid backed)
+        float r2 = radius * radius;
+        for (int i = 0; i < _players.Count; i++)
+        {
+            Player p = _players[i];
+            if (p.IsFreed) continue;
+            Vector3 nearest = Vector3.Clamp(origin, p.Origin + p.Mins, p.Origin + p.Maxs);
+            if ((nearest - origin).LengthSquared() > r2) continue;
+            if (!results.Contains(p))
+                results.Add(p);
         }
     }
 }

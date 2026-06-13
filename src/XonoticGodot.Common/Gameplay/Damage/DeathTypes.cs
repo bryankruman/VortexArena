@@ -1,4 +1,57 @@
+// Port of Base/.../qcsrc/common/deathtypes/all.{qh,inc} (REGISTER_DEATHTYPE registry + .message category
+//      + DEATH_ISMONSTER/ISTURRET/ISVEHICLE macros).
+using System.Collections.Generic;
+
 namespace XonoticGodot.Common.Gameplay.Damage;
+
+/// <summary>
+/// The category an "extra" deathtype message carries (QC <c>.message</c> on a registered deathtype,
+/// deathtypes/all.qh:12 + all.inc). Drives obituary phrasing: a monster/turret/vehicle kill uses the
+/// generic DEATH_MURDER_MONSTER / DEATH_SELF_TURRET / … lines instead of a weapon line. The QC macros
+/// <c>DEATH_ISMONSTER(t)</c>/<c>ISTURRET(t)</c>/<c>ISVEHICLE(t)</c> are string compares on this field.
+/// </summary>
+public enum DeathCategory
+{
+    /// <summary>No extra category — a plain environment/weapon death (QC <c>message == ""</c>).</summary>
+    None = 0,
+    /// <summary>QC <c>message == "monster"</c> — DEATH_ISMONSTER (MONSTER_* deathtypes).</summary>
+    Monster = 1,
+    /// <summary>QC <c>message == "turret"</c> — DEATH_ISTURRET (TURRET_* deathtypes).</summary>
+    Turret = 2,
+    /// <summary>QC <c>message == "vehicle"</c> — DEATH_ISVEHICLE (VH_* deathtypes).</summary>
+    Vehicle = 3,
+}
+
+/// <summary>
+/// One registered "special" (non-weapon) deathtype — the C# successor to a QC <c>REGISTER_DEATHTYPE</c>
+/// entry (deathtypes/all.qh:18 + all.inc). Carries the bare name (QC <c>m_name</c>, e.g. "MONSTER_SPIDER")
+/// and its <see cref="Category"/> (QC <c>.message</c>). The self/murder message NAMES are resolved by
+/// <c>DeathMessages</c> from the name + category, so they're not duplicated here.
+/// </summary>
+public sealed class DeathTypeDef
+{
+    /// <summary>QC <c>m_name</c> — the registered deathtype id, e.g. "MONSTER_SPIDER", "TURRET_MLRS", "VH_WAKI_GUN".</summary>
+    public string Name { get; }
+
+    /// <summary>QC <c>.message</c> category (monster/turret/vehicle), or <see cref="DeathCategory.None"/>.</summary>
+    public DeathCategory Category { get; }
+
+    /// <summary>QC <c>death_msgself</c> (all.inc col 2): the bare DEATH_SELF_* notification name for a SUICIDE/
+    /// self-death by this deathtype, or null when the row registers no self message (QC NULL → generic fallback).</summary>
+    public string? SelfMessage { get; }
+
+    /// <summary>QC <c>death_msgmurder</c> (all.inc col 3): the bare DEATH_MURDER_* notification name for a MURDER
+    /// by this deathtype, or null when the row registers no murder message (QC NULL → generic fallback).</summary>
+    public string? MurderMessage { get; }
+
+    public DeathTypeDef(string name, DeathCategory category, string? selfMessage = null, string? murderMessage = null)
+    {
+        Name = name;
+        Category = category;
+        SelfMessage = selfMessage;
+        MurderMessage = murderMessage;
+    }
+}
 
 /// <summary>
 /// Lightweight stand-in for the QuakeC deathtype registry
@@ -174,4 +227,152 @@ public static class DeathTypes
         string b = BaseOf(deathType);
         return b == TeamChange || b == AutoTeamChange;
     }
+
+    // ============================================================================================
+    //  Special deathtype registry + .message category (QC deathtypes/all.qh DEATH_ISMONSTER/
+    //  ISTURRET/ISVEHICLE + all.inc). Replaces brittle substring obituary checks with a registry
+    //  keyed by the special deathtype's base name.
+    // ============================================================================================
+
+    // Base-name tags for the categorized special deaths (QC m_name; lower-cased to match the BaseOf scheme).
+    // These mirror the REGISTER_DEATHTYPE rows in all.inc that carry "monster"/"turret"/"vehicle".
+
+    /// <summary>QC DEATH_MONSTER_MAGE — Mage monster kill ("monster").</summary>
+    public const string MonsterMage = "monster_mage";
+    /// <summary>QC DEATH_MONSTER_GOLEM_CLAW — Golem claw ("monster").</summary>
+    public const string MonsterGolemClaw = "monster_golem_claw";
+    /// <summary>QC DEATH_MONSTER_GOLEM_SMASH — Golem smash ("monster").</summary>
+    public const string MonsterGolemSmash = "monster_golem_smash";
+    /// <summary>QC DEATH_MONSTER_GOLEM_ZAP — Golem zap ("monster").</summary>
+    public const string MonsterGolemZap = "monster_golem_zap";
+    /// <summary>QC DEATH_MONSTER_SPIDER — Spider monster ("monster").</summary>
+    public const string MonsterSpider = "monster_spider";
+    /// <summary>QC DEATH_MONSTER_WYVERN — Wyvern monster ("monster").</summary>
+    public const string MonsterWyvern = "monster_wyvern";
+    /// <summary>QC DEATH_MONSTER_ZOMBIE_JUMP — Zombie jump ("monster").</summary>
+    public const string MonsterZombieJump = "monster_zombie_jump";
+    /// <summary>QC DEATH_MONSTER_ZOMBIE_MELEE — Zombie melee ("monster").</summary>
+    public const string MonsterZombieMelee = "monster_zombie_melee";
+
+    /// <summary>QC DEATH_TURRET — generic turret ("turret").</summary>
+    public const string Turret = "turret";
+
+    /// <summary>QC DEATH_VH_* — generic vehicle death ("vehicle"). Use the registry for the full per-vehicle set.</summary>
+    public const string Vehicle = "vehicle";
+
+    /// <summary>
+    /// The categorized special-deathtype registry — the C# successor to the QC <c>Deathtypes</c> registry
+    /// rows that carry a non-empty <c>.message</c> (deathtypes/all.inc). Keyed by the base-name tag (lower
+    /// case, matching <see cref="BaseOf"/>). The monster set is enumerated explicitly (each MONSTER_* row);
+    /// the turret/vehicle families are enumerated and ALSO matched by their "turret"/"vh_" base-name prefix
+    /// so a per-turret/vehicle tag (e.g. "turret_mlrs", "vh_waki_gun") is recognized without listing all 30+
+    /// QC rows. This is what <see cref="IsMonster"/>/<see cref="IsTurret"/>/<see cref="IsVehicle"/> consult,
+    /// replacing the brittle substring scans the obituary code used before.
+    /// </summary>
+    private static readonly Dictionary<string, DeathTypeDef> _registry = BuildRegistry();
+
+    private static Dictionary<string, DeathTypeDef> BuildRegistry()
+    {
+        var d = new Dictionary<string, DeathTypeDef>(System.StringComparer.Ordinal);
+        // QC REGISTER_DEATHTYPE(id, death_msgself, death_msgmurder, …, extra) — the all.inc cols 2/3 carry the
+        // bare DEATH_SELF_*/DEATH_MURDER_* notification each row sends (NULL → generic fallback). We store those
+        // names verbatim so SelectSpecial reproduces Obituary_SpecialDeath's registered selection exactly,
+        // rather than guessing from the tag.
+        void Reg(string name, DeathCategory cat, string? self, string? murder)
+            => d[name] = new DeathTypeDef(name, cat, self, murder);
+
+        // QC all.inc monster rows (message == "monster"): each monster has its OWN DEATH_SELF_MON_* self line;
+        // ALL monsters share DEATH_MURDER_MONSTER for the murder line.
+        Reg(MonsterMage,       DeathCategory.Monster, "DEATH_SELF_MON_MAGE",         "DEATH_MURDER_MONSTER");
+        Reg(MonsterGolemClaw,  DeathCategory.Monster, "DEATH_SELF_MON_GOLEM_CLAW",   "DEATH_MURDER_MONSTER");
+        Reg(MonsterGolemSmash, DeathCategory.Monster, "DEATH_SELF_MON_GOLEM_SMASH",  "DEATH_MURDER_MONSTER");
+        Reg(MonsterGolemZap,   DeathCategory.Monster, "DEATH_SELF_MON_GOLEM_ZAP",    "DEATH_MURDER_MONSTER");
+        Reg(MonsterSpider,     DeathCategory.Monster, "DEATH_SELF_MON_SPIDER",       "DEATH_MURDER_MONSTER");
+        Reg(MonsterWyvern,     DeathCategory.Monster, "DEATH_SELF_MON_WYVERN",       "DEATH_MURDER_MONSTER");
+        Reg(MonsterZombieJump, DeathCategory.Monster, "DEATH_SELF_MON_ZOMBIE_JUMP",  "DEATH_MURDER_MONSTER");
+        Reg(MonsterZombieMelee,DeathCategory.Monster, "DEATH_SELF_MON_ZOMBIE_MELEE", "DEATH_MURDER_MONSTER");
+
+        // QC all.inc turret rows (message == "turret"): each turret has its OWN DEATH_SELF_TURRET_* self line;
+        // ALL turrets share DEATH_MURDER_CHEAT for the murder line. The bare "turret" tag uses DEATH_SELF_TURRET;
+        // the per-turret variants below carry their own self line (resolved through the explicit rows here, with
+        // the "turret" base-name prefix in Lookup catching any unlisted variant → bare DEATH_SELF_TURRET).
+        Reg(Turret,                  DeathCategory.Turret, "DEATH_SELF_TURRET",               "DEATH_MURDER_CHEAT");
+        Reg("turret_ewheel",         DeathCategory.Turret, "DEATH_SELF_TURRET_EWHEEL",        "DEATH_MURDER_CHEAT");
+        Reg("turret_flac",           DeathCategory.Turret, "DEATH_SELF_TURRET_FLAC",          "DEATH_MURDER_CHEAT");
+        Reg("turret_hellion",        DeathCategory.Turret, "DEATH_SELF_TURRET_HELLION",       "DEATH_MURDER_CHEAT");
+        Reg("turret_hk",             DeathCategory.Turret, "DEATH_SELF_TURRET_HK",            "DEATH_MURDER_CHEAT");
+        Reg("turret_machinegun",     DeathCategory.Turret, "DEATH_SELF_TURRET_MACHINEGUN",    "DEATH_MURDER_CHEAT");
+        Reg("turret_mlrs",           DeathCategory.Turret, "DEATH_SELF_TURRET_MLRS",          "DEATH_MURDER_CHEAT");
+        Reg("turret_phaser",         DeathCategory.Turret, "DEATH_SELF_TURRET_PHASER",        "DEATH_MURDER_CHEAT");
+        Reg("turret_plasma",         DeathCategory.Turret, "DEATH_SELF_TURRET_PLASMA",        "DEATH_MURDER_CHEAT");
+        Reg("turret_tesla",          DeathCategory.Turret, "DEATH_SELF_TURRET_TESLA",         "DEATH_MURDER_CHEAT");
+        Reg("turret_walk_gun",       DeathCategory.Turret, "DEATH_SELF_TURRET_WALK_GUN",      "DEATH_MURDER_CHEAT");
+        Reg("turret_walk_melee",     DeathCategory.Turret, "DEATH_SELF_TURRET_WALK_MELEE",    "DEATH_MURDER_CHEAT");
+        Reg("turret_walk_rocket",    DeathCategory.Turret, "DEATH_SELF_TURRET_WALK_ROCKET",   "DEATH_MURDER_CHEAT");
+
+        // QC all.inc vehicle rows (message == "vehicle"): each VH_* row carries its OWN self AND murder line
+        // (some are NULL — e.g. a vehicle GUN has murder-only). The generic "vehicle" tag falls back to GENERIC
+        // (no QC row registers a bare "vehicle"); the per-vehicle rows below are the real all.inc entries, and
+        // the "vh_" base-name prefix in Lookup catches any unlisted variant → generic.
+        Reg(Vehicle,           DeathCategory.Vehicle, null, null);
+        Reg("vh_bumb_death",   DeathCategory.Vehicle, "DEATH_SELF_VH_BUMB_DEATH",  "DEATH_MURDER_VH_BUMB_DEATH");
+        Reg("vh_bumb_gun",     DeathCategory.Vehicle, null,                        "DEATH_MURDER_VH_BUMB_GUN");
+        Reg("vh_crush",        DeathCategory.Vehicle, "DEATH_SELF_VH_CRUSH",       "DEATH_MURDER_VH_CRUSH");
+        Reg("vh_rapt_bomb",    DeathCategory.Vehicle, "DEATH_SELF_VH_RAPT_BOMB",   "DEATH_MURDER_VH_RAPT_BOMB");
+        Reg("vh_rapt_cannon",  DeathCategory.Vehicle, null,                        "DEATH_MURDER_VH_RAPT_CANNON");
+        Reg("vh_rapt_death",   DeathCategory.Vehicle, "DEATH_SELF_VH_RAPT_DEATH",  "DEATH_MURDER_VH_RAPT_DEATH");
+        Reg("vh_rapt_fragment",DeathCategory.Vehicle, "DEATH_SELF_VH_RAPT_BOMB",   "DEATH_MURDER_VH_RAPT_BOMB");
+        Reg("vh_spid_death",   DeathCategory.Vehicle, "DEATH_SELF_VH_SPID_DEATH",  "DEATH_MURDER_VH_SPID_DEATH");
+        Reg("vh_spid_minigun", DeathCategory.Vehicle, null,                        "DEATH_MURDER_VH_SPID_MINIGUN");
+        Reg("vh_spid_rocket",  DeathCategory.Vehicle, "DEATH_SELF_VH_SPID_ROCKET", "DEATH_MURDER_VH_SPID_ROCKET");
+        Reg("vh_waki_death",   DeathCategory.Vehicle, "DEATH_SELF_VH_WAKI_DEATH",  "DEATH_MURDER_VH_WAKI_DEATH");
+        Reg("vh_waki_gun",     DeathCategory.Vehicle, null,                        "DEATH_MURDER_VH_WAKI_GUN");
+        Reg("vh_waki_rocket",  DeathCategory.Vehicle, "DEATH_SELF_VH_WAKI_ROCKET", "DEATH_MURDER_VH_WAKI_ROCKET");
+
+        return d;
+    }
+
+    /// <summary>Prefix marking the per-turret deathtype variants (QC TURRET_* rows, message "turret").</summary>
+    private const string TurretPrefix = "turret";
+
+    /// <summary>Prefix marking the per-vehicle deathtype variants (QC VH_* rows, message "vehicle").</summary>
+    private const string VehiclePrefix = "vh_";
+
+    /// <summary>
+    /// QC the registered deathtype entity for a tag (DEATH_ENT(t)): the <see cref="DeathTypeDef"/> if the
+    /// base name is a registered special death, else null. The per-turret/vehicle variants resolve to the
+    /// generic turret/vehicle def via the name-prefix match.
+    /// </summary>
+    public static DeathTypeDef? Lookup(string? deathType)
+    {
+        string b = BaseOf(deathType);
+        if (_registry.TryGetValue(b, out var def))
+            return def;
+        if (b.StartsWith(TurretPrefix, System.StringComparison.Ordinal))
+            return _registry[Turret];
+        if (b.StartsWith(VehiclePrefix, System.StringComparison.Ordinal))
+            return _registry[Vehicle];
+        return null;
+    }
+
+    /// <summary>QC the <c>.message</c> category for a deathtype, or <see cref="DeathCategory.None"/>.</summary>
+    public static DeathCategory CategoryOf(string? deathType) => Lookup(deathType)?.Category ?? DeathCategory.None;
+
+    /// <summary>
+    /// QC <c>DEATH_ISMONSTER(t)</c> (deathtypes/all.qh:46): the deathtype's <c>.message == "monster"</c>.
+    /// Replaces the old substring scan for monster kills in the obituary phrasing.
+    /// </summary>
+    public static bool IsMonster(string? deathType) => CategoryOf(deathType) == DeathCategory.Monster;
+
+    /// <summary>
+    /// QC <c>DEATH_ISTURRET(t)</c> (deathtypes/all.qh:45): the deathtype's <c>.message == "turret"</c>.
+    /// Recognizes the bare "turret" tag and every "turret_*" variant.
+    /// </summary>
+    public static bool IsTurret(string? deathType) => CategoryOf(deathType) == DeathCategory.Turret;
+
+    /// <summary>
+    /// QC <c>DEATH_ISVEHICLE(t)</c> (deathtypes/all.qh:44): the deathtype's <c>.message == "vehicle"</c>.
+    /// Recognizes the bare "vehicle" tag and every "vh_*" variant.
+    /// </summary>
+    public static bool IsVehicle(string? deathType) => CategoryOf(deathType) == DeathCategory.Vehicle;
 }

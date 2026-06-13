@@ -140,6 +140,34 @@ namespace XonoticGodot.Common.Gameplay
             if (TryF(fields, "volume", out float vol)) e.Volume = vol;
             if (TryF(fields, "atten", out float att)) e.Atten = att;
             if (fields.TryGetValue("noise", out string? ns)) e.Noise = ns;
+
+            // --- T59 long-tail map-object keys (the 7 rare entities; not promoted by GameWorld's fixed key set) ---
+            // dynlight (light_lev/color/dtagname/style), the generic .target2-4/.delay/.message2/.phase movers read,
+            // misc_follow (.jointtype), func_fourier/voicescript (.netname), func_fourier crush interval (.dmgtime),
+            // and func_vectormamamam's per-reference factors + projection normals (.target[N]factor/.target[N]normal).
+            if (TryF(fields, "light_lev", out float ll)) e.LightLev = ll;
+            if (TryVec(fields, "color", out Vector3 col)) e.LightColor = col;
+            if (fields.TryGetValue("dtagname", out string? dtn)) e.DTagName = dtn;
+            if (TryF(fields, "style", out float st)) e.LightStyle = (int)st;
+
+            if (fields.TryGetValue("netname", out string? nn)) e.NetName = nn;
+            if (TryF(fields, "phase", out float ph)) e.Phase = ph;
+            if (fields.TryGetValue("target2", out string? t2)) e.Target2 = t2;
+            if (fields.TryGetValue("target3", out string? t3)) e.Target3 = t3;
+            if (fields.TryGetValue("target4", out string? t4)) e.Target4 = t4;
+            if (fields.TryGetValue("message2", out string? m2)) e.Message2 = m2;
+            if (TryF(fields, "delay", out float dl)) e.Delay = dl;
+            if (TryF(fields, "jointtype", out float jt)) e.JointType = jt;
+            if (TryF(fields, "dmgtime", out float dt)) e.CrushInterval = dt;
+
+            if (TryF(fields, "targetfactor", out float tf0)) e.TargetFactor = tf0;
+            if (TryF(fields, "target2factor", out float tf1)) e.Target2Factor = tf1;
+            if (TryF(fields, "target3factor", out float tf2)) e.Target3Factor = tf2;
+            if (TryF(fields, "target4factor", out float tf3)) e.Target4Factor = tf3;
+            if (TryVec(fields, "targetnormal", out Vector3 tn0)) e.TargetNormal = tn0;
+            if (TryVec(fields, "target2normal", out Vector3 tn1)) e.Target2Normal = tn1;
+            if (TryVec(fields, "target3normal", out Vector3 tn2)) e.Target3Normal = tn2;
+            if (TryVec(fields, "target4normal", out Vector3 tn3)) e.Target4Normal = tn3;
         }
 
         private static bool TryF(System.Collections.Generic.IReadOnlyDictionary<string, string> f, string key, out float v)

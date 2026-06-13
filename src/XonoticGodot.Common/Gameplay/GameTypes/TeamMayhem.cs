@@ -210,6 +210,11 @@ public sealed class TeamMayhem : GameType
     /// <summary>Read a team's running ST_SCORE total (0 if the team has never scored).</summary>
     public int GetTeamScore(int team) => GameScores.TeamScore(team, GameScores.TeamSlotScore);
 
+    /// <summary>QC team equality (server/scores.qc:500): the top two teams are tied on team points (ST_SCORE),
+    /// so a tied timed Team Mayhem enters overtime instead of drawing (server/world.qc).</summary>
+    public override bool ReportsTie(IReadOnlyList<Player> roster)
+        => TeamTie.TopTwoTied(GameScores.LeaderTeam(), GameScores.SecondTeam(), GetTeamScore);
+
     /// <summary>
     /// The per-kill driver — mirrors QC's GiveFragsForKill effect (sv_tmayhem.qc:207) fused with the obituary.
     /// The DM frag matrix is NOT applied (Team Mayhem scores from damage+frags); the kills/teamkills/suicides

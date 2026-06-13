@@ -68,6 +68,16 @@ public partial class Main : Node
 
         string[] args = OS.GetCmdlineArgs();
 
+        // `--bake-sdf <map.bsp> [-o out.psdf]` (planning/particles-dual-system.md §A.7): the headless SDF
+        // compiler-side baker — reuses the §A.3 generator verbatim (zero drift vs the load-time output), writes
+        // maps/<map>.psdf for the pk3, then quits. Runs before any game/menu boot.
+        if (Array.IndexOf(args, XonoticGodot.Engine.Particles.SdfBakeCli.Flag) >= 0)
+        {
+            int code = XonoticGodot.Engine.Particles.SdfBakeCli.Run(args);
+            GetTree().Quit(code);
+            return;
+        }
+
         // `--net-loopback` runs the whole networked stack in-process (server+bot+client+render) — an
         // end-to-end exercise of the §2 netcode (auth handshake, delta snapshots, entity rendering, radar).
         if (Array.IndexOf(args, "--net-loopback") >= 0)

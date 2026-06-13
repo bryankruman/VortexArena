@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Godot;
 
@@ -46,11 +47,32 @@ public partial class GpuWarmPass : Node
         return pass;
     }
 
+    /// <summary>
+    /// (§12.6) Warm arbitrary already-built nodes by rendering them offscreen for a few frames, then invoke
+    /// <paramref name="onDone"/> (which owns their lifetime — the pass does NOT free them; they're removed
+    /// from the warm viewport first). Used by the idle model warmer: a built-then-immediately-freed model
+    /// never rendered, so its material variants' pipelines never compiled — and the FIRST player wearing
+    /// that model on screen paid the compile (`pipe +N` mid-fight). Headless: onDone runs immediately.
+    /// </summary>
+    public static GpuWarmPass WarmNodes(Node parent, List<Node3D> nodes, Action onDone)
+    {
+        var pass = new GpuWarmPass { Name = "GpuWarmNodes", _onDone = onDone, _returnInstances = true };
+        if (DisplayServer.GetName() != "headless")
+            pass._instances.AddRange(nodes);
+        parent.AddChild(pass);
+        return pass;
+    }
+
+    private Action? _onDone;
+    private bool _returnInstances;
+
     public override void _Ready()
     {
-        // Nothing to warm (no atlas mounted / headless) — drop immediately.
+        // Nothing to warm (no atlas mounted / headless) — drop immediately. A WarmNodes caller still gets
+        // its completion callback (it owns the nodes' lifetime).
         if (_instances.Count == 0)
         {
+            _onDone?.Invoke();
             QueueFree();
             return;
         }
@@ -80,7 +102,17 @@ public partial class GpuWarmPass : Node
 
     public override void _Process(double delta)
     {
-        if (--_framesLeft <= 0)
-            QueueFree(); // frees the SubViewport, camera, and every warm instance
+        if (--_framesLeft > 0)
+            return;
+        XonoticGodot.Common.Diagnostics.Prof.Event($"warm: GPU warm pass done ({_instances.Count} instances)");
+        if (_returnInstances)
+        {
+            // WarmNodes mode: hand the (now pipeline-warm) nodes back to the caller instead of freeing them.
+            foreach (Node3D n in _instances)
+                if (GodotObject.IsInstanceValid(n) && n.GetParent() is { } p)
+                    p.RemoveChild(n);
+            _onDone?.Invoke();
+        }
+        QueueFree(); // frees the SubViewport + camera (and, in the classic mode, every warm instance)
     }
 }

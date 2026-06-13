@@ -60,6 +60,23 @@ public interface IEntityService
     IEnumerable<Entity> FindByClass(string className);
     IEnumerable<Entity> FindInRadius(Vector3 origin, float radius);
 
+    /// <summary>Allocation-free <c>findradius</c>: clears <paramref name="results"/> then fills it with every
+    /// entity within <paramref name="radius"/> of <paramref name="origin"/>. Default impl materializes the
+    /// enumerator overload (for minimal fakes); real services override it to fill from the area grid directly.</summary>
+    void FindInRadius(Vector3 origin, float radius, List<Entity> results)
+    {
+        results.Clear();
+        foreach (Entity e in FindInRadius(origin, radius)) results.Add(e);
+    }
+
+    /// <summary>Allocation-free <c>find(classname)</c>: clears <paramref name="results"/> then fills it with every
+    /// non-freed entity whose classname matches. Default impl materializes the enumerator overload.</summary>
+    void FindByClass(string className, List<Entity> results)
+    {
+        results.Clear();
+        foreach (Entity e in FindByClass(className)) results.Add(e);
+    }
+
     /// <summary>
     /// The live NON-CLIENT entity table as an indexable list, for per-frame consumers that need ONE alloc-free
     /// pass over every edict instead of repeated <see cref="FindByClass"/> iterator scans (each call allocates
@@ -236,7 +253,34 @@ public interface IEngineServices
 /// </summary>
 public static class Api
 {
-    public static IEngineServices Services { get; set; } = null!;
+    // The process-wide ambient facade — the single value set by SimulationLoop.InstallAsAmbient / GameInit.Boot
+    // and by ALL tests (which assign Api.Services directly). This is the value every read resolves to UNLESS the
+    // calling thread installed a thread-local override (see below).
+    private static IEngineServices _ambient = null!;
+
+    // S5 (sv_threaded, default OFF): an OPTIONAL per-thread override of the ambient facade. INERT by default —
+    // it is null on every thread until SetThreadServices is called, so the getter returns _ambient unchanged and
+    // the single-threaded path (and all 1496 tests, which never set it) is byte-for-byte identical. When the
+    // listen server runs its sim on a dedicated worker thread (sv_threaded 1), the worker calls
+    // SetThreadServices(world.ServerServices) as its first action so EVERY ambient read inside the sim
+    // (MovementParameters.FromCvars, TriggerTouch, find/radius, sound) resolves to the server world on that thread
+    // without disturbing the process-wide _ambient the main thread reads. [ThreadStatic] storage is per-thread and
+    // dies with the thread (no ClearThreadServices needed on the worker's own thread).
+    [System.ThreadStatic] private static IEngineServices? _threadOverride;
+
+    public static IEngineServices Services
+    {
+        get => _threadOverride ?? _ambient;
+        set => _ambient = value;
+    }
+
+    /// <summary>S5: install a thread-local ambient facade for the CURRENT thread only (the server-sim worker when
+    /// sv_threaded is on). Subsequent <see cref="Services"/> reads on THIS thread return <paramref name="services"/>;
+    /// other threads (and the process-wide value) are untouched. No-op in the single-threaded default path.</summary>
+    public static void SetThreadServices(IEngineServices services) => _threadOverride = services;
+
+    /// <summary>S5: clear this thread's facade override (revert to the process-wide ambient on THIS thread).</summary>
+    public static void ClearThreadServices() => _threadOverride = null;
 
     public static ITraceService Trace => Services.Trace;
     public static IEntityService Entities => Services.Entities;

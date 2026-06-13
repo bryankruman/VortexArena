@@ -199,6 +199,18 @@ public sealed class EntityService : IEntityService, TraceService.IEntityProvider
         }
     }
 
+    /// <summary>Allocation-free <c>find(classname)</c> (D1 residual): clears + fills <paramref name="results"/>
+    /// with every non-freed entity whose classname matches, one pass over the dense table — no iterator alloc.</summary>
+    public void FindByClass(string className, List<Entity> results)
+    {
+        results.Clear();
+        for (int i = 0; i < _all.Count; i++)
+        {
+            Entity e = _all[i];
+            if (!e.IsFreed && e.ClassName == className) results.Add(e);
+        }
+    }
+
     public IEnumerable<Entity> FindInRadius(Vector3 origin, float radius)
     {
         // Compat path: materialize via the list-filling overload. Callers on the hot splash-damage path should
@@ -516,6 +528,12 @@ public readonly record struct SoundEvent(
 /// </summary>
 public sealed class SoundService : ISoundService
 {
+    // S5 (sv_threaded) thread-ownership note: on the listen/host path EACH world owns ITS OWN SoundService
+    // instance (the server world's, reached via Api.Sound on the sim thread). The only Broadcast subscriber is
+    // ServerNet.OnSoundEmitted, which appends to ServerNet._soundQueue — and ServerNet.Tick (which both raises
+    // and drains those sounds) runs entirely under the host's _simGate lock on the server-sim worker, so the
+    // raise→capture→flush sequence is single-threaded by construction. No cross-thread access to this instance;
+    // no locking is added here. (With sv_threaded 0 everything is on one thread, unchanged.)
     /// <summary>Fired for every <see cref="Play"/>/<see cref="Stop"/> — the server→client sound emission (SV_StartSound).</summary>
     public event Action<SoundEvent>? Broadcast;
 

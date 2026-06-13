@@ -25,12 +25,58 @@ public sealed class ParticleFont
     // index -> pixel rect inside the atlas (x, y, w, h).
     private readonly Dictionary<int, Rect2I> _cells = new();
     private Image? _atlas;
+    private ImageTexture? _atlasTex;
     private readonly Dictionary<int, ImageTexture> _cellTex = new();
     private readonly Dictionary<int, ImageTexture> _decalTex = new();
     private readonly Dictionary<int, ImageTexture?> _stripTex = new();
 
     /// <summary>True once both the atlas image and at least one UV cell parsed.</summary>
     public bool Loaded => _atlas is not null && _cells.Count > 0;
+
+    /// <summary>
+    /// The WHOLE source atlas as a single <see cref="ImageTexture"/> (the already-loaded
+    /// <c>particlefont</c> image), built lazily on first access and cached. Paired with
+    /// <see cref="TryGetCellUv"/>, a consumer can draw any number of cells by sampling this ONE texture at
+    /// each cell's UV rect — exactly how DP keeps particlefont resident and samples cells by texcoord —
+    /// instead of cropping every cell into a separate texture and re-packing them into a duplicate atlas
+    /// (what <see cref="Cell"/> + a manual blit pass costs the faithful MultiMesh renderer and the modern
+    /// GPU backend today). Null until the font is <see cref="Loaded"/>.
+    /// </summary>
+    public Texture2D? AtlasTexture
+    {
+        get
+        {
+            if (_atlasTex is null && _atlas is not null)
+            {
+                try { _atlasTex = ImageTexture.CreateFromImage(_atlas); }
+                catch { _atlasTex = null; }
+            }
+            return _atlasTex;
+        }
+    }
+
+    /// <summary>
+    /// The NORMALIZED UV rect (x, y, w, h in 0..1) of atlas <paramref name="index"/> within
+    /// <see cref="AtlasTexture"/>, derived from the cell's pixel rect and the atlas size. Returns false (with
+    /// <paramref name="uv"/> = default) when the font isn't loaded or the index has no cell. Lets a consumer
+    /// sample the shared atlas directly for cell <paramref name="index"/> instead of cropping it out via
+    /// <see cref="Cell"/>.
+    /// </summary>
+    public bool TryGetCellUv(int index, out Rect2 uv)
+    {
+        uv = default;
+        if (_atlas is null || !_cells.TryGetValue(index, out Rect2I rect) || rect.Size.X <= 0)
+            return false;
+        float w = _atlas.GetWidth(), h = _atlas.GetHeight();
+        if (w <= 0f || h <= 0f)
+            return false;
+        uv = new Rect2(rect.Position.X / w, rect.Position.Y / h, rect.Size.X / w, rect.Size.Y / h);
+        return true;
+    }
+
+    /// <summary>Every atlas index that parsed a cell — for consumers that enumerate the atlas (e.g. build a
+    /// contiguous slot table over the shared <see cref="AtlasTexture"/>). Backed by the live cell table.</summary>
+    public IReadOnlyCollection<int> CellIndices => _cells.Keys;
 
     /// <summary>Default VFS paths for the atlas image (extension-agnostic) and its UV table.</summary>
     public const string AtlasVPath = "particles/particlefont";

@@ -77,4 +77,48 @@ public class FreezeTagScoreTests
         Assert.Equal(-1, attacker.ScoreFrags);
         Assert.Equal(-1, victim.ScoreFrags);
     }
+
+    // ---- ReviveTick accumulation + the networkable entity mirror (T41/T46 finding 11/16) ----
+
+    [Fact]
+    public void ReviveTick_NearbyTeammate_AccumulatesAndMirrorsToEntityField()
+    {
+        var ft = new FreezeTag();
+        Player frozen = P(Teams.Red);
+        Player reviver = P(Teams.Red); // same team, co-located → in reviving range (origin-distance fallback)
+
+        ft.Freeze(frozen, attacker: null); // rules freeze (no score side effects)
+        Assert.True(ft.IsFrozen(frozen));
+        Assert.Equal(0f, frozen.ReviveProgress); // entity mirror starts at 0
+
+        ft.SetRoster(new[] { frozen, reviver });
+        ft.ReviveTick(0.5f); // 0.5s * default revive speed (0.4/s) = 0.2 progress
+
+        // The per-player FrozenState accumulated, AND the snapshot-facing entity field mirrors it (the wire
+        // ServerNet networks as NetEntityState.ReviveProgress → the client thaw ring).
+        Assert.True(frozen.ReviveProgress > 0f);
+        Assert.Equal(ft.Frozen[frozen].ReviveProgress, frozen.ReviveProgress, 5);
+
+        // A non-frozen roster member reads 0 on the entity mirror.
+        Assert.Equal(0f, reviver.ReviveProgress);
+    }
+
+    [Fact]
+    public void ReviveTick_FullProgress_ThawsAndResetsEntityMirror()
+    {
+        var ft = new FreezeTag();
+        Player frozen = P(Teams.Red);
+        Player reviver = P(Teams.Red);
+
+        ft.Freeze(frozen, attacker: null);
+        ft.SetRoster(new[] { frozen, reviver });
+
+        // Enough cumulative time to cross 1.0 (default speed 0.4/s → ~2.5s of revive). On reaching 1.0 the
+        // player is thawed and the entity mirror falls back to 0 (Unfreeze reset the FrozenState).
+        for (int i = 0; i < 10; i++)
+            ft.ReviveTick(0.5f);
+
+        Assert.False(ft.IsFrozen(frozen));
+        Assert.Equal(0f, frozen.ReviveProgress);
+    }
 }

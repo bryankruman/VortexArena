@@ -17,8 +17,8 @@ namespace XonoticGodot.Tests;
 ///
 /// These tests:
 ///  * pin same-run reproducibility (the sim is deterministic — no wall-clock / unordered / Random leaks),
-///  * pin the canonical trace checksum + key float results to their x64 reference values (a regression guard
-///    and a cross-arch *detector*),
+///  * pin the canonical trace checksum + key float results against the recorded per-platform reference values
+///    (a regression guard that tolerates documented libm last-ULP divergence — see <c>MovementTraceReferences</c>),
 ///  * prove a ULP-scale perturbation stays within the prediction-error envelope (the cross-play guarantee),
 ///  * forbid non-deterministic APIs in the simulation source.
 /// See <c>planning/process/determinism.md</c>.
@@ -139,16 +139,35 @@ public class DeterminismTests
         Assert.Equal(a, b);
     }
 
+    // The canonical checksums below fold raw transcendental (sin/cos) result bits from makevectors. Those bits
+    // differ in the last ULP between platform libm implementations (Windows CRT vs Linux glibc vs Apple libm)
+    // even on the same x64 architecture — the documented, error-compensation-absorbed cross-platform divergence
+    // (ADR-0010; see the class summary and planning/process/determinism.md). So each pinned check accepts the
+    // reference recorded for ANY known platform: a genuine numeric REGRESSION shifts the result on EVERY
+    // platform at once (matching none of these → fails everywhere), while a mere libm last-ULP difference still
+    // matches its own platform's pin. When a new platform/runtime first runs this, append its observed value
+    // (printed by the test) — but ONLY after confirming via the envelope test + determinism.md that it is a
+    // transcendental last-ULP difference, NOT a logic change. Do not blindly bump.
+    private static readonly ulong[] MovementTraceReferences =
+    {
+        0xA169345D42F53C7DUL, // x64 / Windows CRT  (original dev-machine pin)
+        0xDF2C2D60CEC26301UL, // x64 / Linux glibc  (GitHub ubuntu-latest)
+    };
+    private static readonly ulong[] QuakeMathReferences =
+    {
+        0x30D85D31A8B2C3EFUL, // x64 / Windows CRT  (original dev-machine pin)
+        0xB23337E9D523E7E6UL, // x64 / Linux glibc  (GitHub ubuntu-latest)
+    };
+
     [Fact]
     public void Movement_Trace_Checksum_Matches_X64_Reference()
     {
-        // The pinned x64 reference checksum. A mismatch means EITHER an intended numeric change (update this
-        // value) OR cross-architecture float divergence (evaluate it against the envelope test below and
-        // planning/process/determinism.md — do NOT just bump the pin).
-        const ulong X64Reference = 0xA169345D42F53C7DUL;
+        // A mismatch against EVERY known-platform reference means EITHER an intended numeric change (re-pin)
+        // OR a brand-new platform's cross-arch float divergence (evaluate against the envelope test below and
+        // planning/process/determinism.md, then add the value to MovementTraceReferences — do NOT just bump).
         ulong actual = RunCanonical().hash;
         _out.WriteLine($"canonical movement checksum = 0x{actual:X16}");
-        Assert.Equal(X64Reference, actual);
+        Assert.Contains(actual, MovementTraceReferences);
     }
 
     [Fact]
@@ -177,8 +196,8 @@ public class DeterminismTests
     [Fact]
     public void QuakeMath_Canonical_Results_Are_Pinned()
     {
-        // makevectors / vectoangles over a sweep — the transcendental-bearing core. These exact bits are the
-        // x64 reference; ARM may differ in the last ULP (that is the documented cross-arch risk).
+        // makevectors / vectoangles over a sweep — the transcendental-bearing core. The exact bits differ by
+        // platform libm (see QuakeMathReferences + the note above); a match against any known platform passes.
         var hash = DeterminismHash.New();
         for (int i = 0; i < 360; i += 7)
         {
@@ -187,7 +206,7 @@ public class DeterminismTests
             hash.Add(QMath.VecToAngles(f));
         }
         _out.WriteLine($"quakemath checksum = 0x{hash.Value:X16}");
-        Assert.Equal(0x30D85D31A8B2C3EFUL, hash.Value);
+        Assert.Contains(hash.Value, QuakeMathReferences);
     }
 
     [Fact]

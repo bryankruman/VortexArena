@@ -1,6 +1,8 @@
 # Dual Particle Systems: Faithful CPU + Modern GPU, with Chunked SDF Collision
 
-Status: PLANNED (2026-06-11). Companion to `planning/weapon-effects-parity.md`.
+Status: IMPLEMENTED (2026-06-11) on branch `feature/modern-particles` — see
+`planning/particles-dual-system-STATUS.md` for what landed, what is verified, and the windowed
+validation still owed. Companion to `planning/weapon-effects-parity.md`.
 Decisions locked 2026-06-11: `cl_particles_modern_nosdf` defaults to 1;
 netradiant fork branch DEFERRED — the C# CLI baker is the sole compiler-side
 deliverable (revisit only if mapper workflow demands native q3map2).

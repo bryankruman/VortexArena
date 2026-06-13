@@ -45,6 +45,31 @@ public sealed class ServerNet : IDisposable
     private readonly GameWorld _world;
     private readonly string _serverName;
 
+    // S5 (sv_threaded, default OFF): the cross-thread serialisation gate for the listen/host worker-thread path.
+    // NULL by default (single-threaded) — when null Tick runs with NO lock, byte-for-byte as today. The host
+    // installs a shared lock object here AND takes the SAME object around the main thread's prediction span in
+    // NetGame._Process; the ServerThread worker's Tick then locks it, so the sim and the main-thread prediction
+    // never touch the shared world concurrently. Set ONCE at StartListenServer when sv_threaded is on.
+    private object? _simGate;
+
+    /// <summary>S5: install (or clear) the cross-thread serialisation gate. Set by the host when sv_threaded is on,
+    /// BEFORE the ServerThread starts; the SAME object is taken by the main thread around its prediction span.</summary>
+    public object? SimGate { get => _simGate; set => _simGate = value; }
+
+    // S5: main→server one-way command handoff. When threaded, console/menu sinks (chat / bot_add / bot_remove /
+    // changelevel) fire on the MAIN thread but must run on the worker that owns the world — they're enqueued here
+    // and drained at the top of Tick (under the gate). When NOT threaded (_simGate == null) Enqueue runs the
+    // action inline immediately, so the single-threaded path keeps its exact synchronous behavior.
+    private readonly System.Collections.Concurrent.ConcurrentQueue<Action> _inbound = new();
+
+    /// <summary>S5: run <paramref name="action"/> on the sim thread. Threaded: enqueue for the worker to drain at the
+    /// next tick top (under the gate). Single-threaded: invoke inline now (unchanged synchronous behavior).</summary>
+    public void RunOnSimThread(Action action)
+    {
+        if (_simGate is null) action();
+        else _inbound.Enqueue(action);
+    }
+
     /// <summary>The transport's connection cap — the browser's slots fallback when g_maxplayers is unset.</summary>
     private int _maxClients = 32;
 
@@ -199,6 +224,18 @@ public sealed class ServerNet : IDisposable
         public float MeasuredRtt;
         public bool HasRtt;
 
+        /// <summary>[T47] QC <c>CS(this).cmd_floodtime</c> (server/command/cmd.qc): the per-client command-flood
+        /// bucket cursor — the absolute sim time the client's command budget is "used up to". A new command is
+        /// rejected when <c>frameStart + count*time &lt; CmdFloodTime</c>; otherwise the cursor advances by
+        /// <c>antispam_time</c> from <c>max(frameStart, CmdFloodTime)</c> (exponential backoff under sustained
+        /// spam). Initialized to 0; the count*time headroom means a fresh client never trips on its first burst.</summary>
+        public float CmdFloodTime;
+
+        /// <summary>[T47] QC <c>.ban_checked</c> (server/ipban.qc <c>Ban_MaybeEnforceBanOnce</c>): the ban gate runs
+        /// at most once per client. Once set, the per-command ban check short-circuits to "not banned" (the QC
+        /// once-guard) — a banned client is dropped on its first command, so re-checking is pointless.</summary>
+        public bool BanChecked;
+
         /// <summary>The session challenge issued to this client and whether its identity is verified (SessionAuth).</summary>
         public byte[]? AuthChallenge;
         public byte[]? PendingPublicKey;   // the client's identity key, held until it signs the challenge
@@ -301,30 +338,92 @@ public sealed class ServerNet : IDisposable
     /// </summary>
     public void Tick(float realDelta)
     {
-        // 1) receive: handshakes + input frames (fills each peer's input queue).
-        using (Prof.Sample("net.poll")) _transport.Poll();
+        // Single-threaded path (sv_threaded 0, the default): everything runs inline on the caller's thread,
+        // exactly as before — receive, sim, send. _simGate is null so no lock and the inbound queue is empty.
+        TransportReceive();
+        int ticksRan = StepWorld(realDelta);
+        TransportSend(realDelta, ticksRan > 0);
+    }
 
-        // 2) simulate: the world runs its fixed ticks, pulling each client's queued input via ProvideInput
-        //    and firing effect/notification emissions into our sinks. ticksRan == 0 when the host renders faster
-        //    than the 72 Hz sim — those frames leave the world byte-identical to the last broadcast.
+    // =====================================================================================
+    //  (§13.5) S5 thread split — the ROOT-CAUSE fix for the threaded prediction desync.
+    //
+    //  The first S5 design ran the WHOLE Tick (transport + sim) on the worker. But the Godot ENet transport
+    //  (ENetMultiplayerPeer / PacketPeerUDP, created on the MAIN thread in ServerNet.Start) is main-thread-
+    //  affine — servicing it from the worker mis-delivered/garbled snapshots, so the client reconciled against
+    //  corrupt authoritative state and prediction ran away (camera through walls, projectiles from the server's
+    //  stale position). The per-trace ConcurrencyGate fixed the sim-side crash storm but could never fix a
+    //  CORRUPT-SNAPSHOT problem — the transport was the real culprit.
+    //
+    //  Fix: the worker runs ONLY the pure-C# sim (GameWorld.Frame — the heavy 4-12 ms cost S5 exists to move
+    //  off the render thread); ALL Godot transport (receive/send/flush) stays on the MAIN thread. Every
+    //  shared-world access on both sides is still serialised by _simGate, so it's race-free; we only changed
+    //  WHICH thread touches the Godot objects. This is strictly more faithful to S5's stated intent.
+    // =====================================================================================
+
+    /// <summary>WORKER thread: advance the authoritative sim under the gate. NO Godot transport here.</summary>
+    public void StepSimThreaded(float realDelta)
+    {
+        if (_simGate is null) { StepWorld(realDelta); return; } // defensive; threaded path always has the gate
+        lock (_simGate)
+        {
+            // Drain main→server commands (chat / bot_add/remove / changelevel) on the thread that owns the world.
+            while (_inbound.TryDequeue(out Action? a)) a();
+            int ticksRan = StepWorld(realDelta);
+            if (ticksRan > 0) _pendingBroadcast = true; // main's PumpTransportThreaded sends the fresh state
+        }
+    }
+
+    /// <summary>MAIN thread (threaded path): service the Godot transport under the gate — receive input the
+    /// worker's next StepSim will consume, and send the snapshot of whatever the worker last produced.</summary>
+    public void PumpTransportThreaded(float realDelta)
+    {
+        if (_simGate is null) return;
+        lock (_simGate) // reentrant: NetGame._Process already holds it across the prediction span
+        {
+            TransportReceive();
+            bool advanced = _pendingBroadcast;
+            _pendingBroadcast = false;
+            TransportSend(realDelta, advanced);
+        }
+    }
+
+    private bool _pendingBroadcast; // worker sets when the sim advanced; main consumes when it sends. Gate-guarded.
+
+    /// <summary>Receive handshakes + input frames (fills each peer's input queue). GODOT TRANSPORT — main thread
+    /// only on the threaded path.</summary>
+    private void TransportReceive()
+    {
+        using (Prof.Sample("net.poll")) _transport.Poll();
+    }
+
+    /// <summary>Step the authoritative world by <paramref name="realDelta"/> + drive observer joins. PURE C# —
+    /// safe on the worker. Returns the number of fixed sim ticks that ran.</summary>
+    private int StepWorld(float realDelta)
+    {
+        // The world runs its fixed ticks, pulling each client's queued input via ProvideInput and firing
+        // effect/notification emissions into our sinks. ticksRan == 0 when the host renders faster than 72 Hz.
         int ticksRan = _world.Frame(realDelta);
         Prof.Mark("ticks", ticksRan); // >1 ⇒ a server.tick spike is catch-up amortizing a prior stall, not new work
 
-        // 2b) observer/join lifecycle: a human connects as an OBSERVER (ClientConnect → TRANSMUTE(Observer)) and
-        //     only enters the match via Join — on +jump/+attack or the delayed autojoin (server/client.qc
-        //     ObserverOrSpectatorThink / PlayerPreThink). The headless world doesn't drive this on the real-client
-        //     path, so we run it here per accepted peer from its last input. (Bots autojoined at connect.)
+        // Observer/join lifecycle: a human connects as an OBSERVER (ClientConnect → TRANSMUTE(Observer)) and only
+        // enters the match via Join — on +jump/+attack or the delayed autojoin. The headless world doesn't drive
+        // this on the real-client path, so we run it here per accepted peer from its last input. (Bots autojoin.)
         DriveObserverJoins();
+        return ticksRan;
+    }
 
-        // 3) send: one snapshot per client + the shared event bundles — but ONLY on a frame where the world
-        //    actually advanced. The sim is a fixed 72 Hz accumulator, so when the render rate outruns it many
-        //    frames run 0 ticks and the world (and _world.Time) is identical to the last broadcast: rebuilding the
-        //    entity set + scoreboard and re-encoding a duplicate snapshot per peer is pure waste, and it's the
-        //    dominant per-frame server cost at high refresh. Gating on ticksRan sends at the sim rate (DP networks
-        //    at sys_ticrate, not the render rate) and lets a 0-tick frame after a hitch recover a frame sooner.
-        //    Events/minigame state are only produced inside a tick, so on a 0-tick frame they're empty too.
+    /// <summary>Broadcast the snapshot (when the world advanced) + master-server pump + flush. GODOT TRANSPORT —
+    /// main thread only on the threaded path. Reads world state, which the gate keeps consistent vs the worker.</summary>
+    private void TransportSend(float realDelta, bool worldAdvanced)
+    {
+        // Send one snapshot per client + the shared event bundles, but ONLY when the world actually advanced.
+        // The sim is a fixed 72 Hz accumulator, so when the render rate outruns it many frames run 0 ticks and
+        // the world is identical to the last broadcast: re-encoding a duplicate snapshot per peer is pure waste.
+        // Sending at the sim rate (DP networks at sys_ticrate, not the render rate) also lets a 0-tick frame
+        // after a hitch recover a frame sooner. Events/minigame state are only produced inside a tick.
         using (Prof.Sample("net.send"))
-        if (ticksRan > 0)
+        if (worldAdvanced)
         {
             BroadcastSnapshots();
             SendMinigameState(); // [T38] push per-peer minigame session snapshots (reliable channel)
@@ -333,13 +432,12 @@ public sealed class ServerNet : IDisposable
             FlushEventBundles();
         }
 
-        // 4) master-server registration: answer browser probes + re-heartbeat periodically.
+        // Master-server registration: answer browser probes + re-heartbeat periodically.
         PumpMasterServer(realDelta);
 
-        // 5) flush: push the snapshots/bundles queued above onto the wire NOW (send-only) instead of letting them
-        //    wait for the next tick's Poll(). On the in-process listen loop the client's Poll() later this SAME
-        //    frame then receives the snapshot, so the fire/knockback the server just simulated reconciles a render-
-        //    frame sooner — the return leg of the input→fire→feedback latency (pairs with the client send flush).
+        // Flush: push the snapshots/bundles queued above onto the wire NOW (send-only) instead of letting them
+        // wait for the next Poll(). On the in-process listen loop the client's Poll() later this SAME frame then
+        // receives the snapshot, so the fire/knockback the server just simulated reconciles a render-frame sooner.
         using (Prof.Sample("net.flush")) _transport.Flush();
     }
 
@@ -551,11 +649,71 @@ public sealed class ServerNet : IDisposable
             || string.IsNullOrWhiteSpace(line))
             return;
 
+        // [T47] SV_ParseClientCommand's three pre-dispatch gates (server/command/cmd.qc:1170-1251), run in QC
+        // order BEFORE any command executes. Any gate that returns drops the command silently (QC `return`):
+        //
+        // GATE 1 — UTF-8 round-trip validation (cmd.qc:1172-1178): QC re-encodes the command char-by-char through
+        // chr2str(str2chr(...)) and drops it if it doesn't round-trip. Malformed input never reaches the parser.
+        if (!ClientCommandRegistry.IsValidUtf8Command(line))
+            return;
+
+        // GATE 2 — Ban_MaybeEnforceBanOnce (cmd.qc:1180-1181 → ipban.qc): if the client is banned, tell+drop them
+        // and don't parse the command. Runs at most once per client (the QC .ban_checked once-guard).
+        if (!st.BanChecked)
+        {
+            st.BanChecked = true;
+            if (_world.Bans.MaybeEnforceBan(st.Player))
+                return; // banned → dropped by the wired Bans.DropClient pipeline; command discarded
+        }
+
+        // GATE 3 — per-client command flood bucket (cmd.qc:1191-1251): exponential-backoff anti-spam on the
+        // common command stream, exempting the engine/server/chat-handled verbs (begin/download/prespawn/spawn/
+        // sentcvar/pause/say/say_team/tell/minigame-non-common/…). A flooded command is rejected with a notice.
+        // The exemption test + budget math live in ClientCommandRegistry (the testable Server assembly); this
+        // method supplies the per-client cursor, the sim frame-start time, and the antispam cvar reads.
+        string verb = FirstToken(line);
+        if (!ClientCommandRegistry.IsCommandFloodExempt(verb, SecondToken(line)))
+        {
+            float antispamTime = Cvars.FloatOr("sv_clientcommand_antispam_time", 1f);
+            float antispamCount = Cvars.FloatOr("sv_clientcommand_antispam_count", 8f);
+            // QC uses gettime(GETTIME_FRAMESTART); _world.Time (the sim clock, constant within a tick) is the
+            // faithful equivalent of that frame-start time. Capture the pre-update cursor for the wait notice.
+            float floodBefore = st.CmdFloodTime;
+            if (!ClientCommandRegistry.TryPassFlood(ref st.CmdFloodTime, _world.Time, antispamCount, antispamTime))
+            {
+                float wait = floodBefore - (_world.Time + antispamCount * antispamTime); // QC: cmd_floodtime - mod_time
+                SendPrint(peerId, $"^3CMD FLOOD CONTROL: wait ^1{wait:0.######}^3 seconds, command was: {line}");
+                return;
+            }
+        }
+
         CommandContext ctx = _world.Commands.Execute(line, isServerConsole: false, caller: st.Player);
         string output = ctx.Output;
         if (string.IsNullOrEmpty(output))
             return;
         SendPrint(peerId, output.TrimEnd('\n', '\r'));
+    }
+
+    /// <summary>The lowercased first whitespace-delimited token of <paramref name="line"/> (QC <c>strtolower(argv(0))</c>).</summary>
+    private static string FirstToken(string line)
+    {
+        int i = 0;
+        while (i < line.Length && char.IsWhiteSpace(line[i])) i++;
+        int start = i;
+        while (i < line.Length && !char.IsWhiteSpace(line[i])) i++;
+        return line.Substring(start, i - start).ToLowerInvariant();
+    }
+
+    /// <summary>The second whitespace-delimited token of <paramref name="line"/> (QC <c>argv(1)</c>), "" if absent.</summary>
+    private static string SecondToken(string line)
+    {
+        int i = 0;
+        while (i < line.Length && char.IsWhiteSpace(line[i])) i++;
+        while (i < line.Length && !char.IsWhiteSpace(line[i])) i++;          // skip argv(0)
+        while (i < line.Length && char.IsWhiteSpace(line[i])) i++;
+        int start = i;
+        while (i < line.Length && !char.IsWhiteSpace(line[i])) i++;
+        return start < line.Length ? line.Substring(start, i - start) : "";
     }
 
     /// <summary>Send one console line to a single peer (DP <c>svc_print</c>).</summary>
@@ -583,6 +741,62 @@ public sealed class ServerNet : IDisposable
             if (st.Accepted)
                 _transport.Send(st.PeerId, _scratchWriter.WrittenSpan, reliable: true);
     }
+
+    // =============================================================================================
+    // [T46] chat delivery — per-player sprint + team/private routing with ignore filtering. The chat engine
+    // (Chat.Say) does the routing/ignore/flood logic over ClientManager.Players; these are the net send paths.
+    // A host wires Commands.ChatToPlayer to SendChatToPlayer so each routed recipient gets a reliable svc_print.
+    // =============================================================================================
+
+    /// <summary>QC <c>sprint(client, text)</c>: send one chat line to a single player's console (DP svc_print over
+    /// the reliable channel). No-op if the player has no accepted peer (a bot, or a not-yet-handshaked client).</summary>
+    public void SendChatToPlayer(Player player, string text)
+    {
+        if (player is null || string.IsNullOrEmpty(text))
+            return;
+        if (!_byPlayer.TryGetValue(player, out PeerState? st) || !st.Accepted)
+            return;
+        SendPrint(st.PeerId, text);
+    }
+
+    /// <summary>
+    /// QC the say_team FOREACH_CLIENT branch (chat.qc:328): deliver <paramref name="text"/> to every real client
+    /// on <paramref name="team"/> who has not ignored <paramref name="sender"/>. Append-only convenience for a
+    /// host that prefers ServerNet to own team routing; <see cref="Chat.Say"/> already routes per-player through
+    /// <see cref="SendChatToPlayer"/>, so this is an alternative entry, not on the default path.
+    /// </summary>
+    public void SendTeamChat(Player? sender, int team, string text)
+    {
+        if (string.IsNullOrEmpty(text))
+            return;
+        foreach (Player p in _world.Clients.Players)
+        {
+            if (p.IsBot || p.IsObserver || (int)p.Team != team)
+                continue;
+            if (ReferenceEquals(p, sender))
+                continue;
+            if (sender is not null && IgnorePlayerInList(p, sender))
+                continue;
+            SendChatToPlayer(p, text);
+        }
+    }
+
+    /// <summary>
+    /// QC the private (tell) delivery (chat.qc:295-307): deliver <paramref name="text"/> to <paramref name="target"/>
+    /// only, suppressed if the target has ignored <paramref name="sender"/>. Append-only convenience entry.
+    /// </summary>
+    public void SendPrivateChat(Player? sender, Player target, string text)
+    {
+        if (target is null || string.IsNullOrEmpty(text))
+            return;
+        if (sender is not null && IgnorePlayerInList(target, sender))
+            return; // sender is ignored by target — drop it
+        SendChatToPlayer(target, text);
+    }
+
+    /// <summary>QC <c>ignore_playerinlist(this, other)</c>: is <paramref name="other"/> on <paramref name="self"/>'s
+    /// ignore list? Delegates to the chat engine's PersistentId-keyed check.</summary>
+    public static bool IgnorePlayerInList(Player self, Player other) => Chat.IgnorePlayerInList(self, other);
 
     /// <summary>[T38] Push each changed minigame session's snapshot to its participating peers (QC
     /// <c>minigame_resend</c> + <c>minigame_CheckSend</c>), each carrying that peer's own team; and an empty
@@ -888,6 +1102,33 @@ public sealed class ServerNet : IDisposable
         if (st.PerFrameInput)
             return ProvideInputPerFrame(st, p, now);
 
+        // LEGACY queue bound (DP sv_clmovement_inputtimeout). Producer and consumer both pace at exactly
+        // 72 Hz, so the queue length never shrinks on its own — a client hitch's burst (up to 18 commands
+        // per long frame, while the sim's B3 soft-cap + spiral guard run/drop FEWER catch-up ticks) would
+        // otherwise become PERMANENT input latency (fire/jump executing queue-length ticks late for the
+        // rest of the match, compounding with every further hitch — the felt "projectile leaves 0.5 s after
+        // the click"). Past the abnormal-depth trigger, discard the OLDEST commands down to a small jitter
+        // floor: dropped seqs still ack (client prediction stops replaying them — both ends agree the
+        // movement never happened, the same brief reconcile warp DP shows), and their one-shot impulses
+        // still dispatch so a hitch can't eat a weapon switch.
+        if (st.Pending.Count > InputQueuePolicy.MaxLegacyQueuedCommands)
+        {
+            _droppedImpulseScratch.Clear();
+            int before = st.Pending.Count;
+            uint highestDropped = InputQueuePolicy.Trim(st.Pending,
+                InputQueuePolicy.MaxLegacyQueuedCommands, InputQueuePolicy.LegacyTrimResidual,
+                _droppedImpulseScratch);
+            if (highestDropped > st.LastProcessedSeq)
+                st.LastProcessedSeq = highestDropped;
+            if (!p.IsObserver)
+                foreach (int imp in _droppedImpulseScratch)
+                    _world.Commands.Execute($"impulse {imp}", isServerConsole: false, caller: p);
+            if (Log.WillTrace)
+                Log.Trace($"[ServerNet] input backlog trimmed for '{p.NetName}': {before} -> {st.Pending.Count} " +
+                          "(client hitch burst; surplus consumed unsimulated)");
+            Prof.Event($"net: input backlog trimmed {before} -> {st.Pending.Count} ({p.NetName})");
+        }
+
         InputCommand cmd;
         if (st.Pending.Count > 0)
         {
@@ -1061,6 +1302,10 @@ public sealed class ServerNet : IDisposable
     // Boxed once: typed as the interface so the hot ProvideInput paths return/store the same object instead of
     // re-boxing the struct on every assignment to an IMovementInput-typed field/return.
     private static readonly IMovementInput ZeroInput = new MovementInput { FrameTime = SimulationLoopTicRate };
+
+    // Scratch for the legacy input-queue trim (one-shot impulses carried by dropped commands); ProvideInput
+    // runs on the sim thread only, so one shared buffer is safe.
+    private readonly List<int> _droppedImpulseScratch = new(4);
 
     private static MovementInput ToMovementInput(in InputCommand c)
     {
@@ -1308,12 +1553,22 @@ public sealed class ServerNet : IDisposable
                 // OnGround flag below) the bot is frozen in a single pose. (QC csqcmodel networks .velocity.)
                 Velocity = p.Velocity,
                 Health = (int)p.Health,
+                Armor = (int)p.ArmorValue, // [T68] networked entcs armor → teammate shownames armor sub-bar
                 Colormap = (int)p.Team,
                 Weapon = p.ActiveWeaponId, // renders the remote player's held weapon (QC wepent)
                 Model = p.Model,           // QC .model (playermodel) — the client loads the skeletal IQM by name
                 Flags = (p.OnGround ? NetEntityFlags.OnGround : 0)
                       | (p.IsDead ? NetEntityFlags.Dead : 0)
                       | (p.IsDucked ? NetEntityFlags.Crouched : 0), // QC FL_DUCKED → remote crouch anim/hull
+                // [T41/T46] the Feedback stats the client diffs/draws (view.qc HitSound + objective rings):
+                //   - HitDamageDealtTotal: cumulative damage dealt — the client diffs it to fire the hit sound.
+                //   - NadeTimer: 0..1 held-nade charge — drives the nade objective ring.
+                //   - ReviveProgress: 0..1 Freeze-Tag thaw — drives the thaw ring (mirrored from FrozenState).
+                // CaptureProgress is intentionally left 0: the stat is networked + rendered but no gametype sets
+                // it (matches Base QC — an unfinished CTF/Assault ring producer; see NetEntity.cs).
+                HitDamageDealtTotal = p.HitsoundDamageDealtTotal,
+                NadeTimer = p.NadeTimer,
+                ReviveProgress = p.ReviveProgress,
             };
             if (teleported)
                 s.Flags |= NetEntityFlags.Teleported;

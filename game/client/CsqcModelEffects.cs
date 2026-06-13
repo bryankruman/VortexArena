@@ -53,6 +53,10 @@ public static class CsqcModelEffects
         // rebuilt when the root node changes (a model swap, detected by instance id) or a cached mesh is freed.
         public readonly List<MeshInstance3D> CachedMeshes = new();
         public ulong CachedMeshesRootId;
+
+        // (§11 R8) Last tint pushed by the per-frame appearance pass — ModelTint.ApplyAppearance skips the
+        // 4×meshes SetInstanceShaderParameter interop when neither the colors nor the mesh list changed.
+        public ModelTint.TintCache Tint;
     }
 
     /// <summary>One DP <c>adddynamiclight</c>: a unit position offset + range + (possibly &gt;1) color.</summary>
@@ -189,6 +193,15 @@ public static class CsqcModelEffects
     //     using that texture (the RC3/RC4 lesson). Net: these three render-flags apply only to per-instance-
     //     material meshes; on shared/shader-material models they're a documented parity gap (no per-instance
     //     additive/fullbright/depthhack render path exists in the port yet).
+
+    /// <summary>
+    /// Expose the per-model cached, flattened mesh list (rebuilding it on a swap / freed mesh exactly like the
+    /// effects pass) so the per-frame appearance pass (<see cref="ModelTint.ApplyAppearance(System.Collections.Generic.IReadOnlyList{MeshInstance3D},int,bool,float,bool)"/>)
+    /// can reuse the SAME cache keyed on the SAME <paramref name="root"/> — no second tree-walk and no risk of
+    /// the two lists diverging (3.2-2). Routes through <see cref="EnsureMeshCache"/> so invalidation (instance-id
+    /// change + freed-mesh validity scan, incl. the staggered placeholder→real swap) stays identical.
+    /// </summary>
+    public static List<MeshInstance3D> GetCachedMeshes(State st, Node3D root) => EnsureMeshCache(st, root);
 
     /// <summary>Return the model's cached mesh list, rebuilding it when the model node changed (a swap, by
     /// instance id) or a cached mesh was freed. The validity scan is O(meshes) of cheap native calls — no

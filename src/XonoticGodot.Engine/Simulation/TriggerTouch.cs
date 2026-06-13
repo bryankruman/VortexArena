@@ -73,6 +73,13 @@ public static class TriggerTouch
     /// Resolves pads through <see cref="Api"/>.Entities.FindByClass so it works whether the ambient facade is
     /// the raw EngineServices (demo) or the listen server's ServerServices wrapper — a plain
     /// <c>Api.Services is EngineServices</c> cast would FALSE-out on the wrapper and silently skip prediction.
+    ///
+    /// S5 (sv_threaded) thread note: this runs on the MAIN thread inside the client-prediction replay
+    /// (EntityMovementStep.Step), so its <see cref="Api"/>.Entities.FindByClass scan walks whatever facade is
+    /// ambient on the main thread. With the lock fallback (one shared world) it walks the live server table; the
+    /// host serialises this whole prediction step against the server-sim worker's ServerNet.Tick via a single
+    /// _simGate lock (taken only when sv_threaded 1), so the FindByClass iterator never races a concurrent
+    /// spawn/remove on the worker thread. With sv_threaded 0 (default) it runs single-threaded as today.
     /// Two further faithful differences from <see cref="Run"/>: it does NOT early-out on a SOLID_NOT mover (the
     /// prediction carrier is deliberately SOLID_NOT, so the listen-server authority never collides with the
     /// ghost, yet it must still feel pads), and it touches ONLY jump-pads — teleport/hurt/conveyor stay

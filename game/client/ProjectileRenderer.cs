@@ -41,6 +41,8 @@ public partial class ProjectileRenderer : Node3D
         public Vector3 SpinDegPerSec;         // local tumble/roll rate (QC avelocity / Projectile_Draw rot)
         public Vector3 LastPos;               // for velocity-from-motion when Entity.Velocity is unset
         public ProjectilePredictor Predictor; // CSQC Projectile_Draw: snap-to-server + local velocity extrapolation
+        public string? SegmentTrail;          // faithful per-segment trail effect (DP CL_ParticleTrail); null = legacy emitters
+        public NVec3 TrailPos;                // Quake-space tail of the last emitted trail segment
     }
 
     private readonly Dictionary<int, Visual> _visuals = new();
@@ -118,11 +120,23 @@ public partial class ProjectileRenderer : Node3D
             body.Scale = Vector3.One * desc.ModelScale;
         root.AddChild(body);
 
-        // Trail: the REAL layered effectinfo trail (smoke + fire core + sparks for a rocket) when the catalog
-        // names one and the atlas is mounted, else the legacy single hand-tuned emitter. World-space emitters
-        // (LocalCoords=false) parented to the root, so they ride the projectile yet leave their particles behind.
-        List<GpuParticles3D> trails = BuildTrails(desc, Coords.ToGodot(entity.Velocity));
-        foreach (GpuParticles3D tr in trails) root.AddChild(tr);
+        // Trail. Preferred: the FAITHFUL per-segment path (DP CL_ParticleTrail) — each frame the follow loop
+        // feeds the flight segment to the faithful sim, whose trailspacing stepping + shared accumulator
+        // reproduce DP's exact trail density (the electro plasma line is one particle every 2qu — a rate-based
+        // GPU emitter can't make that). Falls back to the legacy continuous GpuParticles emitters in
+        // all-modern mode (cl_particles_modern 2) or when the effect isn't in the catalog.
+        List<GpuParticles3D> trails;
+        string? segmentTrail = null;
+        if (!string.IsNullOrEmpty(desc.TrailEffect) && Effects?.UseFaithfulTrails == true)
+        {
+            segmentTrail = desc.TrailEffect;
+            trails = new List<GpuParticles3D>();
+        }
+        else
+        {
+            trails = BuildTrails(desc, Coords.ToGodot(entity.Velocity));
+            foreach (GpuParticles3D tr in trails) root.AddChild(tr);
+        }
 
         OmniLight3D? light = (DynamicLights && desc.HasLight) ? BuildLight(desc) : null;
         if (light is not null) root.AddChild(light);
@@ -154,6 +168,8 @@ public partial class ProjectileRenderer : Node3D
             SpinDegPerSec = desc.SpinDegPerSec,
             LastPos = startPos,
             Predictor = predictor,
+            SegmentTrail = segmentTrail,
+            TrailPos = entity.Origin,
         };
         _visuals[entity.Index] = visual;
 
@@ -182,13 +198,14 @@ public partial class ProjectileRenderer : Node3D
         if (!_visuals.Remove(index, out Visual? v))
             return;
 
-        // Impact effect (the CSQC wr_impacteffect): the explicit one if the caller passed it (demo path), else
-        // the projectile type's default boom. No PVS culling runs on the entity stream, so the live net path only
-        // removes a projectile when the server FREED it (it detonated / expired) — so drawing the explosion here
-        // is correct, not a false positive from going out of view.
-        string? fx = !string.IsNullOrEmpty(impactEffect) ? impactEffect : ImpactEffectFor(v.Type);
-        if (!string.IsNullOrEmpty(fx))
-            Effects?.Spawn(fx!, origin);
+        // Impact effect: ONLY the explicit one a caller passes (the offline demo driver, which has no server
+        // feeding it effects). On the live net path the SERVER is authoritative for impacts — every ported
+        // projectile weapon emits its wr_impacteffect equivalent (ROCKET_EXPLODE, ELECTRO_IMPACT, …) through
+        // EffectEmitter, networked to every client including the listen-server local one. A type-default spawn
+        // here too played every impact TWICE (and "exploded" projectiles culled by round cleanup, which never
+        // explode upstream).
+        if (!string.IsNullOrEmpty(impactEffect))
+            Effects?.Spawn(impactEffect!, origin);
 
         // Let each active trail layer finish emitting its tail before the node disappears (detach + linger).
         foreach (GpuParticles3D trail in v.Trails)
@@ -273,6 +290,20 @@ public partial class ProjectileRenderer : Node3D
 
             OrientToVelocity(v.Root, v.Entity, v.Root.Position - v.LastPos);
             v.LastPos = v.Root.Position;
+
+            // Faithful trail segment (DP CL_ParticleTrail): feed this frame's flight segment to the sim —
+            // its trailspacing stepping + shared accumulator make the per-frame calls compose into the
+            // exact DP trail density regardless of frame rate or projectile speed.
+            if (v.SegmentTrail is not null)
+            {
+                NVec3 cur = Coords.ToQuake(v.Root.Position);
+                NVec3 seg = cur - v.TrailPos;
+                if (NVec3.Dot(seg, seg) > 0.01f)
+                {
+                    Effects?.SpawnTrailSegment(v.SegmentTrail, v.TrailPos, cur, v.Entity.Velocity);
+                    v.TrailPos = cur;
+                }
+            }
 
             // Spin/tumble the body locally on top of the velocity-aligned root (QC Projectile_Draw rot /
             // avelocity): rocket rolls (z), bouncing grenade tumbles sideways (y), hookbomb pitches (x), …
@@ -548,8 +579,26 @@ public partial class ProjectileRenderer : Node3D
         return list;
     }
 
-    private static OmniLight3D BuildLight(ProjectileCatalog.Desc desc)
-        => new()
+    private OmniLight3D BuildLight(ProjectileCatalog.Desc desc)
+    {
+        // DP attaches the trail effect's no-fade light block to the mover every frame (cl_particles.c:1645
+        // "glowing entity") — e.g. TR_NEXUIZPLASMA carries 'lightradius 90, lightcolor 1.5 3 6', the tight
+        // saturated blue glow that paints the walls as an electro bolt flies. Use those exact values when the
+        // effectinfo defines them (same HDR mapping as EffectSystem.SpawnInfoLight: unit hue × energy); the
+        // catalog GlowColor stays the fallback for trailless/unparsed types.
+        if (!string.IsNullOrEmpty(desc.TrailEffect) && Effects?.TrailLightFor(desc.TrailEffect) is { } tl)
+        {
+            float maxc = MathF.Max(1f, MathF.Max(tl.Color.X, MathF.Max(tl.Color.Y, tl.Color.Z)));
+            return new OmniLight3D
+            {
+                Name = "Light",
+                LightColor = new Color(tl.Color.X / maxc, tl.Color.Y / maxc, tl.Color.Z / maxc),
+                LightEnergy = MathF.Min(8f, maxc),
+                OmniRange = Math.Clamp(tl.Radius, 1f, 2000f),
+                ShadowEnabled = false,
+            };
+        }
+        return new OmniLight3D
         {
             Name = "Light",
             LightColor = desc.GlowColor,
@@ -557,6 +606,7 @@ public partial class ProjectileRenderer : Node3D
             OmniRange = desc.Body == BodyFamily.FireSprite ? 220f : 160f,
             ShadowEnabled = false,
         };
+    }
 
     /// <summary>Attach a looping spatial fly sound to the projectile root (QC <c>loopsound</c>). Graceful miss.</summary>
     private void AttachLoopSound(Node3D root, string sample)
@@ -610,26 +660,6 @@ public partial class ProjectileRenderer : Node3D
         }
         return ImageTexture.CreateFromImage(img);
     }
-
-    /// <summary>
-    /// The explosion/impact effect a projectile type leaves when it's removed (detonates) — the CSQC
-    /// <c>wr_impacteffect</c> mapping. Splash weapons leave a real explosion; energy bolts a small burst; pure
-    /// gibs/none return null (no effect). Names resolve through <see cref="EffectSystem.Spawn(string,NVec3,NVec3,int,Color?)"/>.
-    /// </summary>
-    private static string? ImpactEffectFor(PType t) => t switch
-    {
-        PType.Rocket or PType.Rpc or PType.SpiderRocket or PType.WakiRocket => "ROCKET_EXPLODE",
-        PType.Fireball => "FIREBALL_EXPLODE",
-        PType.Grenade or PType.GrenadeBouncing or PType.Mine => "GRENADE_EXPLODE",
-        PType.Firemine => "GRENADE_EXPLODE",
-        PType.Hagar or PType.HagarBouncing or PType.Seeker or PType.Flac or PType.Tag => "HAGAR_EXPLODE",
-        PType.Electro or PType.ElectroBeam => "ELECTRO_BALLEXPLODE",
-        PType.Crylink or PType.CrylinkBouncing => "CRYLINK_IMPACT",
-        PType.Blaster or PType.RocketMinstaLaser => "BLASTER_IMPACT",
-        PType.Hlac => "GREEN_HLAC_IMPACT",
-        PType.GolemLightning or PType.MageSpike or PType.ArcBolt or PType.Plasma => "ELECTRO_IMPACT",
-        _ => null,
-    };
 
     /// <summary>
     /// Aim the root so the body's NOSE (Godot +X — see <see cref="BuildModelBody"/>) points down the entity's

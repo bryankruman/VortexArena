@@ -92,10 +92,22 @@ public static class Cvars
         new("sv_step_upspeed_scale", "1", "step-up upward-velocity multiplier (1 = vanilla launch, 0 = step up without launching)"),
         new("sv_step_upspeed_max", "-1", "step-up upward-velocity hard cap in u/s (-1 = disabled/uncapped)"),
 
+        // [T45] warpzone self-targeting (lib/warpzone/server.qc WarpZone_InitStep_FindTarget). Behaviour is already
+        // correct without this entry (Warpzone.cs reads it via Api.Cvars.GetFloat, which returns 0 when unset), but
+        // registering it makes it visible to cvarlist/the menu and lets the listen-server `set` bridge apply changes.
+        new("sv_warpzone_allow_selftarget", "0", Save, "1 = a warpzone may target itself (default 0: never self-link)"),
+
         // ---- match flow / limits (mapinfo + xonotic-server.cfg) ----
         new("timelimit", "20", Notify, "match time limit in minutes (0 = none)"),
         new("fraglimit", "0", Notify, "score limit (0 = none)"),
         new("leadlimit", "0", Notify, "lead margin to win (0 = none)"),
+        // overtime / sudden death (xonotic-server.cfg:273-275; gametypes-server.cfg leadlimit_and_fraglimit).
+        // Read by OverTimeManager (QC world.qc InitiateSuddenDeath / InitiateOvertime / WinningCondition_Scores):
+        // a tied timed match adds normal overtimes (up to timelimit_overtimes) then enters suddendeath.
+        new("timelimit_overtime", "2", Save, "duration in minutes of one added overtime, added to the timelimit"),
+        new("timelimit_overtimes", "0", Save, "how many overtimes to add at max"),
+        new("timelimit_suddendeath", "5", Save, "minutes suddendeath lasts after all overtimes are added and still no winner"),
+        new("leadlimit_and_fraglimit", "0", Save, "both leadlimit AND fraglimit must be reached"),
         new("g_maxplayers", "0", Save, "0 = unlimited player slots"),
         new("minplayers", "0", Save, "fill FFA up to this many with bots"),
         new("minplayers_per_team", "0", Save, "fill each team up to this many with bots"),

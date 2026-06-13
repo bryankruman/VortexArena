@@ -1,0 +1,176 @@
+Godot Engine v4.6.3.stable.mono.official.7d41c59c4 - https://godotengine.org
+
+[lb]frameprofiler] env: managed-debugger=False godot-context=debug csharp=Debug vsync=Enabled maxfps=0[0m
+=== XonoticGodot boot ===[0m
+Weapons:   24[0m
+Items:     19[0m
+Mutators:  41[0m
+GameTypes: 20[0m
+[lb]MenuState] config: 6462 cvars from 25 cfg files (374 aliases, 0 missing).[0m
+[lb]shell] --cvar cl_frameprofiler = "2"[0m
+[lb]video] vid_vsync 2 → requested Mailbox, actual Enabled[0m
+[lb]video] process priority → AboveNormal (sys_priority_boost)[0m
+[lb]Shell] hosting listen server: gametype=dm map=stormkeep bots=4 skill=0 timelimit=0 fraglimit=0[0m
+[AssetSystem] loaded 2439 shaders from 185 scripts.
+[NetTransport.Server] listening on UDP 26000 (max 16).
+[ServerNet] LAN discovery: answering getinfo on UDP 26001 (game port 26000).
+[NetTransport.Client] connecting to 127.0.0.1:26000 …
+[EffectSystem] effectinfo: 301 effects, particlefont atlas: loaded, style overlay: 0 effects
+[Particles] backend=original (cl_particles_modern=0)
+[MapLoader] 'stormkeep' materials: lightmapped=35 vertexLit=3 plain=10 glow=4 normalMapped=34 (deluxe=True, internalPages=0, atlas=1p, cells=31, surfaces=388)
+[DecalSplats] geometry: 106027 render triangles, 502 grid cells
+[Skybox] loaded 'env/extragalactic/asteroids'.
+[NetGame] map music: 'cdtracks/track005' (from mapinfo/worldspawn)
+[lb]frameprofile] med 128.5ms p99 150.0ms | proc 1.9 rcpu 0.0 gpu 0.0 rest 126.6 | draws 0 | iqm.mesh 109.2ms, iqm.materials 107.7ms, iqm.anims 8.8ms, particles.cpu 1.2ms[0m
+[NetGame] precached 24 weapon models, skipped 0 (lazy), 24 muzzle tags.
+[NetGame] precached 36 combat sounds, 1 player models.
+[NetGame] listen server on 127.0.0.1:26000 (map 'stormkeep', dm, 4 bots) — self-connecting.
+[ServerNet] peer 1881541826 connected (awaiting handshake).
+[ServerNet] peer 1881541826 accepted as 'player' (netId 1881541826, id 62209835).
+[ClientNet] handshake accepted by 'Xonotic  Server': netId 1, tickrate 72 Hz.
+[NetGame] handshake accepted by 'Xonotic  Server': netId 1.
+[lb]frameprofile] med 33.3ms p99 150.0ms | proc 8.7 rcpu 0.0 gpu 0.0 rest 24.6 | draws 0 | proc:other 3.8ms, stream.build 2.4ms, particles.cpu 1.3ms, iqm.mesh 1.3ms | ticks 2[0m
+[IdleWarmer] asset warm queue drained — full asset set is hot.
+[lb]hitch] 36.7ms (med 6.9) | proc 9.4 rcpu 0.0 gpu 0.0 phys 0.1 rest 27.3 | GC g0+1 g1+0 g2+0 | alloc 1493KB | top: ng.process 5.7ms, server.tick 4.5ms, sim.move 3.7ms | ticks 3 | EXTERNAL? (rest-dominated; OS/compositor/driver)[0m
+[lb]hitch]   scopes: ng.process 5.7ms/50KB, server.tick 4.5ms/18KB, sim.move 3.7ms, move.post 2.7ms, particles.cpu 1.7ms, proc:other 1.6ms, move.pm 1.0ms, sim.start 0.4ms, net.send 0.2ms/17KB, md3.morph 0.1ms, start.hooks 0.1ms, entitynode 0.1ms[0m
+[lb]hitch]   gc: g0+1 g1+0 g2+0 pause 1.4ms alloc 1493KB[0m
+[lb]hitch]   events: [lb]-1f] net: PREDICTION DESYNC 1067qu (predicted vs acked-replay origin)[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch] 16.7ms (med 6.9) | proc 5.1 rcpu 0.0 gpu 0.0 phys 0.1 rest 11.5 | alloc 114KB | top: ng.process 1.8ms, proc:other 1.6ms, particles.cpu 1.5ms | ticks 1[0m
+[lb]hitch] 16.7ms (med 6.9) | proc 4.6 rcpu 0.0 gpu 0.0 phys 0.1 rest 12.1 | alloc 98KB | top: ng.process 1.5ms, proc:other 1.5ms, particles.cpu 1.4ms | ticks 1[0m
+[lb]frameprofile] med 6.9ms p99 150.0ms | proc 4.1 rcpu 0.0 gpu 0.0 rest 2.8 | draws 0 | proc:other 1.9ms, particles.cpu 1.3ms, ng.process 0.6ms, md3.morph 0.1ms | ticks 0[0m
+[lb]bots] waypoints for 'stormkeep': nodes=99 (file=loaded, cache=yes)[0m
+[lb]hitch] 45.1ms (med 6.9) | proc 30.3 rcpu 0.0 gpu 0.0 phys 0.1 rest 14.8 | GC g0+1 g1+1 g2+0 | alloc 8226KB | top: proc:other 13.8ms, ng.process 13.6ms, server.tick 12.0ms | ticks 3[0m
+[lb]hitch]   scopes: proc:other 13.8ms, ng.process 13.6ms/87KB, server.tick 12.0ms/73KB, sim.move 10.8ms/27KB, move.in 10.4ms/27KB, bot.think 10.3ms/26KB, bot.path 9.5ms, iqm.mesh 4.4ms/1088KB, particles.cpu 1.9ms, cw.process 0.9ms/1KB, sim.start 0.6ms/39KB, net.send 0.5ms/6KB[0m
+[lb]hitch]   gc: g0+1 g1+1 g2+0 pause 6.2ms alloc 8226KB[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch] 35.2ms (med 6.9) | proc 5.8 rcpu 0.0 gpu 0.0 phys 0.1 rest 29.4 | alloc 4119KB | top: proc:other 2.3ms, particles.cpu 1.5ms, ng.process 1.5ms | ticks 3 | EXTERNAL? (rest-dominated; OS/compositor/driver)[0m
+[lb]frameprofile] med 6.9ms p99 35.2ms | proc 6.5 rcpu 0.0 gpu 0.0 rest 0.4 | draws 0 | proc:other 3.8ms, particles.cpu 1.9ms, ng.process 0.4ms, md3.morph 0.1ms | ticks 0[0m
+[lb]hitch] 14.2ms (med 6.9) | proc 11.1 rcpu 0.0 gpu 0.0 phys 0.1 rest 3.2 | alloc 87KB | top: proc:other 5.4ms, ng.process 3.3ms, server.tick 2.7ms | ticks 1[0m
+[lb]hitch] 15.6ms (med 6.9) | proc 11.8 rcpu 0.0 gpu 0.0 phys 0.1 rest 3.8 | alloc 64KB | top: proc:other 5.1ms, particles.cpu 2.8ms, ng.process 2.7ms | ticks 1[0m
+[lb]hitch] 14.9ms (med 6.9) | proc 6.1 rcpu 0.0 gpu 0.0 phys 0.1 rest 8.8 | alloc 64KB | top: proc:other 2.3ms, ng.process 1.7ms, particles.cpu 1.7ms | ticks 1[0m
+[lb]hitch] 18.0ms (med 6.9) | proc 18.0 rcpu 0.0 gpu 0.0 phys 0.1 rest 0.0 | GC g0+1 g1+1 g2+1 | alloc 304743KB | top: particles.cpu 23.4ms, cw.process 3.7ms, cw.players 3.6ms | ticks 1[0m
+[lb]hitch] 62.8ms (med 6.9) | proc 16.2 rcpu 0.0 gpu 0.0 phys 0.1 rest 46.7 | alloc 82064KB | top: proc:other 7.6ms, ng.process 4.2ms, server.tick 3.1ms | ticks 5 | EXTERNAL? (rest-dominated; OS/compositor/driver)[0m
+[lb]hitch] 20.8ms (med 6.9) | proc 13.5 rcpu 0.0 gpu 0.0 phys 0.3 rest 7.3 | alloc 87KB | top: proc:other 6.3ms, ng.process 3.8ms, server.tick 2.8ms | ticks 1[0m
+[lb]hitch] 26.6ms (med 6.9) | proc 14.7 rcpu 0.0 gpu 0.0 phys 0.3 rest 11.9 | alloc 70235KB | top: proc:other 8.0ms, ng.process 3.0ms, particles.cpu 2.4ms | ticks 2[0m
+[lb]hitch] 20.8ms (med 6.9) | proc 15.3 rcpu 0.0 gpu 0.0 phys 0.3 rest 5.6 | alloc 16548KB | top: proc:other 8.9ms, ng.process 2.9ms, particles.cpu 2.1ms | ticks 1[0m
+[lb]hitch] 20.0ms (med 6.9) | proc 20.0 rcpu 0.0 gpu 0.0 phys 0.3 rest 0.0 | alloc 194KB | top: proc:other 9.3ms, particles.cpu 5.4ms, ng.process 3.3ms | ticks 2[0m
+[lb]hitch] 20.8ms (med 6.9) | proc 20.2 rcpu 0.0 gpu 0.0 phys 0.3 rest 0.6 | alloc 154KB | top: proc:other 8.6ms, ng.process 4.8ms, particles.cpu 4.6ms | ticks 1[0m
+[lb]hitch] 21.2ms (med 6.9) | proc 21.2 rcpu 0.0 gpu 0.0 phys 0.3 rest 0.0 | alloc 110KB | top: proc:other 8.9ms, ng.process 5.8ms, server.tick 4.0ms | ticks 2[0m
+[lb]hitch] 35.6ms (med 6.9) | proc 19.8 rcpu 0.0 gpu 0.0 phys 0.3 rest 15.8 | alloc 223KB | top: ng.process 7.7ms, proc:other 7.4ms, server.tick 2.8ms | ticks 2[0m
+[lb]hitch]   scopes: ng.process 7.7ms/99KB, proc:other 7.4ms, server.tick 2.8ms/1KB, particles.cpu 2.8ms, sim.move 1.4ms, cw.process 1.2ms, move.pm 0.9ms, cw.players 0.9ms, net.send 0.5ms, net.poll 0.4ms, sim.start 0.4ms, entitynode 0.3ms[0m
+[lb]hitch]   events: [lb]-6f] stream: player model models/player/erebus.iqm tex textures/erebusfullbright built (0.0ms); [lb]-6f] stream: player model models/player/erebus.iqm tex textures/erebusfullbright_norm built (0.0ms); [lb]-6f] stream: player model models/player/erebus.iqm tex textures/erebusfullbright_gloss built (0.0ms); [lb]-6f] stream: player model models/player/erebus.iqm tex textures/erebusfullbright_glow built (0.0ms); [lb]-5f] stream: player model models/player/erebus.iqm tex textures/erebusfullbright_shirt built (7.0ms); [lb]-3f] stream: player model models/player/ignismasked.iqm tex textures/ignisfullbright_reflect built (0.0ms); [lb]-3f] stream: player model models/player/ignismasked.iqm tex textures/ignisheadfb_pants built (0.0ms); [lb]-2f] stream: player model models/player/ignismasked.iqm tex textures/ignisfullbright_glow built (0.0ms); stream: player model models/player/ignismasked.iqm tex textures/ignisfullbright_norm built (0.0ms); stream: player model models/player/ignismasked.iqm tex textures/ignisheadfb_glow built (0.1ms); stream: player model models/player/ignismasked.iqm tex textures/ignisheadfb_shirt built (0.0ms)[0m
+[lb]hitch]   prev: 62.8 20.8 26.6 10.3 20.8 20.0 20.8 21.2[0m
+[lb]hitch] 27.4ms (med 6.9) | proc 14.7 rcpu 0.0 gpu 0.0 phys 0.3 rest 12.6 | alloc 139KB | top: proc:other 6.8ms, ng.process 3.5ms, particles.cpu 2.6ms | ticks 2[0m
+[lb]hitch] 25.0ms (med 6.9) | proc 13.2 rcpu 0.0 gpu 0.0 phys 0.3 rest 11.8 | alloc 85KB | top: proc:other 5.3ms, ng.process 4.7ms, server.tick 4.0ms | ticks 2[0m
+[lb]hitch] 25.0ms (med 6.9) | proc 8.4 rcpu 0.0 gpu 0.0 phys 0.3 rest 16.6 | alloc 395KB | top: proc:other 2.3ms, ng.process 2.1ms, stream.build 2.0ms | ticks 2[0m
+[lb]hitch] 16.7ms (med 6.9) | proc 7.8 rcpu 0.0 gpu 0.0 phys 0.3 rest 8.9 | alloc 390KB | top: proc:other 2.2ms, stream.build 1.9ms, ng.process 1.4ms | ticks 1[0m
+[lb]frameprofile] med 6.9ms p99 35.6ms | proc 5.2 rcpu 0.0 gpu 0.0 rest 1.7 | draws 0 | proc:other 1.7ms, particles.cpu 1.6ms, cw.process 1.1ms, cw.players 1.1ms | ticks 1[0m
+[lb]frameprofile] med 6.9ms p99 27.4ms | proc 4.7 rcpu 0.0 gpu 0.0 rest 2.2 | draws 0 | proc:other 1.5ms, particles.cpu 1.3ms, cw.process 1.0ms, cw.players 0.9ms | ticks 1[0m
+[lb]hitch] 17.0ms (med 6.9) | proc 5.8 rcpu 0.0 gpu 0.0 phys 0.1 rest 11.2 | alloc 48KB | top: ng.process 1.8ms, proc:other 1.8ms, server.tick 1.6ms | ticks 2[0m
+[lb]hitch]   scopes: ng.process 1.8ms/4KB, proc:other 1.8ms, server.tick 1.6ms/2KB, sim.move 1.2ms, particles.cpu 1.2ms, cw.process 1.0ms, cw.players 0.9ms, move.in 0.7ms, bot.think 0.7ms, move.pm 0.5ms, bot.path 0.5ms, net.send 0.2ms[0m
+[lb]hitch]   prev: 12.0 6.9 6.9 6.9 3.2 7.1 6.9 6.9[0m
+[lb]frameprofile] med 6.9ms p99 9.2ms | proc 4.5 rcpu 0.0 gpu 0.0 rest 2.4 | draws 0 | particles.cpu 1.6ms, proc:other 1.6ms, cw.process 1.1ms, cw.players 1.1ms | ticks 0[0m
+[lb]frameprofile] med 6.9ms p99 12.0ms | proc 5.8 rcpu 0.0 gpu 0.0 rest 1.1 | draws 0 | proc:other 2.5ms, particles.cpu 1.8ms, cw.process 1.2ms, cw.players 1.1ms | ticks 0[0m
+[lb]hitch] 13.0ms (med 6.9) | proc 5.0 rcpu 0.0 gpu 0.0 phys 0.2 rest 8.0 | alloc 48KB | top: proc:other 1.6ms, ng.process 1.2ms, particles.cpu 1.1ms | ticks 1[0m
+[lb]hitch]   scopes: proc:other 1.6ms, ng.process 1.2ms/4KB, particles.cpu 1.1ms, cw.process 1.0ms, cw.players 0.9ms, server.tick 0.9ms/1KB, sim.move 0.6ms, move.in 0.3ms, bot.think 0.3ms, move.pm 0.3ms, net.send 0.2ms, bot.path 0.1ms[0m
+[lb]hitch]   prev: 6.7 6.7 6.7 6.7 6.7 6.7 6.7 6.7[0m
+[lb]hitch] 12.7ms (med 6.9) | proc 8.2 rcpu 0.0 gpu 0.0 phys 0.2 rest 4.5 | alloc 56KB | top: proc:other 2.6ms, ng.process 2.3ms, particles.cpu 1.9ms | ticks 1[0m
+[lb]frameprofile] med 6.9ms p99 11.4ms | proc 8.2 rcpu 0.0 gpu 0.0 rest 0.0 | draws 0 | proc:other 2.6ms, ng.process 2.3ms, particles.cpu 1.9ms, server.tick 1.8ms | ticks 1[0m
+[lb]hitch] 13.2ms (med 6.7) | proc 7.8 rcpu 0.0 gpu 0.0 phys 0.3 rest 5.4 | alloc 48KB | top: proc:other 2.7ms, ng.process 1.9ms, particles.cpu 1.7ms | ticks 1[0m
+[lb]hitch]   scopes: proc:other 2.7ms, ng.process 1.9ms/4KB, particles.cpu 1.7ms, server.tick 1.4ms/1KB, cw.process 1.2ms, cw.players 1.1ms, sim.move 1.0ms, move.pm 0.5ms, move.in 0.4ms, bot.think 0.4ms, net.send 0.2ms, md3.morph 0.1ms[0m
+[lb]hitch]   prev: 6.3 6.3 6.3 6.3 6.7 6.7 6.7 6.7[0m
+[lb]hitch] 12.7ms (med 6.9) | proc 5.9 rcpu 0.0 gpu 0.0 phys 0.3 rest 6.9 | alloc 48KB | top: proc:other 2.3ms, particles.cpu 1.8ms, cw.process 1.2ms | ticks 0[0m
+[lb]hitch]   scopes: proc:other 2.3ms, particles.cpu 1.8ms, cw.process 1.2ms, cw.players 1.1ms, ng.process 0.4ms/2KB, server.tick 0.1ms, entitynode 0.1ms, net.poll 0.1ms, cw.csqc 0.1ms[0m
+[lb]hitch]   prev: 11.7 7.4 4.8 7.4 7.4 7.4 7.4 7.4[0m
+[lb]frameprofile] med 6.9ms p99 12.7ms | proc 5.9 rcpu 0.0 gpu 0.0 rest 1.0 | draws 0 | proc:other 2.3ms, particles.cpu 1.8ms, cw.process 1.2ms, cw.players 1.1ms | ticks 0[0m
+[lb]hitch] 13.8ms (med 6.9) | proc 5.7 rcpu 0.0 gpu 0.0 phys 0.2 rest 8.1 | alloc 56KB | top: proc:other 2.0ms, ng.process 1.4ms, particles.cpu 1.2ms | ticks 1[0m
+[lb]frameprofile] med 6.9ms p99 11.7ms | proc 6.9 rcpu 0.0 gpu 0.0 rest 0.0 | draws 0 | particles.cpu 2.0ms, proc:other 1.9ms, ng.process 1.7ms, server.tick 1.2ms | ticks 1[0m
+[lb]frameprofile] med 7.1ms p99 11.7ms | proc 5.6 rcpu 0.0 gpu 0.0 rest 1.6 | draws 0 | proc:other 2.1ms, particles.cpu 1.8ms, cw.process 1.1ms, cw.players 1.1ms | ticks 0[0m
+[lb]hitch] 15.1ms (med 6.9) | proc 7.4 rcpu 0.0 gpu 0.0 phys 0.2 rest 7.7 | alloc 56KB | top: proc:other 2.4ms, ng.process 1.9ms, particles.cpu 1.8ms | ticks 2[0m
+[lb]hitch]   scopes: proc:other 2.4ms, ng.process 1.9ms/4KB, particles.cpu 1.8ms, server.tick 1.4ms/2KB, cw.process 1.2ms, cw.players 1.0ms, sim.move 0.9ms, move.pm 0.4ms, move.in 0.4ms, bot.think 0.4ms, net.send 0.3ms, sim.start 0.1ms[0m
+[lb]hitch]   prev: 6.7 6.7 6.7 8.7 6.9 6.9 6.9 6.9[0m
+[lb]hitch] 12.6ms (med 6.9) | proc 4.8 rcpu 0.0 gpu 0.0 phys 0.2 rest 7.9 | alloc 48KB | top: proc:other 1.4ms, particles.cpu 1.4ms, ng.process 1.0ms | ticks 1[0m
+[lb]frameprofile] med 6.9ms p99 12.2ms | proc 3.7 rcpu 0.0 gpu 0.0 rest 3.2 | draws 0 | proc:other 1.3ms, particles.cpu 1.1ms, cw.process 0.9ms, cw.players 0.9ms | ticks 0[0m
+[lb]frameprofile] med 7.1ms p99 10.1ms | proc 6.5 rcpu 0.0 gpu 0.0 rest 0.6 | draws 0 | proc:other 2.7ms, particles.cpu 1.6ms, cw.process 1.2ms, cw.players 1.1ms | ticks 1[0m
+[lb]frameprofile] med 7.1ms p99 12.1ms | proc 5.1 rcpu 0.0 gpu 0.0 rest 2.1 | draws 0 | proc:other 1.8ms, particles.cpu 1.2ms, ng.process 1.0ms, cw.process 0.9ms | ticks 1[0m
+[lb]hitch] 13.4ms (med 7.1) | proc 4.8 rcpu 0.0 gpu 0.0 phys 0.1 rest 8.6 | alloc 48KB | top: proc:other 1.5ms, particles.cpu 1.3ms, cw.process 0.9ms | ticks 1[0m
+[lb]hitch]   scopes: proc:other 1.5ms, particles.cpu 1.3ms, cw.process 0.9ms, ng.process 0.9ms/4KB, cw.players 0.9ms, server.tick 0.6ms/1KB, sim.move 0.3ms, move.pm 0.3ms, net.send 0.2ms, entitynode 0.1ms, cw.csqc 0.1ms[0m
+[lb]hitch]   prev: 7.1 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]frameprofile] med 6.9ms p99 12.4ms | proc 4.6 rcpu 0.0 gpu 0.0 rest 2.3 | draws 0 | proc:other 1.3ms, particles.cpu 1.2ms, ng.process 1.1ms, cw.process 0.9ms | ticks 1[0m
+[lb]frameprofile] med 6.9ms p99 10.9ms | proc 5.6 rcpu 0.0 gpu 0.0 rest 1.3 | draws 0 | proc:other 1.6ms, particles.cpu 1.6ms, ng.process 1.3ms, cw.process 1.1ms | ticks 1[0m
+[lb]frameprofile] med 6.9ms p99 9.8ms | proc 3.4 rcpu 0.0 gpu 0.0 rest 3.5 | draws 0 | particles.cpu 1.2ms, proc:other 1.2ms, cw.process 0.9ms, cw.players 0.9ms | ticks 0[0m
+[lb]frameprofile] med 6.9ms p99 9.9ms | proc 4.7 rcpu 0.0 gpu 0.0 rest 2.2 | draws 0 | particles.cpu 1.7ms, proc:other 1.6ms, cw.process 1.2ms, cw.players 1.1ms | ticks 0[0m
+[lb]frameprofile] med 6.9ms p99 7.1ms | proc 5.4 rcpu 0.0 gpu 0.0 rest 1.5 | draws 0 | proc:other 1.7ms, particles.cpu 1.6ms, ng.process 1.1ms, cw.process 1.0ms | ticks 1[0m
+[lb]frameprofile] med 6.9ms p99 7.1ms | proc 5.1 rcpu 0.0 gpu 0.0 rest 1.9 | draws 0 | proc:other 1.9ms, particles.cpu 1.7ms, cw.process 1.1ms, cw.players 1.1ms | ticks 0[0m
+[lb]hitch] 13.3ms (med 6.9) | proc 7.3 rcpu 0.0 gpu 0.0 phys 0.2 rest 6.1 | alloc 417KB | top: proc:other 3.3ms, particles.cpu 1.5ms, ng.process 1.3ms | ticks 1[0m
+[lb]hitch]   scopes: proc:other 3.3ms, particles.cpu 1.5ms, ng.process 1.3ms/8KB, iqm.mesh 1.2ms/363KB, cw.process 1.0ms, cw.players 0.9ms, server.tick 0.9ms/5KB, sim.move 0.4ms/4KB, net.send 0.3ms/1KB, move.pm 0.1ms, sim.start 0.1ms, entitynode 0.1ms[0m
+[lb]hitch]   prev: 7.6 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]frameprofile] med 6.9ms p99 9.1ms | proc 4.7 rcpu 0.0 gpu 0.0 rest 2.3 | draws 0 | particles.cpu 1.7ms, proc:other 1.7ms, cw.process 1.1ms, cw.players 1.0ms | ticks 0[0m
+[lb]frameprofile] med 6.9ms p99 10.8ms | proc 4.9 rcpu 0.0 gpu 0.0 rest 2.0 | draws 0 | particles.cpu 1.9ms, proc:other 1.8ms, cw.process 1.1ms, cw.players 1.1ms | ticks 0[0m
+[lb]hitch] 14.6ms (med 6.9) | proc 5.8 rcpu 0.0 gpu 0.0 phys 0.1 rest 8.8 | alloc 48KB | top: proc:other 2.1ms, ng.process 1.3ms, particles.cpu 1.2ms | ticks 1[0m
+[lb]hitch]   scopes: proc:other 2.1ms, ng.process 1.3ms/4KB, particles.cpu 1.2ms, cw.process 1.0ms, server.tick 0.9ms/1KB, cw.players 0.9ms, sim.move 0.6ms, move.pm 0.3ms, move.in 0.2ms, bot.think 0.2ms, net.send 0.2ms, sim.start 0.1ms[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]frameprofile] med 6.9ms p99 10.9ms | proc 5.1 rcpu 0.0 gpu 0.0 rest 1.9 | draws 0 | particles.cpu 1.6ms, proc:other 1.5ms, cw.process 0.9ms, ng.process 0.9ms | ticks 1[0m
+[lb]frameprofile] med 6.9ms p99 10.1ms | proc 3.9 rcpu 0.0 gpu 0.0 rest 3.1 | draws 0 | particles.cpu 1.5ms, proc:other 1.2ms, cw.process 0.9ms, cw.players 0.9ms | ticks 0[0m
+[lb]frameprofile] med 6.9ms p99 8.3ms | proc 4.7 rcpu 0.0 gpu 0.0 rest 2.3 | draws 0 | particles.cpu 1.8ms, proc:other 1.6ms, cw.process 1.1ms, cw.players 1.0ms | ticks 0[0m
+[lb]frameprofile] med 6.9ms p99 8.3ms | proc 5.5 rcpu 0.0 gpu 0.0 rest 1.5 | draws 0 | proc:other 2.1ms, particles.cpu 1.4ms, cw.process 1.0ms, cw.players 0.9ms | ticks 1[0m
+[lb]frameprofile] med 7.1ms p99 9.1ms | proc 6.0 rcpu 0.0 gpu 0.0 rest 1.1 | draws 0 | particles.cpu 2.1ms, proc:other 1.7ms, cw.process 1.1ms, cw.players 1.0ms | ticks 1[0m
+[lb]hitch] 14.9ms (med 7.1) | proc 9.2 rcpu 0.0 gpu 0.0 phys 0.2 rest 5.6 | alloc 64KB | top: ng.process 4.8ms, server.tick 3.9ms, sim.move 3.5ms | ticks 2[0m
+[lb]hitch]   scopes: ng.process 4.8ms/8KB, server.tick 3.9ms/5KB, sim.move 3.5ms/4KB, move.post 2.3ms/3KB, proc:other 1.8ms, particles.cpu 1.5ms, cw.process 1.0ms, move.pm 0.9ms, cw.players 0.9ms, net.send 0.2ms/1KB, move.in 0.1ms, bot.think 0.1ms[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]frameprofile] med 7.1ms p99 11.0ms | proc 5.9 rcpu 0.0 gpu 0.0 rest 1.3 | draws 0 | particles.cpu 2.4ms, proc:other 1.8ms, cw.process 1.2ms, cw.players 1.1ms | ticks 0[0m
+[lb]frameprofile] med 6.9ms p99 11.9ms | proc 4.8 rcpu 0.0 gpu 0.0 rest 2.2 | draws 0 | proc:other 2.0ms, particles.cpu 1.2ms, cw.process 1.0ms, cw.players 0.9ms | ticks 0[0m
+[lb]frameprofile] med 7.1ms p99 9.7ms | proc 5.1 rcpu 0.0 gpu 0.0 rest 2.1 | draws 0 | particles.cpu 1.9ms, proc:other 1.7ms, cw.process 1.2ms, cw.players 1.1ms | ticks 0[0m
+[lb]frameprofile] med 6.9ms p99 7.4ms | proc 6.9 rcpu 0.0 gpu 0.0 rest 0.0 | draws 0 | proc:other 2.4ms, particles.cpu 1.7ms, ng.process 1.5ms, server.tick 1.3ms | ticks 1[0m
+[lb]frameprofile] med 6.9ms p99 7.4ms | proc 6.2 rcpu 0.0 gpu 0.0 rest 0.8 | draws 0 | proc:other 2.6ms, particles.cpu 1.7ms, cw.process 1.2ms, cw.players 1.1ms | ticks 0[0m
+[lb]frameprofile] med 6.9ms p99 10.4ms | proc 3.5 rcpu 0.0 gpu 0.0 rest 3.5 | draws 0 | proc:other 1.2ms, particles.cpu 1.2ms, cw.process 0.9ms, cw.players 0.9ms | ticks 0[0m
+[lb]frameprofile] med 6.9ms p99 8.1ms | proc 6.9 rcpu 0.0 gpu 0.0 rest 0.0 | draws 0 | proc:other 2.6ms, particles.cpu 1.9ms, ng.process 1.2ms, cw.process 1.2ms | ticks 1[0m
+[lb]hitch] 12.8ms (med 6.9) | proc 4.9 rcpu 0.0 gpu 0.0 phys 0.2 rest 7.8 | alloc 48KB | top: particles.cpu 1.6ms, proc:other 1.5ms, cw.process 1.0ms | ticks 1[0m
+[lb]hitch]   scopes: particles.cpu 1.6ms, proc:other 1.5ms, cw.process 1.0ms, cw.players 0.9ms, ng.process 0.8ms/3KB, server.tick 0.6ms/1KB, sim.move 0.3ms, move.pm 0.2ms, net.send 0.2ms, move.in 0.1ms, bot.think 0.1ms, sim.start 0.1ms[0m
+[lb]hitch]   prev: 6.9 6.9 11.1 6.9 6.9 7.4 7.4 6.8[0m
+[lb]frameprofile] med 6.9ms p99 11.1ms | proc 6.6 rcpu 0.0 gpu 0.0 rest 0.3 | draws 0 | proc:other 2.4ms, particles.cpu 2.3ms, cw.process 1.0ms, cw.players 0.9ms | ticks 1[0m
+[lb]hitch] 13.4ms (med 6.9) | proc 6.4 rcpu 0.0 gpu 0.0 phys 0.2 rest 7.1 | alloc 48KB | top: particles.cpu 2.0ms, proc:other 2.0ms, ng.process 1.2ms | ticks 1[0m
+[lb]hitch]   scopes: particles.cpu 2.0ms, proc:other 2.0ms, ng.process 1.2ms/5KB, cw.process 1.0ms, server.tick 1.0ms/1KB, cw.players 0.9ms, sim.move 0.6ms, move.pm 0.4ms, net.send 0.2ms, move.in 0.1ms, bot.think 0.1ms, entitynode 0.1ms[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch] 13.8ms (med 6.9) | proc 7.7 rcpu 0.0 gpu 0.0 phys 0.2 rest 6.0 | alloc 72KB | top: particles.cpu 2.7ms, proc:other 2.5ms, ng.process 1.2ms | ticks 1[0m
+[lb]frameprofile] med 6.9ms p99 11.4ms | proc 7.4 rcpu 0.0 gpu 0.0 rest 0.0 | draws 0 | proc:other 3.3ms, particles.cpu 2.0ms, cw.process 1.3ms, cw.players 1.2ms | ticks 0[0m
+[lb]frameprofile] med 6.9ms p99 7.4ms | proc 5.4 rcpu 0.0 gpu 0.0 rest 1.5 | draws 0 | particles.cpu 2.3ms, proc:other 1.8ms, cw.process 1.2ms, cw.players 1.1ms | ticks 0[0m
+[lb]frameprofile] med 6.9ms p99 7.4ms | proc 5.6 rcpu 0.0 gpu 0.0 rest 1.3 | draws 0 | particles.cpu 1.8ms, proc:other 1.7ms, cw.process 1.1ms, cw.players 1.1ms | ticks 1[0m
+[lb]hitch] 13.7ms (med 6.9) | proc 9.4 rcpu 0.0 gpu 0.0 phys 0.1 rest 4.4 | alloc 56KB | top: ng.process 3.3ms, particles.cpu 2.4ms, proc:other 2.2ms | ticks 1[0m
+[lb]hitch]   scopes: ng.process 3.3ms/15KB, particles.cpu 2.4ms, proc:other 2.2ms, cw.process 1.3ms, server.tick 1.3ms/2KB, cw.players 1.2ms, sim.move 0.7ms, move.in 0.5ms, bot.think 0.5ms, net.send 0.3ms/1KB, move.pm 0.2ms, bot.path 0.1ms[0m
+[lb]hitch]   prev: 6.9 6.9 7.1 6.9 6.9 6.9 11.8 6.9[0m
+[lb]hitch] 13.8ms (med 6.9) | proc 8.8 rcpu 0.0 gpu 0.0 phys 0.1 rest 5.0 | alloc 64KB | top: proc:other 3.2ms, particles.cpu 3.1ms, cw.process 1.2ms | ticks 1[0m
+[lb]frameprofile] med 6.9ms p99 11.8ms | proc 4.8 rcpu 0.0 gpu 0.0 rest 2.1 | draws 0 | particles.cpu 1.8ms, proc:other 1.6ms, cw.process 1.1ms, cw.players 1.1ms | ticks 0[0m
+[lb]frameprofile] med 6.9ms p99 9.1ms | proc 6.6 rcpu 0.0 gpu 0.0 rest 0.3 | draws 0 | proc:other 3.1ms, particles.cpu 2.0ms, cw.process 1.2ms, cw.players 1.1ms | ticks 0[0m
+[lb]frameprofile] med 7.1ms p99 8.9ms | proc 4.1 rcpu 0.0 gpu 0.0 rest 3.1 | draws 0 | particles.cpu 1.9ms, proc:other 1.2ms, cw.process 0.9ms, cw.players 0.9ms | ticks 0[0m
+[lb]frameprofile] med 6.9ms p99 7.1ms | proc 6.6 rcpu 0.0 gpu 0.0 rest 0.4 | draws 0 | proc:other 2.3ms, particles.cpu 2.0ms, cw.process 1.2ms, cw.players 1.1ms | ticks 1[0m
+[lb]frameprofile] med 6.9ms p99 8.3ms | proc 5.7 rcpu 0.0 gpu 0.0 rest 1.2 | draws 0 | proc:other 2.1ms, particles.cpu 1.5ms, cw.process 1.1ms, cw.players 1.1ms | ticks 1[0m
+[lb]frameprofile] med 6.9ms p99 8.3ms | proc 4.6 rcpu 0.0 gpu 0.0 rest 2.3 | draws 0 | particles.cpu 1.7ms, proc:other 1.6ms, cw.process 1.1ms, cw.players 1.1ms | ticks 0[0m
+[lb]hitch] 12.8ms (med 6.9) | proc 4.8 rcpu 0.0 gpu 0.0 phys 0.1 rest 8.0 | alloc 40KB | top: proc:other 1.5ms, particles.cpu 1.3ms, cw.process 0.9ms | ticks 1[0m
+[lb]hitch]   scopes: proc:other 1.5ms, particles.cpu 1.3ms, cw.process 0.9ms, ng.process 0.9ms/4KB, cw.players 0.9ms, server.tick 0.7ms/1KB, sim.move 0.5ms, move.in 0.3ms, bot.think 0.3ms, move.pm 0.2ms, net.send 0.2ms, entitynode 0.1ms[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 7.1 7.1 7.1[0m
+[lb]frameprofile] med 6.9ms p99 8.3ms | proc 4.5 rcpu 0.0 gpu 0.0 rest 2.5 | draws 0 | proc:other 1.6ms, particles.cpu 1.5ms, cw.process 1.2ms, cw.players 1.1ms | ticks 0[0m
+[lb]frameprofile] med 6.9ms p99 8.3ms | proc 5.6 rcpu 0.0 gpu 0.0 rest 1.3 | draws 0 | proc:other 1.8ms, particles.cpu 1.5ms, cw.process 1.1ms, ng.process 1.1ms | ticks 1[0m
+[lb]frameprofile] med 6.9ms p99 7.1ms | proc 5.3 rcpu 0.0 gpu 0.0 rest 1.6 | draws 0 | particles.cpu 1.7ms, proc:other 1.7ms, cw.process 1.1ms, cw.players 1.1ms | ticks 1[0m
+[lb]frameprofile] med 6.9ms p99 6.9ms | proc 4.8 rcpu 0.0 gpu 0.0 rest 2.2 | draws 0 | proc:other 1.9ms, particles.cpu 1.5ms, cw.process 1.0ms, cw.players 1.0ms | ticks 0[0m
+[lb]frameprofile] med 6.9ms p99 7.4ms | proc 4.5 rcpu 0.0 gpu 0.0 rest 2.4 | draws 0 | particles.cpu 1.9ms, proc:other 1.3ms, cw.process 1.1ms, cw.players 1.1ms | ticks 0[0m
+[lb]frameprofile] med 7.1ms p99 10.3ms | proc 5.1 rcpu 0.0 gpu 0.0 rest 2.0 | draws 0 | proc:other 1.9ms, particles.cpu 1.3ms, cw.process 1.0ms, cw.players 0.9ms | ticks 1[0m
+[lb]frameprofile] med 6.9ms p99 8.3ms | proc 4.7 rcpu 0.0 gpu 0.0 rest 2.3 | draws 0 | particles.cpu 1.7ms, proc:other 1.6ms, cw.process 1.1ms, cw.players 1.1ms | ticks 0[0m
+[lb]hitch] 13.8ms (med 6.9) | proc 8.0 rcpu 0.0 gpu 0.0 phys 0.1 rest 5.8 | alloc 64KB | top: proc:other 2.7ms, particles.cpu 2.3ms, ng.process 1.5ms | ticks 1[0m
+[lb]hitch]   scopes: proc:other 2.7ms, particles.cpu 2.3ms, ng.process 1.5ms/4KB, server.tick 1.2ms/1KB, cw.process 1.2ms, cw.players 1.1ms, sim.move 0.8ms, move.pm 0.7ms, net.send 0.2ms, md3.morph 0.1ms, entitynode 0.1ms, sim.start 0.1ms[0m
+[lb]hitch]   prev: 7.6 7.4 7.4 7.4 7.4 7.4 7.4 10.7[0m
+[lb]hitch] 13.8ms (med 6.9) | proc 7.9 rcpu 0.0 gpu 0.0 phys 0.1 rest 5.9 | alloc 56KB | top: proc:other 2.5ms, particles.cpu 2.3ms, ng.process 1.7ms | ticks 1[0m
+[lb]frameprofile] med 6.9ms p99 10.7ms | proc 5.6 rcpu 0.0 gpu 0.0 rest 1.3 | draws 0 | particles.cpu 1.7ms, proc:other 1.6ms, ng.process 1.1ms, cw.process 1.1ms | ticks 1[0m
+[lb]frameprofile] med 6.9ms p99 12.0ms | proc 5.6 rcpu 0.0 gpu 0.0 rest 1.3 | draws 0 | proc:other 2.3ms, particles.cpu 1.8ms, cw.process 1.1ms, cw.players 1.1ms | ticks 0[0m
+[lb]frameprofile] med 6.9ms p99 9.5ms | proc 5.2 rcpu 0.0 gpu 0.0 rest 1.7 | draws 0 | particles.cpu 1.9ms, proc:other 1.9ms, cw.process 1.2ms, cw.players 1.1ms | ticks 0[0m
+[lb]hitch] 12.7ms (med 6.9) | proc 7.7 rcpu 0.0 gpu 0.0 phys 0.3 rest 5.0 | alloc 40KB | top: proc:other 2.8ms, particles.cpu 2.2ms, ng.process 1.3ms | ticks 1[0m
+[lb]hitch]   scopes: proc:other 2.8ms, particles.cpu 2.2ms, ng.process 1.3ms/4KB, cw.process 1.3ms, cw.players 1.1ms, server.tick 1.0ms/1KB, sim.move 0.6ms, move.in 0.3ms, move.pm 0.3ms, bot.think 0.3ms, net.send 0.2ms, entitynode 0.1ms[0m
+[lb]hitch]   prev: 9.4 6.9 6.9 6.9 7.1 7.1 7.1 7.1[0m
+[lb]frameprofile] med 6.9ms p99 11.0ms | proc 5.4 rcpu 0.0 gpu 0.0 rest 1.5 | draws 0 | particles.cpu 2.3ms, proc:other 1.7ms, cw.process 1.1ms, cw.players 1.0ms | ticks 0[0m
+[lb]frameprofile] med 6.9ms p99 9.4ms | proc 6.1 rcpu 0.0 gpu 0.0 rest 0.9 | draws 0 | particles.cpu 2.1ms, proc:other 1.9ms, cw.process 1.2ms, cw.players 1.1ms | ticks 1[0m
+[lb]frameprofile] med 7.1ms p99 9.7ms | proc 5.9 rcpu 0.0 gpu 0.0 rest 1.2 | draws 0 | proc:other 2.4ms, particles.cpu 2.1ms, cw.process 1.2ms, cw.players 1.1ms | ticks 0[0m
+[lb]hitch] 13.8ms (med 6.9) | proc 6.4 rcpu 0.0 gpu 0.0 phys 0.2 rest 7.4 | alloc 40KB | top: proc:other 2.4ms, particles.cpu 1.6ms, cw.process 1.2ms | ticks 1[0m
+[lb]hitch]   scopes: proc:other 2.4ms, particles.cpu 1.6ms, cw.process 1.2ms, ng.process 1.1ms/4KB, cw.players 1.1ms, server.tick 0.9ms/1KB, sim.move 0.6ms, move.pm 0.3ms, move.in 0.3ms, bot.think 0.2ms, net.send 0.2ms, entitynode 0.1ms[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 11.6[0m
+[lb]frameprofile] med 6.9ms p99 9.6ms | proc 5.6 rcpu 0.0 gpu 0.0 rest 1.3 | draws 0 | particles.cpu 1.8ms, proc:other 1.5ms, ng.process 1.2ms, server.tick 1.1ms | ticks 1[0m

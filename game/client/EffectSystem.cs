@@ -5,6 +5,8 @@ using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Gameplay;
 using XonoticGodot.Common.Services;
 using XonoticGodot.Engine.Collision;
+using XonoticGodot.Engine.Particles;
+using XonoticGodot.Game.Client.Particles;
 using NVec3 = System.Numerics.Vector3;
 
 namespace XonoticGodot.Game.Client;
@@ -64,7 +66,33 @@ public partial class EffectSystem : Node3D
     /// <summary>Hard cap on simultaneous one-shot effect nodes; oldest are culled past this (cheap GC guard).</summary>
     [Export] public int MaxLiveEffects { get; set; } = 256;
 
+    /// <summary>
+    /// (3.2-1) When set, the single-node heuristic bursts from <see cref="BuildBurst"/> are reused from a
+    /// free-list instead of <c>new</c>+<c>QueueFree</c>'d per spawn — killing the GpuParticles3D node /
+    /// native-handle / finalizer / tree churn in firefights. Default FALSE: every code path then falls
+    /// through to today's allocate-and-free behavior, so default visuals/allocation are byte-identical.
+    /// Flipping this changes ONLY allocation behavior, not visuals — the same cached mesh + freshly-built
+    /// ParticleProcessMaterial are carried by the reused node. Only the heuristic <see cref="BuildBurst"/>
+    /// path participates; trails, the effectinfo fx_info tree, attached muzzle flashes and the GPU warm pass
+    /// stay on QueueFree.
+    /// </summary>
+    // (§11 R11) Default ON since the rendering-pipeline pass: the pooled lifecycle (ScheduleRelease →
+    // free-list) replaces the per-burst new GpuParticles3D + QueueFree node churn in firefights. The
+    // attached-muzzleflash and GPU-warm callers still pass pool:false and keep their QueueFree lifecycle.
+    [Export] public bool PoolBurstNodes { get; set; } = true;
+
     private readonly Queue<Node3D> _live = new();
+
+    // (3.2-1) Per-(class, 5-bit tint bucket) free-list of idle one-shot burst nodes, ready to re-emit. A
+    // released burst is detached from the tree (no parent) and parked here; AcquireBurst pops one (skipping
+    // any Godot freed out from under us) and ConfigureBurst fully re-sets it. Managed-side dictionaries (NOT
+    // SetMeta) so we never convert a string literal to a StringName on the hot path (XG0002 analyzer).
+    private readonly Dictionary<(EffectClass, int), Stack<GpuParticles3D>> _burstPool = new();
+    // Reverse lookup: a tracked/armed burst node -> its pool key, so ReleaseBurst can re-file it. Membership
+    // also marks "this node is a live pooled burst": ReleaseBurst removes it (a second release becomes a
+    // no-op) and Track's cull consults it to release rather than free an early-culled burst.
+    private readonly Dictionary<GpuParticles3D, (EffectClass, int)> _burstKey = new();
+    private const int MaxPooledPerKey = 24; // cap idle nodes retained per (class,tint) bucket
 
     // =================================================================================================
     //  effectinfo.txt-driven path (T20): the real parsed catalog and the decal/casing sub-systems.
@@ -107,6 +135,85 @@ public partial class EffectSystem : Node3D
     /// <summary>Real model-gib bursts (player death / robot chunks). Created on first add to the tree.</summary>
     public ModelGibs Gibs { get; private set; } = null!;
 
+    // =================================================================================================
+    //  Dual particle system (planning/particles-dual-system.md). The router resolves each effectinfo
+    //  spawn to the faithful CPU backend (mode 0 default) or the modern GPU backend (mode 2), per the
+    //  cl_particles_modern cvar + per-effect authored style + SDF coverage. Created as children in _Ready;
+    //  Font/Decals/style-registry are wired in EnsureInfoLoaded once the atlas + VFS loaders are ready.
+    // =================================================================================================
+
+    /// <summary>The faithful CPU particle backend (perfect-parity MultiMesh path; the mode-0 default).</summary>
+    public FaithfulParticleBackend FaithfulParticles { get; private set; } = null!;
+
+    /// <summary>The modern GPU particle backend (custom shader_type particles + SDF collision; mode 2).</summary>
+    public ModernParticleBackend ModernParticles { get; private set; } = null!;
+
+    /// <summary>The chunked-SDF collision service (built at map load via <see cref="BuildSdfForMap"/>).</summary>
+    public SdfCollisionService Sdf { get; private set; } = null!;
+
+    /// <summary>Per-effect authored style/preset overlay (effectinfo_xg.txt). Drives mode-1 routing.</summary>
+    public EffectStyleRegistry Styles { get; } = new();
+
+    /// <summary>Routes effectinfo spawns to the faithful/modern backend (§D.2). Null until _Ready.</summary>
+    public ParticleRouter Router { get; private set; } = null!;
+
+    /// <summary>Faithful surface-splat decals (DP R_DecalSystem) — every particle mark draws here.</summary>
+    public DecalSplats Splats { get; private set; } = null!;
+
+    /// <summary>
+    /// Wire the map's static collision world so decal splats conform to the real brush faces (DP
+    /// R_DecalSystem clips the mark against the surfaces around the impact). Call after map load with the
+    /// world from <c>MapLoader.BuildCollision</c>; without it splats fall back to flat quads.
+    /// </summary>
+    public void SetCollisionWorld(CollisionWorld world)
+    {
+        if (Splats is not null)
+            Splats.World = world;
+    }
+
+    /// <summary>
+    /// True when projectile trails should spawn through the faithful per-segment path (DP CL_ParticleTrail)
+    /// instead of the legacy continuous GpuParticles emitters: the faithful backend exists and the renderer
+    /// is not in all-modern mode. Read per projectile spawn (live mode switches apply to new projectiles).
+    /// </summary>
+    public bool UseFaithfulTrails =>
+        FaithfulParticles is not null &&
+        (int)XonoticGodot.Game.Menu.MenuState.Cvars.GetFloat(ParticleCvars.Modern) != 2;
+
+    /// <summary>
+    /// DP CL_ParticleTrail: spawn one trail segment of <paramref name="effectName"/> along
+    /// <paramref name="from"/> → <paramref name="to"/> (Quake space) with the projectile's
+    /// <paramref name="velocity"/> as the emit velocity (trail blocks apply their velocitymultiplier to it —
+    /// e.g. the electro trail's −0.1 backward drift). The faithful sim steps each trailspacing block along
+    /// the segment with the shared fractional accumulator, so per-frame calls compose into a continuous,
+    /// speed-independent trail exactly like DP. Returns false when the faithful path is off (mode 2).
+    /// </summary>
+    public bool SpawnTrailSegment(string effectName, NVec3 from, NVec3 to, NVec3 velocity)
+    {
+        if (!UseFaithfulTrails)
+            return false;
+        EnsureInfoLoaded();
+        Effect? effect = ResolveEffect(effectName);
+        IReadOnlyList<EffectInfoEmitter>? blocks = LookupInfo(effectName, effect);
+        if (blocks is null || blocks.Count == 0)
+            return false;
+        FaithfulParticles.Trail(blocks, from, to, velocity, 1);
+        return true;
+    }
+
+    /// <summary>
+    /// Wire the map's RENDER geometry for decal splats (DP's R_DecalSystem clips marks against the visible
+    /// surface triangles, not the collision brushes — the difference shows on bevelled trim and patches,
+    /// where a brush-clipped mark stops at the wrong edge). Call after map load with the loaded BSP.
+    /// </summary>
+    public void SetDecalGeometry(XonoticGodot.Formats.Bsp.BspData bsp)
+    {
+        if (Splats is null || bsp is null)
+            return;
+        try { Splats.SetGeometry(bsp); }
+        catch (Exception ex) { GD.PushWarning($"[DecalSplats] SetGeometry failed: {ex.Message}"); }
+    }
+
     /// <summary>
     /// Optional host-supplied model loader (e.g. <c>AssetLoader.LoadModel</c>) shared with the casing and
     /// gib systems so they can render the real brass/limb meshes from the mounted content. When unset they
@@ -133,6 +240,27 @@ public partial class EffectSystem : Node3D
         AddChild(Casings);
         Gibs = new ModelGibs { Name = "Gibs", ModelLoader = _modelLoader };
         AddChild(Gibs);
+
+        // Dual particle backends + SDF service live as children (shared transform/lifetime). Font/Decals and
+        // the style overlay are wired lazily in EnsureInfoLoaded (after the atlas + VFS loaders are present).
+        //
+        // CLIENT CVAR STORE: the cl_particles* gates/quality/mode are CLIENT cvars the console/menu write into
+        // MenuState.Cvars. The faithful sim, renderer, router and SDF service MUST read them from there — NOT
+        // the ambient Api.Cvars, which on a listen server is the SERVER store (it lacks the client particle
+        // cvars, so cl_particles reads 0 and every spawn is gated off → nothing renders). See SetCvars.
+        ICvarService clientCvars = XonoticGodot.Game.Menu.MenuState.Cvars;
+
+        FaithfulParticles = new FaithfulParticleBackend { Name = "FaithfulParticles" };
+        AddChild(FaithfulParticles);
+        FaithfulParticles.SetCvars(clientCvars);
+        Splats = new DecalSplats { Name = "DecalSplats" };
+        AddChild(Splats);
+        FaithfulParticles.SetSplats(Splats);
+        ModernParticles = new ModernParticleBackend { Name = "ModernParticles" };
+        AddChild(ModernParticles);
+        Sdf = new SdfCollisionService { Name = "SdfCollision", Cvars = clientCvars };
+        AddChild(Sdf);
+        Router = new ParticleRouter(FaithfulParticles, ModernParticles, Styles, Sdf) { Cvars = clientCvars };
     }
 
     /// <summary>
@@ -205,6 +333,21 @@ public partial class EffectSystem : Node3D
             if (built is not null)
                 list.Add(built);
         }
+
+        // (§11 R1) The FAITHFUL path's pipelines — the default backend since the dual-system merge, and
+        // entirely separate resources from the legacy bursts above: the premul/invmod MultiMesh shaders
+        // (incl. the spark vertex path) and the DecalSplats blend_mul shader. Without these the first real
+        // explosion/impact mark compiled 2-3 pipelines mid-play.
+        if (FaithfulParticles is not null)
+            list.AddRange(FaithfulParticles.BuildWarmupInstances());
+        if (Splats is not null)
+            list.Add(Splats.BuildWarmupInstance());
+
+        // One representative effect flash so the warm viewport renders with a clustered OmniLight active.
+        // (The live fx-light pool itself is seeded by the BuildFromInfo warm bursts above — their
+        // lightradius blocks route through the pooled SpawnInfoLight during the loading screen.)
+        list.Add(new OmniLight3D { Name = "warm_fx_light", OmniRange = 60f, LightEnergy = 2f });
+
         return list;
     }
 
@@ -227,8 +370,44 @@ public partial class EffectSystem : Node3D
         try { Font = ParticleFont.Load(TextureLoader, VfsTextLoader); }
         catch { Font = null; }
 
+        // Wire the dual particle backends now that the atlas + decal subsystem exist. Idempotent (shares this
+        // method's _infoLoadAttempted guard). The per-effect style overlay (effectinfo_xg.txt) is parsed from
+        // the same VFS text loader; absent => every effect resolves to ParticleStyle.Auto (faithful by default).
+        if (FaithfulParticles is not null)
+        {
+            FaithfulParticles.SetFont(Font);
+            FaithfulParticles.SetDecals(Decals);
+        }
+        if (Splats is not null)
+            Splats.Font = Font;
+        if (ModernParticles is not null)
+            ModernParticles.Font = Font;
+        try { Styles.Load(VfsTextLoader); }
+        catch { /* no overlay => Auto everywhere */ }
+
+        int mode = (int)XonoticGodot.Game.Menu.MenuState.Cvars.GetFloat(ParticleCvars.Modern);
+        string modeName = mode switch { 0 => "original", 2 => "modern", _ => "mixed" };
         GD.Print($"[EffectSystem] effectinfo: {Info.Count} effects, particlefont atlas: " +
-                 (Font?.Loaded == true ? "loaded" : "MISSING (solid-quad fallback)"));
+                 (Font?.Loaded == true ? "loaded" : "MISSING (solid-quad fallback)") +
+                 $", style overlay: {Styles.Count} effects");
+        // Headless regression / mode-matrix guard (planning §F.2): the active particle backend per cl_particles_modern.
+        GD.Print($"[Particles] backend={modeName} (cl_particles_modern={mode})");
+    }
+
+    /// <summary>
+    /// Build the chunked-SDF collision field for the loaded map (planning §A). The host (NetGame/GameDemo)
+    /// calls this once after <c>MapLoader.BuildCollision</c> returns — it has the raw BSP bytes (for the cache
+    /// hash), the static <see cref="CollisionWorld"/>, and the mounted VFS. Cheap when a cache/shipped .psdf
+    /// exists; otherwise generates asynchronously on a worker (cl_particles_sdf_generate gates generation).
+    /// Only meaningful for modern-collision (cl_particles_modern 1/2); harmless in mode 0 (default).
+    /// </summary>
+    public void BuildSdfForMap(string mapName, byte[] bspBytes, CollisionWorld collision,
+        XonoticGodot.Formats.Vfs.VirtualFileSystem vfs)
+    {
+        if (Sdf is null || collision is null || bspBytes is null)
+            return;
+        try { Sdf.BuildForMap(mapName, bspBytes, collision, vfs); }
+        catch (Exception ex) { GD.PushWarning($"[ParticleSDF] BuildForMap failed: {ex.Message}"); }
     }
 
     // =================================================================================================
@@ -275,6 +454,20 @@ public partial class EffectSystem : Node3D
         IReadOnlyList<EffectInfoEmitter>? blocks = LookupInfo(effectName, effect);
         if (blocks is not null && blocks.Count > 0)
         {
+            // Dual particle system (§D.2): route to the faithful (mode 0 default) or modern (mode 2) backend
+            // per cl_particles_modern + the effect's authored style. The backend owns the spawn (the faithful
+            // pool / modern emitter is persistent, not a per-call node), so a handled route returns null. Only
+            // an unwired backend falls through to the legacy GpuParticles3D path below.
+            if (Router is not null && Router.Route(effectName, blocks, origin, velocity, count, isTrail, color))
+            {
+                // DP spawns each block's dlight INDEPENDENT of the particles (cl_particles.c:1631-1652, before
+                // the spawnparticles gate) — the routed backend draws only sprites, so the light flash that
+                // sells an explosion (electro_impact's blue 'lightcolor 3.1 4.4 10' room-wash, the muzzle
+                // flashes, the combo's radius-400 burst) still belongs to this layer.
+                SpawnRoutedBlockLights(blocks, origin, velocity, isTrail, color);
+                return null;
+            }
+
             Node3D? built = BuildFromInfo(blocks, origin, velocity, count, color, isTrail);
             if (built is not null)
                 return built;
@@ -297,14 +490,21 @@ public partial class EffectSystem : Node3D
         else
         {
             int n = Math.Max(1, (int)MathF.Round(count * DensityScale));
-            node = BuildBurst(kind, godotOrigin, Coords.ToGodot(velocity), n, tint);
+            // (3.2-1) Only the world-space burst path opts into node pooling (attached muzzleflashes / warm-pass
+            // instances pass pool:false and keep their QueueFree lifecycle). Default PoolBurstNodes=false => new.
+            node = BuildBurst(kind, godotOrigin, Coords.ToGodot(velocity), n, tint, pool: PoolBurstNodes);
         }
 
         AddChild(node);
         // Now that the node is in the tree, schedule its self-removal once the one-shot burst finishes.
         // GpuParticles3D.Lifetime is the per-particle life; add a margin for the last particles to fade.
         float linger = (float)(node is GpuParticles3D gp ? gp.Lifetime : 1f) + 0.5f;
-        ScheduleFree(node, linger);
+        // (3.2-1) A pooled burst is returned to the free-list (not freed) when it finishes; otherwise QueueFree.
+        // _burstKey membership marks the node as a live pooled burst (populated in ConfigureBurst when pooling).
+        if (node is GpuParticles3D burst && _burstKey.ContainsKey(burst))
+            ScheduleRelease(burst, linger);
+        else
+            ScheduleFree(node, linger);
         Track(node);
         return node;
     }
@@ -556,7 +756,29 @@ public partial class EffectSystem : Node3D
     //  Particle factories — one per class. Each returns a self-freeing node.
     // =================================================================================================
 
-    private Node3D BuildBurst(EffectClass kind, Vector3 pos, Vector3 vel, int count, Tint tint)
+    /// <summary>
+    /// Build (or, when <paramref name="pool"/>, reuse) a single one-shot heuristic burst node and configure it.
+    /// <paramref name="pool"/> is honored ONLY by the world-space <see cref="Spawn"/> burst path (it passes
+    /// <see cref="PoolBurstNodes"/>); the attached-muzzleflash and GPU-warm callers leave it false so their
+    /// nodes are freshly <c>new</c>'d and never enter the pool (different ownership/lifecycle — see those
+    /// callers). When false this is byte-identical to the original <c>new GpuParticles3D</c> + configure.
+    /// </summary>
+    private Node3D BuildBurst(EffectClass kind, Vector3 pos, Vector3 vel, int count, Tint tint, bool pool = false)
+    {
+        GpuParticles3D particles = pool ? AcquireBurst(kind, tint) : new GpuParticles3D();
+        ConfigureBurst(particles, kind, pos, vel, count, tint, pool);
+        return particles;
+    }
+
+    /// <summary>
+    /// Apply the per-class heuristic burst preset onto <paramref name="particles"/>. This doubles as the RESET
+    /// path for a pooled node: it stops any leftover emission, reassigns every sizing/timing/material property,
+    /// <c>Restart()</c>s to drop particles from a prior burst, then re-arms emission — so a reused node carries
+    /// nothing stale from its previous use. On a freshly-<c>new</c>'d node the extra reset steps are cheap no-ops,
+    /// keeping a single divergence-free code path. When <paramref name="pool"/> the node's pool key is recorded
+    /// in <see cref="_burstKey"/> so it can later be re-filed by <see cref="ReleaseBurst"/>.
+    /// </summary>
+    private void ConfigureBurst(GpuParticles3D particles, EffectClass kind, Vector3 pos, Vector3 vel, int count, Tint tint, bool pool = false)
     {
         // Per-class burst tuning: (baseCount, lifetime, speedMin, speedMax, scale, gravityZ, spread).
         (int baseCount, float life, float vMin, float vMax, float scale, float grav, float spread) = kind switch
@@ -578,17 +800,20 @@ public partial class EffectSystem : Node3D
 
         int n = Math.Clamp(Math.Max(baseCount, count), 1, 1024);
 
-        var particles = new GpuParticles3D
-        {
-            Name = $"fx_{kind}",
-            Amount = n,
-            Lifetime = life,
-            OneShot = true,
-            Explosiveness = kind == EffectClass.MuzzleFlash ? 1f : 0.85f,
-            Emitting = true,
-            Position = pos,
-            // Directional emitters (muzzle/blood/spark) bias along the velocity; otherwise spherical.
-        };
+        // (3.2-1) RESET-FIRST: stop any leftover emission before re-arming a reused node (no-op on a fresh one).
+        particles.Emitting = false;
+        particles.Name = $"fx_{kind}";
+        particles.Amount = n;
+        particles.Lifetime = life;
+        particles.OneShot = true;
+        particles.Explosiveness = kind == EffectClass.MuzzleFlash ? 1f : 0.85f;
+        particles.Position = pos;
+        // Directional emitters (muzzle/blood/spark) bias along the velocity; otherwise spherical.
+        // Defense-in-depth for a reused node: a prior life as some other class could have left these set even
+        // though BuildBurst never sets them itself (only BuildInfoBurst does — and that path isn't pooled yet).
+        particles.LocalCoords = false;
+        particles.TransformAlign = GpuParticles3D.TransformAlignEnum.Disabled;
+        particles.Visible = true; // a released node was hidden (see ReleaseBurst)
 
         var mat = new ParticleProcessMaterial
         {
@@ -607,9 +832,59 @@ public partial class EffectSystem : Node3D
         };
         // Fade alpha over life and cool the color toward dark for fire/explosion.
         ApplyColorRamp(mat, kind, tint.Color);
+        // Reassigning ProcessMaterial/DrawPass1 REPLACES the prior emission shape/velocity/ramp + mesh.
         particles.ProcessMaterial = mat;
         particles.DrawPass1 = BuildParticleMesh(kind, tint.Color);
-        return particles;
+        // Clear any still-live particles from a prior burst (GPU buffer) AFTER mat/mesh are assigned and BEFORE
+        // re-arming emission, so a reused node never spits leftover particles from its previous direction.
+        particles.Restart();
+        particles.Emitting = true; // arm LAST
+
+        if (pool)
+            _burstKey[particles] = (kind, ColorKey5(tint.Color));
+    }
+
+    /// <summary>(3.2-1) Pop an idle burst node for (class, 5-bit tint) from the free-list, or build a fresh one
+    /// when the bucket is empty. Skips any pooled node Godot freed out from under us (e.g. on tree exit).</summary>
+    private GpuParticles3D AcquireBurst(EffectClass kind, Tint tint)
+    {
+        var key = (kind, ColorKey5(tint.Color));
+        if (_burstPool.TryGetValue(key, out Stack<GpuParticles3D>? stack))
+        {
+            while (stack.Count > 0)
+            {
+                GpuParticles3D n = stack.Pop();
+                if (GodotObject.IsInstanceValid(n))
+                    return n;
+            }
+        }
+        return new GpuParticles3D();
+    }
+
+    /// <summary>(3.2-1) Return a finished burst node to its free-list instead of freeing it. Idempotent: a node
+    /// that's already been released (no longer in <see cref="_burstKey"/>) is a no-op, so the timer-release and
+    /// the Track-cull release of the same node can't double-handle it. Detaches the node from the tree, hides it
+    /// and drops its live particles so a parked node holds nothing on the GPU.</summary>
+    private void ReleaseBurst(GpuParticles3D p)
+    {
+        if (!GodotObject.IsInstanceValid(p))
+            return;
+        // Not currently a live tracked burst (already pooled / never pooled) -> nothing to do.
+        if (!_burstKey.Remove(p, out (EffectClass, int) key))
+            return;
+
+        p.Emitting = false;
+        p.Visible = false;
+        p.Restart(); // drop any in-flight particles so the parked node renders nothing
+        p.GetParent()?.RemoveChild(p); // detach but DO NOT free
+
+        Stack<GpuParticles3D> stack = _burstPool.TryGetValue(key, out Stack<GpuParticles3D>? s)
+            ? s
+            : (_burstPool[key] = new Stack<GpuParticles3D>());
+        if (stack.Count < MaxPooledPerKey)
+            stack.Push(p);
+        else
+            p.QueueFree(); // bucket full — let this one go
     }
 
     private Node3D BuildTrail(EffectClass kind, Vector3 start, Vector3 end, Tint tint)
@@ -835,7 +1110,7 @@ public partial class EffectSystem : Node3D
             // like TE_SMALLFLASH / grapple_muzzleflash / jumppad_activate) keeps the parent that holds the light.
             if (info.LightRadius > 0f)
             {
-                SpawnInfoLight(parent, info, originMax, colorOverride);
+                SpawnInfoLight(info, originMax, colorOverride);
                 any = true;
             }
 
@@ -1649,8 +1924,99 @@ public partial class EffectSystem : Node3D
         mat.TextureFilter = BaseMaterial3D.TextureFilterEnum.Linear;
     }
 
-    /// <summary>Spawn the OmniLight3D an effectinfo block requests (lightradius/lightcolor/lightradiusfade).</summary>
-    private void SpawnInfoLight(Node3D parent, EffectInfoEmitter info, NVec3 atQuake, Color? colorOverride)
+    /// <summary>
+    /// The dlight pass for spawns the dual-system ROUTER handled (the faithful/modern backends draw only
+    /// sprites/decals). Mirrors the DP block loop's light section (cl_particles.c:1631-1652): per defined
+    /// block with <c>lightradius</c> &gt; 0 — after the underwater gates, independent of any particle gating —
+    /// place the flash at the trail END (originmaxs) for trail-class spawns, else at the effect center.
+    /// The flashes are pool-backed (§11 R3) and fade/recycle via this system's <see cref="_Process"/>.
+    /// </summary>
+    private void SpawnRoutedBlockLights(IReadOnlyList<EffectInfoEmitter> blocks, NVec3 origin, NVec3 velocity,
+        bool isTrail, Color? colorOverride)
+    {
+        NVec3 end = isTrail && velocity != default ? velocity : origin;
+        NVec3 center = (origin + end) * 0.5f;
+        bool underwater = false, underwaterKnown = false;
+
+        foreach (EffectInfoEmitter info in blocks)
+        {
+            if (!info.Defined || info.LightRadius <= 0f)
+                continue;
+            if (info.Underwater || info.NotUnderwater)
+            {
+                if (!underwaterKnown) // probe lazily; most blocks carry no water gate
+                {
+                    underwater = Api.Services is not null
+                        && (Api.Trace.PointContents(center) & (SuperContents.Water | SuperContents.Slime)) != 0;
+                    underwaterKnown = true;
+                }
+                if (info.Underwater && !underwater) continue;
+                if (info.NotUnderwater && underwater) continue;
+            }
+
+            SpawnInfoLight(info, isTrail ? end : center, colorOverride);
+        }
+    }
+
+    /// <summary>
+    /// The light block a trail effect would attach to its mover, for the projectile renderer's flight glow —
+    /// DP re-adds a per-frame rtlight at the trail head from any lightradius block with no fade
+    /// (cl_particles.c:1645-1651 "glowing entity"); a persistent OmniLight on the projectile is the stable
+    /// equivalent. Returns the first defined block with lightradius &gt; 0, as (radius, lightcolor).
+    /// </summary>
+    public (float Radius, NVec3 Color)? TrailLightFor(string effectName)
+    {
+        EnsureInfoLoaded();
+        IReadOnlyList<EffectInfoEmitter>? blocks = LookupInfo(effectName, ResolveEffect(effectName));
+        if (blocks is null)
+            return null;
+        foreach (EffectInfoEmitter info in blocks)
+            if (info.Defined && info.LightRadius > 0f)
+                return (info.LightRadius, info.LightColor);
+        return null;
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    //  (§11 R3) Pooled effect flash lights. Every lightradius>0 block used to create an OmniLight3D +
+    //  a SceneTree Tween + QueueFree per spawn — constant node churn in a firefight (explosions are
+    //  several blocks each). The flashes are short (≤1.5 s) and DP itself recycles a fixed dlight slot
+    //  array, so a small reused pool + one per-frame fade pass replaces all of it; saturation steals
+    //  the OLDEST (most-faded) flash. Lights are absolute-positioned children of this system — a flash
+    //  is a positional snapshot (DP CL_AllocLightFlash), it never follows a mover.
+    // ---------------------------------------------------------------------------------------------
+
+    private sealed class FxLight
+    {
+        public OmniLight3D Node = null!;
+        public float Age;
+        public float Duration;
+        public float Energy0;
+    }
+
+    /// <summary>Hard cap on simultaneously-live effect flashes (the oldest is recycled past this).</summary>
+    private const int MaxFxLights = 24;
+
+    private readonly List<FxLight> _liveFxLights = new();   // append order == age order (oldest first)
+    private readonly Queue<FxLight> _freeFxLights = new();
+
+    private FxLight AcquireFxLight()
+    {
+        if (_freeFxLights.TryDequeue(out FxLight? pooled))
+            return pooled;
+        if (_liveFxLights.Count >= MaxFxLights)
+        {
+            FxLight oldest = _liveFxLights[0];
+            _liveFxLights.RemoveAt(0);
+            return oldest;
+        }
+        var node = new OmniLight3D { Name = "fx_light", Visible = false };
+        AddChild(node);
+        return new FxLight { Node = node };
+    }
+
+    /// <summary>Light the flash an effectinfo block requests (lightradius/lightcolor/lightradiusfade) at an
+    /// absolute Quake-space position. Pool-backed; faded and recycled by <see cref="_Process"/>.</summary>
+    private void SpawnInfoLight(EffectInfoEmitter info, NVec3 atQuake, Color? colorOverride)
     {
         // DP color scales lightcolor by the tint; we use the parsed lightcolor (or the override hue) directly.
         Color lcol = colorOverride is { } c
@@ -1658,32 +2024,43 @@ public partial class EffectSystem : Node3D
             : new Color(info.LightColor.X, info.LightColor.Y, info.LightColor.Z);
         // lightcolor components routinely exceed 1 (e.g. "8 4 1"); normalise into a unit hue + energy.
         float maxc = MathF.Max(1f, MathF.Max(lcol.R, MathF.Max(lcol.G, lcol.B)));
-        var light = new OmniLight3D
-        {
-            Name = "fx_light",
-            Position = Coords.ToGodot(atQuake) - parent.Position,
-            OmniRange = Math.Clamp(info.LightRadius, 1f, 2000f),
-            LightColor = new Color(lcol.R / maxc, lcol.G / maxc, lcol.B / maxc),
-            LightEnergy = MathF.Min(8f, maxc),
-        };
-        parent.AddChild(light);
 
+        FxLight l = AcquireFxLight();
+        l.Node.Position = Coords.ToGodot(atQuake);
+        l.Node.OmniRange = Math.Clamp(info.LightRadius, 1f, 2000f);
+        l.Node.LightColor = new Color(lcol.R / maxc, lcol.G / maxc, lcol.B / maxc);
+        l.Energy0 = MathF.Min(8f, maxc);
+        l.Node.LightEnergy = l.Energy0;
+        l.Node.Visible = true;
         // Fade the flash: lightradiusfade is radius-units/sec, so the flash lasts ~radius/fade seconds.
-        float dur = info.LightRadiusFade > 0f
+        l.Duration = info.LightRadiusFade > 0f
             ? Math.Clamp(info.LightRadius / info.LightRadiusFade, 0.05f, 1.5f)
             : 0.15f;
-        SceneTree? tree = IsInsideTree() ? GetTree() : parent.GetTree();
-        if (tree is not null)
+        l.Age = 0f;
+        _liveFxLights.Add(l);
+    }
+
+    /// <summary>The one fx-light ager: linear energy fade over each flash's duration, then release to the
+    /// pool. Replaces the per-flash SceneTree Tween + QueueFree.</summary>
+    public override void _Process(double delta)
+    {
+        int count = _liveFxLights.Count;
+        if (count == 0)
+            return;
+        float dt = (float)delta;
+        for (int i = count - 1; i >= 0; i--)
         {
-            // Create the tween from the SceneTree, not the light: the light's parent isn't AddChild'd until after
-            // this block loop, so light.CreateTween() would fail ("not inside the SceneTree") and return null,
-            // NRE-ing every lightradius>0 effect (all explosions). The callback below guards the light's validity.
-            var tween = tree.CreateTween();
-            tween.TweenProperty(light, "light_energy", 0f, dur).From(light.LightEnergy);
-            tween.TweenCallback(Callable.From(() =>
+            FxLight l = _liveFxLights[i];
+            l.Age += dt;
+            float frac = l.Duration > 0f ? 1f - l.Age / l.Duration : 0f;
+            if (frac <= 0f)
             {
-                if (GodotObject.IsInstanceValid(light)) light.QueueFree();
-            }));
+                l.Node.Visible = false;
+                _liveFxLights.RemoveAt(i);
+                _freeFxLights.Enqueue(l);
+                continue;
+            }
+            l.Node.LightEnergy = l.Energy0 * frac;
         }
     }
 
@@ -1713,7 +2090,13 @@ public partial class EffectSystem : Node3D
         _live.Enqueue(node);
         while (_live.Count > MaxLiveEffects && _live.TryDequeue(out Node3D? old))
         {
-            if (GodotObject.IsInstanceValid(old))
+            if (!GodotObject.IsInstanceValid(old))
+                continue;
+            // (3.2-1) An early-culled pooled burst is still reusable — return it to the free-list rather than
+            // free it (ReleaseBurst is a no-op if it already finished via its timer). All other nodes free.
+            if (old is GpuParticles3D burst && _burstKey.ContainsKey(burst))
+                ReleaseBurst(burst);
+            else
                 old.QueueFree();
         }
     }
@@ -1735,5 +2118,39 @@ public partial class EffectSystem : Node3D
             if (GodotObject.IsInstanceValid(node))
                 node.QueueFree();
         };
+    }
+
+    /// <summary>(3.2-1) Like <see cref="ScheduleFree"/> but returns the finished burst to the pool instead of
+    /// freeing it. Mirrors ScheduleFree's SceneTreeTimer mechanism; the timeout calls <see cref="ReleaseBurst"/>,
+    /// which is idempotent so a node already released by the Track-cull is handled harmlessly.</summary>
+    private void ScheduleRelease(GpuParticles3D node, float seconds)
+    {
+        SceneTree? tree = IsInsideTree() ? GetTree() : node.GetTree();
+        if (tree is null)
+        {
+            // No tree to time against — fall back to the pooled release immediately (still better than a free).
+            ReleaseBurst(node);
+            return;
+        }
+        SceneTreeTimer timer = tree.CreateTimer(seconds);
+        timer.Timeout += () => ReleaseBurst(node);
+    }
+
+    /// <summary>(3.2-1) On teardown, free every idle node still parked in the burst pool. Pooled idle nodes are
+    /// detached (no parent) and not in <see cref="_live"/>, so without this they'd leak as orphaned handles when
+    /// the system leaves the tree (map change / shutdown).</summary>
+    public override void _ExitTree()
+    {
+        foreach (Stack<GpuParticles3D> stack in _burstPool.Values)
+        {
+            while (stack.Count > 0)
+            {
+                GpuParticles3D n = stack.Pop();
+                if (GodotObject.IsInstanceValid(n))
+                    n.QueueFree();
+            }
+        }
+        _burstPool.Clear();
+        _burstKey.Clear();
     }
 }

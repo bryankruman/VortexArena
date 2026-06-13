@@ -239,10 +239,111 @@ public static class SoundSystem
     /// <summary>
     /// Play a voice message (QC VoiceMessage — team radio / taunt) for <paramref name="emitter"/>. Same
     /// per-model resolution as <see cref="PlayPlayerSound"/>; <paramref name="id"/> is a
-    /// <see cref="Sounds.VoiceMessageIds"/> entry (e.g. "attack", "taunt").
+    /// <see cref="Sounds.VoiceMessageIds"/> entry (e.g. "attack", "taunt"). This is the simple "play on the
+    /// emitter" path; for the full VOICETYPE recipient/gate routing use <see cref="GlobalSound"/>.
     /// </summary>
     public static void PlayVoiceMessage(Entity emitter, string id, string? modelSoundDir = null)
         => PlayPlayerSound(emitter, id, modelSoundDir, SoundLevels.VolBaseVoice, SoundLevels.AttenNorm);
+
+    // ---- VOICETYPE routing (QC _GlobalSound, globalsound.qc:341-465) -------------------------------
+
+    /// <summary>
+    /// Route a voice message by its <see cref="VoiceMessages"/> id through the full VOICETYPE dispatch
+    /// (QC <c>VoiceMessage(this, def, msg)</c> -&gt; <c>_GlobalSound</c>). Resolves the message's
+    /// <see cref="VoiceType"/> and applies the matching recipient set + gates. <paramref name="recipients"/>
+    /// is the live real-client roster the host supplies (QC FOREACH_CLIENT) — required for TEAMRADIO and
+    /// TAUNT/AUTOTAUNT which broadcast to a subset; null/empty falls back to playing on the emitter only.
+    /// </summary>
+    public static void GlobalSound(Entity emitter, string voiceMessageId,
+        IReadOnlyList<Entity>? recipients = null, string? modelSoundDir = null)
+    {
+        VoiceType vt = VoiceMessages.VoiceTypeOf(voiceMessageId);
+        _GlobalSound(emitter, voiceMessageId, vt, recipients, modelSoundDir);
+    }
+
+    /// <summary>
+    /// The C# successor to QC <c>_GlobalSound</c> (globalsound.qc:341): dispatch a voice/player sound to the
+    /// recipients selected by <paramref name="voiceType"/>, applying the directional attenuation and the
+    /// sv_autotaunt / sv_taunt / sv_gentle gates. The recipient sets mirror QC exactly:
+    /// <list type="bullet">
+    ///   <item><b>LASTATTACKER / LASTATTACKER_ONLY</b>: heard by the emitter's <see cref="Entity.Pusher"/>
+    ///         (the last attacker), and — for LASTATTACKER (not _ONLY) — also by the emitter.</item>
+    ///   <item><b>TEAMRADIO</b>: heard by every recipient on the emitter's team (QC SAME_TEAM).</item>
+    ///   <item><b>AUTOTAUNT</b>: gated by <c>sv_autotaunt</c>; <b>TAUNT</b> gated by <c>sv_taunt</c> and
+    ///         suppressed by <c>sv_gentle</c>; both broadcast to all recipients.</item>
+    ///   <item><b>PLAYERSOUND</b>: broadcast to everyone at ATTEN_NORM.</item>
+    /// </list>
+    /// </summary>
+    public static void _GlobalSound(Entity emitter, string voiceMessageId, VoiceType voiceType,
+        IReadOnlyList<Entity>? recipients, string? modelSoundDir = null)
+    {
+        // QC: if(this.classname == "body") return; — corpses don't speak.
+        if (emitter is null || emitter.IsCorpse) return;
+
+        // DEVIATION: QC picks the directional attenuation per-recipient from CS_CVAR(it).cvar_cl_voice_directional
+        // (ATTEN_MIN when 1, else ATTEN_NONE). The Godot-free layer has no per-client cvar table, so the
+        // directional cases use the directional default (ATTEN_MIN); the per-recipient cvar read is deferred.
+        string sample = Sounds.PlayerSoundSample(modelSoundDir, voiceMessageId);
+
+        switch (voiceType)
+        {
+            case VoiceType.LastAttackerOnly:
+            case VoiceType.LastAttacker:
+            {
+                // QC: if(!this.pusher) break; play to the last attacker at the directional attenuation.
+                if (emitter.Pusher is { } attacker)
+                    Emit(attacker, sample, SoundLevels.VolBaseVoice, SoundLevels.AttenMin);
+                // QC: LASTATTACKER_ONLY stops here; LASTATTACKER also plays back to the speaker at ATTEN_NONE.
+                if (voiceType == VoiceType.LastAttackerOnly) break;
+                Emit(emitter, sample, SoundLevels.VolBaseVoice, SoundLevels.AttenNone);
+                break;
+            }
+
+            case VoiceType.TeamRadio:
+            {
+                // QC: FOREACH_CLIENT(IS_REAL_CLIENT(it) && SAME_TEAM(it, this), …) at the directional atten.
+                if (recipients is null) { Emit(emitter, sample, SoundLevels.VolBaseVoice, SoundLevels.AttenMin); break; }
+                foreach (Entity it in recipients)
+                    if (it is not null && Teams.SameTeam(it, emitter))
+                        Emit(it, sample, SoundLevels.VolBaseVoice, SoundLevels.AttenMin);
+                break;
+            }
+
+            case VoiceType.AutoTaunt:
+            case VoiceType.Taunt:
+            {
+                // QC: gate the autotaunt on sv_autotaunt; the manual taunt on sv_taunt and !sv_gentle.
+                if (voiceType == VoiceType.AutoTaunt)
+                {
+                    if (!CvarBool(VoiceCvars.SvAutotaunt)) break;
+                }
+                if (!CvarBool(VoiceCvars.SvTaunt)) break;
+                if (CvarBool(VoiceCvars.SvGentle)) break;
+                // QC broadcasts to all real clients (FOREACH_CLIENT(IS_REAL_CLIENT(it))) at the taunt atten.
+                if (recipients is null) { Emit(emitter, sample, SoundLevels.VolBaseVoice, SoundLevels.AttenNorm); break; }
+                foreach (Entity it in recipients)
+                    if (it is not null)
+                        Emit(it, sample, SoundLevels.VolBaseVoice, SoundLevels.AttenNorm);
+                break;
+            }
+
+            case VoiceType.PlayerSound:
+            default:
+            {
+                // QC: globalsound(MSG_ALL, …, ATTEN_NORM) — heard by everyone at the emitter's position.
+                Emit(emitter, sample, SoundLevels.VolBaseVoice, SoundLevels.AttenNorm);
+                break;
+            }
+        }
+    }
+
+    /// <summary>Emit a resolved voice sample on the CH_VOICE channel (QC sound7/soundto from _GlobalSound).</summary>
+    private static void Emit(Entity e, string sample, float volume, float attenuation)
+        => Api.Sound.Play(e, SoundChannel.VoiceAuto, sample, volume, attenuation);
+
+    /// <summary>Read a boolean cvar via the facade (a non-zero float is true; unset/no-services is false).</summary>
+    private static bool CvarBool(string name)
+        => Api.Services is not null && Api.Cvars.GetFloat(name) != 0f;
 
     /// <summary>Reset the shared emitter (test support; also drops a freed emitter reference).</summary>
     public static void Reset() => _globalEmitter = null;

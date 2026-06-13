@@ -79,6 +79,48 @@ public sealed class CtsSpawnTests
         Assert.DoesNotContain("target_checkpoint", world.UnhandledClasses);
     }
 
+    // ============================================== Q3DF target_score / target_fragsFilter CTS gate (T52)
+
+    [Fact]
+    public void TargetScoreAndFragsFilter_SurviveOnCtsMap_WithPromotedFragsThreshold()
+    {
+        // A target_fragsFilter with a mapper-set custom threshold (frags "5"), plus a target_score, on a CTS map:
+        // the CTS gate (CompatRemaps.IsCtsActive, wired in GameWorld.Boot) must keep both alive, and the 'frags'
+        // key must be promoted by ApplyDictFields so the filter gates on 5, not the hardcoded default 1.
+        var filterDict = Dict("target_fragsFilter", new Vector3(0, 0, 0));
+        filterDict.Fields["frags"] = "5";
+        var world = new GameWorld(new CollisionWorld(), new List<EntityDict>
+        {
+            Dict("target_score", new Vector3(100, 0, 0)),
+            filterDict,
+        });
+        world.Boot("cts");
+        Assert.IsType<Cts>(world.GameType);
+
+        Entity score = Assert.Single(Api.Entities.FindByClass("target_score"));
+        Assert.NotNull(score.Use);                 // .use wired → it survived the !g_cts gate
+        Assert.Equal(1, score.Count);              // QC: count unset → 1
+
+        Entity filter = Assert.Single(Api.Entities.FindByClass("target_fragsFilter"));
+        Assert.NotNull(filter.Use);                // survived the gate
+        Assert.Equal(5f, filter.Frags);            // the mapper's frags "5" was promoted (not defaulted to 1)
+    }
+
+    [Fact]
+    public void TargetScoreAndFragsFilter_DeletedOffCtsMap()
+    {
+        // The same entities on a non-CTS (DM) map must self-delete (QC: if(!g_cts) { delete(this); return; }).
+        var world = new GameWorld(new CollisionWorld(), new List<EntityDict>
+        {
+            Dict("target_score", new Vector3(100, 0, 0)),
+            Dict("target_fragsFilter", new Vector3(0, 0, 0)),
+        });
+        world.Boot("dm");
+
+        Assert.Empty(Api.Entities.FindByClass("target_score"));
+        Assert.Empty(Api.Entities.FindByClass("target_fragsFilter"));
+    }
+
     // =========================================================================== end-to-end timing (touch path)
 
     [Fact]

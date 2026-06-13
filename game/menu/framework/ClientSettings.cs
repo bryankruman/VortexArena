@@ -1,5 +1,6 @@
 using Godot;
 using XonoticGodot.Common.Services;
+using XonoticGodot.Engine.Particles;
 using XonoticGodot.Engine.Simulation;
 
 namespace XonoticGodot.Game.Menu;
@@ -37,6 +38,21 @@ public static class ClientSettings
         RegisterTintDefaults(MenuState.Cvars);
         RegisterStairSmoothDefaults(MenuState.Cvars);
         RegisterEngineClientDefaults(MenuState.Cvars);
+        RegisterParticleDefaults(MenuState.Cvars);
+    }
+
+    /// <summary>
+    /// The dual particle system cvars (planning/particles-dual-system.md §overview): the renderer-mode control
+    /// (<c>cl_particles_modern</c> 0/1/2, <c>cl_particles_sdf_*</c>) plus the stock Darkplaces particle/decal
+    /// mirrors the faithful backend reads (<c>cl_particles</c>, <c>cl_particles_quality</c>, the per-type gates,
+    /// <c>cl_decals_*</c>, <c>r_drawparticles_*</c>). Names + defaults are centralised in <see cref="ParticleCvars"/>;
+    /// registering here makes them visible/bindable (the Effects dialog binds the renderer dropdown + SDF
+    /// checkbox) and live before the first spawn. Idempotent — keeps any value a cfg already set.
+    /// </summary>
+    private static void RegisterParticleDefaults(CvarService c)
+    {
+        foreach ((string name, string def, bool archived) in ParticleCvars.Defaults)
+            c.Register(name, def, archived ? CvarFlags.Save : CvarFlags.None);
     }
 
     /// <summary>
@@ -62,7 +78,7 @@ public static class ClientSettings
         // Server-browser auto-refresh pause toggle (DP default 0).
         c.Register("net_slist_pause", "0", save);
         // Input cadence + local fire prediction (port extensions, read live from the shared store by NetGame).
-        c.Register("cl_movement_perframe", "0", save); // absent → off; keep off
+        c.Register("cl_movement_perframe", "1", save); // absent → ON (DP-style per-frame variable-dt input; PERFORMANCE_REPORT.md B2, user-approved). `set cl_movement_perframe 0` restores the legacy fixed 72 Hz cadence.
         c.Register("cl_predictfire", "1", save);       // intentionally default ON (NetGame: unset → on)
         // Client-side projectile prediction (CSQC Projectile_Draw): snap+extrapolate vs the old ease. Default
         // ON; `set cl_projectile_prediction 0` reverts for A/B feel-testing (ClientWorld polls it live).
@@ -73,6 +89,28 @@ public static class ClientSettings
         // (PERFORMANCE_REPORT.md A3). `set cl_precache_all_weapons 0` restores the smart expected-only warm
         // for memory-constrained machines (NetGame.PrecacheWeaponModelsAsync reads it).
         c.Register("cl_precache_all_weapons", "1", save);
+        // Off-screen / distant pose-cull for skeletal player models (3.3): when ON, PlayerModel.PushBones is
+        // skipped for a REMOTE player whose model is off-screen, and distant on-screen players refresh the
+        // Skeleton3D at half rate. The CPU locomotion clock keeps running every frame, so a model going
+        // on-screen mid-stride shows a fresh (not stale) pose. Default OFF preserves the port's current
+        // behaviour byte-for-byte; it's a perf opt-in (the local player's own model is NEVER skipped).
+        // (§13 flip, 2026-06-12) Default ON: off-screen remote players skip the ~50-60 bone-pose interop
+        // calls/frame and distant on-screen ones refresh at half rate; the local player is never culled and
+        // the locomotion clock always runs (fresh pose on re-entry). `cl_pose_cull 0` restores full-rate.
+        c.Register("cl_pose_cull", "1", save);
+        // Quake units: beyond this an ON-SCREEN remote player refreshes at half rate (a per-model phase stagger
+        // spreads the work). 0 disables the distance half-rate, keeping only the off-screen skip.
+        c.Register("cl_pose_cull_distance", "1500", save);
+        // (§13 flip, 2026-06-12) Default ON: animated MD3s morph in a vertex shader (2 uniforms/frame)
+        // instead of re-uploading lerped vertex+normal buffers every frame (the 3.3 Tier-3 item). Eligible
+        // models only (StandardMaterial3D surfaces — others keep the CPU path automatically); visual parity
+        // verified on the stormkeep item set. `cl_gpu_morph 0` restores the CPU path.
+        c.Register("cl_gpu_morph", "1", save);
+        // Spawn-point idle glow + player-spawn flash (Xonotic QC autocvars; the Effects dialog binds the
+        // first, makeMulti pokes the second). Stock defaults ON — SpawnPointParticles / the SPAWN effect
+        // read these (absent → 0 would silently disable both).
+        c.Register("cl_spawn_point_particles", "1", save);
+        c.Register("cl_spawn_event_particles", "1", save);
         // Console/diagnostics verbosity (DP CF_CLIENT, NOT archived — a debug toggle shouldn't persist).
         c.Register("developer", "0");
     }
@@ -121,14 +159,24 @@ public static class ClientSettings
         CvarService c = MenuState.Cvars;
         RegisterEngineVideoDefaults(c);
 
-        bool fullscreen = c.GetFloat("vid_fullscreen") != 0f;
+        // vid_fullscreen is extended to a mode index (like vid_vsync): 0 windowed / 1 fullscreen (Godot's
+        // composited borderless — the desktop compositor stays in the present path) / 2 EXCLUSIVE fullscreen.
+        // (§12.7) Exclusive takes the compositor OUT of the present path on Windows, which removes the
+        // biggest OS-stall class the forensics tag [external?] (rest-dominated ~100 ms frames with quiet
+        // game-side numbers — DWM hiccups). Trade-offs are the classic ones: slower alt-tab, overlays may
+        // flicker. 0/1 keep their stock DP meaning, so existing configs are unaffected.
+        int fsMode = (int)c.GetFloat("vid_fullscreen");
+        bool fullscreen = fsMode != 0;
         bool borderless = c.GetFloat("vid_borderless") != 0f;
         int w = (int)c.GetFloat("vid_width");
         int h = (int)c.GetFloat("vid_height");
 
-        DisplayServer.WindowMode mode = fullscreen
-            ? DisplayServer.WindowMode.Fullscreen
-            : DisplayServer.WindowMode.Windowed;
+        DisplayServer.WindowMode mode = fsMode switch
+        {
+            <= 0 => DisplayServer.WindowMode.Windowed,
+            1 => DisplayServer.WindowMode.Fullscreen,
+            _ => DisplayServer.WindowMode.ExclusiveFullscreen,
+        };
         DisplayServer.WindowSetMode(mode);
 
         if (!fullscreen && w > 0 && h > 0)
@@ -170,6 +218,30 @@ public static class ClientSettings
         // fps would multiply into a Gen0 GC treadmill. With vid_vsync 2 (mailbox) leave it at 0 (uncapped).
         int maxFps = (int)c.GetFloat("cl_maxfps");
         Godot.Engine.MaxFps = maxFps > 0 ? maxFps : 0;
+
+        // (§12.7) OS-stall resistance: lift the process to ABOVE_NORMAL so background work (AV scans, the
+        // indexer, browsers) can't preempt the game's main/render threads mid-frame — the CPU-side half of
+        // the [external?] rest-stall class (the compositor half is vid_fullscreen 2). Deliberately NOT High:
+        // High can starve audio/driver threads and feels worse, not better. sys_priority_boost 0 opts out.
+        // Idempotent per apply; silently ignored where the OS denies it.
+        try
+        {
+            var proc = System.Diagnostics.Process.GetCurrentProcess();
+            var want = c.GetFloat("sys_priority_boost") != 0f
+                ? System.Diagnostics.ProcessPriorityClass.AboveNormal
+                : System.Diagnostics.ProcessPriorityClass.Normal;
+            if (proc.PriorityClass != want)
+            {
+                proc.PriorityClass = want;
+                XonoticGodot.Common.Diagnostics.Log.Info($"[video] process priority → {want} (sys_priority_boost)");
+            }
+        }
+        catch (Exception ex)
+        {
+            // Sandboxed / job-object-restricted environments can deny the change — run at stock priority,
+            // but say so (an invisible no-op here would read as "the boost is on" when it isn't).
+            XonoticGodot.Common.Diagnostics.Log.Info($"[video] process priority boost unavailable: {ex.Message}");
+        }
     }
 
     /// <summary>
@@ -192,6 +264,8 @@ public static class ClientSettings
         // 0 preserves the current low-latency behaviour; the video dialog recommends 2 (mailbox) for pacing.
         c.Register("vid_vsync", "0", save);
         c.Register("vid_borderless", "0", save);
+        // (§12.7) AboveNormal process priority by default — see ApplyVideo's priority block. 0 = stock priority.
+        c.Register("sys_priority_boost", "1", save);
     }
 
     /// <summary>

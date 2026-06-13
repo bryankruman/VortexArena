@@ -60,6 +60,16 @@ public enum EntityField : ushort
     Owner = 1 << 11,  // the player entnum this entity belongs to (view-models, nameplates, projectiles)
     Weapon = 1 << 12, // the active/held weapon registry id (renders a remote player's weapon — QC wepent)
     Model = 1 << 13,  // the model NAME (precache path); networked for players/bots so the client loads the IQM
+
+    // [T41] client-feedback stats networked on the owning player's entity (QC owner-only STATs). These ride the
+    // same delta as the rest of the owner's state; they are 0 on every non-owner entity (so they cost nothing on
+    // the wire for remote players / projectiles, where the mask bit stays clear).
+    Feedback = 1 << 14, // the HitsoundDamageDealtTotal + objective-ring fractions (NadeTimer/Capture/Revive)
+
+    // [T68] the QC entcs ARMOR slice (ent_cs.qc ENTCS_PROP_RESOURCE(ARMOR, …)). Networked alongside Health for the
+    // shownames teammate status bar (Draw_ShowNames reads RES_ARMOR off the entcs entity for same-team players).
+    // 0 on non-player entities / when armor is unchanged, so it costs nothing on the wire when the bit stays clear.
+    Armor = 1 << 15, // a player's armor value (the entcs private ARMOR slice — shownames teammate status bar)
 }
 
 /// <summary>
@@ -84,10 +94,23 @@ public struct NetEntityState
     public int Effects;          // EF_* render flags bitfield
     public int Colormap;         // player colors (top/bottom) or team tint
     public int Health;           // for nameplates / the owner HUD (0 when not applicable)
+    public int Armor;            // [T68] QC entcs RES_ARMOR slice — the shownames teammate status bar (0 when N/A)
     public NetEntityFlags Flags;
     public int Owner;            // owning player's entnum (view-models / nameplates / projectiles); 0 = none
     public int Weapon;           // active/held weapon registry id (−1 = none) — renders a remote player's weapon
     public string Model;         // model name / precache path (QC .model) — the client loads the mesh by name
+
+    // [T41] client-feedback stats (QC STAT(HITSOUND_DAMAGE_DEALT_TOTAL) + the HUD_Draw objective rings). Only
+    // meaningful on the LOCAL player's own entity; 0 everywhere else. Carried together under EntityField.Feedback.
+    /// <summary>QC STAT(HITSOUND_DAMAGE_DEALT_TOTAL): cumulative damage the owner has dealt; the client diffs it
+    /// against the previous update to drive the hit-confirmation sound (view.qc UpdateDamage/HitSound).</summary>
+    public float HitDamageDealtTotal;
+    /// <summary>QC STAT(NADE_TIMER): 0..1 held-nade charge — the top-priority HUD objective ring (view.qc:1006).</summary>
+    public float NadeTimer;
+    /// <summary>QC STAT(CAPTURE_PROGRESS): 0..1 objective-capture progress — the 2nd-priority ring (view.qc:1012).</summary>
+    public float CaptureProgress;
+    /// <summary>QC STAT(REVIVE_PROGRESS): 0..1 freeze-tag thaw progress — the 3rd-priority ring (view.qc:1017).</summary>
+    public float ReviveProgress;
 
     /// <summary>A fresh state carrying just an id (the implicit baseline for a never-seen entity — a "spawn").</summary>
     public static NetEntityState Empty(int entNum) => new() { EntNum = entNum };
@@ -106,10 +129,15 @@ public struct NetEntityState
         if (baseline.Effects != current.Effects) m |= EntityField.Effects;
         if (baseline.Colormap != current.Colormap) m |= EntityField.Colormap;
         if (baseline.Health != current.Health) m |= EntityField.Health;
+        if (baseline.Armor != current.Armor) m |= EntityField.Armor;
         if (baseline.Flags != current.Flags) m |= EntityField.Flags;
         if (baseline.Owner != current.Owner) m |= EntityField.Owner;
         if (baseline.Weapon != current.Weapon) m |= EntityField.Weapon;
         if (baseline.Model != current.Model) m |= EntityField.Model;
+        if (baseline.HitDamageDealtTotal != current.HitDamageDealtTotal
+            || baseline.NadeTimer != current.NadeTimer
+            || baseline.CaptureProgress != current.CaptureProgress
+            || baseline.ReviveProgress != current.ReviveProgress) m |= EntityField.Feedback;
         return m;
     }
 }
@@ -139,10 +167,18 @@ public static class EntityStateCodec
         if ((mask & EntityField.Effects) != 0) w.WriteLong(current.Effects);
         if ((mask & EntityField.Colormap) != 0) w.WriteByte(current.Colormap & 0xFF);
         if ((mask & EntityField.Health) != 0) w.WriteShort(current.Health);
+        if ((mask & EntityField.Armor) != 0) w.WriteShort(current.Armor);
         if ((mask & EntityField.Flags) != 0) w.WriteByte((byte)current.Flags);
         if ((mask & EntityField.Owner) != 0) w.WriteUShort(current.Owner);
         if ((mask & EntityField.Weapon) != 0) w.WriteShort(current.Weapon);
         if ((mask & EntityField.Model) != 0) w.WriteString(current.Model);
+        if ((mask & EntityField.Feedback) != 0)
+        {
+            w.WriteFloat(current.HitDamageDealtTotal);
+            w.WriteFloat(current.NadeTimer);
+            w.WriteFloat(current.CaptureProgress);
+            w.WriteFloat(current.ReviveProgress);
+        }
         return mask;
     }
 
@@ -162,10 +198,18 @@ public static class EntityStateCodec
         if ((mask & EntityField.Effects) != 0) s.Effects = r.ReadLong();
         if ((mask & EntityField.Colormap) != 0) s.Colormap = r.ReadByte();
         if ((mask & EntityField.Health) != 0) s.Health = r.ReadShort();
+        if ((mask & EntityField.Armor) != 0) s.Armor = r.ReadShort();
         if ((mask & EntityField.Flags) != 0) s.Flags = (NetEntityFlags)r.ReadByte();
         if ((mask & EntityField.Owner) != 0) s.Owner = r.ReadUShort();
         if ((mask & EntityField.Weapon) != 0) s.Weapon = r.ReadShort();
         if ((mask & EntityField.Model) != 0) s.Model = r.ReadString();
+        if ((mask & EntityField.Feedback) != 0)
+        {
+            s.HitDamageDealtTotal = r.ReadFloat();
+            s.NadeTimer = r.ReadFloat();
+            s.CaptureProgress = r.ReadFloat();
+            s.ReviveProgress = r.ReadFloat();
+        }
         return s;
     }
 }

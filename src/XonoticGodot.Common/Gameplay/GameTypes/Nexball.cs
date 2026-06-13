@@ -288,6 +288,12 @@ public sealed class Nexball : GameType
     /// <summary>The current goal count for a team color code (QC teamscores(team, ST_NEXBALL_GOALS); 0 if none).</summary>
     public int GoalsFor(int team) => GS.TeamScore(team, GS.TeamSlotSecondary);
 
+    /// <summary>QC team equality (server/scores.qc:500): the top two teams are tied on goals
+    /// (ST_NEXBALL_GOALS, Nexball's ranking primary), so a tied timed Nexball enters overtime instead of
+    /// drawing (server/world.qc).</summary>
+    public override bool ReportsTie(IReadOnlyList<Player> roster)
+        => TeamTie.TopTwoTied(GS.LeaderTeam(), GS.SecondTeam(), GoalsFor);
+
     /// <summary>
     /// Resolve a ball-into-goal event (QC GoalTouch). For a normal <see cref="GoalKind.Score"/> the scorer's
     /// team gains a point; for an <see cref="GoalKind.OwnGoal"/> a point is taken away — in a two-team game by

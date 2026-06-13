@@ -92,6 +92,12 @@ public sealed class Notification : IRegistered
     public float Volume = 1f;
     /// <summary>Attenuation / positioning (QC <c>position</c>; ATTEN_NONE == 0).</summary>
     public float Attenuation;
+    /// <summary>
+    /// Spacing between successive announcer plays in seconds (QC <c>queuetime</c>, the last MSG_ANNCE_NOTIF
+    /// arg). 0 = guess from the sample length; -1 = play immediately without occupying the queue
+    /// (Local_Notification_Queue_Add, notifications/all.qc:1131). Only meaningful for MSG_ANNCE.
+    /// </summary>
+    public float Queuetime;
 
     // --- MSG_MULTI references (resolved lazily by name to avoid declaration-order coupling) ---
     /// <summary>Name of the announcer sub-notification (QC anncename), or null.</summary>
@@ -110,6 +116,28 @@ public sealed class Notification : IRegistered
     public string? ChoiceOptionA;
     /// <summary>Bare name of option B — chosen when the client's choice value is 2 (QC <c>nent_optionb</c>).</summary>
     public string? ChoiceOptionB;
+    /// <summary>
+    /// Stable per-choice index (QC <c>nent_choice_idx</c>): the slot in a client's
+    /// <see cref="NotificationChoiceState"/> array that holds this choice's selection. Assigned by
+    /// <see cref="NotificationChoiceIndexer.AssignChoiceIndices"/> after registration; team variants of one
+    /// choice family share an index. Only meaningful for MSG_CHOICE.
+    /// </summary>
+    public int ChoiceIdx;
+
+    // --- team-keyed notification metadata (QC nent_teamnum + the MULTITEAM color suffix) ---
+    /// <summary>
+    /// The team this notification belongs to (QC <c>nent_teamnum</c>, NUM_TEAM_1..4), or 0 for a non-team
+    /// notification. Used by <see cref="NotificationChoiceState.ReplicateFromCvars"/> to replicate a team
+    /// choice family from only its canonical row, and to derive the shared cvar name.
+    /// </summary>
+    public int TeamNum;
+
+    /// <summary>
+    /// The uppercase team-color suffix on this notification's name (QC the MULTITEAM token: "RED"/"BLUE"/
+    /// "YELLOW"/"PINK"), or "" for a non-team notification. Stripped to form the shared choice cvar name
+    /// (QC <c>Get_Notif_CvarName</c>).
+    /// </summary>
+    public string TeamColorSuffix = "";
 
     /// <summary>Total args expected, for the Send-time count check (QC stringcount + floatcount).</summary>
     public int ArgCount => StringCount + FloatCount;
@@ -162,9 +190,16 @@ public static class Notifications
 
     /// <summary>
     /// Populate the catalog with every implemented notification (delegates to
-    /// <see cref="NotificationsList.RegisterAll"/>). The lead calls this once from GameInit. Idempotent.
+    /// <see cref="NotificationsList.RegisterAll"/>), then assign the stable per-choice indices used by the
+    /// per-client MSG_CHOICE replication (QC <c>nent_choice_idx</c>; see
+    /// <see cref="NotificationChoiceIndexer.AssignChoiceIndices"/>). The lead calls this once from GameInit.
+    /// Idempotent (re-running yields the same registry + indices).
     /// </summary>
-    public static void RegisterAll() => NotificationsList.RegisterAll();
+    public static void RegisterAll()
+    {
+        NotificationsList.RegisterAll();
+        NotificationChoiceIndexer.AssignChoiceIndices();
+    }
 
     public static void Sort() => Registry<Notification>.Sort();
     public static void Clear() => Registry<Notification>.Clear();
@@ -191,13 +226,18 @@ public static class Notifications
             Args = args, Cpid = cpid, Normal = normal, Gentle = gentle,
         });
 
-    /// <summary>QC <c>MSG_ANNCE_NOTIF(name, default, sound, channel, volume, position, queuetime)</c>.</summary>
+    /// <summary>
+    /// QC <c>MSG_ANNCE_NOTIF(name, default, sound, channel, volume, position, queuetime)</c>. The
+    /// <paramref name="queuetime"/> arg (QC the last macro arg) governs the announcer queue spacing and is
+    /// appended LAST so the existing positional <c>enabled</c> call sites keep binding correctly.
+    /// </summary>
     public static Notification Annce(string name, string sound, int channel = 0, float volume = 1f,
-        float attenuation = 0f, bool enabled = true)
+        float attenuation = 0f, bool enabled = true, float queuetime = 0f)
         => Register(new Notification
         {
             Name = name, Type = MsgType.Annce, Enabled = enabled,
             Sound = sound, Channel = channel, Volume = volume, Attenuation = attenuation,
+            Queuetime = queuetime,
         });
 
     /// <summary>QC <c>MSG_MULTI_NOTIF(name, default, anncename, infoname, centername)</c> (sub-notifs referenced by bare name).</summary>

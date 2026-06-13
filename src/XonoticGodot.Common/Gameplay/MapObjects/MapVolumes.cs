@@ -88,6 +88,12 @@ public static class MapVolumes
     private static readonly Dictionary<Entity, List<Entity>> _conveyed = new();
     private static readonly Dictionary<Entity, List<Entity>> _laddered = new();
 
+    /// <summary>Scratch buffer reused for the per-frame FindInRadius volume scan (replaces a per-think
+    /// <c>.ToList()</c>). The conveyor/ladder thinks run sequentially on the sim thread and never re-enter, and
+    /// each fully drains the scan (into its per-producer held list) before the next think reuses this — so one
+    /// shared static is safe. The result is iterated as a SNAPSHOT (the loop relinks entities via SetOrigin).</summary>
+    private static readonly List<Entity> _volumeScratch = new();
+
     /// <summary>Drop the per-producer conveyed/laddered tracking lists (QC clears g_conveyed/g_ladderents on map (re)load).</summary>
     public static void ResetTracking()
     {
@@ -120,8 +126,13 @@ public static class MapVolumes
         if (self.Active != MapMover.ActiveActive)
             return;
 
-        foreach (Entity it in Api.Entities.FindInRadius(BoxCenter(self), BoxRadius(self)).ToList())
+        // Snapshot the radius scan into the reused buffer (alloc-free); the loop relinks entities via SetOrigin
+        // below, so iterating a snapshot (not the live grid result) is required, and `held` above is a distinct
+        // list so appending to it mid-loop doesn't disturb _volumeScratch.
+        Api.Entities.FindInRadius(BoxCenter(self), BoxRadius(self), _volumeScratch);
+        for (int i = 0; i < _volumeScratch.Count; i++)
         {
+            Entity it = _volumeScratch[i];
             // QC: it.conveyor.active == ACTIVE_NOT && isPushable(it) — claim only entities not held by an ACTIVE
             // conveyor (a null conveyor reads as world.active == ACTIVE_NOT, i.e. claimable).
             bool claimable = it.ConveyorEntity is null || it.ConveyorEntity.Active == MapMover.ActiveNot;
@@ -196,8 +207,12 @@ public static class MapVolumes
                 it.LadderEntity = null;
         held.Clear();
 
-        foreach (Entity it in Api.Entities.FindInRadius(BoxCenter(self), BoxRadius(self)).ToList())
+        // Snapshot the radius scan into the reused buffer (alloc-free); `held` above is a distinct list, so
+        // appending to it mid-loop doesn't disturb _volumeScratch (the conveyor think drained it first).
+        Api.Entities.FindInRadius(BoxCenter(self), BoxRadius(self), _volumeScratch);
+        for (int i = 0; i < _volumeScratch.Count; i++)
         {
+            Entity it = _volumeScratch[i];
             // QC: !it.ladder_entity && IS_PLAYER(it) && it.move_movetype != MOVETYPE_NOCLIP && !IS_DEAD(it)
             if (it.LadderEntity is not null)
                 continue;

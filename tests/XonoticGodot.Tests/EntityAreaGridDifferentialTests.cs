@@ -115,6 +115,31 @@ public class EntityAreaGridDifferentialTests
     }
 
     [Fact]
+    public void EntitiesInBox_dedupsNegativeIndexClientEdicts()
+    {
+        // ClientManager gives client edicts NEGATIVE indices (they live outside the engine table's dense
+        // slots) and the sim links them into the grid every tick (SimulationLoop: LinkEdict(c) after
+        // ClientMove). A player straddling a cell boundary must still be returned ONCE: the original dedup
+        // indexed the tag array by the raw Entity.Index, whose bounds check silently skipped negatives — so
+        // every splash blast (RadiusDamage iterates FindInRadius) damaged + pushed a player once per
+        // overlapped 256-unit cell, multiplying damage/knockback 2-5x depending on where they stood.
+        var es = new EntityService();
+        var p = new Entity { Index = -1, ClassName = "player" };
+        p.Mins = new Vector3(-16, -16, -24);
+        p.Maxs = new Vector3(16, 16, 45);
+        p.Origin = new Vector3(0f, 0f, 25f);   // AABB straddles the X=0 and Y=0 cell lines -> 4 grid cells
+        es.LinkEdict(p);
+
+        var box = new List<Entity>();
+        es.EntitiesInBox(new Vector3(-300, -300, -300), new Vector3(300, 300, 300), box);
+        Assert.Single(box, e => ReferenceEquals(e, p));
+
+        var radius = new List<Entity>();
+        es.FindInRadius(new Vector3(0, 0, 25), 200f, radius);
+        Assert.Single(radius, e => ReferenceEquals(e, p));
+    }
+
+    [Fact]
     public void Remove_thenReSpawn_reusesSlotWithoutStaleGridEntries()
     {
         var es = new EntityService();

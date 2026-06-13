@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Godot;
+using XonoticGodot.Common.Diagnostics;
 using XonoticGodot.Formats.Iqm;
 using XonoticGodot.Formats.Sidecars;
 using SN = System.Numerics;
@@ -86,25 +87,38 @@ public static class IqmBuilder
     //  Public entry point
     // =================================================================================================
 
+    /// <summary>The fixed name of the skeleton node a built model carries — also the animation track-path
+    /// prefix, which is why <see cref="BuildAnimationLibrary"/> can build clips without the live skeleton.</summary>
+    public const string SkeletonNodeName = "Skeleton3D";
+
     /// <summary>
     /// Build a posed, skinned, animated model from <paramref name="iqm"/>. Returns a root <see cref="Node3D"/>
     /// whose children are the <see cref="Skeleton3D"/> (carrying the <see cref="MeshInstance3D"/>) and an
     /// <see cref="AnimationPlayer"/>. Materials come from <c>assets.ResolveMaterial(mesh.Material)</c>; if
     /// <paramref name="framegroups"/> is non-empty it defines the animation clips (overriding the IQM's own).
+    /// (§12.3-1) <paramref name="prebuiltAnims"/>/<paramref name="prebuiltDefaultClip"/>: a clip library the
+    /// off-thread parse phase already built via <see cref="BuildAnimationLibrary"/> (the ~130 ms of track-key
+    /// work) — when supplied it is attached verbatim and the inline build is skipped.
     /// </summary>
-    public static Node3D Build(IqmData iqm, AssetSystem assets, IReadOnlyList<FrameGroup>? framegroups = null, SkinFile? skin = null)
+    public static Node3D Build(IqmData iqm, AssetSystem assets, IReadOnlyList<FrameGroup>? framegroups = null,
+        SkinFile? skin = null, AnimationLibrary? prebuiltAnims = null, string? prebuiltDefaultClip = null)
     {
         ArgumentNullException.ThrowIfNull(iqm);
 
         var root = new Node3D { Name = "IqmModel" };
 
         // ---- 1. Skeleton (bones + Godot-space rests) -------------------------------------------------
-        Skeleton3D skeleton = BuildSkeleton(iqm);
-        root.AddChild(skeleton);
+        Skeleton3D skeleton;
+        using (Prof.Sample("iqm.skeleton"))
+        {
+            skeleton = BuildSkeleton(iqm);
+            root.AddChild(skeleton);
+        }
 
         // ---- 2. Skinned mesh -------------------------------------------------------------------------
         var meshInstance = new MeshInstance3D { Name = "Mesh" };
-        meshInstance.Mesh = BuildMesh(iqm, assets, skin);
+        using (Prof.Sample("iqm.mesh"))
+            meshInstance.Mesh = BuildMesh(iqm, assets, skin);
 
         // Skin: bind poses = rest_global^-1 for each bone, generated from the rests we just set. This is the
         // canonical Godot binding and matches our world-conjugated rests exactly (no manual inverse).
@@ -123,7 +137,18 @@ public static class IqmBuilder
         // not the skeleton itself. RootNode must therefore be the model root (= the player's parent).
         player.RootNode = player.GetPathTo(root);
 
-        AnimationLibrary library = BuildAnimations(iqm, skeleton, framegroups, out string? defaultClip);
+        AnimationLibrary library;
+        string? defaultClip;
+        if (prebuiltAnims is not null)
+        {
+            library = prebuiltAnims;
+            defaultClip = prebuiltDefaultClip;
+        }
+        else
+        {
+            using (Prof.Sample("iqm.anims"))
+                library = BuildAnimationLibrary(iqm, framegroups, out defaultClip);
+        }
         player.AddAnimationLibrary(LibraryName, library);
 
         // Auto-play a sensible default (idle if present, else the first clip) so a freshly built model moves.
@@ -148,7 +173,7 @@ public static class IqmBuilder
     /// </summary>
     private static Skeleton3D BuildSkeleton(IqmData iqm)
     {
-        var skeleton = new Skeleton3D { Name = "Skeleton3D" };
+        var skeleton = new Skeleton3D { Name = SkeletonNodeName };
         IqmJoint[] joints = iqm.Joints;
         int n = joints.Length;
         // Each bone's Godot-space WORLD rest, kept locally so children can localize against their parent.
@@ -157,11 +182,10 @@ public static class IqmBuilder
         // First pass: add bones + parent links. IQM guarantees parent < child, so a single forward pass works.
         // Bone names are sanitised because they double as animation track sub-paths ("Skeleton3D:bone"), where
         // ':' '/' '%' '@' would break the NodePath. Attachment lookups sanitise their query the same way.
+        // BoneNames is the single source of the naming so the off-thread animation build can never drift.
+        string[] names = BoneNames(iqm);
         for (int i = 0; i < n; i++)
-        {
-            string boneName = string.IsNullOrEmpty(joints[i].Name) ? $"bone_{i}" : SanitizeBoneName(joints[i].Name);
-            skeleton.AddBone(boneName);
-        }
+            skeleton.AddBone(names[i]);
         for (int i = 0; i < n; i++)
         {
             int parent = joints[i].Parent;
@@ -226,16 +250,10 @@ public static class IqmBuilder
             // _N.skin per-mesh material override (DP skin remap), keyed by the IQM mesh NAME. A mesh mapped to
             // common/nodraw renders nothing; otherwise the remap replaces the baked shader name. Mirrors how
             // Md3Builder applies its SkinFile, so every model format honors the same sidecar (RC5: IQM ignored it).
-            string materialName = sub.Material;
-            bool remapped = false;
-            if (skin is not null && !string.IsNullOrEmpty(sub.Name)
-                && skin.MeshToTexture.TryGetValue(sub.Name, out string? remap) && !string.IsNullOrEmpty(remap))
-            {
-                if (SkinFile.IsNoDraw(remap))
-                    continue; // skin hides this mesh
-                materialName = remap;
-                remapped = true;
-            }
+            // EffectiveMaterialName is shared with the off-thread predecode pass, so the two can't disagree.
+            string? materialName = EffectiveMaterialName(sub, skin, out bool remapped);
+            if (materialName is null)
+                continue; // skin hides this mesh
 
             var positions = new Vector3[vcount];
             var normals = new Vector3[vcount];
@@ -302,9 +320,13 @@ public static class IqmBuilder
             // Resolve and attach the surface material from the (possibly skin-remapped) shader name. If a
             // remap resolved to the magenta fallback (a variant-only name with no shader/texture), keep the
             // baked material so a bad remap can't blank an otherwise-valid surface.
-            Material? material = ResolveMaterialSafe(assets, materialName);
-            if (remapped && material is not null && ReferenceEquals(material, assets.FallbackMaterial()))
-                material = ResolveMaterialSafe(assets, sub.Material);
+            Material? material;
+            using (Prof.Sample("iqm.materials"))   // texture decode + upload live in here (skin/_norm/_gloss)
+            {
+                material = ResolveMaterialSafe(assets, materialName);
+                if (remapped && material is not null && ReferenceEquals(material, assets.FallbackMaterial()))
+                    material = ResolveMaterialSafe(assets, sub.Material);
+            }
             if (material is not null)
                 mesh.SurfaceSetMaterial(surfaceIndex, material);
 
@@ -367,18 +389,35 @@ public static class IqmBuilder
     //  3. Animations
     // =================================================================================================
 
+    /// <summary>The bone names a built skeleton will carry, derived from the IQM joints alone (the same
+    /// fallback + sanitisation <see cref="BuildSkeleton"/> applies) — what lets the animation library build
+    /// OFF-THREAD, before any <see cref="Skeleton3D"/> exists.</summary>
+    private static string[] BoneNames(IqmData iqm)
+    {
+        IqmJoint[] joints = iqm.Joints;
+        var names = new string[joints.Length];
+        for (int i = 0; i < joints.Length; i++)
+            names[i] = string.IsNullOrEmpty(joints[i].Name) ? $"bone_{i}" : SanitizeBoneName(joints[i].Name);
+        return names;
+    }
+
     /// <summary>
     /// Build one <see cref="AnimationLibrary"/> holding every clip. Each clip is one
     /// <see cref="IqmAnim"/> (or, when supplied, one <see cref="FrameGroup"/> which overrides the ranges),
     /// expressed as per-bone position/rotation/scale 3D tracks keyed across its frame span at 1/fps.
+    /// (§12.3-1) Needs NO live skeleton — bone names + track paths derive from the IQM data and the fixed
+    /// <see cref="SkeletonNodeName"/> — so the (~130 ms of track-key work for a player model) can run on the
+    /// streamer's worker thread inside the parse phase. Building a Resource on a worker and handing it to
+    /// the main thread once is the supported Godot threading pattern (one thread at a time).
     /// </summary>
-    private static AnimationLibrary BuildAnimations(
-        IqmData iqm, Skeleton3D skeleton, IReadOnlyList<FrameGroup>? framegroups, out string? defaultClip)
+    public static AnimationLibrary BuildAnimationLibrary(
+        IqmData iqm, IReadOnlyList<FrameGroup>? framegroups, out string? defaultClip)
     {
         defaultClip = null;
         var library = new AnimationLibrary();
         IqmFrame[] frames = iqm.Frames;
-        int boneCount = skeleton.GetBoneCount();
+        string[] boneNames = BoneNames(iqm);
+        int boneCount = boneNames.Length;
         if (frames.Length == 0 || boneCount == 0)
             return library; // static model: no clips, the rest pose stands.
 
@@ -413,7 +452,7 @@ public static class IqmBuilder
 
         foreach (ClipSpec clip in clips)
         {
-            Animation anim = BuildOneAnimation(iqm, skeleton, clip, boneCount);
+            Animation anim = BuildOneAnimation(iqm, boneNames, clip);
             library.AddAnimation(clip.Name, anim);
 
             // Choose an autoplay default: prefer any "idle"-named clip, else fall back to the first clip.
@@ -431,8 +470,9 @@ public static class IqmBuilder
     /// bone-LOCAL transform through the same world-conjugation as the rest pose (computed fresh per frame so
     /// the non-commuting parent translation is handled correctly).
     /// </summary>
-    private static Animation BuildOneAnimation(IqmData iqm, Skeleton3D skeleton, ClipSpec clip, int boneCount)
+    private static Animation BuildOneAnimation(IqmData iqm, string[] boneNames, ClipSpec clip)
     {
+        int boneCount = boneNames.Length;
         IqmFrame[] frames = iqm.Frames;
         IqmJoint[] joints = iqm.Joints;
 
@@ -455,10 +495,9 @@ public static class IqmBuilder
         var sclTrack = new int[boneCount];
         for (int bone = 0; bone < boneCount; bone++)
         {
-            string boneName = skeleton.GetBoneName(bone);
-            // Paths are relative to the AnimationPlayer.RootNode (the Skeleton3D): "<skeleton>:<bone>".
-            // Because RootNode points AT the skeleton, the leading node is just the skeleton itself.
-            var basePath = $"{skeleton.Name}:{boneName}";
+            // Paths are relative to the AnimationPlayer.RootNode (the model root): "<skeleton>:<bone>".
+            // The skeleton's node name is the fixed SkeletonNodeName, so no live node is needed here.
+            var basePath = $"{SkeletonNodeName}:{boneNames[bone]}";
 
             posTrack[bone] = anim.AddTrack(Animation.TrackType.Position3D);
             anim.TrackSetPath(posTrack[bone], basePath);
@@ -609,6 +648,26 @@ public static class IqmBuilder
     /// <summary>True if the model carries per-vertex skin data (so the mesh should be bound to the skeleton).</summary>
     private static bool HasSkinning(IqmData iqm)
         => iqm.Joints.Length > 0 && iqm.BlendIndexes is { Length: > 0 } && iqm.BlendWeights is { Length: > 0 };
+
+    /// <summary>
+    /// The material name a mesh will actually resolve after the <c>_N.skin</c> remap — null when the skin
+    /// hides the mesh (common/nodraw). Shared by <see cref="BuildMesh"/> and the off-thread texture-predecode
+    /// pass (§12.3-1) so the predecoded set always matches what the build loads.
+    /// </summary>
+    public static string? EffectiveMaterialName(IqmMesh sub, SkinFile? skin, out bool remapped)
+    {
+        remapped = false;
+        string materialName = sub.Material;
+        if (skin is not null && !string.IsNullOrEmpty(sub.Name)
+            && skin.MeshToTexture.TryGetValue(sub.Name, out string? remap) && !string.IsNullOrEmpty(remap))
+        {
+            if (SkinFile.IsNoDraw(remap))
+                return null; // skin hides this mesh
+            materialName = remap;
+            remapped = true;
+        }
+        return materialName;
+    }
 
     /// <summary>Resolve a material through the asset facade, tolerating a null facade (build-order safety).</summary>
     private static Material? ResolveMaterialSafe(AssetSystem assets, string materialName)

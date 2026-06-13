@@ -70,6 +70,15 @@ public sealed partial class MusicPlayer : Node
     /// <summary>Current server time (for trigger_music touch freshness check).</summary>
     public float ServerTime { get; set; }
 
+    /// <summary>
+    /// S5 (sv_threaded): the host's shared sim gate, set by NetGame ONLY when the listen server runs its
+    /// simulation on a dedicated worker thread. <see cref="EntityList"/> is then the live server entity table
+    /// the worker mutates, so the per-frame scan in <see cref="EvaluateMusicSources"/> must hold this gate to
+    /// avoid racing a concurrent spawn/relink. Null on the default single-threaded path → no lock is taken and
+    /// the scan is byte-for-byte the old behaviour.
+    /// </summary>
+    public object? SimGate { get; set; }
+
     // ---- constants ----
     private const string MusicBus = "Music";
     private const float TouchFreshnessWindow = 0.2f; // a trigger_music is "active" if touched within this many seconds
@@ -91,7 +100,19 @@ public sealed partial class MusicPlayer : Node
         float dt = (float)delta;
 
         // --- evaluate the priority stack to find the best music source ---
-        EvaluateMusicSources(out string bestTrack, out float bestVolume, out float fadeIn, out float fadeOut);
+        // S5: the scan reads the live server entity list; when sv_threaded the host hands us its gate so this
+        // can't race the worker's spawn/relink. SimGate is null on the default path → no lock, byte-identical.
+        string bestTrack;
+        float bestVolume, fadeIn, fadeOut;
+        if (SimGate is not null)
+        {
+            lock (SimGate)
+                EvaluateMusicSources(out bestTrack, out bestVolume, out fadeIn, out fadeOut);
+        }
+        else
+        {
+            EvaluateMusicSources(out bestTrack, out bestVolume, out fadeIn, out fadeOut);
+        }
 
         // --- if the best track changed, start a crossfade ---
         // The OUTGOING track fades on ITS OWN fade_rate (captured when it started — QC TargetMusic_Advance
@@ -117,6 +138,39 @@ public sealed partial class MusicPlayer : Node
     //  Priority evaluation
     // ========================================================================
 
+    // (§11 R7) The music sources are map-static (trigger_music/target_music spawn at map load), so the
+    // per-frame priority scan iterates this small cached subset instead of walking EVERY entity (the old
+    // full-list scan ran 3 passes × all entities × frame, with per-entity string ClassName compares —
+    // under the SimGate lock when sv_threaded). Rebuilt when the EntityList reference changes (map load)
+    // and on a slow safety interval in case a mod spawns one mid-match.
+    private readonly List<Entity> _triggerMusic = new();
+    private readonly List<Entity> _targetMusic = new();
+    private IReadOnlyList<Entity>? _scannedList;
+    private float _nextRescanAt = float.NegativeInfinity;
+    private const float RescanInterval = 5f;
+
+    private void RefreshMusicEntities()
+    {
+        bool stale = !ReferenceEquals(EntityList, _scannedList)
+                     || ServerTime >= _nextRescanAt
+                     || _nextRescanAt > ServerTime + RescanInterval;   // server clock went backwards
+        if (!stale)
+            return;
+        _scannedList = EntityList;
+        _nextRescanAt = ServerTime + RescanInterval;
+        _triggerMusic.Clear();
+        _targetMusic.Clear();
+        if (EntityList is null)
+            return;
+        for (int i = 0; i < EntityList.Count; i++)
+        {
+            Entity e = EntityList[i];
+            if (e.IsFreed) continue;
+            if (e.ClassName == "trigger_music") _triggerMusic.Add(e);
+            else if (e.ClassName == "target_music") _targetMusic.Add(e);
+        }
+    }
+
     private void EvaluateMusicSources(out string bestTrack, out float bestVolume, out float fadeIn, out float fadeOut)
     {
         bestTrack = "";
@@ -127,13 +181,14 @@ public sealed partial class MusicPlayer : Node
         // Highest priority: trigger_music (player inside a brush volume)
         if (EntityList is not null)
         {
+            RefreshMusicEntities();
+
             // Scan for active trigger_music whose touch is fresh (player inside it this frame).
             Entity? bestTrigger = null;
-            for (int i = 0; i < EntityList.Count; i++)
+            for (int i = 0; i < _triggerMusic.Count; i++)
             {
-                Entity e = EntityList[i];
+                Entity e = _triggerMusic[i];
                 if (e.IsFreed) continue;
-                if (e.ClassName != "trigger_music") continue;
                 if (e.Active != MapMover.ActiveActive) continue;
                 if (string.IsNullOrEmpty(e.Noise)) continue;
                 // The touch handler stamps PushLTime each frame the player overlaps.
@@ -159,11 +214,10 @@ public sealed partial class MusicPlayer : Node
             // becomes music_target and outranks the default only while time < activation + lifetime; a used
             // one with lifetime 0 instead REPLACES the music_default slot (handled in the default pass below).
             Entity? bestTarget = null;
-            for (int i = 0; i < EntityList.Count; i++)
+            for (int i = 0; i < _targetMusic.Count; i++)
             {
-                Entity e = EntityList[i];
+                Entity e = _targetMusic[i];
                 if (e.IsFreed) continue;
-                if (e.ClassName != "target_music") continue;
                 if (e.Active != MapMover.ActiveActive) continue;
                 if (string.IsNullOrEmpty(e.Noise)) continue;
                 if (string.IsNullOrEmpty(e.TargetName)) continue;     // untargeted = default slot
@@ -184,11 +238,10 @@ public sealed partial class MusicPlayer : Node
             // Default slot — overrides cdtrack. Prefer the most recently ACTIVATED lifetime-0 targeted
             // track (QC: Net_TargetMusic with tim==0 reassigns music_default), else the untargeted default.
             Entity? def = null;
-            for (int i = 0; i < EntityList.Count; i++)
+            for (int i = 0; i < _targetMusic.Count; i++)
             {
-                Entity e = EntityList[i];
+                Entity e = _targetMusic[i];
                 if (e.IsFreed) continue;
-                if (e.ClassName != "target_music") continue;
                 if (e.Active != MapMover.ActiveActive) continue;
                 if (string.IsNullOrEmpty(e.Noise)) continue;
                 if (!string.IsNullOrEmpty(e.TargetName))

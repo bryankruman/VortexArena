@@ -1,0 +1,4 @@
+# Compiled golden-trace generator (regenerate with the gcc command in README.md).
+particles_ref
+particles_ref.exe
+*.o

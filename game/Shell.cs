@@ -663,7 +663,11 @@ public partial class Shell : Node
         GameWorld? world = _netGame?.ServerWorld;
         if (world is null)
             return null;
-        return world.Commands.Execute(line, isServerConsole: false, caller: _netGame?.LocalServerPlayer).Output;
+        // T47 integration wire-up: the listen-server operator's in-game console is the HOST, so it runs as the
+        // server console (isServerConsole: true) — without this flag the new client-command privilege gate would
+        // reject the host's own kick/map/set/endmatch/etc. (a regression vs pre-T47). caller stays LocalServerPlayer
+        // so kill/say/team still act on the host's player; the remote-client path (ServerNet.cs) stays gated.
+        return world.Commands.Execute(line, isServerConsole: true, caller: _netGame?.LocalServerPlayer).Output;
     }
 
     /// <summary>

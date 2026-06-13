@@ -609,6 +609,30 @@ public sealed class ClientNet : IDisposable
     private static readonly string[] ReplicatedCvars =
         { "cl_weaponpriority", "cl_autoswitch", "cl_noantilag", "cl_physics" };
 
+    /// <summary>QC <c>notification_CHOICE_*</c> replicated cvars (notifications/all.qh:884 ReplicateVars): one per
+    /// registered MSG_CHOICE notification (team variants collapse to a single shared cvar). Built LAZILY from the
+    /// notification registry (Notifications.RegisterAll runs at GameInit, before the first replicate pump) so the
+    /// watcher pushes exactly the choice cvars the server's gate accepts. Without this the client's verbose/terse
+    /// kill-message preference never reaches the server.</summary>
+    private string[]? _replicatedChoiceCvars;
+    private string[] ReplicatedChoiceCvars
+    {
+        get
+        {
+            if (_replicatedChoiceCvars is null)
+            {
+                var s = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var n in Notifications.All)
+                    if (n.Type == MsgType.Choice)
+                        s.Add("notification_" + NotificationChoiceState.ChoiceCvarName(n));
+                var arr = new string[s.Count];
+                s.CopyTo(arr);
+                _replicatedChoiceCvars = arr;
+            }
+            return _replicatedChoiceCvars;
+        }
+    }
+
     /// <summary>
     /// Where the watcher reads the replicated <c>cl_*</c> values — the host wires this to the SHARED menu/console
     /// cvar store (where cl_* live; on a listen host <c>Api.Cvars</c> is the server world's PRIVATE store, which
@@ -643,7 +667,16 @@ public sealed class ClientNet : IDisposable
         _replicateSendAll = false;
         _nextReplicateTime = now + 0.8f + (float)_replicateJitter.NextDouble() * 0.4f; // replicate.qh:48
 
-        foreach (string name in ReplicatedCvars)
+        PushReplicatedSet(ReplicatedCvars, sendAll);
+        // QC ReplicateVars also pushes the per-choice notification_CHOICE_* cvars (the client's verbose/terse
+        // kill-message preference) so the server can pick option A/B per recipient.
+        PushReplicatedSet(ReplicatedChoiceCvars, sendAll);
+    }
+
+    /// <summary>Push the changed (or, on send-all, every set) cvar in <paramref name="names"/> via sentcvar.</summary>
+    private void PushReplicatedSet(string[] names, bool sendAll)
+    {
+        foreach (string name in names)
         {
             string value = ReadReplicatedCvar(name);
             if (value.Length == 0)

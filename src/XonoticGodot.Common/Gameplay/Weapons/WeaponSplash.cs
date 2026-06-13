@@ -16,9 +16,8 @@ namespace XonoticGodot.Common.Gameplay;
 /// Devastator, Crylink, Electro and Hagar share one faithful blast model instead of each copying the
 /// Blaster's private version. The Blaster keeps its own equivalent private method; behaviour matches.
 ///
-/// Deferred vs QC (same gaps the Blaster flags): line-of-sight occlusion, the energy-conserving knockback
-/// cubic (lives in the damage pipeline, DamageSystem.cs), self-damage radius scaling, force_zscale shaping,
-/// and Damage_DamageInfo blast networking.
+/// Deferred vs QC (same gaps the Blaster flags): the energy-conserving knockback cubic (lives in the damage
+/// pipeline, DamageSystem.cs), self-damage radius scaling, and Damage_DamageInfo blast networking.
 /// </summary>
 public static class WeaponSplash
 {
@@ -35,8 +34,9 @@ public static class WeaponSplash
     /// <item>knockback direction points from the blast toward the victim's bbox/view center (not from the
     /// victim's origin), and its magnitude is <c>(finaldmg / max(core, edge)) * force</c> — i.e. it tracks
     /// the damage falloff exactly, as QC does;</item>
-    /// <item><paramref name="forceZScale"/> scales the vertical knockback component (QC force_xyzscale.z,
-    /// e.g. the Blaster's force_zscale launch boost);</item>
+    /// <item><paramref name="forceScale"/> shapes the knockback per axis (QC force_xyzscale, damage.qc:831-836
+    /// — a zero component leaves that axis unscaled): the Blaster's force_zscale launch boost rides Z, the
+    /// Devastator's force_xyscale rides X/Y;</item>
     /// <item>line-of-sight: if a wall blocks the blast from the victim, damage and force are reduced by the
     /// through-floor factors (QC g_throughfloor_damage / _force) — a single LOS trace stands in for QC's
     /// multi-sample box test;</item>
@@ -47,14 +47,15 @@ public static class WeaponSplash
     /// The Damage_DamageInfo blast-effect networking is the only deferred piece (client render).
     /// </summary>
     public static void RadiusDamage(Entity inflictor, Vector3 center, float damage, float edgeDamage,
-        float radius, Entity? attacker, int deathType, float force = 0f, float forceZScale = 1f,
+        float radius, Entity? attacker, int deathType, float force = 0f, Vector3? forceScale = null,
         Entity? directHit = null, Weapon? accuracyWeapon = null)
     {
         if (Api.Services is null || radius <= 0f) return;
         Entity src = attacker ?? inflictor;
 
-        float throughFloorDmg = Cvar("g_throughfloor_damage", 0.5f);
-        float throughFloorForce = Cvar("g_throughfloor_force", 0.7f);
+        // balance-xonotic.cfg:200-201 — both 0.75 (the old 0.5/0.7 fallbacks matched neither balance nor QC).
+        float throughFloorDmg = Cvar("g_throughfloor_damage", 0.75f);
+        float throughFloorForce = Cvar("g_throughfloor_force", 0.75f);
 
         // [T57] QC stat_damagedone (damage.qc:909-914): the splash accuracy-hit tally. The weapon explosion
         // call sites pass their Weapon as accuracyWeapon (QC derives it via DEATH_WEAPONOF(deathtype); the
@@ -64,15 +65,32 @@ public static class WeaponSplash
 
         // QC searches a padded radius (rad + MAX_DAMAGEEXTRARADIUS, damage.qc:746) so the per-target
         // nearest-point check below — not the broadphase pre-filter — is the binding constraint.
-        foreach (Entity e in Api.Entities.FindInRadius(center, radius + MaxDamageExtraRadius))
+        // [T45] WARPZONE-AWARE find (QC RadiusDamageForSource calls WarpZone_FindRadius): the result reaches
+        // victims through linked portals, each tagged with the blast origin in ITS OWN frame (hit.LocalBlastOrigin)
+        // so distance/falloff/LOS for a far-side victim are measured from the portal-shifted blast point. With no
+        // warpzones in the world this is exactly the plain findradius with identity transforms (every hit's
+        // LocalBlastOrigin == center). Snapshot into a method-LOCAL list (not a shared static): ApplyDamage below
+        // can spawn/free entities and re-enter RadiusDamage (damage → death → secondary explosion), so the buffer
+        // must be per-call; iterating the live grid result would be unsafe (the loop relinks the world).
+        List<WarpzoneRadiusHit> targets = new();
+        WarpzoneRadiusQuery.FindRadiusWarpzone(WarpzoneTrace.AmbientManager, center,
+            radius + MaxDamageExtraRadius, targets);
+        for (int i = 0; i < targets.Count; i++)
         {
+            WarpzoneRadiusHit hit = targets[i];
+            Entity e = hit.Entity;
             if (e.TakeDamage == DamageMode.No) continue;
+
+            // The blast origin in THIS victim's frame (QC WarpZone_findradius_findorigin): the original center for
+            // a same-room victim, or the portal-shifted origin for one reached through a warpzone. All of this
+            // victim's distance/force/LOS math below is measured from blastOrg, in the victim's own world frame.
+            Vector3 blastOrg = hit.LocalBlastOrigin;
 
             // QC RadiusDamageForSource measures distance to the NEAREST POINT on the target's bbox (so a
             // point-blank / direct hit takes full core damage — the bbox-center metric undershot close range).
             Vector3 targetCenter = e.Origin + (e.Mins + e.Maxs) * 0.5f;
-            Vector3 nearest = Vector3.Clamp(center, e.Origin + e.Mins, e.Origin + e.Maxs);
-            float dist = (nearest - center).Length();
+            Vector3 nearest = Vector3.Clamp(blastOrg, e.Origin + e.Mins, e.Origin + e.Maxs);
+            float dist = (nearest - blastOrg).Length();
             if (dist > radius) continue;
 
             float frac = 1f - dist / radius;                 // in [0,1] since dist <= radius
@@ -98,25 +116,67 @@ public static class WeaponSplash
             float denom = MathF.Max(damage, edgeDamage);
             if (force != 0f && denom > 0f)
             {
-                Vector3 dirDelta = forceRef - center;
+                Vector3 dirDelta = forceRef - blastOrg;
                 float dirLen = dirDelta.Length();
                 Vector3 dir = dirLen > 0f ? dirDelta / dirLen : Vector3.UnitZ;
                 forceVec = dir * ((finalDmg / denom) * force);
-                if (forceZScale != 1f) forceVec.Z *= forceZScale;
+                if (forceScale is { } s)
+                {
+                    // QC damage.qc:831-836: each axis only scales when its component is non-zero.
+                    if (s.X != 0f) forceVec.X *= s.X;
+                    if (s.Y != 0f) forceVec.Y *= s.Y;
+                    if (s.Z != 0f) forceVec.Z *= s.Z;
+                }
             }
 
-            // Line of sight: the direct-hit target is always fully hit; for others, a blocked trace reduces
-            // damage + force by the through-floor factors (QC's multi-sample box test collapsed to one ray).
+            // Line of sight (QC damage.qc:838-905): the direct-hit target is always fully hit; for others,
+            // trace from the blast to MULTIPLE points on the victim's box — the NEAREST point first (QC seeds
+            // the loop with its running `nearest`), then uniformly random box points — and BLEND damage/force
+            // by the visible fraction: factor = throughfloor + (1 - throughfloor) * hitratio. The sample count
+            // is adaptive from the allowed result stddev (xonotic-server.cfg:309-314: max stddev 2 dmg /
+            // 10 force, steps bounded 1..100 player / 1..10 other), so a big rocket blast on a player samples
+            // ~75 points while a grazing hit samples once. This replaces the previous single-ray-to-CENTER
+            // BINARY check, whose full-force-or-0.7x coin flip whenever the one ray nicked a stair lip / ramp
+            // edge made blaster-jump knockback inconsistent (the splash-duplication bug used to mask it).
+            Vector3 hitLoc = nearest; // QC hitloc: the nearest box point (mean of visible samples below)
             if (!ReferenceEquals(e, directHit))
             {
-                TraceResult los = Api.Trace.Trace(center, Vector3.Zero, Vector3.Zero, targetCenter,
-                    MoveFilter.NoMonsters, inflictor);
-                bool blocked = los.Fraction < 1f && !ReferenceEquals(los.Ent, e);
-                if (blocked)
+                // QC: n = (1 / (2 * max stddev))^2 -> total = 0.25 * (max(mininv_f, mininv_d))^2
+                float mininvD = finalDmg * (1f - throughFloorDmg) / Cvar("g_throughfloor_damage_max_stddev", 2f);
+                float mininvF = forceVec.Length() * (1f - throughFloorForce) / Cvar("g_throughfloor_force_max_stddev", 10f);
+                bool isPlayer = (e.Flags & EntFlags.Client) != 0;
+                float steps = 0.25f * MathF.Pow(MathF.Max(mininvD, mininvF), 2f);
+                float minSteps = Cvar(isPlayer ? "g_throughfloor_min_steps_player" : "g_throughfloor_min_steps_other", 1f);
+                float maxSteps = Cvar(isPlayer ? "g_throughfloor_max_steps_player" : "g_throughfloor_max_steps_other", isPlayer ? 100f : 10f);
+                int total = (int)MathF.Ceiling(QMath.Clamp(steps, minSteps, maxSteps));
+
+                int hits = 0;
+                Vector3 sample = nearest;
+                Vector3 visibleAccum = Vector3.Zero;
+                for (int c = 0; c < total; c++)
                 {
-                    finalDmg *= throughFloorDmg;
-                    forceVec *= throughFloorForce;
+                    // [T45] LOS from the (portal-shifted) blast origin, warpzone-aware (QC RadiusDamageForSource
+                    // traces with WarpZone_TraceLine). For a same-room victim this is the plain LOS trace; for a
+                    // far-side victim blastOrg already sits in the victim's frame so the trace stays local.
+                    TraceResult los = Api.Trace.TraceLineWarpzone(blastOrg, sample,
+                        MoveFilter.NoMonsters, inflictor).Trace;
+                    if (los.Fraction >= 1f || ReferenceEquals(los.Ent, e))
+                    {
+                        ++hits;
+                        visibleAccum += sample;
+                    }
+                    // next sample: a uniform random point inside the victim's bbox (QC random() -> Prandom,
+                    // the deterministic PRNG every other weapon-spread call site uses, ADR-0010).
+                    sample = new Vector3(
+                        e.Origin.X + e.Mins.X + Prandom.Float() * (e.Maxs.X - e.Mins.X),
+                        e.Origin.Y + e.Mins.Y + Prandom.Float() * (e.Maxs.Y - e.Mins.Y),
+                        e.Origin.Z + e.Mins.Z + Prandom.Float() * (e.Maxs.Z - e.Mins.Z));
                 }
+                float hitRatio = (float)hits / total;
+                finalDmg *= QMath.Clamp(throughFloorDmg + (1f - throughFloorDmg) * hitRatio, 0f, 1f);
+                forceVec *= QMath.Clamp(throughFloorForce + (1f - throughFloorForce) * hitRatio, 0f, 1f);
+                if (hits > 0)
+                    hitLoc = visibleAccum / hits; // QC: hitloc = the mean visible sample
             }
 
             // [T57] accumulate the accuracy tally BEFORE Damage (QC damage.qc:911-914, iscreature → the
@@ -128,8 +188,9 @@ public static class WeaponSplash
             // DamageSystem.Apply (QC damage.qc:614-615 — only Damage() scales it; RadiusDamageForSource does
             // NOT). Scaling it here too double-applied it (0.65^2 ≈ 0.42×), making rocket/blaster/electro-jumps
             // ~35% too cheap. The pipeline is now the single source of truth (DMG1).
+            // QC passes `nearest` (the nearest/mean-visible box point) as hitloc, not the box center.
             WeaponFiring.ApplyDamage(e, src, finalDmg, deathType, inflictor: inflictor, force: forceVec,
-                hitLoc: targetCenter);
+                hitLoc: hitLoc);
         }
 
         // [T57] ONE hit credit per blast, capped at one blast's max damage (QC damage.qc:928-929:

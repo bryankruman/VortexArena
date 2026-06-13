@@ -125,17 +125,20 @@ public struct MovementParameters
     // The prefix+name cvar-name strings, interned once per (prefix, name) pair. FromCvars runs PER PLAYER MOVE
     // (server tick × clients + every client-prediction replay), and a naive `prefix + "maxspeed"` concat on each
     // of the ~45 reads below allocated ~2.5 KB per call — the dominant sim.move GC churn under bot load. The
-    // cache is tiny (one prefix in practice) and read on the sim thread only (single-threaded by contract,
-    // like the Prof scopes).
-    private static readonly Dictionary<(string Prefix, string Name), string> _cvarNameCache = new();
+    // cache is tiny (one prefix in practice).
+    //
+    // S5 (sv_threaded): this NAME cache is a process-global mutable static shared across threads. The two-world
+    // split isolates the cvar STORE per thread, but FromCvars on BOTH the server-sim thread and the main-thread
+    // prediction replay still hit THIS cache — so it MUST be thread-safe even though each thread reads a different
+    // store. A ConcurrentDictionary makes GetOrAdd atomic (no torn write, no lost entry) at no measurable cost on
+    // the single-threaded path (the same lookup, one tiny dictionary, one prefix in practice — the GetOrAdd
+    // fast-path is a plain read after the first miss). Drop-in: the key/value types are unchanged.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(string Prefix, string Name), string> _cvarNameCache = new();
 
     private static string N(string prefix, string name)
-    {
-        var key = (prefix, name);
-        if (!_cvarNameCache.TryGetValue(key, out string? full))
-            _cvarNameCache[key] = full = prefix + name;
-        return full;
-    }
+        => _cvarNameCache.TryGetValue((prefix, name), out string? full)
+            ? full
+            : _cvarNameCache.GetOrAdd((prefix, name), static k => k.Prefix + k.Name);
 
     public static MovementParameters FromCvars(string prefix = "sv_")
     {

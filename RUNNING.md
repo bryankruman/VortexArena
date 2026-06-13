@@ -148,6 +148,58 @@ Headless doesn't render. To walk around the scene:
 
 ---
 
+## Visual QA (T5 — Wave A5)
+
+Verifying the renderer is **split in two**, because the headless renderer (`dummy_video`) renders *nothing* —
+`GetViewport().GetTexture().GetImage()` is null headless (`game/ScreenshotHook.cs`), so no rendered-frame or
+pixel check can run in CI.
+
+| Half | What it checks | How | Where |
+|---|---|---|---|
+| **Headless (automated)** | every stock map *loads* + has renderable/collidable geometry; every model *loads* + has a valid bone parent-chain (IQM additionally: non-singular bind pose; DPM/MD3 skip the determinant/unit-scale check per shipped DP model baselines); every `.shader` *compiles* (parses, no hard failure) | `VisualQaTests.cs` (pure xUnit over the parsed asset structures — no GPU, self-skips without `assets/data`) | `ci/ci.sh` step 5; `dotnet test … --filter VisualQa` |
+| **Windowed (manual eye-check)** | actual on-screen *correctness*: lightmap/deluxemap direction, patch smoothness, flare quads, material color, bone pose | `tools/visual-qa.sh` captures a real frame per map + per model into `screenshots/`; then a human (or an agent via the Read tool) eyeballs each PNG against the checklist below | `tools/visual-qa.sh` + the checklist below |
+
+**The headless half is NOT a substitute for the eye-check.** A map can load with all counts in range and still
+render wrong (magenta walls, flat lighting, faceted curves). The structural assertions only catch *load* and
+*structure* regressions; visual correctness is **only** decidable on-screen.
+
+### Capture the frames
+
+```bash
+export GODOT="/c/Program Files/Godot/Godot_v4.6.3-stable_mono_win64_console.exe"
+tools/visual-qa.sh                 # every stock map + every hero model → screenshots/
+tools/visual-qa.sh --map stormkeep # just one map
+tools/visual-qa.sh --models        # just the player models
+tools/visual-qa.sh --frames 240    # let shadows/streaming settle longer before each shot
+```
+
+Each capture opens a window for ~1.5 s and self-quits (windowed only — `--headless` writes a blank PNG). The
+PNGs land in `screenshots/` (git-ignored, `.gdignore`'d). **`Read` each PNG to view it.**
+
+### Windowed checklist (run per captured PNG)
+
+Compare to an upstream Darkplaces baseline screenshot of the same map/model where one has been collected
+(collecting baselines is a future task). Until then, judge against the Base look:
+
+- [ ] **Materials / textures** — no **magenta** missing-texture walls; hero textures, `_norm`/`_gloss`
+  variants and DDS-compressed textures all resolve (the first windowed capture caught stormkeep's DDS walls
+  rendering magenta while the headless smoke still said `0 errors` — see Tricks → *Visual capture*).
+- [ ] **Lightmaps / deluxemaps** — baked lighting reads as directional, not flat/fullbright; deluxemapped maps
+  (the `IsDeluxemapped` ones) show light *direction* modulation on walls, not a uniform wash.
+- [ ] **Patches (bezier curves)** — curved surfaces (arches, pipes, domes) render **smooth**, not faceted /
+  collapsed; no gaps at patch seams.
+- [ ] **Billboards / flares** — `Q3FACETYPE_FLARE` light flares appear as textured quads facing the camera, not
+  invisible and not opaque black squares.
+- [ ] **Model bone pose** — the player model stands **un-twisted** (no bones collapsed to the origin or folded
+  inside-out), feet on the floor, the idle/bind pose matching Base. A twisted model points at a skeleton or
+  bind-pose decode bug the headless parent-chain/non-singular assertions did *not* catch on-screen.
+
+If something looks wrong, the headless `VisualQaTests` won't have flagged it — file it against the relevant
+loader/builder (`MapLoader`/`BspReader`, `BezierPatch`, `IqmBuilder`/`Md3Builder`/`DpmBuilder`,
+`LightmapShader`, the material pipeline).
+
+---
+
 ## Menu / front-end
 
 `Main.cs` now boots the **`Shell`** (the app coordinator) which shows the **main menu** front-end and owns the
@@ -278,7 +330,23 @@ ToS/welcome/team-select, tools, confirms). Architecture:
   *Allocation Rate* / *% Time in GC* / gen0 counts while playing. **Do not** flip GC modes
   (`ServerGarbageCollection` etc.) in `XonoticGodot.csproj` without counter evidence — client frame-pauses
   trade against dedicated throughput.
+- **Hitch forensics (FrameProfiler, 2026-06-12):** `cl_frameprofiler 1` = overlay graph + hitch log,
+  `2` = also a per-second breakdown + the file sink `user://frameprofile.log`. Every frame is recorded into a
+  240-frame forensic ring (full per-scope ms+alloc table, GC counts + **pause ms**, draw calls, **pipeline-compile
+  deltas** — a nonzero `pipe +N` mid-play is a first-use shader compile slipping past the warm pass), and a hitch
+  emits a multi-line dump: `[hitch] scopes:` (top 12 with per-scope KB), `gpu:`, `gc:`, `events:`, and `prev:`
+  (the 8-frame run-up). **Events** are one-shot forensic markers any layer can raise via
+  `Prof.Event("...")` — wired today: streamer main-thread builds (with ms), GPU warm-pass completion, sim
+  backlog drops, server input-queue trims, faithful-particle capacity changes. Read a hitch as: events name the
+  culprit; `scopes` attribute the C# time; `pipe/gpu` attribute the GPU; `gc pause` the GC.
+  `set cl_frameprofiler_dump 1` (console, mid-play, after a stutter) writes the whole ring to
+  `user://frameprofile_ring.csv` (Excel/pandas-ready) and re-arms. Add new `Prof.Event` call sites freely —
+  they're free when the profiler is off, bounded when on, thread-safe everywhere.
 - **Dedicated/headless server:** v1 is the headless listen server (`--headless --host`, see the section
   above + `tools/run-dedicated.sh`); the `linux-dedicated` export preset uses Godot's "export as dedicated
   server" mode (`OS.HasFeature("dedicated_server")` is the feature-tag branch point). The
   `XonoticGodot.Server` lib is Godot-free so a plain console host remains possible later.
+- **Smoothest-play settings (PERFORMANCE_REPORT §12.7):** `vid_fullscreen 2` (exclusive — compositor out of
+  the present path), `vid_vsync 2` (mailbox — no FIFO cascade on a missed present), `sys_priority_boost 1`
+  (default — AboveNormal process priority). Hitch lines tagged `EXTERNAL?` are the machine (compositor/
+  driver/background load), not the game — check what else is running before profiling the repo.

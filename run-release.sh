@@ -11,10 +11,32 @@
 #                 ./run-release.sh --host atelier --gametype dm   (extra args forwarded to the game)
 set -euo pipefail
 
-GODOT="/c/Program Files/Godot/Godot_v4.6.3-stable_mono_win64_console.exe"
 PROJ="$(cd "$(dirname "$0")" && pwd)"
-PRESET="windows-client"                              # preset.0 in export_presets.cfg
-OUT="$PROJ/dist/windows-client/XonoticGodot.exe"
+
+# Pick the desktop-client export preset + output binary for THIS OS (export_presets.cfg). GODOT may be
+# overridden via the environment so non-Windows devs point at their own Godot 4.6.3 mono console build.
+is_windows=false
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*|Windows_NT)
+        is_windows=true
+        GODOT="${GODOT:-/c/Program Files/Godot/Godot_v4.6.3-stable_mono_win64_console.exe}"
+        PRESET="windows-client"; OUT="$PROJ/dist/windows-client/XonoticGodot.exe" ;;   # preset.0
+    Linux)
+        GODOT="${GODOT:-godot}"
+        PRESET="linux-client";   OUT="$PROJ/dist/linux-client/XonoticGodot.x86_64" ;;  # preset.2
+    Darwin)
+        echo "[run-release] macOS export is CI-only / best-effort (ADR-0014) — use the release workflow." >&2
+        exit 1 ;;
+    *)  echo "[run-release] unsupported OS '$(uname -s)'" >&2; exit 1 ;;
+esac
+
+# On non-Windows the export's C# publish reads nuget.config; drop the Windows-only 'godot-editor' local
+# source (a C:\ path absent here) or NuGet/SDK resolution hard-fails. Backed up + restored on exit.
+if ! $is_windows && grep -q godot-editor "$PROJ/nuget.config" 2>/dev/null; then
+    _nuget_bak="$(mktemp)"; cp "$PROJ/nuget.config" "$_nuget_bak"
+    trap 'cp -f "$_nuget_bak" "$PROJ/nuget.config"; rm -f "$_nuget_bak"' EXIT
+    dotnet nuget remove source godot-editor --configfile "$PROJ/nuget.config" >/dev/null
+fi
 
 mkdir -p "$(dirname "$OUT")"
 echo "[run-release] exporting '$PRESET' (release, optimized C#) → $OUT"
@@ -25,7 +47,7 @@ set +e
 "$GODOT" --headless --path "$PROJ" --export-release "$PRESET" "$OUT"
 rc=$?
 set -e
-if [ ! -f "$OUT" ]; then
+if [ ! -e "$OUT" ]; then
     echo "[run-release] export FAILED — '$OUT' was not produced (godot exit $rc)" >&2
     exit 1
 fi

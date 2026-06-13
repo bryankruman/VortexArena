@@ -797,6 +797,8 @@ public partial class QuickMenuPanel : HudPanel
         c.Register("hud_panel_quickmenu_align", "0", save);
         c.Register("hud_panel_quickmenu_translatecommands", "0", save);
         c.Register("hud_panel_quickmenu_server_is_default", "0", save);
-        c.Register("hud_panel_quickmenu_time", "0", save);
+        // Base default is 5 (_hud_common.cfg:124: seta hud_panel_quickmenu_time 5) — the page idle-timeout in
+        // seconds. The port had 0 ("never expire"), a parity deviation; restore the shipped 5s timeout.
+        c.Register("hud_panel_quickmenu_time", "5", save);
     }
 }

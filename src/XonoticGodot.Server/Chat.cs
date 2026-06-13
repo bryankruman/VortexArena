@@ -1,0 +1,846 @@
+// Port of qcsrc/server/chat.qc — Say()/formatmessage()/NearestLocation()/PlayerHealth() (the server chat engine)
+// plus the ignore-list CRUD from qcsrc/server/command/cmd.qc (ignore_add_player/ignore_remove_player/
+// ignore_playerinlist/ignore_clearall). Flood/allowed/teamcolor defaults from xonotic-server.cfg.
+
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Text;
+using XonoticGodot.Common.Diagnostics;
+using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Gameplay;
+using XonoticGodot.Common.Services;
+
+namespace XonoticGodot.Server;
+
+/// <summary>
+/// The server chat engine — the C# successor to <c>server/chat.qc</c>'s <see cref="Say"/> plus the ignore-list
+/// CRUD that lives in <c>server/command/cmd.qc</c>. One instance per <see cref="GameWorld"/>; the
+/// <see cref="Commands"/> say/say_team/tell/ignore/unignore/clear_ignores verbs route through it.
+///
+/// <para>Faithfully ported: the 4 <c>g_chat_*</c> allowed gates (all ship 1), <c>formatmessage()</c> macro
+/// expansion (%h/%a/%l/%y/%d/%o/%O/%w/%W/%x/%s/%S/%t/%T plus %% and \n), per-say-type flood control (broadcast/
+/// team/tell with spl 3/1/1, burst 2/2/2, lmax 2/2/2), recipient routing (broadcast / team / spectator /
+/// private) with mutual ignore blocking keyed by <see cref="Player.PersistentId"/>, muted = fake-accept (the
+/// sender sees the message, no one else does), the event-log line, and the 1/0/-1 return code.</para>
+///
+/// <para>Deviations (commented at each site): the MUTATOR_CALLHOOK ChatMessage/ChatMessageTo/PreFormatMessage/
+/// FormatMessage hooks have no port infrastructure yet (no chat mutator bus), so they are omitted; the
+/// active_minigame team branch and the permanent-ignore ServerProgsDB persistence are out of scope (the port
+/// keys ignores by PersistentId in-memory). Delivery is abstracted behind <see cref="Commands"/> sinks so the
+/// routing/ignore logic is testable headless without the net layer.</para>
+/// </summary>
+public sealed class Chat
+{
+    private readonly GameWorld _world;
+
+    public Chat(GameWorld world)
+    {
+        _world = world;
+        RegisterCvars();
+    }
+
+    /// <summary>
+    /// Register the shipped chat cvar defaults (xonotic-server.cfg:395-411) lazily/idempotently through the
+    /// cvar facade — Cvars.cs is owned by another task this wave, so the chat engine seeds its own autocvars the
+    /// way a mutator registers its cvars at boot (Cvars.Register keeps an already-set value). All four allowed
+    /// gates ship 1 (chat on); the flood triples are 3/2/2 (broadcast), 1/2/2 (team), 1/2/2 (tell).
+    /// </summary>
+    private static void RegisterCvars()
+    {
+        Cvars.Register("g_chat_allowed", "1");
+        Cvars.Register("g_chat_private_allowed", "1");
+        Cvars.Register("g_chat_spectator_allowed", "1");
+        Cvars.Register("g_chat_team_allowed", "1");
+        Cvars.Register("g_chat_teamcolors", "0");
+        Cvars.Register("g_chat_tellprivacy", "1");
+        Cvars.Register("g_chat_show_playerid", "0");
+        Cvars.Register("g_chat_nospectators", "0");
+        Cvars.Register("g_chat_flood_notify_flooder", "1");
+        Cvars.Register("g_chat_flood_spl", "3");
+        Cvars.Register("g_chat_flood_lmax", "2");
+        Cvars.Register("g_chat_flood_burst", "2");
+        Cvars.Register("g_chat_flood_spl_team", "1");
+        Cvars.Register("g_chat_flood_lmax_team", "2");
+        Cvars.Register("g_chat_flood_burst_team", "2");
+        Cvars.Register("g_chat_flood_spl_tell", "1");
+        Cvars.Register("g_chat_flood_lmax_tell", "2");
+        Cvars.Register("g_chat_flood_burst_tell", "2");
+    }
+
+    // =============================================================================================
+    // Say (qcsrc/server/chat.qc:27-372)
+    // =============================================================================================
+
+    /// <summary>
+    /// QC <c>Say(source, teamsay, privatesay, msgin, floodcontrol)</c>: the chat entry point.
+    /// <list type="bullet">
+    /// <item><paramref name="source"/> — the speaking player (null = a server-originated message).</item>
+    /// <item><paramref name="teamsay"/> — &gt;0 say_team; 0 public say; flipped to -1 internally for a spectator
+    /// message. The caller passes true(1)/false(0).</item>
+    /// <item><paramref name="privatesay"/> — the recipient of a <c>tell</c> (null otherwise).</item>
+    /// <item><paramref name="floodcontrol"/> — run the per-say-type flood throttle.</item>
+    /// </list>
+    /// Returns 1 = accept, 0 = reject, -1 = fake-accept (sender sees it, others don't). An empty
+    /// <paramref name="msgin"/> only tests flood control (QC the documented "message \"\"" contract).
+    /// </summary>
+    public int Say(Player? source, int teamsay, Player? privatesay, string msgin, bool floodcontrol)
+    {
+        bool sourceIsReal = source is not null && IsRealClient(source);
+
+        // ---- 4 allowed gates (chat.qc:29-51). IS_REAL_CLIENT(source): the bot/console path is never gated. ----
+        if (!Cvars.Bool("g_chat_allowed") && sourceIsReal)
+        {
+            NotifyInfo(source!, "CHAT_DISABLED");
+            return 0;
+        }
+        if (!Cvars.Bool("g_chat_private_allowed") && privatesay is not null)
+        {
+            NotifyInfo(source!, "CHAT_PRIVATE_DISABLED");
+            return 0;
+        }
+        if (!Cvars.Bool("g_chat_spectator_allowed") && source is not null && IsObserver(source))
+        {
+            NotifyInfo(source, "CHAT_SPECTATOR_DISABLED");
+            return 0;
+        }
+        if (!Cvars.Bool("g_chat_team_allowed") && teamsay != 0)
+        {
+            NotifyInfo(source!, "CHAT_TEAM_DISABLED");
+            return 0;
+        }
+
+        // chat.qc:53-54 — DP say bug workaround: a leading space on a public say is trimmed (not say_team/tell).
+        if (teamsay == 0 && privatesay is null && msgin.Length >= 1 && msgin[0] == ' ')
+            msgin = msgin.Substring(1);
+
+        // chat.qc:56-57 — macro expansion.
+        if (source is not null)
+            msgin = FormatMessage(source, msgin);
+
+        // chat.qc:59-73 — pick the name-prefix color code by source kind.
+        bool teamplay = _world.Teamplay?.IsTeamGame ?? false;
+        string colorstr;
+        if (source is null || !IsIngame(source))
+            colorstr = "^0"; // black for spectators (and the server)
+        else if (teamplay)
+            colorstr = TeamColorCode((int)source.Team);
+        else
+        {
+            colorstr = "";
+            teamsay = 0;
+        }
+        if (source is null)
+        {
+            colorstr = "";
+            teamsay = 0;
+        }
+
+        // chat.qc:75-76 — run the message through every magicear (already ported in LogicGates). A null source
+        // (a server-originated message) skips it — the magicear path dereferences the source's flags/origin.
+        if (msgin != "" && source is not null)
+            msgin = LogicGates.MagicEarProcessAllEars(source, teamsay, privatesay, msgin);
+
+        // chat.qc:89-96 — build the colored name + the prefix color (^3 if uncolored, else ^7).
+        string namestr = "";
+        if (source is not null)
+            namestr = PlayerName(source, Cvars.Bool("g_chat_teamcolors") && IsPlayer(source));
+        if (Cvars.Bool("g_chat_show_playerid") && source is not null)
+            namestr = $"{namestr} ^9#{source.Index}^7"; // QC itos(etof(source)) — the entity slot
+        string colorprefix = (Log.StripColors(namestr) == namestr) ? "^3" : "^7";
+
+        // chat.qc:98-148 — build the broadcast string (msgstr) + the centerprint string (cmsgstr).
+        string msgstr = "", cmsgstr = "";
+        string? privatemsgprefix = null;
+        int privatemsgprefixlen = 0;
+        if (msgin != "")
+        {
+            bool foundMe = msgin.StartsWith("/me ", StringComparison.Ordinal); // only at the start (anti-imitation)
+            if (foundMe)
+            {
+                string newnamestr = teamsay != 0
+                    ? $"{colorstr}({colorprefix}{namestr}{colorstr})^7"
+                    : $"{colorprefix}{namestr}^7";
+                msgin = newnamestr + msgin.Substring(3); // QC substring(msgin, 3, len-3)
+            }
+
+            if (privatesay is not null)
+            {
+                msgstr = $"\x01\x0d* {colorprefix}{namestr}^3 tells you: ^7";
+                privatemsgprefixlen = msgstr.Length;
+                msgstr += msgin;
+                cmsgstr = $"{colorstr}{colorprefix}{namestr}^3 tells you:\n^7{msgin}";
+                privatemsgprefix = $"\x01\x0d* ^3You tell {PlayerName(privatesay, Cvars.Bool("g_chat_teamcolors") && IsPlayer(privatesay))}: ^7";
+            }
+            else if (teamsay != 0)
+            {
+                msgstr = foundMe
+                    ? $"\x01\x0d^4* ^7{msgin}"
+                    : $"\x01\x0d{colorstr}({colorprefix}{namestr}{colorstr}) ^7{msgin}";
+                cmsgstr = $"{colorstr}({colorprefix}{namestr}{colorstr})\n^7{msgin}";
+            }
+            else
+            {
+                if (foundMe)
+                    msgstr = $"\x01^4* ^7{msgin}";
+                else
+                {
+                    msgstr = "\x01";
+                    msgstr += (namestr != "") ? $"{colorprefix}{namestr}^7: " : "^7";
+                    msgstr += msgin;
+                }
+                cmsgstr = "";
+            }
+            // chat.qc:147 — newlines only good for centerprint; the broadcast line ends with one \n.
+            msgstr = msgstr.Replace("\n", " ") + "\n";
+        }
+
+        string fullmsgstr = msgstr;
+        string fullcmsgstr = cmsgstr;
+        float modTime = 0f;
+
+        // ---- FLOOD CONTROL (chat.qc:154-218) ----
+        int flood = 0;
+        FloodField floodField = FloodField.Chat;
+        if (floodcontrol && source is not null)
+        {
+            float floodSpl, floodBurst, floodLmax;
+            if (privatesay is not null)
+            {
+                floodSpl = Cvars.Float("g_chat_flood_spl_tell");
+                floodBurst = Cvars.Float("g_chat_flood_burst_tell");
+                floodLmax = Cvars.Float("g_chat_flood_lmax_tell");
+                floodField = FloodField.ChatTell;
+            }
+            else if (teamsay != 0)
+            {
+                floodSpl = Cvars.Float("g_chat_flood_spl_team");
+                floodBurst = Cvars.Float("g_chat_flood_burst_team");
+                floodLmax = Cvars.Float("g_chat_flood_lmax_team");
+                floodField = FloodField.ChatTeam;
+            }
+            else
+            {
+                floodSpl = Cvars.Float("g_chat_flood_spl");
+                floodBurst = Cvars.Float("g_chat_flood_burst");
+                floodLmax = Cvars.Float("g_chat_flood_lmax");
+                floodField = FloodField.Chat;
+            }
+            // chat.qc:182 — a burst value of N must allow N-line bursts, not N+1.
+            floodBurst = Math.Max(0f, floodBurst - 1f);
+
+            int lines = -1;
+            float now = FrameStartTime();
+            modTime = now + floodBurst * floodSpl;
+
+            // chat.qc:187-204 — wrap the line into flood_lmax pieces; mark flood=2 if it overflows (too long).
+            if (msgstr != "")
+            {
+                var remaining = msgstr;
+                msgstr = "";
+                lines = 0;
+                while (remaining.Length > 0 && (floodLmax == 0f || lines <= floodLmax))
+                {
+                    string piece = GetWrappedLine(ref remaining);
+                    msgstr += " " + piece;
+                    ++lines;
+                }
+                if (msgstr.Length > 0)
+                    msgstr = msgstr.Substring(1); // strip the leading space (QC substring(msgstr, 1, len-1))
+
+                if (remaining != "")
+                {
+                    msgstr += "\n";
+                    flood = 2;
+                }
+            }
+
+            // chat.qc:206-217 — advance/charge the per-type flood stamp, or reject as flooding.
+            float stamp = GetFlood(source, floodField);
+            if (modTime >= stamp)
+            {
+                if (lines > 1)
+                    floodSpl *= lines;
+                SetFlood(source, floodField, Math.Max(now, stamp) + floodSpl);
+            }
+            else
+            {
+                if (lines >= 0) // msgstr was modified by the wrap loop — restore it
+                    msgstr = fullmsgstr;
+                flood = 1;
+            }
+        }
+
+        // chat.qc:220-239 — pick the sender-visible strings (flood==2 trims + notifies the flooder).
+        string sourcemsgstr, sourcecmsgstr;
+        if (flood == 2) // cannot happen for an empty msgstr
+        {
+            if (Cvars.Bool("g_chat_flood_notify_flooder"))
+            {
+                sourcemsgstr = msgstr + "\n^3CHAT FLOOD CONTROL: ^7message too long, trimmed\n";
+                sourcecmsgstr = "";
+            }
+            else
+            {
+                sourcemsgstr = fullmsgstr;
+                sourcecmsgstr = fullcmsgstr;
+            }
+            cmsgstr = "";
+        }
+        else
+        {
+            sourcemsgstr = msgstr;
+            sourcecmsgstr = cmsgstr;
+        }
+
+        // chat.qc:241-245 — a spectator's public/team say becomes a spectator-only message (teamsay = -1).
+        if (privatesay is null && source is not null && !IsIngame(source) && !_world.GameStopped
+            && (teamsay != 0 || ChatNoSpectators()))
+        {
+            teamsay = -1; // spectators
+        }
+
+        // chat.qc:247-248 — log a flood note.
+        if (flood != 0 && source is not null)
+            Log.Info($"NOTE: {PlayerName(source, IsPlayer(source))}^7 is flooding.");
+
+        // chat.qc:250-252 — splice the private "you tell X" prefix onto the sender-visible string.
+        if (privatesay is not null)
+            sourcemsgstr = privatemsgprefix + sourcemsgstr.Substring(Math.Min(privatemsgprefixlen, sourcemsgstr.Length));
+
+        // chat.qc:254-274 — the return code: muted = fake-accept; flood==1 = reject-or-fake; else accept.
+        int ret;
+        if (source is not null && source.Muted)
+        {
+            ret = -1; // always fake the message
+        }
+        else if (flood == 1)
+        {
+            if (Cvars.Bool("g_chat_flood_notify_flooder"))
+            {
+                Sprint(source!, $"^3CHAT FLOOD CONTROL: ^7wait ^1{Ftos(GetFlood(source!, floodField) - modTime)}^3 seconds\n");
+                ret = 0;
+            }
+            else
+                ret = -1;
+        }
+        else
+        {
+            ret = 1;
+        }
+
+        // chat.qc:276-280 — a spectator telling an in-game player while nospectators is on: hide it entirely.
+        if (privatesay is not null && source is not null && !IsIngame(source) && !_world.GameStopped
+            && IsIngame(privatesay) && ChatNoSpectators())
+        {
+            ret = -1;
+        }
+
+        // chat.qc:282-283 — MUTATOR_CALLHOOK(ChatMessage, ...): no chat mutator bus in the port (deviation).
+
+        string eventLogMsg = "";
+
+        // chat.qc:287-365 — deliver. ret==0 means rejected (no delivery, but the flood sprint already fired).
+        if (sourcemsgstr != "" && ret != 0)
+        {
+            if (ret < 0) // faked message (muted, or a notify-disabled flood) — only the sender sees it
+            {
+                Sprint(source!, sourcemsgstr);
+                if (sourcecmsgstr != "" && privatesay is null)
+                    CenterPrint(source!, sourcecmsgstr);
+            }
+            else if (privatesay is not null) // private message between two people only
+            {
+                Sprint(source!, sourcemsgstr);
+                if (!Cvars.Bool("g_chat_tellprivacy")) DedicatedPrint(msgstr); // server console too
+                if (sourceIsReal && IgnorePlayerInList(privatesay, source!))
+                    return -1; // source is ignored by privatesay — don't deliver, return -1
+                Sprint(privatesay, msgstr);
+                if (cmsgstr != "")
+                    CenterPrint(privatesay, cmsgstr);
+            }
+            else if (teamsay > 0) // team message — teammates only
+            {
+                Sprint(source!, sourcemsgstr);
+                DedicatedPrint(msgstr);
+                if (sourcecmsgstr != "")
+                    CenterPrint(source!, sourcecmsgstr);
+                foreach (Player it in RealClients())
+                {
+                    if (ReferenceEquals(it, source) || !IsIngame(it) || (int)it.Team != (int)source!.Team)
+                        continue;
+                    if (sourceIsReal && IgnorePlayerInList(it, source))
+                        continue; // source is ignored by it
+                    Sprint(it, msgstr);
+                    if (cmsgstr != "")
+                        CenterPrint(it, cmsgstr);
+                }
+                eventLogMsg = $":chat_team:{source!.PlayerId}:{(int)source.Team}:{msgin.Replace("\n", " ")}";
+            }
+            else if (teamsay < 0) // spectator message — spectators only
+            {
+                Sprint(source!, sourcemsgstr);
+                DedicatedPrint(msgstr);
+                foreach (Player it in RealClients())
+                {
+                    if (ReferenceEquals(it, source) || IsIngame(it))
+                        continue;
+                    if (sourceIsReal && IgnorePlayerInList(it, source!))
+                        continue;
+                    Sprint(it, msgstr);
+                }
+                eventLogMsg = $":chat_spec:{source!.PlayerId}:{msgin.Replace("\n", " ")}";
+            }
+            else // public message — everyone
+            {
+                if (source is not null)
+                {
+                    Sprint(source, sourcemsgstr);
+                    DedicatedPrint(msgstr);
+                }
+                foreach (Player it in RealClients())
+                {
+                    if (ReferenceEquals(it, source))
+                        continue;
+                    if (sourceIsReal && IgnorePlayerInList(it, source!))
+                        continue;
+                    Sprint(it, msgstr);
+                }
+                eventLogMsg = source is not null
+                    ? $":chat:{source.PlayerId}:{msgin.Replace("\n", " ")}"
+                    : "";
+            }
+        }
+
+        // chat.qc:367-369 — event log.
+        if (Cvars.Bool("sv_eventlog") && eventLogMsg != "")
+            _world.GameLog.Echo(eventLogMsg);
+
+        return ret;
+    }
+
+    // =============================================================================================
+    // ignore-list CRUD (qcsrc/server/command/cmd.qc:47-195)
+    // =============================================================================================
+
+    /// <summary>QC IGNORE_MAXPLAYERS (server/command/cmd.qh): the cap on a single player's ignore list.</summary>
+    public const int IgnoreMaxPlayers = 50;
+
+    /// <summary>
+    /// QC <c>ignore_playerinlist(this, pl)</c> (cmd.qc:134): is <paramref name="pl"/> ignored by
+    /// <paramref name="self"/>? Keyed by <see cref="Player.PersistentId"/> in the port (QC keyed by entity id +
+    /// the permanent-ignore UID). A target with no PersistentId is never matched (its "" key can't be added).
+    /// </summary>
+    public static bool IgnorePlayerInList(Player self, Player pl)
+    {
+        if (self.IgnoreList.Count == 0 || string.IsNullOrEmpty(pl.PersistentId))
+            return false;
+        return self.IgnoreList.Contains(pl.PersistentId);
+    }
+
+    /// <summary>
+    /// QC <c>ignore_add_player(this, ignore, to_db_too)</c> (cmd.qc:88): add <paramref name="ignore"/> to
+    /// <paramref name="self"/>'s ignore list. Returns 0 = not added (the list is full), 1 = added (this match).
+    /// The permanent (db) tier (return 2) is out of scope — the port keys by PersistentId, which already survives
+    /// a reconnect within the match. A target without a PersistentId can't be ignored (it returns 0).
+    /// </summary>
+    public static int IgnoreAddPlayer(Player self, Player ignore)
+    {
+        if (string.IsNullOrEmpty(ignore.PersistentId))
+            return 0;
+        if (self.IgnoreList.Contains(ignore.PersistentId))
+            return 1; // already present (the caller checks IgnorePlayerInList first; defensive)
+        if (self.IgnoreList.Count >= IgnoreMaxPlayers)
+            return 0;
+        self.IgnoreList.Add(ignore.PersistentId);
+        return 1;
+    }
+
+    /// <summary>QC <c>ignore_remove_player(this, ignore, from_db_too)</c> (cmd.qc:47): drop a player from the
+    /// ignore list. No-op if the target has no PersistentId or isn't present.</summary>
+    public static void IgnoreRemovePlayer(Player self, Player ignore)
+    {
+        if (!string.IsNullOrEmpty(ignore.PersistentId))
+            self.IgnoreList.Remove(ignore.PersistentId);
+    }
+
+    /// <summary>QC <c>ignore_clearall(this)</c> (cmd.qc:176): clear the whole ignore list.</summary>
+    public static void IgnoreClearAll(Player self) => self.IgnoreList.Clear();
+
+    // =============================================================================================
+    // formatmessage (qcsrc/server/chat.qc:498-591) + helpers (461-496)
+    // =============================================================================================
+
+    /// <summary>
+    /// QC <c>formatmessage(this, msg)</c>: expand <c>%</c>/<c>\</c> escapes in a chat message, up to 7 per call
+    /// (the QC <c>n = 7</c> replacement budget). Supported tokens mirror chat.qc:555-582 — %% (literal %), \n /
+    /// \\ (slash escapes), %a armor, %h health, %l/%y/%d location, %o/%O origin, %w/%W weapon/ammo name, %x aimed
+    /// entity, %s/%S speed, %t/%T time. The crosshair-trace tokens (%y aim location, %x aimed entity) resolve
+    /// against the source's view trace; the port has no server-side crosshair tracer wired into chat, so they
+    /// fall back to "somewhere"/"nothing" (the QC values when nothing is hit) rather than crashing.
+    /// </summary>
+    public string FormatMessage(Player self, string msg)
+    {
+        if (string.IsNullOrEmpty(msg))
+            return msg;
+
+        // chat.qc:511-512 — MUTATOR_CALLHOOK(PreFormatMessage, ...): no port hook (deviation).
+
+        int p = 0;
+        int n = 7;
+        var sb = new StringBuilder();
+
+        while (true)
+        {
+            if (n < 1)
+                break; // too many replacements
+            --n;
+
+            int p1 = msg.IndexOf('%', p);
+            int p2 = msg.IndexOf('\\', p);
+            if (p1 < 0) p1 = p2;
+            if (p2 < 0) p2 = p1;
+            int pos = (p1 < 0 || p2 < 0) ? Math.Max(p1, p2) : Math.Min(p1, p2);
+            if (pos < 0)
+                break;
+
+            // append everything before the escape verbatim, then resolve the 2-char escape.
+            sb.Append(msg, p, pos - p);
+            if (pos + 1 >= msg.Length)
+            {
+                // a trailing lone '%' or '\' — emit it and stop (QC substring(msg, p, 2) would be just the char).
+                sb.Append(msg[pos]);
+                p = pos + 1;
+                break;
+            }
+
+            char escapeToken = msg[pos];
+            char escape = msg[pos + 1];
+            string? replacement = ResolveEscape(self, escapeToken, escape);
+
+            if (replacement is null)
+            {
+                // QC `break` cases (a backslash before a non-escape, or a slash-required token without one):
+                // stop expanding — emit the rest of the string verbatim.
+                sb.Append(msg, pos, msg.Length - pos);
+                p = msg.Length;
+                break;
+            }
+
+            sb.Append(replacement);
+            p = pos + 2;
+        }
+        // append the unscanned remainder.
+        if (p < msg.Length)
+            sb.Append(msg, p, msg.Length - p);
+        return sb.ToString();
+    }
+
+    /// <summary>Resolve one formatmessage escape (chat.qc:555-582). Returns null for the QC <c>break</c> cases
+    /// (ON_SLASH/NO_SLASH that abort the expansion loop) so the caller stops and emits the rest verbatim.</summary>
+    private string? ResolveEscape(Player self, char escapeToken, char escape)
+    {
+        bool isSlash = escapeToken == '\\';
+        switch (escape)
+        {
+            case '%': return "%";
+            case '\\': return isSlash ? "\\" : null; // ON_SLASH: only valid after a backslash
+            case 'n': return isSlash ? "\n" : null;  // ON_SLASH
+            // NO_SLASH tokens: invalid (abort) if preceded by a backslash.
+            case 'a': return isSlash ? null : Ftos(MathF.Floor(self.GetResource(ResourceType.Armor)));
+            case 'h': return isSlash ? null : PlayerHealth(self);
+            case 'l': return isSlash ? null : NearestLocation(self.Origin);
+            case 'y': return isSlash ? null : NearestLocation(self.Origin); // crosshair trace unwired → self loc
+            case 'd': return isSlash ? null : NearestLocation(self.Origin); // death_origin unwired → self loc
+            case 'o': return isSlash ? null : Vtos(self.Origin);
+            case 'O': return isSlash ? null : string.Format(CultureInfo.InvariantCulture,
+                "'{0:F6} {1:F6} {2:F6}'", self.Origin.X, self.Origin.Y, self.Origin.Z);
+            case 'w': return isSlash ? null : WeaponName(self);
+            case 'W': return isSlash ? null : AmmoName(self);
+            case 'x': return isSlash ? null : "nothing"; // aimed-entity trace unwired
+            case 's': return isSlash ? null : Ftos(HorizontalSpeed(self));
+            case 'S': return isSlash ? null : Ftos(self.Velocity.Length());
+            case 't': return isSlash ? null : SecondsToString((int)MathF.Ceiling(
+                Math.Max(0f, Cvars.Float("timelimit") * 60f + _world.GameStartTime - _world.Time)));
+            case 'T': return isSlash ? null : SecondsToString((int)MathF.Floor(_world.Time - _world.GameStartTime));
+            default:
+                // QC default: NO_SLASH then MUTATOR_CALLHOOK(FormatMessage). No port hook — leave the token
+                // verbatim (emit the 2-char escape, matching QC's "replacement = substring(msg,p,2)" default).
+                if (isSlash) return null;
+                return new string(new[] { escapeToken, escape });
+        }
+    }
+
+    /// <summary>QC <c>PlayerHealth(this)</c> (chat.qc:461): the %h replacement.</summary>
+    private static string PlayerHealth(Player self)
+    {
+        float h = MathF.Floor(self.GetResource(ResourceType.Health));
+        if (h == -666f) return "spectating";
+        if (h == -2342f) return "observing";
+        if (h <= 0f || self.IsDead) return "dead";
+        return Ftos(h);
+    }
+
+    /// <summary>
+    /// QC <c>NearestLocation(p)</c> (chat.qc:446): the %l/%y/%d replacement — the message of the nearest
+    /// <c>target_location</c> entity (else "somewhere"). The port walks the registered location volumes
+    /// (<see cref="MapObjectsState.Locations"/>) and returns the nearest one's label (Message, then NetName —
+    /// target_location stores the label in NetName in the port). The item fallback (findnearest checkitems=true)
+    /// is out of scope (no g_items intrusive list wired into chat).
+    /// </summary>
+    private static string NearestLocation(System.Numerics.Vector3 p)
+    {
+        string best = "somewhere";
+        float bestLen = float.MaxValue;
+        foreach (Entity loc in MapObjectsState.Locations)
+        {
+            float len = (loc.Origin - p).LengthSquared();
+            if (len < bestLen)
+            {
+                bestLen = len;
+                string label = !string.IsNullOrEmpty(loc.Message) ? loc.Message : loc.NetName;
+                if (!string.IsNullOrEmpty(label))
+                    best = label;
+            }
+        }
+        return best;
+    }
+
+    /// <summary>QC <c>WeaponNameFromWeaponentity(this, weaponentity)</c> (chat.qc:473): the %w replacement — the
+    /// display name of the player's active weapon, "N/A" off a non-player, "none" with no weapon.</summary>
+    private static string WeaponName(Player self)
+    {
+        if (!IsPlayer(self))
+            return "N/A";
+        int id = self.ActiveWeaponId;
+        if (id < 0 || id >= Weapons.Count)
+            return "none";
+        Weapon w = Weapons.ById(id);
+        return string.IsNullOrEmpty(w.DisplayName) ? w.NetName : w.DisplayName;
+    }
+
+    /// <summary>QC <c>AmmoNameFromWeaponentity(this, weaponentity)</c> (chat.qc:485): the %W replacement — the
+    /// ammo-resource name of the player's active weapon ("N/A" off a non-player / a no-ammo weapon).</summary>
+    private static string AmmoName(Player self)
+    {
+        if (!IsPlayer(self))
+            return "N/A";
+        int id = self.ActiveWeaponId;
+        if (id < 0 || id >= Weapons.Count)
+            return "N/A";
+        ResourceType ammo = Weapons.ById(id).AmmoType;
+        return ammo == ResourceType.None ? "N/A" : ResourceName(ammo);
+    }
+
+    /// <summary>QC <c>ammo_type.m_name</c> — the resource display name used by the %W expansion.</summary>
+    private static string ResourceName(ResourceType r) => r switch
+    {
+        ResourceType.Shells => "shells",
+        ResourceType.Bullets => "bullets",
+        ResourceType.Rockets => "rockets",
+        ResourceType.Cells => "cells",
+        ResourceType.Fuel => "fuel",
+        ResourceType.Health => "health",
+        ResourceType.Armor => "armor",
+        _ => "N/A",
+    };
+
+    // =============================================================================================
+    // delivery + routing helpers
+    // =============================================================================================
+
+    /// <summary>QC <c>sprint(client, text)</c>: send one chat line to a single client's console. Routed through
+    /// the host's per-player chat sink (<see cref="Commands.ChatToPlayer"/>); when unwired (tests/headless) the
+    /// line is captured in <see cref="Delivered"/> so routing is observable without the net layer.</summary>
+    private void Sprint(Player client, string text)
+    {
+        _world.Commands.ChatToPlayer?.Invoke(client, text);
+        Delivered.Add((client, text));
+    }
+
+    /// <summary>QC <c>centerprint(client, text)</c>: the HUD center-print channel (team/private cmsgstr). The
+    /// port records it on <see cref="DeliveredCenter"/>; a host wires the HUD channel via the same sink later.</summary>
+    private void CenterPrint(Player client, string text) => DeliveredCenter.Add((client, text));
+
+    /// <summary>QC <c>dedicated_print(text)</c>: echo a line to the SERVER console only (not the clients).</summary>
+    private void DedicatedPrint(string text) => _world.Commands.ChatConsole?.Invoke(text);
+
+    /// <summary>QC <c>Send_Notification(NOTIF_ONE_ONLY, source, MSG_INFO, INFO_*)</c>: an info notification to the
+    /// gated sender. The port surfaces it as a chat sprint to that player (the notification text channel).</summary>
+    private void NotifyInfo(Player source, string notif)
+    {
+        string text = notif switch
+        {
+            "CHAT_DISABLED" => "^1You may not chat on this server.\n",
+            "CHAT_PRIVATE_DISABLED" => "^1Private messages are disabled on this server.\n",
+            "CHAT_SPECTATOR_DISABLED" => "^1Spectators may not chat on this server.\n",
+            "CHAT_TEAM_DISABLED" => "^1Team chat is disabled on this server.\n",
+            _ => "",
+        };
+        if (text != "")
+            Sprint(source, text);
+    }
+
+    /// <summary>The real (human) clients — QC FOREACH_CLIENT(IS_REAL_CLIENT(it), ...). Bots never receive chat.</summary>
+    private IEnumerable<Player> RealClients()
+    {
+        foreach (Player p in _world.Clients.Players)
+            if (IsRealClient(p))
+                yield return p;
+    }
+
+    /// <summary>
+    /// Per-call delivery log (recipient, line) for the SPRINT channel — populated on every <see cref="Say"/> so
+    /// headless tests can assert routing without a net layer. The host's real send happens through the sinks; this
+    /// is purely observational (it accumulates; a host/test clears it via <see cref="ClearDelivered"/>).
+    /// </summary>
+    public readonly List<(Player Client, string Text)> Delivered = new();
+
+    /// <summary>Per-call delivery log for the CENTERPRINT channel (team/private cmsgstr).</summary>
+    public readonly List<(Player Client, string Text)> DeliveredCenter = new();
+
+    /// <summary>Reset the observational delivery logs (a host calls this between messages; tests per-assert).</summary>
+    public void ClearDelivered()
+    {
+        Delivered.Clear();
+        DeliveredCenter.Clear();
+    }
+
+    // =============================================================================================
+    // small QC builtins / predicates
+    // =============================================================================================
+
+    /// <summary>QC IS_REAL_CLIENT — a connected human (not a bot, not the server).</summary>
+    private static bool IsRealClient(Player p) => !p.IsBot;
+
+    /// <summary>QC IS_OBSERVER — a spectating/observing client (no body).</summary>
+    private static bool IsObserver(Player p) => p.IsObserver || p.FragsStatus == Player.FragsSpectator;
+
+    /// <summary>QC IS_PLAYER — a live, non-spectator player.</summary>
+    private static bool IsPlayer(Player p) => !IsObserver(p) && !p.IsDead;
+
+    /// <summary>QC (IS_PLAYER(it) || INGAME(it)) — in the match (the port has no separate .ingame round flag, so
+    /// an in-game player is any non-observer; eliminated round players are treated as observers here).</summary>
+    private static bool IsIngame(Player p) => !IsObserver(p);
+
+    /// <summary>QC CHAT_NOSPECTATORS() (chat.qh:30): g_chat_nospectators 1, or 2 outside warmup.</summary>
+    private bool ChatNoSpectators()
+    {
+        int v = Cvars.Int("g_chat_nospectators");
+        return v == 1 || (v == 2 && !(_world.Warmup?.WarmupStage ?? false));
+    }
+
+    /// <summary>QC <c>gettime(GETTIME_FRAMESTART)</c>: the sim time at the start of this frame.</summary>
+    private float FrameStartTime() => Api.Services is not null ? Api.Clock.Time : _world.Time;
+
+    /// <summary>QC Team_ColorCode(teamid) (common/teams.qh:63): the per-team chat color code. The port's
+    /// <see cref="Teams"/> uses the CSQC team numbering (Red=4/Blue=13/Yellow=12/Pink=9).</summary>
+    private static string TeamColorCode(int team) => team switch
+    {
+        Teams.Red => "^1",    // COL_TEAM_1
+        Teams.Blue => "^4",   // COL_TEAM_2
+        Teams.Yellow => "^3", // COL_TEAM_3
+        Teams.Pink => "^6",   // COL_TEAM_4
+        _ => "^7",
+    };
+
+    /// <summary>QC <c>playername(netname, team, autocolor)</c> (server-side): the display name. The port returns
+    /// the raw netname; the team-color auto-colorization (g_chat_teamcolors) prefixes the team code.</summary>
+    private static string PlayerName(Player p, bool autoColor)
+        => autoColor ? TeamColorCode((int)p.Team) + p.NetName : p.NetName;
+
+    /// <summary>QC <c>ftos(f)</c>: integer-or-decimal float formatting (no trailing .000000).</summary>
+    private static string Ftos(float f)
+    {
+        if (f == MathF.Floor(f) && !float.IsInfinity(f))
+            return ((long)f).ToString(CultureInfo.InvariantCulture);
+        return f.ToString("0.######", CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>QC <c>vtos(v)</c>: "'x y z'" with the QC default precision.</summary>
+    private static string Vtos(System.Numerics.Vector3 v)
+        => string.Format(CultureInfo.InvariantCulture, "'{0:0.#} {1:0.#} {2:0.#}'", v.X, v.Y, v.Z);
+
+    /// <summary>QC <c>vlen(velocity - velocity_z * '0 0 1')</c>: horizontal speed (the %s replacement).</summary>
+    private static float HorizontalSpeed(Player p)
+        => new System.Numerics.Vector2(p.Velocity.X, p.Velocity.Y).Length();
+
+    /// <summary>QC <c>seconds_tostring(s)</c> (common/util.qc): "M:SS".</summary>
+    private static string SecondsToString(int seconds)
+    {
+        if (seconds < 0) seconds = 0;
+        int m = seconds / 60;
+        int s = seconds % 60;
+        return string.Format(CultureInfo.InvariantCulture, "{0}:{1:00}", m, s);
+    }
+
+    /// <summary>
+    /// QC <c>getWrappedLineLen(w, strlennocol)</c> (common/util.qc, the chat-wrap slice): split the remaining
+    /// message into a single display line of at most ~82 visible chars (the vera-sans averagewidth budget). The
+    /// port wraps on whole words at a fixed visible-character width (color codes don't count toward the width).
+    /// Mutates <paramref name="remaining"/> to the leftover; returns the wrapped piece.
+    /// </summary>
+    private static string GetWrappedLine(ref string remaining)
+    {
+        const int maxVisible = 82; // ~82.4 px-equiv width / 1 average char (the QC 82.4289758859709 budget)
+        if (VisibleLength(remaining) <= maxVisible)
+        {
+            string all = remaining;
+            remaining = "";
+            return all;
+        }
+        // find a wrap point at or before maxVisible visible chars, preferring the last space.
+        int visible = 0;
+        int lastSpace = -1;
+        int i = 0;
+        for (; i < remaining.Length && visible < maxVisible; i++)
+        {
+            char c = remaining[i];
+            if (c == '^' && i + 1 < remaining.Length && IsColorCode(remaining, i))
+            {
+                i += (remaining[i + 1] == 'x') ? 4 : 1;
+                continue;
+            }
+            if (c == ' ')
+                lastSpace = i;
+            visible++;
+        }
+        int cut = (lastSpace > 0) ? lastSpace : i;
+        string piece = remaining.Substring(0, cut);
+        remaining = remaining.Substring(cut).TrimStart(' ');
+        return piece;
+    }
+
+    private static bool IsColorCode(string s, int i)
+    {
+        if (i + 1 >= s.Length || s[i] != '^') return false;
+        char n = s[i + 1];
+        if (n >= '0' && n <= '9') return true;
+        return n == 'x' && i + 4 < s.Length && IsHex(s[i + 2]) && IsHex(s[i + 3]) && IsHex(s[i + 4]);
+    }
+
+    private static bool IsHex(char c) => (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+
+    private static int VisibleLength(string s) => Log.StripColors(s).Length;
+
+    // ---- per-type flood-stamp access (chat.qc the `.float flood_field` field pointer) ----
+
+    private enum FloodField { Chat, ChatTeam, ChatTell }
+
+    private static float GetFlood(Player p, FloodField f) => f switch
+    {
+        FloodField.ChatTeam => p.FloodControlChatTeam,
+        FloodField.ChatTell => p.FloodControlChatTell,
+        _ => p.FloodControlChat,
+    };
+
+    private static void SetFlood(Player p, FloodField f, float v)
+    {
+        switch (f)
+        {
+            case FloodField.ChatTeam: p.FloodControlChatTeam = v; break;
+            case FloodField.ChatTell: p.FloodControlChatTell = v; break;
+            default: p.FloodControlChat = v; break;
+        }
+    }
+}

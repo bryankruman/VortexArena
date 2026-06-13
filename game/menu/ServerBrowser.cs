@@ -126,6 +126,20 @@ public sealed class ServerBrowser : IDisposable
     public IReadOnlyList<ServerEntry> Servers => _servers;
 
     /// <summary>
+    /// Read-only lookup of the row for <paramref name="address"/> (normalized) — what the Server Info dialog
+    /// reads when it pops up for the selected row (the C# stand-in for the QC host-cache index the
+    /// serverinfo dialog reads via <c>gethostcachestring</c>). Returns null when no row matches (e.g. the
+    /// address was typed manually and never queried). Append-only; never mutates the list.
+    /// </summary>
+    public ServerEntry? FindByAddress(string address)
+    {
+        if (string.IsNullOrEmpty(address))
+            return null;
+        string norm = NormalizeAddress(address);
+        return _servers.Find(s => s.Address == norm) ?? _servers.Find(s => s.Address == address);
+    }
+
+    /// <summary>
     /// Bumped on every change to the list — a row added, or an existing row's fields filled in by an async
     /// reply. The UI compares this between frames to know when to re-render (rows mutate in place, so a plain
     /// count check would miss detail fill-in). Starts at 0; <see cref="Refresh"/> is one change among many.

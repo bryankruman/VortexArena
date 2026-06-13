@@ -45,10 +45,18 @@ public sealed class EntityAreaGrid
     private readonly List<Entity> _oversized = new();                 // huge/world-spanning entities (always candidates)
     private readonly Dictionary<Entity, Span> _links = new();         // each entity's current linked footprint (for unlink)
 
-    // Dedup state: a per-slot "last query id" stamped during a gather. Indexed by Entity.Index (dense), grown on
-    // link. _queryId increments per EntitiesInBox call; an entity already stamped with the current id is a dup.
+    // Dedup state: a per-slot "last query id" stamped during a gather. Indexed by Slot(Entity.Index) (dense),
+    // grown on link. _queryId increments per EntitiesInBox call; an entity already stamped with the current id
+    // is a dup.
     private int[] _queryTag = new int[64];
     private int _queryId;
+
+    /// <summary>Tag-array slot for an entity index. Client edicts live in ClientManager's NEGATIVE index space
+    /// (so they never collide with engine-table slots); indexing the tag array directly by Entity.Index made the
+    /// bounds check skip them, so a player spanning N grid cells was returned N times per query — every splash
+    /// blast then damaged/pushed the player once per overlapped cell (2-4x). Interleave the two index spaces:
+    /// index &gt;= 0 → even slots, index &lt; 0 → odd slots, so both dedup.</summary>
+    private static int Slot(int index) => index >= 0 ? index << 1 : (~index << 1) | 1;
 
     /// <summary>One entity's linked footprint: the inclusive cell range, or the oversized flag.</summary>
     private readonly record struct Span(int X0, int Y0, int X1, int Y1, bool Oversized);
@@ -66,7 +74,7 @@ public sealed class EntityAreaGrid
             Unlink(e);
             return;
         }
-        EnsureTag(e.Index);
+        EnsureTag(Slot(e.Index));
 
         Vector3 lo = e.Origin + e.Mins;
         Vector3 hi = e.Origin + e.Maxs;
@@ -139,12 +147,12 @@ public sealed class EntityAreaGrid
     {
         if (e.IsFreed)
             return;
-        int idx = e.Index;
-        if ((uint)idx < (uint)_queryTag.Length)
+        int slot = Slot(e.Index);
+        if ((uint)slot < (uint)_queryTag.Length)
         {
-            if (_queryTag[idx] == qid)
+            if (_queryTag[slot] == qid)
                 return;                  // already gathered this query
-            _queryTag[idx] = qid;
+            _queryTag[slot] = qid;
         }
         results.Add(e);
     }

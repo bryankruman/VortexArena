@@ -149,6 +149,42 @@ public sealed class Player : Entity
     /// <summary>QC IS_DEAD(this): the player is dying or already dead (<see cref="Entity.DeadState"/> != No).</summary>
     public bool IsDead => DeadState != DeadFlag.No;
 
+    // ===== chat state (server/chat.qc Say + server/command/cmd.qc ignore-list CRUD — T46) =====
+    // The flat per-client chat fields QC keeps on the clientstate (CS(this)): the three per-say-type flood
+    // "next allowed time" stamps, the mute flag, and the ignore list. These must persist across ticks (a per-tick
+    // reset would let a flooder past the throttle), so they live on the long-lived Player like the rest of CS().
+
+    /// <summary>
+    /// QC <c>.floodcontrol_chat</c> (server/chat.qc:156): the absolute sim time before which the next BROADCAST
+    /// (public <c>say</c>) line is throttled as flooding. <see cref="Chat.Say"/> advances it by the per-line
+    /// spacing on each accepted line; a message whose modeled time is below it is rejected (flood == 1). 0 = never
+    /// said before (the QC field default).
+    /// </summary>
+    public float FloodControlChat;
+
+    /// <summary>QC <c>.floodcontrol_chatteam</c> (server/chat.qc:172): the TEAM-chat (<c>say_team</c>) flood stamp.</summary>
+    public float FloodControlChatTeam;
+
+    /// <summary>QC <c>.floodcontrol_chattell</c> (server/chat.qc:165): the PRIVATE-chat (<c>tell</c>) flood stamp.</summary>
+    public float FloodControlChatTell;
+
+    /// <summary>
+    /// QC <c>CS(this).muted</c> (server/chat.qc:255): when set, this player's chat is fake-accepted — the sender
+    /// still sees their own message (the <c>say</c> echoes locally) but NO other client receives it. Set by the
+    /// admin <c>mute</c> command (the chatban list), cleared by <c>unmute</c>.
+    /// </summary>
+    public bool Muted;
+
+    /// <summary>
+    /// QC <c>.ignore_list</c> (server/command/cmd.qc): the set of players this client has ignored — messages from
+    /// a member are dropped before reaching this client's chat log. QC stored a space-separated tempstring of
+    /// per-match entity ids; the port keys by the stable <see cref="PersistentId"/> so an ignore survives a
+    /// reconnect within the match (and a future db-backed permanent ignore reads the same key). A player with no
+    /// PersistentId still keys by it ("" — matches no real client, so an unauthenticated target can't be ignored,
+    /// the same effective behavior as QC's permanent-ignore UID requirement).
+    /// </summary>
+    public readonly HashSet<string> IgnoreList = new(StringComparer.Ordinal);
+
     // ===== respawn state machine (server/client.qc PlayerThink dead branch + calculate_player_respawn_time) =====
 
     /// <summary>
