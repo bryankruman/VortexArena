@@ -93,7 +93,7 @@ BARE_ALLOWLIST = {
     "hostname", "mapname", "modname", "nextmap",
     # client view / input / engine
     "fov", "sensitivity", "developer", "name",
-    "showfps", "showping", "showdate", "showtime", "prvm_language",
+    "showfps", "showping", "showposition", "showdate", "showtime", "prvm_language",
     # audio (the rest of the family is snd_*)
     "volume", "bgmvolume", "mastervolume",
 }
