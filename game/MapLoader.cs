@@ -729,8 +729,12 @@ public static class MapLoader
                 // all is treated always-visible by the culler.
                 if (pvs is not null)
                 {
-                    int cluster = pvs.LeafCluster(pvs.FindLeaf(
-                        new System.Numerics.Vector3(centroid.X, centroid.Y, centroid.Z)));
+                    // FindLeaf descends the BSP tree in QUAKE space (Z-up), but `centroid` is in Godot space
+                    // (Y-up — Positions were ToGodot'd as the mesh was built). Feed the Quake form, exactly as
+                    // the per-frame culler does for the camera (WorldPvsCuller uses Coords.ToQuake). Without
+                    // this the Y/Z axis swap mislabels every cell's clusters, so cells get hidden by clusters
+                    // they don't occupy — world geometry vanishing as the camera crosses clusters.
+                    int cluster = pvs.LeafCluster(pvs.FindLeaf(Coords.ToQuake(centroid)));
                     if (cluster >= 0)
                     {
                         if (!cellClusters.TryGetValue(cell, out HashSet<int>? set))
