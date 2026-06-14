@@ -52,6 +52,7 @@ public partial class Hud : CanvasLayer
     public MapVotePanel MapVote { get; private set; } = null!;
     public FpsPanel Fps { get; private set; } = null!;
     public PingPanel Ping { get; private set; } = null!;
+    public PositionPanel Position { get; private set; } = null!;
 
     /// <summary>The active-minigame board overlay (CSQC minigame board draw + click-to-move). Not a HudPanel.</summary>
     public MinigameRenderer Minigame { get; private set; } = null!;
@@ -98,7 +99,7 @@ public partial class Hud : CanvasLayer
 
     // Panels that drive their OWN Visible + redraw in their own _Process (port extras) — the manager only
     // refreshes their cvar layout, it never sets their Visible (else it would fight them frame-to-frame).
-    private static readonly HashSet<Type> SelfManaged = new() { typeof(FpsPanel), typeof(PingPanel) };
+    private static readonly HashSet<Type> SelfManaged = new() { typeof(FpsPanel), typeof(PingPanel), typeof(PositionPanel) };
 
     // Panels conditionally shown by the net/match layer or by a gameplay event (kept hidden until shown), and
     // the newly-discovered Radar (no data wiring yet). Matches the old manager's `{ Visible = false }` set.
@@ -107,7 +108,7 @@ public partial class Hud : CanvasLayer
     private static readonly HashSet<string> StartHiddenIds = new()
     {
         "racetimer", "checkpoints", "vote", "modicons", "itemstime", "mapvote",
-        "vehicle", "fps", "ping", "radar",
+        "vehicle", "fps", "ping", "position", "radar",
     };
 
     private string _skin = "luma";
@@ -139,6 +140,7 @@ public partial class Hud : CanvasLayer
         MapVote      = Get<MapVotePanel>();
         Fps          = Get<FpsPanel>();
         Ping         = Get<PingPanel>();
+        Position     = Get<PositionPanel>();
 
         // Apply initial visibility (the conditionally-shown panels start hidden; net layer shows them).
         foreach (HudPanel p in _panels)

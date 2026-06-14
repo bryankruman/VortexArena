@@ -72,8 +72,10 @@ public static class ClientSettings
         // and were invisible for the identical reason. cl_show* are the DP-native fallbacks FpsPanel/PingPanel read.
         c.Register("showfps", "0", save);
         c.Register("showping", "0", save);
+        c.Register("showposition", "0", save);
         c.Register("cl_showfps", "0", save);
         c.Register("cl_showping", "0", save);
+        c.Register("cl_showposition", "0", save);
         // PVS-cull escape hatch (archived). WorldPvsCuller registers this in _Ready — which only runs inside a
         // match — so a menu-only session would leave it "allocated, default unknown" and re-save it to config.cfg
         // even at its default. Register it eagerly at boot (idempotent with WorldPvsCuller's own Register) so it's

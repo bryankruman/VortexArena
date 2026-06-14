@@ -1149,6 +1149,13 @@ public sealed partial class NetGame : Node3D
         // -1 before the link is up (the panel then draws nothing). On a loopback listen server this reads ~0.
         _fullHud.Ping.PingProvider = () => _client?.PingMs ?? -1;
 
+        // Position readout (stacked above the FPS/ping counters): feed it the local player's predicted Quake-space
+        // origin — the same X Y Z space map entities use. The panel self-gates on cl_showposition/showposition
+        // (debug-default-on, like FPS) and returns null until we have a live local body (handshake assigns a
+        // non-zero LocalNetId), so it draws nothing in the menu / pre-spawn.
+        _fullHud.Position.PositionProvider =
+            () => _client is { LocalNetId: not 0 } c ? c.PredictedOrigin : (NVec3?)null;
+
         // [T51] Floating damage-number layer (QC cl_damagetext). Full-rect overlay; fed each frame in _Process
         // from the server-side DamagetextMutator's drained events, projected via the first-person _camera.
         _damageText = new XonoticGodot.Game.Client.DamageTextLayer { Name = "DamageText" };
