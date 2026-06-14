@@ -89,6 +89,12 @@ public sealed class ServerNet : IDisposable
     // --- snapshot delta-compression + movevar replication + teleport detection ---
     private ushort _snapshotSeq;                                     // global snapshot sequence (clients ack it)
     private readonly Dictionary<int, NetEntityState> _entityScratch = new(); // reused per-tick entity set
+    // (§12.8) DP-faithful per-client PVS entity culling (sv_cullentities_pvs). _entityBounds holds each networked
+    // entity's world-space bounds (filled in BuildEntitySet); _relevantScratch is the per-recipient filtered view
+    // of _entityScratch fed to EncodeSnapshot — the delta encoder then turns "no longer relevant" into a removal
+    // and "relevant again" into a spawn against THIS client's baseline, exactly like DP's per-client entity frame.
+    private readonly Dictionary<int, (NVec3 Min, NVec3 Max)> _entityBounds = new();
+    private readonly Dictionary<int, NetEntityState> _relevantScratch = new();
     // Memoized "<classname> <netname>" catalog keys for model-less projectiles so BuildEntitySet doesn't
     // allocate a fresh interpolated string per projectile per tick-frame (3.2-4). Keyed by (classname, netname)
     // — both stable per projectile — so the set of distinct entries is tiny (one per projectile type).
@@ -1448,6 +1454,9 @@ public sealed class ServerNet : IDisposable
         _snapshotSeq++;
         if (_snapshotSeq == 0) _snapshotSeq = 1; // 0 is the "no baseline" sentinel
 
+        // (§12.8) DP sv_cullentities_pvs: read once per broadcast — the per-recipient PVS filter is applied below.
+        bool cullEntitiesPvs = _world.Services.Cvars.GetFloat("sv_cullentities_pvs") != 0f;
+
         foreach (PeerState st in _peers.Values)
         {
             if (!st.Accepted || st.Player is null)
@@ -1540,8 +1549,11 @@ public sealed class ServerNet : IDisposable
             // is a PER-OWNER payload, so it is written/read at the END of the owner block (WriteOwnerState's
             // append-at-END slot), NOT here in the broadcast entity-shared region.
 
-            // delta-compressed entity section (everyone but the recipient's own entity).
-            st.SnapHistory.EncodeSnapshot(_snapshotWriter, _entityScratch, _snapshotSeq, excludeEntNum: st.NetId);
+            // delta-compressed entity section (everyone but the recipient's own entity). DP-faithful per-client
+            // PVS cull (sv_cullentities_pvs): out-of-PVS entities are dropped from THIS client's set and the
+            // delta encoder removes them against its baseline (re-spawning them when they return into view).
+            IReadOnlyDictionary<int, NetEntityState> sendSet = RelevantEntitiesFor(owner, st.NetId, cullEntitiesPvs);
+            st.SnapHistory.EncodeSnapshot(_snapshotWriter, sendSet, _snapshotSeq, excludeEntNum: st.NetId);
 
             // Snapshots are normally unreliable (latest-wins, loss-tolerant), but the FIRST frame to a client is a
             // full baseline of every networked entity (all of the map's static items at once) and exceeds the
@@ -1580,6 +1592,7 @@ public sealed class ServerNet : IDisposable
     private void BuildEntitySet(float now)
     {
         _entityScratch.Clear();
+        _entityBounds.Clear();
 
         // QC world.qc:EndFrame records antilag history at `altime` (time + frametime*(1+g_antilag_nudge)), NOT at
         // the bare current time — so the ring aligns with the time the client will see this frame. Compute it once.
@@ -1665,6 +1678,7 @@ public sealed class ServerNet : IDisposable
             s.StatusEffects = _statusBlob.TryGetValue(p, out byte[]? cachedBlob) ? cachedBlob : null;
 
             _entityScratch[netId] = s;
+            _entityBounds[netId] = RelevanceBounds(p.Origin, p.Mins, p.Maxs);
         }
 
         // non-player networked entities: projectiles, items, gibs, monsters/turrets/vehicles — everything with a
@@ -1725,6 +1739,7 @@ public sealed class ServerNet : IDisposable
                         | (e.ItemAnimate == 2 ? NetEntityFlags.ItemAnimate2 : NetEntityFlags.None)
                         | (kind == NetEntityKind.Item && !e.ItemAvailable ? NetEntityFlags.ItemGhost : NetEntityFlags.None),
             };
+            _entityBounds[netId] = RelevanceBounds(e.Origin, e.Mins, e.Maxs);
         }
 
         // Antilag breadth (world.qc:EndFrame): besides players, record the position history of every MONSTER and
@@ -1732,6 +1747,53 @@ public sealed class ServerNet : IDisposable
         // g_projectiles[classname=="nade"] too). Done as its own pass over `all` because antilag-eligibility is
         // independent of render-eligibility — a monster/nade is recorded whether or not it made the snapshot set.
         RecordAntilagEntities(all, altime);
+    }
+
+    /// <summary>
+    /// (§12.8) The world-space box used to PVS-test a networked entity for relevance: the entity's own hull
+    /// (origin + Mins/Maxs) expanded to a conservative minimum half-extent so point entities (projectiles) and
+    /// fast movers aren't culled right at a cluster boundary — wrongly hiding a visible entity is far worse than
+    /// under-culling one solidly behind a wall. (DP caches each edict's clusters at link time; we box-test live
+    /// per recipient, which is cheap at these entity counts.)
+    /// </summary>
+    private static (NVec3 Min, NVec3 Max) RelevanceBounds(NVec3 origin, NVec3 mins, NVec3 maxs)
+    {
+        const float minHalf = 48f;
+        NVec3 lo = origin + mins, hi = origin + maxs;
+        return (
+            new NVec3(MathF.Min(lo.X, origin.X - minHalf), MathF.Min(lo.Y, origin.Y - minHalf), MathF.Min(lo.Z, origin.Z - minHalf)),
+            new NVec3(MathF.Max(hi.X, origin.X + minHalf), MathF.Max(hi.Y, origin.Y + minHalf), MathF.Max(hi.Z, origin.Z + minHalf)));
+    }
+
+    /// <summary>
+    /// (§12.8) Build the per-recipient entity set fed to the delta encoder: DP's <c>SV_MarkWriteEntityStateToClient</c>
+    /// PVS cull (<c>sv_cullentities_pvs</c>). Returns <see cref="_entityScratch"/> unchanged when culling is off /
+    /// the map is unvised / the recipient is dead-or-spectating (no stable own-eye viewpoint) / the eye is in solid
+    /// — all conservative "send everything" fallbacks. Otherwise drops entities whose bounds aren't in the
+    /// recipient's PVS; the delta encoder turns those into removals against this client's baseline (and re-spawns
+    /// them when they return), so appear/disappear is handled by the existing per-client history.
+    /// </summary>
+    private IReadOnlyDictionary<int, NetEntityState> RelevantEntitiesFor(Player owner, int ownNetId, bool cullPvs)
+    {
+        if (!cullPvs || _world.Pvs is not { HasVis: true } pvs || owner.IsDead || owner.IsObserver)
+            return _entityScratch;
+
+        NVec3 eye = owner.Origin + owner.ViewOfs;
+        int viewerCluster = pvs.LeafCluster(pvs.FindLeaf(eye));
+        if (viewerCluster < 0)
+            return _entityScratch; // eye in solid / outside the tree → conservatively send all
+
+        _relevantScratch.Clear();
+        foreach (KeyValuePair<int, NetEntityState> kv in _entityScratch)
+        {
+            // Never cull the recipient's own entity (EncodeSnapshot excludes it anyway), and keep anything whose
+            // bounds touch a cluster the recipient can see.
+            if (kv.Key == ownNetId
+                || !_entityBounds.TryGetValue(kv.Key, out (NVec3 Min, NVec3 Max) b)
+                || pvs.BoxAnyClusterVisibleFrom(viewerCluster, b.Min, b.Max))
+                _relevantScratch[kv.Key] = kv.Value;
+        }
+        return _relevantScratch;
     }
 
     /// <summary>

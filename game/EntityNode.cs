@@ -20,6 +20,29 @@ public partial class EntityNode : Node3D, IEntityPresence
     /// <summary>The bound simulation entity. Set this (and optionally <see cref="Entity.Presence"/>) after construction.</summary>
     public Entity? Entity { get; set; }
 
+    // Visibility has two independent owners that must AND together: gameplay (item respawn-ghost / death fade)
+    // and the §12.8 entity PVS cull. Routing both through these setters keeps them from clobbering each other
+    // (a faded-out item behind a wall stays hidden; an in-PVS ghosting item still shows its ghost).
+    private bool _gameplayVisible = true;
+    private bool _pvsVisible = true;
+
+    /// <summary>Gameplay-side visibility (item ghost / death-fade). ANDs with the PVS cull for the final flag.</summary>
+    public void SetGameplayVisible(bool v)
+    {
+        if (_gameplayVisible == v) return;
+        _gameplayVisible = v;
+        Visible = _gameplayVisible && _pvsVisible;
+    }
+
+    /// <summary>(§12.8) PVS-cull visibility — true unless the entity's bounds are outside the camera's PVS.
+    /// ANDs with the gameplay flag so neither owner overrides the other.</summary>
+    public void SetPvsVisible(bool v)
+    {
+        if (_pvsVisible == v) return;
+        _pvsVisible = v;
+        Visible = _gameplayVisible && _pvsVisible;
+    }
+
     /// <summary>Attach to an entity and register this node as its presence link.</summary>
     public void Bind(Entity entity)
     {

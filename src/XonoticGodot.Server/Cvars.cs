@@ -459,6 +459,14 @@ public static class Cvars
         new("g_pickup_respawntime_powerup", "120", Save),
         new("g_pickup_respawntime_weapon", "10", Save),
         new("g_pickup_respawntime_superweapon", "120", Save),
+
+        // (§12.8) DP-faithful networking entity culling (DP sv_send.c SV_MarkWriteEntityStateToClient): the
+        // server stops SENDING a client the entities whose bounds fall outside that client's PVS — the bandwidth
+        // + draw-call win, and the half of DP's entity culling we were missing (we only used PVS for bot LOS).
+        // Box-tested per recipient (conservative: a model spanning a cluster boundary stays sent; a viewer in
+        // solid / unvised map / dead-or-spectating recipient sends everything). Default 1 = DP's default.
+        // See ServerNet.BuildEntitySet/RelevantEntitiesFor.
+        new("sv_cullentities_pvs", "1", Save, "PVS-cull networked entities per client (DP SV_MarkWriteEntityStateToClient)"),
     };
 
     /// <summary>

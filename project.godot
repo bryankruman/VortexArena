@@ -23,6 +23,10 @@ project/assembly_name="XonoticGodot"
 
 textures/default_filters/anisotropic_filtering_level=3
 anti_aliasing/quality/msaa_3d=2
+; Allocates the software occlusion-culling buffer so OccluderInstance3D works. Per-viewport opt-in still
+; gates it: only the game viewport turns it on (via the r_occlusion_cull cvar / WorldOcclusion); the menu
+; viewport leaves Viewport.use_occlusion_culling=false, so this is ~free until a map enables the A/B path.
+occlusion_culling/use_occlusion_culling=true
 ; Required for the macOS universal/arm64 export (the Apple-Silicon slice uses ETC2/ASTC, not S3TC/BPTC).
 ; Harmless for the Windows/Linux exports — their presets don't include the etc2_astc texture variants.
 textures/vram_compression/import_etc2_astc=true

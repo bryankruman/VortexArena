@@ -79,6 +79,21 @@ public static class ClientSettings
         // even at its default. Register it eagerly at boot (idempotent with WorldPvsCuller's own Register) so it's
         // a declared cvar with a known default and is persisted only when actually changed.
         c.Register("r_pvs_cull", "1", save);
+        // (§12.8 A/B) Godot-native occlusion culling — orthogonal to r_pvs_cull, OFF by default (PVS is the
+        // shipping path). Eager idempotent register (matches WorldOcclusion's own) so it's a declared cvar.
+        c.Register("r_occlusion_cull", "0", save);
+        // (§12.8) DP-faithful entity render culling: hide remote entities outside the camera's PVS — DP draws an
+        // entity only when its cluster is in the view's PVS. ON by default (pairs with sv_cullentities_pvs so the
+        // client also skips drawing anything that slips through); margin = the half-extent of the bounds box.
+        c.Register("r_pvs_cull_entities", "1", save);
+        c.Register("r_pvs_cull_entities_margin", "64", save);
+        // (§12.5) Adaptive world-mesh cell size — scales the spatial split to map size to bound draw calls.
+        // adaptive 0 = fixed r_world_cell_size (1024 = today). div ~= cells along the longest axis; min/max clamp.
+        c.Register("r_world_cell_adaptive", "0", save);
+        c.Register("r_world_cell_size", "1024", save);
+        c.Register("r_world_cell_div", "8", save);
+        c.Register("r_world_cell_min", "256", save);
+        c.Register("r_world_cell_max", "4096", save);
         // Mouse pitch (only its SIGN is used here, for invert-look); DP default 1 (non-inverted) = current behaviour.
         c.Register("m_pitch", "1", save);
         // Server-browser auto-refresh pause toggle (DP default 0).

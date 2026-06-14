@@ -115,6 +115,51 @@ public class SnapshotDeltaTests
         Assert.False(d2.ContainsKey(20)); // removed
     }
 
+    /// <summary>
+    /// (§12.8) Locks the contract the DP-faithful networking PVS cull (sv_cullentities_pvs) relies on: filtering
+    /// an entity out of a client's per-tick set (it left that client's PVS) removes it via the delta, and putting
+    /// it back (re-entered the PVS) RE-SPAWNS it carrying its CURRENT state — not the stale pre-cull value — since
+    /// the client's baseline no longer holds it. This is why per-client filtering is safe: the existing delta
+    /// history handles appear/disappear with no special casing.
+    /// </summary>
+    [Fact]
+    public void Snapshot_Culled_Entity_Removes_Then_Respawns_With_Current_State()
+    {
+        var server = new ServerSnapshotHistory();
+        var client = new ClientSnapshotHistory();
+        var w = new BitWriter();
+
+        var both = new Dictionary<int, NetEntityState>
+        {
+            [10] = Player(10, Vector3.Zero, 100),
+            [20] = Player(20, new Vector3(500, 0, 0), 50),
+        };
+        w.Reset(); server.EncodeSnapshot(w, both, 1);
+        var r1 = new BitReader(w.WrittenSpan); var d1 = client.DecodeSnapshot(ref r1);
+        Assert.Equal(2, d1!.Count);
+        server.Ack(client.LastDecodedSeq);
+
+        // frame 2: entity 20 left the recipient's PVS → filtered out of THIS client's set.
+        var culled = new Dictionary<int, NetEntityState> { [10] = both[10] };
+        w.Reset(); server.EncodeSnapshot(w, culled, 2);
+        var r2 = new BitReader(w.WrittenSpan); var d2 = client.DecodeSnapshot(ref r2);
+        Assert.True(d2!.ContainsKey(10));
+        Assert.False(d2.ContainsKey(20)); // culled → removed from the client's view
+        server.Ack(client.LastDecodedSeq);
+
+        // frame 3: entity 20 re-enters the PVS, having moved + taken damage while the client couldn't see it.
+        var back = new Dictionary<int, NetEntityState>
+        {
+            [10] = both[10],
+            [20] = Player(20, new Vector3(470, 0, 0), 35),
+        };
+        w.Reset(); server.EncodeSnapshot(w, back, 3);
+        var r3 = new BitReader(w.WrittenSpan); var d3 = client.DecodeSnapshot(ref r3);
+        Assert.True(d3!.ContainsKey(20));                                 // respawned
+        Assert.Equal(35, d3[20].Health);                                 // CURRENT state, not the stale 50
+        Assert.True((d3[20].Origin - back[20].Origin).Length() < 0.5f);  // current origin
+    }
+
     [Fact]
     public void Snapshot_Without_Ack_Stays_A_Full_Resend()
     {

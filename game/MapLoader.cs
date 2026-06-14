@@ -59,9 +59,40 @@ public static class MapLoader
     /// at a wall culls most of the map. Triangles are binned by centroid; a tri spanning a border lands in
     /// exactly one cell (no seams — geometry is unchanged, only its mesh grouping).
     /// </summary>
-    private const float WorldCellSize = 1024f;
+    private const float WorldCellSizeDefault = 1024f;
 
-    /// <summary>One spatial cell of the split world mesh, keyed by floor(centroid / WorldCellSize).</summary>
+    /// <summary>
+    /// (§12.5) Resolve the spatial-cell edge length for this map. Default is the fixed
+    /// <see cref="WorldCellSizeDefault"/> (1024) — today's behavior, unchanged. With <c>r_world_cell_adaptive 1</c>
+    /// it scales to the map's size so the cell COUNT (and thus draw-call count) stays bounded: small/enclosed maps
+    /// get finer cells (more PVS/frustum culling), large/open maps stay coarse (protecting draw calls — where a
+    /// fixed small size would regress). <c>r_world_cell_div</c> is roughly "cells along the longest axis";
+    /// <c>r_world_cell_min</c>/<c>_max</c> clamp it. Read once at map load (a build-time mesh parameter — changing
+    /// it needs a map reload). Falls back to the default if the cvar store isn't up (e.g. a non-client build).
+    /// </summary>
+    private static float ResolveCellSize(BspData bsp)
+    {
+        var cv = XonoticGodot.Game.Menu.MenuState.Cvars;
+        if (cv is null)
+            return WorldCellSizeDefault;
+        float fixedSize = cv.GetFloat("r_world_cell_size");
+        if (fixedSize < 64f)
+            fixedSize = WorldCellSizeDefault;        // unset / garbage → default
+        if (cv.GetFloat("r_world_cell_adaptive") == 0f)
+            return fixedSize;
+
+        float div = cv.GetFloat("r_world_cell_div"); if (div < 1f) div = 8f;
+        float lo = cv.GetFloat("r_world_cell_min");  if (lo < 64f) lo = 256f;
+        float hi = cv.GetFloat("r_world_cell_max");  if (hi < lo) hi = 4096f;
+        if (bsp.Models.Length == 0)
+            return fixedSize;
+        BspModel world = bsp.Models[0];               // worldspawn bounds (Quake; max-axis is swap-invariant)
+        float ext = MathF.Max(world.Maxs.X - world.Mins.X,
+                    MathF.Max(world.Maxs.Y - world.Mins.Y, world.Maxs.Z - world.Mins.Z));
+        return ext > 0f ? Math.Clamp(ext / div, lo, hi) : fixedSize;
+    }
+
+    /// <summary>One spatial cell of the split world mesh, keyed by floor(centroid / cell size).</summary>
     private readonly record struct CellKey(int X, int Y, int Z);
 
     /// <summary>
@@ -86,6 +117,11 @@ public static class MapLoader
         public readonly List<Vector2> Uv2 = new();   // lightmap UVs (only meaningful for lightmapped surfaces)
         public readonly List<Color> Colors = new();  // per-vertex RGBA (only packed for vertex-lit surfaces)
         public readonly List<int> Indices = new();
+
+        /// <summary>(§12.8) Source BSP face index per TRIANGLE (parallel to <see cref="Indices"/>/3, same order),
+        /// so the cell regroup can union each triangle's face → PVS-cluster set (lump-5 leaffaces) into its cell.
+        /// Appended one entry per complete triangle by the face/patch appenders.</summary>
+        public readonly List<int> TriangleFaces = new();
     }
 
     /// <summary>
@@ -133,7 +169,7 @@ public static class MapLoader
 
             int lm = LightmapKeyForFace(bsp, assets, face);
             SurfaceBuilder sb = GetSurface(surfaces, face.TextureIndex, lm);
-            AppendPolygonFace(sb, bsp, face);
+            AppendPolygonFace(sb, bsp, face, fi);
         }
 
         // --- bucket bezier patches (tessellated) into the same surface keys ---
@@ -165,9 +201,16 @@ public static class MapLoader
                 if (tess is null)
                     continue;
                 SurfaceBuilder sb = GetSurface(surfaces, patchJobs[j].TexIndex, patchJobs[j].Lm);
-                AppendTessellation(sb, tess);
+                AppendTessellation(sb, tess, patchJobs[j].Fi);
             }
         }
+
+        // --- (§12.8 A/B) build a conservative occluder from the OPAQUE world surfaces for Godot's native
+        // occlusion culling (gated behind r_occlusion_cull; WorldOcclusion toggles it at runtime). Built from
+        // the render mesh, NOT brushes — finalrage alone has ~17.6k bevel-padded solid brushes (hundreds of k
+        // of tris) vs ~24k render tris, and the render surface is both lower-poly and guaranteed conservative.
+        // Built unconditionally (cheap, load-time only) so the cvar can A/B-toggle without a map reload.
+        Occluder3D? worldOccluder = BuildWorldOccluder(bsp, assets, surfaces);
 
         // --- (§12.5 R5b) lightmap atlas: pack every USED page (+ its deluxe pair) into one gutter-padded
         // texture so lightmapped surfaces no longer split per page — materials (and with the regroup below,
@@ -180,8 +223,12 @@ public static class MapLoader
         // the atlas (UV2 remapped per page). Appends above stay byte-identical; this is a pure repack.
         // (§12.8) The regroup also records each cell's visibility clusters so the PVS culler below can hide
         // cells the map compiler PROVED can't be seen from the camera's cluster (occlusion the frustum can't).
+        // Cluster labels are DP's EXACT per-surface vis — the union of clusters of every leaf that references a
+        // face (lump-5 leaffaces) — not a sampled point, so no face is mislabeled into solid (the old bug).
         var pvs = new XonoticGodot.Formats.Bsp.BspPvs(bsp);
-        var cells = RegroupIntoCells(surfaces, atlas, pvs.HasVis ? pvs : null,
+        int[][]? faceClusters = pvs.HasVis ? pvs.BuildFaceClusterSets() : null;
+        float cellSize = ResolveCellSize(bsp);
+        var cells = RegroupIntoCells(surfaces, atlas, faceClusters, cellSize,
             out Dictionary<CellKey, HashSet<int>> cellClusters);
 
         // --- pack each cell into its own ArrayMesh + MeshInstance3D, sharing materials across cells ---
@@ -262,13 +309,18 @@ public static class MapLoader
         if (pvs.HasVis && pvsCells.Count > 0)
             root.AddChild(new WorldPvsCuller(pvs, pvsCells));
 
+        // (§12.8 A/B) Godot-native occlusion culling — orthogonal to the PVS culler, off by default
+        // (r_occlusion_cull 0). Present on every map (no vis dependency); WorldOcclusion self-gates on the cvar.
+        if (worldOccluder is not null)
+            root.AddChild(new WorldOcclusion(worldOccluder));
+
         // Surface-material summary — guards the external-lightmap wiring (lightmapped=0 or a non-zero
         // lightmapMissing on a stock map means lightmaps stopped binding; see LoadLightmap / the map-name thread).
         GD.Print($"[MapLoader] '{mapName}' materials: lightmapped={nLit} vertexLit={nVtx} plain={nPlain}" +
                  (nLitMissing > 0 ? $" lightmapMissing={nLitMissing}" : string.Empty) +
                  (nTrans > 0 ? $" translucent={nTrans}" : string.Empty) +
                  $" glow={nGlow} normalMapped={nNormal} (deluxe={deluxe}, internalPages={bsp.Lightmaps.Length}" +
-                 $", atlas={(atlas is not null ? $"{atlas.PageCount}p" : "none")}, cells={cellCount}, surfaces={drawSurfaces})");
+                 $", atlas={(atlas is not null ? $"{atlas.PageCount}p" : "none")}, cellSize={cellSize:0}, cells={cellCount}, surfaces={drawSurfaces})");
 
         return root;
     }
@@ -315,10 +367,12 @@ public static class MapLoader
         return sb;
     }
 
-    /// <summary>Append one polygon/mesh face's vertex window + index window into a surface (Quake->Godot).</summary>
-    private static void AppendPolygonFace(SurfaceBuilder sb, BspData bsp, BspFace face)
+    /// <summary>Append one polygon/mesh face's vertex window + index window into a surface (Quake->Godot).
+    /// <paramref name="faceIndex"/> tags each appended triangle for the §12.8 cell→cluster regroup.</summary>
+    private static void AppendPolygonFace(SurfaceBuilder sb, BspData bsp, BspFace face, int faceIndex)
     {
         int baseIndex = sb.Positions.Count;
+        int indexBase = sb.Indices.Count;
 
         // Copy this face's vertex range [FirstVertex, FirstVertex+VertexCount).
         for (int v = 0; v < face.VertexCount; v++)
@@ -352,12 +406,18 @@ public static class MapLoader
                 local = 0;
             sb.Indices.Add(baseIndex + local);
         }
+
+        // Tag each complete triangle just appended with its source face (parallel to Indices/3).
+        for (int t = (sb.Indices.Count - indexBase) / 3; t > 0; t--)
+            sb.TriangleFaces.Add(faceIndex);
     }
 
-    /// <summary>Append a tessellated bezier patch (Quake-space vertices) into a surface (Quake->Godot).</summary>
-    private static void AppendTessellation(SurfaceBuilder sb, BezierPatch.Tessellation tess)
+    /// <summary>Append a tessellated bezier patch (Quake-space vertices) into a surface (Quake->Godot).
+    /// <paramref name="faceIndex"/> tags each appended triangle for the §12.8 cell→cluster regroup.</summary>
+    private static void AppendTessellation(SurfaceBuilder sb, BezierPatch.Tessellation tess, int faceIndex)
     {
         int baseIndex = sb.Positions.Count;
+        int indexBase = sb.Indices.Count;
 
         for (int i = 0; i < tess.Vertices.Count; i++)
         {
@@ -371,6 +431,10 @@ public static class MapLoader
 
         for (int i = 0; i < tess.Indices.Count; i++)
             sb.Indices.Add(baseIndex + tess.Indices[i]);
+
+        // Tag each complete triangle just appended with its source patch face (parallel to Indices/3).
+        for (int t = (sb.Indices.Count - indexBase) / 3; t > 0; t--)
+            sb.TriangleFaces.Add(faceIndex);
     }
 
     /// <summary>
@@ -683,7 +747,7 @@ public static class MapLoader
     /// </summary>
     private static Dictionary<CellKey, Dictionary<SurfaceKey, SurfaceBuilder>> RegroupIntoCells(
         Dictionary<SurfaceKey, SurfaceBuilder> surfaces, LightmapAtlas? atlas,
-        XonoticGodot.Formats.Bsp.BspPvs? pvs, out Dictionary<CellKey, HashSet<int>> cellClusters)
+        int[][]? faceClusters, float cellSize, out Dictionary<CellKey, HashSet<int>> cellClusters)
     {
         var cells = new Dictionary<CellKey, Dictionary<SurfaceKey, SurfaceBuilder>>();
         var remap = new Dictionary<(CellKey Cell, int OldIndex), int>();   // vertex dedup per source bucket
@@ -712,9 +776,9 @@ public static class MapLoader
                 int a = src.Indices[i], b = src.Indices[i + 1], c = src.Indices[i + 2];
                 Vector3 centroid = (src.Positions[a] + src.Positions[b] + src.Positions[c]) / 3f;
                 var cell = new CellKey(
-                    (int)MathF.Floor(centroid.X / WorldCellSize),
-                    (int)MathF.Floor(centroid.Y / WorldCellSize),
-                    (int)MathF.Floor(centroid.Z / WorldCellSize));
+                    (int)MathF.Floor(centroid.X / cellSize),
+                    (int)MathF.Floor(centroid.Y / cellSize),
+                    (int)MathF.Floor(centroid.Z / cellSize));
 
                 if (!cells.TryGetValue(cell, out Dictionary<SurfaceKey, SurfaceBuilder>? cellSurfaces))
                     cells[cell] = cellSurfaces = new Dictionary<SurfaceKey, SurfaceBuilder>();
@@ -722,24 +786,28 @@ public static class MapLoader
                     cellSurfaces[targetKey] = dst = new SurfaceBuilder();
 
                 // (§12.8) Record which visibility clusters this cell's geometry occupies — the per-frame PVS
-                // culler shows a cell iff ANY of its clusters is potentially visible from the camera's
-                // cluster (the map compiler's own conservative vis; per-cell union = strictly MORE
-                // conservative than DP's per-face culling, so nothing DP would draw is ever hidden).
-                // A centroid in solid / outside the tree contributes nothing; a cell with NO clusters at
-                // all is treated always-visible by the culler.
-                if (pvs is not null)
+                // culler shows a cell iff ANY of its clusters is potentially visible from the camera's cluster
+                // (the map compiler's own conservative vis; per-cell union = strictly MORE conservative than
+                // DP's per-face culling, so nothing DP would draw is ever hidden). The cluster set per triangle
+                // is DP's EXACT per-surface vis: the union of clusters of every leaf that references the source
+                // face (lump-5 leaffaces; see BspPvs.BuildFaceClusterSets). This replaces the old point-sampling
+                // (centroid → FindLeaf) which mislabeled ~10% of triangles whose centroid landed on the surface
+                // boundary in solid — whole cells then winked out to the skybox. A face referenced only by solid
+                // leaves contributes nothing; a cell with NO clusters is treated always-visible by the culler.
+                if (faceClusters is not null)
                 {
-                    // FindLeaf descends the BSP tree in QUAKE space (Z-up), but `centroid` is in Godot space
-                    // (Y-up — Positions were ToGodot'd as the mesh was built). Feed the Quake form, exactly as
-                    // the per-frame culler does for the camera (WorldPvsCuller uses Coords.ToQuake). Without
-                    // this the Y/Z axis swap mislabels every cell's clusters, so cells get hidden by clusters
-                    // they don't occupy — world geometry vanishing as the camera crosses clusters.
-                    int cluster = pvs.LeafCluster(pvs.FindLeaf(Coords.ToQuake(centroid)));
-                    if (cluster >= 0)
+                    int tri = i / 3;
+                    int face = tri < src.TriangleFaces.Count ? src.TriangleFaces[tri] : -1;
+                    if (face >= 0 && face < faceClusters.Length)
                     {
-                        if (!cellClusters.TryGetValue(cell, out HashSet<int>? set))
-                            cellClusters[cell] = set = new HashSet<int>();
-                        set.Add(cluster);
+                        int[] clusters = faceClusters[face];
+                        if (clusters.Length > 0)
+                        {
+                            if (!cellClusters.TryGetValue(cell, out HashSet<int>? set))
+                                cellClusters[cell] = set = new HashSet<int>();
+                            foreach (int cl in clusters)
+                                set.Add(cl);
+                        }
                     }
                 }
 
@@ -990,6 +1058,55 @@ public static class MapLoader
         // Shader surfaceparm bits (nodraw / sky).
         SurfaceFlags.SurfaceInfo info = assets.GetSurfaceInfo(bsp.Textures[textureIndex].ShaderName);
         return info.NoDraw || info.Sky;
+    }
+
+    /// <summary>
+    /// (§12.8 A/B) Merge every OPAQUE world surface into one <see cref="ArrayOccluder3D"/> for Godot's native
+    /// occlusion culling (driven by <see cref="WorldOcclusion"/>). Positions are already Godot world-space
+    /// (ToGodot'd at append), so the occluder lines up 1:1 with the rendered solid — it can never extend past
+    /// real geometry and over-cull. Translucent, liquid, nonsolid (grates/fences), sky and nodraw surfaces are
+    /// excluded so nothing visible THROUGH them is wrongly hidden. Returns null when nothing qualifies.
+    /// </summary>
+    private static Occluder3D? BuildWorldOccluder(BspData bsp, AssetSystem assets,
+        Dictionary<SurfaceKey, SurfaceBuilder> surfaces)
+    {
+        var verts = new List<Vector3>();
+        var indices = new List<int>();
+        foreach (var kv in surfaces)
+        {
+            if (!IsOpaqueOccluder(bsp, assets, kv.Key.TextureIndex))
+                continue;
+            SurfaceBuilder sb = kv.Value;
+            int baseIndex = verts.Count;
+            verts.AddRange(sb.Positions);
+            foreach (int idx in sb.Indices)
+                indices.Add(baseIndex + idx);
+        }
+        if (indices.Count == 0)
+            return null;
+
+        var occ = new ArrayOccluder3D();
+        occ.SetArrays(verts.ToArray(), indices.ToArray());
+        GD.Print($"[MapLoader] occluder: {verts.Count} verts / {indices.Count / 3} tris (r_occlusion_cull A/B)");
+        return occ;
+    }
+
+    /// <summary>
+    /// True if a texture's surfaces are safe to use as solid occluders: opaque, solid, and actually drawn.
+    /// Excludes everything <see cref="ShouldSkip"/> drops (sky/nodraw) plus translucent / liquid / nonsolid
+    /// shaders and the compiler-baked NONSOLID bit — any of which would let the camera see PAST the surface,
+    /// so occluding behind it would pop real geometry in/out.
+    /// </summary>
+    private static bool IsOpaqueOccluder(BspData bsp, AssetSystem assets, int textureIndex)
+    {
+        if (ShouldSkip(bsp, assets, textureIndex))
+            return false;
+        if (textureIndex < 0 || textureIndex >= bsp.Textures.Length)
+            return false;
+        if ((bsp.Textures[textureIndex].SurfaceFlags & Q3SurfaceFlags.NonSolid) != 0)
+            return false;
+        SurfaceFlags.SurfaceInfo info = assets.GetSurfaceInfo(bsp.Textures[textureIndex].ShaderName);
+        return !info.NonSolid && !info.Translucent && !info.Liquid;
     }
 
     /// <summary>

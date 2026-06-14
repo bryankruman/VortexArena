@@ -69,6 +69,15 @@ public partial class ClientWorld : Node3D
     /// <summary>Per-entity render nodes for non-projectile networked entities (players/monsters/items).</summary>
     private readonly Dictionary<int, EntityNode> _entityNodes = new();
 
+    /// <summary>(§12.8) The map's compiled PVS, wired by the host after the BSP loads (null on a non-BSP/demo
+    /// scene → entity PVS culling is inert). Drives <see cref="ApplyEntityPvsCull"/>: DP-faithful render culling
+    /// of remote entities whose bounds fall outside the camera's potentially-visible set.</summary>
+    public XonoticGodot.Formats.Bsp.BspPvs? Pvs { get; set; }
+
+    /// <summary>Whether the entity PVS cull applied anything last frame, so a freshly-disabled cvar can restore
+    /// every node's visibility exactly once (mirrors WorldPvsCuller's disable handling).</summary>
+    private bool _entityPvsActive;
+
     /// <summary>Per-entity model animators (players/monsters/vehicles with MD3 anim).</summary>
     private readonly Dictionary<int, ModelAnimator> _animators = new();
 
@@ -929,6 +938,7 @@ public partial class ClientWorld : Node3D
             }
         }
 
+        using (FrameProfiler.Scope("cw.pvscull")) ApplyEntityPvsCull(localId);
         using (FrameProfiler.Scope("cw.csqc")) DriveCsqcModelHooks((float)delta);
         using (FrameProfiler.Scope("cw.vehicles")) DriveVehicles((float)delta);
         // Live-poll the dynamic map/scene tint cvars so a console `set r_map_tint*` re-tints instantly (the
@@ -949,6 +959,61 @@ public partial class ClientWorld : Node3D
         {
             DriveLoopingSounds((float)delta, listener);
             DriveOneShots(listener);
+        }
+    }
+
+    /// <summary>
+    /// (§12.8) DP-faithful entity render culling: hide remote entities whose bounds lie outside the camera's
+    /// PVS (DP draws an entity only when its leaf cluster is in the view's visible set). This is the per-entity
+    /// analogue of <see cref="XonoticGodot.Game.WorldPvsCuller"/> and the free, faithful way to make players /
+    /// items / props behind walls disappear — the thing Godot's geometric occluder would otherwise be needed
+    /// for. Gated behind <c>r_pvs_cull_entities</c> (default 1, DP-faithful; set 0 to disable for A/B).
+    ///
+    /// <para>Conservative: the LOCAL player is never culled (its model parents the view), and an unvised map /
+    /// a camera in solid (cluster &lt; 0) / a degenerate box all keep everything visible. Tested against the
+    /// entity's BOUNDS (origin ± <c>r_pvs_cull_entities_margin</c>), not a point, so a model peeking past a
+    /// cluster boundary can't wink out. Culling rides the <see cref="EntityNode.SetPvsVisible"/> flag so it
+    /// composes with the item ghost/fade visibility instead of fighting it.</para>
+    /// </summary>
+    private void ApplyEntityPvsCull(int localId)
+    {
+        bool enabled = CvarF("r_pvs_cull_entities", 1f) != 0f && Pvs is { HasVis: true };
+        if (!enabled)
+        {
+            if (_entityPvsActive)
+            {
+                foreach (EntityNode n in _entityNodes.Values)
+                    if (GodotObject.IsInstanceValid(n)) n.SetPvsVisible(true);
+                _entityPvsActive = false;
+            }
+            return;
+        }
+        _entityPvsActive = true;
+
+        NVec3? view = ViewOrigin();
+        int viewerCluster = view is { } v ? Pvs!.LeafCluster(Pvs.FindLeaf(v)) : -1;
+        // Camera in solid / outside the tree → show everything (BoxAnyClusterVisibleFrom also guards this, but
+        // skip the per-entity work entirely).
+        bool showAll = viewerCluster < 0;
+        float m = Mathf.Max(CvarF("r_pvs_cull_entities_margin", 64f), 0f);
+        var margin = new NVec3(m, m, m);
+
+        foreach (var kv in _entityNodes)
+        {
+            EntityNode node = kv.Value;
+            Entity? e = node.Entity;
+            if (e is null || e.IsFreed || !GodotObject.IsInstanceValid(node))
+                continue;
+            if (showAll || e.Index == localId)
+            {
+                node.SetPvsVisible(true);
+                continue;
+            }
+            // Bounds around the networked origin (a generous symmetric box — biased toward NOT hiding, since
+            // wrongly culling a visible enemy is far worse than under-culling one solidly behind a wall).
+            NVec3 o = e.Origin;
+            bool visible = Pvs!.BoxAnyClusterVisibleFrom(viewerCluster, o - margin, o + margin);
+            node.SetPvsVisible(visible);
         }
     }
 
@@ -1047,7 +1112,7 @@ public partial class ClientWorld : Node3D
             {
                 // Back to available (respawned) — undo the prior ghost/despawn fade exactly once (no per-frame churn).
                 SetTreeTransparency(node, st, 0f);
-                node.Visible = true;
+                node.SetGameplayVisible(true);
                 st.ItemFaded = false;
             }
 
@@ -1071,7 +1136,7 @@ public partial class ClientWorld : Node3D
     {
         float ghost = Mathf.Clamp(CvarF("cl_ghost_items", 0.45f), 0f, 1f); // QC autocvar_cl_ghost_items default 0.45
         SetTreeTransparency(node, st, 1f - ghost);
-        node.Visible = ghost > 0.001f;
+        node.SetGameplayVisible(ghost > 0.001f);
     }
 
     /// <summary>
@@ -1089,7 +1154,7 @@ public partial class ClientWorld : Node3D
         // QC: this.alpha *= (wait - time)/IT_DESPAWNFX_TIME — apply as a per-instance transparency on the model
         // (bit 2). Bit 2 clear → Tick returns 1, so this is a no-op (item stays opaque, just particles).
         SetTreeTransparency(node, st, 1f - alpha);
-        node.Visible = alpha > 0.001f; // hidden once fully faded (QC drawmask 0); transparency handles the gradient
+        node.SetGameplayVisible(alpha > 0.001f); // hidden once fully faded (QC drawmask 0); transparency handles the gradient
 
         // QC: pointparticles(EFFECT_ITEM_DESPAWN, this.origin + '0 0 16', '0 0 0', 1) — same client path the
         // pickup/respawn bursts take (EffectSystem.Spawn); item_despawn resolves from effectinfo.txt.

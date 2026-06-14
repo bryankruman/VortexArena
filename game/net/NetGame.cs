@@ -949,6 +949,11 @@ public sealed partial class NetGame : Node3D
             // Pass the loaded map name so external lm_NNNN lightmaps resolve (stock maps have no internal lump).
             AddChild(MapLoader.BuildMap(_bsp, _assets.Assets, _map, _droppedSubmodels));
 
+        // (§12.8) Hand the render world the map's PVS so it can DP-faithfully cull remote entities behind walls
+        // (r_pvs_cull_entities). Cheap — BspPvs just wraps the parsed lumps. Null map keeps entity culling inert.
+        if (_bsp is not null)
+            _render.Pvs = new XonoticGodot.Formats.Bsp.BspPvs(_bsp);
+
         // Client-side collision world for the particle systems: decal splats conform to the real brush faces
         // (DP R_DecalSystem — without it marks fall back to flat quads), and the chunked-SDF service builds
         // from the same world. One build per map load (~100 ms, hidden by the load screen; the server world's
