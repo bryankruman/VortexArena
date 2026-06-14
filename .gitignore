@@ -58,3 +58,6 @@ desktop.ini
 
 # Dev launch log artifact
 _game_menu.log
+
+# Local agent/design memory notes — kept on disk, never versioned
+/memory/
