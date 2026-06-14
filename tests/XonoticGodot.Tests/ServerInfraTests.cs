@@ -118,27 +118,58 @@ public class ServerInfraTests
     }
 
     [Fact]
-    public void ArchivedNamesToPersist_KeepsUserCreatedAndLateRegisteredCvars_NotDroppedAsDefault()
+    public void ArchivedNamesToPersist_RegisteredCvarAtDefault_NotWritten_EvenIfRegisteredAfterLock()
     {
-        // The ordering trap the !DefaultLocked escape (DP CF_ALLOCATED & !CF_DEFAULTSET) guards against: a cvar
-        // that does NOT exist at LockDefaults time — a console-created `seta`, or a port-extension cl_* registered
-        // only once a match starts — has its saved value become its inferred "default", so a naive value!=default
-        // test would treat it as unchanged and silently drop it on the next save. It must persist regardless.
+        // THE config.cfg-bloat fix. A port-extension cl_* / hud_* cvar registers via ClientSettings.ApplyAll —
+        // AFTER MenuState.Boot's LockDefaults — and at its default value. It must NOT be written, just like DP
+        // doesn't dump CF_ALLOCATED cvars once they're cleared by a Register (CF_ALLOCATED is cleared, the rule
+        // falls back to value!=defstring). This is the exact sequence that bloated config.cfg with ~195 setas.
         var cvars = new CvarService();
-        cvars.Set("crosshair", "3");
-        cvars.LockDefaults();             // my_pref / cl_vignette absent here
+        cvars.Set("crosshair", "3");      // a stock cfg-tree cvar present at lock time
+        cvars.LockDefaults();             // cl_vignette is NOT in the store yet (registers later)
 
-        cvars.Set("my_pref", "1");        // user created it in the console after the lock
+        // a previous bloated config.cfg is loaded first: the cvar is created by `seta` at its default value...
+        cvars.Set("cl_vignette", "1");
+        cvars.MarkArchived("cl_vignette");
+        // ...then the overlay registers its real default (== the loaded value). Register clears Allocated + adopts
+        // the authoritative default, so the cvar is now "unchanged from default" and drops out of the save.
+        cvars.Register("cl_vignette", "1", CvarFlags.Save);
+
+        Assert.False(cvars.IsModified("cl_vignette"));
+        Assert.DoesNotContain("cl_vignette",
+            new HashSet<string>(cvars.ArchivedNamesToPersist, System.StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void ArchivedNamesToPersist_RegisteredCvarChangedFromDefault_IsWritten()
+    {
+        // The flip side: the user actually changed a registered cvar off its default. Register promotes the real
+        // default (1), so value (2) != default (1) → it IS written — even though it was loaded/created before the
+        // overlay's Register ran (the inferred default "2" must not mask the real default "1").
+        var cvars = new CvarService();
+        cvars.LockDefaults();
+        cvars.Set("cl_vignette", "2");                       // loaded from config at a NON-default value
+        cvars.MarkArchived("cl_vignette");
+        cvars.Register("cl_vignette", "1", CvarFlags.Save);  // overlay declares the real default 1
+
+        Assert.True(cvars.IsModified("cl_vignette"));
+        Assert.Contains("cl_vignette",
+            new HashSet<string>(cvars.ArchivedNamesToPersist, System.StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void ArchivedNamesToPersist_UserCreatedCvarNeverRegistered_AlwaysWritten()
+    {
+        // DP's CF_ALLOCATED & !CF_DEFAULTSET escape: a cvar the user created in the console (`seta my_pref 1`) that
+        // no code ever Registers has no authoritative default we can compare against, so it's always saved — losing
+        // it would be wrong. It stays Allocated (never promoted) and unlocked (created after LockDefaults).
+        var cvars = new CvarService();
+        cvars.LockDefaults();
+        cvars.Set("my_pref", "1");
         cvars.MarkArchived("my_pref");
 
-        cvars.Set("cl_vignette", "2");    // user-config value applied first (first-seen → inferred default "2")...
-        cvars.MarkArchived("cl_vignette");
-        cvars.Register("cl_vignette", "1", CvarFlags.Save); // ...then the overlay registers its real default later
-
-        Assert.False(cvars.IsModified("cl_vignette")); // inferred default == value → "modified" alone would drop it
-        var persist = new HashSet<string>(cvars.ArchivedNamesToPersist, System.StringComparer.Ordinal);
-        Assert.Contains("my_pref", persist);
-        Assert.Contains("cl_vignette", persist);
+        Assert.Contains("my_pref",
+            new HashSet<string>(cvars.ArchivedNamesToPersist, System.StringComparer.Ordinal));
     }
 
     // =========================================================================================== bans

@@ -74,6 +74,11 @@ public static class ClientSettings
         c.Register("showping", "0", save);
         c.Register("cl_showfps", "0", save);
         c.Register("cl_showping", "0", save);
+        // PVS-cull escape hatch (archived). WorldPvsCuller registers this in _Ready — which only runs inside a
+        // match — so a menu-only session would leave it "allocated, default unknown" and re-save it to config.cfg
+        // even at its default. Register it eagerly at boot (idempotent with WorldPvsCuller's own Register) so it's
+        // a declared cvar with a known default and is persisted only when actually changed.
+        c.Register("r_pvs_cull", "1", save);
         // Mouse pitch (only its SIGN is used here, for invert-look); DP default 1 (non-inverted) = current behaviour.
         c.Register("m_pitch", "1", save);
         // Server-browser auto-refresh pause toggle (DP default 0).
