@@ -785,4 +785,55 @@ public class ServerInfraTests
         Assert.Equal("dance", changedTo);            // gotomap's queued map won and reached the changelevel pipeline
         Assert.Equal("dance", world.SelectedNextMap); // and is recorded as the chosen next map
     }
+
+    [Fact]
+    public void Restart_FromIntermission_ResetsTheServerCleanly()
+    {
+        // DP/QC `restart` (RestartMatch → ReadyRestart): leave intermission, clear scores, re-arm the pre-live
+        // start countdown, and re-spawn every player + reset map objects — WITHOUT reloading the level (that is
+        // what `map` does). This pins the full server-side reset the listen-server host triggers from its console
+        // and a passed `vote call restart`, so a regression in any of those steps fails here rather than in a
+        // playtest. (The listen-server CLIENT then resets its own prediction off the respawn-teleport snap; the
+        // `map` full reload is covered by Map_*RoutesToChangeLevelHandler above.)
+        var world = new GameWorld(new CollisionWorld()) { MapName = "boil" };
+        world.Boot("dm");
+        world.Commands.AddBotHandler = (_, _) => true;
+
+        ClientManager.ClientInfo a = world.Clients.ClientConnect(isBot: true, netName: "bot1");
+        world.Clients.ClientConnect(isBot: true, netName: "bot2");
+
+        // Dirty the match: register + score a player, give them speed, then drive the match to intermission.
+        world.Scores.Row(a.Player);                 // ensure the row exists so Score_ClearAll touches it
+        a.Player.ScoreFrags = 7;
+        a.Player.Velocity = new Vector3(320f, 0f, 0f);
+        world.EndMatch();
+        Assert.True(world.Intermission.Running, "precondition: EndMatch latches intermission (the state restart undoes)");
+
+        // The exact path the host's in-game console runs (isServerConsole: true → bypasses the client gate).
+        CommandContext ctx = world.Commands.Execute("restart", isServerConsole: true);
+        Assert.Contains("restart", ctx.Output);
+
+        Assert.False(world.Intermission.Running, "restart must leave intermission");
+        Assert.False(world.Warmup.WarmupStage, "restart forces warmup to end (forceWarmupEnd)");
+        Assert.True(world.Warmup.CountdownRunning, "restart must arm the pre-live start countdown");
+        Assert.Equal(0, a.Player.ScoreFrags);                  // QC Score_ClearAll on a real restart
+        Assert.False(a.Player.IsDead);                         // every player re-spawned alive (PutClientInServer)
+        Assert.Equal(Vector3.Zero, a.Player.Velocity);         // reset_map zeroes velocity for the fresh start
+    }
+
+    [Fact]
+    public void Map_SameMap_ReloadsTheCurrentLevel()
+    {
+        // DP `map <currentmap>` is the faithful way to RELOAD the level (full changelevel: server reboots on the
+        // same map, the client tears down + reconnects). It must route to ChangeLevelHandler exactly like a
+        // change to a different map — i.e. reloading the level is not special-cased away.
+        var world = new GameWorld(new CollisionWorld()) { MapName = "boil" };
+        world.Boot("dm");
+        string? changedTo = null;
+        world.Commands.ChangeLevelHandler = m => changedTo = m;
+
+        world.Commands.Execute("map boil", isServerConsole: true);
+
+        Assert.Equal("boil", changedTo); // a reload of the current level reaches the same reboot pipeline
+    }
 }

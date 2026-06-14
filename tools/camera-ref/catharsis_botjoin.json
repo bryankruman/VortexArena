@@ -1,0 +1,2 @@
+{ "map": "catharsis", "gametype": "ctf", "bots": 2, "frames": 500,
+  "input": { "f": 0, "s": 0, "u": 0, "yaw": 0, "pitch": 0, "roll": 0, "buttons": 0 } }

@@ -92,6 +92,13 @@ public static class Cvars
         new("sv_step_upspeed_scale", "1", "step-up upward-velocity multiplier (1 = vanilla launch, 0 = step up without launching)"),
         new("sv_step_upspeed_max", "-1", "step-up upward-velocity hard cap in u/s (-1 = disabled/uncapped)"),
 
+        // Global time scale (Darkplaces host_timescale / Xonotic slowmo): the real->sim time mapping for the WHOLE
+        // simulation. <1 = slow motion, >1 = fast, 1 = real time, 0 = paused. ServerNet.StepWorld feeds it to
+        // SimulationLoop.TimeScale and NetGame scales the client's input cadence + render clock by the same value,
+        // so prediction stays in lockstep (this is the same time-mapping that makes movement frame-rate-independent).
+        // Registered (like the step-up knobs) so the console/menu can set it and the listen-server cvar bridge applies it.
+        new("slowmo", "1", Notify, "global time scale: <1 slow-motion, >1 fast, 1 = real time, 0 = paused"),
+
         // [T45] warpzone self-targeting (lib/warpzone/server.qc WarpZone_InitStep_FindTarget). Behaviour is already
         // correct without this entry (Warpzone.cs reads it via Api.Cvars.GetFloat, which returns 0 when unset), but
         // registering it makes it visible to cvarlist/the menu and lets the listen-server `set` bridge apply changes.

@@ -419,6 +419,11 @@ public sealed class ServerNet : IDisposable
     /// safe on the worker. Returns the number of fixed sim ticks that ran.</summary>
     private int StepWorld(float realDelta)
     {
+        // slowmo / host_timescale (DP): scale the whole sim's real→sim time mapping (default 1). Read live so it
+        // toggles in-session; clamp negatives to 0 (paused). The client scales its input cadence by the SAME
+        // (replicated) value so prediction stays in lockstep — the time-mapping that makes movement fps-independent.
+        _world.Simulation.TimeScale = ResolveSlowmo(_world.Services.Cvars);
+
         // The world runs its fixed ticks, pulling each client's queued input via ProvideInput and firing
         // effect/notification emissions into our sinks. ticksRan == 0 when the host renders faster than 72 Hz.
         int ticksRan = _world.Frame(realDelta);
@@ -429,6 +434,17 @@ public sealed class ServerNet : IDisposable
         // this on the real-client path, so we run it here per accepted peer from its last input. (Bots autojoin.)
         DriveObserverJoins();
         return ticksRan;
+    }
+
+    /// <summary>Read the live <c>slowmo</c> time scale (DP host_timescale), default 1 when unset, clamped to &gt;= 0
+    /// (0 = paused). Shared by the server tick (<see cref="StepWorld"/>) and exposed so the client scales its input
+    /// cadence by the same value.</summary>
+    internal static float ResolveSlowmo(XonoticGodot.Common.Services.ICvarService cv)
+    {
+        string s = cv.GetString("slowmo");
+        if (string.IsNullOrWhiteSpace(s)) return 1f;
+        float v = cv.GetFloat("slowmo");
+        return v < 0f ? 0f : v;
     }
 
     /// <summary>Broadcast the snapshot (when the world advanced) + master-server pump + flush. GODOT TRANSPORT —
@@ -1294,21 +1310,26 @@ public sealed class ServerNet : IDisposable
 
         if (!any)
         {
-            // Starved (packet loss / client hitch): repeat the last command so held keys keep the player moving —
-            // a single batch entry worth one tick of dt.
+            // No queued command this world tick. This is EITHER a soft-capped EXTRA tick within a render frame (the
+            // frame's real commands already drained on its first tick) OR a genuinely starved frame (client hitch /
+            // packet loss). In BOTH cases the player must NOT advance on a FABRICATED command. The old "starve-
+            // repeat" stepped the player on these ticks, advancing it MORE than the client predicted — and below the
+            // sim rate that happens on every render frame, desyncing client vs server every frame (the catharsis
+            // rubberband; see ListenServerDiagnosisTests). Path B = COMMAND-DRIVEN movement: leave the batch EMPTY
+            // so OnClientMove runs ZERO moves; the player advances only by real commands, in lockstep with the
+            // client (which also only predicted real commands). The held state still drives the once-per-tick MERGED
+            // input below (view angles + weapon frame continue) — only the MOVEMENT is withheld.
             if (st.HasLast)
             {
-                InputCommand rep = st.Last;
-                rep.DeltaTime = SimulationLoopTicRate;
-                st.TickBatch.Add(ToMovementInput(rep));
-                mergedButtons = rep.TypedButtons;
-                last = rep;
+                last = st.Last;
+                mergedButtons = st.Last.TypedButtons;
+                // Intentionally NOT adding to st.TickBatch — no fabricated movement step (the Path B fix).
             }
             else
             {
                 st.TickInput = ZeroInput;
                 st.TickInputTime = now;
-                return ZeroInput; // empty batch → OnClientMove uses the single ZeroInput
+                return ZeroInput; // never had input → nothing to drive the weapon frame either
             }
         }
 
@@ -1334,8 +1355,10 @@ public sealed class ServerNet : IDisposable
 
     /// <summary>
     /// The per-command movement batch drained for <paramref name="p"/> THIS tick (per-frame mode) — one entry per
-    /// client render frame, each integrated with its own dt by OnClientMove. Null in legacy mode or when not
-    /// drained this tick (→ OnClientMove runs the single InputProvider command). Built by
+    /// real client command, each integrated with its own dt by OnClientMove. In per-frame mode this is returned
+    /// even when EMPTY (a soft-capped extra tick / a starved frame): an empty batch means "the player runs ZERO
+    /// moves this tick" (Path B command-driven movement — no fabricated starve-repeat), which is distinct from the
+    /// LEGACY/no-net case (null → OnClientMove runs the single merged InputProvider command). Built by
     /// <see cref="ProvideInputPerFrame"/>, which OnClientMove triggers via its first InputProvider call.
     /// </summary>
     private IReadOnlyList<IMovementInput>? TickMovementBatch(Player p)
@@ -1343,8 +1366,8 @@ public sealed class ServerNet : IDisposable
         if (!_byPlayer.TryGetValue(p, out PeerState? st))
             return null;
         if (!st.PerFrameInput || st.TickInputTime != _world.Time)
-            return null;
-        return st.TickBatch.Count > 0 ? st.TickBatch : null;
+            return null; // legacy / not drained this tick → caller runs the single merged command
+        return st.TickBatch; // per-frame: the real commands (possibly empty → zero moves, never fabricated)
     }
 
     // Boxed once: typed as the interface so the hot ProvideInput paths return/store the same object instead of

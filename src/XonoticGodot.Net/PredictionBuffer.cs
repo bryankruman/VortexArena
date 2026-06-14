@@ -160,6 +160,12 @@ public sealed class Reconciler
     /// reads (before adding the smoothing offset).</summary>
     public PredictedState Predicted { get; private set; }
 
+    /// <summary>Diagnostic: the magnitude (qu) of the prediction error the LAST <see cref="Reconcile"/> measured —
+    /// i.e. how far the freshly-corrected prediction sat from what we were already rendering. ~0 when client predict
+    /// and server authority agree (the command-driven, fps-independent target); a steady nonzero value is the
+    /// rubberband. A one-shot large value is a teleport/respawn. Surfaced for the camera-trace catharsis check.</summary>
+    public float LastReconcileError { get; private set; }
+
     /// <summary>cl_movement_errorcompensation: 0 disables smoothing (snap to truth). Mirrors the autocvar.</summary>
     public float ErrorCompensation = 0f;
 
@@ -296,6 +302,7 @@ public sealed class Reconciler
         // sv_threaded real-play test hit, which no idle-client soak can catch. Latched with periodic
         // re-raise so the forensic log shows both the onset and the persistence.
         float errLen = oErr.Length();
+        LastReconcileError = errLen; // diagnostic (camera-trace): ~0 = client/server agree; steady nonzero = rubberband
         if (errLen > DesyncEventQu)
         {
             if (!_desyncLatched || ++_desyncRepeat >= 72)
@@ -399,6 +406,17 @@ public sealed class Reconciler
             Log.Trace($"[reconcile] knockback shove {vLen:0}u/s (origin {oLen:0.0}u) — smoothing over {ForceSmoothWindow * 1000f:0}ms");
         _errorOrigin = GetPredictionErrorOrigin(now) + originError;
         _errorVelocity = GetPredictionErrorVelocity(now) + velocityError;
+
+        // C2 bug-fix (port mode): cap the ACCUMULATED offset so a stream of same-direction residuals arriving
+        // faster than the decay window can't build an ever-growing camera lag (the "slow drift" the apparatus
+        // reproduces in Layer1_Port_LongerWindow). A single residual is always < MaxErrorOrigin (a bigger one
+        // already snapped above), so clamping the accumulator to that bound preserves normal one-shot smoothing
+        // while bounding pathological accumulation; the velocity error is clamped to its sibling threshold.
+        float accO = _errorOrigin.Length();
+        if (accO > MaxErrorOrigin) _errorOrigin *= MaxErrorOrigin / accO;
+        float accV = _errorVelocity.Length();
+        if (accV > MaxErrorVelocity) _errorVelocity *= MaxErrorVelocity / accV;
+
         float residualWindow = 1f / (ErrorCompensation * (TickRate > 0f ? TickRate : 1f));
         float newWindow = isForce && ForceSmoothWindow > 0f ? ForceSmoothWindow : residualWindow;
         float activeUntil = _errorUntilTime > now ? _errorUntilTime : now;

@@ -138,6 +138,12 @@ public sealed partial class NetGame : Node3D
     // ViewState each frame; we read back EyeContents / ZoomFraction / SensitivityScale / ChaseActive.
     private readonly Client.FirstPersonView _view = new();
 
+    // The FAITHFUL Base view smoothing (CSQCPlayer_ApplySmoothing: stairsmoothz glide + viewheightavg eye-height
+    // blend), used by UpdateCamera when cl_movement_smoothing_faithful is on (the default) so the rendered eye
+    // matches stock Xonotic exactly. The port's adaptive stair offset + error-comp glide is the alternative
+    // (faithful 0). Reset on respawn/teleport via the same path that clears the reconciler smoothing.
+    private readonly XonoticGodot.Net.FaithfulViewSmoothing _faithfulSmoothing = new();
+
     // The zoom scope reticle overlay (QC crosshair.qc DrawReticle), fed each frame in _Process from the networked
     // active weapon (ClientNet.ActiveWeaponId) + the zoom/button state — the net-path twin of PlayerController's.
     private Client.ReticleOverlay _reticle = null!;
@@ -276,18 +282,41 @@ public sealed partial class NetGame : Node3D
     // is frame-rate independent). Capped so a frame hitch can't queue a huge input burst (spiral-of-death).
     private float _inputAccum;
     private const float MaxInputBacklog = 0.25f; // ≤ ~18 catch-up input ticks per frame
+    // GRACEFUL HITCH RECOVERY: cap how many fixed input ticks one render frame may drain. A frame hitch (bot
+    // pathfinding spike / GC / OS preempt) leaves a backlog in _inputAccum; draining it ALL in the recovery frame
+    // sends a burst of commands the server applies in one go → a one-frame movement lunge + a reconcile snap. With
+    // command-driven movement the server advances the player by exactly the commands we send, so capping the drain
+    // makes a hitch's backlog spread over the next few frames IN LOCKSTEP with the server (no lunge, no snap). Set
+    // to the server's interactive soft cap (SimulationLoop.MaxTicksPerFrame = 4 above): high enough not to clip
+    // sustained low-fps play (handles down to ~18 fps), low enough to smear a real hitch over several frames.
+    // (Used only by the LEGACY fixed-tick path / perframe 0; Path A's bounded single step subsumes it.)
+    private const int MaxClientCatchupTicksPerFrame = 4;
+
+    // PATH A (Base-faithful variable-dt local prediction) bounds, mirroring Darkplaces:
+    //   MaxInputFrameDt — hard spiral-guard cap on one render frame's simulated time (DP: bound(cl_timer, .., 0.1));
+    //                     a multi-100ms hitch simulates at most this, the rest is dropped (the graceful-recovery
+    //                     equivalent, now inherent to the bounded step instead of a tick-count cap).
+    //   MaxSubStepDt    — split a long frame into <= this so one huge physics step can't tunnel collisions
+    //                     (DP CL_ClientMovement_PlayerMove_Frame splits moves > 0.05 s).
+    private const float MaxInputFrameDt = 0.1f;
+    private const float MaxSubStepDt = 0.05f;
+
+    // PATH A render-clock damping (#2): fraction of the render-clock→server-time error closed per fresh snapshot
+    // (DP cl_nettimesyncfactor-style gradual catch-up), and the discontinuity threshold above which we hard-snap
+    // instead (respawn / teleport / level change / a big hitch).
+    private const float ClockSyncFactor = 0.2f;
+    private const float MaxClockResync = 0.25f;
 
     // Per-frame (variable-dt) input mode — cl_movement_perframe (DP-style: one command per rendered frame stamped
     // with the real frame dt, the server drains all pending commands that tick). DEFAULT 1 (on, user-approved per
     // PERFORMANCE_REPORT.md B2); `set cl_movement_perframe 0` = the legacy fixed 1/72 s cadence above (kept for
     // parity testing). Read live from the shared cvar store each frame so it A/B-toggles in-session.
     private bool _perFrameInput;
-    // The DeltaTime stamped onto the next sampled InputCommand: TicRate in legacy mode, the clamped real frame dt
-    // in per-frame mode. Bounds mirror DP's per-move msec clamp (kills 0-dt paused frames + hitch spikes); the
-    // server re-clamps each command's dt since the client is untrusted.
+    // The DeltaTime stamped onto the next sampled InputCommand. Always the fixed TicRate now — BOTH input modes
+    // integrate movement in fixed 1/72 s ticks (the bunnyhop-consistency fix); per-frame mode differs only in
+    // sending a command per render frame (snappy aim/fire + faster backlog catch-up via the server batch path),
+    // not in the movement dt.
     private float _inputDeltaTime = XonoticGodot.Engine.Simulation.SimulationLoop.TicRate;
-    private const float MinInputDt = 0.0005f;
-    private const float MaxInputDt = 0.05f;
 
     // FPS eye height (Xonotic PL_VIEW_OFS '0 0 35'). Mouse-look sensitivity now reads the live `sensitivity`
     // cvar (LookSensitivity), not a hardcoded constant, so the input-settings dialog drives it.
@@ -1804,6 +1833,13 @@ public sealed partial class NetGame : Node3D
     private float _bgmVolumeCv = 0.7f;
     private bool _predictFireCv = true;
     private bool _perFrameInputCv;
+    // Path A send model. cl_netfps (DP-faithful, default 72) = datagram send rate; cl_movement_send_all (default 0):
+    // 0 = BASE-FAITHFUL — transmit gated at 1/cl_netfps with bounded redundancy (intermediate frames coalesce above
+    // ~cl_netfps×redundancy fps, exactly like DP), 1 = EXACT — transmit every predicted frame so the server replays
+    // the identical command sequence and reconcile stays ~0 (more bandwidth; great on a listen server).
+    private float _netFpsCv = 72f;
+    private bool _sendAllCv;
+    private bool _netClockSmoothCv = true; // cl_netclock_smooth: gradual render-clock creep vs hard rebase (#2)
 
     private void EnsureProcessCvarCache()
     {
@@ -1819,7 +1855,10 @@ public sealed partial class NetGame : Node3D
     {
         if (name.Equals("bgmvolume", StringComparison.OrdinalIgnoreCase)
             || name.Equals("cl_predictfire", StringComparison.OrdinalIgnoreCase)
-            || name.Equals("cl_movement_perframe", StringComparison.OrdinalIgnoreCase))
+            || name.Equals("cl_movement_perframe", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("cl_netfps", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("cl_movement_send_all", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("cl_netclock_smooth", StringComparison.OrdinalIgnoreCase))
             RefreshProcessCvars();
     }
 
@@ -1829,6 +1868,10 @@ public sealed partial class NetGame : Node3D
         // cl_predictfire defaults ON: unset GetString reads "" → treat anything but "0" as on.
         _predictFireCv = (_sharedCvars?.GetString("cl_predictfire") ?? "") != "0";
         _perFrameInputCv = _sharedCvars?.GetFloat("cl_movement_perframe") is float pf && pf != 0f;
+        _netFpsCv = _sharedCvars?.GetFloat("cl_netfps") is float nf && nf > 0f ? nf : 72f;
+        _sendAllCv = _sharedCvars?.GetFloat("cl_movement_send_all") is float sa && sa != 0f;
+        // cl_netclock_smooth defaults ON (unset → on): treat anything but "0" as enabled.
+        _netClockSmoothCv = (_sharedCvars?.GetString("cl_netclock_smooth") ?? "") != "0";
     }
 
     public override void _Process(double delta)
@@ -1844,6 +1887,14 @@ public sealed partial class NetGame : Node3D
         EnsureProcessCvarCache();   // (§11 R11) hot-path cvar values are cached; refreshed on Changed
 
         float dt = (float)delta;
+
+        // slowmo / host_timescale: the CLIENT-side time accumulators (input cadence + render clock) scale by the
+        // SAME factor the server applies to its sim (ServerNet.StepWorld → SimulationLoop.TimeScale), so the player's
+        // command rate and the server's tick rate slow/speed together and prediction stays in lockstep. On a listen
+        // server both ends read the same shared cvar; a remote client reads the replicated value. 1 = real time.
+        // NOTE: the server is still driven by the RAW dt below (it scales internally via TimeScale) — only the
+        // client accumulators are pre-scaled here.
+        float slowmo = ResolveTimeScale();
 
         // Drive the listen server (if any) by real elapsed time — it runs its fixed ticks, pulls each client's
         // queued input, simulates, and broadcasts snapshots.
@@ -1934,18 +1985,30 @@ public sealed partial class NetGame : Node3D
             return;
         _client.Poll();
 
-        // Advance the render clock: accumulate this frame, then rebase to the server time on a fresh snapshot so
-        // it stays aligned with the clock the reconciler armed the stair/error decays with (see _renderClock).
-        _renderClock += dt;
+        // Advance the render clock: free-run by this frame's elapsed time, then gently CREEP it toward server time
+        // on a fresh snapshot (see _renderClock).
+        _renderClock += dt * slowmo; // slowmo: keep the render clock aligned with the (time-scaled) server clock
         if (_client.LatestServerTime != _lastSeenServerTime)
         {
-            // A fresh snapshot landed: rebase the clock, and (on the very first one) seed the carrier from the
-            // server's authoritative owner state so the predictor's first replay starts at the real spawn.
             bool firstSnapshot = _lastSeenServerTime < 0f;
             _lastSeenServerTime = _client.LatestServerTime;
-            _renderClock = _client.LatestServerTime;
+            // PATH A (#2 divergence vs Base): do NOT hard-rebase the render clock to server time on every snapshot.
+            // The in-process server runs 0-4 ticks/frame and only broadcasts when the world advanced, so snapshots
+            // arrive in lumps; a hard `= LatestServerTime` jolts the clock — and the camera / error+stair decay
+            // timeline it drives — at irregular instants (a contributor to the bhop judder). Instead let the clock
+            // free-run (+= dt above) and gently creep toward server time, matching Base's cl_nettimesyncboundmode
+            // (bound + small per-frame creep, cl_parse.c). Snap only on the FIRST snapshot or a large discontinuity
+            // (respawn / teleport / level change / a hitch beyond MaxClockResync). cl_netclock_smooth 0 = old hard
+            // rebase, for A/B.
+            float err = _client.LatestServerTime - _renderClock;
+            if (firstSnapshot || !_netClockSmoothCv || MathF.Abs(err) > MaxClockResync)
+                _renderClock = _client.LatestServerTime;
+            else
+                _renderClock += err * ClockSyncFactor; // DP-style gradual catch-up (cl_nettimesyncfactor)
             if (firstSnapshot)
             {
+                // Seed the carrier from the server's authoritative owner state so the predictor's first replay
+                // starts at the real spawn.
                 SeedCarrierFromServer();
                 // C5: the camera now has an authoritative owner state to sit at — start placing it (the per-frame
                 // UpdateCamera below is gated on _cameraReady until this runs).
@@ -2024,18 +2087,37 @@ public sealed partial class NetGame : Node3D
             // in-session (the Changed hook refreshes it the frame the cvar is set).
             _perFrameInput = _perFrameInputCv;
             _client.PerFrameInput = _perFrameInput;
+            // Send model (Path A): EXACT = transmit every predicted frame (InputSendInterval 0 → server replays the
+            // identical sequence → reconcile ~0); BASE-FAITHFUL (default) = gate transmits to cl_netfps/s, the
+            // bounded redundancy then coalescing intermediate frames above ~cl_netfps×redundancy fps exactly as DP
+            // does. Only meaningful in per-frame (Path A) mode; the legacy fixed-tick path already sends one/tick.
+            _client.InputSendInterval = _perFrameInput && !_sendAllCv ? 1f / MathF.Max(10f, _netFpsCv) : 0f;
             if (_perFrameInput)
             {
-                // PER-FRAME (DP-style variable-dt): emit ONE command per rendered frame stamped with the real
-                // clamped frame dt; the server drains all pending commands that tick, running movement per command
-                // with each dt. Removes the up-to-one-tick input quantization → snappier fire + aim. The player
-                // still advances at wall-clock speed because each command carries the dt it represents. The render
-                // clock was already advanced by real dt at the top of _Process — do NOT add _inputDeltaTime here too
-                // (that double-advance is the bug fix), just send at the current clock.
-                _inputDeltaTime = Mathf.Clamp(dt, MinInputDt, MaxInputDt);
-                _client.SendInput(_renderClock);
-                ConsumePredictedFixAngle();
-                _inputAccum = 0f; // keep the legacy accumulator drained so a mid-session switch back can't burst
+                // PATH A — BASE-FAITHFUL variable-dt local prediction (Xonotic Base's default, Movetype_Physics_
+                // NoMatchTicrate): step the LOCAL player ONCE per RENDER frame at the real (clamped) frame dt, so the
+                // predicted origin lands at the EXACT render time. It then advances smoothly at ANY fps with no fixed
+                // 1/72 tick boundary to alias against the display rate — that aliasing was the bhop "lurch" the
+                // earlier fixed-tick attempt introduced (Base never had it; cf. cl_input.c CL_ClientMovement /
+                // cl.cmd.frametime, and the bhop-candidates-vs-base analysis). The physics is frametime-independent
+                // (half-step Verlet gravity → dt-invariant apex; verified by MovementTimingTests Phase1), so variable
+                // dt does not distort the arc; only the landing tick carries the tiny ±dt quantization Base accepts.
+                // A long frame is hard-capped (spiral guard) and split into <= MaxSubStepDt chunks so one huge step
+                // can't tunnel collisions (DP splits moves > 0.05 s). Transmit is rate-gated in ClientNet
+                // (InputSendInterval ~ 1/72 = DP cl_netfps) so a high-fps client predicts every frame WITHOUT
+                // flooding the server. _inputAccum is unused here (no tick draining) — zeroed so the legacy sub-tic
+                // extrapolation term is inert (the eye is already at exact render time, nothing to extrapolate).
+                _inputAccum = 0f;
+                float frameDt = dt * slowmo;
+                if (frameDt > MaxInputFrameDt) frameDt = MaxInputFrameDt; // spiral guard: cap a multi-100ms hitch
+                while (frameDt > 1e-5f)
+                {
+                    float sub = frameDt > MaxSubStepDt ? MaxSubStepDt : frameDt; // collision-stable sub-step split
+                    _inputDeltaTime = sub;
+                    _client.SendInput(_renderClock);
+                    ConsumePredictedFixAngle();
+                    frameDt -= sub;
+                }
             }
             else
             {
@@ -2045,11 +2127,13 @@ public sealed partial class NetGame : Node3D
                 // trigger a spiral-of-death.
                 const float tic = XonoticGodot.Engine.Simulation.SimulationLoop.TicRate;
                 _inputDeltaTime = tic;
-                _inputAccum += dt;
+                _inputAccum += dt * slowmo; // slowmo scales the client's command cadence to match the server's tick rate
                 if (_inputAccum > MaxInputBacklog) _inputAccum = MaxInputBacklog;
-                while (_inputAccum >= tic)
+                int drained = 0;
+                while (_inputAccum >= tic && drained < MaxClientCatchupTicksPerFrame) // cap: graceful hitch recovery
                 {
                     _inputAccum -= tic;
+                    drained++;
                     // Sample WASD/mouse → InputCommand → push to the ring, predict forward, send the redundant tail.
                     // Send at the current render clock (already advanced by real dt once at the top of _Process); the
                     // drained tics share that timestamp, which the redundant-send + cvar-pump pacing tolerate. Do NOT
@@ -2142,6 +2226,22 @@ public sealed partial class NetGame : Node3D
         // (which reads SampleEyeContents = _view.EyeContents).
         if (_cameraReady)
             UpdateCamera(dt);
+
+        // Camera-trace capture (apparatus A2): once spawned, record the rendered camera origin + predicted state
+        // per frame; finish + quit when the scripted input is exhausted. Inert unless --camera-trace was passed.
+        if (CameraTrace.Active && _cameraReady && _carrier is not null && _client is not null)
+        {
+            CameraTrace.RecordFrame(
+                time: _renderClock, dt: dt,
+                physicsOrigin: _client.PredictedOrigin,
+                viewOriginGodot: _camera.GlobalPosition,
+                velocity: _client.PredictedVelocity,
+                onGround: _carrier.OnGround,
+                viewOfsZ: _carrier.ViewOfs.Z,
+                reconcileError: _client.LastReconcileError);
+            if (CameraTrace.Done)
+                CameraTrace.Finish(GetTree());
+        }
 
         // Dev capture (--fx-demo): burst the configured effect from the predicted eye along the aim. Inert (a
         // single null check) unless --fx-demo was passed; only runs once the eye is seeded (_cameraReady).
@@ -3028,6 +3128,21 @@ public sealed partial class NetGame : Node3D
 
     private InputCommand SampleInput()
     {
+        // Camera-trace (apparatus A2): once spawned, feed the deterministic scripted input instead of the live
+        // keyboard/mouse, and slave the view angles to it so the captured camera is reproducible. Inert unless
+        // --camera-trace was passed; falls through to real input once the script is exhausted.
+        if (CameraTrace.Active && _carrier is not null && CameraTrace.TryNextInput(out CameraTrace.InputSpec spec))
+        {
+            _viewAngles = spec.ViewAngles;
+            return new InputCommand
+            {
+                ViewAngles = spec.ViewAngles,
+                Forward = spec.Forward, Side = spec.Side, Up = spec.Up,
+                Buttons = spec.Buttons, Impulse = 0,
+                DeltaTime = _inputDeltaTime,
+            };
+        }
+
         // Re-capture on click if the user released the mouse (e.g. after alt-tab); never while the tree is
         // paused (the in-game menu), the console is open, or the minigame menu is up — those own the cursor.
         if (!GetTree().Paused && !ConsoleState.IsOpen && !UiOwnsCursor
@@ -3167,27 +3282,64 @@ public sealed partial class NetGame : Node3D
         // few units of the extrapolated eye — so the error smoother never engages. Render-only: it does not touch
         // the authoritative predicted state, the input ring, or anything the server/reconciler sees. Suppressed
         // while dead (viewVelocity is zeroed above) so the frozen corpse's death-fall speed can't bob the eye.
-        predicted += viewVelocity * _inputAccum;
+        //
+        // DIAGNOSTIC / quality toggle cl_movement_subtic_extrapolate (default 1 = current behaviour). This LINEAR
+        // extrapolation ignores the sub-tic gravity/accel curve, and `_inputAccum` (the leftover < one tic) varies
+        // frame-to-frame at any fps that isn't a multiple of 72 — so the eye gets shoved by velocity*_inputAccum in a
+        // pattern that BEATS with the framerate (up to ~5u horizontally at bhop speed), which can read as inconsistent
+        // hop rhythm. It is NOT gated by the cl_movement_smoothing_* cvars (those tune POST-extrapolation smoothing).
+        // Set 0 to render the eye at the last simulated tic (no extrapolation) — an A/B isolation switch for the
+        // bhop-timing jitter; the proper fix (a gravity-correct partial-tic sub-step, like DP) supersedes it.
+        if (CvarOr(Api.Cvars, "cl_movement_subtic_extrapolate", 1f) != 0f)
+            predicted += viewVelocity * _inputAccum;
 
-        // Subtract the stair-smooth Z so the camera glides over steps (cl_movement stairsmooth). Driven by the
-        // REAL frame delta (dt), NOT the server-synced render clock — the rebasing clock's 1/72-quantized jumps
-        // made the catch-up jitter up/down (the reference advances stair smoothing by real frametime). Refresh the
-        // tunables from the live cvars first so cl_stairsmoothspeed / the port anti-jitter knobs apply immediately
-        // and the lag clamp tracks the live sv_stepheight (a non-stock physics preset can change it).
+        // cl_movement_smoothing_faithful (default 1): route the view smoothing through the FAITHFUL Base algorithm
+        // (CSQCPlayer_ApplySmoothing — bound()-based stairsmoothz glide + viewheightavg eye-height blend, error
+        // compensation OFF so corrections SNAP), so the rendered eye matches stock Xonotic exactly and the only
+        // intentional divergence from Base is the stepheight processing. 0 = the port path (adaptive stair catch-up
+        // + error-comp/knockback glide), with the accumulation bug-fix in Reconciler.SetPredictionError.
         XonoticGodot.Common.Services.ICvarService cv = Api.Cvars;
-        _client.ConfigureStairSmoothing(
-            smoothSpeed: CvarOr(cv, "cl_stairsmoothspeed", 200f),
-            stepHeight:  CvarOr(cv, "sv_stepheight", 31f),
-            snapSpeed:   CvarOr(cv, "cl_stairsmooth_snapspeed", 30f),
-            catchupTime: CvarOr(cv, "cl_stairsmooth_catchuptime", 0.1f));
+        bool faithfulSmoothing = CvarOr(cv, "cl_movement_smoothing_faithful", 1f) != 0f;
+
         // Prediction-error view smoothing, read live so the cvars (and the settings-menu checkbox) tune in-session:
         //   cl_movement_errorcompensation       — strength; 0 = snap to truth (smoothing off), the stock toggle.
         //   cl_movement_errorcompensation_force_time — how long an explosion/blaster shove glides (port extension;
         //                                              0 falls back to the one-tick residual window, knockback pops).
+        // FAITHFUL forces the Base default (0 = snap): a correction the smoother would smear into a drifting camera
+        // lag instead lands as a clean snap to truth, exactly as stock Xonotic renders it.
         _client.ConfigureErrorSmoothing(
-            errorComp:   CvarOr(cv, "cl_movement_errorcompensation", 1f),
-            forceWindow: CvarOr(cv, "cl_movement_errorcompensation_force_time", 0.12f));
-        predicted.Z -= _client.PredictedStairOffset(dt);
+            errorComp:   faithfulSmoothing ? 0f : CvarOr(cv, "cl_movement_errorcompensation", 0f),
+            forceWindow: faithfulSmoothing ? 0f : CvarOr(cv, "cl_movement_errorcompensation_force_time", 0.12f));
+
+        float eyeOfsZ = _carrier?.ViewOfs.Z ?? EyeHeight;
+        if (faithfulSmoothing)
+        {
+            // Faithful stair + eye-height smoothing on the predicted origin (driven by the real frame dt). The
+            // smoothed origin Z feeds OriginQuake.Z and the blended view height feeds EyeHeightZ — the same shape
+            // FirstPersonView consumes. The PredictionErrorOffset above is 0 here (errorcomp forced off).
+            _faithfulSmoothing.StairSmoothSpeed = CvarOr(cv, "cl_stairsmoothspeed", 200f);
+            _faithfulSmoothing.SmoothViewHeight = CvarOr(cv, "cl_smoothviewheight", 0.05f);
+            _faithfulSmoothing.StepHeight = CvarOr(cv, "sv_stepheight", 31f);
+            bool onground = _carrier?.OnGround ?? true;
+            // A teleport this tick (carrier .fixangle, set by the predicted teleport pass) snaps the glide instead
+            // of smoothing the cross-map jump — QC csqcmodel_teleped does the same.
+            bool teleported = _carrier?.FixAngle ?? false;
+            XonoticGodot.Net.FaithfulViewSmoothing.Result r =
+                _faithfulSmoothing.Apply(predicted.Z, dt, onground, eyeOfsZ, teleported);
+            predicted.Z = r.StairZ;
+            eyeOfsZ = r.ViewHeightZ;
+        }
+        else
+        {
+            // Port path: the render-only adaptive stair offset (driven by the REAL frame delta, not the server-
+            // synced render clock whose 1/72-quantized jumps jittered the catch-up). Refresh tunables live.
+            _client.ConfigureStairSmoothing(
+                smoothSpeed: CvarOr(cv, "cl_stairsmoothspeed", 200f),
+                stepHeight:  CvarOr(cv, "sv_stepheight", 31f),
+                snapSpeed:   CvarOr(cv, "cl_stairsmooth_snapspeed", 30f),
+                catchupTime: CvarOr(cv, "cl_stairsmooth_catchuptime", 0.1f));
+            predicted.Z -= _client.PredictedStairOffset(dt);
+        }
 
         var st = new Client.FirstPersonView.ViewState
         {
@@ -3199,7 +3351,8 @@ public sealed partial class NetGame : Node3D
             IsDead = localDead,
             // Eye drops while crouched: the predicted carrier carries the live view offset (PlayerPhysics.UpdateCrouch
             // sets ViewOfs to the crouch/standing value each predicted tick, QC STAT(PL_CROUCH_VIEW_OFS)/PL_VIEW_OFS).
-            EyeHeightZ = _carrier?.ViewOfs.Z ?? EyeHeight,
+            // In faithful mode this is the viewheightavg-blended height (smooth crouch); else the raw live offset.
+            EyeHeightZ = eyeOfsZ,
         };
         _view.UpdateView(_camera, st, dt);
     }
@@ -3211,6 +3364,11 @@ public sealed partial class NetGame : Node3D
         string s = c.GetString(name);
         return s.Length == 0 ? fallback : c.GetFloat(name);
     }
+
+    /// <summary>The active slowmo / host_timescale the client scales its time accumulators (input cadence + render
+    /// clock) by, so it stays in lockstep with the server's <c>SimulationLoop.TimeScale</c>. Listen server: the
+    /// shared <c>slowmo</c> cvar. (Remote-client replication of slowmo is a follow-up.) 1 = real time, clamped &gt;= 0.</summary>
+    private static float ResolveTimeScale() => ServerNet.ResolveSlowmo(Api.Cvars);
 
     /// <summary>SUPERCONTENTS at the FINAL render origin this frame — read back from the shared view after
     /// <see cref="UpdateCamera"/> ran (QC pointcontents(view_origin) at the pulled-back cam during a chase). A

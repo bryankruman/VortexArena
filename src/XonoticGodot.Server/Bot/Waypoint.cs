@@ -117,6 +117,17 @@ public sealed class WaypointNetwork
     public IReadOnlyList<Waypoint> Nodes => _nodes;
     public int Count => _nodes.Count;
 
+    // Spatial hash for O(1) FindAt during link loading. LoadLinks/LoadHardwiredLinks match each cache line's
+    // from/to origin back to a node within 1u (cache) / 5u (hardwired); the naive scan was O(nodes) PER line, so
+    // loading the shipped 76 KB catharsis cache cost ~2M distance checks on the single first-bot frame — a visible
+    // movement stutter when bots join (cf. graceful hitch recovery, which only SMOOTHS such a spike). Built lazily
+    // and rebuilt if the node set changed; FindAt is only called in the link-load phase, where node count is fixed
+    // (AutoLink, the only other graph mutation, adds links not nodes — and runs only when no cache ships). Cell =
+    // FindHashCell so any FindAt radius ≤ that is covered by a 3×3×3 (27-cell) probe around the query cell.
+    private const float FindHashCell = 5f;
+    private Dictionary<(int, int, int), List<Waypoint>>? _findHash;
+    private int _findHashCount = -1;
+
     // ---- cost model (QC waypoint_getlinearcost / waypoint_gettravelcost) ----
 
     /// <summary>QC autocvar_sv_maxspeed default (xonotic-server.cfg). Used as the cost denominator.</summary>
@@ -663,13 +674,55 @@ public sealed class WaypointNetwork
         }
     }
 
+    // Bucket a position into the spatial-hash grid (FindHashCell-sized cells).
+    private static (int, int, int) FindCell(Vector3 p) =>
+        ((int)MathF.Floor(p.X / FindHashCell), (int)MathF.Floor(p.Y / FindHashCell), (int)MathF.Floor(p.Z / FindHashCell));
+
+    private void EnsureFindHash()
+    {
+        if (_findHash is not null && _findHashCount == _nodes.Count) return;
+        var h = new Dictionary<(int, int, int), List<Waypoint>>(_nodes.Count);
+        foreach (var wp in _nodes)
+        {
+            var key = FindCell(wp.Origin);
+            if (!h.TryGetValue(key, out var list)) h[key] = list = new List<Waypoint>(1);
+            list.Add(wp);
+        }
+        _findHash = h;
+        _findHashCount = _nodes.Count;
+    }
+
+    // Nearest node whose Origin is within <paramref name="radius"/> of <paramref name="pos"/>, or null. Used to
+    // match a cache/hardwired link endpoint back to its node. O(1) via the spatial hash (the old O(nodes) scan was
+    // the dominant cost of the first-bot-frame waypoint load). Falls back to a linear scan if the requested radius
+    // exceeds one grid cell (the 27-cell probe could miss beyond that) — never the case for the shipped files.
     private Waypoint? FindAt(Vector3 pos, float radius = 1f)
     {
         float r2 = radius * radius;
-        foreach (var wp in _nodes)
-            if ((wp.Origin - pos).LengthSquared() < r2)
-                return wp;
-        return null;
+        if (radius > FindHashCell)
+        {
+            Waypoint? lin = null; float linBest = r2;
+            foreach (var wp in _nodes)
+            {
+                float d = (wp.Origin - pos).LengthSquared();
+                if (d < linBest) { linBest = d; lin = wp; }
+            }
+            return lin;
+        }
+
+        EnsureFindHash();
+        var (cx, cy, cz) = FindCell(pos);
+        Waypoint? best = null; float bestD2 = r2;
+        for (int dx = -1; dx <= 1; dx++)
+            for (int dy = -1; dy <= 1; dy++)
+                for (int dz = -1; dz <= 1; dz++)
+                    if (_findHash!.TryGetValue((cx + dx, cy + dy, cz + dz), out var list))
+                        foreach (var wp in list)
+                        {
+                            float d2 = (wp.Origin - pos).LengthSquared();
+                            if (d2 < bestD2) { bestD2 = d2; best = wp; }
+                        }
+        return best;
     }
 
     /// <summary>

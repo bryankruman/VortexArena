@@ -91,6 +91,11 @@ public sealed class ClientNet : IDisposable
     /// <summary>The current predicted local velocity (Quake space).</summary>
     public NVec3 PredictedVelocity => _reconciler.Predicted.Velocity;
 
+    /// <summary>Diagnostic (camera-trace): the magnitude (qu) of the last reconcile's prediction error — ~0 when
+    /// client predict and server authority agree (the command-driven, fps-independent target); a steady nonzero
+    /// value is the rubberband; a one-shot spike is a teleport/respawn.</summary>
+    public float LastReconcileError => _reconciler.LastReconcileError;
+
     /// <summary>Owner HUD stats from the last snapshot (health/armor), for the client HUD.</summary>
     public int Health { get; private set; }
     public int Armor { get; private set; }

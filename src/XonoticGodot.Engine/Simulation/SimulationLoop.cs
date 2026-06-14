@@ -49,6 +49,16 @@ public sealed class SimulationLoop
 
     private float _accumulator;
 
+    /// <summary>
+    /// Global time scale (Darkplaces <c>host_timescale</c> / Xonotic <c>slowmo</c>): real seconds are multiplied by
+    /// this before being accumulated into fixed ticks, so the WHOLE simulation runs slower (&lt;1) or faster (&gt;1)
+    /// in real time while each tick stays a fixed <see cref="TicRate"/> of SIM time. 1 = real time; 0 = paused.
+    /// Set from the <c>slowmo</c> cvar each frame. Because the client's input cadence is scaled by the SAME factor
+    /// (NetGame), the player's command rate and the server's tick rate slow together, so prediction stays in
+    /// lockstep — this is the same time-mapping that makes the movement frame-rate-independent.
+    /// </summary>
+    public float TimeScale { get; set; } = 1f;
+
     /// <summary>Current simulation time in seconds (sv.time). Advances by <see cref="FrameTime"/> each tick.</summary>
     public float Time { get; private set; }
 
@@ -143,7 +153,10 @@ public sealed class SimulationLoop
         // clamp a single huge delta (DP caps the per-call timer at 100ms before sub-stepping)
         if (realDelta > 0.25f) realDelta = 0.25f;
 
-        _accumulator += realDelta;
+        // slowmo / host_timescale: scale REAL time into SIM time before accumulating (fewer/more fixed ticks per
+        // real second; each tick is still TicRate of sim time). Clamp negatives to 0 (paused). The client scales
+        // its input cadence by the same factor so prediction and authority stay in lockstep.
+        _accumulator += realDelta * MathF.Max(0f, TimeScale);
 
         // SOFT cap (B3): run at most MaxTicksPerFrame ticks this render frame, but DON'T drop the remainder —
         // it drains over the next frames (clamped to the hard MaxTicksPerAdvance so a stale-default can't exceed

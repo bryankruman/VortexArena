@@ -79,14 +79,48 @@ public static class ClientSettings
         // Server-browser auto-refresh pause toggle (DP default 0).
         c.Register("net_slist_pause", "0", save);
         // Input cadence + local fire prediction (port extensions, read live from the shared store by NetGame).
-        c.Register("cl_movement_perframe", "1", save); // absent → ON (DP-style per-frame variable-dt input; PERFORMANCE_REPORT.md B2, user-approved). `set cl_movement_perframe 0` restores the legacy fixed 72 Hz cadence.
+        // Per-frame input SEND (default ON): emit a command per rendered frame for snappy aim/fire + faster input
+        // backlog catch-up (the server batch path). MOVEMENT is integrated in FIXED 1/72 s ticks in BOTH modes now
+        // — feeding the raw variable frame dt to the jump/bhop physics made hop timing wobble with fps (the
+        // catharsis "inconsistent jumps" report; see MovementTimingTests). `set cl_movement_perframe 0` = the legacy
+        // one-command-per-tick send. (PERFORMANCE_REPORT.md B2.)
+        c.Register("cl_movement_perframe", "1", save);
+        // Sub-tic eye extrapolation (DP partial-final-frame approximation, NetGame.UpdateCamera). Default ON. This
+        // LINEAR extrapolation by the leftover input accumulator beats with any fps that isn't a multiple of 72,
+        // shoving the eye a few units per hop — a candidate for "inconsistent bunnyhop timing". `set
+        // cl_movement_subtic_extrapolate 0` renders the eye at the last simulated tic (no extrapolation) for A/B
+        // isolation; the gravity-correct partial-tic sub-step fix supersedes it. NOT gated by cl_movement_smoothing_*.
+        c.Register("cl_movement_subtic_extrapolate", "1", save);
+        // Path A send model (only consulted in per-frame / cl_movement_perframe 1 mode). cl_netfps (DP-faithful,
+        // default 72) = how many input datagrams/s the client sends; the client still PREDICTS every render frame.
+        // cl_movement_send_all (default 0 = Base-faithful): 0 = gate sends to cl_netfps with bounded redundancy
+        // (intermediate frames coalesce above ~cl_netfps×redundancy fps, exactly like Darkplaces); 1 = send every
+        // predicted frame so the server replays the IDENTICAL command sequence and reconcile stays ~0 (more
+        // bandwidth, ideal on a listen server). Read live by NetGame so it A/B-toggles in-session.
+        c.Register("cl_netfps", "72", save);
+        c.Register("cl_movement_send_all", "0", save);
+        // Render-clock damping (Path A #2): 1 (default) = free-run the render clock and gently creep it toward server
+        // time (Base cl_nettimesyncboundmode), 0 = hard-rebase to the latest server time every snapshot (the old
+        // behaviour, which jolts the camera/decay timeline when snapshots arrive in lumps). For A/B isolation.
+        c.Register("cl_netclock_smooth", "1", save);
         c.Register("cl_predictfire", "1", save);       // intentionally default ON (NetGame: unset → on)
         // Client-side projectile prediction (CSQC Projectile_Draw): snap+extrapolate vs the old ease. Default
         // ON; `set cl_projectile_prediction 0` reverts for A/B feel-testing (ClientWorld polls it live).
         c.Register("cl_projectile_prediction", "1", save);
+        // Master view-smoothing mode (default 1 = FAITHFUL): render the eye via the Base CSQCPlayer_ApplySmoothing
+        // algorithm (stairsmoothz glide + viewheightavg eye-height blend, error compensation forced OFF so
+        // corrections SNAP) so the camera matches stock Xonotic exactly and the only intentional divergence is the
+        // stepheight processing. 0 = the port path (adaptive stair catch-up + error-comp/knockback glide). Read
+        // live by NetGame.UpdateCamera; the Settings→Misc dialog can bind it.
+        c.Register("cl_movement_smoothing_faithful", "1", save);
         // Prediction-error view smoothing strength (stock DP/Xonotic cvar; the Settings→Misc checkbox binds it).
-        // 1 = smooth corrections (default), 0 = snap to truth. Read live by NetGame via ConfigureErrorSmoothing.
-        c.Register("cl_movement_errorcompensation", "1", save);
+        // Base default is 0 (snap to truth) — a correction the smoother would smear into a drifting camera lag
+        // instead lands as a clean snap. Only consulted on the PORT path (faithful mode forces it 0). >0 re-enables
+        // the port's decaying error glide. Read live by NetGame via ConfigureErrorSmoothing.
+        c.Register("cl_movement_errorcompensation", "0", save);
+        // Eye-height smoothing time, seconds (stock Xonotic cl_smoothviewheight, default 0.05): how fast the eye
+        // blends to the new view offset on crouch/stand (faithful viewheightavg). 0 = snap. Read live by NetGame.
+        c.Register("cl_smoothviewheight", "0.05", save);
         // Knockback view-smoothing window, seconds (PORT EXTENSION, read live by NetGame via ConfigureErrorSmoothing):
         // how long an explosion/blaster shove glides the view instead of popping it. Stock Xonotic discards the spike
         // (it predates predicted jumppads/teleporters); this port smooths it. 0 = pop like stock. See Reconciler.

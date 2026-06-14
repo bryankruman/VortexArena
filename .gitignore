@@ -55,3 +55,6 @@ assets/*
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# Dev launch log artifact
+_game_menu.log

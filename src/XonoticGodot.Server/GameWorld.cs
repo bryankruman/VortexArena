@@ -1061,24 +1061,46 @@ public sealed class GameWorld
         if (canMove)
         using (Prof.Sample("move.pm"))
         {
-            // Per-frame (variable-dt) mode: integrate one move per QUEUED client command (each with its own dt) —
-            // DP's process-queued-client-moves — so the player advances at wall-clock speed off the client's real
-            // frame cadence. Legacy mode (or bot, or no net layer) runs a single Move with this tick's one command.
+            // Per-frame mode: the player advances by EXACTLY the real client commands drained this tick (each with
+            // its own dt) — DP's process-queued-client-moves. A non-null batch is authoritative even when EMPTY: on
+            // a soft-capped extra world tick (or a starved frame) there are no real commands, so the player runs
+            // ZERO moves rather than a FABRICATED starve-repeat. That fabrication advanced the player more than the
+            // client predicted and, below the sim rate, desynced client vs server every frame (the catharsis
+            // rubberband — Path B; ListenServerDiagnosisTests proves command-driven drives the per-frame reconcile
+            // correction to 0 at any fps). Legacy mode (or bot, or no net layer) → null batch → a single Move with
+            // this tick's one merged command.
             IReadOnlyList<IMovementInput>? batch = p.IsBot ? null : TickMovementBatch?.Invoke(p);
-            if (batch is { Count: > 0 })
+            if (batch is not null)
             {
+                // QC anticheat_physics (ecs/systems/sv_physics): run the statistical detectors PER COMMAND, not once
+                // per tick. Under Path A (variable-dt per-frame prediction) a tick's batch holds 0..N real commands
+                // each with its OWN dt; feeding the detectors one fixed FrameTime per tick mis-weights the snap-aim
+                // angle-speed and, worse, makes the speedhack `movetime` track the assumed 1/72 instead of the
+                // player's actual movement time (DP runs its speedhack detector per usercmd). So we accumulate each
+                // command's dt and stagger the serverTime across the batch's real-time span [Time-total, Time], so
+                // movetime tracks serverTime exactly and each command's true angle-delta/dt is measured. An empty
+                // batch (soft-capped extra tick / starved frame) = no movement → no detector call. Bots never cheat.
+                float total = 0f;
                 for (int i = 0; i < batch.Count; i++)
+                    total += batch[i].FrameTime > 0f ? batch[i].FrameTime : Simulation.FrameTime;
+                float acc = 0f;
+                for (int i = 0; i < batch.Count; i++)
+                {
                     Movement.Move(p, batch[i]);
+                    float ft = batch[i].FrameTime > 0f ? batch[i].FrameTime : Simulation.FrameTime;
+                    acc += ft;
+                    AntiCheat.Physics(p, batch[i], Time - total + acc, ft, ft, Simulation.TimeScale);
+                }
             }
             else
             {
+                // Legacy fixed-tick (or bot, or no net layer): one merged command at the sim FrameTime. sysFrametime
+                // mirrors frametime; slowmo arg carries the live time scale (1 = real time) so the speed detectors
+                // stay correct under slowmo.
                 Movement.Move(p, input);
+                if (!p.IsBot)
+                    AntiCheat.Physics(p, input, Time, Simulation.FrameTime, Simulation.FrameTime, Simulation.TimeScale);
             }
-
-            // QC anticheat_physics (ecs/systems/sv_physics): accumulate the statistical detectors for a real
-            // client from this tick's view angles + movement input. Bots have no remote stream to cheat over.
-            if (!p.IsBot)
-                AntiCheat.Physics(p, input, Time, Simulation.FrameTime, Simulation.FrameTime, 1f);
         }
 
         // ---- PlayerPostThink (QC client.qc PlayerPostThink) ----
