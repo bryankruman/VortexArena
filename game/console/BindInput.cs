@@ -225,6 +225,29 @@ public static class BindInput
         }
     }
 
+    /// <summary>
+    /// Resolve a fresh key/mouse PRESS to the console command bound to that key (DP key→bind lookup), or null for
+    /// a release, OS auto-repeat, unbound key, or non-key event. Lets a global hotkey owner (the screenshot
+    /// service) act on ITS bind in ANY context — the menu, an open console, a paused match — without running the
+    /// whole +/- held-button machine <see cref="HandleEvent"/> drives (which would leak movement state).
+    /// </summary>
+    public static string? ResolvePress(InputEvent ev)
+    {
+        switch (ev)
+        {
+            case InputEventKey k when k.Pressed && !k.Echo:
+                string? kk = KeyString(k);
+                return string.IsNullOrEmpty(kk) ? null : NullIfEmpty(BindTable.Get(kk));
+            case InputEventMouseButton m when m.Pressed:
+                string? mk = MouseString(m.ButtonIndex);
+                return string.IsNullOrEmpty(mk) ? null : NullIfEmpty(BindTable.Get(mk));
+            default:
+                return null;
+        }
+    }
+
+    private static string? NullIfEmpty(string s) => string.IsNullOrEmpty(s) ? null : s;
+
     // ---- key encoding (canonical strings shared with KeyBindings; edge-independent) ----------------------
 
     private static string? KeyString(InputEventKey k)
