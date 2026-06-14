@@ -26,6 +26,13 @@ public sealed class EntityMovementStep : IMovementStep
 
     public EntityMovementStep(Entity carrier) => _carrier = carrier;
 
+    /// <summary>PRE-MATCH FREEZE mirror (set by the host each frame, like the carrier's DeadState). While true the
+    /// predictor runs NO movement step — gravity, wishmove, jump, jumppad/teleport are all skipped — so the predicted
+    /// body stays pinned EXACTLY where the server holds it (canMove=false, GameWorld.preMatchFreeze) during the
+    /// pre-match countdown. Without this the client predicts a falling/creeping body while the server holds still, and
+    /// the per-snapshot sub-32u reconcile error gets smoothed + re-armed every frame = the spawn-countdown vibrate.</summary>
+    public bool Frozen { get; set; }
+
     public void Step(ref PredictedState state, in InputCommand cmd, in PlayerState vars)
     {
         // load the predicted state onto the carrier entity.
@@ -61,6 +68,17 @@ public sealed class EntityMovementStep : IMovementStep
             // footstep/landing sounds so a predicted landing doesn't fire (and replays don't multiply) them.
             Predicted = true,
         };
+
+        // PRE-MATCH FREEZE: mirror the server's canMove=false — run NO movement this tick so the predicted body
+        // stays pinned at the seed (spawn). Returning the seed unchanged makes the reconcile error 0 against the
+        // frozen server origin (no smoothed-error rubberband during the countdown). Resumes the instant go-live.
+        if (Frozen)
+        {
+            state.Origin = _carrier.Origin;
+            state.Velocity = _carrier.Velocity;
+            state.OnGround = _carrier.OnGround;
+            return;
+        }
 
         // run one authoritative movement tick (gravity + friction/accel + slide/step collision).
         Movement.Move(_carrier, input);

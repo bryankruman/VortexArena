@@ -182,6 +182,58 @@ public class MovementTimingTests
 
     private static InputCommand Forward(float dt) => new() { ViewAngles = Vector3.Zero, Forward = 1f, DeltaTime = dt };
 
+    [Fact]
+    public void PreMatchFreeze_FrozenPredictor_StaysAtSpawn_NoReconcileError()
+    {
+        // The pre-match countdown rubberband fix. During the freeze the SERVER pins the player at spawn
+        // (canMove=false); if the client predictor keeps walking forward (FROZEN=false), the reconcile measures a
+        // steady error against the frozen-at-spawn authoritative origin every snapshot — which the smoother re-arms
+        // = the spawn-countdown vibrate. The fix mirrors the freeze onto the predictor (FROZEN=true) so it runs NO
+        // movement and the predicted origin stays AT spawn → reconcile error ~0. This pins both: bug reproduces with
+        // Frozen=false, fix holds with Frozen=true.
+        float frozenDrift = MaxPredictedDriftVsFrozenServer(frozenPredictor: true);
+        float unfrozenDrift = MaxPredictedDriftVsFrozenServer(frozenPredictor: false);
+        _out.WriteLine($"pre-match freeze: predictor FROZEN max drift from spawn {frozenDrift:F2}u; UNFROZEN (bug) {unfrozenDrift:F2}u");
+
+        Assert.True(frozenDrift < 0.5f, $"a frozen predictor must stay at spawn, got {frozenDrift:F2}u");
+        Assert.True(unfrozenDrift > 10f, $"an unfrozen predictor must drift forward off the frozen server (the bug), got {unfrozenDrift:F2}u");
+    }
+
+    // Model the pre-match freeze: the SERVER holds the player at spawn (never moves, canMove=false) while the client
+    // holds +forward and predicts AHEAD by a latency window (the server acks `latency` ticks behind newest). Returns
+    // the max distance the client's PREDICTED (rendered) origin drifts from the frozen-spawn truth — ≈0 if the
+    // predictor is correctly frozen, large (it walks off) if it isn't (= the rubberband the camera shows).
+    private float MaxPredictedDriftVsFrozenServer(bool frozenPredictor)
+    {
+        var (world, clock) = FlatWorld();
+        Api.Services = new MovementTestServices(world, clock);
+        XonoticGodot.Common.Gameplay.MutatorHooks.PlayerJump.Clear();
+        XonoticGodot.Common.Gameplay.MutatorHooks.PlayerCanCrouch.Clear();
+        XonoticGodot.Common.Gameplay.MutatorHooks.PlayerPhysics.Clear();
+
+        const float tic = 1f / 72f;
+        const int latency = 5; // client predicts ~5 ticks ahead of the server ack
+        var step = new PlayerPhysicsStep(new Vector3(-16f, -16f, -24f), new Vector3(16f, 16f, 45f)) { Frozen = frozenPredictor };
+        var buf = new PredictionBuffer();
+        var rec = new Reconciler(buf, step) { ErrorCompensation = 0f, TickRate = 72f };
+
+        var spawn = new PredictedState { Origin = new Vector3(0f, 0f, 24f), Velocity = Vector3.Zero, OnGround = true };
+        float now = 0f, maxDrift = 0f;
+        rec.Predict(spawn, 0, default, now); // seed Predicted = spawn
+
+        for (int f = 0; f < 80; f++)
+        {
+            now += tic; clock.Time = now;
+            buf.Push(new InputCommand { ViewAngles = Vector3.Zero, Forward = 1f, Buttons = (int)InputButtons.Jump, DeltaTime = tic });
+            uint newest = buf.NextSeq - 1;
+            uint acked = newest > latency ? newest - latency : 0u; // server stays `latency` ticks behind
+            rec.Reconcile(spawn, acked, default, now, rec.Predicted); // server origin never leaves spawn (frozen)
+            rec.Predict(spawn, acked, default, now);
+            maxDrift = MathF.Max(maxDrift, (rec.Predicted.Origin - spawn.Origin).Length());
+        }
+        return maxDrift;
+    }
+
     // Run an auto-bhop (forward + jump-when-onground) over the given per-tick dt stream; return hop consistency.
     private HopStats RunBhop(IEnumerable<float> dts)
     {

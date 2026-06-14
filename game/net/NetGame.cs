@@ -158,6 +158,7 @@ public sealed partial class NetGame : Node3D
     // engine world (the listen server's GameWorld, or the minimal client facade) so PlayerPhysics has a real
     // edict with a hull to slide-and-step. Mirrors PlayerController's spawned entity.
     private Entity? _carrier;
+    private EntityMovementStep? _movementStep; // the client predictor adapter (kept so the pre-match freeze mirrors onto it)
     private IEngineServices? _world; // the facade the carrier lives in (captured so teardown removes it correctly)
 
     // Accumulated view angles in DEGREES, Quake convention (X = pitch down-positive, Y = yaw, Z = roll) — the
@@ -306,6 +307,15 @@ public sealed partial class NetGame : Node3D
     // instead (respawn / teleport / level change / a big hitch).
     private const float ClockSyncFactor = 0.2f;
     private const float MaxClockResync = 0.25f;
+
+    // Fix B: a render frame longer than this (a stall on the shared listen-server thread — GC / heavy map streaming,
+    // ~3.6+ ticks) arms the reconciler's post-hitch hold so a transient server-behind correction glides/holds rather
+    // than snapping the camera back to spawn.
+    private const float HitchFrameSeconds = 0.05f;
+
+    // Fix C: seconds to defer the background idle-warmer past the spawn / pre-match-countdown / streaming-settle
+    // window (5s countdown + a couple seconds margin) so its stock-model builds don't hitch the opening seconds.
+    private const float IdleWarmupDelaySeconds = 7f;
 
     // Per-frame (variable-dt) input mode — cl_movement_perframe (DP-style: one command per rendered frame stamped
     // with the real frame dt, the server drains all pending commands that tick). DEFAULT 1 (on, user-approved per
@@ -468,10 +478,14 @@ public sealed partial class NetGame : Node3D
         await PrecacheCombatSoundsAndModelsAsync();
         if (!IsInsideTree()) return;
 
-        // S3: once the loading screen drops, a low-priority idle warmer mops up the long tail (announcer/pickup
-        // voices, the other stock player models) on a ~1.5 ms/frame budget so the WHOLE asset set goes hot within
-        // the first minute of play, without ever spiking a frame.
-        StartIdleWarmup();
+        // S3: a low-priority idle warmer mops up the long tail (announcer/pickup voices, the OTHER stock player
+        // models) so the whole asset set goes hot within the first minute. (Fix C) DEFER its start past the critical
+        // opening seconds: its 5 stock-model builds + GPU-warms otherwise land during the first ~5-7s — exactly the
+        // pre-match countdown + streaming-settle window the player spawns into — adding frame hitches right then (a
+        // contributor to the spawn-rubberband: Fix A/B stop it TELEPORTing, this keeps it SMOOTH). By go-live the
+        // local model + map are already hot and the player is moving; any model that appears sooner still resolves
+        // on-demand at High priority. cl_idle_warmup 0 still disables it entirely (checked in StartIdleWarmup).
+        GetTree().CreateTimer(IdleWarmupDelaySeconds).Timeout += () => { if (IsInsideTree()) StartIdleWarmup(); };
 
         LoadingScreen?.BeginStage("Connecting…", 0.90f, 0.5f);
 
@@ -810,9 +824,8 @@ public sealed partial class NetGame : Node3D
         // proper hull + client flags to slide-and-step.
         _carrier = SpawnCarrier();
 
-        IMovementStep step = _carrier is not null
-            ? new EntityMovementStep(_carrier)
-            : new NullMovementStep();
+        _movementStep = _carrier is not null ? new EntityMovementStep(_carrier) : null;
+        IMovementStep step = (IMovementStep?)_movementStep ?? new NullMovementStep();
 
         ClientNet? client = ClientNet.Connect(_host, _port, step, SampleInput);
         if (client is null)
@@ -1840,6 +1853,10 @@ public sealed partial class NetGame : Node3D
     private float _netFpsCv = 72f;
     private bool _sendAllCv;
     private bool _netClockSmoothCv = true; // cl_netclock_smooth: gradual render-clock creep vs hard rebase (#2)
+    private bool _netInputTraceCv;         // net_input_trace: dormant net input→movement pipeline diagnostic (see _Process)
+    private int _netTraceTick;             // throttle counter for the net_input_trace log
+    private bool _hitchHoldCv = true;      // cl_movement_hitch_hold: Fix B post-hitch stall-aware reconcile (see TROUBLESHOOTING.md)
+    private bool _immediateButtonsCv = true; // cl_netimmediatebuttons: send fire/jump/impulse immediately past the rate gate (DP)
 
     private void EnsureProcessCvarCache()
     {
@@ -1858,7 +1875,10 @@ public sealed partial class NetGame : Node3D
             || name.Equals("cl_movement_perframe", StringComparison.OrdinalIgnoreCase)
             || name.Equals("cl_netfps", StringComparison.OrdinalIgnoreCase)
             || name.Equals("cl_movement_send_all", StringComparison.OrdinalIgnoreCase)
-            || name.Equals("cl_netclock_smooth", StringComparison.OrdinalIgnoreCase))
+            || name.Equals("cl_netclock_smooth", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("net_input_trace", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("cl_movement_hitch_hold", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("cl_netimmediatebuttons", StringComparison.OrdinalIgnoreCase))
             RefreshProcessCvars();
     }
 
@@ -1872,6 +1892,11 @@ public sealed partial class NetGame : Node3D
         _sendAllCv = _sharedCvars?.GetFloat("cl_movement_send_all") is float sa && sa != 0f;
         // cl_netclock_smooth defaults ON (unset → on): treat anything but "0" as enabled.
         _netClockSmoothCv = (_sharedCvars?.GetString("cl_netclock_smooth") ?? "") != "0";
+        _netInputTraceCv = (_sharedCvars?.GetString("net_input_trace") ?? "") == "1";
+        // cl_movement_hitch_hold defaults ON (unset → on): treat anything but "0" as enabled.
+        _hitchHoldCv = (_sharedCvars?.GetString("cl_movement_hitch_hold") ?? "") != "0";
+        // cl_netimmediatebuttons defaults ON (unset → on): treat anything but "0" as enabled.
+        _immediateButtonsCv = (_sharedCvars?.GetString("cl_netimmediatebuttons") ?? "") != "0";
     }
 
     public override void _Process(double delta)
@@ -1983,6 +2008,12 @@ public sealed partial class NetGame : Node3D
         // Pump the client transport (handshake + snapshots + event bundles) before reading predicted state.
         if (_client is null)
             return;
+        // Fix B (cl_movement_hitch_hold, default on): flag a frame HITCH (the shared listen-server thread stalled —
+        // GC / heavy map streaming) so the reconciler HOLDS a moderate post-stall correction instead of snapping the
+        // camera back (see ClientNet.HandleSnapshot). Gated by a cvar because it's defensive, not the cause of any
+        // observed bug (the spawn-stutter was the ENet throttle) — `set cl_movement_hitch_hold 0` disables it.
+        // Rationale + risks: TROUBLESHOOTING.md.
+        _client.RecentHitch = _hitchHoldCv && dt > HitchFrameSeconds;
         _client.Poll();
 
         // Advance the render clock: free-run by this frame's elapsed time, then gently CREEP it toward server time
@@ -2052,7 +2083,38 @@ public sealed partial class NetGame : Node3D
                 // entrap nade) onto the prediction carrier so PlayerPhysics' predicted leg scales the top speed like
                 // authority (the carrier has none of those status effects to recompute it). 1 while none active.
                 _carrier.SpeedMultiplierPredicted = _client.LocalSpeedMultiplier;
+
+                // PRE-MATCH FREEZE mirror (the real spawn-rubberband fix): the server pins the player at spawn while
+                // `time < game_starttime` (GameWorld.preMatchFreeze, canMove=false). Mirror that onto the PREDICTOR so
+                // it runs no movement during the countdown — otherwise it predicts gravity/creep the frozen server
+                // never applies, and the per-snapshot sub-32u error gets smoothed+re-armed every frame (the vibrate,
+                // which then takes a freeze-length to bleed off → looked like movement freed ~5s into live). Gate on
+                // HasMatchState (not MatchStartTime>0) so it engages from the very first post-spawn frame, on the
+                // server clock (LatestServerTime) so it releases exactly at go-live. Warmup is freely playable.
+                if (_movementStep is not null)
+                    _movementStep.Frozen = _client.HasMatchState && !_client.MatchWarmup
+                        && _client.LatestServerTime < _client.MatchStartTime;
             }
+
+            // NET-INPUT DIAGNOSTIC (dormant; `set net_input_trace 1`). Logs the full input→movement pipeline every
+            // ~0.25 s so a future movement/networking regression can be SEEN end-to-end instead of guessed at (this
+            // is exactly what found the ENet packet-throttle spawn-stutter). Columns: push/send = client commands
+            // generated / transmitted; recv/enq/batch = server commands received off the wire / past the seq-dedup /
+            // drained into a movement batch; enet throttle (0..32 — gates UNRELIABLE sends, a low value silently
+            // drops input) / loss / rtt; pred vs srvOrg = predicted vs authoritative origin (a widening gap = the
+            // predictor running ahead of a starved/lagging server); recon = reconcile error (a steady nonzero is a
+            // rubberband). Reading guide + failure signatures: NET-DEBUGGING.md. Fully off when the cvar is 0
+            // (the counters it reads are single increments on the hot path — negligible — so they stay always-on).
+            if (_netInputTraceCv && (_netTraceTick++ & 15) == 0)
+            {
+                var st = _client.DbgEnet;
+                var sp = LocalServerPlayer;
+                GD.Print($"[nettrace] dt={dt * 1000f:F0}ms push={_client.DbgPush} send={_client.DbgSend} " +
+                         $"recv={_server?.DbgRecv} enq={_server?.DbgEnqueued} batch={_server?.DbgBatch} " +
+                         $"| enet throttle={st.Throttle:F0}/{st.ThrottleLimit:F0} loss={st.Loss:F0} rtt={st.Rtt:F0}ms " +
+                         $"| pred={_client.PredictedOrigin} srvOrg={(sp is null ? "-" : sp.Origin.ToString())} recon={_client.LastReconcileError:F2}");
+            }
+
 
             // F03 (re)spawn view snap (QC PutPlayerInServer: self.fixangle = true; self.angles = spot.angles). The
             // server latches the spawn-spot facing in the host Player's FixAngle/FixAngleAngles channel (the same
@@ -2092,6 +2154,9 @@ public sealed partial class NetGame : Node3D
             // bounded redundancy then coalescing intermediate frames above ~cl_netfps×redundancy fps exactly as DP
             // does. Only meaningful in per-frame (Path A) mode; the legacy fixed-tick path already sends one/tick.
             _client.InputSendInterval = _perFrameInput && !_sendAllCv ? 1f / MathF.Max(10f, _netFpsCv) : 0f;
+            // cl_netimmediatebuttons (DP): fire/jump/weapon-switch bypass the rate gate above so they reach the
+            // server immediately at high fps, while steady movement stays gated to cl_netfps.
+            _client.ImmediateButtons = _immediateButtonsCv;
             if (_perFrameInput)
             {
                 // PATH A — BASE-FAITHFUL variable-dt local prediction (Xonotic Base's default, Movetype_Physics_
@@ -3191,6 +3256,22 @@ public sealed partial class NetGame : Node3D
         // free-fly observer, spectatee_status == own id, still moves — server + client agree, no drift.)
         if (_client is not null && _client.SpectatingNetId != 0)
             forward = side = up = 0f;
+
+        // PRE-MATCH COUNTDOWN FREEZE (QC PM_Main `time < game_starttime`; server GameWorld.preMatchFreeze). The
+        // server pins the player AT SPAWN (canMove=false) during the ~5s start countdown but still ACKs our input
+        // each tick (to avoid an un-acked pile-up, GameWorld.cs:1006-1014). If the client PREDICTED movement here,
+        // its forward prediction would diverge from the server's frozen-at-spawn authoritative origin, and a
+        // map-load hitch's sudden batch-ack collapses the unacked window past the 32u reconcile snap threshold →
+        // the camera teleports back to spawn (the "first ~5s rubberbands me to spawn ~5x" report, mode-agnostic so
+        // no movement cvar helped). Match the server (and Base, whose CSQC prediction freezes the same way): predict
+        // NO movement while frozen — zero the move axes + clear jump/crouch. WARMUP is freely playable, so it is NOT
+        // frozen (MatchWarmup). View angles + fire are kept (look around; the weapon think is server-owned).
+        if (_client is not null && _client.HasMatchState && !_client.MatchWarmup
+            && _client.LatestServerTime < _client.MatchStartTime)
+        {
+            forward = side = up = 0f;
+            buttons &= ~(InputButtons.Jump | InputButtons.Crouch);
+        }
 
         // C2S impulse (QC usercmd.impulse): consume the one-shot weapon-switch/reload number a bind set this
         // frame (RunBoundCommand stamped it into _pendingImpulse, edge-triggered). Stamp it onto THIS command and

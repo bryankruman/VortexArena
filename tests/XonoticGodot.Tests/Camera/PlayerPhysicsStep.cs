@@ -42,12 +42,24 @@ public sealed class PlayerPhysicsStep : IMovementStep
     /// <summary>The live carrier — the harness reads <see cref="Entity.ViewOfs"/> (eye height) and crouch state.</summary>
     public Entity Carrier => _carrier;
 
+    /// <summary>Parity twin of <c>EntityMovementStep.Frozen</c>: while true, run NO movement (pre-match freeze).</summary>
+    public bool Frozen { get; set; }
+
     public void Step(ref PredictedState state, in InputCommand cmd, in PlayerState vars)
     {
         _carrier.Origin = state.Origin;
         _carrier.Velocity = state.Velocity;
         if (state.OnGround) _carrier.Flags |= EntFlags.OnGround;
         else _carrier.Flags &= ~EntFlags.OnGround;
+
+        // Pre-match freeze: no movement (mirror the server's canMove=false) → state passes through unchanged.
+        if (Frozen)
+        {
+            state.Origin = _carrier.Origin;
+            state.Velocity = _carrier.Velocity;
+            state.OnGround = _carrier.OnGround;
+            return;
+        }
 
         InputButtons b = cmd.TypedButtons;
         var input = new MovementInput

@@ -223,13 +223,13 @@ public sealed class Reconciler
     // velocity jump past MaxErrorVelocity is a "spike" QC discarded. The port reinterprets the spike: with jumppads
     // and teleporters now predicted, a spike with an origin delta still within MaxForceOrigin is damage knockback —
     // smoothed over ForceSmoothWindow rather than discarded. A bigger origin delta is a real teleport, so snap.
-    private const float MaxErrorOrigin = 32f;    // vdist(o, >, 32)
+    public const float MaxErrorOrigin = 32f;     // vdist(o, >, 32) — origin error above this is a teleport-class snap
     private const float MaxErrorVelocity = 192f;  // vdist(v, >, 192)
 
     // Knockback's origin delta = the in-flight velocity spike integrated over the unacked-command window (a few
     // ticks); even a strong rocket-jump stays well under this. A genuine cross-map teleport dwarfs it, so a spike
     // with an origin jump past this is a teleport (snap), not a shove to smooth.
-    private const float MaxForceOrigin = 250f;
+    public const float MaxForceOrigin = 250f;
 
     // Fallback step-height clamp when StairStepHeight is left unset/0 (keep in sync with MovementParameters.StepHeight).
     private const float MaxStairStepFallback = 31f;

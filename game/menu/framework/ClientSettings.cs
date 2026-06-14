@@ -78,12 +78,14 @@ public static class ClientSettings
         c.Register("m_pitch", "1", save);
         // Server-browser auto-refresh pause toggle (DP default 0).
         c.Register("net_slist_pause", "0", save);
-        // Input cadence + local fire prediction (port extensions, read live from the shared store by NetGame).
-        // Per-frame input SEND (default ON): emit a command per rendered frame for snappy aim/fire + faster input
-        // backlog catch-up (the server batch path). MOVEMENT is integrated in FIXED 1/72 s ticks in BOTH modes now
-        // — feeding the raw variable frame dt to the jump/bhop physics made hop timing wobble with fps (the
-        // catharsis "inconsistent jumps" report; see MovementTimingTests). `set cl_movement_perframe 0` = the legacy
-        // one-command-per-tick send. (PERFORMANCE_REPORT.md B2.)
+        // Local-player movement-prediction model (read live by NetGame). DEFAULT 1 = PATH A, the Base-faithful path:
+        // predict the local player ONCE per RENDER frame at the real (clamped) frame dt — Xonotic Base's
+        // Movetype_Physics_NoMatchTicrate — so the predicted origin lands at the exact render time and moves smoothly
+        // at any fps (no fixed-tick→fps aliasing "lurch"). The physics is frametime-independent (half-step gravity →
+        // dt-invariant apex; fps-independent strafe speed — see MovementTimingTests), so variable dt is safe; the
+        // server stays a fixed 1/72 s authoritative tick. `set cl_movement_perframe 0` = the LEGACY fixed-tick path
+        // (drain input in 1/72 s quanta + snap-to-latest render) — kept as an A/B fallback. See
+        // [[camera-drift-render-smoothing]] / NET-DEBUGGING.md.
         c.Register("cl_movement_perframe", "1", save);
         // Sub-tic eye extrapolation (DP partial-final-frame approximation, NetGame.UpdateCamera). Default ON. This
         // LINEAR extrapolation by the leftover input accumulator beats with any fps that isn't a multiple of 72,
@@ -99,10 +101,21 @@ public static class ClientSettings
         // bandwidth, ideal on a listen server). Read live by NetGame so it A/B-toggles in-session.
         c.Register("cl_netfps", "72", save);
         c.Register("cl_movement_send_all", "0", save);
+        // cl_netimmediatebuttons (DP-faithful, default ON): send a command IMMEDIATELY (bypassing the cl_netfps rate
+        // gate) when it carries an impulse or a button-state change (fire/jump/crouch press/release), so above 72 fps
+        // those reach the server with minimal latency instead of waiting up to one ~13.9ms interval; steady movement
+        // input stays rate-limited to cl_netfps. `set cl_netimmediatebuttons 0` rate-limits everything uniformly.
+        c.Register("cl_netimmediatebuttons", "1", save);
         // Render-clock damping (Path A #2): 1 (default) = free-run the render clock and gently creep it toward server
         // time (Base cl_nettimesyncboundmode), 0 = hard-rebase to the latest server time every snapshot (the old
         // behaviour, which jolts the camera/decay timeline when snapshots arrive in lumps). For A/B isolation.
         c.Register("cl_netclock_smooth", "1", save);
+        // Post-hitch stall-aware reconcile (default ON). After a frame HITCH (GC / heavy streaming stalls the shared
+        // listen-server thread), the server is transiently behind; this HOLDS a moderate reconcile correction for a
+        // few snapshots instead of snapping the camera back, then resumes. Defensive (NOT the cause of any observed
+        // bug — the spawn-stutter was the ENet throttle), so it's toggleable: `set cl_movement_hitch_hold 0` reverts
+        // to immediate snapping. Rationale + the masking risk it carries: TROUBLESHOOTING.md.
+        c.Register("cl_movement_hitch_hold", "1", save);
         c.Register("cl_predictfire", "1", save);       // intentionally default ON (NetGame: unset → on)
         // Client-side projectile prediction (CSQC Projectile_Draw): snap+extrapolate vs the old ease. Default
         // ON; `set cl_projectile_prediction 0` reverts for A/B feel-testing (ClientWorld polls it live).
@@ -155,6 +168,11 @@ public static class ClientSettings
         c.Register("cl_spawn_event_particles", "1", save);
         // Console/diagnostics verbosity (DP CF_CLIENT, NOT archived — a debug toggle shouldn't persist).
         c.Register("developer", "0");
+        // Net input→movement pipeline diagnostic (dormant; NOT archived — a debug toggle shouldn't persist). `set
+        // net_input_trace 1` logs the [nettrace] line every ~0.25s: client push/send → server recv/enq/batch → ENet
+        // throttle/loss/rtt → predicted-vs-authoritative origin → reconcile error. The end-to-end view for diagnosing
+        // movement/networking issues (it found the ENet packet-throttle spawn-stutter). See NET-DEBUGGING.md.
+        c.Register("net_input_trace", "0");
     }
 
     /// <summary>

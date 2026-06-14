@@ -296,8 +296,27 @@ public sealed class ClientNet : IDisposable
         return cn;
     }
 
-    /// <summary>Minimum seconds between input-frame transmits (0 = every tick). DP <c>cl_netrate</c>-style pacing.</summary>
+    /// <summary>Minimum seconds between input-frame transmits (0 = every tick). DP <c>cl_netfps</c>-style pacing.</summary>
     public float InputSendInterval { get; set; }
+
+    /// <summary>DP <c>cl_netimmediatebuttons</c>: when set, a command whose button bits CHANGED (or that carries an
+    /// impulse) is transmitted immediately, bypassing the <see cref="InputSendInterval"/> rate gate — so fire/jump/
+    /// weapon-switch reach the server with minimal latency at high fps while steady movement stays rate-limited.</summary>
+    public bool ImmediateButtons { get; set; } = true;
+    private int _lastSentButtons; // last transmitted button bits (for the ImmediateButtons change-detect)
+
+    /// <summary>(Fix B) Set by the host each frame when the last render frame was a HITCH (dt &gt; threshold) — i.e. the
+    /// shared listen-server thread stalled (GC / heavy map streaming). Arms the post-hitch stall hold in
+    /// <see cref="HandleSnapshot"/>: a moderate (non-teleport) correction right after a stall is the server being
+    /// transiently behind, not a real desync, so we keep predicting forward (bounded) instead of snapping back.</summary>
+    public bool RecentHitch { get; set; }
+    // Diagnostics surfaced by net_input_trace (NetGame [nettrace]): DbgPush = input commands generated; DbgSend =
+    // datagrams transmitted; DbgRedundancy = commands per datagram. DbgEnet = the server peer's ENet throttle/loss/RTT.
+    public int DbgPush, DbgSend, DbgRedundancy;
+    public (double Throttle, double ThrottleLimit, double Loss, double Rtt) DbgEnet => _transport.DbgEnetStats();
+    private bool _hitchHoldActive;
+    private int _hitchSkips;
+    private const int MaxHitchSkips = 8; // bound: a real desync still corrects after this many held snapshots
 
     /// <summary>True when the link was established and has since dropped — the host can prompt/auto <see cref="Reconnect"/>.</summary>
     public bool ConnectionLost => _wasConnected && !_transport.IsActive;
@@ -420,6 +439,7 @@ public sealed class ClientNet : IDisposable
 
         InputCommand cmd = _sampleInput();
         uint seq = _inputBuffer.Push(cmd);
+        DbgPush++; // net_input_trace diagnostic
 
         // Re-predict from the last authoritative state with the freshly-extended input history so the local
         // view reflects this tick immediately (client-side prediction). We reconcile against the last server
@@ -428,8 +448,15 @@ public sealed class ClientNet : IDisposable
 
         // Send the redundant tail (unreliable): a single dropped datagram won't strand an input. Lead with the
         // newest snapshot we decoded so the server can delta the next snapshot against a baseline we hold. The
-        // transmit is rate-gated (InputSendInterval); the redundancy widens to still cover every batched tick.
-        if (InputSendInterval <= 0f || now - _lastInputSend >= InputSendInterval)
+        // transmit is rate-gated to cl_netfps (InputSendInterval); the redundancy widens to still cover every tick.
+        //
+        // cl_netimmediatebuttons (DP cl_input.c): an IMPORTANT command — a weapon switch/reload (impulse) or any
+        // button-state CHANGE (fire/jump/crouch press or release) — is sent RIGHT NOW, bypassing the rate gate, so
+        // fire/aim/jump reach the server with minimal latency at high fps; steady movement-only input stays gated to
+        // cl_netfps. Button changes are infrequent (you don't toggle fire 144×/s), so this doesn't flood the link —
+        // it just removes the up-to-one-interval (~13.9 ms) wait a fire would otherwise sit through.
+        bool important = cmd.Impulse != 0 || (ImmediateButtons && cmd.Buttons != _lastSentButtons);
+        if (important || InputSendInterval <= 0f || now - _lastInputSend >= InputSendInterval)
         {
             int redundancy = InputSendInterval > 0f ? (int)(InputSendInterval * ServerTickRate) + 3 : 3;
             _writer.Reset();
@@ -445,12 +472,14 @@ public sealed class ClientNet : IDisposable
             _writer.WriteByte(PerFrameInput ? (byte)1 : (byte)0);
             _inputBuffer.WriteRedundant(_writer, redundancy);
             _transport.SendToServer(_writer.WrittenSpan, reliable: false);
+            DbgSend++; DbgRedundancy = redundancy; // net_input_trace diagnostic
             // Flush this input onto the wire NOW (send-only) instead of letting it sit until the next Poll(): on
             // the in-process listen loop the server's next Tick then consumes it THIS frame rather than a render-
             // frame later, cutting the input→fire latency that makes firing (and Blaster trick-jump timing) feel
             // behind the keypress. Harmless on a remote client (the datagram just leaves a hair sooner).
             _transport.Flush();
             _lastInputSend = now;
+            _lastSentButtons = cmd.Buttons; // for the cl_netimmediatebuttons change-detect above
         }
         return seq;
     }
@@ -855,14 +884,36 @@ public sealed class ClientNet : IDisposable
 
         LatestServerTime = serverTime;
 
-        // Stash the previous prediction at the (newly) acked frame for the error measurement, then update the
-        // authoritative state the reconciler replays from.
-        _previousPredictionAtAck = _reconciler.Predicted;
-        _serverState = new PredictedState { Origin = origin, Velocity = velocity, OnGround = onGround };
-        _serverAckedSeq = ackedSeq;
+        // Fix B — POST-HITCH STALL HOLD (defense-in-depth for the spawn-rubberband; Fix A removes the pre-match-freeze
+        // case, this covers any other shared-thread stall: mid-match GC, a heavier map). After a frame hitch the
+        // listen server is transiently BEHIND — it hasn't simulated our queued input yet — so this snapshot's
+        // authoritative origin sits well behind our prediction. Snapping to it teleports the camera backward even
+        // though our prediction is the correct future the server is about to reproduce. So when a hitch armed the
+        // hold and the pending correction is MODERATE (a stall lag: between the teleport-snap threshold and a genuine
+        // teleport/respawn jump), HOLD: keep the old authoritative baseline and keep predicting forward, WITHOUT
+        // snapping. Bounded to MaxHitchSkips snapshots so a genuine desync still corrects; it releases the moment the
+        // server catches up (pending error drops back under the snap threshold) or the player teleports for real.
+        float pendingErr = (_reconciler.Predicted.Origin - origin).Length();
+        if (RecentHitch) _hitchHoldActive = true;
+        bool holdPlayer = _hitchHoldActive && _hitchSkips < MaxHitchSkips
+            && pendingErr > Reconciler.MaxErrorOrigin && pendingErr < Reconciler.MaxForceOrigin;
+        if (holdPlayer)
+        {
+            _hitchSkips++; // keep _serverState/_serverAckedSeq from before the stall → keep predicting forward
+        }
+        else
+        {
+            _hitchSkips = 0;
+            _hitchHoldActive = false;
+            // Stash the previous prediction at the (newly) acked frame for the error measurement, then update the
+            // authoritative state the reconciler replays from.
+            _previousPredictionAtAck = _reconciler.Predicted;
+            _serverState = new PredictedState { Origin = origin, Velocity = velocity, OnGround = onGround };
+            _serverAckedSeq = ackedSeq;
 
-        // Reconcile immediately so prediction error is measured + smoothing armed the moment the ack lands.
-        _reconciler.Reconcile(_serverState, _serverAckedSeq, _vars, serverTime, _previousPredictionAtAck);
+            // Reconcile immediately so prediction error is measured + smoothing armed the moment the ack lands.
+            _reconciler.Reconcile(_serverState, _serverAckedSeq, _vars, serverTime, _previousPredictionAtAck);
+        }
 
         // Spawn/respawn settle-snap: a freshly spawned player teleports to its spawn point and FALLS to the floor.
         // The client predicts that whole fall in one replay (it lands instantly) while the server descends one tick
@@ -881,6 +932,15 @@ public sealed class ClientNet : IDisposable
             if (_serverState.OnGround)
                 _settlingAfterSpawn = false; // landed: prediction has converged, resume smoothing
         }
+
+        // PRE-MATCH FREEZE: keep the view smoother CLEARED for the whole pre-match countdown (server holds the
+        // player at spawn, canMove=false, while serverTime < MatchStartTime and we're not in freely-playable
+        // warmup). The predictor is also frozen (EntityMovementStep.Frozen) so the error should be ~0, but any
+        // residual from inputs buffered before the first MatchState arrived (the MatchStartTime-race) would
+        // otherwise be smoothed + re-armed each snapshot and take a freeze-length to bleed off — the vibrate the
+        // user saw lingering ~5s into live play. Clearing it every frozen snapshot makes go-live instant + clean.
+        if (!MatchWarmup && MatchStartTime > 0f && serverTime < MatchStartTime)
+            _reconciler.ResetError();
 
         // delta-decompress the entity section against the baseline the server named.
         IReadOnlyDictionary<int, NetEntityState>? entities = _snapHistory.DecodeSnapshot(ref r);

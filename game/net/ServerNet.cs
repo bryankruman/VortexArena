@@ -1098,12 +1098,14 @@ public sealed class ServerNet : IDisposable
             InputCommand cmd = InputCommand.Deserialize(ref r);
             if (r.BadRead)
                 break;
+            DbgRecv++;            // net_input_trace diagnostic
             // dedup by seq: the client sends a redundant tail; only enqueue commands we haven't processed and
             // haven't already queued (keep the queue monotonic in seq).
             if (cmd.Seq > st.LastProcessedSeq && cmd.Seq > st.HighestQueuedSeq)
             {
                 st.Pending.Enqueue(cmd);
                 st.HighestQueuedSeq = cmd.Seq;
+                DbgEnqueued++;     // net_input_trace diagnostic
             }
         }
     }
@@ -1260,6 +1262,12 @@ public sealed class ServerNet : IDisposable
     // simulated time one server tick may drain (drain the rest next tick) so a flooded queue can't fast-forward.
     private const float PerFrameMinCommandDt = 0.0005f;
     private const float PerFrameMaxCommandDt = 0.05f;
+    // Diagnostic counters surfaced by net_input_trace (see NetGame [nettrace]). Cumulative, all peers: DbgRecv =
+    // input commands deserialized off the wire; DbgEnqueued = passed the seq-dedup into a per-peer queue; DbgBatch =
+    // drained into a movement batch. recv≫enq ⇒ heavy redundancy or dup; enq≫batch ⇒ queue not draining. Single
+    // increments on the hot path — negligible; left always-on so the trace reads true the instant it's enabled.
+    public int DbgRecv, DbgEnqueued, DbgBatch;
+
     private const float PerFrameTickBudget = 0.25f;
 
     /// <summary>
@@ -1303,6 +1311,7 @@ public sealed class ServerNet : IDisposable
             }
 
             st.TickBatch.Add(ToMovementInput(cmd));
+            DbgBatch++; // net_input_trace diagnostic
             mergedButtons |= cmd.TypedButtons;
             last = cmd;
             any = true;
