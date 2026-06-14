@@ -309,14 +309,18 @@ public static class ClientSettings
         try
         {
             var proc = System.Diagnostics.Process.GetCurrentProcess();
-            var want = c.GetFloat("sys_priority_boost") != 0f
+            int boost = (int)c.GetFloat("sys_priority_boost");
+            var want = boost != 0
                 ? System.Diagnostics.ProcessPriorityClass.AboveNormal
                 : System.Diagnostics.ProcessPriorityClass.Normal;
             if (proc.PriorityClass != want)
-            {
                 proc.PriorityClass = want;
-                XonoticGodot.Common.Diagnostics.Log.Info($"[video] process priority → {want} (sys_priority_boost)");
-            }
+            // Always log the EFFECTIVE priority + the cvar that drove it. The old "only log on change" hid the
+            // state in the common cases (already-AboveNormal, or sys_priority_boost 0 → Normal-and-unchanged),
+            // so a config that pinned the boost off read as silence — indistinguishable from "boost on". This
+            // line now makes "is the boost on?" answerable straight from the boot log.
+            XonoticGodot.Common.Diagnostics.Log.Info(
+                $"[video] process priority {proc.PriorityClass} (sys_priority_boost {boost})");
         }
         catch (Exception ex)
         {
@@ -342,9 +346,11 @@ public static class ClientSettings
     private static void RegisterEngineVideoDefaults(CvarService c)
     {
         const CvarFlags save = CvarFlags.Save;
-        // vid_vsync is extended to a mode index (see ApplyVideo): 0 off / 1 on / 2 mailbox / 3 adaptive. Default
-        // 0 preserves the current low-latency behaviour; the video dialog recommends 2 (mailbox) for pacing.
-        c.Register("vid_vsync", "0", save);
+        // vid_vsync is extended to a mode index (see ApplyVideo): 0 off / 1 on / 2 mailbox / 3 adaptive. The port
+        // default is 2 (mailbox — best frame pacing without a FIFO cascade on a missed present); it's already set
+        // to 2 as a locked default in MenuState.Boot, so this idempotent Register keeps that value and just carries
+        // the archive flag. A player can still set 0 (lowest input latency) / 1 / 3 from the console or video menu.
+        c.Register("vid_vsync", "2", save);
         c.Register("vid_borderless", "0", save);
         // (§12.7) AboveNormal process priority by default — see ApplyVideo's priority block. 0 = stock priority.
         c.Register("sys_priority_boost", "1", save);

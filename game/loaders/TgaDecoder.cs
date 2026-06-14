@@ -99,7 +99,9 @@ internal static class TgaDecoder
         }
 
         int pixelCount = width * height;
-        var outRgba = new byte[pixelCount * 4];
+        // Pooled per-thread scratch (the decode fully writes every pixel; CreateFromData copies it out below).
+        // Collapses the per-texture decode-burst allocation (§12.6b) — see RgbaDecodeBuffer.
+        byte[] outRgba = RgbaDecodeBuffer.Rent(pixelCount * 4);
 
         // Read pixels into a linear buffer in source order (the file's first row), then flip if needed.
         if (rle)

@@ -60,7 +60,9 @@ internal static class DdsDecoder
         uint aMask       = U32(data, 104);
 
         const int dataOffset = 128; // no DX10 extended header (rejected below)
-        byte[] outRgba = new byte[width * height * 4];
+        // Pooled per-thread scratch (the block/uncompressed decode writes every pixel; CreateFromData copies it
+        // out below). Collapses the per-texture decode-burst allocation (§12.6b) — see RgbaDecodeBuffer.
+        byte[] outRgba = RgbaDecodeBuffer.Rent(width * height * 4);
 
         if ((pfFlags & DDPF_FOURCC) != 0)
         {

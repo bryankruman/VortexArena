@@ -133,6 +133,17 @@ public static class MenuState
         if (!XonoticGodot.Engine.Console.BindTable.List().Any())
             BindInput.SeedFromActions(KeyBindings.Defaults);
 
+        // (perf §12.7) PORT "smoothest play" video defaults. These override Xonotic's SHIPPED cfg values
+        // (xonotic-client.cfg sets vid_fullscreen 1; vid_vsync is assigned nowhere) but run BEFORE LockDefaults +
+        // LoadUserConfig below — so they become the locked DEFAULT (persisted only if the player moves them, and a
+        // player's own config.cfg value still wins). vid_fullscreen 2 = EXCLUSIVE fullscreen (takes the desktop
+        // compositor out of the present path — desktop-fullscreen 1 still composites on Windows, the missed-vblank
+        // double-frames in the hitch logs); vid_vsync 2 = mailbox (no FIFO cascade on a missed present). Either can
+        // be set 0/1 from the console or video menu. (Setting vid_vsync here, before the lock, also makes it a
+        // proper locked default instead of the post-lock "always-save" cvar RegisterEngineVideoDefaults created.)
+        _cvars.Set("vid_fullscreen", "2");
+        _cvars.Set("vid_vsync", "2");
+
         // Lock the shipped baseline NOW — the full stock cfg tree is loaded but the user's saved overrides are
         // not yet applied. This is DP's Cvar_LockDefaults: it freezes each cvar's current value as its default so
         // SaveUserConfig can persist only what the user actually moved off-default (and so a cvar that only ever

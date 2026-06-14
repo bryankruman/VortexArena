@@ -10,9 +10,12 @@ namespace XonoticGodot.Engine.Particles;
 // =====================================================================================================
 //  FAITHFUL CPU particle simulation — the perfect-parity port of Darkplaces' cl_particles.c (spawn:
 //  CL_NewParticle / CL_NewParticlesFromEffectinfo; update: R_DrawParticles integration loop). Pure,
-//  Godot-free, headless-testable: collisions/cvars come through the ambient Api facade (Api.Trace /
-//  Api.Cvars), randomness through the injected IParticleRng, so ParticleParityTests can replay it against
-//  the tools/particles-ref C reference. See planning/particles-dual-system.md §C.
+//  Godot-free, headless-testable: cvars come through the injected Cvars store (ambient Api.Cvars fallback)
+//  and collisions through the injected Trace seam (ambient Api.Trace fallback) — in the game both are wired
+//  to the CLIENT stores (Cvars -> MenuState.Cvars, Trace -> a static world-only TraceService over the map's
+//  client collision world), while tests leave them null and replay against the tools/particles-ref C
+//  reference via the ambient facade. Randomness comes through the injected IParticleRng. See
+//  planning/particles-dual-system.md §C.
 //
 //  PORT NOTES (DP source line numbers are cl_particles.c unless stated):
 //   * lhrandom / VectorRandom reductions live in ParticleRandom (IParticleRng.cs) and are consumed in the
@@ -77,7 +80,12 @@ public sealed class ParticleSim
     /// <summary>The sim's current clock (last value passed to <see cref="Update"/>). Spawns use it for `die`.</summary>
     public float Now => _currentTime;
 
-    public ParticleSim(IParticleRng rng, int initialCapacity = 8192, int maxParticles = 1 << 18)
+    // The default pool CEILING (the pool grows ×2 from initialCapacity up to this). 1<<16 = 65,536 keeps the
+    // faithful sim near DP's practical particle count: the old 1<<18 = 262,144 gave BOTH the per-frame
+    // collision-trace loop AND the full-capacity MultiMesh upload ~4× more headroom than DP ever uses, so a
+    // heavy-combat burst could balloon both into the catastrophic particles.cpu hitch. Tests pass an explicit
+    // max, so this only retunes the production backend (FaithfulParticleBackend uses the default).
+    public ParticleSim(IParticleRng rng, int initialCapacity = 8192, int maxParticles = 1 << 16)
     {
         Rng = rng ?? throw new ArgumentNullException(nameof(rng));
         _maxParticles = Math.Max(initialCapacity, maxParticles);
@@ -110,8 +118,22 @@ public sealed class ParticleSim
     /// </summary>
     public ICvarService? Cvars { get; set; }
 
+    /// <summary>
+    /// The collision/trace seam for particle bounces and content checks. Set this to the CLIENT's static,
+    /// world-only tracer — a <see cref="XonoticGodot.Engine.Collision.TraceService"/> over the per-map
+    /// <c>MapLoader.BuildCollision</c> world with NO entity provider and NO concurrency gate. That mirrors
+    /// DP's <c>CL_TraceLine</c>: particles clip against the static map BSP only, never live players/items/
+    /// projectiles, and never the SERVER's collision world. Null (tests) falls back to the ambient
+    /// <c>Api.Trace</c> — which on a listen server IS the server world, whose per-trace cost AND tick
+    /// serialisation gate made the bounce loop the dominant combat-frame hitch (see <see cref="Update"/>).
+    /// </summary>
+    public ITraceService? Trace { get; set; }
+
     private float Cv(string name) => (Cvars ?? Api.Cvars).GetFloat(name);
     private bool CvBool(string name) => (Cvars ?? Api.Cvars).GetFloat(name) != 0f;
+
+    /// <summary>The resolved tracer: the injected client world-only tracer, or the ambient fallback (tests).</summary>
+    private ITraceService TraceSvc => Trace ?? Api.Trace;
 
     // -----------------------------------------------------------------------------------------------------
     //  Spawn — CL_NewParticlesFromEffectinfo (1569-1788), non-trail/non-beam path.
@@ -141,7 +163,7 @@ public sealed class ParticleSim
 
         // VectorLerp(originmins, 0.5, originmaxs, center) (1600).
         Vector3 center = originMins + (originMaxs - originMins) * 0.5f;
-        int supercontents = Api.Trace.PointContents(center);
+        int supercontents = TraceSvc.PointContents(center);
         bool underwater = (supercontents & (SuperContents.Water | SuperContents.Slime)) != 0;
 
         // traildir / traillen (1603-1605).
@@ -493,7 +515,7 @@ public sealed class ParticleSim
             _pool[idx].TypeIndex = ParticleType.Spark;
             _pool[idx].Bounce = 0f;
             Vector3 endvec = org + vel * lifetime;
-            TraceResult tr = Api.Trace.Trace(org, Vector3.Zero, Vector3.Zero, endvec,
+            TraceResult tr = TraceSvc.Trace(org, Vector3.Zero, Vector3.Zero, endvec,
                 MoveFilter.NoMonsters, null);
             _pool[idx].Die = now + lifetime * tr.Fraction;
             Vector3 dorg = tr.EndPos + tr.PlaneNormal;
@@ -577,7 +599,7 @@ public sealed class ParticleSim
                 {
                     float f;
                     bool inLiquid = p.LiquidFriction != 0f && collisions &&
-                                    (Api.Trace.PointContents(p.Org) & SuperContents.LiquidsMask) != 0;
+                                    (TraceSvc.PointContents(p.Org) & SuperContents.LiquidsMask) != 0;
                     if (inLiquid)
                     {
                         if (p.TypeIndex == ParticleType.Blood) p.Size += frametime * 8f;
@@ -603,15 +625,16 @@ public sealed class ParticleSim
                         int hitmask = SuperContents.Solid |
                             ((p.TypeIndex == ParticleType.Rain || p.TypeIndex == ParticleType.Snow) ? SuperContents.LiquidsMask : 0);
                         // DP's per-frame bounce trace (cl_particles.c:2984) is CL_TraceLine(..., MOVE_NORMAL, ...,
-                        // hitnetworkbrushmodels=true, hitnetworkplayers=false, hitcsqcentities=false) — i.e. it clips
-                        // ONLY against the world BSP + brush-model entities (func_door/plat/breakable), never players,
-                        // items, monsters or projectiles. MoveFilter.NoMonsters is exactly that (world + Solid.Bsp
-                        // entities; bbox entities are skipped). Using MoveFilter.Normal here was both unfaithful
-                        // (particles bounced off players/items) and the dominant combat-frame cost — on a listen server
-                        // Api.Trace is the server world, so every bouncing spark/ember was box-swept against every
-                        // live player, dropped item, and in-flight projectile each frame. Matches the spawn-time rain
-                        // pre-trace above, which already uses NoMonsters.
-                        TraceResult tr = Api.Trace.Trace(oldorg, Vector3.Zero, Vector3.Zero, p.Org, MoveFilter.NoMonsters, null);
+                        // hitnetworkbrushmodels=true, hitnetworkplayers=false, hitcsqcentities=false) — it clips
+                        // against the static world BSP, never players/items/monsters/projectiles. We route this
+                        // through TraceSvc — the injected CLIENT world-only tracer (a TraceService over the per-map
+                        // collision world, entities=null, no concurrency gate) — exactly DP's cl.worldmodel trace.
+                        // The MoveFilter.NoMonsters argument is now redundant (an entities-null tracer has no entity
+                        // pass) but kept so the fallback ambient Api.Trace stays faithful in tests. Routing this at
+                        // the live SERVER world was the dominant combat-frame hitch: every bouncing spark/ember box-
+                        // swept the entire live entity broadphase under the server-tick lock each frame; the static
+                        // client tracer removes both the per-trace cost and the cross-thread serialisation.
+                        TraceResult tr = TraceSvc.Trace(oldorg, Vector3.Zero, Vector3.Zero, p.Org, MoveFilter.NoMonsters, null);
                         // Honor only the requested hitmask: a SOLID-only particle ignores a liquid surface.
                         bool hitWanted = (tr.DpHitContents & hitmask) != 0 || tr.StartSolid;
                         if (tr.Fraction < 1f && !hitWanted)
@@ -689,19 +712,19 @@ public sealed class ParticleSim
                             break;
                         case ParticleType.Blood:
                         {
-                            int a = Api.Trace.PointContents(p.Org);
+                            int a = TraceSvc.PointContents(p.Org);
                             if ((a & (SuperContents.Solid | SuperContents.Lava | SuperContents.NoDrop)) != 0) { Kill(ref p, i); continue; }
                             break;
                         }
                         case ParticleType.Bubble:
                         {
-                            int a = Api.Trace.PointContents(p.Org);
+                            int a = TraceSvc.PointContents(p.Org);
                             if ((a & (SuperContents.Water | SuperContents.Slime)) == 0) { Kill(ref p, i); continue; }
                             break;
                         }
                         case ParticleType.Rain:
                         {
-                            int a = Api.Trace.PointContents(p.Org);
+                            int a = TraceSvc.PointContents(p.Org);
                             if ((a & (SuperContents.Solid | SuperContents.LiquidsMask)) != 0) { Kill(ref p, i); continue; }
                             break;
                         }
@@ -714,7 +737,7 @@ public sealed class ParticleSim
                                 p.Vel.X = p.Vel.X * 0.9f + (float)ParticleRandom.Lhrandom(Rng, -32, 32);
                                 p.Vel.Y = p.Vel.X * 0.9f + (float)ParticleRandom.Lhrandom(Rng, -32, 32);
                             }
-                            int a = Api.Trace.PointContents(p.Org);
+                            int a = TraceSvc.PointContents(p.Org);
                             if ((a & (SuperContents.Solid | SuperContents.LiquidsMask)) != 0) { Kill(ref p, i); continue; }
                             break;
                         }

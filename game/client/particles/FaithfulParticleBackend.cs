@@ -102,6 +102,15 @@ public sealed partial class FaithfulParticleBackend : Node3D
     /// <summary>Wire the splat decal system (orchestrator). Marks route here instead of the Godot-Decal path.</summary>
     public void SetSplats(DecalSplats? splats) => Splats = splats;
 
+    /// <summary>
+    /// Wire the particle sim's collision tracer (orchestrator, at map load). Pass the CLIENT's static,
+    /// world-only <see cref="XonoticGodot.Engine.Collision.TraceService"/> over the per-map collision world
+    /// so bounces/content checks clip the static map BSP only — never the live SERVER world (which on a
+    /// listen server cost a box-sweep of the whole entity broadphase under the tick lock per bouncing
+    /// particle). See <see cref="ParticleSim.Trace"/>. Null reverts to the ambient Api.Trace.
+    /// </summary>
+    public void SetTrace(ITraceService? trace) => _sim.Trace = trace;
+
     /// <summary>The live simulation (exposed for stats/HUD and the parity harness; do not mutate).</summary>
     public ParticleSim Sim => _sim;
 
@@ -333,7 +342,16 @@ public sealed partial class FaithfulParticleBackend : Node3D
         // NOT Api.Clock.Time, which is the server sim clock and reads 0/paused on the render side, freezing
         // the sim (particles never age → never die → leak). The sim clamps frametime internally, so a load
         // hitch's large delta is bounded. Spawn (die) and update share this clock via ParticleSim.Now.
-        _clientTime += (float)delta;
+        // (hitch guard) Cap how far the sim clock advances in ONE frame. DP clamps particle frametime to 1.0 s
+        // for correctness (particles don't fly off after a load pause) — that clamp is mirrored bit-faithfully
+        // INSIDE ParticleSim.Update and is left untouched. But a full-second catch-up step turns any upstream
+        // hitch into a particle amplifier: every live colliding particle box-sweeps a 1 s-long path and the
+        // MultiMesh buffer balloons — the particles.cpu spike in the hitch logs. Visual particles never need to
+        // fast-forward through a stall, so clamp the per-frame ADVANCE to a few render frames here. This is a
+        // deliberate game-side divergence from DP's 1 s clamp; the faithful sim's own clamp stays bit-exact
+        // (parity tests drive Update directly and are unaffected — this only bounds what the backend feeds it).
+        const float MaxParticleStep = 0.05f;   // ~3 frames @ 60 fps; far tighter than DP's 1.0 s correctness clamp
+        _clientTime += Math.Min((float)delta, MaxParticleStep);
         _sim.Update(_clientTime);
 
         // View origin/forward in Quake space, from the active camera (GetViewport().GetCamera3D()). The

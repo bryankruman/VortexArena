@@ -169,6 +169,16 @@ public partial class EffectSystem : Node3D
     {
         if (Splats is not null)
             Splats.World = world;
+
+        // Give the faithful particle sim its OWN static, world-only tracer over the CLIENT collision world
+        // (NetGame builds it per map via MapLoader.BuildCollision). This mirrors DP's CL_TraceLine: particle
+        // bounces/content checks clip the static map BSP only — never live players/items/projectiles, and
+        // never the SERVER's collision world. A new TraceService(world) has entities=null (no entity sweep)
+        // and ConcurrencyGate=null (no lock): on a listen server the ambient Api.Trace IS the server world, so
+        // every bouncing spark used to box-sweep the live entity broadphase under the server-tick gate — the
+        // dominant combat-frame hitch. This tracer runs only on the main thread alongside the splat consumer
+        // of the same (client-only) world, so it needs no gate.
+        FaithfulParticles?.SetTrace(new TraceService(world));
     }
 
     /// <summary>

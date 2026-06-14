@@ -1525,14 +1525,16 @@ public sealed partial class NetGame : Node3D
         if (!string.IsNullOrEmpty(local))
             models.Add(local);
 
-        // (perf §9.4) Hosting bots → warm the bot roster's candidate models NOW, under the loading screen,
-        // instead of letting them stream in during the opening seconds of play. Each cold IQM otherwise decodes
-        // + GPU-uploads its textures one-per-frame as the bots first render (`stream: idle-warm … tex … built
-        // (~20ms)`), and that storm lands while the player is spawned and moving — the glitchy match start. The
-        // candidate set is the distinct models the active bots.txt can assign; warming them fills the
-        // texture/material caches so the in-play skeletal build (StreamSkeletalInto) is a cache hit. erebus/local
-        // are already in `models`, so duplicates self-skip via the HashSet.
-        if (_isListenServer && _botCount > 0 && _serverWorld is not null)
+        // (perf §9.4) Hosting → warm the PLAYER-MODEL roster NOW, under the loading screen, instead of letting it
+        // stream in during play. The set isn't bot-specific: a bot added at RUNTIME (bot_number raised mid-match —
+        // the 2026-06-14 release profile started bots=0 and added them later, so every model cold-loaded and the
+        // `iqm.anims`/`iqm.mesh` + texture-decode storm hit while playing) OR a human joining picks from this same
+        // stock roster, so warm it regardless of the start bot count. Each cold IQM otherwise decodes + GPU-uploads
+        // its textures one-per-frame on first render; warming fills the parse/texture/material caches so the in-play
+        // skeletal build (StreamSkeletalInto) is a cache hit. erebus/local are already in `models` (HashSet dedups).
+        // NOTE: a human bringing a NON-roster custom model still cold-loads on first sight — a warm-on-first-seen
+        // hook would close that, but the stock roster covers bots and the overwhelming majority of player picks.
+        if (_isListenServer && _serverWorld is not null)
             foreach (string bm in _serverWorld.Bots.CandidateModelPaths())
                 models.Add(bm);
 
