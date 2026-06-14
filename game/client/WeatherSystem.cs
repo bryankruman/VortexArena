@@ -52,6 +52,7 @@ public partial class WeatherSystem : Node3D
 
     public override void _Process(double delta)
     {
+        using var _scope = FrameProfiler.Scope("weather"); // [profiling] §18: out of proc:other
         if (Api.Services is null)
             return;
 

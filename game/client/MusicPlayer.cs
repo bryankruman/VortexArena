@@ -97,6 +97,7 @@ public sealed partial class MusicPlayer : Node
 
     public override void _Process(double delta)
     {
+        using var _scope = FrameProfiler.Scope("music"); // [profiling] §18: out of proc:other
         float dt = (float)delta;
 
         // --- evaluate the priority stack to find the best music source ---

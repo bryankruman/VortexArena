@@ -581,6 +581,7 @@ public sealed partial class DecalSplats : Node3D
         int count = _liveSlots.Count;
         if (count == 0)
             return;
+        using var _scope = XonoticGodot.Game.Client.FrameProfiler.Scope("decals.splat"); // [profiling] §18: out of proc:other
         float dt = (float)delta;
         for (int i = count - 1; i >= 0; i--)
         {

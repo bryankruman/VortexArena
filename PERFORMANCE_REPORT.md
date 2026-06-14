@@ -373,7 +373,8 @@ disproved (including §2.1's vsync hypothesis), and what it found to be the real
   scopes are free when the profiler is off). New `bot.think` / `bot.path` scopes added in `BotBrain`.
 - **Diagnostics tooling added** (all reusable): repeatable **`--cvar NAME VALUE`** boot flag
   (`Shell.ApplyCvarOverrides`, applied before `ClientSettings.ApplyAll`); a FrameProfiler **file sink** at
-  `user://frameprofile.log` plus `rest` in the mode-2 line (windowed/exported runs detach stdout — read the file);
+  `user://frameprofile.log` (superseded 2026-06-14 by the per-launch `~/XonData/logs/session-*.log` + `.csv`
+  background writer — see RUNNING.md) plus `rest` in the mode-2 line (windowed/exported runs detach stdout — read the file);
   a **`[video]` requested-vs-actual vsync log** in `ApplyVideo`; and a `cl_idle_warmup 0` A/B gate on the idle
   warm. **Bug fixed along the way:** `FrameProfiler.Mode()`/`HitchFloorMs()` read `Api.Cvars` (the listen-server's
   *private* store), but `cl_frameprofiler` is registered/set in `MenuState.Cvars` (the *shared* client store) — so

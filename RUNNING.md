@@ -336,18 +336,35 @@ ToS/welcome/team-select, tools, confirms). Architecture:
   *Allocation Rate* / *% Time in GC* / gen0 counts while playing. **Do not** flip GC modes
   (`ServerGarbageCollection` etc.) in `XonoticGodot.csproj` without counter evidence — client frame-pauses
   trade against dedicated throughput.
-- **Hitch forensics (FrameProfiler, 2026-06-12):** `cl_frameprofiler 1` = overlay graph + hitch log,
-  `2` = also a per-second breakdown + the file sink `~/XonData/frameprofile.log`. Every frame is recorded into a
-  240-frame forensic ring (full per-scope ms+alloc table, GC counts + **pause ms**, draw calls, **pipeline-compile
-  deltas** — a nonzero `pipe +N` mid-play is a first-use shader compile slipping past the warm pass), and a hitch
-  emits a multi-line dump: `[hitch] scopes:` (top 12 with per-scope KB), `gpu:`, `gc:`, `events:`, and `prev:`
-  (the 8-frame run-up). **Events** are one-shot forensic markers any layer can raise via
-  `Prof.Event("...")` — wired today: streamer main-thread builds (with ms), GPU warm-pass completion, sim
-  backlog drops, server input-queue trims, faithful-particle capacity changes. Read a hitch as: events name the
-  culprit; `scopes` attribute the C# time; `pipe/gpu` attribute the GPU; `gc pause` the GC.
-  `set cl_frameprofiler_dump 1` (console, mid-play, after a stutter) writes the whole ring to
-  `~/XonData/frameprofile_ring.csv` (Excel/pandas-ready) and re-arms. Add new `Prof.Event` call sites freely —
-  they're free when the profiler is off, bounded when on, thread-safe everywhere.
+- **Hitch forensics (FrameProfiler, reworked 2026-06-14):** `cl_frameprofiler 1` = overlay graph + hitch log +
+  **session recording**; `2` = also the periodic snapshot on the console. Every frame is recorded into a
+  240-frame forensic ring (per-scope ms + **self-time** + alloc, GC counts + **pause ms**, draw calls,
+  **pipeline-compile deltas**).
+  - **Classified hitches (5).** Each hitch is tagged with what dominated it — `GC-PAUSE`, `PIPELINE-COMPILE`,
+    `ASSET-BUILD`, `CPU-LOGIC`, `GPU-BOUND`, `VSYNC/PRESENT`, `EXTERNAL` — followed by a one-line reason, the
+    frames-dropped count, the engine split, and human-readable byte sizes. Steady-state repeats of the same
+    class **collapse** into one `[hitch CLASS ×N] min–max over Δs` line instead of spamming.
+  - **Call tree (16).** The forensic block prints an indented `tree:` of inclusive/self ms with an automatic
+    `(other)` remainder at each level, so a fat `proc:other` self-attributes. A per-scope `(typ X, N× over)`
+    anomaly note flags a scope spiking above its rolling baseline (9).
+  - **Sampling watchdog (17, `cl_frameprofiler_watchdog` default 1).** A background thread samples the main
+    thread's innermost open scope during an over-budget frame, so a stall inside un-scoped code is attributed
+    (`watchdog: 38/41 samples in 'sim.move'`). Near-zero main-thread cost; reports `(unscoped)` when stuck
+    outside any scope (⇒ a candidate for a new `Prof.Sample`).
+  - **Overlay (1–4).** Stacked category bars (proc/rcpu/rest, GPU marker, red cap on a pipe/GC frame), a header
+    with fps + 1%-low + session hitch count, a pinned last-hitch verdict, and **`F11`** to toggle an expanded
+    panel showing the top live scopes vs their baselines.
+  - **Recording (14).** Whenever the profiler is active it writes a per-launch `~/XonData/logs/session-<stamp>.log`
+    (classified hitches + periodic `p50/p95/p99/p99.9` snapshots + an end-of-session summary with 1%/0.1% lows,
+    hitch breakdown, top worst frames, GC + alloc totals) and a parallel `.csv` (the per-frame numeric timeline).
+    A **background writer thread** does all formatting + I/O + periodic flush; the game thread only enqueues, so
+    recording never causes a hitch. Logs are kept per session (no pruning); under disk backpressure the CSV rows
+    drop first (counted in the summary), never the game's frame time.
+  - **Events** are one-shot forensic markers any layer raises via `Prof.Event("...")` — streamer builds, GPU
+    warm-pass completion, sim backlog drops, input-queue trims, particle capacity changes.
+  `set cl_frameprofiler_dump 1` (console, after a stutter) still writes the whole ring to
+  `~/XonData/frameprofile_ring.csv` and re-arms. Add new `Prof.Sample`/`Prof.Event` call sites freely — they're
+  free when the profiler is off, cheap (per-thread, no shared lock) when on, thread-safe everywhere.
 - **Dedicated/headless server:** v1 is the headless listen server (`--headless --host`, see the section
   above + `tools/run-dedicated.sh`); the `linux-dedicated` export preset uses Godot's "export as dedicated
   server" mode (`OS.HasFeature("dedicated_server")` is the feature-tag branch point). The

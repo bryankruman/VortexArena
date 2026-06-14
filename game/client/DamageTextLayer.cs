@@ -65,6 +65,7 @@ public partial class DamageTextLayer : Control
 
     public override void _Process(double delta)
     {
+        using var _scope = FrameProfiler.Scope("damagetext"); // [profiling] §18: out of proc:other
         // Prune dead items (alpha/size/lifetime expired) and request a redraw each frame (animated).
         float now = Now();
         var cfg = DamageTextConfig.Read();

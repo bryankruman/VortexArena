@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Text;
 using Godot;
 using XonoticGodot.Common.Diagnostics;
 using XonoticGodot.Common.Services;
@@ -13,27 +14,37 @@ namespace XonoticGodot.Game.Client;
 /// <see cref="Hud.FpsPanel"/> can't be. <c>FpsPanel</c> averages over a 1-second window, which HIDES the very
 /// thing that matters for smoothness: a single long frame. This node samples the real per-frame delta, the
 /// managed-heap GC activity (gen-0/1/2 collection deltas + bytes allocated <em>this frame</em>), and a handful
-/// of coarse subsystem timers, then flags any frame that spikes above the rolling baseline as a "hitch" and
-/// logs what dominated it. That turns "it stuttered" into "it stuttered because gen-0 collected after 0.4 MB
-/// of allocation during server.tick" — the attribution a profiler needs.
+/// of coarse subsystem timers, then flags any frame that spikes above the rolling baseline as a "hitch",
+/// <b>classifies</b> what dominated it (GC pause / pipeline compile / asset build / CPU logic / GPU / present /
+/// external), and logs the attribution. That turns "it stuttered" into "it stuttered because gen-0 collected
+/// after 0.4 MB of allocation during server.tick".
 ///
 /// <para><b>How it measures.</b> A single <see cref="_Process"/> per frame diffs <see cref="GC.CollectionCount"/>
 /// and <see cref="GC.GetTotalAllocatedBytes"/> against the previous frame, so the window covers exactly one
 /// frame's worth of allocation regardless of node order. Subsystem timing uses the allocation-free
 /// <see cref="Scope"/> struct: <c>using (FrameProfiler.Scope("server.tick")) ...</c> accumulates elapsed
-/// <see cref="Stopwatch"/> ticks into a static bucket that this node snapshots + clears each frame. When the
-/// profiler is off the scope is a no-op (it never even reads the clock), so the instrumentation costs nothing
-/// in a release build with the cvar at 0.</para>
+/// <see cref="Stopwatch"/> ticks into a per-thread bucket (now also tracking parent + self-time, so the flat
+/// list renders as a call tree) that this node snapshots + clears each frame. When the profiler is off the scope
+/// is a no-op, so the instrumentation costs nothing in a release build with the cvar at 0.</para>
 ///
-/// <para><b>Cvars</b> (both archived):
+/// <para><b>Recording.</b> Whenever the profiler is active it writes a per-launch session log + parallel CSV
+/// under <c>&lt;userdir&gt;/logs/</c> via a background thread (<see cref="SessionProfileLog"/>) — the game thread
+/// only enqueues, never touches the disk, so recording can't itself cause a hitch.</para>
+///
+/// <para><b>Cvars</b> (all <see cref="CvarFlags.Save"/> except the transient triggers):
 /// <list type="bullet">
-///   <item><c>cl_frameprofiler</c> — 0 off, 1 on-screen graph + stats + hitch log, 2 also emits a per-frame
-///         trace line at <c>developer&gt;0</c>. Like <see cref="Hud.FpsPanel"/> it defaults <b>on (1) in debug
-///         builds</b> unless the player has set it, so a dev always sees the graph; a release stays clean.</item>
-///   <item><c>cl_frameprofiler_hitchms</c> — absolute floor (ms) below which a frame is never called a hitch,
-///         so high-refresh jitter near the baseline doesn't spam (default 12). A hitch also has to exceed
-///         <see cref="HitchFactor"/>× the rolling median, so the threshold tracks the actual framerate.</item>
+///   <item><c>cl_frameprofiler</c> — 0 off, 1 on-screen graph + stats + hitch log + recording, 2 also emits the
+///         periodic snapshot to the console. Defaults <b>on (1) in debug builds</b> unless the player set it.</item>
+///   <item><c>cl_frameprofiler_hitchms</c> — absolute floor (ms) below which a frame is never a hitch (default 12);
+///         a hitch must also exceed <see cref="HitchFactor"/>× the rolling median.</item>
+///   <item><c>cl_frameprofiler_watchdog</c> — 1 (default) runs the sampling watchdog thread that attributes
+///         stalls inside un-scoped code; 0 disables it.</item>
+///   <item><c>cl_frameprofiler_dump</c> — transient: writes the forensic ring to <c>frameprofile_ring.csv</c>.</item>
 /// </list></para>
+///
+/// <para><b>Hotkey.</b> <c>F11</c> (the one unbound function key) toggles the expanded overlay — top live scopes
+/// with rolling baselines + the call tree. Handled at the <c>_Input</c> stage with <c>ProcessMode.Always</c>, so
+/// it works in the menu, a paused match, anywhere.</para>
 ///
 /// <para>Instantiated once from <c>Main._Ready</c> so it spans the whole session (menu + match), above every
 /// other layer. The graph sits unobtrusively in the top-left.</para>
@@ -48,18 +59,21 @@ public partial class FrameProfiler : CanvasLayer
     /// <summary>Frame-time ring length — a few seconds of history for the graph + the rolling median/p99.</summary>
     private const int RingSize = 240;
 
+    /// <summary>Cadence of the periodic steady-state snapshot (percentiles + hitch breakdown).</summary>
+    private const double SnapshotIntervalMs = 5000.0;
+
     // ---- subsystem scope timing -----------------------------------------------------------------------------
-    // The accumulator lives in XonoticGodot.Common.Diagnostics.Prof so EVERY layer (the sim loop, netcode,
-    // physics — none of which can see this Godot-side node) can contribute scopes. This node is the collector:
-    // it drives Prof.Enabled from the cvar and drains Prof each frame into _lastScopes/_lastCounters (below).
-    private static readonly Dictionary<string, double> _lastScopes = new();
-    private static readonly Dictionary<string, double> _lastCounters = new();
+    private static readonly Dictionary<string, double> _lastScopes = new();    // inclusive ms per scope
+    private static readonly Dictionary<string, double> _lastCounters = new();  // per-frame numeric markers
+    private static readonly Dictionary<string, double> _lastSelf = new();      // self ms (inclusive - children)
+    private static readonly Dictionary<string, string> _lastParent = new();    // scope -> representative parent
 
     // Whole-node _Process scopes (distinct nodes ⇒ non-overlapping); summed to compute "proc:other". Nested
     // sub-scopes (server.tick, sim.*, net.*, cw.*) are intentionally NOT here so they don't double-count.
+    // The §18 effect nodes (music/weather/decals/vehicles/damagetext) are included so they leave proc:other.
     private static readonly string[] TopLevelNodeScopes =
         { "ng.process", "cw.process", "md3.morph", "entitynode", "hud.mgr", "proj", "viewmodel", "nethud",
-          "stream.build", "particles.cpu" };
+          "stream.build", "particles.cpu", "music", "weather", "decals.splat", "vehicle.vis", "damagetext" };
 
     /// <summary>
     /// Open a named timing scope: <c>using (FrameProfiler.Scope("name")) { ... }</c> (or as a one-statement
@@ -79,17 +93,14 @@ public partial class FrameProfiler : CanvasLayer
     private int _dGc0, _dGc1, _dGc2;   // collections that happened THIS frame
     private long _dAllocBytes;          // bytes allocated THIS frame
     private double _median, _p99;
-    private double _summaryClock;   // accumulates ms for the once-per-second mode-2 breakdown
+    private double _snapshotClock;      // accumulates ms for the periodic snapshot
     private bool _defaultsRegistered;
 
-    // ---- forensic frame records (the hitch-attribution ring) --------------------------------------------------
-    // One record per frame, pooled in a ring parallel to _ring: the FULL per-scope time+alloc table, the GPU
-    // counters (draw calls + pipeline-compile deltas — a first-use compile hitch is directly visible), GC pause
-    // time, and any one-shot Prof.Events stamped onto the frame they were drained in. A hitch dumps ITS record
-    // plus the preceding frames' one-liners; `cl_frameprofiler_dump 1` writes the whole ring to CSV.
+    private readonly Stopwatch _sessionSw = Stopwatch.StartNew();
+    private double SessionSeconds => _sessionSw.Elapsed.TotalSeconds;
 
-    /// <summary>One scope row inside a <see cref="FrameRecord"/>: name + ms + bytes allocated.</summary>
-    private readonly record struct ScopeRow(string Name, double Ms, double Bytes);
+    // ---- forensic frame records (the hitch-attribution ring) --------------------------------------------------
+    private readonly record struct ScopeRow(string Name, double Ms, double Self, double Bytes);
 
     private sealed class FrameRecord
     {
@@ -98,11 +109,11 @@ public partial class FrameProfiler : CanvasLayer
         public long AllocBytes;
         public int G0, G1, G2;
         public double GcPauseMs;
-        public double DrawCalls;          // Performance monitor: draw calls in frame (already per-frame)
-        public long PipeCompiles;          // delta of RenderingServer pipeline compilations (all sources)
-        public long PipeCompilesUber;      // delta of the ubershader-fallback slice (canvas+mesh+surface)
-        public readonly List<ScopeRow> Scopes = new(32);   // unsorted; sorted only when dumped
-        public readonly List<string> Events = new(2);      // one-shot Prof.Events drained this frame
+        public double DrawCalls;
+        public long PipeCompiles;
+        public long PipeCompilesUber;
+        public readonly List<ScopeRow> Scopes = new(32);
+        public readonly List<string> Events = new(2);
 
         public void Reset(ulong frameId)
         {
@@ -114,61 +125,117 @@ public partial class FrameProfiler : CanvasLayer
 
     private readonly FrameRecord[] _records = new FrameRecord[RingSize];
     private ulong _frameId;
-    private readonly Dictionary<string, double> _allocScratch = new();   // per-frame alloc drain target
+    private readonly Dictionary<string, double> _allocScratch = new();
     private readonly List<string> _eventScratch = new(8);
     private long _lastPipeTotal, _lastPipeUber;
     private double _lastGcPauseMs;
-    private double _lastForensicDumpAt = -1000.0;   // rate limit (accumulated ms); negative so the FIRST hitch dumps
+    private double _lastForensicDumpAt = -1000.0;
     private double _forensicClock;
 
-    // Engine-level frame breakdown (the part the C# scopes can't see): total time in ALL _Process callbacks,
-    // physics, and — usually the dominant slice on a hitch — the renderer (render-thread CPU submit + GPU).
     private double _procMs, _physMs, _renderCpuMs, _renderGpuMs;
     private Rid _viewportRid;
     private bool _measureArmed;
 
+    // ---- rolling alloc rate + heap (10) ----------------------------------------------------------------------
+    private double _allocRateMbPerSec;   // managed garbage over the ring window, MB/s
+    private long _heapBytes;             // GC.GetTotalMemory(false)
+
+    // ---- per-scope rolling baseline (9) ----------------------------------------------------------------------
+    private readonly Dictionary<string, double> _scopeEwma = new();   // EWMA of inclusive ms per scope
+
+    // ---- classification + collapse (5,6) ---------------------------------------------------------------------
+    private enum HitchClass { Unknown, CpuLogic, GpuBound, VsyncPresent, GcPause, PipelineCompile, AssetBuild, External }
+
+    private HitchClass _runClass = HitchClass.Unknown;
+    private int _runCount;
+    private double _runMinMs, _runMaxMs, _runStartS, _runLastS, _runLastInterimS;
+    private string _runReason = "";
+
+    private long _sessionHitchCount;
+    private readonly int[] _windowHitchByClass = new int[8];
+    private readonly int[] _sessionHitchByClass = new int[8];
+
+    private string _lastHitchSummary = "";
+    private double _lastHitchAtS = -1000.0;
+
+    // ---- session summary (12) --------------------------------------------------------------------------------
+    private readonly FrameHistogram _sessionHist = new();
+    private readonly FrameHistogram _windowHist = new();
+    private int _initGc0, _initGc1, _initGc2;
+    private double _initGcPauseMs;
+    private long _sessionAllocTotal;
+    private long _peakAllocFrame;
+    private double _peakAllocAtS;
+    private readonly List<(double Ms, HitchClass Cls, string Scope, double TimeS)> _worst = new(12);
+    private bool _summaryEmitted;
+
+    // ---- recording (14) --------------------------------------------------------------------------------------
+    private readonly SessionProfileLog _sessionLog = new();
+    private DateTime _launchWall;
+
+    // ---- sampling watchdog (17) ------------------------------------------------------------------------------
+    private PhaseWatchdog? _watchdog;
+
     private FrameProfilerGraph _view = null!;
+    private bool _expanded;   // F11 toggle: expanded overlay (top scopes + tree)
 
     public override void _Ready()
     {
         Instance = this;
         Layer = 10;                    // a dev overlay above the HUD
         ProcessPriority = 1_000_000;   // run late so most scopes have closed before we snapshot the bucket
+        ProcessMode = ProcessModeEnum.Always; // the F11 hotkey + recording keep working while the tree is paused
 
+        Prof.SetMainThread();          // tag this (Godot main) thread for the watchdog's MainPhase
         TryRegisterDefaults();
 
-        _lastGc0 = GC.CollectionCount(0);
-        _lastGc1 = GC.CollectionCount(1);
-        _lastGc2 = GC.CollectionCount(2);
+        _lastGc0 = _initGc0 = GC.CollectionCount(0);
+        _lastGc1 = _initGc1 = GC.CollectionCount(1);
+        _lastGc2 = _initGc2 = GC.CollectionCount(2);
         _lastAllocBytes = GC.GetTotalAllocatedBytes(false);
+        _lastGcPauseMs = _initGcPauseMs = GC.GetTotalPauseDuration().TotalMilliseconds;
+        _launchWall = DateTime.Now;
 
         _view = new FrameProfilerGraph { Name = "Graph", Visible = false };
         _view.SetAnchorsPreset(Control.LayoutPreset.TopLeft);
         _view.Position = new Vector2(8f, 8f);
-        _view.CustomMinimumSize = new Vector2(GraphWidth, GraphHeight + 66f);
+        _view.CustomMinimumSize = new Vector2(GraphWidth, GraphHeight + 70f);
         _view.Size = _view.CustomMinimumSize;
         _view.MouseFilter = Control.MouseFilterEnum.Ignore;
         AddChild(_view);
 
-        // A fence that runs FIRST each frame (lowest process priority) to stamp the start of the process step;
-        // this node runs LAST (priority above), so the span between them is the true per-frame total _Process time.
         AddChild(new FrameProfilerFence { Name = "Fence", ProcessPriority = -1_000_000 });
 
-        // One-shot environment banner: a large `rest` (idle CPU+GPU but a long frame) is usually the run
-        // environment, not game code — an attached managed/Mono debugger adds main-thread sync stalls, and the
-        // vsync/fps cap paces frame delivery. This prints the facts so you don't have to guess (esp. when running
-        // from an IDE "Player" config, which attaches a debugger for hot-reload even on a non-breakpoint run).
-        // `debug-build` = OS.IsDebugBuild() = Godot's export/run CONTEXT (always true from the editor, regardless
-        // of the C# config). `csharp` = the actual managed assembly optimization (#if DEBUG), which IS what the
-        // Rider Debug/Release switch controls — check this line to confirm a Release switch reached the running DLL.
 #if DEBUG
         const string csharpConfig = "Debug";
 #else
         const string csharpConfig = "Release(optimized)";
 #endif
-        Log.Info($"[frameprofiler] env: managed-debugger={System.Diagnostics.Debugger.IsAttached} " +
-                 $"godot-context={(OS.IsDebugBuild() ? "debug" : "release")} csharp={csharpConfig} " +
-                 $"vsync={DisplayServer.WindowGetVsyncMode()} maxfps={Godot.Engine.MaxFps}");
+        string env = $"env: managed-debugger={System.Diagnostics.Debugger.IsAttached} " +
+                     $"godot-context={(OS.IsDebugBuild() ? "debug" : "release")} csharp={csharpConfig} " +
+                     $"vsync={DisplayServer.WindowGetVsyncMode()} maxfps={Godot.Engine.MaxFps} " +
+                     $"cpu={OS.GetProcessorCount()}c gpu={RenderingServer.GetVideoAdapterName()}";
+        _envBanner = env;
+        Log.Info($"[frameprofiler] {env}");
+        Log.Info($"[frameprofiler] {ColumnsLegend}");   // (8) one-time legend
+    }
+
+    private string _envBanner = "";
+
+    /// <summary>(8) The column legend — printed once at boot and written into the log header.</summary>
+    private const string ColumnsLegend =
+        "columns: proc=all _Process CPU | rcpu=render-thread submit | gpu=main viewport GPU | " +
+        "rest=present/vsync/stall (ms-proc-rcpu) | alloc=managed garbage/frame | pipe=shader-pipeline compiles";
+
+    public override void _Input(InputEvent @event)
+    {
+        // (4) F11 toggles the expanded overlay. Direct physical-key intercept (F11 is the one unbound function
+        // key) so it needs no cfg bind; consumed because nothing else uses it.
+        if (@event is InputEventKey { Pressed: true, Echo: false, Keycode: Key.F11 })
+        {
+            _expanded = !_expanded;
+            GetViewport().SetInputAsHandled();
+        }
     }
 
     public override void _Process(double delta)
@@ -177,26 +244,30 @@ public partial class FrameProfiler : CanvasLayer
         int mode = Mode();
         Prof.Enabled = mode >= 1;
 
-        // GC deltas across exactly one frame (this _Process to the previous one).
+        // Start/stop recording + watchdog with the active state.
+        if (mode >= 1 && !_sessionLog.Active)
+            _sessionLog.Start(_launchWall, _envBanner, ColumnsLegend);
+        if (mode >= 1 && _watchdog is null && WatchdogEnabled())
+            _watchdog = new PhaseWatchdog();
+
+        if (mode < 1)
+        {
+            if (_view.Visible) _view.Visible = false;
+            return;   // fully idle when off (besides the cheap cvar reads above)
+        }
+
+        // GC deltas across exactly one frame.
         int g0 = GC.CollectionCount(0), g1 = GC.CollectionCount(1), g2 = GC.CollectionCount(2);
         long alloc = GC.GetTotalAllocatedBytes(false);
         _dGc0 = g0 - _lastGc0; _dGc1 = g1 - _lastGc1; _dGc2 = g2 - _lastGc2;
         _dAllocBytes = alloc - _lastAllocBytes;
         _lastGc0 = g0; _lastGc1 = g1; _lastGc2 = g2; _lastAllocBytes = alloc;
 
-        // Drain this frame's subsystem timers + markers (from any layer via Prof) for display + hitch attribution.
-        // The 3-arg form also drains per-scope ALLOCATION, so every hitch row reads "how long AND how much garbage".
-        Prof.SnapshotAndReset(_lastScopes, _lastCounters, _allocScratch);
+        // Drain this frame's scopes + markers + the hierarchy (self-time + parents) for display + attribution.
+        Prof.SnapshotAndReset(_lastScopes, _lastCounters, _allocScratch, _lastSelf, _lastParent);
 
-        // Engine-level breakdown: the Prof scopes only cover the C# logic we wrapped — the REST of a frame is the
-        // other _Process nodes, physics, and (usually the big one on a hitch) rendering, none of which live in a
-        // C# scope. Pull those from Godot so a hitch line accounts for the WHOLE frame: TIME_PROCESS is the sum of
-        // every node's _Process; the viewport render timers split the render-thread CPU submit from the GPU (so a
-        // first-draw shader/pipeline compile shows up as a GPU or render-CPU spike, not as missing time).
-        // Per-frame total _Process span (fence node stamped the start; this node runs last) — a true per-frame
-        // number we CAN difference against the scopes, unlike Godot's smoothed TIME_PROCESS monitor.
         _procMs = Prof.FrameProcessMs();
-        _physMs = Performance.GetMonitor(Performance.Monitor.TimePhysicsProcess) * 1000.0; // part of `rest`
+        _physMs = Performance.GetMonitor(Performance.Monitor.TimePhysicsProcess) * 1000.0;
         if (!_measureArmed && GetViewport() is { } vp)
         {
             _viewportRid = vp.GetViewportRid();
@@ -210,41 +281,32 @@ public partial class FrameProfiler : CanvasLayer
         }
 
         double ms = delta * 1000.0;
-        // The _Process span can never exceed the whole frame — clamping kills the first-frame artifact where the
-        // fence hadn't stamped yet (Prof.Enabled flips on mid-frame) and FrameProcessMs reads a garbage epoch.
         if (_procMs > ms) _procMs = ms;
 
-        // "Everything else": the per-frame _Process span not attributed to a named WHOLE-NODE scope ⇒ time in
-        // nodes we haven't wrapped (each HUD panel, weather/radar, music, gibs, …) plus Godot's per-node
-        // dispatch. A big proc:other ⇒ scope more nodes; a small one with a still-large frame ⇒ the time is in
-        // `rest` (present/vsync/stall), not _Process. The summed keys are distinct nodes (non-overlapping);
-        // nested scopes (server.tick, sim.*, net.*, cw.*) are deliberately excluded so nothing double-counts.
-        // Computed AFTER this frame's _procMs refresh+clamp — it used to difference THIS frame's scopes
-        // against LAST frame's _procMs, which printed impossible rows (proc:other > proc) on hitch frames.
+        // proc:other = the per-frame _Process span not attributed to a named WHOLE-NODE scope.
         double accounted = 0.0;
         foreach (string k in TopLevelNodeScopes)
             if (_lastScopes.TryGetValue(k, out double v)) accounted += v;
         _lastScopes["proc:other"] = Math.Max(0.0, _procMs - accounted);
+        _lastParent["proc:other"] = "";   // a root-level bucket in the tree
+
+        // Feed the watchdog this frame's "is it long yet?" threshold so it only samples over-budget frames.
+        if (_watchdog is { } wd)
+            wd.SampleThresholdMs = Math.Max(6.0, HitchFloorMs() * 0.6);
 
         _ring[_ringHead] = ms;
 
-        // ---- forensic record for THIS frame (same ring slot as _ring) ----------------------------------------
+        // ---- forensic record for THIS frame ------------------------------------------------------------------
         FrameRecord rec = _records[_ringHead] ??= new FrameRecord();
         rec.Reset(_frameId++);
         rec.Ms = ms; rec.ProcMs = _procMs; rec.RcpuMs = _renderCpuMs; rec.GpuMs = _renderGpuMs; rec.PhysMs = _physMs;
         rec.AllocBytes = _dAllocBytes;
         rec.G0 = _dGc0; rec.G1 = _dGc1; rec.G2 = _dGc2;
 
-        // GC pause: the cumulative suspension total — its per-frame delta is the all-threads stop time that
-        // landed in this frame (the part of a gen2 that the alloc counters can't show).
         double pauseTotal = GC.GetTotalPauseDuration().TotalMilliseconds;
         rec.GcPauseMs = Math.Max(0.0, pauseTotal - _lastGcPauseMs);
         _lastGcPauseMs = pauseTotal;
 
-        // GPU counters. Draw calls are already a per-frame monitor; the pipeline-compilation counters are
-        // cumulative totals → per-frame delta. A nonzero delta on a hitch frame IS the first-use-compile class
-        // (§1.1/§11 R1) caught red-handed; "uber" = the canvas/mesh/surface slice (ubershader fallback compiles),
-        // the rest are specialization/draw-time compiles.
         rec.DrawCalls = Performance.GetMonitor(Performance.Monitor.RenderTotalDrawCallsInFrame);
         long uber = (long)RenderingServer.GetRenderingInfo(RenderingServer.RenderingInfo.PipelineCompilationsCanvas)
                   + (long)RenderingServer.GetRenderingInfo(RenderingServer.RenderingInfo.PipelineCompilationsMesh)
@@ -257,11 +319,17 @@ public partial class FrameProfiler : CanvasLayer
         _lastPipeTotal = pipeTotal;
         _lastPipeUber = uber;
 
-        // Scope table (time + alloc per scope) and the one-shot events drained this frame.
+        // Scope table (inclusive + self + alloc per scope) + the one-shot events; track the dominant scope.
+        string? topName = null; double topMs = 0.0;
         foreach (KeyValuePair<string, double> kv in _lastScopes)
         {
             _allocScratch.TryGetValue(kv.Key, out double bytes);
-            rec.Scopes.Add(new ScopeRow(kv.Key, kv.Value, bytes));
+            _lastSelf.TryGetValue(kv.Key, out double self);
+            rec.Scopes.Add(new ScopeRow(kv.Key, kv.Value, self, bytes));
+            // EWMA baseline (9): slow alpha so a spike barely moves its own "typical".
+            _scopeEwma.TryGetValue(kv.Key, out double e);
+            _scopeEwma[kv.Key] = e <= 0.0 ? kv.Value : e * 0.95 + kv.Value * 0.05;
+            if (kv.Value > topMs) { topMs = kv.Value; topName = kv.Key; }
         }
         _eventScratch.Clear();
         Prof.DrainEvents(_eventScratch);
@@ -271,39 +339,52 @@ public partial class FrameProfiler : CanvasLayer
         _ringHead = (_ringHead + 1) % RingSize;
         if (_ringCount < RingSize) _ringCount++;
         ComputeStats();
+
+        // Rolling alloc rate (10) over the ring window + heap size.
+        double restMs = Math.Max(0.0, ms - _procMs - _renderCpuMs);
+        _heapBytes = GC.GetTotalMemory(false);
+
+        // Session accumulators (12).
+        _sessionHist.Add(ms);
+        _windowHist.Add(ms);
+        _sessionAllocTotal += _dAllocBytes;
+        if (_dAllocBytes > _peakAllocFrame) { _peakAllocFrame = _dAllocBytes; _peakAllocAtS = SessionSeconds; }
+
         _forensicClock += ms;
 
-        if (mode >= 1 && _ringCount > 30)
+        // Per-frame CSV row (writer thread formats it; main thread just enqueues a struct).
+        if (_sessionLog.Active)
+            _sessionLog.WriteFrame(new FrameSample(
+                (long)rec.FrameId, SessionSeconds, ms, _procMs, _renderCpuMs, _renderGpuMs, _physMs, restMs,
+                _dAllocBytes, _dGc0, _dGc1, _dGc2, rec.GcPauseMs, rec.DrawCalls, rec.PipeCompiles,
+                rec.PipeCompilesUber, topName, topMs));
+
+        // ---- hitch detection + classification + collapse -----------------------------------------------------
+        if (_ringCount > 30)
         {
             double floor = HitchFloorMs();
             if (ms > floor && ms > _median * HitchFactor)
-                LogHitch(ms, rec);
+                OnHitch(ms, restMs, rec);
         }
+        MaybeFlushRun();
 
-        // On-demand ring export: `set cl_frameprofiler_dump 1` (console or --cvar) writes the last RingSize
-        // frames — every record, full scope tables, events — to user://frameprofile_ring.csv and re-arms.
         if (ConsumeDumpRequest())
             DumpRingCsv();
-        // mode 2: a once-per-second breakdown of where frame time goes (the top subsystem scopes + markers), so
-        // you can read the steady-state split live without waiting for a hitch. Hitches still log regardless above.
-        if (mode >= 2)
+
+        // (11) periodic steady-state snapshot.
+        _snapshotClock += ms;
+        if (_snapshotClock >= SnapshotIntervalMs)
         {
-            _summaryClock += ms;
-            if (_summaryClock >= 1000.0)
-            {
-                _summaryClock = 0.0;
-                // rest = the median frame time not spent in C# _Process or render submit ⇒ present/vsync wait or
-                // GPU wait. Big rest + small gpu ⇒ vsync pacing (try Mailbox); big rest + big gpu ⇒ GPU-bound.
-                double restMed = Math.Max(0.0, _median - _procMs - _renderCpuMs);
-                EmitProfile($"[frameprofile] med {_median:0.0}ms p99 {_p99:0.0}ms | proc {_procMs:0.0} rcpu {_renderCpuMs:0.0} gpu {_renderGpuMs:0.0} rest {restMed:0.0} | draws {(RecordAt(1) is { } r ? r.DrawCalls : 0):0} | {TopScopes(4)}{Markers()}");
-            }
+            EmitSnapshot();
+            _snapshotClock = 0.0;
         }
 
-        bool show = mode >= 1;
+        bool show = true;
         if (_view.Visible != show)
             _view.Visible = show;
-        if (show)
-            _view.QueueRedraw();
+        _view.CustomMinimumSize = new Vector2(GraphWidth, _expanded ? GraphHeight + 70f + ExpandedExtraHeight : GraphHeight + 70f);
+        _view.Size = _view.CustomMinimumSize;
+        _view.QueueRedraw();
     }
 
     private void ComputeStats()
@@ -315,67 +396,170 @@ public partial class FrameProfiler : CanvasLayer
         _median = _sortScratch[n / 2];
         int idx = Math.Min(n - 1, (int)(n * 0.99));
         _p99 = _sortScratch[idx];
+
+        // Alloc rate (10): sum the ring's per-frame alloc / its wall-time → MB/s.
+        double sumMs = 0.0, sumBytes = 0.0;
+        for (int i = 0; i < n; i++)
+        {
+            int slot = (_ringHead - 1 - i + RingSize * 2) % RingSize;
+            sumMs += _ring[slot];
+            if (_records[slot] is { } r) sumBytes += r.AllocBytes;
+        }
+        _allocRateMbPerSec = sumMs > 0.0 ? sumBytes / sumMs * 1000.0 / (1024.0 * 1024.0) : 0.0;
     }
 
-    private void LogHitch(double ms, FrameRecord rec)
-    {
-        string top = TopScopes(3);
-        string gc = (_dGc0 + _dGc1 + _dGc2) > 0 ? $" | GC g0+{_dGc0} g1+{_dGc1} g2+{_dGc2}" : "";
-        string scopes = top.Length > 0 ? " | top: " + top : "";
-        string marks = Markers();
-        // rest = wall-clock not spent in C# _Process or render-thread submit ⇒ GPU wait / vsync-present / an
-        // external (driver/OS) stall. Big rest + big gpu ⇒ GPU-bound (e.g. a first-draw shader compile);
-        // big rest + small gpu ⇒ present/vsync or a stall outside Godot's measured sections.
-        double rest = Math.Max(0.0, ms - _procMs - _renderCpuMs);
-        // [external?] (§12.6c): the stall lived almost entirely in `rest` with quiet game-side numbers (no
-        // pipeline compile, no gen2, small proc/gpu) ⇒ compositor/driver/OS, not game code. Resistors:
-        // vid_fullscreen 2 (exclusive — compositor out of the present path), sys_priority_boost (default on),
-        // vid_vsync 2 (a missed present costs one late frame, not a cascade). Don't chase these in the repo.
-        bool external = ms >= 25.0 && rest >= ms * 0.7 && _procMs <= ms * 0.3
-                        && rec.PipeCompiles == 0 && rec.G2 == 0 && _renderGpuMs <= ms * 0.3;
-        string tag = external ? " | EXTERNAL? (rest-dominated; OS/compositor/driver)" : "";
-        EmitProfile($"[hitch] {ms:0.0}ms (med {_median:0.0}) | proc {_procMs:0.0} rcpu {_renderCpuMs:0.0} gpu {_renderGpuMs:0.0} phys {_physMs:0.0} rest {rest:0.0}{gc} | alloc {_dAllocBytes / 1024}KB{scopes}{marks}{tag}");
+    // ---- hitch handling ---------------------------------------------------------------------------------------
 
-        // Multi-line forensic block (rate-limited so a hitch storm logs one block, not a wall): the FULL scope
-        // table with per-scope allocation, the GPU compile/draw counters, GC pause, the one-shot events that
-        // landed on this frame (and the recent ones leading up to it), and the preceding frames' one-liners —
-        // enough to attribute the hitch without re-running.
+    private void OnHitch(double ms, double restMs, FrameRecord rec)
+    {
+        _sessionHitchCount++;
+        (HitchClass cls, string reason) = Classify(ms, restMs, rec);
+        _windowHitchByClass[(int)cls]++;
+        _sessionHitchByClass[(int)cls]++;
+        double nowS = SessionSeconds;
+
+        // Worst-frame hall of shame (12).
+        ConsiderWorst(ms, cls, rec);
+
+        // (3) pin the latest hitch for the overlay.
+        _lastHitchSummary = $"{ms:0.0}ms {ClassTag(cls)} ({reason})";
+        _lastHitchAtS = nowS;
+
+        // (6) collapse: extend a run of the same class seen within the last second instead of re-logging.
+        if (_runCount > 0 && _runClass == cls && nowS - _runLastS < 1.0)
+        {
+            _runCount++;
+            _runMinMs = Math.Min(_runMinMs, ms);
+            _runMaxMs = Math.Max(_runMaxMs, ms);
+            _runLastS = nowS;
+            return;
+        }
+
+        // New run: flush the previous one, then log THIS hitch in full.
+        FlushRun();
+        _runClass = cls; _runCount = 1; _runMinMs = _runMaxMs = ms;
+        _runStartS = _runLastS = _runLastInterimS = nowS; _runReason = reason;
+        LogHitchFull(ms, restMs, rec, cls, reason);
+    }
+
+    /// <summary>(5) Decide what dominated the frame. Priority order: the unambiguous one-shot causes (a pipeline
+    /// compile, a gen-2 / long GC pause) first, then a dominating asset build, then the proportional split
+    /// (CPU / GPU / present) and finally the rest-dominated external-stall heuristic.</summary>
+    private (HitchClass, string) Classify(double ms, double restMs, FrameRecord rec)
+    {
+        if (rec.PipeCompiles > 0)
+            return (HitchClass.PipelineCompile,
+                $"{rec.PipeCompiles} shader-pipeline compile(s){(rec.PipeCompilesUber > 0 ? $", {rec.PipeCompilesUber} ubershader" : "")}");
+
+        if (rec.G2 > 0 || rec.GcPauseMs >= Math.Max(2.0, 0.3 * ms))
+            return (HitchClass.GcPause,
+                $"GC g0+{rec.G0} g1+{rec.G1} g2+{rec.G2}, pause {rec.GcPauseMs:0.0}ms, {Bytes(rec.AllocBytes)} allocated");
+
+        string dom = DominantScope(out double domMs);
+        bool assetDom = dom.StartsWith("stream.", StringComparison.Ordinal) || dom.StartsWith("iqm.", StringComparison.Ordinal);
+        if (assetDom && domMs >= 0.4 * ms)
+            return (HitchClass.AssetBuild, $"{dom} {domMs:0.0}ms (asset build/upload)");
+
+        // External: rest-dominated, game-side quiet (the §12.6c compositor/driver/OS class).
+        bool external = ms >= 25.0 && restMs >= ms * 0.7 && _procMs <= ms * 0.3
+                        && rec.PipeCompiles == 0 && rec.G2 == 0 && _renderGpuMs <= ms * 0.3;
+        if (external)
+            return (HitchClass.External, "rest-dominated, game-side quiet — OS/compositor/driver");
+
+        if (_procMs >= 0.55 * ms)
+            return (HitchClass.CpuLogic, $"{dom} {domMs:0.0}ms{Anomaly(dom, domMs)}");
+
+        if (_renderGpuMs >= 0.45 * ms)
+            return (HitchClass.GpuBound, $"gpu {_renderGpuMs:0.0}ms, {rec.DrawCalls:0} draws");
+
+        if (restMs >= 0.55 * ms)
+            return (HitchClass.VsyncPresent, $"present/vsync-bound (rest {restMs:0.0}ms, gpu {_renderGpuMs:0.0}ms)");
+
+        return (HitchClass.Unknown, $"mixed — {dom} {domMs:0.0}ms");
+    }
+
+    private void LogHitchFull(double ms, double restMs, FrameRecord rec, HitchClass cls, string reason)
+    {
+        int dropped = FramesDropped(ms);
+        string drop = dropped > 0 ? $" ({dropped} dropped @{Hz():0}Hz)" : "";
+        string wd = WatchdogSuffix();
+        string marks = Markers();
+        Emit($"[hitch {ClassTag(cls)}] {ms:0.0}ms{drop} (med {_median:0.0}, ×{ms / Math.Max(0.1, _median):0.0}) — {reason} | " +
+             $"proc {_procMs:0.0} rcpu {_renderCpuMs:0.0} gpu {_renderGpuMs:0.0} rest {restMs:0.0} | alloc {Bytes(rec.AllocBytes)}{marks}{wd}",
+             toConsole: true);
+
+        // Multi-line forensic block (rate-limited so a hitch storm logs one block, not a wall).
         if (_forensicClock - _lastForensicDumpAt < 500.0)
             return;
         _lastForensicDumpAt = _forensicClock;
         DumpForensics(rec);
     }
 
+    /// <summary>(6) Emit a one-line summary for a collapsed run of ≥2 same-class hitches, then optionally clear it.</summary>
+    private void FlushRun()
+    {
+        if (_runCount >= 2)
+        {
+            double span = Math.Max(0.0, _runLastS - _runStartS);
+            Emit($"[hitch {ClassTag(_runClass)} ×{_runCount}] {_runMinMs:0.0}–{_runMaxMs:0.0}ms over {span:0.0}s " +
+                 $"(med {_median:0.0}) — {_runReason}", toConsole: true);
+        }
+        _runCount = 0;
+    }
+
+    /// <summary>Flush a run that has gone quiet (&gt;1s since the last hit), or emit an interim line for a long
+    /// ongoing run (every ~3s) so a sustained stutter still reports progress.</summary>
+    private void MaybeFlushRun()
+    {
+        if (_runCount == 0)
+            return;
+        double nowS = SessionSeconds;
+        if (nowS - _runLastS > 1.0)
+        {
+            FlushRun();
+            return;
+        }
+        if (_runCount >= 2 && nowS - _runLastInterimS > 3.0)
+        {
+            _runLastInterimS = nowS;
+            double span = Math.Max(0.0, nowS - _runStartS);
+            Emit($"[hitch {ClassTag(_runClass)} ×{_runCount}…] ongoing {_runMinMs:0.0}–{_runMaxMs:0.0}ms over {span:0.0}s " +
+                 $"— {_runReason}", toConsole: true);
+        }
+    }
+
+    private void ConsiderWorst(double ms, HitchClass cls, FrameRecord rec)
+    {
+        if (_worst.Count >= 10 && ms <= _worst[^1].Ms)
+            return;
+        string scope = DominantScope(out _);
+        _worst.Add((ms, cls, scope, SessionSeconds));
+        _worst.Sort(static (a, b) => b.Ms.CompareTo(a.Ms));
+        if (_worst.Count > 10)
+            _worst.RemoveRange(10, _worst.Count - 10);
+    }
+
     private void DumpForensics(FrameRecord rec)
     {
-        // Full scope table, descending by time (insertion sort into a scratch — tiny N, only on a hitch).
-        rec.Scopes.Sort(static (a, b) => b.Ms.CompareTo(a.Ms));
-        string rows = "";
-        int shown = 0;
-        foreach (ScopeRow r in rec.Scopes)
-        {
-            if (r.Ms < 0.05 && r.Bytes < 16 * 1024) continue;       // noise floor
-            if (shown++ == 12) break;
-            if (rows.Length > 0) rows += ", ";
-            rows += r.Bytes >= 1024 ? $"{r.Name} {r.Ms:0.0}ms/{r.Bytes / 1024.0:0}KB" : $"{r.Name} {r.Ms:0.0}ms";
-        }
-        if (rows.Length > 0)
-            EmitProfile($"[hitch]   scopes: {rows}");
+        // (16) Call tree: indented self-time, with a "<parent>:other" remainder synthesised at each level.
+        string tree = BuildScopeTree(rec, maxRows: 16);
+        if (tree.Length > 0)
+            Emit($"[hitch]   tree:\n{tree}", toConsole: true);
 
         if (rec.PipeCompiles > 0 || rec.DrawCalls > 0)
-            EmitProfile($"[hitch]   gpu: draws {rec.DrawCalls:0}, pipeline compiles +{rec.PipeCompiles}" +
-                        (rec.PipeCompiles > 0 ? $" (uber +{rec.PipeCompilesUber}, spec/draw +{rec.PipeCompiles - rec.PipeCompilesUber})" : "") +
-                        $", vram {Performance.GetMonitor(Performance.Monitor.RenderVideoMemUsed) / (1024.0 * 1024.0):0}MB");
+            Emit($"[hitch]   gpu: draws {rec.DrawCalls:0}, pipeline compiles +{rec.PipeCompiles}" +
+                 (rec.PipeCompiles > 0 ? $" (uber +{rec.PipeCompilesUber}, spec/draw +{rec.PipeCompiles - rec.PipeCompilesUber})" : "") +
+                 $", vram {Performance.GetMonitor(Performance.Monitor.RenderVideoMemUsed) / (1024.0 * 1024.0):0}MB", toConsole: true);
 
         if (rec.G0 + rec.G1 + rec.G2 > 0 || rec.GcPauseMs > 0.1)
-            EmitProfile($"[hitch]   gc: g0+{rec.G0} g1+{rec.G1} g2+{rec.G2} pause {rec.GcPauseMs:0.0}ms alloc {rec.AllocBytes / 1024}KB");
+            Emit($"[hitch]   gc: g0+{rec.G0} g1+{rec.G1} g2+{rec.G2} pause {rec.GcPauseMs:0.0}ms alloc {Bytes(rec.AllocBytes)} " +
+                 $"(rate {_allocRateMbPerSec:0}MB/s, heap {Bytes(_heapBytes)})", toConsole: true);
 
-        // Events on this frame + the few frames before it (a model build / warm pass / backlog trim that LANDED
-        // here, or just preceded it). Walk back up to 8 records.
+        // Events on this frame + the few before it.
         string events = "";
         for (int back = 7; back >= 0; back--)
         {
-            FrameRecord? r = RecordAt(back + 1);   // +1: ring head already advanced past rec
+            FrameRecord? r = RecordAt(back + 1);
             if (r is null) continue;
             foreach (string e in r.Events)
             {
@@ -384,9 +568,9 @@ public partial class FrameProfiler : CanvasLayer
             }
         }
         if (events.Length > 0)
-            EmitProfile($"[hitch]   events: {events}");
+            Emit($"[hitch]   events: {events}", toConsole: true);
 
-        // The run-up: the preceding 8 frames' totals — "was it building or a cliff?".
+        // The run-up: the preceding 8 frames' totals.
         string prev = "";
         for (int back = 8; back >= 1; back--)
         {
@@ -396,30 +580,138 @@ public partial class FrameProfiler : CanvasLayer
             prev += r.Ms.ToString("0.0");
         }
         if (prev.Length > 0)
-            EmitProfile($"[hitch]   prev: {prev}");
+            Emit($"[hitch]   prev: {prev}", toConsole: true);
     }
 
-    /// <summary>The record <paramref name="back"/> slots behind the ring head (1 = the newest written).</summary>
+    // ---- periodic snapshot (11) -------------------------------------------------------------------------------
+
+    private void EmitSnapshot()
+    {
+        if (_windowHist.Count == 0)
+            return;
+        string hitches = HitchBreakdown(_windowHitchByClass);
+        Emit($"[frameprofile] {_windowHist.Count} frames: p50 {_windowHist.Percentile(0.50):0.0} " +
+             $"p95 {_windowHist.Percentile(0.95):0.0} p99 {_windowHist.Percentile(0.99):0.0} " +
+             $"p99.9 {_windowHist.Percentile(0.999):0.0}ms (max {_windowHist.Max:0.0}) | " +
+             $"{hitches} | alloc {_allocRateMbPerSec:0}MB/s heap {Bytes(_heapBytes)} | proc {_procMs:0.0} gpu {_renderGpuMs:0.0}",
+             toConsole: Mode() >= 2);
+        _windowHist.Reset();
+        Array.Clear(_windowHitchByClass);
+    }
+
+    // ---- session summary (12) ---------------------------------------------------------------------------------
+
+    private void EmitSummary()
+    {
+        if (_summaryEmitted || _sessionHist.Count == 0)
+            return;
+        _summaryEmitted = true;
+
+        double dur = SessionSeconds;
+        double avgFps = _sessionHist.Mean > 0 ? 1000.0 / _sessionHist.Mean : 0;
+        double low1 = _sessionHist.Percentile(0.99), low01 = _sessionHist.Percentile(0.999);
+        Emit($"=== frame profiler session summary ({dur:0}s, {_sessionHist.Count} frames) ===", toConsole: true);
+        Emit($"  fps: avg {avgFps:0.0}  1%low {(low1 > 0 ? 1000.0 / low1 : 0):0}  0.1%low {(low01 > 0 ? 1000.0 / low01 : 0):0}" +
+             $"  (median {_sessionHist.Percentile(0.5):0.0}ms, worst {_sessionHist.Max:0.0}ms)", toConsole: true);
+        Emit($"  hitches: {_sessionHitchCount} total — {HitchBreakdown(_sessionHitchByClass)}", toConsole: true);
+        for (int i = 0; i < _worst.Count && i < 5; i++)
+        {
+            var w = _worst[i];
+            Emit($"    worst[{i + 1}]: {w.Ms:0.0}ms {ClassTag(w.Cls)} ({w.Scope}) @ t={w.TimeS:0.0}s", toConsole: true);
+        }
+        Emit($"  gc: g0+{GC.CollectionCount(0) - _initGc0} g1+{GC.CollectionCount(1) - _initGc1} " +
+             $"g2+{GC.CollectionCount(2) - _initGc2}, total pause {GC.GetTotalPauseDuration().TotalMilliseconds - _initGcPauseMs:0}ms", toConsole: true);
+        Emit($"  alloc: {Bytes(_sessionAllocTotal)} total, {_allocRateMbPerSec:0}MB/s recent, " +
+             $"peak {Bytes(_peakAllocFrame)} in one frame @ t={_peakAllocAtS:0.0}s, heap {Bytes(_heapBytes)}", toConsole: true);
+        if (_sessionLog.DroppedFrames > 0)
+            Emit($"  note: {_sessionLog.DroppedFrames} CSV rows dropped under disk backpressure (log lines unaffected)", toConsole: true);
+    }
+
+    public override void _ExitTree()
+    {
+        // Flush the in-flight collapse run, write the summary footer, then stop the background writer cleanly.
+        if (Prof.Enabled || _sessionLog.Active)
+        {
+            FlushRun();
+            EmitSummary();
+        }
+        _watchdog?.Stop();
+        _sessionLog.Stop();
+        if (Instance == this) Instance = null;
+    }
+
+    // ---- scope tree (16) --------------------------------------------------------------------------------------
+
+    /// <summary>Render the frame's scopes as an indented self-time tree (descending by inclusive ms), synthesising
+    /// a <c>(other)</c> remainder under any node whose children don't account for its inclusive time. Built only
+    /// on a hitch / for the expanded overlay, so the allocation + sort here is off the hot path.</summary>
+    private string BuildScopeTree(FrameRecord rec, int maxRows)
+    {
+        // Adjacency: parent -> children, from the representative parent map captured this frame.
+        var children = new Dictionary<string, List<string>>();
+        foreach (ScopeRow row in rec.Scopes)
+        {
+            string parent = _lastParent.TryGetValue(row.Name, out string? p) ? p : "";
+            (children.TryGetValue(parent, out List<string>? list) ? list : children[parent] = new List<string>()).Add(row.Name);
+        }
+        var incl = new Dictionary<string, double>();
+        var self = new Dictionary<string, double>();
+        var bytes = new Dictionary<string, double>();
+        foreach (ScopeRow row in rec.Scopes) { incl[row.Name] = row.Ms; self[row.Name] = row.Self; bytes[row.Name] = row.Bytes; }
+
+        var sb = new StringBuilder(512);
+        int rows = 0;
+        void Walk(string node, int depth)
+        {
+            if (rows >= maxRows) return;
+            incl.TryGetValue(node, out double mi);
+            self.TryGetValue(node, out double ms);
+            bytes.TryGetValue(node, out double b);
+            if (mi < 0.05 && b < 16 * 1024 && depth > 0) return;   // noise floor (always show roots)
+            sb.Append("    ").Append(' ', depth * 2)
+              .Append(node).Append(' ').Append(mi.ToString("0.0")).Append("ms");
+            if (ms < mi - 0.05) sb.Append(" (self ").Append(ms.ToString("0.0")).Append(')');
+            if (b >= 64 * 1024) sb.Append(" /").Append(Bytes((long)b));
+            sb.Append('\n');
+            rows++;
+
+            if (!children.TryGetValue(node, out List<string>? kids)) return;
+            kids.Sort((a, c) => incl.GetValueOrDefault(c).CompareTo(incl.GetValueOrDefault(a)));
+            double kidSum = 0.0;
+            foreach (string k in kids) { kidSum += incl.GetValueOrDefault(k); Walk(k, depth + 1); }
+            double other = mi - kidSum;
+            if (other >= 0.5 && kids.Count > 0 && rows < maxRows)
+            {
+                sb.Append("    ").Append(' ', (depth + 1) * 2)
+                  .Append("(other) ").Append(other.ToString("0.0")).Append("ms\n");
+                rows++;
+            }
+        }
+        if (children.TryGetValue("", out List<string>? roots))
+        {
+            roots.Sort((a, c) => incl.GetValueOrDefault(c).CompareTo(incl.GetValueOrDefault(a)));
+            foreach (string r in roots) Walk(r, 0);
+        }
+        return sb.ToString().TrimEnd('\n');
+    }
+
     private FrameRecord? RecordAt(int back)
     {
         if (back > _ringCount) return null;
         return _records[(_ringHead - back + RingSize * 2) % RingSize];
     }
 
-    // ---- on-demand ring export ---------------------------------------------------------------------------------
+    // ---- on-demand ring export --------------------------------------------------------------------------------
 
     private bool ConsumeDumpRequest()
     {
         CvarService? cv = ClientCvars();
         if (cv is null || cv.GetFloat("cl_frameprofiler_dump") == 0f)
             return false;
-        cv.Set("cl_frameprofiler_dump", "0");   // re-arm
+        cv.Set("cl_frameprofiler_dump", "0");
         return true;
     }
 
-    /// <summary>Write the whole forensic ring (oldest → newest) to <c>user://frameprofile_ring.csv</c>: one row
-    /// per frame with the engine split, GC, GPU counters, the top-3 scopes, and any events — Excel/pandas-ready
-    /// for plotting a stutter pattern offline.</summary>
     private void DumpRingCsv()
     {
         string ringPath = UserPaths.Resolve("frameprofile_ring.csv");
@@ -451,67 +743,114 @@ public partial class FrameProfiler : CanvasLayer
     private static string Csv(string s)
         => s.Contains(',') || s.Contains('"') ? "\"" + s.Replace("\"", "\"\"") + "\"" : s;
 
-    // Mode-2 file sink: route hitch + per-second profile lines to user://frameprofile.log (in addition to the
-    // console) so a windowed or exported run's profile is capturable even when stdout is buffered/detached (the
-    // common case for the listen-server play phase). Flushed per line so a force-quit keeps the data.
-    private static Godot.FileAccess? _logFile;
-    private static bool _logOpenTried;
+    // ---- output sink ------------------------------------------------------------------------------------------
 
-    private static void EmitProfile(string line)
+    /// <summary>Route a profile line to the console (when <paramref name="toConsole"/>) and ALWAYS to the
+    /// background session log (when recording is active). The console gate keeps the per-second snapshot off the
+    /// console unless <c>cl_frameprofiler 2</c>, while still recording it to the file.</summary>
+    private void Emit(string line, bool toConsole)
     {
-        Log.Info(line);
-        if (Mode() < 2)
-            return;
-        if (_logFile is null && !_logOpenTried)
-        {
-            _logOpenTried = true;
-            _logFile = Godot.FileAccess.Open(UserPaths.Resolve("frameprofile.log"), Godot.FileAccess.ModeFlags.Write);
-        }
-        if (_logFile is not null)
-        {
-            // Wall-clock stamp on the FILE lines only (console stays clean): the [external?] stall class
-            // survives exclusive fullscreen (§12.7), so the remaining diagnosis is CORRELATION — matching
-            // stall times against system events (WLAN scan period, AV activity, driver ops) needs real time.
-            _logFile.StoreLine($"{DateTime.Now:HH:mm:ss.fff} {line}");
-            _logFile.Flush();
-        }
+        if (toConsole)
+            Log.Info(line);
+        if (_sessionLog.Active)
+            _sessionLog.WriteLine(SessionSeconds, line);
     }
 
-    /// <summary>This frame's numeric markers (e.g. "ticks 3") as a compact suffix; empty when none. Hitch-only.</summary>
-    private static string Markers()
+    // ---- small helpers ----------------------------------------------------------------------------------------
+
+    private string DominantScope(out double ms)
+    {
+        string best = "?"; double bestMs = 0.0;
+        foreach (KeyValuePair<string, double> kv in _lastScopes)
+            if (kv.Value > bestMs) { bestMs = kv.Value; best = kv.Key; }
+        ms = bestMs;
+        return best;
+    }
+
+    /// <summary>(9) "(typ X, N× over)" suffix when a scope is far above its rolling baseline; empty otherwise.</summary>
+    private string Anomaly(string scope, double ms)
+    {
+        if (!_scopeEwma.TryGetValue(scope, out double typ) || typ < 0.05 || ms < typ * 3.0)
+            return "";
+        return $" (typ {typ:0.0}ms, {ms / typ:0}× over)";
+    }
+
+    /// <summary>This frame's numeric markers (e.g. "ticks 3" — the catch-up tick count) as a compact suffix;
+    /// empty when none. Lets a server.tick spike be read as "ran 3 ticks" vs "one expensive tick".</summary>
+    private string Markers()
     {
         if (_lastCounters.Count == 0) return "";
-        string s = "";
+        var sb = new StringBuilder(" | ");
+        bool first = true;
         foreach (KeyValuePair<string, double> kv in _lastCounters)
         {
-            if (s.Length > 0) s += ", ";
-            s += $"{kv.Key} {kv.Value:0.##}";
+            if (!first) sb.Append(", ");
+            sb.Append(kv.Key).Append(' ').Append(kv.Value.ToString("0.##"));
+            first = false;
         }
-        return " | " + s;
+        return sb.ToString();
     }
 
-    /// <summary>The k highest subsystem timers this frame, as a compact string (only built on a hitch).</summary>
-    private static string TopScopes(int k)
+    private string WatchdogSuffix()
     {
-        if (_lastScopes.Count == 0) return "";
-        var used = new HashSet<string>();
-        string s = "";
-        for (int i = 0; i < k; i++)
-        {
-            string? best = null; double bestMs = 0;
-            foreach (KeyValuePair<string, double> kv in _lastScopes)
-                if (kv.Value > bestMs && !used.Contains(kv.Key)) { bestMs = kv.Value; best = kv.Key; }
-            if (best is null || bestMs < 0.05) break;
-            used.Add(best);
-            if (s.Length > 0) s += ", ";
-            s += $"{best} {bestMs:0.0}ms";
-        }
-        return s;
+        if (_watchdog is not { } wd) return "";
+        wd.SnapshotCurrent(out string? phase, out int samples, out int total);
+        if (total < 3 || phase is null) return "";
+        return $" | watchdog: {samples}/{total} samples in '{phase}'";
     }
+
+    private static string ClassTag(HitchClass c) => c switch
+    {
+        HitchClass.CpuLogic => "CPU-LOGIC",
+        HitchClass.GpuBound => "GPU-BOUND",
+        HitchClass.VsyncPresent => "VSYNC/PRESENT",
+        HitchClass.GcPause => "GC-PAUSE",
+        HitchClass.PipelineCompile => "PIPELINE-COMPILE",
+        HitchClass.AssetBuild => "ASSET-BUILD",
+        HitchClass.External => "EXTERNAL",
+        _ => "MIXED",
+    };
+
+    private string HitchBreakdown(int[] byClass)
+    {
+        var sb = new StringBuilder();
+        int total = 0;
+        for (int i = 0; i < byClass.Length; i++) total += byClass[i];
+        if (total == 0) return "no hitches";
+        for (int i = byClass.Length - 1; i >= 0; i--)
+            if (byClass[i] > 0)
+            {
+                if (sb.Length > 0) sb.Append(", ");
+                sb.Append(byClass[i]).Append(' ').Append(ClassTag((HitchClass)i));
+            }
+        return sb.ToString();
+    }
+
+    /// <summary>(7) Human-readable byte size: B / KB / MB / GB.</summary>
+    private static string Bytes(long b) => Bytes((double)b);
+    private static string Bytes(double b)
+    {
+        double abs = Math.Abs(b);
+        if (abs >= 1024.0 * 1024.0 * 1024.0) return $"{b / (1024.0 * 1024.0 * 1024.0):0.0}GB";
+        if (abs >= 1024.0 * 1024.0) return $"{b / (1024.0 * 1024.0):0.0}MB";
+        if (abs >= 1024.0) return $"{b / 1024.0:0}KB";
+        return $"{b:0}B";
+    }
+
+    /// <summary>(7) Whole vsync/refresh frames missed by a frame of <paramref name="ms"/> (rounds to the nearest
+    /// refresh interval, then subtracts the one frame we were entitled to).</summary>
+    private int FramesDropped(double ms)
+    {
+        double budget = BudgetMs();
+        return budget > 0 ? Math.Max(0, (int)Math.Round(ms / budget) - 1) : 0;
+    }
+
+    private double Hz() => 1000.0 / BudgetMs();
 
     // ---- drawing data (read by FrameProfilerGraph._Draw) -----------------------------------------------------
-    internal const float GraphWidth = 256f;
+    internal const float GraphWidth = 300f;
     internal const float GraphHeight = 56f;
+    private const float ExpandedExtraHeight = 132f;   // room for the live-scope list + last-hitch line
 
     internal void DrawInto(Control c)
     {
@@ -519,54 +858,100 @@ public partial class FrameProfiler : CanvasLayer
         if (font is null)
             return;
         double budget = BudgetMs();
-        double scaleMax = Math.Max(budget * 3.0, _p99 * 1.2 + 1.0); // headroom so a 3-frame hitch still fits
+        double scaleMax = Math.Max(budget * 3.0, _p99 * 1.2 + 1.0);
 
-        // Backing panel.
-        c.DrawRect(new Rect2(0f, 0f, GraphWidth, GraphHeight), new Color(0f, 0f, 0f, 0.45f));
+        c.DrawRect(new Rect2(0f, 0f, GraphWidth, GraphHeight), new Color(0f, 0f, 0f, 0.5f));
 
-        // Frame-time bars, oldest -> newest left-to-right (show the most recent RingSize samples).
+        // (1) Stacked category bars: proc (blue) + rcpu (cyan) + rest (grey) = ms; gpu drawn as an orange marker
+        // (it runs async, so it doesn't stack); a pipeline-compile or gen-2 frame gets a red cap.
         int n = _ringCount;
         float bw = GraphWidth / RingSize;
+        var cProc = new Color(0.35f, 0.6f, 1f);
+        var cRcpu = new Color(0.3f, 0.85f, 0.95f);
+        var cRest = new Color(0.5f, 0.5f, 0.55f);
+        var cGpu = new Color(1f, 0.6f, 0.2f);
+        var cCap = new Color(1f, 0.2f, 0.2f);
         for (int i = 0; i < n; i++)
         {
-            // _ringHead points one past the newest; walk back so the rightmost bar is the newest sample.
             int slot = (_ringHead - n + i + RingSize * 2) % RingSize;
             double v = _ring[slot];
-            float h = (float)Math.Clamp(v / scaleMax, 0.0, 1.0) * GraphHeight;
-            Color col = v >= budget * 2.0 ? new Color(1f, 0.25f, 0.2f)
-                : v >= budget * 1.25 ? new Color(1f, 0.8f, 0.2f)
-                : new Color(0.3f, 0.9f, 0.4f);
-            float x = i * bw;
-            c.DrawRect(new Rect2(x, GraphHeight - h, Math.Max(1f, bw), h), col);
+            FrameRecord? r = _records[slot];
+            float x = i * bw, w = Math.Max(1f, bw);
+            float Scale(double t) => (float)Math.Clamp(t / scaleMax, 0.0, 1.0) * GraphHeight;
+
+            if (r is null)
+            {
+                float hh = Scale(v);
+                c.DrawRect(new Rect2(x, GraphHeight - hh, w, hh), cRest);
+                continue;
+            }
+            double proc = r.ProcMs, rcpu = r.RcpuMs, rest = Math.Max(0.0, v - proc - rcpu);
+            float y = GraphHeight;
+            void Seg(double t, Color col) { float h = Scale(t); if (h <= 0f) return; c.DrawRect(new Rect2(x, y - h, w, h), col); y -= h; }
+            Seg(proc, cProc);
+            Seg(rcpu, cRcpu);
+            Seg(rest, cRest);
+            // GPU marker tick.
+            float gy = GraphHeight - Scale(r.GpuMs);
+            c.DrawRect(new Rect2(x, gy - 1f, w, 2f), cGpu);
+            // Red cap on a one-shot hazard frame.
+            if (r.PipeCompiles > 0 || r.G2 > 0)
+                c.DrawRect(new Rect2(x, GraphHeight - Scale(v) - 2f, w, 2f), cCap);
         }
 
-        // The vsync/refresh budget line.
+        // Budget line.
         float by = GraphHeight - (float)Math.Clamp(budget / scaleMax, 0.0, 1.0) * GraphHeight;
         c.DrawLine(new Vector2(0f, by), new Vector2(GraphWidth, by), new Color(1f, 1f, 1f, 0.5f), 1f);
 
-        // Three stat lines under the graph: frame summary, the engine breakdown (where the WHOLE frame goes), GC.
-        double cur = n > 0 ? _ring[(_ringHead - 1 + RingSize) % RingSize] : 0;
         var white = new Color(1f, 1f, 1f, 0.95f);
-        c.DrawString(font, new Vector2(2f, GraphHeight + 13f),
-            $"{cur,5:0.0}ms  p99 {_p99:0.0}  med {_median:0.0}  ({budget:0.0} budget)",
+        double cur = n > 0 ? _ring[(_ringHead - 1 + RingSize) % RingSize] : 0;
+        double curFps = cur > 0 ? 1000.0 / cur : 0;
+        double low1 = _p99 > 0 ? 1000.0 / _p99 : 0;
+
+        // (2) Header: fps + 1%-low + session hitch counter.
+        float ty = GraphHeight + 13f;
+        c.DrawString(font, new Vector2(2f, ty), $"{curFps,3:0} fps ({cur:0.0}ms)  med {_median:0.0}  p99 {_p99:0.0}  1%low {low1:0}  hitch {_sessionHitchCount}",
             HorizontalAlignment.Left, -1f, 12, white);
-        // proc = all C# _Process; gpu = main viewport GPU; the rest of the frame is render-submit + present/wait.
         Color gpuCol = _renderGpuMs > budget ? new Color(1f, 0.55f, 0.3f) : white;
-        c.DrawString(font, new Vector2(2f, GraphHeight + 29f),
-            $"proc {_procMs:0.0}  rcpu {_renderCpuMs:0.0}  gpu {_renderGpuMs:0.0}",
+        c.DrawString(font, new Vector2(2f, ty + 16f), $"proc {_procMs:0.0}  rcpu {_renderCpuMs:0.0}  gpu {_renderGpuMs:0.0}",
             HorizontalAlignment.Left, -1f, 12, gpuCol);
         Color allocCol = _dAllocBytes > 256 * 1024 ? new Color(1f, 0.7f, 0.3f) : white;
-        c.DrawString(font, new Vector2(2f, GraphHeight + 45f),
-            $"GC {_lastGc0}/{_lastGc1}/{_lastGc2}   {_dAllocBytes / 1024}KB/frame",
+        c.DrawString(font, new Vector2(2f, ty + 32f), $"GC {_lastGc0}/{_lastGc1}/{_lastGc2}  {Bytes(_dAllocBytes)}/f  {_allocRateMbPerSec:0}MB/s  heap {Bytes(_heapBytes)}",
             HorizontalAlignment.Left, -1f, 12, allocCol);
-        // Forensic line: draw calls, pipeline compiles this frame (any nonzero mid-play = a first-use compile
-        // slipping past the warm pass), and the GC pause that landed in the frame.
         if (RecordAt(1) is { } latest)
         {
             Color pipeCol = latest.PipeCompiles > 0 ? new Color(1f, 0.55f, 0.3f) : white;
-            c.DrawString(font, new Vector2(2f, GraphHeight + 61f),
-                $"draws {latest.DrawCalls:0}  pipe +{latest.PipeCompiles}  pause {latest.GcPauseMs:0.0}ms",
+            c.DrawString(font, new Vector2(2f, ty + 48f), $"draws {latest.DrawCalls:0}  pipe +{latest.PipeCompiles}  pause {latest.GcPauseMs:0.0}ms  [F11 detail]",
                 HorizontalAlignment.Left, -1f, 12, pipeCol);
+        }
+
+        // (3) Pinned last-hitch line (dim) — only meaningful for a while after a hitch.
+        if (_lastHitchSummary.Length > 0)
+        {
+            double age = SessionSeconds - _lastHitchAtS;
+            var dim = new Color(1f, 0.8f, 0.5f, age < 6.0 ? 0.95f : 0.45f);
+            c.DrawString(font, new Vector2(2f, ty + 64f), $"last hitch: {_lastHitchSummary} ({age:0.0}s ago)",
+                HorizontalAlignment.Left, -1f, 11, dim);
+        }
+
+        // (4/16) Expanded overlay: top live scopes with their rolling baseline.
+        if (_expanded)
+        {
+            float ey = ty + 82f;
+            c.DrawString(font, new Vector2(2f, ey), "live scopes (ms, typ):", HorizontalAlignment.Left, -1f, 11, white);
+            ey += 14f;
+            var top = new List<KeyValuePair<string, double>>(_lastScopes);
+            top.Sort((a, b) => b.Value.CompareTo(a.Value));
+            for (int i = 0; i < top.Count && i < 7; i++)
+            {
+                if (top[i].Value < 0.05) break;
+                _scopeEwma.TryGetValue(top[i].Key, out double typ);
+                bool hot = typ > 0.05 && top[i].Value > typ * 2.5;
+                c.DrawString(font, new Vector2(6f, ey),
+                    $"{top[i].Key,-16} {top[i].Value,5:0.0}  (typ {typ:0.0})",
+                    HorizontalAlignment.Left, -1f, 11, hot ? new Color(1f, 0.55f, 0.3f) : white);
+                ey += 13f;
+            }
         }
     }
 
@@ -578,10 +963,6 @@ public partial class FrameProfiler : CanvasLayer
     }
 
     // ---- cvars -----------------------------------------------------------------------------------------------
-    // cl_frameprofiler* lives in the SHARED CLIENT store (MenuState.Cvars) — where ClientSettings registers it,
-    // the console/menu set it, and the --cvar boot override writes it. Reading Api.Cvars was a bug: on a listen
-    // server Api.Cvars is the server's PRIVATE store, so `set cl_frameprofiler 2` (or --cvar) never reached the
-    // profiler mid-match. (Before MenuState.Boot the store is empty → fall back to the debug default.)
     private static CvarService? ClientCvars()
     {
         CvarService cv = XonoticGodot.Game.Menu.MenuState.Cvars;
@@ -605,12 +986,12 @@ public partial class FrameProfiler : CanvasLayer
         if (cvars is null) return;
         cvars.Register("cl_frameprofiler", "0", CvarFlags.Save);
         cvars.Register("cl_frameprofiler_hitchms", "12", CvarFlags.Save);
-        // Transient trigger (NOT archived): `set cl_frameprofiler_dump 1` writes the forensic ring to
-        // user://frameprofile_ring.csv and re-arms itself to 0.
+        cvars.Register("cl_frameprofiler_watchdog", "1", CvarFlags.Save);
+        // Transient trigger (NOT archived): `set cl_frameprofiler_dump 1` writes the forensic ring CSV + re-arms.
         cvars.Register("cl_frameprofiler_dump", "0");
     }
 
-    /// <summary>Effective mode: 0 off / 1 graph+hitch-log / 2 +per-frame trace. Debug-default-on like FpsPanel.</summary>
+    /// <summary>Effective mode: 0 off / 1 graph+hitch-log+record / 2 +console snapshot. Debug-default-on.</summary>
     private static int Mode()
     {
         CvarService? cv = ClientCvars();
@@ -622,6 +1003,12 @@ public partial class FrameProfiler : CanvasLayer
         if (OS.IsDebugBuild() && !cv.IsModified("cl_frameprofiler"))
             return 1;
         return 0;
+    }
+
+    private static bool WatchdogEnabled()
+    {
+        CvarService? cv = ClientCvars();
+        return cv is null || cv.GetFloat("cl_frameprofiler_watchdog") != 0f;
     }
 
     private static double HitchFloorMs()
@@ -647,5 +1034,135 @@ public partial class FrameProfilerGraph : Control
 /// </summary>
 public partial class FrameProfilerFence : Node
 {
+    public FrameProfilerFence() => ProcessMode = ProcessModeEnum.Always;
     public override void _Process(double delta) => Prof.MarkFrameStart();
+}
+
+/// <summary>
+/// A fixed-bucket frame-time histogram (0.25 ms buckets up to 300 ms + an overflow bin) for cheap percentile
+/// queries without storing every frame. <see cref="Add"/> is one array increment; the session instance is never
+/// reset, the window instance is reset each periodic snapshot.
+/// </summary>
+internal sealed class FrameHistogram
+{
+    private const double BucketMs = 0.25;
+    private const int N = 1200;                 // 1200 * 0.25 ms = 300 ms
+    private readonly long[] _buckets = new long[N + 1];
+    public long Count { get; private set; }
+    private double _sum;
+    public double Max { get; private set; }
+
+    public void Add(double ms)
+    {
+        int b = (int)(ms / BucketMs);
+        if (b < 0) b = 0;
+        if (b > N) b = N;
+        _buckets[b]++;
+        Count++;
+        _sum += ms;
+        if (ms > Max) Max = ms;
+    }
+
+    public double Mean => Count > 0 ? _sum / Count : 0.0;
+
+    /// <summary>The frame time at percentile <paramref name="p"/> (0..1). Bucket-resolution; exact for the tails
+    /// that matter (a p99.9 in the overflow bin reports the true max).</summary>
+    public double Percentile(double p)
+    {
+        if (Count == 0) return 0.0;
+        long target = (long)(Count * p);
+        long acc = 0;
+        for (int i = 0; i <= N; i++)
+        {
+            acc += _buckets[i];
+            if (acc >= target)
+                return i >= N ? Max : (i + 0.5) * BucketMs;
+        }
+        return Max;
+    }
+
+    public void Reset()
+    {
+        Array.Clear(_buckets);
+        Count = 0;
+        _sum = 0.0;
+        Max = 0.0;
+    }
+}
+
+/// <summary>
+/// (17) A sampling watchdog: a background thread that, during an over-budget frame, polls the main thread's
+/// innermost open scope (<see cref="Prof.MainPhase"/>) so a stall can be attributed even inside code we never
+/// wrapped in a scope (it reports <c>(unscoped)</c> then). Near-zero main-thread cost — the main thread only does
+/// a volatile store per scope push/pop. The thread sleeps cheaply when frames are short and only samples once a
+/// frame has already exceeded <see cref="SampleThresholdMs"/>.
+/// </summary>
+internal sealed class PhaseWatchdog
+{
+    // Plain field: written by the main thread each frame, read by the watchdog once per loop. A one-cycle-stale
+    // read just shifts the sample-start by ~1 ms — harmless for a heuristic, so no volatile/interlock needed.
+    public double SampleThresholdMs = 8.0;
+
+    private readonly Thread _thread;
+    private volatile bool _stop;
+
+    private readonly object _gate = new();
+    private readonly Dictionary<string, int> _hist = new();
+    private long _curSeq = -1;
+    private int _curTotal;
+
+    public PhaseWatchdog()
+    {
+        _thread = new Thread(Loop)
+        {
+            Name = "frameprofiler-watchdog",
+            IsBackground = true,
+            Priority = ThreadPriority.AboveNormal,   // it must wake promptly to catch a short hitch
+        };
+        _thread.Start();
+    }
+
+    private void Loop()
+    {
+        while (!_stop)
+        {
+            if (!Prof.Enabled)
+            {
+                Thread.Sleep(50);
+                continue;
+            }
+            long seq = Prof.FrameSeq;
+            long started = Prof.FrameStartTicks;
+            double elapsed = Prof.SpanMs(Stopwatch.GetTimestamp() - started);
+            if (elapsed >= SampleThresholdMs)
+            {
+                string phase = Prof.MainPhase ?? "(unscoped)";
+                lock (_gate)
+                {
+                    if (seq != _curSeq) { _hist.Clear(); _curSeq = seq; _curTotal = 0; }
+                    _hist.TryGetValue(phase, out int v); _hist[phase] = v + 1;
+                    _curTotal++;
+                }
+            }
+            Thread.Sleep(1);   // ~1 ms cadence; plenty of samples for a >12 ms hitch
+        }
+    }
+
+    /// <summary>The dominant sampled phase for the in-progress frame + how many of how many samples it won.
+    /// Called by the collector (which runs last in the frame, after the long part has elapsed).</summary>
+    public void SnapshotCurrent(out string? phase, out int samples, out int total)
+    {
+        lock (_gate)
+        {
+            phase = null; samples = 0; total = _curTotal;
+            foreach (KeyValuePair<string, int> kv in _hist)
+                if (kv.Value > samples) { samples = kv.Value; phase = kv.Key; }
+        }
+    }
+
+    public void Stop()
+    {
+        _stop = true;
+        _thread.Join(200);
+    }
 }
