@@ -67,6 +67,8 @@ public partial class FrameProfiler : CanvasLayer
     private static readonly Dictionary<string, double> _lastCounters = new();  // per-frame numeric markers
     private static readonly Dictionary<string, double> _lastSelf = new();      // self ms (inclusive - children)
     private static readonly Dictionary<string, string> _lastParent = new();    // scope -> representative parent
+    private static readonly Dictionary<string, double> _lastCalls = new();     // open count per scope this frame
+    private static readonly Dictionary<string, double> _lastMax = new();       // longest single open per scope (ms)
 
     // Whole-node _Process scopes (distinct nodes ⇒ non-overlapping); summed to compute "proc:other". Nested
     // sub-scopes (server.tick, sim.*, net.*, cw.*) are intentionally NOT here so they don't double-count.
@@ -100,7 +102,7 @@ public partial class FrameProfiler : CanvasLayer
     private double SessionSeconds => _sessionSw.Elapsed.TotalSeconds;
 
     // ---- forensic frame records (the hitch-attribution ring) --------------------------------------------------
-    private readonly record struct ScopeRow(string Name, double Ms, double Self, double Bytes);
+    private readonly record struct ScopeRow(string Name, double Ms, double Self, double Bytes, double Calls, double MaxMs);
 
     private sealed class FrameRecord
     {
@@ -264,7 +266,7 @@ public partial class FrameProfiler : CanvasLayer
         _lastGc0 = g0; _lastGc1 = g1; _lastGc2 = g2; _lastAllocBytes = alloc;
 
         // Drain this frame's scopes + markers + the hierarchy (self-time + parents) for display + attribution.
-        Prof.SnapshotAndReset(_lastScopes, _lastCounters, _allocScratch, _lastSelf, _lastParent);
+        Prof.SnapshotAndReset(_lastScopes, _lastCounters, _allocScratch, _lastSelf, _lastParent, _lastCalls, _lastMax);
 
         _procMs = Prof.FrameProcessMs();
         _physMs = Performance.GetMonitor(Performance.Monitor.TimePhysicsProcess) * 1000.0;
@@ -325,7 +327,9 @@ public partial class FrameProfiler : CanvasLayer
         {
             _allocScratch.TryGetValue(kv.Key, out double bytes);
             _lastSelf.TryGetValue(kv.Key, out double self);
-            rec.Scopes.Add(new ScopeRow(kv.Key, kv.Value, self, bytes));
+            _lastCalls.TryGetValue(kv.Key, out double calls);
+            _lastMax.TryGetValue(kv.Key, out double maxms);
+            rec.Scopes.Add(new ScopeRow(kv.Key, kv.Value, self, bytes, calls, maxms));
             // EWMA baseline (9): slow alpha so a spike barely moves its own "typical".
             _scopeEwma.TryGetValue(kv.Key, out double e);
             _scopeEwma[kv.Key] = e <= 0.0 ? kv.Value : e * 0.95 + kv.Value * 0.05;
@@ -541,10 +545,12 @@ public partial class FrameProfiler : CanvasLayer
 
     private void DumpForensics(FrameRecord rec)
     {
-        // (16) Call tree: indented self-time, with a "<parent>:other" remainder synthesised at each level.
-        string tree = BuildScopeTree(rec, maxRows: 16);
+        // (16) Call tree: indented self-time, with a "<parent>:other" remainder synthesised at each level. FILE
+        // ONLY (Option C) — the console stays clean (the one-liner already names the dominant scope + reason);
+        // the file has no width limit, so it gets the FULL tree (uncapped) for offline analysis.
+        string tree = BuildScopeTree(rec, maxRows: 64);
         if (tree.Length > 0)
-            Emit($"[hitch]   tree:\n{tree}", toConsole: true);
+            Emit($"[hitch]   tree:\n{tree}", toConsole: false);
 
         if (rec.PipeCompiles > 0 || rec.DrawCalls > 0)
             Emit($"[hitch]   gpu: draws {rec.DrawCalls:0}, pipeline compiles +{rec.PipeCompiles}" +
@@ -642,55 +648,88 @@ public partial class FrameProfiler : CanvasLayer
 
     // ---- scope tree (16) --------------------------------------------------------------------------------------
 
-    /// <summary>Render the frame's scopes as an indented self-time tree (descending by inclusive ms), synthesising
-    /// a <c>(other)</c> remainder under any node whose children don't account for its inclusive time. Built only
-    /// on a hitch / for the expanded overlay, so the allocation + sort here is off the hot path.</summary>
+    /// <summary>Render the frame's scopes as a box-drawing call tree (Option D): a fixed-width name column with
+    /// <c>├─/└─/│</c> connectors, then right-aligned stat columns — inclusive <c>ms</c>, <c>%fr</c> (share of the
+    /// frame), <c>×n</c> (open count this frame), <c>max</c> (longest single open, shown only when n&gt;1),
+    /// <c>alloc</c>, and <c>typ</c> (the rolling-baseline multiplier when the node is abnormal). Self-time is left
+    /// implicit (= a node's ms minus the sum of its children, which the tree shows). A synthetic <c>(other)</c>
+    /// child carries each level's unattributed remainder. File-only (no width limit); built off the hot path.</summary>
     private string BuildScopeTree(FrameRecord rec, int maxRows)
     {
-        // Adjacency: parent -> children, from the representative parent map captured this frame.
         var children = new Dictionary<string, List<string>>();
+        var incl = new Dictionary<string, double>();
+        var bytes = new Dictionary<string, double>();
+        var calls = new Dictionary<string, double>();
+        var maxms = new Dictionary<string, double>();
         foreach (ScopeRow row in rec.Scopes)
         {
             string parent = _lastParent.TryGetValue(row.Name, out string? p) ? p : "";
             (children.TryGetValue(parent, out List<string>? list) ? list : children[parent] = new List<string>()).Add(row.Name);
+            incl[row.Name] = row.Ms; bytes[row.Name] = row.Bytes; calls[row.Name] = row.Calls; maxms[row.Name] = row.MaxMs;
         }
-        var incl = new Dictionary<string, double>();
-        var self = new Dictionary<string, double>();
-        var bytes = new Dictionary<string, double>();
-        foreach (ScopeRow row in rec.Scopes) { incl[row.Name] = row.Ms; self[row.Name] = row.Self; bytes[row.Name] = row.Bytes; }
 
-        var sb = new StringBuilder(512);
+        const int NameW = 30;
+        double frame = rec.Ms > 0.0 ? rec.Ms : 1.0;
+        var sb = new StringBuilder(1024);
         int rows = 0;
-        void Walk(string node, int depth)
+
+        sb.Append("scope".PadRight(NameW))
+          .Append("ms".PadLeft(6)).Append(' ').Append("%fr".PadLeft(4)).Append(' ').Append("×n".PadLeft(4)).Append(' ')
+          .Append("max".PadLeft(6)).Append(' ').Append("alloc".PadLeft(7)).Append(' ').Append("typ".PadLeft(6)).Append('\n');
+
+        string Nums(string node)
+        {
+            incl.TryGetValue(node, out double mi);
+            bytes.TryGetValue(node, out double b);
+            calls.TryGetValue(node, out double c);
+            maxms.TryGetValue(node, out double mx);
+            _scopeEwma.TryGetValue(node, out double typ);
+            string callsStr = c > 1.0 ? "×" + (int)c : "";
+            string maxStr = c > 1.0 ? mx.ToString("0.0") : "";
+            string allocStr = b >= 1024.0 ? (long)(b / 1024.0) + "KB" : "";
+            string typStr = typ > 0.05 && mi > typ * 2.5 ? (mi / typ).ToString("0") + "×" : "";
+            string pctStr = (mi / frame * 100.0).ToString("0") + "%";
+            return mi.ToString("0.0").PadLeft(6) + " " + pctStr.PadLeft(4) + " " + callsStr.PadLeft(4) + " " +
+                   maxStr.PadLeft(6) + " " + allocStr.PadLeft(7) + " " + typStr.PadLeft(6);
+        }
+
+        void Row(string nameField, string? node, double otherMs)
+        {
+            string nf = nameField.Length > NameW ? nameField.Substring(0, NameW - 1) + "…" : nameField.PadRight(NameW);
+            if (node is not null)
+                sb.Append(nf).Append(Nums(node)).Append('\n');
+            else // synthetic "(other)" remainder — only ms + %fr are meaningful
+                sb.Append(nf).Append(otherMs.ToString("0.0").PadLeft(6)).Append(' ')
+                  .Append(((otherMs / frame * 100.0).ToString("0") + "%").PadLeft(4)).Append('\n');
+            rows++;
+        }
+
+        void Walk(string node, string prefix, bool isLast, int depth)
         {
             if (rows >= maxRows) return;
-            incl.TryGetValue(node, out double mi);
-            self.TryGetValue(node, out double ms);
-            bytes.TryGetValue(node, out double b);
-            if (mi < 0.05 && b < 16 * 1024 && depth > 0) return;   // noise floor (always show roots)
-            sb.Append("    ").Append(' ', depth * 2)
-              .Append(node).Append(' ').Append(mi.ToString("0.0")).Append("ms");
-            if (ms < mi - 0.05) sb.Append(" (self ").Append(ms.ToString("0.0")).Append(')');
-            if (b >= 64 * 1024) sb.Append(" /").Append(Bytes((long)b));
-            sb.Append('\n');
-            rows++;
+            string connector = depth == 0 ? "" : (isLast ? "└─ " : "├─ ");
+            Row(prefix + connector + node, node, 0.0);
 
             if (!children.TryGetValue(node, out List<string>? kids)) return;
             kids.Sort((a, c) => incl.GetValueOrDefault(c).CompareTo(incl.GetValueOrDefault(a)));
+            incl.TryGetValue(node, out double mi);
             double kidSum = 0.0;
-            foreach (string k in kids) { kidSum += incl.GetValueOrDefault(k); Walk(k, depth + 1); }
+            foreach (string k in kids) kidSum += incl.GetValueOrDefault(k);
+            // Synthesise an "(other)" remainder only when the parent's unattributed self-time is worth a row
+            // (≥1ms AND ≥8% of the parent) — a tiny remainder is just rounding/self and only clutters the tree.
             double other = mi - kidSum;
-            if (other >= 0.5 && kids.Count > 0 && rows < maxRows)
-            {
-                sb.Append("    ").Append(' ', (depth + 1) * 2)
-                  .Append("(other) ").Append(other.ToString("0.0")).Append("ms\n");
-                rows++;
-            }
+            bool hasOther = other >= 1.0 && other >= 0.08 * mi && kids.Count > 0;
+            string childPrefix = prefix + (depth == 0 ? "" : (isLast ? "   " : "│  "));
+            for (int i = 0; i < kids.Count && rows < maxRows; i++)
+                Walk(kids[i], childPrefix, i == kids.Count - 1 && !hasOther, depth + 1);
+            if (hasOther && rows < maxRows)
+                Row(childPrefix + "└─ (other)", null, other);
         }
+
         if (children.TryGetValue("", out List<string>? roots))
         {
             roots.Sort((a, c) => incl.GetValueOrDefault(c).CompareTo(incl.GetValueOrDefault(a)));
-            foreach (string r in roots) Walk(r, 0);
+            foreach (string r in roots) Walk(r, "", false, 0);
         }
         return sb.ToString().TrimEnd('\n');
     }

@@ -344,9 +344,11 @@ ToS/welcome/team-select, tools, confirms). Architecture:
     `ASSET-BUILD`, `CPU-LOGIC`, `GPU-BOUND`, `VSYNC/PRESENT`, `EXTERNAL` — followed by a one-line reason, the
     frames-dropped count, the engine split, and human-readable byte sizes. Steady-state repeats of the same
     class **collapse** into one `[hitch CLASS ×N] min–max over Δs` line instead of spamming.
-  - **Call tree (16).** The forensic block prints an indented `tree:` of inclusive/self ms with an automatic
-    `(other)` remainder at each level, so a fat `proc:other` self-attributes. A per-scope `(typ X, N× over)`
-    anomaly note flags a scope spiking above its rolling baseline (9).
+  - **Call tree (16, file only).** The forensic block in `session-*.log` (NOT the console — kept clean) prints a
+    box-drawing call tree with right-aligned columns: inclusive `ms`, `%fr` (share of frame), `×n` (open count),
+    `max` (longest single open when n>1), `alloc`, and `typ` (rolling-baseline multiplier when abnormal, §9).
+    Self-time is implicit (a node's ms minus its children); an `(other)` row carries any level's significant
+    unattributed remainder, so a fat `proc:other` self-attributes.
   - **Sampling watchdog (17, `cl_frameprofiler_watchdog` default 1).** A background thread samples the main
     thread's innermost open scope during an over-budget frame, so a stall inside un-scoped code is attributed
     (`watchdog: 38/41 samples in 'sim.move'`). Near-zero main-thread cost; reports `(unscoped)` when stuck

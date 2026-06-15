@@ -54,6 +54,8 @@ public static class Prof
         public readonly Dictionary<string, double> Children = new();  // summed inclusive ms of DIRECT children (⇒ self = inclusive - children)
         public readonly Dictionary<string, string> Parent = new();    // scope -> representative parent ("" = frame root)
         public readonly Dictionary<string, double> Counters = new();  // per-frame numeric markers (latest wins)
+        public readonly Dictionary<string, double> Calls = new();     // number of times the scope opened this frame
+        public readonly Dictionary<string, double> Max = new();       // longest single open of the scope this frame (ms)
 
         // Open-scope stack for this thread (array-based so a parent frame's accumulated child time is mutable in place).
         public StackFrame[] Stack = new StackFrame[64];
@@ -174,6 +176,8 @@ public static class Prof
                 acc.Alloc.TryGetValue(name, out double a);    acc.Alloc[name] = a + bytes;
                 acc.Children.TryGetValue(name, out double ch); acc.Children[name] = ch + childMs;
                 acc.Parent[name] = parentName;
+                acc.Calls.TryGetValue(name, out double cc);   acc.Calls[name] = cc + 1.0;
+                acc.Max.TryGetValue(name, out double mx);     if (elapsedMs > mx) acc.Max[name] = elapsedMs;
             }
 
             if (acc.IsMain)
@@ -268,13 +272,16 @@ public static class Prof
     /// </summary>
     public static void SnapshotAndReset(Dictionary<string, double> scopesInto, Dictionary<string, double> countersInto,
         Dictionary<string, double>? allocInto = null,
-        Dictionary<string, double>? selfInto = null, Dictionary<string, string>? parentInto = null)
+        Dictionary<string, double>? selfInto = null, Dictionary<string, string>? parentInto = null,
+        Dictionary<string, double>? callsInto = null, Dictionary<string, double>? maxInto = null)
     {
         scopesInto.Clear();
         countersInto.Clear();
         allocInto?.Clear();
         selfInto?.Clear();
         parentInto?.Clear();
+        callsInto?.Clear();
+        maxInto?.Clear();
         _childrenMerge.Clear();
 
         // Snapshot the registry under its lock, then drain each accumulator under its OWN gate (so a worker thread
@@ -314,6 +321,20 @@ public static class Prof
                 foreach (KeyValuePair<string, double> kv in acc.Counters)
                     countersInto[kv.Key] = kv.Value;
                 acc.Counters.Clear();
+
+                if (callsInto is not null)
+                    foreach (KeyValuePair<string, double> kv in acc.Calls)
+                    {
+                        callsInto.TryGetValue(kv.Key, out double v); callsInto[kv.Key] = v + kv.Value;
+                    }
+                acc.Calls.Clear();
+
+                if (maxInto is not null)
+                    foreach (KeyValuePair<string, double> kv in acc.Max)
+                    {
+                        maxInto.TryGetValue(kv.Key, out double v); maxInto[kv.Key] = System.Math.Max(v, kv.Value);
+                    }
+                acc.Max.Clear();
             }
         }
 
