@@ -77,40 +77,53 @@ public partial class GpuWarmPass : Node
             return;
         }
 
-        // Isolated 64×64 viewport with its OWN World3D so the warm instances never render into the main scene.
         var vp = new SubViewport
         {
             Name = "WarmViewport",
             Size = new Vector2I(64, 64),
             RenderTargetUpdateMode = SubViewport.UpdateMode.Always,
-            OwnWorld3D = true,
         };
-        // (hitch-fix 2026-06-15) A Vulkan graphics pipeline is keyed by its MULTISAMPLE state, among other things.
-        // A SubViewport defaults to MSAA-disabled, but the main window viewport runs 4× MSAA (project.godot) — so
-        // warming in a 1× viewport compiled the WRONG pipeline variant and the main viewport recompiled the 4×
-        // variant on first draw anyway (mid-match PIPELINE-COMPILE hitches persisted despite warming). Match the
-        // main viewport's MSAA / AA / scaling so the pipelines compiled here are the exact ones play will reuse.
-        if (GetViewport() is { } mainVp)
+        // (engine-perf 2026-06-15) The Vulkan graphics-pipeline key includes the MULTISAMPLE state AND the enabled
+        // render-feature set (glow, Sky ambient) AND the directional shadow/PSSM mode. Warming in an isolated empty
+        // OwnWorld3D therefore compiled the WRONG variant — the live first-draw recompiled the glow+PSSM SURFACE
+        // variant mid-match (the residual 105-137ms hitches, confirmed via the split RenderingInfo counters to be
+        // SURFACE compiles). Fix: SHARE the live World3D so the warm pass inherits the in-match WorldEnvironment +
+        // the Sun's EXACT config (a hand-built generic light regressed before — wrong PSSM split variant; sharing the
+        // live world makes the warmed variant byte-identical by construction), and match the main viewport's
+        // MSAA/AA/scaling (also part of the key — docs: differing MSAA levels across viewports cause stutter).
+        Viewport? mainVp = GetViewport();
+        if (mainVp is not null)
         {
+            vp.World3D = mainVp.World3D;        // inherit the live WorldEnvironment + Sun → the SURFACE-variant fix
             vp.Msaa3D = mainVp.Msaa3D;
             vp.ScreenSpaceAA = mainVp.ScreenSpaceAA;
             vp.UseTaa = mainVp.UseTaa;
             vp.UseDebanding = mainVp.UseDebanding;
             vp.Scaling3DMode = mainVp.Scaling3DMode;
         }
+        else
+        {
+            vp.OwnWorld3D = true;               // headless / no main viewport: isolated fallback
+        }
         AddChild(vp);
 
-        // A camera looking at the origin (where the warm instances sit). Current is scoped to this SubViewport's
-        // world, so it never steals the main window's camera.
+        // Because we now SHARE the live World3D, the warm instances live in the same 3D scenario as the gameplay
+        // camera. Park the whole warm scene FAR outside any playable area (Quake maps span well under this) so the
+        // live camera never sees it — no on-screen flash — while the warm camera (in this SubViewport) still renders
+        // it. The Sun is directional (positionless) + glow/ambient are global, so the compiled variant is identical
+        // wherever the instances sit; only the cull-from-the-live-view matters.
+        var root = new Node3D { Name = "WarmRoot", Position = new Vector3(1_000_000f, 1_000_000f, 1_000_000f) };
+        vp.AddChild(root);
+
         var cam = new Camera3D { Name = "WarmCam", Position = new Vector3(0f, 20f, 140f), Current = true };
-        vp.AddChild(cam);
-        cam.LookAt(Vector3.Zero, Vector3.Up);
+        root.AddChild(cam);
+        cam.LookAt(root.GlobalPosition, Vector3.Up);
 
         // Park every warm instance in front of the camera. One render frame compiles each referenced pipeline;
         // the one-shot particles (Explosiveness near 1) emit + draw within the first couple of frames.
         foreach (Node3D n in _instances)
             if (GodotObject.IsInstanceValid(n))
-                vp.AddChild(n);
+                root.AddChild(n);
     }
 
     public override void _Process(double delta)

@@ -115,8 +115,13 @@ public partial class FrameProfiler : CanvasLayer
         public int G0, G1, G2;
         public double GcPauseMs;
         public double DrawCalls;
-        public long PipeCompiles;
-        public long PipeCompilesUber;
+        public long PipeCompiles;          // total of the five RenderingInfo pipeline-compilation counters
+        public long PipeCompilesUber;      // the SYNCHRONOUS render-thread stalls = Surface + Draw (the hitch culprits)
+        // (engine-perf 2026-06-15) The five Godot pipeline-compile counters, tracked SEPARATELY. Per the Godot docs:
+        //   Surface = first-instancing of a (mesh,material,render-feature) variant — a SYNCHRONOUS render-thread stall.
+        //   Draw    = a precompile MISS at draw time — should be ~0 with the ubershader system (nonzero ⇒ upstream bug).
+        //   Mesh / Specialization = load-time / async (benign). Canvas = 2D first-draw.
+        public long PipeSurface, PipeDraw, PipeMesh, PipeSpec, PipeCanvas;
         public readonly List<ScopeRow> Scopes = new(32);
         public readonly List<string> Events = new(2);
 
@@ -133,6 +138,7 @@ public partial class FrameProfiler : CanvasLayer
     private readonly Dictionary<string, double> _allocScratch = new();
     private readonly List<string> _eventScratch = new(8);
     private long _lastPipeTotal, _lastPipeUber;
+    private long _lastPipeCanvas, _lastPipeMesh, _lastPipeSurface, _lastPipeDraw, _lastPipeSpec;
     private double _lastGcPauseMs;
     private double _lastForensicDumpAt = -1000.0;
     private double _forensicClock;
@@ -317,16 +323,23 @@ public partial class FrameProfiler : CanvasLayer
         _lastGcPauseMs = pauseTotal;
 
         rec.DrawCalls = Performance.GetMonitor(Performance.Monitor.RenderTotalDrawCallsInFrame);
-        long uber = (long)RenderingServer.GetRenderingInfo(RenderingServer.RenderingInfo.PipelineCompilationsCanvas)
-                  + (long)RenderingServer.GetRenderingInfo(RenderingServer.RenderingInfo.PipelineCompilationsMesh)
-                  + (long)RenderingServer.GetRenderingInfo(RenderingServer.RenderingInfo.PipelineCompilationsSurface);
-        long pipeTotal = uber
-                  + (long)RenderingServer.GetRenderingInfo(RenderingServer.RenderingInfo.PipelineCompilationsDraw)
-                  + (long)RenderingServer.GetRenderingInfo(RenderingServer.RenderingInfo.PipelineCompilationsSpecialization);
-        rec.PipeCompiles = Math.Max(0, pipeTotal - _lastPipeTotal);
-        rec.PipeCompilesUber = Math.Max(0, uber - _lastPipeUber);
-        _lastPipeTotal = pipeTotal;
-        _lastPipeUber = uber;
+        // (engine-perf 2026-06-15) Track the five pipeline-compile counters SEPARATELY — the old code summed
+        // Canvas+Mesh+Surface into one opaque "uber" bucket, hiding which class actually stalled. Surface + Draw
+        // are the synchronous render-thread stalls (the hitch culprits); Mesh + Specialization are load/async.
+        long cCanvas  = (long)RenderingServer.GetRenderingInfo(RenderingServer.RenderingInfo.PipelineCompilationsCanvas);
+        long cMesh    = (long)RenderingServer.GetRenderingInfo(RenderingServer.RenderingInfo.PipelineCompilationsMesh);
+        long cSurface = (long)RenderingServer.GetRenderingInfo(RenderingServer.RenderingInfo.PipelineCompilationsSurface);
+        long cDraw    = (long)RenderingServer.GetRenderingInfo(RenderingServer.RenderingInfo.PipelineCompilationsDraw);
+        long cSpec    = (long)RenderingServer.GetRenderingInfo(RenderingServer.RenderingInfo.PipelineCompilationsSpecialization);
+        rec.PipeCanvas  = Math.Max(0, cCanvas  - _lastPipeCanvas);
+        rec.PipeMesh    = Math.Max(0, cMesh    - _lastPipeMesh);
+        rec.PipeSurface = Math.Max(0, cSurface - _lastPipeSurface);
+        rec.PipeDraw    = Math.Max(0, cDraw    - _lastPipeDraw);
+        rec.PipeSpec    = Math.Max(0, cSpec    - _lastPipeSpec);
+        rec.PipeCompiles = rec.PipeCanvas + rec.PipeMesh + rec.PipeSurface + rec.PipeDraw + rec.PipeSpec;
+        rec.PipeCompilesUber = rec.PipeSurface + rec.PipeDraw;   // the synchronous stalls (kept name for the CSV slot)
+        _lastPipeCanvas = cCanvas; _lastPipeMesh = cMesh; _lastPipeSurface = cSurface; _lastPipeDraw = cDraw; _lastPipeSpec = cSpec;
+        _lastPipeTotal = cCanvas + cMesh + cSurface + cDraw + cSpec; _lastPipeUber = cSurface + cDraw;
 
         // Scope table (inclusive + self + alloc per scope) + the one-shot events; track the dominant scope.
         string? topName = null; double topMs = 0.0;
@@ -463,7 +476,8 @@ public partial class FrameProfiler : CanvasLayer
     {
         if (rec.PipeCompiles > 0)
             return (HitchClass.PipelineCompile,
-                $"{rec.PipeCompiles} shader-pipeline compile(s){(rec.PipeCompilesUber > 0 ? $", {rec.PipeCompilesUber} ubershader" : "")}");
+                $"{rec.PipeCompiles} pipeline compile(s) — SYNC[surface+{rec.PipeSurface} draw+{rec.PipeDraw}] " +
+                $"async[mesh+{rec.PipeMesh} spec+{rec.PipeSpec}] canvas+{rec.PipeCanvas}");
 
         if (rec.G2 > 0 || rec.GcPauseMs >= Math.Max(2.0, 0.3 * ms))
             return (HitchClass.GcPause,
@@ -573,7 +587,7 @@ public partial class FrameProfiler : CanvasLayer
 
         if (rec.PipeCompiles > 0 || rec.DrawCalls > 0)
             Emit($"[hitch]   gpu: draws {rec.DrawCalls:0}, pipeline compiles +{rec.PipeCompiles}" +
-                 (rec.PipeCompiles > 0 ? $" (uber +{rec.PipeCompilesUber}, spec/draw +{rec.PipeCompiles - rec.PipeCompilesUber})" : "") +
+                 (rec.PipeCompiles > 0 ? $" — SYNC[surface+{rec.PipeSurface} draw+{rec.PipeDraw}] async[mesh+{rec.PipeMesh} spec+{rec.PipeSpec}] canvas+{rec.PipeCanvas}" : "") +
                  $", vram {Performance.GetMonitor(Performance.Monitor.RenderVideoMemUsed) / (1024.0 * 1024.0):0}MB", toConsole: true);
 
         if (rec.G0 + rec.G1 + rec.G2 > 0 || rec.GcPauseMs > 0.1)
@@ -862,7 +876,7 @@ public partial class FrameProfiler : CanvasLayer
             return;
         }
         f.StoreLine("frame,ms,proc_ms,rcpu_ms,gpu_ms,phys_ms,rest_ms,alloc_kb,gc0,gc1,gc2,gc_pause_ms," +
-                    "draw_calls,pipe_compiles,pipe_uber,top1,top1_ms,top2,top2_ms,top3,top3_ms,events");
+                    "draw_calls,pipe_compiles,pipe_sync,top1,top1_ms,top2,top2_ms,top3,top3_ms,events");
         for (int back = _ringCount; back >= 1; back--)
         {
             FrameRecord? r = RecordAt(back);
