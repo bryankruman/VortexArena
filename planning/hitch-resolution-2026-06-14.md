@@ -125,23 +125,31 @@ fires that many times — the measured `mp.weapon ×28` / `bot.think` spikes. 3 
 over one extra frame (brief, invisible slow-motion) and tick semantics are bit-identical (parity-safe). Secondary
 to #1, which removes the primary backlog source.
 
-**Evaluated → not implemented (honest reasons):**
+**Landed (follow-up pass, 2026-06-15):**
 
-- **Buffer pooling (#2) — blocked + low value.** `IqmBuilder.BuildMesh` hands the per-surface
-  `Vector3[]/Vector2[]/int[]` to `AddSurfaceFromArrays` at **exact length**, but `ArrayPool.Rent` returns
-  *oversized* arrays whose garbage tail would marshal into the mesh — the same exact-length constraint that
-  already stopped `DecodeBuffer` from using `ArrayPool`. A `[ThreadStatic]` exact-size reuse buffer has a low hit
-  rate (vcount varies per surface/model) and the AnimationLibrary cache (§3) already cut GC-PAUSE 11→0–3, so the
-  residual mesh-build alloc is small and infrequent. Not worth a fragile reuse path.
-- **Warm-pass coverage (#3) — already comprehensive; residual is long-tail.** `EffectSystem.BuildWarmupInstances`
-  already warms one burst per `EffectClass`, a curated set of the common combat effectinfo effects
-  (`WarmupEffectNames`: rocket/grenade/electro/crylink/muzzle/blood/sparks…), the faithful MultiMesh path, the
-  splat shader, and a representative flash light. The residual mid-match PIPELINE-COMPILE (now ~67ms, rarer than
-  the fixed 88–140ms storm) is the **long tail**: arbitrary rarer effect variants + **per-bot model-material**
-  first-draws. Closing it fully means either enumerating *every* effectinfo effect (load-time cost) or rendering
-  every roster model variant through `GpuWarmPass.WarmNodes` at load — both diminishing-returns now, both
-  parity-sensitive (the dual particle system), and both **stochastic to verify** (the compile count varies
-  run-to-run). Recommended only if a profile shows mid-match `pipe +N` still hurting after the above land.
+- **#3 — warm-pass MSAA fix (the real find) + roster model warm-by-render.** Instrument-first showed the residual
+  PIPELINE-COMPILE hitches clustered at the **bot-join window** (t=22–27), rest-dominated, "ubershader" — pointing
+  at player-model pipelines. Two causes found:
+  1. **A latent bug in `GpuWarmPass`:** a Vulkan graphics pipeline is keyed by its **multisample state**, but the
+     warm `SubViewport` defaulted to MSAA-disabled while the main viewport runs 4× MSAA (`project.godot`). So the
+     warm pass compiled the **wrong (1×) pipeline variant** and the main viewport recompiled the 4× variant on
+     first draw — the *whole* warm pass (effects **and** models) was only partially effective. Fixed by matching
+     the warm viewport's MSAA/AA/TAA/debanding/scaling to the main viewport.
+  2. **The load-time roster warm built each player model then `QueueFree`'d it *unrendered*** (`NetGame.cs:1554`) —
+     warming only the texture/material caches, never compiling the pipelines (the exact bug §12.6-2 fixed for the
+     *idle* warmer, missed here). Now the 10 roster models render via `GpuWarmPass.WarmNodes` at load.
+  - **Measured: mid-match PIPELINE-COMPILE 8 → 2** (the 2 residual at t≈21–23 are the last uncovered families —
+    likely weapon view-models). The ~25MB model-texture build also moves to load-time.
+- **#2 — IQM mesh-array reuse (safe version).** Exact-size `[ThreadStatic]` scratch reuse for the per-surface
+  arrays in `IqmBuilder.BuildMesh` (a **separate pool per slot** — all six are alive until `AddSurfaceFromArrays`;
+  **exact length only**, since an oversized buffer would marshal garbage-tail verts = corrupted mesh; the
+  `Godot.Collections.Array` marshal copies synchronously, so reuse is safe). Reuse hits across instances of the
+  same model. **Marginal** post the anim cache (the build alloc is texture-dominated and #3 moves it to load),
+  but harmless and verified pixel-clean (erebus model render). Note: `ArrayPool` is *not* usable here — its
+  oversized arrays violate the exact-length constraint (same reason `DecodeBuffer` can't use it).
+
+**Still open (diminishing returns):** the 2 residual t≈21 PIPELINE-COMPILE hitches (likely weapon view-models —
+`PrecacheWeaponModelsAsync` warms them but may not render them; the same warm-by-render fix would apply).
 
 **Deeper structural option (unchanged from PERFORMANCE_REPORT §5 S5):** moving the server sim to a worker thread
 would take the whole `server.tick` (and its catch-up multiplier) off the render frame — but it's High-risk
@@ -159,5 +167,7 @@ first-draw-compile log behind `cl_debug_warm_materials` to make #1's ROI measura
 
 - `game/loaders/AssetLoader.cs` — IQM AnimationLibrary + parse cache (§3, the bot-spawn-storm killer).
 - `game/menu/framework/ClientSettings.cs` — `cl_maxfps` auto-cap to an engaging ceiling (§2, the biggest count win).
-- `game/net/NetGame.cs` — interactive catch-up cap 4→3 (§5).
+- `game/net/NetGame.cs` — interactive catch-up cap 4→3 (§5) + roster model warm-by-render (§5/#3).
 - `game/client/FrameProfiler.cs` — GC-tail reclassifier (§4) + the `refresh=NHz` env-banner field.
+- `game/client/GpuWarmPass.cs` — warm `SubViewport` now matches the main viewport's MSAA/AA/scaling (§5/#3, the latent-bug fix).
+- `game/loaders/models/IqmBuilder.cs` — exact-size `[ThreadStatic]` mesh-array reuse (§5/#2).
