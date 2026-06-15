@@ -45,6 +45,7 @@ public sealed partial class WorldOcclusion : Node
 
     public override void _Process(double delta)
     {
+        using var _prof = XonoticGodot.Game.Client.FrameProfiler.Scope("clientmisc");
         bool enabled = XonoticGodot.Game.Menu.MenuState.Cvars.GetFloat("r_occlusion_cull") != 0f;
         if (enabled == _lastEnabled)
             return;

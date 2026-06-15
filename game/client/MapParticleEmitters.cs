@@ -55,6 +55,8 @@ public partial class MapParticleEmitters : Node3D
         if (Api.Services is null)
             return;
 
+        using var _prof = FrameProfiler.Scope("emitters");
+
         _rescanIn -= (float)delta;
         if (_rescanIn <= 0f)
         {

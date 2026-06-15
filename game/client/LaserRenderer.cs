@@ -62,6 +62,8 @@ public partial class LaserRenderer : Node3D
         if (Api.Services is null)
             return;
 
+        using var _prof = FrameProfiler.Scope("clientmisc");
+
         _rescanIn -= (float)delta;
         if (_rescanIn <= 0f)
         {

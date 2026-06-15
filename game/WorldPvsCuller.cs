@@ -40,6 +40,7 @@ public sealed partial class WorldPvsCuller : Node
 
     public override void _Process(double delta)
     {
+        using var _prof = XonoticGodot.Game.Client.FrameProfiler.Scope("world.pvscull");
         bool enabled = XonoticGodot.Game.Menu.MenuState.Cvars.GetFloat("r_pvs_cull") != 0f;
         if (!enabled)
         {

@@ -75,7 +75,10 @@ public partial class FrameProfiler : CanvasLayer
     // The §18 effect nodes (music/weather/decals/vehicles/damagetext) are included so they leave proc:other.
     private static readonly string[] TopLevelNodeScopes =
         { "ng.process", "cw.process", "md3.morph", "entitynode", "hud.mgr", "proj", "viewmodel", "nethud",
-          "stream.build", "particles.cpu", "music", "weather", "decals.splat", "vehicle.vis", "damagetext" };
+          "stream.build", "particles.cpu", "music", "weather", "decals.splat", "vehicle.vis", "damagetext",
+          // (perf-investigation 2026-06-14) the previously-unscoped client _Process nodes that leaked into
+          // proc:other on big/populated maps — now attributed so the residual is provably Godot-internal.
+          "cev.process", "world.pvscull", "emitters", "clientmisc", "hud.trueaim" };
 
     /// <summary>
     /// Open a named timing scope: <c>using (FrameProfiler.Scope("name")) { ... }</c> (or as a one-statement
@@ -163,6 +166,9 @@ public partial class FrameProfiler : CanvasLayer
     // ---- session summary (12) --------------------------------------------------------------------------------
     private readonly FrameHistogram _sessionHist = new();
     private readonly FrameHistogram _windowHist = new();
+    // (perf-investigation) per-scope inclusive-ms summed over the snapshot window → a steady-state top-scope
+    // breakdown printed each snapshot, so every experiment yields comparable per-frame averages without a hitch.
+    private readonly Dictionary<string, double> _windowScopeMs = new();
     private int _initGc0, _initGc1, _initGc2;
     private double _initGcPauseMs;
     private long _sessionAllocTotal;
@@ -333,6 +339,9 @@ public partial class FrameProfiler : CanvasLayer
             // EWMA baseline (9): slow alpha so a spike barely moves its own "typical".
             _scopeEwma.TryGetValue(kv.Key, out double e);
             _scopeEwma[kv.Key] = e <= 0.0 ? kv.Value : e * 0.95 + kv.Value * 0.05;
+            // (perf-investigation) sum into the snapshot window for the steady-state top-scope dump.
+            _windowScopeMs.TryGetValue(kv.Key, out double ws);
+            _windowScopeMs[kv.Key] = ws + kv.Value;
             if (kv.Value > topMs) { topMs = kv.Value; topName = kv.Key; }
         }
         _eventScratch.Clear();
@@ -596,12 +605,40 @@ public partial class FrameProfiler : CanvasLayer
         if (_windowHist.Count == 0)
             return;
         string hitches = HitchBreakdown(_windowHitchByClass);
+        // (perf-investigation) scene-graph complexity — the suspected driver of the Godot-internal proc:other
+        // floor on entity-heavy maps. nodes = total scene-tree nodes; robj = objects drawn this frame.
+        double nodeCount = Performance.GetMonitor(Performance.Monitor.ObjectNodeCount);
+        double renderObjs = Performance.GetMonitor(Performance.Monitor.RenderTotalObjectsInFrame);
+        Emit($"[frameprofile] scene: nodes {nodeCount:0} objs-drawn {renderObjs:0} draws {RecordAt(1)?.DrawCalls ?? 0:0} " +
+             $"vram {Performance.GetMonitor(Performance.Monitor.RenderVideoMemUsed) / (1024.0 * 1024.0):0}MB",
+             toConsole: Mode() >= 2);
+        Emit($"[frameprofile] census: {NodeTypeCensus()}", toConsole: Mode() >= 2);
         Emit($"[frameprofile] {_windowHist.Count} frames: p50 {_windowHist.Percentile(0.50):0.0} " +
              $"p95 {_windowHist.Percentile(0.95):0.0} p99 {_windowHist.Percentile(0.99):0.0} " +
              $"p99.9 {_windowHist.Percentile(0.999):0.0}ms (max {_windowHist.Max:0.0}) | " +
              $"{hitches} | alloc {_allocRateMbPerSec:0}MB/s heap {Bytes(_heapBytes)} | proc {_procMs:0.0} gpu {_renderGpuMs:0.0}",
              toConsole: Mode() >= 2);
+
+        // (perf-investigation) steady-state per-scope breakdown: the top scopes by total window-ms, printed as a
+        // PER-FRAME AVERAGE (ms/frame) so two experiments are directly comparable without provoking a hitch. File
+        // only by default (console at mode>=2). proc:other here = the still-unattributed main-thread _Process span.
+        if (_windowScopeMs.Count > 0 && _windowHist.Count > 0)
+        {
+            var top = new List<KeyValuePair<string, double>>(_windowScopeMs);
+            top.Sort((a, b) => b.Value.CompareTo(a.Value));
+            var sb = new StringBuilder("[frameprofile] ms/frame: ");
+            for (int i = 0; i < top.Count && i < 10; i++)
+            {
+                double perFrame = top[i].Value / _windowHist.Count;
+                if (perFrame < 0.05) break;
+                if (i > 0) sb.Append("  ");
+                sb.Append(top[i].Key).Append(' ').Append(perFrame.ToString("0.0"));
+            }
+            Emit(sb.ToString(), toConsole: Mode() >= 2);
+        }
+
         _windowHist.Reset();
+        _windowScopeMs.Clear();
         Array.Clear(_windowHitchByClass);
     }
 
@@ -732,6 +769,41 @@ public partial class FrameProfiler : CanvasLayer
             foreach (string r in roots) Walk(r, "", false, 0);
         }
         return sb.ToString().TrimEnd('\n');
+    }
+
+    // (perf-investigation) one-shot scene-tree node-type census (called only from the 5s snapshot, not per frame):
+    // counts nodes by concrete type so an entity-heavy / animation-heavy scene shows WHICH built-in node type
+    // dominates the per-frame engine processing that lands in proc:other (AnimationPlayer / AudioStreamPlayer3D /
+    // GpuParticles3D / etc.). Reports the count of nodes with processing actually enabled, where it matters.
+    private readonly Dictionary<string, int> _censusScratch = new();
+    private readonly Dictionary<string, int> _censusProc = new();
+    private string NodeTypeCensus()
+    {
+        _censusScratch.Clear();
+        _censusProc.Clear();
+        if (GetTree()?.Root is { } root)
+            CensusWalk(root);
+        var list = new List<KeyValuePair<string, int>>(_censusScratch);
+        list.Sort((a, b) => b.Value.CompareTo(a.Value));
+        var sb = new StringBuilder();
+        for (int i = 0; i < list.Count && i < 10; i++)
+        {
+            if (i > 0) sb.Append("  ");
+            _censusProc.TryGetValue(list[i].Key, out int proc);
+            sb.Append(list[i].Key).Append(' ').Append(list[i].Value);
+            if (proc > 0) sb.Append("(proc").Append(proc).Append(')');
+        }
+        return sb.ToString();
+    }
+    private void CensusWalk(Node n)
+    {
+        string t = n.GetType().Name;
+        _censusScratch.TryGetValue(t, out int c); _censusScratch[t] = c + 1;
+        if (n.IsProcessing() || n.IsPhysicsProcessing())
+        { _censusProc.TryGetValue(t, out int p); _censusProc[t] = p + 1; }
+        int kids = n.GetChildCount();
+        for (int i = 0; i < kids; i++)
+            CensusWalk(n.GetChild(i));
     }
 
     private FrameRecord? RecordAt(int back)

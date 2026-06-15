@@ -78,9 +78,15 @@ public sealed partial class ClientEntityView : Node
         if (!_net.Accepted)
             return;
 
+        using var _prof = FrameProfiler.Scope("cev.process");
+
         // Interpolate remote entities at the latest server time (a one-snapshot delay falls out of the lerp).
         float now = _net.LatestServerTime;
         _seen.Clear();
+
+        // (perf-investigation) the remote-entity count drives this whole loop's cost; surface it as a marker so
+        // the profiler shows how many entities catharsis carries at the spawn (estimates diverged 20x).
+        XonoticGodot.Common.Diagnostics.Prof.Mark("remote.ents", _net.RemoteIds.Count);
 
         foreach (int id in _net.RemoteIds)
         {

@@ -44,6 +44,7 @@ public sealed partial class SpawnPointParticles : Node3D
 
     public override void _Process(double delta)
     {
+        using var _prof = FrameProfiler.Scope("clientmisc");
         if (Effects is null || Api.Services is null)
             return;
         if (XonoticGodot.Game.Menu.MenuState.Cvars.GetFloat("cl_spawn_point_particles") == 0f)

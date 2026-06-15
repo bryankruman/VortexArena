@@ -1134,7 +1134,8 @@ public sealed class GameWorld
             PlayerFrameLogic.Regen(p, st, Simulation.FrameTime);
 
             // QC StatusEffects tick: expire timed effects and apply periodic burn damage.
-            StatusEffectsCatalog.Tick(p, Time);
+            using (Prof.Sample("mp.fx"))
+                StatusEffectsCatalog.Tick(p, Time);
 
             // QC player_powerups(): the superweapon countdown (strip held superweapons once their timer lapses,
             // after the tick expires it) + the MUTATOR_CALLHOOK(PlayerPowerups) tail hook (instagib/overkill
@@ -1142,7 +1143,8 @@ public sealed class GameWorld
             PlayerFrameLogic.PlayerPowerups(p);
 
             // QC the per-frame weapon driver (W_WeaponFrame): run the full fire state machine for the player.
-            WeaponThink(p);
+            using (Prof.Sample("mp.weapon"))
+                WeaponThink(p);
         }
 
         // QC PlayerPreThink tail (client.qc:2762): target_voicescript_next(this) — advance the player's active

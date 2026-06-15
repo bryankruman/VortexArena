@@ -255,6 +255,16 @@ public partial class CrosshairPanel : HudPanel
     private double _localClock;
     private double _lastDelta = 1.0 / 60.0;
 
+    // (perf 2026-06-14) The two forward world traces in ComputeShotType are a full max_shot_distance (32768 qu)
+    // ray + a box trace. The TRUE root-cause fix is in the collision broadphase (Brush.cs: a long ray no longer
+    // brute-forces every brush in the map), which made each trace ~negligible. This cache is a cheap, always-
+    // correct secondary guard: a static aim ray cannot change the true-aim classification, so we skip the traces
+    // entirely while standing still (the user's "slowest at the spawn" case). An optional cl_crosshair_trueaim_rate
+    // (default 0 = off) can additionally cap the re-trace rate while turning on pathologically dense content.
+    private NVec3 _trueAimLastOrigin, _trueAimLastForward;
+    private bool _trueAimHaveCache;
+    private double _trueAimNextAt;
+
     // Weapon-switch cross-fade state — the port of QC's wcross_name_* "goal_prev" persisted globals. We key
     // the transition on the resolved crosshair texture changing (QC keys on wcross_name/resolution changing).
     private Texture2D? _crossPrev;       // the outgoing crosshair texture (QC wcross_name_goal_prev_prev)
@@ -1001,6 +1011,11 @@ public partial class CrosshairPanel : HudPanel
         if (!IsFinite(origin) || !IsFinite(forward))
             return ShotType.HitWorld;
 
+        // (perf) Reuse the last classification when the aim ray is effectively unchanged (standing still) or we
+        // traced very recently — the two world traces below are ~6 ms on big maps and only drive a cosmetic tint.
+        if (TrueAimCanReuse(origin, forward))
+            return ShotResult;
+
         // QC: the rail family (Vortex/Vaporizer; QC also Overkill-Nex, not present in this port) traces against
         // players too (MOVE_NORMAL); everything else uses MOVE_NOMONSTERS for the aim line. Projectile-size
         // weapons additionally get a non-zero trace box.
@@ -1014,6 +1029,8 @@ public partial class CrosshairPanel : HudPanel
         // The two forward traces reach into the live engine trace service. A failure there must NOT escape into
         // _Process (it runs every frame — an unhandled throw would spam the log and stall HUD repaint); degrade
         // to HitWorld (the QC default) so the crosshair stays at full strength.
+        // (perf) scope the two world traces so they are never invisible in proc:other again.
+        using var _trueAimScope = XonoticGodot.Game.Client.FrameProfiler.Scope("hud.trueaim");
         try
         {
             // 1) Aim line: where is the player pointing? (QC traceline(traceorigin, ... view_forward * max_shot_distance)).
@@ -1039,6 +1056,39 @@ public partial class CrosshairPanel : HudPanel
         {
             return ShotType.HitWorld;
         }
+    }
+
+    /// <summary>
+    /// (perf) True-aim trace gate. Returns true when the caller should REUSE the last <see cref="ShotResult"/>
+    /// instead of running the two expensive world traces: either the aim ray is effectively unchanged since the
+    /// last trace (standing still / negligible aim drift — the common case, and exactly the user's "slowest while
+    /// standing at the spawn" scenario), or we traced within the last <c>1/cl_crosshair_trueaim_rate</c> seconds
+    /// while turning. When it returns false it records the ray + schedules the next allowed trace. Set the cvar to
+    /// 0 to disable throttling and trace every frame (the faithful QC cadence, only viable on cheap-trace maps).
+    /// </summary>
+    private bool TrueAimCanReuse(NVec3 origin, NVec3 forward)
+    {
+        bool viewSame = _trueAimHaveCache
+            && NVec3.DistanceSquared(origin, _trueAimLastOrigin) < 0.25f   // < 0.5 qu of eye movement
+            && NVec3.Dot(forward, _trueAimLastForward) > 0.99985f;         // < ~1 degree of aim change
+        if (viewSame)
+            return true;   // standing still / negligible change → the classification can't have changed
+
+        // Cap the re-trace rate while turning. The true-aim tint is a coarse cosmetic hint that does not need to
+        // update every frame, so we hold it to cl_crosshair_trueaim_rate Hz (default 30; 0 = per-frame, which the
+        // Brush.cs broadphase fix also made cheap). The view-unchanged cache above is the always-on, always-correct
+        // part (a static aim ray can't change the classification), so standing still costs zero traces regardless.
+        float rate = GlobalF("cl_crosshair_trueaim_rate", 30f);
+        if (rate > 0f && _trueAimHaveCache && _localClock < _trueAimNextAt)
+            return true;   // turning, but we traced recently → hold the last result until the next slot
+
+        // We are about to trace: record this ray as the cache key and schedule the next permitted trace.
+        _trueAimLastOrigin = origin;
+        _trueAimLastForward = forward;
+        _trueAimHaveCache = true;
+        if (rate > 0f)
+            _trueAimNextAt = _localClock + 1.0 / rate;
+        return false;
     }
 
     /// <summary>

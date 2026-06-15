@@ -473,8 +473,9 @@ public sealed class CollisionWorld
         y1 = (int)MathF.Floor((maxs.Y + _biasY) * _scaleY) + 1;
 
         outside = x0 < 0 || y0 < 0 || x1 > GridDim || y1 > GridDim;
-        if (outside) return;
-
+        // Always clamp to the grid — callers rely on the clamped range even when 'outside' is reported. LinkBrush
+        // sends a spilling brush to _outside; Query scans the clamped cells PLUS _outside, which is candidate-
+        // identical to a full scan because every in-grid brush is linked to all cells it overlaps (see Query).
         if (x0 < 0) x0 = 0;
         if (y0 < 0) y0 = 0;
         if (x1 > GridDim) x1 = GridDim;
@@ -515,20 +516,14 @@ public sealed class CollisionWorld
                 result.Add(b);
         }
 
-        GridRange(mins, maxs, out int x0, out int y0, out int x1, out int y1, out bool outside);
-        if (outside)
-        {
-            // query box spills the grid: clamp to the grid and also fall back to a full scan for safety
-            for (int i = 0; i < _brushes.Count; i++)
-            {
-                if (_mark![i] == mark) continue;
-                _mark[i] = mark;
-                var b = _brushes[i];
-                if (BoxesOverlap(mins, maxs, b.Mins, b.Maxs))
-                    result.Add(b);
-            }
-            return;
-        }
+        // (perf 2026-06-14) A query box that SPILLS the grid — any long ray: weapon hitscan, AI line-of-sight,
+        // and the 32768-qu crosshair true-aim ray — used to brute-force EVERY brush in the map here, making the
+        // trace O(total brushes) and dominating frame time on brush-dense maps (catharsis: ~3 ms per such ray).
+        // It suffices to scan the CLAMPED grid range plus _outside (already scanned just above): every brush is
+        // either in _outside (it spilled the grid at link time) or linked to ALL in-grid cells it overlaps, so the
+        // clamped scan yields the IDENTICAL candidate set the old full scan did — verified by the BspCollision /
+        // differential trace suites. GridRange now always returns the clamped range.
+        GridRange(mins, maxs, out int x0, out int y0, out int x1, out int y1, out _);
 
         for (int y = y0; y < y1; y++)
         {
