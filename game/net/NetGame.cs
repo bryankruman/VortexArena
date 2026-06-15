@@ -1546,12 +1546,19 @@ public sealed partial class NetGame : Node3D
                 models.Add(bm);
 
         int modelsWarmed = 0;
+        var warmRoots = new System.Collections.Generic.List<Node3D>();
         foreach (string m in models)
         {
             AssetLoader.SkeletalModelParts? parts = _assets.LoadSkeletalModel(m, 0);
             if (parts is not null)
             {
-                parts.Root.QueueFree(); // warm the texture/material caches; discard the throwaway build node
+                // (hitch-fix §3, 2026-06-15) Keep the built node to RENDER it below instead of freeing it
+                // unrendered. Building-then-freeing warmed only the texture/material CACHES — Godot compiles a
+                // material's pipeline on first DRAW, so an un-drawn warm model left its player-shader pipeline
+                // UNcompiled, and the first bot wearing it paid a mid-match PIPELINE-COMPILE hitch at join
+                // (measured t=23-27s, rest-dominated, "1 ubershader"). This is the exact bug §12.6-2 fixed for the
+                // idle warmer (which renders via WarmNodes); the load-time roster warm had been missed.
+                warmRoots.Add(parts.Root);
                 modelsWarmed++;
             }
             // Yield per model so the loading bar animates and one cold IQM's decode+upload doesn't monopolize the
@@ -1559,7 +1566,18 @@ public sealed partial class NetGame : Node3D
             await YieldForLoadingFrame();
             if (!IsInsideTree()) return;
         }
-        GD.Print($"[NetGame] precached {sounds} combat sounds, {modelsWarmed} player models.");
+        // Render the roster offscreen for a few frames so every player-shader pipeline variant compiles NOW (under
+        // the loading screen), then free them — the textures/materials stay cached. Mirrors StartIdleWarmup's
+        // WarmNodes use. Textures are shared-cached, so holding the roster's scene nodes briefly is a small,
+        // bounded peak. No-op/immediate-free headless.
+        if (warmRoots.Count > 0)
+            XonoticGodot.Game.Client.GpuWarmPass.WarmNodes(this, warmRoots, () =>
+            {
+                foreach (Node3D r in warmRoots)
+                    if (GodotObject.IsInstanceValid(r))
+                        r.QueueFree();
+            });
+        GD.Print($"[NetGame] precached {sounds} combat sounds, {modelsWarmed} player models (rendered for pipeline warm).");
     }
 
     /// <summary>The stock player models the idle warmer warms after load (the local + erebus default are already

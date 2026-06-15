@@ -85,6 +85,19 @@ public partial class GpuWarmPass : Node
             RenderTargetUpdateMode = SubViewport.UpdateMode.Always,
             OwnWorld3D = true,
         };
+        // (hitch-fix 2026-06-15) A Vulkan graphics pipeline is keyed by its MULTISAMPLE state, among other things.
+        // A SubViewport defaults to MSAA-disabled, but the main window viewport runs 4× MSAA (project.godot) — so
+        // warming in a 1× viewport compiled the WRONG pipeline variant and the main viewport recompiled the 4×
+        // variant on first draw anyway (mid-match PIPELINE-COMPILE hitches persisted despite warming). Match the
+        // main viewport's MSAA / AA / scaling so the pipelines compiled here are the exact ones play will reuse.
+        if (GetViewport() is { } mainVp)
+        {
+            vp.Msaa3D = mainVp.Msaa3D;
+            vp.ScreenSpaceAA = mainVp.ScreenSpaceAA;
+            vp.UseTaa = mainVp.UseTaa;
+            vp.UseDebanding = mainVp.UseDebanding;
+            vp.Scaling3DMode = mainVp.Scaling3DMode;
+        }
         AddChild(vp);
 
         // A camera looking at the origin (where the warm instances sit). Current is scoped to this SubViewport's

@@ -231,6 +231,31 @@ public static class IqmBuilder
     /// sum 1; the surface material is resolved from the mesh's shader name. Note only the triangle *vertex*
     /// indices are re-based into the surface-local window, since each Godot surface indexes its own Vertex array.
     /// </summary>
+    // (hitch-fix §2, 2026-06-15) Exact-size scratch reuse for the per-surface mesh arrays. ArrayMesh.AddSurfaceFromArrays
+    // copies the managed arrays into Godot's mesh buffers SYNCHRONOUSLY at the Godot.Collections.Array assignment (it
+    // marshals to a Packed* Variant), so the scratch can be reused on the next surface/build — but ONLY at the EXACT
+    // length (an oversized buffer, e.g. from ArrayPool, would marshal garbage tail vertices = corrupted mesh; that is
+    // why this keys by length and never hands Godot a too-long array). One pool PER SLOT because all six arrays are
+    // alive simultaneously until AddSurfaceFromArrays. Reuse hits across instances of the same model (identical surface
+    // sizes) — the bot-spawn wave. [ThreadStatic]: BuildMesh runs on the main thread; bounded by distinct surface sizes.
+    [ThreadStatic] private static Dictionary<int, Vector3[]>? _posPool;
+    [ThreadStatic] private static Dictionary<int, Vector3[]>? _normPool;
+    [ThreadStatic] private static Dictionary<int, Vector2[]>? _uvPool;
+    [ThreadStatic] private static Dictionary<int, int[]>? _bonePool;
+    [ThreadStatic] private static Dictionary<int, float[]>? _weightPool;
+    [ThreadStatic] private static Dictionary<int, int[]>? _idxPool;
+
+    private static T[] RentExact<T>(ref Dictionary<int, T[]>? pool, int len)
+    {
+        pool ??= new Dictionary<int, T[]>();
+        if (!pool.TryGetValue(len, out T[]? buf))
+        {
+            buf = new T[len];
+            pool[len] = buf;
+        }
+        return buf;
+    }
+
     private static ArrayMesh BuildMesh(IqmData iqm, AssetSystem assets, SkinFile? skin)
     {
         var mesh = new ArrayMesh { ResourceName = "IqmMesh" };
@@ -255,12 +280,12 @@ public static class IqmBuilder
             if (materialName is null)
                 continue; // skin hides this mesh
 
-            var positions = new Vector3[vcount];
-            var normals = new Vector3[vcount];
-            var uvs = new Vector2[vcount];
+            var positions = RentExact(ref _posPool, vcount);
+            var normals = RentExact(ref _normPool, vcount);
+            var uvs = RentExact(ref _uvPool, vcount);
             // Godot wants 4 bone indices + 4 weights per vertex when skinned.
-            int[]? bones = skinned ? new int[vcount * 4] : null;
-            float[]? weights = skinned ? new float[vcount * 4] : null;
+            int[]? bones = skinned ? RentExact(ref _bonePool, vcount * 4) : null;
+            float[]? weights = skinned ? RentExact(ref _weightPool, vcount * 4) : null;
 
             bool haveNormals = iqm.Normals is { Length: > 0 };
             for (int v = 0; v < vcount; v++)
@@ -293,7 +318,7 @@ public static class IqmBuilder
             int triStart = sub.FirstTriangle * 3;
             int triEnd = (sub.FirstTriangle + sub.TriangleCount) * 3;
             triEnd = Math.Min(triEnd, iqm.Triangles.Length);
-            var indices = new int[Math.Max(0, triEnd - triStart)];
+            var indices = RentExact(ref _idxPool, Math.Max(0, triEnd - triStart));
             int upper = first + vcount;
             for (int t = triStart, k = 0; t < triEnd; t++, k++)
             {
