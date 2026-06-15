@@ -1440,6 +1440,12 @@ public sealed partial class NetGame : Node3D
 
         int warmed = 0, skipped = 0, muzzles = 0;
         int i = 0;
+        // (hitch-fix 2026-06-15) Collect the built v_ models to RENDER them once at the end (see below) instead of
+        // freeing them unrendered — building+freeing warmed only the caches, leaving each weapon's material
+        // pipeline UNcompiled, so the first time a weapon was drawn (1st-person view model on switch, or another
+        // player's 3rd-person carried weapon) it paid a mid-match PIPELINE-COMPILE hitch. Same warm-by-render fix
+        // as the player-model roster (PrecacheCombatSoundsAndModelsAsync) and the idle warmer (§12.6-2).
+        var weaponWarmRoots = new System.Collections.Generic.List<Node3D>();
         foreach (XonoticGodot.Common.Gameplay.Weapon w in XonoticGodot.Common.Gameplay.Weapons.All)
         {
             string vModel = WeaponVModelPath(w);
@@ -1468,9 +1474,10 @@ public sealed partial class NetGame : Node3D
             // An unanticipated pickup under the smart path just lazy-loads (one-frame hitch, then cached).
             if (warmAll || expected.Contains(w.NetName))
             {
-                // Build once to fill the parse + material/texture caches, then discard the orphan node
-                // (never added to the tree → free it so it doesn't leak). A miss just caches the failure.
-                _assets.LoadModel(vModel)?.QueueFree();
+                // Build once to fill the parse + material/texture caches; keep the node to render it for pipeline
+                // warm below (instead of freeing it unrendered). A miss just caches the failure.
+                if (_assets.LoadModel(vModel) is { } vRoot)
+                    weaponWarmRoots.Add(vRoot);
                 // The hand rig is loaded by WeaponAttachTransform on each switch; warm it too (it builds +
                 // frees its own throwaway node internally and caches the attach transform's model).
                 ViewModelEquip.WeaponAttachTransform(_assets, vModel);
@@ -1487,6 +1494,16 @@ public sealed partial class NetGame : Node3D
                 if (!IsInsideTree()) return;
             }
         }
+        // Render the warmed v_ models offscreen for a few frames so their material pipelines COMPILE now (under
+        // the loading screen) — Godot compiles a pipeline on first DRAW, so an un-drawn warm model left it
+        // uncompiled. Then free them; the texture/material caches persist. Mirrors the player-roster warm.
+        if (weaponWarmRoots.Count > 0)
+            XonoticGodot.Game.Client.GpuWarmPass.WarmNodes(this, weaponWarmRoots, () =>
+            {
+                foreach (Node3D r in weaponWarmRoots)
+                    if (GodotObject.IsInstanceValid(r))
+                        r.QueueFree();
+            });
         GD.Print($"[NetGame] precached {warmed} weapon models, skipped {skipped} (lazy), {muzzles} muzzle tags.");
     }
 
