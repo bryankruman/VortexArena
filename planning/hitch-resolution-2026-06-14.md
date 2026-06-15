@@ -148,8 +148,21 @@ to #1, which removes the primary backlog source.
   but harmless and verified pixel-clean (erebus model render). Note: `ArrayPool` is *not* usable here — its
   oversized arrays violate the exact-length constraint (same reason `DecodeBuffer` can't use it).
 
-**Still open (diminishing returns):** the 2 residual t≈21 PIPELINE-COMPILE hitches (likely weapon view-models —
-`PrecacheWeaponModelsAsync` warms them but may not render them; the same warm-by-render fix would apply).
+**Then mopped up the weapon-model warm (2026-06-15):** `PrecacheWeaponModelsAsync` had the same bug — it built each
+weapon v_ model then `QueueFree`'d it *unrendered*, so weapon pipelines compiled on first draw (1st-person view
+model on switch / another player's 3rd-person carried weapon). Now warmed-by-render too. Correct fix for the
+weapon-first-draw class.
+
+**Still open — a deeper, stochastic residual (NOT player or weapon models).** After warming **both** rosters,
+catharsis+6-bots still shows **2–6 PIPELINE-COMPILE hitches at the join window (t≈20–33)**, run-to-run variable,
+occasionally a 6-compile / 67–150ms cluster. Since both player- and weapon-model pipelines are now warmed-by-render,
+this residual is a different class — materials / render-states the 64×64 warm `SubViewport` doesn't replicate
+(clustered lighting, the Sun's PSSM shadows, the WorldEnvironment). Replicating those is **fragile**: matching a
+generic shadow-casting light *regressed* it (a different shadow variant compiled than the Sun's, wasted, and the
+main scene recompiled anyway), so it was reverted. And **Godot exposes only the compile *count*, not which pipeline**,
+so warm-viewport targeting is blind. Proper closure needs a Godot-side per-pipeline hook or accepting it as a
+bounded, stochastic match-start cost (it is match-start, not sustained). The **MSAA-match fix is the real warm-pass
+win** and stands. Recommend stopping the warm-viewport chase here.
 
 **Deeper structural option (unchanged from PERFORMANCE_REPORT §5 S5):** moving the server sim to a worker thread
 would take the whole `server.tick` (and its catch-up multiplier) off the render frame — but it's High-risk
@@ -167,7 +180,7 @@ first-draw-compile log behind `cl_debug_warm_materials` to make #1's ROI measura
 
 - `game/loaders/AssetLoader.cs` — IQM AnimationLibrary + parse cache (§3, the bot-spawn-storm killer).
 - `game/menu/framework/ClientSettings.cs` — `cl_maxfps` auto-cap to an engaging ceiling (§2, the biggest count win).
-- `game/net/NetGame.cs` — interactive catch-up cap 4→3 (§5) + roster model warm-by-render (§5/#3).
+- `game/net/NetGame.cs` — interactive catch-up cap 4→3 (§5) + roster model **and weapon model** warm-by-render (§5/#3).
 - `game/client/FrameProfiler.cs` — GC-tail reclassifier (§4) + the `refresh=NHz` env-banner field.
 - `game/client/GpuWarmPass.cs` — warm `SubViewport` now matches the main viewport's MSAA/AA/scaling (§5/#3, the latent-bug fix).
 - `game/loaders/models/IqmBuilder.cs` — exact-size `[ThreadStatic]` mesh-array reuse (§5/#2).
