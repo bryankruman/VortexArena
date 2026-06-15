@@ -80,6 +80,49 @@ info()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn()  { printf '\033[1;33mWARN:\033[0m %s\n' "$*"; }
 error() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; }
 
+# ── Retry a command with exponential backoff (for flaky network ops) ──────
+retry() {
+    local max="$1"; shift
+    local attempt=1 delay=5
+    while true; do
+        if "$@"; then
+            return 0
+        fi
+        if [ "$attempt" -ge "$max" ]; then
+            return 1
+        fi
+        warn "  attempt $attempt/$max failed; retrying in ${delay}s..."
+        sleep "$delay"
+        attempt=$((attempt + 1))
+        delay=$((delay * 2))
+    done
+}
+
+# ── git clone with retry + partial-clone cleanup ──────────────────────────
+# A clone that dies mid-transfer ("RPC failed; curl 56", "early EOF",
+# "fetch-pack: invalid index-pack output") leaves a half-written dir that
+# would block a re-clone, so we wipe it before each retry. http.postBuffer is
+# bumped because it's the canonical mitigation for the curl-56 RPC failure.
+# Usage: git_clone_retry <url> <dest> [extra git-clone flags...]
+git_clone_retry() {
+    local url="$1" dest="$2"; shift 2
+    local max=4 attempt=1 delay=5
+    while true; do
+        if git -c http.postBuffer=524288000 clone "$@" "$url" "$dest"; then
+            return 0
+        fi
+        rm -rf "$dest"
+        if [ "$attempt" -ge "$max" ]; then
+            error "clone of $url failed after $max attempts (network?)"
+            return 1
+        fi
+        warn "clone attempt $attempt/$max failed; cleaning up and retrying in ${delay}s..."
+        sleep "$delay"
+        attempt=$((attempt + 1))
+        delay=$((delay * 2))
+    done
+}
+
 require_cmd() {
     if ! command -v "$1" &>/dev/null; then
         error "Required command '$1' not found. Please install it."
@@ -107,7 +150,9 @@ clone_repo() {
 
     if [ -d "$dest/.git" ] || [ -f "$dest/.git" ]; then
         info "$dir: already cloned, pulling latest..."
-        git -C "$dest" pull --ff-only 2>/dev/null || git -C "$dest" pull
+        # ff-only first (quiet); fall back to a retried merge pull, which also
+        # covers a transient drop during the ff-only attempt.
+        git -C "$dest" pull --ff-only 2>/dev/null || retry 3 git -C "$dest" pull
         return
     fi
 
@@ -117,7 +162,7 @@ clone_repo() {
     fi
 
     info "$dir: cloning from $GITLAB_BASE/$repo ..."
-    git clone --depth 1 --single-branch "$GITLAB_BASE/$repo" "$dest"
+    git_clone_retry "$GITLAB_BASE/$repo" "$dest" --depth 1 --single-branch
 }
 
 # ── Remove dev-only directories from xonotic-data.pk3dir ──────────────────
@@ -151,8 +196,12 @@ clone_fonts() {
     tmp_dir="$(mktemp -d)"
     trap "rm -rf '$tmp_dir'" RETURN
 
-    git clone --depth 1 --single-branch --filter=blob:none --sparse \
-        "$GITLAB_BASE/xonotic.git" "$tmp_dir/xonotic" 2>/dev/null
+    if ! git_clone_retry "$GITLAB_BASE/xonotic.git" "$tmp_dir/xonotic" \
+        --depth 1 --single-branch --filter=blob:none --sparse; then
+        rm -rf "$tmp_dir"; trap - RETURN
+        error "font repo clone failed after retries"
+        return 1
+    fi
 
     pushd "$tmp_dir/xonotic" >/dev/null
     local sparse_paths=()
@@ -202,8 +251,30 @@ download_maps() {
 
     local zip_path="$tmp_dir/xonotic-release.zip"
 
-    info "  downloading $RELEASE_URL (~960 MB)..."
-    curl -L --progress-bar -o "$zip_path" "$RELEASE_URL"
+    local attempt=1 max=4 delay=5
+    while true; do
+        info "  downloading $RELEASE_URL (~960 MB)..."
+        # -C - resumes a partial download across attempts; --fail turns HTTP
+        # errors / connection resets into a non-zero exit so the loop retries.
+        if curl -L --fail --progress-bar -C - -o "$zip_path" "$RELEASE_URL"; then
+            # Full transfer — sanity-check the archive isn't truncated (a
+            # readable central directory means the tail arrived intact).
+            if unzip -l "$zip_path" >/dev/null 2>&1; then
+                break
+            fi
+            warn "  downloaded zip is corrupt/truncated; discarding and re-downloading"
+            rm -f "$zip_path"
+        fi
+        if [ "$attempt" -ge "$max" ]; then
+            rm -rf "$tmp_dir"; trap - RETURN
+            error "  release zip download failed after $max attempts"
+            return 1
+        fi
+        warn "  download attempt $attempt/$max failed; retrying in ${delay}s..."
+        sleep "$delay"
+        attempt=$((attempt + 1))
+        delay=$((delay * 2))
+    done
 
     for pk3 in "${MAP_PK3S[@]}"; do
         if [ ! -f "$ASSETS_DIR/$pk3" ]; then
