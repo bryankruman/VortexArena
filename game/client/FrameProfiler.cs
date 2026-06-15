@@ -222,6 +222,7 @@ public partial class FrameProfiler : CanvasLayer
         string env = $"env: managed-debugger={System.Diagnostics.Debugger.IsAttached} " +
                      $"godot-context={(OS.IsDebugBuild() ? "debug" : "release")} csharp={csharpConfig} " +
                      $"vsync={DisplayServer.WindowGetVsyncMode()} maxfps={Godot.Engine.MaxFps} " +
+                     $"refresh={DisplayServer.ScreenGetRefreshRate():0}Hz " +
                      $"cpu={OS.GetProcessorCount()}c gpu={RenderingServer.GetVideoAdapterName()}";
         _envBanner = env;
         Log.Info($"[frameprofiler] {env}");

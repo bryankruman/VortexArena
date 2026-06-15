@@ -565,8 +565,15 @@ public sealed partial class NetGame : Node3D
         // catch-up so a hitch isn't followed by a frame running 16× the sim — that second spike would miss
         // another vblank. The small backlog drains over the next few frames instead. A headless dedicated host
         // (no vblank) keeps the full cap and catches up fast.
+        // (hitch-fix 2026-06-14) Lowered 4 -> 3. A recovery frame after a hitch runs MaxTicksPerFrame catch-up
+        // ticks, and every per-tick × per-player multiplier (WeaponThink, the bot strategy-token goal-rating)
+        // fires that many times in one frame — the measured `mp.weapon ×28` / `bot.think` spikes on catch-up
+        // frames. 3 trims that multiplier ~25% (the backlog just drains over one extra frame — brief, invisible
+        // slow-motion); tick SEMANTICS are bit-identical (same ticks run, only their per-render-frame distribution
+        // changes), so it is parity-safe. The primary cause of these backlogs (the bot-spawn model-build storm) is
+        // fixed by the AnimationLibrary cache, so this is a secondary smoother. Headless keeps the full cap.
         if (DisplayServer.GetName() != "headless")
-            _serverWorld.Simulation.MaxTicksPerFrame = 4;
+            _serverWorld.Simulation.MaxTicksPerFrame = 3;
         if (built is not null)
             _serverWorld.BrushModels = built.Submodels; // moving SOLID_BSP brushes (doors/plats) clip correctly
         if (bsp is not null)

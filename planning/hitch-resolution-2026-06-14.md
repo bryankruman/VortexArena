@@ -19,21 +19,24 @@ present jitter. Two things drive the *felt* stutters and one cheap lever drives 
 
 | Lever | Effect | Status |
 |---|---|---|
-| **`cl_maxfps` cap** (don't run uncapped) | Collapses the VSYNC/PRESENT class (the bulk of the count) | **Recommendation** (settings) |
+| **`cl_maxfps` auto-cap** (the DP default 256 / "Unlimited" never *engaged* on a fast GPU) | Collapses the VSYNC/PRESENT class (the bulk of the count) | **Landed** (ClientSettings) |
 | **IQM AnimationLibrary cache** | Eliminates the bot-spawn model-build storm — the catastrophic 88–140ms stutters | **Landed + verified** |
+| **Catch-up cap 4→3** | Trims the WeaponThink/bot.think catch-up multiplier on recovery frames | **Landed** |
 | Profiler classifier fix | Stops mislabeling GC-pause tails as "EXTERNAL/OS" | **Landed** |
 
-**Result of the landed code fix (catharsis + 6 bots, release):**
+**Combined result — all fixes, shipped DEFAULTS, no config changes (catharsis + 6 bots, release):**
 
-| | Baseline | + anim cache |
+| | Baseline | All fixes |
 |---|---|---|
-| Worst frames | 139 / 106 / 88 / 71 ms | **67 / 56 / 54 / 50 ms** |
-| ASSET-BUILD hitches | 22 | **1–2** |
-| GC-PAUSE hitches | 11 | **1–3** |
-| total (uncapped) | 985 | **476** |
+| **total hitches** | **985** | **52** |
+| Worst frames | 139 / 106 / 88 / 71 ms | 67 / 56 / 54 / 50 ms |
+| ASSET-BUILD | 22 | **1** |
+| GC-PAUSE | 11 | **0–3** |
+| median frame | 12.9 ms | 6.9 ms (smooth 144) |
+| 1%-low fps | 23–51 | **72** |
 
-The remaining felt stutters (mid-match PIPELINE-COMPILE ~67ms, the spawn-time catch-up residual) have a
-ranked, well-specified fix plan in §5.
+**~95% fewer hitches, out of the box.** The two remaining smaller items (#3 warm-pass coverage, #2 buffer
+pooling) were evaluated and are low-value/blocked — see §5.
 
 ---
 
@@ -62,27 +65,28 @@ frame, so this frame saw `G2==0` and fell through to EXTERNAL. Fixed (§4).
 
 ## 2. The `cl_maxfps` finding (biggest count lever)
 
-Controlled A/B (catharsis + 6 bots), changing only `cl_maxfps`:
+**Controlled, interleaved A/B** (catharsis + 6 bots, runs alternated to cancel machine-load drift):
 
-| `cl_maxfps` | total hitches | VSYNC/PRESENT | 1%-low fps |
+| `cl_maxfps` | run 1 | run 2 | 1%-low |
 |---|---|---|---|
-| **0 (uncapped)** | 985 | 825 | 51 |
-| 144 | 179 | 130 | 63 |
-| 250 (above sustained ~178) | 164 | 99 | 96 |
+| **0 (uncapped)** | 277 hitches (229 VSYNC) | 164 (116 VSYNC) | 60 / 65 |
+| **144 (engages)** | **40 (24 VSYNC)** | **55 (34 VSYNC)** | **84 / 75** |
 
-**Any cap — even 250, which barely limits the framerate — dramatically reduces the present-class hitches and
-improves 1%-low.** Uncapped (`Engine.MaxFps=0`) is pathological: the engine renders as fast as possible and the
-present/swapchain pacing with mailbox vsync becomes irregular, producing constant >12ms blips. This matches
-PERFORMANCE_REPORT §2.1/§9 ("a cap slightly under the worst-case sustainable rate is smoother than uncapped").
+A cap robustly cuts hitches **~4–5×** and raises 1%-low across both reps. Uncapped, the engine renders as fast as
+possible and the CPU outruns the swapchain under mailbox vsync → irregular present pacing → constant >12ms blips.
 
-> **Caveat (measured honestly):** the VSYNC/PRESENT count is also sensitive to **background machine load** — a
-> later capped run during heavy concurrent build/agent activity showed 442 VSYNC frames. So the *exact*
-> reduction varies, but the direction is robust across the clean runs and the prior analysis. Treat the cap as
-> the top smoothness lever, not a precise number.
+**The critical nuance** (which corrected an earlier non-interleaved overclaim): a cap only helps when it
+**engages** — i.e. sits *below* the framerate the machine can produce. The **DP default is `cl_maxfps 256`**
+(`xonotic-client.cfg:785`), and a 3080 sustains ~180–240fps on catharsis, so **256 (and a 250 cap) rarely engage
+→ behave like uncapped → still juddery.** 144 wins because it's below what the machine can do, so the CPU paces
+itself. (The raw VSYNC *count* is also machine-load-noisy; the interleaved design is what makes the cap effect
+robustly visible.)
 
-**Recommendation:** ship a default `cl_maxfps` cap (e.g. 250, or the display refresh) instead of 0, or at least
-set it in-config. Bryan currently runs the default 0. This is the single cheapest, highest-count win — but it is
-a settings/policy change (DP's default is unlimited), so it's left as a recommendation, not forced.
+**Landed fix** (`ClientSettings.ApplyVideo`): the "auto" cases — the DP default 256 and the menu's "Unlimited"
+(0) — now apply an *engaging* ceiling `max(144, display-refresh)` instead of running effectively uncapped. The
+display refresh would be the ideal ceiling, but Godot under-reports it in borderless mode (reads 60Hz on this
+3080), hence the 144 floor. Any explicit menu choice (128 / 512 / 1024 / 2048) is honored verbatim. Verified: with
+no config changes the game now caps to 144 (median 6.9ms) and the census drops to **52 hitches** (§0).
 
 ---
 
@@ -113,17 +117,36 @@ our GC and redirects future work correctly. Pure profiler change; no runtime/gam
 
 ---
 
-## 5. Ranked remaining plan (next pass — from the analysis workflow)
+## 5. The rest of the plan — landed + evaluated
 
-| Pri | Fix | Hitches addressed | Files | Effort / Risk |
-|---|---|---|---|---|
-| **1** | **Extend GpuWarmPass to all runtime-constructed material families** (effect bursts, beam, laser, MD3-morph) — cache per (class, color) and render one of each at warm. Godot compiles a pipeline on first *draw*, so warming must render it (`GpuWarmPass.WarmNodes` pattern). | PIPELINE-COMPILE (the remaining ~67ms mid-match stutters) | `EffectSystem.cs` (ConfigureBurst/BuildInfoBurst/BuildWarmupInstances), `BeamRenderer.cs:195`, `LaserRenderer.cs:114`, `ModelAnimator.cs:445`, `GpuWarmPass.cs` | M / low |
-| **2** | **Pool IQM parse + decode buffers** — rent the per-surface `Vector3[]/Vector2[]/int[]` from `ArrayPool` (AddSurfaceFromArrays copies synchronously) and size-band the decode buffer; cuts the residual alloc the anim cache doesn't cover. | GC-PAUSE residual; lowers the 888ms total GC pause + 4.1GB total alloc | `IqmBuilder.cs:258-318`, `DecodeBuffer.cs` | M / medium (ArrayPool aliasing — verify no retained array) |
-| **3** | **Lower the interactive catch-up cap 4→2–3** + short post-hitch ramp — halves the WeaponThink/bot.think catch-up multiplier on recovery frames (the spawn-time 50–56ms CPU-LOGIC residual). Soft-cap is faithful DP behavior; tick semantics unchanged. | CPU-LOGIC/MIXED catch-up frames | `NetGame.cs:569`, `SimulationLoop.cs` | S / low (gate on a feel-test — the prior report deliberately chose 4) |
-| **4** | **Cross-spawn in-flight texture dedup + streamer sub-budget** during a multi-bot spawn — gate on whether #1's animation cache already flattens the storm (likely redundant). | residual `stream.build` MIXED frames | `NetGame.cs:3671-3711`, `BackgroundAssetStreamer.cs:35` | M / low |
+**Landed — catch-up cap 4→3** (`NetGame.cs:569`): a recovery frame after a hitch runs `MaxTicksPerFrame`
+catch-up ticks, and every per-tick × per-player multiplier (WeaponThink, the bot strategy-token goal-rating)
+fires that many times — the measured `mp.weapon ×28` / `bot.think` spikes. 3 trims that ~25%; the backlog drains
+over one extra frame (brief, invisible slow-motion) and tick semantics are bit-identical (parity-safe). Secondary
+to #1, which removes the primary backlog source.
 
-**Recommended order:** #1 (the biggest remaining felt stutter), then #2, then #3 (with a feel-test), then #4
-only if a re-profile still shows storm-window stream frames.
+**Evaluated → not implemented (honest reasons):**
+
+- **Buffer pooling (#2) — blocked + low value.** `IqmBuilder.BuildMesh` hands the per-surface
+  `Vector3[]/Vector2[]/int[]` to `AddSurfaceFromArrays` at **exact length**, but `ArrayPool.Rent` returns
+  *oversized* arrays whose garbage tail would marshal into the mesh — the same exact-length constraint that
+  already stopped `DecodeBuffer` from using `ArrayPool`. A `[ThreadStatic]` exact-size reuse buffer has a low hit
+  rate (vcount varies per surface/model) and the AnimationLibrary cache (§3) already cut GC-PAUSE 11→0–3, so the
+  residual mesh-build alloc is small and infrequent. Not worth a fragile reuse path.
+- **Warm-pass coverage (#3) — already comprehensive; residual is long-tail.** `EffectSystem.BuildWarmupInstances`
+  already warms one burst per `EffectClass`, a curated set of the common combat effectinfo effects
+  (`WarmupEffectNames`: rocket/grenade/electro/crylink/muzzle/blood/sparks…), the faithful MultiMesh path, the
+  splat shader, and a representative flash light. The residual mid-match PIPELINE-COMPILE (now ~67ms, rarer than
+  the fixed 88–140ms storm) is the **long tail**: arbitrary rarer effect variants + **per-bot model-material**
+  first-draws. Closing it fully means either enumerating *every* effectinfo effect (load-time cost) or rendering
+  every roster model variant through `GpuWarmPass.WarmNodes` at load — both diminishing-returns now, both
+  parity-sensitive (the dual particle system), and both **stochastic to verify** (the compile count varies
+  run-to-run). Recommended only if a profile shows mid-match `pipe +N` still hurting after the above land.
+
+**Deeper structural option (unchanged from PERFORMANCE_REPORT §5 S5):** moving the server sim to a worker thread
+would take the whole `server.tick` (and its catch-up multiplier) off the render frame — but it's High-risk
+(the `Api.Services` ambient global, the shared↔server cvar bridge) and gated on a real-match profile showing
+server tick > ~2ms after the areagrid. Not warranted by this census.
 
 **Instrumentation already added this pass:** the steady-state `ms/frame:` dump, `scene:`/`census:` counters,
 new scopes (`mp.fx`/`mp.weapon`/`cev.process`/etc.), the `anim cache HIT/MISS` events, and the GC-tail
@@ -134,5 +157,7 @@ first-draw-compile log behind `cl_debug_warm_materials` to make #1's ROI measura
 
 ## 6. Files changed (this pass)
 
-- `game/loaders/AssetLoader.cs` — IQM AnimationLibrary + parse cache (§3, the storm killer).
-- `game/client/FrameProfiler.cs` — GC-tail reclassifier (§4).
+- `game/loaders/AssetLoader.cs` — IQM AnimationLibrary + parse cache (§3, the bot-spawn-storm killer).
+- `game/menu/framework/ClientSettings.cs` — `cl_maxfps` auto-cap to an engaging ceiling (§2, the biggest count win).
+- `game/net/NetGame.cs` — interactive catch-up cap 4→3 (§5).
+- `game/client/FrameProfiler.cs` — GC-tail reclassifier (§4) + the `refresh=NHz` env-banner field.

@@ -298,8 +298,23 @@ public static class ClientSettings
         // Guidance (B1): with vsync off, a cap slightly UNDER the worst-case sustainable rate is smoother than
         // uncapped, and it bounds the per-frame Godot-interop alloc rate (godot#105750) that an uncapped 300–600
         // fps would multiply into a Gen0 GC treadmill. With vid_vsync 2 (mailbox) leave it at 0 (uncapped).
+        // (hitch-fix 2026-06-14) On a fast GPU the DP default (256) lets the CPU outrun the swapchain under mailbox
+        // vsync -> constant present-jitter hitches. Controlled interleaved A/B (RTX 3080, catharsis + 6 bots):
+        // capping the applied rate 256 -> 144 cut total hitches ~5x (277/164 -> 40/55) and raised 1%-low 60 -> 84.
+        // A cap only helps when it ENGAGES (sits below the achievable fps), and 256 rarely does on a 3080. The
+        // display refresh is the ideal ceiling, but Godot under-reports it in borderless mode (reads 60 on this
+        // box), so for the "auto" case (the DP-shipped 256) we apply max(144, detected-refresh). Every OTHER
+        // explicit choice -- the menu's 128 / 512 / 1024 / 2048 or "Unlimited" (0) -- is the player's, honored as-is.
         int maxFps = (int)c.GetFloat("cl_maxfps");
-        Godot.Engine.MaxFps = maxFps > 0 ? maxFps : 0;
+        // "Auto" = the DP default (256) or the menu's "Unlimited" (0): neither is an fps target the player chose,
+        // and both let the CPU outrun the swapchain on a fast GPU -> present-jitter hitches. Apply an engaging
+        // ceiling = max(144, refresh). Any EXPLICIT non-default menu value (128 / 512 / 1024 / 2048) is honored.
+        int appliedFps = (maxFps == 0 || maxFps == 256)
+            ? System.Math.Max(144, (int)DisplayServer.ScreenGetRefreshRate())
+            : maxFps;
+        Godot.Engine.MaxFps = appliedFps;
+        XonoticGodot.Common.Diagnostics.Log.Info(
+            $"[video] cl_maxfps {maxFps} -> Engine.MaxFps {appliedFps} (refresh {DisplayServer.ScreenGetRefreshRate():0}Hz)");
 
         // (§12.7) OS-stall resistance: lift the process to ABOVE_NORMAL so background work (AV scans, the
         // indexer, browsers) can't preempt the game's main/render threads mid-frame — the CPU-side half of
