@@ -69,6 +69,17 @@ public sealed class AssetLoader
     // immutable and safe to share across many AudioStreamPlayer3D, so unlike models we cache the built resource.
     private readonly Dictionary<string, AudioStream?> _soundCache = new(StringComparer.Ordinal);
 
+    // (hitch-fix 2026-06-14) Skeletal-IQM parse cache keyed by normalized vpath (model only — none of these
+    // depend on skinIndex; the skin only selects materials, loaded separately per call). The AnimationLibrary
+    // build is the 100-360 ms / ~50-100 MB worker burst behind the bot-spawn hitch storm (PERFORMANCE_REPORT
+    // §13.3 backlog #1): every bot wearing the same model re-ran it. The parsed IqmData is immutable post-read and
+    // the AnimationLibrary is attached verbatim (IqmBuilder.Build -> AddAnimationLibrary, no per-instance
+    // mutation; bone tracks are "Skeleton3D:bone" paths identical across instances), so both are safe to share.
+    // Touched from BackgroundAssetStreamer worker threads -> guarded by _skeletalCacheGate.
+    private readonly Dictionary<string, (IqmData Iqm, IReadOnlyList<FrameGroup>? Groups, AnimationLibrary Anims, string? DefaultClip)>
+        _skeletalParseCache = new(StringComparer.Ordinal);
+    private readonly object _skeletalCacheGate = new();
+
     /// <summary>The virtual filesystem this loader reads from (mounted gamedirs/pk3s).</summary>
     public VirtualFileSystem Vfs => _vfs;
 
@@ -377,6 +388,20 @@ public sealed class AssetLoader
     {
         string key = AssetPaths.Normalize(vpath);
         if (key.Length == 0) return null;
+
+        // (hitch-fix) Cache hit: reuse the shared parsed IqmData + AnimationLibrary (the expensive ~360 ms /
+        // ~96 MB build); only the per-skin sidecars (Info, Skin) are loaded fresh. This is what collapses the
+        // bot-spawn storm — N bots on one model now pay the build ONCE, not N times.
+        lock (_skeletalCacheGate)
+        {
+            if (_skeletalParseCache.TryGetValue(key, out var hit))
+            {
+                Prof.Event($"anim cache HIT {key}");
+                return new SkeletalModelParse(hit.Iqm, hit.Groups, LoadModelInfo(vpath, skinIndex),
+                    LoadSkin(key, skinIndex), hit.Anims, hit.DefaultClip);
+            }
+        }
+
         byte[] bytes;
         try { bytes = _vfs.ReadBytes(key); }
         catch (Exception ex) { GD.PrintErr($"[AssetLoader] skeletal model '{key}' read failed: {ex.Message}"); return null; }
@@ -391,6 +416,17 @@ public sealed class AssetLoader
             string? defaultClip;
             using (Prof.Sample("iqm.anims"))   // attribution: this now costs the WORKER, not the frame
                 anims = IqmBuilder.BuildAnimationLibrary(iqm, groups, out defaultClip);
+
+            // Publish to the cache (double-build race is harmless — last writer wins, all readers get a valid
+            // shared library). Build happened OUTSIDE the lock so a slow build never blocks other models' parses.
+            lock (_skeletalCacheGate)
+            {
+                if (_skeletalParseCache.TryGetValue(key, out var raced))
+                    (iqm, groups, anims, defaultClip) = (raced.Iqm, raced.Groups, raced.Anims, raced.DefaultClip);
+                else
+                    _skeletalParseCache[key] = (iqm, groups, anims, defaultClip);
+            }
+            Prof.Event($"anim cache MISS {key}");
             return new SkeletalModelParse(iqm, groups, LoadModelInfo(vpath, skinIndex), LoadSkin(key, skinIndex),
                 anims, defaultClip);
         }

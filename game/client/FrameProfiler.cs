@@ -477,7 +477,16 @@ public partial class FrameProfiler : CanvasLayer
         bool external = ms >= 25.0 && restMs >= ms * 0.7 && _procMs <= ms * 0.3
                         && rec.PipeCompiles == 0 && rec.G2 == 0 && _renderGpuMs <= ms * 0.3;
         if (external)
+        {
+            // (hitch-fix) GcPauseMs is a once-per-frame GC.GetTotalPauseDuration delta, so an all-thread gen2
+            // freeze that STARTED in frame N-1 lands its tail on frame N with G2==0 there — which used to fall
+            // through to EXTERNAL and blame the OS for what is really our GC (the catharsis 139ms "EXTERNAL" worst
+            // frame was a gen2 + mp.weapon catch-up tail). If a very recent frame collected gen2 or paused long,
+            // attribute this rest-dominated tail to GC, not the compositor.
+            if (RecentGcEvent(out double recentPauseMs))
+                return (HitchClass.GcPause, $"gen2/GC-pause tail (prior frame paused {recentPauseMs:0.0}ms; this frame rest-dominated)");
             return (HitchClass.External, "rest-dominated, game-side quiet — OS/compositor/driver");
+        }
 
         if (_procMs >= 0.55 * ms)
             return (HitchClass.CpuLogic, $"{dom} {domMs:0.0}ms{Anomaly(dom, domMs)}");
@@ -810,6 +819,25 @@ public partial class FrameProfiler : CanvasLayer
     {
         if (back > _ringCount) return null;
         return _records[(_ringHead - back + RingSize * 2) % RingSize];
+    }
+
+    /// <summary>(hitch-fix) Did one of the last few frames just take a gen2 collection or a long GC pause? Used to
+    /// re-attribute a rest-dominated "EXTERNAL"-looking frame to GC when it is really the tail of a freeze that the
+    /// once-per-frame pause delta charged to the previous frame. RecordAt(1) is the current frame; look back 2-4.</summary>
+    private bool RecentGcEvent(out double pauseMs)
+    {
+        pauseMs = 0.0;
+        for (int back = 2; back <= 4; back++)
+        {
+            FrameRecord? r = RecordAt(back);
+            if (r is null) continue;
+            if (r.G2 > 0 || r.GcPauseMs >= 8.0)
+            {
+                pauseMs = r.GcPauseMs;
+                return true;
+            }
+        }
+        return false;
     }
 
     // ---- on-demand ring export --------------------------------------------------------------------------------
