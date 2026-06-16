@@ -14,6 +14,17 @@ engine-level perf levers + profiling tools. Builds on the catharsis (FPS) and hi
 | 1 | **Split the 5 pipeline-compile counters** in FrameProfiler (Canvas/Mesh/Surface/Draw/Specialization) instead of one "uber" bucket | Made the residual *diagnosable* — confirmed the worst hitches are **SURFACE** compiles | ✅ |
 | 2 | **Warm pipelines in the live `World3D`** (not an isolated `OwnWorld3D`) | Eliminated the **105–137ms SURFACE clusters** → worst compile hitch now **~36ms** | ✅ |
 
+## 0.1 What landed (2026-06-16 — the config wins + RenderDoc diagnosis)
+
+| # | Change | Effect | Status |
+|---|---|---|---|
+| A | **Shader Baker in the windows-client export preset** (`export_presets.cfg` `shader_baker/enabled=true`) | Ships baked `SceneForwardClusteredShaderRD/…*.vulkan.cache` in the PCK → removes first-run / post-driver-bump cold SPIR-V cost on a fresh install. **VERIFIED**: full export completed exit 0, **no `godot#112794` hang** (reached 100%, `project.binary` stored). | ✅ |
+| D | **Debanding** (`project.godot` `anti_aliasing/quality/use_debanding=true`) | Kills sky/gradient banding; ~0 CPU, sub-ms GPU (we're GPU-idle). | ✅ |
+| B | **Vulkan RD driver pin** — *intentionally not added.* | Empirically the build already selects **`Vulkan 1.4.341 - Forward+`** by default (no D3D12); the report's "fresh checkout could flip to D3D12" premise does **not** hold for 4.6.3. Godot strips a `rendering_device/driver.windows="vulkan"` key as redundant-vs-default, so there's nothing persistable. The preset also sets `application/export_d3d12=0`. | ☑ moot |
+| — | **RenderDoc in-app auto-capture** (`RenderDocCapture.cs` + FrameProfiler hook): self-triggers a capture the instant a SURFACE compile fires, gated to mid-match (`SessionSeconds>28`). Self-guarding — no-op unless launched under RenderDoc, free to ship. | The only reliable way to capture a *stochastic, render-thread* PSO stall (the GUI "capture frame" button can't — a backgrounded window stops presenting). Reusable for any future GPU-stutter naming. | ✅ tool |
+
+**RenderDoc finding — the residual SURFACE compile is class-identified (Open Q #1 from §4, answered).** Captured the mid-match `surface+1` frame (frame2905, t=77.6). Godot's **release build sets no Vulkan debug object names**, so a headless string-grep of the (1.8 GB) capture names nothing — the resources are anonymous. But the capture + the frame's forensic + the warm-coverage code together pin the **class**: the compile fires on a frame whose watchdog is in **`cev.process`** (the remote-entity render feed) with **`md3.morph`** active, mid-combat, 169 entities. The warm pass covers player models (IQM), weapon `v_` models, effects, **and projectile bodies+trails** — but **NOT gibs, shell casings, or map-item MD3 models**, which render through the entity feed. So the residual SURFACE compiles are **un-warmed MD3 entity models (gibs / casings / items) first-instancing in combat** — a *different* one each occurrence (hence "stochastic", ~14–49 ms, a couple per match). The **exact** per-instance material would need a GUI before/after pipeline-set diff on the capture (disproportionate for the payoff; worst case already fixed). **Candidate fix (not yet done):** extend the warm pass to render representative gib/casing/item MD3 models at load — the same warm-by-render pattern as the roster/weapon warm.
+
 **Measured (catharsis + 6 bots, release):** the catastrophic 105–137ms SURFACE clusters are gone; residual = 2–4
 small compiles (a stray `surface+1` at 14–36ms + the upstream `draw+N` misses). 2755 tests green, 0 errors, clean
 spawn render (no flash).
@@ -82,8 +93,10 @@ an "Invalid Vulkan pipelines cache header" (a driver bump rejected it → every 
 
 ## 4. Open questions
 
-- The stray `surface+1` (14–36ms) — which material/mesh variant? RenderDoc at that frame would name it so the warm
-  instances cover it (e.g. a model variant or effect drawn in a state the warm scene didn't instance).
-- The `draw+N` misses — file an upstream Godot bug (ubershader should prevent `DRAW` compiles)?
-- Does the Shader Baker complete on this 683MB project (godot#112794), and does it capture the per-match-roster
-  ubershader variants?
+- ~~The stray `surface+1` (14–36ms) — which material/mesh variant?~~ **ANSWERED 2026-06-16 (see §0.1):** the
+  *class* is un-warmed **MD3 entity models (gibs / casings / items)** rendered via the entity feed; a different one
+  each occurrence. Exact per-instance naming needs a GUI before/after diff (Godot ships no Vulkan debug names);
+  the actionable fix is to warm those MD3 classes by render at load. *(Not yet implemented.)*
+- The `draw+N` misses — file an upstream Godot bug (ubershader should prevent `DRAW` compiles)? *(still open)*
+- ~~Does the Shader Baker complete on this 683MB project (godot#112794)?~~ **ANSWERED 2026-06-16:** yes — the
+  windows-client export completed exit 0, no hang, baked `SceneForwardClusteredShaderRD` caches stored in the PCK.

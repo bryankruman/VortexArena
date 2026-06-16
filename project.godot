@@ -23,6 +23,13 @@ project/assembly_name="XonoticGodot"
 
 textures/default_filters/anisotropic_filtering_level=3
 anti_aliasing/quality/msaa_3d=2
+; (engine-perf 2026-06-16) Dither the final image to kill banding in the sky / large gradients. A pipeline-key
+; change set once at boot (never toggled mid-match) so it costs nothing at runtime — ~0 CPU, sub-ms GPU, and
+; we're GPU-idle. The warm SubViewport copies UseDebanding from the live viewport, so warmed variants match.
+; (NOTE: Godot strips these comments whenever it re-serialises project.godot — e.g. on export. Rationale also
+; lives in planning/engine-optimization-2026-06-15.md. The Vulkan RD driver is already the verified default —
+; "Vulkan 1.4.341 - Forward+" — so no rendering_device/driver.windows pin is needed; Godot drops it as redundant.)
+anti_aliasing/quality/use_debanding=true
 ; Allocates the software occlusion-culling buffer so OccluderInstance3D works. Per-viewport opt-in still
 ; gates it: only the game viewport turns it on (via the r_occlusion_cull cvar / WorldOcclusion); the menu
 ; viewport leaves Viewport.use_occlusion_culling=false, so this is ~free until a map enables the A/B path.
