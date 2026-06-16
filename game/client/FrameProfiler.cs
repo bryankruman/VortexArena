@@ -139,6 +139,9 @@ public partial class FrameProfiler : CanvasLayer
     private readonly List<string> _eventScratch = new(8);
     private long _lastPipeTotal, _lastPipeUber;
     private long _lastPipeCanvas, _lastPipeMesh, _lastPipeSurface, _lastPipeDraw, _lastPipeSpec;
+    // (engine-perf 2026-06-16) Budget of RenderDoc auto-captures to trigger on SURFACE compiles (no-op unless
+    // running under RenderDoc). A handful is enough to name the residual; capped so a compile storm can't spam.
+    private int _rdocCapturesLeft = 6;
     private double _lastGcPauseMs;
     private double _lastForensicDumpAt = -1000.0;
     private double _forensicClock;
@@ -340,6 +343,20 @@ public partial class FrameProfiler : CanvasLayer
         rec.PipeCompilesUber = rec.PipeSurface + rec.PipeDraw;   // the synchronous stalls (kept name for the CSV slot)
         _lastPipeCanvas = cCanvas; _lastPipeMesh = cMesh; _lastPipeSurface = cSurface; _lastPipeDraw = cDraw; _lastPipeSpec = cSpec;
         _lastPipeTotal = cCanvas + cMesh + cSurface + cDraw + cSpec; _lastPipeUber = cSurface + cDraw;
+
+        // (engine-perf 2026-06-16) Under RenderDoc only: self-trigger a capture of the next frame whenever a
+        // SYNCHRONOUS SURFACE pipeline-compile fires, so the stochastic stall is captured deterministically (the
+        // residual material/mesh is drawn again next frame with the now-warm pipeline → inspectable offline).
+        // Gate on SessionSeconds > 28 so the budget targets the MID-MATCH residual (the felt join/combat
+        // SURFACE compiles), not the expected load-time ones (the warm pass + first scene draw) hidden by the
+        // loading screen.
+        const double RdocCaptureAfterSeconds = 28.0;
+        if (rec.PipeSurface > 0 && _rdocCapturesLeft > 0 && SessionSeconds > RdocCaptureAfterSeconds && RenderDocCapture.Available)
+        {
+            RenderDocCapture.TriggerCapture();
+            _rdocCapturesLeft--;
+            Prof.Event($"rdoc: capture queued on SURFACE compile (surface+{rec.PipeSurface}, {_rdocCapturesLeft} left)");
+        }
 
         // Scope table (inclusive + self + alloc per scope) + the one-shot events; track the dominant scope.
         string? topName = null; double topMs = 0.0;
