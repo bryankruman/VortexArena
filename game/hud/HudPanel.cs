@@ -132,6 +132,11 @@ public abstract partial class HudPanel : Control
     /// <summary>Whether contents change every frame (health/ammo/timer/crosshair/killfeed). Unchanged.</summary>
     public virtual bool IsDynamic => true;
 
+    /// <summary>(R8) This panel renders with its OWN alpha (e.g. the crosshair's <c>crosshair_alpha</c>) rather
+    /// than the scoreboard panel-fade, so the manager must NOT stop re-recording it when the scoreboard is up.
+    /// Default false: ordinary panels fade with the scoreboard and can be skipped once fully transparent.</summary>
+    public virtual bool DrawsWithOwnAlpha => false;
+
     // ---- HUD configure-mode (editor) flags — set by HudConfigEditor, read for the editor's overlay draw ----
 
     /// <summary>QC <c>panel == highlightedPanel</c>: this panel is the one the editor's cursor/keyboard is acting

@@ -70,13 +70,10 @@ public partial class ClientWorld : Node3D
     private readonly Dictionary<int, EntityNode> _entityNodes = new();
 
     /// <summary>(§12.8) The map's compiled PVS, wired by the host after the BSP loads (null on a non-BSP/demo
-    /// scene → entity PVS culling is inert). Drives <see cref="ApplyEntityPvsCull"/>: DP-faithful render culling
-    /// of remote entities whose bounds fall outside the camera's potentially-visible set.</summary>
+    /// scene → entity PVS culling is inert). Drives <see cref="DriveEntityNodes"/>: DP-faithful render culling
+    /// of remote entities whose bounds fall outside the camera's potentially-visible set. When the cvar is off,
+    /// the same loop simply marks every node visible each frame (no separate disable-reset bookkeeping needed).</summary>
     public XonoticGodot.Formats.Bsp.BspPvs? Pvs { get; set; }
-
-    /// <summary>Whether the entity PVS cull applied anything last frame, so a freshly-disabled cvar can restore
-    /// every node's visibility exactly once (mirrors WorldPvsCuller's disable handling).</summary>
-    private bool _entityPvsActive;
 
     /// <summary>Per-entity model animators (players/monsters/vehicles with MD3 anim).</summary>
     private readonly Dictionary<int, ModelAnimator> _animators = new();
@@ -428,6 +425,7 @@ public partial class ClientWorld : Node3D
         {
             node = new EntityNode { Name = $"ent#{entity.Index}_{Safe(entity.ClassName)}" };
             AddChild(node);
+            node.SetProcess(false); // R1: ClientWorld drives DriveSync centrally; kill the per-node _Process callback
             node.Bind(entity);
             _entityNodes[entity.Index] = node;
 
@@ -910,10 +908,14 @@ public partial class ClientWorld : Node3D
         foreach (var kv in _animators)
         {
             ModelAnimator anim = kv.Value;
-            if (anim.FollowEntityFrame) continue; // networked frame drives it (CSQCMODEL_AUTOUPDATE)
             Entity? e = anim.Entity;
-            if (e is not null && !e.IsFreed)
+            // Movement-derived clip pick is only for non-networked (demo/local) animators; networked entities
+            // play their server frame directly (CSQCMODEL_AUTOUPDATE).
+            if (!anim.FollowEntityFrame && e is not null && !e.IsFreed)
                 SelectClipFromMovement(e, anim);
+            // R1: Advance() relocated here from the (now-disabled) ModelAnimator._Process so the morph still
+            // rebuilds once per frame without paying a per-node native->managed callback.
+            anim.Advance((float)delta);
         }
 
         // Skeletal player models: synthesize the four-pose split + aim each frame and push the CPU bones.
@@ -938,7 +940,7 @@ public partial class ClientWorld : Node3D
             }
         }
 
-        using (FrameProfiler.Scope("cw.pvscull")) ApplyEntityPvsCull(localId);
+        using (FrameProfiler.Scope("entitynode")) DriveEntityNodes(localId);
         using (FrameProfiler.Scope("cw.csqc")) DriveCsqcModelHooks((float)delta);
         using (FrameProfiler.Scope("cw.vehicles")) DriveVehicles((float)delta);
         // Live-poll the dynamic map/scene tint cvars so a console `set r_map_tint*` re-tints instantly (the
@@ -963,40 +965,41 @@ public partial class ClientWorld : Node3D
     }
 
     /// <summary>
-    /// (§12.8) DP-faithful entity render culling: hide remote entities whose bounds lie outside the camera's
-    /// PVS (DP draws an entity only when its leaf cluster is in the view's visible set). This is the per-entity
-    /// analogue of <see cref="XonoticGodot.Game.WorldPvsCuller"/> and the free, faithful way to make players /
-    /// items / props behind walls disappear — the thing Godot's geometric occluder would otherwise be needed
-    /// for. Gated behind <c>r_pvs_cull_entities</c> (default 1, DP-faithful; set 0 to disable for A/B).
-    ///
-    /// <para>Conservative: the LOCAL player is never culled (its model parents the view), and an unvised map /
-    /// a camera in solid (cluster &lt; 0) / a degenerate box all keep everything visible. Tested against the
-    /// entity's BOUNDS (origin ± <c>r_pvs_cull_entities_margin</c>), not a point, so a model peeking past a
-    /// cluster boundary can't wink out. Culling rides the <see cref="EntityNode.SetPvsVisible"/> flag so it
-    /// composes with the item ghost/fade visibility instead of fighting it.</para>
+    /// (R1+R2) Central per-frame drive for every entity node — replaces the per-node <see cref="EntityNode"/>
+    /// <c>_Process</c> callback (the dominant render-submission / interop tax at ~150 entities × high fps). One
+    /// pass over <see cref="_entityNodes"/> that:
+    /// <list type="bullet">
+    /// <item>(§12.8) computes the DP-faithful PVS visibility — the entity's BOUNDS (origin ±
+    ///       <c>r_pvs_cull_entities_margin</c>) vs the camera's visible cluster set — and routes it through
+    ///       <see cref="EntityNode.SetPvsVisible"/> so it ANDs with the gameplay ghost/fade flag (neither owner
+    ///       clobbers the other). DP draws an entity only when its leaf cluster is in the view's visible set;</item>
+    /// <item>(R2) skips the transform sync entirely for an effectively-hidden node — Godot does NOT gate
+    ///       processing on <c>Visible</c>, so a culled entity behind a wall would otherwise still pay the full
+    ///       marshalled transform write every frame. A hidden→visible regain force-re-syncs (see
+    ///       <see cref="EntityNode.DriveSync"/> / <see cref="EntityNode.ForceSync"/>);</item>
+    /// <item>(R1) for a visible node, drives the dirty-gated <see cref="EntityNode.DriveSync"/> — which itself
+    ///       skips the interop writes when nothing the sync reads (origin/yaw/pitch/roll/scale, or the bob clock
+    ///       while <c>ItemAnimate != 0</c>) changed.</item>
+    /// </list>
+    /// PVS culling is gated behind <c>r_pvs_cull_entities</c> (default 1); when off, every node is visible and
+    /// simply syncs. Conservative: the LOCAL player and an unvised map / camera-in-solid keep everything visible
+    /// (wrongly culling a visible enemy is far worse than under-culling one solidly behind a wall).
     /// </summary>
-    private void ApplyEntityPvsCull(int localId)
+    private void DriveEntityNodes(int localId)
     {
-        bool enabled = CvarF("r_pvs_cull_entities", 1f) != 0f && Pvs is { HasVis: true };
-        if (!enabled)
-        {
-            if (_entityPvsActive)
-            {
-                foreach (EntityNode n in _entityNodes.Values)
-                    if (GodotObject.IsInstanceValid(n)) n.SetPvsVisible(true);
-                _entityPvsActive = false;
-            }
-            return;
-        }
-        _entityPvsActive = true;
+        bool pvsEnabled = CvarF("r_pvs_cull_entities", 1f) != 0f && Pvs is { HasVis: true };
 
-        NVec3? view = ViewOrigin();
-        int viewerCluster = view is { } v ? Pvs!.LeafCluster(Pvs.FindLeaf(v)) : -1;
-        // Camera in solid / outside the tree → show everything (BoxAnyClusterVisibleFrom also guards this, but
-        // skip the per-entity work entirely).
-        bool showAll = viewerCluster < 0;
-        float m = Mathf.Max(CvarF("r_pvs_cull_entities_margin", 64f), 0f);
-        var margin = new NVec3(m, m, m);
+        int viewerCluster = -1;
+        bool showAll = true;
+        NVec3 margin = default;
+        if (pvsEnabled)
+        {
+            NVec3? view = ViewOrigin();
+            viewerCluster = view is { } v ? Pvs!.LeafCluster(Pvs.FindLeaf(v)) : -1;
+            showAll = viewerCluster < 0; // camera in solid / outside the tree → show everything
+            float m = Mathf.Max(CvarF("r_pvs_cull_entities_margin", 64f), 0f);
+            margin = new NVec3(m, m, m);
+        }
 
         foreach (var kv in _entityNodes)
         {
@@ -1004,16 +1007,17 @@ public partial class ClientWorld : Node3D
             Entity? e = node.Entity;
             if (e is null || e.IsFreed || !GodotObject.IsInstanceValid(node))
                 continue;
-            if (showAll || e.Index == localId)
-            {
-                node.SetPvsVisible(true);
-                continue;
-            }
-            // Bounds around the networked origin (a generous symmetric box — biased toward NOT hiding, since
-            // wrongly culling a visible enemy is far worse than under-culling one solidly behind a wall).
-            NVec3 o = e.Origin;
-            bool visible = Pvs!.BoxAnyClusterVisibleFrom(viewerCluster, o - margin, o + margin);
-            node.SetPvsVisible(visible);
+
+            bool pvsVis = true;
+            if (pvsEnabled && !showAll && e.Index != localId)
+                pvsVis = Pvs!.BoxAnyClusterVisibleFrom(viewerCluster, e.Origin - margin, e.Origin + margin);
+            node.SetPvsVisible(pvsVis);
+
+            // R1/R2: only an effectively-visible node pays the transform sync; a hidden one re-syncs on regain.
+            if (node.EffectiveVisible)
+                node.DriveSync();
+            else
+                node.ForceSync();
         }
     }
 
@@ -1515,6 +1519,7 @@ public partial class ClientWorld : Node3D
             if (isPlayer)
                 CsqcStateFor(entity).IsPlayerModel = true;
             node.AddChild(anim);
+            anim.SetProcess(false); // R1: ClientWorld's cw.anim loop drives Advance(); kill the per-node callback
             _animators[entity.Index] = anim;
         }
         else

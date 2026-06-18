@@ -241,11 +241,20 @@ public partial class Hud : CanvasLayer
 
             // Non-scoreboard panels fade out as the scoreboard fades in (QC panel_fade_alpha).
             float panelFade = p.ShowFlags.HasFlag(PanelShow.WithScoreboard) ? 1f : 1f - sbFade;
+
+            // (R8) While the scoreboard is fully up a non-WithScoreboard panel renders at ~0 alpha. Each panel's
+            // NeedsRedraw carries the fade alpha, so it has already drawn its final near-transparent frame on the
+            // way down; stop re-resolving (LoadConfig) and re-recording it entirely until the scoreboard begins
+            // closing (panelFade rises). Crosshair-style panels draw with their OWN alpha (crosshair_alpha), not
+            // panelFade, so they must keep updating — never skip those.
+            if (panelFade <= 0.004f && !p.DrawsWithOwnAlpha)
+                continue;
+
             p.LoadConfig(vp, fade, panelFade);
 
-            // Re-record the canvas item only when the panel's displayed content actually changed (3.2-3) —
-            // most dynamic panels return true (animate every frame), but the value readouts (timer/race timer)
-            // gate on a once-per-second change so we don't re-run DrawPanel 160×/s for content that ticks 1×/s.
+            // Re-record the canvas item only when the panel's displayed content actually changed (3.2-3) — most
+            // dynamic panels return true (animate every frame), but the value readouts (timer/race timer/health/
+            // armor/ammo/weapons) gate on an actual change so we don't re-run DrawPanel 160×/s for static content.
             if (p.IsDynamic && p.NeedsRedraw())
                 p.QueueRedraw();
         }

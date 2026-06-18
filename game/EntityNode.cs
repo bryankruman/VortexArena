@@ -25,13 +25,29 @@ public partial class EntityNode : Node3D, IEntityPresence
     // (a faded-out item behind a wall stays hidden; an in-PVS ghosting item still shows its ghost).
     private bool _gameplayVisible = true;
     private bool _pvsVisible = true;
+    private bool _effectiveVisible = true;
+
+    /// <summary>Effective render visibility (gameplay AND pvs), mirrored in managed state so the central
+    /// drive loop (<see cref="DriveSync"/>) can gate the transform sync without an interop <c>Visible</c> read.</summary>
+    public bool EffectiveVisible => _effectiveVisible;
+
+    /// <summary>Recompute the ANDed Godot visibility from the two owners; on a hidden→visible regain, force a
+    /// fresh sync next drive (the entity's origin may have changed while we were skipping its sync).</summary>
+    private void ApplyVisible()
+    {
+        bool eff = _gameplayVisible && _pvsVisible;
+        bool regained = eff && !_effectiveVisible;
+        _effectiveVisible = eff;
+        Visible = eff;
+        if (regained) _syncValid = false;
+    }
 
     /// <summary>Gameplay-side visibility (item ghost / death-fade). ANDs with the PVS cull for the final flag.</summary>
     public void SetGameplayVisible(bool v)
     {
         if (_gameplayVisible == v) return;
         _gameplayVisible = v;
-        Visible = _gameplayVisible && _pvsVisible;
+        ApplyVisible();
     }
 
     /// <summary>(§12.8) PVS-cull visibility — true unless the entity's bounds are outside the camera's PVS.
@@ -40,7 +56,7 @@ public partial class EntityNode : Node3D, IEntityPresence
     {
         if (_pvsVisible == v) return;
         _pvsVisible = v;
-        Visible = _gameplayVisible && _pvsVisible;
+        ApplyVisible();
     }
 
     /// <summary>Attach to an entity and register this node as its presence link.</summary>
@@ -51,11 +67,38 @@ public partial class EntityNode : Node3D, IEntityPresence
         SyncFromEntity();
     }
 
-    public override void _Process(double delta)
+    // R1 dirty-gate: SyncFromEntity is a pure function of (Origin, Angles, ScaleFactor, ItemAnimate) — plus the
+    // render clock, but ONLY while ItemAnimate != 0 (bob/spin pickups). So the marshalled Position/Basis/Scale
+    // writes can be skipped whenever none of those inputs changed. The node's own _Process is disabled
+    // (ClientWorld drives DriveSync from its central _entityNodes loop) to remove the per-node native->managed
+    // callback — the dominant render-submission (rcpu) tax at ~150 entities × high fps.
+    private System.Numerics.Vector3 _lastOrigin, _lastAngles;
+    private float _lastScale;
+    private byte _lastItemAnimate;
+    private bool _syncValid;
+
+    /// <summary>Drive one frame of transform sync (called from <c>ClientWorld._Process</c>'s central loop),
+    /// skipping the interop writes when nothing the sync reads has changed. An animating pickup
+    /// (<c>ItemAnimate != 0</c>) is time-driven, so it always re-syncs.</summary>
+    public void DriveSync()
     {
-        using var _enScope = XonoticGodot.Game.Client.FrameProfiler.Scope("entitynode"); // [profiling] all EntityNode syncs
+        Entity? e = Entity;
+        if (e is null) return;
+        if (e.ItemAnimate == 0 && _syncValid
+            && e.Origin == _lastOrigin && e.Angles == _lastAngles
+            && e.ScaleFactor == _lastScale && e.ItemAnimate == _lastItemAnimate)
+            return; // unchanged → skip the marshalled Position/Basis/Scale writes
         SyncFromEntity();
+        _lastOrigin = e.Origin;
+        _lastAngles = e.Angles;
+        _lastScale = e.ScaleFactor;
+        _lastItemAnimate = e.ItemAnimate;
+        _syncValid = true;
     }
+
+    /// <summary>Force the next <see cref="DriveSync"/> to re-sync regardless of the dirty-gate (model swap /
+    /// visibility regain — see <see cref="ApplyVisible"/>).</summary>
+    public void ForceSync() => _syncValid = false;
 
     /// <summary>Copy the bound entity's origin and yaw onto this node's transform (Quake -> Godot).</summary>
     public void SyncFromEntity()
