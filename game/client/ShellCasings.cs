@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Godot;
 using XonoticGodot.Game;
 using NVec3 = System.Numerics.Vector3;
@@ -74,6 +75,23 @@ public sealed partial class ShellCasings : Node3D
         CullIfNeeded();
         return body;
     }
+
+    /// <summary>
+    /// (engine-perf 2026-06-16) Build one hidden instance per casing variant for the offscreen GPU pipeline warm
+    /// pass (<see cref="GpuWarmPass"/>). Casings render via the entity feed and are otherwise un-warmed, so the
+    /// FIRST weapon shot first-instances their (mesh,material) pipeline mid-match — a synchronous SURFACE compile.
+    /// Uses the SAME <see cref="BuildMesh"/> factory a live <see cref="Spawn"/> uses (real IQM brass when
+    /// <see cref="ModelLoader"/> resolves it, the generated cylinder fallback otherwise). The returned nodes are
+    /// unparented — the warm pass parents, renders, and frees them.
+    /// </summary>
+    public List<Node3D> BuildWarmupInstances()
+        => new()
+        {
+            // Opaque first-draw variant + the alpha-override fade variant (ApplyAlpha switches to Alpha over the
+            // final 0.4s — a distinct PSO otherwise compiled mid-match on the first casing fade).
+            BuildMesh(CasingKind.Bullet), GpuWarmPass.AlphaWarm(BuildMesh(CasingKind.Bullet)),
+            BuildMesh(CasingKind.Shell),  GpuWarmPass.AlphaWarm(BuildMesh(CasingKind.Shell)),
+        };
 
     // ------------------------------------------------------------------------------------------------
 

@@ -32,7 +32,8 @@ public partial class GpuWarmPass : Node
     /// map load, AFTER <see cref="EffectSystem.Warmup"/> / <see cref="ProjectileRenderer.WarmupTrails"/> (which
     /// populate the resource caches this renders).
     /// </summary>
-    public static GpuWarmPass Run(Node parent, EffectSystem? effects, ProjectileRenderer? projectiles)
+    public static GpuWarmPass Run(Node parent, EffectSystem? effects, ProjectileRenderer? projectiles,
+        IReadOnlyList<Node3D>? extra = null)
     {
         var pass = new GpuWarmPass { Name = "GpuWarmPass" };
         // Headless (dedicated server / CI): there is no GPU and no pipelines to warm, and the dummy renderer
@@ -42,9 +43,46 @@ public partial class GpuWarmPass : Node
             // Gather the instances before entering the tree; building them is pure CPU (uses the populated caches).
             if (effects is not null) pass._instances.AddRange(effects.BuildWarmupInstances());
             if (projectiles is not null) pass._instances.AddRange(projectiles.BuildWarmupInstances());
+            // (engine-perf 2026-06-16) Caller-supplied warm instances — e.g. the map-item / pickup MD3 models the
+            // host builds from the AssetLoader + item registry (NetGame.BuildItemWarmupInstances). Warmed alongside
+            // the effect/projectile families so an item first-seen mid-match doesn't compile its pipeline that frame.
+            if (extra is not null) pass._instances.AddRange(extra);
         }
         parent.AddChild(pass);
         return pass;
+    }
+
+    /// <summary>
+    /// (engine-perf 2026-06-16) Return <paramref name="node"/> with a per-instance ALPHA-transparent surface
+    /// override on each MeshInstance3D surface, so rendering it offscreen compiles the alpha-blend pipeline
+    /// variant. Gibs + casings flip their (shared) material to <see cref="BaseMaterial3D.TransparencyEnum.Alpha"/>
+    /// during their final-second fade-out (ModelGibs/ShellCasings ApplyAlpha) — a DISTINCT Vulkan PSO from the
+    /// opaque first-draw, otherwise compiled mid-match on the FIRST fade (~7s after the first death; confirmed as
+    /// the residual surface compile by fade-timed live captures). The alpha is cloned onto a surface OVERRIDE so
+    /// the shared opaque material the live mesh draws with is never mutated. For warm instances only (then freed).
+    /// </summary>
+    public static Node3D AlphaWarm(Node3D node)
+    {
+        ApplyAlphaOverride(node);
+        return node;
+    }
+
+    private static void ApplyAlphaOverride(Node node)
+    {
+        if (node is MeshInstance3D mi && mi.Mesh is { } mesh)
+        {
+            for (int s = 0; s < mesh.GetSurfaceCount(); s++)
+            {
+                if (mesh.SurfaceGetMaterial(s) is StandardMaterial3D mat)
+                {
+                    var clone = (StandardMaterial3D)mat.Duplicate();
+                    clone.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
+                    mi.SetSurfaceOverrideMaterial(s, clone);   // per-instance — the shared mesh material is untouched
+                }
+            }
+        }
+        foreach (Node child in node.GetChildren())
+            ApplyAlphaOverride(child);
     }
 
     /// <summary>

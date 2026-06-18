@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Godot;
 using XonoticGodot.Formats.Vfs;
 using XonoticGodot.Common;            // GameInit
@@ -930,7 +931,15 @@ public sealed partial class NetGame : Node3D
         // grenademodel.md3) through the same VFS loader the world/weapon models use. Set after AddChild since
         // ClientWorld._Ready (which built _render.Projectiles) ran synchronously on it.
         if (_assets is not null)
+        {
             _render.Projectiles.ModelFactory = m => _assets.LoadModel(m);
+            // (engine-perf 2026-06-16) Wire the SAME loader into the gib + casing systems so they render their
+            // REAL MD3/IQM limb + brass models (faithful to DP gibs.qc/casings.qc) instead of the generated
+            // placeholder box/cylinder — the ModelLoader Func they support was never connected, so that path was
+            // dead. The GpuWarmPass below warms these models' pipelines, so the restored MD3s cost no mid-match
+            // SURFACE compile. (EffectSystem.ModelLoader propagates to its Gibs/Casings, both live post-AddChild.)
+            _render.Effects.ModelLoader = m => _assets.LoadModel(m);
+        }
 
         // Pre-warm the effect catalog + particlefont atlas now (map-load), so the FIRST weapon shot doesn't hitch
         // parsing effectinfo.txt + decoding the atlas on its render frame (DP precaches these at client init,
@@ -943,7 +952,9 @@ public sealed partial class NetGame : Node3D
         // A2: render one hidden instance of every effect/projectile material family in a tiny offscreen viewport
         // so the GPU compiles their shader pipelines NOW (during load) — the first real explosion/rocket/gib in
         // play then hits a warm pipeline instead of stalling the frame. Self-frees after a few frames.
-        XonoticGodot.Game.Client.GpuWarmPass.Run(_render, _render.Effects, _render.Projectiles);
+        // The map-item / pickup MD3 models render through the entity feed (PVS-culled until first-seen), so warm
+        // them here too — built from the item registry + the same AssetLoader the live entity build uses.
+        XonoticGodot.Game.Client.GpuWarmPass.Run(_render, _render.Effects, _render.Projectiles, BuildItemWarmupInstances());
 
         // CSQC appearance context (FORCEMODEL/FORCECOLORS need the local player + gametype): read live each frame.
         _render.AppearanceProvider = BuildAppearanceContext;
@@ -1825,6 +1836,37 @@ public sealed partial class NetGame : Node3D
         if (_assets is null || string.IsNullOrEmpty(e.Model) || e.Model.StartsWith('*'))
             return null;
         return _assets.LoadModel(e.Model);
+    }
+
+    /// <summary>
+    /// (engine-perf 2026-06-16) Build one hidden instance per DISTINCT map-item / pickup model for the offscreen
+    /// GPU pipeline warm pass. Item world-models render through the entity feed and are PVS-culled until first
+    /// seen, so their (mesh,material) pipeline first-compiles mid-match the moment the player rounds a corner onto
+    /// a pickup — a synchronous SURFACE compile (the residual a RenderDoc capture pinned to the MD3-entity class).
+    /// Loads each distinct model the SAME way <see cref="BuildEntityModel"/> does (<c>_assets.LoadModel</c> of the
+    /// registry def's <see cref="StartItem.ResolveModelPath"/>), so the warmed pipeline is byte-identical to the
+    /// live draw. The returned nodes are unparented (the warm pass owns + frees them); the cached parses/materials
+    /// live on for the real spawns. Missing / unsupported (Quake1 .mdl) models simply aren't warmed.
+    /// </summary>
+    private List<Node3D> BuildItemWarmupInstances()
+    {
+        var list = new List<Node3D>();
+        if (_assets is null || DisplayServer.GetName() == "headless")
+            return list;
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (Pickup def in Registry<Pickup>.All)
+        {
+            string? path = StartItem.ResolveModelPath(def);
+            if (string.IsNullOrEmpty(path) || !seen.Add(path))
+                continue;
+            try
+            {
+                if (_assets.LoadModel(path) is { } node)
+                    list.Add(node);
+            }
+            catch { /* a missing / unsupported item model simply isn't warmed */ }
+        }
+        return list;
     }
 
     public override void _ExitTree() => Shutdown();

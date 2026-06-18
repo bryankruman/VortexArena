@@ -353,6 +353,14 @@ public partial class EffectSystem : Node3D
         if (Splats is not null)
             list.Add(Splats.BuildWarmupInstance());
 
+        // (engine-perf 2026-06-16) The gib limbs + brass casings render via the entity feed (cev.process) and are
+        // otherwise un-warmed: the first combat death/shot first-instances their (mesh,material) pipeline mid-match
+        // → a synchronous SURFACE compile (the residual a RenderDoc capture pinned to the MD3-entity class). Their
+        // BuildWarmupInstances() warms exactly what plays — the real MD3/IQM limb+brass once the host wires their
+        // ModelLoader, the generated fallback otherwise — via the same BuildMesh factory the live spawn uses.
+        if (Gibs is not null) list.AddRange(Gibs.BuildWarmupInstances());
+        if (Casings is not null) list.AddRange(Casings.BuildWarmupInstances());
+
         // One representative effect flash so the warm viewport renders with a clustered OmniLight active.
         // (The live fx-light pool itself is seeded by the BuildFromInfo warm bursts above — their
         // lightradius blocks route through the pooled SpawnInfoLight during the loading screen.)

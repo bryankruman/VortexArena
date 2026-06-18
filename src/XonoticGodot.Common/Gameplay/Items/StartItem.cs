@@ -148,8 +148,9 @@ public static class StartItem
     /// <c>W_Model</c> (<c>"models/weapons/" + m</c>). The item/weapon defs store the bare macro argument
     /// (e.g. <c>item_armor_large.md3</c>, <c>v_laser.md3</c>); without the directory the asset loader reports
     /// "not found in any mount". A model that already contains a path separator is returned unchanged.
+    /// (Public so the client GPU warm pass can build the IDENTICAL vpath a live spawn uses — engine-perf 2026-06-16.)
     /// </summary>
-    private static string? ResolveModelPath(Pickup def)
+    public static string? ResolveModelPath(Pickup def)
     {
         string? m = def.Model;
         if (string.IsNullOrEmpty(m) || m.Contains('/'))

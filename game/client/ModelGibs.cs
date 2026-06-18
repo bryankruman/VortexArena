@@ -100,6 +100,34 @@ public sealed partial class ModelGibs : Node3D
         return gib;
     }
 
+    /// <summary>
+    /// (engine-perf 2026-06-16) Build one hidden instance per DISTINCT gib model for the offscreen GPU pipeline
+    /// warm pass (<see cref="GpuWarmPass"/>). The gib world-models render via the entity feed and are otherwise
+    /// un-warmed, so the FIRST combat death first-instances their (mesh,material) pipeline mid-match — a
+    /// synchronous SURFACE compile (the residual a RenderDoc capture pinned to the MD3-entity class). Uses the
+    /// SAME <see cref="BuildMesh"/> factory a live <see cref="Toss"/> uses, so it warms exactly what plays: the
+    /// real MD3 limb when <see cref="ModelLoader"/> resolves it, the generated chunk fallback otherwise. The
+    /// returned nodes are unparented — the warm pass parents, renders, and frees them.
+    /// </summary>
+    public List<Node3D> BuildWarmupInstances()
+    {
+        var list = new List<Node3D>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // One opaque instance (the first-draw variant) + one alpha-override instance (the final-second fade
+        // variant ApplyAlpha switches to — a distinct PSO otherwise compiled mid-match on the first gib fade).
+        void Warm(string path)
+        {
+            if (!seen.Add(path)) return;
+            list.Add(BuildMesh(path));
+            list.Add(GpuWarmPass.AlphaWarm(BuildMesh(path)));
+        }
+        foreach (string mdl in LimbModels) Warm(mdl);   // arm (listed twice → deduped), chest, smallchest, leg1, leg2
+        Warm("models/gibs/eye.md3");                    // the eye + bloody skull Splash() always tosses
+        Warm("models/gibs/bloodyskull.md3");
+        Warm("models/gibs/chunk.mdl");                  // fast chunks → GeneratedChunk fallback variant
+        return list;
+    }
+
     // ------------------------------------------------------------------------------------------------
 
     private Node3D BuildMesh(string modelPath)

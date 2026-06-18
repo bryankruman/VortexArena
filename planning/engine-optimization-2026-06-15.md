@@ -23,7 +23,27 @@ engine-level perf levers + profiling tools. Builds on the catharsis (FPS) and hi
 | B | **Vulkan RD driver pin** — *intentionally not added.* | Empirically the build already selects **`Vulkan 1.4.341 - Forward+`** by default (no D3D12); the report's "fresh checkout could flip to D3D12" premise does **not** hold for 4.6.3. Godot strips a `rendering_device/driver.windows="vulkan"` key as redundant-vs-default, so there's nothing persistable. The preset also sets `application/export_d3d12=0`. | ☑ moot |
 | — | **RenderDoc in-app auto-capture** (`RenderDocCapture.cs` + FrameProfiler hook): self-triggers a capture the instant a SURFACE compile fires, gated to mid-match (`SessionSeconds>28`). Self-guarding — no-op unless launched under RenderDoc, free to ship. | The only reliable way to capture a *stochastic, render-thread* PSO stall (the GUI "capture frame" button can't — a backgrounded window stops presenting). Reusable for any future GPU-stutter naming. | ✅ tool |
 
-**RenderDoc finding — the residual SURFACE compile is class-identified (Open Q #1 from §4, answered).** Captured the mid-match `surface+1` frame (frame2905, t=77.6). Godot's **release build sets no Vulkan debug object names**, so a headless string-grep of the (1.8 GB) capture names nothing — the resources are anonymous. But the capture + the frame's forensic + the warm-coverage code together pin the **class**: the compile fires on a frame whose watchdog is in **`cev.process`** (the remote-entity render feed) with **`md3.morph`** active, mid-combat, 169 entities. The warm pass covers player models (IQM), weapon `v_` models, effects, **and projectile bodies+trails** — but **NOT gibs, shell casings, or map-item MD3 models**, which render through the entity feed. So the residual SURFACE compiles are **un-warmed MD3 entity models (gibs / casings / items) first-instancing in combat** — a *different* one each occurrence (hence "stochastic", ~14–49 ms, a couple per match). The **exact** per-instance material would need a GUI before/after pipeline-set diff on the capture (disproportionate for the payoff; worst case already fixed). **Candidate fix (not yet done):** extend the warm pass to render representative gib/casing/item MD3 models at load — the same warm-by-render pattern as the roster/weapon warm.
+**RenderDoc finding — the residual SURFACE compile is class-identified (Open Q #1 from §4, answered).** Captured the mid-match `surface+1` frame (frame2905, t=77.6). Godot's **release build sets no Vulkan debug object names**, so a headless string-grep of the (1.8 GB) capture names nothing — the resources are anonymous. But the capture + the frame's forensic + the warm-coverage code together pin the **class**: the compile fires on a frame whose watchdog is in **`cev.process`** (the remote-entity render feed) with **`md3.morph`** active, mid-combat, 169 entities. The warm pass covers player models (IQM), weapon `v_` models, effects, **and projectile bodies+trails** — but **NOT gibs, shell casings, or map-item MD3 models**, which render through the entity feed. So the residual SURFACE compiles are **un-warmed MD3 entity models (gibs / casings / items) first-instancing in combat** — a *different* one each occurrence (hence "stochastic", ~14–49 ms, a couple per match). The **exact** per-instance material would need a GUI before/after pipeline-set diff on the capture (disproportionate for the payoff; worst case already fixed).
+
+**FIX LANDED (2026-06-16) — the gib/casing/item residual is closed.** Extended the warm-by-render pass to the
+MD3-entity class (same pattern as the roster/weapon warm), and fixed a latent wiring gap found along the way:
+- **`EffectSystem.ModelLoader` was never wired** → `ModelGibs`/`ShellCasings` always hit their generated
+  placeholder fallback (red boxes / brass cylinders); the real MD3 limb + IQM brass path was dead code. Wired
+  `_render.Effects.ModelLoader = m => _assets.LoadModel(m)` in `NetGame.SetupRender` (next to the existing
+  `Projectiles.ModelFactory`), so gibs/casings now render their **real DP models** (faithful to gibs.qc/casings.qc).
+- **Warm gibs + casings + items at load:** `ModelGibs`/`ShellCasings.BuildWarmupInstances()` (one instance per
+  distinct model via the SAME `BuildMesh` factory the live spawn uses) folded into `EffectSystem.BuildWarmupInstances`;
+  `NetGame.BuildItemWarmupInstances()` enumerates `Registry<Pickup>.All` → `StartItem.ResolveModelPath` →
+  `_assets.LoadModel` (byte-identical to `BuildEntityModel`), passed via a new `extra` arg on `GpuWarmPass.Run`.
+- **Alpha-fade variant too:** gibs/casings flip their material to `Transparency.Alpha` over their final-second
+  fade — a distinct PSO otherwise compiled mid-match on the FIRST fade (~7s after the first death). `GpuWarmPass.AlphaWarm`
+  warms it via a per-instance surface-override clone (shared opaque material untouched).
+
+**Measured (catharsis + 6 bots, debug, 3× ~110s runs):** the gib/casing/item SURFACE compiles are gone — the
+clean fade-timed compile (run 2 @ t=84.7, death+7s) **disappeared once the alpha variant was warmed**. The only
+residual PIPELINE-COMPILE left is a single compound hitch at ~t=38 bundled with a 10–18MB alloc = the **pre-existing
+bot first-sight player-model streaming** (its own roster-warm path; see [[bot-join-iqm-modelload-stutter]]), NOT an
+entity model. No gib-build hitch ever surfaced (MD3 gibs are cheap per-spawn). 2755 tests green, no crashes.
 
 **Measured (catharsis + 6 bots, release):** the catastrophic 105–137ms SURFACE clusters are gone; residual = 2–4
 small compiles (a stray `surface+1` at 14–36ms + the upstream `draw+N` misses). 2755 tests green, 0 errors, clean
@@ -96,7 +116,9 @@ an "Invalid Vulkan pipelines cache header" (a driver bump rejected it → every 
 - ~~The stray `surface+1` (14–36ms) — which material/mesh variant?~~ **ANSWERED 2026-06-16 (see §0.1):** the
   *class* is un-warmed **MD3 entity models (gibs / casings / items)** rendered via the entity feed; a different one
   each occurrence. Exact per-instance naming needs a GUI before/after diff (Godot ships no Vulkan debug names);
-  the actionable fix is to warm those MD3 classes by render at load. *(Not yet implemented.)*
+  the actionable fix is to warm those MD3 classes by render at load. **DONE 2026-06-16 (see §0.1):** warmed
+  gibs/casings/items (opaque + alpha-fade) at load + wired the dead `Effects.ModelLoader` so gibs/casings render
+  real MD3/IQM; the entity-model residual is closed. Remaining ~t=38 compile = pre-existing bot-model streaming.
 - The `draw+N` misses — file an upstream Godot bug (ubershader should prevent `DRAW` compiles)? *(still open)*
 - ~~Does the Shader Baker complete on this 683MB project (godot#112794)?~~ **ANSWERED 2026-06-16:** yes — the
   windows-client export completed exit 0, no hang, baked `SceneForwardClusteredShaderRD` caches stored in the PCK.
