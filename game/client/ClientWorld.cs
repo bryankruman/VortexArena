@@ -652,12 +652,30 @@ public partial class ClientWorld : Node3D
         return player;
     }
 
+    // (R18) Cache the active Camera3D per process-frame. ListenerPos + ViewOrigin each resolve it (and ListenerPos
+    // is called again per looping sound), and GetViewport().GetCamera3D() is two marshalled crossings each call.
+    // Keyed on the frame counter so a camera from a prior frame is never returned stale.
+    private ulong _camFrame = ulong.MaxValue;
+    private Camera3D? _camThisFrame;
+
+    private Camera3D? FrameCamera()
+    {
+        ulong f = Godot.Engine.GetProcessFrames();
+        if (f != _camFrame)
+        {
+            Camera3D? cam = GetViewport()?.GetCamera3D();
+            _camThisFrame = cam is not null && GodotObject.IsInstanceValid(cam) ? cam : null;
+            _camFrame = f;
+        }
+        return _camThisFrame;
+    }
+
     /// <summary>The current listener position (the active <see cref="Camera3D"/>, which IS Godot's audio listener)
     /// in Godot space; falls back to the last known position when no camera is available this frame.</summary>
     private Godot.Vector3 ListenerPos()
     {
-        Camera3D? cam = GetViewport()?.GetCamera3D();
-        if (cam is not null && GodotObject.IsInstanceValid(cam))
+        Camera3D? cam = FrameCamera();
+        if (cam is not null)
             _lastListener = cam.GlobalPosition;
         return _lastListener;
     }
@@ -1035,6 +1053,14 @@ public partial class ClientWorld : Node3D
         float frameTime = Mathf.Clamp(delta, 0f, 0.1f); // QC bound(0, frametime, 0.1) used for the particle bursts
         NVec3? viewOrigin = ViewOrigin();
 
+        // LOD cvars are frame-invariant — read them ONCE here instead of per entity inside ApplyLod (it ran
+        // ~4 cvar lookups × every entity × every frame, all for a result the port currently discards). cfg seta
+        // overrides the qh inline defaults (768/2304) with 1024/3072 at runtime.
+        int lodPlayerDR = (int)CvarF("cl_playerdetailreduction", 4f);
+        int lodModelDR = (int)CvarF("cl_modeldetailreduction", 1f);
+        float lodDist1 = CvarF("cl_loddistance1", 1024f);
+        float lodDist2 = CvarF("cl_loddistance2", 3072f);
+
         foreach (var kv in _entityNodes)
         {
             EntityNode node = kv.Value;
@@ -1081,7 +1107,7 @@ public partial class ClientWorld : Node3D
             }
 
             // (2) LOD: compute the index (faithful math) — see ApplyLod for the swap caveat.
-            ApplyLod(e, node, st, viewOrigin);
+            ApplyLod(e, st, viewOrigin, lodPlayerDR, lodModelDR, lodDist1, lodDist2);
 
             // (3) EFFECTS: EF_* lights/particles/render-flags from the networked Effects bitfield. MF_* model
             //     flags aren't networked, so 0 here for remote entities (EF_BRIGHTFIELD trail still applies).
@@ -1195,15 +1221,12 @@ public partial class ClientWorld : Node3D
     /// testable) but, lacking a resolved alternate model, keeps lod0 — mirroring the QC fexists guard that keeps
     /// the base model when no <c>_lodN</c> file exists. Documented as a known parity gap in the T58 report.
     /// </summary>
-    private void ApplyLod(Entity e, EntityNode node, CsqcState st, NVec3? viewOrigin)
+    private void ApplyLod(Entity e, CsqcState st, NVec3? viewOrigin, int playerDetailReduction,
+        int modelDetailReduction, float dist1, float dist2)
     {
         if (viewOrigin is not { } vo)
             return;
-        int detailReduction = st.IsPlayerModel
-            ? (int)CvarF("cl_playerdetailreduction", 4f)
-            : (int)CvarF("cl_modeldetailreduction", 1f);
-        float dist1 = CvarF("cl_loddistance1", 1024f); // cfg seta 1024 overrides the qh inline 768 at runtime
-        float dist2 = CvarF("cl_loddistance2", 3072f); // cfg seta 3072
+        int detailReduction = st.IsPlayerModel ? playerDetailReduction : modelDetailReduction;
         float distance = (e.Origin - vo).Length();
         // view_quality has no port equivalent (renderer LOD-quality global) → 1; current_viewzoom → 1 here.
         _ = CsqcModelLod.SelectLodIndex(detailReduction, distance, viewZoom: 1f, viewQuality: 1f, dist1, dist2);
@@ -1213,8 +1236,8 @@ public partial class ClientWorld : Node3D
     /// <summary>The active camera's Quake-space origin (CSQC <c>view_origin</c>) for LOD distance, or null.</summary>
     private NVec3? ViewOrigin()
     {
-        Camera3D? cam = GetViewport()?.GetCamera3D();
-        if (cam is null || !GodotObject.IsInstanceValid(cam))
+        Camera3D? cam = FrameCamera();
+        if (cam is null)
             return null;
         return Coords.ToQuake(cam.GlobalPosition);
     }
