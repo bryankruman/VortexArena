@@ -1,0 +1,263 @@
+unit: duel
+category: gametype
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 9
+  worst_gaps:
+    - "2-player (1v1) cap not enforced on EITHER path: a 3rd+ client can join, and bot-fill reads g_maxplayers not the duel cap"
+    - "powerups still spawn in duel at default g_duel_with_powerups 0 (item filter is dead)"
+    - "no 'playerA vs playerB' duel centerprint title on the live path"
+features:
+  - id: duel.identity.registration
+    name: "Duel gametype identity + default match limits"
+    layer: [shared]
+    base_refs:
+      - "common/gametypes/gametype/duel/duel.qh:INIT(Duel)"
+      - "common/gametypes/gametype/duel/duel.qh:REGISTER_GAMETYPE(DUEL)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Duel.cs:Duel"
+      - "src/XonoticGodot.Server/GameWorld.cs:ResolveGameType"
+    constants:
+      - { name: "netname", base: "duel", port: "duel", match: true }
+      - { name: "flags", base: "USEPOINTS|1V1", port: "TeamGame=false; 1v1 via netname", match: true }
+      - { name: "timelimit", base: "10 (min)", port: "generic timelimit (not seeded per-gametype)", match: false }
+      - { name: "pointlimit", base: "0 (no frag limit)", port: "DefaultFragLimit=0", match: true }
+      - { name: "leadlimit", base: "0", port: "not modeled", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "timelimit=10 / leadlimit=0 gametype-init defaults are not seeded per-gametype (timelimit handling is generic); pointlimit=0 is matched."
+    verification:
+      - { kind: code_read, ref: "duel.qh gametype_init vs Duel.cs ctor/OnInit + ResolveGameType", result: pass }
+    confidence: high
+    notes: "Duel is selectable and resolves via GameTypes.ByName(\"duel\"); identity faithful. Match-limit metadata only partially seeded but pointlimit=0 (the duel-distinctive one) matches."
+
+  - id: duel.rules.player_limit_2
+    name: "Hard 1v1 player limit (GetPlayerLimit -> 2)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/duel/sv_duel.qc:MUTATOR_HOOKFUNCTION(duel, GetPlayerLimit)"
+      - "server/client.qc:2155:GetPlayerLimit (if(g_duel) return 2 short-circuit)"
+      - "server/client.qc:2192:nJoinAllowed (free_slots = max(0, player_limit - currentlyPlaying))"
+      - "server/client.qc:1105:status advert; server/bot/scripting bot-fill uses GetPlayerLimit()"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Duel.cs:45:PlayerLimit"
+    constants:
+      - { name: "player_limit", base: "2", port: "2 (const, unenforced)", match: false }
+    status:
+      logic: stub
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "A 3rd (or more) client can +jump-join a duel and play simultaneously: duel is not actually 1v1. ClientManager.JoinAllowed (ClientManager.cs:256) has NO free-slot/player-limit gate at all (its own doc-comment says the maxplayers/queue gates are 'deferred'); the Base free-slot cap (nJoinAllowed, client.qc:2192-2194) is unported, and Duel.PlayerLimit (=2) has no caller."
+      - "Bot-fill is ALSO uncapped in duel: Base GetPlayerLimit() short-circuits to 2 for g_duel and that value feeds bot_fixcount; the port's BotPopulation.TargetBotCount reads g_maxplayers directly (BotPopulation.cs:240) with no duel->2 override, so bot fill ignores the duel cap. The free-slot status advert (client.qc:1105) is likewise not duel-aware."
+    verification:
+      - { kind: code_read, ref: "Duel.PlayerLimit refs are self-only (Duel.cs:12/19/44/45); ClientManager.JoinAllowed (ClientManager.cs:256-265) body has no player_limit/free_slots check; BotPopulation.cs:240 reads g_maxplayers not the duel cap", result: fail }
+    confidence: high
+    notes: "The const holds the correct value (2) but nothing reads it. Both player-facing enforcement points (join gate AND bot fill) bypass it. Single most impactful gap — duel's defining rule is not enforced."
+
+  - id: duel.items.powerup_filter
+    name: "Powerup item filter (block powerups unless g_duel_with_powerups)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/duel/sv_duel.qc:MUTATOR_HOOKFUNCTION(duel, FilterItemDefinition)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Duel.cs:FilterItem"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Duel.cs:WithPowerups"
+    constants:
+      - { name: "g_duel_with_powerups", base: "0", port: "0 (read, but read is dead)", match: false }
+    status:
+      logic: stub
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Powerups (Strength/Shield) still spawn in duel at the default g_duel_with_powerups 0, altering item-control balance. Duel.FilterItem is a standalone method with no caller; it never registers into the live MutatorHooks.FilterItemDefinition chain (StartItem.cs:90) the way Mayhem/TeamMayhem do."
+    verification:
+      - { kind: code_read, ref: "grep FilterItem/WithPowerups (self-only) + StartItem.cs:90 FilterItemDefinition.Call has no Duel subscriber", result: fail }
+    confidence: high
+    notes: "Logic is correct in isolation (returns true to filter powerups when g_duel_with_powerups off) but is never invoked. Compare Mayhem.OnFilterItemDefinition which DOES MutatorHooks.FilterItemDefinition.Add."
+
+  - id: duel.scoring.frag_matrix
+    name: "Deathmatch frag/obituary scoring matrix (inherited)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/duel/duel.qh:CLASS(Duel, Gametype)"
+      - "common/gametypes/gametype/deathmatch/deathmatch.qh"
+      - "server/damage.qc:Obituary"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Duel.cs:OnDeath"
+      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType"
+    constants:
+      - { name: "enemy_frag", base: "+1", port: "+1", match: true }
+      - { name: "suicide", base: "-1", port: "-1", match: true }
+      - { name: "world_death", base: "-1", port: "-1", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "Duel.OnDeath mirrors Deathmatch.OnDeath; Duel.Activate subscribes Combat.Death (GameWorld.cs:1364)", result: pass }
+    confidence: high
+    notes: "Duel reuses the DM matrix verbatim (enemy +1, suicide/world -1). Death handler is subscribed live on activation."
+
+  - id: duel.rules.match_end_latch
+    name: "End-of-match frag-limit latch + winner resolution"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/duel/sv_duel.qc:MUTATOR_HOOKFUNCTION(duel, Scores_CountFragsRemaining)"
+      - "server/scores.qc:WinningConditionHelper"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Duel.cs:MatchEnded"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Duel.cs:FragLimit"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Duel.cs:RecomputeLeader"
+      - "src/XonoticGodot.Server/GameWorld.cs:280"
+    constants:
+      - { name: "default_fraglimit", base: "0 (pointlimit=0, unlimited)", port: "0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: partial
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "DriveGametypeFrame does not call Duel.RecomputeLeader each frame (only Deathmatch/Mayhem get a per-frame FFA recompute); duel relies on the incremental on-death leader/limit update, so a limit re-check only fires on a kill. Correct for a 2-player FFA in practice but diverges from a per-frame checkrules."
+    verification:
+      - { kind: code_read, ref: "Duel.MatchEnded read at GameWorld.cs:280 + winner at :2055; RecomputeLeader absent from DriveGametypeFrame switch", result: pass }
+    confidence: high
+    notes: "Frag-limit latch + leader are correct; default 0 = decided by timelimit, matching pointlimit=0. Per-frame recompute omitted but on-death path keeps it correct between kills."
+
+  - id: duel.timing.respawn_delay
+    name: "Respawn delay (effective 2s via global fallback)"
+    layer: [authority]
+    base_refs:
+      - "server/client.qc:calculate_player_respawn_time"
+      - "server/client.qh:GAMETYPE_DEFAULTED_SETTING"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Duel.cs:ScheduleRespawn"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Duel.cs:RespawnDelay"
+    constants:
+      - { name: "g_duel_respawn_delay_small", base: "0 (=> falls back to g_respawn_delay_small)", port: "not read; uses generic", match: true }
+      - { name: "g_respawn_delay_small (effective)", base: "2 (s)", port: "2 (s)", match: true }
+      - { name: "g_duel_respawn_waves", base: "0", port: "not modeled (no waves)", match: true }
+      - { name: "g_duel_weapon_stay", base: "0", port: "not modeled", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port does not model the per-gametype g_duel_respawn_delay_* / g_duel_weapon_stay override layer; reads the generic g_respawn_delay_small directly. Cosmetic at defaults (all duel overrides are 0 => Base falls back to the same generic 2s) but would diverge if an admin set a duel-specific respawn cvar."
+    verification:
+      - { kind: code_read, ref: "GAMETYPE_DEFAULTED_SETTING(client.qh:347) 0->global fallback; g_respawn_delay_small=2 (xonotic-server.cfg:264); Duel.RespawnDelay reads g_respawn_delay_small default 2", result: pass }
+    confidence: high
+    notes: "Effective respawn delay matches at defaults (2s). The earlier-looking 'instant respawn' from g_duel_respawn_delay_small 0 is a false read: 0 means 'use the global default' in Base, which is 2."
+
+  - id: duel.presentation.duel_title
+    name: "Duel 'playerA vs playerB' centerprint title"
+    layer: [presentation]
+    base_refs:
+      - "client/announcer.qc:Announcer_Duel"
+      - "client/hud/panel/centerprint.qc:centerprint_SetDuelTitle"
+    port_refs:
+      - "game/hud/CenterPrintPanel.cs:SetDuelTitle"
+    constants: []
+    status:
+      logic: stub
+      values: na
+      timing: missing
+      presentation: stub
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The characteristic 'name1 vs name2' duel title is never displayed: CenterPrintPanel.SetDuelTitle exists and renders left/right title halves, but there is no port equivalent of Announcer_Duel to call it (no caller anywhere)."
+    verification:
+      - { kind: code_read, ref: "grep SetDuelTitle -> only the definition + docs in CenterPrintPanel.cs, no caller", result: fail }
+    confidence: high
+    notes: "Panel-side support is complete (matches centerprint_SetDuelTitle: shorten to namesize, store left/right). Only the m_1v1 countdown driver (Announcer_Duel) is missing."
+
+  - id: duel.presentation.forced_colors
+    name: "Forced enemy player colors in 1v1 (cl_forceplayercolors / suppress unique)"
+    layer: [presentation]
+    base_refs:
+      - "client/csqcmodel_hooks.qc:244"
+      - "client/csqcmodel_hooks.qc:309"
+    port_refs:
+      - "src/XonoticGodot.Engine/Simulation/CsqcModelAppearance.cs:ForcePlayerColorsEnabled"
+      - "game/client/ClientWorld.cs:1247"
+      - "game/net/NetGame.cs:3921"
+    constants:
+      - { name: "fpc_enable_modes_1v1", base: "1,2,3,5", port: "1,2,3,5", match: true }
+      - { name: "suppress_forceunique_in_1v1", base: "true", port: "true (!is1v1 guard)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "CsqcModelAppearance.ForcePlayerColorsEnabled(is1v1) + ClientWorld FORCECOLORS path; Is1v1 set from netname==\"duel\" at NetGame.cs:3921/3932", result: pass }
+    confidence: high
+    notes: "is1v1 flows from the duel netname into the live color-resolution path; mode gating (1/2/3/5) and the unique-color suppression match csqcmodel_hooks.qc."
+
+  - id: duel.mapsupport.gating
+    name: "Map-support gating (diameter < 3250; force duel on DM maps)"
+    layer: [shared]
+    base_refs:
+      - "common/gametypes/gametype/duel/duel.qh:m_isAlwaysSupported"
+      - "common/gametypes/gametype/duel/duel.qh:m_isForcedSupported"
+    port_refs: []
+    constants:
+      - { name: "max_diameter", base: "3250 (units)", port: "none", match: false }
+      - { name: "g_duel_not_dm_maps", base: "0", port: "seeded in cfg, not read", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No port logic gates duel auto-support by map size (diameter<3250) or force-lists duel on DM maps. Map-pool/menu concern: a too-large map could be offered for duel, or a DM-only map might not list duel."
+    verification:
+      - { kind: code_read, ref: "no port symbol for m_isAlwaysSupported/m_isForcedSupported diameter gate", result: fail }
+    confidence: medium
+    notes: "Low gameplay impact (affects map selection/listing, not in-match behavior). MapInfoBackend handles gametype listing but does not implement the duel diameter/forcing predicates."

@@ -1,0 +1,523 @@
+unit: vehicle-spiderbot
+category: vehicle
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 16
+  worst_gaps:
+    - "Per-frame controller runs once per 0.1s vehicle think (DefaultThinkRate) but its turn/gravity steps multiply by Api.Clock.FrameTime (= TicRate, ~0.0167s), NOT QC's per-movement-frame PHYS_INPUT_FRAMETIME — so head/body slew + gravity advance ~TicRate/0.1 (~6x) SLOWER than Base, not merely coarser. Magnitude error, not just feel."
+    - "vr_enter does NOT reattach a pilot's carried CTF flag to tur_head at '-20 0 120' (QC spiderbot.qc:552-556); EnterVehicle leaves it a cross-boundary TODO. Directly relevant to the CTF flag-rotation validation anchor."
+    - "Death blowup is simplified: no 4 physics gib entities (head MF_ROCKET+EF_FLAME bounce+fade, 2 tossed guns, body frame 11) and no spiderbot_headfade; the per-burn random EFFECT_EXPLOSION_SMALL + SND_ROCKET_IMPACT during the ~3.4s burn are a TODO. The 250-dmg blast + 45s respawn ARE faithful."
+    - "Landing sound (SND_VEH_SPIDERBOT_LAND on the frame 4->5 land transition) is not played; the port has no landing-detect branch."
+    - "Head turret aim traces only tag_hardpoint01; QC averages tag_hardpoint01 + tag_hardpoint02 (and both v_forward) for the aux-crosshair aim point."
+    - "pushable (jumppad launches the spiderbot) is set in QC vr_setup but has no port concept; mass=5000 not modeled; vr_impact/bouncepain handler not ported (no-op by default)."
+features:
+  - id: vehicle-spiderbot.identity.registration
+    name: "Spiderbot vehicle type registration + identity (model, name, hitbox, view)"
+    layer: [authority, shared, presentation]
+    base_refs:
+      - "common/vehicles/vehicle/spiderbot.qh:CLASS(Spiderbot)"
+      - "common/vehicles/vehicle/spiderbot.qh:REGISTER_VEHICLE(SPIDERBOT)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Spiderbot.cs:Spiderbot"
+    constants:
+      - { name: "netname", base: "spiderbot", port: "spiderbot", match: true }
+      - { name: "m_name", base: "Spiderbot", port: "Spiderbot", match: true }
+      - { name: "model", base: "models/vehicles/spiderbot.dpm", port: "models/vehicles/spiderbot.dpm", match: true }
+      - { name: "m_mins", base: "-75 -75 10", port: "-75 -75 10", match: true }
+      - { name: "m_maxs", base: "75 75 125", port: "75 75 125", match: true }
+      - { name: "view_ofs", base: "0 0 70", port: "not modeled (no seated view-offset in headless port)", match: false }
+      - { name: "height", base: "170", port: "not modeled", match: false }
+      - { name: "spawnflags", base: "VHF_DMGSHAKE", port: "DmgShake", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "view_ofs '0 0 70' / height 170 (the seated camera offset + chase distance) are client-view concerns not modeled on the headless server descriptor."
+    verification:
+      - { kind: code, ref: "Spiderbot.cs ctor + Spawn SetSize; [Vehicle] attribute -> Vehicles registry by net name 'spiderbot'", result: pass }
+    confidence: high
+    notes: "Registered via [Vehicle]; resolved by net name 'spiderbot' in Vehicles.ByName, wired to the vehicle_spiderbot spawnfunc. File namespace is XonoticGodot.Common.Gameplay (port_ref path is correct)."
+
+  - id: vehicle-spiderbot.spawn.map_placement
+    name: "vehicle_spiderbot map spawnfunc (g_vehicle_spiderbot gate + vehicle_initialize)"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/spiderbot.qc:spawnfunc(vehicle_spiderbot)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleSpawnFuncs.cs:Spiderbot"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:221"
+    constants:
+      - { name: "g_vehicle_spiderbot (master)", base: "true (1)", port: "MasterSwitchEnabled('g_vehicle_spiderbot')", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "MapObjectsRegistry.cs:221 SpawnFuncs.Register('vehicle_spiderbot', VehicleSpawnFuncs.Spiderbot) -> Spawn gates on the master cvar then runs def.Spawn", result: pass }
+    confidence: high
+    notes: "Records pos1/pos2 (spawn return point) then runs the descriptor Spawn. The controller/targetname/ACTIVE_NOT/delayspawn init scheduling QC does in vehicle_initialize is out of scope (sibling boarding-seam note)."
+
+  - id: vehicle-spiderbot.spawn.setup
+    name: "vr_setup / vr_spawn — resources, flags, gun sub-entities, movetype"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/spiderbot.qc:vr_setup"
+      - "common/vehicles/vehicle/spiderbot.qc:vr_spawn"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Spiderbot.cs:Spawn"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:SpawnVehicle"
+    constants:
+      - { name: "health", base: "800", port: "800", match: true }
+      - { name: "shield", base: "200", port: "200", match: true }
+      - { name: "respawntime", base: "45", port: "45", match: true }
+      - { name: "gravity", base: "2", port: "2", match: true }
+      - { name: "mass", base: "5000", port: "not modeled (no mass field)", match: false }
+      - { name: "damageforcescale", base: "0.03", port: "0.03", match: true }
+      - { name: "movetype", base: "MOVETYPE_STEP", port: "MoveType.Step", match: true }
+      - { name: "solid", base: "SOLID_SLIDEBOX", port: "Solid.SlideBox", match: true }
+      - { name: "pushable", base: "true (jumppads)", port: "not set", match: false }
+      - { name: "health_regen / pause", base: "10 / 5", port: "10 / 5", match: true }
+      - { name: "shield_regen / pause", base: "25 / 0.35", port: "25 / 0.35", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "pushable (jumppad launches the spiderbot) is set in QC vr_setup but has no port concept; the spiderbot can ride jumppads in Base."
+      - "mass=5000 is not modeled (no mass field on the entity); affects push/knockback interactions QC scales by mass."
+      - "Port adds a MoveGround vehicle flag not present in QC vr_setup; harmless shared-helper flag, not a Base value."
+    verification:
+      - { kind: code, ref: "Spiderbot.Spawn sets health/shield/respawntime/gravity/damageforcescale/movetype/solid + the gun sub-entities; flags HasShield|ShieldRegen|HealthRegen|MoveGround|DmgShake", result: pass }
+    confidence: high
+    notes: "Gun1/gun2 head sub-entities created once (spiderbot_top + 2x spiderbot_gun attached to tur_head). tur_head.frame=1, body frame=5 (idle). VehicleAmmo1 seeded to MinigunAmmoMax on Spawn (QC seeds 0 on enter, full belt is fine)."
+
+  - id: vehicle-spiderbot.enter
+    name: "vr_enter — W2MODE=GUIDE, seat the pilot, reattach a carried CTF flag to the head"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/spiderbot.qc:vr_enter"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Spiderbot.cs:Enter"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:EnterVehicle"
+    constants:
+      - { name: "default rocket mode on enter", base: "SBRM_GUIDE (2)", port: "Guided (2)", match: true }
+      - { name: "movetype on enter", base: "MOVETYPE_STEP", port: "MoveType.Step", match: true }
+      - { name: "flagcarried reattach offset", base: "tur_head at '-20 0 120'", port: "NOT IMPLEMENTED", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC vr_enter (spiderbot.qc:552-556) reattaches a pilot's carried CTF flag to tur_head at '-20 0 120' so the flag rides the spiderbot; the port (Spiderbot.Enter + VehicleCommon.EnterVehicle) does NOT — EnterVehicle explicitly defers flagcarried handling as cross-boundary. No flagcarried code exists anywhere in src/**/Vehicles. Visible in CTF when a flag-runner boards a spiderbot."
+      - "QC seeds owner.vehicle_health/shield % on enter; the port mirrors health/shield each Think instead (functionally equivalent)."
+    verification:
+      - { kind: code, ref: "Spiderbot.Enter sets VehW2Mode=Guided + MoveType.Step, arms Think; grep for flagcarried/flag-reattach across src/**/Vehicles returns no matches", result: pass }
+    confidence: high
+    notes: "Liveness via VehicleBoarding.UseKey, called on the +use rising edge in game/net/ServerNet.cs:1257,1363. The flag-reattach omission is the only logic gap."
+
+  - id: vehicle-spiderbot.exit
+    name: "spiderbot_exit — unguide in-flight rockets, eject pilot with momentum/ahead-spot"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/spiderbot.qc:spiderbot_exit"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Spiderbot.cs:Exit"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:ExitVehicle"
+    constants:
+      - { name: "eject velocity", base: "(v_up + v_forward*0.25)*750, exit 100u ahead", port: "(up + forward*0.25)*750, 100u ahead", match: true }
+      - { name: "fast exit (|vel|>400)", base: "carry momentum + z+200, exit 128u ahead", port: "same", match: true }
+      - { name: "slow exit", base: "velocity*0.5 + z+10, exit 256u ahead", port: "same", match: true }
+      - { name: "in-flight rockets on exit", base: "owner cleared, realowner=player (lose guidance)", port: "Owner=null, DmgInflictor=player, SpiderGuided->SpiderUnguided", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port keys the eject branch on IsDead(vehicle) rather than the explicit eject flag QC passes; equivalent on the death-eject path but the +use 'normal' exit always takes the momentum branch (matches QC eject=false)."
+      - "antilag_clear(player) is not called on exit (antilag system cross-boundary)."
+    verification:
+      - { kind: code, ref: "Spiderbot.Exit: iterates spiderbot_rocket projectiles owned by the body -> unguide; computes the eject/fast/slow spot via FindGoodExit; calls ExitVehicle then SetOrigin", result: pass }
+    confidence: high
+    notes: "Live via VehicleBoarding.UseKey seated->exit path (game/net/ServerNet.cs)."
+
+  - id: vehicle-spiderbot.frame.controller
+    name: "spiderbot_frame per-frame controller (drive dispatch + game_stopped + pilot glue)"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/spiderbot.qc:spiderbot_frame"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Spiderbot.cs:Think"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Spiderbot.cs:Frame"
+      - "src/XonoticGodot.Server/GameWorld.cs:1054"
+      - "src/XonoticGodot.Engine/Simulation/SimulationLoop.cs:RunThink"
+    constants:
+      - { name: "controller invocation cadence", base: "PHYS_INPUT_FRAMETIME (every movement frame)", port: "0.1 (DefaultThinkRate)", match: false }
+      - { name: "per-step dt multiplier", base: "PHYS_INPUT_FRAMETIME (= the same frame dt)", port: "Api.Clock.FrameTime (= TicRate, decoupled from the 0.1s cadence)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: partial
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "DOUBLE timing defect: the controller is INVOKED once per 0.1s (DefaultThinkRate) but its turn/gravity steps multiply by Api.Clock.FrameTime (= TicRate, ~0.0167s), not by the time elapsed since the last call. QC runs spiderbot_frame EVERY movement frame and multiplies by that frame's PHYS_INPUT_FRAMETIME. Net: head/body slew and the locomotion gravity step accumulate at ~TicRate/0.1 (~1/6) of the Base rate — turning is ~6x slower, not merely 'coarser'. Magnitude error."
+    verification:
+      - { kind: code, ref: "Seated input stashed on vehicle.VehInput (GameWorld.cs:1049-1056); vehicle.Think pumped by SimulationLoop.RunThink at NextThink=Time+ThinkRate(0.1); Frame multiplies by FrameTime=TicRate", result: pass }
+      - { kind: code, ref: "VehicleRuntimeTests.cs board/drive coverage on the sibling vehicles (same Think/Frame seam)", result: pass }
+    confidence: high
+    notes: "Pilot glue (origin = vehic.origin + maxs.z, velocity match, oldorigin negate fall damage) is faithful. game_stopped park via FreezeIfGameStopped. The empty-spiderbot vr_think brake-to-stop is folded into Think (OnGround -> BrakeSimple). The TODO.md 'orphaned / VehInput never written' note is STALE."
+
+  - id: vehicle-spiderbot.frame.head_aim
+    name: "Head turret aim toward the pilot crosshair (turn + pitch within limits)"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/spiderbot.qc:spiderbot_frame"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Spiderbot.cs:Frame"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehiclePhysicsHelpers.cs:CrosshairTrace"
+    constants:
+      - { name: "head_turnspeed", base: "110", port: "110", match: true }
+      - { name: "head_turnlimit", base: "90", port: "90", match: true }
+      - { name: "head_pitchlimit_down", base: "-20", port: "-20", match: true }
+      - { name: "head_pitchlimit_up", base: "30", port: "30", match: true }
+      - { name: "aim muzzle/aux tag", base: "avg(tag_hardpoint01, tag_hardpoint02), both v_forward", port: "tag_hardpoint01 only", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: partial
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Aim point uses only tag_hardpoint01 (with a hardcoded (60,0,20) fallback offset when no tag); QC averages tag_hardpoint01+tag_hardpoint02 and both v_forwards — minor aim bias for the head-aim crosshair_trace."
+      - "Slew step is head_turnspeed*FrameTime but Frame runs at the 0.1s think cadence (see frame.controller): the head tracks the crosshair ~6x slower than QC's per-movement-frame slew."
+    verification:
+      - { kind: code, ref: "Frame head-aim block: CrosshairTrace -> body-relative ShortAngles delta -> clamp +/-turnspeed*FrameTime -> clamp yaw +/-90 / pitch [-20,30]", result: pass }
+    confidence: high
+    notes: "Angle math (ShortAngles, body-relative delta) matches the QC AnglesTransform left-divide approach. The aux-crosshair UpdateAuxiliaryXhair (presentation) is not produced."
+
+  - id: vehicle-spiderbot.frame.groundalign
+    name: "4-point leg ground alignment (movelib_groundalign4point)"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/spiderbot.qc:spiderbot_frame"
+      - "common/physics/movelib.qc:movelib_groundalign4point"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehiclePhysicsHelpers.cs:GroundAlign4Point"
+    constants:
+      - { name: "springlength", base: "150", port: "150", match: true }
+      - { name: "springup", base: "20", port: "20", match: true }
+      - { name: "springblend", base: "0.1", port: "0.1", match: true }
+      - { name: "tiltlimit", base: "90", port: "90", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "GroundAlign4Point: 4 corner spring traces (maxs*0.8 inset) -> pitch/roll push blended at springblend; tilt clamped +/-90 in Frame; uses makevectors(angles + '-2 0 0'*angles.x) basis like QC", result: pass }
+    confidence: medium
+    notes: "Faithful structure; the spring-hit (1 - fraction) and push differential match QC. Headless trace fidelity unverified in-game."
+
+  - id: vehicle-spiderbot.frame.locomotion
+    name: "Walk/strafe/idle locomotion + body turn + gravity step"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/spiderbot.qc:spiderbot_frame"
+      - "common/physics/movelib.qc:movelib_move_simple"
+      - "common/physics/movelib.qc:movelib_brake_simple"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Spiderbot.cs:Frame"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehiclePhysicsHelpers.cs:MoveSimple"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehiclePhysicsHelpers.cs:BrakeSimple"
+    constants:
+      - { name: "speed_walk", base: "500", port: "500", match: true }
+      - { name: "speed_strafe", base: "400", port: "400", match: true }
+      - { name: "speed_stop", base: "50", port: "50", match: true }
+      - { name: "turnspeed", base: "90", port: "90", match: true }
+      - { name: "turnspeed_strafe", base: "300", port: "300", match: true }
+      - { name: "movement_inertia", base: "0.15", port: "0.15", match: true }
+      - { name: "gravity step factor g", base: "0.5 if gravityunaffectedbyticrate (default 1/true), else 1", port: "0.5 hardcoded (does NOT read the cvar)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: partial
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Body-turn step is turnspeed*FrameTime but Frame runs at the 0.1s think cadence (see frame.controller): turn rate is ~6x slower than QC's per-movement-frame step."
+      - "Gravity factor g=0.5 is hardcoded; QC reads autocvar_sv_gameplayfix_gravityunaffectedbyticrate (default true => 0.5, so matches the default, but would diverge if set 0). Also g*FrameTime*sv_gravity inherits the same 0.1-cadence-vs-FrameTime timing skew."
+    verification:
+      - { kind: code, ref: "Frame: idle->BrakeSimple(50); forward/back->MoveSimple(walk500); strafe->MoveSimple(strafe400); body yaw turned toward head yaw, vert preserved + 0.5*FrameTime*sv_gravity step when velz<=20", result: pass }
+    confidence: high
+    notes: "Frame indices (0/1 fwd/back, 2/3 strafe, 5 idle) set as the networked body frame for the client legs. Walk/strafe/idle engine sounds re-architected client-side (intended; see notes on the audio dimension)."
+
+  - id: vehicle-spiderbot.frame.jump
+    name: "Directional jump (launch from wishmove) + jump/land latch"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/vehicles/vehicle/spiderbot.qc:spiderbot_frame"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Spiderbot.cs:Frame"
+    constants:
+      - { name: "jump velocity", base: "sd*700 + rt*600 + v_up*600", port: "sd*700 + rt*600 + up*600", match: true }
+      - { name: "jump/land lockout (tur_head.wait, jump_delay)", base: "time + 2", port: "time + 2", match: true }
+      - { name: "SND_VEH_SPIDERBOT_JUMP", base: "vehicles/spiderbot_jump.wav on launch", port: "vehicles/spiderbot_jump.wav (server Play)", match: true }
+      - { name: "SND_VEH_SPIDERBOT_LAND", base: "on frame 4->5 land transition", port: "MISSING", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: partial
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Landing sound (SND_VEH_SPIDERBOT_LAND on the frame 4->5 land transition) is not played; the port has no landing-detect branch."
+      - "The land FRAME transition (4->5) itself is not modeled (frame stays at the jump frame until movement resets it)."
+    verification:
+      - { kind: code, ref: "Frame jump block: on-ground + ButtonJump + !VehJumpLatched + VehLandTime<Time -> launch sd*700+rt*600+up*600, latch+delay time+2, clear OnGround, play jump sound", result: pass }
+    confidence: high
+    notes: "Default jump direction is forward when no wishmove (matches QC). 'Always survives the fall' is via the pilot-glue oldorigin reset (frame.controller). Jump sound is played BEFORE setting velocity in the port vs after the sound() call in QC — ordering irrelevant."
+
+  - id: vehicle-spiderbot.weapon.minigun
+    name: "Twin alternating-barrel hitscan miniguns (heat/ammo belt, spread, solid penetration)"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/spiderbot.qc:spiderbot_frame"
+      - "common/vehicles/vehicle/spiderbot_weapons.qh"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Spiderbot.cs:FireMinigun"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Spiderbot.cs:FireBulletPenetrating"
+    constants:
+      - { name: "minigun_damage", base: "16", port: "16", match: true }
+      - { name: "minigun_refire", base: "0.06", port: "0.06", match: true }
+      - { name: "minigun_spread", base: "0.012", port: "0.012", match: true }
+      - { name: "minigun_force", base: "9", port: "9", match: true }
+      - { name: "minigun_solidpenetration", base: "32", port: "32", match: true }
+      - { name: "minigun_ammo_cost", base: "1", port: "1", match: true }
+      - { name: "minigun_ammo_max", base: "100", port: "100", match: true }
+      - { name: "minigun_ammo_regen", base: "40", port: "40", match: true }
+      - { name: "minigun_ammo_regen_pause", base: "1", port: "1", match: true }
+      - { name: "deathtype", base: "DEATH_VH_SPID_MINIGUN", port: "DeathTypes.VhSpidMinigun", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Cosmetic barrel spin (QC gun1.angles.z += 45 / gun2.angles.z -= 45 with 360 wrap) is server-side cosmetic in QC; the port does the spin client-side (VehicleVisuals via the Firing effect flag) so the server-state field is not advanced — functionally fine, non-1:1 split."
+      - "EFFECT_SPIDERBOT_MINIGUN_MUZZLEFLASH is a client effect (Firing flag in VehicleVisuals), not the server Send_Effect QC uses."
+    verification:
+      - { kind: code, ref: "FireMinigun: alternates gun1/gun2 by VehBulletCounter%2, fires from 'barrels' tag + fwd*50 with spread; FireBulletPenetrating bounded 4-pass solid penetration budget 32u; ammo gated, refire 0.06; fire sound played", result: pass }
+      - { kind: test, ref: "MonsterTurretVehicleObituaryTests.SpiderbotMinigun_RealFire_TagsVhSpidMinigun_ObituaryPicksVehicleLine", result: pass }
+    confidence: high
+    notes: "Solid-penetration is a bounded multi-pass trace (QC fireBullet solidpenetration). Minigun regen uses VehRegenPauseTime set to Time on fire, mirroring QC's vehic.cnt=time-on-fire then vehicles_regen(vehic.cnt,...)."
+
+  - id: vehicle-spiderbot.weapon.rockets
+    name: "3-mode rocket launcher (VOLLY salvo / GUIDE homing / ARTILLERY lob) + belt reload"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/spiderbot_weapons.qc:spiderbot_rocket_do"
+      - "common/vehicles/vehicle/spiderbot_weapons.qc:spiberbot_calcartillery"
+      - "common/vehicles/vehicle/spiderbot_weapons.qh"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Spiderbot.cs:RocketDo"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Spiderbot.cs:CalcArtillery"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Spiderbot.cs:SolveQuadratic"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:SpawnProjectile"
+    constants:
+      - { name: "rocket_damage", base: "50", port: "50", match: true }
+      - { name: "rocket_force", base: "150", port: "150", match: true }
+      - { name: "rocket_radius", base: "250", port: "250", match: true }
+      - { name: "rocket_speed", base: "3500", port: "3500", match: true }
+      - { name: "rocket_spread (VOLLY)", base: "0.05", port: "0.05", match: true }
+      - { name: "rocket_refire", base: "0.1", port: "0.1", match: true }
+      - { name: "rocket_refire2 (VOLLY)", base: "0.025", port: "0.025", match: true }
+      - { name: "rocket_reload (at belt 9)", base: "4", port: "4", match: true }
+      - { name: "rocket_health (shootable)", base: "100", port: "100", match: true }
+      - { name: "rocket_lifetime", base: "20", port: "20", match: true }
+      - { name: "edge damage", base: "0 (single damage value, RadiusDamage edge=0)", port: "0", match: true }
+      - { name: "belt frames", base: "tur_head.frame 1..9", port: "VehRocketBelt 1..9", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "ARTILLERY clearance-height traces use a headless WorldOnly trace; the h1/h2 (0.75 of the up/diagonal world clearance) are reproduced but the resulting arc was not in-game verified."
+      - "Rocket-in-flight CSQCProjectile visual (PROJECTILE_SPIDERROCKET) + launch effect (EFFECT_SPIDERBOT_ROCKETLAUNCH) are client/net networking deferred to the shared projectile catalog."
+    verification:
+      - { kind: code, ref: "RocketDo: VOLLY dumb+timed detonate (matches QC vehicles_projectile_explode_think distance/spread), GUIDE crosshair-homing (AttachGuidance), ARTILLERY CalcArtillery toss; belt advances, refire/reload at frame 9; wait/-10 volley-empty + guide-hold latch", result: pass }
+      - { kind: test, ref: "MonsterTurretVehicleObituaryTests vehicle-projectile vh_spid_rocket obituary path", result: pass }
+    confidence: high
+    notes: "spiberbot_calcartillery solve-quadratic root selection (down/up/straight-line cases) ported in CalcArtillery + SolveQuadratic. Belt/refire bookkeeping (VehAttackFinished=raw refire, VehRocketGate=Time+refire) matches QC attack_finished_single[0] + gun2.cnt."
+
+  - id: vehicle-spiderbot.weapon.guide_release
+    name: "Guided-rocket steering think + guide-release on button-up"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/spiderbot_weapons.qc:spiderbot_rocket_guided"
+      - "common/vehicles/vehicle/spiderbot_weapons.qc:spiderbot_rocket_unguided"
+      - "common/vehicles/vehicle/spiderbot_weapons.qc:spiderbot_guide_release"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Spiderbot.cs:AttachGuidance"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Spiderbot.cs:GuideRelease"
+    constants:
+      - { name: "rocket_turnrate", base: "0.25", port: "0.25", match: true }
+      - { name: "rocket_noise", base: "0.2", port: "0.2", match: true }
+      - { name: "unguided detonate dist", base: "vdist(pos1 - origin, <, 16)", port: "< 16", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "AttachGuidance: per-tick re-trace of the pilot crosshair, velocity = normalize(olddir + newdir*turnrate)*speed + noise; converts SpiderGuided->SpiderUnguided when the pilot leaves; GuideRelease redirects this pilot's guided rockets to the last crosshair on button-up", result: pass }
+    confidence: high
+    notes: "Spiderbot uses an inline guidance think (AttachGuidance) rather than the shared VehiclePhysics.GuideRocket; both exist and agree on the model. Exit also unguides in-flight rockets (Spiderbot.Exit)."
+
+  - id: vehicle-spiderbot.weapon.modeswitch
+    name: "Rocket-mode set/cycle impulses (VOLLY/GUIDE/ARTILLERY)"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/spiderbot.qc:spiderbot_impulse"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Spiderbot.cs:SetMode"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Spiderbot.cs:CycleMode"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleBoarding.cs:Impulse"
+      - "src/XonoticGodot.Server/Commands.cs:1324"
+    constants:
+      - { name: "SBRM_VOLLY/GUIDE/ARTILLERY", base: "1/2/3", port: "1/2/3", match: true }
+      - { name: "impulse map", base: "1->VOLLY 2->GUIDE 3->ARTILLERY; next(10)/prev(11,12) cycle [1..3] wrap", port: "same", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "CSQCVehicleSetup HUD/crosshair networking on the QC mode-set is deferred; the W2MODE state itself is set + networked via the vehicle stat."
+    verification:
+      - { kind: test, ref: "VehicleRuntimeTests.Impulse_Spiderbot_SetsAndCyclesRocketMode (line 358) — board, default GUIDE, set 1->VOLLY/3->ARTILLERY, cycle 10/12 wrap", result: pass }
+      - { kind: code, ref: "Commands.cs:1324 routes VehicleBoarding.Impulse before the weapon-impulse path for a seated pilot; VehicleBoarding.cs:330-340 Spiderbot case maps 1/2/3 + 10/11/12", result: pass }
+    confidence: high
+    notes: "VehicleBoarding resolves the gunner-slot body via VehSlotOwner before dispatch."
+
+  - id: vehicle-spiderbot.death.blowup
+    name: "vr_death + spiderbot_blowup (burn, gib entities, 250-dmg blast, respawn)"
+    layer: [authority, presentation, audio]
+    base_refs:
+      - "common/vehicles/vehicle/spiderbot.qc:vr_death"
+      - "common/vehicles/vehicle/spiderbot.qc:spiderbot_blowup"
+      - "common/vehicles/vehicle/spiderbot.qc:spiderbot_headfade"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Spiderbot.cs:Death"
+      - "game/client/VehicleVisuals.cs"
+    constants:
+      - { name: "burn delay", base: "3.4 + time + random()*2", port: "Time + 3.4 + Prandom.Range(0,2)", match: true }
+      - { name: "blast core damage", base: "250", port: "250", match: true }
+      - { name: "blast edge damage", base: "15", port: "15", match: true }
+      - { name: "blast radius", base: "250", port: "250", match: true }
+      - { name: "blast force", base: "250", port: "250", match: true }
+      - { name: "blast deathtype", base: "DEATH_VH_SPID_DEATH", port: "DeathTypes.VhSpidDeath", match: true }
+      - { name: "respawntime", base: "45 (vehicles_spawn after blowup)", port: "45", match: true }
+      - { name: "gib entities (head/2 guns/body)", base: "4 physics gibs + headfade", port: "MISSING (server); approximate gib arc client-side", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: partial
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Death blowup is simplified: no 4 physics gib entities (head MF_ROCKET+EF_FLAME bounce+fade via spiderbot_headfade, 2 tossed guns body-vel v_forward*700, body frame 11) and no spiderbot_headfade; the per-burn random EFFECT_EXPLOSION_SMALL + SND_ROCKET_IMPACT (random()<0.1 each 0.1s) during the ~3.4s burn (and the head EF_FLAME) are a TODO in Spiderbot.Death. The 250-dmg blast + respawn ARE faithful. Client VehicleVisuals does an approximate scripted gib arc (GibCount 6) instead."
+    verification:
+      - { kind: code, ref: "Death: HP 0, DAMAGE_NO, MOVETYPE_TOSS, burn-timer think; at expiry RadiusDamage(self,origin,250,15,250,enemy,0,250,VhSpidDeath), SOLID_NOT, then respawn (SetOrigin SpawnPos, NextThink=+45, Think=Spawn)", result: pass }
+      - { kind: code, ref: "WeaponSplash.RadiusDamage signature (inflictor,center,damage,edge,radius,attacker,deathType,force) vs the Death call — arg mapping matches QC RadiusDamage(this,enemy,250,15,250,...,250,DEATH_VH_SPID_DEATH)", result: pass }
+    confidence: high
+    notes: "The functional death (blast + respawn) is faithful; only the gib/burn presentation is partial. Death is invoked from VehicleCommon.DamageVehicle on HP<=0."
+
+  - id: vehicle-spiderbot.impact.bouncepain
+    name: "vr_impact — bounce/fall impact pain (g_vehicle_spiderbot_bouncepain)"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/spiderbot.qc:METHOD(Spiderbot, vr_impact)"
+    port_refs: []
+    constants:
+      - { name: "bouncepain", base: "'0 0 0' (default no-op)", port: "not implemented", match: false }
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC vr_impact calls vehicles_impact(minspeed, factor, max_damage) from the bouncepain cvar; not ported. Default bouncepain='0 0 0' makes it a no-op, so zero live effect with stock cvars — flagged for completeness only."
+    verification:
+      - { kind: code, ref: "No vr_impact/bouncepain handler in Spiderbot.cs or VehicleCommon; impact-pain dispatch absent", result: pass }
+    confidence: high
+    notes: "Lowest-priority gap; the stock default neutralizes it. Would only matter on a server that sets g_vehicle_spiderbot_bouncepain."

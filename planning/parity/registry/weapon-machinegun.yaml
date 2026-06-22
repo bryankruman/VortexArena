@@ -1,0 +1,411 @@
+unit: weapon-machinegun
+category: weapon
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 13
+  worst_gaps:
+    - "Secondary (burst + mode-0 snipe) shots never OR in HITTYPE_SECONDARY: kills wrongly obituary as SPRAY, never SNIPE (logic gap missed by first pass)"
+    - "Bullet-impact random ricochet sound (SND_RIC_RANDOM) never plays — PlayRic()/Ric() exist, no live caller"
+    - "Bot wr_aim distance switch missing: bots never use the long-range no-spread burst secondary (ButtonAttack2 forced false)"
+    - "Casing ejection (g_casings>=2) not ported — no SpawnCasing for the MachineGun"
+    - "C# Configure() fallback literals wrong (spread_crouchmod 0.25 vs 1, burst_spread 0.04 vs 0, spread_decay 0 vs 0.048) — dead at bundled balance but a latent values defect across auto/burst/spread"
+features:
+  - id: machinegun.identity
+    name: "MachineGun registration & identity (flags, color, ammo, models, impulse)"
+    layer: [shared]
+    base_refs:
+      - "common/weapons/weapon/machinegun.qh:CLASS(MachineGun)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Machinegun.cs:Machinegun (ctor)"
+    constants:
+      - { name: "netname", base: "machinegun", port: "machinegun", match: true }
+      - { name: "ammo_type", base: "RES_BULLETS", port: "ResourceType.Bullets", match: true }
+      - { name: "impulse", base: "3", port: "3", match: true }
+      - { name: "color", base: "'0.678 0.886 0.267'", port: "(0.678,0.886,0.267)", match: true }
+      - { name: "spawnflags", base: "NORMAL|RELOADABLE|TYPE_HITSCAN|PENETRATEWALLS|BLEED", port: "Normal|Reloadable|TypeHitscan|PenetrateWalls|Bleed", match: true }
+      - { name: "view_model", base: "h_uzi.iqm", port: "h_uzi.iqm", match: true }
+      - { name: "world_model", base: "v_uzi.md3", port: "v_uzi.md3", match: true }
+      - { name: "item_model", base: "g_uzi.md3", port: "g_uzi.md3", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "machinegun.qh ATTRIBs vs Machinegun.cs ctor (DisplayName/NetName/Impulse/Color/flags/models)", result: pass }
+    confidence: high
+    notes: "First pass marked presentation faithful; corrected to na — this row is pure registration. The model STRINGS are stored as identity here, but actual viewmodel/muzzleflash rendering is covered by machinegun.presentation.muzzle_impact. bot_pickupbasevalue 7000 not ported (bot weapon-pref tuning, out of scope of this row)."
+
+  - id: machinegun.firemode.dispatch
+    name: "wr_think fire-mode dispatch (mode 0 vs mode 1, primary/secondary routing)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/machinegun.qc:wr_think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Machinegun.cs:WrThink"
+      - "src/XonoticGodot.Server/GameWorld.cs:1182 (WeaponFireDriver.Frame)"
+    constants:
+      - { name: "mode", base: "1", port: "1 (live from cfg)", match: true }
+      - { name: "burst_gate", base: "(fire&2) && burst", port: "Secondary && Burst>0", match: true }
+      - { name: "first_gate (mode0 sec)", base: "(fire&2) && first", port: "Secondary (first not re-checked)", match: false }
+      - { name: "secondary-as-zoom gate", base: "wr_checkammo2/wr_zoom: secondary is zoom when burst==0 (mode1) / first==0 (mode0)", port: "not modeled (Burst>0 gate only)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "mode-0 secondary path does not re-check the `first` cvar gate (Base requires (fire&2) && first); harmless at default first=1."
+      - "The secondary-as-zoom behavior (Base: when burst==0 the secondary becomes a zoom, not a fire mode, via wr_zoom/wr_checkammo2) is not modeled; harmless at default burst=3 but a custom balance with burst 0 would zoom in Base and do nothing here."
+    verification:
+      - { kind: code, ref: "machinegun.qc:wr_think 277-349 vs Machinegun.WrThink mode 0/1 split", result: pass }
+      - { kind: code, ref: "GameWorld.cs:409 ConfigLoader then :416 Weapons.ConfigureAll() -> live cfg values; :1182 WeaponFireDriver.Frame -> WrThink", result: pass }
+    confidence: high
+    notes: "WeaponFireDriver calls WrThink(Primary) every tick + WrThink(Secondary) when ATCK2 held (WeaponFireDriver.cs:155-157); the refire gate is in Weapon.PrepareAttack."
+
+  - id: machinegun.fire.auto
+    name: "Sustained automatic primary fire (spread accumulation + per-shot damage/ammo)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/machinegun.qc:W_MachineGun_Attack_Auto"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Machinegun.cs:AttackAuto"
+    constants:
+      - { name: "sustained_damage", base: "10", port: "10", match: true }
+      - { name: "sustained_ammo", base: "1", port: "1", match: true }
+      - { name: "sustained_force", base: "3", port: "3", match: true }
+      - { name: "sustained_refire", base: "0.1", port: "0.1", match: true }
+      - { name: "spread_accuracy_formula", base: "spread_min < spread_max ? spread_min+accum : spread_min-accum", port: "same", match: true }
+      - { name: "spread_crouchmod (C# fallback)", base: "1", port: "fallback 0.25 (live cfg 1)", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "C# Configure() fallback for spread_crouchmod is 0.25 vs Base 1; dead on the live path (cfg seeds 1) but a config-less path would over-tighten crouched auto spread. Auto applies CrouchSpreadMod, so this fallback affects auto too."
+      - "WrThink does not reset misc_bulletcounter=0 issue: Base wr_think DOES set misc_bulletcounter=0 before auto (machinegun.qc:293); port's AttackAuto increments but never resets to 0 on a fresh trigger pull. Only the legacy (spread_decay==0) counter-spread branch reads misc_bulletcounter, which is dead at the live spread_decay 0.048 — so harmless live."
+    verification:
+      - { kind: code, ref: "W_MachineGun_Attack_Auto 146-213 vs AttackAuto 189-215 (damage raw, heat scales dealt, spread accum persists)", result: pass }
+      - { kind: code, ref: "bal-wep-xonotic.cfg:111 spread_crouchmod 1 vs Machinegun.cs:105 fallback 0.25", result: fail }
+    confidence: high
+    notes: "Damage credit passes raw sustained_damage; heat multiplies the DEALT damage only. Live values all match cfg. The fire sound (uzi_fire) is played per shot in FireOne, matching Base SND_MACHINEGUN_FIRE in W_SetupShot."
+
+  - id: machinegun.fire.burst
+    name: "Burst secondary (3-round no-spread burst, count-up scheduling, cooldown)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/machinegun.qc:W_MachineGun_Attack_Burst"
+      - "common/weapons/weapon/machinegun.qc:wr_think (burst setup: to_shoot/burst_fraction/to_use)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Machinegun.cs:AttackBurst"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Machinegun.cs:WrThink (burst branch 122-159)"
+    constants:
+      - { name: "burst", base: "3", port: "3", match: true }
+      - { name: "burst_ammo", base: "3", port: "3", match: true }
+      - { name: "burst_refire", base: "0.06", port: "0.06", match: true }
+      - { name: "burst_refire2", base: "0.45", port: "0.45", match: true }
+      - { name: "burst_animtime", base: "0.3", port: "0.3", match: true }
+      - { name: "burst_spread (C# fallback)", base: "0", port: "fallback 0.04 (live cfg 0)", match: false }
+      - { name: "deathtype secondary bit", base: "thiswep.m_id | HITTYPE_SECONDARY (W_SetupShot deathtype)", port: "RegistryId only (no secondary bit)", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The burst shot does NOT carry HITTYPE_SECONDARY in its deathtype (FireOne passes plain RegistryId). Base's W_MachineGun_Attack_Burst routes through W_SetupShot/fireBullet with thiswep.m_id, and the obituary path keys SNIPE on HITTYPE_SECONDARY — so MachineGun burst kills wrongly read as MURDER_SPRAY instead of MURDER_SNIPE. (Note: Base burst uses thiswep.m_id WITHOUT the secondary bit on the bullet itself, but wr_killmessage selects on w_deathtype which carries the secondary bit from the secondary attack path — the port never sets that bit anywhere for the secondary, so SNIPE is unreachable.)"
+      - "C# Configure() fallback for burst_spread is 0.04 vs Base 0; dead on the live path (cfg seeds 0) but a config-less path would give the no-spread burst a 0.04 spread."
+    verification:
+      - { kind: code, ref: "W_MachineGun_Attack_Burst 215-267 + wr_think 298-329 vs AttackBurst 220-258 + WrThink burst branch (count-up, burst_fraction, to_use)", result: pass }
+      - { kind: code, ref: "FireOne passes RegistryId with no HITTYPE_SECONDARY -> DeathMessages.SelectKillMessage sec=false -> SPRAY", result: fail }
+      - { kind: code, ref: "bal-wep-xonotic.cfg:94 burst_spread 0 vs Machinegun.cs:103 fallback 0.04", result: fail }
+    confidence: high
+    notes: "Scheduling/ammo/count-up logic is faithful (misc_bulletcounter=-to_shoot counts up to 0; ammo decremented once up front; toShoot==0 edge handled). The two defects are the missing secondary hittype (logic) and the wrong burst_spread fallback (values). Also affected by the spread_crouchmod 0.25 fallback (applied via CrouchSpreadMod)."
+
+  - id: machinegun.fire.single_mode0
+    name: "Single 'first'/sustained shot (mode 0 primary + secondary snipe)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/machinegun.qc:W_MachineGun_Attack"
+      - "common/weapons/weapon/machinegun.qc:W_MachineGun_Attack_Frame"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Machinegun.cs:AttackSingle"
+    constants:
+      - { name: "first_damage", base: "14", port: "14", match: true }
+      - { name: "first_spread", base: "0.03", port: "0.03", match: true }
+      - { name: "first_refire", base: "0.125", port: "0.125", match: true }
+      - { name: "first_ammo", base: "1", port: "1", match: true }
+      - { name: "first_force", base: "3", port: "3", match: true }
+      - { name: "secondary deathtype bit", base: "thiswep.m_id | HITTYPE_SECONDARY", port: "RegistryId only", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "mode 0 is not the bundled default (mode 1), so AttackSingle is dead on the live path."
+      - "The W_MachineGun_Attack_Frame auto-continuation loop (held-fire repeat for mode-0 primary) is not separately modeled — AttackSingle fires once per gated call rather than via a self-rescheduling frame think."
+      - "The mode-0 secondary 'snipe' (AttackSingle secondary:true) does not OR in HITTYPE_SECONDARY, so even if mode 0 were enabled the snipe kill would read SPRAY not SNIPE (same defect as the burst)."
+    verification:
+      - { kind: code, ref: "cfg g_balance_machinegun_mode 1 (bal-wep-xonotic.cfg:105) -> mode-0 branch unreached", result: pass }
+      - { kind: code, ref: "W_MachineGun_Attack 57-118 vs AttackSingle 265-278", result: pass }
+    confidence: medium
+    notes: "Values/refire faithful; logic partial (frame-loop continuation, the `first` gate, and the missing secondary hittype all differ). Reachable only if a server sets mode 0."
+
+  - id: machinegun.spread.accumulation
+    name: "Spread accumulation: time-decay (default) + legacy counter branch"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/machinegun.qc:MachineGun_Update_Spread"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Machinegun.cs:UpdateSpread"
+    constants:
+      - { name: "spread_min", base: "0.02", port: "0.02", match: true }
+      - { name: "spread_max", base: "0.05", port: "0.05", match: true }
+      - { name: "spread_add", base: "0.012", port: "0.012", match: true }
+      - { name: "spread_decay", base: "0.048", port: "0.048 (live from cfg); C# fallback 0 WRONG", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The C# Configure() fallback for spread_decay is 0 (legacy counter branch) vs Base 0.048 (decay branch). On the live path the cfg seeds 0.048 so the decay branch runs correctly; a config that omits spread_decay would silently flip the MG to the legacy Nexuiz counter-spread model."
+    verification:
+      - { kind: code, ref: "MachineGun_Update_Spread 8-29 vs UpdateSpread 298-313 (both branches present, bound/clamp matches)", result: pass }
+      - { kind: code, ref: "bal-wep-xonotic.cfg:112 spread_decay 0.048; GameWorld.cs:416 ConfigureAll re-reads after ConfigLoader", result: pass }
+    confidence: high
+    notes: "Both branches ported faithfully; only the dead C# fallback literal is wrong. Live behavior = decay branch (spread_decay 0.048)."
+
+  - id: machinegun.heat
+    name: "Barrel-heat damage multiplier (cold/heat by spread accumulation)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/machinegun.qc:MachineGun_Heat"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Machinegun.cs:Heat"
+    constants:
+      - { name: "spread_cold_damagemultiplier", base: "1", port: "1 (read live)", match: true }
+      - { name: "spread_heat_damagemultiplier", base: "1", port: "1 (read live)", match: true }
+      - { name: "unset-multiplier compat", base: "multiplier ? pct*mult : pct (skip when 0)", port: "same (!=0f guard)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "At the shipped cfg both multipliers are 1 (not unset/0), so coldPct*1 + heatPct*1 = 1.0 exactly — a no-op, faithful to Base (the QC `? :` keeps the raw pct only when the cvar is 0, which it isn't here, so it returns pct*1 too). Net behavior is identical."
+    verification:
+      - { kind: code, ref: "MachineGun_Heat 31-55 vs Heat 329-343 (cold/heat pct formula + 0-guard)", result: pass }
+      - { kind: code, ref: "bal-wep-xonotic.cfg:115-116 cold/heat_damagemultiplier both 1", result: pass }
+    confidence: high
+    notes: "Reads the live cold/heat mult cvars directly so it stays faithful if a balance set retunes them; default 1/1 makes it a 1.0 no-op."
+
+  - id: machinegun.fire.bullet_trace
+    name: "Shared bullet trace: spread, wall penetration, distance falloff, force, antilag"
+    layer: [authority, shared]
+    base_refs:
+      - "server/weapons/tracing.qc:fireBullet_falloff"
+      - "common/weapons/calculations.qc:W_CalculateSpread"
+      - "server/weapons/tracing.qc:W_SetupShot_Dir_ProjectileSize_Range"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:FireBullet"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:SetupShot"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:CalculateSpread"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Machinegun.cs:FireOne"
+    constants:
+      - { name: "solidpenetration", base: "13.1", port: "13.1", match: true }
+      - { name: "max_shot_distance", base: "32768", port: "32768", match: true }
+      - { name: "g_ballistics_solidpenetration_exponent", base: "1", port: "1 (const)", match: true }
+      - { name: "g_ballistics_mindistance", base: "1", port: "1 (const)", match: true }
+      - { name: "hitscan_spread_style", base: "0 (dir + randomvec*spread)", port: "style 0", match: true }
+      - { name: "damagefalloff (all)", base: "0 (off)", port: "0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "g_ballistics_solidpenetration_exponent and g_ballistics_mindistance are hardcoded consts (1,1) in FireBullet rather than live cvars; matches default but won't follow a ruleset that retunes ballistics."
+      - "EFFECT_BULLET tracer particle and accuracy hitplot/antilag-warpzone edge cases deferred per code comments (LagComp + warpzone sweep ARE present)."
+    verification:
+      - { kind: code, ref: "fireBullet_falloff vs WeaponFiring.FireBullet 203-317 (spread, penetration loop pow(frac,exp), double-hit guard, sky stop, falloff, LagComp, warpzone)", result: pass }
+      - { kind: code, ref: "PENETRATEWALLS trueaim approximation in SetupShot 105-172", result: pass }
+    confidence: high
+    notes: "Antilag (LagComp.Begin/End) and warpzone-aware sweep are ported. Headshot multiplier unused by the MG (0)."
+
+  - id: machinegun.recoil
+    name: "Firing recoil (punchangle random kick unless g_norecoil)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/machinegun.qc:W_MachineGun_Attack_Auto (punchangle, 165-169)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Machinegun.cs:Recoil"
+    constants:
+      - { name: "punch_xy", base: "random()-0.5", port: "Prandom.Float()-0.5", match: true }
+      - { name: "g_norecoil gate", base: "if (!autocvar_g_norecoil) { ... }", port: "not checked in Recoil()", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Recoil() always applies the punch and does not gate on g_norecoil (Base wraps the whole punchangle assignment in `if (!autocvar_g_norecoil)`); harmless at default g_norecoil 0 but ignores the cvar if a server sets it. Downgraded logic to partial (a Base branch is unconditionally taken)."
+    verification:
+      - { kind: code, ref: "machinegun.qc:165-169 (if !g_norecoil) vs Machinegun.Recoil 316-322 (no gate)", result: fail }
+    confidence: high
+    notes: "Uses deterministic PRNG (Prandom) so client prediction agrees. Note: SetupShot's separate view-pitch recoil (-recoil) DOES gate on g_norecoil, but the MG calls SetupShot with recoil=0, so the punchangle kick is solely from the ungated Recoil()."
+
+  - id: machinegun.presentation.muzzle_impact
+    name: "Muzzle flash + bullet-impact particle effects + casing ejection"
+    layer: [presentation]
+    base_refs:
+      - "common/weapons/weapon/machinegun.qc:W_MuzzleFlash (per shot)"
+      - "common/weapons/weapon/machinegun.qc:wr_impacteffect (EFFECT_MACHINEGUN_IMPACT)"
+      - "common/weapons/weapon/machinegun.qc:W_MachineGun_Attack_Auto/Burst (SpawnCasing, g_casings>=2)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Machinegun.cs:FireOne (EffectEmitter.Emit MACHINEGUN_MUZZLEFLASH / MACHINEGUN_IMPACT)"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:61-62"
+    constants:
+      - { name: "impact_effect", base: "EFFECT_MACHINEGUN_IMPACT", port: "MACHINEGUN_IMPACT -> machinegun_impact", match: true }
+      - { name: "muzzleflash_effect", base: "EFFECT_MACHINEGUN_MUZZLEFLASH", port: "MACHINEGUN_MUZZLEFLASH -> uzi_muzzleflash", match: true }
+      - { name: "casings (g_casings>=2)", base: "SpawnCasing per shot", port: "none", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Brass casing ejection (g_casings>=2) is not ported for the MachineGun: no SpawnCasing analog is called in AttackAuto/AttackBurst/AttackSingle, so no shells eject during fire."
+    verification:
+      - { kind: code, ref: "EffectEmitter.Emit MACHINEGUN_MUZZLEFLASH/IMPACT in FireOne 291-293 (live); both registered in EffectsList 61-62", result: pass }
+      - { kind: code, ref: "grep SpawnCasing/casing in Machinegun.cs -> absent", result: fail }
+    confidence: high
+    notes: "Impact backoff uses the real surface normal (impTr.PlaneNormal), arguably more faithful than Base's -force_dir for angled hits. Effects emitted server-side per shot (Base does muzzleflash sv-side, impact in CSQC) — visible result equivalent. Casing default g_casings is typically 2, so the gap is normally observable."
+
+  - id: machinegun.audio.impact_ricochet
+    name: "Bullet-impact random ricochet sound (SND_RIC_RANDOM)"
+    layer: [presentation]
+    base_refs:
+      - "common/weapons/weapon/machinegun.qc:wr_impacteffect (sound CH_SHOTS SND_RIC_RANDOM, 419-420)"
+      - "common/sounds/all.inc (SND_RIC_RANDOM -> ric1/ric2/ric3)"
+    port_refs: []
+    constants:
+      - { name: "ric_sounds", base: "ric1/ric2/ric3 random", port: "SoundSystem.Ric()/PlayRic() exist, no caller", match: false }
+      - { name: "channel", base: "CH_SHOTS, VOL_BASE, ATTN_NORM", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: missing
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Firing the MachineGun at a wall plays the impact PARTICLE (MACHINEGUN_IMPACT) but no ricochet PING — the random ric1/ric2/ric3 sound from Base's wr_impacteffect is never played. SoundSystem.Ric()/PlayRic() (SoundSystem.cs:65/195) are registered but have no live caller; FireOne emits the impact effect without a ric sound."
+    verification:
+      - { kind: code, ref: "grep PlayRic/Ric() callers across src -> only SoundSystem definitions (65/194-195), no call site", result: fail }
+      - { kind: code, ref: "FireOne 291 EffectEmitter.Emit MACHINEGUN_IMPACT with no ric Play", result: fail }
+    confidence: high
+    notes: "The MG fire sound (uzi_fire) IS played per shot in FireOne; this gap is specifically the per-impact ricochet. Shared with all bullet weapons (rifle/shotgun/okmg)."
+
+  - id: machinegun.bot.wr_aim
+    name: "Bot fire logic (wr_aim distance-based primary/secondary selection)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/machinegun.qc:wr_aim (269-275)"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs (generic primary-only fire, ButtonAttack2=false at :367)"
+    constants:
+      - { name: "switch_distance", base: "3000 - bound(0,skill,10)*200", port: "none (generic close/far)", match: false }
+      - { name: "secondary_use", base: "ATCK2 burst beyond range", port: "ButtonAttack2 forced false", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Bots never use the MachineGun's long-range no-spread burst secondary: the per-weapon wr_aim (which presses ATCK2 beyond ~3000-skill*200 units) is not ported; BotBrain fires primary only with ButtonAttack2=false."
+    verification:
+      - { kind: code, ref: "BotBrain.cs:333-334 comment 'secondary fire is the deferred per-weapon wr_aim'; ButtonAttack2=false at :367", result: fail }
+      - { kind: code, ref: "grep WrAim/wr_aim in Machinegun.cs -> absent", result: fail }
+    confidence: high
+    notes: "Generic bot fire works (bots shoot the MG primary), so this is a behavioral subtlety, not a dead weapon. Affects bot effectiveness at long range. Shared deferral across all weapons with a wr_aim."
+
+  - id: machinegun.notification.kill_suicide
+    name: "Kill/suicide obituary (MURDER_SNIPE vs MURDER_SPRAY, THINKING_WITH_PORTALS suicide)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/machinegun.qc:wr_killmessage (398-404)"
+      - "common/weapons/weapon/machinegun.qc:wr_suicidemessage (393-396)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:73 (SelectKillMessage)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs (SelectSuicideMessage)"
+      - "src/XonoticGodot.Server/Scores.cs:643-644 / 565-566 (obituary wiring)"
+    constants:
+      - { name: "murder_secondary", base: "HITTYPE_SECONDARY ? MURDER_SNIPE : MURDER_SPRAY", port: "sec ? SNIPE : SPRAY (keyed on deathtype secondary bit)", match: true }
+      - { name: "suicide", base: "WEAPON_THINKING_WITH_PORTALS", port: "WEAPON_THINKING_WITH_PORTALS", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The message-SELECTION code is faithful and wired live (Scores.cs obituary path calls SelectKillMessage/SelectSuicideMessage), but the SNIPE branch is unreachable: the MachineGun's secondary fire paths (burst + mode-0 snipe) never tag the bullet's deathtype with HITTYPE_SECONDARY, so SelectKillMessage always sees sec=false and emits MURDER_SPRAY. The SNIPE obituary can never fire in practice. (Root defect lives in machinegun.fire.burst / machinegun.fire.single_mode0.)"
+    verification:
+      - { kind: code, ref: "DeathMessages.cs:73 machinegun SNIPE/SPRAY split + suicide THINKING_WITH_PORTALS present, wired in Scores.cs:643", result: pass }
+      - { kind: code, ref: "Machinegun FireOne passes RegistryId (no HITTYPE_SECONDARY) for burst+snipe -> sec always false -> SNIPE dead", result: fail }
+    confidence: high
+    notes: "Added by the verifier (first pass omitted this feature entirely). The selection table itself is correct and live; the divergence is that the secondary hittype is never set, making the SNIPE message dead. Spray kills + the suicide line ARE produced correctly."

@@ -42,6 +42,7 @@ public static class WeaponImpulses
     private const int NextByGroup = 18;
     private const int PrevByGroup = 19;
     private const int Reload = 20;
+    private const int Use = 21;       // IMPULSE(use) = 21 (all.qh:130) -> PlayerUseKey
 
     /// <summary>
     /// Route a raw client impulse (QC <c>ImpulseCommands</c> → the IMPULSES registry handler) onto the weapon
@@ -115,6 +116,17 @@ public static class WeaponImpulses
                 // (The vehicle gate is N/A on this path — no vehicle occupancy field reaches the impulse router.)
                 if (!dead) DropHandle(actor);
                 return true;
+            case Use:
+                // QC IMPULSE(use) (server/impulse.qc:409 -> PlayerUseKey, client.qc:2620): the +use key routed
+                // through the impulse path (separate from the +use BUTTON rising edge). PlayerUseKey is the SINGLE
+                // entry that drives the voluntary use-key actions: vehicle enter/exit AND, via its trailing
+                // MUTATOR_CALLHOOK(PlayerUseKey), the CTF flag throw/pass/request-pass (ctf PlayerUseKey hook), the
+                // Keepaway / Team Keepaway / Nexball / KeyHunt voluntary ball/key drop, and objective/door/button use.
+                // VehicleBoarding.UseKey is the port's PlayerUseKey entry; it gates IS_DEAD / game_stopped itself, so
+                // route unconditionally (do NOT pre-filter on `dead` here — QC routes the impulse to PlayerUseKey
+                // even when dead and lets PlayerUseKey's own IS_PLAYER/IS_DEAD guards decide).
+                UseHandle(actor);
+                return true;
         }
 
         return false; // not a weapon impulse
@@ -170,13 +182,37 @@ public static class WeaponImpulses
     }
 
     /// <summary>
+    /// QC <c>IMPULSE(use)</c> → <c>PlayerUseKey</c> (server/impulse.qc:409, client.qc:2620). Routes the voluntary
+    /// use-key onto the port's <see cref="VehicleBoarding.UseKey"/> (the port's <c>PlayerUseKey</c> entry). That
+    /// method handles the vehicle enter/exit half and fires the trailing <c>PlayerUseKey</c> mutator hook on which
+    /// the CTF flag throw/pass/request-pass, the Keepaway/Team Keepaway/Nexball/KeyHunt voluntary ball/key drop, and
+    /// objective/door use all depend — once those hooks are wired (see todos: MutatorHooks.PlayerUseKey +
+    /// VehicleBoarding.UseKey calling it, both in files this seam does not own).
+    /// </summary>
+    private static void UseHandle(Entity actor) => VehicleBoarding.UseKey(actor);
+
+    /// <summary>
     /// QC <c>weapon_reload</c> impulse: reload the weapon(s) in the active slot(s). weaponLocked gates it (a
     /// frozen/blocked player can't reload); the reload itself runs the weapon's <c>wr_reload</c> → W_Reload.
+    /// <para>For a non-<see cref="WeaponFlags.Reloadable"/> weapon QC's <c>wr_reload</c> is repurposed rather than a
+    /// no-op: the Tuba's <c>wr_reload</c> (tuba.qc:360) cycles the instrument (Tuba → Accordion → Klein Bottle).
+    /// The base <see cref="Weapon.WrReload"/> early-outs on the missing Reloadable flag, so route a non-Reloadable
+    /// weapon that exposes an instrument-cycle (<see cref="Tuba.Reload"/>) to it directly — that handler exists with
+    /// zero callers otherwise.</para>
     /// </summary>
     private static void ReloadHandle(Entity actor)
     {
         Weapon? w = Inventory.CurrentWeapon(actor);
-        w?.WrReload(actor, new WeaponSlot(0));
+        if (w is null) return;
+        var slot = new WeaponSlot(0);
+        // QC: non-Reloadable weapons whose wr_reload is repurposed (Tuba instrument cycle). The Reloadable early-out
+        // in W_Reload would otherwise swallow this, so dispatch the instrument cycle before the generic reload.
+        if ((w.SpawnFlags & WeaponFlags.Reloadable) == 0 && w is Tuba tuba)
+        {
+            tuba.Reload(actor, slot);
+            return;
+        }
+        w.WrReload(actor, slot);
     }
 
     private static bool IsDead(Entity e) => e.DeadState != DeadFlag.No;

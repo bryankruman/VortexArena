@@ -1,0 +1,452 @@
+unit: vehicle-racer
+category: vehicle
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 13
+  worst_gaps:
+    - "vr_impact bounce-pain not ported: no vehicles_impact fall-damage on ramming + bouncefactor/bouncestop unset (engine-default restitution)"
+    - "Water mechanics partial: racer_air_finished air-meter (crouch-dive up-push 200->30) + racer_watertime 3s post-water downforce ramp not modeled"
+    - "Homing-rocket tracker: the obstacle-avoidance traceline + newdir.z += 16*frametime climb-lift step is omitted; GuideRocket RacerHoming steers straight at the predicted point with no terrain dodge"
+    - "Guided rocket timeout/owner-death detonation uses RegistryId not deathTag VhWakiRocket -> misattributed obituary (touch path is correct)"
+    - "vr_enter does not reposition a boarding flag-carrier's flag to '-190 0 96' (CTF interaction dropped)"
+    - "Constants hardcoded as fields: per-cvar server retune of g_vehicle_racer_* not honoured (master g_vehicle_racer boolean IS read)"
+    - "Secondary HUD mirror dropped: vehicle_ammo2 (100/50/0) + vehicle_reload2 reload-bar progress never written"
+    - "Presentation deferred: EFFECT_RACER_BOOSTER/MUZZLEFLASH/ROCKETLAUNCH, under-craft smoke, CSQC bolt/rocket trails, EXPLOSION_MEDIUM death FX, aux-crosshair lock colour"
+    - "Audio partial: racer_move/racer_idle engine-sound state machine not ported (boost sound plays per-tick, idle/move loop selection does not)"
+features:
+  - id: vehicle-racer.identity.def
+    name: "Identity, hitbox, models, spawnflags"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/vehicles/vehicle/racer.qh:Racer"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Racer.cs:Racer (ctor)"
+    constants:
+      - { name: "mins", base: "'-120 -120 -40'*0.5 = (-60,-60,-20)", port: "(-60,-60,-20)", match: true }
+      - { name: "maxs", base: "'120 120 40'*0.5 = (60,60,20)", port: "(60,60,20)", match: true }
+      - { name: "model", base: "models/vehicles/wakizashi.dpm", port: "models/vehicles/wakizashi.dpm", match: true }
+      - { name: "hud_model", base: "wakizashi_cockpit.dpm", port: "none (cosmetic)", match: false }
+      - { name: "head_model", base: "null", port: "none", match: true }
+      - { name: "netname", base: "racer", port: "racer", match: true }
+      - { name: "view_ofs", base: "'0 0 50'", port: "not set (cosmetic view)", match: false }
+      - { name: "height", base: "200", port: "not set (cosmetic view-dist)", match: false }
+      - { name: "spawnflags", base: "VHF_DMGSHAKE|VHF_DMGROLL", port: "DmgShake|DmgRoll", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "hud cockpit model + tag_viewport attachment and the scale-0.5 model hack are cosmetic-only and not instantiated (physics uses the real hitbox)."
+      - "view_ofs '0 0 50' + height 200 (camera view offset/dist) not set; affects the cockpit camera, not the sim."
+    verification:
+      - { kind: test, ref: "VehicleRuntimeTests.RacerSpawn_RegistersDescriptor_ArmsThink_AndIdlesWithoutNaN (21 vehicle tests pass)", result: pass }
+      - { kind: code_read, ref: "racer.qh vs Racer ctor + Spawn", result: pass }
+    confidence: high
+    notes: "Identity/hitbox/model faithful; cockpit hud model + view_ofs are presentation-only."
+  - id: vehicle-racer.spawn.lifecycle
+    name: "vr_spawn / vr_setup: movetype, solid, health/shield/energy, regen capability flags"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/racer.qc:vr_spawn"
+      - "common/vehicles/vehicle/racer.qc:vr_setup"
+      - "common/vehicles/sv_vehicles.qc:vehicles_spawn"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Racer.cs:Spawn"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:SpawnVehicle"
+    constants:
+      - { name: "health", base: "200", port: "200", match: true }
+      - { name: "shield", base: "100", port: "100", match: true }
+      - { name: "energy", base: "100", port: "100", match: true }
+      - { name: "respawntime", base: "35", port: "35", match: true }
+      - { name: "movetype (spawn)", base: "MOVETYPE_TOSS", port: "MoveType.Toss", match: true }
+      - { name: "solid", base: "SOLID_SLIDEBOX", port: "Solid.SlideBox", match: true }
+      - { name: "damageforcescale", base: "0.5", port: "0.5", match: true }
+      - { name: "bouncefactor", base: "0.25", port: "not set (engine default)", match: false }
+      - { name: "bouncestop", base: "0", port: "not set", match: false }
+      - { name: "mass", base: "900", port: "not set", match: false }
+      - { name: "scale", base: "0.5", port: "not set (cosmetic)", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "bouncefactor 0.25 / bouncestop 0 never set, so the MOVETYPE_BOUNCE restitution uses the engine default instead of 0.25 (affects how the craft bounces, live on enter + corpse)."
+      - "mass 900 + scale 0.5 not set (mass affects push interactions; scale is cosmetic)."
+    verification:
+      - { kind: test, ref: "VehicleRuntimeTests.RacerSpawn_RegistersDescriptor_ArmsThink_AndIdlesWithoutNaN", result: pass }
+      - { kind: code_read, ref: "racer.qc vr_spawn/vr_setup vs Racer.Spawn", result: pass }
+    confidence: high
+    notes: "Core spawn state + regen flags faithful; bouncefactor/bouncestop/mass not applied."
+  - id: vehicle-racer.spawnfunc.liveness
+    name: "Map spawnfunc wiring + master cvar gate (vehicle_racer on map)"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/racer.qc:spawnfunc(vehicle_racer)"
+      - "common/vehicles/sv_vehicles.qc:vehicle_initialize"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleSpawnFuncs.cs:Racer"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:219"
+    constants:
+      - { name: "g_vehicles master", base: "1 (default on)", port: "default-on (absent=enabled)", match: true }
+      - { name: "g_vehicle_racer", base: "1 (default on)", port: "MasterSwitchEnabled (absent=enabled, 0 disables)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Per-cvar tunables (g_vehicle_racer_* speeds/damage/etc.) are hardcoded fields, not read from the cvar store; only the boolean g_vehicle_racer master switch is honoured."
+    verification:
+      - { kind: code_read, ref: "SpawnFuncs.Register('vehicle_racer', VehicleSpawnFuncs.Racer) in MapObjectsRegistry; MasterSwitchEnabled gate matches !autocvar_g_vehicle_racer", result: pass }
+    confidence: high
+    notes: "Spawnfunc registered + master gate faithful; numeric cvars not live-readable."
+  - id: vehicle-racer.board.usekey
+    name: "+use board / exit + guards (PlayerUseKey -> vehicles_enter/exit)"
+    layer: [authority]
+    base_refs:
+      - "server/client.qc:PlayerUseKey"
+      - "common/vehicles/sv_vehicles.qc:vehicles_enter"
+      - "common/vehicles/sv_vehicles.qc:vehicles_exit"
+      - "common/vehicles/vehicle/racer.qc:vr_enter"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleBoarding.cs:UseKey"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:EnterVehicle"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:ExitVehicle"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Racer.cs:Enter"
+    constants:
+      - { name: "g_vehicles_enter", base: "1 (use-key board)", port: "1 (touch-mode 0 not reachable)", match: true }
+      - { name: "g_vehicles_enter_radius", base: "250", port: "250", match: true }
+      - { name: "vehicle_enter_delay", base: "time+2 on exit", port: "Time+2", match: true }
+      - { name: "g_vehicles_allow_bots", base: "0", port: "0", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "vr_enter does NOT reposition a boarding flag-carrier's flag (QC `setorigin(instance.owner.flagcarried, '-190 0 96')`); a CTF flag carrier who boards the racer leaves the flag where it was, diverging from Base."
+      - "Touch-mode board (g_vehicles_enter 0) not reachable (player .Touch not dual-dispatched onto solids) — shared VehicleBoarding partial; default is use-key so the parity path holds."
+      - "Exit does not seed owner.oldorigin = origin (QC fall-damage negation on dismount); OldOrigin not modeled in Exit (Think glue does set player.OldOrigin while seated)."
+    verification:
+      - { kind: test, ref: "VehicleRuntimeTests.UseKey_BoardsNearbyRacer_LinksAndFreezesPilot (+ guard tests + Exit/Death eject)", result: pass }
+      - { kind: code_read, ref: "ServerNet +use rising edge -> VehicleBoarding.UseKey -> Racer.Enter/Exit; Racer.Enter omits flagcarried reposition", result: pass }
+    confidence: high
+    notes: "Board/exit + entry guards live and tested; flag-carrier reposition + touch-mode + exit-oldorigin are the gaps."
+  - id: vehicle-racer.drive.hover4point
+    name: "racer_align4point: 4 engine springs + pitch/roll torque + stabilizer"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/racer.qc:racer_align4point"
+      - "common/vehicles/vehicles.qc:vehicles_force_fromtag_hover"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Racer.cs:Align4Point"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehiclePhysicsHelpers.cs:ForceFromTag"
+    constants:
+      - { name: "hoverpower", base: "8000 (x4 engines)", port: "8000", match: true }
+      - { name: "springlength", base: "90", port: "90", match: true }
+      - { name: "upforcedamper", base: "2", port: "2", match: true }
+      - { name: "water_upforcedamper", base: "15", port: "15", match: true }
+      - { name: "anglestabilizer", base: "1.75", port: "1.75", match: true }
+      - { name: "hovertype", base: "0 (hover)", port: "0 (hover; maglev branch present)", match: true }
+      - { name: "torque differential factor", base: "360", port: "360", match: true }
+      - { name: "water crouch+air up-push", base: "30 (if crouch && time<racer_air_finished) else 200", port: "30 if crouch else 200; air-meter gate absent", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The crouch-dive up-push 200->30 in water is gated by `PHYS_INPUT_BUTTON_CROUCH && time < racer_air_finished` in Base; the port keys it on ButtonCrouch alone (no air-meter), so the dive force differs once the 5s air timer would have expired."
+    verification:
+      - { kind: test, ref: "VehicleRuntimeTests.RacerSpawn idle hover no-NaN + Drive_ForwardInput_AcceleratesAlongFacing", result: pass }
+      - { kind: code_read, ref: "racer_align4point vs Align4Point + ForceFromTag", result: pass }
+    confidence: high
+    notes: "Spring/torque/stabilizer faithful; only the water air-meter gate on the crouch up-push is simplified."
+  - id: vehicle-racer.drive.controller
+    name: "racer_frame: yaw/pitch/roll toward view, friction, wishmove, downforce"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/racer.qc:racer_frame"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Racer.cs:Frame"
+    constants:
+      - { name: "turnspeed", base: "220", port: "220", match: true }
+      - { name: "turnroll", base: "30", port: "30", match: true }
+      - { name: "pitchspeed", base: "125", port: "125", match: true }
+      - { name: "pitchlimit", base: "30", port: "30", match: true }
+      - { name: "friction", base: "0.45", port: "0.45", match: true }
+      - { name: "speed_forward/strafe", base: "650/650", port: "650/650", match: true }
+      - { name: "water_speed_forward/strafe", base: "600/600", port: "600/600", match: true }
+      - { name: "downforce / water_downforce", base: "0.01 / 0.03", port: "0.01 / 0.03", match: true }
+      - { name: "water_time (air meter)", base: "5", port: "not modeled", match: false }
+      - { name: "racer_watertime post-water downforce window", base: "3s", port: "not modeled (uses current-liquid test only)", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "racer_watertime: Base sets racer_watertime=time while in a liquid and uses water_downforce (0.03) for the 3s AFTER leaving water; the port picks water-vs-normal downforce purely from the current liquid test, so the post-water heavy-downforce ramp is missing."
+      - "racer_air_finished (5s submerged air meter, time + water_time) not modeled — only affects the align4point crouch up-push (see drive.hover4point)."
+    verification:
+      - { kind: test, ref: "VehicleRuntimeTests.Drive_ForwardInput_AcceleratesAlongFacing", result: pass }
+      - { kind: code_read, ref: "racer_frame yaw/pitch/roll/thrust/downforce vs Frame", result: pass }
+    confidence: high
+    notes: "Steering + thrust constants all faithful; the two water-timer behaviours (watertime ramp, air meter) are the only logic gaps."
+  - id: vehicle-racer.drive.afterburn
+    name: "Afterburn (jump): energy drain + boost thrust (water vs air)"
+    layer: [authority, presentation, audio]
+    base_refs:
+      - "common/vehicles/vehicle/racer.qc:racer_frame (afterburn block)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Racer.cs:Frame"
+    constants:
+      - { name: "speed_afterburn", base: "3000", port: "3000", match: true }
+      - { name: "afterburn_cost (energy/s)", base: "130", port: "130", match: true }
+      - { name: "waterburn_cost", base: "5", port: "5", match: true }
+      - { name: "waterburn_speed", base: "750", port: "750", match: true }
+      - { name: "boost sound", base: "SND_VEH_RACER_BOOST (racer_boost.wav, 10.92s loop on tur_head)", port: "vehicles/racer_boost.wav (per-tick, no 10.92s gate, on vehicle)", match: false }
+      - { name: "booster effect", base: "EFFECT_RACER_BOOSTER (every 0.2s) + under-craft smoke trail", port: "none (Boosting effect flag only)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: partial
+      presentation: missing
+      audio: partial
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Boost sound is replayed every afterburn tick rather than gated to the ~10.92s loop length (Base reuses .strength_finished as the delay) and plays on the vehicle, not tur_head; the not-boosting branch's SND_Null stop is not issued."
+      - "No EFFECT_RACER_BOOSTER puff (every 0.2s, gated on .wait) and no under-craft smoke trail (Base reuses .invincible_finished as a 0.1+rand timer)."
+      - "Engine-sound state machine not ported: racer_frame loops SND_VEH_RACER_MOVE (sounds=1, 10.92s) while moving and SND_VEH_RACER_IDLE (sounds=0, 11.89s) while idle, gated on vehic.sound_nexttime; the port plays only the per-tick boost sound, so the persistent move/idle engine loop is absent."
+    verification:
+      - { kind: test, ref: "VehicleRuntimeTests.Drive_AfterburnInput_DrainsEnergy", result: pass }
+      - { kind: code_read, ref: "racer_frame afterburn block vs Frame afterburn", result: pass }
+    confidence: high
+    notes: "Energy drain + thrust (air & water) faithful and tested; sound cadence + booster FX diverge."
+  - id: vehicle-racer.weapon.cannon
+    name: "Primary energy laser cannon (rapid, energy-gated)"
+    layer: [authority, presentation, audio]
+    base_refs:
+      - "common/vehicles/vehicle/racer_weapon.qc:RacerAttack.wr_think (fire&1)"
+      - "common/vehicles/sv_vehicles.qc:vehicles_projectile"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Racer.cs:FireCannon"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:SpawnProjectile"
+    constants:
+      - { name: "cannon_cost (energy/shot)", base: "1.5", port: "1.5", match: true }
+      - { name: "cannon_damage", base: "15", port: "15", match: true }
+      - { name: "cannon_radius", base: "100", port: "100", match: true }
+      - { name: "cannon_force", base: "50", port: "50", match: true }
+      - { name: "cannon_speed", base: "15000", port: "15000", match: true }
+      - { name: "cannon_spread", base: "0.0125", port: "0.0125", match: true }
+      - { name: "cannon_refire", base: "0.05", port: "0.05", match: true }
+      - { name: "deathtype", base: "DEATH_VH_WAKI_GUN", port: "DeathTypes.VhWakiGun", match: true }
+      - { name: "fire sound", base: "lasergun_fire", port: "vehicles/lasergun_fire.wav", match: true }
+      - { name: "muzzle tag (player path)", base: "W_SetupShot_Dir from player (NO tag alternation; alternation is bot-only)", port: "always alternates tag_fire1/tag_fire2", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Cannon muzzle tag alternation: Base only swaps tag_fire1/tag_fire2 (via veh.cnt) on the BOT/non-player path; the piloted path uses W_SetupShot_Dir from the player. The port alternates tags unconditionally, so a piloted racer's bolt origin alternates left/right where Base would not. Cosmetic/origin only (ballistics/damage/spread unchanged)."
+      - "No EFFECT_RACER_MUZZLEFLASH muzzle effect and no CSQCProjectile (PROJECTILE_WAKICANNON) bolt trail."
+    verification:
+      - { kind: test, ref: "VehicleRuntimeTests.Drive_PrimaryFire_SpawnsAVehicleProjectile + MonsterTurretVehicleObituaryTests (VhWakiGun)", result: pass }
+      - { kind: code_read, ref: "racer_weapon.qc wr_think fire&1 vs FireCannon", result: pass }
+    confidence: high
+    notes: "Ballistics/damage/spread/refire/deathtype/sound faithful; muzzle FX + bolt trail deferred; tag-alternation diverges on the piloted path (origin only)."
+  - id: vehicle-racer.weapon.rocket
+    name: "Secondary rocket pair (lock-on / homing / ground-hugging)"
+    layer: [authority, presentation, audio]
+    base_refs:
+      - "common/vehicles/vehicle/racer_weapon.qc:racer_fire_rocket"
+      - "common/vehicles/vehicle/racer_weapon.qc:racer_rocket_tracker"
+      - "common/vehicles/vehicle/racer_weapon.qc:racer_rocket_groundhugger"
+      - "common/vehicles/sv_vehicles.qc:vehicles_locktarget"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Racer.cs:FireRocket"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehiclePhysicsHelpers.cs:GuideRocket"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehiclePhysicsHelpers.cs:LockTarget"
+    constants:
+      - { name: "rocket_damage", base: "100", port: "100", match: true }
+      - { name: "rocket_radius", base: "125", port: "125", match: true }
+      - { name: "rocket_force", base: "350", port: "350", match: true }
+      - { name: "rocket_speed", base: "900", port: "900", match: true }
+      - { name: "rocket_accel", base: "1600", port: "1600", match: true }
+      - { name: "rocket_turnrate", base: "0.2", port: "0.2", match: true }
+      - { name: "rocket_refire (after pair)", base: "3", port: "3", match: true }
+      - { name: "pair fire delay", base: "0.3", port: "0.3", match: true }
+      - { name: "rocket lifetime", base: "15 (cnt = time+15)", port: "15", match: true }
+      - { name: "rocket_climbspeed", base: "1600", port: "1600 (hardcoded)", match: true }
+      - { name: "rocket_locked_maxangle", base: "1.8", port: "1.8 (hardcoded)", match: true }
+      - { name: "locking_time / releasetime / locked_time", base: "0.35 / 0.5 / 4", port: "0.35 / 0.5 / 4", match: true }
+      - { name: "timeout/owner-death deathtype", base: "DEATH_VH_WAKI_ROCKET", port: "RegistryId (no deathTag)", match: false }
+      - { name: "tracker obstacle-avoid lift", base: "traceline ahead; if blocked && trace_ent!=enemy then newdir.z += 16*sys_frametime", port: "omitted", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "racer_rocket_tracker: Base traces a line ahead (origin -> origin + v_forward*64 - '0 0 32') and, if it hits something that is not the locked target, lifts the steering vector (`newdir.z += 16 * sys_frametime`) to climb over obstacles. GuideRocket RacerHoming omits this trace + lift entirely, so the homing rocket does not climb over terrain between it and the target."
+      - "On owner-death/lifetime-expiry detonation FireRocket overrides the projectile think and calls RadiusDamage with RegistryId and NO deathTag, so a timeout kill is attributed to a generic weapon id instead of DEATH_VH_WAKI_ROCKET (the touch-detonation path keeps SpawnProjectile's Explode, which tags it correctly)."
+      - "No EFFECT_RACER_ROCKETLAUNCH launch effect and no CSQCProjectile (PROJECTILE_WAKIROCKET) rocket trail."
+    verification:
+      - { kind: test, ref: "MonsterTurretVehicleObituaryTests (VhWakiRocket murder line)", result: pass }
+      - { kind: code_read, ref: "racer_fire_rocket + tracker/groundhugger + locktarget vs FireRocket/GuideRocket/LockTarget", result: pass }
+    confidence: high
+    notes: "Lock-on + groundhugger + values faithful; homing tracker drops the obstacle-avoid climb step, and the timeout-detonation deathtype is misattributed; launch FX/trail deferred."
+  - id: vehicle-racer.weapon.rockethud
+    name: "Secondary HUD ammo/reload mirror (vehicle_ammo2 / vehicle_reload2)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/vehicles/vehicle/racer.qc:racer_frame (vehicle_ammo2/reload2 writes)"
+    port_refs: []
+    constants:
+      - { name: "vehicle_ammo2", base: "100 idle / 50 after shot1 / 0 after pair", port: "none", match: false }
+      - { name: "vehicle_reload2", base: "bound(0,100*(time-lip)/(delay-lip),100)", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The rocket reload/ammo HUD percentages (vehicle_ammo2 100/50/0 and the vehicle_reload2 progress bar from .lip/.delay) are never written, so the secondary-weapon HUD gauge is dead (flagged TODO in Frame). VehReloadStart (.lip) IS stamped on the pair-complete shot but never read."
+    verification:
+      - { kind: code_read, ref: "no vehicle_ammo2/vehicle_reload2 writes in Racer.Frame (TODO comment); VehReloadStart set, unused", result: fail }
+    confidence: high
+    notes: "Pure HUD mirror; not ported."
+  - id: vehicle-racer.regen.resources
+    name: "Per-frame shield/energy/health regen + player %-stat mirror"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/racer.qc:racer_frame (regen + VEHICLE_UPDATE_PLAYER block)"
+      - "common/vehicles/sv_vehicles.qc:vehicles_regen"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Racer.cs:Think (regen block)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:Regen"
+    constants:
+      - { name: "energy_regen / pause", base: "90 / 0.35", port: "90 / 0.35", match: true }
+      - { name: "shield_regen / pause", base: "30 / 1", port: "30 / 1", match: true }
+      - { name: "health_regen / pause", base: "0 / 0", port: "0 / 0 (HealthRegen flag off)", match: true }
+      - { name: "shield regen healthscale", base: "true", port: "true", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC racer_frame mirrors vehicle health/energy/shield to the seated player as 0-100% stats (VEHICLE_UPDATE_PLAYER) each tick for the on-foot HUD gauge; the port runs the regen but does not write the player %-mirror stats. (vr_enter's one-shot %-seed is also not ported.) Cosmetic HUD only — the authoritative resources are correct."
+    verification:
+      - { kind: test, ref: "VehicleRuntimeTests.Drive_AfterburnInput_DrainsEnergy (energy regen at 90/s observed)", result: pass }
+      - { kind: code_read, ref: "racer_frame regen calls vs Racer.Think regen block; no player.vehicle_health %-write", result: pass }
+    confidence: high
+    notes: "Regen rates/pauses/healthscale faithful and live; only the player %-stat HUD mirror is dropped."
+  - id: vehicle-racer.death.blowup
+    name: "vr_death tumble -> deadtouch/timed blowup -> radius blast -> respawn"
+    layer: [authority, presentation, audio]
+    base_refs:
+      - "common/vehicles/vehicle/racer.qc:vr_death"
+      - "common/vehicles/vehicle/racer.qc:racer_blowup_think"
+      - "common/vehicles/vehicle/racer.qc:racer_deadtouch"
+      - "common/vehicles/vehicle/racer.qc:racer_blowup"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Racer.cs:Death"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Racer.cs:Blowup"
+    constants:
+      - { name: "blowup_coredamage", base: "250", port: "250", match: true }
+      - { name: "blowup_edgedamage", base: "15", port: "15", match: true }
+      - { name: "blowup_radius", base: "250", port: "250", match: true }
+      - { name: "blowup_forceintensity", base: "250", port: "250", match: true }
+      - { name: "death deathtype", base: "DEATH_VH_WAKI_DEATH", port: "DeathTypes.VhWakiDeath", match: true }
+      - { name: "blowup delay", base: "2 + time + rand*3", port: "Time + 2 + rand*3 (seeded PRNG)", match: true }
+      - { name: "deadtouch bounce count cnt", base: "1 + rand*2", port: "1 + rand*2", match: true }
+      - { name: "death pop velocity.z", base: "+700", port: "+700", match: true }
+      - { name: "respawntime", base: "35", port: "35", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: missing
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No EFFECT_EXPLOSION_MEDIUM (Send_Effect) on death and no colormod '-0.5 -0.5 -0.5' darken; setSendEntity(func_null) stop-networking is not modeled (presentation/net only)."
+    verification:
+      - { kind: test, ref: "VehicleRuntimeTests.Death_EjectsPilot_ThenRespawnsAtSpawnPoint", result: pass }
+      - { kind: code_read, ref: "vr_death/racer_blowup_think/racer_deadtouch/racer_blowup vs Death/Blowup", result: pass }
+    confidence: high
+    notes: "Tumble + timed/bounce detonation + radius blast + 35s respawn faithful and tested; death FX deferred."
+  - id: vehicle-racer.impact.bouncepain
+    name: "vr_impact: ram/collision fall-damage (vehicles_impact bouncepain)"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/racer.qc:vr_impact"
+      - "common/vehicles/sv_vehicles.qc:vehicles_impact"
+    port_refs: []
+    constants:
+      - { name: "bouncepain", base: "'200 0.15 150' (minspeed, speedchange_factor, max_damage)", port: "none", match: false }
+      - { name: "impact cooldown", base: "0.25s", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No vr_impact override and no vehicles_impact dispatch path: ramming a surface at >200 speed-change deals no DEATH_FALL self-damage (Base min(0.15*Δvel,150), 0.25s cooldown); the racer takes no collision pain at all."
+    verification:
+      - { kind: code_read, ref: "no vr_impact / vehicles_impact call in Racer (Touch is null on spawn, no impact dispatch)", result: fail }
+    confidence: high
+    notes: "Collision self-damage entirely absent; related bouncefactor/bouncestop also unset (see spawn.lifecycle)."

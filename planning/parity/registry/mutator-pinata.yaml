@@ -1,0 +1,208 @@
+unit: mutator-pinata
+category: mutator
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 7
+  worst_gaps:
+    - "Throw spread distribution differs: QC randomvec() (engine builtin #91) is uniform inside the UNIT BALL (|v|<=1; the prandomvec QC fallback also rejection-samples via `while (v*v > 1)`), but the port's Prandom.Vec() is uniform in the CUBE [-1,1)^3 (|v| up to ~1.73, no rejection). With the *175 scale, port burst weapons can fly up to ~303 qu/s horizontally vs 175 in Base and are biased toward the 8 cube-corner diagonals — the loot fan-out is boxier/farther than Base. Shared Prandom.Vec() defect that also affects the normal held-weapon death drop (randomvec()*125 + '0 0 200')."
+    - "Active-mutators string hooks unmapped: Base sv_pinata.qc has authority-side BuildMutatorsString (':Pinata') and BuildMutatorsPrettyString (', Piñata') hookfunctions; the port has NO BuildMutatorsString hook chain at all (confirmed: RocketFlyingMutator notes the chain was intentionally skipped 'by the batch'). The server-browser/HUD/scoreboard active-mutators report omits Pinata. Affects every mutator, not just pinata."
+    - "g_pinata is a QC string evaluated via expr_evaluate (allows expression values); the port reads it as a float (GetFloat != 0) even though an ExprEvaluate(GetString(...)) helper already exists in the port (used by RocketFlyingMutator for the identical expr_evaluate(g_pinata)-style idiom). Immaterial for the stock 0/1 values but not literally faithful and inconsistent with the sibling mutator."
+    - "No MENUQC describe text or create-game create-mutators checkbox for Pinata (general menu gap across the port, not unique to pinata)."
+features:
+  - id: mutator-pinata.enable.predicate
+    name: "Enable predicate (g_pinata gate + InstaGib/Overkill suppression + registration/activation)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/pinata/sv_pinata.qc:5 REGISTER_MUTATOR(pinata, expr_evaluate(autocvar_g_pinata) && !MUTATOR_IS_ENABLED(mutator_instagib) && !MUTATOR_IS_ENABLED(ok))"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PinataMutator.cs:IsEnabled"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PinataMutator.cs:Hook"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:Apply"
+      - "src/XonoticGodot.Server/GameWorld.cs:511"
+    constants:
+      - { name: "g_pinata", base: "0 (string, expr_evaluate; mutators.cfg:557)", port: "0 (read as float GetFloat != 0, NOT ExprEvaluate)", match: false }
+      - { name: "suppressed if instagib enabled", base: "!MUTATOR_IS_ENABLED(mutator_instagib)", port: "!OtherEnabled(\"instagib\") (reads instagib.IsEnabled)", match: true }
+      - { name: "suppressed if overkill enabled", base: "!MUTATOR_IS_ENABLED(ok)", port: "!OtherEnabled(\"overkill\") (reads overkill.IsEnabled)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "g_pinata is a QC string evaluated with expr_evaluate; the port reads it as a float (GetFloat != 0). Equivalent for the stock 0/1 values; not literally faithful for expression-string values. An ExprEvaluate(GetString(...)) helper already exists in the port (RocketFlyingMutator uses it for the same idiom) but pinata does not use it."
+    verification:
+      - { kind: code, ref: "PinataMutator.IsEnabled = Api.Services != null && GetFloat(g_pinata)!=0 && !OtherEnabled(instagib) && !OtherEnabled(overkill); OtherEnabled reads the other mutator's IsEnabled predicate (order-independent, matching MUTATOR_IS_ENABLED). [Mutator] auto-discovery -> Mutators.All -> MutatorActivation.Apply() at GameWorld.cs:511 calls Hook() when enabled", result: pass }
+      - { kind: value, ref: "Base mutators.cfg:557 'set g_pinata 0' matches port default off; mutators.cfg:558 g_pinata_offhand 0 matches; InstaGib/Overkill order-independent via the other mutator's IsEnabled predicate", result: pass }
+    confidence: high
+    notes: "Registered (auto-discovered via [Mutator]) and the PlayerDies handler is subscribed on the live boot path when g_pinata != 0 and neither InstaGib nor Overkill is on. The string-vs-float read is the only logic nit and is immaterial for stock values, but is a real inconsistency vs the sibling RocketFlyingMutator which uses ExprEvaluate."
+
+  - id: mutator-pinata.death.scatter_weapons
+    name: "PlayerDies burst — scatter every owned-but-not-held throwable weapon as loot"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/pinata/sv_pinata.qc:7-30 MUTATOR_HOOKFUNCTION(pinata, PlayerDies)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PinataMutator.cs:OnPlayerDies"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:552"
+    constants:
+      - { name: "weapon set scanned", base: "FOREACH(Weapons, it != WEP_Null) & STAT(WEAPONS,frag_target)", port: "foreach(target.OwnedWeaponSet.Weapons())", match: true }
+      - { name: "exclude currently-held weapon", base: "frag_target.(weaponentity).m_weapon != it", port: "skip if ReferenceEquals(it, held) where held=Inventory.CurrentWeapon (=ActiveWeaponId = slot0 m_weapon)", match: true }
+      - { name: "throwable gate", base: "W_IsWeaponThrowable(frag_target, it.m_id)", port: "WeaponThrowing.IsWeaponThrowable(target, it)", match: true }
+      - { name: "doreduce", base: "false", port: "false", match: true }
+      - { name: "hook return", base: "true (does not stop chain)", port: "true", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "OnPlayerDies iterates OwnedWeaponSet, excludes held (CurrentWeapon = slot0 active), IsWeaponThrowable-gated, ThrowNewWeapon(doreduce:false); fired from MutatorHooks.PlayerDies.Call at DamageSystem.cs:552 on the live kill path", result: pass }
+      - { kind: code, ref: "held weapon dropped separately by WeaponThrowing.SpawnThrownWeapon at DamageSystem.cs:577 (after the PlayerDies hook ran) -> not double-thrown, matching QC m_weapon!=it exclusion + the separate player.qc death drop", result: pass }
+    confidence: high
+    notes: "Core behavior is faithful and live. The throw IMPULSE (origin + random vector) is split into its own rows below (spawn origin + impulse distribution) so the randomvec gap is isolated. The pinata burst correctly runs BEFORE the held-weapon SpawnThrownWeapon in DamageSystem.Killed, matching the QC ordering (hook then player.qc drop)."
+
+  - id: mutator-pinata.death.spawn_origin
+    name: "Burst spawn origin — CENTER_OR_VIEWOFS(frag_target) (eye height)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/pinata/sv_pinata.qc:25 CENTER_OR_VIEWOFS(frag_target)"
+      - "server/utils.qh:31 #define CENTER_OR_VIEWOFS"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PinataMutator.cs:OnPlayerDies"
+    constants:
+      - { name: "spawn origin", base: "origin + (IS_PLAYER ? view_ofs : (mins+maxs)*0.5)", port: "target.Origin + target.ViewOfs", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "CENTER_OR_VIEWOFS resolves to origin+view_ofs because frag_target is still a player (IS_PLAYER true) at the PlayerDies hook, before corpse setup; port computes Origin+ViewOfs. Confirmed in DamageSystem.Killed the corpse ViewOfs (0,0,-8) is set AFTER the hook+held-drop, so the eye-height view_ofs is still in effect when pinata reads it", result: pass }
+    confidence: high
+    notes: "The player has not yet been turned into a corpse at PlayerDies (DamageSystem.cs sets the -8 corpse ViewOfs only at line 584, after the hook at 552 and the held drop at 577), so the player branch (view_ofs) is taken; the port matches."
+
+  - id: mutator-pinata.death.throw_impulse
+    name: "Burst throw impulse — randomvec()*175 + '0 0 325'"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/pinata/sv_pinata.qc:25 randomvec() * 175 + '0 0 325'"
+      - "lib/random.qh:34 randomvec resolution (USE_PRANDOM defined)"
+      - "lib/random.qc:120-131 prandomvec rejection sampling"
+      - "dpdefs/upstream/csprogsdefs.qc:411 vector() randomvec = #91 (engine builtin)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PinataMutator.cs:OnPlayerDies"
+      - "src/XonoticGodot.Common/Math/Prandom.cs:Vec"
+    constants:
+      - { name: "horizontal scale", base: "175 (* randomvec())", port: "175f (* Prandom.Vec())", match: true }
+      - { name: "vertical offset", base: "'0 0 325'", port: "(0,0,325)", match: true }
+      - { name: "random vector distribution", base: "randomvec() engine builtin #91 = uniform in UNIT BALL (|v|<=1; prandomvec fallback also rejection-samples while v*v>1)", port: "Prandom.Vec() = new(Signed(),Signed(),Signed()), uniform CUBE [-1,1)^3 (|v| up to ~1.73, NO rejection)", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Prandom.Vec() samples a uniform cube ([-1,1)^3, |v| up to ~1.73) with no rejection step, where QC randomvec() (the DarkPlaces engine builtin #91) samples uniformly inside the unit ball (|v|<=1). Even the QC prandomvec fallback (lib/random.qc:120, `while (v*v > 1)`) rejection-samples to the unit ball, so neither QC path matches the port. With the *175 scale, port burst weapons get up to ~303 qu/s horizontal kick vs <=175 in Base and the throw directions cluster toward the 8 cube-corner diagonals instead of being isotropic — visibly boxier/farther loot scatter."
+    verification:
+      - { kind: code, ref: "Prandom.Vec() = new(Signed(),Signed(),Signed()) with Signed()=Float()*2-1 in [-1,1); no rejection sampling. lib/random.qh:34 defines USE_PRANDOM so the `#define prandomvec randomvec` alias (in the #else) is NOT active; pinata calls randomvec() directly (engine builtin #91, csprogsdefs.qc:411 / dpextensions.qc:998), which is unit-ball. The QC prandomvec fallback (random.qc:129) also does `while (v*v > 1)`", result: fail }
+    confidence: high
+    notes: "Shared Prandom.Vec() defect: also affects the normal held-weapon death drop (WeaponThrowing.SpawnThrownWeapon, randomvec()*125 + '0 0 200') and every other randomvec() caller. A fix belongs in Prandom.Vec() (rejection-sample to the unit ball), not pinata-locally. Established by code inspection; no runtime observation. NOTE the port deliberately uses the deterministic Prandom (QC prandom family, ADR-0010) rather than the raw engine randomvec — acceptable for a server-side non-predicted death event; the distribution shape is the real gap, not the determinism choice."
+
+  - id: mutator-pinata.death.offhand_slots
+    name: "g_pinata_offhand — scatter off-hand (slot>0) weapons when dual-wielding"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/pinata/sv_pinata.qc:11-19 (per-slot loop + `if(slot > 0 && !autocvar_g_pinata_offhand) break`)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PinataMutator.cs:Offhand"
+    constants:
+      - { name: "g_pinata_offhand", base: "0 (mutators.cfg:558)", port: "0 (read into Offhand in Hook(), inert)", match: true }
+      - { name: "slots scanned", base: "0..MAX_WEAPONSLOTS-1 (=2), break after slot 0 unless offhand", port: "single WeaponSlot(0) only", match: false }
+    status:
+      logic: stub
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: true
+    divergence_rationale: "The port models a single weapon slot (no dual-wielding in normal play; MaxWeaponSlots=2 exists but is not driven for the main game), so QC's slot>0 offhand loop has no extra weapons to scatter. g_pinata_offhand is read in Hook() for cvar parity but has no behavioral effect. Not player-observable in stock play; should be revisited only if/when dual-wielding is implemented."
+    gaps:
+      - "With g_pinata_offhand 1 and a dual-wield loadout, Base would also scatter the off-hand slot's non-held weapons; the port has no second slot to iterate (OnPlayerDies hardcodes WeaponSlot(0)), so this branch never does anything. Inert in stock play (no dual-wielding)."
+    verification:
+      - { kind: code, ref: "PinataMutator.Offhand read from g_pinata_offhand in Hook() but OnPlayerDies iterates a single WeaponSlot(0); no slot>0 loop. Class comment documents the single-slot divergence", result: pass }
+    confidence: high
+    notes: "Recorded as intended_divergence because it is a deliberate consequence of the port not implementing dual-wielding, not a bug in pinata. Cvar default (0) matches Base; the Offhand field is set but never read in OnPlayerDies."
+
+  - id: mutator-pinata.report.mutators_string
+    name: "Active-mutators string hooks — BuildMutatorsString (':Pinata') + BuildMutatorsPrettyString (', Piñata')"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/pinata/sv_pinata.qc:32-35 MUTATOR_HOOKFUNCTION(pinata, BuildMutatorsString)"
+      - "common/mutators/mutator/pinata/sv_pinata.qc:37-40 MUTATOR_HOOKFUNCTION(pinata, BuildMutatorsPrettyString)"
+    port_refs: []
+    constants:
+      - { name: "BuildMutatorsString token", base: "strcat(s, \":Pinata\")", port: "none (no BuildMutatorsString hook chain in port)", match: false }
+      - { name: "BuildMutatorsPrettyString token", base: "strcat(s, \", Piñata\")", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The port has NO BuildMutatorsString / BuildMutatorsPrettyString hook chain at all (confirmed by RocketFlyingMutator.cs:23 which explicitly notes 'the cosmetic AllowRocketJumping + BuildMutatorsString sub-hooks are skipped — no such chains needed by the batch'). Pinata's two server-side report hooks (':Pinata' machine token used by the server browser/serverinfo, ', Piñata' pretty string used by the scoreboard/HUD active-mutators display) therefore never contribute. This is a general port gap affecting all mutators, surfaced here because pinata defines both hooks."
+    verification:
+      - { kind: code, ref: "grep for BuildMutatorsString/MutatorsString/active-mutators in src/**/Mutators/ found no hook chain; only doc references. Port MutatorHooks.cs has no BuildMutators* HookChain", result: fail }
+    confidence: high
+    notes: "Authority-side (SV) report hooks, distinct from the MENUQC describe text (separate row). No gameplay effect — affects only the displayed/serialized active-mutators list. Tracked for completeness and to satisfy the worst_gaps consistency rule."
+
+  - id: mutator-pinata.menu.metadata
+    name: "MENUQC metadata (describe text + create-game checkbox)"
+    layer: [presentation]
+    base_refs:
+      - "common/mutators/mutator/pinata/pinata.qc:4-11 METHOD(MutatorPinata, describe)"
+      - "common/mutators/mutator/pinata/pinata.qh:4-8 CLASS(MutatorPinata) ATTRIB message = _(\"Piñata\")"
+      - "menu/xonotic/dialog_multiplayer_create_mutators.qc (g_pinata checkbox)"
+    port_refs: []
+    constants:
+      - { name: "menu label/message", base: "_(\"Piñata\")", port: "none", match: false }
+      - { name: "describe text", base: "'makes players drop all their weapons when they die' (PAGE_TEXT)", port: "none", match: false }
+      - { name: "create-game checkbox cvar", base: "g_pinata", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No MENUQC describe text, no MutatorPinata menu class/label, and no create-game create-mutators checkbox for Pinata: the menu would not offer a Piñata toggle. General menu gap across the port, not unique to pinata."
+    verification:
+      - { kind: code, ref: "no MutatorPinata menu class / describe / create-mutators checkbox mechanism found in port (game/ has no mutator describe UI)", result: fail }
+    confidence: high
+    notes: "Pure menu presentation; no gameplay effect. Split out from the active-mutators string row above — that is server-side report state, this is client menu UI."

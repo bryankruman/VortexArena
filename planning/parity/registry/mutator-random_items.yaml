@@ -1,0 +1,313 @@
+unit: mutator-random_items
+category: mutator
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 11
+  worst_gaps:
+    - "Map items are never replaced under g_random_items 1: the port has no entity-level FilterItem mutator hook. The only item filter hook is FilterItemDefinition (definition-level powerup/item blocking, used by Duel/Mayhem) — a DIFFERENT hook that cannot replace an item with a different classname."
+    - "Picked-up map items never re-randomize: there is no ItemTouch mutator-hook chain in the port. ItemPickupRules.ItemTouch:279 explicitly notes 'the port has no ItemTouch hook chain yet', so a respawning item keeps its original identity."
+    - "Dropped loot is not pickup-able: SpawnLootItem creates a bare entity (classname, MoveType.Toss, NextThink remove) instead of calling StartItem.SpawnLoot(item, Pickup, lifetime) (which EXISTS at StartItem.cs:58 and installs ItemPickupRules.ItemTouch); it has no Pickup def and no touch handler, so players can't collect it."
+    - "Probability cvar name is wrong: port reads g_random_items_vortex_probability, but Base (sprintf with m_canonical_spawnfunc='weapon_vortex') and the shipped cfg use g_random_items_weapon_vortex_probability. Every shipped weapon-prob cvar misses -> all weights 0 -> chosenWep stays null -> the engine returns empty."
+    - "Not implemented: the mutator never enumerates the item registry, so health/armor/resource/powerup picks always resolve to empty. These are the dominant Base categories, so random replacement/loot is non-functional even ignoring the weapon-cvar bug."
+features:
+  - id: random_items.gate.enable
+    name: "Enable gate + mutator registration (g_random_items || g_random_loot)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/random_items/sv_random_items.qh:44 (REGISTER_MUTATOR)"
+      - "mutators.cfg:550 (g_random_items 0); :551 (g_random_loot 0)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RandomItemsMutator.cs:73 (IsEnabled)"
+    constants:
+      - { name: "g_random_items", base: "0", port: "0", match: true }
+      - { name: "g_random_loot", base: "0", port: "0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "IsEnabled reads both cvars; [Mutator] auto-discovery (Registry<MutatorBase>). mutators.cfg ships both at 0.", result: pass }
+    confidence: high
+    notes: "Gate identical to Base (either cvar). Port ships the same mutators.cfg defaults; verified."
+
+  - id: random_items.engine.type_weighted_pick
+    name: "Type-weighted classname pick (RandomItems_GetRandomVanillaItemClassName)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/random_items/sv_random_items.qc:64 (RandomItems_GetRandomVanillaItemClassName)"
+      - "common/mutators/mutator/random_items/sv_random_items.qc:54 (RandomItems_GetRandomItemClassName)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RandomItemsMutator.cs:167 (GetRandomVanillaItemClassName)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RandomItemsMutator.cs:155 (GetRandomItemClassName)"
+    constants:
+      - { name: "type prob cvar pattern", base: "g_{prefix}_{type}_probability", port: "g_{prefix}_{type}_probability", match: true }
+      - { name: "weighted-reservoir rule", base: "random()*total <= prob", port: "Prandom.Float()*total <= prob", match: true }
+      - { name: "RANDOM_ITEM_TYPE_ALL", base: "BITS(5)", port: "(1<<5)-1", match: true }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Only the WEAPON type resolves to a concrete classname; HEALTH/ARMOR/RESOURCE/POWERUP always return empty (see random_items.engine.item_prob_by_property)."
+      - "The only live caller is SpawnLootItem (loot half), which is itself broken; the map half (FilterItem/ItemTouched) never calls it at all -> dead."
+    verification:
+      - { kind: code, ref: "GetRandomVanillaItemClassName: only the RandomItemType.Weapon branch builds a classname; other branches fall through to empty (line 200 comment).", result: fail }
+    confidence: high
+    notes: "Weighted-reservoir scaffolding over the 5 types is faithful (verified against RandomSelection_AddFloat); per-type resolution is weapon-only and weapon lookup is broken (random_items.engine.weapon_prob_cvar)."
+
+  - id: random_items.engine.weapon_prob_cvar
+    name: "Per-weapon probability lookup + weapon classname construction"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/random_items/sv_random_items.qc:159-178 (WEAPON case; sprintf g_%s_%s_probability with it.m_canonical_spawnfunc)"
+      - "common/weapons/weapon/vortex.qh (m_canonical_spawnfunc = \"weapon_vortex\")"
+      - "randomitems-xonotic.cfg:74 (g_random_items_weapon_vortex_probability 1)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RandomItemsMutator.cs:190-198"
+    constants:
+      - { name: "weapon prob cvar name", base: "g_{prefix}_weapon_{netname}_probability", port: "g_{prefix}_{netname}_probability", match: false }
+      - { name: "emitted classname", base: "\"weapon_\"+netname (== m_canonical_spawnfunc)", port: "\"weapon_\"+NetName", match: true }
+      - { name: "mutatorblocked filter", base: "!(spawnflags & WEP_FLAG_MUTATORBLOCKED)", port: "!(SpawnFlags & WeaponFlags.MutatorBlocked)", match: true }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Probability cvar name is wrong: port reads g_random_items_vortex_probability, but Base (sprintf with m_canonical_spawnfunc='weapon_vortex') and the shipped cfg use g_random_items_weapon_vortex_probability. Every shipped weapon-prob cvar misses -> all weights 0 -> chosenWep stays null -> the engine returns empty."
+    verification:
+      - { kind: value, ref: "port $\"g_{prefix}_{w.NetName}_probability\" (RandomItemsMutator.cs:193) vs cfg g_random_items_weapon_<name>_probability (randomitems-xonotic.cfg:68-94); m_canonical_spawnfunc confirmed = 'weapon_<name>' across common/weapons/weapon/*.qh.", result: fail }
+    confidence: high
+    notes: "The emitted CLASSNAME ('weapon_'+netname) is correct; it is the CVAR NAME in the weight lookup that drops the 'weapon_' segment. The same bug would affect the loot half's weapon picks."
+
+  - id: random_items.engine.item_prob_by_property
+    name: "Health/armor/resource/powerup classname pick (GetRandomItemClassNameWithProperty)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/random_items/sv_random_items.qc:211 (RandomItems_GetRandomItemClassNameWithProperty)"
+    port_refs: []
+    constants:
+      - { name: "item prob cvar pattern", base: "g_{prefix}_{m_canonical_spawnfunc}_probability (e.g. g_random_items_item_health_small_probability)", port: "none", match: false }
+      - { name: "filter", base: "it.<prop> && (spawnflags & ITEM_FLAG_NORMAL) && Item_IsDefinitionAllowed(it)", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Not implemented: the mutator never enumerates the item registry, so health/armor/resource/powerup picks always resolve to empty. These are the dominant Base categories, so random replacement/loot is non-functional even ignoring the weapon-cvar bug."
+    verification:
+      - { kind: code, ref: "GetRandomVanillaItemClassName non-weapon branch is a comment + empty string (RandomItemsMutator.cs:200-201).", result: fail }
+    confidence: high
+    notes: "PORTABLE NOW: the item registry IS enumerable via Registry<Pickup>.All ([Item] defs) and ItemSpawnFuncs.CanonicalSpawnFunc(def) maps a Pickup to its 'item_health_small' canonical classname (== m_canonical_spawnfunc). The class doc's 'item registries aren't enumerable here yet' rationale is STALE."
+
+  - id: random_items.engine.mod_injection_hook
+    name: "Mod-injection hook (RandomItems_GetRandomItemClassName MUTATOR_HOOKABLE; overkill/instagib override)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/random_items/sv_random_items.qh:41 (MUTATOR_HOOKABLE RandomItems_GetRandomItemClassName)"
+      - "common/mutators/mutator/random_items/sv_random_items.qc:56 (CALLHOOK at entry of RandomItems_GetRandomItemClassName)"
+      - "common/mutators/mutator/overkill/sv_overkill.qc:58 (ok override); common/mutators/mutator/instagib/sv_instagib.qc:102 (instagib override)"
+    port_refs: []
+    constants:
+      - { name: "hook event EV_RandomItems_GetRandomItemClassName(prefix -> classname)", base: "present", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The RandomItems_GetRandomItemClassName mutator hook seam is not modeled: GetRandomItemClassName goes straight to the vanilla pick. So Overkill/Instagib cannot substitute their item pools (okhmg/okrpc, vaporizer_cells), and randomitems-overkill.cfg's overkill-specific probabilities are never consulted on this path."
+    verification:
+      - { kind: code, ref: "GetRandomItemClassName (RandomItemsMutator.cs:155) is `=> GetRandomVanillaItemClassName(prefix, All)` with no hook call; no subscriber to such a hook in OverkillMutator/InstagibMutator.", result: fail }
+    confidence: high
+    notes: "randomitems-overkill.cfg IS shipped in the port, but unreachable without this override hook. Added by the verifier (draft folded this into type_weighted_pick gaps only)."
+
+  - id: random_items.map.filter_replace
+    name: "Map-item replacement on spawn (FilterItem -> RandomItems_ReplaceMapItem)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/random_items/sv_random_items.qc:323 (FilterItem hook, CBC_ORDER_LAST)"
+      - "common/mutators/mutator/random_items/sv_random_items.qc:233 (RandomItems_ReplaceMapItem)"
+      - "common/mutators/mutator/random_items/sv_random_items.qc:200 (RandomItems_GetItemReplacementClassNames)"
+    port_refs: []
+    constants:
+      - { name: "g_random_items_replace_* default", base: "\"random\"", port: "shipped in cfg but unread", match: false }
+      - { name: "new_item.lifetime", base: "-1 (permanent)", port: "none", match: false }
+      - { name: "replace-list pick", base: "tokenize + argv(floor(random()*n))", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Map items are never replaced under g_random_items 1: the port has no entity-level FilterItem mutator hook. The only item filter hook is FilterItemDefinition (definition-level powerup/item blocking, used by Duel/Mayhem) — a DIFFERENT hook that cannot replace an item with a different classname."
+      - "The g_random_items_replace_<classname> machinery (literal 'random' vs candidate-list, tokenize + uniform pick, chosen==current -> no-op) is entirely absent, though the replace cvars are shipped in randomitems-xonotic.cfg."
+    verification:
+      - { kind: code, ref: "No entity FilterItem hook chain (only MutatorHooks.FilterItemDefinition on GameItemDef). StartItem.SpawnInternal:89 calls FilterItemDefinition, not an entity FilterItem.", result: fail }
+    confidence: high
+    notes: "The live item pipeline (ItemSpawnFuncs.Register + StartItem.Spawn) DOES spawn real map items, so unmodified items are observable in-game. The missing piece is a FilterItem-equivalent entity hook seam at spawn time."
+
+  - id: random_items.map.item_touched_rerandom
+    name: "Re-randomize map item on respawn (ItemTouched -> replace + ScheduleRespawn + delete)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/random_items/sv_random_items.qc:347 (ItemTouched hook, CBC_ORDER_LAST)"
+    port_refs: []
+    constants:
+      - { name: "Item_ScheduleRespawn(new_item) + delete(item)", base: "respawn the replacement, drop original", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Picked-up map items never re-randomize: there is no ItemTouch mutator-hook chain in the port. ItemPickupRules.ItemTouch:279 explicitly notes 'the port has no ItemTouch hook chain yet', so a respawning item keeps its original identity."
+    verification:
+      - { kind: code, ref: "No ItemTouch HookChain in MutatorHooks; ItemPickupRules.ItemTouch (:260) has no mutator dispatch (:279 comment).", result: fail }
+    confidence: high
+    notes: "Depends on the same missing item-replacement seam as random_items.map.filter_replace, plus an ItemTouch hook + Item_ScheduleRespawn (which exists for normal items)."
+
+  - id: random_items.loot.player_dies_count
+    name: "Loot count on death: floor(min + random()*max) items at corpse"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/random_items/sv_random_items.qc:369 (PlayerDies hook)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RandomItemsMutator.cs:106 (OnPlayerDies)"
+    constants:
+      - { name: "g_random_loot_min", base: "0", port: "0 (from cvar)", match: true }
+      - { name: "g_random_loot_max", base: "4", port: "4 (from cvar)", match: true }
+      - { name: "count formula", base: "floor(min + random()*max)", port: "floor(LootMin + Prandom.Float()*LootMax)", match: true }
+      - { name: "loot position", base: "victim.origin + '0 0 32'", port: "victim.Origin + (0,0,32)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "MutatorHooks.PlayerDies.Call fired live from DamageSystem.cs:552; OnPlayerDies count/position math matches QC.", result: pass }
+    confidence: high
+    notes: "Count + spawn position faithful, hook genuinely live; the items it spawns are broken (random_items.loot.spawn_item)."
+
+  - id: random_items.loot.spawn_item
+    name: "Loot-item spawn (RandomItems_SpawnLootItem): classname + spread + lifetime"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/random_items/sv_random_items.qc:286 (RandomItems_SpawnLootItem)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RandomItemsMutator.cs:125 (SpawnLootItem)"
+    constants:
+      - { name: "g_random_loot_spread", base: "200", port: "200 (cvar; field default 200)", match: true }
+      - { name: "g_random_loot_time", base: "10", port: "10 from shipped cfg; field default 20, cvar override only if !=0", match: false }
+      - { name: "spread.z bias", base: "spread/2", port: "LootSpread/2", match: true }
+      - { name: "spread vec", base: "randomvec()*spread (each axis [-1,1])", port: "Prandom.Vec()*LootSpread (Signed = Float()*2-1 in [-1,1])", match: true }
+      - { name: "makes a real pickup", base: "Item_Initialise => MOVETYPE_TOSS, touch-pickupable, despawns", port: "bare Spawn() placeholder, no Pickup def, no touch handler", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Dropped loot is not pickup-able: SpawnLootItem creates a bare entity (classname, MoveType.Toss, NextThink remove) instead of calling StartItem.SpawnLoot(item, Pickup, lifetime) (which EXISTS at StartItem.cs:58 and installs ItemPickupRules.ItemTouch); it has no Pickup def and no touch handler, so players can't collect it."
+      - "Because the classname engine returns weapon-only and the weapon cvar name is wrong, GetRandomItemClassName('random_loot') almost always returns empty -> SpawnLootItem early-returns and nothing drops."
+      - "g_random_loot_time field default is 20 vs Base 10; the cvar override only applies when non-zero. Latent only when the random-items cfg isn't loaded (the shipped cfg sets 10)."
+    verification:
+      - { kind: code, ref: "SpawnLootItem uses Api.Entities.Spawn placeholder (RandomItemsMutator.cs:135-146); StartItem.SpawnLoot exists but is unused. Spread math matches QC; Prandom.Vec verified [-1,1] per axis (Prandom.cs:36,44).", result: fail }
+    confidence: high
+    notes: "Spread/position/lifetime-timer math faithful; the item it produces is inert scenery. StartItem.SpawnLoot + a Pickup resolved from the chosen classname would fix the non-pickupable defect."
+
+  - id: random_items.spawn.recursion_guard_ok_flag
+    name: "Spawn-mechanics correctness: random_items_is_spawning recursion guard, ITEM_IS_LOOT skip, ok_item flag"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/random_items/sv_random_items.qc:42 (random_items_is_spawning); :268/:296 (set/clear around spawn)"
+      - "common/mutators/mutator/random_items/sv_random_items.qc:330/335/355 (random_items_is_spawning + ITEM_IS_LOOT skips in FilterItem/ItemTouched)"
+      - "common/mutators/mutator/random_items/sv_random_items.qc:274/303 (if MUTATOR_IS_ENABLED(ok) new_item.ok_item = true)"
+    port_refs: []
+    constants:
+      - { name: "recursion guard", base: "random_items_is_spawning bool", port: "none", match: false }
+      - { name: "ITEM_IS_LOOT skip in FilterItem/ItemTouched", base: "present", port: "none", match: false }
+      - { name: "ok_item flag on spawned/replaced item", base: "set when MUTATOR_IS_ENABLED(ok)", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "None of the spawn-mechanics safety/flagging is ported: no recursion guard (the FilterItem replacement re-enters the spawn path in Base), no ITEM_IS_LOOT skip (so loot wouldn't be re-filtered as a map item), and no ok_item flag on spawned/replaced items (so under Overkill the spawned items wouldn't be tagged as Overkill items)."
+    verification:
+      - { kind: code, ref: "RandomItemsMutator has no is-spawning flag, no ITEM_IS_LOOT check, and no ok_item/OkItem write anywhere (grep ok_item/OkItem in src returns nothing).", result: fail }
+    confidence: high
+    notes: "Mostly moot until the map-replacement half (FilterItem/ItemTouched) is wired, but the ok_item flagging also affects the loot half under Overkill. Added by the verifier."
+
+  - id: random_items.string.mutator_labels
+    name: "Active-mutators string hooks (BuildMutatorsString / BuildMutatorsPrettyString)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/random_items/sv_random_items.qc:312 (BuildMutatorsString -> ':random_items')"
+      - "common/mutators/mutator/random_items/sv_random_items.qc:317 (BuildMutatorsPrettyString -> ', Random items')"
+    port_refs: []
+    constants:
+      - { name: "mutator net id", base: ":random_items", port: "NetName=random_items (not appended to any string)", match: false }
+      - { name: "pretty label", base: ", Random items", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Neither BuildMutatorsString nor BuildMutatorsPrettyString is ported, and the port has NO active-mutators string builder at all (no MutatorHooks.BuildMutatorsString chain; NetName is never consumed to assemble a mutator list). So the active-mutators net string and the scoreboard 'Random items' label omit this mutator entirely."
+    verification:
+      - { kind: code, ref: "No BuildMutatorsString hook in MutatorHooks.cs; grep for an active-mutators string assembly across src/ finds none; MutatorBase.NetName (GameplayBases.cs:141) is used only as the registry key.", result: fail }
+    confidence: high
+    notes: "DOWNGRADE from draft (was logic:partial / liveness:unknown). Verified there is no generic NetName-based mutator-string builder, so this is fully missing, not merely unconfirmed."

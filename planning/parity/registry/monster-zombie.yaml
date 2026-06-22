@@ -1,0 +1,346 @@
+unit: monster-zombie
+category: monster
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 11
+  worst_gaps:
+    - "Zombie animation never plays: the 14 mr_anim frame groups are collapsed to a logical phase enum that never sets Entity.Frame; monsters always network Frame=0 (the client frame-drive path exists but is fed a constant 0), so the model is pinned to its static pose (no visible spawn/walk/attack/block/pain/death anim)."
+    - "Pain sound played where Base zombie is silent (zombie.dpm_0.sounds has 'pain' commented out)."
+    - "Block plays a monsters/zombie_melee.wav sound that Base's block never plays (and zombie 'melee' sound is commented out)."
+    - "Sound delivery diverges from Base: literal monsters/zombie_*.wav paths instead of the GlobalSound .sounds-file table (no random sample, no g_monsters_sounds gate, no msound_delay throttle)."
+    - "Block armor-restore fallback is 0.6 vs Base g_monsters_armor_blockpercent default 0.5 (matters only when cvar unset)."
+features:
+  - id: monster-zombie.identity.def
+    name: "Zombie identity / model / bbox / class flags"
+    layer: [shared, authority]
+    base_refs:
+      - "common/monsters/monster/zombie.qh:Zombie (CLASS / REGISTER_MONSTER)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Zombie.cs:Zombie (ctor + Spawn SetSize)"
+    constants:
+      - { name: "model", base: "zombie.dpm", port: "models/monsters/zombie.dpm", match: true }
+      - { name: "netname", base: "zombie", port: "zombie", match: true }
+      - { name: "m_mins", base: "'-18 -18 -25'", port: "(-18,-18,-25)", match: true }
+      - { name: "m_maxs", base: "'18 18 47'", port: "(18,18,47)", match: true }
+      - { name: "spawnflags", base: "MONSTER_TYPE_UNDEAD|MON_FLAG_MELEE|MON_FLAG_RIDE", port: "doc-only (no flags int)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Class flags (UNDEAD/MELEE/RIDE) are documented in comments but not stored as spawnflags; MON_FLAG_RIDE (monster riding) is unported across the whole monster family."
+    verification:
+      - { kind: code-read, ref: "zombie.qh vs Zombie.cs ctor+Spawn", result: pass }
+    confidence: high
+    notes: "Identity/size faithful. The categorical flags carry no behavior the zombie itself needs except UNDEAD's corpse-respawn, which is implemented via AlwaysRespawn+RespawnAtDeathPoint+gib threshold."
+
+  - id: monster-zombie.setup.mr_setup
+    name: "Spawn setup: always-respawn at death point, loot, spawn shield, no-push spawn window"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/monster/zombie.qc:mr_setup"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Zombie.cs:Spawn"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:Setup"
+    constants:
+      - { name: "g_monster_zombie_health", base: "200", port: "200 (live cvar; 200 fallback)", match: true }
+      - { name: "g_monster_zombie_speed_walk", base: "300", port: "300", match: true }
+      - { name: "g_monster_zombie_speed_run", base: "600", port: "600", match: true }
+      - { name: "g_monster_zombie_speed_stop", base: "100", port: "100", match: true }
+      - { name: "g_monster_zombie_loot", base: "health_medium", port: "health_medium", match: true }
+      - { name: "respawntime", base: "0.2", port: "0.2", match: true }
+      - { name: "spawn_damageforcescale", base: "0.0001", port: "0.0001", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: partial
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Spawn-anim/no-think window hardcoded to 1/3s instead of being derived from anim_spawn '30 1 3' via animfixfps/animstate_endtime (close approximation, not model-exact)."
+    verification:
+      - { kind: code-read, ref: "zombie.qc:mr_setup vs Zombie.Spawn + MonsterAI.Setup", result: pass }
+      - { kind: value-diff, ref: "monsters.cfg lines 2-13 vs Zombie.cs cvar reads", result: pass }
+    confidence: high
+    notes: "NORESPAWN cleared, APPEAR cleared, RESPAWN_DEATHPOINT set, respawntime 0.2 — all faithful. SpawnShield + 0.0001 forcescale during spawn faithful."
+
+  - id: monster-zombie.think.forcescale_restore
+    name: "Per-think: restore knockback scale after spawn animation"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/monster/zombie.qc:mr_think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Zombie.cs:Think"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:RunThink"
+    constants:
+      - { name: "g_monster_zombie_damageforcescale", base: "0.55", port: "0.55", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "zombie.qc:mr_think vs Zombie.Think", result: pass }
+    confidence: high
+    notes: "Once time>=spawn_time, forcescale restored to 0.55; then RunThink runs the shared chase/attack loop. Ticked live by SimulationLoop.RunThink."
+
+  - id: monster-zombie.attack.melee
+    name: "Melee attack: 3-way anim roll + forward traceline damage"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/monster/zombie.qc:M_Zombie_Attack (MELEE case)"
+      - "common/monsters/sv_monsters.qc:Monster_Attack_Melee"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Zombie.cs:Attack"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MeleeAttack"
+    constants:
+      - { name: "g_monster_zombie_attack_melee_damage", base: "55", port: "55 (live cvar)", match: true }
+      - { name: "g_monster_zombie_attack_melee_delay", base: "1", port: "1 (live cvar)", match: true }
+      - { name: "deathtype", base: "DEATH_MONSTER_ZOMBIE_MELEE", port: "DeathTypes.MonsterZombieMelee", match: true }
+      - { name: "melee_anim_split", base: "0.33/0.66 -> melee1/2/3", port: "PRNG draw consumed, frame unused", match: false }
+      - { name: "skill_mod", base: "0.5+skill*0.09", port: "same SkillMod", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The 3-way melee anim choice (melee1/2/3) is rolled but never mapped to a frame — no visible melee variety (presentation)."
+    verification:
+      - { kind: code-read, ref: "zombie.qc:M_Zombie_Attack + Monster_Attack_Melee vs Zombie.Attack + MeleeAttack", result: pass }
+    confidence: high
+    notes: "Damage*skillmod via real Combat.Damage, correct deathtype, dostop=true freeze, cooldown=delay. PRNG draw kept for stream parity."
+
+  - id: monster-zombie.attack.block
+    name: "Defend block: raise armor + freeze when hurt vs healthy enemy"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/monster/zombie.qc:M_Zombie_Defend_Block"
+      - "common/monsters/monster/zombie.qc:M_Zombie_Defend_Block_End"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Zombie.cs:DefendBlock"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:QueueDelayedAttack"
+    constants:
+      - { name: "block_chance", base: "random()<0.3", port: "0.3", match: true }
+      - { name: "self_health_cond", base: "<75", port: "<75", match: true }
+      - { name: "enemy_health_cond", base: ">10", port: ">10", match: true }
+      - { name: "block_armor", base: "0.9", port: "0.9", match: true }
+      - { name: "block_freeze_time", base: "2.1", port: "2.1", match: true }
+      - { name: "block_end_delay", base: "2 (Monster_Delay)", port: "2 (windUp)", match: true }
+      - { name: "g_monsters_armor_blockpercent (restore)", base: "0.5", port: "0.6 fallback", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: missing
+      audio: partial
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Block armor-restore fallback is 0.6 vs Base g_monsters_armor_blockpercent default 0.5 (only diverges when the cvar is unset)."
+      - "DefendBlock plays monsters/zombie_melee.wav, but Base's block plays NO sound (and the zombie 'melee' cue is commented out in zombie.dpm_0.sounds)."
+      - "blockstart/blockend anim frames ('8 1 1' / '7 1 1') are never played (presentation)."
+    verification:
+      - { kind: code-read, ref: "zombie.qc:M_Zombie_Defend_Block(_End) vs Zombie.DefendBlock", result: pass }
+      - { kind: value-diff, ref: "monsters.cfg:127 g_monsters_armor_blockpercent=0.5 vs DefendBlock fallback 0.6", result: fail }
+    confidence: high
+    notes: "Logic + 0.9 armor + 2.1s freeze + 2s restore-delay are faithful. The added block sound and the 0.6 restore fallback are the defects."
+
+  - id: monster-zombie.attack.leap
+    name: "Leap attack: ballistic toss toward enemy when at range"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/monster/zombie.qc:M_Zombie_Attack (RANGED case)"
+      - "common/monsters/sv_monsters.qc:Monster_Attack_Leap / Monster_Attack_Leap_Check"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Zombie.cs:Attack"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:Leap"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:TraceToss"
+    constants:
+      - { name: "g_monster_zombie_attack_leap_speed", base: "500", port: "500 (live cvar)", match: true }
+      - { name: "leap_vertical_boost", base: "'0 0 200'", port: "(0,0,200)", match: true }
+      - { name: "g_monster_zombie_attack_leap_delay", base: "1.5", port: "1.5 (live cvar)", match: true }
+      - { name: "leap_guard", base: "grounded + !attacking + alive + tracetoss hits enemy", port: "same guards + TraceToss", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "anim_shoot '0 1 5' leap animation never played (presentation)."
+    verification:
+      - { kind: code-read, ref: "zombie.qc RANGED + Monster_Attack_Leap(_Check) vs Zombie.Attack + Leap", result: pass }
+    confidence: medium
+    notes: "Leap velocity, vertical boost, guards, and tracetoss-lands-on-enemy gate all faithful. TraceToss is a stepped approximation of QC tracetoss (medium confidence on arc fidelity)."
+
+  - id: monster-zombie.attack.leap_touch
+    name: "Leap contact: contact damage + knockback, then disarm to stop spam"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/monster/zombie.qc:M_Zombie_Attack_Leap_Touch"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Zombie.cs:LeapTouch"
+    constants:
+      - { name: "g_monster_zombie_attack_leap_damage", base: "60", port: "60 (live cvar)", match: true }
+      - { name: "g_monster_zombie_attack_leap_force", base: "55", port: "55 (live cvar)", match: true }
+      - { name: "deathtype", base: "DEATH_MONSTER_ZOMBIE_JUMP", port: "DeathTypes.MonsterZombieJump", match: true }
+      - { name: "force_dir", base: "normalize(vectoangles(moveto-origin))*force", port: "same", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "zombie.qc:M_Zombie_Attack_Leap_Touch vs Zombie.LeapTouch", result: pass }
+    confidence: high
+    notes: "damage*skillmod, correct deathtype, faithful face-moveto force vector, touch reset to Monster_Touch + state=0. World-hit (trace_dphitcontents) clear is handled by the OnGround state-clear in RunThink."
+
+  - id: monster-zombie.pain.mr_pain
+    name: "Pain reaction: brief pain window + pain anim + (added) hurt sound"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/monster/zombie.qc:mr_pain"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MarkPain"
+    constants:
+      - { name: "pain_finished_window", base: "time+0.34", port: "Now+0.34", match: true }
+      - { name: "pain_anim_split", base: "random()>0.5 -> pain1/pain2 (gated by spawn_time)", port: "Pain phase only", match: false }
+      - { name: "pain_sound", base: "NONE (pain commented out in .sounds)", port: "monsters/zombie_pain.wav", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: partial
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Plays monsters/zombie_pain.wav on every hit, but Base zombie pain is SILENT (pain cue commented out in zombie.dpm_0.sounds)."
+      - "Sound delivery diverges from Base: literal monsters/zombie_*.wav paths instead of the GlobalSound .sounds-file table (no random sample, no g_monsters_sounds gate, no msound_delay throttle)."
+      - "pain1/pain2 frame anims ('20 1 2' / '22 1 2') never played; pain is a logical phase only (presentation)."
+    verification:
+      - { kind: code-read, ref: "zombie.qc:mr_pain vs MonsterAI.MarkPain", result: pass }
+      - { kind: data-file, ref: "models/monsters/zombie.dpm_0.sounds (pain commented out)", result: fail }
+    confidence: high
+    notes: "0.34 pain window faithful. The generic MarkPain pain sound is shared across all monsters; it's wrong for the zombie specifically because the zombie has no pain cue."
+
+  - id: monster-zombie.death.mr_death
+    name: "Death: corpse + death anim + death sound + respawn machinery"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/monster/zombie.qc:mr_death"
+      - "common/monsters/sv_monsters.qc:Monster_Dead / Monster_Dead_Damage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MarkDead"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MonsterDeadDamage"
+    constants:
+      - { name: "death_armor_restore", base: "g_monsters_armor_blockpercent=0.5", port: "handled generically", match: true }
+      - { name: "death_anim_split", base: "random()>0.5 -> die1/die2", port: "Death phase only", match: false }
+      - { name: "death_sound", base: "death cue (defined in .sounds)", port: "monsters/zombie_death.wav", match: true }
+      - { name: "corpse_gib_threshold", base: "-50 (Monster_Dead_Damage)", port: "-50", match: true }
+      - { name: "live_gib_threshold", base: "-100", port: "-100", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "die1/die2 death anims ('9 1 0.5' / '12 1 0.5') never played; death is a logical phase only (presentation)."
+    verification:
+      - { kind: code-read, ref: "zombie.qc:mr_death + Monster_Dead(_Damage) vs MarkDead + MonsterDeadDamage", result: pass }
+    confidence: high
+    notes: "Death sound + corpse + loot + scoring + gib thresholds faithful. Undead corpse-respawn behavior covered by the respawn feature row."
+
+  - id: monster-zombie.respawn.undead
+    name: "Always-respawn at death point (undead): corpse rises unless gibbed"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/monster/zombie.qc:mr_setup (always-respawn + DEATHPOINT)"
+      - "common/monsters/sv_monsters.qc:Monster_Respawn_Check / Monster_Respawn / Monster_Dead_Think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:RespawnCheck"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:Respawn"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:DeadThink"
+    constants:
+      - { name: "always_respawn", base: "NORESPAWN cleared (zombies always respawn)", port: "AlwaysRespawn=true", match: true }
+      - { name: "respawn_at_deathpoint", base: "MONSTER_RESPAWN_DEATHPOINT", port: "RespawnAtDeathPoint=true", match: true }
+      - { name: "respawntime", base: "0.2", port: "0.2", match: true }
+      - { name: "corpse_lifetime_before_respawn", base: "Monster_Dead lifetime", port: "Now+5 (generic)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "zombie.qc:mr_setup + Monster_Respawn(_Check)/Dead_Think vs RespawnCheck/Respawn/DeadThink", result: pass }
+    confidence: medium
+    notes: "AlwaysRespawn bypasses g_monsters_respawn/NORESPAWN; respawns at death point after corpse lifetime + 0.2s. Gibbing (corpse health <=-50, or live <=-100) removes the body and prevents the rise. Not yet exercised end-to-end in a live match (no stock map places it)."
+
+  - id: monster-zombie.presentation.animation
+    name: "Zombie model animation (mr_anim frame groups)"
+    layer: [presentation]
+    base_refs:
+      - "common/monsters/monster/zombie.qc:mr_anim"
+    port_refs: []
+    constants:
+      - { name: "anim_spawn", base: "'30 1 3'", port: "none", match: false }
+      - { name: "anim_walk/run", base: "'27 1 1'", port: "none", match: false }
+      - { name: "anim_idle", base: "'19 1 1'", port: "none", match: false }
+      - { name: "anim_pain1/2", base: "'20 1 2' / '22 1 2'", port: "none", match: false }
+      - { name: "anim_melee1/2/3", base: "'4 1 5'", port: "none", match: false }
+      - { name: "anim_shoot", base: "'0 1 5'", port: "none", match: false }
+      - { name: "anim_die1/2", base: "'9 1 0.5' / '12 1 0.5'", port: "none", match: false }
+      - { name: "anim_blockstart/end", base: "'8 1 1' / '7 1 1'", port: "none", match: false }
+    status:
+      logic: na
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "None of the 14 mr_anim frame groups are mapped to Entity.Frame; the port keeps a 6-value logical MonsterAnim enum used only for server timing and never assigns Entity.Frame. Entity.Frame is NEVER written for any monster (verified: the only server-side Frame writes are damage-reset/buttons/minelayer/tuba), so a monster always networks Frame=0. The client view (ClientEntityView) DOES frame-drive Player/Generic/Gib/monster nodes from the networked NetEntityState.Frame, but for monsters that wire value is a constant 0 — the model is pinned to its static frame-0 pose. CSQC monster frame selection is an explicit named no-op in RunThink (lines 982-983). No visible spawn/walk/run/melee(x3)/leap/block/pain(x2)/death(x2) animation."
+    verification:
+      - { kind: code-read, ref: "grep: no `.Frame =` in src/**/Monsters/**; RunThink:982-983 no-op comment; ClientEntityView:21 frame-drive doc", result: fail }
+    confidence: high
+    notes: "Whole monster family shares this reduction; the spec's per-frame anim table is fully unmapped. The networked-Frame plumbing exists (players play their frame) but monsters never compute one, so monsters always send 0. Server timing (attack/pain/death windows) is faithful via the enum, but presentation is dead."

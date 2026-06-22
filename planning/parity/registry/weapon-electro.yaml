@@ -1,0 +1,377 @@
+unit: weapon-electro
+category: weapon
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 12
+  worst_gaps:
+    - "In-flight projectiles are INVISIBLE: no projectile model, trail, or electro_fly sound loop is wired (no client/ProjectileCatalog exists in this codebase). The first pass claimed a faithful 'ProjectileCatalog' that does not exist."
+    - "Shoot-down-into-combo is DEAD: the orb's ProjectileDamage callback is never invoked by the damage pipeline (only BreakablehookMutator calls ProjectileDamage), so an orb can never be shot down into a combo on the live path."
+    - "All electro detonations (bolt/orb/combo) are SILENT — WeaponSplash.ImpactSound exists and is called by other weapons (Mortar) but Electro never calls it."
+    - "combo_speed seeded 1000 vs Base 2000 (Electro.ComboSpeed field is never set from the cvar in Configure) — combo chain ripple twice too slow."
+    - "Orb bounce uses the engine's hardcoded bouncefactor 0.5 / bouncestop 60/800; orb's 0.3/0.05 (set on the entity) are never read by MoveTypePhysics."
+features:
+  - id: electro.primary.fire_gate
+    name: "Primary bolt fire gate (refire + refire2 interlock)"
+    layer: [authority, shared]
+    base_refs:
+      - "common/weapons/weapon/electro.qc:wr_think (fire & 1)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Electro.cs:WrThink"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireDriver.cs:Frame"
+    constants:
+      - { name: "primary_refire", base: "0.6", port: "0.6", match: true }
+      - { name: "secondary_refire2", base: "0.2", port: "0.2", match: true }
+      - { name: "primary_animtime", base: "0.3", port: "0.3", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Electro.WrThink mirrors time>=electro_secondarytime+refire2*rate && PrepareAttack(refire); WeaponFireDriver.Frame calls WrThink(Primary) every tick (GameWorld.WeaponThink->WeaponFireDriver.Frame, confirmed live)", result: pass }
+    confidence: high
+    notes: "electro_secondarytime on EntityWeaponState; rate factor via WeaponRateFactor(). Liveness re-confirmed: GameWorld.WeaponThink (GameWorld.cs:1147,1182) drives WeaponFireDriver.Frame which calls WrThink."
+
+  - id: electro.primary.bolt_projectile
+    name: "Primary bolt projectile (MOVETYPE_FLY, velocity, lifetime)"
+    layer: [authority, shared, presentation]
+    base_refs:
+      - "common/weapons/weapon/electro.qc:W_Electro_Attack_Bolt"
+      - "common/weapons/weapon/electro.qc:W_Electro_Bolt_Think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Electro.cs:AttackBolt"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Electro.cs:BoltThink"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:ProjectileVelocity"
+    constants:
+      - { name: "primary_speed", base: "2500", port: "2500", match: true }
+      - { name: "primary_lifetime", base: "5", port: "5", match: true }
+      - { name: "primary_spread", base: "0", port: "0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: partial
+      presentation: missing
+      audio: partial
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "BoltThink reschedules every 0.05s; Base with midaircombo_radius==0 (default) sets nextthink=ltime (no per-tick think). Functionally equivalent (explodes on touch or at lifetime) but the bolt 'thinks' far more often than Base. Also note Base interval cvar is midaircombo_interval (0.1), not 0.05."
+      - "PRESENTATION MISSING: the spawned electro_bolt gets NO model, NO trail (TR_NEXUIZPLASMA / PROJECTILE_ELECTRO_BEAM in Base CSQCProjectile), so the bolt is invisible in flight. There is no client/ProjectileCatalog in this codebase (the first-pass claim was fabricated); Projectiles.MakeTrigger only sets collision."
+      - "AUDIO partial: the FIRE sound (weapons/electro_fire.wav) IS played at AttackBolt, but there is no in-flight loop (Base has none for the bolt either, so this is the only audio cue and it is present)."
+    verification:
+      - { kind: code, ref: "AttackBolt: MoveType.Fly + ProjectileVelocity==W_SetupProjVelocity_PRI; touch=ExplodeBolt, think=BoltThink; Api.Sound.Play(electro_fire) + ELECTRO_MUZZLEFLASH emitted. NO setmodel / traileffect anywhere; no client render project exists (src/ has Common/Engine/Server/Net only).", result: fail }
+    confidence: high
+    notes: "Fire sound + muzzleflash are real and live. The in-flight visual is entirely absent — corrected from the first pass's 'presentation: faithful via ProjectileCatalog' (that file does not exist)."
+
+  - id: electro.primary.explode_splash
+    name: "Bolt explosion splash damage"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/electro.qc:W_Electro_Explode"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Electro.cs:ExplodeBolt"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponSplash.cs:RadiusDamage"
+    constants:
+      - { name: "primary_damage", base: "40", port: "40", match: true }
+      - { name: "primary_edgedamage", base: "20", port: "20", match: true }
+      - { name: "primary_radius", base: "100", port: "100", match: true }
+      - { name: "primary_force", base: "200", port: "200", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: missing
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No SND_ELECTRO_IMPACT played on bolt detonation. ExplodeBolt emits the ELECTRO_IMPACT particle effect but never calls WeaponSplash.ImpactSound (which exists and is used by Mortar). The blast is silent."
+    verification:
+      - { kind: code, ref: "WeaponSplash.RadiusDamage is a full RadiusDamageForSource port (LOS sampling, force falloff, warpzone-aware); ExplodeBolt calls it with primary balance + emits ELECTRO_IMPACT particles only. WeaponSplash.ImpactSound defined but never called from Electro.cs.", result: fail }
+    confidence: high
+    notes: "Particle blast fx (ELECTRO_IMPACT registered in EffectsList.cs:71) is faithful and live; only the impact sound is missing."
+
+  - id: electro.combo.trigger_chain
+    name: "Combo: bolt blast triggers nearby orbs into a chained explosion"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/electro.qc:W_Electro_TriggerCombo"
+      - "common/weapons/weapon/electro.qc:W_Electro_ExplodeCombo"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Electro.cs:TriggerCombo"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Electro.cs:ExplodeCombo"
+    constants:
+      - { name: "primary_comboradius", base: "300", port: "300", match: true }
+      - { name: "combo_comboradius", base: "300", port: "300", match: true }
+      - { name: "combo_damage", base: "50", port: "50", match: true }
+      - { name: "combo_edgedamage", base: "25", port: "25", match: true }
+      - { name: "combo_radius", base: "150", port: "150", match: true }
+      - { name: "combo_force", base: "120", port: "120", match: true }
+      - { name: "combo_speed", base: "2000", port: "1000 (Electro.ComboSpeed field default; Configure() never sets it from g_balance_electro_combo_speed)", match: false }
+      - { name: "combo_comboradius_thruwall", base: "200", port: "none", match: false }
+      - { name: "combo_duration", base: "0", port: "none (explode-over-time path absent; OK while default 0)", match: true }
+    status:
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: faithful
+      audio: missing
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "ComboSpeed field default is 1000, not Base 2000. Configure() (Electro.cs:91-129) never assigns ComboSpeed, and there is no g_balance_electro_combo_speed read anywhere — so the chain ripple delay (distance/speed) is permanently twice as slow as Base."
+      - "No combo_comboradius_thruwall (200) LOS test: TriggerCombo chains to every orb within radius regardless of walls; Base aborts the chain to orbs beyond thruwall distance that fail WarpZone_TraceLine."
+      - "No SND_ELECTRO_IMPACT_COMBO on the combo blast (silent) — ExplodeCombo emits ELECTRO_COMBO particles only."
+      - "IS_INDEPENDENT_PLAYER owner-gating in W_Electro_TriggerCombo is not ported (default modes have no independent players, so dead-OFF-equivalent)."
+    verification:
+      - { kind: code, ref: "TriggerCombo converts orbs to electro_orb_chain, schedules ExplodeCombo with (origin-org).Length()/ComboSpeed delay, recursively re-triggers within Combo.ComboRadius. ComboSpeed=1000 (Electro.cs:369) and Configure never sets it. No thruwall trace, no ImpactSound.", result: fail }
+    confidence: high
+    notes: "Recursive chain structure faithful and live (driven from ExplodeBolt->TriggerCombo). ELECTRO_COMBO is a pointparticles effect in Base (no lightning arc), matched by EffectEmitter.Emit."
+
+  - id: electro.primary.midaircombo
+    name: "Primary bolt midair-combo (trigger orbs in flight)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/electro.qc:W_Electro_Bolt_Think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Electro.cs:BoltThink"
+    constants:
+      - { name: "primary_midaircombo_radius", base: "0 (OFF)", port: "0 (OFF)", match: true }
+      - { name: "primary_midaircombo_explode", base: "1", port: "true", match: true }
+      - { name: "primary_midaircombo_interval", base: "0.1", port: "0.05 (hardcoded reschedule)", match: false }
+      - { name: "primary_midaircombo_own", base: "1", port: "any non-self orb (no gating)", match: false }
+      - { name: "primary_midaircombo_teammate", base: "1", port: "no gating", match: false }
+      - { name: "primary_midaircombo_enemy", base: "1", port: "no gating", match: false }
+      - { name: "primary_midaircombo_speed", base: "2000", port: "uses Combo.Damage path immediately (no separate first-orb delay)", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: faithful
+      audio: missing
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Default-OFF (midaircombo_radius 0). The code path in BoltThink is gated behind Primary.MidairComboRadius>0, which is never true with the shipped balance, so this is DEAD on the live match path (downgraded from the first pass's 'partial')."
+      - "When force-enabled: no own/teammate/enemy gating (triggers any non-self orb), no midaircombo_speed first-orb delay, reschedule interval hardcoded 0.05 not midaircombo_interval (0.1), and combo detonation is silent (no ImpactSound)."
+      - "The midair branch in BoltThink also RadiusDamages the orb immediately with Combo balance rather than converting it to electro_orb_chain + scheduling W_Electro_ExplodeCombo (delayed chain) as Base does."
+    verification:
+      - { kind: code, ref: "BoltThink guards on Primary.MidairComboRadius>0 (Bal default 0, bal-wep-xonotic.cfg:232); the branch never runs with stock balance. When on, no SAME_TEAM/own gating and immediate RadiusDamage per orb.", result: fail }
+    confidence: high
+    notes: "Liveness DEAD: the entire feature is gated off by the default-0 cvar in the shipped Xonotic balance; the team-gating + delayed-chain sub-features are also unimplemented."
+
+  - id: electro.secondary.orb_stream
+    name: "Secondary orb stream (count orbs, one per animtime while held)"
+    layer: [authority, shared]
+    base_refs:
+      - "common/weapons/weapon/electro.qc:wr_think (fire & 2)"
+      - "common/weapons/weapon/electro.qc:W_Electro_CheckAttack"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Electro.cs:WrThink"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Electro.cs:CheckAttack"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Electro.cs:ScheduleCheckAttack"
+    constants:
+      - { name: "secondary_count", base: "3", port: "3", match: true }
+      - { name: "secondary_refire", base: "1.2", port: "1.2", match: true }
+      - { name: "secondary_animtime", base: "0.2", port: "0.2", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "WrThink(Secondary) fires first orb, sets ElectroCount=count, ElectroSecondaryTime=time, ScheduleCheckAttack(animtime); CheckAttack streams while ElectroCount>1 && ButtonAttack2 held, decrementing. WeaponFireDriver.Frame calls WrThink(Secondary) only when ATCK2 held (driver:156-157).", result: pass }
+    confidence: high
+    notes: "ElectroCount/ElectroSecondaryTime on EntityWeaponState; held-button state propagated by WeaponFireDriver before the scheduled think."
+
+  - id: electro.secondary.orb_projectile
+    name: "Secondary orb projectile (MOVETYPE_BOUNCE, gravity, shootable HP)"
+    layer: [authority, shared, presentation]
+    base_refs:
+      - "common/weapons/weapon/electro.qc:W_Electro_Attack_Orb"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Electro.cs:AttackOrb"
+      - "src/XonoticGodot.Engine/Simulation/MoveTypePhysics.cs:PhysicsToss (Bounce case)"
+    constants:
+      - { name: "secondary_speed", base: "1000", port: "1000", match: true }
+      - { name: "secondary_speed_up", base: "200", port: "200", match: true }
+      - { name: "secondary_speed_z", base: "0", port: "0 (not passed)", match: true }
+      - { name: "secondary_lifetime", base: "4", port: "4", match: true }
+      - { name: "secondary_health", base: "5", port: "5", match: true }
+      - { name: "secondary_bouncefactor", base: "0.3", port: "0.5 (engine hardcoded; orb's 0.3 set on entity but ignored)", match: false }
+      - { name: "secondary_bouncestop", base: "0.05", port: "60/800=0.075 (engine hardcoded; orb's 0.05 ignored)", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: missing
+      audio: missing
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Orb bounce values dead: MoveTypePhysics.cs:161-182 Bounce case hardcodes bf=0.5 and bouncestop=60/800; it never reads ent.BounceFactor/BounceStop. AttackOrb sets orb.BounceFactor=0.3/orb.BounceStop=0.05 but they are inert. Orbs retain more speed per bounce and rest later than Base. (Cross-cutting engine gap, also affects Mortar.)"
+      - "PRESENTATION MISSING: the spawned electro_orb gets no model, no TR_NEXUIZPLASMA trail, no electro_fly looping sound, and (in Base) the CSQC electro_orb_draw scale-pulse + Electro_Orb networking — none of this is ported. There is no client render project / ProjectileCatalog (first-pass claim of 'ProjectileCatalog electro_orb (ebomb...electro_fly loop)' is fabricated). Orb is invisible in flight."
+      - "AUDIO MISSING in-flight: the electro_fly loop is not played. (The fire and bounce cues exist elsewhere.)"
+    verification:
+      - { kind: code, ref: "AttackOrb sets MoveType.Bounce + Gravity 1 + BounceFactor/Stop + Health 5 + ProjectileVelocity==W_SetupProjVelocity_UP_SEC. MoveTypePhysics Bounce hardcodes bf/bouncestop, never reads ent fields. No setmodel/traileffect/loop sound; no client render path in src/.", result: fail }
+    confidence: high
+    notes: "Physics motion (bounce + gravity) is live and structurally faithful; the bounce-VALUES gap is engine-wide; the in-flight presentation/sound is entirely absent (corrected from the first pass)."
+
+  - id: electro.secondary.orb_touch_explode
+    name: "Orb touch: explode on player vs bounce (+ bounce sound)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/electro.qc:W_Electro_Orb_Touch"
+      - "common/weapons/weapon/electro.qc:W_Electro_Explode (orb path)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Electro.cs:OrbTouch"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Electro.cs:ExplodeOrb"
+    constants:
+      - { name: "secondary_touchexplode", base: "1", port: "true", match: true }
+      - { name: "secondary_damage", base: "30", port: "30", match: true }
+      - { name: "secondary_edgedamage", base: "15", port: "15", match: true }
+      - { name: "secondary_radius", base: "150", port: "150", match: true }
+      - { name: "secondary_force", base: "50", port: "50", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: partial
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Bounce sound (weapons/electro_bounce.wav) IS played in OrbTouch, but the orb DETONATION (ExplodeOrb) plays no SND_ELECTRO_IMPACT — the burst is silent (only ELECTRO_BALLEXPLODE particles)."
+      - "OrbTouch's bounce branch lacks Base's guard `toucher.owner != this.owner && toucher.classname != this.classname` (don't bounce-sound off / stick to the firer's own projectiles) and does not set HITTYPE_BOUNCE on the deathtype the way W_Electro_Orb_Touch does. Sticky-orb branch (stick, default 0) is intentionally omitted."
+    verification:
+      - { kind: code, ref: "OrbTouch: explode on DAMAGE_AIM/client with touchexplode, else play electro_bounce + reface; ExplodeOrb does RadiusDamage with secondary balance + ELECTRO_BALLEXPLODE particles only (no ImpactSound). Missing the owner/classname bounce guard.", result: partial }
+    confidence: high
+    notes: "Touch/bounce decision and bounce sound are live; detonation sound missing; minor bounce-guard logic gap. Logic downgraded to partial for the missing self-projectile bounce guard."
+
+  - id: electro.secondary.orb_shotdown_combo
+    name: "Shoot-down orb converts to a combo blast"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/electro.qc:W_Electro_Orb_Damage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Electro.cs:AttackOrb (ProjectileDamage callback)"
+    constants:
+      - { name: "secondary_health", base: "5", port: "5", match: true }
+      - { name: "secondary_damageforcescale", base: "4", port: "4", match: true }
+      - { name: "combo_damage", base: "50", port: "50", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: missing
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "DEAD: the orb's ProjectileDamage callback (set in AttackOrb) is NEVER invoked by the damage pipeline. DamageSystem.EventDamage (DamageSystem.cs:287-304) dispatches non-player damageables to GtEventDamage, not to ProjectileDamage; the only ProjectileDamage?.Invoke caller in the whole tree is BreakablehookMutator.cs:79. So an electro orb cannot be shot down into a combo on the live match path."
+      - "Even if invoked, the callback explodes immediately as a combo and skips Base's HP-subtract / g_projectiles_damage (W_CheckProjectileDamage) / is_combo branch (delayed chain vs immediate secondary). Combo detonation sound also missing."
+    verification:
+      - { kind: code, ref: "grep across src/: ProjectileDamage?.Invoke appears only in BreakablehookMutator; DamageSystem.cs has no ProjectileDamage reference. The orb (takedamage=Yes, no GtEventDamage) would fall through EventDamage to the player path, never firing its ProjectileDamage. QC W_Electro_Orb_Damage takes HP then branches combo/non-combo.", result: fail }
+    confidence: high
+    notes: "Downgraded from first-pass 'partial/live' to logic:partial/liveness:dead — the shoot-down combo is not reachable. This is a cross-cutting gap (every weapon that sets ProjectileDamage for shoot-down — Devastator/Mortar/Hagar/Minelayer/Arc — is affected); track at the weapon level here for Electro."
+
+  - id: electro.ammo_reload
+    name: "Ammo checks + reload (cells, combo_safeammocheck)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/electro.qc:wr_checkammo1"
+      - "common/weapons/weapon/electro.qc:wr_checkammo2"
+      - "common/weapons/weapon/electro.qc:wr_reload"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Electro.cs:CheckAmmoPrimary"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Electro.cs:CheckAmmoSecondary"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireGate.cs:WeaponAmmo.Check"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireGate.cs:WrReload"
+    constants:
+      - { name: "primary_ammo", base: "4", port: "4", match: true }
+      - { name: "secondary_ammo", base: "2", port: "2", match: true }
+      - { name: "combo_safeammocheck", base: "1", port: "not implemented", match: false }
+      - { name: "reload_ammo", base: "0 (reload off by default)", port: "generic WrReload path", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "CheckAmmoSecondary requires only Secondary.Ammo, not Base's combo_safeammocheck term secondary_ammo+primary_ammo (default safeammocheck 1). So the weapon reports 'has secondary ammo' when it can't afford the follow-up combo bolt — it won't auto-switch away when it should."
+      - "Neither CheckAmmoPrimary nor CheckAmmoSecondary includes the clip-load OR-term (weapon_load[m_id] >= ammo) Base's wr_checkammo1/2 add for the reloadable weapon."
+      - "No Electro-specific wr_reload override (Base's is just W_Reload(min(pri,sec) ammo, SND_RELOAD)); relies on the generic WeaponFireGate.WrReload, which is acceptable since reload_ammo defaults 0."
+    verification:
+      - { kind: code, ref: "WeaponAmmo.Check (WeaponFireGate.cs:492) routes Electro to CheckAmmoPrimary/Secondary; consumed by CheckAmmoWithAutoSwitch (WeaponFireGate.cs:134-159) on the dry-fire/auto-switch path — so these checks ARE live. CheckAmmoSecondary compares GetResource(Cells)>=Secondary.Ammo only; no safeammocheck, no clip_load term.", result: fail }
+    confidence: high
+    notes: "Liveness UPGRADED from first-pass 'unknown' to 'live': WeaponAmmo.Check has an explicit Electro case and is consumed by the auto-switch gate. The safeammocheck + clip-load logic gaps stand."
+
+  - id: electro.deathmessages
+    name: "Kill / suicide obituary lines (bolt/orb/combo variants)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/electro.qc:wr_killmessage"
+      - "common/weapons/weapon/electro.qc:wr_suicidemessage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "MURDER_COMBO is keyed on the HITTYPE_BOUNCE deathtype bit. Since the only live combo path is ExplodeBolt->TriggerCombo->ExplodeCombo, verify the combo blast actually tags HITTYPE_BOUNCE through RadiusDamage's int deathType (the port passes RegistryId, which may NOT carry the HITTYPE_BOUNCE bit Base sets). If the bit is lost, combo kills would read as MURDER_BOLT. Flagged for the damage-tag trace."
+    verification:
+      - { kind: code, ref: "DeathMessages.cs SECONDARY->MURDER_ORBS, BOUNCE->MURDER_COMBO, else MURDER_BOLT; SECONDARY->SUICIDE_ORBS else SUICIDE_BOLT — matches electro.qc:695/703-715. Bit-propagation of HITTYPE_BOUNCE through the port's int deathType not fully traced.", result: pass }
+    confidence: medium
+    notes: "Mapping table faithful; lowered to medium confidence pending confirmation that the combo path sets HITTYPE_BOUNCE on the port deathtype (the int deathType=RegistryId may not encode it)."
+
+  - id: electro.electrobitch_announce
+    name: "ELECTROBITCH airshot announcement (direct bolt kill on flying enemy)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/electro.qc:W_Electro_Explode"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: missing
+      audio: missing
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Killing a flying enemy with a direct electro bolt never plays ANNCE_ACHIEVEMENT_ELECTROBITCH. W_Electro_Explode's directhitentity.takedamage==DAMAGE_AIM && IS_PLAYER && DIFF_TEAM && !IS_DEAD && IsFlying check (electro.qc:197-200) is not ported. ExplodeBolt drops directHit entirely (calls TriggerCombo+RadiusDamage with no airshot test)."
+    verification:
+      - { kind: code, ref: "ExplodeBolt(self, directHit) ignores directHit; no IsFlying/Send_Notification analog anywhere in Electro.cs.", result: fail }
+    confidence: high
+    notes: "Announcer 'electrobitch' may be registered globally but Electro never fires it. Cross-references the standing audio-parity MEMORY note on electro."

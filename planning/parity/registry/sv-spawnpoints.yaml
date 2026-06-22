@@ -1,0 +1,397 @@
+unit: sv-spawnpoints
+category: server
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 14
+  worst_gaps:
+    - "target_spawnpoint forced-spawn redirection is dead: target_spawnpoint_use sets Entity.SpawnPointTarg (EntityMapObjectStateExtra.cs:61) but SelectSpawnPoint never reads it (Base returns this.spawnpoint_targ before any scoring), so a map scripting a player's next spawn location has no effect."
+    - "No move-out-of-solid relocation (g_spawnpoints_auto_move_out_of_solid, default 1): Base nudges an in-solid spawnpoint out at link time; the port only traces startsolid at selection time and drops the spot, so a map with all spots embedded can have every spot filtered out (then falls back to placing the player in solid)."
+    - "Spawn sound SND_SPAWN (cl_spawn_event_sound, half of g_spawn_alloweffects 3) is never played: the port emits the EFFECT_SPAWN particle burst on spawn but no audio cue."
+    - "The spawned player model gets no EF_TELEPORT_BIT | EF_RESTARTANIM_BIT: Base sets the teleport sparkle + anim-restart effect bits on respawn (server/client.qc:630); the port relies on an origin particle burst instead."
+    - "Emergency fallback diverges: Base re-filters with targetcheck=false when the first filter empties (fixes improperly-repacked maps); the port skips that and jumps straight to scoring every spot at prio 0 (places the player in solid via the prio-0 path)."
+features:
+  - id: sv-spawnpoints.select.select_spawn_point
+    name: "SelectSpawnPoint: gather, filter, weighted 50/50 pick"
+    layer: [authority]
+    base_refs:
+      - "server/spawnpoints.qc:SelectSpawnPoint"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:SelectSpawnPoint"
+      - "src/XonoticGodot.Server/ClientManager.cs:Spawn"
+    constants:
+      - { name: "g_spawn_furthest", base: "0.5", port: "0.5", match: true }
+      - { name: "near_pick (lower,upper,exponent)", base: "1,1,1", port: "1,1,1", match: true }
+      - { name: "far_pick (lower,upper,exponent)", base: "1,5000,5", port: "1,5000,5", match: true }
+      - { name: "mindist (Spawn_FilterOutBadSpots)", base: "100 qu", port: "100 qu (SpawnMinDist)", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Emergency fallback differs: Base, when Spawn_FilterOutBadSpots returns empty, RE-FILTERS the spot list once with targetcheck=false (server/spawnpoints.qc:421-435) before giving up. The port skips that re-filter and instead seeds every spot at (prio 0, weight 0), so the assault/active gate is never relaxed and the player may be placed in solid via the prio-0 fallback."
+      - "anypoint / g_spawn_useallspawns path: Base skips Spawn_FilterOutBadSpots entirely and does Spawn_WeightedPoint(1,1,1) over ALL spots (spawnpoints.qc:413-416). The port still runs ScoreSpot (startsolid veto + restriction + active filters) on the anyPoint path, so a few spots a Base anypoint pick would keep can be dropped."
+      - "testplayerstart debug edict (spawnpoints.qc:363-370) — Base returns a 'testplayerstart' classname spot before any other logic; not ported (debug-only)."
+    verification:
+      - { kind: code, ref: "SpawnSystem.cs:324-367 vs server/spawnpoints.qc:358-460; caller ClientManager.cs:515/522 Spawn", result: pass }
+    confidence: high
+    notes: "Live via ClientManager.Spawn (every join/respawn, targetCheck=true), BotController.cs:166, and MatchController.cs:88. The 50/50 furthest split, the team-spawn ladder, and the survivor-prio>=0 filter all match. The two emergency/anypoint branches and the testplayerstart edict are the logic gaps (all low-severity on stock maps). Runtime distribution shape unverified."
+
+  - id: sv-spawnpoints.select.spawn_score
+    name: "Spawn_Score: nearest-player distance scoring + good-distance prio"
+    layer: [authority]
+    base_refs:
+      - "server/spawnpoints.qc:Spawn_Score"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:ScoreSpot"
+    constants:
+      - { name: "SPAWN_PRIO_GOOD_DISTANCE", base: "10", port: "10 (PrioGoodDistance)", match: true }
+      - { name: "mindist threshold", base: "100", port: "100 (SpawnMinDist)", match: true }
+      - { name: "shortest seed", base: "vlen(world.maxs - world.mins) (world diagonal)", port: "1_000_000 (fixed)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "shortest is seeded with a fixed 1e6 instead of the world diagonal; benign because the prio threshold (>100) and the weight upper-clamp (5000) both swamp it, so the pick is statistically identical."
+    verification:
+      - { kind: code, ref: "SpawnSystem.cs:375-439 vs server/spawnpoints.qc:239-301", result: pass }
+    confidence: high
+    notes: "Distance to nearest live non-dead OTHER player (excludes self/dead/observers, matching QC IS_PLAYER && !IS_DEAD && it!=this); prio = 10 when that exceeds 100. Fires the Spawn_Score mutator hook to bias prio/weight (read back from the args). The race_spawns target requirement and the assault spawn_evalfunc target chain (spawnpoints.qc:246-296) are NOT ported on this path — see sv-spawnpoints.select.spawn_evalfunc."
+
+  - id: sv-spawnpoints.select.weighted_point
+    name: "Spawn_WeightedPoint / RandomSelection reservoir pick"
+    layer: [authority]
+    base_refs:
+      - "server/spawnpoints.qc:Spawn_WeightedPoint"
+      - "lib/random.qc:RandomSelection_AddEnt"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:WeightedPick"
+    constants:
+      - { name: "weight", base: "bound(lower,score.y,upper) ** exponent * spot.cnt", port: "pow(bound(lower,weight,upper), exponent) (cnt NOT multiplied)", match: false }
+      - { name: "priority", base: "(score.y >= lower)*0.5 + score.x", port: "(weight >= lower ? 0.5 : 0) + prio", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "spot.cnt is not multiplied into the weight: a mapper distributing several spawnpoints in a small area with cnt>1 (to weight that cluster more) gets uniform weighting in the port. Default cnt is 1 so stock maps are unaffected."
+    verification:
+      - { kind: code, ref: "SpawnSystem.cs:448-477 vs server/spawnpoints.qc:336-347 + lib/random.qc:RandomSelection_AddEnt", result: pass }
+    confidence: high
+    notes: "Reservoir: strictly-higher priority resets; equal priority accumulates weight and keeps with prob w/total (NextDouble()*total <= w). Faithful to the RandomSelection reservoir except the missing cnt multiplier."
+
+  - id: sv-spawnpoints.select.teamcheck_ladder
+    name: "teamcheck branch ladder + have_team_spawns globals"
+    layer: [authority]
+    base_refs:
+      - "server/spawnpoints.qc:SelectSpawnPoint (teamcheck ladder)"
+      - "server/spawnpoints.qc:relocate_spawnpoint (have_team_spawns detection)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:ComputeTeamCheck"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:DetectTeamSpawns"
+      - "src/XonoticGodot.Server/ClientManager.cs (RequestTeamSpawns)"
+    constants:
+      - { name: "have_team_spawns tri-state", base: "0 none / -1 requested-none / 1 found", port: "same (HaveTeamSpawns)", match: true }
+      - { name: "team colors NUM_TEAM_1..4", base: "4/5/6/7 (red/blue/yellow/pink)", port: "Teams.Red/Blue/Yellow/Pink", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "DetectTeamSpawns recomputes the team-spawn globals from the live spots on each SelectSpawnPoint call rather than once at link time (Base relocate_spawnpoint); idempotent and O(spots), and it avoids a stale forteams mask across map/gametype changes. Same result. ComputeTeamCheck also auto-derives the team request from a team player when the host never called RequestTeamSpawns explicitly (a tolerant fallback Base doesn't need)."
+    gaps: []
+    verification:
+      - { kind: code, ref: "SpawnSystem.cs:201-301 vs server/spawnpoints.qc:159-165,375-396", result: pass }
+    confidence: high
+    notes: "The full QC branch ladder (player team has spawns ⇒ MUST be team; else noteam if present; else any; the have_team_spawns==0 && BIT(0) noteam-MUST branch) is mirrored exactly. GameRules_spawning_teams stand-in is SpawnSystem.RequestTeamSpawns, fed GameType.RequestsTeamSpawns when a mode activates."
+
+  - id: sv-spawnpoints.select.spot_filters
+    name: "Spot filters: wrong-team / inactive / restriction"
+    layer: [authority]
+    base_refs:
+      - "server/spawnpoints.qc:Spawn_Score (filters)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:ScoreSpot (filters)"
+      - "src/XonoticGodot.Common/Gameplay/Player/EntitySpawnPointState.cs"
+    constants:
+      - { name: "restriction 1 / 2", base: "1=bots-only (real clients rejected), 2=real-clients-only (bots rejected)", port: "SpawnRestriction 1/2 (same)", match: true }
+      - { name: "active gate", base: "active != ACTIVE_ACTIVE && targetcheck ⇒ reject", port: "SpawnActive != ActiveActive && targetCheck ⇒ reject", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "SpawnSystem.cs:382-393 + EntitySpawnPointState.cs vs server/spawnpoints.qc:242-262", result: pass }
+    confidence: high
+    notes: "ClientManager.Spawn passes targetCheck=true so the ACTIVE_ACTIVE gate is live (inert on stock maps where every spot is active; needed once Onslaught control-point deactivation flips spot.active via spawnpoint_setactive). restriction defaults 0 (anyone). IS_REAL_CLIENT mapped to !forPlayer.IsBot."
+
+  - id: sv-spawnpoints.select.spawn_evalfunc
+    name: "race/assault spawn_evalfunc target chain + race_spawns requirement"
+    layer: [authority]
+    base_refs:
+      - "server/spawnpoints.qc:Spawn_Score (race_spawns + findchain spawn_evalfunc)"
+      - "server/race.qc:trigger_race_checkpoint_spawn_evalfunc"
+    port_refs: []
+    constants:
+      - { name: "SPAWN_PRIO_RACE_PREVIOUS_SPAWN", base: "50", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Spawn_Score's race_spawns gate (a race spot MUST have a target, else -1) and the assault/race spawn_evalfunc target chain (findchain(targetname, spot.target) → targ.spawn_evalfunc rewrites/vetoes the score; no target found and not CTS ⇒ -1) are not ported. The port flags this cross-boundary (race/assault own the objective graph) but no port symbol implements it on the spawn path, so race-checkpoint spawning and assault spawn redirection do not bias/veto spots."
+    verification:
+      - { kind: code, ref: "ScoreSpot has an inline NOTE deferring the target chain; grep spawn_evalfunc in src = none", result: fail }
+    confidence: high
+    notes: "ADDED by adversarial verify: the draft folded this into spawn_score's notes but it is a distinct, fully-missing Base feature with its own constant (SPAWN_PRIO_RACE_PREVIOUS_SPAWN=50). Severity depends on race/assault parity, which those units own; on plain DM targetCheck-gated, so inert."
+
+  - id: sv-spawnpoints.select.spawnpoint_targ
+    name: "target_spawnpoint forced-spawn redirection"
+    layer: [authority]
+    base_refs:
+      - "server/spawnpoints.qc:SelectSpawnPoint (this.spawnpoint_targ)"
+      - "common/mapobjects/target/spawnpoint.qh"
+      - "server/client.qc:735 (PutPlayerInServer: spawnpoint_targ = NULL)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/TargetUtilities.cs:238 (SpawnPointUse sets SpawnPointTarg)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/EntityMapObjectStateExtra.cs:61 (SpawnPointTarg field)"
+    constants: []
+    status:
+      logic: stub
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "target_spawnpoint forced-spawn redirection is dead: target_spawnpoint_use sets Entity.SpawnPointTarg but SelectSpawnPoint never reads it (and PutPlayerInServer never clears it), so a map scripting a player's next spawn location has no effect."
+    verification:
+      - { kind: code, ref: "SpawnPointTarg written at TargetUtilities.cs:238; field at EntityMapObjectStateExtra.cs:61; read NOWHERE in SpawnSystem.cs (grep)", result: fail }
+    confidence: high
+    notes: "CORRECTED port_ref: the SpawnPointTarg field lives in EntityMapObjectStateExtra.cs:61, NOT EntitySpawnPointState.cs (the draft's claim). The setter (target_spawnpoint_use) is live; the reader is missing. Base returns this.spawnpoint_targ before any scoring (spawnpoints.qc:372) and clears it in PutPlayerInServer at client.qc:735 (the :399 clear is commented out). Severity depends on whether any shipped map uses target_spawnpoint."
+
+  - id: sv-spawnpoints.relocate.move_out_of_solid
+    name: "relocate_spawnpoint move-out-of-solid"
+    layer: [authority]
+    base_refs:
+      - "server/spawnpoints.qc:relocate_spawnpoint"
+    port_refs: []
+    constants:
+      - { name: "g_spawnpoints_auto_move_out_of_solid", base: "1 (on)", port: "none", match: false }
+    status:
+      logic: partial
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No move-out-of-solid relocation (g_spawnpoints_auto_move_out_of_solid, default 1): Base nudges an in-solid spawnpoint out at link time; the port only traces startsolid at selection time and drops the spot, so a map with all spots embedded can have every spot filtered out (then falls back to placing the player in solid)."
+    verification:
+      - { kind: code, ref: "grep MoveOutOfSolid in src: only NadeTranslocateBoom; ScoreSpot drops startsolid spots (SpawnSystem.cs:399-405)", result: fail }
+    confidence: high
+    notes: "The port substitutes a select-time startsolid veto (a tracebox at the actual placement origin + z-nudge) for Base's link-time move_out_of_solid relocation. Differs at the margin: a slightly-embedded spot Base would nudge-and-keep, the port skips; all-embedded map -> port filters all out then places in solid via the prio-0 fallback (which itself diverges — see select_spawn_point)."
+
+  - id: sv-spawnpoints.put.put_player_in_server
+    name: "PutPlayerInServer: physics/loadout/placement reset on (re)spawn"
+    layer: [authority]
+    base_refs:
+      - "server/client.qc:PutPlayerInServer"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:PutPlayerInServer"
+    constants:
+      - { name: "g_spawnshieldtime", base: "1 s", port: "1 s (DefSpawnShieldTime, honors explicit 0)", match: true }
+      - { name: "g_player_damageforcescale", base: "2", port: "2", match: true }
+      - { name: "PL_MIN/PL_MAX", base: "'-16 -16 -24' / '16 16 45'", port: "same", match: true }
+      - { name: "z-nudge", base: "spot.origin + '0 0 1'*(1 - mins.z - 24) = +1 qu", port: "origin + (1 - mins.z - 24) = +1 qu", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: partial
+      presentation: partial
+      audio: missing
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The spawned player model gets no EF_TELEPORT_BIT | EF_RESTARTANIM_BIT: Base sets the teleport sparkle + anim-restart effect bits on respawn (client.qc:630); the port relies on an origin particle burst instead."
+      - "The time < game_starttime countdown extension (roll the shield + rot/regen pauses forward by game_starttime - time) is not applied here (flagged inline at SpawnSystem.cs:632; also tracked in sv-client-lifecycle)."
+    verification:
+      - { kind: code, ref: "SpawnSystem.cs:509-642 vs server/client.qc:PutPlayerInServer (~580-743)", result: pass }
+      - { kind: test, ref: "SpawnLoadoutTests (loadout/equip/damageforcescale/view_ofs reset)", result: pass }
+    confidence: high
+    notes: "Resets MoveType/Solid/TakeDamage/Flags/DeadState, corpse/alpha/ballistics, frags STATUS (not score), loadout (warmup vs start via ComputeStartItems→SetStartItems hook), velocities/angles, fixangle to spot (FixAngle/FixAngleAngles), view_ofs standing eye + un-duck, spawn shield (honors explicit g_spawnshieldtime 0 via CvarOr), rot/regen pause primers, player model (sv_defaultplayermodel). Equips best owned weapon (Inventory.SwitchToBest). The countdown shield/pause extension and the EF effect bits are the gaps; stopsound(CH_PLAYER_SINGLE) is a client-render concern not modeled."
+
+  - id: sv-spawnpoints.fx.spawn_event_particle
+    name: "SpawnEvent particle burst on (re)spawn"
+    layer: [presentation]
+    base_refs:
+      - "server/spawnpoints.qc:SpawnEvent_Send"
+      - "client/spawnpoints.qc:ENT_CLIENT_SPAWNEVENT"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:598 (EffectEmitter.Emit SPAWN)"
+      - "game/client/EffectSystem.cs (Teleport / SPAWN class)"
+    constants:
+      - { name: "g_spawn_alloweffects", base: "3 (bit0 particles + bit1 sound)", port: "particle path only", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: partial
+      audio: missing
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Spawn sound SND_SPAWN (cl_spawn_event_sound, bit1 of g_spawn_alloweffects 3) is never played: the port emits the EFFECT_SPAWN particle burst on spawn but no audio cue (the only SND_SPAWN occurrence in src is the NOTE comment in SpawnSystem.cs)."
+      - "Team-coloring of the burst (Team_ColorRGB(teamnum) / entcs_GetColor in teamplay, client/spawnpoints.qc:58-60) is not networked through a SpawnEvent entity — the port emits an untinted EffectEmitter.Emit('SPAWN', origin)."
+    verification:
+      - { kind: code, ref: "EffectEmitter.Emit('SPAWN') at SpawnSystem.cs:598; grep SND_SPAWN/spawn_event_sound in src+game = none (only the comment)", result: fail }
+    confidence: high
+    notes: "Particle burst rendered (EFFECT_SPAWN -> EffectSystem). The audio half of the spawn event (SND_SPAWN on CH_TRIGGER) is absent, and the team-color network path is collapsed to a plain effect emit. cl_spawn_event_particles gating collapses to render/not-render."
+
+  - id: sv-spawnpoints.fx.spawnpoint_idle_glow
+    name: "Idle spawn-point particle glow (Spawn_Draw)"
+    layer: [presentation]
+    base_refs:
+      - "client/spawnpoints.qc:Spawn_Draw"
+    port_refs:
+      - "game/client/SpawnPointParticles.cs"
+    constants:
+      - { name: "cl_spawn_point_particles", base: "1 (on)", port: "read (gated)", match: true }
+      - { name: "cl_spawn_point_dist_max", base: "cvar draw-cull distance", port: "DrawDistance 2000 qu (hardcoded)", match: false }
+      - { name: "EFFECT", base: "EFFECT_SPAWNPOINT (spawn_point_neutral)", port: "SPAWNPOINT", match: true }
+      - { name: "team color", base: "Team_ColorRGB(team-1)", port: "none (untinted SPAWNPOINT)", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Upstream emits per render-frame via boxparticles in Spawn_Draw; the port uses a 0.2s pulse timer through the EffectSystem accumulator (same per-point average rate). Distance cull uses a fixed 2000 qu DrawDistance rather than reading cl_spawn_point_dist_max."
+    gaps:
+      - "Draw-distance cull is a hardcoded 2000 qu rather than the cl_spawn_point_dist_max cvar."
+      - "Per-team color (Team_ColorRGB(team-1) per the spot's team, client/spawnpoints.qc:19) is NOT applied — the port emits the neutral SPAWNPOINT effect at every spot regardless of team, so team-colored spawn glows are missing."
+    verification:
+      - { kind: code, ref: "SpawnPointParticles.cs:45-86 vs client/spawnpoints.qc:8-22", result: pass }
+    confidence: medium
+    notes: "Live as a Node3D in the client world; gated by cl_spawn_point_particles. Per-spot glow over the same spawn classnames, distance-culled to the camera. The team-color is genuinely missing (the spot's team is discovered but only the origin is emitted); the draft listed this as 'unverified' — confirmed MISSING by code read."
+
+  - id: sv-spawnpoints.mutator.spawn_near_teammate
+    name: "spawn_near_teammate: bias/relocate spawn near a teammate"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/spawn_near_teammate/sv_spawn_near_teammate.qc"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SpawnNearTeammateMutator.cs"
+    constants:
+      - { name: "SPAWN_PRIO_NEAR_TEAMMATE_FOUND", base: "200", port: "200", match: true }
+      - { name: "SPAWN_PRIO_NEAR_TEAMMATE_SAMETEAM", base: "100", port: "100", match: true }
+      - { name: "near-teammate dist band", base: "48 .. g_spawn_near_teammate_distance (640)", port: "48 .. distance (640)", match: true }
+      - { name: "g_spawn_near_teammate (enable)", base: "0", port: "0", match: true }
+      - { name: "6 relocation offsets (snt_ofs)", base: "up64 ±right128 -fwd64 / ±right192 / ±right64 -fwd128", port: "identical", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "In the ignore_spawnpoint relocation branch, the per-offset sky-surface reject (Q3SURFACEFLAG_SKY), the lava/slime pointcontents reject, the tracebox_hits_trigger_hurt hurt-volume reject, and the g_nades nade-in-range reject are deferred (a faithful superset that may keep a spot QC would reject); weaponLocked and PHYS_INPUT_BUTTON_CHAT gates are always false (no plumbed input/weapon-lock); closetodeath uses the player's current origin not .death_origin."
+    verification:
+      - { kind: code, ref: "SpawnNearTeammateMutator.cs vs sv_spawn_near_teammate.qc (full); [Mutator] + MutatorHooks.SpawnScore/PlayerSpawn", result: pass }
+    confidence: high
+    notes: "Live behind g_spawn_near_teammate (default off). Spawn_Score bias (200/100), the random reservoir over in-band teammates, the look-at facing (FixedVecToAngles == vectoangles + pitch-flip), the per-team-of-1 advantage guard, the msnt_timer cooldown, and the 6 trace offsets are faithful. Per-spot/per-player state held in ConditionalWeakTable (QC used .msnt_lookat/.msnt_timer edict fields). Off by default in stock play."
+
+  - id: sv-spawnpoints.mutator.spawn_unique
+    name: "spawn_unique: demote the player's last spawnpoint"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/spawn_unique/sv_spawn_unique.qc"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SpawnUniqueMutator.cs"
+    constants:
+      - { name: "repeat-spot priority", base: "0.1 (extremely low, still selectable)", port: "0.1", match: true }
+      - { name: "g_spawn_unique (enable)", base: "0", port: "0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "SpawnUniqueMutator.cs vs sv_spawn_unique.qc (both hooks); MutatorBatchT19Tests (g_spawn_unique 1)", result: pass }
+    confidence: high
+    notes: "Live behind g_spawn_unique (default off). Spawn_Score demotes the last spot to prio 0.1; PlayerSpawn records the last spot in a ConditionalWeakTable (QC kept .su_last_point on the edict). Bit-faithful to the QC; covered by MutatorBatchT19Tests."
+
+  - id: sv-spawnpoints.net.spawnpoint_link_send
+    name: "SpawnPoint_Send / link_spawnpoint / spawnpoint_think networking"
+    layer: [authority, presentation]
+    base_refs:
+      - "server/spawnpoints.qc:SpawnPoint_Send"
+      - "server/spawnpoints.qc:link_spawnpoint"
+      - "server/spawnpoints.qc:spawnpoint_think"
+      - "server/spawnpoints.qc:spawnpoint_use / spawnpoint_setactive / spawnpoint_reset"
+    port_refs: []
+    constants:
+      - { name: "spawnpoint_think interval", base: "0.1 s (resend on move)", port: "none", match: false }
+      - { name: "link nextthink jitter", base: "time + 0.5 + random()*2", port: "none", match: false }
+    status:
+      logic: partial
+      values: missing
+      timing: missing
+      presentation: partial
+      audio: na
+      liveness: partial
+    intended_divergence: true
+    divergence_rationale: "The port discovers spawnpoints directly from the entity table (FindByClass) on both server (SpawnSystem) and client (SpawnPointParticles) rather than networking a per-spawnpoint ENT_CLIENT_SPAWNPOINT entity. Static map edicts don't move, so the SpawnPoint_Send / spawnpoint_think (0.1s move-resend) / link_spawnpoint visibility-gating machinery has no gameplay effect. The spawnpoint_use team-retag, spawnpoint_setactive toggle (Onslaught), and spawnpoint_reset are the live-relevant pieces: SpawnActive is honored by ScoreSpot but the use/setactive/reset transitions and the some_spawn_has_been_used latch driving the team-locked-out NULL return are not driven by any control-point path in the port."
+    gaps:
+      - "spawnpoint_use (teamplay team-retag of a claimed spot) and the some_spawn_has_been_used latch are not driven on the live path — SomeSpawnHasBeenUsed exists but nothing sets it, so SelectSpawnPoint's 'team can't spawn any more (return NULL)' branch is unreachable (only relevant to Onslaught/Assault control-point capture)."
+      - "spawnpoint_setactive / spawnpoint_reset (active-toggle on control-point loss/restore) have no caller; SpawnActive is read but never flipped at runtime."
+    verification:
+      - { kind: code, ref: "grep SomeSpawnHasBeenUsed/SpawnActive setters in src; SpawnSystem reads but no live writer; SpawnPointParticles discovers via FindByClass", result: fail }
+    confidence: medium
+    notes: "ADDED by adversarial verify: the draft only mentioned this in the spec mapping table ('networking divergence') with no feature row. The static-spawnpoint networking is a justified divergence, but the active/used state machine that Onslaught/Assault drive is genuinely dead on the port path (SomeSpawnHasBeenUsed has no writer). Inert on stock DM/CTF maps where spots never deactivate."

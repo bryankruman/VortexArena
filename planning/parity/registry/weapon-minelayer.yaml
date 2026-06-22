@@ -1,0 +1,397 @@
+unit: weapon-minelayer
+category: weapon
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 13
+  worst_gaps:
+    - "Whole weapon is WEP_FLAG_MUTATORBLOCKED: never in a normal-match loadout, only reachable via weaponarena/NewToys/impulse-give → fire-path liveness is partial, not live"
+    - "Proximity team-filter is dead: mine.Team is never assigned, so DIFF_TEAM(head, owner) degenerates and a placed mine triggers proximity on a TEAMMATE in team modes (real bug — opposite of the draft's 'more protective' claim)"
+    - "Placed mine has no model (never SetModel'd) → invisible to players"
+    - "Mine shoot-down is dead: DamageSystem.EventDamage never invokes the mine's ProjectileDamage callback (only BreakablehookMutator does)"
+    - "Over-limit fire returns silently — no WEAPON_MINELAYER_LIMIT notification (exists but never sent), no UNAVAILABLE sound"
+    - "Bot wr_aim (mine-detonation AI) not ported — bots lay but never remote-detonate mines"
+features:
+  - id: minelayer.fire.lay_mine
+    name: "Primary fire: lay a tossed mine"
+    layer: [authority, shared]
+    base_refs:
+      - "common/weapons/weapon/minelayer.qc:W_MineLayer_Attack"
+      - "common/weapons/weapon/minelayer.qc:MineLayer.wr_think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Minelayer.cs:Attack"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Minelayer.cs:WrThink"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:SetupShot"
+    constants:
+      - { name: "ammo", base: "4", port: "4", match: true }
+      - { name: "speed", base: "800", port: "800", match: true }
+      - { name: "animtime", base: "0.4", port: "0.4", match: true }
+      - { name: "refire", base: "1", port: "1", match: true }
+      - { name: "recoil", base: "5", port: "5", match: true }
+      - { name: "projectile_size", base: "+-4", port: "+-4", match: true }
+      - { name: "setorigin_offset", base: "w_shotorg - v_forward*4", port: "shot.Origin - shot.Dir*4", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: faithful
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "WEP_FLAG_MUTATORBLOCKED: the weapon is excluded from the default loadout/allweapons (GiveItems.cs:340), so this fire path is NOT reached in a normal match. It is live only when the weapon is granted via weaponarena/NewToys/impulse-give (SpawnSystem.cs:765, NixMutator, RandomItemsMutator honor the flag). WrThink dispatch itself (WeaponFireDriver.Frame) is correct on that conditional path."
+      - "No W_MuzzleFlash on fire (Base emits EFFECT_ROCKET_MUZZLEFLASH; Mortar/Devastator emit theirs)."
+      - "Mine entity is never assigned a team (mine.Team unset) — see minelayer.mine.proximity for the downstream defect."
+    verification:
+      - { kind: code, ref: "WeaponFireDriver.Frame -> WrThink(Primary); Attack reads cvars; weapon is MutatorBlocked (Minelayer.cs:60)", result: pass }
+      - { kind: value-diff, ref: "bal-wep-xonotic.cfg:178-208", result: pass }
+    confidence: high
+    notes: "mine_fire sound played; velocity = dir*speed (spread 0) matches W_SetupProjVelocity_Basic. cnt deadline = time + (lifetime - lifetime_countdown). Logic/values/timing faithful; liveness downgraded to partial because a normal match never grants this MUTATORBLOCKED weapon."
+
+  - id: minelayer.fire.mine_limit
+    name: "Per-player mine limit gate"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/minelayer.qc:W_MineLayer_Attack"
+      - "common/weapons/weapon/minelayer.qc:W_MineLayer_Count"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Minelayer.cs:CountMines"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Minelayer.cs:WrThink"
+    constants:
+      - { name: "limit", base: "4", port: "4", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: missing
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Over-limit press returns silently: no WEAPON_MINELAYER_LIMIT center-print. The notification IS defined (NotificationsList.cs:336/1012/1146) but the weapon never sends it (no Send_Notification equivalent in Attack/WrThink)."
+      - "No SND(UNAVAILABLE) cue (Base play2(actor, SND(UNAVAILABLE))) on the rejected over-limit press."
+      - "Liveness partial: MUTATORBLOCKED weapon (see minelayer.fire.lay_mine)."
+    verification:
+      - { kind: code, ref: "WrThink gates on CountMines >= Limit before PrepareAttack; no Send_Notification/play2; notification defined but unsent (grep WEAPON_MINELAYER_LIMIT)", result: fail }
+    confidence: high
+    notes: "The count cap itself is enforced correctly (mines stop at 4) and the early return before PrepareAttack preserves the refire timer; only the player feedback is missing."
+
+  - id: minelayer.mine.stick
+    name: "Mine sticks to BSP surface and locks in place"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/minelayer.qc:W_MineLayer_Stick"
+      - "common/weapons/weapon/minelayer.qc:W_MineLayer_Touch"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Minelayer.cs:OnTouch"
+    constants: []
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: faithful
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No setmodel(MDL_MINELAYER_MINE) — see minelayer.mine.render (placed mine is invisible)."
+      - "Surface-normal facing (angles = vectoangles(-trace_plane_normal)) not reproduced; port zeroes velocity and keeps prior angles. movedir (= -trace_plane_normal, used by remote-explode for fx) is also not stored."
+      - "OnTouch sticks on `other.Solid==Bsp OR non-client other`; Base W_MineLayer_Touch sticks ONLY on toucher.solid==SOLID_BSP. The extra non-client branch can stick the mine to other non-player solids."
+      - "Base W_MineLayer_Touch has a `time <= this.wait` reattach-delay gate (skip touch for 0.0625s after a damage knock-loose); port OnTouch has no wait gate, so a knocked-loose bouncing mine can re-stick a tick early."
+      - "SetMovetypeFollow for sticking to a moving platform is not modeled."
+      - "Liveness partial: MUTATORBLOCKED weapon (see minelayer.fire.lay_mine)."
+    verification:
+      - { kind: code, ref: "OnTouch: solid==Bsp||non-client -> velocity=0, MoveType.None, mine_stick sound; no wait gate, no movedir, no SetModel", result: fail }
+    confidence: high
+    notes: "Lock-in-place + mine_stick.wav present; touch driven by FlyMove dual-dispatch on the toss integrator. Logic downgraded from draft 'faithful' to 'partial': the touch-condition broadening, missing wait gate, and missing movedir are concrete deviations."
+
+  - id: minelayer.mine.proximity
+    name: "Proximity detonation (closer enemy = sooner)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/minelayer.qc:W_MineLayer_Think"
+      - "common/weapons/weapon/minelayer.qc:W_MineLayer_ProximityExplode"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Minelayer.cs:OnThink"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Minelayer.cs:ProximityExplode"
+    constants:
+      - { name: "proximity_radius", base: "125", port: "125", match: true }
+      - { name: "proximity_time_core", base: "0.1", port: "0.1", match: true }
+      - { name: "proximity_time_edge", base: "0.3", port: "0.3", match: true }
+      - { name: "radius", base: "175", port: "175", match: true }
+      - { name: "protection", base: "0 (default; block inert in BOTH Base and port)", port: "n/a (block gated on mine.Team which is unset)", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: faithful
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "TEAM-FILTER IS DEAD (real bug): the proximity trigger excludes teammates with `self.Team != 0 && head.Team == self.Team`, but the mine's Team is NEVER assigned in Attack (only Owner is). So in team modes self.Team==0, the exclusion never fires, and a placed mine arms/detonates on a TEAMMATE walking near it. Base uses DIFF_TEAM(head, this.realowner) keyed on the OWNER's team and correctly skips teammates. The port should compare head.Team against self.Owner.Team."
+      - "CORRECTION of draft: the draft claimed the port is 'MORE protective than Base' because it omits the `protection` cvar in ProximityExplode. That is wrong twice over: (a) the ProximityExplode team-safety block is itself dead (gated on self.Team==0, never true), so it never holds; (b) Base's block is gated on WEP_CVAR(protection) which defaults to 0, so Base never holds either. Net ProximityExplode behavior matches Base-default by accident, not by being more protective."
+      - "Base proximity loop also skips IS_INDEPENDENT_PLAYER(head) and STAT(FROZEN, head); port skips neither (FROZEN head not modeled, independent-player mode not modeled)."
+      - "Liveness partial: MUTATORBLOCKED weapon (see minelayer.fire.lay_mine)."
+    verification:
+      - { kind: code, ref: "OnThink earliest-time interpolation matches QC; team exclusion uses self.Team (never set in Attack) instead of self.Owner.Team; ProximityExplode block gated on self.Team==0 -> dead", result: fail }
+    confidence: high
+    notes: "mine_trigger sound on first arm; earliest mine_time selection and edge->core distance scaling are exact. self.MaxHealth doubles as QC .mine_time. The arm-on-teammate bug is the material finding the draft missed."
+
+  - id: minelayer.mine.lifetime_countdown
+    name: "Lifetime expiry + countdown warning"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/minelayer.qc:W_MineLayer_Think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Minelayer.cs:OnThink"
+    constants:
+      - { name: "lifetime", base: "30", port: "30", match: true }
+      - { name: "lifetime_countdown", base: "0.5", port: "0.5", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: faithful
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Liveness partial: MUTATORBLOCKED weapon (see minelayer.fire.lay_mine)."
+    verification:
+      - { kind: code, ref: "OnThink: time>deathTime arms mine_time=time+countdown, Frame=1 (mine_explodeanyway), plays mine_trigger", result: pass }
+    confidence: high
+    notes: "Frame field reused as the mine_explodeanyway flag. deathTime = time + (lifetime - lifetime_countdown). Matches Base cnt>0 guard implicitly (lifetime-countdown=29.5>0)."
+
+  - id: minelayer.mine.owner_death
+    name: "Owner death/disconnect/frozen auto-detonate"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/minelayer.qc:W_MineLayer_Think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Minelayer.cs:OnThink"
+    constants: []
+    status:
+      logic: partial
+      values: na
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Frozen owner is not checked: Base detonates when STAT(FROZEN, owner); port only checks null/freed/Dead/non-client. A frozen player's mines persist instead of detonating."
+      - "HITTYPE_BOUNCE deathtype tag on the auto-detonate is not set in the port (obituary uses the splash murder string regardless; minor)."
+      - "Liveness partial: MUTATORBLOCKED weapon (see minelayer.fire.lay_mine)."
+    verification:
+      - { kind: code, ref: "OnThink owner null/freed/Dead/non-client -> Explode; no FROZEN check, no HITTYPE_BOUNCE tag", result: fail }
+    confidence: high
+    notes: "The disconnect/death detonation is faithful; the frozen-owner branch and the bounce deathtype tag are the gaps."
+
+  - id: minelayer.mine.shootdown
+    name: "Mine shoot-down: knock loose / destroy when shot"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/minelayer.qc:W_MineLayer_Damage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Minelayer.cs:OnMineDamage"
+    constants:
+      - { name: "health", base: "15", port: "15", match: true }
+      - { name: "damageforcescale", base: "1.25", port: "1.25", match: true }
+    status:
+      logic: stub
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "OnMineDamage is installed only as Entity.ProjectileDamage, but DamageSystem.EventDamage (DamageSystem.cs:294) routes a non-player damageable target to GtEventDamage if present, ELSE to PlayerDamage/PlayerCorpseDamage — it NEVER invokes ProjectileDamage. The only caller of ProjectileDamage is BreakablehookMutator.cs:79. So a mine's HP is never subtracted by OnMineDamage and it cannot be shot loose or destroyed."
+      - "Worse: with TakeDamage=Yes and GtEventDamage null, a shot mine actually falls into PlayerDamage/PlayerCorpseDamage (treated as a player corpse), so the shoot-down path is not just absent but mis-routed."
+      - "W_CheckProjectileDamage (g_projectiles_damage) gate, vectoangles re-facing, avelocity spin, and the W_PrepareExplosionByDamage delayed-explode are all consequently unreachable."
+    verification:
+      - { kind: code, ref: "Grep ProjectileDamage?.Invoke -> only BreakablehookMutator.cs:79; DamageSystem.EventDamage (DamageSystem.cs:287-304) routes non-player to GtEventDamage else PlayerDamage", result: fail }
+    confidence: high
+    notes: "Shared pipeline gap — Mortar/Devastator/Arc/Hagar/Seeker/Electro/Fireball/OkRpc shoot-down callbacks are dead the same way (all install ProjectileDamage that nothing invokes). Mine still receives knockback (ApplyKnockback runs) but never dies/loosens. Worth flagging to the owner as a cross-weapon fix."
+
+  - id: minelayer.fire.remote_detonate
+    name: "Secondary fire: remote-detonate all placed mines"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/minelayer.qc:W_MineLayer_RemoteExplode"
+      - "common/weapons/weapon/minelayer.qc:W_MineLayer_DoRemoteExplode"
+      - "common/weapons/weapon/minelayer.qc:W_MineLayer_PlacedMines"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Minelayer.cs:RemoteDetonate"
+    constants:
+      - { name: "detonatedelay", base: "-1", port: "-1", match: true }
+      - { name: "remote_damage", base: "40", port: "40", match: true }
+      - { name: "remote_edgedamage", base: "20", port: "20", match: true }
+      - { name: "remote_force", base: "300", port: "300", match: true }
+      - { name: "remote_radius", base: "200", port: "200", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: faithful
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port detonates inline in RemoteDetonate. Base flags minelayer_detonate=true and lets each mine's own W_MineLayer_Think call W_MineLayer_RemoteExplode the next tick. The sound semantics also differ: Base plays SND_MINE_DET if W_MineLayer_PlacedMines newly set the flag on ANY mine (i.e. as soon as you have a placed mine), whereas the port plays mine_det only if at least one mine actually passed the spawnshield+team-safety gate and detonated. With detonatedelay=-1 + proximity safety, pressing secondary while standing on your own mines plays the sound in Base but is silent in the port."
+      - "deathtype HITTYPE_BOUNCE tag on remote blasts not set (Base ORs HITTYPE_BOUNCE; obituary picks the splash murder string regardless)."
+      - "Liveness partial: MUTATORBLOCKED weapon (see minelayer.fire.lay_mine)."
+    verification:
+      - { kind: code, ref: "RemoteDetonate: spawnshield-timer gate (>=0) else proximity self-safety; team-safety reads actor.Team (correctly set); plays mine_det only on actual detonation", result: fail }
+    confidence: high
+    notes: "Spawnshield/team-safety gate reads Entity.ProjectileDetonateTime so the RocketFlying EditProjectile clear opens detonation immediately. The team-safety check here uses actor.Team (which IS assigned), so unlike proximity it is faithful. Logic downgraded from draft 'faithful' to 'partial' due to the sound-cue divergence."
+
+  - id: minelayer.mine.explode
+    name: "Explosion: radius damage + knockback + fx"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/weapons/weapon/minelayer.qc:W_MineLayer_Explode"
+      - "common/weapons/weapon/minelayer.qc:MineLayer.wr_impacteffect"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Minelayer.cs:Explode"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponSplash.cs:RadiusDamage"
+    constants:
+      - { name: "damage", base: "40", port: "40", match: true }
+      - { name: "edgedamage", base: "20", port: "20", match: true }
+      - { name: "radius", base: "175", port: "175", match: true }
+      - { name: "force", base: "250", port: "250", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: faithful
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Airshot achievement (ANNCE_ACHIEVEMENT_AIRSHOT on a direct hit to an enemy flying player) not implemented."
+      - "Out-of-ammo forced weapon switch after the last mine fires (Base W_MineLayer_Explode tail: ATTACK_FINISHED + m_switchweapon = w_getbestweapon) is not done here."
+      - "Liveness partial: MUTATORBLOCKED weapon (see minelayer.fire.lay_mine)."
+    verification:
+      - { kind: code, ref: "Explode: WeaponSplash.RadiusDamage(40/20/175/250) + mine_exp + ROCKET_EXPLODE effect", result: pass }
+    confidence: high
+    notes: "EFFECT_ROCKET_EXPLODE + mine_exp.wav faithful (matches CSQC wr_impacteffect). RadiusDamage is the shared faithful blast model."
+
+  - id: minelayer.mine.render
+    name: "Placed-mine model + networking (visible mine)"
+    layer: [presentation]
+    base_refs:
+      - "common/weapons/weapon/minelayer.qc:W_MineLayer_Stick"
+      - "common/weapons/weapon/minelayer.qc:W_MineLayer_Attack"
+      - "common/weapons/weapon/minelayer.qh:MODEL(MINELAYER_MINE)"
+    port_refs: []
+    constants:
+      - { name: "mine_model", base: "models/mine.md3", port: "none", match: false }
+    status:
+      logic: na
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Mine entity is never SetModel'd (no models/mine.md3), so the in-flight and placed mine is invisible to players."
+      - "CSQCProjectile(PROJECTILE_MINE) in-flight networking has no port analogue."
+    verification:
+      - { kind: code, ref: "Attack/OnTouch never call Api.Entities.SetModel; Entity.Model stays empty (cf. StartItem/MapModels which DO SetModel)", result: fail }
+    confidence: high
+    notes: "Shared with other projectile weapons (Mortar grenade also unmodeled). Mine is gameplay-functional but invisible."
+
+  - id: minelayer.ammo.checks
+    name: "Ammo checks + reload"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/minelayer.qc:MineLayer.wr_checkammo1"
+      - "common/weapons/weapon/minelayer.qc:MineLayer.wr_checkammo2"
+      - "common/weapons/weapon/minelayer.qc:MineLayer.wr_reload"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Minelayer.cs:CheckAmmoPrimary"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Minelayer.cs:CheckAmmoSecondary"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireGate.cs:WrReload"
+    constants:
+      - { name: "reload_ammo", base: "0", port: "0", match: true }
+      - { name: "reload_time", base: "2", port: "2", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port WrThink omits the forced-reload branch, but reload_ammo defaults to 0 so Base never enters it either — faithful at default values (would diverge if reload_ammo were set)."
+      - "Base wr_checkammo1 also counts clip_load (weapon_load) as a second ammo source; port checks only the rocket resource. Inert at reload_ammo=0 (clip is never loaded), so no behavioral difference at defaults."
+      - "Liveness partial: MUTATORBLOCKED weapon (see minelayer.fire.lay_mine)."
+    verification:
+      - { kind: code, ref: "CheckAmmoPrimary rockets>=4; CheckAmmoSecondary CountMines>0 (== wr_checkammo2 PlacedMines); base WrReload via WeaponFireGate", result: pass }
+    confidence: medium
+    notes: "Secondary-available-when-mines-placed matches Base wr_checkammo2. clip_load path inert at reload_ammo=0."
+
+  - id: minelayer.obituary
+    name: "Suicide / murder obituary messages"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/minelayer.qc:MineLayer.wr_suicidemessage"
+      - "common/weapons/weapon/minelayer.qc:MineLayer.wr_killmessage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:76"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:153"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:313"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Resolved via the centralized DeathMessages netname switch rather than per-weapon wr_killmessage/wr_suicidemessage methods, but the resulting notification ids (WEAPON_MINELAYER_MURDER / WEAPON_MINELAYER_SUICIDE) and templates match Base. Liveness is live (the obituary pipeline runs in every match regardless of the MutatorBlocked weapon flag — it fires whenever someone dies to a mine, which requires the weapon to have been granted)."
+    verification:
+      - { kind: code, ref: "DeathMessages.cs:76/153 map netname 'minelayer' -> MURDER/SUICIDE; NotificationsList.cs:313-314 define templates matching minelayer.qc:521-529", result: pass }
+    confidence: high
+    notes: "Feature omitted by the draft; added here. The kill template '%s got too close to %s's mine' and suicide 'forgot about their mine' match Base exactly."
+
+  - id: minelayer.bot.aim
+    name: "Bot AI: lay + remote-detonate decision (wr_aim)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/minelayer.qc:MineLayer.wr_aim"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Per-weapon wr_aim is not ported (deferred for all weapons per BotBrain). Bots lay mines via the generic primary fire path but never set BUTTON_ATCK2 to remote-detonate, and ignore the over-limit fire suppression + the skill-gated (skill>=2) detonation-desirability math (selfdamage/teamdamage/enemydamage weighting, the 0.75*coredamage group-detonate threshold, the skill>6.5 self-preservation veto)."
+    verification:
+      - { kind: code, ref: "no minelayer wr_aim under src/**/Bot*; BotBrain defers per-weapon wr_aim", result: fail }
+    confidence: high
+    notes: "Bots therefore use the Mine Layer poorly (place-and-forget); no group-detonation tactics. Moot in practice while the weapon stays MutatorBlocked."

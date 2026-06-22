@@ -1,0 +1,177 @@
+unit: mutator-random_gravity
+category: mutator
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 6
+  worst_gaps:
+    - "Missing the `time < game_starttime` gate: the port re-rolls sv_gravity during the pre-match warmup/countdown, where Base does not. The fix infra exists (StartItem.GameStartTimeProvider, already used by DamageSystem.cs:472 for the same QC gate)."
+    - "Missing the round-handler gate (`round_handler_IsActive() && !round_handler_IsRoundStarted()`): in round modes (CA/Freezetag/etc.) the port can roll gravity in the inter-round pre-start window; Base suppresses it. NOT trivially fixable — there is NO global RoundHandler accessor reachable from Common (DamageSystem.cs:470 documents 'No round handler is reachable from the pipeline'); the per-gametype RoundHandler lives on the gametype, not a global seam."
+    - "MUTATOR_ONADD cvar_settemp(\"sv_gravity\", ...) is not modelled: nothing pushes/restores the original gravity, so a mutator-modified sv_gravity may leak into the next match (deferred to the host by an in-code NOTE)."
+    - "BuildMutatorsString / BuildMutatorsPrettyString not implemented: 'Random gravity' / ':RandomGravity' is not advertised in the scoreboard/server-info mutator list (no generic mutator-list builder exists in the port for this unit either)."
+features:
+  - id: random_gravity.enable.cvar_gate
+    name: "Enable gate — g_random_gravity cvar gating mutator registration + ONADD cvar_settemp"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/random_gravity/sv_random_gravity.qc:15 REGISTER_MUTATOR(random_gravity, cvar(\"g_random_gravity\"))"
+      - "common/mutators/mutator/random_gravity/sv_random_gravity.qc:17-20 MUTATOR_ONADD cvar_settemp(\"sv_gravity\", cvar_string(\"sv_gravity\"))"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RandomGravityMutator.cs:32 IsEnabled (Api.Cvars.GetFloat(\"g_random_gravity\") != 0)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RandomGravityMutator.cs:40 Hook"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:60 Apply -> Add -> Hook"
+      - "src/XonoticGodot.Server/GameWorld.cs:511 MutatorActivation.Apply()"
+    constants:
+      - { name: "g_random_gravity", base: "0 (mutators.cfg:184)", port: "0 (assets/data/xonotic-data.pk3dir/mutators.cfg:184)", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "MUTATOR_ONADD cvar_settemp(\"sv_gravity\", ...) is not modelled: the original sv_gravity is not pushed onto a restore stack, so a modified gravity is not guaranteed to be reverted at match end (deferred to the host via an in-code NOTE at RandomGravityMutator.cs:45-46)."
+    verification:
+      - { kind: code-read, ref: "IsEnabled reads g_random_gravity (RandomGravityMutator.cs:32); MutatorActivation.Apply (MutatorActivation.cs:60, called from GameWorld.cs:511) walks Mutators.All and calls Add->Hook for each enabled mutator on the live server-boot path", result: pass }
+      - { kind: code-read, ref: "Hook() (RandomGravityMutator.cs:40) subscribes _onStartFrame to MutatorHooks.SvStartFrame and resets _gravityDelay; NO cvar_settemp restore is modelled (comment defers it to host)", result: fail }
+      - { kind: test, ref: "tests/XonoticGodot.Tests/MutatorBatchT19Tests.cs:RandomGravity_SetsSvGravityWithinBounds + ByName(\"random_gravity\") not-null (booted with g_random_gravity=1)", result: pass }
+    confidence: high
+    notes: "Enable predicate and live activation are 1:1 (verified MutatorActivation.Apply iterates Mutators.All and calls Hook on enabled mutators; called at GameWorld.cs:511 on boot). The only enable-side gap is the un-modelled cvar_settemp restore (logic:partial) — a real but host-deferrable defect, not a deliberate divergence."
+
+  - id: random_gravity.roll.startframe
+    name: "Per-frame gravity re-roll on SV_StartFrame (formula + clamp + delay schedule)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/random_gravity/sv_random_gravity.qc:25-40 MUTATOR_HOOKFUNCTION(random_gravity, SV_StartFrame)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RandomGravityMutator.cs:55-89 OnStartFrame"
+      - "src/XonoticGodot.Server/GameWorld.cs:943 MutatorHooks.FireStartFrame(Time)"
+    constants:
+      - { name: "g_random_gravity_delay", base: "3 (mutators.cfg:185)", port: "3 (mutators.cfg:185, read live via GetFloat)", match: true }
+      - { name: "g_random_gravity_negative_chance", base: "0.5 (mutators.cfg:186)", port: "0.5 (mutators.cfg:186)", match: true }
+      - { name: "g_random_gravity_min", base: "-2000 (mutators.cfg:187)", port: "-2000 (mutators.cfg:187)", match: true }
+      - { name: "g_random_gravity_max", base: "2000 (mutators.cfg:188)", port: "2000 (mutators.cfg:188)", match: true }
+      - { name: "g_random_gravity_positive", base: "1000 (mutators.cfg:189)", port: "1000 (mutators.cfg:189)", match: true }
+      - { name: "g_random_gravity_negative", base: "1000 (mutators.cfg:190)", port: "1000 (mutators.cfg:190)", match: true }
+      - { name: "branch1_formula (random>=neg_chance)", base: "bound(min, random() - random()*-negative, max)", port: "QMath.Bound(min, Prandom.Float() - Prandom.Float()*-negative, max)", match: true }
+      - { name: "branch2_formula (else)", base: "bound(min, random()*positive, max)", port: "QMath.Bound(min, Prandom.Float()*positive, max)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "OnStartFrame (RandomGravityMutator.cs:71-87): two-branch formula + QMath.Bound clamp + _gravityDelay=time+delay vs sv_random_gravity.qc:32-37; byte-for-byte equivalent incl. the `* -negative` sign flip (C# `*` binds before `-`, matching QC). Two Prandom.Float() draws in QC order in branch1.", result: pass }
+      - { kind: code-read, ref: "Prandom.Float() (Math/Prandom.cs:33) is the seeded random() facade ([0,1) via (Next()>>8)*(1/2^24))", result: pass }
+      - { kind: code-read, ref: "FireStartFrame pumped every server frame at GameWorld.cs:943 (alongside ServerHooks.FireStartFrame at :940)", result: pass }
+      - { kind: test, ref: "tests/XonoticGodot.Tests/MutatorBatchT19Tests.cs:RandomGravity_SetsSvGravityWithinBounds (rolls all in [min,max]) + RandomGravity_RespectsDelay (no re-roll inside the delay window)", result: pass }
+    confidence: high
+    notes: "1:1 roll. Branch naming in Base is counter-intuitive (both branches normally yield non-negative gravity at stock defaults; gravity only goes negative if min<0 forces the lower clamp) — ported faithfully as written. LOG_TRACE at sv_random_gravity.qc:39 is a dev trace only, no behavior, intentionally not a separate row."
+
+  - id: random_gravity.roll.gamestart_gate
+    name: "Pre-match suppression gate (time < game_starttime)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/random_gravity/sv_random_gravity.qc:29 if(time < game_starttime) return false"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: missing
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No `time < game_starttime` gate in OnStartFrame: the port re-rolls sv_gravity during the pre-match warmup/countdown window, where Base suppresses it. The port comment (RandomGravityMutator.cs:62-63) claiming game_stopped is 'a faithful superset' is incorrect — game_stopped (Intermission/MatchEnded/Timeout) is NOT set during the pre-game countdown. Readily fixable: StartItem.GameStartTimeProvider exists and is already used for this exact QC gate at DamageSystem.cs:472."
+    verification:
+      - { kind: code-read, ref: "OnStartFrame (RandomGravityMutator.cs:55-89) has only `game_stopped` (VehicleCommon.GameStopped) + `time < _gravityDelay`; the game_starttime gate from sv_random_gravity.qc:29 is absent. StartItem.GameStartTimeProvider (StartItem.cs:37) is wired (GameWorld.cs:520) and consumed by DamageSystem.cs:472 for the same gate, so the omission is not infra-limited.", result: fail }
+    confidence: high
+    notes: "Real divergence: gravity flips during the warmup countdown. Cheap fix with already-present infra. liveness:na — the gate code does not exist."
+
+  - id: random_gravity.roll.round_gate
+    name: "Pre-round-start suppression gate (round active && !round started)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/random_gravity/sv_random_gravity.qc:30 if(round_handler_IsActive() && !round_handler_IsRoundStarted()) return false"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: missing
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No round-handler gate in OnStartFrame: in round modes (Clan Arena, Freezetag, etc.) the port can roll gravity in the inter-round window before the round starts; Base suppresses it. NOT trivially fixable: there is NO global RoundHandler accessor reachable from the Common gameplay layer — RoundHandler (Common/Gameplay/GameTypes/RoundHandler.cs) is owned per-gametype, and DamageSystem.cs:470 explicitly notes 'No round handler is reachable from the pipeline.' Wiring this gate needs a new global round-state seam."
+    verification:
+      - { kind: code-read, ref: "OnStartFrame has no round-handler check. RoundHandler exposes Phase/RoundStartTime per instance (RoundHandler.cs:55,58) but there is no static/global accessor for the active instance (grep for static RoundHandler/Current/Active found none); DamageSystem.cs:470 confirms the round half of this same QC gate is unreachable from Common.", result: fail }
+    confidence: high
+    notes: "Real divergence in round modes only (gravity can roll between rounds before round start). Unlike the game_starttime half, this is NOT fixable with present infra — it needs a new global round-state seam. Separated from the game_starttime gate because their fix-availability differs."
+
+  - id: random_gravity.output.sv_gravity_consumption
+    name: "sv_gravity output consumed live by the physics integrator"
+    layer: [authority, shared]
+    base_refs:
+      - "common/mutators/mutator/random_gravity/sv_random_gravity.qc:33-35 cvar_set(\"sv_gravity\", ftos(...))"
+      - "common/physics/player.qc (gravity read from sv_gravity per move via PHYS_GRAVITY)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RandomGravityMutator.cs:84 Api.Cvars.Set(\"sv_gravity\", Ftos(gravity))"
+      - "src/XonoticGodot.Common/Physics/MovementParameters.cs:190 p.Gravity = Cvar(N(prefix,\"gravity\"), p.Gravity)  [prefix defaults \"sv_\"]"
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:132 MovementParameters.Resolve(player, input.Predicted)"
+    constants:
+      - { name: "sv_gravity_stock", base: "800", port: "800 (MovementParameters Defaults, MovementParameters.cs:266)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "FromCvars(prefix=\"sv_\") reads sv_gravity live each Resolve (MovementParameters.cs:143,190), called per player move at PlayerPhysics.cs:132, so a mid-match Set takes effect next tick — matches Base's per-move PHYS_GRAVITY read", result: pass }
+      - { kind: code-read, ref: "Ftos (RandomGravityMutator.cs:92) serialises with InvariantCulture so the value round-trips through the cvar store", result: pass }
+      - { kind: test, ref: "tests/XonoticGodot.Tests/MutatorBatchT19Tests.cs:RandomGravity_SetsSvGravityWithinBounds asserts the sv_gravity cvar after each roll", result: pass }
+    confidence: high
+    notes: "The mutator's effect channel is the sv_gravity cvar, re-read live per move. Faithful."
+
+  - id: random_gravity.advertise.mutator_string
+    name: "Mutator-list advertisement (BuildMutatorsString / BuildMutatorsPrettyString)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/random_gravity/sv_random_gravity.qc:42-45 BuildMutatorsString -> strcat(..., \":RandomGravity\")"
+      - "common/mutators/mutator/random_gravity/sv_random_gravity.qc:47-50 BuildMutatorsPrettyString -> strcat(..., \", Random gravity\")"
+    port_refs: []
+    constants:
+      - { name: "mutator_tag / pretty", base: ":RandomGravity / \", Random gravity\"", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Random Gravity is not added to the server-info / scoreboard mutator list: neither BuildMutatorsString nor BuildMutatorsPrettyString is implemented for this mutator, and grep found no generic mutator-list builder advertising 'RandomGravity'/'Random gravity' in the port."
+    verification:
+      - { kind: code-read, ref: "RandomGravityMutator.cs has no BuildMutatorsString/Pretty hook; grep -rn 'RandomGravity' over src/game found only this mutator class (no advertising string)", result: fail }
+    confidence: high
+    notes: "Cosmetic/informational only — affects the displayed active-mutator list, not gameplay. Upgraded to high confidence: the port-wide grep for the advertising string came back empty."

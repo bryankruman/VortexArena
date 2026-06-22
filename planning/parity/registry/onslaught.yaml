@@ -1,0 +1,497 @@
+unit: onslaught
+category: gametype
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 17
+  worst_gaps:
+    - "onslaught_link map entities are never resolved into graph edges on the live BSP path: with no links every node stays shielded forever, so on a real map NO control point can be captured and NO generator damaged — the mode is non-functional in an actual match despite correct, live combat logic"
+    - "No Onslaught notifications/sounds/particles are ever emitted (capture/build/under-attack/destroy/win cues registered as data but never called)"
+    - "No CSQC presentation: no generator/control-point/icon models, no progressive damage models, no icon bob/spin/punch animation, no radar links, no objective death-cam"
+    - "Stale hardcoded fallback values diverge from Base (gen 2000 vs 2500, cp 200 vs 1000, cp_regen 10 vs 20, round_timelimit fallback 0 vs 500) — masked only while the shipped cfg is loaded"
+    - "CaptureShield (spinning shield model + push + blocked sound), proximity-decap, ons_Teleport / spawn_choose / spawn_at_* placement all NOT IMPLEMENTED"
+
+features:
+  - id: onslaught.graph.power_propagation
+    name: "Power graph + shielding propagation (onslaught_updatelinks)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/onslaught/sv_onslaught.qc:onslaught_updatelinks"
+      - "common/gametypes/gametype/onslaught/sv_onslaught.qc:ons_ControlPoint_CanBeLinked"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:UpdateLinks"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:IsAttackable"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Algorithm is faithful (3-phase: reset → flow power → unshield enemy-adjacent), but the graph has NO EDGES on a live map because onslaught_link is never resolved (see onslaught.links.resolution). Live, the propagation runs over an edgeless graph: every CP stays shielded and every generator stays shielded, so nothing is ever attackable."
+    verification:
+      - { kind: unit_test, ref: "tests/XonoticGodot.Tests/OnslaughtCombatTests.cs (manual Link()+UpdateLinks)", result: pass }
+      - { kind: code_read, ref: "Onslaught.cs:297-342 vs sv_onslaught.qc:109-246", result: pass }
+    confidence: high
+    notes: "Logic verified against QC; liveness partial only because edges are missing on the live path (a separate feature)."
+
+  - id: onslaught.links.resolution
+    name: "onslaught_link map entity → graph edges"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/onslaught/sv_onslaught.qc:spawnfunc(onslaught_link)"
+      - "common/gametypes/gametype/onslaught/sv_onslaught.qc:ons_DelayedLinkSetup"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "On a real Onslaught BSP map, onslaught_link entities (target/target2 naming two nodes) are never turned into Onslaught.Link() edges: GameWorld.cs WireObjectiveSpawns has an EMPTY 'onslaught_link' case that just retires the placeholder. There is no post-spawn link-resolution pass (unlike Assault.ResolveObjectiveGraph)."
+      - "Consequence: the power graph is edgeless, so UpdateLinks never unshields anything — no control point is capturable and no generator is damageable. The entire mode cannot be played to completion on a real map."
+    verification:
+      - { kind: code_read, ref: "GameWorld.cs:1430-1435 (empty case + deferral comment); grep for ResolveOns/ons.Link in server — none", result: fail }
+    confidence: high
+    notes: "The single most severe gap. Combat logic below is correct & live-callable but unreachable without edges. Tests pass only because they hand-wire Link()."
+
+  - id: onslaught.cp.touch_build
+    name: "Control-point capture-by-build (touch → icon → build → flip)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/onslaught/sv_onslaught.qc:ons_ControlPoint_Touch"
+      - "common/gametypes/gametype/onslaught/sv_onslaught.qc:ons_ControlPoint_Icon_Spawn"
+      - "common/gametypes/gametype/onslaught/sv_onslaught.qc:ons_ControlPoint_Icon_BuildThink"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/OnslaughtControlPoint.cs:ControlPointTouch"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/OnslaughtControlPoint.cs:SpawnIcon"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/OnslaughtControlPoint.cs:IconBuildThink"
+    constants:
+      - { name: "g_onslaught_cp_health", base: "1000", port: "1000 (cvar) / 200 (hardcoded fallback)", match: false }
+      - { name: "g_onslaught_cp_buildhealth", base: "100", port: "100", match: true }
+      - { name: "g_onslaught_cp_buildtime", base: "5", port: "5", match: true }
+      - { name: "ONS_CP_THINKRATE", base: "0.2", port: "0.2", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: missing
+      audio: missing
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Hardcoded fallback cp_health = 200 differs from Base 1000 (live value correct via cfg)."
+      - "No ONS_CONTROLPOINT_BUILD/BUILT sound, no EFFECT_CAP/EFFECT_RAGE particles, no pad-model swap (MDL_ONS_CP_PAD1/2), no build-bar waypoint sprite — none are emitted."
+      - "Liveness partial: only reachable once links exist (see onslaught.links.resolution)."
+    verification:
+      - { kind: unit_test, ref: "OnslaughtCombatTests.ControlPoint_BuildToCompletion_CapturesAndCredits", result: pass }
+    confidence: high
+    notes: "Per-tick build rate (max-build)*0.2/buildtime matches QC e.count; capture flips only on completion."
+
+  - id: onslaught.cp.icon_damage
+    name: "Capture-icon damage / destroy mid-build (revert to neutral)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/onslaught/sv_onslaught.qc:ons_ControlPoint_Icon_Damage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/OnslaughtControlPoint.cs:IconDamage"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: missing
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Shield-block ignore, subtract, destroy-at-0 → revert owner to neutral + UpdateLinks all faithful. But no ONS_HIT1/2 / ONS_GENERATOR_EXPLODE sound, no EFFECT_SPARKS/ROCKET_EXPLODE particles, no CP-destroyed notification, no progressive icon model swap."
+      - "Proximity self-destruct nearby-enemy +5 reward (QC FOREACH_CLIENT branch) not modeled — only the single-attacker ONS_TAKES+1/SCORE+10 path."
+      - "Liveness partial: needs links."
+    verification:
+      - { kind: unit_test, ref: "OnslaughtCombatTests.ControlPointIcon_DestroyedMidBuild_AbortsCapture", result: pass }
+    confidence: high
+    notes: "Destroyer credited ONS_TAKES+1 + SCORE+10 (QC). Routed via shared DamageSystem (GtEventDamage)."
+
+  - id: onslaught.cp.icon_think_regen
+    name: "Built-icon steady-state slow regen"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/onslaught/sv_onslaught.qc:ons_ControlPoint_Icon_Think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/OnslaughtControlPoint.cs:IconThink"
+    constants:
+      - { name: "g_onslaught_cp_regen", base: "20", port: "20 (cvar) / 10 (hardcoded fallback)", match: false }
+      - { name: "regen_delay_after_hit", base: "5 s", port: "5 s", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: missing
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Hardcoded cp_regen fallback 10 vs Base 20 (live correct via cfg)."
+      - "Damaged-FX sparks + ONS_SPARK1/2 sounds not emitted."
+    verification:
+      - { kind: code_read, ref: "OnslaughtControlPoint.cs:322-332 vs sv_onslaught.qc:519-526", result: pass }
+    confidence: medium
+    notes: "Regen rate = cp_regen * THINKRATE applied 5 s after last hit, matching QC."
+
+  - id: onslaught.cp.icon_heal
+    name: "Capture-icon heal (Healer mutator / heal trigger)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/onslaught/sv_onslaught.qc:ons_ControlPoint_Icon_Heal"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/OnslaughtControlPoint.cs:IconHeal"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Logic faithful, but VERIFIED dead: grep over all of src/ shows IconHeal has NO caller (only its definition at OnslaughtControlPoint.cs:387). The Healer mutator / heal-trigger path that would call it is not ported, so the method never runs on the live path."
+    verification:
+      - { kind: code_read, ref: "OnslaughtControlPoint.cs:387-394 vs sv_onslaught.qc:460-475 (logic match)", result: pass }
+      - { kind: code_read, ref: "grep IconHeal across src/ — only the definition, zero callers", result: fail }
+    confidence: high
+    notes: "Heal-toward-limit logic matches QC; confirmed no live caller (downgraded unknown→dead, low→high)."
+
+  - id: onslaught.gen.damage_destroy
+    name: "Generator shield-gated damage + destruction"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/onslaught/sv_onslaught.qc:ons_GeneratorDamage"
+      - "common/gametypes/gametype/onslaught/sv_onslaught.qc:ons_GeneratorSetup"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/OnslaughtControlPoint.cs:GeneratorDamage"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/OnslaughtControlPoint.cs:SpawnGenerator"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:DamageGenerator"
+    constants:
+      - { name: "g_onslaught_gen_health", base: "2500", port: "2500 (cvar) / 2000 (hardcoded fallback)", match: false }
+      - { name: "generator_kill_score", base: "100", port: "100", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: missing
+      audio: missing
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Hardcoded gen_health fallback 2000 vs Base 2500 (live correct via cfg)."
+      - "No generator damage `frame = 10*(1-hp/max)` (progressive damage state), no under-attack ONS_GENERATOR_UNDERATTACK sound / CENTER notify, no flaming-gib chance (ROCKET_IMPACT) / EFFECT_SPARKS / ONS_HIT1/2, no GENDESTROYED info notify, no ons_camSetup death-cam."
+      - "Liveness partial: needs an unshielded generator, which needs an enemy-controlled linked CP, which needs links."
+    verification:
+      - { kind: unit_test, ref: "OnslaughtCombatTests.Generator_ShieldBlocksThenDestroyThroughPipeline", result: pass }
+    confidence: high
+    notes: "Shield-block + destroy + attacker SCORE+100 + round-end + ST_ONS_GENS+1 verified. warmup/round-started gate present."
+
+  - id: onslaught.round.handler
+    name: "Round handler (warmup → countdown → round → end-delay)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/onslaught/sv_onslaught.qc:ons_DelayedInit"
+      - "common/gametypes/gametype/onslaught/sv_onslaught.qc:Onslaught_RoundStart"
+      - "server/round_handler.qc:round_handler_Init"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:Activate"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:Tick"
+      - "src/XonoticGodot.Server/GameWorld.cs:DriveGametypeFrame"
+    constants:
+      - { name: "round_handler_Init_delay (first round)", base: "5", port: "7", match: false }
+      - { name: "g_onslaught_warmup (countdown)", base: "5", port: "5 (cvar)", match: true }
+      - { name: "g_onslaught_round_timelimit", base: "500", port: "500 (cvar) / 0 (hardcoded fallback)", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: partial
+      presentation: na
+      audio: missing
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port uses round_handler_Init end-delay = 7 for the FIRST round; Base uses 5 initially and 7 only after a round ends (2 s longer end-delay on round 1)."
+      - "round_timelimit hardcoded fallback 0 vs Base 500 (live correct via cfg)."
+      - "Per-player ROUNDLOST/player_blocked latch, nades_RemovePlayer, and the round-win center/info notifications + play2all CTF_CAPTURE on round decision are not driven by the port's handler."
+    verification:
+      - { kind: code_read, ref: "Onslaught.cs:170-180, GameWorld.cs:1621-1624 (Activate+Tick live)", result: pass }
+    confidence: medium
+    notes: "Handler is constructed, Init'd, and Tick'd live; CanRoundEnd = CheckWinner()!=0."
+
+  - id: onslaught.win.check_winner
+    name: "Win check (last standing generator) + ST_ONS_GENS credit"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/onslaught/sv_onslaught.qc:Onslaught_CheckWinner"
+      - "common/gametypes/gametype/onslaught/sv_onslaught.qc:Onslaught_count_generators"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:CheckWinner"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:BankRoundWin"
+      - "src/XonoticGodot.Server/GameWorld.cs (win latch :2093)"
+    constants:
+      - { name: "pointlimit", base: "1", port: "1 (cvar)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: missing
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Tie handling (-1, none standing) + the winner credit ST_ONS_GENS+1 are ported and the host reads MatchEnded/WinningTeam, but the ROUND_TEAM_WIN/ROUND_TIED notifications + win jingle are not sent."
+    verification:
+      - { kind: unit_test, ref: "OnslaughtCombatTests.Generator_ShieldBlocksThenDestroyThroughPipeline (ST_ONS_GENS+1, WinningTeam)", result: pass }
+      - { kind: code_read, ref: "GameWorld.cs:2093 win latch", result: pass }
+    confidence: high
+    notes: "Winner = sole team with a live generator; idempotent via MatchEnded latch."
+
+  - id: onslaught.overtime.decay
+    name: "Overtime generator self-decay (sudden death)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/onslaught/sv_onslaught.qc:Onslaught_CheckWinner (stalemate branch)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:IsInOvertime"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:DriveOvertime"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/OnslaughtControlPoint.cs:OvertimeDecayTick"
+    constants:
+      - { name: "timelimit_suddendeath", base: "5 (min)", port: "5 (cvar) / 5 (fallback)", match: true }
+      - { name: "decay_window_floor", base: "max(30, 60*suddendeath)", port: "max(30, 60*suddendeath)", match: true }
+      - { name: "decay_step", base: "1 s", port: "1 s", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: missing
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "d = max_health/window scaled by 1 + (#enemy-linked CPs) per second faithful, routed via the self-damage (DEATH_HURTTRIGGER) generator path. But OVERTIME_CONTROLPOINT center notify + ONS_GENERATOR_DECAY announce sound are not emitted (only a bool latch OvertimeAnnounced)."
+      - "Liveness partial: the base self-decay self-damage path DOES bypass the shield (GeneratorDamage selfDamage branch unshields, OnslaughtControlPoint.cs:154-161), so even on an edgeless map overtime would eventually destroy a generator once the timelimit/round-end gate trips — but the enemy-linked-CP acceleration is always 0 without links, so decay runs at the base rate only."
+    verification:
+      - { kind: unit_test, ref: "tests/XonoticGodot.Tests/OverTimeManagerTests.cs (overtime decay)", result: pass }
+      - { kind: code_read, ref: "OnslaughtControlPoint.cs:408-433 vs sv_onslaught.qc:1188-1211", result: pass }
+    confidence: medium
+    notes: "Decay accelerates with enemy-linked CP count exactly like QC; uses gen.MaxHealth/window."
+
+  - id: onslaught.scoring.rules
+    name: "Scoreboard rules (generators / caps / takes)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/onslaught/sv_onslaught.qc:ons_ScoreRules"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:Activate"
+    constants:
+      - { name: "ST_ONS_GENS (team primary)", base: "generators", port: "generators (TeamSlotSecondary)", match: true }
+      - { name: "SP_ONS_CAPS / SP_ONS_TAKES", base: "caps / takes", port: "ONS_CAPS / ONS_TAKES", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "QC awards ONS_TAKES on destroying an enemy icon and ONS_CAPS on a completed build (two separate events). The port credits ONS_TAKES+SCORE+10 on icon destroy (IconDamage) and ONS_CAPS+SCORE+10 on build completion (CaptureControlPoint) — same columns, but the port deliberately does NOT add ONS_TAKES on a build-capture (it documents collapsing to avoid double-credit). Net player columns match Base for each event."
+    gaps:
+      - "The scoreboard COLUMN rendering (the actual HUD scoreboard layout for the generators/caps/takes fields) is a presentation/HUD concern not audited here."
+    verification:
+      - { kind: code_read, ref: "Onslaught.cs:155-166 vs sv_onslaught.qc:2135-2149", result: pass }
+    confidence: high
+    notes: "field_team(ST_ONS_GENS, generators, PRIMARY) + field(caps, SECONDARY) + field(takes, 0) reproduced."
+
+  - id: onslaught.captureshield
+    name: "CaptureShield (spinning shield model + push + blocked sound)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/gametypes/gametype/onslaught/sv_onslaught.qc:ons_CaptureShield_Spawn"
+      - "common/gametypes/gametype/onslaught/sv_onslaught.qc:ons_CaptureShield_Touch"
+    port_refs: []
+    constants:
+      - { name: "g_onslaught_shield_force", base: "100", port: "none", match: false }
+      - { name: "shield_hitbox_scale", base: "1.20", port: "none", match: false }
+      - { name: "shield_avelocity", base: "'7 0 11'", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: missing
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No physical capture-shield around shielded generators/control points: an enemy player can walk into a shielded node with no push-back, no ONS_DAMAGEBLOCKEDBYSHIELD sound, no GENERATOR/CONTROLPOINT_SHIELDED center notification, and no spinning additive shield model. (The shield is purely a feel/feedback layer; the damage-ignore IS enforced in code via the isshielded flag.)"
+    verification:
+      - { kind: code_read, ref: "grep CaptureShield in src — only CTF; no Onslaught shield", result: fail }
+    confidence: high
+    notes: "Damage immunity itself is honored (node.Shielded gate); only the visible/physical shield entity is missing."
+
+  - id: onslaught.spawn.teleport_choose
+    name: "Spawn placement + teleport (spawn_choose / spawn_at_* / ons_Teleport / click-radar)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/onslaught/sv_onslaught.qc:ons_Teleport"
+      - "common/gametypes/gametype/onslaught/sv_onslaught.qc:MUTATOR_HOOKFUNCTION(ons, PlayerSpawn)"
+      - "common/gametypes/gametype/onslaught/sv_onslaught.qc:MUTATOR_HOOKFUNCTION(ons, SV_ParseClientCommand) (ons_spawn)"
+      - "common/gametypes/gametype/onslaught/sv_onslaught.qc:MUTATOR_HOOKFUNCTION(ons, PlayerUseKey)"
+    port_refs: []
+    constants:
+      - { name: "g_onslaught_teleport_radius", base: "200", port: "none", match: false }
+      - { name: "g_onslaught_teleport_wait", base: "5", port: "none", match: false }
+      - { name: "g_onslaught_spawn_choose", base: "1", port: "none", match: false }
+      - { name: "g_onslaught_click_radius", base: "500", port: "none", match: false }
+      - { name: "g_onslaught_spawn_at_controlpoints", base: "0", port: "none", match: false }
+      - { name: "g_onslaught_spawn_at_controlpoints_chance", base: "0.5", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: missing
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No control-point-to-control-point teleport (use key / click-radar), no respawn-at-chosen-CP, no spawn_at_controlpoints / spawn_at_generator placement near owned nodes. Players spawn only via the generic team spawn system. The ons_spawn client command + clickradar HUD are absent. (spawn_choose defaults ON in Base.)"
+    verification:
+      - { kind: code_read, ref: "grep ons_Teleport/spawn_choose/teleport_antispam in src — none", result: fail }
+    confidence: high
+    notes: "Default-on spawn_choose makes this a noticeable gameplay-feel gap on real ONS maps."
+
+  - id: onslaught.cp.proximity_decap
+    name: "Proximity de-capture (stand near a point to flip it)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/onslaught/sv_onslaught.qc:ons_ControlPoint_Icon_Think (proximitydecap branch)"
+    port_refs: []
+    constants:
+      - { name: "g_onslaught_cp_proximitydecap", base: "0", port: "none", match: false }
+      - { name: "g_onslaught_cp_proximitydecap_distance", base: "512", port: "none", match: false }
+      - { name: "g_onslaught_cp_proximitydecap_dps", base: "100", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Proximity-decap (friendly-minus-enemy player count within 512 qu changes icon HP at 100 HP/s, destroying it at 0) is not implemented. Default OFF in Base, so low player impact, but a hosted server enabling it gets no effect."
+    verification:
+      - { kind: code_read, ref: "OnslaughtControlPoint.cs:319 comment 'Proximity-decap is deferred'; grep proximitydecap in src — none", result: fail }
+    confidence: high
+    notes: "Explicitly deferred in the port (IconThink comment). Default-off mitigates impact."
+
+  - id: onslaught.presentation.csqc
+    name: "CSQC presentation (generator/icon models, animation, radar, death-cam, FX)"
+    layer: [presentation]
+    base_refs:
+      - "common/gametypes/gametype/onslaught/cl_generator.qc:generator_construct"
+      - "common/gametypes/gametype/onslaught/cl_generator.qc:generator_damage"
+      - "common/gametypes/gametype/onslaught/cl_controlpoint.qc:cpicon_draw"
+      - "common/gametypes/gametype/onslaught/onslaught.qc:WantEventchase"
+    port_refs: []
+    constants:
+      - { name: "generator_damage_models", base: "MDL_ONS_GEN..GEN9/DEAD (11 states)", port: "none", match: false }
+      - { name: "cpicon_damage_models", base: "MDL_ONS_CP..CP3 (4 states)", port: "none", match: false }
+      - { name: "cpicon_spin_rate", base: "45 deg/s yaw + bob 9*(1-cos(1.875*t))", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: missing
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No generator/control-point/icon world models on the client; no progressive damage-model swaps; no icon bob/spin/punch-on-hit animation; no generator damage `frame`; no radar link lines; no objective death-cam (ENT_ONSCAMERA/WantEventchase) on round loss; no generator explosion sequence (rays/shockwave/gibs/electricity)."
+    verification:
+      - { kind: code_read, ref: "no CSQC onslaught entity handlers in port; effects registered as data only", result: fail }
+    confidence: medium
+    notes: "Cross-boundary (client). Port comments explicitly defer all CSQC models/animation/FX."
+
+  - id: onslaught.audio.cues
+    name: "Onslaught notifications + sounds emission"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/gametypes/gametype/onslaught/sv_onslaught.qc (Send_Notification/sound/play2team calls throughout)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Sounds/SoundsList.cs (registered, not called)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs (registered, not called)"
+    constants: []
+    status:
+      logic: na
+      values: na
+      timing: na
+      presentation: missing
+      audio: missing
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "All Onslaught sound + notification cues are registered as data but NEVER emitted by the ported gameplay: no build/built/under-attack/blocked-by-shield/hit/spark/generator-alarm/decay/explode sounds, no capture/CP-destroyed/generator-destroyed/round-win/round-tied/shielded/overtime notifications, no play2all CTF_CAPTURE win jingle."
+    verification:
+      - { kind: code_read, ref: "Onslaught.cs + OnslaughtControlPoint.cs contain no Notify/Sound/Effect emit calls (all deferred per comments)", result: fail }
+    confidence: high
+    notes: "Data tables exist (SoundsList:115-124, NotificationsList:711+); only the call sites are missing."
+
+  - id: onslaught.bot.roles
+    name: "Bot Onslaught objective role (offense/defense/assistant goal rating)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/onslaught/sv_onslaught.qc:havocbot_role_ons_setrole"
+      - "common/gametypes/gametype/onslaught/sv_onslaught.qc:havocbot_role_ons_offense"
+      - "common/gametypes/gametype/onslaught/sv_onslaught.qc:havocbot_role_ons_defense"
+      - "common/gametypes/gametype/onslaught/sv_onslaught.qc:havocbot_goalrating_ons_controlpoints_attack"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/BotObjectiveRoles.cs:RoleOnslaught (169)"
+      - "src/XonoticGodot.Server/Bot/BotRoles.cs (98: \"ons\"/\"onslaught\" -> RoleOnslaught)"
+    constants:
+      - { name: "havocbot_role_timeout", base: "120 s (role re-evaluation)", port: "none (single static role)", match: false }
+    status:
+      logic: partial
+      values: missing
+      timing: missing
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port has a SINGLE simplified offense role (rate every non-own onslaught_generator at RatingGenerator + every non-own onslaught_controlpoint at RatingControlPoint, by classname only) plus items + roam. Base has three roles (offense/defense/assistant) with a 120 s role-timeout re-evaluation (havocbot_role_ons_setrole)."
+      - "Port rates ALL non-own nodes; Base goal-rating FILTERS to only ATTACKABLE nodes (skips cp2.isshielded) and only nodes that are a generator/CP neighbor of the bot's team (aregensneighbor/arecpsneighbor bitmask), plus teammate-interest cost balancing (havocbot_ons_target). The port's lack of a shield/neighbor filter means bots also path toward unattackable shielded nodes."
+      - "Compounded by onslaught.links.resolution: with no live edges every node is shielded anyway, so on a real map the bot rates shielded objectives it can never act on."
+    verification:
+      - { kind: code_read, ref: "BotObjectiveRoles.cs:169-196 vs sv_onslaught.qc:1272-1500 (havocbot_role_ons_* + goalrating)", result: fail }
+    confidence: high
+    notes: "Draft omitted this entirely. Role IS wired live (BotRoles classname dispatch) but is a coarse offense-only approximation with no attackability filter and no role state machine. Monster/turret/vehicle reteam hooks (MUTATOR_HOOKFUNCTION(ons, MonsterSpawn/MonsterMove), allow_vehicle_touch) are likewise not ported — those belong to the monster/turret/vehicle units."

@@ -1,0 +1,75 @@
+unit: mutator-running_guns
+category: mutator
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 2
+  worst_gaps:
+    - "g_running_guns 1 has no in-game effect: players render fully visible, guns not isolated."
+    - "SetDefaultAlpha hook chain is never invoked (no .Call site) and its PlayerAlpha/WeaponAlpha output is never consumed; spawn hardcodes Alpha=1f."
+features:
+  - id: running_guns.registration.enable
+    name: "Mutator registration + g_running_guns enable cvar"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/running_guns/sv_running_guns.qc:REGISTER_MUTATOR(running_guns, autocvar_g_running_guns)"
+      - "common/mutators/mutator/running_guns/_mod.inc"
+      - "mutators.cfg:522 (set g_running_guns 0)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RunningGunsMutator.cs:RunningGunsMutator"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RunningGunsMutator.cs:IsEnabled"
+      - "assets/data/xonotic-data.pk3dir/mutators.cfg:522"
+    constants:
+      - { name: "g_running_guns", base: "0", port: "0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "RunningGunsMutator.cs:14-21 [Mutator]+IsEnabled (Cvars.GetFloat(\"g_running_guns\")!=0); mutators.cfg:522 default 0 present (Base + port byte-identical line)", result: pass }
+      - { kind: code, ref: "MutatorActivation.Apply() Add/Remove loop subscribes enabled mutators; live caller GameWorld.cs:511 on the map-load/server-boot path (verified, real match path)", result: pass }
+    confidence: high
+    notes: "Registration + cvar gate are faithful and the activation loop has a live caller, so when g_running_guns!=0 the mutator IS added (MutatorActivation.Add → Hook → SetDefaultAlpha.Add) and its handler subscribed. The downstream hook is dead (see other feature), but the registration/enable plumbing itself is correct and live. Unlike NIX/instagib, running_guns has no menu mutual-exclusion concern — it is purely cosmetic and orthogonal."
+  - id: running_guns.alpha.set_default_alpha
+    name: "SetDefaultAlpha override — player invisible (alpha -1), weapon visible (alpha +1)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/running_guns/sv_running_guns.qc:MUTATOR_HOOKFUNCTION(running_guns, SetDefaultAlpha)"
+      - "server/world.qc:105 (void SetDefaultAlpha; MUTATOR_CALLHOOK(SetDefaultAlpha))"
+      - "server/world.qc:954,1730 (SetDefaultAlpha() called at world spawn + map restart)"
+      - "server/client.qc:788,790 (this.alpha=default_player_alpha; exteriorweaponentity.alpha=default_weapon_alpha)"
+      - "server/player.qc:540 (this.alpha = default_player_alpha on respawn)"
+      - "server/weapons/weaponsystem.qc:116 (weapon m_alpha = default_weapon_alpha when owner at default)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RunningGunsMutator.cs:OnSetDefaultAlpha"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:403 (SetDefaultAlpha HookChain — defined, never .Call'd)"
+    constants:
+      - { name: "default_player_alpha", base: "-1", port: "-1 (args.PlayerAlpha, set by handler, never applied)", match: false }
+      - { name: "default_weapon_alpha", base: "+1", port: "+1 (args.WeaponAlpha, set by handler, never applied)", match: false }
+      - { name: "default-branch fallback (no hook)", base: "g_player_alpha; 0->1; weapon=player", port: "none (no SetDefaultAlpha() equivalent, no g_player_alpha seed)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "g_running_guns 1 has no in-game effect: players render fully visible, guns not isolated."
+      - "SetDefaultAlpha hook chain is never invoked (no .Call site) and its PlayerAlpha/WeaponAlpha output is never consumed; spawn hardcodes Alpha=1f."
+      - "No port equivalent of world.qc SetDefaultAlpha() to seed default_player_alpha/default_weapon_alpha (from g_player_alpha) and fire the hook at world spawn / map restart (world.qc:954,1730)."
+      - "No default_player_alpha/default_weapon_alpha globals; player spawn hardcodes p.Alpha=1f (SpawnSystem.cs:524) and corpse-reset hardcodes victim.Alpha=1f (DamageSystem.cs:581); no exterior-weapon-entity alpha tracks the weapon default (weaponsystem.qc:116 has no port consumer)."
+    verification:
+      - { kind: code, ref: "RunningGunsMutator.cs:37-43 OnSetDefaultAlpha sets args.PlayerAlpha=-1f, args.WeaponAlpha=1f, returns true — values+logic faithful to QC (-1/+1, return true)", result: pass }
+      - { kind: code, ref: "grep src/** for MutatorHooks.SetDefaultAlpha → only .Add/.Remove (RunningGuns + Cloaked) + the chain definition (MutatorHooks.cs:403); NO .Call site anywhere — chain invoked zero times", result: fail }
+      - { kind: code, ref: "grep src/** PlayerAlpha/WeaponAlpha → written only by RunningGuns + Cloaked handlers, read by NOTHING; spawn alpha hardcoded 1f (SpawnSystem.cs:524, DamageSystem.cs:581); no g_player_alpha/default_*_alpha seed in src/**", result: fail }
+    confidence: high
+    notes: "Handler logic+values are a faithful port (-1 / +1, return true). But the feature is present-but-dead on two independent counts, both re-verified by grep: (1) the MutatorHooks.SetDefaultAlpha chain has no invoker (no .Call) — Base fires it from SetDefaultAlpha() at world spawn + map restart; the port has no equivalent, and (2) nothing consumes the resulting alpha — spawn hardcodes 1f. The same dead chain also nullifies CloakedMutator's SetDefaultAlpha (identical .Add/no-consumer pattern). Fix is mechanical: add a SetDefaultAlpha() that seeds default_player_alpha/default_weapon_alpha (from g_player_alpha, 0->1), Calls the chain, and have player-spawn + exterior-weapon code read those defaults instead of hardcoding 1f. The Base mutator file is otherwise fully covered by these two rows (registration + one hook — nothing omitted)."

@@ -1,0 +1,415 @@
+unit: keepaway
+category: gametype
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 14
+  worst_gaps:
+    - "No ball exists in a live match: SpawnBall has no caller, so the mode is unplayable (you cannot pick up or carry anything)."
+    - "Because there is never a carrier, NO Keepaway scoring ever fires (time points, kill bonuses, pickups, bctime all stay 0)."
+    - "No Keepaway HUD mod-icon, carrier waypoint, or radar tracking (presentation entirely missing)."
+    - "No pickup/drop/respawn/touch sounds, no respawn/spark particles, no center/info notifications."
+    - "Possession damage/force matrix and carrier highspeed multiplier are dead/missing — combat plays like plain DM."
+features:
+  - id: keepaway.ball.spawn
+    name: "Ball spawn at map start (single keepawayball)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/keepaway/sv_keepaway.qc:ka_SpawnBalls"
+      - "common/gametypes/gametype/keepaway/sv_keepaway.qc:ka_Handler_CheckBall"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Keepaway.cs:SpawnBall"
+    constants:
+      - { name: "g_keepawayball_count", base: "1", port: "1 (single ball only)", match: true }
+      - { name: "ball_bbox", base: "+-24 24 24", port: "+-24 24 24", match: true }
+      - { name: "g_keepawayball_damageforcescale", base: "2", port: "set on entity but dead", match: false }
+      - { name: "g_keepawayball_trail_color", base: "254", port: "none", match: false }
+      - { name: "g_keepawayball_effects", base: "8 (EF_DIMLIGHT)", port: "none", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: unknown
+      presentation: missing
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "SpawnBall has zero callers (Grep across src/**): GameWorld objective-spawner has no keepawayball/keepaway case."
+      - "QC ka's ball is procedural (ka_Handler_CheckBall thinks each frame and calls ka_SpawnBalls when g_kaballs empty); the port has no equivalent driver, and the map-entity spawner will never trigger it (ka ball is not a map placement)."
+      - "BallEntity stays null in every live match; no glow_trail / EF_DIMLIGHT / model is realized."
+    verification:
+      - { kind: codetrace, ref: "Grep .SpawnBall over src/** -> only Nexball.SpawnBall is called", result: fail }
+    confidence: high
+    notes: "Entity layer is fully coded but unreachable. Needs a host-side procedural spawner to replace ka_Handler_CheckBall."
+
+  - id: keepaway.ball.respawn
+    name: "Loose-ball relocate timer + fall-off/NEEDKILL respawn"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/keepaway/sv_keepaway.qc:ka_RespawnBall"
+      - "common/gametypes/gametype/keepaway/sv_keepaway.qc:ka_DamageEvent"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Keepaway.cs:RespawnBall"
+    constants:
+      - { name: "g_keepawayball_respawntime", base: "10", port: "10 (RespawnTime fallback)", match: true }
+      - { name: "respawn_velocity", base: "0 0 200", port: "0 0 200", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: partial
+      presentation: missing
+      audio: missing
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "RespawnBall only re-bounces/re-arms; it does NOT MoveToRandomMapLocation (port comment admits this is a host concern)."
+      - "No EFFECT_KA_BALL_RESPAWN at old+new origin, no SND_KA_RESPAWN, no WP_KaBall waypoint."
+      - "No NOIMPACT/fall-off respawn and no NEEDKILL-damage respawn path (ka_TouchEvent NOIMPACT branch / ka_DamageEvent not ported)."
+      - "Dead anyway: reached only via the dead ball-entity layer."
+    verification:
+      - { kind: codetrace, ref: "RespawnBall called only by SpawnBall/Drop think trampoline, both dead", result: fail }
+    confidence: high
+    notes: "Random relocation is the key missing behavior even if the layer were wired."
+
+  - id: keepaway.ball.pickup
+    name: "Ball pickup (attach to carrier, mark VIP, pickups++)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/keepaway/sv_keepaway.qc:ka_TouchEvent"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Keepaway.cs:PickUp"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Keepaway.cs:BallTouchEntity"
+    constants:
+      - { name: "carried_scale", base: "12/16 = 0.75", port: "none", match: false }
+      - { name: "self_recapture_lockout_wait", base: "0.5", port: "none", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: missing
+      presentation: missing
+      audio: missing
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "PickUp is only reachable via BallTouchEntity, which is only registered by the dead SpawnBall -> never fires in a match."
+      - "No SND_KA_PICKEDUP, no INFO/CENTER_KEEPAWAY_PICKUP* notifications, no carrier waypoint attach."
+      - "No 0.5s self-recapture lockout (wait/previous_owner), no non-player touch (BALL_SPARKS + SND_KA_TOUCH) branch, no scale 0.75, no setattachment/SOLID_NOT physics."
+      - "GameRules_scoring_vip(toucher,true) has no port equivalent."
+    verification:
+      - { kind: codetrace, ref: "BallTouchEntity registered only by dead SpawnBall", result: fail }
+    confidence: high
+    notes: "KEEPAWAY_PICKUPS column add is coded inside PickUp but never runs."
+
+  - id: keepaway.ball.drop
+    name: "Ball drop on death/use-key/disconnect/observe"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/keepaway/sv_keepaway.qc:ka_DropEvent"
+      - "common/gametypes/gametype/keepaway/sv_keepaway.qc:ka_PlayerReset"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Keepaway.cs:Drop"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Keepaway.cs:OnDeath"
+    constants:
+      - { name: "drop_offset_z", base: "10", port: "10", match: true }
+      - { name: "drop_velocity_base", base: "0 0 200 + random xy", port: "0 0 200 (no random)", match: false }
+      - { name: "self_recapture_lockout_wait", base: "0.5", port: "none", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: missing
+      audio: missing
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Drop() is invoked from OnDeath (LIVE death hook) when the victim carried, but since nobody ever carries it is effectively unreachable; use-key (PlayerUseKey), disconnect, and MakePlayerObserver drop paths are NOT wired at all."
+      - "Drop velocity omits the crandom xy scatter; no nudgeoutofsolid; no previous_owner/wait lockout."
+      - "No SND_KA_DROPPED, no INFO/CENTER_KEEPAWAY_DROPPED notifications, no WP_KaBall waypoint."
+      - "No multi-ball chain advance / ka_PlayerReset semantics."
+    verification:
+      - { kind: codetrace, ref: "Drop reached only from OnDeath victimCarried branch; no use-key/disconnect/observe hooks", result: fail }
+    confidence: high
+    notes: "Death-drop wiring exists but is moot without a carry path; the other 3 drop triggers are absent."
+
+  - id: keepaway.score.timepoints
+    name: "Per-second carry scoring (score_timepoints * frametime)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/keepaway/sv_keepaway.qc:ka_BallThink_Carried"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Keepaway.cs:Tick"
+    constants:
+      - { name: "g_keepaway_score_timepoints", base: "0", port: "0 (DefaultScoreTimePoints)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Tick() is LIVE (GameWorld.cs:1635) and the float2int-remainder accrual is faithful, BUT it early-returns when Ball.Carrier is null, which is ALWAYS (no carry path) -> zero points awarded in practice."
+    verification:
+      - { kind: codetrace, ref: "GameWorld.cs:1635 ka.Tick(FrameTime); carrier always null", result: fail }
+    confidence: high
+    notes: "Algorithm + default match Base; defect is the missing carrier upstream, not this code."
+
+  - id: keepaway.score.bctime
+    name: "Ball-carry-time secondary column (KEEPAWAY_BCTIME += frametime)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/keepaway/sv_keepaway.qc:ka_BallThink_Carried"
+      - "common/gametypes/gametype/keepaway/sv_keepaway.qh:GameRules_scoring"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Keepaway.cs:Tick"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Keepaway.cs:Activate"
+    constants:
+      - { name: "bctime_sort_prio", base: "SFL_SORT_PRIO_SECONDARY", port: "SetSortKeys(Score, BCTIME)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "BCTIME accrual + secondary-sort registration are faithful, but only fire while carrying; carrier is never set so the column stays 0."
+      - "Port banks whole seconds (int column) carrying the fractional remainder; QC adds raw frametime to a float scoring field. Observable difference is negligible (display is whole seconds)."
+    verification:
+      - { kind: codetrace, ref: "Tick BCTIME branch; carrier always null", result: fail }
+    confidence: high
+    notes: "Column declared in Activate (LIVE). Faithful logic, dead due to no carrier."
+
+  - id: keepaway.score.killbonuses
+    name: "Kill bonuses (bckill killer bonus + killac carrier bonus + carrierkills)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/keepaway/sv_keepaway.qc:PlayerDies"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Keepaway.cs:OnDeath"
+    constants:
+      - { name: "g_keepaway_score_bckill", base: "1", port: "0 (DefaultScoreBcKill)", match: false }
+      - { name: "g_keepaway_score_killac", base: "1", port: "0 (DefaultScoreKillAc)", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "OnDeath is on the LIVE death bus and the bonus/carrier-kill logic is faithfully shaped, but it is contingent on a carrier (victimCarried / attacker carrying) which can never be true with no carry path."
+      - "Port hardcoded fallbacks for bckill/killac are 0, but Base defaults are 1; when cvars are unset (headless/tests) the port awards nothing where Base awards 1."
+      - "GiveFragsForKill=0 (no normal frags in ka) is NOT modeled — OnDeath returns false and lets the normal FFA frag path run, so ka would award frags Base suppresses."
+    verification:
+      - { kind: codetrace, ref: "OnDeath added in Activate via Combat.Death; bonuses gated on carrier", result: fail }
+      - { kind: value, ref: "DefaultScoreBcKill/KillAc=0 vs cfg g_keepaway_score_*=1", result: fail }
+    confidence: high
+    notes: "When the server cfg is loaded the cvars read 1; the wrong values are the unset-fallbacks plus the missing frag-suppression."
+
+  - id: keepaway.win.pointlimit
+    name: "Point-limit win condition + leader"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/keepaway/sv_keepaway.qh:GameRules_limit_score"
+      - "common/gametypes/gametype/keepaway/keepaway.qh:gametype_init pointlimit=30"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Keepaway.cs:UpdateLeaderAndCheckLimit"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Keepaway.cs:RecomputeLeader"
+      - "src/XonoticGodot.Server/GameWorld.cs:2052"
+    constants:
+      - { name: "pointlimit_default", base: "30 (mapinfo; g_keepaway_point_limit=-1->mapinfo)", port: "30 (DefaultPointLimit)", match: true }
+      - { name: "timelimit_default", base: "20", port: "via gametype_init/cvars", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port PointLimit fallback is the literal 30; Base g_keepaway_point_limit default is -1 (use mapinfo). With no carrier nobody reaches the limit anyway, but the resolution order (ka cvar -> fraglimit -> 30) is reasonable."
+    verification:
+      - { kind: codetrace, ref: "GameWorld.cs:2052 reports ka.Leader when MatchEnded", result: pass }
+    confidence: medium
+    notes: "Leader/limit machinery is live and faithful; only ever triggered if scoring worked."
+
+  - id: keepaway.ffa.framing
+    name: "FFA framing (no teams) + tie -> overtime"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/keepaway/keepaway.qh:gametype_init GAMETYPE_FLAG_USEPOINTS"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Keepaway.cs:TeamGame"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Keepaway.cs:ReportsTie"
+    constants:
+      - { name: "teamplay", base: "false (no GAMETYPE_FLAG_TEAMPLAY)", port: "TeamGame=false", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: codetrace, ref: "TeamGame=false; ReportsTie=FfaTie.TopTwoTied", result: pass }
+    confidence: high
+    notes: "Correctly modeled as FFA (team variant is separate tka/TeamKeepaway)."
+
+  - id: keepaway.damage.matrix
+    name: "Possession damage/force scaling matrix (Damage_Calculate)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/keepaway/sv_keepaway.qc:Damage_Calculate"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Keepaway.cs:DamageScale"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Keepaway.cs:DamageForceScale"
+    constants:
+      - { name: "g_keepaway_ballcarrier_damage", base: "1 1 1", port: "1 1 1 (per-component cvar fallback)", match: true }
+      - { name: "g_keepaway_ballcarrier_force", base: "1 1 1", port: "1 1 1", match: true }
+      - { name: "g_keepaway_noncarrier_damage", base: "1 1 1", port: "1 1 1", match: true }
+      - { name: "g_keepaway_noncarrier_force", base: "1 1 1", port: "1 1 1", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "DamageScale/DamageForceScale have ZERO callers (DamageSystem never consults the gametype for ka) -> the possession matrix never affects combat."
+      - "Port reads per-component cvars by suffix (_x/_y/_z) instead of the vector cvar; Base ships only the vector form (g_keepaway_ballcarrier_damage \"1 1 1\"), so a server-set non-default vector would NOT be honored by the port (it would read the absent _x/_y/_z and fall back to 1)."
+    verification:
+      - { kind: codetrace, ref: "Grep DamageScale/DamageForceScale -> only definitions, no call sites", result: fail }
+    confidence: high
+    notes: "Even if wired, the suffix-cvar read would silently ignore the real vector cvars."
+
+  - id: keepaway.carrier.highspeed
+    name: "Carrier speed multiplier (MOVEVARS_HIGHSPEED *= ballcarrier_highspeed)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/keepaway/sv_keepaway.qc:PlayerPhysics_UpdateStats"
+    port_refs: []
+    constants:
+      - { name: "g_keepaway_ballcarrier_highspeed", base: "1", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No PlayerPhysics hook applies a carrier highspeed multiplier; explicitly deferred in the Keepaway.cs class comment."
+      - "Default is 1 (no effect by default) so the visible impact is nil unless a server sets it; still a missing feature."
+    verification:
+      - { kind: codetrace, ref: "No keepaway reference in PlayerPhysics.cs", result: fail }
+    confidence: high
+    notes: "Low gameplay impact at default but absent."
+
+  - id: keepaway.hud.modicon
+    name: "Keepaway HUD mod-icon (blinking ball-carrying icon)"
+    layer: [presentation]
+    base_refs:
+      - "common/gametypes/gametype/keepaway/cl_keepaway.qc:HUD_Mod_Keepaway"
+      - "common/gametypes/gametype/keepaway/sv_keepaway.qc:PlayerPreThink (OBJECTIVE_STATUS|KA_CARRYING)"
+    port_refs: []
+    constants:
+      - { name: "blink", base: "blink(0.85,0.15,5)", port: "none", match: false }
+      - { name: "KA_CARRYING", base: "BIT(0)", port: "never set", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "ModIconsPanel.ModIconsMode has no Keepaway entry; NetGame.cs mode-select never sets it; ModIconsPanel has no DrawKeepaway."
+      - "Server never sets STAT(OBJECTIVE_STATUS) KA_CARRYING bit, so even a client renderer would have no data."
+      - "Player never sees the blinking 'keepawayball_carrying' icon or its expand transition."
+    verification:
+      - { kind: codetrace, ref: "Grep ModIconsMode enum (no Keepaway); NetGame mode-select (no ka)", result: fail }
+    confidence: high
+    notes: "Entire mod-icon stack absent on both server (status bit) and client (renderer)."
+
+  - id: keepaway.waypoints.tracking
+    name: "Ball / carrier waypoint sprites + radar tracking (g_keepawayball_tracking)"
+    layer: [presentation, authority]
+    base_refs:
+      - "common/gametypes/gametype/keepaway/sv_keepaway.qc:ka_ballcarrier_waypointsprite_visible_for_player"
+      - "common/gametypes/gametype/keepaway/sv_keepaway.qc:ka_RespawnBall (WP_KaBall)"
+    port_refs: []
+    constants:
+      - { name: "g_keepawayball_tracking", base: "1 (0=none/1=always/2=dropped-only)", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No WP_KaBall / WP_KaBallCarrier waypoint sprites; no RADARICON_FLAGCARRIER; no spectator/invisibility visibility rules; no tracking-mode cvar handling."
+    verification:
+      - { kind: codetrace, ref: "No keepaway waypoint code in src/** or game/**", result: fail }
+    confidence: high
+    notes: "Players/spectators get no on-screen or radar cue to the ball or carrier."
+
+  - id: keepaway.bot.role
+    name: "Bot ka roles (carrier/collector + ball goal rating + ForbidAttack)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/keepaway/sv_keepaway.qc:havocbot_role_ka_carrier"
+      - "common/gametypes/gametype/keepaway/sv_keepaway.qc:havocbot_role_ka_collector"
+      - "common/gametypes/gametype/keepaway/sv_keepaway.qc:havocbot_goalrating_ball"
+      - "common/gametypes/gametype/keepaway/sv_keepaway.qc:Bot_ForbidAttack"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/BotObjectiveRoles.cs:RoleKeepaway"
+      - "src/XonoticGodot.Server/Bot/BotRoles.cs:99"
+    constants:
+      - { name: "ball_goalrating_scale", base: "8000", port: "RatingBall = 8000f", match: true }
+      - { name: "routerating_dist", base: "2000", port: "2000f", match: true }
+      - { name: "ball_class", base: "keepawayball", port: "FindBall queries 'keepaway_ball'", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "RoleKeepaway is registered in the bot role table (BotRoles.cs:99 'ka'/'keepaway'/'tka' -> RoleKeepaway, LIVE dispatch) but FindBall() (BotObjectiveRoles.cs:277) searches class 'keepaway_ball' while the (dead) SpawnBall creates 'keepawayball' -> bot always finds no ball and falls back to DM behavior."
+      - "No Bot_ForbidAttack equivalent (Base: forbid attacking when neither bot nor target carries and a held ball exists)."
+      - "Collector/carrier split is collapsed into one role (Base has two havocbot_role_ka_carrier/collector); functionally fine but a structural simplification."
+      - "CORRECTION vs first pass: RatingBall IS 8000 (matches Base havocbot_goalrating_ball scale 8000) and the routerating distance is 2000 (matches Base); the draft's '~2000 mismatch' was wrong."
+    verification:
+      - { kind: codetrace, ref: "FindBall 'keepaway_ball' (BotObjectiveRoles.cs:277) vs SpawnBall 'keepawayball' (Keepaway.cs:211); SpawnBall never runs", result: fail }
+      - { kind: value, ref: "RatingBall=8000f (BotObjectiveRoles.cs:25) == Base goalrating_ball 8000; routerating 2000f == Base", result: pass }
+    confidence: high
+    notes: "Role dispatch is wired but functionally inert because there is never a ball entity to target, and the class string mismatches what SpawnBall would create even if there were. Rating values are faithful (draft error corrected)."

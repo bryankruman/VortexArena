@@ -674,6 +674,44 @@ public static class TurretAI
     }
 
     /// <summary>
+    /// The turret's installed <c>.event_damage</c> (QC <c>turret_damage</c>, sv_turrets.qc) — the
+    /// <see cref="Entity.GtEventDamage"/> shim wired in <see cref="TurretSpawn.Init"/>. The headless
+    /// <see cref="Damage.DamageSystem.EventDamage"/> routes every non-player edict with a <c>GtEventDamage</c>
+    /// here (and returns), exactly as it does for monsters / Onslaught objectives — so a turret victim runs the
+    /// turret pre-damage gate + retaliation (<see cref="Damage"/>) and its OWN health subtract, instead of being
+    /// treated as a player by <c>PlayerDamage</c>.
+    ///
+    /// This is the seam Wave-2 turrets depend on: it makes <see cref="Damage"/> (which was bit-faithful but had
+    /// no live caller) actually run on the live damage path. It applies the gated damage to RES_HEALTH and, when
+    /// the turret drops to 0, fires the shared <see cref="Combat.Death"/> bus — which <see cref="OnAnyDeath"/>
+    /// already turns into <see cref="Die"/> (blast + respawn schedule). Signature mirrors <c>GtEventDamage</c>:
+    /// <c>(self, inflictor, attacker, deathtype, damage, hitloc, force)</c>.
+    /// </summary>
+    public static void EventDamage(Entity turret, Entity? inflictor, Entity? attacker, string deathType,
+        float damage, Vector3 hitLoc, Vector3 force)
+    {
+        _ = inflictor; _ = hitLoc; // (parity slots: QC turret_damage uses attacker/force; hitloc is unused)
+
+        // Pre-damage gate (QC turret_damage): rejects dead/inactive/friendly hits (returns 0), scales friendly
+        // fire, shoves a movable turret, and picks the attacker for retaliation.
+        float take = Damage(turret, attacker, damage, force);
+        if (take <= 0f)
+            return;
+
+        // QC turret_damage: TakeResource(this, RES_HEALTH, damage) then `if (health <= 0) turret_die`. A turret
+        // is not a player, so there is no armor split here — the raw gated damage hits health.
+        turret.TakeResource(ResourceType.Health, take);
+        turret.Health = turret.GetResource(ResourceType.Health);
+
+        if (turret.Health <= 0f && turret.DeadState == DeadFlag.No)
+        {
+            // Fire the shared obituary/death bus (gametypes score, OnAnyDeath -> Die runs the blast + respawn).
+            var death = new DeathEvent { Victim = turret, Attacker = attacker, Inflictor = inflictor, DeathType = deathType };
+            Combat.Death.Call(ref death);
+        }
+    }
+
+    /// <summary>
     /// Port of <c>turret_die</c> (sv_turrets.qc): unsolidify, stop taking damage, do the death blast
     /// (RadiusDamage scaled by leftover ammo), and either remove (no-respawn) or schedule a respawn after
     /// <see cref="TurretState.RespawnTime"/>. Driven from <see cref="OnAnyDeath"/>.

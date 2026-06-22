@@ -1,0 +1,479 @@
+unit: warpzones
+category: mapobject
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 18
+  worst_gaps:
+    - "No client portal render: the warpzone surface is a static dark mirror placeholder (HeroMaterials.BuildPortal), not a SubViewport camera view of the linked OUT plane — you cannot see through a warpzone."
+    - "No client view rotate across the seam (WarpZone_FixView / ENT_CLIENT_WARPZONE_TELEPORTED unported) — crossing snaps the camera."
+    - "Warpzone crossing is not client-predicted (TriggerTouch.PredictTeleportsAmbient handles trigger_teleport only) — the server teleport arrives as a rubber-band correction."
+    - "No near-clip fix / roll-kill at the seam (WarpZone_FixNearClip / cl_rollkillspeed unported)."
+    - "func_camera / func_warpzone_camera (fixed dpcamera view) not implemented."
+    - "trigger_warpzone_reconnect + WarpZone_Think (runtime/moving-warpzone re-link) not implemented — links computed once at init."
+    - "Observers / SOLID_NOT clients can't pass through warpzones (WarpZone_StartFrame per-frame observer warp unported)."
+features:
+  - id: warpzones.transform.algebra
+    name: "Seamless-portal transform math (origin/velocity/angles rotated through the seam)"
+    layer: [shared]
+    base_refs:
+      - "lib/warpzone/anglestransform.qc:AnglesTransform_Apply"
+      - "lib/warpzone/common.qc:WarpZone_SetUp"
+      - "lib/warpzone/common.qc:WarpZone_TransformOrigin"
+      - "lib/warpzone/common.qc:WarpZone_TransformVelocity"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:WarpzoneTransform"
+    constants:
+      - { name: "transform_encoding", base: "AnglesTransform Euler-vector (transform+shift)", port: "explicit fwd/right/up basis", match: false }
+      - { name: "180deg turn (in->out direction flip)", base: "AnglesTransform_TurnDirectionFR", port: "inFwd->-outFwd, inRight->-outRight, inUp->outUp", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Port encodes the transform with an explicit forward/right/up basis (WarpzoneTransform) instead of QC's AnglesTransform Euler-vector algebra — same math, headless-testable. AnglesTransform_Normalize/CancelRoll view-angle canonicalisation is not reproduced (only relevant once the client view-rotate exists, currently moot)."
+    gaps: []
+    verification:
+      - { kind: unit_test, ref: "WarpzoneTests.Transform_MapsPlaneCenters / Transform_PreservesSpeed / Transform_MovingIntoIn_EmergesOutOfOut", result: pass }
+    confidence: high
+    notes: "warpzone_transform = RightDivide(other_ang, TurnDirectionFR(my_ang)); shift = PrePostShift_GetPostShift. mathlib.qc (C99 math shim) is incidental to warpzones and not ported."
+  - id: warpzones.transform.chain
+    name: "Chained-transform accumulator (multi-portal composition)"
+    layer: [shared]
+    base_refs:
+      - "lib/warpzone/common.qc:WarpZone_Accumulator_AddTransform"
+      - "lib/warpzone/anglestransform.qc:AnglesTransform_Multiply_GetPostShift"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Warpzone/WarpzoneRadiusQuery.cs:WarpzoneTransformChain"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: unit_test, ref: "WarpzoneTraceTests.Chain_Identity_Is_NoOp / Chain_Append_Matches_The_Zone_Transform_For_One_Zone", result: pass }
+    confidence: high
+    notes: "Affine R*p+shift composed exactly as WarpZone_Accumulator_Add (latest-crossed zone is the outer multiply)."
+  - id: warpzones.spawn.trigger
+    name: "trigger_warpzone / trigger_warpzone_position map spawnfuncs + registration"
+    layer: [authority]
+    base_refs:
+      - "lib/warpzone/server.qc:spawnfunc(trigger_warpzone)"
+      - "lib/warpzone/server.qc:spawnfunc(trigger_warpzone_position)"
+      - "lib/warpzone/util_server.qc:WarpZoneLib_ExactTrigger_Init"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:WarpzoneSpawns"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:WarpzoneManager.AddMapZone"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:108"
+      - "src/XonoticGodot.Server/GameWorld.cs:393"
+    constants:
+      - { name: "scale default", base: "modelscale then 1", port: "not modeled (scale=1 implicit)", match: false }
+      - { name: "solid / movetype", base: "SOLID_TRIGGER / MOVETYPE_NONE", port: "Solid.Trigger / MoveType.None", match: true }
+      - { name: "warpzone_isboxy (box vs model trigger)", base: "set when no model / mapper mins+maxs", port: "not modeled (always uses model/brush bounds)", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "scale/modelscale and the warpzone_isboxy box-vs-exacttrigger distinction from WarpZoneLib_ExactTrigger_Init are not modeled; the EF_NODEPTHTEST render flag and WarpZone_Send CSQC serialisation are unported (no client entity)."
+    verification:
+      - { kind: unit_test, ref: "WarpzoneSpawnTests.MapWarpzones_Spawn_Orient_And_Link_FromBrushGeometry", result: pass }
+    confidence: high
+    notes: "Sink WarpzoneSpawns.Sink wired in GameWorld.cs:393 to Warpzones.OnMapEntity; deferred plane/link in InitMapZones."
+  - id: warpzones.spawn.brushplane
+    name: "Auto-orient IN plane from brush geometry (getsurface* area-weighted normal)"
+    layer: [authority]
+    base_refs:
+      - "lib/warpzone/server.qc:WarpZone_InitStep_UpdateTransform"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:WarpzoneManager.DerivePlaneFromBrush"
+    constants:
+      - { name: "non-planar threshold", base: "vdist(norm, <, 0.99)", port: "norm.Length() < 0.99", match: true }
+      - { name: "trigger texture skip", base: "textures/common/trigger | trigger", port: "same", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: unit_test, ref: "WarpzoneSpawnTests.MapWarpzones_Spawn_Orient_And_Link_FromBrushGeometry / MapWarpzone_PositionEntity_Overrides_Orientation", result: pass }
+    confidence: high
+    notes: "Uses ISurfaceService.GetSurface* (SurfaceService.cs). killtarget/position aiment resolved in ResolveAiment (Warpzone.cs:420)."
+  - id: warpzones.spawn.link
+    name: "Pair zones by target/targetname (+ sv_warpzone_allow_selftarget) and deferred init"
+    layer: [authority]
+    base_refs:
+      - "lib/warpzone/server.qc:WarpZone_InitStep_FindTarget"
+      - "lib/warpzone/server.qc:WarpZone_InitStep_FinalizeTransform"
+      - "lib/warpzone/server.qc:WarpZone_StartFrame"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:WarpzoneManager.Link"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:WarpzoneManager.InitMapZones"
+      - "src/XonoticGodot.Server/GameWorld.cs:552"
+      - "src/XonoticGodot.Server/Cvars.cs:105"
+    constants:
+      - { name: "sv_warpzone_allow_selftarget", base: "0", port: "0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: unit_test, ref: "WarpzoneSpawnTests.MapWarpzones_TwoWayLink_WhenOnlyOneCarriesTarget", result: pass }
+    confidence: high
+    notes: "Two-pass forward+reverse pairing mirrors QC this.enemy=e2; e2.enemy=this. Cvar registered and read once per link pass."
+  - id: warpzones.teleport.player
+    name: "Player/projectile crossing: warp origin/velocity/angles, momentum-preserved"
+    layer: [authority, shared]
+    base_refs:
+      - "lib/warpzone/server.qc:WarpZone_Touch"
+      - "lib/warpzone/server.qc:WarpZone_Teleport"
+      - "lib/warpzone/server.qc:WarpZone_TeleportPlayer"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:WarpzoneManager.Teleport"
+      - "src/XonoticGodot.Engine/Simulation/TriggerTouch.cs:Run"
+    constants:
+      - { name: "cross-into-plane gate", base: "WarpZone_PlaneDist(this, origin+view_ofs) < 0", port: "Dot(velocity, InForward) > 0 -> skip (moving-out gate)", match: false }
+      - { name: "interp cancel", base: "oldorigin = to + EF_TELEPORT_BIT", port: "OldOrigin = newOrigin (no EF_TELEPORT)", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port gates the warp on velocity direction (Dot(velocity, InForward) > 0 -> skip) rather than QC's plane-side test WarpZone_PlaneDist(this, origin+view_ofs) >= 0 -> return (server.qc:193). VERIFIED divergent: an entity loitering exactly ON or just past the plane with outward/zero velocity is NOT teleported by the port even though it has crossed the seam, whereas QC teleports it as soon as it is past the plane regardless of velocity sign; the port also lacks the view_ofs offset in the side test."
+      - "The frame-back re-trace (WarpZone_Teleport f0/f1 double-touch avoidance, server.qc:80) and WarpZoneLib_MoveOutOfSolid stuck-recovery are not ported."
+      - "warpzone_teleport_finishtime / warpzone_teleport_time same-frame re-teleport guard not modeled (server.qc:186,355; relies on the touch not re-firing). WarpZone_Projectile_Touch (the projectile .move_touch filter that aborts a stray impact and re-teleports on the same frame, server.qc:344) and the WARPZONELIB_REMOVEHACK-gated WarpZone_CheckProjectileImpact impact-filter are absent — a rocket that touches the trigger and a wall in the same frame could detonate on the seam instead of passing through."
+    verification:
+      - { kind: unit_test, ref: "WarpzoneTests.Teleport_WarpsEntityAndPreservesMomentum / Teleport_SkipsWhenMovingOutOfZone", result: pass }
+      - { kind: code, ref: "VERIFIER: Base WarpZone_Touch server.qc:181-223 vs Warpzone.cs:186-206 — gate, EF_TELEPORT, finishtime guard, projectile touch", result: partial }
+    confidence: high
+    notes: "Trigger .Touch set in SpawnFromBrush/SpawnTriggerFor; fired by TriggerTouch.Run on the per-tick TouchAreaGrid pass (SimulationLoop). avelocity also transformed. VERIFIER: confirmed momentum-preserving transform is correct + live; logic stays 'partial' for the gate + projectile-touch + finishtime-guard gaps above."
+  - id: warpzones.teleport.usetargets
+    name: "Fire warpzone targets on a crossing (SUB_UseTargets)"
+    layer: [authority]
+    base_refs:
+      - "lib/warpzone/server.qc:WarpZone_Touch"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:Teleport"
+    constants: []
+    status:
+      logic: partial
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port fires UseTargets on the trigger only; QC fires SUB_UseTargets_SkipTargets on BOTH this and this.enemy with specific skip bitmasks (BIT(1)|BIT(3) / BIT(1)|BIT(2)). Partner-zone target relays won't trigger."
+    verification:
+      - { kind: code, ref: "Warpzone.cs:203 MapMover.UseTargets(trig, e, trig)", result: partial }
+    confidence: medium
+    notes: "Rare in practice (most warpzones carry no .target relay)."
+  - id: warpzones.combat.traceline
+    name: "Hitscan/aim traces cross seamless portals (16-zone guard)"
+    layer: [shared]
+    base_refs:
+      - "lib/warpzone/common.qc:WarpZone_TraceBox_ThroughZone"
+      - "lib/warpzone/common.qc:WarpZone_TraceLine"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Warpzone/WarpzoneRadiusQuery.cs:WarpzoneTrace.TraceLineWarpzone"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:141"
+      - "src/XonoticGodot.Engine/Collision/TraceServiceWarpzoneExt.cs:TraceServiceWarpzoneBridge"
+    constants:
+      - { name: "chained-zone cap", base: "i = 16", port: "MaxZoneDepth = 16", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Port detects crossings analytically (plane + trigger AABB) rather than QC's WarpZone_MakeAllSolid + tracebox-hits-the-now-solid-zone; same outcome, deterministic and headless-testable."
+    gaps: []
+    verification:
+      - { kind: unit_test, ref: "WarpzoneTraceTests.TraceLine_Crosses_One_Portal_And_Accumulates_The_Transform / TraceLine_Pathological_Self_Recrossing_Chain_Stops_At_The_Guard", result: pass }
+    confidence: high
+    notes: "Live callers: WeaponFiring.cs:141 (aim), :233 + :358 (hitscan). Manager published via TraceService.SetWarpzoneManager (GameWorld.cs:558)."
+  - id: warpzones.combat.findradius
+    name: "Splash radius damage reaches victims through portals (blast-frame falloff)"
+    layer: [shared]
+    base_refs:
+      - "lib/warpzone/common.qc:WarpZone_FindRadius"
+      - "lib/warpzone/common.qc:WarpZone_FindRadius_Recurse"
+      - "lib/warpzone/common.qc:WarpZoneLib_BadEntity"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Warpzone/WarpzoneRadiusQuery.cs:FindRadiusWarpzone"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponSplash.cs:76"
+    constants:
+      - { name: "radius recurse clamp", base: "bound(0, rad - vlen(org_new-org0_new), rad - 8)", port: "Clamp(rad - dist_to_zone_plane, 0, rad - 8)", match: false }
+      - { name: "blacklist classnames", base: "is_pure + weaponentity/exteriorweaponentity/sprite_waypoint/waypoint/spawnfunc/weaponchild/chatbubbleentity/buff_model + target_*/info_*", port: "same minus is_pure() (uses IsFreed + empty-classname)", match: false }
+      - { name: "per-victim distance", base: "WarpZoneLib_NearestPointOnBox(it.mins,it.maxs,org0)", port: "entity center (wz.InOrigin/org distance)", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Radius recursion uses an explicit front-side gate (Dot(org-InOrigin, InForward) >= 0) instead of QC's per-zone LOS traceline + radius reduction to discard the wrong side (WarpzoneRadiusQuery.cs:407) — same result without the extra trace, avoids back-warp loops. Same-room LOS is still warpzone-aware via WeaponSplash.cs:161."
+    gaps:
+      - "VERIFIER: three un-flagged numeric divergences from WarpZone_FindRadius_Recurse: (1) radius reduction uses distance to the zone PLANE ORIGIN (wz.InOrigin) not Base's vlen(org_new - org0_new) (the transformed blast-to-zone distance) — slightly different falloff budget through a portal; (2) per-victim distance uses the entity CENTER not Base's WarpZoneLib_NearestPointOnBox (nearest point on the victim's AABB) — large/elongated victims at the radius edge can be mis-included/excluded; (3) is_pure() blacklist branch not modeled. Outcome-equivalent for the common small-victim, single-portal blast; edge cases diverge."
+    verification:
+      - { kind: unit_test, ref: "WarpzoneTraceTests.FindRadius_Reaches_A_Victim_Only_Through_A_Portal / FindRadius_Skips_Blacklisted_Classnames", result: pass }
+    confidence: high
+    notes: "WeaponSplash uses hit.LocalBlastOrigin (portal-shifted blast frame) for distance/force/LOS; LOS trace itself is warpzone-aware (WeaponSplash.cs:161). VERIFIER: rad-8 clamp + blacklist classnames confirmed against common.qc:562/652; values downgraded faithful->partial for the distance-metric + is_pure nuances above (still intended-equivalent, not a regression)."
+  - id: warpzones.porto
+    name: "Porto-weapon portals realised as warpzones"
+    layer: [authority]
+    base_refs:
+      - "lib/warpzone/server.qc:spawnfunc(trigger_warpzone)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:PlacePortoPortal"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:LinkPair"
+      - "src/XonoticGodot.Server/GameWorld.cs:389"
+    constants:
+      - { name: "porto trigger bounds", base: "weapon-defined", port: "+/-48 box (PortoMins/Maxs)", match: false }
+    status:
+      logic: faithful
+      values: unknown
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Porto portals share the missing client portal render — they teleport correctly server-side but show as dark placeholders, same as map warpzones."
+    verification:
+      - { kind: code, ref: "GameWorld.cs:389 Warpzones.PlacePortoPortal", result: pass }
+    confidence: medium
+    notes: "Server transform is faithful; the +/-48 trigger box is a port choice (Base Porto portal bounds not re-verified here)."
+  - id: warpzones.client.render
+    name: "Portal surface drawn as a live camera view of the linked OUT plane"
+    layer: [presentation]
+    base_refs:
+      - "lib/warpzone/common.qc:WarpZone_camera_transform"
+      - "lib/warpzone/client.qc:ENT_CLIENT_WARPZONE"
+      - "lib/warpzone/client.qc:WarpZone_Fade_PreDraw"
+    port_refs: []
+    constants:
+      - { name: "r_water / resolutionmultiplier HACK", base: "cvar_settemp 1 / 1 when zones exist", port: "none", match: false }
+      - { name: "fade by distance", base: "warpzone_fadestart/_fadeend", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No Godot SubViewport+Camera3D renders the linked OUT side onto the portal surface; HeroMaterials.BuildPortal (HeroMaterials.cs:168) is a static dark near-black StandardMaterial3D mirror. The warpzone reads as an opaque/wavy wall — you cannot see through it. PVS-fade and the r_water enable HACK are also absent."
+    verification:
+      - { kind: code, ref: "grep NetGame.cs warpzone/portal/SubViewport/FixView = empty; HeroMaterials.cs:168 placeholder", result: fail }
+    confidence: high
+    notes: "Primary runtime break #1. NetGame.cs has zero warpzone code."
+  - id: warpzones.client.fixview
+    name: "Seamless view across the seam (FixView / FixNearClip / View_Inside / FixPMove)"
+    layer: [presentation]
+    base_refs:
+      - "lib/warpzone/client.qc:WarpZone_FixView"
+      - "lib/warpzone/client.qc:WarpZone_FixNearClip"
+      - "lib/warpzone/client.qc:WarpZone_View_Inside"
+      - "lib/warpzone/client.qc:WarpZone_FixPMove"
+    port_refs: []
+    constants:
+      - { name: "cl_rollkillspeed", base: "10", port: "none", match: false }
+      - { name: "r_nearclip multiplier", base: "1.125", port: "none", match: false }
+      - { name: "r_drawexteriormodel inside", base: "0", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No client view rotate when the camera straddles a zone, no near-clip push-out (geometry clips at the seam), no roll-kill on a roll-changing crossing, no exterior-model hide. Crossing a warpzone is visually jarring."
+    verification:
+      - { kind: code, ref: "no WarpZone_FixView/FixNearClip/View_Inside symbols in src/ or game/", result: fail }
+    confidence: high
+    notes: "Primary runtime break #2."
+  - id: warpzones.client.teleported_view
+    name: "Smooth view/input rotate on a server crossing (ENT_CLIENT_WARPZONE_TELEPORTED + CL_RotateMoves)"
+    layer: [presentation]
+    base_refs:
+      - "lib/warpzone/server.qc:WarpZone_Teleported_Send"
+      - "lib/warpzone/client.qc:ENT_CLIENT_WARPZONE_TELEPORTED"
+      - "lib/warpzone/server.qc:WarpZone_PlayerPhysics_FixVAngle"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Server never sends a warpzone_teleported entity and never re-rotates v_angle (WarpZone_PlayerPhysics_FixVAngle); the client never rotates VF_CL_VIEWANGLES / CL_RotateMoves on a crossing. The view does not carry through the seam."
+    verification:
+      - { kind: code, ref: "no warpzone_teleported send / FixVAngle in port", result: fail }
+    confidence: high
+    notes: "EF_TELEPORT_BIT constant exists (CsqcModelEffectFlags.cs:44) but is not toggled by the warpzone teleport."
+  - id: warpzones.client.prediction
+    name: "Client-side prediction of a warpzone crossing"
+    layer: [presentation, shared]
+    base_refs:
+      - "lib/warpzone/client.qc:WarpZone_FixPMove"
+      - "lib/warpzone/server.qc:WarpZone_Teleport"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "TriggerTouch.PredictTeleportsAmbient (TriggerTouch.cs:139) predicts trigger_teleport only, never trigger_warpzone, so a warpzone crossing arrives as a server-authoritative correction snap (rubber-band) instead of a predicted seamless transition."
+    verification:
+      - { kind: code, ref: "TriggerTouch.cs:147 FindByClass(\"trigger_teleport\") — no trigger_warpzone branch", result: fail }
+    confidence: high
+    notes: "Primary runtime break #4. Pairs with the missing FixView/render."
+  - id: warpzones.camera
+    name: "func_camera / func_warpzone_camera (fixed dpcamera security-camera view)"
+    layer: [authority, presentation]
+    base_refs:
+      - "lib/warpzone/server.qc:spawnfunc(func_camera)"
+      - "lib/warpzone/server.qc:WarpZoneCamera_InitStep_FindTarget"
+      - "lib/warpzone/common.qc:WarpZone_Camera_SetUp"
+      - "lib/warpzone/client.qc:ENT_CLIENT_WARPZONE_CAMERA"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No func_camera spawnfunc; security-camera dpcamera surfaces render as a dark mirror placeholder (HeroMaterials) rather than a fixed camera view of the target position."
+    verification:
+      - { kind: code, ref: "no func_camera/WarpZoneCamera symbols in port", result: fail }
+    confidence: high
+    notes: "Camera variant shares the missing SubViewport render."
+  - id: warpzones.reconnect
+    name: "trigger_warpzone_reconnect + WarpZone_Think (runtime / moving-warpzone re-link)"
+    layer: [authority]
+    base_refs:
+      - "lib/warpzone/server.qc:trigger_warpzone_reconnect_use"
+      - "lib/warpzone/server.qc:spawnfunc(trigger_warpzone_reconnect)"
+      - "lib/warpzone/server.qc:WarpZone_Think"
+    port_refs: []
+    constants:
+      - { name: "spawnflag 1 -> per-frame Think", base: "moving-warpzone re-derive when org/angles change", port: "none", match: false }
+    status:
+      logic: missing
+      values: na
+      timing: missing
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Link()/InitMapZones() run once at boot and never re-derive. Maps with moving warpzones (spawnflag 1 -> WarpZone_Think) or runtime trigger_warpzone_reconnect/target_warpzone_reconnect will have stale transforms."
+    verification:
+      - { kind: code, ref: "no warpzone_reconnect / WarpZone_Think symbols; Link called once GameWorld.cs:552", result: fail }
+    confidence: high
+    notes: "Affects the subset of maps with dynamic warpzones; static maps unaffected."
+  - id: warpzones.observer_warp
+    name: "Per-frame observer / SOLID_NOT client warp (WarpZone_StartFrame)"
+    layer: [authority]
+    base_refs:
+      - "lib/warpzone/server.qc:WarpZone_StartFrame"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: missing
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Observers / SOLID_NOT clients are warped through zones each frame by WarpZone_StartFrame (WarpZone_Find + WarpZone_Teleport(-1,0), no targets) and by the teleportable-simple-teleporter pass; unported, so spectators cannot pass through warpzones. WarpZone_StoreProjectileData per-frame snapshot also absent."
+    verification:
+      - { kind: code, ref: "no WarpZone_StartFrame observer warp in port", result: fail }
+    confidence: medium
+    notes: "Live-player crossing is driven by the touch pass (faithful); only the observer/non-solid path is missing."
+  - id: warpzones.combat.traceextras
+    name: "WarpZone_TraceToss (ballistic) + WarpZone_TrailParticles (trail through portal)"
+    layer: [shared, presentation]
+    base_refs:
+      - "lib/warpzone/common.qc:WarpZone_TraceToss_ThroughZone"
+      - "lib/warpzone/common.qc:WarpZone_TrailParticles"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Grenade/toss trajectory prediction (WarpZone_TraceToss) and projectile particle trails (WarpZone_TrailParticles[_WithMultiplier]) do not bend through portals — bot grenade aim and trail visuals are wrong across a warpzone. Minor."
+    verification:
+      - { kind: code, ref: "no TraceToss/TrailParticles warpzone variant in port", result: fail }
+    confidence: medium
+    notes: "Lower-impact than the render/view/prediction gaps; hitscan + splash (the common combat cases) already cross."

@@ -1,0 +1,486 @@
+unit: sv-teamplay
+category: server
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 17
+  worst_gaps:
+    - "No .team_forced field, no connect-time forced-team determination, no g_forced_team_* parsing; server configs that pin players (or force-spectate unlisted players) have no effect."
+    - "A human can manually switch (team/join command) to the larger or stronger team mid-match; Base rejects switches to a team not in TeamBalance_FindBestTeams (cmd.qc:746)."
+    - "No TrueSkill ratings: SkillProvider defaults to 5 for every player and variance is a flat 1, so the weighted path (which IS invoked on the live AssignBestTeam join when g_balance_teams_skill=1) reduces to a plain count and has no observable effect; the gametype-level JoinSmallestTeam callers bypass weighting entirely."
+    - "No team-unbalanced nag is computed or networked; players are never warned when teams differ by >= sv_teamnagger; warmup is not held open while unbalanced."
+    - "Port sizes the bot COUNT by |ratio| * active humans (TargetBotCount) but never bans teams so bots take one side and humans the other; a bot_vs_human match still mixes bots and humans on both teams."
+    - "No Player_ChangeTeam / Player_ChangedTeam mutator hooks on a team change: a mutator cannot block or react to team changes (NIX/CA/etc. team-change reactions and balance overrides are unreachable)."
+    - "No teamplay_lockonrestart: teams are not auto-locked after the ready-restart, so new players can join mid-match on a server that expects locked teams."
+features:
+  - id: sv-teamplay.identity.team_codes
+    name: "Team color codes & active-team set"
+    layer: [shared]
+    base_refs:
+      - "common/teams.qh:NUM_TEAM_1..NUM_TEAM_4"
+      - "common/teams.qh:Team_IndexToTeam"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Teams.cs:Teams"
+    constants:
+      - { name: "RED", base: "4 (NUM_TEAM_1)", port: "4", match: true }
+      - { name: "BLUE", base: "13 (NUM_TEAM_2)", port: "13", match: true }
+      - { name: "YELLOW", base: "12 (NUM_TEAM_3)", port: "12", match: true }
+      - { name: "PINK", base: "9 (NUM_TEAM_4)", port: "9", match: true }
+      - { name: "NUM_TEAMS", base: "4", port: "4 (All[])", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: value-diff, ref: "common/teams.qh vs Teams.cs color constants", result: pass }
+    confidence: high
+    notes: "Color codes and Active(count) match. teamplay_bitmask / AVAILABLE_TEAMS is represented as TeamCount (clamped 2..4)."
+
+  - id: sv-teamplay.join.find_best_team
+    name: "Assign joiner to the best (smallest) team"
+    layer: [authority]
+    base_refs:
+      - "server/teamplay.qc:TeamBalance_JoinBestTeam"
+      - "server/teamplay.qc:TeamBalance_FindBestTeam"
+      - "server/teamplay.qc:TeamBalance_FindBestTeams"
+    port_refs:
+      - "src/XonoticGodot.Server/Teamplay.cs:AssignBestTeam"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Tdm.cs:TeamBalance.JoinSmallestTeam"
+    constants: []
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Tie-break differs: Base picks size -> team strength (skill*score) -> RANDOM among ties; port picks smallest count -> lower team score -> lowest fixed index (deterministic, no randomization)."
+      - "Gametype-level callers (CTF/CA/FreezeTag/Dom/KeyHunt/TDM/TeamMayhem via TeamBalance.JoinSmallestTeam) apply count only, with no score/skill tiebreak at all."
+      - "Base uses m_num_players_net (humans, deducts leavable bots) vs raw count; port always uses raw count."
+    verification:
+      - { kind: code-read, ref: "AssignBestTeam vs TeamBalance_FindBestTeams", result: partial }
+    confidence: high
+    notes: "Live on connect (ClientManager.cs:181) and via moveplayer/team commands. Core 'smallest team' rule is faithful; ranking refinements diverge."
+
+  - id: sv-teamplay.join.skill_weighting
+    name: "Inverse-variance skill-weighted balance (g_balance_teams_skill)"
+    layer: [authority]
+    base_refs:
+      - "server/teamplay.qc:TeamBalance_GetTeamCounts"
+      - "server/teamplay.qc:TeamBalance_CompareTeamsInternal"
+    port_refs:
+      - "src/XonoticGodot.Server/Teamplay.cs:TeamBalance_GetWeightedTeamCount"
+      - "src/XonoticGodot.Server/Teamplay.cs:SkillProvider"
+    constants:
+      - { name: "g_balance_teams_skill", base: "1", port: "1 (registered)", match: true }
+      - { name: "g_balance_teams_skill_significance_threshold", base: "1.645", port: "none (always significant)", match: false }
+      - { name: "g_balance_teams_skill_unranked_factor", base: "0.666", port: "none", match: false }
+      - { name: "skill mu/var model", base: "TrueSkill m_skill_mu / m_skill_var", port: "flat mu=5, var=1", match: false }
+    status:
+      logic: partial
+      values: stub
+      timing: na
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No TrueSkill ratings: SkillProvider defaults to 5 for every player and variance is a flat 1, so weighting reduces to a plain count and has no observable effect."
+      - "No unranked-client factor (0.666) and no significance threshold (1.645) gate; threshold is treated as always met (SkillWeightingEnabled returns true whenever g_balance_teams_skill != 0)."
+      - "No score-ratio team-strength ramp (Base TeamBalance_CompareTeamsInternal scales strength by team_score ratio * min(1,(t-start)/timelimit)^1.5 after warmup & past game_starttime)."
+      - "No warmup skill-aware join branch (Base TeamBalance_FindBestTeams warmup+sv_teamnagger+skill block picking the team whose weighted-mean skill is furthest from the joiner)."
+      - "The weighted path is only reached from AssignBestTeam (connect/moveplayer/team); the per-gametype TeamBalance.JoinSmallestTeam callers (CTF/CA/FreezeTag/Dom/KeyHunt/TDM/TeamMayhem) ignore skill entirely."
+    verification:
+      - { kind: code-read, ref: "AssignBestTeam useSkill=SkillWeightingEnabled (cvar default 1) -> TeamBalance_GetWeightedTeamCount; SkillProvider default _ => 5f; SkillVariance=1", result: partial }
+    confidence: high
+    notes: "Liveness=partial NOT dead: the weighted-count path IS invoked on the live AssignBestTeam join (g_balance_teams_skill defaults to 1), but with the flat provider it computes weight*(5/5)=count, identical to a plain count, so the effect is inert. A host wiring a real SkillProvider (e.g. BotBrain.Skill) would activate it. The gametype-level JoinSmallestTeam callers never touch this path."
+
+  - id: sv-teamplay.balance.autobalance_bots
+    name: "Bot autobalance (move lowest-scoring bot largest->smallest)"
+    layer: [authority]
+    base_refs:
+      - "server/teamplay.qc:TeamBalance_AutoBalanceBots"
+      - "server/teamplay.qc:TeamBalance_GetPlayerForTeamSwitch"
+    port_refs:
+      - "src/XonoticGodot.Server/Teamplay.cs:AutoBalanceBots"
+      - "src/XonoticGodot.Server/GameWorld.cs:BalanceTeamsTick"
+    constants:
+      - { name: "imbalance gap threshold", base: "2 (largest-smallest >= 2)", port: "2", match: true }
+      - { name: "tiebreak score", base: "SP_SCORE", port: "frag score (ScoreFrags)", match: false }
+      - { name: "trigger", base: "on every human SetPlayerTeam (unconditional)", port: "3s timer, gated by g_balance_teams||prevent_imbalance", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base autobalances bots unconditionally; port gates on g_balance_teams||g_balance_teams_prevent_imbalance (QC explicitly comments that gate OUT)."
+      - "Base triggers synchronously whenever a human changes team; port only runs on a 3s polling timer, so a manual human switch isn't immediately compensated."
+      - "Uses frag score, not SP_SCORE, to pick the bot to move; ordering can differ when frags != composite score."
+    verification:
+      - { kind: code-read, ref: "AutoBalanceBots + BalanceTeamsTick vs TeamBalance_AutoBalanceBots", result: partial }
+    confidence: high
+    notes: "Live: GameWorld.BalanceTeamsTick is called per gametype frame (GameWorld.cs:1612). Only-bots and gap>=2 rules are faithful."
+
+  - id: sv-teamplay.balance.prevent_imbalance
+    name: "Block switching to a stronger/larger team mid-match"
+    layer: [authority]
+    base_refs:
+      - "server/command/cmd.qc:746 (g_balance_teams_prevent_imbalance switch gate)"
+      - "server/teamplay.qc:TeamBalance_FindBestTeams"
+    port_refs: []
+    constants:
+      - { name: "g_balance_teams_prevent_imbalance", base: "1", port: "1 (registered, but only gates the autobalance timer)", match: false }
+    status:
+      logic: missing
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "A human can manually switch (team/join command) to the larger or stronger team mid-match; Base rejects switches to a team not in TeamBalance_FindBestTeams."
+      - "The cvar is registered but only used to decide whether the bot-autobalance timer runs (GameWorld.cs:1583), not to validate human team switches."
+    verification:
+      - { kind: code-read, ref: "no equivalent of cmd.qc:746 gate in Commands.cs CmdTeam/CmdMovePlayer", result: fail }
+    confidence: high
+    notes: "Cvar exists with the right default but the actual mid-match switch protection is absent."
+
+  - id: sv-teamplay.forced.determine_team
+    name: "Forced teams (g_forced_team_*, otherwise, campaign forceteam)"
+    layer: [authority]
+    base_refs:
+      - "server/teamplay.qc:Player_DetermineForcedTeam"
+      - "server/teamplay.qc:Player_HasRealForcedTeam"
+    port_refs: []
+    constants:
+      - { name: "g_forced_team_red/blue/yellow/pink", base: "\"\"", port: "none (unregistered)", match: false }
+      - { name: "g_forced_team_otherwise", base: "\"default\"", port: "none", match: false }
+      - { name: "g_campaign_forceteam", base: "0", port: "none in this unit", match: false }
+      - { name: "TEAM_FORCE_SPECTATOR / DEFAULT", base: "-1 / 0", port: "no team_forced field", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No .team_forced field, no connect-time forced-team determination, no g_forced_team_* parsing; server configs that pin players (or force-spectate unlisted players) have no effect."
+      - "TeamBalance_JoinBestTeam's forced-team honoring (join the forced team if allowed) is absent."
+    verification:
+      - { kind: grep, ref: "no team_forced/ForcedTeam/g_forced_team in src", result: fail }
+    confidence: high
+    notes: "Teamplay.cs docstring explicitly defers g_forced_team_*."
+
+  - id: sv-teamplay.queue.join_queue
+    name: "Warmup/match join queue (g_balance_teams_queue)"
+    layer: [authority]
+    base_refs:
+      - "server/teamplay.qc:QueueNeeded"
+      - "server/teamplay.qc:TeamBalance_QueuedPlayersTagIn"
+      - "server/teamplay.qc:QueuedPlayersReady"
+    port_refs: []
+    constants:
+      - { name: "g_balance_teams_queue", base: "0", port: "none (unregistered)", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No join-queue: players join immediately regardless of balance; the deficit-filling tag-in (specific-team-first then any-team) is absent."
+      - "wants_join (WantsJoin) exists on Player but is never consulted for queueing."
+    verification:
+      - { kind: grep, ref: "no QueueNeeded/TaggedIn/balance_teams_queue in src", result: fail }
+    confidence: high
+    notes: "Default is off (0) in Base, so absence is low-impact for stock servers but still a parity gap when enabled."
+
+  - id: sv-teamplay.remove.excess_players
+    name: "Remove excess players on leave (g_balance_teams_remove)"
+    layer: [authority]
+    base_refs:
+      - "server/teamplay.qc:TeamBalance_RemoveExcessPlayers"
+      - "server/teamplay.qc:Remove_Countdown"
+    port_refs: []
+    constants:
+      - { name: "g_balance_teams_remove", base: "0", port: "none (unregistered)", match: false }
+      - { name: "g_balance_teams_remove_wait", base: "10", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "On a player leave that unbalances 2-team play, Base moves the NEWEST joiner on the overfull team to spectators after a 10s countdown nag; the port does nothing."
+      - "No Remove_Countdown timer, no CENTER_MOVETOSPEC_REMOVE / INFO_MOVETOSPEC_REMOVE notifications."
+    verification:
+      - { kind: grep, ref: "no RemoveExcessPlayers/Remove_Countdown/balance_teams_remove in src", result: fail }
+    confidence: high
+    notes: "Default off in Base."
+
+  - id: sv-teamplay.nagger.team_nagger
+    name: "Unbalanced-teams nag + warmup hold (sv_teamnagger)"
+    layer: [authority, presentation]
+    base_refs:
+      - "server/teamplay.qc:TeamBalance_SizeDifference"
+      - "server/command/vote.qc:580"
+      - "server/client.qc:143 (SendFlags bits 5/6)"
+    port_refs: []
+    constants:
+      - { name: "sv_teamnagger", base: "2", port: "none (default unregistered; only in CommandReplies list)", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No team-unbalanced nag is computed or networked; players are never warned when teams differ by >= sv_teamnagger."
+      - "Warmup is not held open while teams are unbalanced (Base: g_warmup won't end while the nag is visible)."
+      - "sv_teamnagger also gates the skill-aware warmup join target in Base; that path is moot here since skill weighting is inert."
+    verification:
+      - { kind: grep, ref: "sv_teamnagger only in CommandReplies.cs:251; no SizeDifference/nag networking", result: fail }
+    confidence: high
+    notes: "Base default 2 not registered as a cvar default in the port."
+
+  - id: sv-teamplay.bot_vs_human.team_split
+    name: "bot_vs_human team partitioning (bots vs humans on separate teams)"
+    layer: [authority]
+    base_refs:
+      - "server/teamplay.qc:TeamBalance_CheckAllowedTeams (bot_vs_human branch)"
+      - "server/bot/default/bot.qc:642 (count sizing)"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/BotPopulation.cs:TargetBotCount"
+    constants:
+      - { name: "bot_vs_human", base: "0", port: "0 (registered)", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port sizes the bot COUNT by |ratio| * active humans (TargetBotCount) but never bans teams so bots take one side and humans the other; a bot_vs_human match still mixes bots and humans on both teams."
+      - "Sign-of-ratio side selection (positive -> bots last team / negative -> bots first team) is not honored at team-assignment time."
+    verification:
+      - { kind: code-read, ref: "TargetBotCount handles count; no TeamBalance_CheckAllowedTeams ban in AssignBestTeam", result: partial }
+    confidence: high
+    notes: "Count math is faithful; the team-segregation half is missing."
+
+  - id: sv-teamplay.change.kill_on_teamchange
+    name: "Kill + score clear on mid-match team change"
+    layer: [authority]
+    base_refs:
+      - "server/teamplay.qc:KillPlayerForTeamChange"
+      - "server/teamplay.qc:SetPlayerTeam (PlayerScore_Clear + LogTeamChange + notification)"
+    port_refs:
+      - "src/XonoticGodot.Server/Teamplay.cs:KillPlayerForTeamChange"
+    constants:
+      - { name: "team-change kill damage", base: "100000 (DEATH_TEAMCHANGE)", port: "100000 (DeathTypes.AutoTeamChange)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No LogTeamChange event-log emission (:team:) and no INFO_JOIN_PLAY_TEAM join notification on a team change."
+      - "Base uses DEATH_TEAMCHANGE for manual changes and the same lethal kill for autobalance; port uses a single AutoTeamChange deathtype for both (cosmetic obituary difference)."
+    verification:
+      - { kind: code-read, ref: "KillPlayerForTeamChange: ClearForTeamChange + Combat.Damage(100000, AutoTeamChange)", result: pass }
+    confidence: high
+    notes: "Live via shuffleteams/moveplayer/team commands and autobalance. Kill + score-clear core is faithful."
+
+  - id: sv-teamplay.admin.lock_shuffle_move
+    name: "Admin team commands: lockteams/shuffleteams/moveplayer/team"
+    layer: [authority]
+    base_refs:
+      - "server/teamplay.qc:MoveToTeam"
+      - "server/teamplay.qc:SetPlayerTeam"
+      - "server/command/cmd.qc (team/shuffleteams/movetoteam)"
+    port_refs:
+      - "src/XonoticGodot.Server/Commands.cs:CmdLockTeams"
+      - "src/XonoticGodot.Server/Commands.cs:CmdShuffleTeams"
+      - "src/XonoticGodot.Server/Commands.cs:CmdMovePlayer"
+    constants: []
+    status:
+      logic: partial
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "shuffleteams uses a deterministic round-robin in roster order; Base uses FOREACH_CLIENT_RANDOM (randomized assignment)."
+      - "moveplayer/team don't enforce lockteams backup/restore semantics of MoveToTeam (which temporarily disables the lock); behavior overlaps but isn't the exact MoveToTeam path."
+    verification:
+      - { kind: code-read, ref: "Commands.cs CmdLockTeams/CmdShuffleTeams/CmdMovePlayer + TeamsLocked wiring", result: partial }
+    confidence: medium
+    notes: "lockteams/unlockteams and team-lock enforcement on join (ClientManager.cs:262) are live and faithful in spirit."
+
+  - id: sv-teamplay.color.set_player_colors
+    name: "color command / clientcolors encoding (SV_ChangeTeam, setcolor, SetPlayerColors)"
+    layer: [authority]
+    base_refs:
+      - "server/teamplay.qc:SV_ChangeTeam"
+      - "server/teamplay.qc:setcolor"
+      - "server/teamplay.qc:SetPlayerColors"
+    port_refs: []
+    constants:
+      - { name: "team-from-color decode", base: "team = (clr & 15) + 1", port: "none", match: false }
+      - { name: "teamplay color set", base: "16*pants + pants", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No clientcolors / pants+shirt color model: the 'color' command's non-teamplay re-color and the teamplay team-from-color derivation are absent. Team is set directly as a color code."
+    verification:
+      - { kind: grep, ref: "no clientcolors/SetPlayerColors/SV_ChangeTeam in src", result: fail }
+    confidence: medium
+    notes: "Player model team color is handled elsewhere (presentation); the QC client-colors authority encoding is not ported here."
+
+  - id: sv-teamplay.global.team_entities
+    name: "Global team entities (score, alive count, owned items, winner queries)"
+    layer: [authority]
+    base_refs:
+      - "server/teamplay.qc:Team_InitTeams"
+      - "server/teamplay.qc:Team_GetWinnerAliveTeam"
+      - "server/teamplay.qc:Team_GetWinnerTeam_WithOwnedItems"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs"
+    constants: []
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No unified Team_* global entity API: per-team score lives in Scores, alive/owned-item counts and winner queries are reimplemented ad hoc per gametype (CA/Dom/Onslaught) rather than via Team_GetWinnerAliveTeam / Team_GetWinnerTeam_WithOwnedItems."
+    verification:
+      - { kind: code-read, ref: "Scores.TeamScore exists; no consolidated Team_GetWinnerAliveTeam equivalent", result: partial }
+    confidence: low
+    notes: "Largely out of this unit's narrow assignment scope; the relevant winner/alive logic is audited under the round-based gametype units. Flagged here for completeness."
+
+  - id: sv-teamplay.change.team_change_hooks
+    name: "Player_ChangeTeam / Player_ChangedTeam mutator hooks"
+    layer: [authority]
+    base_refs:
+      - "server/teamplay.qc:Player_SetTeamIndex (MUTATOR_CALLHOOK Player_ChangeTeam / Player_ChangedTeam)"
+      - "server/mutators/events.qh:Player_ChangeTeam / Player_ChangedTeam"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base Player_SetTeamIndex fires Player_ChangeTeam (can return true to BLOCK the change) before applying, and Player_ChangedTeam after; the port's AssignBestTeam/KillPlayerForTeamChange/shuffle set Entity.Team directly with no pre/post mutator dispatch."
+      - "No way for a mutator to veto or react to a team change (e.g. balance overrides, per-mode team-change side effects); the early-out 'already on this team' guard also lives only inside Player_SetTeamIndex in Base."
+    verification:
+      - { kind: grep, ref: "no Player_ChangeTeam/ChangedTeam hook in src; team set via p.Team = ...", result: fail }
+    confidence: high
+    notes: "Port sets Team directly (ClientManager.AssignBestTeam, Commands shuffle/move). Mutator team-change interception is absent."
+
+  - id: sv-teamplay.lock.lockonrestart
+    name: "Auto-lock teams on ready-restart (teamplay_lockonrestart)"
+    layer: [authority]
+    base_refs:
+      - "server/command/vote.qc:478 (if autocvar_teamplay_lockonrestart && teamplay -> lockteams = 1)"
+      - "server/teamplay.qh:autocvar_teamplay_lockonrestart"
+    port_refs: []
+    constants:
+      - { name: "teamplay_lockonrestart", base: "0", port: "none (unregistered)", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "On a ready-restart Base sets lockteams=1 when teamplay_lockonrestart is enabled, so no new players can join after the restart until unlockteams; the port has no such hook and the cvar is unregistered."
+    verification:
+      - { kind: grep, ref: "no lockonrestart in src; TeamsLocked only set by lockteams/unlockteams commands", result: fail }
+    confidence: high
+    notes: "Default off (0) in Base; manual lockteams/unlockteams is wired, but the restart-triggered auto-lock is not."
+
+  - id: sv-teamplay.bot.bot_forced_team
+    name: "Bot forced team (bot_forced_team from bot config/connect)"
+    layer: [authority]
+    base_refs:
+      - "server/client.qc:592 (if this.bot_forced_team -> SetPlayerTeam(this, bot_forced_team, TEAM_CHANGE_MANUAL))"
+      - "server/teamplay.qc:461 (TeamBalance_JoinBestTeam early-out on bot_forced_team)"
+      - "server/bot/default/bot.qc:257 (this.bot_forced_team = stof(argv(5)))"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No bot_forced_team field: a bot config that pins a bot to a specific team (5th arg of bot_cmd add / addbot) is ignored; bots are always auto-balanced via AssignBestTeam at connect."
+      - "TeamBalance_JoinBestTeam's bot_forced_team early-out (skip auto-balance for a pinned bot) has no port equivalent."
+    verification:
+      - { kind: grep, ref: "no bot_forced_team/ForcedTeam in src; ClientManager assigns bots via AssignBestTeam unconditionally", result: fail }
+    confidence: high
+    notes: "Niche (used by scripted/forced-roster bot configs); bots otherwise balance correctly via the normal join path."

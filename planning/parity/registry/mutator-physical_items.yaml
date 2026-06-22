@@ -1,0 +1,127 @@
+unit: mutator-physical_items
+category: mutator
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 4
+  worst_gaps:
+    - "Item_Spawn ghost-entity creation is entirely unimplemented: no second MOVETYPE_PHYSICS/SOLID_CORPSE entity is spawned, the real item is never hidden (EF_NODRAW/MOVETYPE_FOLLOW/aiment), so items can never become physical under any g_physical_items setting (port always shows classic spinning pickups)."
+    - "physical_item_think reset logic is missing: a map item awaiting respawn is never snapped home/frozen and a knocked-around item is never returned to its origin (g_physical_items_reset has no effect); ghost is never deleted when the real item is gone."
+    - "physical_item_touch / physical_item_damage hazard-reset is missing: an item that slides into NODROP/SKY or is hit by HURTTRIGGER/SLIME/LAVA/SWAMP is never snapped back to spawn_origin."
+features:
+  - id: mutator-physical_items.registration.ode_gate
+    name: "Mutator registration + ODE-engine availability gate (MUTATOR_ONADD revert)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/physical_items/sv_physical_items.qc:7 REGISTER_MUTATOR"
+      - "common/mutators/mutator/physical_items/sv_physical_items.qc:10 MUTATOR_ONADD"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PhysicalItemsMutator.cs:IsEnabled"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PhysicalItemsMutator.cs:HasPhysicsEngine"
+      - "src/XonoticGodot.Server/GameWorld.cs:511"
+    constants:
+      - { name: "physics_ode (engine cvar, required for activation)", base: "0 (off; needs DP_PHYSICS_ODE)", port: "no autocvar_physics_ode / no ODE engine", match: false }
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "HasPhysicsEngine() unconditionally returns false (after emitting the exact QC revert Log.Trace), so the mutator self-disables. This reproduces QC's own MUTATOR_ONADD revert path when DP_PHYSICS_ODE is unavailable — the port has no ODE rigid-body integrator wired to gameplay entities, so the only faithful behavior on a non-ODE engine is to revert to classic items, which is what stock DarkPlaces also does by default."
+    gaps: []
+    verification:
+      - { kind: code, ref: "PhysicalItemsMutator.cs:47-80 IsEnabled/HasPhysicsEngine vs sv_physical_items.qc:10-17; revert Log.Trace string matches QC LOG_TRACE verbatim", result: pass }
+      - { kind: code, ref: "Activation entry on live path: MutatorActivation.Apply() at GameWorld.cs:511", result: pass }
+    confidence: high
+    notes: "VERIFIED 2026-06-22 (adversarial): MutatorActivation.Apply() iterates Mutators.All and evaluates IsEnabled (MutatorActivation.cs:60-64), so the gate predicate IS reached on the live boot path → liveness=live is correct. With g_physical_items default 0, IsEnabled short-circuits on the cvar==0 check and HasPhysicsEngine()/the revert Log.Trace never run; the trace only fires if an operator sets the cvar. Either way the mutator never hooks anything (hard-false gate), exactly as Base reverts on a non-ODE build. Revert string is byte-identical to QC LOG_TRACE (sv_physical_items.qc:14)."
+  - id: mutator-physical_items.registration.cvars
+    name: "g_physical_items* cvar load + defaults"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/physical_items/sv_physical_items.qc:3-5"
+      - "mutators.cfg:154-156"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PhysicalItemsMutator.cs:Hook"
+      - "assets/data/xonotic-data.pk3dir/mutators.cfg:154-156"
+    constants:
+      - { name: "g_physical_items", base: "0 (0 off / 1 dropped only / 2 all map items)", port: "0", match: true }
+      - { name: "g_physical_items_damageforcescale", base: "3", port: "3", match: true }
+      - { name: "g_physical_items_reset", base: "1", port: "1", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Hook() reads g_physical_items / _damageforcescale / _reset (PhysicalItemsMutator.cs:54-56); defaults VERIFIED line-by-line 2026-06-22: port assets mutators.cfg:154-156 == Base mutators.cfg:154-156 byte-identical incl. description strings (0 / 3 / 1)", result: pass }
+    confidence: high
+    notes: "All three cvars present with identical Base defaults and identical .cfg description strings. Liveness partial: Hook() only runs when IsEnabled, which HasPhysicsEngine() blocks, so the loaded values are never consumed by any behavior (cvars are read but inert)."
+  - id: mutator-physical_items.item_spawn.ghost_entity
+    name: "Item_Spawn: spawn physics ghost entity + hide real item"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/physical_items/sv_physical_items.qc:92 MUTATOR_HOOKFUNCTION(physical_items, Item_Spawn)"
+    port_refs: []
+    constants:
+      - { name: "ghost solid", base: "SOLID_CORPSE", port: "none", match: false }
+      - { name: "ghost movetype", base: "MOVETYPE_PHYSICS", port: "none", match: false }
+      - { name: "ghost takedamage", base: "DAMAGE_AIM", port: "none", match: false }
+      - { name: "ghost effects", base: "EF_NOMODELFLAGS (disable spin)", port: "none", match: false }
+      - { name: "ghost.damageforcescale", base: "autocvar_g_physical_items_damageforcescale (3)", port: "none", match: false }
+      - { name: "mode gate", base: "owner==NULL && g_physical_items<=1 -> skip; spawnflags&1 (floating) -> skip", port: "none", match: false }
+      - { name: "real item hide", base: "EF_NODRAW + MOVETYPE_FOLLOW + aiment=ghost + setSendEntity func_null", port: "none", match: false }
+      - { name: "settle", base: "DropToFloor_QC_DelayedInit when !cnt (map item)", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Item_Spawn ghost-entity creation is entirely unimplemented: no second MOVETYPE_PHYSICS/SOLID_CORPSE entity is spawned, the real item is never hidden (EF_NODRAW/MOVETYPE_FOLLOW/aiment), so items can never become physical under any g_physical_items setting (port always shows classic spinning pickups)."
+    verification:
+      - { kind: code, ref: "VERIFIED 2026-06-22: no Item_Spawn mutator hook chain in the port (StartItem.cs:139 'MUTATOR_CALLHOOK(Item_Spawn, this) — no hook chain; skip.'); source-only grep for physical_item|physics_ode|EF_NOMODELFLAGS|damageforcescale|MOVETYPE_PHYSICS-for-items across src/** + game/** returns only the inert PhysicalItemsMutator class — no ghost-entity code anywhere", result: fail }
+    confidence: high
+    notes: "Double-blocked: needs both an ODE-equivalent rigid-body integrator wired to gameplay entities AND an Item_Spawn mutator hook (neither exists). Functionally moot today because IsEnabled is hard-false, but the behavior itself is entirely absent."
+  - id: mutator-physical_items.item_callbacks.think_touch_damage
+    name: "physical_item think/touch/damage: reset-on-respawn, hazard/NODROP/SKY reset, alpha follow, delete-when-gone"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/physical_items/sv_physical_items.qc:35 physical_item_think"
+      - "common/mutators/mutator/physical_items/sv_physical_items.qc:72 physical_item_touch"
+      - "common/mutators/mutator/physical_items/sv_physical_items.qc:82 physical_item_damage"
+    port_refs: []
+    constants:
+      - { name: "reset gate", base: "autocvar_g_physical_items_reset (1)", port: "none", match: false }
+      - { name: "awaiting-respawn state", base: "SOLID_NOT + alpha=-1 + MOVETYPE_NONE, snap to spawn_origin/spawn_angles", port: "none", match: false }
+      - { name: "available state", base: "alpha=1 + SOLID_CORPSE + MOVETYPE_PHYSICS", port: "none", match: false }
+      - { name: "touch needkill", base: "ITEM_TOUCH_NEEDKILL() (NODROP content | SKY surface) -> snap home", port: "none", match: false }
+      - { name: "damage needkill", base: "ITEM_DAMAGE_NEEDKILL = HURTTRIGGER|SLIME|LAVA|SWAMP -> snap home", port: "none", match: false }
+      - { name: "delete-when-gone", base: "!owner.modelindex -> delete(ghost)", port: "none", match: false }
+      - { name: "dropped exemption", base: "cnt==1 (dropped weapon) skips reset/touch/damage-reset", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "physical_item_think reset logic is missing: a map item awaiting respawn is never snapped home/frozen and a knocked-around item is never returned to its origin (g_physical_items_reset has no effect); ghost is never deleted when the real item is gone."
+      - "physical_item_touch / physical_item_damage hazard-reset is missing: an item that slides into NODROP/SKY or is hit by HURTTRIGGER/SLIME/LAVA/SWAMP is never snapped back to spawn_origin."
+    verification:
+      - { kind: code, ref: "VERIFIED 2026-06-22: no setthink/settouch/event_damage callbacks for physical items in the port; behavior bodies (sv_physical_items.qc:35-90) have no counterpart. NEEDKILL gates confirmed in Base (items.qh:122 ITEM_TOUCH_NEEDKILL = NODROP content | SKY surface; items.qh:123 ITEM_DAMAGE_NEEDKILL = DEATH_HURTTRIGGER|SLIME|LAVA|SWAMP) — neither macro nor its snap-home effect exists in the port", result: fail }
+    confidence: high
+    notes: "Depends on the ghost entity (item_spawn feature) existing first; with no ghost there is nothing to think/touch/damage. Listed separately because it is the per-frame maintenance + edge-case handling that keeps physical items playable, and is distinct work from the spawn hook."

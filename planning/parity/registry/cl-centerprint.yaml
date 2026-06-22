@@ -1,0 +1,381 @@
+unit: cl-centerprint
+category: client
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 13
+  worst_gaps:
+    - "Raw engine centerprint() builtin feed is systematically dead: door/trigger/target `.message`, item pickup hints, target_print, locked-door key messages — the port plays only the audible half and explicitly drops the centerprint TEXT (MapObjectsCommon/TargetUtilities/CompatRemaps). Panel never shows any map/trigger centerprint."
+    - "Gametype/duel title never shown: SetTitle/SetDuelTitle/ClearTitle present but DEAD (no Announcer driver port)."
+    - "COUNTDOWN_ROUNDSTART ^COUNT reads flts[0]=round# instead of f2=seconds (durcnt arg-selection not modeled) — shows the round number where the seconds should count down."
+    - "MSG_CENTER_KILL remote group/all-kill not implemented (no wire msg, no handler); Kill/ClearAll dead — no event-driven retraction of a centerprint group."
+    - "Server `tell`/private-message centerprint (Chat.CenterPrint → DeliveredCenter) is recorded server-side but never networked to the panel."
+    - "hud_panel_centerprint_fade_in default is 0 in port vs 0.15 in Base — messages pop in with no fade-in ramp."
+features:
+  - id: cl-centerprint.ring.add_replace
+    name: "Message ring + add / replace-by-cpid"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/centerprint.qc:centerprint_Add"
+    port_refs:
+      - "game/hud/CenterPrintPanel.cs:Push"
+    constants:
+      - { name: "CENTERPRINT_MAX_MSGS", base: "10", port: "10", match: true }
+      - { name: "CENTERPRINT_BASE_SIZE", base: "1.3", port: "1.3", match: true }
+      - { name: "CENTERPRINT_SPACING", base: "0.3", port: "0.3", match: true }
+      - { name: "CENTERPRINT_TITLE_SPACING", base: "0.35", port: "0.35", match: true }
+      - { name: "duration==0 default", base: "max(1, hud_panel_centerprint_time)", port: "max(1, time)", match: true }
+      - { name: "duration<0 sticky", base: "time=-1 (forced)", port: "ExpireTime=+Inf", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "CenterPrintPanel.Push vs centerprint_Add: strip edge newlines, id-replace-in-place, sticky/default duration all reproduced", result: pass }
+    confidence: high
+    notes: "Newest-prepend, non-empty id → RemoveAll(Id==id) then prepend (QC replace-in-place). Empty+matching-id graceful fade is the Kill feature. NOTE: ShowCenter is the ONLY live caller and it always passes DefaultDuration=3 (never <0 sticky nor the time-cvar default), so the sticky/default-duration branches, while faithfully coded, are never exercised on the live path."
+
+  - id: cl-centerprint.feed.msg_center
+    name: "MSG_CENTER notification feed → panel"
+    layer: [presentation]
+    base_refs:
+      - "common/notifications/all.qc:Local_Notification (case MSG_CENTER)"
+      - "common/notifications/all.qc:Local_Notification_centerprint_Add"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationSystem.cs:Send"
+      - "game/net/ClientNet.cs:HandleReliableBundle"
+      - "game/net/NetGame.cs:OnNotificationReceived"
+      - "game/hud/HudNotifications.cs:ShowCenter"
+      - "game/hud/CenterPrintPanel.cs:Push"
+    constants:
+      - { name: "cpid carried", base: "notif.nent_cpid (local CSQC)", port: "Notification.Cpid recovered by registry id", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Base resolves MSG_CENTER client-side (CSQC Local_Notification); the port has no CSQC, so the server formats + reliably networks the dispatch (NotificationSystem.Send → sink → ClientNet) and the client re-resolves the Notification by registry id (carrying cpid). Behaviorally equivalent feed."
+    gaps: []
+    verification:
+      - { kind: code, ref: "many live NotificationSystem.Center/Send(...MsgType.Center...) callers (CTF/instagib/NIX/items/buffs/LMS/countdown); HudSink + net path → ShowCenter → Push traced", result: pass }
+    confidence: high
+    notes: "Cpid is not on the wire but recovered from the registry by id; equivalent. The local single-process path mirrors via HudNotifications.HudSink (NotificationSystem.Sink)."
+
+  - id: cl-centerprint.countdown.count_token
+    name: "^COUNT countdown decrement"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/centerprint.qc:HUD_CenterPrint (countdown decrement, lines 349-360)"
+      - "client/announcer.qc:Announcer_Countdown"
+    port_refs:
+      - "game/hud/CenterPrintPanel.cs:_Process"
+      - "game/hud/CenterPrintPanel.cs:MessageAlpha"
+      - "game/hud/HudNotifications.cs:ShowCenter"
+      - "src/XonoticGodot.Server/GameWorld.cs:BroadcastGameStartCountdown"
+      - "src/XonoticGodot.Server/GameWorld.cs:BroadcastRoundStartCountdown"
+    constants:
+      - { name: "countdown forces fade_in/out=0", base: "yes", port: "yes (MessageAlpha countdown branch)", match: true }
+      - { name: "always-laid-out at ~0 alpha", base: "yes (hold position)", port: "yes (isCountdown skip-guard)", match: true }
+      - { name: "durcnt COUNTDOWN_GAMESTART", base: "\"1 f1\" → dur=1s/step, count=f1(seconds)", port: "dur=3 (DefaultDuration), count=flts[0]=f1(seconds)", match: false }
+      - { name: "durcnt COUNTDOWN_ROUNDSTART", base: "\"1 f2\" → dur=1s/step, count=f2(seconds), %s=f1(round)", port: "dur=3, count=flts[0]=f1(ROUND#), %s=f1", match: false }
+      - { name: "per-step duration", base: "1s (durcnt first token)", port: "DefaultDuration=3 always", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "ShowCenter hardcodes the ^COUNT value to flts[0] regardless of which float the notification's durcnt selects. COUNTDOWN_ROUNDSTART's durcnt is \"1 f2\" (count=f2=seconds, with f1=round# feeding the %s in 'Round %s starts in'), but the port broadcasts (round+1, seconds) so flts[0]=round# — the ^COUNT shows the ROUND NUMBER instead of the seconds. This is an unintended defect in round-based modes (GAMESTART's flts[0]=seconds happens to be correct). Latent risk for any future ^COUNT notification whose count is not the first float."
+      - "The Base durcnt per-step DURATION (1s) is ignored: Push always uses DefaultDuration=3, so the panel's own decrement window is 3s, not 1s. The per-second server re-broadcast masks this for GAMESTART/ROUNDSTART (each second refreshes the slot), but the panel-local ^COUNT decrement (CenterPrintPanel._Process) ticks on the wrong (3s) cadence between broadcasts."
+    verification:
+      - { kind: value_diff, ref: "all.inc:568 COUNTDOWN_ROUNDSTART durcnt \"1 f2\"; GameWorld.cs:1273 Send(...,round+1,secondsLeft); HudNotifications.cs:155 count=(int)flts[0]=round+1", result: fail }
+      - { kind: code, ref: "Base Announcer_Countdown emits the center ONCE (this.skin latch) then lets ^COUNT tick locally; port GameWorld re-broadcasts every countdown tick (BroadcastGameStartCountdown/BroadcastRoundStartCountdown called per second)", result: fail }
+    confidence: medium
+    notes: "INTENDED part: the port has no CSQC Announcer_Countdown think loop, so the countdown is server-driven — GameWorld re-broadcasts COUNTDOWN_GAMESTART/_ROUNDSTART once per second (each replacing the CPID_ROUND slot) instead of Base's once-then-local-^COUNT. That cadence is a deliberate consequence of the no-CSQC architecture. The wrong-^COUNT-arg in ROUNDSTART and the ignored per-step duration are NOT intended (hence intended_divergence=false). The cadence also adds reliable traffic and a redundant local decrement; possible per-second number stutter vs Base's smooth local tick (needs runtime check). End-of-countdown via MSG_MULTI \"BEGIN\" → CENTER_COUNTDOWN_BEGIN (CPID_ROUND) matches."
+
+  - id: cl-centerprint.fade.in_out
+    name: "Per-message fade in / out"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/centerprint.qc:HUD_CenterPrint (fade block 376-386)"
+      - "client/hud/panel/centerprint.qh:autocvar_hud_panel_centerprint_fade_in/out"
+    port_refs:
+      - "game/hud/CenterPrintPanel.cs:MessageAlpha"
+      - "game/hud/CenterPrintPanel.cs:RegisterDefaults"
+    constants:
+      - { name: "hud_panel_centerprint_fade_in", base: "0.15", port: "0", match: false }
+      - { name: "hud_panel_centerprint_fade_out", base: "0.15", port: "0.15", match: true }
+      - { name: "fade_out hard cap", base: "min(5, fade_out)", port: "min(5, fade_out)", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: partial
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "hud_panel_centerprint_fade_in default is 0 in the port (RegisterDefaults registers \"0\" at CenterPrintPanel.cs:208; the C# read CvarF(\"fade_in\", 0f) also defaults to 0) vs 0.15 in Base (centerprint.qh:6) — messages pop in instantly with no fade-in ramp."
+    verification:
+      - { kind: value_diff, ref: "CenterPrintPanel.cs:208 registers fade_in \"0\"; centerprint.qh:6 defaults it to 0.15", result: fail }
+    confidence: high
+    notes: "fade_out (0.15) and the min(5,..) cap match exactly; only the fade_in default diverges. CPID_TIMEIN fade-exemption (Base centerprint.qc:378) is not reproduced, but TIMEIN is not emitted in the port so it is moot."
+
+  - id: cl-centerprint.fade.subsequent
+    name: "Subsequent-message two-pass progressive fade"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/centerprint.qc:HUD_CenterPrint (fade_subsequent block 393-399)"
+    port_refs:
+      - "game/hud/CenterPrintPanel.cs:MessageAlpha"
+    constants:
+      - { name: "fade_subsequent", base: "1", port: "1", match: true }
+      - { name: "passone", base: "3", port: "3", match: true }
+      - { name: "passone_minalpha", base: "0.5", port: "0.5", match: true }
+      - { name: "passtwo", base: "10", port: "10", match: true }
+      - { name: "passtwo_minalpha", base: "0.5", port: "0.5", match: true }
+      - { name: "fade_minfontsize", base: "1", port: "1", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "two bound()/Clamp passes with matching floors + alpha→fontsize shrink (sz = minfontsize + a*(1-minfontsize)) reproduced exactly", result: pass }
+    confidence: high
+    notes: "Both passes use 1 - g/max(1,pass) clamped to [min,1], identical to QC. Floor cvars are sanitized to [0,1] in the port (a NaN-guard hardening, not a behavior change)."
+
+  - id: cl-centerprint.layout.draw
+    name: "Layout: flip / align / wrap / ^BOLD / color codes / font scales"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/centerprint.qc:HUD_CenterPrint (message draw 434-491)"
+    port_refs:
+      - "game/hud/CenterPrintPanel.cs:DrawPanel"
+      - "game/hud/CenterPrintPanel.cs:DrawMessage"
+      - "game/hud/CenterPrintPanel.cs:WrapLine"
+    constants:
+      - { name: "fontscale", base: "1", port: "1", match: true }
+      - { name: "fontscale_bold (header default)", base: "1.4", port: "1.4", match: true }
+      - { name: "fontscale_bold (shipped skin)", base: "1.2 (hud_luma/luminos cfgs)", port: "1.4 (skin override not applied)", match: false }
+      - { name: "fontscale_title (shipped skin)", base: "1.3 (hud_luma/luminos cfgs)", port: "1.8 (skin override not applied)", match: false }
+      - { name: "BOLD_OPERATOR", base: "^BOLD", port: "^BOLD", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base shipped HUD skins (hud_luma.cfg/hud_luminos*.cfg:290-291) set fontscale_bold=1.2 / fontscale_title=1.3, overriding the header defaults; the port keeps the header defaults (1.4/1.8). Bold message lines render slightly larger than the stock skin; titles never render anyway (see title rows)."
+    verification:
+      - { kind: code, ref: "flip bottom-up pre-measure block, align lerp, word-wrap + single-word hard-break, ^BOLD bold-font swap all present and behavior-matched", result: pass }
+    confidence: high
+    notes: "Word-wrap is reimplemented (not QC getWrappedLine) but matches behavior incl. hard-break of an over-long single word. Panel does NOT reproduce Base's slide-below-scoreboard/radar repositioning (HUD_CenterPrint:221-242) — minor layout-only omission; not separately rowed."
+
+  - id: cl-centerprint.kill.group
+    name: "centerprint_Kill — graceful group fade-out"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/centerprint.qc:centerprint_Kill"
+    port_refs:
+      - "game/hud/CenterPrintPanel.cs:Kill"
+    constants:
+      - { name: "kill fade time", base: "min(5, fade_out)", port: "min(5, fade_out)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "CenterPrintPanel.Kill has zero callers (repo-wide grep) — no port path retracts a centerprint group; lines only expire on their own timer. Base calls centerprint_Kill on countdown abort (Announcer_Gamestart: centerprint_Kill(CPID_ROUND)) and CTF line retraction."
+    verification:
+      - { kind: code, ref: "grep '\\.Kill' across *.cs: only the definition in CenterPrintPanel.cs; no caller", result: fail }
+    confidence: high
+    notes: "Implementation matches Base exactly (start_time=0 → past fade-in, expire over min(5,fade_out)); purely a liveness gap."
+
+  - id: cl-centerprint.kill.all_remote
+    name: "MSG_CENTER_KILL — remote group / all kill from server"
+    layer: [presentation]
+    base_refs:
+      - "common/notifications/all.qc:NET_HANDLE(ENT_CLIENT_NOTIFICATION) MSG_CENTER_KILL (1372-1392)"
+      - "client/hud/panel/centerprint.qc:centerprint_KillAll"
+    port_refs:
+      - "game/hud/CenterPrintPanel.cs:ClearAll"
+    constants:
+      - { name: "CPID_Null → kill all", base: "centerprint_KillAll", port: "ClearAll (no caller)", match: false }
+      - { name: "else → kill group", base: "centerprint_Kill(cpid)", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "MSG_CENTER_KILL is not on the wire and not handled: the server cannot retract a centerprint group / clear all remotely. CenterPrintPanel.ClearAll is dead (no caller). Base uses this to clear CPID_ROUND on countdown abort, retract CTF lines, and on notification-queue clear (all.qc:116)."
+    verification:
+      - { kind: code, ref: "no MSG_CENTER_KILL wire message, no KillGroup handler; ClearAll has no caller", result: fail }
+    confidence: high
+    notes: "In the port, groups are only ever replaced by a same-cpid push (e.g. BEGIN replacing the countdown), never explicitly killed; lines otherwise expire on their timer."
+
+  - id: cl-centerprint.title.gametype
+    name: "Gametype title line (centerprint_SetTitle + Announcer driver)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/centerprint.qc:centerprint_SetTitle"
+      - "client/announcer.qc:Announcer_Gamestart (centerprint_SetTitle(\"^BG\"+MapInfo_Type_ToText(gametype)))"
+    port_refs:
+      - "game/hud/CenterPrintPanel.cs:SetTitle"
+      - "game/hud/CenterPrintPanel.cs:DrawTitle"
+    constants:
+      - { name: "fontscale_title", base: "1.8 header / 1.3 shipped skin", port: "1.8", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No port equivalent of Announcer()/Announcer_Gamestart, so the gametype-name title above the countdown is never set. SetTitle/DrawTitle exist but have zero callers (grep)."
+    verification:
+      - { kind: code, ref: "grep '\\.SetTitle' across *.cs: zero callers outside CenterPrintPanel.cs; no client Announcer driver", result: fail }
+    confidence: high
+    notes: "DrawTitle rendering (bold title + underline at fontscale_title) faithfully ported; only the driver/caller is absent. The server-side AnnouncerController/GameWorld broadcast the countdown but never the title."
+
+  - id: cl-centerprint.title.duel
+    name: "Duel title 'left vs right' (centerprint_SetDuelTitle + Announcer_Duel)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/centerprint.qc:centerprint_SetDuelTitle"
+      - "client/announcer.qc:Announcer_Duel"
+    port_refs:
+      - "game/hud/CenterPrintPanel.cs:SetDuelTitle"
+      - "game/hud/CenterPrintPanel.cs:DrawTitle"
+    constants:
+      - { name: "name shorten width", base: "textShortenToWidth(name, hud_panel_scoreboard_namesize * hud_fontsize.x)", port: "MeasuredColoredWidth (no namesize clamp)", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No Announcer_Duel driver: the duel 'P1 vs P2' title is never set in Duel. SetDuelTitle/DrawTitle exist but are caller-less (grep)."
+      - "Port DrawTitle does not shorten names to hud_panel_scoreboard_namesize (Base centerprint_SetDuelTitle uses textShortenToWidth) — long names would overflow the duel title block."
+    verification:
+      - { kind: code, ref: "grep '\\.SetDuelTitle': no caller; no per-player duel-title refresh driver (Base refreshes when the two duelers change)", result: fail }
+    confidence: high
+    notes: "Duel layout (left vs right + per-name underline) ported faithfully; driver + name-shorten missing."
+
+  - id: cl-centerprint.feed.engine_builtin
+    name: "Raw engine centerprint() builtin → panel (map/trigger/door/item/MOTD text)"
+    layer: [presentation]
+    base_refs:
+      - "client/main.qc:CSQC_Parse_CenterPrint"
+      - "client/hud/panel/centerprint.qc:centerprint_AddStandard"
+      - "common/mapobjects/func/door.qc (locked-door .message centerprint)"
+      - "common/mapobjects/misc/keys.qc / common/mapobjects/target/items.qc / common/mapobjects/target/.. target_print (map-trigger centerprints)"
+      - "server/compat/quake3.qc:target_print_message"
+    port_refs:
+      - "game/hud/CenterPrintPanel.cs:Add"
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: missing
+      audio: partial
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The entire raw centerprint() builtin family is dead in the port: the centerprint TEXT half of map/trigger `.message`, locked-door 'you need the key' messages, item pickup hints, target_print, Q3-compat target_print, and the MOTD are never routed to the panel. The port's mapobject code explicitly comments this out — MapObjectsCommon.cs:365-366, TargetUtilities.cs:495/796, CompatRemaps.cs:421-422/466 all 'play the audible half' and drop the centerprint text as 'presentation-side / client-side'."
+      - "CenterPrintPanel.Add / AddTimed (the centerprint_AddStandard analogue) have zero callers."
+      - "MOTD/welcome is shown via the DialogWelcome menu instead of the panel."
+    verification:
+      - { kind: code, ref: "grep centerprint route in src/: only the audible half is played; CenterPrintPanel.Add caller-less; mapobject files state the TEXT is dropped", result: fail }
+    confidence: high
+    notes: "The draft folded this into 'MOTD' but it is far broader: any map relying on door/trigger/target centerprint text (very common in custom/Q3 maps and locked-door gameplay) shows no on-screen text in the port, only the talk sound. The 'audio: partial' reflects that the SND(TALK)/noise half IS played."
+
+  - id: cl-centerprint.feed.chat_tell
+    name: "Server chat 'tell'/private-message centerprint (cmsg/sourcecmsg)"
+    layer: [presentation, authority]
+    base_refs:
+      - "server/chat.qc (cmsgstr / sourcecmsgstr → centerprint(client, ...))"
+    port_refs:
+      - "src/XonoticGodot.Server/Chat.cs:CenterPrint"
+      - "src/XonoticGodot.Server/Chat.cs:DeliveredCenter"
+    constants: []
+    status:
+      logic: partial
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The 'X tells you:' private-message centerprint (Base server/chat.qc builds cmsgstr and centerprints it to the recipient) is RECORDED server-side onto Chat.DeliveredCenter but never networked to the client or routed to CenterPrintPanel — DeliveredCenter is only Add()'d and Clear()'d, with no consumer. So /tell and team-message centerprints never appear on the HUD."
+    verification:
+      - { kind: code, ref: "grep DeliveredCenter: written in Chat.CenterPrint, cleared in reset, no read/send/route to the panel", result: fail }
+    confidence: high
+    notes: "Distinct from the engine-builtin row: this has a concrete server-side port stub (Chat.CenterPrint) that builds the text but drops it on the floor. The host comment (Chat.cs:662) says 'a host wires the HUD channel via the same sink later' — that wiring does not exist."
+
+  - id: cl-centerprint.config.preview
+    name: "HUD-config live preview messages + title"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/centerprint.qc:HUD_CenterPrint (autocvar__hud_configure block 189-217)"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "When the HUD editor is open, Base generates rotating sample centerprint lines (countdown/multiline/standard/'Generic message') + a 'Title' line so the panel previews live while being positioned. The port's CenterPrintPanel has no _hud_configure preview path, so the centerprint panel renders empty in the HUD editor."
+    verification:
+      - { kind: code, ref: "no autocvar__hud_configure / preview-generation branch in CenterPrintPanel.cs", result: fail }
+    confidence: medium
+    notes: "Cosmetic/editor-only; low gameplay impact but a real Base behavior the panel omits. Whether the port's HUD editor relies on per-panel self-preview at all is a separate question (HudConfig)."

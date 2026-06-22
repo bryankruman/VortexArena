@@ -1,0 +1,706 @@
+unit: cl-hud
+category: client
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 35
+  worst_gaps:
+    - "VotePanel never appears in a match: no vote state is networked to the client; a real callvote shows no on-screen yes/no progress bar."
+    - "MapVotePanel never appears at intermission: NetGame has no mapvote feed, so the map-grid + vote counts + countdown are never shown."
+    - "RaceTimerPanel + CheckpointsPanel are dead: no race-split network feed, so live lap timer + checkpoint split deltas don't render in Race/CTS."
+    - "No HUD dock: hud_dock/dock_medium is registered + menu-exposed but never drawn."
+    - "Progress bars are flat fills, not the skin progressbar 9-slice with baralign 0/1/2/3 semantics."
+features:
+  - id: cl-hud.engine.registry_and_order
+    name: "Panel registry, z-order, panel-order cvar"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/hud.qh:REGISTER_HUD_PANEL"
+      - "client/hud/hud.qc:HUD_Main"
+    port_refs:
+      - "game/hud/HudRegistry.cs:PanelTypes"
+      - "game/hud/HudLayoutDefaults.cs:Table"
+      - "game/hud/HudManager.cs:_Ready"
+    constants:
+      - { name: "panel_count", base: "28 panels (REGISTER_HUD_PANEL WEAPONS..CHECKPOINTS, hud.qh:250-277; +4 minigame panels = 32 total registrations)", port: "discovered set (incl. port extras: Fps/Ping/Position/Shownames)", match: false }
+      - { name: "_hud_panelorder reverse draw", base: "order[0] on top", port: "Godot child z-order", match: false }
+    status: { logic: faithful, values: faithful, timing: na, presentation: partial, audio: na, liveness: live }
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Draw order follows Godot child order, not the QC _hud_panelorder reverse-walk; relative panel layering may differ but panels don't overlap in luma."
+    verification:
+      - { kind: code, ref: "HudRegistry reflection + HudLayoutDefaults table", result: pass }
+    confidence: high
+    notes: "Reflection-discovered registry replaces the hand list; per-panel ids/showflags/config match REGISTER_HUD_PANEL."
+
+  - id: cl-hud.engine.loadcvars
+    name: "Per-frame cvar-driven layout (HUD_Panel_LoadCvars)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/hud.qc:HUD_Panel_LoadCvars"
+      - "client/hud/hud.qh:HUD_Panel_GetBg"
+    port_refs:
+      - "game/hud/HudPanel.cs:LoadConfig"
+      - "game/hud/HudPanel.cs:Resolve"
+    constants:
+      - { name: "hud_panel_update_interval", base: "2", port: "dirty-flag + viewport throttle", match: false }
+      - { name: "padding clamp", base: "min(min(size)*0.5-5, padding)", port: "same", match: true }
+    status: { logic: faithful, values: faithful, timing: faithful, presentation: faithful, audio: na, liveness: live }
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "_bg_color shirt/pants/team-blend not implemented (inherits global bg color instead)."
+    verification:
+      - { kind: code, ref: "HudPanel.Resolve mirrors QC '' / '0' inherit rules", result: pass }
+    confidence: high
+    notes: "Live cvar reads via MenuState.Cvars so console set / menu dialogs move panels live; reload on cvar Changed + viewport resize."
+
+  - id: cl-hud.engine.skin_border
+    name: "9-slice skin border (draw_BorderPicture)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/hud.qh:HUD_Panel_DrawBg"
+      - "lib/draw.qh:draw_BorderPicture"
+    port_refs:
+      - "game/hud/HudSkin.cs:DrawBorderPicture"
+      - "game/hud/HudPanel.cs:DrawBackground"
+    constants:
+      - { name: "BORDER_MULTIPLIER", base: "4", port: "border slice", match: true }
+      - { name: "border_* directional variants", base: "engine-synthesized crops of border_default", port: "full 9-slice for all variants (suffix masking is a follow-up)", match: false }
+    status: { logic: faithful, values: faithful, timing: na, presentation: partial, audio: na, liveness: live }
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Directional border variants (_south/_north/_east/_corner_*) render as the full 9-slice frame rather than the engine's edge-masked crops; bg-enabled panels show a full frame where Base shows a partial edge."
+    verification:
+      - { kind: code, ref: "HudSkin resolves skin->default chain", result: pass }
+    confidence: medium
+    notes: "Phase-1 simplification acknowledged in the contract (§4.2)."
+
+  - id: cl-hud.engine.progressbar
+    name: "Progress-bar primitive (HUD_Panel_DrawProgressBar)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/hud.qc:HUD_Panel_DrawProgressBar"
+    port_refs:
+      - "game/hud/HudPanel.cs:DrawBar"
+    constants:
+      - { name: "baralign", base: "0/1/2/3 (left/right/center/center-bidirectional)", port: "flat fill, alignment approximated per-panel", match: false }
+      - { name: "skin art", base: "progressbar / progressbar_vertical / accelbar / num_leading", port: "DrawRect fills", match: false }
+    status: { logic: partial, values: partial, timing: na, presentation: partial, audio: na, liveness: live }
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Bars are flat colored rects, not the rounded skin progressbar texture; the shared baralign 0/1/2/3 semantics (esp. center-bidirectional accel bar) are approximated by each panel rather than the one primitive."
+    verification:
+      - { kind: code, ref: "DrawBar is a 3-rect flat fill", result: fail }
+    confidence: high
+    notes: "Visually flatter than Base; vertical-bar and baralign-3 paths are per-panel approximations."
+
+  - id: cl-hud.engine.num_color
+    name: "Value tint gradient (HUD_Get_Num_Color)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/hud.qc:HUD_Get_Num_Color"
+    port_refs:
+      - "game/hud/HudPanel.cs:NumColor"
+    constants:
+      - { name: "stops", base: "5 (100/75/50/25/10)", port: "2-stop lerp", match: false }
+      - { name: "blink", base: "sine flash >=100%, pulse <25%", port: "none", match: false }
+    status: { logic: partial, values: partial, timing: partial, presentation: partial, audio: na, liveness: live }
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No blink/pulse (full-health sine flash + low-health pulse) and a 2-stop instead of 5-stop gradient, so number tints differ from Base."
+    verification:
+      - { kind: code, ref: "NumColor is a 2-segment lerp, no time term", result: fail }
+    confidence: high
+    notes: "Functional color-by-value, missing the animated emphasis."
+
+  - id: cl-hud.engine.dynamic_shake
+    name: "Damage-keyed whole-HUD shake (Hud_Dynamic_Frame shake)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/hud.qc:Hud_Dynamic_Frame"
+      - "client/hud/hud.qc:Hud_Shake_Update"
+    port_refs:
+      - "game/hud/HudDynamicShake.cs:Update"
+      - "game/hud/HudManager.cs:_Process"
+    constants:
+      - { name: "hud_dynamic_shake_damage_min", base: "10", port: "10", match: true }
+      - { name: "hud_dynamic_shake_damage_max", base: "130", port: "130", match: true }
+      - { name: "hud_dynamic_shake_scale", base: "0.2", port: "0.2", match: true }
+      - { name: "keyframe polyline", base: "x[10]/y[10] fixed", port: "identical arrays", match: true }
+    status: { logic: faithful, values: faithful, timing: faithful, presentation: faithful, audio: na, liveness: live }
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: unit_test, ref: "HudDynamicShakeTests", result: pass }
+    confidence: high
+    notes: "Line-for-line port incl. reset sentinel, strongest-hit-wins, intermission suppress."
+
+  - id: cl-hud.engine.dynamic_follow
+    name: "HUD sway with viewmodel (hud_dynamic_follow)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/hud.qc:Hud_Dynamic_Frame"
+    port_refs: []
+    constants: []
+    status: { logic: missing, values: missing, timing: missing, presentation: missing, audio: na, liveness: na }
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The hud_dynamic_follow HUD-shift/scale-with-viewmodel effect is unported; the HUD never sways with weapon bob."
+    verification:
+      - { kind: grep, ref: "no hud_dynamic_follow in game/", result: fail }
+    confidence: high
+    notes: "Only the shake half of Hud_Dynamic_Frame is ported."
+
+  - id: cl-hud.engine.dock
+    name: "HUD dock background (hud_dock)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/hud.qc:HUD_Main"
+    port_refs: []
+    constants:
+      - { name: "hud_dock", base: "0 (off); dock_medium art", port: "registered, never drawn", match: false }
+    status: { logic: missing, values: stub, timing: na, presentation: missing, audio: na, liveness: dead }
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Enabling hud_dock (or the menu Dock slider) has no visual effect: the dock_medium full-screen background is never drawn."
+    verification:
+      - { kind: grep, ref: "hud_dock only in HudConfig register + menu, no draw", result: fail }
+    confidence: high
+    notes: "Cvars registered + menu-exposed; draw path missing."
+
+  - id: cl-hud.engine.configure_mode
+    name: "HUD configure-mode editor (hud_config.qc)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/hud_config.qc"
+    port_refs:
+      - "game/hud/HudConfigEditor.cs"
+    constants:
+      - { name: "hud_configure_grid / _xsize / _ysize", base: "1 / 0.005 / 0.005", port: "1 / 0.005 / 0.005", match: true }
+      - { name: "hud_configure_checkcollisions", base: "0", port: "0", match: true }
+    status: { logic: faithful, values: faithful, timing: unknown, presentation: faithful, audio: na, liveness: live }
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "HudConfigEditor wired via NetGame._UnhandledInput on _hud_configure", result: pass }
+    confidence: medium
+    notes: "Drag/resize/keyboard/grid present; per-panel-settings-dialog + export parity not runtime-verified."
+
+  - id: cl-hud.panel.weapons
+    name: "Weapons panel (#0)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/weapons.qc:HUD_Weapons"
+    port_refs:
+      - "game/hud/WeaponsPanel.cs"
+    constants:
+      - { name: "hud_panel_weapons_timeout", base: "1", port: "1", match: true }
+      - { name: "hud_panel_weapons_selection_speed", base: "10", port: "10", match: true }
+      - { name: "hud_panel_weapons_complainbubble_time", base: "0 (min clamped to 1)", port: "registered", match: true }
+    status: { logic: faithful, values: faithful, timing: unknown, presentation: partial, audio: na, liveness: live }
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Selection-slide animation, accuracy-tint overlay and per-weapon ammo clip bar fidelity not runtime-verified; bars use the flat DrawBar."
+    verification:
+      - { kind: code, ref: "WeaponsPanel fed via Hud.SetPlayer + SetAccuracy in NetGame", result: pass }
+    confidence: medium
+    notes: "Owned-weapon grid + complainbubble + label modes + timeout fade present and fed live."
+
+  - id: cl-hud.panel.ammo
+    name: "Ammo panel (#1)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/ammo.qc:HUD_Ammo"
+    port_refs:
+      - "game/hud/AmmoPanel.cs"
+    constants:
+      - { name: "hud_panel_ammo_maxammo", base: "40", port: "40", match: true }
+      - { name: "noncurrent_alpha / _scale", base: "0.6 / 0.4", port: "0.6 / 0.4", match: true }
+    status: { logic: faithful, values: faithful, timing: na, presentation: partial, audio: na, liveness: live }
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Clip progressbar uses the flat DrawBar; nade-bonus display fidelity not verified."
+    verification:
+      - { kind: code, ref: "AmmoPanel fed via Hud.SetPlayer", result: pass }
+    confidence: medium
+    notes: "Per-resource icons + current bg + low-ammo color + infinite present."
+
+  - id: cl-hud.panel.powerups
+    name: "Powerups panel (#2)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/powerups.qc:HUD_Powerups"
+    port_refs:
+      - "game/hud/PowerupsPanel.cs"
+    constants: []
+    status: { logic: faithful, values: unknown, timing: unknown, presentation: partial, audio: na, liveness: live }
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Countdown expanding-flash (<=5s) + per-powerup bar fidelity not runtime-verified."
+    verification:
+      - { kind: code, ref: "PowerupsPanel fed via Hud.SetPlayer", result: pass }
+    confidence: medium
+    notes: "Active-powerup grid with timers; fed live on listen server."
+
+  - id: cl-hud.panel.healtharmor
+    name: "Health/armor panel (#3)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/healtharmor.qc:HUD_HealthArmor"
+    port_refs:
+      - "game/hud/HealthArmorPanel.cs"
+    constants:
+      - { name: "_maxhealth / _maxarmor", base: "200 / 200", port: "200 / 200", match: true }
+      - { name: "_progressbar_gfx_damage", base: "5", port: "5", match: true }
+      - { name: "_progressbar_gfx_smooth", base: "2", port: "2", match: true }
+      - { name: "_progressbar_gfx_lowhealth", base: "40", port: "40", match: true }
+      - { name: "baralign / iconalign", base: "3 / 3", port: "3 / 3", match: true }
+    status: { logic: faithful, values: faithful, timing: faithful, presentation: partial, audio: na, liveness: live }
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Bars use the flat DrawBar (not the skin progressbar); number tint lacks the NumColor blink. Combined/split/fuel/oxygen/damage-flash/smooth logic is faithful."
+    verification:
+      - { kind: code, ref: "HealthArmorPanel fed via Hud.SetPlayer + Now/AirFinished feed", result: pass }
+    confidence: high
+    notes: "On a pure --connect client NetHud's lightweight health label covers it (hybrid HUD, see net feature)."
+
+  - id: cl-hud.panel.notify
+    name: "Notify / kill-feed panel (#4)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/notify.qc:HUD_Notify"
+    port_refs:
+      - "game/hud/NotifyPanel.cs"
+      - "game/hud/HudNotifications.cs"
+    constants:
+      - { name: "NOTIFY_MAX_ENTRIES", base: "10", port: "circular buffer", match: true }
+      - { name: "_time / _fadetime", base: "10 / 3", port: "registered", match: true }
+    status: { logic: faithful, values: faithful, timing: faithful, presentation: faithful, audio: na, liveness: live }
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "HudNotifications routes MSG_INFO obituaries to NotifyPanel.Push", result: pass }
+    confidence: high
+    notes: "Per-line fade + flip + color-coded names + icons; fed from the notification stream."
+
+  - id: cl-hud.panel.timer
+    name: "Timer panel (#5)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/timer.qc:HUD_Timer"
+    port_refs:
+      - "game/hud/TimerPanel.cs"
+    constants: []
+    status: { logic: faithful, values: unknown, timing: faithful, presentation: faithful, audio: na, liveness: live }
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Secondary round-timer + overtime/sudden-death/warmup subtext coverage not all runtime-verified."
+    verification:
+      - { kind: code, ref: "NetGame.FeedTimer drives _fullHud.Timer", result: pass }
+    confidence: medium
+    notes: "Count-down/up + warning colors present; fed the networked clock."
+
+  - id: cl-hud.panel.radar
+    name: "Radar / minimap panel (#6)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/radar.qc:HUD_Radar"
+    port_refs:
+      - "game/hud/RadarPanel.cs"
+    constants:
+      - { name: "_scale / _maximized_scale", base: "8192 / 5120", port: "registered", match: true }
+    status: { logic: partial, values: unknown, timing: na, presentation: partial, audio: na, liveness: partial }
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Full BSP-minimap render + maximized clickable mode (ons spawn / teleport select) are partial; the live radar is the standalone _radar (the discovered one is force-hidden to avoid a double radar)."
+    verification:
+      - { kind: code, ref: "standalone _radar fed from ClientNet; _fullHud radar in StartHiddenIds", result: pass }
+    confidence: medium
+    notes: "Player blips render; full minimap + rotation/zoom modes not fully verified."
+
+  - id: cl-hud.panel.score
+    name: "Score overlay panel (#7)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/score.qc:HUD_Score"
+    port_refs:
+      - "game/hud/ScorePanel.cs"
+    constants:
+      - { name: "SCOREPANEL_MAX_ENTRIES", base: "6", port: "6", match: true }
+      - { name: "highlight_alpha", base: "0.2", port: "0.2", match: true }
+    status: { logic: faithful, values: faithful, timing: na, presentation: faithful, audio: na, liveness: live }
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "NetGame.FeedScorePanel feeds mode/self/teamscores/rankings", result: pass }
+    confidence: high
+    notes: "Rankings / ffa-distribution / race / team layouts all present and fed."
+
+  - id: cl-hud.panel.racetimer
+    name: "Race timer panel (#8)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/racetimer.qc:HUD_RaceTimer"
+    port_refs:
+      - "game/hud/RaceTimerPanel.cs"
+    constants: []
+    status: { logic: faithful, values: unknown, timing: unknown, presentation: faithful, audio: na, liveness: dead }
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No live feeder: the Race*/checkpoint-split API is never set (no race-split networking on the client), so the running lap timer + checkpoint split deltas never render in Race/CTS."
+    verification:
+      - { kind: grep, ref: "no RaceTimer.* setter caller in game/ or src/", result: fail }
+    confidence: high
+    notes: "Full render code exists and works when given data; purely a wire-up gap."
+
+  - id: cl-hud.panel.vote
+    name: "Vote panel (#9)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/vote.qc:HUD_Vote"
+    port_refs:
+      - "game/hud/VotePanel.cs"
+    constants:
+      - { name: "_alreadyvoted_alpha", base: "0.7 (hud_luma.cfg:201)", port: "0.75 default", match: false }
+    status: { logic: faithful, values: partial, timing: faithful, presentation: faithful, audio: na, liveness: dead }
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "VotePanel never appears in a match: no vote state is networked to the client (ClientNet has no vote fields) and NetGame never sets Vote.Active/CalledVote/YesCount/NoCount/Needed (verified: zero .Vote. references outside VotePanel.cs) — a real callvote shows no on-screen yes/no progress bar."
+      - "AlreadyVoted alpha default is 0.75 vs Base luma 0.7 (draft mis-stated Base as 0.35)."
+    verification:
+      - { kind: grep, ref: "server VoteController exists but no client vote wire / no VotePanel feeder", result: fail }
+    confidence: high
+    notes: "Full render + key/yes/no/progress code present; the server has VoteController but vote state isn't sent to the client."
+
+  - id: cl-hud.panel.modicons
+    name: "Mod icons panel (#10)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/modicons.qc:HUD_ModIcons"
+    port_refs:
+      - "game/hud/ModIconsPanel.cs"
+    constants: []
+    status: { logic: partial, values: unknown, timing: unknown, presentation: partial, audio: na, liveness: live }
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Mode coverage is CA/FreezeTag/Keyhunt/Survival; CTF flag-state icons, dom point ownership, assault and the full per-gametype icon set are partial."
+    verification:
+      - { kind: code, ref: "NetGame sets ModIcons.Mode from match state", result: pass }
+    confidence: medium
+    notes: "Driven live from gametype; icon fidelity per mode varies."
+
+  - id: cl-hud.panel.pressedkeys
+    name: "Pressed-keys panel (#11)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/pressedkeys.qc:HUD_PressedKeys"
+    port_refs:
+      - "game/hud/PressedKeysPanel.cs"
+    constants:
+      - { name: "_aspect", base: "1.8", port: "registered", match: true }
+      - { name: "enable", base: "0/1/2 (off/spectating/always)", port: "show-mode", match: true }
+    status: { logic: faithful, values: unknown, timing: na, presentation: partial, audio: na, liveness: partial }
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Spectating-only enable gate + the key_*/key_*_inv art coverage not runtime-verified; only shows for the local/spectated pressed-keys stat."
+    verification:
+      - { kind: code, ref: "PressedKeysPanel discovered; show-mode gated", result: pass }
+    confidence: low
+    notes: "Key grid present; data feed for spectated players not confirmed."
+
+  - id: cl-hud.panel.chat
+    name: "Chat panel (#12)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/chat.qc:HUD_Chat"
+    port_refs:
+      - "game/hud/ChatPanel.cs"
+    constants:
+      - { name: "con_chatsize / con_chattime", base: "8 / 30", port: "own renderer (not engine rect)", match: false }
+    status: { logic: partial, values: na, timing: partial, presentation: faithful, audio: na, liveness: live }
+    intended_divergence: true
+    divergence_rationale: "There is no DarkPlaces engine chat console to drive (con_chatrect/con_chat*); the port keeps its own scrolling line buffer and renders chat itself with the Xolonium font. Same on-screen result, different mechanism."
+    gaps: []
+    verification:
+      - { kind: code, ref: "ChatPanel.AddLine fed from NetGame chat stream", result: pass }
+    confidence: high
+    notes: "Maximized/scroll parity is partial but the core chat history renders live."
+
+  - id: cl-hud.panel.engineinfo
+    name: "Engine-info (FPS) panel (#13)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/engineinfo.qc:HUD_EngineInfo"
+    port_refs:
+      - "game/hud/EngineInfoPanel.cs"
+      - "game/hud/FpsPanel.cs"
+    constants:
+      - { name: "enable", base: "0 (off)", port: "0", match: true }
+    status: { logic: faithful, values: unknown, timing: unknown, presentation: faithful, audio: na, liveness: live }
+    intended_divergence: true
+    divergence_rationale: "Off by default like Base; the port also ships a separate DP-style FpsPanel (cl_showfps) that is the primary FPS readout, so engineinfo is redundant by design."
+    gaps: []
+    verification:
+      - { kind: code, ref: "EngineInfoPanel discovered, enable 0", result: pass }
+    confidence: medium
+    notes: "FpsPanel (port extra) covers FPS; engineinfo parity is low-priority."
+
+  - id: cl-hud.panel.infomessages
+    name: "Info-messages panel (#14)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/infomessages.qc:HUD_InfoMessages"
+    port_refs:
+      - "game/hud/InfoMessagesPanel.cs"
+    constants:
+      - { name: "_flip", base: "1", port: "registered", match: true }
+      - { name: "group_time / group_fadetime", base: "6 / 0.4", port: "unknown", match: false }
+    status: { logic: partial, values: unknown, timing: unknown, presentation: faithful, audio: na, liveness: live }
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Cycling group hints (spectate controls), team-unbalanced nag, spectator list and the full message set are partially covered."
+    verification:
+      - { kind: code, ref: "NetGame.FeedInfoMessages drives the panel", result: pass }
+    confidence: medium
+    notes: "Observing/press-to-join/warmup/countdown lines present and fed live."
+
+  - id: cl-hud.panel.physics
+    name: "Physics / speedometer panel (#15)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/physics.qc:HUD_Physics"
+    port_refs:
+      - "game/hud/PhysicsPanel.cs"
+    constants:
+      - { name: "_speed_max", base: "1800", port: "registered", match: true }
+      - { name: "_acceleration_max", base: "1.5", port: "registered", match: true }
+      - { name: "_topspeed_time", base: "4", port: "registered", match: true }
+      - { name: "enable", base: "3 (Race/CTS show-mode)", port: "3 show-mode", match: true }
+    status: { logic: faithful, values: faithful, timing: unknown, presentation: partial, audio: na, liveness: live }
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Acceleration/speed bars use the flat DrawBar (no accelbar art, baralign-3 center bar approximated); topspeed progressbar peak fidelity not verified."
+    verification:
+      - { kind: code, ref: "PhysicsPanel fed via Hud.SetPlayer; show-mode 3 gated by RaceOrCts/Observing", result: pass }
+    confidence: medium
+    notes: "Speedometer + topspeed + jumpspeed + accel-in-g + unit present; cvar-gated show-mode wired."
+
+  - id: cl-hud.panel.centerprint
+    name: "Center-print panel (#16)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/centerprint.qc:HUD_CenterPrint"
+    port_refs:
+      - "game/hud/CenterPrintPanel.cs"
+      - "game/hud/HudNotifications.cs"
+    constants:
+      - { name: "CENTERPRINT_MAX_MSGS", base: "10", port: "buffer", match: true }
+      - { name: "_time / _fade_in / _fade_out", base: "3 / 0 / 0.15", port: "registered", match: true }
+    status: { logic: faithful, values: faithful, timing: faithful, presentation: faithful, audio: na, liveness: live }
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Duel 'vs' title + follow-below-scoreboard/radar repositioning fidelity not all runtime-verified."
+    verification:
+      - { kind: code, ref: "HudNotifications routes MSG_CENTER + ^COUNT countdown to CenterPrint.Push", result: pass }
+    confidence: high
+    notes: "Priority buffer + fade + id-keyed replace + countdown + bold/title scales present and fed."
+
+  - id: cl-hud.panel.itemstime
+    name: "Items-time panel (#17)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/itemstime.qc:HUD_ItemsTime"
+    port_refs:
+      - "game/hud/ItemsTimePanel.cs"
+    constants:
+      - { name: "enable", base: "2 (spectating-only/always)", port: "2", match: true }
+    status: { logic: faithful, values: unknown, timing: unknown, presentation: partial, audio: na, liveness: live }
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Progressbar / dynamicsize / ratio-columns fidelity not runtime-verified."
+    verification:
+      - { kind: code, ref: "NetGame feeds ItemsTime.SetItemTimes + Visible", result: pass }
+    confidence: medium
+    notes: "Per-item respawn timers + icons + countdown present and fed live."
+
+  - id: cl-hud.panel.quickmenu
+    name: "Quick-menu panel"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/quickmenu.qc:HUD_QuickMenu"
+    port_refs:
+      - "game/hud/QuickMenuPanel.cs"
+    constants: []
+    status: { logic: partial, values: unknown, timing: na, presentation: partial, audio: na, liveness: live }
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Nested quick-chat tree from a quickmenu file + translatecommands/server_is_default parity not verified."
+    verification:
+      - { kind: code, ref: "QuickMenuPanel.Toggle wired in NetGame; IsOpen gates cursor", result: pass }
+    confidence: low
+    notes: "Open/close + key/click nav present; entry-source fidelity unverified."
+
+  - id: cl-hud.panel.scoreboard
+    name: "Scoreboard panel"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/scoreboard.qc:Scoreboard_Draw"
+    port_refs:
+      - "game/hud/ScoreboardPanel.cs"
+    constants:
+      - { name: "_fadeinspeed / _fadeoutspeed", base: "10 / 5", port: "registered", match: true }
+      - { name: "layout source", base: "hud_panel_scoreboard_pos/_size", port: "hardcoded Configure rect in NetGame", match: false }
+    status: { logic: faithful, values: faithful, timing: unknown, presentation: partial, audio: na, liveness: live }
+    intended_divergence: true
+    divergence_rationale: "The networked scoreboard is a standalone _scoreboard placed by a manual Configure rect (fed from ClientNet); _fullHud's discovered Scoreboard is left unfed to avoid a double scoreboard. The cvar pos/size therefore doesn't move the live board."
+    gaps:
+      - "Scoreboard ignores hud_panel_scoreboard_pos/_size (manual rect); per-weapon accuracy / item-stats double-rows + full spectator/footer parity not all verified."
+    verification:
+      - { kind: code, ref: "_scoreboard fed SetWireRows/SetAccuracy + FeedScoreboardHeader from ClientNet.LatestScoreboard", result: pass }
+    confidence: medium
+    notes: "Columns + team totals + self/eliminated highlight + accuracy + header render live."
+
+  - id: cl-hud.panel.strafehud
+    name: "Strafe HUD panel"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/strafehud.qc:HUD_StrafeHUD"
+    port_refs:
+      - "game/hud/StrafeHudPanel.cs"
+    constants:
+      - { name: "enable", base: "3 (Race/CTS show-mode)", port: "3", match: true }
+    status: { logic: faithful, values: unknown, timing: unknown, presentation: partial, audio: na, liveness: live }
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Bar zones / best-angle marker / wturn-switch indicator + mode/style/range fidelity not runtime-verified."
+    verification:
+      - { kind: code, ref: "NetGame feeds StrafeHudPanel; show-mode 3 gated", result: pass }
+    confidence: low
+    notes: "Strafe bar present and fed; faithful-to-stock-strafehud detail unverified."
+
+  - id: cl-hud.panel.pickup
+    name: "Pickup panel (#26)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/pickup.qc:HUD_Pickup"
+    port_refs:
+      - "game/hud/PickupPanel.cs"
+    constants:
+      - { name: "_time / _fade_out / _iconsize", base: "3 / 0.15 / 1.5", port: "registered", match: true }
+    status: { logic: faithful, values: faithful, timing: unknown, presentation: faithful, audio: na, liveness: live }
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Item-respawn-timer (_showtimer) display fidelity not runtime-verified."
+    verification:
+      - { kind: code, ref: "NetGame feeds PickupPanel on pickup events", result: pass }
+    confidence: medium
+    notes: "Recent-pickup line with icon + name + xcount fade present and fed."
+
+  - id: cl-hud.panel.checkpoints
+    name: "Checkpoints panel (#27)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/checkpoints.qc:HUD_Checkpoints"
+    port_refs:
+      - "game/hud/CheckpointsPanel.cs"
+    constants: []
+    status: { logic: faithful, values: unknown, timing: unknown, presentation: faithful, audio: na, liveness: dead }
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No live feeder: race_checkpoint_splits is never networked to the client, so the checkpoint splits list never renders in Race/CTS."
+    verification:
+      - { kind: grep, ref: "no Checkpoints.* setter caller in game/ or src/", result: fail }
+    confidence: high
+    notes: "Full render code exists; purely a wire-up gap (same family as racetimer)."
+
+  - id: cl-hud.panel.mapvote
+    name: "Map-vote panel"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/hud.qh:REGISTER_HUD_PANEL(MAPVOTE)"
+      - "client/mapvoting.qc:MapVote_Draw"
+    port_refs:
+      - "game/hud/MapVotePanel.cs"
+    constants: []
+    status: { logic: faithful, values: unknown, timing: unknown, presentation: faithful, audio: na, liveness: dead }
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "MapVotePanel never appears at intermission: NetGame has zero MapVote/MapVotePanel references, so the intermission map-grid + mapshots + vote counts + countdown are never shown to the player."
+    verification:
+      - { kind: grep, ref: "no MapVote/MapVotePanel reference in NetGame", result: fail }
+    confidence: high
+    notes: "Server has MapVoting.cs; the client panel renders when given data but is never fed at intermission."
+
+  - id: cl-hud.panel.minigame
+    name: "Minigame HUD panels (BOARD/STATUS/HELP/MENU)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/hud.qh:REGISTER_HUD_PANEL(MINIGAMEBOARD)"
+      - "client/hud/hud.qh:REGISTER_HUD_PANEL(MINIGAMESTATUS)"
+      - "client/hud/hud.qh:REGISTER_HUD_PANEL(MINIGAMEHELP)"
+      - "client/hud/hud.qh:REGISTER_HUD_PANEL(MINIGAMEMENU)"
+      - "common/minigames/cl_minigames_hud.qc:HUD_MinigameBoard"
+      - "common/minigames/cl_minigames_hud.qc:HUD_MinigameHelp"
+    port_refs:
+      - "game/hud/MinigameRenderer.cs"
+      - "game/hud/MinigameMenu.cs"
+      - "game/hud/MinigameHelpPanel.cs"
+      - "game/net/NetGame.cs:_minigame (MinigameClient)"
+    constants: []
+    status: { logic: partial, values: unknown, timing: unknown, presentation: partial, audio: na, liveness: live }
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Board + status are merged into one MinigameRenderer (board square + team pieces + win-line + status line) rather than the QC BOARD/STATUS split; only the implemented minigame rule-sets are renderable. Per-game _hud_board/_hud_status art coverage not all runtime-verified."
+    verification:
+      - { kind: code, ref: "NetGame builds MinigameClient(_fullHud, _fullHud.MinigameMenu) when _client!=null; OnMinigameStateReceived feeds MinigameHelpPanel.ActiveMinigame; PongMoveSink wired", result: pass }
+    confidence: medium
+    notes: "Draft OMITTED all 4 Base minigame HUD panels; they ARE ported and live via the MinigameClient coordinator (board renderer + menu + help). Board/status combined into MinigameRenderer."
+
+  - id: cl-hud.net.hybrid_hud
+    name: "Hybrid HUD (NetHud fallback + _fullHud), font + skin wiring"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/hud.qc:HUD_Main"
+    port_refs:
+      - "game/net/NetGame.cs:_fullHud"
+      - "game/net/NetHud.cs"
+    constants: []
+    status: { logic: faithful, values: na, timing: na, presentation: faithful, audio: na, liveness: live }
+    intended_divergence: true
+    divergence_rationale: "Godot HUD panels need a local Player actor for STAT(*); a pure --connect client has none. So NetGame runs the full skinned Hud on Layer 4 AND a lightweight NetHud (networked health/armor + crosshair) on Layer 5, suppressing _fullHud's HealthArmor/Crosshair when NetHud owns them to avoid a double draw. On a listen server the local server Player feeds the full panels directly."
+    gaps: []
+    verification:
+      - { kind: code, ref: "NetGame builds _fullHud + NetHud; SetPlayer + suppression logic", result: pass }
+    confidence: high
+    notes: "Also wires HudPanel.HudFont = xolonium + HudSkin.BoldFont; the live HUD is genuinely on the net path."

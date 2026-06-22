@@ -1,0 +1,341 @@
+unit: weapon-hagar
+category: weapon
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 11
+  worst_gaps:
+    - "Loadable secondary hold-to-charge state machine absent: every secondary press fires the full 4-rocket salvo instantly; no partial loads, no 0.5s/rocket charge."
+    - "All Hagar load/charge audio missing (SND_HAGAR_LOAD per-rocket tick, SND_HAGAR_BEEP last-rocket/abort/auto-release warning beeps)."
+    - "HUD Hagar load ring is wired but never fed (CrosshairPanel.HagarLoad never assigned) so it never draws."
+    - "Non-loaded bouncing secondary (AttackBounce) is unreachable at stock balance (secondary_load=1, SecondaryLoad=true) — code exists but no live caller in a normal match."
+features:
+  - id: hagar.primary.attack
+    name: "Primary rapid-fire straight rocket stream"
+    layer: [authority, shared]
+    base_refs:
+      - "common/weapons/weapon/hagar.qc:W_Hagar_Attack"
+      - "common/weapons/weapon/hagar.qc:W_Hagar_Attack_Auto"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hagar.cs:Attack"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hagar.cs:WrThink"
+    constants:
+      - { name: "primary_damage", base: "25", port: "25", match: true }
+      - { name: "primary_edgedamage", base: "12.5", port: "12.5", match: true }
+      - { name: "primary_force", base: "100", port: "100", match: true }
+      - { name: "primary_radius", base: "65", port: "65", match: true }
+      - { name: "primary_refire", base: "0.16667", port: "0.16667", match: true }
+      - { name: "primary_speed", base: "2200", port: "2200", match: true }
+      - { name: "primary_lifetime", base: "5", port: "5", match: true }
+      - { name: "primary_ammo", base: "1", port: "1", match: true }
+      - { name: "primary_health", base: "15", port: "15", match: true }
+      - { name: "primary_spread", base: "0", port: "0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: value_diff, ref: "bal-wep-xonotic.cfg:384-394 vs Hagar.Configure", result: pass }
+      - { kind: code_read, ref: "hagar.qc:98-141 vs Hagar.cs:Attack; live via WeaponFireDriver.Frame (GameWorld.cs:1182)", result: pass }
+    confidence: high
+    notes: "MOVETYPE_FLY straight rocket, bursts on impact/lifetime/shot-down. Refire 0.16667 enforced by PrepareAttack gate. Muzzle/fire emitted server-side (port convention)."
+
+  - id: hagar.secondary.bounce
+    name: "Non-loaded secondary: single bouncing rocket"
+    layer: [authority, shared]
+    base_refs:
+      - "common/weapons/weapon/hagar.qc:W_Hagar_Attack2"
+      - "common/weapons/weapon/hagar.qc:W_Hagar_Touch2"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hagar.cs:AttackBounce"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hagar.cs:BounceTouch"
+    constants:
+      - { name: "secondary_damage", base: "35", port: "35", match: true }
+      - { name: "secondary_edgedamage", base: "17.5", port: "17.5", match: true }
+      - { name: "secondary_force", base: "75", port: "75", match: true }
+      - { name: "secondary_radius", base: "80", port: "80", match: true }
+      - { name: "secondary_speed", base: "2000", port: "2000", match: true }
+      - { name: "secondary_lifetime_min", base: "10", port: "10", match: true }
+      - { name: "secondary_lifetime_rand", base: "0", port: "0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: faithful
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "DEAD at stock balance: secondary_load=1 (Base) and SecondaryLoad=true (port), so WrThink always routes the secondary to AttackLoadRelease — AttackBounce/BounceTouch have no live caller in a normal match. Only reachable if g_balance_hagar_secondary=load is set to 0 (non-stock)."
+      - "EFFECT_HAGAR_BOUNCE particle is NOT emitted on the bounce (Base Send_Effect(EFFECT_HAGAR_BOUNCE) in W_Hagar_Touch2); BounceTouch only reorients angles. HAGAR_BOUNCE is registered (EffectsList.cs:101) but never Emit'd anywhere."
+      - "BounceTouch detonates on DAMAGE_AIM OR any entity with the Client flag; Base W_Hagar_Touch2 keys only on toucher.takedamage == DAMAGE_AIM. Cosmetically equivalent for players (they are DAMAGE_AIM) but the extra Client-flag OR is not in Base."
+    verification:
+      - { kind: code_read, ref: "hagar.qc:143-198 vs Hagar.cs:AttackBounce/BounceTouch — logic/values match", result: pass }
+      - { kind: code_read, ref: "Hagar.cs:64 SecondaryLoad=true (never reassigned) + WrThink:122 gate; bal-wep-xonotic.cfg:406 secondary_load=1 -> AttackBounce unreachable at stock", result: fail }
+      - { kind: code_read, ref: "EFFECT_HAGAR_BOUNCE registered (EffectsList.cs:101) but never Emit'd in src/", result: fail }
+    confidence: high
+    notes: "MOVETYPE_BOUNCEMISSILE; bounce once (cnt) then detonate, or detonate immediately on a DAMAGE_AIM/client. The math is faithful but it is DEAD at the stock balance every public match uses (load=1); downgraded from the draft's 'live' which contradicted its own 'inactive at stock' note."
+
+  - id: hagar.secondary.load_release
+    name: "Loaded secondary salvo (release fan + per-shot bias spread)"
+    layer: [authority, shared]
+    base_refs:
+      - "common/weapons/weapon/hagar.qc:W_Hagar_Attack2_Load_Release"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hagar.cs:AttackLoadRelease"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:CalculateSpreadPattern"
+    constants:
+      - { name: "secondary_load_max", base: "4", port: "4", match: true }
+      - { name: "secondary_load_spread", base: "0.075", port: "0.075", match: true }
+      - { name: "secondary_load_spread_bias", base: "0.5", port: "0.5", match: true }
+      - { name: "secondary_load_animtime", base: "0.2", port: "unused", match: false }
+      - { name: "secondary_refire", base: "0.5", port: "0.5", match: true }
+      - { name: "secondary_spread", base: "0", port: "0", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: partial
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Documented in Hagar.cs class comment: the incremental hold-to-charge machine needs per-tick held-button input the headless layer does not carry yet, so the secondary is summarized to firing the full load_max salvo on each press, gated by the secondary refire (0.5s). The salvo math itself (load_spread fan via CalculateSpreadPattern + per-shot bias spread) is faithful."
+    gaps:
+      - "Cannot fire a partial load (1-3 rockets): every press fires exactly load_max (4) rockets."
+      - "load_animtime (0.2) post-release anim time is unused (RefireFor doubles as the gate; AnimtimeFor returns 0)."
+      - "Salvo damage matches per-rocket sec.damage but the W_SetupShot accuracy/recoil pass uses sec.damage*shots in Base (cosmetic accuracy denominator)."
+    verification:
+      - { kind: code_read, ref: "hagar.qc:193-259 vs Hagar.cs:AttackLoadRelease", result: pass }
+      - { kind: value_diff, ref: "bal-wep-xonotic.cfg:407-415 load_* vs Hagar.Configure", result: pass }
+    confidence: high
+    notes: "Fan + bias-spread per-shot math is bit-for-bit faithful (W_CalculateSpreadPattern pattern 1 + spread_pershot formula). Divergence is only the absence of the incremental charge front-end."
+
+  - id: hagar.secondary.load_charge_machine
+    name: "Hold-to-charge incremental load state machine"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/hagar.qc:W_Hagar_Attack2_Load"
+    port_refs: []
+    constants:
+      - { name: "secondary_load_speed", base: "0.5", port: "none", match: false }
+      - { name: "secondary_load_hold", base: "4", port: "none", match: false }
+      - { name: "secondary_load_abort", base: "1", port: "none", match: false }
+      - { name: "secondary_load", base: "1", port: "SecondaryLoad=true (selects summarized path)", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: missing
+      liveness: dead
+    intended_divergence: true
+    divergence_rationale: "Same documented summarization as hagar.secondary.load_release: the per-rocket charge loop (one rocket per load_speed while held, max load_max, auto-release after load_hold, abort-on-primary give-back) is intentionally collapsed to the one-press salvo because the headless driver lacks per-tick held-button state. The EntityWeaponState.HagarLoad/HagarLoadStep/HagarLoadBlock/HagarLoadBeep/HagarWarning fields are scaffolded for it but uncalled."
+    gaps:
+      - "No incremental loading: you cannot charge 1-3 rockets and release early; loading is instant, not 0.5s/rocket over up to ~2s."
+      - "No auto-release after holding load_hold (4s); no abort-on-primary that gives back the loaded ammo (load_abort)."
+      - "No loadblock (must-release-to-reload-again) gating."
+      - "EntityWeaponState.HagarLoad* fields exist (EntityWeaponState.cs:296-301) but have no reader/writer."
+    verification:
+      - { kind: code_read, ref: "hagar.qc:261-365 W_Hagar_Attack2_Load has no port counterpart; Hagar.WrThink jumps straight to AttackLoadRelease", result: fail }
+      - { kind: grep, ref: "HagarLoad* fields never assigned outside their declaration", result: fail }
+    confidence: high
+    notes: "The signature 'charge before turning a corner' feel is absent. Distinct from load_release (which is the summarized FIRE half); this row is the missing CHARGE half."
+
+  - id: hagar.secondary.load_audio
+    name: "Load / beep / warning charge sounds"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/hagar.qc:W_Hagar_Attack2_Load"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: missing
+      presentation: na
+      audio: missing
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "SND_HAGAR_LOAD (per-rocket load tick, VOL_BASE*0.8) never played."
+      - "SND_HAGAR_BEEP never played: last-rocket-loaded beep, abort beep, and the about-to-auto-release warning beep are all silent."
+    verification:
+      - { kind: grep, ref: "no Sound.Play of hagar_load/hagar_beep anywhere in src/ or game/", result: fail }
+    confidence: high
+    notes: "Consequence of the missing charge machine, but tracked separately because the audio cues are independently player-observable (you lose the 'rockets are loaded / about to fire' feedback)."
+
+  - id: hagar.damage.shootdown
+    name: "Shootable rocket -> burst when shot (W_Hagar_Damage)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/hagar.qc:W_Hagar_Damage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hagar.cs:Attack"
+    constants:
+      - { name: "primary_health", base: "15", port: "15 (set on rocket)", match: true }
+      - { name: "damageforcescale", base: "0", port: "unused", match: false }
+      - { name: "load_linkexplode", base: "0", port: "unused", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Rocket detonates on ANY incoming damage rather than accumulating against its 15 hp then bursting only when hp<=0 (a small graze that wouldn't kill the rocket in Base still detonates it here)."
+      - "damageforcescale (knockback applied to the rocket when shot) not modeled; moot at default 0."
+      - "load_linkexplode chained-detonation test not ported; moot at default 0."
+    verification:
+      - { kind: code_read, ref: "hagar.qc:53-74 vs Hagar.cs ProjectileDamage=Explode", result: partial }
+    confidence: medium
+    notes: "missile.TakeDamage=Yes + health set, but the ProjectileDamage delegate detonates immediately instead of subtracting from hp. W_CheckProjectileDamage (g_projectiles_damage) gate also not reproduced."
+
+  - id: hagar.explosion.radiusdamage
+    name: "Explosion: radius damage + knockback"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/hagar.qc:W_Hagar_Explode"
+      - "common/weapons/weapon/hagar.qc:W_Hagar_Explode2"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hagar.cs:Explode"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponSplash.cs:RadiusDamage"
+    constants:
+      - { name: "primary_radius", base: "65", port: "65", match: true }
+      - { name: "secondary_radius", base: "80", port: "80", match: true }
+      - { name: "primary_force", base: "100", port: "100", match: true }
+      - { name: "secondary_force", base: "75", port: "75", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Damage_DamageInfo blast-effect networking deferred (shared WeaponSplash gap, render-only)."
+    verification:
+      - { kind: code_read, ref: "hagar.qc:7-46 -> WeaponSplash.RadiusDamage (faithful RadiusDamageForSource port)", result: pass }
+    confidence: high
+    notes: "No bounce protection, matching Base comment. LOS sampling, force falloff and nearest-point metric all in the shared splash helper."
+
+  - id: hagar.fx.muzzle_explode_trail
+    name: "Muzzle flash, explosion particle, rocket trail, impact sound"
+    layer: [presentation]
+    base_refs:
+      - "common/weapons/weapon/hagar.qc:wr_impacteffect"
+      - "common/effects/all.inc:HAGAR_MUZZLEFLASH/HAGAR_EXPLODE/HAGAR_ROCKET"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hagar.cs:Explode"
+      - "game/client/ProjectileCatalog.cs:Hagar"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:101"
+    constants:
+      - { name: "rocket_model_scale", base: "0.75", port: "0.75", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Muzzleflash, fire sound and explosion are emitted server-side and networked rather than in CSQC wr_impacteffect; this is the port-wide presentation convention and is visually/aurally equivalent."
+    gaps:
+      - "EFFECT_HAGAR_BOUNCE not emitted on bounce (tracked under hagar.secondary.bounce)."
+    verification:
+      - { kind: code_read, ref: "ProjectileCatalog Hagar/HagarBouncing RocketMesh scale 0.75 + HAGAR_ROCKET trail; Explode emits HAGAR_EXPLODE", result: pass }
+      - { kind: code_read, ref: "FLACEXP1..3 == hagexp1..3 (SoundsList.cs:77) so FlacExp() realizes SND_HAGEXP_RANDOM", result: pass }
+    confidence: high
+    notes: "Random hagexp1/2/3 explosion sound faithful (despite the FLACEXP alias name). HAGAR_MUZZLEFLASH on every fire path."
+
+  - id: hagar.hud.load_ring
+    name: "Crosshair Hagar load ring"
+    layer: [presentation]
+    base_refs:
+      - "qcsrc/client/hud/panel/crosshair.qc (hagar_load ring)"
+    port_refs:
+      - "game/hud/CrosshairPanel.cs:HagarLoad"
+    constants:
+      - { name: "load_max", base: "4", port: "HagarLoadMax=4", match: true }
+    status:
+      logic: stub
+      values: faithful
+      timing: na
+      presentation: stub
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "CrosshairPanel.HagarLoad is never assigned a real value (stays -1f), so the load ring never draws even though the draw code (CrosshairPanel.cs:906) exists."
+    verification:
+      - { kind: grep, ref: "no '.HagarLoad =' assignment anywhere in src/ or game/", result: fail }
+    confidence: high
+    notes: "Wired-but-fed-nothing. Moot while the charge machine is summarized (there is no live hagar_load to display), but the ring is a dead presentation feature."
+
+  - id: hagar.identity
+    name: "Weapon identity, flags, models, pickup/switch balance"
+    layer: [shared]
+    base_refs:
+      - "common/weapons/weapon/hagar.qh:CLASS(Hagar)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hagar.cs"
+    constants:
+      - { name: "impulse", base: "8", port: "8", match: true }
+      - { name: "ammo_type", base: "RES_ROCKETS", port: "Rockets", match: true }
+      - { name: "spawnflags", base: "NORMAL|RELOADABLE|CANCLIMB|TYPE_SPLASH", port: "Normal|Reloadable|CanClimb|TypeSplash", match: true }
+      - { name: "color", base: "0.886 0.545 0.345", port: "0.886 0.545 0.345", match: true }
+      - { name: "switchdelay_raise", base: "0.2", port: "0.2 (via base SwitchDelayRaise)", match: true }
+      - { name: "switchdelay_drop", base: "0.2", port: "0.2 (via base SwitchDelayDrop)", match: true }
+      - { name: "pickup_ammo", base: "40", port: "via item pickup balance", match: true }
+      - { name: "weaponthrowable", base: "1", port: "1 (WeaponThrowing default)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "hagar.qh:20-86 vs Hagar ctor + WeaponFireGate defaults", result: pass }
+    confidence: high
+    notes: "All identity attributes and models (h_hagar.iqm / v_hagar.md3 / g_hagar.md3) match."
+
+  - id: hagar.notifications.killmessages
+    name: "Burst-vs-spray kill message + suicide message"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/hagar.qc:wr_killmessage"
+      - "common/weapons/weapon/hagar.qc:wr_suicidemessage"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No differentiation between WEAPON_HAGAR_MURDER_BURST (secondary) and WEAPON_HAGAR_MURDER_SPRAY (primary); WEAPON_HAGAR_SUICIDE not wired per-weapon."
+    verification:
+      - { kind: code_read, ref: "no wr_killmessage/wr_suicidemessage equivalent on Hagar.cs", result: fail }
+    confidence: medium
+    notes: "Belongs to the notification subsystem; flagged here for the weapon's obituary parity. Out of this unit's deep scope."

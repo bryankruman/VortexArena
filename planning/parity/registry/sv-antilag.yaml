@@ -1,0 +1,369 @@
+unit: sv-antilag
+category: server
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 13
+  worst_gaps:
+    - "W_SetupShot trueaim + shotorg traces are NOT antilagged in the port: Base runs them through WarpZone_traceline_antilag/tracebox_antilag at g_antilag==2 (tracing.qc:46/85/97), so w_shotend/w_shotorg/w_shotdir are computed against REWOUND enemy positions for every weapon; the port's WeaponFiring.SetupShot uses plain present-position traces. Hitscan damage hit-reg is still rewound via the FireBullet bracket, but the trueaim point a projectile is launched toward (and the muzzle nudge) uses present positions."
+    - "Vehicle occupants are never rewound: Base recurses antilag into a manned vehicle's body, the port has no vehicle recursion, so high-ping shots at a moving vehicle hit its present position only."
+    - "g_antilag modes 1 (verified client-side) and 3 (prydon cursor hitscan) are unimplemented: a server set to either gets NO lag compensation at all (port treats anything != 2 as no-rewind)."
+    - "Arc beam is not lag-compensated: its per-frame damage trace is a plain trace, so a high-ping player's Arc fails to connect on a strafing target."
+    - "Shotgun melee secondary is not lag-compensated: Base traces it through WarpZone_traceline_antilag (shotgun.qc:124); the port's Shotgun.Melee uses a plain trace."
+features:
+  - id: sv-antilag.history.record
+    name: "Per-frame position-history ring (antilag_record)"
+    layer: [authority]
+    base_refs:
+      - "server/antilag.qc:antilag_record"
+      - "server/world.qc:EndFrame"
+    port_refs:
+      - "src/XonoticGodot.Net/AntilagBuffer.cs:AntilagBuffer.Store"
+      - "game/net/ServerNet.cs:BuildEntitySet"
+    constants:
+      - { name: "ANTILAG_MAX_ORIGINS (ring capacity)", base: "64", port: "64", match: true }
+      - { name: "record monotonic guard", base: "time < head (drop)", port: "time <= head (drop)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "tests/XonoticGodot.Tests/AntilagTests.cs:Store_Drops_Stale_Stamps / Records_Wrap_Around_The_Ring", result: pass }
+      - { kind: code, ref: "ServerNet.BuildEntitySet calls hist.Store(altime, p.Origin) every advanced sim tick", result: pass }
+    confidence: high
+    notes: "Ring layout + monotonic record match QC (Capacity=64). Port uses <= (vs QC <) only to forbid a zero-width lerp interval — behaviorally identical. VERIFIED against AntilagBuffer.cs:53-63."
+
+  - id: sv-antilag.history.record_timestamp
+    name: "Record at altime = time + frametime*(1 + g_antilag_nudge)"
+    layer: [authority]
+    base_refs:
+      - "server/world.qc:EndFrame"
+      - "server/antilag.qh:autocvar_g_antilag_nudge"
+    port_refs:
+      - "src/XonoticGodot.Net/AntilagBuffer.cs:LagCompensation.RecordTime"
+      - "game/net/ServerNet.cs:BuildEntitySet"
+    constants:
+      - { name: "g_antilag_nudge", base: "0", port: "0 (shipped in xonotic-server.cfg:200)", match: true }
+      - { name: "frame-of-lag offset", base: "+1 frametime", port: "+1 SimulationLoopTicRate", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "ServerNet.cs:1599 altime = LagCompensation.RecordTime(now, SimulationLoopTicRate, _antilagNudge); _antilagNudge read from g_antilag_nudge cvar", result: pass }
+    confidence: high
+    notes: "RecordTime(serverTime, frameTime, nudge) = serverTime + frameTime*(1+nudge), exact port of world.qc:2526. CORRECTION vs draft: g_antilag_nudge IS shipped in the port's assets/data xonotic-server.cfg:200 (set 0, identical to Base) — it is NOT unregistered; the cvar-unset fallback to 0 is moot."
+
+  - id: sv-antilag.history.sample
+    name: "Sample a past origin by bracketing-pair lerp (antilag_find + antilag_takebackorigin)"
+    layer: [authority]
+    base_refs:
+      - "server/antilag.qc:antilag_find"
+      - "server/antilag.qc:antilag_takebackorigin"
+    port_refs:
+      - "src/XonoticGodot.Net/AntilagBuffer.cs:AntilagBuffer.SampleAt"
+    constants:
+      - { name: "interpolation", base: "lerpv between bracketing samples", port: "linear lerp between bracketing samples", match: true }
+      - { name: "older-than-oldest case", base: "collapses to present (e.origin)", port: "clamps to oldest sample", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "An older-than-oldest takeback time returns the oldest recorded sample instead of QC's 'present' (e.origin); only reachable past the 0.4s cap / ~1s buffer depth, so unreachable in normal play."
+    verification:
+      - { kind: test, ref: "tests/XonoticGodot.Tests/AntilagTests.cs:SampleAt_* (exact, midpoint, multi-axis, clamps)", result: pass }
+      - { kind: code, ref: "AntilagBuffer.cs:77-109 newest->oldest walk + lerp; SampleAt:87 clamps older-than-oldest to oldest", result: pass }
+    confidence: high
+    notes: "QC's three-loop wrap search and the port's logical newest->oldest walk are equivalent for the monotonic ring. Edge clamp diverges from QC only past the rewind cap."
+
+  - id: sv-antilag.latency.cap
+    name: "ANTILAG_LATENCY = min(0.4, ping); takeback time = time - lag"
+    layer: [authority]
+    base_refs:
+      - "server/antilag.qh:ANTILAG_LATENCY"
+      - "server/antilag.qc:antilag_takeback_all"
+    port_refs:
+      - "src/XonoticGodot.Net/AntilagBuffer.cs:LagCompensation.ComputeTakebackTime"
+      - "game/net/ServerNet.cs:EstimatedPing"
+    constants:
+      - { name: "max rewind (seconds)", base: "0.4", port: "0.4 (MaxDelay)", match: true }
+      - { name: "added ticrate", base: "none (commented-out musing)", port: "none (interpolationDelay passed 0)", match: true }
+      - { name: "ping source", base: "CS(e).ping*0.001 (DP host_client->ping, engine EWMA)", port: "MeasuredRtt = receivetime-cmd.time, custom EWMA (RttSmoothing)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "tests/XonoticGodot.Tests/AntilagTests.cs:ComputeTakebackTime_* (ping, 0.4 cap, negative->0)", result: pass }
+      - { kind: code, ref: "ComputeTakebackTime bounds [0,0.4]; ServerNet.cs:1092-93 MeasuredRtt = cmd.receivetime - cmd.time, low-passed; BeginLagComp passes interpolationDelay 0", result: pass }
+    confidence: medium
+    notes: "0.4s cap + no-added-ticrate are exact. Ping is a faithful re-impl of DP's cmd.receivetime-cmd.time with a 1st-order low-pass, but the port's smoothing constant (RttSmoothing) is not DP's, so the exact rewind depth under jitter can differ by a few ms — hence medium, not high."
+
+  - id: sv-antilag.takeback.bracket
+    name: "Takeback/restore bracket around the hitscan trace (antilag_takeback_all/restore_all)"
+    layer: [authority]
+    base_refs:
+      - "server/antilag.qc:antilag_takeback_all"
+      - "server/antilag.qc:antilag_restore_all"
+      - "server/weapons/tracing.qc:fireBullet (do_antilag)"
+    port_refs:
+      - "game/net/ServerNet.cs:BeginLagComp"
+      - "game/net/ServerNet.cs:EndLagComp"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:FireBullet"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:FireRailgunBullet"
+    constants:
+      - { name: "rewound set", base: "players + monsters + nades (+ vehicles via recursion)", port: "players + monsters + nades", match: false }
+      - { name: "shooter excluded", base: "ignore == shooter", port: "ReferenceEquals(kv.Key, shooter) skip", match: true }
+      - { name: "re-entrancy", base: "shotgun does ONE bracket around all pellets (do_antilag=false per pellet)", port: "per-pellet Begin/End; _lagCompActive guard makes nesting a no-op", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Vehicle occupants are never rewound: Base recurses antilag into a manned vehicle's body, the port has no vehicle recursion, so high-ping shots at a moving vehicle hit its present position only."
+    verification:
+      - { kind: test, ref: "tests/XonoticGodot.Tests/AntilagHookTests.cs:FireBullet/FireRailgunBullet_Brackets_Its_Trace_With_LagComp", result: pass }
+      - { kind: code, ref: "WeaponFiring.cs:208/316 FireBullet + :339/415 FireRailgunBullet wrap the trace in LagComp.Begin/End; BeginLagComp rewinds _antilag (players) + _antilagEntities (monsters/nades); no e.vehicle recursion", result: pass }
+    confidence: high
+    notes: "Bracket is live for every hitscan weapon routed through FireBullet/FireRailgunBullet (Shotgun/Machinegun/Rifle/Vortex/Vaporizer/Ok* + bullet turrets). Port brackets per-pellet rather than once-per-shot, but the _lagCompActive guard + identical rewind time make it behaviorally equivalent. Vehicle recursion is the missing breadth."
+
+  - id: sv-antilag.setupshot.trueaim
+    name: "W_SetupShot trueaim + shotorg traces are antilagged (g_antilag==2)"
+    layer: [authority]
+    base_refs:
+      - "server/weapons/tracing.qc:W_SetupShot_Dir_ProjectileSize_Range (WarpZone_traceline_antilag :46, tracebox_antilag :85, :97)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:SetupShot"
+    constants:
+      - { name: "trueaim trace (w_shotend)", base: "WarpZone_traceline_antilag at ANTILAG_LATENCY", port: "plain TraceLineWarpzone (no takeback)", match: false }
+      - { name: "muzzle-nudge traces (w_shotorg)", base: "tracebox_antilag at ANTILAG_LATENCY", port: "plain Trace (no takeback)", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "W_SetupShot trueaim + shotorg traces are NOT antilagged in the port: Base runs them through WarpZone_traceline_antilag/tracebox_antilag at g_antilag==2, so w_shotend/w_shotorg/w_shotdir are computed against REWOUND enemy positions for every weapon (hitscan AND projectile); the port's WeaponFiring.SetupShot uses plain present-position traces. The actual hitscan damage trace is still rewound via the FireBullet bracket, but the trueaim ENDPOINT a projectile/bolt is aimed at, and the muzzle wall-nudge, use present positions — so a high-ping player's projectile (and the hitscan's aim direction) is slightly off vs Base."
+    verification:
+      - { kind: code, ref: "WeaponFiring.cs:141 SetupShot uses Api.Trace.TraceLineWarpzone (plain); :146/163/165 plain Trace; no LagComp bracket. Base tracing.qc:46/85/97 use the _antilag variants.", result: fail }
+    confidence: high
+    notes: "NEW row (draft only footnoted this as a minor trueaim issue). SetupShot is called by EVERY weapon (hitscan + every projectile). liveness=dead because the antilag aspect of SetupShot has no code at all in the port; the SetupShot function itself is live, the rewind inside it is absent. Comments in SetupShot explicitly acknowledge 'antilag ... deferred'."
+
+  - id: sv-antilag.solidmask.corpse
+    name: "Shooter dphitcontentsmask -> SOLID|BODY|CORPSE for the duration of the trace"
+    layer: [authority]
+    base_refs:
+      - "server/antilag.qc:tracebox_antilag_force_wz"
+      - "server/weapons/tracing.qc:W_SetupShot (dphitcontentsmask :44/50)"
+    port_refs: []
+    constants:
+      - { name: "shooter solid override during trace", base: "DPCONTENTS_SOLID|BODY|CORPSE", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base temporarily switches the shooter's hit-contents mask to also include CORPSE so a hitscan can hit gibbed/corpse bodies during the antilag trace (tracebox_antilag_force_wz, and W_SetupShot's pre-trace mask); the port's FireBullet/FireRailgunBullet/SetupShot do not adjust any contents mask around the trace. The port HAS corpse entities (Solid.Corpse / Entity.IsCorpse), so corpse-hitting behavior may differ unless the port's default trace already includes corpse-solids."
+    verification:
+      - { kind: code, ref: "WeaponFiring.Fire*/SetupShot set no DpHitContentsMask around the trace; Entity.DpHitContentsMask exists (Entity.cs:45) but is not touched by the antilag path. Corpse entities exist (EntityEnums.cs Corpse=5, DamageEntityState.IsCorpse).", result: fail }
+    confidence: medium
+    notes: "Whether this matters depends on the port's default trace/contents model for corpses; flagged as a behavioral divergence in the antilag trace wrapper. liveness=na (no code on this dimension)."
+
+  - id: sv-antilag.gate.cvars
+    name: "Gating: g_antilag==0, cl_noantilag, lag<0.001, non-client shooter -> no rewind (antilag_getlag)"
+    layer: [authority, shared]
+    base_refs:
+      - "server/antilag.qc:antilag_getlag"
+      - "server/weapons/tracing.qc:fireBullet"
+    port_refs:
+      - "game/net/ServerNet.cs:BeginLagComp"
+      - "game/net/ServerNet.cs:BuildEntitySet"
+      - "game/net/ClientNet.cs:666"
+    constants:
+      - { name: "g_antilag default", base: "2", port: "2 (shipped xonotic-server.cfg:199; empty cvar -> 2)", match: true }
+      - { name: "cl_noantilag default", base: "0", port: "replicated; GetClientCvarBool", match: true }
+      - { name: "lag<0.001 -> 0", base: "yes", port: "RTT<0 -> 0; non-Player skip", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "BeginLagComp (ServerNet.cs:2046) early-returns on _antilagMode!=2; :2052 GetClientCvarBool(sp,'cl_noantilag'); non-Player skip; ComputeTakebackTime clamps RTT<0->0. cl_noantilag in ClientNet.cs:666 ReplicatedCvars.", result: pass }
+    confidence: high
+    notes: "cl_noantilag is replicated client->server (ClientNet.cs:666) and honored per-shooter. CORRECTION vs draft: g_antilag IS shipped in the port's xonotic-server.cfg:199 (set 2); the empty-cvar fallback to 2 still yields the correct default."
+
+  - id: sv-antilag.mode.server_hitscan
+    name: "g_antilag==2 server-side hitscan in the past (the takeback mode)"
+    layer: [authority]
+    base_refs:
+      - "server/weapons/tracing.qc:traceline_antilag"
+      - "xonotic-server.cfg:g_antilag"
+    port_refs:
+      - "game/net/ServerNet.cs:BeginLagComp"
+    constants:
+      - { name: "g_antilag mode for takeback", base: "2", port: "2 (_antilagMode != 2 disables)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "BeginLagComp (ServerNet.cs:2046) gated on _antilagMode == 2, matching QC's autocvar_g_antilag != 2 -> lag = 0", result: pass }
+    confidence: high
+    notes: "The stock default mode and the only one Xonotic servers normally run. Caveat: the gate only governs the FireBullet/FireRailgunBullet hitscan-damage bracket; the W_SetupShot trueaim traces (sv-antilag.setupshot.trueaim) are never rewound even at mode 2."
+
+  - id: sv-antilag.mode.client_verified_and_cursor
+    name: "g_antilag==1 (verified client-side) and ==3 (prydon cursor) aim-correction"
+    layer: [authority]
+    base_refs:
+      - "server/weapons/tracing.qc:W_SetupShot (g_antilag==1 ghost trace, :117)"
+      - "server/weapons/tracing.qc:W_SetupShot (g_antilag==3 cursor_trace_ent, :132)"
+    port_refs: []
+    constants:
+      - { name: "g_antilag mode 1 ghost-trace correction", base: "redirect w_shotdir on miss-then-antilag-hit", port: "none", match: false }
+      - { name: "g_antilag mode 3 cursor redirect", base: "redirect w_shotdir toward cursor_trace_ent", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "g_antilag modes 1 (verified client-side) and 3 (prydon cursor hitscan) are unimplemented: a server set to either gets NO lag compensation at all (port treats anything != 2 as no-rewind)."
+    verification:
+      - { kind: code, ref: "No w_shotdir aim-correction / cursor_trace_ent handling in the port; _antilagMode != 2 simply disables the bracket (ServerNet.cs:2046)", result: fail }
+    confidence: high
+    notes: "Open question whether the port intends to support modes 1/3 at all. If servers only ever run mode 2 (stock default), this is a non-issue. liveness=na (no code on this dimension; corrected from draft's 'dead')."
+
+  - id: sv-antilag.clear.on_spawn
+    name: "antilag_clear on (re)spawn / teleport / vehicle enter-exit"
+    layer: [authority]
+    base_refs:
+      - "server/antilag.qc:antilag_clear"
+      - "server/client.qc:PutClientInServer (:858)"
+      - "common/vehicles/sv_vehicles.qc (:700/:1077), vehicle/{spiderbot,raptor,racer,bumblebee}.qc"
+    port_refs:
+      - "game/net/ServerNet.cs:BuildEntitySet"
+      - "game/net/ServerNet.cs:RecordAntilagEntities"
+      - "src/XonoticGodot.Net/AntilagBuffer.cs:AntilagBuffer.Clear"
+    constants:
+      - { name: "clear trigger", base: "explicit antilag_clear call on spawn / teleport / vehicle enter-exit", port: "per-tick origin jump > TeleportTickDistance (150u) heuristic", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "History is wiped on a per-tick origin-jump heuristic (>150u) rather than an explicit spawn/teleport/vehicle-enter call; a (re)spawn or teleport that lands within TeleportTickDistance of the previous origin would not clear the ring, so a shot could briefly rewind the player toward a stale position."
+    verification:
+      - { kind: test, ref: "tests/XonoticGodot.Tests/AntilagTests.cs:Clear_* (ring reset)", result: pass }
+      - { kind: code, ref: "ServerNet.cs:1619/1629 BuildEntitySet + :1838-39 RecordAntilagEntities call hist.Clear() only when (Origin-prev).Length() > TeleportTickDistance (150f)", result: fail }
+    confidence: medium
+    notes: "The clear MECHANISM (AntilagBuffer.Clear, port of antilag_clear's array reset) is faithful; the TRIGGER is a movement heuristic instead of the explicit lifecycle calls QC uses (PutClientInServer + 6 vehicle enter/exit sites). QC also fills the cleared ring with e.origin and sentinel -2342; the port's Clear just resets head/count, behaviorally equivalent."
+
+  - id: sv-antilag.arc_beam
+    name: "Arc beam lag-compensated trace + antilag_takebackavgvelocity"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/arc.qc:375 (WarpZone_traceline_antilag)"
+      - "server/antilag.qc:antilag_takebackavgvelocity"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Arc.cs:274"
+    constants:
+      - { name: "Arc damage trace antilag", base: "WarpZone_traceline_antilag at ANTILAG_LATENCY", port: "plain Trace (no takeback)", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Arc beam is not lag-compensated: its per-frame damage trace is a plain trace, so a high-ping player's Arc fails to connect on a strafing target."
+    verification:
+      - { kind: code, ref: "Arc.cs:274 Api.Trace.Trace with no LagComp.Begin/End bracket; Base arc.qc:375 uses WarpZone_traceline_antilag", result: fail }
+    confidence: high
+    notes: "The Arc fires and damages (logic partial), but its antilag trace path is absent. liveness=na (no antilag code on this path; corrected from draft's 'dead'). antilag_takebackavgvelocity (the Arc beam-teleport velocity helper) is also unported, though its only other Base use — multijump.qc:95 — is itself commented out (#ifdef SVQC block), so the CSQC-live velocity path is matched."
+
+  - id: sv-antilag.melee.secondary
+    name: "Shotgun melee secondary trace is antilagged"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/shotgun.qc:124 (WarpZone_traceline_antilag)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Shotgun.cs:208 (Melee)"
+    constants:
+      - { name: "melee swing trace antilag", base: "WarpZone_traceline_antilag at ANTILAG_LATENCY", port: "plain Trace (no takeback)", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Shotgun melee secondary is not lag-compensated: Base traces each swing-arc segment through WarpZone_traceline_antilag (shotgun.qc:124); the port's Shotgun.Melee (Shotgun.cs:208) uses a plain trace, so a high-ping melee can miss a moving target it would connect with in Base."
+    verification:
+      - { kind: code, ref: "Shotgun.cs:208 Melee uses Api.Trace.Trace (MoveFilter.Normal) with no LagComp bracket; Base shotgun.qc:124 W_Shotgun_Melee_Think uses WarpZone_traceline_antilag", result: fail }
+    confidence: high
+    notes: "NEW row (draft omitted entirely). Short-range melee, so the latency error is small in absolute units but real. liveness=na (no antilag code on this path)."

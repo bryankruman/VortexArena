@@ -1647,6 +1647,7 @@ public sealed class ServerNet : IDisposable
                 Velocity = p.Velocity,
                 Health = (int)p.Health,
                 Armor = (int)p.ArmorValue, // [T68] networked entcs armor → teammate shownames armor sub-bar
+                Alpha = QuantizeAlpha(p.Alpha), // [W1-alpha-net] Cloaked/RunningGuns/Invisibility player transparency
                 Colormap = (int)p.Team,
                 Weapon = p.ActiveWeaponId, // renders the remote player's held weapon (QC wepent)
                 Model = p.Model,           // QC .model (playermodel) — the client loads the skeletal IQM by name
@@ -1726,6 +1727,7 @@ public sealed class ServerNet : IDisposable
                 Effects = e.Effects,
                 Colormap = (int)e.Team,
                 Health = (int)e.Health,
+                Alpha = QuantizeAlpha(e.Alpha), // [W1-alpha-net] per-entity render transparency (e.g. Cloaked items)
                 Owner = (e.Owner is Player op && _byPlayer.TryGetValue(op, out PeerState? ops)) ? ops.PeerId : 0,
                 // QC ItemStatus bits (items.qc). ITS_EXPIRING: a loot item in its despawn-fx window — set the
                 // frame it flips so the client starts the despawn animation. ITS_ANIMATE1/2: the item's static
@@ -1902,6 +1904,20 @@ public sealed class ServerNet : IDisposable
 
     /// <summary>Net-id base for non-player entities, above the small ENet peer ids (so the two id spaces can't collide).</summary>
     private const int EntityNetBase = 16384;
+
+    /// <summary>
+    /// [W1-alpha-net] Quantize an entity's render alpha (QC csqcmodel m_alpha) to the wire byte: a fully-opaque
+    /// entity (alpha &gt;= 1, or the QC -1 "use default" sentinel) sends 0 so the <see cref="EntityField.Alpha"/>
+    /// bit stays clear and costs nothing; a transparent entity sends 1..254 (clamped so a real fade never
+    /// rounds to the 0 = opaque sentinel and a near-opaque value doesn't disappear). The client maps 0 → opaque,
+    /// else <c>byte/255</c>.
+    /// </summary>
+    private static int QuantizeAlpha(float alpha)
+    {
+        if (alpha < 0f || alpha >= 1f)
+            return 0; // opaque / "use default" — not networked
+        return System.Math.Clamp((int)MathF.Round(alpha * 255f), 1, 254);
+    }
 
     private static bool IsProjectileMoveType(MoveType mt)
         => mt is MoveType.Fly or MoveType.Toss or MoveType.FlyMissile or MoveType.Bounce or MoveType.BounceMissile;

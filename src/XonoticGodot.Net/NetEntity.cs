@@ -80,6 +80,13 @@ public enum EntityField : uint
     // overlays. Bit 16 — this is the field that pushed the mask past 16 bits and widened EntityField to uint. The
     // blob is null/empty on every entity with no networked effects, so the bit stays clear and costs nothing.
     StatusEffects = 1 << 16,
+
+    // [W1-alpha-net] the QC csqcmodel m_alpha / .alpha render-transparency channel (csqcmodel_settings.qh
+    // CSQCMODEL_PROPERTY_ALPHA). Carries a per-entity render alpha so the client fades a transparent entity —
+    // the Cloaked mutator (default_player_alpha 0.25), Running Guns (invisible player / visible gun), the
+    // Invisibility powerup, and any death/spawn fade. Sent as a byte (0..255 = 0..1) only when it changes; the
+    // default (fully opaque) never sets the bit, so an opaque entity costs nothing on the wire.
+    Alpha = 1 << 17,
 }
 
 /// <summary>
@@ -105,6 +112,16 @@ public struct NetEntityState
     public int Colormap;         // player colors (top/bottom) or team tint
     public int Health;           // for nameplates / the owner HUD (0 when not applicable)
     public int Armor;            // [T68] QC entcs RES_ARMOR slice — the shownames teammate status bar (0 when N/A)
+
+    /// <summary>
+    /// [W1-alpha-net] QC csqcmodel <c>m_alpha</c> / <c>.alpha</c> render transparency, quantized to a byte
+    /// (1..254 = 1/255..254/255; <b>0 = the default "fully opaque"</b>, which is NOT networked — the
+    /// <see cref="EntityField.Alpha"/> bit stays clear so an opaque entity costs nothing on the wire and a
+    /// never-seen entity (Empty baseline, all zero) reads as opaque). Set by the producer only when an entity's
+    /// alpha drops below 1 (Cloaked/Running Guns/Invisibility/death-fade). The client maps 0 → opaque, else
+    /// <c>Alpha/255</c>.
+    /// </summary>
+    public int Alpha;
     public NetEntityFlags Flags;
     public int Owner;            // owning player's entnum (view-models / nameplates / projectiles); 0 = none
     public int Weapon;           // active/held weapon registry id (−1 = none) — renders a remote player's weapon
@@ -149,6 +166,7 @@ public struct NetEntityState
         if (baseline.Colormap != current.Colormap) m |= EntityField.Colormap;
         if (baseline.Health != current.Health) m |= EntityField.Health;
         if (baseline.Armor != current.Armor) m |= EntityField.Armor;
+        if (baseline.Alpha != current.Alpha) m |= EntityField.Alpha;
         if (baseline.Flags != current.Flags) m |= EntityField.Flags;
         if (baseline.Owner != current.Owner) m |= EntityField.Owner;
         if (baseline.Weapon != current.Weapon) m |= EntityField.Weapon;
@@ -202,6 +220,7 @@ public static class EntityStateCodec
         if ((mask & EntityField.Colormap) != 0) w.WriteByte(current.Colormap & 0xFF);
         if ((mask & EntityField.Health) != 0) w.WriteShort(current.Health);
         if ((mask & EntityField.Armor) != 0) w.WriteShort(current.Armor);
+        if ((mask & EntityField.Alpha) != 0) w.WriteByte(current.Alpha & 0xFF); // 0 = opaque (default); 1..254 = alpha/255
         if ((mask & EntityField.Flags) != 0) w.WriteByte((byte)current.Flags);
         if ((mask & EntityField.Owner) != 0) w.WriteUShort(current.Owner);
         if ((mask & EntityField.Weapon) != 0) w.WriteShort(current.Weapon);
@@ -242,6 +261,7 @@ public static class EntityStateCodec
         if ((mask & EntityField.Colormap) != 0) s.Colormap = r.ReadByte();
         if ((mask & EntityField.Health) != 0) s.Health = r.ReadShort();
         if ((mask & EntityField.Armor) != 0) s.Armor = r.ReadShort();
+        if ((mask & EntityField.Alpha) != 0) s.Alpha = r.ReadByte();
         if ((mask & EntityField.Flags) != 0) s.Flags = (NetEntityFlags)r.ReadByte();
         if ((mask & EntityField.Owner) != 0) s.Owner = r.ReadUShort();
         if ((mask & EntityField.Weapon) != 0) s.Weapon = r.ReadShort();

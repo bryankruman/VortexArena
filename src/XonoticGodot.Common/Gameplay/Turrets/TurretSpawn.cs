@@ -80,11 +80,14 @@ public static class TurretSpawn
         st.ShotOrg = TurretAI.ShotOrigin(e);
 
         // Lifecycle hooks (QC turret_use / turret_damage / turret_die). turret_use swaps the team+active state
-        // on trigger. The headless DamageSystem has no per-entity event_damage hook, so death+respawn is driven
-        // off the shared Combat.Death subscription (TurretAI.EnsureDeathHook); the pre-damage gating
-        // (inactive/friendly-fire) + retaliation live in TurretAI.Damage, the entrypoint the server damage
-        // router calls for turrets.
+        // on trigger. The turret carries its OWN .event_damage (QC turret_damage) as a GtEventDamage shim:
+        // DamageSystem.EventDamage routes a non-player edict with a GtEventDamage to it and returns, so a turret
+        // victim runs the pre-damage gate (inactive immunity / friendly-fire scaling / MOVE shove / retaliation)
+        // in TurretAI.Damage and its own health subtract — instead of being treated as a player. Lethal hits fire
+        // the shared Combat.Death bus, which the EnsureDeathHook subscription (OnAnyDeath -> Die) turns into the
+        // death blast + respawn schedule.
         e.Use = (self, activator) => TurretAI.Use(self, activator);
+        e.GtEventDamage = TurretAI.EventDamage;
         TurretAI.EnsureDeathHook();
 
         return st;

@@ -1,0 +1,384 @@
+unit: cl-viewmodel
+category: client
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 12
+  worst_gaps:
+    - "No brass/shell casings ever eject from any weapon: ShellCasings.cs sim is complete but DEAD (EffectSystem.SpawnCasing has zero callers, no server-side casings emit). Base shows tumbling/bouncing/fading casings on every machinegun/shotgun/rifle/vortex shot."
+    - "View-model ignores player team colormap and per-weapon glowmod: the gun never tints to your team color or glows (e.g. Vortex charge glow), unlike Base viewmodel_draw."
+    - "View-model has no EF_NODEPTHTEST: the gun can clip into / be occluded by nearby world geometry instead of always drawing on top of the scene."
+    - "Weapon-switch animation is a slide-down, not Base's barrel-tip (this.angles_x = -90*f*f), and is not keyed to per-weapon switchdelay_raise/drop or weapon_nextthink (port does not network wframe)."
+    - "No networked weapon fire/idle/reload animation (the QC wframe temp entity is not networked); the gun never visibly cycles or reloads."
+    - "No muzzle-flash MODEL (the spinning flash md3 for Devastator + Machinegun, m_muzzlemodel) — only the particle burst is emitted."
+    - "Viewmodel sway/align toggles (cl_followmodel / cl_leanmodel / cl_bobmodel / cl_gunalign / cl_viewmodel_alpha / cl_gunoffset) are baked [Export] defaults, not read from cvars — the menu checkboxes/sliders do not affect the live gun."
+features:
+  - id: cl-viewmodel.model.select_and_rig
+    name: "View-model entity + model select (invisible-hand vs full-rig), rebuild on weapon change"
+    layer: [presentation]
+    base_refs:
+      - "client/view.qc:viewmodel_draw"
+      - "common/weapons/all.qc:CL_WeaponEntity_SetModel"
+    port_refs:
+      - "game/client/ViewModel.cs:SetWeaponModel"
+      - "game/client/ViewModelEquip.cs:Build"
+      - "game/net/NetGame.cs:EquipNetworkedWeapon"
+    constants:
+      - { name: "r_drawviewmodel", base: "1", port: "implicit (always drawn when alive/1st-person)", match: true }
+      - { name: "anim framegroups (fire1/fire2/idle/reload)", base: "'0 1 0.01' / '1 1 0.01' / '2 1 0.01' / '3 1 0.01'", port: "best-effort local clip (no framegroup preset)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "anim framegroup presets (animfixfps fire1/fire2/idle/reload) not preset; port plays a best-effort local clip."
+    verification:
+      - { kind: code, ref: "ViewModel.SetWeaponModel + ViewModelEquip.Build invisible-hand/full-rig branch; EquipNetworkedWeapon rebuilds only on weapon-id change (NetGame:1396), hides on dead/holster/chase", result: pass }
+    confidence: high
+    notes: "Invisible-hand (v_ attached to h_ rig 'weapon'/'tag_weapon' tag) vs full-rig classification is faithful to CL_WeaponEntity_SetModel. movedir from 'shot' tag drives shot origin. Live on NetGame match path."
+
+  - id: cl-viewmodel.anim.networked_frames
+    name: "Networked weapon fire/idle/reload animation (wframe temp entity)"
+    layer: [presentation]
+    base_refs:
+      - "common/weapons/all.qc:wframe_send"
+      - "common/weapons/all.qc:NET_HANDLE(wframe)"
+      - "client/view.qc:viewmodel_draw (anim_update/anim_set idle, lines 335-337)"
+    port_refs:
+      - "game/client/ViewModel.cs (best-effort local fire/idle clip via ModelAnimator)"
+    constants:
+      - { name: "wframe states", base: "WFRAME_FIRE1 / WFRAME_FIRE2 / WFRAME_IDLE / WFRAME_RELOAD via networked attackrate+restartanim", port: "local fire/idle only; no network sync", match: false }
+    status:
+      logic: partial
+      values: missing
+      timing: missing
+      presentation: partial
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No networked weapon fire/idle/reload animation (the QC wframe temp entity is not networked); the gun never visibly cycles or reloads."
+    verification:
+      - { kind: code, ref: "grep: no wframe networking in port; ViewModel plays a best-effort local fire/idle clip via ModelAnimator when the model has one, no reload clip, no server-synced frame timing", result: pass }
+    confidence: high
+    notes: "Base networks the weapon frame (wframe_send -> NET_HANDLE) so fire/idle/reload play with server timing. Port has no wframe channel; it locally plays fire/idle best-effort and never plays a reload animation."
+
+  - id: cl-viewmodel.model.skin_colormap_glow_effects
+    name: "Per-child skin / team colormap / glowmod / EF_NODEPTHTEST / cheap effects mask"
+    layer: [presentation]
+    base_refs:
+      - "client/view.qc:viewmodel_draw (lines 302-321)"
+    port_refs: []
+    constants:
+      - { name: "colormap", base: "256 + entcs colors (team/player tint)", port: "none", match: false }
+      - { name: "glowmod", base: "weaponentity_glowmod(wep,c) (per-weapon wr_glow or palette)", port: "none", match: false }
+      - { name: "csqcmodel_effects", base: "(EFMASK_CHEAP | EF_NODEPTHTEST) & ~EF_FULLBRIGHT", port: "none", match: false }
+      - { name: "skin", base: "m_skin per child", port: "none (base material)", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "View-model ignores player team colormap and per-weapon glowmod: the gun never tints to your team color or glows (e.g. Vortex charge glow), unlike Base viewmodel_draw."
+      - "View-model has no EF_NODEPTHTEST: the gun can clip into / be occluded by nearby world geometry instead of always drawing on top of the scene."
+      - "Per-child m_skin not applied; the gun renders with its base material."
+    verification:
+      - { kind: code, ref: "grep ViewModel.cs/ViewModelEquip.cs for colormap/glowmod/skin/NoDepthTest — no matches", result: pass }
+    confidence: high
+    notes: "Base loops every weaponchild applying drawmask/alpha/skin/colormap/glowmod/csqcmodel_effects. Port applies none of it; gun is untinted, unglowing, depth-tested."
+
+  - id: cl-viewmodel.alpha.viewmodel_alpha
+    name: "View-model alpha (cl_viewmodel_alpha / _alpha_min, vehicle/dead/intermission/chase hide)"
+    layer: [presentation]
+    base_refs:
+      - "client/view.qc:viewmodel_draw (lines 297-304, 322)"
+    port_refs:
+      - "game/net/NetGame.cs:EquipNetworkedWeapon (Visible toggle)"
+    constants:
+      - { name: "cl_viewmodel_alpha", base: "1", port: "inert (not read)", match: false }
+      - { name: "cl_viewmodel_alpha_min", base: "0", port: "inert (not read)", match: false }
+    status:
+      logic: partial
+      values: missing
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "cl_viewmodel_alpha / cl_viewmodel_alpha_min do nothing; the menu opacity slider is inert for the gun (port only toggles Visible on/off)."
+    verification:
+      - { kind: code, ref: "EquipNetworkedWeapon sets Visible on dead/holster/chase; no alpha bound on cl_viewmodel_alpha", result: pass }
+    confidence: high
+    notes: "Port hides the gun on dead/holster/chase (matches Base drawmask 0) but has no continuous opacity; vehicle force-hide (a=-1) is via Visible. The opacity range slider is dead."
+
+  - id: cl-viewmodel.align.gunalign_gunoffset
+    name: "Shot-origin alignment (cl_gunalign 1/2/3/4) + cl_gunoffset"
+    layer: [presentation, shared]
+    base_refs:
+      - "common/weapons/all.qc:shotorg_adjust"
+      - "common/weapons/all.qc:shotorg_adjustfromclient"
+      - "common/weapons/calculations.qc:W_GunAlign"
+      - "client/view.qc:viewmodel_draw (line 333, cl_gunoffset)"
+    port_refs:
+      - "game/client/ViewModel.cs:GunAlignOffset"
+      - "game/client/ViewModel.cs:GunOffset"
+    constants:
+      - { name: "cl_gunalign", base: "3 (1/2=center vecs.y=0 z-=2; 3=right; 4=left mirror Y)", port: "right/left side hardcoded 0 (identical); center drops 2u", match: false }
+      - { name: "cl_gunoffset", base: "'0 0 0'", port: "GunOffset Export default '0 0 0' (not cvar-driven)", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "cl_gunalign left/right are visually identical (side offset hardcoded 0); only center differs. Menu gunalign radio buttons barely change the gun."
+      - "cl_gunoffset is a baked [Export] default, not read from a cvar."
+      - "Viewmodel sway/align toggles (cl_followmodel / cl_leanmodel / cl_bobmodel / cl_gunalign / cl_viewmodel_alpha / cl_gunoffset) are baked [Export] defaults, not read from cvars — the menu checkboxes/sliders do not affect the live gun."
+    verification:
+      - { kind: code, ref: "ViewModel.GunAlignOffset — const side=0f; case 3/4 both return (0,+/-0,0); case 1/2 returns (0,0,-2)", result: pass }
+    confidence: high
+    notes: "Center (1/2) drop of 2u matches Base. Right/left rely entirely on the v_ model's authored position. W_GunAlign slot-collision auto-resolve (dual-wield) not relevant on the port single-slot path."
+
+  - id: cl-viewmodel.switch.raise_lower_anim
+    name: "Weapon-switch raise/lower (barrel-tip -90*f*f keyed to switchdelay/weapon_nextthink)"
+    layer: [presentation]
+    base_refs:
+      - "client/view.qc:viewmodel_draw (lines 339-362)"
+      - "common/weapons/all.qc (wframe temp entity, lines 533-573)"
+    port_refs:
+      - "game/client/ViewModel.cs:PlayHolster"
+      - "game/client/ViewModel.cs:PlayRaise"
+      - "game/client/ViewModel.cs:UpdateSwitch"
+      - "game/net/NetGame.cs:EquipNetworkedWeapon"
+      - "game/net/NetGame.cs:RunBoundCommand (holster on switch impulse)"
+    constants:
+      - { name: "angles_x tip", base: "-90 * f * f (barrel swings down out of view)", port: "slide straight down off-screen", match: false }
+      - { name: "switch timing", base: "switchdelay_raise / switchdelay_drop via weapon_nextthink, /WEAPONRATEFACTOR", port: "custom durations, keypress-predicted + server-confirm + auto-recover", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Port does not network the QC wframe temp entity / weapon_switchdelay / weapon_nextthink, so it cannot drive the -90*f*f tip from server-synced state. Instead the gun slides straight down off-screen on a keypress-predicted holster (RunBoundCommand) with a server-confirmed raise (EquipNetworkedWeapon) + auto-recover grace. Documented in ViewModel.PlayHolster/PlayRaise."
+    gaps:
+      - "Weapon-switch animation is a slide-down, not Base's barrel-tip (this.angles_x = -90*f*f), and is not keyed to per-weapon switchdelay_raise/drop or weapon_nextthink (port does not network wframe)."
+    verification:
+      - { kind: code, ref: "ViewModel.PlayHolster/PlayRaise/UpdateSwitch; live from RunBoundCommand (NetGame:3067) + EquipNetworkedWeapon (NetGame:1400)", result: pass }
+    confidence: high
+    notes: "Functionally LIVE (gun lowers on switch, raises on confirm). Deliberate re-implementation; flagged intended_divergence so it isn't re-reported as a bug, but the visual is not the Base barrel-tip."
+
+  - id: cl-viewmodel.sway.followmodel
+    name: "Follow sway (velocity lowpass -> acceleration offset, cl_followmodel)"
+    layer: [presentation]
+    base_refs:
+      - "client/view.qc:calc_followmodel_ofs"
+      - "client/view.qc:viewmodel_animate"
+    port_refs:
+      - "game/client/ViewModel.cs:FollowModelOffset"
+      - "game/net/NetGame.cs:BuildViewState"
+    constants:
+      - { name: "cl_followmodel", base: "1", port: "Export true (not cvar-driven)", match: true }
+      - { name: "cl_followmodel_speed", base: "0.3 (scale * -0.042)", port: "0.3", match: true }
+      - { name: "cl_followmodel_limit", base: "135", port: "135", match: true }
+      - { name: "cl_followmodel_velocity_lowpass", base: "0.05", port: "0.05", match: true }
+      - { name: "cl_followmodel_highpass", base: "0.05", port: "0.05", match: true }
+      - { name: "cl_followmodel_lowpass", base: "0.03", port: "0.03", match: true }
+      - { name: "cl_followmodel_velocity_absolute", base: "0", port: "not handled (always relative path)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "cl_followmodel_velocity_absolute (1) branch not ported (port always uses the view-relative path; matches Base default 0)."
+      - "cl_followmodel toggle + constants are baked [Export] defaults, not read from cvars."
+    verification:
+      - { kind: code, ref: "FollowModelOffset diffed vs calc_followmodel_ofs (lowpass3/highpass3/avg_factor, scale -0.042); fed by BuildViewState predicted velocity", result: pass }
+    confidence: high
+    notes: "Near line-by-line port of the QC lowpass/highpass macros, same constants. Live on the match path via ViewStateProvider = BuildViewState (NetGame:1127)."
+
+  - id: cl-viewmodel.sway.leanmodel
+    name: "Lean sway (view-angle highpass -> gun roll/pitch, cl_leanmodel)"
+    layer: [presentation]
+    base_refs:
+      - "client/view.qc:leanmodel_ofs"
+      - "client/view.qc:viewmodel_animate"
+    port_refs:
+      - "game/client/ViewModel.cs:LeanModelOffset"
+      - "game/net/NetGame.cs:BuildViewState"
+    constants:
+      - { name: "cl_leanmodel", base: "1", port: "Export true (not cvar-driven)", match: true }
+      - { name: "cl_leanmodel_speed", base: "0.3", port: "0.3", match: true }
+      - { name: "cl_leanmodel_limit", base: "30", port: "30", match: true }
+      - { name: "cl_leanmodel_highpass1", base: "0.2", port: "0.2", match: true }
+      - { name: "cl_leanmodel_highpass", base: "0.2", port: "0.2", match: true }
+      - { name: "cl_leanmodel_lowpass", base: "0.05", port: "0.05", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Lean teleport reset (csqcmodel_teleported -> gunangles_prev = view_angles) not ported; gun may snap on teleport/warpzone."
+      - "cl_leanmodel toggle + constants are baked [Export] defaults, not read from cvars."
+    verification:
+      - { kind: code, ref: "LeanModelOffset diffed vs leanmodel_ofs (highpass2_limited, pitch re-inversion, same avg_factor); fed by BuildViewState live view angles", result: pass }
+    confidence: high
+    notes: "Faithful port of the angle highpass chain incl. final pitch re-inversion. Missing the teleported reset (a minor warpzone-snap edge)."
+
+  - id: cl-viewmodel.sway.bobmodel
+    name: "Bob sway (ground-walk sinusoidal side/up sway, cl_bobmodel)"
+    layer: [presentation]
+    base_refs:
+      - "client/view.qc:bobmodel_ofs"
+      - "client/view.qc:viewmodel_animate"
+    port_refs:
+      - "game/client/ViewModel.cs:BobModelOffset"
+      - "game/net/NetGame.cs:BuildViewState"
+    constants:
+      - { name: "cl_bobmodel", base: "1", port: "Export true (not cvar-driven)", match: true }
+      - { name: "cl_bobmodel_side", base: "0.2", port: "0.2", match: true }
+      - { name: "cl_bobmodel_up", base: "0.1", port: "0.1", match: true }
+      - { name: "cl_bobmodel_speed", base: "10", port: "10", match: true }
+      - { name: "bobmodel_scale ramp", base: "+/- frametime*5 (ground/air)", port: "+/- frametime*5", match: true }
+      - { name: "xyspeed clamp", base: "0..400", port: "0..400", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "cl_bobmodel toggle + constants are baked [Export] defaults, not read from cvars."
+    verification:
+      - { kind: code, ref: "BobModelOffset diffed vs bobmodel_ofs (bobmodel_scale ramp, avg_xyspeed avg_time 0.1, map_bound_ranges 150..400 crouch slowdown, sin(s)/cos(2s)); onground fed by BuildViewState", result: pass }
+    confidence: high
+    notes: "Faithful incl. crouch-walk frequency reduction (map_bound_ranges) and the hit-ground 0.05s settle. Vertical view-bob (cl_bob/cl_bob2/cl_bobfall) is TODO in Base too — not a gap."
+
+  - id: cl-viewmodel.muzzle.flash_particle
+    name: "Muzzle flash particle (local firer + remote world-space, m_muzzleeffect)"
+    layer: [presentation]
+    base_refs:
+      - "common/weapons/all.qc:W_MuzzleFlash"
+      - "common/weapons/all.qc:NET_HANDLE(w_muzzleflash)"
+    port_refs:
+      - "game/client/ViewModel.cs:Fire"
+      - "game/client/EffectSystem.cs:MuzzleFlashAttached"
+      - "game/net/NetGame.cs:MuzzleEffectFor"
+      - "game/net/NetGame.cs:UpdateLocalFireFeedback"
+    constants:
+      - { name: "local emit", base: "pointparticles(m_muzzleeffect) at view-projected movedir_aligned", port: "MuzzleFlashAttached burst at tag_shot socket + flash OmniLight + recoil", match: false }
+      - { name: "remote emit", base: "Send_Effect_Except(m_muzzleeffect, shotorg, shotdir*1000, except actor)", port: "server EffectEmitter.Emit('*_MUZZLEFLASH', ..., except: actor)", match: true }
+      - { name: "chase_active branch", base: "emit at server sv_shotorg", port: "not handled (gun hidden in chase)", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Local muzzle position is a heuristic at the tag_shot socket rather than Base's view-projected movedir_aligned (not verified to read identically on-screen)."
+      - "Secondary fire does not flash (only the primary _attackHeld path calls Fire)."
+      - "ClientWorld.OnMuzzleFlash wrapper has no caller (NetGame calls _viewModel.Fire() directly) — dead wrapper, but the feature is live by another path."
+    verification:
+      - { kind: code, ref: "ViewModel.Fire -> MuzzleFlashAttached + OmniLight; live from PredictFireShot/UpdateLocalFireFeedback (NetGame:3230/3248); remote VERIFIED via EffectEmitter.Emit('*_MUZZLEFLASH', shot.Origin, shot.Dir*1000, 1, except: actor) in all 21 weapon Fire paths (Blaster/Vortex/Machinegun/Shotgun/...); grep OnMuzzleFlash (ClientWorld:897) has no caller", result: pass }
+    confidence: medium
+    notes: "Both local and remote particle flashes are LIVE. Remote emit confirmed faithful to Send_Effect_Except (every weapon passes except: actor). Position is heuristic (tag socket) not the QC view-projection; not runtime-verified for on-screen match. Secondary fire genuinely does not flash (only the _attackHeld/_predictFire primary path calls Fire; the a2 branch only latches for the server)."
+
+  - id: cl-viewmodel.muzzle.flash_model
+    name: "Muzzle flash MODEL (spinning flash md3 for Devastator + Machinegun)"
+    layer: [presentation]
+    base_refs:
+      - "common/weapons/all.qc:W_MuzzleFlash_Model"
+      - "common/weapons/all.qc:W_MuzzleFlash_Model_Think"
+      - "common/weapons/all.qc:W_MuzzleFlash_Model_AttachToShotorg"
+    port_refs: []
+    constants:
+      - { name: "m_muzzlemodel", base: "MDL_DEVASTATOR_MUZZLEFLASH / MDL_MACHINEGUN_MUZZLEFLASH (else MDL_Null)", port: "none", match: false }
+      - { name: "flash think", base: "frame+=2, scale*=0.5, alpha-=0.25 every 0.05s; start scale 0.75 alpha 0.75 frame 2", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No muzzle-flash MODEL (the spinning flash md3 for Devastator + Machinegun, m_muzzlemodel) — only the particle burst is emitted."
+    verification:
+      - { kind: code, ref: "grep muzzlemodel/MuzzleFlash_Model in game/+src/ finds only the tag-loader (MuzzleTag.Model) and effect-name registration, not the spinning flash md3", result: pass }
+    confidence: high
+    notes: "Base attaches a spinning, scaling, fading flash md3 to the view-model 'shot' tag (and exterior model for others) for Devastator + Machinegun only. Port has neither the model nor the think."
+
+  - id: cl-viewmodel.casings.brass_eject
+    name: "Brass / shell casings (eject, tumble, bounce, fade, bounce sounds)"
+    layer: [presentation]
+    base_refs:
+      - "common/effects/qc/casings.qc:SpawnCasing"
+      - "common/effects/qc/casings.qc:NET_HANDLE(casings)"
+      - "common/effects/qc/casings.qc:Casing_Touch"
+      - "common/weapons/weapon/machinegun.qc:111 (SpawnCasing caller)"
+    port_refs:
+      - "game/client/ShellCasings.cs"
+      - "game/client/EffectSystem.cs:SpawnCasing"
+    constants:
+      - { name: "cl_casings_bronze_time (bullet)", base: "10", port: "BulletTime 1.5", match: false }
+      - { name: "cl_casings_shell_time (shell)", base: "30", port: "ShellTime 2.0", match: false }
+      - { name: "cl_casings_maxcount", base: "100", port: "MaxCasings 64", match: false }
+      - { name: "cl_casings_ticrate", base: "0.03125", port: "per-frame (moot while dead)", match: false }
+      - { name: "bouncefactor", base: "0.25 shell / 0.5 bullet", port: "matched in sim (dead)", match: true }
+      - { name: "avelocity", base: "'0 10 0' + 100*prandomvec", port: "matched in sim (dead)", match: true }
+      - { name: "bounce sound dist", base: "vdist(velocity,>,50) -> brass*/casings* CH_SHOTS ATTEN_LARGE", port: "absent (casings dead)", match: false }
+    status:
+      logic: stub
+      values: partial
+      timing: stub
+      presentation: stub
+      audio: missing
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No brass/shell casings ever eject from any weapon: ShellCasings.cs sim is complete but DEAD (EffectSystem.SpawnCasing has zero callers, no server-side casings emit). Base shows tumbling/bouncing/fading casings on every machinegun/shotgun/rifle/vortex shot."
+      - "Casing bounce sounds (brass*/casings* on touch when vdist(velocity,>,50)) are absent (casings dead)."
+      - "Casing lifetimes (1.5/2.0s) + maxcount (64) differ from Base (10/30s, 100) — moot while casings are dead."
+    verification:
+      - { kind: code, ref: "EffectSystem.SpawnCasing has zero invocations (grep); no server-side SpawnCasing/casings temp-entity emit exists in port", result: fail }
+    confidence: high
+    notes: "ShellCasings.cs is a complete faithful client casing sim (bounce/tumble/fade/maxcount, real casing_bronze.iqm + generated shell) but has no live caller and no server emit. No brass ejects in a match. Constants also drift (lifetimes/maxcount)."

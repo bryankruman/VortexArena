@@ -1,0 +1,303 @@
+unit: weapon-hlac
+category: weapon
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 9
+  worst_gaps:
+    - "PRIMARY SPREAD NEVER RECOVERS: misc_bulletcounter is not reset on a fresh primary trigger pull (only on a secondary press / weapon raise), so once spread caps, release+re-tap does NOT restore accuracy — defeats the weapon's signature feather-the-trigger mechanic (QC resets it in wr_think fire&1, hlac.qc:173)"
+    - "punchangle recoil kick ignores g_norecoil (still twitches with g_norecoil 1)"
+    - "secondary bolts do not carry HITTYPE_SECONDARY in the deathtype (port uses RegistryId for both modes); damage resolves correctly via per-mode captured values, but the bit is absent (benign at present — single kill message, no HITTYPE stats)"
+    - "wr_checkammo is reserve-only (no clip-OR term); no observable effect at default reload_ammo 0"
+    - "HLAC-specific bot aim (projectile lead) not implemented"
+    - "muzzle/impact green->blaster compat fallback not ported (cosmetic)"
+    - "bolt client render (PROJECTILE_HLAC model/trail) unverified on live path"
+features:
+  - id: weapon-hlac.primary.attack
+    name: "Primary rapid-fire single bolt with held-fire spread accumulation"
+    layer: [authority, shared]
+    base_refs:
+      - "common/weapons/weapon/hlac.qc:W_HLAC_Attack"
+      - "common/weapons/weapon/hlac.qc:W_HLAC_Attack_Frame"
+      - "common/weapons/weapon/hlac.qc:wr_think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hlac.cs:Attack"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hlac.cs:WrThink"
+    constants:
+      - { name: "primary_damage", base: "10", port: "10", match: true }
+      - { name: "primary_edgedamage", base: "5", port: "5", match: true }
+      - { name: "primary_force", base: "15", port: "15", match: true }
+      - { name: "primary_radius", base: "60", port: "60", match: true }
+      - { name: "primary_speed", base: "6000", port: "6000", match: true }
+      - { name: "primary_lifetime", base: "5", port: "5", match: true }
+      - { name: "primary_ammo", base: "1", port: "1", match: true }
+      - { name: "primary_refire", base: "0.078125", port: "0.078125", match: true }
+      - { name: "primary_animtime", base: "0.03125", port: "0.03125", match: true }
+      - { name: "primary_spread_min", base: "0", port: "0", match: true }
+      - { name: "primary_spread_add", base: "0.001953125", port: "0.001953125", match: true }
+      - { name: "primary_spread_max", base: "0.03125", port: "0.03125", match: true }
+      - { name: "misc_bulletcounter reset on fresh primary press", base: "= 0 in wr_think fire&1 first-press (hlac.qc:173)", port: "never reset on primary (only on secondary press / weapon raise)", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "VERIFIER (2026-06-22): primary spread does NOT recover on a fresh trigger pull. QC W_HLAC_Attack_Frame's loop runs ONLY while ATCK is held; on release the loop ends, and the NEXT first press hits wr_think's `weapon_prepareattack` -> `misc_bulletcounter = 0` (hlac.qc:173), so spread restarts at spread_min (dead-accurate first shot). The port drives every tick via WrThink(Primary)+PrepareAttack and NEVER resets MiscBulletCounter on primary (Hlac.cs:121-125) — it only resets on a secondary press (Hlac.cs:131) or on weapon raise (BeginRaise resets the DIFFERENT BulletCounter field). So once spread caps it stays maxed; releasing and re-tapping primary does not restore accuracy. This is the weapon's signature mechanic (the in-game describe text: 'releasing primary fire every now and then is important to restore accuracy') — broken in the port. Compare OkMachinegun.cs:97, which DOES reset MiscBulletCounter=0 in its WrThink primary branch."
+    verification:
+      - { kind: read, ref: "Hlac.cs:121-125 (no reset) vs hlac.qc:169-176 (wr_think resets misc_bulletcounter=0 on first press)", result: fail }
+      - { kind: test, ref: "tests/XonoticGodot.Tests/HlacCrouchSpreadTests.cs — pins ONLY the crouchmod gate (single WrThink call); does NOT cover the held-fire counter reset", result: partial }
+      - { kind: value-diff, ref: "Configure() vs bal-wep-xonotic.cfg:537-548", result: pass }
+      - { kind: trace, ref: "WeaponFireDriver.Frame -> Hlac.WrThink -> Attack", result: pass }
+    confidence: high
+    notes: "Per-shot cadence, ammo drain, spread-add growth (capped at spread_max), and the crouchmod gate are faithful and live. The DEFECT is the missing per-press counter reset: the draft claimed 'misc_bulletcounter resets on first press' but the code never does so for primary. The HlacCrouchSpreadTests give a false sense of coverage — they fire exactly one WrThink per case and never exercise the cross-press reset."
+
+  - id: weapon-hlac.secondary.burst
+    name: "Secondary one-shot burst of `shots` scattered bolts"
+    layer: [authority, shared]
+    base_refs:
+      - "common/weapons/weapon/hlac.qc:W_HLAC_Attack2"
+      - "common/weapons/weapon/hlac.qc:wr_think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hlac.cs:Attack2"
+    constants:
+      - { name: "secondary_shots", base: "6", port: "6", match: true }
+      - { name: "secondary_damage", base: "15", port: "15", match: true }
+      - { name: "secondary_edgedamage", base: "7.5", port: "7.5", match: true }
+      - { name: "secondary_force", base: "30", port: "30", match: true }
+      - { name: "secondary_radius", base: "60", port: "60", match: true }
+      - { name: "secondary_speed", base: "6000", port: "6000", match: true }
+      - { name: "secondary_lifetime", base: "5", port: "5", match: true }
+      - { name: "secondary_ammo", base: "6", port: "6", match: true }
+      - { name: "secondary_refire", base: "1", port: "1", match: true }
+      - { name: "secondary_animtime", base: "0.3", port: "0.3", match: true }
+      - { name: "secondary_spread", base: "0.15", port: "0.15", match: true }
+      - { name: "secondary_enabled", base: "1", port: "true", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base decrements ammo AFTER W_SetupShot; port decrements before the loop. No observable difference (single actor, single tick)."
+    verification:
+      - { kind: test, ref: "tests/XonoticGodot.Tests/HlacCrouchSpreadTests.cs (Secondary_* cases)", result: pass }
+      - { kind: value-diff, ref: "Configure() vs bal-wep-xonotic.cfg:551-563", result: pass }
+    confidence: high
+    notes: "Burst loops `shots` bolts with one shared (crouch-adjusted) secondary spread; one recoil kick for the whole burst (matches Base)."
+
+  - id: weapon-hlac.spread.crouchmod
+    name: "Crouch+grounded spread tightening gate"
+    layer: [shared]
+    base_refs:
+      - "common/weapons/weapon/hlac.qc:33"
+      - "common/weapons/weapon/hlac.qc:79"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hlac.cs:CrouchSpreadMod"
+    constants:
+      - { name: "primary_spread_crouchmod", base: "0.25", port: "0.25", match: true }
+      - { name: "secondary_spread_crouchmod", base: "0.5", port: "0.5", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "tests/XonoticGodot.Tests/HlacCrouchSpreadTests.cs", result: pass }
+    confidence: high
+    notes: "Gate fires only when IS_DUCKED && IS_ONGROUND; per-mode crouchmod. Pinned bit-exact via deterministic PRNG (zero/one/0.25 multiplier cases)."
+
+  - id: weapon-hlac.bolt.impact
+    name: "Bolt radius-damage burst on touch / lifetime"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/hlac.qc:W_HLAC_Touch"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hlac.cs:Explode"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hlac.cs:SpawnBolt"
+    constants:
+      - { name: "is_primary deathtype split (HITTYPE_SECONDARY)", base: "deathtype bit", port: "per-bolt pri/sec values captured at spawn", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base damages only on touch (SUB_Remove at lifetime does no damage); port think=Remove also does no damage — matches."
+      - "VERIFIER (2026-06-22): secondary bolts do NOT carry HITTYPE_SECONDARY in the deathtype. QC sets `projectiledeathtype = m_id | HITTYPE_SECONDARY` (hlac.qc:113); the port passes `deathType = RegistryId` (SpawnBolt, Hlac.cs:216) for BOTH modes. The damage/edge/radius/force still resolve correctly because the port captures the per-mode values in the SpawnBolt closure rather than re-deriving them from the bit, and HLAC has a single kill message for both modes — so this is benign today. It would matter only if/when HITTYPE_SECONDARY-keyed stats, obituary variants, or mode-specific damage hooks are added."
+    verification:
+      - { kind: read, ref: "Hlac.Explode -> WeaponSplash.RadiusDamage; per-mode damage/edge/radius/force captured at SpawnBolt", result: pass }
+      - { kind: read, ref: "hlac.qc:113 sets m_id|HITTYPE_SECONDARY; port SpawnBolt uses RegistryId for both modes", result: fail }
+    confidence: high
+    notes: "Per-mode damage/edge/radius/force are captured at SpawnBolt (closure) instead of via the QC deathtype bit; resolved damage matches Base exactly. The only divergence is the absent HITTYPE_SECONDARY death-type bit (currently benign, see gap)."
+
+  - id: weapon-hlac.projectile.velocity
+    name: "Shared projectile-velocity setup (W_SetupProjVelocity_Basic)"
+    layer: [shared]
+    base_refs:
+      - "server/weapons/tracing.qc:W_SetupProjVelocity_Explicit"
+      - "common/weapons/calculations.qc:W_CalculateSpread"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:ProjectileVelocity"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:CalculateSpread"
+    constants:
+      - { name: "g_projectiles_newton_style", base: "0", port: "0 (inheritance omitted)", match: true }
+      - { name: "g_projectiles_spread_style", base: "0", port: "0 (dir + randomvec*spread)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "VERIFIED 2026-06-22 against tracing.qc:184-213. Port re-normalizes after spread and scales by speed (`QMath.Normalize(dir)*speed`, WeaponFiring.cs:580-581 -> |v|==speed exactly). QC `W_SetupProjVelocity_Explicit` calls `W_CalculateSpread(dir, spread, style, false)` (NOT normalized) then `proj.velocity = W_CalculateProjectileVelocity(owner, owner.velocity, pSpeed*dir, false)`; with g_projectiles_newton_style 0 that returns `pSpeed*dir` unchanged, so |velocity| = pSpeed*|normalize(dir_folded)+randomvec*spread|, i.e. Base bolts gain a small speed bump. Magnitude: at spread_max 0.03125 the per-axis randomvec()*spread is in [-0.03125,0.03125), so |v| is within ~1-3% of speed in typical draws (worst case ~5% on a fully axis-aligned draw). Aim DIRECTION is effectively identical (port normalizes the same vector QC builds). Flagged so it is not re-reported; fix only if exact projectile-speed parity is required."
+    gaps: []
+    verification:
+      - { kind: read, ref: "WeaponFiring.ProjectileVelocity vs tracing.qc:185-213", result: pass }
+    confidence: medium
+    notes: "Newton-style velocity inheritance defaults off in Base and is omitted in the port (correct at default). The renormalize-after-spread is the only math divergence."
+
+  - id: weapon-hlac.recoil.punchangle
+    name: "Per-shot punchangle recoil kick"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/hlac.qc:38"
+      - "common/weapons/weapon/hlac.qc:121"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hlac.cs:Recoil"
+    constants:
+      - { name: "punchangle.x/y = random()-0.5", base: "gated by !g_norecoil", port: "unconditional", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "g_norecoil 1 does NOT suppress the HLAC punchangle kick in the port (Base wraps it in `if (!autocvar_g_norecoil)`); observable only with the non-default g_norecoil 1."
+    verification:
+      - { kind: read, ref: "Hlac.Recoil (unconditional) vs hlac.qc:38,121 (norecoil-gated)", result: fail }
+    confidence: high
+    notes: "The separate W_SetupShot view recoil IS g_norecoil-gated in the port; only the HLAC-local punchangle.x/y kick ignores it."
+
+  - id: weapon-hlac.ammo.checkreload
+    name: "Ammo check + reload (wr_checkammo / wr_reload / forced reload)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/hlac.qc:wr_checkammo1"
+      - "common/weapons/weapon/hlac.qc:wr_checkammo2"
+      - "common/weapons/weapon/hlac.qc:wr_reload"
+      - "common/weapons/weapon/hlac.qc:wr_think (forced reload)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hlac.cs:CheckAmmoPrimary"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hlac.cs:CheckAmmoSecondary"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireGate.cs:WrReload"
+    constants:
+      - { name: "reload_ammo", base: "0", port: "0", match: true }
+      - { name: "reload_time", base: "2", port: "2", match: true }
+      - { name: "wr_reload ammo floor", base: "min(pri.ammo, sec.ammo)=1", port: "max(1, ReloadingAmmoMin())=1", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port wr_checkammo is reserve-only (cells >= ammo); Base also passes if weapon_load[m_id] >= ammo (clip OR reserve). No observable effect at default reload_ammo 0 (HLAC ships un-clipped)."
+      - "Forced-reload branch in wr_think not ported; dormant at default reload_ammo 0."
+    verification:
+      - { kind: read, ref: "CheckAmmoPrimary/Secondary vs hlac.qc:188-200", result: fail }
+    confidence: high
+    notes: "Generic base WrReload + SND_RELOAD covers the reload; the clip-OR-reserve ammo term and forced-reload check matter only if reload_ammo is set >0, which is not the shipped default."
+
+  - id: weapon-hlac.fx.muzzle_impact
+    name: "Muzzle flash, impact effect, fire/impact sounds"
+    layer: [presentation]
+    base_refs:
+      - "common/weapons/weapon/hlac.qh:m_muzzleeffect"
+      - "common/weapons/weapon/hlac.qc:wr_impacteffect"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hlac.cs:Attack (Emit GREEN_HLAC_MUZZLEFLASH)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hlac.cs:Explode (Emit GREEN_HLAC_IMPACT + ImpactSound)"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:81"
+    constants:
+      - { name: "fire sound", base: "SND_HLAC_FIRE=lasergun_fire", port: "weapons/lasergun_fire.wav", match: true }
+      - { name: "impact sound", base: "SND_LASERIMPACT", port: "weapons/laserimpact.wav", match: true }
+      - { name: "muzzle effect", base: "GREEN_HLAC_MUZZLEFLASH (blaster fallback)", port: "GREEN_HLAC_MUZZLEFLASH (no fallback)", match: false }
+      - { name: "impact effect", base: "GREEN_HLAC_IMPACT (blaster fallback)", port: "GREEN_HLAC_IMPACT (no fallback)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Runtime green->blaster effect fallback (v0.8.6 compat) not ported; cosmetic, only matters on a build missing the green HLAC effects (both are registered in the port)."
+    verification:
+      - { kind: trace, ref: "EffectsList.cs registers GREEN_HLAC_MUZZLEFLASH/IMPACT; Hlac emits them", result: pass }
+    confidence: medium
+    notes: "Fire+impact audio cues and channels match. Effect names match; only the compat fallback path is absent."
+
+  - id: weapon-hlac.identity.metadata
+    name: "Weapon identity, kill/suicide notifications, registration/liveness"
+    layer: [authority, shared, presentation]
+    base_refs:
+      - "common/weapons/weapon/hlac.qh"
+      - "common/weapons/weapon/hlac.qc:wr_killmessage"
+      - "common/weapons/weapon/hlac.qc:wr_suicidemessage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hlac.cs:Hlac (ctor)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponOrder.cs:209"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:66"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:306"
+    constants:
+      - { name: "impulse", base: "6", port: "6", match: true }
+      - { name: "ammo_type", base: "cells", port: "Cells", match: true }
+      - { name: "m_color", base: "'0.506 0.945 0.239'", port: "(0.506,0.945,0.239)", match: true }
+      - { name: "spawnflags", base: "MUTATORBLOCKED|RELOADABLE|TYPE_SPLASH", port: "MutatorBlocked|Reloadable|TypeSplash", match: true }
+      - { name: "killmessage", base: "WEAPON_HLAC_MURDER", port: "WEAPON_HLAC_MURDER", match: true }
+      - { name: "suicidemessage", base: "WEAPON_HLAC_SUICIDE", port: "WEAPON_HLAC_SUICIDE", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "wr_aim (bot projectile-lead aim) not implemented for HLAC -> bots lead/aim HLAC bolts worse."
+      - "Bolt client render via CSQCProjectile(PROJECTILE_HLAC) (bolt model/trail) not verified on the live render path."
+    verification:
+      - { kind: trace, ref: "WeaponOrder.cs:209 registration; CompatRemaps maps weapon_plasmagun/ammo_cells -> hlac; impulse 6", result: pass }
+      - { kind: trace, ref: "DeathMessages.cs / NotificationsList.cs HLAC_MURDER/SUICIDE wired", result: pass }
+    confidence: high
+    notes: "Identity, flags, color, ammo type and notifications all match. Reachable via impulse, weapon order, NewToys/NIX mutators, and CompatRemaps. wr_aim + per-type bolt render are the open presentation/bot gaps."

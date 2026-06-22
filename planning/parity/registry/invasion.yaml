@@ -1,0 +1,663 @@
+unit: invasion
+category: gametype
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 25
+  worst_gaps:
+    - "Round handler wired with default CA-style predicates (DefaultCanRoundStart needs >=2 players in a non-team game; DefaultCanRoundEnd iterates empty teams) — the Invasion round handler is wired but DEAD; Tick() is the sole live wave driver, so there is no Base round-over/warmup cadence."
+    - "Per-round time limit (120s) and inter-round warmup (10s) not implemented — a wave that can't be cleared never times out."
+    - "Port monsters ATTACK players (FindTarget acquires clients always) — Base Invasion monsters do not (monster_attack=false); plus no PvP-damage cancel, no-regen, 200/200 ROUND start items, or Bot_ForbidAttack."
+    - "PickMonster ignores Base's monster-type filter (HIDDEN/PASSIVE/FLY/SWIM/QUAKE-size, super-once-one-alive) and g_invasion_zombies_only → wrong monster mix (e.g. flying Wyvern spawns)."
+    - "Round-over / round-player-win / supermonster center-prints + HUD monsters_total/killed never sent (notifications exist in the catalog but are dead for this mode)."
+features:
+  - id: invasion.core.registration
+    name: "Invasion gametype registration + init (g_monsters forced, score limit)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/invasion/invasion.qh:CLASS(Invasion)"
+      - "common/gametypes/gametype/invasion/sv_invasion.qh:REGISTER_MUTATOR(inv)"
+      - "common/gametypes/gametype/invasion/sv_invasion.qc:invasion_DelayedInit"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Invasion.cs:Invasion"
+      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType"
+    constants:
+      - { name: "pointlimit_default", base: "50 (mapinfo; cvar default -1)", port: "50", match: true }
+      - { name: "g_monsters_forced", base: "1 (cvar_settemp)", port: "not forced (monsters spawned directly)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port does not cvar_settemp g_monsters 1; it spawns monsters directly, so the equivalence relies on the spawn path, not the global toggle."
+    verification:
+      - { kind: code, ref: "GameWorld.cs:1367 case Invasion inv: inv.Activate(); EnableRounds();", result: pass }
+    confidence: high
+    notes: "Class registered via [GameType]; Boot(\"inv\") reaches Activate (verified). g_invasion_point_limit/pointlimit resolves to 50 default when unset."
+
+  - id: invasion.core.type_variants
+    name: "g_invasion_type ROUND/HUNT/STAGE variant selection"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/invasion/sv_invasion.qh:INV_TYPE_ROUND/HUNT/STAGE"
+      - "common/gametypes/gametype/invasion/invasion.qh:m_parse_mapinfo"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Invasion.cs:Type"
+    constants:
+      - { name: "INV_TYPE_ROUND", base: "0", port: "0", match: true }
+      - { name: "INV_TYPE_HUNT", base: "1", port: "1", match: true }
+      - { name: "INV_TYPE_STAGE", base: "2", port: "2", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "InvasionVariantsTests.Type_DefaultsToRound / HuntType_* / StageType_*", result: pass }
+      - { kind: code, ref: "Invasion.cs:54 Type => (InvasionType)(int)g_invasion_type, default Round", result: pass }
+    confidence: high
+    notes: "Reads g_invasion_type; default ROUND. mapinfo type= sets the cvar (handled at boot)."
+
+  - id: invasion.score.rules
+    name: "Score rules: KILLS as sole primary-sort column, score disabled"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/invasion/sv_invasion.qc:invasion_ScoreRules"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Invasion.cs:Activate"
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:ScoreRulesBasics"
+    constants:
+      - { name: "SP_KILLS sort prio", base: "SFL_SORT_PRIO_PRIMARY", port: "primary sort key", match: true }
+      - { name: "score_enabled", base: "false", port: "false", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Invasion.cs:216-218 ScoreRulesBasics(false,false)+DeclareColumn(KILLS)+SetSortKeys(Kills); GameScores.cs:309/347/377 confirm signatures", result: pass }
+    confidence: high
+    notes: "Single KILLS column matches Base; independent_players handled by ScoreRulesBasics(teams:false)."
+
+  - id: invasion.score.monster_kill
+    name: "Killing a monster banks +1 KILLS to the player (MonsterDies)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/invasion/sv_invasion.qc:MUTATOR_HOOKFUNCTION(inv, MonsterDies)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Invasion.cs:OnDeath"
+    constants:
+      - { name: "kills_on_monster_frag", base: "+1", port: "+1", match: true }
+      - { name: "kills_on_same_team_frag", base: "-1", port: "n/a (FFA, no teams)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Invasion.cs:428-440 IsMonster→Wave.Killed++, AddToPlayer(killer,Kills,1); subscribed via Combat.Death.Add in Activate", result: pass }
+    confidence: high
+    notes: "SAME_TEAM -1 path is moot in the default non-team mode. Base also decrements inv_maxcurrent (a fill-loop counter the port doesn't model)."
+
+  - id: invasion.wave.size_formula
+    name: "Per-round monster count: round(max(base, base*round*0.5))"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/invasion/sv_invasion.qc:Invasion_RoundStart"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Invasion.cs:ComputeWaveSize"
+    constants:
+      - { name: "g_invasion_monster_count", base: "10", port: "10", match: true }
+      - { name: "scale_per_round", base: "round*0.5", port: "round*0.5", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Invasion.cs:237-243 rint(max(b, b*round*0.5)); matches QC sv_invasion.qc:336 inv_maxspawned formula exactly", result: pass }
+    confidence: high
+    notes: "Formula matches Base inv_maxspawned exactly (clamped >=1)."
+
+  - id: invasion.wave.monster_skill
+    name: "Monster skill = round + max(1, players*0.3)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/invasion/sv_invasion.qc:Invasion_RoundStart (inv_monsterskill)"
+      - "common/gametypes/gametype/invasion/sv_invasion.qc:MUTATOR_HOOKFUNCTION(inv, MonsterSpawn)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Invasion.cs:ComputeMonsterSkill"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Invasion.cs:SpawnMonsterDef"
+    constants:
+      - { name: "player_skill_factor", base: "max(1, numplayers*0.3)", port: "max(1, PlayerCount*0.3)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "InvasionVariantsTests.MonsterSkill_ScalesWithRoundAndPlayers / InvasionMonsterSpawnTests skill stamp", result: pass }
+      - { kind: code, ref: "Invasion.cs:197-198 + SpawnMonsterDef:377 st.Skill=_monsterSkill; PlayerCount fed from Clients.Players.Count in DriveGametypeFrame:1643", result: pass }
+    confidence: high
+    notes: "PlayerCount fed each frame from Clients.Players.Count; stamped on the live MonsterState. Note: Base derives numplayers inside Invasion_RoundStart per round, the port from the live client count per frame — equivalent for a stable roster."
+
+  - id: invasion.spawn.objective_entities
+    name: "Map spawnfuncs: invasion_spawnpoint / invasion_wave / target_invasion_roundend"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/invasion/sv_invasion.qc:spawnfunc(invasion_spawnpoint/invasion_wave/target_invasion_roundend)"
+    port_refs:
+      - "src/XonoticGodot.Server/GameWorld.cs:WireObjectiveSpawns (Invasion arm)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Invasion.cs:AddSpawnPoint/AddWave/AddRoundEnd"
+    constants:
+      - { name: "wave_key_field", base: ".cnt", port: "e.Cnt", match: true }
+      - { name: "wave_monster_list", base: ".spawnmob", port: "e.Spawnmob", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "InvasionSpawnTests.SpawnpointSpawnfunc_* / WaveSpawnfunc_* / Cnt_IsDistinctFromCount / RoundEndSpawnfunc_*", result: pass }
+      - { kind: code, ref: "GameWorld.cs:1520-1540 Invasion arm dispatches all three classnames; roundend kept as Solid.Trigger touch volume", result: pass }
+    confidence: high
+    notes: "Round-end placeholder kept as a Solid.Trigger touch volume in STAGE; others retire after registering."
+
+  - id: invasion.spawn.wave_entity_resolution
+    name: "Wave-entity lookup: exact .cnt else highest .cnt <= round"
+    layer: [shared]
+    base_refs:
+      - "common/gametypes/gametype/invasion/sv_invasion.qc:invasion_GetWaveEntity"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Invasion.cs:GetWaveMonsters"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "InvasionVariantsTests.PerWaveMonsterList_ResolvesExactThenFallback", result: pass }
+      - { kind: code, ref: "Invasion.cs:107-116 exact==round else best where num<=round && num>bestNum; matches QC invasion_GetWaveEntity", result: pass }
+    confidence: high
+    notes: "Faithful exact-then-fallback resolution."
+
+  - id: invasion.spawn.pick_monster
+    name: "Random monster pick with type filters + zombies-only"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/invasion/sv_invasion.qc:invasion_PickMonster"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Invasion.cs:PickMonster"
+    constants:
+      - { name: "g_invasion_zombies_only", base: "0", port: "ignored", match: false }
+      - { name: "type_exclusions", base: "HIDDEN|PASSIVE|FLY|SWIM|QUAKE_SIZE; SUPER once one alive", port: "none", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port picks uniformly over the whole monster catalog (Monsters.All); Base excludes flying/swimming/passive/hidden/Quake-size monsters and excludes supermonsters once one is alive. CONFIRMED consequential: the port catalog includes Wyvern (MONSTER_TYPE_FLY, sets EntFlags.Fly), which Base's FLY exclusion would never spawn but the port can."
+      - "g_invasion_zombies_only is never honored — zombie-only servers still spawn non-zombies."
+    verification:
+      - { kind: code, ref: "Invasion.cs:343-346 Monsters.All[RangeInt(0,n)] with no spawnflag filter; Wyvern.cs:50 e.Flags|=EntFlags.Fly proves a FLY monster is in the catalog", result: fail }
+    confidence: high
+    notes: "Per-wave spawnmob list IS honored (faithful, Invasion.cs:331-342); only the random fallback ignores Base's exclusions."
+
+  - id: invasion.spawn.pick_spawnpoint
+    name: "Spawn-point selection with recent-use de-weighting"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/invasion/sv_invasion.qc:invasion_PickSpawn"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Invasion.cs:SpawnWaveMonster"
+    constants:
+      - { name: "recent_use_weight", base: "0.2 vs 1.0", port: "uniform (no weighting)", match: false }
+      - { name: "g_invasion_spawnpoint_spawn_delay", base: "0.5", port: "unused", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: missing
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port picks a spawn point uniformly at random; Base de-weights a point to 0.2 for g_invasion_spawnpoint_spawn_delay (0.5s) after use (spawnshieldtime), so monsters cluster more on the same point in the port."
+      - "MoveToRandomMapLocation fallback (when no spawnpoints) is replaced by spawning at world origin Vector3.Zero — monsters pile up at origin instead of being scattered across the map."
+    verification:
+      - { kind: code, ref: "Invasion.cs:311-313 SpawnPoints[RangeInt] uniform; origin Zero fallback. Base sv_invasion.qc:143-154 + 192-211", result: fail }
+    confidence: high
+    notes: "No spawnshieldtime tracking; no random-map-location fallback."
+
+  - id: invasion.spawn.chosen_monster
+    name: "Spawn the chosen monster (NORESPAWN, skill stamp, think wired)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/invasion/sv_invasion.qc:invasion_SpawnChosenMonster"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Invasion.cs:SpawnMonsterDef"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:SpawnMonster"
+    constants:
+      - { name: "respawn", base: "false (NORESPAWN)", port: "false (NORESPAWN)", match: true }
+      - { name: "moveflag", base: "2 (WANDER)", port: "MonsterMove_Wander (=2)", match: true }
+      - { name: "monster_attack", base: "false (players hunt monsters; removed from g_monster_targets)", port: "not cleared — port monsters DO attack players", match: false }
+      - { name: "miniboss_on_last_round", base: "inv_roundcnt>=inv_maxrounds → MONSTERFLAG_MINIBOSS", port: "never set", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "monster_attack=false is NOT set in the port, and it is NOT a no-op: MonsterAI.FindTarget (MonsterAI.cs:608-635) acquires any client (player) in range as a target unconditionally — there is no g_monster_targets attackable-list gate. So Base Invasion monsters ignore players (it's the players' job to kill them) but ported Invasion monsters chase/attack players. (Resolves the draft's open question.)"
+      - "Final-round miniboss escalation missing: Base ORs MONSTERFLAG_MINIBOSS onto every monster on the last round; the port never does, so the last wave is no tougher than earlier ones (miniboss machinery exists in MonsterAI.cs:246 but is never triggered here)."
+      - "spawn_point target_range/target2 copy is not modeled (no spawn-point entity in the port)."
+    verification:
+      - { kind: test, ref: "InvasionMonsterSpawnTests.SpawnMonsterDef_WiresThinkAndStampsFlagsAndSkill (NORESPAWN+skill+think); SpawnedWaveMonster_TicksItsBrain_AcquiresAndChasesPlayer (CONFIRMS monsters chase players — the monster_attack gap)", result: pass }
+      - { kind: code, ref: "Invasion.cs:358-380 SpawnMonster(respawn:false, moveFlags:Wander) + skill stamp; no monster_attack/miniboss", result: partial }
+    confidence: high
+    notes: "Spawn/skill/NORESPAWN/think-wiring is faithful & live; the cited test 'AcquiresAndChasesPlayer' actually evidences the monster_attack divergence, not parity."
+
+  - id: invasion.round.fill_and_win_round_mode
+    name: "ROUND fill loop + round-cleared advance / win"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/invasion/sv_invasion.qc:Invasion_CheckWinner"
+      - "common/gametypes/gametype/invasion/sv_invasion.qc:MUTATOR_HOOKFUNCTION(inv, SV_StartFrame)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Invasion.cs:Tick"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Invasion.cs:AdvanceWaveIfCleared"
+      - "src/XonoticGodot.Server/GameWorld.cs:DriveGametypeFrame (case Invasion)"
+    constants:
+      - { name: "g_invasion_spawn_delay", base: "0.25", port: "2.0 fallback when cvar unset", match: false }
+      - { name: "inv_maxrounds", base: "15", port: "15 (g_invasion_rounds || 15)", match: true }
+    status:
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Spawn-fill default delay is 2s when g_invasion_spawn_delay is unset, vs Base's cfg default 0.25s (gametypes-server.cfg:611) → ~8x slower wave fill on a default server."
+      - "Per-round winner (most KILLS) is not computed/announced at round end; the round simply rolls over (Base Invasion_CheckWinner picks the top-KILLS player and announces ROUND_PLAYER_WIN)."
+      - "Match ends when round count reaches MaxRounds (15) — Base's ROUND mode is bounded by the point limit, not a max-round survival cap; surviving all 15 rounds is a port-added end condition (Invasion.cs:396-400)."
+    verification:
+      - { kind: code, ref: "Invasion.cs:256-299 Tick fill loop + AdvanceWaveIfCleared; DriveGametypeFrame:1644 inv.Tick(); cfg default confirmed 0.25", result: partial }
+    confidence: medium
+    notes: "Core fill/advance is live and structurally close; defaults + round-winner announcement + end-on-maxrounds diverge."
+
+  - id: invasion.round.handler_wiring
+    name: "ROUND round_handler with Invasion-specific start/end/players callbacks + warmup + timelimit"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/invasion/sv_invasion.qc:invasion_DelayedInit (round_handler_Spawn/Init)"
+      - "common/gametypes/gametype/invasion/sv_invasion.qc:Invasion_RoundStart/Invasion_CheckPlayers/Invasion_CheckWinner"
+      - "server/round_handler.qc:round_handler_Think"
+    port_refs:
+      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (EnableRounds())"
+    constants:
+      - { name: "round_delay", base: "5", port: "default handler default", match: false }
+      - { name: "g_invasion_warmup", base: "10", port: "unused", match: false }
+      - { name: "g_invasion_round_timelimit", base: "120", port: "unused", match: false }
+    status:
+      logic: partial
+      values: missing
+      timing: missing
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Invasion calls EnableRounds() with NO callbacks → the round handler uses the default CA-style predicates. CONFIRMED inert/wrong for Invasion: DefaultCanRoundStart (GameWorld.cs:2515) for a non-team game requires Clients.PlayerCount>=2 (a solo listen server never starts a round); DefaultCanRoundEnd (2527) iterates Teams.Active (empty in FFA) → aliveTeams<=1 always true. It is NOT driven by Invasion_RoundStart/CheckWinner/CheckPlayers."
+      - "The live match-end check (GameWorld.cs:2064 case Invasion: return inv.MatchEnded) reads ONLY inv.MatchEnded, which is set solely by Invasion.Tick()/CheckPointLimit — so the round handler produces no observable Invasion effect. Hence liveness=dead (the handler is wired but its Invasion purpose never fires)."
+      - "No inter-round warmup countdown (g_invasion_warmup=10s) and no per-round time limit (g_invasion_round_timelimit=120s); waves only advance on full clear via Tick()."
+    verification:
+      - { kind: code, ref: "GameWorld.cs:1367 EnableRounds() (no args) → DefaultCanRoundStart/End at 2515/2527; match end at 2064 reads inv.MatchEnded only", result: fail }
+    confidence: high
+    notes: "Largest logic divergence: the Base round handler IS the wave driver; the port's round handler is a dead no-op for Invasion and Tick() is the sole driver. liveness corrected partial→dead in this verify pass."
+
+  - id: invasion.round.timeout
+    name: "Round timeout: remove monsters, ROUND_OVER, restart round"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/invasion/sv_invasion.qc:Invasion_CheckWinner (round_endtime check)"
+    port_refs: []
+    constants:
+      - { name: "g_invasion_round_timelimit", base: "120", port: "n/a", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No round time limit at all: if a wave can't be cleared the round never ends. Base wipes the monsters, center-prints CENTER_ROUND_OVER + INFO_ROUND_OVER, and restarts after 120s."
+    verification:
+      - { kind: code, ref: "Invasion.cs full read: no round_endtime/timelimit handling; Base sv_invasion.qc:245-257", result: fail }
+    confidence: high
+    notes: "Notification ROUND_OVER exists in NotificationsList.cs but is never sent for invasion."
+
+  - id: invasion.win.hunt
+    name: "HUNT: win when all placed monsters are cleared"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/invasion/sv_invasion.qc:WinningCondition_Invasion (INV_TYPE_HUNT)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Invasion.cs:Tick (Hunt branch)"
+    constants: []
+    status:
+      logic: partial
+      values: na
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base derives the HUNT win from the live g_monsters list (no non-respawned monster remaining); the port checks its own Wave.MaxSpawned/Killed counters + LiveMonsters (Invasion.cs:289-293), so map-placed (pre-existing) monsters are not the win source."
+    verification:
+      - { kind: test, ref: "InvasionVariantsTests.HuntType_WinsWhenAllSpawnedMonstersCleared", result: pass }
+      - { kind: code, ref: "Invasion.cs:289-293 LiveMonsters.Count==0 && Killed>=MaxSpawned", result: partial }
+    confidence: medium
+    notes: "Test passes against the port's own model; fidelity to Base's map-placed-monster semantics is unverified in a real HUNT map."
+
+  - id: invasion.win.stage
+    name: "STAGE: win when >=70% of players reach the level-end trigger"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/invasion/sv_invasion.qc:target_invasion_roundend_use / WinningCondition_Invasion (INV_TYPE_STAGE)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Invasion.cs:TriggerRoundEnd / Tick (Stage branch)"
+      - "src/XonoticGodot.Server/GameWorld.cs:WireObjectiveSpawns (roundend touch volume)"
+    constants:
+      - { name: "roundend_player_fraction", base: "0.7 (ceil of real players)", port: "1 player touch (no threshold)", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "STAGE ends on the FIRST player touch; Base requires ceil(realplayers * min(1,count)) distinct REAL players (default count=0.7 → 70%, bots excluded) to have set inv_endreached before winning."
+    verification:
+      - { kind: test, ref: "InvasionVariantsTests.StageType_WinsWhenRoundEndTriggered / InvasionSpawnTests.RoundEndSpawnfunc_StageTouch_FiresTriggerRoundEnd", result: pass }
+      - { kind: code, ref: "GameWorld.cs:1535 touch → inv.TriggerRoundEnd() on any Player; Invasion.cs:122-124 sets RoundEndReached unconditionally", result: fail }
+    confidence: high
+    notes: "Single-touch is fine for solo/co-op, wrong for multi-player STAGE maps."
+
+  - id: invasion.win.point_limit
+    name: "Match end on banked-kill point limit (default 50)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/invasion/sv_invasion.qh:GameRules_limit_score(autocvar_g_invasion_point_limit)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Invasion.cs:CheckPointLimit"
+      - "src/XonoticGodot.Server/GameWorld.cs:DriveGametypeFrame (inv.CheckPointLimit)"
+    constants:
+      - { name: "pointlimit", base: "50 (mapinfo) / g_invasion_point_limit (cvar default -1 = use mapinfo)", port: "50 / g_invasion_point_limit / fraglimit", match: true }
+    status:
+      logic: partial
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base's limit is a per-score-row total via GameRules_limit_score; the port latches MatchEnded on the cumulative MonstersKilled total (sum across ALL players), which approximates but is not the same as Base's leading-player limit."
+      - "Base cvar g_invasion_point_limit defaults to -1 (meaning 'use the mapinfo pointlimit', i.e. 50). The port's PointLimit returns the cvar value directly when set, so a server explicitly running g_invasion_point_limit -1 yields -1 → CheckPointLimit (limit>0 guard) treats it as NO limit, instead of falling back to the mapinfo 50. Default-unset case matches (50)."
+    verification:
+      - { kind: code, ref: "Invasion.cs:177-185 PointLimit (cvar||fraglimit||50); CheckPointLimit:450-455 MonstersKilled>=limit→MatchEnded; called from DriveGametypeFrame:1645", result: partial }
+    confidence: medium
+    notes: "Default 50 matches; tracks cumulative total kills (port) vs leading player's KILLS (Base), and mis-handles the -1 sentinel."
+
+  - id: invasion.rules.no_pvp_damage
+    name: "Player-vs-player damage cancelled (Damage_Calculate)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/invasion/sv_invasion.qc:MUTATOR_HOOKFUNCTION(inv, Damage_Calculate)"
+    port_refs: []
+    constants:
+      - { name: "pvp_damage", base: "0 (force 0 too)", port: "n/a (not cancelled)", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Players can damage and kill each other in the port's Invasion; Base zeroes both frag_damage and frag_force between two distinct players."
+    verification:
+      - { kind: code, ref: "Invasion.cs full read + no Damage_Calculate/PvP-cancel anywhere for invasion", result: fail }
+    confidence: high
+    notes: "Co-op design relies on this; its absence changes the mode's character."
+
+  - id: invasion.rules.no_regen
+    name: "No health/armor regeneration (PlayerRegen)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/invasion/sv_invasion.qc:MUTATOR_HOOKFUNCTION(inv, PlayerRegen)"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base disables all health/armor regen in Invasion (any variant; PlayerRegen returns true); the port does not, so players regenerate as in DM."
+    verification:
+      - { kind: code, ref: "Invasion.cs full read: no PlayerRegen suppression for invasion", result: fail }
+    confidence: high
+    notes: "Affects survivability balance."
+
+  - id: invasion.rules.start_items
+    name: "ROUND start items: 200 health / 200 armor (SetStartItems)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/invasion/sv_invasion.qc:MUTATOR_HOOKFUNCTION(inv, SetStartItems)"
+    port_refs: []
+    constants:
+      - { name: "start_health", base: "200 (ROUND)", port: "default (100)", match: false }
+      - { name: "start_armorvalue", base: "200 (ROUND)", port: "default (0)", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "ROUND players spawn with default 100/0 instead of Base's 200/200, halving their starting survivability."
+    verification:
+      - { kind: code, ref: "Invasion.cs full read: no SetStartItems override for invasion", result: fail }
+    confidence: high
+    notes: "ROUND-only buff; HUNT/STAGE use normal start items in Base too."
+
+  - id: invasion.bots.targeting
+    name: "Bot/monster targeting: monsters won't target players, bots only attack monsters"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/invasion/sv_invasion.qc:MUTATOR_HOOKFUNCTION(inv, PlayerSpawn)"
+      - "common/gametypes/gametype/invasion/sv_invasion.qc:MUTATOR_HOOKFUNCTION(inv, Bot_ForbidAttack)"
+    port_refs: []
+    constants:
+      - { name: "player.bot_attack", base: "false", port: "n/a (not cleared)", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base clears player.bot_attack on spawn (removes players from g_bot_targets so bots/monster targeting ignore them) and forbids bots from attacking non-monsters. The port has neither; CONFIRMED MonsterAI.FindTarget (MonsterAI.cs:608-635) acquires any client in range, so port monsters path to and attack players, and nothing stops bots shooting players."
+    verification:
+      - { kind: code, ref: "Invasion.cs full read: no bot_attack clear / Bot_ForbidAttack; MonsterAI.cs:615-620 acquires isClient targets unconditionally", result: fail }
+    confidence: high
+    notes: "Coupled to the co-op no-PvP intent and to invasion.spawn.chosen_monster's monster_attack gap."
+
+  - id: invasion.notify.supermonster
+    name: "Center-print when a supermonster arrives (CENTER_INVASION_SUPERMONSTER)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/gametypes/gametype/invasion/sv_invasion.qc:MUTATOR_HOOKFUNCTION(inv, MonsterSpawn) (supermonster branch)"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No supermonster-arrival center-print. The notification INVASION_SUPERMONSTER is defined in NotificationsList.cs but never sent by Invasion. (The port catalog also lacks a SUPERMONSTER-flagged monster, so there is no trigger source either.)"
+    verification:
+      - { kind: code, ref: "NotificationsList.cs defines INVASION_SUPERMONSTER; no sender in Invasion.cs", result: fail }
+    confidence: high
+    notes: "Catalog-present but dead for this unit."
+
+  - id: invasion.notify.round_end
+    name: "Round-over / round-winner center+info prints"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/gametypes/gametype/invasion/sv_invasion.qc:Invasion_CheckWinner (CENTER_ROUND_OVER / CENTER_ROUND_PLAYER_WIN)"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No 'Round over' / 'Player X wins the round' notification on round timeout or round clear. ROUND_OVER / ROUND_PLAYER_WIN exist in the catalog but are not sent for invasion."
+    verification:
+      - { kind: code, ref: "NotificationsList.cs defines ROUND_OVER/ROUND_PLAYER_WIN; no invasion sender", result: fail }
+    confidence: high
+    notes: "Tied to the missing round-handler-driven round cadence (invasion.round.handler_wiring)."
+
+  - id: invasion.hud.monster_count
+    name: "HUD monsters_total / monsters_killed publish (SV_StartFrame)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/gametypes/gametype/invasion/sv_invasion.qc:MUTATOR_HOOKFUNCTION(inv, SV_StartFrame)"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Invasion does not publish monsters_total (=inv_maxspawned) / monsters_killed (=inv_numkilled) to the HUD, so the wave progress counter players normally see is absent. Wave.MaxSpawned/Killed are tracked internally (Invasion.cs WaveState) but not surfaced to a HUD field."
+    verification:
+      - { kind: code, ref: "no monsters_total/monsters_killed publish from Invasion in src/game tree", result: fail }
+    confidence: medium
+    notes: "Internal counters exist; the HUD wiring does not."
+
+  - id: invasion.client.hide_item_stats
+    name: "Scoreboard hides the item-stats panel in Invasion (cl_invasion)"
+    layer: [presentation]
+    base_refs:
+      - "common/gametypes/gametype/invasion/cl_invasion.qc:MUTATOR_HOOKFUNCTION(cl_inv, DrawScoreboardItemStats)"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The scoreboard item-stats (weapon accuracy) panel is not suppressed in Invasion; Base hides it because monsters aren't valid accuracy targets."
+    verification:
+      - { kind: code, ref: "no DrawScoreboardItemStats invasion gate in port HUD/scoreboard", result: fail }
+    confidence: medium
+    notes: "Minor presentation parity; pairs with the AccuracyTargetValid hook (also unported)."

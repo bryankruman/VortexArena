@@ -1,0 +1,379 @@
+unit: turret-ewheel
+category: turret
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 12
+  worst_gaps:
+    - "Drive speeds all inflated (fast 700/slow 500/slower 320/stop 100 vs Base 500/150/50/25) — eWheel moves & brakes far faster than Base"
+    - "Body turn rate 90 deg/s vs Base 200 (tr_think clamps body yaw with tur_head.aim_speed = turnrate 200)"
+    - "No aim-error speed gating in chase: port always uses speed_fast; Base slows (fast/slow/slower) by body yaw error and never sets tur_head.spawnshieldtime"
+    - "target_range_optimal 1500 vs Base 900 (standoff + kite thresholds wrong)"
+    - "Head clamps wrong: aim_maxrot 360 vs Base 20, aim_maxpitch 20 vs Base 45; track_type FluidInertia(3) vs Base STEPMOTOR(1)"
+    - "No locomotion drive-frame animation (frames 0..4 / turrets_setframe) and no CSQC rolling draw + low-health sparks (ewheel_draw)"
+    - "No waypoint path following (ewheel_move_path / ewheel_findtarget / turret_checkpoint graph)"
+    - "respawntime 60 vs Base 30 (port passes generic default, not the ewheel cfg value)"
+features:
+  - id: turret-ewheel.identity.def
+    name: "Identity, hitbox, models, spawnflags"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/turrets/turret/ewheel.qh:EWheel"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/EWheelTurret.cs:EWheelTurret"
+    constants:
+      - { name: "mins", base: "'-32 -32 0'", port: "(-32,-32,0)", match: true }
+      - { name: "maxs", base: "'32 32 48'", port: "(32,32,48)", match: true }
+      - { name: "model", base: "models/turrets/ewheel-base2.md3", port: "models/turrets/ewheel-base2.md3", match: true }
+      - { name: "head_model", base: "ewheel-gun1.md3", port: "none (no head bone entity)", match: false }
+      - { name: "netname", base: "ewheel", port: "ewheel", match: true }
+      - { name: "spawnflags", base: "TUR_FLAG_PLAYER|TUR_FLAG_MOVE|TUR_FLAG_ROAM", port: "movable=true (MOVE); PLAYER select implicit; ROAM not modeled", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Head model (ewheel-gun1.md3) not instantiated as a separate head entity; no tag_head attachment."
+    verification:
+      - { kind: test, ref: "TurretLifecycleTests.EwheelSpawn_PinsHealthAndCoreSetup", result: pass }
+      - { kind: code_read, ref: "ewheel.qh vs EWheelTurret ctor + Spawn", result: pass }
+    confidence: high
+    notes: "Identity/hitbox/base model faithful; head bone + ROAM flag not modeled."
+  - id: turret-ewheel.setup.tr_setup
+    name: "tr_setup: SlideBox/Step creature, select flags, ammo flags, home pose"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/ewheel.qc:185"
+      - "common/turrets/sv_turrets.qc:turret_initialize"
+      - "common/turrets/sv_turrets.qc:turret_respawn"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/EWheelTurret.cs:Spawn"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:Init"
+    constants:
+      - { name: "solid", base: "SOLID_SLIDEBOX", port: "Solid.SlideBox", match: true }
+      - { name: "movetype", base: "MOVETYPE_STEP", port: "MoveType.Step", match: true }
+      - { name: "takedamage", base: "DAMAGE_AIM", port: "DamageMode.Aim", match: true }
+      - { name: "select_flags", base: "PLAYERS|RANGELIMITS|TEAMCHECK|LOS", port: "Players|RangeLimits|TeamCheck|Los|AngleLimits", match: false }
+      - { name: "ammo_flags", base: "ENERGY|RECHARGE|RECIEVE", port: "not modeled (ammo pool only)", match: false }
+      - { name: "frame/tur_head.frame", base: "1", port: "none", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port adds SelectAngleLimits to the select flags; Base ewheel tr_setup does NOT include ANGLELIMITS (it relies on the body turning to face, not angle-gated acquisition)."
+      - "Initial frame=1 / tur_head.frame=1 not set (no frame handling)."
+    verification:
+      - { kind: test, ref: "TurretLifecycleTests.EwheelSpawn_PinsHealthAndCoreSetup", result: pass }
+      - { kind: code_read, ref: "ewheel.qc tr_setup vs Spawn/Init", result: pass }
+    confidence: high
+    notes: "Core creature setup faithful; select-flag set differs (extra ANGLELIMITS) and frame init missing."
+  - id: turret-ewheel.spawn.liveness
+    name: "Map spawnfunc wiring + per-frame think (turret_ewheel placed on map)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/ewheel.qc:134"
+      - "common/turrets/sv_turrets.qc:turret_link"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawnFuncs.cs:EWheel"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:215"
+      - "src/XonoticGodot.Common/GameInit.cs:21"
+    constants:
+      - { name: "g_turrets master switch", base: "1 (default on)", port: "MasterSwitchEnabled default-on", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "TurretLifecycleTests.Spawnfunc_RespectsTheGTurretsMasterSwitch", result: pass }
+      - { kind: code_read, ref: "RegisterAll(turret_ewheel) -> EWheel -> Spawn + Think; GameInit calls RegisterAll", result: pass }
+    confidence: high
+    notes: "Confirmed live: spawnfunc registered, RegisterAll runs at boot, Think re-armed each frame."
+  - id: turret-ewheel.combat.brain
+    name: "Acquire/aim/fire combat brain (shared turret_think framework)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_think"
+      - "common/turrets/sv_turrets.qc:turret_select_target"
+      - "common/turrets/sv_turrets.qc:turret_firecheck"
+      - "common/turrets/sv_turrets.qc:turret_fire"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:RunCombat"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Fire"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/EWheelTurret.cs:Think"
+    constants:
+      - { name: "targetscan_mindelay", base: "0.1", port: "0.1 (hardcoded)", match: true }
+      - { name: "targetscan_maxdelay", base: "1", port: "0.6 (hardcoded)", match: false }
+      - { name: "aimidle_delay", base: "5", port: "5", match: true }
+      - { name: "ammo_recharge", base: "50", port: "50", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Framework targetscan_maxdelay hardcoded 0.6 vs Base default 1 (shared turret-framework concern, affects ewheel rescan cadence)."
+    verification:
+      - { kind: code_read, ref: "RunCombat vs turret_think/firecheck/fire", result: pass }
+    confidence: medium
+    notes: "Combat flow faithful; maxdelay value drift is framework-wide and tracked at the framework level."
+  - id: turret-ewheel.drive.enemy
+    name: "tr_think locomotion: chase/kite/hold toward enemy + body yaw"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/ewheel.qc:140"
+      - "common/turrets/turret/ewheel.qc:59"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/EWheelTurret.cs:Drive"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretMath.cs:SteerArrive"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretMath.cs:MoveSimple"
+    constants:
+      - { name: "speed_fast", base: "500", port: "700", match: false }
+      - { name: "speed_slow", base: "150", port: "500", match: false }
+      - { name: "speed_slower", base: "50", port: "320", match: false }
+      - { name: "speed_stop", base: "25", port: "100", match: false }
+      - { name: "turnrate (body yaw)", base: "200 (tur_head.aim_speed in tr_think)", port: "90 (TurnRate)", match: false }
+      - { name: "target_range_optimal", base: "900", port: "1500", match: false }
+      - { name: "kite_threshold", base: "optimal*0.5 = 450", port: "optimal*0.5 = 750", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No aim-error speed gating: Base picks fast/slow/slower from tur_head.spawnshieldtime (body yaw error <1/<2/else); port always uses speed_fast to close the gap and never sets tur_head.spawnshieldtime."
+      - "All drive speeds inflated (fast 700/slow 500/slower 320/stop 100 vs 500/150/50/25)."
+      - "Body turn rate 90 vs Base 200 (tr_think clamps body yaw with turnrate, not aim_speed)."
+      - "target_range_optimal 1500 vs 900 (and kite threshold 750 vs 450)."
+      - "Kite/back-off branch uses SpeedSlow 500 vs Base speed_slow 150."
+    verification:
+      - { kind: code_read, ref: "ewheel.qc tr_think + ewheel_move_enemy vs EWheelTurret.Drive", result: fail }
+    confidence: high
+    notes: "Logic shape (chase/kite/hold + steer-toward yaw) ported, but speeds, turnrate, optimal range and the aim-error speed gating all diverge."
+  - id: turret-ewheel.drive.path
+    name: "Waypoint path following (ewheel_move_path / ewheel_findtarget)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/ewheel.qc:17"
+      - "common/turrets/turret/ewheel.qc:111"
+    port_refs: []
+    constants:
+      - { name: "path_node_proximity", base: "64", port: "none", match: false }
+      - { name: "path move speed", base: "speed_fast 500", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No turret_checkpoint waypoint graph / path roaming: an idle ewheel with a target set brakes in place instead of following its path chain (Base ewheel_move_path)."
+    verification:
+      - { kind: code_read, ref: "no path/checkpoint code in EWheelTurret.Drive (Enemy==null -> brake only)", result: fail }
+    confidence: high
+    notes: "Port comment explicitly states the map-waypoint path chase is left out (no waypoint graph in this port)."
+  - id: turret-ewheel.drive.idle
+    name: "ewheel_move_idle: brake to a stop + idle frame"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/turrets/turret/ewheel.qc:98"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/EWheelTurret.cs:Drive"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretMath.cs:BrakeSimple"
+    constants:
+      - { name: "speed_stop", base: "25", port: "100", match: false }
+      - { name: "idle frame", base: "0 (with TNSF_ANIM)", port: "none", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: missing
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Brake force 100 vs Base 25 (stops much harder)."
+      - "No idle-frame reset (Base sets frame 0 + nets TNSF_ANIM)."
+    verification:
+      - { kind: code_read, ref: "ewheel_move_idle vs Drive enemy==null branch", result: fail }
+    confidence: high
+    notes: "Idle braking ported but with wrong stop force and no frame handling."
+  - id: turret-ewheel.weapon.fire
+    name: "EWheelAttack: fast blaster bolt volley (2 shots, near-hitscan)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/ewheel_weapon.qc:7"
+      - "common/turrets/sv_turrets.qc:turret_projectile"
+      - "common/turrets/sv_turrets.qc:turret_fire"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/EWheelTurret.cs:Attack"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:Projectile"
+    constants:
+      - { name: "shot_dmg", base: "30", port: "30", match: true }
+      - { name: "shot_radius", base: "50", port: "50", match: true }
+      - { name: "shot_speed", base: "9000", port: "9000", match: true }
+      - { name: "shot_force", base: "125", port: "125", match: true }
+      - { name: "shot_spread", base: "0.025", port: "0.0125", match: false }
+      - { name: "shot_refire", base: "0.1", port: "0.1", match: true }
+      - { name: "shot_volly", base: "2", port: "2", match: true }
+      - { name: "shot_volly_refire", base: "1", port: "1", match: true }
+      - { name: "missile_flags", base: "MIF_SPLASH", port: "splash via radius damage", match: true }
+      - { name: "deathtype", base: "DEATH_TURRET_EWHEEL", port: "DeathTypes.TurretEwheel", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: missing
+      audio: partial
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "shot_spread 0.0125 vs Base 0.025 (bolts half as spread / more accurate)."
+      - "No EFFECT_BLASTER_MUZZLEFLASH emitted on fire."
+      - "No PROJECTILE_BLASTER client trail on the bolt."
+      - "No two-cannon head-frame alternation (Base: tur_head.frame += 2, wrap > 3 -> 0)."
+    verification:
+      - { kind: test, ref: "MonsterTurretVehicleObituaryTests.cs:203 (ewheel projectile deathtype)", result: pass }
+      - { kind: code_read, ref: "ewheel_weapon.qc wr_think + turret_projectile vs Attack/Projectile", result: pass }
+    confidence: high
+    notes: "Projectile ballistics/damage faithful; spread halved; muzzleflash/trail/cannon-frame alternation missing; fire sound plays (lasergun_fire)."
+  - id: turret-ewheel.damage.lifecycle
+    name: "Damage gating, head-shake, MOVE-shove, death + respawn"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_damage"
+      - "common/turrets/sv_turrets.qc:turret_die"
+      - "common/turrets/sv_turrets.qc:turret_respawn"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Damage"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Die"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/EWheelTurret.cs:Spawn (OnRespawn)"
+    constants:
+      - { name: "respawntime", base: "30", port: "60", match: false }
+      - { name: "MOVE shove (velocity += vforce)", base: "yes (TUR_FLAG_MOVE)", port: "movable=true", match: true }
+      - { name: "inactive/dead take no damage", base: "yes", port: "yes", match: true }
+      - { name: "friendlyfire gate", base: "g_friendlyfire", port: "g_friendlyfire", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: partial
+      presentation: na
+      audio: unknown
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "respawntime 60 vs Base 30 (EWheelTurret.Spawn passes an explicit hardcoded respawnTime:60f to TurretSpawn.Init, not the cfg value g_turrets_unit_ewheel_respawntime 30) — flagged in TurretLifecycleTests:88."
+    verification:
+      - { kind: test, ref: "TurretLifecycleTests (Damage_Dead/Inactive/SameTeam gates)", result: pass }
+      - { kind: code_read, ref: "turret_damage/die/respawn vs TurretAI.Damage/Die + OnRespawn", result: pass }
+    confidence: high
+    notes: "Damage gating + death/respawn lifecycle faithful; respawn delay is 2x Base."
+  - id: turret-ewheel.head.track
+    name: "Head rotation: track type + aim clamps"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_track"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Track"
+    constants:
+      - { name: "aim_speed", base: "90", port: "90", match: true }
+      - { name: "aim_maxrot", base: "20", port: "360", match: false }
+      - { name: "aim_maxpitch", base: "45", port: "20", match: false }
+      - { name: "track_type", base: "1 (STEPMOTOR)", port: "3 (FluidInertia)", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "aim_maxrot 360 vs Base 20 (port head can spin full circle; Base limits head yaw to +/-20 and turns the body instead)."
+      - "aim_maxpitch 20 vs Base 45 (head pitch over-clamped)."
+      - "track_type FluidInertia(3) vs Base STEPMOTOR(1) — different head-aim dynamics (blended/wobbly vs hard per-frame clamp)."
+    verification:
+      - { kind: code_read, ref: "turrets.cfg aim_maxrot/aim_maxpitch/track_type vs EWheelTurret consts + Think p.trackType", result: fail }
+    confidence: high
+    notes: "Aim speed matches; rotation/pitch clamps and tracker type all diverge."
+  - id: turret-ewheel.client.draw
+    name: "CSQC rolling draw + low-health sparks (ewheel_draw)"
+    layer: [presentation]
+    base_refs:
+      - "common/turrets/turret/ewheel.qc:220"
+    port_refs: []
+    constants:
+      - { name: "spark health threshold", base: "127", port: "none", match: false }
+      - { name: "spark chance/frame", base: "0.05", port: "none", match: false }
+      - { name: "client movetype", base: "MOVETYPE_BOUNCE + gravity 1", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No CSQC ewheel_draw: model does not visibly roll (origin += velocity*dt, head angles += avelocity*dt) and damaged ewheels (<127 hp) do not emit te_spark."
+    verification:
+      - { kind: code_read, ref: "no client draw counterpart for ewheel", result: fail }
+    confidence: high
+    notes: "Pure client presentation; not implemented."
+  - id: turret-ewheel.anim.driveframes
+    name: "Locomotion drive-frame animation (frames 0..4)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/turrets/turret/ewheel.qc:11"
+      - "common/turrets/turret/ewheel.qc:95"
+      - "common/turrets/sv_turrets.qc:turrets_setframe"
+    port_refs: []
+    constants:
+      - { name: "anim frames", base: "stop=0,fwd_slow=1,fwd_fast=2,bck_slow=3,bck_fast=4", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No locomotion frame selection (turrets_setframe) and no TNSF_ANIM net sync; the wheel never shows the correct drive animation for its motion state."
+    verification:
+      - { kind: code_read, ref: "no frame handling in EWheelTurret", result: fail }
+    confidence: high
+    notes: "Frame set drives both server frame state and client anim; entirely absent in port."

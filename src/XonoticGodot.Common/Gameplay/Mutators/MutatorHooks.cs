@@ -324,6 +324,20 @@ public static class MutatorHooks
     public static readonly HookChain<SetWeaponArenaArgs> SetWeaponArena = new();
 
     /// <summary>
+    /// Fire <see cref="SetWeaponArena"/> for the given starting arena string and return the resolved arena
+    /// (QC <c>MUTATOR_CALLHOOK(SetWeaponArena, "")</c> then reads back <c>M_ARGV(0, string)</c>). The arena
+    /// hooks rewrite the in/out slot to "off" to disable a configured weapon arena (instagib/overkill/melee/
+    /// nix) or to a named pool ("most"/"all"/...). The owner of the start-items path (SpawnSystem) calls this
+    /// stable entry point instead of reconstructing the args struct, so the chain signature stays fixed here.
+    /// </summary>
+    public static string FireSetWeaponArena(string arena)
+    {
+        var a = new SetWeaponArenaArgs(arena);
+        SetWeaponArena.Call(ref a);
+        return a.Arena;
+    }
+
+    /// <summary>
     /// EV_ForbidRandomStartWeapons — return true to forbid giving random start weapons (slot0 player).
     /// </summary>
     public struct ForbidRandomStartWeaponsArgs
@@ -332,6 +346,18 @@ public static class MutatorHooks
         public ForbidRandomStartWeaponsArgs(Entity player) { Player = player; }
     }
     public static readonly HookChain<ForbidRandomStartWeaponsArgs> ForbidRandomStartWeapons = new();
+
+    /// <summary>
+    /// Fire <see cref="ForbidRandomStartWeapons"/> for the spawning player; returns true if any handler
+    /// forbids giving random start weapons (QC <c>if (MUTATOR_CALLHOOK(ForbidRandomStartWeapons, player))
+    /// return;</c>). instagib/overkill/melee_only/nix all return true. The owner of the start-items path
+    /// (SpawnSystem) calls this stable entry point.
+    /// </summary>
+    public static bool FireForbidRandomStartWeapons(Entity player)
+    {
+        var a = new ForbidRandomStartWeaponsArgs(player);
+        return ForbidRandomStartWeapons.Call(ref a);
+    }
 
     /// <summary>
     /// EV_ForbidThrowCurrentWeapon — return true to forbid dropping the current weapon. Slot0 player,
@@ -402,6 +428,23 @@ public static class MutatorHooks
     }
     public static readonly HookChain<SetDefaultAlphaArgs> SetDefaultAlpha = new();
 
+    /// <summary>
+    /// Fire <see cref="SetDefaultAlpha"/> and return the resolved (player, weapon) default alpha (QC
+    /// <c>SetDefaultAlpha()</c> seeds <c>default_player_alpha = -1</c> / <c>default_weapon_alpha = +1</c>,
+    /// runs <c>MUTATOR_CALLHOOK(SetDefaultAlpha)</c>, then reads the globals back). Cloaked lowers the player
+    /// alpha to <c>g_balance_cloaked_alpha</c> (0.25); running_guns makes the player invisible but the gun
+    /// visible. The world-init owner (alpha-net seam) calls this at worldspawn and seeds the per-entity Alpha
+    /// channel from the returned values. <paramref name="basePlayerAlpha"/>/<paramref name="baseWeaponAlpha"/>
+    /// are the pre-hook defaults (QC -1 / +1; pass 1f / 1f for "fully opaque").
+    /// </summary>
+    public static (float playerAlpha, float weaponAlpha) FireSetDefaultAlpha(
+        float basePlayerAlpha = 1f, float baseWeaponAlpha = 1f)
+    {
+        var a = new SetDefaultAlphaArgs(basePlayerAlpha, baseWeaponAlpha);
+        SetDefaultAlpha.Call(ref a);
+        return (a.PlayerAlpha, a.WeaponAlpha);
+    }
+
     // ----------------------------------------------------------------------------------------------
     // Vehicles (common/vehicles/sv_vehicles.qc MUTATOR_CALLHOOK) — added by the Wave-A2 orchestrator
     // as the stable interface T37 (vehicle seam) fires; no stock mutator subscribes them yet.
@@ -418,6 +461,17 @@ public static class MutatorHooks
         public VehicleInitArgs(Entity vehicle) { Vehicle = vehicle; }
     }
     public static readonly HookChain<VehicleInitArgs> VehicleInit = new();
+
+    /// <summary>
+    /// Fire <see cref="VehicleInit"/> for a just-initialised vehicle; returns true if init should ABORT
+    /// (QC <c>if (MUTATOR_CALLHOOK(VehicleInit, this)) return false;</c>). The vehicle-framework owner calls
+    /// this stable entry point at the end of vehicle initialise.
+    /// </summary>
+    public static bool FireVehicleInit(Entity vehicle)
+    {
+        var a = new VehicleInitArgs(vehicle);
+        return VehicleInit.Call(ref a);
+    }
 
     /// <summary>
     /// EV_VehicleEnter (sv_vehicles.qc:1072) — a player boarded a vehicle. Slot0 player, slot1 vehicle.
@@ -455,6 +509,17 @@ public static class MutatorHooks
         public VehicleTouchArgs(Entity vehicle, Entity toucher) { Vehicle = vehicle; Toucher = toucher; }
     }
     public static readonly HookChain<VehicleTouchArgs> VehicleTouch = new();
+
+    /// <summary>
+    /// Fire <see cref="VehicleTouch"/> for a vehicle touching an entity; returns true if the touch should be
+    /// SUPPRESSED (QC <c>if (MUTATOR_CALLHOOK(VehicleTouch, this, toucher)) return;</c> — stops the toucher
+    /// entering the vehicle). The vehicle-framework owner calls this stable entry point from the touch handler.
+    /// </summary>
+    public static bool FireVehicleTouch(Entity vehicle, Entity toucher)
+    {
+        var a = new VehicleTouchArgs(vehicle, toucher);
+        return VehicleTouch.Call(ref a);
+    }
 
     // ----------------------------------------------------------------------------------------------
     // PlayerDamaged (server/mutators/events.qh:478 EV_PlayerDamaged) — added by the Wave-A2 orchestrator

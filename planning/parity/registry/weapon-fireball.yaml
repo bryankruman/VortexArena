@@ -1,0 +1,395 @@
+unit: weapon-fireball
+category: weapon
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 13
+  worst_gaps:
+    - "Primary CHARGE-UP missing entirely: no 5-frame windup, no prefire delay, no SND_FIREBALL_PREFIRE2, no EFFECT_FIREBALL_PRE_MUZZLEFLASH — the fireball launches instantly instead of supercharging."
+    - "Burn damage-over-time uses a different model (Strength*0.05/frame, no frametime scaling, no Fire_AddDamage combine math) vs Base fire_damagepersec*frametime — burn totals/duration diverge and are frame-rate coupled."
+    - "BFG sweep gates broken/missing: no !this.cnt gate (timed-out fireball still sweeps), can hit same-team players (no DIFF_TEAM/DAMAGE_AIM/!independent), and the owner-survived gate is read BEFORE the blast (never suppresses self-kill) vs Base's after-blast health+armor compare."
+    - "Per-victim BFG/laser/sphere effects (FIREBALL_BFGDAMAGE, FIREBALL_LASER, sphere modeleffect) and flight sounds are not emitted; firemine impact is non-silent + uses GRENADE_EXPLODE where Base is silent."
+features:
+  - id: weapon-fireball.identity
+    name: "Weapon identity/attributes (superweapon flags, color, models, impulse)"
+    layer: [shared, presentation]
+    base_refs:
+      - "common/weapons/weapon/fireball.qh:CLASS(Fireball)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Fireball.cs:Fireball()"
+    constants:
+      - { name: "spawnflags", base: "SUPERWEAPON|TYPE_SPLASH|NODUAL", port: "SuperWeapon|TypeSplash|NoDual", match: true }
+      - { name: "impulse", base: "9", port: "9", match: true }
+      - { name: "m_color", base: "0.941 0.522 0.373", port: "0.941 0.522 0.373", match: true }
+      - { name: "viewmodel/world/item", base: "h_fireball.iqm / v_fireball.md3 / g_fireball.md3", port: "same", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Verifier note: ctor sets ViewModel/WorldModel/ItemModel strings + Color + flags + impulse (all match qh), but does NOT set the crosshair gfx (gfx/crosshairfireball) — out of the gameplay-class scope, presentation of the model itself unverified at render time."
+    verification:
+      - { kind: value, ref: "Fireball ctor (Fireball.cs:69-80) vs fireball.qh ATTRIBs: SpawnFlags/Color/3 models/impulse all match", result: pass }
+    confidence: high
+    notes: "Crosshair gfx/crosshairfireball + the 6 SND_FIREBALL_* + sphere.md3 are declared in qh; the identity attribs the ctor sets all match. Crosshair not wired here (likely a separate crosshair table)."
+
+  - id: weapon-fireball.balance
+    name: "Balance constants (g_balance_fireball_* primary + secondary)"
+    layer: [shared]
+    base_refs:
+      - "bal-wep-xonotic.cfg:633-671"
+      - "common/weapons/weapon/fireball.qh:W_PROPS"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Fireball.cs:Configure"
+    constants:
+      - { name: "primary_damage/edgedamage/radius/force", base: "200/50/200/600", port: "200/50/200/600", match: true }
+      - { name: "primary_bfgdamage/bfgforce/bfgradius", base: "100/0/1000", port: "100/0/1000", match: true }
+      - { name: "primary_speed/lifetime/refire/refire2/animtime/health", base: "1200/15/2/0/0.4/0", port: "1200/15/2/0/0.4/0", match: true }
+      - { name: "primary_laserdamage/laseredgedamage/laserradius/laserburntime", base: "80/20/256/0.5", port: "80/20/256/0.5", match: true }
+      - { name: "secondary_damage/damagetime/damageforcescale", base: "40/5/4", port: "40/5/4", match: true }
+      - { name: "secondary_speed/speed_up/speed_z/lifetime/refire/animtime", base: "900/100/0/7/1.5/0.3", port: "900/100/0/7/1.5/0.3", match: true }
+      - { name: "secondary_laserdamage/laseredgedamage/laserradius/laserburntime", base: "50/20/110/0.5", port: "50/20/110/0.5", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: value, ref: "all 34 Configure fallbacks vs bal-wep-xonotic.cfg defaults", result: pass }
+    confidence: high
+    notes: "Every constant matches the Base default; values read via Bal() so a server cfg override is honored too."
+
+  - id: weapon-fireball.primary.chargeup
+    name: "Primary charge-up: 5-frame prefire windup (prefire sound + prefire-muzzleflash effects)"
+    layer: [shared, presentation]
+    base_refs:
+      - "common/weapons/weapon/fireball.qc:W_Fireball_Attack1_Frame0"
+      - "common/weapons/weapon/fireball.qc:W_Fireball_AttackEffect"
+    port_refs: []
+    constants:
+      - { name: "prefire_frames", base: "5 (Frame0..4, each weapon_thinkf animtime)", port: "none", match: false }
+      - { name: "SND_FIREBALL_PREFIRE2", base: "played on CH_WEAPON_SINGLE at Frame0", port: "none", match: false }
+      - { name: "EFFECT_FIREBALL_PRE_MUZZLEFLASH", base: "emitted Frame0..3 w/ ±1.25 ±3.75 offsets", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: missing
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port's WrThink fires Attack1 immediately on the primary edge — there is NO prefire frame chain, so no ~4x-animtime windup before launch."
+      - "Player hears no charge-up SND_FIREBALL_PREFIRE2 and sees no swirling EFFECT_FIREBALL_PRE_MUZZLEFLASH corners; the weapon's defining 'supercharge then fire' feel is absent."
+    verification:
+      - { kind: codetrace, ref: "Fireball.WrThink primary branch calls Attack1 directly; no Frame0..4 / AttackEffect symbols in port", result: fail }
+    confidence: high
+    notes: "Effects ARE registered (FIREBALL_PRE_MUZZLEFLASH in EffectsList) but never emitted; the whole windup state machine is unported."
+
+  - id: weapon-fireball.primary.launch
+    name: "Primary launch: spawn slow large fireball (MOVETYPE_FLY, ±16, fire2 sound, muzzleflash)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/fireball.qc:W_Fireball_Attack1"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Fireball.cs:Attack1"
+    constants:
+      - { name: "bbox", base: "±16", port: "±16", match: true }
+      - { name: "speed/spread", base: "1200/0", port: "1200/0", match: true }
+      - { name: "recoil", base: "2", port: "2", match: true }
+      - { name: "movetype", base: "MOVETYPE_FLY", port: "MoveType.Fly", match: true }
+      - { name: "fire sound", base: "SND_FIREBALL_FIRE2", port: "weapons/fireball_fire2.wav", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No projectile flight sound (fireball_fly) or trail effect wired for the live plasma_prim entity (FIREBALL trail registered in EffectsList but not attached here)."
+      - "Verifier note: Base sets proj.use = W_Fireball_Explode_use (so a map trigger/use can detonate the fireball); the port sets no .use handler. Edge case — only matters for trigger-driven detonation."
+    verification:
+      - { kind: codetrace, ref: "Attack1 (Fireball.cs:143) spawns plasma_prim MOVETYPE_FLY, SetupShot recoil 2, ProjectileVelocity(dir,speed 1200,spread 0); fire2 sound + FIREBALL_MUZZLEFLASH emitted; reached via WeaponFireDriver->WrThink->PrepareAttack", result: pass }
+    confidence: high
+    notes: "Velocity = W_SetupProjVelocity_PRI (speed*dir, spread 0) faithful; EditProjectile hook called; muzzleflash emitted (matches W_MuzzleFlash). fire2 sound played separately after SetupShot vs inside W_SetupShot in Base, but cue+channel match. Missing .use detonation handler."
+
+  - id: weapon-fireball.primary.lifetime
+    name: "Fireball think: lifetime timeout explode + periodic laser scorch (0.1s)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/fireball.qc:W_Fireball_Think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Fireball.cs:OnFireballThink"
+    constants:
+      - { name: "think_interval", base: "0.1s", port: "0.1s", match: true }
+      - { name: "lifetime (pushltime)", base: "15s", port: "15s", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "On timeout Base sets cnt=1 + projectiledeathtype|=HITTYPE_SPLASH before exploding (so the BFG sweep is suppressed and the death is tagged a splash); the port's timeout calls Explode(self,null) with neither, so a timed-out fireball still does the BFG blast."
+    verification:
+      - { kind: codetrace, ref: "OnFireballThink: time>deathTime -> Explode(self,null); LaserPlay each 0.1s", result: pass }
+    confidence: high
+    notes: "Timeout + scorch cadence faithful; missing cnt/HITTYPE_SPLASH tagging feeds the BFG-gate gap below."
+
+  - id: weapon-fireball.primary.explode
+    name: "Fireball explode: heavy radius damage on impact/timeout"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/fireball.qc:W_Fireball_Explode"
+      - "server/damage.qc:RadiusDamage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Fireball.cs:Explode"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponSplash.cs:RadiusDamage"
+    constants:
+      - { name: "damage/edgedamage/radius/force", base: "200/50/200/600", port: "200/50/200/600", match: true }
+      - { name: "damageforcescale", base: "0", port: "0 (not passed; default)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "EFFECT_FIREBALL_EXPLODE + impact sound at ATTEN_NORM*0.25 emitted (faithful), but the modeleffect_spawn(sphere.md3) BFG visual is not produced."
+    verification:
+      - { kind: codetrace, ref: "Explode -> WeaponSplash.RadiusDamage(damage,edge,radius,force) + ImpactSound(ATTEN_NORM*0.25)", result: pass }
+    confidence: high
+    notes: "Touch-explode is wired (proj.Touch = Explode). Direct radius damage matches Base; shared RadiusDamage is the faithful splash port."
+
+  - id: weapon-fireball.primary.bfg
+    name: "BFG secondary blast: damage every visible enemy within bfgradius (distance-scaled, LOS-gated)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/fireball.qc:W_Fireball_Explode (findradius bfgradius loop)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Fireball.cs:Explode (BFG loop)"
+    constants:
+      - { name: "bfgdamage/bfgforce/bfgradius", base: "100/0/1000", port: "100/0/1000", match: true }
+      - { name: "points falloff", base: "1 - sqrt(dist/bfgradius)", port: "1 - sqrt(dist/bfgradius)", match: true }
+      - { name: "owner-survived gate", base: "owner.health+armor >= pre-blast", port: "owner.DeadState==No", match: false }
+      - { name: "cnt gate", base: "!this.cnt (skip if shot-down/timed-out)", port: "none", match: false }
+      - { name: "target filter", base: "DAMAGE_AIM && !independent && DIFF_TEAM", port: "TakeDamage!=No && !=owner", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No !this.cnt gate: a fireball that timed out (or, if it were shootable, was shot down) still does the full BFG sweep — extra AoE damage Base suppresses."
+      - "Team filter too loose: port can BFG-damage SAME-team players (no DIFF_TEAM check) and lacks the DAMAGE_AIM/!IS_INDEPENDENT_PLAYER filters."
+      - "Owner-survived gate is BROKEN, not just approximated: port snapshots `ownerSurvived = owner.DeadState==No` BEFORE calling RadiusDamage and never re-reads, so it measures alive-before-own-blast (almost always true) rather than QC's 'health+armor AFTER blast >= before' — the gate effectively never suppresses the BFG even when the owner kills himself."
+      - "Only ONE LOS trace (fireball->target); Base also requires the SHOOTER be visible to the target (second traceline)."
+      - "EFFECT_FIREBALL_BFGDAMAGE per-victim effect not emitted; no accuracy_add hit credit for the BFG damage."
+    verification:
+      - { kind: codetrace, ref: "Explode BFG loop: FindInRadius(bfgradius), points=1-sqrt(dist/bfgradius), single LOS trace, ApplyDamage", result: fail }
+    confidence: high
+    notes: "Core falloff math + radius + LOS-gating idea are faithful; the gates/filters and per-victim fx are the divergences. bfgforce 0 default means the force omission is invisible."
+
+  - id: weapon-fireball.primary.laserscorch
+    name: "Laser scorch: periodically set one nearby enemy alight (weighted nearest, prefer not-burning)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/fireball.qc:W_Fireball_LaserPlay"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Fireball.cs:LaserPlay"
+    constants:
+      - { name: "primary laserradius/damage/edgedamage/burntime", base: "256/80/20/0.5", port: "256/80/20/0.5", match: true }
+      - { name: "scorch rate", base: "damage + (edgedamage-damage)*(d/dist)", port: "same formula", match: true }
+      - { name: "selection", base: "RandomSelection weight 1/(1+d), prefer !burning", port: "deterministic argmax, prefer !burning", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Picks a target via deterministic argmax rather than QC's weighted random (RandomSelection_AddEnt weight 1/(1+d)) — same general target, not the exact stochastic one."
+      - "No same-team-player / IS_INDEPENDENT_PLAYER / STAT(FROZEN) skip beyond the takedamage!=AIM and e==owner checks; warpzone-aware WarpZone_FindRadius reduced to a plain radius find."
+      - "EFFECT_FIREBALL_LASER scorch beam not emitted."
+    verification:
+      - { kind: codetrace, ref: "LaserPlay: FindInRadius, weight 1/(1+d), Apply Burning with rate scaled by distance", result: fail }
+    confidence: medium
+    notes: "Feeds the burn via StatusEffectsCatalog.Apply (see burn-model row); the burn TOTAL is governed by that model, not Fire_AddDamage."
+
+  - id: weapon-fireball.primary.shootable
+    name: "Shootable fireball (event_damage destroys it; default health 0)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/fireball.qc:W_Fireball_Damage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Fireball.cs:Attack1 (proj.ProjectileDamage / Health gate)"
+    constants:
+      - { name: "health", base: "0 (DAMAGE_YES but 0 HP)", port: "0 (only wires damage when health>0)", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port only sets takedamage + an explode-on-deplete handler when health>0; with the default health 0 the fireball is NOT damageable at all, so this path is dead at defaults (matches Base's net effect — 0 HP fireball dies on any hit — only if the projectile is even made damageable, which the port skips)."
+      - "Missing W_CheckProjectileDamage (g_projectiles_damage) gate and the cnt=1 + W_PrepareExplosionByDamage delayed-explode used by Base when shot down."
+    verification:
+      - { kind: codetrace, ref: "Attack1: if(Primary.Health>0) proj.TakeDamage=Yes + ProjectileDamage=Explode; default 0 -> skipped", result: fail }
+    confidence: medium
+    notes: "Default-value behavior is effectively parity (a 0-HP fireball is destroyed instantly by Base too), but a server raising fireball health would expose the missing depletion/g_projectiles_damage logic."
+
+  - id: weapon-fireball.secondary.firemine
+    name: "Secondary: lob gravity bouncing firemine (MOVETYPE_BOUNCE, ±4, up-launch)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/fireball.qc:W_Fireball_Attack2"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Fireball.cs:Attack2"
+    constants:
+      - { name: "bbox", base: "±4", port: "±4", match: true }
+      - { name: "speed/speed_up/speed_z/spread", base: "900/100/0/0", port: "900/100/0/0", match: true }
+      - { name: "movetype/gravity", base: "MOVETYPE_BOUNCE / gravity 1", port: "Bounce / Gravity 1", match: true }
+      - { name: "fire sound", base: "SND_FIREBALL_FIRE", port: "weapons/fireball_fire.wav", match: true }
+      - { name: "bulletcounter f_diff muzzle nudge", base: "4-corner cycle + traceline nudge", port: "none (fires from shot.Origin)", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port omits the bulletcounter%4 muzzle-corner f_diff offset + the traceline nudge (cosmetic spawn-point spread of consecutive mines); all mines spawn from the same muzzle point."
+      - "No firemine flight sound / FIREMINE trail attached to the live grenade entity."
+    verification:
+      - { kind: codetrace, ref: "Attack2 spawns grenade MOVETYPE_BOUNCE, W_SetupProjVelocity_UP_SEC via ProjectileVelocity(up,900,100,0)", result: pass }
+    confidence: high
+    notes: "Arc launch + bbox + balance faithful; the missing f_diff is a small visual nicety, not damage-affecting."
+
+  - id: weapon-fireball.secondary.firemine.lifecycle
+    name: "Firemine think/touch: scorch nearby, self-destruct at lifetime, ignite-on-touch-or-bounce"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/fireball.qc:W_Fireball_Firemine_Think"
+      - "common/weapons/weapon/fireball.qc:W_Fireball_Firemine_Touch"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Fireball.cs:FiremineThink"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Fireball.cs:FiremineTouch"
+    constants:
+      - { name: "lifetime", base: "7s", port: "7s", match: true }
+      - { name: "secondary laserradius/damage/edgedamage/burntime", base: "110/50/20/0.5", port: "110/50/20/0.5", match: true }
+      - { name: "touch ignite", base: "Fire_AddDamage(damage 40, damagetime 5)", port: "Apply(Burning, damagetime 5, strength=40)", match: false }
+      - { name: "make-it-hot owner decouple", base: "cnt==3 beyond laserradius -> owner=NULL", port: "none", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: partial
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Missing the 'make it hot once it leaves its owner' decoupling (3 ticks beyond laserradius -> owner=NULL); the port's mine never scorches its own firer."
+      - "Touch: port ignites any AIM/client toucher and ALWAYS deletes; Base only deletes when Fire_AddDamage>=0 and otherwise keeps bouncing (HITTYPE_BOUNCE) — differs on already-burning / dead targets."
+      - "Firemine impact: port plays weapons/fireball_impact2 + GRENADE_EXPLODE; Base's firemine is SILENT on impact (wr_impacteffect secondary branch = 'goes out silently')."
+      - "Ignite uses the StatusEffectsCatalog burn model, not Fire_AddDamage (see burn-model row)."
+    verification:
+      - { kind: codetrace, ref: "FiremineThink lifetime+LaserPlay; FiremineTouch ignites + Remove (no bounce-on-fail, plays sound)", result: fail }
+    confidence: high
+    notes: "Scorch cadence + radius/values faithful; owner-decouple + silent-impact + bounce-on-fail are the divergences."
+
+  - id: weapon-fireball.burn.model
+    name: "Fire damage-over-time (Fire_AddDamage / Fire_ApplyDamage) backing both projectiles' burns"
+    layer: [authority]
+    base_refs:
+      - "server/damage.qc:Fire_AddDamage"
+      - "server/damage.qc:Fire_ApplyDamage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/StatusEffects.cs:Apply"
+      - "src/XonoticGodot.Common/Gameplay/StatusEffects.cs:Tick"
+      - "src/XonoticGodot.Server/GameWorld.cs:1138"
+    constants:
+      - { name: "per-frame burn", base: "fire_damagepersec * frametime", port: "Strength * 0.05 (no frametime)", match: false }
+      - { name: "dps", base: "d / max(t,0.1)", port: "Strength passed raw (scorch rate / 40)", match: false }
+      - { name: "combine-burns math", base: "totaldamage/totaltime cap so dps<=max(old,new)", port: "Apply just overwrites expiry+strength", match: false }
+      - { name: "fire transfer", base: "g_balance_firetransfer_* to nearby g_damagedbycontents", port: "none", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Burn tick applies Strength*0.05 per server frame with NO frametime scaling -> frame-rate-coupled and tickrate-dependent (≈Strength*3/s at 60Hz), unlike Base's exact fire_damagepersec*frametime."
+      - "No Fire_AddDamage combine semantics: re-igniting an already-burning target just overwrites duration/strength instead of merging burns under the dps cap, so total burn damage and duration do not match Base's d-over-t."
+      - "Burn ticks only on players (GameWorld player loop); no fire-transfer to nearby damageable entities (g_balance_firetransfer_*)."
+      - "Fire_AddDamage's return-value contract (>=0 added damage, -1 if d<=0/dead) — used by FiremineTouch to decide delete-vs-bounce — is not modeled."
+    verification:
+      - { kind: codetrace, ref: "StatusEffectsCatalog.Tick: Damage(e, s.Strength*0.05, 'burning'); no frametime; Apply overwrites", result: fail }
+    confidence: medium
+    notes: "Both the laser scorch and the firemine ignite route through this model, so the divergence affects the actual fire damage dealt by the whole weapon. Needs a DOT measurement to quantify."
+
+  - id: weapon-fireball.bot.obituary
+    name: "Bot aim (wr_aim) + kill/suicide obituary lines (FIREMINE vs BLAST)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/fireball.qc:wr_aim"
+      - "common/weapons/weapon/fireball.qc:wr_killmessage"
+      - "common/weapons/weapon/fireball.qc:wr_suicidemessage"
+    port_refs: []
+    constants:
+      - { name: "bot_aim primary/secondary", base: "speed 1200 / speed 900 up 100, rare random swap", port: "none", match: false }
+      - { name: "obituary split", base: "HITTYPE_SECONDARY -> FIREMINE else BLAST", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No wr_aim: bots have no Fireball-specific aim (no lead for the slow projectile, no primary/secondary mode switching)."
+      - "No per-mode kill/suicide notification (WEAPON_FIREBALL_MURDER_FIREMINE/_BLAST, _SUICIDE_*) — obituaries fall back to the generic weapon death tag."
+    verification:
+      - { kind: codetrace, ref: "No wr_aim / killmessage / suicidemessage equivalent in Fireball.cs", result: fail }
+    confidence: medium
+    notes: "Bot aim + obituary variants are common cross-weapon gaps in the port; flagged here for completeness."

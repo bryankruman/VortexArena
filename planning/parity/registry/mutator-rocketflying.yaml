@@ -1,0 +1,147 @@
+unit: mutator-rocketflying
+category: mutator
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 5
+  worst_gaps:
+    - "AllowRocketJumping not ported: the mutator no longer forces the Devastator remote-jump self-boost on, and the port's Devastator has no remote_jump_* system at all (no dedicated rocket-jump blast / vertical velocity shaping)."
+    - "No advertised mutator string / scoreboard indicator: BuildMutatorsString + mut_set_active are not ported, so clients never see 'Rocket Flying' listed as an active mutator."
+features:
+  - id: mutator-rocketflying.register.enable_gate
+    name: "Registration + g_rocket_flying enable gate"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/rocketflying/sv_rocketflying.qc:3"
+      - "common/mutators/mutator/rocketflying/sv_rocketflying.qc:5"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RocketFlyingMutator.cs:35"
+      - "src/XonoticGodot.Server/GameWorld.cs:511"
+    constants:
+      - { name: "g_rocket_flying (default)", base: "0 (string, expr_evaluate truthy → enable)", port: "0 (ExprEvaluate(GetString))", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "RocketFlyingMutator.IsEnabled => ExprEvaluate(g_rocket_flying); registered via [Mutator] source-gen into Mutators.All; activated by MutatorActivation.Apply() at GameWorld.cs:511", result: pass }
+    confidence: high
+    notes: "expr_evaluate ported faithfully (empty/'0'/'false' → false). Source-gen discovery + Apply() loop is the QC STATIC_INIT_LATE Mutator_Add equivalent."
+  - id: mutator-rocketflying.editprojectile.disable_detonate_delay
+    name: "EditProjectile: kill rocket/mine remote-detonate delay (instant detonate)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/rocketflying/sv_rocketflying.qc:7"
+      - "common/weapons/weapon/devastator.qc:295"
+      - "common/weapons/weapon/devastator.qc:145"
+      - "common/weapons/weapon/minelayer.qc:316"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RocketFlyingMutator.cs:54"
+      - "src/XonoticGodot.Common/Framework/EntityProjectileGate.cs:36"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Devastator.cs:298"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Minelayer.cs:304"
+    constants:
+      - { name: "g_rocket_flying_disabledelays (default)", base: "1 (true)", port: "true", match: true }
+      - { name: "classname filter", base: "rocket || mine", port: "\"rocket\" || \"mine\"", match: true }
+      - { name: "gate write", base: "proj.spawnshieldtime = time", port: "proj.ProjectileDetonateTime = Clock.Time", match: true }
+      - { name: "devastator detonatedelay (arm window removed)", base: "0.02 s", port: "0.02 s (Cvars.DetonateDelay)", match: true }
+      - { name: "gate default (non-projectile / pooled entity)", base: "n/a (per-launch seed)", port: "-1f (proximity branch)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: unit, ref: "tests/XonoticGodot.Tests/RocketFlyingGateTests.cs (gate cleared to time for rocket/mine; untouched for other classes; inert when g_rocket_flying unset or disabledelays off; default -1)", result: pass }
+      - { kind: code, ref: "MutatorHooks.EditProjectile.Call fired at launch by Devastator.cs:191 / Minelayer.cs:167; gate read by Devastator.RemoteExplode (:298) / Minelayer (:304)", result: pass }
+    confidence: high
+    notes: "Core gameplay effect; fully live. Prior dead-write bug (mutator wrote player spawn-shield field; weapons stored gate elsewhere) corrected — gate now the same Entity.ProjectileDetonateTime both weapons read, defaulting to the safe proximity branch."
+  - id: mutator-rocketflying.allowrocketjumping.force_on
+    name: "AllowRocketJumping: force Devastator remote-jump self-boost on"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/rocketflying/sv_rocketflying.qc:18"
+      - "common/weapons/weapon/devastator.qc:74"
+      - "common/weapons/weapon/devastator.qc:78"
+    port_refs: []
+    constants:
+      - { name: "remote_jump (forced)", base: "true (overrides g_balance_devastator_remote_jump=0)", port: "none", match: false }
+      - { name: "g_balance_devastator_remote_jump_damage", base: "70", port: "absent", match: false }
+      - { name: "g_balance_devastator_remote_jump_force", base: "450", port: "absent", match: false }
+      - { name: "g_balance_devastator_remote_jump_radius", base: "100", port: "absent", match: false }
+      - { name: "g_balance_devastator_remote_jump_velocity_z_add/min/max", base: "0 / 400 / 1500", port: "absent", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "AllowRocketJumping not ported: the mutator no longer forces the Devastator remote-jump self-boost on, and the port's Devastator has no remote_jump_* system at all (no dedicated rocket-jump blast / vertical velocity shaping)."
+    verification:
+      - { kind: code, ref: "grep (2026-06-22): no AllowRocketJumping / remote_jump / RemoteJump symbol anywhere in port src/ or game/; the AllowRocketJumping hook CHAIN is not defined in MutatorHooks.cs; Devastator.DoRemoteExplode (Devastator.cs:307-322) does ONLY the plain remote_* RadiusDamage — no allow_rocketjump fetch, no remote_jump_radius WarpZone_FindRadius branch, no velocity_z shaping", result: fail }
+    confidence: high
+    notes: "Verified against Base W_Devastator_DoRemoteExplode (devastator.qc:65-137): Base fetches allow_rocketjump = WEP_CVAR(remote_jump), runs the AllowRocketJumping hook (which this mutator forces true), and if allow_rocketjump && remote_jump_radius does a dedicated rocket-jump blast (×0.9 horiz vel, bounded +velocity_z, remote_jump_damage/force over remote_jump_radius) on the owner instead of the plain blast. Port has none of this. Downstream of the port Devastator lacking the entire remote-jump system (a weapon-devastator gap), but the mutator's force-on sub-hook is itself absent (chain not even defined). Low gameplay impact at DEFAULT bal-wep-xonotic balance (remote_jump=0 so it never engages; even forced on, remote_jump_velocity_z_add=0 makes the vertical-shaping branch a no-op) — but the dedicated remote_jump_* damage(70)/force(450)/radius(100) blast is still missing, and non-default balance sets (mario remote_jump=1, samual/nexuiz25 z_add>0) would diverge. Recorded as a real gap, not an intended divergence."
+  - id: mutator-rocketflying.advertise.mutator_string
+    name: "BuildMutatorsString + BuildMutatorsPrettyString (advertise active mutator to clients)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/rocketflying/sv_rocketflying.qc:23"   # BuildMutatorsString -> ':RocketFlying'
+      - "common/mutators/mutator/rocketflying/sv_rocketflying.qc:28"   # BuildMutatorsPrettyString -> ', Rocket Flying'
+      - "common/util.qc:299"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No advertised mutator string / scoreboard indicator: BuildMutatorsString + mut_set_active are not ported, so clients never see 'Rocket Flying' listed as an active mutator."
+    verification:
+      - { kind: code, ref: "grep: no BuildMutatorsString / BuildMutatorsPrettyString / mut_set_active / ':RocketFlying' string in port src/ or game/; the BuildMutatorsString and BuildMutatorsPrettyString hook CHAINS are not even defined in MutatorHooks.cs (verified 2026-06-22) so there is nothing to subscribe to", result: fail }
+    confidence: high
+    notes: "Covers BOTH Base hooks (BuildMutatorsString = machine ':RocketFlying', BuildMutatorsPrettyString = human ', Rocket Flying'). Almost certainly a unit-wide port-framework omission (no mutator-advertisement string / mut_set_active scoreboard surface exists for ANY mutator), not rocketflying-specific; flagged per-mutator here. The mut_set_active client parse (util.qc:299) has no port counterpart."
+  - id: mutator-rocketflying.menu.describe
+    name: "Menu checkbox + description (MutatorRocketFlying.describe)"
+    layer: [presentation]
+    base_refs:
+      - "common/mutators/mutator/rocketflying/rocketflying.qc:6"
+      - "qcsrc/menu/xonotic/dialog_multiplayer_create_mutators.qc:154"
+    port_refs:
+      - "game/menu/dialogs/DialogMutators.cs:206"
+    constants:
+      - { name: "cvar bound", base: "g_rocket_flying", port: "g_rocket_flying", match: true }
+      - { name: "instagib incompatibility", base: "setDependent(e,'g_instagib',0,0)", port: "Dependent.Bind(rocketFly,'g_instagib',0,0)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "DialogMutators.cs:206 CheckBox(g_rocket_flying, 'Rocket Flying', <equivalent description>) + Instagib dependency bind at :211", result: pass }
+    confidence: medium
+    notes: "Description text is paraphrased (not the exact QC _() string) but conveys the same meaning; menu wiring + cvar + instagib dependency match."

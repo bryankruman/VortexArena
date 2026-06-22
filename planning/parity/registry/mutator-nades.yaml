@@ -1,0 +1,666 @@
+unit: mutator-nades
+category: mutator
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 21
+  worst_gaps:
+    - "The throw input is dead: InputCommand.InputButtons (src/XonoticGodot.Net/InputCommand.cs:11) has NO nade/offhand/hook/weapon_drop bit (only Attack/Jump/Attack2/Zoom/Crouch/Use), and Entity.OffhandFirePressed is ASSIGNED NOWHERE in src/ (verified: only HookMutator/OffhandBlasterMutator/NadesMutator READ it; NadeAltButton is set only inside NadeThrow itself, never by input). So OffhandThink runs every tick with keyPressed=false and a player can never prime or throw a nade. NadeThrow.CheckThrow (the weapon_drop path) has no caller (NadesMutator does not subscribe ForbidThrowCurrentWeapon). The entire subsystem (charge, toss, all 11 booms, pickup, shoot-down, orbs) is dead on the live path — same wire as the offhand hook/blaster (TODO.md T11)."
+    - "All presentation is missing (headless port): no projectile model/trail (nade_customize/spawn_held_nade trail), no orb 3D model + 2D color flash (orb_draw/orb_draw2d), no darkness blind overlay (HUD_DarkBlinking) + SND_BLIND, no spawn-loc EF_STARDUST, no DrawAmmoNades bonus-nade ammo-panel icon. The only wired piece — the held-nade charge ring (CrosshairPanel.NadeTimer) — never shows because no nade can be primed."
+    - "Lifecycle cleanup hooks are NOT ported: NadesMutator subscribes ONLY PlayerSpawn/PlayerPreThink/PlayerDies/DamageCalculate. MakePlayerObserver / ClientDisconnect / reset_map_global (nades_RemovePlayer = nades_Clear + RemoveBonus + delete spawnloc), PutClientInServer (RemoveBonus), SpectateCopy (copy nade stats to spectator), VehicleEnter (toss held nade), and DropSpecialItems (toss held nade) are all unsubscribed/absent — a held nade, banked bonus, or spawn marker leaks across observer/disconnect/round-reset, and a player entering a vehicle keeps a primed nade. nades_Clear/RemoveBonus exist as methods but have no live caller for these paths."
+    - "nade_damage omits the melee-slap branch (force*10, damage=max_health*0.1 for melee primary/secondary weapons) and the Nade_Damage mutator hook; napalm ball damageforcescale 4 is not applied (modeled as Burning status, no knockback); pokenade monster_lifetime (150s despawn) is missing; freezetag revive-nade suppresses damage but never unfreezes/revives (FreezeTag seam); ice revival_time<1.5s re-freeze skip omitted."
+features:
+  - id: mutator-nades.enable.predicate
+    name: "Enable predicate + offhand assignment (g_nades)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/sv_nades.qc:706 REGISTER_MUTATOR"
+      - "common/mutators/mutator/nades/sv_nades.qc:818 PlayerSpawn offhand assign"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadesMutator.cs:IsEnabled"
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadesMutator.cs:OnPlayerSpawn"
+    constants:
+      - { name: "g_nades", base: "0 (mutators.cfg:196)", port: "GetFloat(g_nades)!=0", match: true }
+      - { name: "g_nades_onspawn", base: "1 (mutators.cfg:199)", port: "1", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "NadesMutator.IsEnabled = g_nades!=0; Hook adds PlayerSpawn/PreThink/Dies/DamageCalc", result: pass }
+      - { kind: code, ref: "MutatorActivation.Apply() (GameWorld.cs:511) subscribes enabled mutators at match start", result: pass }
+    confidence: high
+    notes: "The mutator is auto-discovered ([Mutator]) and its 4 hooks ARE added when g_nades!=0. RegisterAll + boom-registry scan run on enable. Default off (on by default in Overkill in Base). PlayerSpawn assigns OFFHAND_NADE if no offhand, sets nade_refire (+refire unless g_nades_onspawn), NadesSmall flag."
+
+  - id: mutator-nades.throw.input_wire
+    name: "Throw input (offhand +hook release / weapon_drop double-press)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/sv_nades.qc:625 nades_CheckThrow"
+      - "common/mutators/mutator/nades/sv_nades.qc:675 OFFHAND_NADE.offhand_think"
+      - "common/mutators/mutator/nades/sv_nades.qc:715 ForbidThrowCurrentWeapon"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadeThrow.cs:OffhandThink"
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadeThrow.cs:CheckThrow"
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadesMutator.cs:OnPlayerPreThink"
+    constants: []
+    status:
+      logic: partial
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "InputCommand.InputButtons (InputCommand.cs:11) has no nade/offhand/hook/weapon_drop bit (only Attack/Jump/Attack2/Zoom/Crouch/Use). Entity.OffhandFirePressed is assigned NOWHERE in src/ (verified by grep: only read by HookMutator/OffhandBlasterMutator/NadesMutator). NadeAltButton is set only inside NadeThrow.CheckThrow itself (an internal weapon_drop toggle), never by the input layer. So keyHeld is always false and OffhandThink never primes."
+      - "NadeThrow.CheckThrow (the weapon_drop second-press path) has no caller — NadesMutator does not subscribe ForbidThrowCurrentWeapon (only Instagib/Melee subscribe it in the port)."
+      - "PlayerPreThink only drives OffhandThink when player.OffhandWeapon==\"nade\"; the QC PlayerPreThink also drives offhand_think only when the player has the HOOK weapon or a non-nade offhand (the +hook release path). Minor reorder; moot while input is dead."
+    verification:
+      - { kind: code, ref: "grep OffhandFirePressed / NadeAltButton over repo -> OffhandFirePressed: 0 assignments; NadeAltButton assigned only in NadeThrow.cs:135/144", result: fail }
+      - { kind: code, ref: "InputCommand.InputButtons enum (InputCommand.cs:11) — no offhand/nade bit", result: fail }
+      - { kind: code, ref: "grep CheckThrow callers -> none; NadesMutator.Hook adds only PlayerSpawn/PreThink/Dies/DamageCalc", result: fail }
+    confidence: high
+    notes: "Same dead-input failure as the offhand hook (TODO.md T11) and offhand blaster. This single missing wire makes the whole subsystem unreachable in a real match. The charge logic itself (OffhandThink/CheckThrow) is faithfully written and unit-tested."
+
+  - id: mutator-nades.prime.select
+    name: "nade_prime: type selection (strength / bonus / client-select / cvar)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/sv_nades.qc:576 nade_prime"
+      - "common/mutators/mutator/nades/sv_nades.qc:530 spawn_held_nade"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadeThrow.cs:Prime"
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadeThrow.cs:SpawnHeldNade"
+    constants:
+      - { name: "g_nades_bonus_onstrength", base: "1 (mutators.cfg:233)", port: "1", match: true }
+      - { name: "g_nades_bonus_only", base: "0 (mutators.cfg:235)", port: "0", match: true }
+      - { name: "g_nades_nade_type", base: "1 (mutators.cfg:214)", port: "\"1\"", match: true }
+      - { name: "g_nades_bonus_type", base: "2 (mutators.cfg:232)", port: "\"2\"", match: true }
+      - { name: "g_nades_nade_lifetime", base: "3.5 (mutators.cfg:204)", port: "3.5", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "g_nades_client_select / g_nades_bonus_client_select not honoured: the port always uses the server g_nades_nade_type / g_nades_bonus_type, never per-client cl_nade_type/cl_pokenade_type (the headless sim has no per-client cvar plumbed). PlayerSpawn's bonus_client_select bonus-type set is also omitted."
+      - "Unreachable: Prime is only called from the dead OffhandThink/CheckThrow input path."
+    verification:
+      - { kind: code, ref: "NadeThrow.Prime vs nade_prime (strength/bonus/cvar branches) — match; client-select deferred", result: pass }
+      - { kind: test, ref: "PowerupsAndNadesTests.Nade_Prime_ThenThrow_SpawnsAProjectile", result: pass }
+    confidence: high
+    notes: "spawn_held_nade .wait=time+lifetime, nextthink=max(wait-3,time) beep-start, nade_time_primed=time all faithful. fake_nade tracked for cleanup. g_nades_nade_type default 1 = NORMAL; bonus default 2 = NAPALM."
+
+  - id: mutator-nades.throw.charge_force
+    name: "Charge-throw force ramp + spread cone"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/sv_nades.qc:646 charge math (weapon_drop)"
+      - "common/mutators/mutator/nades/sv_nades.qc:695 charge math (offhand)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadeThrow.cs:ChargeDir"
+    constants:
+      - { name: "g_nades_nade_minforce", base: "400 (mutators.cfg:205)", port: "400", match: true }
+      - { name: "g_nades_nade_maxforce", base: "2000 (mutators.cfg:206)", port: "2000", match: true }
+      - { name: "g_nades_spread", base: "0.04 (mutators.cfg:197)", port: "0.04", match: true }
+      - { name: "dir_weights_weapondrop", base: "fwd0.75 up0.2 right0.05", port: "0.75/0.2/0.05", match: true }
+      - { name: "dir_weights_offhand", base: "fwd0.7 up0.2 right0.1", port: "0.7/0.2/0.1", match: true }
+      - { name: "min_charge_time", base: "1s since prime", port: "1s (NadeTimePrimed+1)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Unreachable (dead throw input)."
+    verification:
+      - { kind: test, ref: "PowerupsAndNadesTests.Nade_Throw_ForceRampsWithChargeTime / Nade_CannotPrime_BeforeRefire", result: pass }
+    confidence: high
+    notes: "force = minforce + (held/lifetime)*(maxforce-minforce); spread via WeaponFiring.CalculateSpread(dir, g_nades_spread, mustNormalize:false). Both path direction weights match QC."
+
+  - id: mutator-nades.toss.projectile
+    name: "toss_nade: launch physics (size, newton-style, health, fuse)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/sv_nades.qc:321 toss_nade"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadeProjectile.cs:Toss"
+    constants:
+      - { name: "g_nades_nade_health", base: "25 (mutators.cfg:207)", port: "25", match: true }
+      - { name: "g_nades_nade_refire", base: "6 (mutators.cfg:208)", port: "6", match: true }
+      - { name: "g_nades_throw_offset", base: "\"0 -25 0\" (mutators.cfg:198)", port: "0,-25,0", match: true }
+      - { name: "nade_size", base: "32 (16 if small)", port: "32/16", match: true }
+      - { name: "newton_style", base: "0 absolute / 1 relative / 2 velocity-only (mutators.cfg:213)", port: "0/1/2", match: false }
+      - { name: "vertical_dribble", base: "v_angle.x in [70,110] + crouch -> '0 0 100'", port: "same", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Newton-style 0 is implemented as pure absolute _velocity rather than W_CalculateProjectileVelocity(e, e.velocity, _velocity, true); for non-default g_projectiles_newton_style this diverges from Base's velocity blending (style 0 is the shipped default, so identical at defaults)."
+      - "Unreachable (dead throw input)."
+    verification:
+      - { kind: code, ref: "NadeProjectile.Toss vs toss_nade (size/movetype/health/takedamage/event_damage/refire/dphitcontentsmask) — match except newton-0", result: pass }
+    confidence: high
+    notes: "MOVETYPE_BOUNCE, DAMAGE_AIM, event_damage routed via GtEventDamage (live damage seam), DamageForceScale kept 0 to avoid double knockback (nade_damage adds force manually). dphitcontentsmask via Projectiles.MakeTrigger; QC's translocate/spawn/monster PLAYERCLIP|BOTCLIP variant collapsed to the SOLID|BODY|CORPSE default."
+
+  - id: mutator-nades.touch.bounce_pickup_detonate
+    name: "nade_touch: owner pass-through, pickup, bounce, impact detonate"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/sv_nades.qc:192 nade_touch"
+      - "common/mutators/mutator/nades/sv_nades.qc:179 nade_pickup"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadeProjectile.cs:OnTouch"
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadeProjectile.cs:Pickup"
+    constants:
+      - { name: "g_nades_pickup", base: "0 (mutators.cfg:201)", port: "0", match: true }
+      - { name: "g_nades_pickup_time", base: "2 (mutators.cfg:202)", port: "2", match: true }
+      - { name: "spawnshieldtime", base: "time+0.1 re-pickup guard", port: "NadePickupShieldTime now+0.1", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: partial
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "ITEM_TOUCH_NEEDKILL (lava/void/nodraw content) delete branch is omitted (content-trace engine concern); a nade in a kill volume is not destroyed-to-normal-boom."
+      - "Bounce plays a single weapons/grenade_bounce1.wav; Base spamsound SND_GRENADE_BOUNCE_RANDOM picks randomly from a set."
+      - "Unreachable (dead throw input)."
+    verification:
+      - { kind: code, ref: "NadeProjectile.OnTouch vs nade_touch (pickup gate / full-health bounce / damaged detonate)", result: pass }
+    confidence: high
+    notes: "Pickup hands a pickup_time fuse + arms refire + copies nade_time_primed. Pickup plays misc/null.wav (matches QC SND_Null)."
+
+  - id: mutator-nades.damage.launch_destroy
+    name: "nade_damage: shoot-to-launch / shoot-to-destroy interactions"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/sv_nades.qc:246 nade_damage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadeProjectile.cs:NadeDamage"
+    constants:
+      - { name: "blaster", base: "force*1.5 damage=0", port: "force*1.5 damage=0", match: true }
+      - { name: "vortex/vaporizer/okvortex", base: "force*6 damage=max_health*0.55", port: "same", match: true }
+      - { name: "machinegun/okmachinegun", base: "damage=max_health*0.1", port: "same", match: true }
+      - { name: "shotgun/okshotgun(primary)", base: "damage=max_health*1.15", port: "same", match: true }
+      - { name: "melee", base: "force*10 damage=max_health*0.1 (WEP_TYPE_MELEE_PRI/SEC)", port: "MISSING", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The melee-slap branch (force*10, damage=max_health*0.1 for weapons flagged WEP_TYPE_MELEE_PRI / WEP_TYPE_MELEE_SEC) is omitted — the port's switch covers only blaster/vortex/mg/shotgun."
+      - "The Nade_Damage MUTATOR_CALLHOOK (overkill/custom damage adjust) is not invoked."
+      - "Blaster pure-force launch (damage=0): the DamageSystem only dispatches event_damage when damage>0 or damageforcescale!=0, and the nade keeps damageforcescale 0, so a 0-damage blaster hit may not reach NadeDamage — documented in NadeProjectile.cs header."
+      - "Unreachable (dead throw input)."
+    verification:
+      - { kind: code, ref: "NadeProjectile.NadeDamage weapon switch vs nade_damage (blaster/vortex/mg/shotgun) — match; melee + Nade_Damage hook missing (confirmed nade_damage:279-285 has melee branch, port:191-205 does not)", result: pass }
+    confidence: high
+    notes: "translocate/spawn ignore damage (no map-spanning launches). First full-health hit arms beep + extends fuse to time+lifetime. HP<=0 runs spawn/translocate DestroyDamage then detonate. Credits the shooter (except tl/spawn)."
+
+  - id: mutator-nades.boom.dispatch
+    name: "nade_boom: type dispatch + destroyed->normal fallback"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/sv_nades.qc:114 nade_boom"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadeBoom.cs:Detonate"
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadeBoom.cs:NadeBoomRegistry"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: faithful
+      presentation: missing
+      audio: partial
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The colored explosion particle (Send_Effect_Except with per-type EFFECT + player-color min/max via findbetterlocation) is omitted (render-only)."
+      - "Base plays SND_Null on CH_SHOTS_SINGLE + SND_ROCKET_IMPACT on CH_SHOTS; the port plays only weapons/rocket_impact.wav."
+      - "Unreachable (dead throw input)."
+    verification:
+      - { kind: test, ref: "PowerupsAndNadesTests.BoomDispatch_RoutesToTheRegisteredHandler / BoomDispatch_DestroyedNade_FallsBackToNormal", result: pass }
+    confidence: high
+    notes: "Reflection-discovered INadeBoom registry replaces the QC switch; destroyed (takedamage cleared) or Null -> NORMAL fallback faithful. RemoveHook of attached grapples on detonate present in QC (RemoveHook); port has no offhand-hook attach so no-op."
+
+  - id: mutator-nades.boom.normal
+    name: "Normal nade explosion (RadiusDamage)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/nade/normal.qc:nade_normal_boom"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/Booms/NadeNormalBoom.cs:Boom"
+    constants:
+      - { name: "g_nades_nade_damage", base: "225 (mutators.cfg:209)", port: "225", match: true }
+      - { name: "g_nades_nade_edgedamage", base: "90 (mutators.cfg:210)", port: "90", match: true }
+      - { name: "g_nades_nade_radius", base: "300 (mutators.cfg:211)", port: "300", match: true }
+      - { name: "g_nades_nade_force", base: "650 (mutators.cfg:212)", port: "650", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Unreachable (dead throw input). DamageInfo (Damage_DamageInfo) network record omitted (render-only)."
+    verification:
+      - { kind: code, ref: "NadeBlast.RadiusDamage replicates WeaponSplash falloff/knockback + nade string deathtype", result: pass }
+    confidence: high
+    notes: "Routes through Combat.Damage with NadeDeathTypes.Nade (string) instead of int-only WeaponSplash so the obituary names the nade. .enemy = direct hit. Shared by ice/darkness explode."
+
+  - id: mutator-nades.boom.napalm
+    name: "Napalm: fireballs + fountain fire damage"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/nade/napalm.qc:nade_napalm_boom"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/Booms/NadeNapalmBoom.cs:Boom"
+    constants:
+      - { name: "g_nades_napalm_ball_count", base: "6 (mutators.cfg:252)", port: "6", match: true }
+      - { name: "g_nades_napalm_ball_damage", base: "40 (mutators.cfg:255)", port: "40", match: true }
+      - { name: "g_nades_napalm_ball_radius", base: "100 (mutators.cfg:257)", port: "100", match: true }
+      - { name: "g_nades_napalm_ball_lifetime", base: "7 (mutators.cfg:256)", port: "7", match: true }
+      - { name: "g_nades_napalm_ball_spread", base: "500 (mutators.cfg:253)", port: "500", match: true }
+      - { name: "g_nades_napalm_ball_damageforcescale", base: "4 (mutators.cfg:254)", port: "MISSING", match: false }
+      - { name: "g_nades_napalm_fountain_lifetime", base: "3 (mutators.cfg:259)", port: "3", match: true }
+      - { name: "g_nades_napalm_fountain_delay", base: "0.5 (mutators.cfg:260)", port: "0.5", match: true }
+      - { name: "g_nades_napalm_fountain_damage", base: "50 (mutators.cfg:261)", port: "50", match: true }
+      - { name: "g_nades_napalm_fountain_edgedamage", base: "20 (mutators.cfg:262)", port: "20", match: true }
+      - { name: "g_nades_napalm_fountain_radius", base: "130 (mutators.cfg:263)", port: "130", match: true }
+      - { name: "g_nades_napalm_burntime", base: "0.5 (mutators.cfg:249)", port: "0.5", match: true }
+      - { name: "g_nades_napalm_selfdamage", base: "1 (mutators.cfg:250)", port: "1", match: true }
+    status:
+      logic: partial
+      values: partial
+      timing: faithful
+      presentation: missing
+      audio: partial
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "g_nades_napalm_ball_damageforcescale (4) is not applied: napalm is modeled as the Burning status effect with no knockback, so the fireball/fountain damage-force push (QC proj.damageforcescale) is missing."
+      - "Water-contents velocity damping (pointcontents CONTENT_WATER -> velocity*0.5 / z=200) and the round-not-started fountain/ball delete guard are omitted; EFFECT_FIREBALL_LASER trail + EF_FLAME ball effect omitted (render)."
+      - "Unreachable (dead throw input)."
+    verification:
+      - { kind: code, ref: "NadeNapalmBoom RandomSelection 1/(1+d) target pick + Fire_AddDamage->Burning(strength=dps) vs napalm_damage; confirmed proj.damageforcescale (napalm.qc:83) has no port equivalent", result: pass }
+    confidence: high
+    notes: "Fire_AddDamage(d*burntime, burntime) == d dps over burntime -> burn strength = d. Team/self/frozen exclusion faithful."
+
+  - id: mutator-nades.boom.ice
+    name: "Ice: freeze field"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/nade/ice.qc:nade_ice_boom"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/Booms/NadeIceBoom.cs:Boom"
+    constants:
+      - { name: "g_nades_ice_freeze_time", base: "3 (mutators.cfg:267)", port: "3", match: true }
+      - { name: "g_nades_ice_radius", base: "300 (mutators.cfg:270)", port: "300", match: true }
+      - { name: "g_nades_ice_teamcheck", base: "2 (mutators.cfg:269)", port: "2", match: true }
+      - { name: "g_nades_ice_explode", base: "0 (mutators.cfg:268)", port: "0", match: true }
+      - { name: "tick", base: "0.1s, special 0.3s start", port: "0.1 / 0.3", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: faithful
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The recently-revived skip (revival_time, time-revival_time < 1.5s) is omitted, so a just-unfrozen player can be immediately re-frozen (confirmed ice.qc:59)."
+      - "The round-not-started delete guard is omitted (relevant only in CA/round modes). The muzzleflash/icefield particle gate omitted (render)."
+      - "Unreachable (dead throw input)."
+    verification:
+      - { kind: code, ref: "NadeIceBoom.IceThink declining current_freeze_time + teamcheck 0/1/2 + STATUSEFFECT_Frozen apply vs nade_ice_think", result: pass }
+    confidence: high
+    notes: "ice_explode reuses NadeBlast.RadiusDamage with NadeDeathTypes.Ice. Freeze duration declines as the field ages (current_freeze_time = ltime-time-0.1) — faithful."
+
+  - id: mutator-nades.boom.translocate
+    name: "Translocate: teleport thrower to detonation"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/nade/translocate.qc:nade_translocate_boom"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/Booms/NadeTranslocateBoom.cs:Boom"
+    constants:
+      - { name: "g_nades_translocate_destroy_damage", base: "25 (mutators.cfg:274)", port: "25", match: true }
+      - { name: "player_hull", base: "PL_MIN/MAX +-16 search box", port: "(-16,-16,-24)/(16,16,45) +-16", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "move_out_of_solid is a minimal upward-nudge approximation (no builtin), so embedded-in-solid recovery is less robust than Base's full search."
+      - "MUTATOR_CALLHOOK(PortalTeleport) is not fired (no subscribers in port)."
+      - "Unreachable (dead throw input)."
+    verification:
+      - { kind: code, ref: "NadeTranslocateBoom.Boom resize/MoveOutOfSolid/tracebox-down/TeleportPlayer + DestroyDamage(true) vs translocate.qc", result: pass }
+    confidence: medium
+    notes: "DestroyDamage damages the OWNER (attacker=shooter), self-detonates as normal, returns true to suppress the projectile-path normal boom. Carries reprojected speed along facing."
+
+  - id: mutator-nades.boom.spawn
+    name: "Spawn: relocate respawn point"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/nade/spawn.qc:nade_spawn_boom"
+      - "common/mutators/mutator/nades/sv_nades.qc:821 PlayerSpawn consume marker"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/Booms/NadeSpawnBoom.cs:Boom"
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadesMutator.cs:OnPlayerSpawn"
+    constants:
+      - { name: "g_nades_spawn_count", base: "3 (mutators.cfg:278)", port: "3", match: true }
+      - { name: "g_nades_spawn_health_respawn", base: "0=normal (mutators.cfg:279)", port: "0", match: true }
+      - { name: "g_nades_spawn_destroy_damage", base: "25 (mutators.cfg:280)", port: "25", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "EF_STARDUST marker render + drawonlytoclient omitted (render)."
+      - "Unreachable end-to-end: marker can only be planted by a thrown spawn nade (dead input); the PlayerSpawn consume path IS live but never has a marker to consume."
+    verification:
+      - { kind: code, ref: "NadeSpawnBoom plants nade_spawn_loc cnt=spawn_count; PlayerSpawn relocates + sets spawn health + decrements cnt", result: pass }
+    confidence: high
+    notes: "DestroyDamage hurts the OWNER and returns false (normal boom still runs) — distinct from translocate which returns true. PlayerSpawn consume is wired live (liveness partial: consume live, plant dead)."
+
+  - id: mutator-nades.boom.heal
+    name: "Heal: healing orb (friend heal / foe harm / armor)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/nade/heal.qc:nade_heal_boom"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/Booms/NadeHealBoom.cs:Boom"
+    constants:
+      - { name: "g_nades_heal_time", base: "10 (mutators.cfg:284)", port: "10", match: true }
+      - { name: "g_nades_heal_radius", base: "300 (mutators.cfg:289)", port: "300", match: true }
+      - { name: "g_nades_heal_rate", base: "15 (mutators.cfg:285)", port: "15", match: true }
+      - { name: "g_nades_heal_friend", base: "1 (mutators.cfg:287)", port: "1", match: true }
+      - { name: "g_nades_heal_foe", base: "-4 (mutators.cfg:288)", port: "-4", match: true }
+      - { name: "g_nades_heal_armor_rate", base: "0 (mutators.cfg:286)", port: "0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "EFFECT_HEALING particle omitted (render). Unreachable (dead throw input)."
+    verification:
+      - { kind: code, ref: "NadeHealBoom.HealTouch rate*frametime*0.5, friend/foe mult, healthmega/armormega caps, DEATH_NADE_HEAL on foe vs nade_heal_touch", result: pass }
+    confidence: high
+    notes: "Orb via shared NadeBoom.SpawnOrb. armor_rate 0 default => no-op armor branch (faithful)."
+
+  - id: mutator-nades.boom.ammo
+    name: "Ammo: ammo orb (refill friend / drain foe)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/nade/ammo.qc:nade_ammo_boom"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/Booms/NadeAmmoBoom.cs:Boom"
+    constants:
+      - { name: "g_nades_ammo_time", base: "4 (mutators.cfg:310)", port: "4", match: true }
+      - { name: "g_nades_ammo_radius", base: "300 (mutators.cfg:315)", port: "300", match: true }
+      - { name: "g_nades_ammo_rate", base: "30 (mutators.cfg:311)", port: "30", match: true }
+      - { name: "g_nades_ammo_friend", base: "1 (mutators.cfg:312)", port: "1", match: true }
+      - { name: "g_nades_ammo_foe", base: "-2 (mutators.cfg:313)", port: "-2", match: true }
+      - { name: "g_nades_ammo_clip_empty_rate", base: "0 (mutators.cfg:314)", port: "0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Per-weapon weapon_load[] persistent store collapsed onto each slot's live ClipLoad (port note). EFFECT_AMMO_REGEN particle omitted. Unreachable (dead throw input)."
+    verification:
+      - { kind: code, ref: "NadeAmmoBoom.AmmoTouch clip refill/empty + give/drain 4 resources at pickup maxes vs nade_ammo_touch", result: pass }
+    confidence: high
+    notes: "Friend magazines stay full; foe clips bleed at clip_empty_rate (0 default). Ammo given/drained at rate*frametime*0.5."
+
+  - id: mutator-nades.boom.entrap_veil_darkness
+    name: "Entrap / Veil / Darkness orbs + fields"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/nade/entrap.qc:nade_entrap_boom"
+      - "common/mutators/mutator/nades/nade/veil.qc:nade_veil_boom"
+      - "common/mutators/mutator/nades/nade/darkness.qc:nade_darkness_boom"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/Booms/NadeEntrapBoom.cs:Boom"
+      - "src/XonoticGodot.Common/Gameplay/Nades/Booms/NadeVeilBoom.cs:Boom"
+      - "src/XonoticGodot.Common/Gameplay/Nades/Booms/NadeDarknessBoom.cs:Boom"
+    constants:
+      - { name: "g_nades_entrap_strength", base: "0.01 (mutators.cfg:298)", port: "0.01", match: true }
+      - { name: "g_nades_entrap_speed", base: "0.5 (mutators.cfg:299)", port: "0.5", match: true }
+      - { name: "g_nades_entrap_time/radius", base: "10 / 500 (mutators.cfg:300-301)", port: "10/500", match: true }
+      - { name: "g_nades_veil_time/radius", base: "8 / 250 (mutators.cfg:305-306)", port: "8/250", match: true }
+      - { name: "g_nades_darkness_time/radius/teamcheck", base: "4 / 300 / 2 (mutators.cfg:319-322)", port: "4/300/2", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: missing
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Entrap MonsterMove run/walk slow is omitted (no MonsterMove hook chain in the port)."
+      - "Veil tint of enemies (render colormod) omitted; only the teammate alpha-hide is ported. Veil monster-alpha lapse omitted."
+      - "Darkness blind overlay (HUD_DarkBlinking full-screen fill) + SND_BLIND are CSQC-only and missing; only the NadeDarknessTime deadline is set server-side."
+      - "Unreachable (dead throw input)."
+    verification:
+      - { kind: code, ref: "EntrapTouch strength**dt damp + NadeEntrapSpeedMutator PlayerPhysics; VeilTouch alpha-hide; DarknessThink teamcheck+NadeDarknessTime vs the three .qc", result: pass }
+    confidence: high
+    notes: "Entrap speed slow wired as a separate g_nades-gated [Mutator] on PlayerPhysics (SpeedMultiplier *= entrap_speed). Velocity damp is ticrate-independent (strength**dt, dt capped 0.15s)."
+
+  - id: mutator-nades.boom.monster
+    name: "Pokenade: spawn monster"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/nade/monster.qc:nade_monster_boom"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/Booms/NadeMonsterBoom.cs:Boom"
+    constants:
+      - { name: "g_nades_pokenade_monster_type", base: "\"zombie\" (mutators.cfg:294)", port: "\"zombie\"", match: true }
+      - { name: "g_nades_pokenade_monster_lifetime", base: "150 (mutators.cfg:293)", port: "MISSING", match: false }
+      - { name: "monster_skill", base: "INSANE", port: "Insane", match: true }
+    status:
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "monster_lifetime (150s timed despawn) has no field in the port's monster model — the summoned monster never auto-despawns."
+      - "Unreachable (dead throw input + requires g_monsters)."
+    verification:
+      - { kind: code, ref: "NadeMonsterBoom.Boom noalign + INSANE + MonsterAI.SpawnMonster(pokenade_type, owner) vs nade_monster_boom", result: pass }
+    confidence: medium
+    notes: "Gated by g_monsters (and the type already falls back to NORMAL when monsters off via nades_CheckTypes). Owner/team/INSANE faithful; lifetime deferred."
+
+  - id: mutator-nades.bonus.economy
+    name: "Bonus-nade economy (accrual / award / wipe)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/sv_nades.qc:445 nades_GiveBonus"
+      - "common/mutators/mutator/nades/sv_nades.qc:836 PlayerDies bonus"
+      - "common/mutators/mutator/nades/sv_nades.qc:896 MonsterDies bonus"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadeBonus.cs"
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadesMutator.cs:OnPlayerPreThink"
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadesMutator.cs:OnPlayerDies"
+    constants:
+      - { name: "g_nades_bonus_max", base: "3 (mutators.cfg:234)", port: "3", match: true }
+      - { name: "g_nades_bonus_score_max", base: "120 (mutators.cfg:238)", port: "120", match: true }
+      - { name: "g_nades_bonus_score_minor", base: "5 (mutators.cfg:239)", port: "5", match: true }
+      - { name: "g_nades_bonus_score_medium", base: "30 (mutators.cfg:241)", port: "30", match: true }
+      - { name: "g_nades_bonus_score_spree", base: "40 (mutators.cfg:243)", port: "40", match: true }
+      - { name: "g_nades_bonus_score_time", base: "-1 decays (mutators.cfg:244)", port: "-1", match: true }
+      - { name: "g_nades_bonus_score_time_flagcarrier", base: "2 (mutators.cfg:245)", port: "MISSING", match: false }
+      - { name: "spree_thresholds", base: "KILL_SPREE_LIST 3,5,10,15,20,25,30", port: "3,5,10,15,20,25,30", match: true }
+    status:
+      logic: partial
+      values: partial
+      timing: faithful
+      presentation: missing
+      audio: missing
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "GameRules_scoring_is_vip is treated as false: the VIP-kill medium bonus + flagcarrier time-score multiplier (g_nades_bonus_score_time_flagcarrier=2, scaled by KH key count) are not applied — the port always uses bonus_score_time."
+      - "MonsterDies bonus is implemented (NadeBonus.OnMonsterDies) but has NO live caller — NadesMutator does not subscribe a MonsterDies hook, so killing an enemy monster never banks the minor bonus."
+      - "The bonus notification + SND(NADE_BONUS) on banking a nade are not emitted (presentation/audio)."
+      - "Accrual + PlayerDies award RUN live (PlayerPreThink/PlayerDies fire), but the banked bonus is unusable — it can only be spent by priming a nade, which is impossible (dead throw input). The death-toss also never has a held nade to toss."
+    verification:
+      - { kind: test, ref: "PowerupsAndNadesTests.NadeBonus_AccruesAndBanksABonusNade / NadeBonus_TeamkillWipesAttackerBonus", result: pass }
+      - { kind: code, ref: "grep MonsterDies in NadesMutator.Hook -> not subscribed; OnMonsterDies dead", result: fail }
+    confidence: high
+    notes: "Accrual normalized by bonus_score_max; banks at >=1 capped at bonus_max; teamkill/suicide wipes attacker; spree milestone -> spree bonus else minor; killcount-scaled bound(0, minor*kc, medium)."
+
+  - id: mutator-nades.lifecycle.cleanup
+    name: "Held-nade/bonus cleanup + spectate copy + vehicle/death-drop toss"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/sv_nades.qc:470 PutClientInServer (RemoveBonus)"
+      - "common/mutators/mutator/nades/sv_nades.qc:667 VehicleEnter (toss)"
+      - "common/mutators/mutator/nades/sv_nades.qc:906 DropSpecialItems (toss)"
+      - "common/mutators/mutator/nades/sv_nades.qc:914 nades_RemovePlayer + MakePlayerObserver/ClientDisconnect/reset_map_global"
+      - "common/mutators/mutator/nades/sv_nades.qc:937 SpectateCopy"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadeThrow.cs:Clear"
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadeBonus.cs:RemoveBonus"
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "NadesMutator.Hook subscribes ONLY PlayerSpawn/PlayerPreThink/PlayerDies/DamageCalculate. The QC cleanup hooks are NOT ported: MakePlayerObserver / ClientDisconnect / reset_map_global (nades_RemovePlayer = nades_Clear + RemoveBonus + delete nade_spawnloc), PutClientInServer (RemoveBonus). nades_Clear/RemoveBonus exist as methods but have no live caller on these paths -> a held nade, banked bonus, or spawn marker leaks across observer/disconnect/round-reset."
+      - "VehicleEnter (toss the held nade on boarding) is NOT subscribed by NadesMutator even though the VehicleEnter HookChain exists in the port (MutatorHooks.cs:432) — a player keeps a primed nade in a vehicle."
+      - "DropSpecialItems (toss held nade) has no port hook at all (no DropSpecialItems HookChain)."
+      - "SpectateCopy (copy NADE_TIMER/NADE_BONUS_TYPE/NADE_BONUS/NADE_BONUS_SCORE/pokenade_type to the spectator) has no port hook — a spectator's nade HUD ring / bonus state is not mirrored from the spectatee."
+    verification:
+      - { kind: code, ref: "grep MakePlayerObserver|ClientDisconnect|reset_map_global|PutClientInServer|SpectateCopy|DropSpecialItems|VehicleEnter in Nades/ -> only doc comments; no .Add subscription", result: fail }
+      - { kind: code, ref: "MutatorHooks has VehicleEnter but no MakePlayerObserver/ClientDisconnect/reset_map_global/SpectateCopy/DropSpecialItems chains", result: fail }
+    confidence: high
+    notes: "Mostly moot while the throw input is dead (a player can never hold a nade or bank a usable bonus), but these are real omitted Base hooks and the cleanup leak becomes live the moment the input wire lands. SpectateCopy is the most observable (HUD mirror)."
+
+  - id: mutator-nades.damage.freezetag_revive
+    name: "Damage_Calculate: freezetag revive-nade"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/sv_nades.qc:876 Damage_Calculate"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadesMutator.cs:OnDamageCalculate"
+    constants:
+      - { name: "g_freezetag_revive_nade", base: "0 (gametype cvar)", port: "0", match: true }
+      - { name: "self_nade_window", base: "time-toss_time <= 0.1s", port: "0.1s", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The port suppresses the self-nade damage+force but does NOT call freezetag_Unfreeze / set freezetag_revive_nade_health / send EFFECT_ICEORGLASS + INFO_FREEZETAG_REVIVED_NADE/CENTER_FREEZETAG_REVIVE_SELF notifications (documented cross-task seam — FreezeTag owns the unfreeze). So the revive-nade does not actually revive."
+      - "Unreachable (dead throw input)."
+    verification:
+      - { kind: code, ref: "OnDamageCalculate matches the frozen-self-nade window + zeroes damage/force; unfreeze deferred to FreezeTag", result: pass }
+    confidence: high
+    notes: "Only the no-damage half of the QC hook is implemented; the actual unfreeze + revive-health is a noted seam to the FreezeTag gametype."
+
+  - id: mutator-nades.presentation.client
+    name: "Client presentation: projectile/trail, orb model + 2D flash, darkness overlay, bonus ammo icon, charge ring"
+    layer: [presentation]
+    base_refs:
+      - "common/mutators/mutator/nades/cl_nades.qc:Ent_Projectile/EditProjectile/DrawAmmoNades"
+      - "common/mutators/mutator/nades/net.qc:orb_draw/orb_draw2d/orb_setup"
+      - "common/mutators/mutator/nades/nade/darkness.qc:HUD_DarkBlinking"
+    port_refs:
+      - "game/hud/CrosshairPanel.cs:NadeTimer (charge ring only)"
+    constants:
+      - { name: "nade_charge_ring", base: "cl_nade_timer modes", port: "CrosshairPanel.NadeTimer/NadeTimerMode networked", match: true }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: missing
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No nade projectile model/trail (nade_customize / nade_spawn CSQCProjectile + Nade_TrailEffect), no orb 3D model (orb_draw), no orb 2D full-screen color flash (orb_draw2d / hud_colorflash_alpha), no darkness blind overlay (HUD_DarkBlinking) + SND_BLIND, no spawn-loc EF_STARDUST render."
+      - "No DrawAmmoNades (cl_nades.qc:86): the ammo-panel bonus-nade count + progress bar + (rainbow) type icon is not drawn."
+      - "The held-nade charge ring (CrosshairPanel.NadeTimer) IS wired + networked, but NadeTimer is always 0 because a nade can never be primed — so it never appears."
+    verification:
+      - { kind: code, ref: "grep DrawAmmoNades/HUD_DarkBlinking/orb_draw across game/ -> not implemented; only CrosshairPanel.NadeTimer present", result: fail }
+      - { kind: code, ref: "ServerNet.cs:1663 -> NetGame.cs:2100 networks NadeTimer to the crosshair ring", result: pass }
+    confidence: high
+    notes: "The port is headless server-authoritative; nade presentation is broadly unimplemented. The one wired ring is moot until the throw input lands."

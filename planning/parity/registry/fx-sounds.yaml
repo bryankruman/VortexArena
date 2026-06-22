@@ -1,0 +1,438 @@
+unit: fx-sounds
+category: sound
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 16
+  worst_gaps:
+    - "Per-model player/voice sample path is BROKEN: PlayerSoundSample builds sound/player/default.sounds/<id> (the manifest file treated as a directory) instead of the manifest-mapped sound/player/espeak/player/<id> -> ALL pain/death/drown/voice body sounds are SILENT on the live path."
+    - "client hit-confirmation sound loads misc/hitconfirm (nonexistent) instead of the registered misc/hit -> hitsound silent"
+    - "LoadPlayerSounds .sounds manifest parse (key->file mapping) + GlobalSound_pitch model-scale pitch shift not ported -> root cause of the broken body-sound paths"
+    - "sound_allowed owner-walk + bot_sound_monopoly gate not implemented (dead cvar; corpse/projectile sounds not re-homed to owner)"
+    - "play2 / play2team (per-client / per-team 2D sends) and spamsound rate-limit have no port equivalent"
+    - "per-recipient cl_voice_directional / cl_autotaunt reads stubbed to defaults (directional uses ATTEN_MIN; autotaunt roll omitted)"
+features:
+  - id: fx-sounds.registry.sound_table
+    name: "Sound registry (SOUND(name,path) table) + path resolution"
+    layer: [shared]
+    base_refs:
+      - "common/sounds/sound.qh:CLASS(Sound)"
+      - "common/sounds/all.qh:SOUND"
+      - "common/sounds/all.inc"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Sounds/GameSound.cs:Sounds"
+      - "src/XonoticGodot.Common/Gameplay/Sounds/SoundsList.cs:RegisterAll"
+    constants:
+      - { name: "registry_size", base: "BITS(9)=512", port: "Registry<GameSound> (unbounded)", match: true }
+      - { name: "path_resolve", base: "wav (sv) / wav,ogg,flac probe (cl)", port: "AssetLoader.ResolveSoundVpath ogg/wav probe under sound/", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "all.inc vs SoundsList.cs incl. #define aliases (ONS_GENERATOR_ALARM=KH_ALARM, NADE_BONUS=KH_ALARM, FLACEXP/FIREBALL aliases); AssetLoader.ResolveSoundVpath probe order", result: pass }
+    confidence: high
+    notes: "Full all.inc coverage (weapons/gametypes/vehicles/turrets/monsters/items/misc) incl. per-team CTF cues + health/armor/powerup pickup sample names. Seeded at boot via Sounds.RegisterAll."
+
+  - id: fx-sounds.registry.channels
+    name: "CH_* channels — auto(neg)=stack vs single(pos)=replace"
+    layer: [shared]
+    base_refs:
+      - "common/sounds/sound.qh:6"
+    port_refs:
+      - "src/XonoticGodot.Common/Services/Services.cs:SoundChannel"
+      - "src/XonoticGodot.Common/Gameplay/Sounds/GameSound.cs:EngineChannel"
+    constants:
+      - { name: "CH_PLAYER", base: "-7 auto", port: "PlayerAuto=-7", match: true }
+      - { name: "CH_VOICE", base: "-2 auto", port: "VoiceAuto=-2", match: true }
+      - { name: "CH_WEAPON_A", base: "-1 auto", port: "WeaponAuto=-1", match: true }
+      - { name: "CH_TRIGGER", base: "-3 auto", port: "TriggerAuto=-3", match: true }
+      - { name: "CH_*_SINGLE", base: "positive = replace per (entity,channel)", port: "positive enum + single-channel replace", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "SoundChannel enum (-7/-3/-2/-1, 1) + EngineChannel switch vs sound.qh CH_*; ClientWorld.OnSound single-replace", result: pass }
+    confidence: high
+    notes: "Negative=autochannel stacks, positive=single replaces; ClientWorld stops the prior player on a (netId,channel) single play."
+
+  - id: fx-sounds.registry.atten_vol
+    name: "ATTEN_* / VOL_* mix constants"
+    layer: [shared]
+    base_refs:
+      - "common/sounds/sound.qh:27"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Sounds/GameSound.cs:SoundLevels"
+    constants:
+      - { name: "ATTEN_NONE/MIN/LOW/NORM/LARGE/IDLE/STATIC/MAX", base: "0/0.015625/0.2/0.5/1/2/3/3.984375", port: "0/0.015625/0.2/0.5/1/2/3/3.984375", match: true }
+      - { name: "VOL_BASE/BASEVOICE/MUFFLED", base: "0.7/1.0/0.35", port: "0.7/1.0/0.35", match: true }
+    status:
+      logic: na
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: value, ref: "SoundLevels vs sound.qh:27-38", result: pass }
+    confidence: high
+    notes: "All eight attenuations + three volumes exact."
+
+  - id: fx-sounds.registry.random_variants
+    name: "SND_*_RANDOM pickers + counted GlobalSound variants"
+    layer: [shared]
+    base_refs:
+      - "common/sounds/all.inc:SND_GRENADE_BOUNCE_RANDOM"
+      - "common/effects/qc/globalsound.qc:GlobalSound_sample"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Sounds/SoundSystem.cs:SoundVariantGroups"
+    constants:
+      - { name: "STEP/STEP_METAL count", base: "6", port: "6", match: true }
+      - { name: "FALL/FALL_METAL count", base: "4", port: "4", match: true }
+      - { name: "RIC/NEXWHOOSH/FLACEXP", base: "1..3", port: "1..3", match: true }
+      - { name: "GRENADE_BOUNCE", base: "1..6", port: "1..6", match: true }
+      - { name: "GIB_SPLAT", base: "01..04 (prandom)", port: "01..04 (Prandom)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "SoundVariantGroups counts/prefixes vs all.inc + GlobalSound_sample sprintf(%s%d.wav, floor(r*n+1)); ResolveGlobalSample matches +1 offset", result: pass }
+    confidence: high
+    notes: "Uses Prandom for determinism (ADR-0010). Live via footsteps (STEP/STEP_METAL) / gibs / ricochet / bounce callers. GlobalSound_sample +1 base-1 indexing matches."
+
+  - id: fx-sounds.emit.sound_play
+    name: "sound() / sound7 / SV_StartSound positional emit + networking"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/sounds/sound.qh:43"
+      - "common/sounds/all.qc:soundtoat"
+    port_refs:
+      - "src/XonoticGodot.Common/Services/Services.cs:ISoundService.Play"
+      - "src/XonoticGodot.Engine/Simulation/EngineServices.cs:SoundService"
+      - "src/XonoticGodot.Net/SoundWire.cs:SoundWire"
+      - "game/client/ClientWorld.cs:OnSound"
+    constants:
+      - { name: "emit_origin", base: "origin + 0.5*(mins+maxs)", port: "e.Origin + (Mins+Maxs)*0.5", match: true }
+      - { name: "wire_encode", base: "SVC_SOUND bit-packed (idx/flags/quantized)", port: "SoundWire self-describing record", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "SoundWire replaces DP's bit-packed SVC_SOUND with a self-describing record (sample string + raw floats + chan + netid + loop/stop/pitch flags) because the port has its own snapshot protocol and no DP sound-index table; behaviorally equivalent (vol/atten/channel/origin/loop/stop/pitch all carried)."
+    gaps: []
+    verification:
+      - { kind: code, ref: "SoundService.Play -> SoundEvent -> SoundWire.Write/Read -> ClientWorld.OnSound; box-center origin", result: pass }
+    confidence: high
+    notes: "The live SV_StartSound path for every networked one-shot. Box-center origin matches DP."
+
+  - id: fx-sounds.emit.loop_stop
+    name: "loopsound / stopsound — persistent (entity,channel) loop + stop"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/sounds/all.qc:stopsound"
+    port_refs:
+      - "src/XonoticGodot.Common/Services/Services.cs:ISoundService.Stop"
+      - "game/client/ClientWorld.cs:CreateLoop"
+    constants:
+      - { name: "loop_key", base: "(entity, channel)", port: "(SourceNetId, Channel)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Play(loop:true)/Stop + SoundWire Loop/Stop flags + ClientWorld dedicated loop players", result: pass }
+    confidence: medium
+    notes: "Live: Arc beam loop, vehicle engines, projectile fly-loops. Re-emitting the same loop on its key is idempotent. Not re-traced exhaustively this pass."
+
+  - id: fx-sounds.emit.sound_allowed
+    name: "sound_allowed owner-walk gate + bot_sound_monopoly"
+    layer: [authority]
+    base_refs:
+      - "common/sounds/all.qc:sound_allowed"
+    port_refs: []
+    constants:
+      - { name: "bot_sound_monopoly", base: "0", port: "none (dead cvar)", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: missing
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "sound_allowed owner-walk (body->enemy / realowner / owner re-home) not implemented: corpse and projectile sounds aren't re-homed to the originating player."
+      - "bot_sound_monopoly is a dead cvar: no gate silences real-client sounds when set to 1."
+    verification:
+      - { kind: grep, ref: "no general sound_allowed/bot_sound_monopoly consumer in src/game (only DamageSystem.SoundAllowedBroadcast for the death-voice case)", result: fail }
+    confidence: high
+    notes: "Default-off cvar -> low practical impact, but every QC SVQC emit passes through this gate (the _sound macro) and the port has no general equivalent."
+
+  - id: fx-sounds.emit.play2_family
+    name: "play2 / play2team / play2all / spamsound"
+    layer: [authority]
+    base_refs:
+      - "common/sounds/all.qc:play2"
+      - "common/sounds/all.qc:play2team"
+      - "common/sounds/all.qc:play2all"
+      - "common/sounds/all.qc:spamsound"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Sounds/SoundSystem.cs:PlayGlobal"
+    constants:
+      - { name: "play2all", base: "_sound(NULL,CH_INFO,samp,VOL_BASE,ATTEN_NONE)", port: "PlayGlobal (shared emitter, ATTEN_NONE)", match: true }
+    status:
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: na
+      audio: partial
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "play2 (per-client 2D send) and play2team (per-team 2D send) have no port equivalent."
+      - "spamsound's per-entity time-step rate limit (e.spamtime) has no equivalent: a touch-spam source could over-emit."
+    verification:
+      - { kind: grep, ref: "no spamsound/play2/play2team implementation; play2all -> PlayGlobal only", result: fail }
+    confidence: high
+    notes: "play2all is covered; the per-client/per-team/rate-limited variants are not."
+
+  - id: fx-sounds.voice.playersound_registry
+    name: "PlayerSounds / GlobalSounds registries (body sound ids)"
+    layer: [shared]
+    base_refs:
+      - "common/effects/qc/globalsound.qh:REGISTER_PLAYERSOUND"
+      - "common/effects/qc/globalsound.qh:REGISTER_GLOBALSOUND"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Sounds/GameSound.cs:PlayerSoundIds"
+      - "src/XonoticGodot.Common/Gameplay/Sounds/SoundsList.cs:RegisterGlobalSounds"
+    constants:
+      - { name: "playersound_ids", base: "death drown fall falling gasp jump pain25 pain50 pain75 pain100", port: "same 10 ids", match: true }
+      - { name: "globalsound_ids", base: "STEP/STEP_METAL (misc/footstep0/metalfootstep0, count 6) FALL/FALL_METAL (misc/hitground/metalhitground, count 4)", port: "same 4 + counts", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "PlayerSoundIds + STEP/STEP_METAL/FALL/FALL_METAL paths+counts vs globalsound.qh:REGISTER_GLOBALSOUND", result: pass }
+    confidence: high
+    notes: "Id set + GlobalSound base paths/counts match. (The sample-PATH resolution for body sounds is a separate, broken concern — see fx-sounds.voice.persounds_manifest.)"
+
+  - id: fx-sounds.voice.voicemessage_table
+    name: "REGISTER_VOICEMSG table (team radio + taunts) + VOICETYPE constants"
+    layer: [shared]
+    base_refs:
+      - "common/effects/qc/globalsound.qh:REGISTER_VOICEMSG"
+      - "common/effects/qc/globalsound.qh:64"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Sounds/VoiceMessage.cs:VoiceMessages"
+      - "src/XonoticGodot.Common/Gameplay/Sounds/VoiceTypes.cs:VoiceType"
+    constants:
+      - { name: "VOICETYPE_PLAYERSOUND..TAUNT", base: "10..15", port: "10..15", match: true }
+      - { name: "voicemsg_count", base: "21 (11 listed + 10 situational)", port: "21 (same order, listed flags)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "VoiceMessages._all vs REGISTER_VOICEMSG (ids+vt+listed) in QC order; VoiceTypeOf fallback->Taunt mirrors _GetPlayerSoundSampleField->playersound_taunt", result: pass }
+    confidence: high
+    notes: "21 messages, VOICETYPE 10..15 exact. Unknown-id fallback to Taunt mirrors QC."
+
+  - id: fx-sounds.voice.globalsound_dispatch
+    name: "_GlobalSound VOICETYPE routing (recipients + taunt/gentle gates)"
+    layer: [authority]
+    base_refs:
+      - "common/effects/qc/globalsound.qc:_GlobalSound"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Sounds/SoundSystem.cs:_GlobalSound"
+      - "src/XonoticGodot.Server/Commands.cs:1682"
+    constants:
+      - { name: "sv_taunt", base: "1", port: "reads cvar (gate honored)", match: true }
+      - { name: "sv_autotaunt", base: "1", port: "reads cvar (gate honored)", match: true }
+      - { name: "PLAYERSOUND atten", base: "ATTEN_NORM (MSG_ALL)", port: "ATTEN_NORM broadcast", match: true }
+      - { name: "voice_sample_path", base: "manifest-mapped sound/player/espeak/coms/<id>", port: "sound/player/default.sounds/<id> (nonexistent)", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: missing
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Resolved voice sample path is BROKEN (PlayerSoundSample bug): the recipient routing/gates run correctly but the sample played is sound/player/default.sounds/<id>, which doesn't exist -> taunts/team-radio are SILENT. See fx-sounds.voice.persounds_manifest."
+      - "Per-recipient cl_voice_directional read is stubbed: directional cases always use ATTEN_MIN (QC: ATTEN_MIN only when ==1, else ATTEN_NONE), and the taunt-attenuation bound(cl_voice_directional_taunt_attenuation) is not applied."
+      - "AUTOTAUNT probability roll (tauntrand < cl_autotaunt) omitted -> autotaunts always play (when sv_autotaunt is on and the sample weren't already silent)."
+      - "TAUNT does not trigger animdecide_setaction(ANIMACTION_TAUNT) on the living speaker."
+    verification:
+      - { kind: code, ref: "_GlobalSound LASTATTACKER[_ONLY]/TEAMRADIO/AUTOTAUNT/TAUNT/PLAYERSOUND recipient sets + sv_taunt/sv_autotaunt/sv_gentle gates vs globalsound.qc; sample via PlayerSoundSample(null,id)", result: fail }
+      - { kind: grep, ref: "voicemessage cmd (Commands.cs:1682) passes Clients.Players roster -> live recipient routing reachable", result: pass }
+    confidence: high
+    notes: "Recipient sets + gates faithful and live via the voicemessage server command, BUT the actual sound is silent because the resolved sample path is wrong. Downgraded audio from faithful (draft) to missing on that basis."
+
+  - id: fx-sounds.voice.live_body_callers
+    name: "PlayerSound/GlobalSound call sites (footstep/fall/pain/death/jump)"
+    layer: [authority]
+    base_refs:
+      - "common/physics/player.qc:PM_Footsteps"
+      - "common/physics/player.qc:PM_check_hitground"
+      - "server/player.qc:374"
+    port_refs:
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:Footsteps"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:567"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:889"
+    constants:
+      - { name: "footstep_interval", base: "0.3 + random*0.1", port: "FootstepInterval 0.3 (no random jitter)", match: false }
+      - { name: "footstep_speed_gate", base: "vdist > 0.6*sv_maxspeed", port: "0.6*MaxSpeed", match: true }
+      - { name: "ducked_landing_vol", base: "VOL_MUFFLED 0.35", port: "VolMuffled 0.35", match: true }
+      - { name: "g_footsteps_gate", base: "autocvar_g_footsteps (default 1)", port: "none (always on)", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: faithful
+      presentation: partial
+      audio: partial
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Footsteps (STEP/STEP_METAL) resolve to real files (misc/footstep0N.wav) and DO play; but pain/death/drown go through PlayerSound -> the BROKEN sound/player/default.sounds/<id> path and are SILENT. So this row is split-audio: footsteps audible, body-voice silent. See fx-sounds.voice.persounds_manifest."
+      - "g_footsteps cvar gate not wired: footsteps always play (matches Base at default 1, but g_footsteps 0 cannot disable them)."
+      - "Footstep interval has no +random*0.1 jitter (fixed 0.3 vs QC 0.3+random*0.1) -> steps are metronomic."
+    verification:
+      - { kind: code, ref: "Footsteps/PlayMovementSound -> Sounds.ByName(STEP) -> misc/footstep0N.wav (REAL); DamageSystem pain/death -> PlayPlayerSound -> PlayerSoundSample(null,id) -> sound/player/default.sounds/<id> (NONEXISTENT)", result: fail }
+      - { kind: code, ref: "real file sound/player/espeak/player/pain50.ogg exists; sound/player/default.sounds/pain50.* does not", result: fail }
+      - { kind: grep, ref: "no autocvar_g_footsteps read in PlayerPhysics; FootstepInterval const 0.3 no jitter", result: fail }
+    confidence: high
+    notes: "Footsteps are the only body-sound family that actually sounds. Pain/death thresholds + ids are correct, but the sample resolution makes them silent. Draft rated audio=faithful/live -> downgraded."
+
+  - id: fx-sounds.voice.persounds_manifest
+    name: "LoadPlayerSounds .sounds manifest parse + per-model/skin reload"
+    layer: [shared]
+    base_refs:
+      - "common/effects/qc/globalsound.qc:LoadPlayerSounds"
+      - "common/effects/qc/globalsound.qc:UpdatePlayerSounds"
+      - "common/effects/qc/globalsound.qc:ClearPlayerSounds"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Sounds/GameSound.cs:PlayerSoundSample"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:ModelSoundDir"
+    constants:
+      - { name: "default_path", base: "key->file from sound/player/default.sounds (e.g. pain50 -> sound/player/espeak/player/pain50)", port: "sound/player/default.sounds/<id> (manifest file treated as a dir)", match: false }
+      - { name: "model_dir_resolve", base: "get_model_datafilename(model,skin,'sounds') parse", port: "ModelSoundDir always returns null", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: missing
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The .sounds manifest is never parsed: PlayerSoundSample builds sound/player/default.sounds/<id> by string concat instead of reading the key->file mapping in sound/player/default.sounds (which maps e.g. pain50 -> sound/player/espeak/player/pain50). The result is a path that does not exist on disk, so EVERY PlayerSound/VoiceMessage body sound is silent."
+      - "ModelSoundDir() always returns null -> there is no per-model or per-skin sound pack resolution (QC get_model_datafilename + UpdatePlayerSounds reload-on-model-change). Custom-model voices never load."
+      - "GlobalSound_pitch model-scale pitch shift (a=1.5 max, b=0.75 min, c=100 std gradient applied when this.scale != 1) is not ported: scaled-model voices don't squeak/deepen; the wire carries a flat pitch byte."
+    verification:
+      - { kind: code, ref: "PlayerSoundSample(null,id) string-build vs LoadPlayerSounds key->file parse; default.sounds is a FILE not a directory; sound/player/espeak/player/pain50.ogg exists, sound/player/default.sounds/pain50.* does not", result: fail }
+      - { kind: code, ref: "no GlobalSound_pitch equivalent; pitch field flat", result: fail }
+    confidence: high
+    notes: "This is the ROOT CAUSE of the silent body/voice sounds. It is not 'low-impact for stock models' (the draft's claim) — it breaks the STOCK default pack too, because the manifest indirection (key->file) is exactly what makes default sounds resolvable. Footsteps survive only because they are GlobalSounds with a literal base path, not manifest-keyed PlayerSounds."
+
+  - id: fx-sounds.presentation.dp_attenuation
+    name: "Client spatialization — DP SND_Spatialize distance gain + emitter follow"
+    layer: [presentation]
+    base_refs:
+      - "common/sounds/sound.qh:sound7"
+    port_refs:
+      - "game/client/ClientWorld.cs:DpDistanceGain"
+      - "game/client/ClientWorld.cs:SetSpatialVolume"
+    constants:
+      - { name: "snd_soundradius", base: "2400 (DP method 1)", port: "2400 (cvar, fallback 2400)", match: true }
+      - { name: "snd exponent", base: "4 (DP method 1)", port: "4", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "DP's SND_Spatialize falloff (radius/exponent) is reproduced in C# with Godot's own attenuation DISABLED (AttenuationModel.Disabled, MaxDistance 0, low-pass cutoff raised), instead of Godot's inverse-distance curve. This is the FAITHFUL DP curve (method 1), not an arbitrary tweak — supersedes the older memory note calling radius=2400/exp=4 a deviation. ATTEN_NONE plays centered on the listener (2D)."
+    gaps: []
+    verification:
+      - { kind: code, ref: "DpDistanceGain vs DP snd_main.c SND_Spatialize; RentAudioPlayer disables Godot attenuation; per-frame re-spatialize + emitter-follow by net id", result: pass }
+    confidence: medium
+    notes: "Not verified side-by-side against DP at runtime; the formula matches the documented DP curve."
+
+  - id: fx-sounds.presentation.hitsound_sample
+    name: "Hit-confirmation sound sample (HIT registry entry)"
+    layer: [presentation]
+    base_refs:
+      - "common/sounds/all.inc:219"
+    port_refs:
+      - "game/client/HitSound.cs:117"
+    constants:
+      - { name: "hit_sample", base: "misc/hit (SND(HIT)) -> sound/misc/hit.wav", port: "misc/hitconfirm (nonexistent)", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: partial
+      audio: missing
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "HitSound.cs:117/121 loads misc/hitconfirm (and res://sound/misc/hitconfirm.ogg) which does not exist; the registered/shipped hit sound is misc/hit (sound/misc/hit.wav). Net effect: the local hit-confirmation beep is SILENT."
+    verification:
+      - { kind: code, ref: "HitSound.cs:117,121 misc/hitconfirm vs SoundsList HIT=misc/hit + shipped assets/data/.../sound/misc/hit.wav", result: fail }
+    confidence: high
+    notes: "Long-standing bug (sound-system memory note). Pitch-mode logic (cl_hitsound 0/1/2/3, antispam 0.05) is otherwise faithful; the wrong sample path makes the whole feature silent."

@@ -1,0 +1,502 @@
+unit: nexball
+category: gametype
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 17
+  worst_gaps:
+    - "No ball-launcher weapon: a basketball carrier cannot shoot the ball at all (no WEP_NEXBALL / BallStealer, no weapon-arena handler)."
+    - "No football kick physics: touching the ball always 'carries' it; there is no soccer-style velocity boost, so footballs cannot be moved toward a goal."
+    - "No ball lifecycle thinks: ball never auto-releases at match start, never idle-resets, and a goal resets it instantly (no delay_goal/idle/start)."
+    - "No power meter, no safe-pass, no tackle-steal, no anti-ballcamp drop, no carrier slowdown."
+    - "No presentation: no ball model/trail, no carry view-ball, no HUD carrying icon / power-meter bar; and the registered NB_* sounds are never played."
+features:
+  - id: nexball.init.initialize
+    name: "Mode init: teams, score/lead limit, meter-period rounding, radar"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/nexball/sv_nexball.qc:nb_Initialize"
+      - "common/gametypes/gametype/nexball/sv_nexball.qc:nb_delayedinit"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:Activate"
+      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (Nexball arm)"
+    constants:
+      - { name: "g_nexball_meter_period", base: "1 (rounded to 1/32 s, min 2 if <=0)", port: "none", match: false }
+      - { name: "g_nexball_radar_showallplayers", base: "1", port: "none", match: false }
+      - { name: "g_nexball_goalleadlimit", base: "-1 (use mapinfo leadlimit=0)", port: "none (no GameRules_limit_lead)", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Meter period rounding, radar-show-enemies, and lead-limit wiring are not ported (the consuming features don't exist)."
+      - "Activate seeds exactly 2 teams unconditionally instead of deriving teams from the goal entities present (nb_spawnteams)."
+    verification:
+      - { kind: code-read, ref: "Nexball.Activate vs nb_Initialize", result: partial }
+    confidence: high
+    notes: "Score rules (team goals primary; player goals/faults) and goal-limit are wired; the rest of init is absent."
+
+  - id: nexball.score.scorerules
+    name: "Score rules: team ST_NEXBALL_GOALS, player goals + faults columns"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/nexball/sv_nexball.qc:nb_ScoreRules"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:Activate"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: unit, ref: "NexballSpawnTests EndToEnd_* (team goal tallies)", result: pass }
+    confidence: high
+    notes: "Team primary = goals (slot 1); player primary goals, secondary faults (lower-is-better). Matches QC field setup."
+
+  - id: nexball.goal.touch_scoring
+    name: "GoalTouch: enemy goal +1, own-goal/fault -1 (credited to other team in 2-team), out returns"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/nexball/sv_nexball.qc:GoalTouch"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:GoalTouch"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:ScoreGoal"
+    constants:
+      - { name: "delay_goal", base: "3 s (0 for OUT)", port: "0 (instant reset)", match: false }
+      - { name: "goal noise (score)", base: "ctf/respawn.wav", port: "none (no noise set on goal ent)", match: false }
+      - { name: "goal noise (fault/out)", base: "TYPEHIT", port: "none", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: partial
+      presentation: missing
+      audio: missing
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Goal resets the ball instantly; Base delays the reset by delay_goal (3 s, 0 for OUT) and converts basketball touch to football control during the delay (ball.cnt=1 + settouch football_touch)."
+      - "No goal sound (ctf/respawn.wav for a score, TYPEHIT for fault/out) is played; no bprint/Send_Notification goal announcement."
+      - "Does not honor the GOAL_TOUCHPLAYER spawnflag (scoring the carrier directly) or the ball.cnt guard."
+      - "LIVENESS partial: a carrier walking into a goal trigger fires GoalTouch via the player-movement TouchAreaGrid pass (live); but a FREE ball reaching a goal is effectively unreachable in normal play because nothing can propel a ball goalward (no football kick, no ball-launcher weapon — see nexball.ball.football_kick / nexball.weapon.ballstealer)."
+    verification:
+      - { kind: unit, ref: "NexballSpawnTests EndToEnd_BallIntoEnemyGoal / OwnGoal / OutVolume", result: pass }
+      - { kind: code-read, ref: "GoalTouchEntity fires on player carrier via SimulationLoop.Tick->TouchAreaGrid(player); free-ball goal needs propulsion that does not exist", result: partial }
+    confidence: high
+    notes: "Branch logic (own-goal -> other team, fault -1, out 0, score +1) and team/player credit are faithful; the unit tests drive ScoreGoal/GoalTouch directly. On the live map path only the carry-into-goal route is reachable."
+
+  - id: nexball.goal.limit_win
+    name: "Goal limit + winning-team latch (GameRules_limit_score)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/nexball/sv_nexball.qc:nb_Initialize (GameRules_limit_score)"
+      - "common/gametypes/gametype/nexball/nexball.qh:gametype_init pointlimit=5"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:GoalLimit"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:CheckGoalLimit"
+      - "src/XonoticGodot.Server/GameWorld.cs:277 (MatchEnded), 2099 (WinningTeam)"
+    constants:
+      - { name: "g_nexball_goallimit / pointlimit", base: "5 (mapinfo default)", port: "5 (DefaultGoalLimit)", match: true }
+      - { name: "timelimit", base: "20", port: "engine timelimit (not nexball-specific)", match: true }
+      - { name: "g_nexball_goalleadlimit", base: "0 (mapinfo default; cvar -1 = use mapinfo)", port: "none (no lead-limit)", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Lead-limit (goalleadlimit) is not implemented."
+    verification:
+      - { kind: code-read, ref: "CheckGoalLimit + GameWorld MatchEnded/WinningTeam dispatch", result: pass }
+    confidence: high
+    notes: "Goal limit default and leader-reaches-limit win are faithful; lead limit missing."
+
+  - id: nexball.goal.tie_overtime
+    name: "Tied-goals reports a tie (timed-match overtime instead of draw)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/nexball/sv_nexball.qc:nb_ScoreRules (ST_NEXBALL_GOALS ranking primary)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:ReportsTie"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "ReportsTie -> TeamTie.TopTwoTied on goals", result: pass }
+    confidence: medium
+    notes: "Top-two-tied-on-goals path mirrors server/scores.qc equality; not exercised by a dedicated test."
+
+  - id: nexball.ball.spawn
+    name: "Ball spawn: world ball entity, home origin, model/scale/trail/effects"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/gametypes/gametype/nexball/sv_nexball.qc:SpawnBall"
+      - "common/gametypes/gametype/nexball/sv_nexball.qc:spawnfunc(nexball_basketball/football)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:SpawnBall"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:NexballBasketball/Football + Ball* aliases"
+      - "src/XonoticGodot.Server/GameWorld.cs:1505 (WireObjectiveSpawns Nexball arm)"
+    constants:
+      - { name: "BALL_MINS/MAXS", base: "+/-16", port: "+/-16", match: true }
+      - { name: "ball model", base: "models/nexball/ball.md3 scale 1.3", port: "none (no model/scale)", match: false }
+      - { name: "g_nexball_trail_color", base: "254", port: "none", match: false }
+      - { name: "g_nexball_playerclip_collisions", base: "1", port: "none", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Spawned ball has no model, scale, glow trail, EF_LOWPRECISION/EF effects, or playerclip mask."
+      - "SpawnBall wires no Think, so the ball never runs InitBall / delay_start release / idle reset (see nexball.ball.lifecycle)."
+      - "relocate_nexball (move-out-of-solid) is not performed."
+    verification:
+      - { kind: unit, ref: "NexballSpawnTests BallSpawnfunc_SpawnsBall_AndSetsBallHome / FootballAlias / BallAliases", result: pass }
+    confidence: high
+    notes: "Entity is created with the right bbox and BallHome; bbox matches but model/trail/effects/think absent."
+
+  - id: nexball.ball.lifecycle
+    name: "Ball lifecycle thinks: delay_start release, 4-step ResetBall glide, idle reset"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/nexball/sv_nexball.qc:InitBall"
+      - "common/gametypes/gametype/nexball/sv_nexball.qc:ResetBall"
+    port_refs: []
+    constants:
+      - { name: "g_nexball_delay_start", base: "3 s", port: "none", match: false }
+      - { name: "g_nexball_delay_idle", base: "10 s", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: missing
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Ball is not released after delay_start at match start; it is immediately spawned in place with no think."
+      - "No idle reset: an untouched ball never returns home after delay_idle."
+      - "ResetBall in the port is an instantaneous teleport home; Base does a 4-step velocity-glide return and plays a drop sound on re-init."
+      - "InitBall drop sound (noise1) is never played."
+    verification:
+      - { kind: code-read, ref: "SpawnBall sets no Think; ResetBall is a single setorigin", result: fail }
+    confidence: high
+    notes: "Port ResetBall only clears ownership + teleports home; the QC timed state machine is absent."
+
+  - id: nexball.ball.football_kick
+    name: "Football kick physics (soccer-style velocity boost on touch)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/nexball/sv_nexball.qc:football_touch"
+    port_refs: []
+    constants:
+      - { name: "g_nexball_football_physics", base: "2 (view-independent)", port: "none", match: false }
+      - { name: "g_nexball_football_boost_forward", base: "100", port: "none", match: false }
+      - { name: "g_nexball_football_boost_up", base: "200", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: missing
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Touching a football does not kick it; BallTouchEntity unconditionally 'carries' the ball regardless of mode."
+      - "No avelocity spin, no boost_forward/up, no view-angle physics modes (-1/0/1/2)."
+      - "No world-bounce sound throttle, no idle-reset scheduling on touch."
+    verification:
+      - { kind: code-read, ref: "Nexball.BallTouchEntity always calls GiveBall", result: fail }
+    confidence: high
+    notes: "Footballs are unplayable to parity: there is no way to move one toward a goal."
+
+  - id: nexball.ball.basketball_pickup
+    name: "Basketball pickup gating (cnt, health, dropper delay_collect, carrier bump)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/nexball/sv_nexball.qc:basketball_touch"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:BallTouchEntity"
+    constants:
+      - { name: "g_nexball_delay_collect", base: "0.5 s", port: "none", match: false }
+    status:
+      logic: partial
+      values: missing
+      timing: missing
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No delay_collect cooldown for the player who just launched the ball (nb_dropper/nb_droptime), so a thrower can instantly re-grab."
+      - "No ball.cnt guard (a resetting ball can be picked up)."
+      - "A toucher who already carries a ball does NOT fall through to football_touch (no bump-as-soccer behavior)."
+    verification:
+      - { kind: code-read, ref: "BallTouchEntity: gives ball to any live player toucher", result: partial }
+    confidence: high
+    notes: "Health<1 is checked (via !IsDead) but the dropper/cnt/carrier-bump gating is missing."
+
+  - id: nexball.ball.giveball
+    name: "GiveBall: ownership, carry effects, forteam lifetime, weapon-arena swap"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/nexball/sv_nexball.qc:GiveBall"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:GiveBall"
+    constants:
+      - { name: "g_nexball_basketball_delay_hold_forteam", base: "60 s", port: "none", match: false }
+      - { name: "g_nexball_basketball_effects_default", base: "8 (dim light)", port: "none", match: false }
+    status:
+      logic: partial
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No weapon swap to WEPSET(NEXBALL) / WEP_NEXBALL on pickup (no weapon-arena enforcement)."
+      - "No carrier light effects, no forteam lifetime (60 s team-hold auto-return), no carrier waypoint sprite."
+      - "No anti-ballcamp DropOwner timer (delay_hold 20 s)."
+    verification:
+      - { kind: unit, ref: "NexballSpawnTests EndToEnd_* (ownership only)", result: partial }
+    confidence: high
+    notes: "Sets ball.team/pusher/carrier back-links correctly; everything beyond ownership is absent."
+
+  - id: nexball.ball.dropball
+    name: "DropBall / DropOwner / drop on death/disconnect/observe"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/nexball/sv_nexball.qc:DropBall"
+      - "common/gametypes/gametype/nexball/sv_nexball.qc:DropOwner"
+      - "common/gametypes/gametype/nexball/sv_nexball.qc:MUTATOR_HOOKFUNCTION(nb,PlayerDies/ClientDisconnect/MakePlayerObserver/DropSpecialItems)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:DropBall"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:OnDeath"
+    constants:
+      - { name: "g_nexball_basketball_delay_hold", base: "20 s", port: "none", match: false }
+    status:
+      logic: partial
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Drop-on-death is wired (OnDeath); drop-on-disconnect and drop-on-observe are not."
+      - "No DropOwner anti-ballcamp shove; no drop velocity inheritance; no ground waypoint; no ResetBall scheduling on drop."
+    verification:
+      - { kind: code-read, ref: "OnDeath drops; no disconnect/observe hook", result: partial }
+    confidence: high
+    notes: "Carrier death drops the ball; the QC hold-timeout DropOwner and the other detach hooks are missing."
+
+  - id: nexball.carry.perframe
+    name: "Carry per-frame: view-ball follow, safe-pass lock, carrier-slowdown, carrying status"
+    layer: [authority, shared]
+    base_refs:
+      - "common/gametypes/gametype/nexball/sv_nexball.qc:MUTATOR_HOOKFUNCTION(nb,PlayerPreThink)"
+      - "common/gametypes/gametype/nexball/sv_nexball.qc:nexball_setstatus"
+      - "common/gametypes/gametype/nexball/sv_nexball.qc:MUTATOR_HOOKFUNCTION(nb,PlayerPhysics_UpdateStats)"
+    port_refs: []
+    constants:
+      - { name: "g_nexball_basketball_carrier_highspeed", base: "0.8", port: "none", match: false }
+      - { name: "g_nexball_viewmodel_offset", base: "8 8 0", port: "none", match: false }
+      - { name: "g_nexball_viewmodel_scale", base: "0.25", port: "none", match: false }
+      - { name: "g_nexball_safepass_maxdist", base: "5000", port: "none", match: false }
+      - { name: "g_nexball_safepass_holdtime", base: "0.75 s", port: "none", match: false }
+      - { name: "g_nexball_safepass_turnrate", base: "0.1", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No per-frame view-ball positioning in front of the carrier; the ball just sticks to the carrier origin."
+      - "No carrier speed multiplier (0.8) — the ballcarrier is not slowed."
+      - "No safe-pass crosshair-lock onto teammates (the secondary-fire homing pass has no target)."
+      - "STAT(OBJECTIVE_STATUS) NB_CARRYING bit is not networked (HUD carrying icon can't light)."
+    verification:
+      - { kind: code-read, ref: "no PlayerPreThink / UpdateStats analogue in Nexball.cs", result: fail }
+    confidence: high
+    notes: "The entire per-frame carry layer is absent."
+
+  - id: nexball.weapon.ballstealer
+    name: "Ball-launcher weapon (BallStealer): primary launch, power meter, secondary tackle/safe-pass"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/nexball/sv_weapon.qc:wr_think"
+      - "common/gametypes/gametype/nexball/sv_weapon.qc:W_Nexball_Attack/Attack2/Touch/Think"
+      - "common/gametypes/gametype/nexball/weapon.qh:BallStealer (REGISTER_WEAPON NEXBALL)"
+    port_refs: []
+    constants:
+      - { name: "g_balance_nexball_primary_speed", base: "1000", port: "none", match: false }
+      - { name: "g_balance_nexball_primary_refire", base: "0.7 s", port: "none", match: false }
+      - { name: "g_balance_nexball_primary_animtime", base: "0.3 s", port: "none", match: false }
+      - { name: "g_balance_nexball_secondary_speed", base: "3000", port: "none", match: false }
+      - { name: "g_balance_nexball_secondary_lifetime", base: "0.15 s", port: "none", match: false }
+      - { name: "g_balance_nexball_secondary_force", base: "500", port: "none", match: false }
+      - { name: "g_balance_nexball_secondary_refire", base: "0.6 s", port: "none", match: false }
+      - { name: "g_nexball_tackling", base: "1", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: missing
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "WEP_NEXBALL / BallStealer weapon does not exist; there is no way to shoot or pass the ball."
+      - "No primary launch, no secondary tackle projectile, no ball-steal, no homing safe-pass."
+      - "No SetWeaponArena handler, so Nexball is not actually a weapon-arena mode in the port."
+    verification:
+      - { kind: code-read, ref: "no BallStealer/WEP_NEXBALL/SetWeaponArena anywhere in port", result: fail }
+    confidence: high
+    notes: "The core basketball interaction (shoot the carried ball at a goal) is entirely missing."
+
+  - id: nexball.weapon.power_meter
+    name: "Basketball power meter (charge-and-release launch strength)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/gametypes/gametype/nexball/sv_weapon.qc:wr_think (NB_METERSTART)"
+      - "common/gametypes/gametype/nexball/sv_weapon.qc:W_Nexball_Attack (mul triangle wave)"
+    port_refs: []
+    constants:
+      - { name: "g_nexball_basketball_meter", base: "1", port: "none", match: false }
+      - { name: "g_nexball_meter_period", base: "1 s", port: "none", match: false }
+      - { name: "g_nexball_basketball_meter_minpower", base: "0.5", port: "none", match: false }
+      - { name: "g_nexball_basketball_meter_maxpower", base: "1.2", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No NB_METERSTART charge state; launch power can't be modulated (no minpower..maxpower triangle wave)."
+      - "No HUD power-meter progress bar."
+    verification:
+      - { kind: code-read, ref: "no NB_METERSTART / meter logic in port", result: fail }
+    confidence: high
+    notes: "Depends on nexball.weapon.ballstealer, which is itself missing."
+
+  - id: nexball.sound.cues
+    name: "Sound cues: bounce / drop / steal / shoot / goal"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/nexball/sv_nexball.qc:football_touch/basketball_touch/InitBall/GoalTouch (_sound)"
+      - "common/gametypes/gametype/nexball/sv_weapon.qc:W_Nexball_Attack/Touch (SND_NB_SHOOT1/SHOOT2/STEAL)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Sounds/SoundsList.cs:109-113 (NB_BOUNCE/DROP/SHOOT1/SHOOT2/STEAL)"
+    constants:
+      - { name: "g_nexball_sound_bounce", base: "1", port: "none", match: false }
+    status:
+      logic: na
+      values: na
+      timing: na
+      presentation: na
+      audio: missing
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The five nexball sound samples are registered but no nexball code path ever calls the sound API: no bounce, drop, steal, shoot, or goal sound is heard."
+    verification:
+      - { kind: code-read, ref: "SoundsList registers NB_*; grep finds no Sound() call in Nexball.cs", result: fail }
+    confidence: high
+    notes: "Samples present-but-dead; classic 'existence != wired'."
+
+  - id: nexball.hud.modicon
+    name: "HUD mod icon (carrying indicator + power-meter bar) + eventchase"
+    layer: [presentation]
+    base_refs:
+      - "common/gametypes/gametype/nexball/cl_nexball.qc:HUD_Mod_NexBall"
+      - "common/gametypes/gametype/nexball/cl_nexball.qc:WantEventchase / DrawScoreboardAccuracy / DrawScoreboardItemStats"
+    port_refs: []
+    constants:
+      - { name: "cl_eventchase_nexball", base: "1", port: "none", match: false }
+      - { name: "hud_progressbar_nexball_color", base: "(skin)", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "ModIconsPanel has no nexball drawer: no 'carrying' icon and no charge-meter progress bar."
+      - "No event-chase (third-person) cam when not carrying; accuracy/item-stats panels not hidden for nexball."
+    verification:
+      - { kind: code-read, ref: "game/hud/ModIconsPanel.cs has no NexBall case", result: fail }
+    confidence: high
+    notes: "STAT(OBJECTIVE_STATUS)/NB_METERSTART aren't networked either, so even a drawer would have no data."
+
+  - id: nexball.goal.sentinel_encoding
+    name: "Goal fault/out sentinel encoding + ball_redgoal/bluegoal swap"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/nexball/sv_nexball.qc:spawnfunc(nexball_fault/out) + ball_redgoal/bluegoal compat"
+      - "common/gametypes/gametype/nexball/sv_nexball.qh:GOAL_FAULT=-1, GOAL_OUT=-2"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:GoalFault(-2)/GoalOut(-3)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:NexballFault/Out + BallRedGoal/BallBlueGoal swap"
+    constants:
+      - { name: "GOAL_FAULT", base: "-1", port: "-2", match: false }
+      - { name: "GOAL_OUT", base: "-2", port: "-3", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Port shifts fault/out sentinels to -2/-3 (QC -1/-2) so they don't collide with the port's team-color/None numbering; mapping is consistent end-to-end and observable scoring is unchanged. The ball_redgoal->blue / ball_bluegoal->red compat swap is preserved exactly."
+    gaps: []
+    verification:
+      - { kind: unit, ref: "NexballSpawnTests GoalSpawnfuncs_... + BallRedGoal_IsSwappedToBlue", result: pass }
+    confidence: high
+    notes: "Deliberate internal encoding change; behavior matches Base."

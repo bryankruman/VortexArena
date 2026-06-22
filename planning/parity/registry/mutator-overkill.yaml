@@ -1,0 +1,414 @@
+unit: mutator-overkill
+category: mutator
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 16
+  worst_gaps:
+    - "Normal health/armor pickups are not filtered out of Overkill maps (Base blocks ArmorMedium+ArmorBig by default; HealthMega/ArmorMega toggle-off by default); item economy wrong."
+    - "Strength/Shield powerups are not replaced by HMG/RPC superweapon pickups; those superweapons are unobtainable from the map."
+    - "Player-death loot drop is a non-functional entity: it never runs the item spawn pipeline (no Touch handler, no def.ItemInit), so the dropped loot cannot be picked up — it just despawns."
+    - "Monsters drop no loot and their normal drop is not suppressed (MonsterDropItem hook chain does not exist in the port)."
+    - "Secondary Blaster does not work during the round countdown (Overkill does not subscribe the live PlayerPreThink chain)."
+    - "No item-respawn waypoints for surviving health/armor; no OK items injected into the random-items pool (neither hook chain exists)."
+    - "SetWeaponArena('off') and ForbidRandomStartWeapons handlers are dead: no caller fires those hook chains anywhere in the port."
+features:
+  - id: overkill.enable.predicate
+    name: "Mutator enable predicate (g_overkill + guards)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/overkill/sv_overkill.qh:REGISTER_MUTATOR(ok)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs:IsEnabled"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:Apply"
+    constants:
+      - { name: "g_overkill", base: "\"\" (empty string, falsey)", port: "0 (GetFloat != 0)", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port enables on g_overkill != 0 only; Base also requires !MUTATOR_IS_ENABLED(mutator_instagib), MapInfo_LoadedGametype.m_weaponarena == false, and cvar_string(\"g_mod_balance\") == \"Overkill\". Port can activate Overkill rules without the Overkill balance/guards, and can double-activate alongside instagib or a weapon-arena gametype."
+    verification:
+      - { kind: code, ref: "OverkillMutator.IsEnabled reads only g_overkill; MutatorActivation.Apply adds when IsEnabled — verified live boot path", result: pass }
+    confidence: high
+    notes: "Mutator is registered and activated on the live boot path; only the enable predicate is narrower than Base. Base default for g_overkill is an empty string (declared `string autocvar_g_overkill;`), not literal \"0\"; both are falsey."
+  - id: overkill.onadd.precache_and_itemblock
+    name: "MUTATOR_ONADD: precache ok_player models, set item mutator-block flags, build g_overkill_items list"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/overkill/sv_overkill.qh:REGISTER_MUTATOR(ok) MUTATOR_ONADD"
+    port_refs: []
+    constants:
+      - { name: "g_overkill_filter_healthmega", base: "0", port: "none", match: false }
+      - { name: "g_overkill_filter_armormedium", base: "1", port: "none", match: false }
+      - { name: "g_overkill_filter_armorbig", base: "1", port: "none", match: false }
+      - { name: "g_overkill_filter_armormega", base: "0", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "ok_player models are never precached / forced as the default player model."
+      - "Health/armor ITEM_FLAG_MUTATORBLOCKED flags are never set (the four g_overkill_filter_* cvars are not read anywhere)."
+      - "g_overkill_items list (used by the random-items injection) is never built."
+    verification:
+      - { kind: code, ref: "no precache_all_playermodels / item-block / g_overkill_items equivalent in OverkillMutator; the four g_overkill_filter_* cvars have zero readers in src/", result: fail }
+    confidence: high
+    notes: "Port has no MUTATOR_ONADD/ONREMOVE equivalent for this mutator."
+  - id: overkill.weapons.unblock
+    name: "ok_weapons mutator: unblock the five OK weapons (WEP_FLAG_MUTATORBLOCKED)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/overkill/sv_weapons.qc:REGISTER_MUTATOR(ok_weapons)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/OkWeapons.cs"
+    constants:
+      - { name: "g_overkill_weapons", base: "0", port: "none", match: false }
+    status:
+      logic: partial
+      values: unknown
+      timing: na
+      presentation: na
+      audio: na
+      liveness: unknown
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No ok_weapons sub-mutator gating the OK weapons behind (g_overkill_weapons || ok). Whether the OK weapons are WEP_FLAG_MUTATORBLOCKED outside Overkill — and unblocked under it — is not enforced via this hook; the OK weapons exist as direct registrations."
+    verification:
+      - { kind: code, ref: "Ok* weapon classes exist; no ok_weapons mutator / WEP_FLAG_MUTATORBLOCKED gating found", result: partial }
+    confidence: low
+    notes: "OK weapon balance/behavior is a separate weapon unit; only the unblock-gate is in scope here."
+  - id: overkill.blaster.nullify_damage_force
+    name: "Damage_Calculate: zero secondary Blaster damage + force"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/overkill/sv_overkill.qc:MUTATOR_HOOKFUNCTION(ok, Damage_Calculate, CBC_ORDER_LAST)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs:OnDamageCalculate"
+    constants:
+      - { name: "g_overkill_blaster_keepdamage", base: "0", port: "0", match: true }
+      - { name: "g_overkill_blaster_keepforce", base: "0", port: "0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Port checks IsPlayer(target) only and drops Base's explicit (IS_VEHICLE || IS_TURRET) target branch; vehicles/turrets route their own damage and are largely unported, so the player subset is the faithful core. The force-zero keeps the self/frozen/dead guard, the damage-zero is unconditional under keepdamage=0 — both matching Base."
+    gaps: []
+    verification:
+      - { kind: code, ref: "OnDamageCalculate added at HookOrder.Last; DamageCalculate.Call live at DamageSystem.cs:219; deathtype matched via WeaponNetNameOf == \"blaster\"; guards (self/frozen/dead/keepforce, keepdamage) match Base", result: pass }
+    confidence: high
+    notes: "Both keep-cvars default 0, so default OK secondary blaster does no damage/force to others; self-jump preserved. Matches WEP_BLASTER deathtype specifically (the OK secondary routes through the blaster), consistent with Base DEATH_ISWEAPON(...,WEP_BLASTER)."
+  - id: overkill.loot.drop_player
+    name: "ok_DropItem on player death (random loot, launched off corpse)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/overkill/sv_overkill.qc:ok_DropItem"
+      - "common/mutators/mutator/overkill/sv_overkill.qc:MUTATOR_HOOKFUNCTION(ok, PlayerDies)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs:OnPlayerDies"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs:DropItem"
+    constants:
+      - { name: "g_overkill_loot_player", base: "armor_small", port: "armor_small", match: true }
+      - { name: "g_overkill_loot_player_time", base: "5", port: "5", match: true }
+      - { name: "drop_origin_z", base: "+32", port: "+32", match: true }
+      - { name: "drop_velocity", base: "'0 0 200' + normalize(att-vic)*500", port: "(0,0,200)+away*500", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: partial
+      presentation: missing
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Dropped loot never runs the item spawn pipeline (Base ok_DropItem → Item_Initialise; port StartItem sets item.Touch = ItemPickupRules.ItemTouch + runs def.ItemInit). The port's DropItem hand-rolls a Toss entity with EntFlags.Item but NO Touch handler and NO ItemInit, so it has no model and cannot be picked up — it simply despawns at NextThink. The drop is effectively non-functional as a pickup."
+      - "Port splits the item list literally on spaces; the Base \"random\" keyword (drop any allowed normal item) and the \"\" (disabled) sentinel are not specially handled."
+    verification:
+      - { kind: code, ref: "OnPlayerDies → DropItem; PlayerDies.Call live at DamageSystem.cs:552; DropItem builds an edict that bypasses StartItem/ItemInit (no Touch handler, no model) — compare StartItem.cs:70,131", result: partial }
+    confidence: high
+    notes: "Launch math + defaults match; entity construction diverges hard from the item pipeline — the loot is launched but not actually collectible."
+  - id: overkill.loot.drop_monster
+    name: "ok_DropItem on monster death (+ suppress normal drop)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/overkill/sv_overkill.qc:MUTATOR_HOOKFUNCTION(ok, MonsterDropItem)"
+    port_refs: []
+    constants:
+      - { name: "g_overkill_loot_monster", base: "armor_small", port: "none", match: false }
+      - { name: "g_overkill_loot_monster_time", base: "5", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Monsters drop no Overkill loot and their normal drop is not suppressed. No MonsterDropItem hook chain exists in the port (MutatorHooks has no such chain), so there is nothing to subscribe."
+    verification:
+      - { kind: code, ref: "no MonsterDropItem hook chain or handler anywhere in src/", result: fail }
+    confidence: high
+    notes: "Monsters are themselves largely unported, but the hook chain/handler is absent regardless."
+  - id: overkill.respawn.remember_restore_weapon
+    name: "Remember held weapon at death, re-select on respawn (HMG->MG, RPC->Nex)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/overkill/sv_overkill.qc:MUTATOR_HOOKFUNCTION(ok, PlayerDies)"
+      - "common/mutators/mutator/overkill/sv_overkill.qc:MUTATOR_HOOKFUNCTION(ok, PlayerWeaponSelect)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs:OnPlayerDies"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs:OnPlayerSpawn"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/EntityMutatorState.cs:OkLastWeapon"
+    constants: []
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port records/restores only slot 0: OnPlayerDies stores Inventory.CurrentWeapon(target) into OkLastWeapon[0] and nulls slots 1..MAX_WEAPONSLOTS; Base captures every slot's m_switchweapon (ok_lastwep[MAX_WEAPONSLOTS]). Low practical impact — Overkill loadouts occupy slot 0 only, so slots>0 are Null in Base too — but the per-slot capture is not faithfully reproduced."
+    verification:
+      - { kind: code, ref: "OnPlayerDies stores slot 0 only (OverkillMutator.cs:148-150); OnPlayerSpawn restores slot 0 with HMG->MG/RPC->Nex mapping (OverkillMutator.cs:164-172)", result: partial }
+    confidence: high
+    notes: "Base PlayerWeaponSelect is folded into the port PlayerSpawn handler (after GiveLoadout); the HMG->MG / RPC->Nex mapping is faithful, slot coverage is slot-0-only."
+  - id: overkill.loadout.start_items
+    name: "SetStartItems: OK weapon set + unlimited ammo"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/overkill/sv_overkill.qc:MUTATOR_HOOKFUNCTION(ok, SetStartItems, CBC_ORDER_LAST)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs:OnSetStartItems"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs:GiveLoadout"
+    constants:
+      - { name: "base_loadout", base: "OVERKILL_MACHINEGUN|NEX|SHOTGUN", port: "okmachinegun,oknex,okshotgun", match: true }
+      - { name: "conditional_rpc_hmg", base: "WEP_OVERKILL_{RPC,HMG}.weaponstart>0", port: "g_weapon_overkill_{rpc,hmg}_weaponstart || g_start_weapon_ok{rpc,hmg} > 0", match: true }
+      - { name: "start_items_unlimited_ammo", base: "IT_UNLIMITED_AMMO", port: "UNLIMITED_AMMO", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "OnSetStartItems added at HookOrder.Last; SetStartItems.Call live at SpawnSystem.cs:669; GiveLoadout also re-applied in OnPlayerSpawn", result: pass }
+    confidence: high
+    notes: "Base sets start_weapons = warmup_start_weapons = ok_start_items; the port loadout is a single set so warmup equality is implied but not separately modeled."
+  - id: overkill.countdown.blaster
+    name: "PlayerPreThink: allow secondary Blaster during round countdown"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/overkill/sv_overkill.qc:MUTATOR_HOOKFUNCTION(ok, PlayerPreThink)"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: missing
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "During an active-but-not-started round, pressing ATCK2 does not fire the secondary Blaster: Overkill does not subscribe the PlayerPreThink chain (which IS live — PlayerPreThink.Call at GameWorld.cs:988). Players cannot blaster-jump during the countdown, and the button is not consumed."
+    verification:
+      - { kind: code, ref: "OverkillMutator subscribes 7 chains, none is PlayerPreThink; the chain itself is live at GameWorld.cs:988", result: fail }
+    confidence: high
+    notes: "Only matters in round-based gametypes (e.g. CA/freezetag) run under Overkill; the live seam exists, Overkill simply never wires onto it."
+  - id: overkill.filter.items_and_powerup_replace
+    name: "FilterItem: block normal health/armor + replace Strength/Shield with HMG/RPC superweapons"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/overkill/sv_overkill.qc:MUTATOR_HOOKFUNCTION(ok, FilterItem)"
+    port_refs: []
+    constants:
+      - { name: "g_overkill_powerups_replace", base: "1", port: "none", match: false }
+      - { name: "respawntime_superweapon", base: "g_pickup_respawntime_superweapon", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "HealthMega/ArmorMedium/ArmorBig/ArmorMega are not filtered from the map (Base blocks ArmorMedium+ArmorBig by default via the filter cvars); item economy diverges."
+      - "item_strength is not replaced by a WEP_OVERKILL_HMG pickup and item_shield is not replaced by a WEP_OVERKILL_RPC pickup; the HMG/RPC superweapons are unobtainable from the map."
+      - "ok_item-flagged loot is not allowed through (no FilterItem subscription at all)."
+    verification:
+      - { kind: code, ref: "FilterItemDefinition.Call is live at StartItem.cs:90 and receives the live item edict (so filter AND powerup-replace are both wireable here); OverkillMutator does NOT subscribe it (MeleeOnly/Hook/Nix/Duel/Mayhem do)", result: fail }
+    confidence: high
+    notes: "The port's FilterItemDefinition seam, despite the name, passes the live item entity at the items.qc:1031 FilterItem callsite — Overkill could implement both the filter and the powerup->superweapon copy here; it simply never wires onto it."
+  - id: overkill.randomitems.inject_ok_items
+    name: "RandomItems_GetRandomItemClassName: weighted OK item/weapon pool"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/overkill/sv_overkill.qc:RandomItems_GetRandomOverkillItemClassName"
+      - "common/mutators/mutator/overkill/sv_overkill.qc:MUTATOR_HOOKFUNCTION(ok, RandomItems_GetRandomItemClassName)"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "When random items are enabled under Overkill, the OK item set (g_overkill_items + weapon_okhmg/okrpc with their g_<prefix>_*_probability weights) is not injected into the random roll. The port's RandomItemsMutator.GetRandomItemClassName does NOT fire a mod-injection hook chain (RandomItemsMutator.cs:152 explicitly notes no subscriber is modeled), so there is no chain for Overkill to override."
+    verification:
+      - { kind: code, ref: "no RandomItems_GetRandomItemClassName mutator hook chain; RandomItemsMutator.GetRandomItemClassName always falls to the vanilla pick", result: fail }
+    confidence: high
+    notes: "Depends on the random-items mutator being active; the override path/chain is absent regardless."
+  - id: overkill.itemwaypoints.respawn
+    name: "Item_RespawnCountdown/ScheduleRespawn: timed waypoints for surviving health/armor"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/overkill/sv_overkill.qc:ok_HandleItemWaypoints"
+      - "common/mutators/mutator/overkill/sv_overkill.qc:MUTATOR_HOOKFUNCTION(ok, Item_RespawnCountdown)"
+      - "common/mutators/mutator/overkill/sv_overkill.qc:MUTATOR_HOOKFUNCTION(ok, Item_ScheduleRespawn)"
+    port_refs: []
+    constants:
+      - { name: "g_overkill_itemwaypoints", base: "1", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No respawn-timer waypoints are shown for HealthMega/ArmorMedium/ArmorBig/ArmorMega under Overkill. No Item_RespawnCountdown / Item_ScheduleRespawn mutator hook chains exist in the port (the item pipeline has its own ScheduleRespawn but no mutator override seam)."
+    verification:
+      - { kind: code, ref: "no Item_RespawnCountdown / Item_ScheduleRespawn mutator hook chain or Overkill handler in src/", result: fail }
+    confidence: high
+    notes: null
+  - id: overkill.forbid.throw_weapon
+    name: "ForbidThrowCurrentWeapon -> true"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/overkill/sv_overkill.qc:MUTATOR_HOOKFUNCTION(ok, ForbidThrowCurrentWeapon)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs:OnForbidThrow"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "OnForbidThrow returns true; ForbidThrowCurrentWeapon.Call live at WeaponThrowing.cs:149,185", result: pass }
+    confidence: high
+    notes: null
+  - id: overkill.forbid.random_start_weapons
+    name: "ForbidRandomStartWeapons -> true"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/overkill/sv_overkill.qc:MUTATOR_HOOKFUNCTION(ok, ForbidRandomStartWeapons)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs:OnForbidRandomStartWeapons"
+    constants: []
+    status:
+      logic: stub
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Handler exists and returns true, but the ForbidRandomStartWeapons hook chain has NO caller anywhere in the port (no ForbidRandomStartWeapons.Call in src/), so it never runs. Instagib/Nix/MeleeOnly subscribe the same dead chain — none of them takes effect either."
+    verification:
+      - { kind: code, ref: "grep ForbidRandomStartWeapons.Call across src/ → zero hits; only Add/Remove subscriptions exist", result: fail }
+    confidence: high
+    notes: null
+  - id: overkill.set_weapon_arena_off
+    name: "SetWeaponArena -> 'off'"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/overkill/sv_overkill.qc:MUTATOR_HOOKFUNCTION(ok, SetWeaponArena)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs:OnSetWeaponArena"
+    constants: []
+    status:
+      logic: stub
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Handler exists and sets args.Arena = \"off\", but the SetWeaponArena hook chain has NO caller anywhere in the port (no SetWeaponArena.Call in src/), so it never runs. Instagib/MeleeOnly/Mayhem/TeamMayhem subscribe the same dead chain — Overkill cannot force weapon-arena off if an arena path is later added."
+    verification:
+      - { kind: code, ref: "grep SetWeaponArena.Call across src/ → zero hits; only Add/Remove subscriptions exist", result: fail }
+    confidence: high
+    notes: null
+  - id: overkill.naming.mod_strings
+    name: "Mod-name strings: BuildMutatorsString ':OK', PrettyString ', Overkill', SetModname 'Overkill'; cl g_overkill cvar_settemp"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/overkill/sv_overkill.qc:MUTATOR_HOOKFUNCTION(ok, BuildMutatorsString)"
+      - "common/mutators/mutator/overkill/sv_overkill.qc:MUTATOR_HOOKFUNCTION(ok, BuildMutatorsPrettyString)"
+      - "common/mutators/mutator/overkill/sv_overkill.qc:MUTATOR_HOOKFUNCTION(ok, SetModname)"
+      - "common/mutators/mutator/overkill/cl_overkill.qc:REGISTER_MUTATOR(ok)"
+    port_refs: []
+    constants:
+      - { name: "mutator_tag", base: ":OK / , Overkill", port: "none", match: false }
+      - { name: "modname", base: "Overkill", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Server browser / scoreboard mutator string does not show ':OK' / ', Overkill'; the mod name is not set to 'Overkill' (no BuildMutatorsString/BuildMutatorsPrettyString/SetModname hook chains or Overkill handlers)."
+      - "Client cl_overkill cvar_settemp(g_overkill,1) sync is absent."
+    verification:
+      - { kind: code, ref: "no BuildMutatorsString/SetModname overkill handlers or chains in src/", result: fail }
+    confidence: high
+    notes: "Cosmetic / reporting only; no gameplay impact."

@@ -642,12 +642,22 @@ public static class SpawnSystem
     }
 
     /// <summary>
-    /// QC <c>SetStartItems()</c> (server/world.qc): build the start-of-life loadout globals (start_health /
-    /// start_armorvalue / start_ammo_* / start_weapons / start_items), then fire the SetStartItems mutator
-    /// hook so arena mutators (weaponarena_random / new_toys / overkill / nix / instagib) can rewrite them.
+    /// QC <c>readplayerstartcvars()</c> (server/world.qc:1983) — the SetWeaponArena/SetStartItems seam.
+    /// Builds the start-of-life loadout globals (start_health / start_armorvalue / start_ammo_* /
+    /// start_weapons / start_items), firing BOTH mutator hooks gametypes/arena mutators subscribe to:
+    /// <list type="number">
+    /// <item><c>MUTATOR_CALLHOOK(SetWeaponArena, s)</c> — a gametype/mutator picks the arena string
+    ///   (CA/LMS "most", Mayhem "most_available", or "off" from instagib/overkill/melee). The resulting
+    ///   string is EXPANDED into <see cref="StartLoadout.Weapons"/> via <see cref="ExpandWeaponArena"/>,
+    ///   and when an arena is active QC ORs in IT_UNLIMITED_AMMO | IT_UNLIMITED_SUPERWEAPONS (world.qc:2089).</item>
+    /// <item><c>MUTATOR_CALLHOOK(SetStartItems)</c> — arena/loadout mutators rewrite health/armor/ammo +
+    ///   the weapon set (weaponarena_random randomizes start_weapons, new_toys swaps in the new-toy
+    ///   variants, overkill sets the OK set; CA/Mayhem set 200/200 + full ammo).</item>
+    /// </list>
     /// QC computes these once at match config; the port computes them per-spawn (handlers are deterministic,
     /// so the result is identical) and feeds the result into <see cref="ApplyStartLoadout"/>. The stock
-    /// defaults (Blaster + zero ammo) mirror balance-xonotic.cfg, so with no arena mutator this is a no-op.
+    /// defaults (Blaster + zero ammo, no arena) mirror balance-xonotic.cfg, so with no mutator this is the
+    /// plain DM loadout.
     /// </summary>
     public static StartLoadout ComputeStartItems()
     {
@@ -661,13 +671,130 @@ public static class SpawnSystem
             AmmoCells   = Cvar(CvarAmmoCells,   0f),
             AmmoFuel    = Cvar(CvarAmmoFuel,    0f),
         };
-        foreach (string w in DefaultLoadout) l.Weapons.Add(w);
+
+        // QC world.qc:2004-2006: s = cvar_string("g_weaponarena"); MUTATOR_CALLHOOK(SetWeaponArena, s);
+        // The arena string defaults to the g_weaponarena cvar; a gametype/mutator overrides it in its hook
+        // (CA/LMS force "most", Mayhem "most_available"; instagib/overkill/melee force "off").
+        var arenaArgs = new MutatorHooks.SetWeaponArenaArgs(CvarStr("g_weaponarena"));
+        MutatorHooks.SetWeaponArena.Call(ref arenaArgs);
+        WepSet arena = ExpandWeaponArena(arenaArgs.Arena, out bool arenaActive);
+
+        if (arenaActive)
+        {
+            // QC world.qc:2085-2091: start_weapons = g_weaponarena_weapons; the arena REPLACES the stock
+            // start loadout and grants unlimited ammo + non-expiring superweapons for the whole arsenal.
+            l.Weapons.Clear();
+            foreach (Weapon w in Weapons.All)
+                if (arena.Has(w)) l.Weapons.Add(w.NetName);
+            l.ItemFlags.Add("UNLIMITED_AMMO");
+            l.ItemFlags.Add("UNLIMITED_SUPERWEAPONS");
+        }
+        else
+        {
+            // No arena: the normal DM start weapons (just the Blaster sidearm; other weapons are map pickups).
+            foreach (string w in DefaultLoadout) l.Weapons.Add(w);
+        }
+
+        // QC world.qc:2106-2110: g_balance_superweapons_time < 0 ⇒ IT_UNLIMITED_SUPERWEAPONS;
+        // !g_use_ammunition ⇒ IT_UNLIMITED_AMMO (independent of any arena).
+        if (CvarOr(CvarSuperweaponsTime, DefSuperweaponsTime) < 0f)
+            l.ItemFlags.Add("UNLIMITED_SUPERWEAPONS");
+        // CvarOr honors an explicit g_use_ammunition 0 (the 0-fallback Cvar helper would read it back as the
+        // default 1 and never grant unlimited ammo).
+        if (CvarOr("g_use_ammunition", 1f) == 0f)
+            l.ItemFlags.Add("UNLIMITED_AMMO");
 
         // MUTATOR_CALLHOOK(SetStartItems) — arena/loadout mutators rewrite the loadout (weaponarena_random
-        // randomizes start_weapons, new_toys swaps in the new-toy variants, overkill sets the OK set).
+        // randomizes start_weapons, new_toys swaps in the new-toy variants, overkill sets the OK set; the
+        // gametype SetStartItems handlers — CA/LMS/Mayhem — set 200/200 + full ammo on top of the arena).
         var args = new MutatorHooks.SetStartItemsArgs(l);
         MutatorHooks.SetStartItems.Call(ref args);
         return args.Loadout;
+    }
+
+    /// <summary>
+    /// Port of the <c>g_weaponarena</c> string → weapon-set expansion in <c>readplayerstartcvars()</c>
+    /// (server/world.qc:2009-2083). Resolves the arena keyword (or a space-separated weapon-name list) to the
+    /// concrete <see cref="WepSet"/> of weapons every player spawns owning, and reports whether an arena is
+    /// active at all (the "off"/"0"/"" cases leave <paramref name="active"/> false so the caller keeps the
+    /// stock start loadout). The Wave-2 gametypes (CA/LMS) and the Mayhem family drive this through their
+    /// SetWeaponArena hooks; arena-suppressing mutators (instagib/overkill/melee) set "off".
+    ///
+    /// Keyword set (QC world.qc):
+    /// <list type="bullet">
+    /// <item><c>""</c> / <c>"0"</c> / <c>"off"</c> ⇒ no arena (active=false).</item>
+    /// <item><c>"all"</c> / <c>"1"</c> ⇒ every non-hidden, non-mutator-blocked weapon (<c>weapons_all</c>).</item>
+    /// <item><c>"devall"</c> ⇒ literally every weapon (<c>weapons_devall</c>).</item>
+    /// <item><c>"most"</c> ⇒ the WEP_FLAG_NORMAL, non-hidden, non-blocked set (<c>weapons_most</c>).</item>
+    /// <item><c>"none"</c> ⇒ an active arena with NO weapons (the Blaster-only "No Weapons Arena").</item>
+    /// <item><c>"all_available"</c> / <c>"devall_available"</c> / <c>"most_available"</c> ⇒ QC intersects with the
+    ///   weapons present on the map; the port has no map-weapon set, so it uses the no-map-weapons fallback
+    ///   QC itself uses (the full all/devall/most set). Flagged as a divergence in the spec.</item>
+    /// <item>anything else ⇒ tokenized as a weapon-name list (each <see cref="Weapon.NetName"/> OR'd in).</item>
+    /// </list>
+    /// </summary>
+    public static WepSet ExpandWeaponArena(string arena, out bool active)
+    {
+        active = false;
+        var set = new WepSet();
+        if (string.IsNullOrEmpty(arena) || arena == "0" || arena == "off")
+            return set; // no arena — caller keeps the stock start weapons
+
+        active = true;
+        switch (arena)
+        {
+            case "all":
+            case "1":
+            case "all_available":          // no map-weapon set in the port → QC's no-map fallback = weapons_all
+                foreach (Weapon w in Weapons.All)
+                    if (!HasAny(w, WeaponFlags.MutatorBlocked | WeaponFlags.Hidden)) set.Add(w);
+                break;
+            case "devall":
+            case "devall_available":       // → weapons_devall (literally every weapon)
+                foreach (Weapon w in Weapons.All) set.Add(w);
+                break;
+            case "most":
+            case "most_available":         // → weapons_most (WEP_FLAG_NORMAL, non-hidden, non-blocked)
+                foreach (Weapon w in Weapons.All)
+                    if (HasAny(w, WeaponFlags.Normal) && !HasAny(w, WeaponFlags.MutatorBlocked | WeaponFlags.Hidden))
+                        set.Add(w);
+                break;
+            case "none":
+                break;                     // "No Weapons Arena": active, but empty (Blaster-only)
+            default:
+                // QC tokenize: a space-separated weapon-name list. Unknown tokens are skipped (QC WEP_Null).
+                foreach (string tok in arena.Split((char[]?)null, System.StringSplitOptions.RemoveEmptyEntries))
+                    if (Weapons.ByName(tok) is { } wep) set.Add(wep);
+                break;
+        }
+        return set;
+    }
+
+    /// <summary>QC <c>(weaponinfo.spawnflags &amp; flags)</c> test — any of the given <see cref="WeaponFlags"/> bits set.</summary>
+    private static bool HasAny(Weapon w, int flags) => (w.SpawnFlags & flags) != 0;
+
+    /// <summary>
+    /// Translate the loadout's string <see cref="StartLoadout.ItemFlags"/> tags (the UPPERCASE convention the
+    /// SetStartItems/SetWeaponArena handlers use — "UNLIMITED_AMMO", "UNLIMITED_SUPERWEAPONS", "FUEL_REGEN",
+    /// "JETPACK") into the concrete <see cref="ItemFlag"/> bits OR'd onto QC's <c>start_items</c>. Unknown tags
+    /// are ignored. This is what lets a weapon arena's unlimited ammo / the hook mutator's fuel-regen actually
+    /// reach the spawned player's <see cref="Entity.Items"/>.
+    /// </summary>
+    private static int StartItemFlagBits(StartLoadout l)
+    {
+        ItemFlag bits = ItemFlag.None;
+        foreach (string tag in l.ItemFlags)
+        {
+            bits |= tag switch
+            {
+                "UNLIMITED_AMMO"          => ItemFlag.UnlimitedAmmo,
+                "UNLIMITED_SUPERWEAPONS"  => ItemFlag.UnlimitedSuperweapons,
+                "FUEL_REGEN"              => ItemFlag.FuelRegen,
+                "JETPACK"                 => ItemFlag.Jetpack,
+                _ => ItemFlag.None,
+            };
+        }
+        return (int)bits;
     }
 
     /// <summary>
@@ -715,8 +842,11 @@ public static class SpawnSystem
         if (randomCount > 0)
             GiveRandomWeapons(p, randomCount, CvarStr(CvarRandomStartWeapons));
 
-        // start_items (QC: this.items = start_items) — the starting powerup/key bitfield. Default 0.
-        p.Items = (int)Cvar(CvarStartItems, 0f);
+        // start_items (QC: this.items = start_items) — the starting powerup/key bitfield. The base value is
+        // the g_start_items cvar; the SetWeaponArena/SetStartItems seam ORs in the loadout's IT_* flags
+        // (IT_UNLIMITED_AMMO / IT_UNLIMITED_SUPERWEAPONS from a weapon arena, IT_FUEL_REGEN from the hook
+        // mutator). Without folding ItemFlags in, an arena's unlimited ammo never reached the player.
+        p.Items = (int)Cvar(CvarStartItems, 0f) | StartItemFlagBits(start);
 
         // QC client.qc: if the loadout includes any superweapon (STAT(WEAPONS) & WEPSET_SUPERWEAPONS), arm the
         // Superweapon status effect for g_balance_superweapons_time so the held superweapon expires on schedule
@@ -754,7 +884,27 @@ public static class SpawnSystem
 
         p.OwnedWeapons.Clear();
         p.OwnedWeaponSet.Clear();
-        if (CvarBool("g_warmup_allguns", true))
+
+        // QC world.qc:2130: with an active weapon arena, warmup_start_weapons = start_weapons — warmup mirrors
+        // the live arena set (CA/LMS/Mayhem keep their full arsenal in warmup). Run the SetWeaponArena seam to
+        // see if an arena is in force before the allguns/normal split below.
+        var warmArenaArgs = new MutatorHooks.SetWeaponArenaArgs(CvarStr("g_weaponarena"));
+        MutatorHooks.SetWeaponArena.Call(ref warmArenaArgs);
+        WepSet warmArena = ExpandWeaponArena(warmArenaArgs.Arena, out bool warmArenaActive);
+        var warmFlags = new StartLoadout();
+
+        if (warmArenaActive)
+        {
+            foreach (Weapon w in Weapons.All)
+                if (warmArena.Has(w))
+                {
+                    p.OwnedWeapons.Add(w.NetName);
+                    p.OwnedWeaponSet.Add(w);
+                }
+            warmFlags.ItemFlags.Add("UNLIMITED_AMMO");
+            warmFlags.ItemFlags.Add("UNLIMITED_SUPERWEAPONS");
+        }
+        else if (CvarBool("g_warmup_allguns", true))
         {
             // QC WARMUP_START_WEAPONS = weapons_all() with allguns (server/world.qc:1953): want_weapon filters
             // ONLY on WEP_FLAG_HIDDEN (+ mutator-blocked) — so superweapons ARE included (they're not hidden)
@@ -776,7 +926,7 @@ public static class SpawnSystem
             }
         }
 
-        p.Items = (int)Cvar(CvarStartItems, 0f);
+        p.Items = (int)Cvar(CvarStartItems, 0f) | StartItemFlagBits(warmFlags);
         Inventory.SwitchToBest(p);
     }
 

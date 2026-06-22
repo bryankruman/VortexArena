@@ -1,0 +1,332 @@
+unit: turret-phaser
+category: turret
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 12
+  worst_gaps:
+    - "Beam is single-hit in the port; Base FireImoBeam penetrates and damages/slows EVERY entity in the line"
+    - "Phaser beam sound (SND_TUR_PHASER) never plays — only a single electro_fire; no 2s re-trigger, no impact (neximpact), no silence-on-end"
+    - "No beam model visual (MDL_TUR_PHASER_BEAM) and no head charge/discharge frame animation (tr_think)"
+    - "Aim uses shotTimeCompensate+zPredict lead flags that Base phaser does NOT set (aim_flags = TFL_AIM_LEAD only)"
+    - "Respawn time defaults to 60 (shared Init default) instead of the cfg's 90"
+    - "Beam never registers on g_bot_dodge (bot_dodge=true, bot_dodgerating=shot_dmg) — bots do not avoid the phaser beam; the port has no g_bot_dodge projectile-avoidance system at all"
+features:
+  - id: turret-phaser.spawn.map_entity
+    name: "Map placement + per-frame think wiring (spawnfunc turret_phaser)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/phaser.qc:spawnfunc(turret_phaser)"
+      - "common/turrets/sv_turrets.qc:turret_initialize"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawnFuncs.cs:Phaser"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:RegisterAll"
+      - "src/XonoticGodot.Server/GameWorld.cs:SpawnMapEntities"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "MapObjectsRegistry.cs:212 -> GameWorld.cs:2158 SpawnFuncs.TrySpawn -> SimulationLoop.RunThink", result: pass }
+    confidence: high
+    notes: "Gated by g_turrets master switch (default on). Whether stock maps actually place turret_phaser is unverified (rare in rotation)."
+
+  - id: turret-phaser.identity.model_hitbox
+    name: "Identity, hitbox, health, body/head models"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/turrets/turret/phaser.qh:PhaserTurret"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:ctor"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:Init"
+    constants:
+      - { name: "health", base: "500", port: "500", match: true }
+      - { name: "m_mins", base: "'-32 -32 0'", port: "(-32,-32,0)", match: true }
+      - { name: "m_maxs", base: "'32 32 64'", port: "(32,32,64)", match: true }
+      - { name: "body model", base: "models/turrets/base.md3", port: "models/turrets/base.md3", match: true }
+      - { name: "head model", base: "models/turrets/phaser.md3", port: "(not separately attached)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Head model (phaser.md3) is not attached as a separate tracking head bone; head frame animation is also absent (see tr_think feature)."
+    verification:
+      - { kind: value, ref: "phaser.qh vs PhaserTurret.cs/TurretSpawn.Init", result: pass }
+    confidence: high
+    notes: "Hitbox/health/body model match; head-bone attachment is a client-render concern deferred in TurretAI."
+
+  - id: turret-phaser.setup.flags
+    name: "tr_setup ammo + aim flags (energy/recharge/recieve, lead-only)"
+    layer: [shared]
+    base_refs:
+      - "common/turrets/turret/phaser.qc:tr_setup"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:Think"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:Spawn"
+    constants:
+      - { name: "ammo_flags", base: "ENERGY|RECHARGE|RECIEVE", port: "ammo pool (max/recharge modeled)", match: true }
+      - { name: "aim_flags", base: "TFL_AIM_LEAD only", port: "lead + shotTimeCompensate + zPredict", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port enables shotTimeCompensate + zPredict in the aim params, but Base phaser's aim_flags is TFL_AIM_LEAD only (no shot-time compensation, no z-prediction). Port leads differently, especially vs airborne targets."
+    verification:
+      - { kind: value, ref: "phaser.qc:39 aim_flags vs PhaserTurret.cs:62-65 TurretParams", result: fail }
+    confidence: high
+    notes: "Phaser is hitscan so shot-time compensation is arguably moot, but Base does not request it; z-predict adds a gravity-arc lead Base omits."
+
+  - id: turret-phaser.firecheck.fireflag_guard
+    name: "Custom firecheck: block fire while beam active/discharging (fireflag)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/phaser.qc:turret_phaser_firecheck"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:BeamThink"
+    constants: []
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port holds AttackFinished = endTime to block re-fire during the beam (functional analogue), but does not model the fireflag==2 DISCHARGE window during which Base also forbids fire (~5 frames after the beam ends, until the head animation returns to idle)."
+    verification:
+      - { kind: code, ref: "phaser.qc:43 turret_phaser_firecheck vs PhaserTurret.BeamThink", result: fail }
+    confidence: medium
+    notes: "The discharge-window difference is small (a few frames); shot_refire (4s) dominates the gap anyway."
+
+  - id: turret-phaser.fire.beam_spawn
+    name: "wr_think: spawn the sustained PhaserTurret_beam"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/phaser_weapon.qc:wr_think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:Attack"
+    constants:
+      - { name: "shot_speed (beam DURATION)", base: "4", port: "4 (ShotSpeed)", match: true }
+      - { name: "shot_dmg (total over burn)", base: "100", port: "100 (ShotDamage)", match: true }
+      - { name: "per-tick dmg", base: "shot_dmg/(shot_speed/frametime)", port: "ShotDamage/(ShotSpeed/FrameTime)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "phaser_weapon.qc:10 vs PhaserTurret.Attack", result: pass }
+    confidence: high
+    notes: "Beam owns the refire: Attack sets endTime; BeamThink re-parks AttackFinished each frame, matching QC beam.cnt + attack_finished overwrite."
+
+  - id: turret-phaser.fire.beam_think_trace
+    name: "beam_think: per-frame trace, damage + slow, refire reset on end"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/phaser_weapon.qc:beam_think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:BeamThink"
+    constants:
+      - { name: "shot_radius (beam half-thickness)", base: "8", port: "8 (ShotRadius)", match: true }
+      - { name: "shot_force", base: "5", port: "5 (ShotForce)", match: true }
+      - { name: "target_range (beam length)", base: "3000", port: "3000 (TargetRange)", match: true }
+      - { name: "shot_refire (after end)", base: "4", port: "4 (ShotRefire)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "phaser_weapon.qc:56 beam_think vs PhaserTurret.BeamThink", result: pass }
+    confidence: high
+    notes: "Re-trace along the head aim every frame, tear down at time>cnt or actor dead, then arm now+shot_refire — faithful. (Multi-hit vs single-hit is split out below.)"
+
+  - id: turret-phaser.fire.imobeam_multihit
+    name: "FireImoBeam penetrating multi-target hit + slow"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/util.qc:FireImoBeam"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:BeamThink"
+    constants:
+      - { name: "f_velfactor (slow)", base: "0.75", port: "0.75 (VelFactor)", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base FireImoBeam is railgun-style PENETRATING: it makes each hit entity unsolid and re-traces until it hits a wall (SOLID_BSP), then damages AND slows EVERY entity along the beam. The port does a single trace and damages/slows only the first hit (tr.Ent). Players lined up behind one another are all hit in Base, only the front one in the port."
+    verification:
+      - { kind: code, ref: "util.qc:25 FireImoBeam (g_railgunhit loop) vs PhaserTurret.BeamThink single Api.Trace.Trace", result: fail }
+    confidence: high
+    notes: "The velocity*=0.75 slow is faithful for the single entity the port hits; the gap is the missing penetration/multi-hit."
+
+  - id: turret-phaser.fire.bot_dodge
+    name: "Beam registers as a dodgeable threat (bot_dodge / g_bot_dodge)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/phaser_weapon.qc:wr_think"
+    port_refs: []
+    constants:
+      - { name: "bot_dodge", base: "true", port: "none", match: false }
+      - { name: "bot_dodgerating", base: "shot_dmg (100)", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base wr_think sets beam.bot_dodge=true, beam.bot_dodgerating=shot_dmg and IL_PUSHes the beam onto g_bot_dodge so havocbots actively strafe out of the phaser beam. The port spawns the beam without any dodge registration and has no g_bot_dodge avoidance system: BotBrain only does the generic havocbot_dodge strafe-on-clock (not threat-list avoidance). Bots will not specifically dodge the beam."
+    verification:
+      - { kind: code, ref: "phaser_weapon.qc:39-41 bot_dodge/IL_PUSH(g_bot_dodge) vs grep g_bot_dodge in port = no projectile-avoidance system", result: fail }
+    confidence: high
+    notes: "Engine-wide gap, not phaser-specific: the whole g_bot_dodge avoidance feed is unported. Minor in practice (affects bot quality vs this turret only)."
+
+  - id: turret-phaser.fire.extra_slow_status
+    name: "Port-only layered slow/disability status effect"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/util.qc:FireImoBeam"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:ApplySlow"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Base's phaser slow is purely the velocity *= 0.75 scale per tick; the port additionally layers a brief StatusEffectsCatalog disability (0.2s) on top to make the slow feel more pronounced. Deliberate port augmentation, not a Base behavior."
+    gaps: []
+    verification:
+      - { kind: code, ref: "PhaserTurret.ApplySlow (no Base counterpart)", result: pass }
+    confidence: medium
+    notes: "Only applies if the catalog offers a buff_disability effect; otherwise a no-op. Cosmetic/feel-only on top of the faithful velocity slow."
+
+  - id: turret-phaser.audio.beam_sound
+    name: "Phaser beam sound (start + 2s re-trigger + silence-on-end) and impact cue"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/turrets/turret/phaser_weapon.qc:wr_think"
+      - "common/turrets/turret/phaser_weapon.qc:beam_think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:Attack"
+    constants:
+      - { name: "beam sound", base: "SND_TUR_PHASER (turrets/phaser)", port: "weapons/electro_fire.wav", match: false }
+      - { name: "re-trigger period", base: "2s (shot_spread clock)", port: "none", match: false }
+      - { name: "impact sound", base: "neximpact (SND_PhaserTurretAttack_IMPACT)", port: "none", match: false }
+      - { name: "silence on end", base: "SND_Null on beam end", port: "none", match: false }
+    status:
+      logic: partial
+      values: missing
+      timing: missing
+      presentation: na
+      audio: missing
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The characteristic phaser hum (SND_TUR_PHASER) is never played; the port plays a single weapons/electro_fire.wav at fire-start instead. No 2s re-trigger while burning, no neximpact impact cue, and no SND_Null stop on beam end. The TUR_PHASER sample is registered (SoundsList.cs:137) but never invoked by PhaserTurret."
+    verification:
+      - { kind: code, ref: "phaser_weapon.qc SND_TUR_PHASER x3 vs PhaserTurret.Attack single electro_fire", result: fail }
+      - { kind: code, ref: "grep SND_TUR_PHASER/TUR_PHASER usage in port -> registered but no Play call", result: fail }
+    confidence: high
+    notes: "electro_fire IS a Base sound but only the player-manned wr_think branch fires it; the turret-edict beam uses SND_TUR_PHASER. So the port plays the wrong cue and omits the rest."
+
+  - id: turret-phaser.presentation.beam_visual_and_head_anim
+    name: "Beam model visual (MDL_TUR_PHASER_BEAM) + head charge/discharge animation (tr_think)"
+    layer: [presentation]
+    base_refs:
+      - "common/turrets/turret/phaser_weapon.qc:wr_think"
+      - "common/turrets/turret/phaser.qc:tr_think"
+    port_refs: []
+    constants:
+      - { name: "beam scale", base: "vlen(shotorg-trace_endpos)/256", port: "none", match: false }
+      - { name: "head frames fireflag==1", base: "cycle 1..10", port: "none", match: false }
+      - { name: "head frames fireflag==2", base: "advance to 15 then reset to 0", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No PhaserTurret_beam model spawned/scaled to the impact distance (acknowledged TODO comment in Attack)."
+      - "No tr_think head-frame state machine: the head never plays the charge (1..10) or discharge (->15->0) animation. The fireflag concept is absent in the port."
+    verification:
+      - { kind: code, ref: "phaser.qc:13 tr_think + setmodel(MDL_TUR_PHASER_BEAM) — no port equivalent", result: fail }
+    confidence: high
+    notes: "The beam is intentionally 'invisible' per the menu description, but Base still draws a faint scaled beam model + animates the head; both are client-render TODOs in the port."
+
+  - id: turret-phaser.lifecycle.respawn_time
+    name: "Death blast + respawn timer"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_die"
+      - "common/turrets/sv_turrets.qc:turret_respawn"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:Spawn"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Die"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Respawn"
+    constants:
+      - { name: "respawntime", base: "90", port: "60 (shared Init default; PhaserTurret.Spawn passes no respawnTime)", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: partial
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "PhaserTurret.Spawn calls TurretSpawn.Init without a respawnTime argument, so it inherits the shared default 60s instead of the phaser cfg's 90s. The turret respawns 30s too early."
+    verification:
+      - { kind: value, ref: "turrets.cfg:287 (90) vs TurretSpawn.Init default 60 / PhaserTurret.Spawn omits arg", result: fail }
+    confidence: high
+    notes: "Death/respawn lifecycle itself is shared and faithful (TurretAI.Die/Respawn); only the per-unit respawntime value is wrong."

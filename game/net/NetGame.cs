@@ -2891,6 +2891,25 @@ public sealed partial class NetGame : Node3D
                 panel.Mode = ModIconsPanel.ModIconsMode.Survival;
                 panel.SurvivalStatus = ms.MyStatus;
                 break;
+            // [W1-mod-icons] the Wave-1 objective feeds net-server added to GametypeStatusBlock — establish the
+            // client dispatch so Wave-3's per-mode render (already present for CTF/Domination, Keepaway below)
+            // is fed live. CTF: the bitpacked OBJECTIVE_STATUS flag pack drives HUD_Mod_CTF.
+            case XonoticGodot.Net.GametypeStatusBlock.Kind.Ctf:
+                panel.Mode = ModIconsPanel.ModIconsMode.Ctf;
+                panel.ObjectiveStatus = unchecked((int)ms.ObjectiveStatus);
+                break;
+            // Domination: STAT(DOM_TOTAL_PPS / DOM_PPS_*). The wire packs [0]=total, [1..4]=red,blue,yellow,pink.
+            case XonoticGodot.Net.GametypeStatusBlock.Kind.Domination:
+                panel.Mode = ModIconsPanel.ModIconsMode.Domination;
+                panel.SetDominationPps(ms.DominationPps[1], ms.DominationPps[2], ms.DominationPps[3],
+                    ms.DominationPps[4], ms.DominationPps[0]);
+                break;
+            // Keepaway: the KA_CARRYING mod icon. The wire carries the carrier's net id (0 = nobody); the QC stat
+            // bit means "the LOCAL player carries it", so resolve it against the local net id here.
+            case XonoticGodot.Net.GametypeStatusBlock.Kind.Keepaway:
+                panel.Mode = ModIconsPanel.ModIconsMode.Keepaway;
+                panel.KeepawayCarrying = ms.CarrierNetId != 0 && ms.CarrierNetId == _client.LocalNetId;
+                break;
             default:
                 panel.Mode = ModIconsPanel.ModIconsMode.None;
                 break;

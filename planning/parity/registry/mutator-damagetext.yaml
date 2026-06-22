@@ -1,0 +1,265 @@
+unit: mutator-damagetext
+category: mutator
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 9
+  worst_gaps:
+    - "2D fallback mode is effectively absent: the port never applies the close-range (cl_damagetext_2d_close_range 125), out-of-view (cl_damagetext_2d_out_of_view), or spectating (spectatee_status) heuristics, the 2d_overlap_offset stagger, or the separate 2D fade(1.3s)/shrink(3s) lifetimes — it only drops to a screen-center number when the camera is null/behind. Numbers for very close or just-off-screen hits behave differently from Base, and 2D numbers never shrink."
+    - "World drift reduced to a vertical world-Z rise: QC offsets the number along the view basis (velocity_world/offset_world along forward/right/up) before projecting; the port keeps only the Z component as a world-up rise (hardcoded 0.0254 inch->meter scale) and drops the forward/right offsets, so the number doesn't track the view-relative placement Base uses."
+    - "Color codes not rendered: the draw uses Godot DrawString (plain) instead of drawcolorcodedstring2, so ^x color codes in cl_damagetext_format render literally; font is the Godot fallback font (no drawfontscale crisp-scaling), not the Xonotic HUD font."
+    - "Server visibility tiers collapsed: no Net_LinkEntity; DrainPending is a host-local queue consumed only on the host path (NetGame.cs:2068 'if (_server is not null)'), so sv_damagetext 1/3 (spectators-only, all-players) and spectator/observer filtering are not modeled and a pure remote client sees no damage text (intended host-only divergence)."
+    - "ClientDisconnect dent_attackers clear is missing (no ClientDisconnect mutator hook), and the ui_damagetext settings menu tab has no port counterpart."
+features:
+  - id: damagetext.sv.player_damaged_producer
+    name: "Server PlayerDamaged producer (build + queue a damage-number event)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/damagetext/sv_damagetext.qc:62 (MUTATOR_HOOKFUNCTION(damagetext, PlayerDamaged))"
+      - "server/player.qc:430 (MUTATOR_CALLHOOK(PlayerDamaged))"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DamagetextMutator.cs:127 (OnPlayerDamaged)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:461 (MutatorHooks.PlayerDamaged.Call)"
+    constants:
+      - { name: "skip hit==attacker", base: "return", port: "return", match: true }
+      - { name: "skip potential_damage==0", base: "return", port: "return", match: true }
+      - { name: "instagib+vaporizer suppression", base: "DEATH_WEAPONOF==WEP_VAPORIZER", port: "WeaponNetNameOf==vaporizer", match: true }
+      - { name: "arg order", base: "attacker,hit,dh,da,hitloc,deathtype,potential", port: "attacker,targ,dhRemoved,daRemoved,hitLoc,deathType,damage", match: true }
+      - { name: "sv_damagetext default", base: "2", port: "2 (xonotic-server.cfg:692)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: unit_test, ref: "MutatorBatchT51Tests.Damagetext_QueuesEvent_OnPlayerDamaged / _Disabled_QueuesNothing (tests/XonoticGodot.Tests/MutatorBatchT51Tests.cs:288,332)", result: pass }
+      - { kind: codetrace, ref: "DamageSystem.cs:460-461 fires PlayerDamaged on the live damage path AFTER health/armor subtract; mutator [Mutator]-registered, IsEnabled gated on sv_damagetext>0", result: pass }
+    confidence: high
+    notes: "deathtype is a string tag in this port vs int in QC (the arg-order and skip logic are otherwise line-for-line). The hook's return is read back as forbidLoggingDamage gating the score block (DamageSystem.cs:466), matching QC."
+  - id: damagetext.sv.same_frame_accumulation
+    name: "Same-frame multi-hit accumulation (shotgun pellets coalesce onto one number)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/damagetext/sv_damagetext.qc:75-105 (net_text_prev / net_damagetext_prev_time / multiple)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DamagetextMutator.cs:150-173 (_prev*, multiple branch)"
+    constants:
+      - { name: "match key", base: "prev_time==time && net_text_prev alive && same realowner+enemy+deathtype", port: "_prevTime==time && _prev!=null && same attacker+target+deathtype", match: true }
+      - { name: "DrainPending resets _prev per frame", base: "prev keyed on time==time", port: "_prev=null on drain", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: unit_test, ref: "MutatorBatchT51Tests.Damagetext_AccumulatesSameFrameHits (asserts two same-frame pellets coalesce to one 20-health event)", result: pass }
+    confidence: high
+    notes: "Uses _prev index into the pending List as the C# successor to the static net_text_prev temp entity; the previous event is rewritten in place exactly as QC rewrites net_text_prev's fields."
+  - id: damagetext.sv.flag_computation
+    name: "Wire flag computation (SAMETEAM / BIG_* / NO_ARMOR / NO_POTENTIAL)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/damagetext/sv_damagetext.qc:91-97"
+      - "common/mutators/mutator/damagetext/damagetext.qh (DTFLAG_* + DAMAGETEXT_SHORT_LIMIT + PRECISION_MULTIPLIER)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DamagetextMutator.cs:162-168 (flags block)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DamagetextMutator.cs:14-28 (DamageTextWire)"
+    constants:
+      - { name: "DAMAGETEXT_SHORT_LIMIT", base: "256", port: "256f (ShortLimit)", match: true }
+      - { name: "DAMAGETEXT_PRECISION_MULTIPLIER", base: "128", port: "128 (PrecisionMultiplier)", match: true }
+      - { name: "almost_equals_eps tolerance (NO_POTENTIAL)", base: "5", port: "5f", match: true }
+      - { name: "DTFLAG_* bit layout", base: "BIT(0..6)", port: "1<<0..1<<6", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: unit_test, ref: "MutatorBatchT51Tests.Damagetext_QueuesEvent_OnPlayerDamaged (asserts DTFLAG_NO_ARMOR set when armor==0)", result: pass }
+      - { kind: codetrace, ref: "DamagetextMutator.cs:162-168 computes all six bits at the right thresholds vs sv_damagetext.qc:91-97", result: pass }
+    confidence: high
+    notes: "All flag thresholds and bit values match damagetext.qh exactly. AlmostEqualsEps uses strict '<' matching QC almost_equals_eps."
+  - id: damagetext.sv.first_hit_bitset
+    name: "Per-victim first-hit-after-respawn set (dent_attackers -> STOP_ACCUMULATION; spawn/disconnect clears)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/damagetext/sv_damagetext.qc:107-118 (dent_attackers -> DTFLAG_STOP_ACCUMULATION)"
+      - "common/mutators/mutator/damagetext/sv_damagetext.qc:138-155 (ClientDisconnect, PlayerSpawn)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DamagetextMutator.cs:178 (hit.DentAttackers.Add), :193 (OnPlayerSpawn clear)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/EntityMutatorState.cs:122 (DentAttackers HashSet<Entity>)"
+    constants:
+      - { name: "bitset width", base: "11 ints x 24 bits = 255 clients", port: "HashSet<Entity> (unbounded)", match: false }
+      - { name: "STOP_ACCUMULATION on first hit", base: "set bit + OR DTFLAG_STOP_ACCUMULATION", port: "DentAttackers.Add() true -> OR FlagStopAccumulation", match: true }
+      - { name: "PlayerSpawn clears victim's whole set", base: "yes (zero all DENT_ATTACKERS_SIZE ints)", port: "yes (DentAttackers.Clear)", match: true }
+      - { name: "ClientDisconnect clears attacker bit on every victim", base: "yes (FOREACH_CLIENT &= ~BIT)", port: "MISSING (no ClientDisconnect hook)", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No ClientDisconnect hook: a disconnecting attacker's entry is not removed from every victim's DentAttackers set (the mutator only subscribes PlayerDamaged + PlayerSpawn). If a new player reuses the same Entity reference/slot, the STOP_ACCUMULATION first-hit gate can mis-fire. Edge case; no ClientDisconnect mutator hook appears to be exposed at all."
+    verification:
+      - { kind: codetrace, ref: "DamagetextMutator.cs:87-93 Hook() subscribes only PlayerDamaged + PlayerSpawn; no ClientDisconnect handler; grep confirms absent", result: fail }
+    confidence: high
+    notes: "Representation differs (HashSet<Entity> keyed by Entity ref vs fixed bit array keyed by etof-1) but the live semantics match except the disconnect path. The STOP_ACCUMULATION add + PlayerSpawn clear are faithful."
+  - id: damagetext.net.wire_and_visibility_tiers
+    name: "Wire encode/decode + sv_damagetext visibility tiers (spectators/attacker/all)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/damagetext/sv_damagetext.qc:23-60,135 (write_damagetext + Net_LinkEntity + tiers)"
+      - "common/mutators/mutator/damagetext/cl_damagetext.qc:219-235 (NET_HANDLE wire read)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DamagetextMutator.cs:115 (DrainPending)"
+      - "game/net/NetGame.cs:2068-2089 (host-only drain -> DamageTextLayer.Add)"
+    constants:
+      - { name: "sv_damagetext tiers", base: "0 off / 1 spectators+observers / 2 +attacker / 3 all", port: "2 default; only tier-2 local-attacker realized", match: false }
+      - { name: "PRECISION_MULTIPLIER fixed-point wire (Short/Int24 by BIG_* flags)", base: "128 + WriteShort/WriteInt24_t; armor omitted on NO_ARMOR, potential on NO_POTENTIAL", port: "no net packet; un-multiplied amounts passed in DamageTextEvent, x128 + NO_*/BIG_* reconstruction in DamageTextLayer.Add", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: partial
+    intended_divergence: true
+    divergence_rationale: "The port collapses the CSQC Net_LinkEntity temp-entity replication into an in-process host-local queue (DrainPending), consumed only on the host path (NetGame.cs:2068 'if (_server is not null)'). Matches the port's general 'host drives the local HUD directly' model; the local attacker (sv_damagetext 2) is the common single-player/listen-host case. Documented in the DamagetextMutator header (lines 70-72)."
+    gaps:
+      - "sv_damagetext 1 (spectators-only) and 3 (all-players) tiers, plus the spectator/observer filtering in write_damagetext, are not modeled — only the local attacker sees text."
+      - "A pure remote client (no local server) gets no damage text at all (the drain is guarded by 'if (_server is not null)')."
+    verification:
+      - { kind: codetrace, ref: "NetGame.cs:2068 'if (_server is not null)' guards the drain; DrainPending is in-process, no wire; the wire BIG_*/NO_* split is reconstructed client-side in DamageTextLayer.Add:97-101", result: fail }
+    confidence: high
+    notes: "Intended divergence for the host model; the non-tier-2 visibility cases and the remote-client case are genuine functional gaps. The wire numeric reconstruction (x128 + NO_ARMOR->0 + NO_POTENTIAL->health+armor) IS faithful in DamageTextLayer.Add."
+  - id: damagetext.cl.format_and_size
+    name: "Label format tokens + font-size mapping (DamageText_update)"
+    layer: [presentation]
+    base_refs:
+      - "common/mutators/mutator/damagetext/cl_damagetext.qc:102-179 (DamageText_update)"
+      - "lib/math.qh (map_bound_ranges)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/DamageTextFormat.cs:30 (Build) / :69 (MapSize)"
+    constants:
+      - { name: "cl_damagetext_format", base: "-{total}", port: "-{total} (xonotic-client.cfg:563)", match: true }
+      - { name: "size_min / size_min_damage", base: "10 / 25", port: "10 / 25", match: true }
+      - { name: "size_max / size_max_damage", base: "16 / 140", port: "16 / 140", match: true }
+      - { name: "PRECISION_MULTIPLIER divide + rint", base: "128, rint (round-half-even)", port: "128, MidpointRounding.ToEven", match: true }
+      - { name: "redundant eps (hide-redundant)", base: "5", port: "5f", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: unit_test, ref: "MutatorBatchT51Tests.DamageTextFormat_DefaultFormat / _HideRedundantArmor / _StripsUnknownTokens / _MapSize_ClampsAndInterpolates", result: pass }
+    confidence: high
+    notes: "Token replacement, verbose/hide-redundant, unknown-token strip, trim, and map_bound_ranges clamp all match. MapSize clamps on the output range (equivalent to map_bound_ranges when dest_min<=dest_max). The string trim is done in Build (QC does it in draw2d) but is behaviorally equivalent."
+  - id: damagetext.cl.placement_2d_3d
+    name: "2D-vs-3D placement heuristics (close-range / out-of-view / spectating, overlap stagger)"
+    layer: [presentation]
+    base_refs:
+      - "common/mutators/mutator/damagetext/cl_damagetext.qc:250-317 (NET_HANDLE: can_use_3d / too_close / prefer_in_view / prefer_2d / overlap stagger)"
+    port_refs:
+      - "game/client/DamageTextLayer.cs:188 (_Draw: camera-null/behind fallback only)"
+    constants:
+      - { name: "cl_damagetext_2d_close_range", base: "125", port: "read into config (CloseRange2d) but UNUSED in placement", match: false }
+      - { name: "cl_damagetext_2d_out_of_view", base: "1", port: "read (OutOfView2d) but UNUSED", match: false }
+      - { name: "cl_damagetext_2d_overlap_offset", base: "0 -15 0", port: "read (OverlapOffset2d) but UNUSED; _screenCount incremented but never applied to position", match: false }
+      - { name: "cl_damagetext_2d_alpha_lifetime / size_lifetime", base: "1.3 / 3", port: "read (Alpha2dLifetime/Size2dLifetime) but UNUSED; FadeRate always uses 3D alpha_lifetime, ShrinkRate hardcoded 0", match: false }
+      - { name: "spectatee_status gate", base: "prefer_2d requires spectating (spectatee_status != -1)", port: "not modeled", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The 2D path only triggers when the camera is null or the world point is behind the camera; the close-range (<125u), out-of-view, and spectating heuristics are never applied (no entcs/view_origin distance test, no projected_on_screen test, no spectatee_status check)."
+      - "cl_damagetext_2d_overlap_offset stagger is never applied (_screenCount is incremented at DamageTextLayer.cs:152 but never used to offset the position); the 2D-specific fade(1.3s) + shrink(3s) lifetimes are never used (ShrinkRate is hardcoded 0, so 2D numbers never shrink; FadeRate is always 1/alpha_lifetime)."
+    verification:
+      - { kind: codetrace, ref: "DamageTextLayer.cs:188 only branches on 'it.ScreenCoords || Camera is null'; ScreenCoords is hardcoded false on Add (line 144/150); close-range/out-of-view never set it true", result: fail }
+    confidence: high
+    notes: "DamageTextConfig carries all the 2D cvars but the draw layer ignores them for placement and for the 2D fade/shrink rates; effectively dead. The 2D screen-center fallback only ever fires when there is no camera at all."
+  - id: damagetext.cl.draw_fade_shrink_move
+    name: "Per-frame draw: fade, shrink, world/screen drift, centering, color codes, font"
+    layer: [presentation]
+    base_refs:
+      - "common/mutators/mutator/damagetext/cl_damagetext.qc:22-99 (DamageText_draw2d)"
+      - "common/mutators/mutator/damagetext/cl_damagetext.qc:181-204 (CONSTRUCTOR fade/shrink rates)"
+    port_refs:
+      - "game/client/DamageTextLayer.cs:173 (_Draw) / :66 (_Process) / :140-153 (Add rates)"
+      - "game/client/DamageTextConfig.cs"
+    constants:
+      - { name: "alpha_lifetime fade (3D)", base: "3 (fade_rate=1/alpha_lifetime)", port: "1/AlphaLifetime", match: true }
+      - { name: "lifetime hard cap", base: "-1 (ignore)", port: "-1 (Lifetime<0 -> hasLifetime always)", match: true }
+      - { name: "velocity_world / offset_world", base: "0 0 20 / 0 25 0 along view forward/right/up basis", port: "only .Z used as world-up rise x0.0254 (inch->meter); forward/right (X/Y) dropped", match: false }
+      - { name: "offset_screen / velocity_screen", base: "0 -45 0 / 0 0 0 (screen space)", port: "applied in screen space (DamageTextLayer.cs:201-202)", match: true }
+      - { name: "string render", base: "drawcolorcodedstring2 + drawfontscale=size/size_max, size_max cell, hud font", port: "DrawString (plain, no color codes) at integer size, ThemeDB.FallbackFont", match: false }
+      - { name: "per-weapon / friendlyfire color", base: "DEATH_WEAPONOF.m_color / friendlyfire_color", port: "Weapon.Color (by RegistryId) / FriendlyFireColor", match: true }
+      - { name: "horizontal centering", base: "screen_pos.x -= stringwidth*0.5", port: "pos.X - width*0.5 (GetStringSize)", match: true }
+    status:
+      logic: partial
+      values: partial
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "World drift only rises along world-Z (x0.0254 inch->meter hardcoded scale); QC offsets along the view basis (forward/right/up) so the number's view-relative placement is lost (lateral offset_world Y=25 and the X/Y velocity components are dropped)."
+      - "Color codes in cl_damagetext_format render literally (DrawString instead of drawcolorcodedstring2); font is the Godot fallback font, not the Xonotic HUD font; drawfontscale-based crisp scaling (size/size_max cell) replaced by a direct integer pixel size, so glyph metrics/centering differ."
+    verification:
+      - { kind: codetrace, ref: "DamageTextLayer.cs:199-200 builds worldOffset from .Z only (x0.0254) and :214-216 uses DrawString with ThemeDB.FallbackFont", result: fail }
+    confidence: medium
+    notes: "Fade timing + FF/per-weapon color + screen-offset + centering are faithful; world-drift basis, color-code rendering, and font are gaps. NOT verified in-game (Godot draw node, no unit test) — hence medium confidence and the open question of whether the 0.0254 scale lands the number on the victim at Quake unit scale."
+  - id: damagetext.ui.settings_tab
+    name: "In-game Damage Text settings menu tab"
+    layer: [presentation]
+    base_refs:
+      - "common/mutators/mutator/damagetext/ui_damagetext.qc:18 (XonoticDamageTextSettings_fill)"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No port menu tab exposes the cl_damagetext / friendlyfire / size_min/size_max / color / per-weapon / alpha_start / fade-time / accumulate sliders that ui_damagetext.qc builds; the cvars exist and are read live by DamageTextConfig but are not editable from a settings UI."
+    verification:
+      - { kind: codetrace, ref: "No DamageText settings tab found across game/**; ui_damagetext.qc has no port counterpart", result: fail }
+    confidence: high
+    notes: "Cosmetic/config-UX gap; the underlying cvars are read live by DamageTextConfig.Read() so console 'seta' still works."

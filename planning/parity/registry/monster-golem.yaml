@@ -1,0 +1,375 @@
+unit: monster-golem
+category: monster
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 12
+  worst_gaps:
+    - "mr_anim frame-group table not ported: golem .dpm idle/walk/run/melee/pain/spawn/die animations never play (port has only a logical phase enum)"
+    - "Golem mr_pain/mr_death overrides absent: generic pain window 0.34s vs QC 0.5s, no random pain1/pain2 + die1 selection"
+    - "Monster_Sound voice-cue system not ported: monstersound_melee (on attack), monstersound_idle (7s throttle) and monstersound_spawn never play; pain/death/sight hardcode monsters/golem_*.wav with no 1.2s antilag throttle"
+    - "Lightning throw plays a fabricated weapons/electro_fire2.wav cue that QC M_Golem_Attack_Lightning does NOT emit"
+    - "Per-swing melee animtime is 0.5 in the port vs 0.8 in QC M_Golem_Attack_Swing"
+    - "Loot drop spawns a generic marker, not the real health_mega/electro items (framework deferral)"
+features:
+  - id: monster-golem.spawn.setup
+    name: "Spawn + mr_setup (health/ranges/speeds/loot/spawn-shield/hitbox)"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/monster/golem.qc:spawnfunc(monster_golem)"
+      - "common/monsters/monster/golem.qc:Golem.mr_setup"
+      - "common/monsters/sv_monsters.qc:Monster_Spawn"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Golem.cs:Spawn"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:Setup"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:SpawnFromMap"
+    constants:
+      - { name: "g_monster_golem_health", base: "650", port: "650", match: true }
+      - { name: "attack_range", base: "150", port: "150", match: true }
+      - { name: "g_monster_golem_speed_walk", base: "150", port: "150", match: true }
+      - { name: "g_monster_golem_speed_run", base: "320", port: "320", match: true }
+      - { name: "g_monster_golem_speed_stop", base: "300", port: "300", match: true }
+      - { name: "g_monster_golem_damageforcescale", base: "0.1", port: "0.1", match: true }
+      - { name: "g_monster_golem_loot", base: "health_mega electro", port: "health_mega electro", match: true }
+      - { name: "m_mins", base: "-24 -24 -20", port: "-24 -24 -20", match: true }
+      - { name: "m_maxs", base: "24 24 88", port: "24 24 88", match: true }
+      - { name: "spawnflags", base: "SUPERMONSTER|MELEE|RANGED", port: "Spawn applies size; flags implied", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: partial
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Spawn-anim gate hardcoded 0.2s vs QC anim_spawn '12 1 5' derived animstate_endtime (approximation)."
+    verification:
+      - { kind: value-diff, ref: "monsters.cfg:81-97 vs Golem.cs:25-45", result: pass }
+      - { kind: code-read, ref: "Golem.cs:Spawn / MonsterAI.Setup", result: pass }
+    confidence: high
+    notes: "Verified: all 14 hardcoded golem fallbacks in Golem.cs:25-38 match, and all 17 golem cvars ship verbatim in assets/data/.../monsters.cfg:81-97; size/range/speeds/force/loot set in Golem.Spawn:54-61; spawn-shield via ApplyFor. mr_setup audio/anim handled in dedicated rows."
+
+  - id: monster-golem.spawnfunc.alias
+    name: "monster_golem spawnfunc + monster_shambler compat alias (live map placement)"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/monster/golem.qc:spawnfunc(monster_golem)"
+      - "common/monsters/monster/golem.qc:spawnfunc(monster_shambler)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterSpawnFuncs.cs:Golem"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterSpawnFuncs.cs:Shambler"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:196"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "MapObjectsRegistry.cs:196-197 register both classnames; MonsterSpawnFuncs.Shambler->Golem->Spawn(e,\"golem\")->SpawnFromMap", result: pass }
+    confidence: high
+    notes: "Verified MonsterSpawnFuncs.cs:28,37 — Shambler forwards to Golem exactly as golem.qc:226; both classnames registered in MapObjectsRegistry. Reachable on the live BSP entity-lump load path."
+
+  - id: monster-golem.brain.think
+    name: "Per-frame brain: enemy acquire, move, attack dispatch"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/sv_monsters.qc:Monster_Think"
+      - "common/monsters/sv_monsters.qc:Monster_Attack_Check"
+      - "common/monsters/monster/golem.qc:Golem.mr_think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Golem.cs:Think"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:RunThink"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:AttackCheck"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "AttackCheck does not honor the g_monsters_target_infront / MONSTERFLAG_INFRONT facing gate (QC Monster_Attack_Check:460); benign for golem at default cvars (no INFRONT flag, default off)."
+    verification:
+      - { kind: code-read, ref: "AttackCheck (MonsterAI.cs:897) melee-if dist<=range else ranged vs Monster_Attack_Check:463/473 dual distance bands", result: pass }
+      - { kind: code-read, ref: "Golem.Think->RunThink; SV_RunThink fires e.Think each frame", result: pass }
+    confidence: high
+    notes: "Verified golem mr_think is a no-op (golem.qc:231 returns true) — port matches. AttackCheck:897-904 mirrors QC's dual-band dispatch; FaceTarget = QC monster_makevectors."
+
+  - id: monster-golem.attack.melee_combo
+    name: "Melee combo: 1-3 claw swings 0.5s apart"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/monster/golem.qc:M_Golem_Attack"
+      - "common/monsters/monster/golem.qc:M_Golem_Attack_Swing"
+      - "common/monsters/sv_monsters.qc:Monster_Attack_Melee"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Golem.cs:Attack"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:QueueCombo"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MeleeAttack"
+    constants:
+      - { name: "g_monster_golem_attack_claw_damage", base: "60", port: "60", match: true }
+      - { name: "swing_count", base: "bound(1, floor(random*4), 3)", port: "Clamp(floor(rand*4),1,3)", match: true }
+      - { name: "swing_interval_s", base: "0.5", port: "0.5", match: true }
+      - { name: "per_swing_animtime_s", base: "0.8", port: "0.5", match: false }
+      - { name: "deathtype", base: "DEATH_MONSTER_GOLEM_CLAW", port: "MonsterGolemClaw", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: partial
+      presentation: missing
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Per-swing melee animtime is 0.5s in the port (MonsterAI.cs:1023) vs 0.8s in QC M_Golem_Attack_Swing (golem.qc:51); combo cadence 0.5s*N matches (QueueCombo:1174)."
+      - "Random anim_melee2/anim_melee3 swing animation not selected/played (no frame table)."
+    verification:
+      - { kind: code-read, ref: "Golem.Attack:91 swing count + QueueCombo:1167 + RunDelayedActions:1016-1026 MeleeAttack(...,0.5f,...) vs golem.qc:178-181 / M_Golem_Attack_Swing", result: pass }
+    confidence: high
+    notes: "Damage = ClawDamage * SkillMod via Combat.Damage on a forward traceline (MeleeAttack:1087) — faithful. NOTE the monstersound_melee voice cue QC plays on attack-success is tracked in monster-golem.audio.voice_cues."
+
+  - id: monster-golem.attack.smash
+    name: "Ranged ground-smash: leap + radius AoE in front"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/monster/golem.qc:M_Golem_Attack (RANGED smash branch)"
+      - "common/monsters/monster/golem.qc:M_Golem_Attack_Smash"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Golem.cs:Smash"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:QueueDelayedAttack"
+    constants:
+      - { name: "g_monster_golem_attack_smash_damage", base: "50", port: "50", match: true }
+      - { name: "smash_edge_damage", base: "smash_damage*0.5", port: "SmashDamage*skill*0.5", match: true }
+      - { name: "g_monster_golem_attack_smash_force", base: "100", port: "100", match: true }
+      - { name: "g_monster_golem_attack_smash_range", base: "200", port: "200", match: true }
+      - { name: "smash_roll_threshold", base: "<=0.5", port: "<=0.5", match: true }
+      - { name: "smash_windup_s", base: "1.1 (Monster_Delay)", port: "1.1", match: true }
+      - { name: "ranged_cooldown_s", base: "3 + random*1.5", port: "3 + rand*1.5", match: true }
+      - { name: "deathtype", base: "DEATH_MONSTER_GOLEM_SMASH", port: "MonsterGolemSmash", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "EFFECT_EXPLOSION_MEDIUM spawn (golem.qc:27) not emitted by the port's Smash."
+    verification:
+      - { kind: code-read, ref: "Golem.Smash:114-128 (RadiusDamage SmashDamage*skill / *0.5 / range200 / force100 + rocket_impact.wav) vs M_Golem_Attack_Smash:24-47", result: pass }
+    confidence: high
+    notes: "SND_ROCKET_IMPACT = weapons/rocket_impact.wav, port matches (Golem.cs:126). Total lock 1.4s (port) covers QC's anim_finished+0.2 attack_finished. AttackDelay=Now+3+rand*1.5 (Golem.cs:116)."
+
+  - id: monster-golem.attack.lightning
+    name: "Ranged lightning chunk: bouncing shootable projectile, 5s fuse"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/monsters/monster/golem.qc:M_Golem_Attack (RANGED lightning branch)"
+      - "common/monsters/monster/golem.qc:M_Golem_Attack_Lightning"
+      - "common/monsters/monster/golem.qc:M_Golem_Attack_Lightning_Think"
+      - "common/monsters/monster/golem.qc:M_Golem_Attack_Lightning_Damage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Golem.cs:ThrowLightning"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:SpawnProjectile"
+    constants:
+      - { name: "g_monster_golem_attack_lightning_speed", base: "1000", port: "1000", match: true }
+      - { name: "g_monster_golem_attack_lightning_speed_up", base: "150", port: "150", match: true }
+      - { name: "shootable_health", base: "50", port: "50", match: true }
+      - { name: "fuse_time_s", base: "5", port: "5", match: true }
+      - { name: "projectile_size", base: "+/-8", port: "+/-8", match: true }
+      - { name: "lightning_roll_threshold", base: "<=0.1 && dist>=smash_range*1.5", port: "<=0.1 && dist>=SmashRange*1.5", match: true }
+      - { name: "lightning_windup_s", base: "0.6 (Monster_Delay)", port: "0.6", match: true }
+      - { name: "projectile_model", base: "models/ebomb.mdl scale 2.5 (CSQCProjectile)", port: "none (headless)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: partial
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Lightning throw plays weapons/electro_fire2.wav (Golem.cs:165), which QC M_Golem_Attack_Lightning (golem.qc:132-168) does NOT emit — fabricated cue."
+      - "CSQC projectile model (models/ebomb.mdl, scale 2.5, PROJECTILE_GOLEM_LIGHTNING) not rendered (headless projectile)."
+    verification:
+      - { kind: code-read, ref: "Golem.ThrowLightning:134-167 + SpawnProjectile:1192 (Bounce, 50hp, makeTrigger, size +/-8, +Z speedUp) vs M_Golem_Attack_Lightning", result: pass }
+      - { kind: code-read, ref: "SpawnProjectile shootable Health<=0 -> Explode (MonsterAI.cs:1259) mirrors W_PrepareExplosionByDamage", result: pass }
+    confidence: medium
+    notes: "Early-detonate-when-shot, bounce, MAKETRIGGER, 5s fuse all ported. damagedbycontents/MIF flags are engine bookkeeping (deferred). electro_fire2 is the same fabricated cue Spider.cs:121 also plays."
+
+  - id: monster-golem.attack.lightning_explode
+    name: "Lightning detonation: small blast + chained zaps to wide radius"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/monsters/monster/golem.qc:M_Golem_Attack_Lightning_Explode"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Golem.cs:ThrowLightning (onExplode)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterFramework.cs:ChainedZaps"
+    constants:
+      - { name: "g_monster_golem_attack_lightning_damage", base: "25", port: "25", match: true }
+      - { name: "lightning_edge_damage", base: "25 (same as center)", port: "25", match: true }
+      - { name: "g_monster_golem_attack_lightning_force", base: "100", port: "100", match: true }
+      - { name: "g_monster_golem_attack_lightning_radius", base: "50", port: "50", match: true }
+      - { name: "g_monster_golem_attack_lightning_radius_zap", base: "250", port: "250", match: true }
+      - { name: "g_monster_golem_attack_lightning_damage_zap", base: "15", port: "15", match: true }
+      - { name: "zap_damage_scaling", base: "zap*MONSTER_SKILLMOD", port: "zap*SkillMod", match: true }
+      - { name: "lightning_impact_sound", base: "SND_MON_GOLEM_LIGHTNING_IMPACT = weapons/electro_impact.wav", port: "weapons/electro_impact.wav", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "EFFECT_ELECTRO_IMPACT effect spawn (golem.qc:59) not emitted by the port's onExplode."
+    verification:
+      - { kind: code-read, ref: "Golem.cs:159 ChainedZaps + MonsterFramework.cs:185-197 FOREACH radius250, exclude owner/inflictor, *skill, GolemZap vs M_Golem_Attack_Lightning_Explode:69-91", result: pass }
+    confidence: high
+    notes: "Center blast (RadiusDamage 25/25/50/force100/GolemZap via SpawnProjectile.Explode) + zaps (15*skill) both faithful. ChainedZaps also excludes the inflictor projectile (it==inflictor) on top of QC's it!=realowner — benign (projectile is being removed). Arc beam via EffectEmitter.TeCsqcLightningArc (client)."
+
+  - id: monster-golem.pain
+    name: "Pain reaction (mr_pain): pain window + pain animation"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/monsters/monster/golem.qc:Golem.mr_pain"
+      - "common/monsters/sv_monsters.qc:Monster_Damage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MarkPain"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MonsterEventDamage"
+    constants:
+      - { name: "pain_finished_window_s", base: "0.5", port: "0.34", match: false }
+      - { name: "pain_anim", base: "anim_pain1 or anim_pain2 (random, looping)", port: "generic Pain phase", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: partial
+      presentation: missing
+      audio: partial
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Golem mr_pain not overridden: pain window hardcoded 0.34s (MarkPain MonsterAI.cs:1320) vs QC golem 0.5s (golem.qc:240)."
+      - "Random anim_pain1/anim_pain2 selection not done (no frame table; generic Pain phase)."
+    verification:
+      - { kind: code-read, ref: "MarkPain:1297-1335 (0.34 window, generic Pain anim, armor split, double force push) vs Golem.mr_pain (0.5, random pain1/2)", result: fail }
+    confidence: high
+    notes: "Damage routed live via GtEventDamage -> MonsterEventDamage -> MarkPain. Logic (invuln/spawn-shield gate, take subtract, double damageforcescale push, death tail) faithful; golem-specific pain-window/anim flavor missing. Pain SOUND tracked in monster-golem.audio.voice_cues."
+
+  - id: monster-golem.death
+    name: "Death (mr_death + Monster_Dead): corpse, loot, scoring, death anim"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/monsters/monster/golem.qc:Golem.mr_death"
+      - "common/monsters/sv_monsters.qc:Monster_Dead"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MarkDead"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterFramework.cs:DropItem"
+    constants:
+      - { name: "corpse_lifetime_s", base: "5", port: "5", match: true }
+      - { name: "gib_threshold_health", base: "-100 (or DEATH_KILL)", port: "-100 or Kill", match: true }
+      - { name: "g_monsters_score_kill", base: "0 (cvar)", port: "0", match: true }
+      - { name: "death_anim", base: "anim_die1 (once)", port: "generic Death phase", match: false }
+      - { name: "loot_items", base: "real health_mega + electro item entities (Item_RandomFromList)", port: "generic loot marker entity", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: partial
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Golem mr_death not overridden: anim_die1 (and die2) never selected/played (generic Death phase, no frame table)."
+      - "DropItem (MonsterFramework.cs:210) spawns a generic loot MARKER carrying the list name, not the real health_mega/electro item entities — full Item_RandomFromList instantiation deferred to the items subsystem."
+    verification:
+      - { kind: code-read, ref: "MarkDead:1360-1421 (corpse solid/movetype, DropItem, ++MonstersKilled natural-only, scorer +g_monsters_score_kill, Death hook, NadeBonus.OnMonsterDies, 5s lifetime) vs Monster_Dead", result: pass }
+      - { kind: code-read, ref: "DropItem:203-214 spawns marker, not real item", result: fail }
+    confidence: high
+    notes: "Corpse setup, natural-only kill count, player scoring, mutator MonsterDies hook (NadeBonus), 5s fade/respawn all faithful. Death anim + the data-file death SOUND (tracked in monster-golem.audio.voice_cues) + real-item loot are the gaps."
+
+  - id: monster-golem.audio.voice_cues
+    name: "Monster_Sound voice cues (idle/sight/melee/spawn/pain/death) + antilag throttle"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/monsters/sv_monsters.qc:Monster_Sound"
+      - "common/monsters/sv_monsters.qc:Monster_Attack_Check (monstersound_melee)"
+      - "common/monsters/sv_monsters.qc:Monster_Move (monstersound_idle, 7s)"
+      - "common/monsters/sv_monsters.qc:Monster_Damage (monstersound_pain, 1.2s)"
+      - "common/monsters/sv_monsters.qc:Monster_Dead (monstersound_death)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:666"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:1323"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:1371"
+    constants:
+      - { name: "pain_sound_antilag_s", base: "1.2 (Monster_Sound delay)", port: "none", match: false }
+      - { name: "idle_sound_throttle_s", base: "7 (Monster_Sound delay, refire)", port: "not played", match: false }
+      - { name: "sound_source", base: "per-monster *.sounds data file (Monster_Sound system)", port: "hardcoded monsters/<netname>_*.wav paths", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: missing
+      presentation: na
+      audio: partial
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "monstersound_melee NOT played: QC Monster_Attack_Check:468/478 plays it on every attack-success (golem MELEE/RANGED return true); the port plays no melee/attack voice cue at all."
+      - "monstersound_idle (7s-throttled ambient, sv_monsters.qc:880) and monstersound_spawn (Monster_Dead-adjacent spawn cue, :1364) not ported."
+      - "Pain (MarkPain:1323) and death (MarkDead:1371) play hardcoded monsters/<netname>_pain.wav / _death.wav with NO 1.2s pain antilag throttle; sight (:666) is hardcoded too. The data-driven Monster_Sound / *.sounds file system is not ported."
+      - "QC spamsound(SND_BODYIMPACT1) pain placeholder (sv_monsters.qc:1110) not played."
+    verification:
+      - { kind: code-read, ref: "grep Api.Sound in Monsters/ : only sight(666)/pain(1323)/death(1371) + the fabricated electro_fire2; no melee/idle/spawn cue, no throttle vs Monster_Sound", result: fail }
+    confidence: high
+    notes: "Framework-wide gap (affects all monsters) but golem has all of monsters/golem_{idle,sight,melee,pain,death,spawn}.* in Base — flagged per-unit here. liveness=partial: sight/pain/death cues fire live (hardcoded), melee/idle/spawn do not."
+
+  - id: monster-golem.anim_frames
+    name: "Animation frame-group table (mr_anim) for .dpm playback"
+    layer: [presentation]
+    base_refs:
+      - "common/monsters/monster/golem.qc:Golem.mr_anim"
+      - "common/monsters/monster/golem.qh:MODEL(MON_GOLEM, golem.dpm)"
+    port_refs: []
+    constants:
+      - { name: "anim_idle", base: "'0 1 1'", port: "none", match: false }
+      - { name: "anim_walk", base: "'1 1 1'", port: "none", match: false }
+      - { name: "anim_run", base: "'2 1 1'", port: "none", match: false }
+      - { name: "anim_melee1/2/3", base: "'6/4/5 1 5'", port: "none", match: false }
+      - { name: "anim_pain1/pain2", base: "'7/8 1 2'", port: "none", match: false }
+      - { name: "anim_spawn", base: "'12 1 5'", port: "none", match: false }
+      - { name: "anim_die1/die2", base: "'13/15 1 0.5'", port: "none", match: false }
+    status:
+      logic: na
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "mr_anim frame-group table not ported: no .dpm frame playback; port maintains only a logical MonsterAnim phase enum (Idle/Walk/Run/Attack/Pain/Death). Likely a shared monster-framework deferral, flagged per-unit here."
+    verification:
+      - { kind: code-read, ref: "No per-monster anim frame table in Golem.cs/MonsterAI.cs; st.Anim is a phase enum only, never resolved to model frames/fps", result: fail }
+    confidence: high
+    notes: "Server-side anim PHASE timing is tracked (st.Anim) but never resolved to model frames/fps; affects all monster visuals, not just golem."

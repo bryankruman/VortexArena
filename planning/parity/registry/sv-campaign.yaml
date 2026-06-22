@@ -1,0 +1,423 @@
+unit: sv-campaign
+category: server
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 14
+  worst_gaps:
+    - "target_levelwarp does nothing in a campaign: CampaignLevelWarpHandler/IsCampaign seams are never wired by the host (dead)."
+    - "target_changelevel campaign win-credit is dead: NextLevelHandler unassigned + the QC `campaign_forcewin = true` (real-client-touched stage win) line has no port equivalent, so a map that ends a stage via target_changelevel never registers the win."
+    - "g_campaign_forceteam is registered but never read: a campaign team-mode level cannot force the player onto a given team."
+    - "Campaign_Invalid (checks current gametype + mapname match the loaded level, else CampaignBailout) is not ported: a level whose actual map/gametype diverges from the file is not detected or aborted server-side. Base calls it at the end of both CampaignPreInit and the start of CampaignPostInit."
+    - "Confirmed wired ONLY into bot MOVEMENT (BotPopulation.MovementHeld + BotBrain pre-game hold). The round-handler campaign gate (Base round_handler.qc:38) is EXPLICITLY DEFERRED in the port (RoundHandler.cs comment: 'Deferred: ... campaign bot gating')."
+features:
+  - id: sv-campaign.file.parse
+    name: "Campaign .txt quoted-CSV parse (CampaignFile_Load)"
+    layer: [shared]
+    base_refs:
+      - "common/campaign_file.qc:CampaignFile_Load"
+      - "common/campaign_common.qh"
+    port_refs:
+      - "src/XonoticGodot.Server/Campaign.cs:Load"
+      - "src/XonoticGodot.Server/Campaign.cs:ParseCsvLine"
+      - "src/XonoticGodot.Server/CampaignCatalog.cs:Parse"
+    constants:
+      - { name: "CAMPAIGN_MAX_ENTRIES (server)", base: "2", port: "2", match: true }
+      - { name: "comment/blank line classification", base: "// and \"// skip but advance lineno; blank transparent (no lineno++)", port: "same", match: true }
+      - { name: "field order", base: "gametype,mapname,bots,botskill,fraglimit,timelimit,mutators[,shortdesc,longdesc]", port: "same", match: true }
+      - { name: "filename localization", base: "language_filename(maps/campaign<name>.txt)", port: "maps/campaign<name>.txt (no language_filename prefix)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Too-few-fields row is logged + the index slot consumed (parity with QC index advance) rather than QC's error()/abort — benign."
+      - "Base wraps the campaign filename in language_filename() (localized campaign briefings, e.g. campaignxonoticbeta.de.txt); the port reads the un-localized base name only. Cosmetic for English; non-English campaign text falls back to the base file."
+    verification:
+      - { kind: unit_test, ref: "CampaignFlowTests.Load_ParsesGameplayColumns / Load_AtOffsetIsCurrentLevelPlusNext / Load_MissingFileLoadsNothing", result: pass }
+      - { kind: unit_test, ref: "CampaignCatalogTests (menu all-levels parse)", result: pass }
+      - { kind: code, ref: "real maps/campaignxonoticbeta.txt: ,, empty fields + single-mutator entries (g_instagib 1) parse correctly under ParseCsvLine", result: pass }
+    confidence: high
+    notes: "Index parity between menu (all levels) and server (current+next) is maintained because both classify comment lines identically. Real file uses ,, for empty fields and the 9-column form; port handles both."
+
+  - id: sv-campaign.preinit.config
+    name: "Per-level config: gametype + bot count/skill + mutator/permanent settemps (CampaignPreInit)"
+    layer: [authority]
+    base_refs:
+      - "server/campaign.qc:CampaignPreInit"
+    port_refs:
+      - "src/XonoticGodot.Server/Campaign.cs:PreInit"
+      - "src/XonoticGodot.Server/Campaign.cs:ApplyMutators"
+      - "src/XonoticGodot.Server/GameWorld.cs:Boot (step 1e, line 458-462)"
+    constants:
+      - { name: "baseskill", base: "max(0, g_campaign_skill + botskill[0])", port: "max(0, g_campaign_skill + botskill)", match: true }
+      - { name: "permanent sets", base: "sv_public 0; pausable 1", port: "sv_public 0; pausable 1", match: true }
+      - { name: "per-level settemps", base: "g_campaign 1; g_dm 0; skill; bot_number; bot_vs_human 0", port: "same", match: true }
+      - { name: "g_campaign_skill default", base: "0", port: "0", match: true }
+      - { name: "g_campaign_name default", base: "xonoticbeta", port: "xonoticbeta (CampaignCatalog.DefaultName)", match: true }
+      - { name: "mutator settemp separator", base: "wrap \"; \"+col+\"; \", tokenizebyseparator \"; \", _MapInfo_Parse_Settemp each", port: "Split(';'), Trim, first-space name/value", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: unit_test, ref: "CampaignFlowTests.PreInit_ResolvesLevelAndSetsSettemps / PreInit_AppliesGlobalSkillOffset", result: pass }
+      - { kind: code, ref: "GameWorld.Boot step 1e calls PreInit before gametype resolution (QC worldspawn order); CurrentGametype feeds gameTypeName", result: pass }
+      - { kind: code, ref: "real file mutator entries (g_instagib 1, g_grappling_hook 1, sv_gravity 200, g_nix 1) -> single name/value settemp via ApplyMutators", result: pass }
+    confidence: high
+    notes: "Mutator settemp loop tokenizes campaign_mutators[0] and applies each name/value as a settemp. Real campaign file uses single-mutator entries per level; port's Split(';')+first-space split matches QC's per-entry settemp."
+
+  - id: sv-campaign.preinit.gametype_switch
+    name: "MapInfo_SwitchGameType + Campaign_Invalid revalidation"
+    layer: [authority]
+    base_refs:
+      - "server/campaign.qc:CampaignPreInit"
+      - "server/campaign.qc:Campaign_Invalid"
+    port_refs:
+      - "src/XonoticGodot.Server/GameWorld.cs:Boot (gametype resolution, line 461-462)"
+    constants: []
+    status:
+      logic: partial
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Campaign_Invalid (checks current gametype + mapname match the loaded level, else CampaignBailout) is not ported: a level whose actual map/gametype diverges from the file is not detected or aborted server-side. Base calls it at the end of both CampaignPreInit and the start of CampaignPostInit."
+    verification:
+      - { kind: code, ref: "no Campaign_Invalid equivalent; PreInit feeds CurrentGametype to the host (gameTypeName) but never revalidates the resolved map/gametype", result: fail }
+    confidence: high
+    notes: "The menu pre-resolves the map so a mismatch is unlikely in practice, but the server-side guard is absent. MapInfo_SwitchGameType itself is reproduced indirectly: PreInit's CurrentGametype drives Boot's gameTypeName."
+
+  - id: sv-campaign.preinit.abort
+    name: "Bailout paths: unknown map + cheats (CampaignBailout)"
+    layer: [authority]
+    base_refs:
+      - "server/campaign.qc:CampaignBailout"
+      - "server/campaign.qc:CampaignPreInit"
+    port_refs:
+      - "src/XonoticGodot.Server/Campaign.cs:Bailout"
+      - "src/XonoticGodot.Server/Campaign.cs:PreInit"
+    constants:
+      - { name: "bailout cvar set", base: "g_campaign 0", port: "g_campaign 0", match: true }
+      - { name: "abort on", base: "entries<1 (unknown map); sv_cheats", port: "entries<1; sv_cheats", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC _campaign_testrun makes the cheats/unknown-map bailout error() (hard crash, intentional for file verification); the port aborts gracefully (Aborted=true). Minor and testrun-only."
+      - "QC's cheats bailout calls MapInfo_SwitchGameType(gametype[0]) BEFORE unloading + bailing (so the engine still lands on a sane gametype); the port skips that pre-bailout gametype switch — moot because Aborted falls back to normal play."
+    verification:
+      - { kind: unit_test, ref: "CampaignFlowTests.PreInit_UnknownMapAborts / PreInit_CheatsAbort", result: pass }
+    confidence: high
+    notes: "Aborted flag falls the host back to normal play (g_campaign 0); GameWorld gates PostInit/PreIntermission/PostIntermission on !Campaign.Aborted."
+
+  - id: sv-campaign.postinit.limits
+    name: "Per-level frag/time limits: default vs empty vs value (CampaignPostInit)"
+    layer: [authority]
+    base_refs:
+      - "server/campaign.qc:CampaignPostInit"
+    port_refs:
+      - "src/XonoticGodot.Server/Campaign.cs:PostInit"
+      - "src/XonoticGodot.Server/GameWorld.cs:Boot (step 6b, line 562-563)"
+    constants:
+      - { name: "testrun limits", base: "fraglimit 0; leadlimit 0; timelimit 0.01", port: "0 / 0 / 0.01", match: true }
+      - { name: "fraglimit form", base: "score+lead (tokenize by +)", port: "Split('+')", match: true }
+      - { name: "default keyword", base: "leave implicit value (skip cvar_set)", port: "skip Set", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: unit_test, ref: "CampaignFlowTests.PostInit_AppliesLevelLimits / PostInit_DefaultKeywordLeavesCvarUntouched / PostInit_FragPlusLeadSplit", result: pass }
+    confidence: high
+    notes: "Permanent cvar_set (not settemp), matching QC. Port omits the Campaign_Invalid recheck QC does at PostInit entry (see gametype_switch row)."
+
+  - id: sv-campaign.bots.may_start
+    name: "campaign_bots_may_start: hold bots/rounds/monsters until the human spawns"
+    layer: [authority]
+    base_refs:
+      - "server/campaign.qh:campaign_bots_may_start"
+      - "server/client.qc:2082"
+      - "server/bot/default/bot.qc:77"
+      - "server/round_handler.qc:38"
+      - "common/monsters/sv_monsters.qc:846"
+      - "common/monsters/sv_monsters.qc:1165"
+      - "common/mutators/mutator/campcheck/sv_campcheck.qc:51"
+      - "common/gametypes/gametype/lms/sv_lms.qc:85"
+    port_refs:
+      - "src/XonoticGodot.Server/Campaign.cs:BotsMayStart"
+      - "src/XonoticGodot.Server/GameWorld.cs:OnClientSpawned (line 755)"
+      - "src/XonoticGodot.Server/Bot/BotPopulation.cs:MovementHeld (line 429-431)"
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs (pre-game movement hold, line 226)"
+    constants:
+      - { name: "set true on", base: "first real client spawn (client.qc:2082)", port: "OnClientSpawned (non-bot)", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Confirmed wired ONLY into bot MOVEMENT (BotPopulation.MovementHeld + BotBrain pre-game hold). The round-handler campaign gate (Base round_handler.qc:38) is EXPLICITLY DEFERRED in the port (RoundHandler.cs comment: 'Deferred: ... campaign bot gating')."
+      - "Base also keys monster move (sv_monsters.qc:846) + monster think (1165), the campcheck mutator (sv_campcheck.qc:51), and the LMS campaign-start gate (sv_lms.qc:85) off campaign_bots_may_start; none of these subsystems consult Campaign.BotsMayStart in the port (monster AI move/think + campcheck not ported with the gate; LMS gate absent)."
+    verification:
+      - { kind: code, ref: "BotPopulation.MovementHeld checks g_campaign && !Campaign.BotsMayStart; OnClientSpawned sets it for the human", result: pass }
+      - { kind: code, ref: "RoundHandler.cs explicitly defers campaign bot gating; no BotsMayStart read there", result: fail }
+      - { kind: code, ref: "monster/campcheck/LMS gates: no Campaign.BotsMayStart reference outside Bot/* + GameWorld", result: fail }
+    confidence: high
+    notes: "Bot-movement hold is live and correct; the round-handler / monster / campcheck / LMS start gates that Base also keys off campaign_bots_may_start are NOT wired -> liveness partial, logic partial. In a single-player campaign (no rounds/monsters in the shipped xonoticbeta levels) the practical impact is small, but a rounds-based or monster campaign level would not be held."
+
+  - id: sv-campaign.winlose.decision
+    name: "Win/lose decision: sole-human-winner + beat-the-clock (CampaignPreIntermission)"
+    layer: [authority]
+    base_refs:
+      - "server/campaign.qc:CampaignPreIntermission"
+    port_refs:
+      - "src/XonoticGodot.Server/Campaign.cs:PreIntermission"
+      - "src/XonoticGodot.Server/GameWorld.cs:NextLevel (PreIntermission call, line 1926-1932)"
+    constants:
+      - { name: "win condition", base: "won==1 && lost==0 && checkrules_equality==0 (bots excluded)", port: "same; non-bot clients only (p.IsBot filter)", match: true }
+      - { name: "time-up loss (sole-winner branch)", base: "timelimit!=0 && fraglimit!=0 && time>timelimit*60 -> LOST", port: "same", match: true }
+      - { name: "time-up loss (fallback branch)", base: "timelimit!=0 && time>timelimit*60 -> LOST", port: "same (overTime)", match: true }
+      - { name: "testrun/forcewin overrides", base: "_campaign_testrun -> won; campaign_forcewin -> won", port: "same", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "checkrulesEquality is hardcoded false at the live call site (GameWorld.cs:1930): a degenerate exact-tie at the limit would be scored a win in the port where Base could score it a loss. ForceWin override branch is reachable in unit tests but ForceWin has no LIVE setter (see mapentity.levelwarp) — so in production the forcewin path of this decision is effectively unreachable."
+    verification:
+      - { kind: unit_test, ref: "CampaignFlowTests.PreIntermission_SoloWinAdvancesFrontier / _LossDoesNotAdvance / _ForceWinAlwaysWins / _SoleWinnerButTimeUpIsALoss / _BotsAreNotCountedAsWinnersOrLosers", result: pass }
+      - { kind: code, ref: "GameWorld.NextLevel feeds checkrulesEquality:false (hardcoded)", result: fail }
+    confidence: high
+    notes: "Branch order matches QC exactly. bprint WON/LOST lines route through Campaign.Log -> Commands.ChatBroadcast (presentation faithful). No campaign-specific audio in Base (the `// sound!` comments are unimplemented in Base too)."
+
+  - id: sv-campaign.progress.save
+    name: "Frontier progress persistence to campaign.cfg (CampaignSaveCvar + the save gate)"
+    layer: [authority]
+    base_refs:
+      - "server/campaign.qc:CampaignSaveCvar"
+      - "server/campaign.qc:CampaignPreIntermission (save gate)"
+    port_refs:
+      - "src/XonoticGodot.Server/Campaign.cs:SaveCvar"
+      - "src/XonoticGodot.Server/Campaign.cs:PreIntermission"
+      - "game/net/NetGame.cs:OnProgressSaved bridge"
+    constants:
+      - { name: "save gate", base: "won && cheatcount_total==0 && !testrun && level==g_campaign<name>_index", port: "same", match: true }
+      - { name: "last-level save", base: "entries<2 -> save _won 1 AND _index level+1", port: "same", match: true }
+      - { name: "cfg format", base: "set <k> <v> lines, RMW preserving other keys (tokenize len==3, argv0==set)", port: "same (Split(' '), tok.Length==3, tok[0]==set)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: unit_test, ref: "CampaignFlowTests.PreIntermission_CheatsBlockTheSave / _ReplayingBelowFrontierDoesNotRegressIt / PostIntermission_WinningTheLastLevelEndsTheCampaign / SaveCvar_RewritesCampaignCfgPreservingOtherKeys", result: pass }
+    confidence: high
+    notes: "OnProgressSaved mirrors each saved cvar to the shared menu cvar store so the front-end list sees the new frontier (port private/shared store bridge). QC registercvar+cvar_set side is reproduced by Cvars.Set."
+
+  - id: sv-campaign.transition.next_level
+    name: "Advance / replay / last-level transition (CampaignPostIntermission + CampaignSetup)"
+    layer: [authority]
+    base_refs:
+      - "server/campaign.qc:CampaignPostIntermission"
+      - "common/campaign_setup.qc:CampaignSetup"
+    port_refs:
+      - "src/XonoticGodot.Server/Campaign.cs:PostIntermission"
+      - "src/XonoticGodot.Server/Campaign.cs:Setup"
+      - "src/XonoticGodot.Server/GameWorld.cs:DriveEndOfMatchMapFlow (line 1974-1979)"
+      - "game/net/NetGame.cs:MapChangeRequested"
+    constants:
+      - { name: "last-level end", base: "won && entries<2 -> campaign over (togglemenu 1)", port: "PostIntermission returns false; ApplyMapChange(\"\")", match: true }
+      - { name: "setup index", base: "_campaign_index = offset + won", port: "Offset + n", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "QC CampaignSetup issues disconnect / maxplayers 16 / MapInfo_LoadMap via localcmd; the port reboots the in-process listen server (Shell) preserving campaign mode/index. Equivalent host plumbing for an in-process Godot listen server, not a behavior change."
+    gaps:
+      - "Host plumbing differs (Shell reboot vs QC localcmd disconnect/maxplayers/MapInfo_LoadMap) — intended divergence, not a defect."
+    verification:
+      - { kind: unit_test, ref: "CampaignFlowTests.PostIntermission_NextLevelSetsUpAndTransitions / _LossReplaysSameLevel / _WinningTheLastLevelEndsTheCampaign / _LosingTheLastLevelReplaysIt / Setup_SetsCampaignCvarsAndFiresTransition", result: pass }
+    confidence: high
+    notes: "OnLevelTransition -> QueuedNextMap -> MapChangeRequested -> Shell reboot in campaign mode at the next/replayed level. Menu->host boot entry is SingleplayerScreen -> StartGameRequested(CampaignId, CampaignIndex) -> NetGame.StartListenServer -> Boot."
+
+  - id: sv-campaign.warp.command
+    name: "Level warp via sv_cmd warp (CampaignLevelWarp)"
+    layer: [authority]
+    base_refs:
+      - "server/campaign.qc:CampaignLevelWarp"
+      - "server/command/sv_cmd.qc:1718"
+    port_refs:
+      - "src/XonoticGodot.Server/Campaign.cs:LevelWarp"
+      - "src/XonoticGodot.Server/Commands.cs:CmdWarp (line 1461)"
+    constants:
+      - { name: "next-level sentinel", base: "n<0 -> campaign_level+1", port: "n<0 -> Level+1", match: true }
+      - { name: "warp setup", base: "Unload; CampaignFile_Load(n,1); if entries CampaignSetup(0) else error", port: "Unload; Load(n,1); if>0 Setup(0) else Echo", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC errors (hard fail 'Sorry, cheater') on an out-of-range warp target; the port logs a benign message instead. Console-only, minor."
+    verification:
+      - { kind: code, ref: "Commands.CmdWarp gated on g_campaign ('Not in a campaign.' otherwise), calls Campaign.LevelWarp(arg | -1)", result: pass }
+    confidence: high
+    notes: "Console-command warp is live; the map-entity warp (target_levelwarp) is the dead sibling — see sv-campaign.mapentity.levelwarp."
+
+  - id: sv-campaign.mapentity.levelwarp
+    name: "target_levelwarp / target_changelevel campaign win-credit (map-triggered)"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/target/levelwarp.qc:target_levelwarp_use"
+      - "common/mapobjects/target/changelevel.qc:target_changelevel_use"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/TargetUtilities.cs:LevelWarpUse"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/TargetUtilities.cs:ChangeLevelUse"
+      - "src/XonoticGodot.Server/Campaign.cs:ForceWin (no live setter)"
+    constants:
+      - { name: "levelwarp cnt", base: "cnt-1 (1-based specific) / -1 (next)", port: "Cnt-1 / -1 (logic present but IsCampaign+CampaignLevelWarpHandler null)", match: false }
+      - { name: "changelevel campaign win", base: "empty chmap + IS_REAL_CLIENT + g_campaign -> campaign_forcewin=true; NextLevel()", port: "NextLevelHandler null -> no-op; NO `ForceWin=true` line exists in the port at all", match: false }
+    status:
+      logic: stub
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "target_levelwarp does nothing in a campaign: CampaignLevelWarpHandler/IsCampaign seams are never wired by the host (dead)."
+      - "target_changelevel campaign win-credit is dead: NextLevelHandler unassigned + the QC `campaign_forcewin = true` (real-client-touched stage win) line has no port equivalent, so a map that ends a stage via target_changelevel never registers the win."
+    verification:
+      - { kind: code, ref: "grep: TargetUtilities.{NextLevelHandler,CampaignLevelWarpHandler,IsCampaign,RealPlayerVoteCount} have ZERO assignments in src/+game/ (only the unrelated Commands.ChangeLevelHandler is wired by NetGame, for the console map/changelevel command)", result: fail }
+      - { kind: code, ref: "Campaign.ForceWin has no assignment except the internal `ForceWin=false` reset in PreInit; no production caller sets it true", result: fail }
+    confidence: high
+    notes: "Spawnfuncs are registered (LevelWarpSetup/ChangeLevelSetup in MapObjectsRegistry) so the entities exist, but degrade to no-op without host seams. ChangeLevelUse's empty-chmap path calls NextLevelHandler (dead) and never reproduces QC's `campaign_forcewin=true` line. ForceWin is exercised in CampaignFlowTests but has no production caller."
+
+  - id: sv-campaign.mapentity.gametype_switch
+    name: "target_changelevel next-map gametype switch (MapInfo_SwitchGameType on .gametype)"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/target/changelevel.qc:target_changelevel_use"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/TargetUtilities.cs:ChangeLevelUse (line 349-352)"
+    constants:
+      - { name: "gametype switch", base: "if(.gametype != \"\") MapInfo_SwitchGameType(...)", port: "log-only Trace, no switch", match: false }
+    status:
+      logic: stub
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "When a target_changelevel sets a .gametype for the next map, Base applies MapInfo_SwitchGameType before the level change; the port only Log.Trace's '... (not ported)' and never switches the gametype. Compounded by the dead NextLevelHandler/ChangeLevelHandler seams, the whole entity is inert."
+    verification:
+      - { kind: code, ref: "ChangeLevelUse: `if(!string.IsNullOrEmpty(self.ChLevelGameType)) Log.Trace(... not ported)` — explicit log-only stub", result: fail }
+    confidence: high
+    notes: "Distinct from the campaign win-credit gap: this is the QC `if(this.gametype != \"\") MapInfo_SwitchGameType(...)` branch, which is reproduced nowhere. Low practical impact (campaign uses one gametype per level via the file), but the entity feature is a stub."
+
+  - id: sv-campaign.forceteam
+    name: "g_campaign_forceteam: force the player onto a given team in campaign"
+    layer: [authority]
+    base_refs:
+      - "server/campaign.qh:autocvar_g_campaign_forceteam"
+      - "server/teamplay.qc:385"
+      - "server/teamplay.qc:938"
+    port_refs:
+      - "src/XonoticGodot.Server/Cvars.cs:373"
+    constants:
+      - { name: "g_campaign_forceteam default", base: "0", port: "0", match: true }
+    status:
+      logic: missing
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "g_campaign_forceteam is registered but never read: a campaign team-mode level cannot force the player onto a given team."
+    verification:
+      - { kind: code, ref: "grep: g_campaign_forceteam appears only in the Cvars.cs registration (line 373), never read in the port; Base reads it in teamplay.qc (team_forced + TeamBalance_GetTeamFromIndex)", result: fail }
+    confidence: high
+    notes: "Base: teamplay.qc:385 sets player.team_forced = autocvar_g_campaign_forceteam when valid; :938 picks the forced team in balance. The port's teamplay consults neither. (bot.qc:185 has only a commented-out reference in Base too.)"
+
+  - id: sv-campaign.welcome.levelnum
+    name: "Campaign level number in the welcome/info message (Campaign_GetLevelNum)"
+    layer: [authority, presentation]
+    base_refs:
+      - "server/campaign.qc:Campaign_GetLevelNum"
+      - "server/client.qc:1080 (SendWelcomeMessage)"
+    port_refs: []
+    constants:
+      - { name: "level num", base: "campaign_level + 1 (networked in SendWelcomeMessage when g_campaign)", port: "not networked", match: false }
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base's SendWelcomeMessage writes a campaign flag + Campaign_GetLevelNum() (level+1) so the client welcome/info dialog shows 'Level N'; the port's welcome/MOTD path has no campaign-level branch (no Campaign_GetLevelNum equivalent, not networked)."
+    verification:
+      - { kind: code, ref: "grep: no GetLevelNum/Campaign level networking in src/ or game/; DialogWelcome has no campaign-level field", result: fail }
+    confidence: medium
+    notes: "Cosmetic info-dialog feature (the campaign level number shown on the welcome screen). The HUD/menu campaign list separately shows progress, so the missing welcome line is low-impact. Marked presentation+logic missing, dead."

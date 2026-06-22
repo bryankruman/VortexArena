@@ -21,6 +21,7 @@ using Godot;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Services;
 using XonoticGodot.Engine.Simulation;
+using XonoticGodot.Game.Loaders;
 using NVec3 = System.Numerics.Vector3;
 using EFlags = XonoticGodot.Engine.Simulation.CsqcModelEffectFlags;
 
@@ -72,12 +73,24 @@ public static class CsqcModelEffects
     /// node (its meshes get the render-flag tweaks), <paramref name="e"/> the networked entity (Effects + origin),
     /// <paramref name="modelFlags"/> the locally-classified MF_* set (0 when unknown). Returns the trail-effect
     /// name to apply to this model (or null for none) so the caller can route it to its trail system.
+    /// <para><paramref name="forced"/> is the optional Wave-3 per-player presentation override
+    /// (<see cref="CsqcModelAppearance.ForcedAppearance"/>): its extra EF_* bits OR onto the networked effects and
+    /// its MF_* bits OR onto <paramref name="modelFlags"/>, so a gametype/mutator can drive role-glow lights,
+    /// powerup/flame visuals, MF trails, or the jetpack loop per player. Omit it for the unchanged behavior.</para>
     /// </summary>
     public static string? Apply(EffectSystem? fx, Node3D root, Entity e, State st, int modelFlags, float frameTime,
-        ISoundService? sound, bool isRespawnGhost)
+        ISoundService? sound, bool isRespawnGhost,
+        CsqcModelAppearance.ForcedAppearance forced = default)
     {
+        // Wave-3 per-player presentation override: OR the forced EF_* bits (role glow / powerup / flame) onto the
+        // networked effects, and OR the forced MF_* model flags onto the locally-classified set. Default-constructed
+        // `forced` (the existing call site, no override) contributes nothing — bit-identical to the prior behavior.
+        // ExtraEffects is masked to the presentation-owned bits so a driver can never force NODRAW/SELECTABLE/etc.
+        int effectsBits = e.Effects | (forced.ExtraEffects & EFlags.ForcedEffectFlags);
+        modelFlags |= forced.ModelFlags;
+
         // QC: int eff = csqcmodel_effects & ~CSQCMODEL_EF_RESPAWNGHOST;  (the ghost bit is handled separately)
-        int eff = e.Effects & ~EFlags.CSQCMODEL_EF_RESPAWNGHOST;
+        int eff = effectsBits & ~EFlags.CSQCMODEL_EF_RESPAWNGHOST;
         NVec3 origin = e.Origin;
 
         // The model's flattened mesh list, cached on State and reused across frames (3.2-2) so the render-flag
@@ -155,7 +168,7 @@ public static class CsqcModelEffects
         // Remember whether any render-flag-affecting bit was applied this frame (EF_* incl. the ghost→additive),
         // so the caller re-runs ONE more frame after they clear to reset the flags (else additive/fullbright/
         // depthhack/no-shadow stick). modelFlags only drives trail+jetpack, not material flags, so it's excluded.
-        st.LastEffects = e.Effects | (isRespawnGhost ? EFlags.CSQCMODEL_EF_RESPAWNGHOST : 0);
+        st.LastEffects = effectsBits | (isRespawnGhost ? EFlags.CSQCMODEL_EF_RESPAWNGHOST : 0);
         return tref;
     }
 
@@ -202,6 +215,24 @@ public static class CsqcModelEffects
     /// change + freed-mesh validity scan, incl. the staggered placeholder→real swap) stays identical.
     /// </summary>
     public static List<MeshInstance3D> GetCachedMeshes(State st, Node3D root) => EnsureMeshCache(st, root);
+
+    /// <summary>
+    /// Override the per-player FORCED glowmod on a cached mesh list — the glow companion to
+    /// <see cref="ModelTint.SetColormod"/>, for the Wave-3 presentation layer to tint a player's model glow by
+    /// role (gametype color, powerup) on top of the colormap-derived glowmod the appearance pass set. Call AFTER
+    /// <see cref="ModelTint.ApplyAppearance(System.Collections.Generic.IReadOnlyList{MeshInstance3D},int,bool,float,bool,ref ModelTint.TintCache)"/>
+    /// and invalidate that pass's change-gate (set <c>Tint.Valid=false</c>) so the real glowmod repaints the frame
+    /// the override clears — exactly the pattern the frozen-tint overlay uses for colormod. No-op when
+    /// <paramref name="forced"/> has no forced glowmod (<see cref="CsqcModelAppearance.ForcedAppearance.HasForcedGlowmod"/>).
+    /// </summary>
+    public static void ApplyForcedGlowmod(IReadOnlyList<MeshInstance3D> meshes, CsqcModelAppearance.ForcedAppearance forced)
+    {
+        if (!forced.HasForcedGlowmod)
+            return;
+        var glow = new Color(forced.ForcedGlowmod.r, forced.ForcedGlowmod.g, forced.ForcedGlowmod.b);
+        for (int i = 0; i < meshes.Count; i++)
+            meshes[i].SetInstanceShaderParameter(PlayerSkinShader.GlowmodUniform, glow);
+    }
 
     /// <summary>Return the model's cached mesh list, rebuilding it when the model node changed (a swap, by
     /// instance id) or a cached mesh was freed. The validity scan is O(meshes) of cheap native calls — no

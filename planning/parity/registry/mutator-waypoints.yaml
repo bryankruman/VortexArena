@@ -1,0 +1,374 @@
+unit: mutator-waypoints
+category: mutator
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 13
+  worst_gaps:
+    - "Player-deployed waypoints (personal/here/danger pings + team HELP-ME) are DEAD: no server impulse dispatch; deploy/attach/helpme API has zero callers."
+    - "Only CTF emits waypoints; Domination/Onslaught/KeyHunt/Assault/Keepaway/Nexball/Race/FreezeTag/itemstime/monster/turret/weapon/vehicle/buff markers are all missing (CollectWaypoints unimplemented)."
+    - "Client tuning cvars are inert: WaypointSpriteLayer hardcodes constants; g_waypointsprite_* and cl_hidewaypoints (incl. the menu bindings) have no effect."
+    - "Presentation fades missing: distance-fade, edge-fade, crosshair-fade, per-sprite scale, text/uppercase toggle, per-def blink, radar ping ring all unimplemented."
+    - "SPRITERULE_DEFAULT visibility: port treats Default as visible-to-everyone unconditionally; QC restricts team-set Default waypoints to same-team live players."
+features:
+  - id: waypoints.registry.defs
+    name: "Waypoint-kind registry (WP_* defs: text/icon/color/blink)"
+    layer: [shared]
+    base_refs:
+      - "common/mutators/mutator/waypoints/all.inc:REGISTER_WAYPOINT"
+      - "common/mutators/mutator/waypoints/all.qh:Waypoint"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs:WaypointRegistry"
+    constants:
+      - { name: "def_count", base: "63 (all.inc) + Null + ~12 RadarIcons", port: "38 (Waypoints.cs Build)", match: false }
+      - { name: "WP_FROZEN_COLOR", base: "0.25 0.9 1", port: "0.25 0.9 1", match: true }
+      - { name: "WP_OnsCPDefend / OnsCPAttack / Seeker blink", base: "0.5 / 2 / 2", port: "def absent (would be 1 via fallback)", match: false }
+      - { name: "blink default / superweapon / item / FlagReturn (spritelookupblinkvalue)", base: "1 / 2 / item.m_waypointblink / 2", port: "1 (all flattened)", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Missing defs (25 of 63): Race (Checkpoint/Finish/Start/StartFinish), Keepaway/Tka (KaBall/KaBallCarrier/TkaBallCarrier{Red,Blue,Yellow,Pink}), NbBall/NbGoal, LmsLeader, all Onslaught (OnsCP/OnsCPDefend/OnsCPAttack/OnsGen/OnsGenShielded), Buff, Item, Weapon, Seeker, KeyCarrierFriend, KeyCarrierFinish, VehicleIntruder. Port DOES have KeyDropped + KeyCarrier{Red,Blue,Yellow,Pink} (no Neutral); FlagBaseNeutral/Dropped/CarrierEnemy present."
+      - "Per-def blink values flattened to 1: spritelookupblinkvalue (superweapon WP_Weapon=2, WP_Item=item.m_waypointblink, WP_FlagReturn=2) lost; OnsCPDefend=0.5 / OnsCPAttack=2 / Seeker=2 defs absent entirely."
+    verification:
+      - { kind: code-read, ref: "all.inc vs WaypointRegistry.Build", result: partial }
+    confidence: high
+    notes: "Defs that exist are faithful (name/text/icon/color). The unported defs only matter once their gametypes emit waypoints — which they don't (see liveness rows)."
+
+  - id: waypoints.server.manager_api
+    name: "Server WaypointSprite_* spawn/update/kill API + manager"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/waypoints/waypointsprites.qc:WaypointSprite_Spawn"
+      - "common/mutators/mutator/waypoints/waypointsprites.qc:WaypointSprite_Kill"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs:WaypointSprites"
+    constants: []
+    status:
+      logic: partial
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "DEAD: Spawn/SpawnFixed/DeployFixed/DeployPersonal/Attach/AttachCarrier/UpdateSprites/UpdateHealth/UpdateRule/UpdateTeamRadar/HelpMePing/Ping/Disown/Kill/DetachCarrier have no callers; _active is always empty."
+      - "Only Reset() (GameWorld.cs:496, map load) and Think() (GameWorld.cs:1223, per tick) are invoked — both no-op on the empty list."
+      - "sv_waypointsprite_deployed_lifetime/deadlifetime/limitedrange never read (consumers are dead); no WaypointSprite_Init analogue."
+    verification:
+      - { kind: code-read, ref: "grep callers of WaypointSprites.* across src/ + game/ → none but defs", result: fail }
+      - { kind: code-read, ref: "VERIFIER re-grep 'WaypointSprites.(Spawn|SpawnFixed|AttachCarrier|UpdateSprites|UpdateHealth|UpdateRule|UpdateTeamRadar|UpdateBuildFinished|UpdateMaxHealth|Ping|HelpMePing|Disown|Kill|DetachCarrier)' across whole repo → ZERO matches", result: fail }
+    confidence: high
+    notes: "VERIFIER CONFIRMED: independent repo-wide grep of every mutation method returns zero callers; only Reset()/Think() at GameWorld.cs are invoked, both no-op on the empty _active list. The full deploy/attach lifecycle exists as well-documented C# but is unreachable. Classic present-but-dead failure mode."
+
+  - id: waypoints.gametype.collect
+    name: "Per-tick objective waypoint emit (per gametype)"
+    layer: [authority]
+    base_refs:
+      - "common/gamemodes/gamemode/ctf/sv_ctf.qc:ctf_FlagSetup"
+      - "common/mutators/mutator/waypoints/waypointsprites.qc:WaypointSprite_SpawnFixed"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameplayBases.cs:CollectWaypoints"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:CollectWaypoints"
+    constants: []
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Only Ctf overrides CollectWaypoints. Domination/Onslaught control points + generators, Key Hunt keys + carriers, Assault defend/destroy, Keepaway/TeamKeepaway/Nexball balls + goals, Race start/finish/checkpoint, LMS leader, FreezeTag frozen/reviving markers all produce NO waypoints (base no-op)."
+      - "itemstime (item-respawn) spectator waypoints, monster/turret/weapon/vehicle/buff markers: none."
+    verification:
+      - { kind: code-read, ref: "grep 'override void CollectWaypoints' → only Ctf.cs", result: partial }
+    confidence: high
+    notes: "CTF flag markers work; this is a deliberate-looking CTF-first scope but leaves most gametypes' objective markers absent."
+
+  - id: waypoints.ctf.flag_markers
+    name: "CTF flag waypoint sprites (base/dropped/carrier state machine)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/gamemodes/gamemode/ctf/sv_ctf.qc:ctf_FlagSetup"
+      - "common/mutators/mutator/waypoints/all.inc:REGISTER_WAYPOINT(FlagBaseRed)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:CollectWaypoints"
+    constants:
+      - { name: "flag radar tint (red)", base: "colormapPaletteColor(0) ~ 1 .0625 .0625", port: "1 0.0625 0.0625", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No flag-carrier HEALTH BAR (QC WaypointSprite_AttachCarrier sets one from healtharmor_maxdamage; the port's CollectWaypoints sets Health=-1 and AttachCarrier is dead)."
+      - "No auto-helpme on carrier hit (g_ctf_flagcarrier_auto_helpme_damage 100) — depends on the dead helpme path."
+    verification:
+      - { kind: code-read, ref: "Ctf.CollectWaypoints → SendWaypoints → ClientNet → WaypointSpriteLayer/RadarPanel chain", result: pass }
+    confidence: medium
+    notes: "The one live producer. State→def mapping (AtBase/Dropped/Carried × team suffix) is faithful. Rendering observed only in code, not runtime."
+
+  - id: waypoints.deploy.personal_here_danger
+    name: "Player-deployed pings (waypoint_personal/here/danger impulses)"
+    layer: [authority]
+    base_refs:
+      - "server/impulse.qc:IMPULSE(waypoint_personal_here)"
+      - "server/impulse.qc:IMPULSE(waypoint_here_here)"
+      - "server/impulse.qc:IMPULSE(waypoint_danger_here)"
+    port_refs: []
+    constants:
+      - { name: "sv_waypointsprite_deployed_lifetime", base: "10", port: "none", match: false }
+      - { name: "sv_waypointsprite_limitedrange", base: "5120", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No server dispatch for waypoint_personal_here/_crosshair/_death, waypoint_here_*, waypoint_danger_*, waypoint_clear*. Strings appear only as QuickMenuPanel say_team macro text; the server never routes them to DeployPersonal/DeployFixed."
+    verification:
+      - { kind: code-read, ref: "grep waypoint_personal/here/danger in src/+game/ → only QuickMenuPanel text", result: fail }
+    confidence: high
+    notes: "DeployPersonal/DeployFixed exist in WaypointSprites but have no caller — the impulse handlers were never ported."
+
+  - id: waypoints.deploy.helpme
+    name: "Team HELP-ME attach + ping (waypoint_here_follow)"
+    layer: [authority]
+    base_refs:
+      - "server/impulse.qc:IMPULSE(waypoint_here_follow)"
+      - "common/mutators/mutator/waypoints/waypointsprites.qc:WaypointSprite_HelpMePing"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs:HelpMePing"
+    constants:
+      - { name: "SPRITE_HELPME_BLINK", base: "2", port: "0.45 dim (different scheme)", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: stub
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No waypoint_here_follow dispatch; WaypointSprite_Attach(WP_Helpme) + HelpMePing never called. The helpme flash exists in the client layer but no waypoint ever sets Helpme>0."
+    verification:
+      - { kind: code-read, ref: "grep HelpMePing callers → none", result: fail }
+    confidence: high
+    notes: "Core teamplay communication feature is non-functional."
+
+  - id: waypoints.visibility.rules
+    name: "Per-peer visibility filter (SPRITERULE_DEFAULT/TEAMPLAY/SPECTATOR)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/waypoints/waypointsprites.qc:WaypointSprite_visible_for_player"
+      - "common/mutators/mutator/waypoints/waypointsprites.qh:SPRITERULE_DEFAULT"
+    port_refs:
+      - "game/net/ServerNet.cs:WaypointVisible"
+      - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs:SpriteRule"
+    constants: []
+    status:
+      logic: partial
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "SPRITERULE_DEFAULT: port returns visible-to-everyone unconditionally; QC (waypointsprites.qc:996) restricts a team-set Default waypoint to the same team (this.team != view.team → false) AND requires the viewer be a live player (!IS_PLAYER(view) → false, i.e. NOT a spectator)."
+      - "SPRITERULE_SPECTATOR: port = observer-only (peer.IsObserver). QC (qc:989) gates on sv_itemstime: hides from EVERYONE when sv_itemstime==0, and also shows to live players in warmup or when sv_itemstime==2. Port ignores sv_itemstime entirely — wrong in both directions (shows to observers when QC would hide all; never shows the warmup/itemstime==2 live-player case)."
+      - "Personal-waypoint (this.enemy/showto) restriction (qc:985: enemy && enemy != view → false) not modeled (no deployed personals exist anyway)."
+    verification:
+      - { kind: code-read, ref: "ServerNet.WaypointVisible vs WaypointSprite_visible_for_player", result: partial }
+    confidence: high
+    notes: "Correct for CTF flags (everyone-visible). A latent bug if team-restricted Default waypoints are added later."
+
+  - id: waypoints.visibility.three_image_rule
+    name: "TEAMPLAY three-image per-audience swap (netname/2/3)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/waypoints/waypointsprites.qc:Draw_WaypointSprite"
+      - "common/mutators/mutator/waypoints/waypointsprites.qc:WaypointSprite_UpdateSprites"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port networks a single SpriteName; the own-team/enemy-team/spectator image triple (model1/2/3) and the client-side SPRITERULE_TEAMPLAY image selection are not modeled."
+    verification:
+      - { kind: code-read, ref: "WaypointNet has one SpriteName; no rule field beyond server-side filter", result: fail }
+    confidence: high
+    notes: "No current producer uses TEAMPLAY rule, so no visible impact yet, but the mechanism is absent."
+
+  - id: waypoints.net.serialize
+    name: "Waypoint networking (S2C channel + per-peer filter)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/waypoints/waypointsprites.qc:WaypointSprite_SendEntity"
+      - "common/mutators/mutator/waypoints/waypointsprites.qc:Ent_WaypointSprite"
+    port_refs:
+      - "game/net/ServerNet.cs:SendWaypoints"
+      - "game/net/ClientNet.cs:HandleWaypoints"
+      - "game/net/NetProtocol.cs:NetControl.Waypoints"
+    constants: []
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Port re-serializes the full peer-visible waypoint set each tick as a flat record list (id/origin/team/sprite/radaricon/color/health/fade/helpme/maxdist/hideable) instead of QC's delta-bit SendEntity edicts. Equivalent payload; simpler wire format suited to the port's snapshot net model. Capped at 255/peer."
+    gaps:
+      - "No SendFlags delta encoding (always sends all fields); QC sends only changed sub-fields. Bandwidth-only difference."
+      - "wp_extra (item/weapon/buff id used for client text/color/blink lookup) not networked — fine while those producers are absent."
+    verification:
+      - { kind: code-read, ref: "SendWaypoints/HandleWaypoints round-trip; called at ServerNet.cs:471 per tick", result: pass }
+    confidence: high
+    notes: "Live for CTF. Format diverges deliberately; functionally equivalent for the fields used."
+
+  - id: waypoints.client.draw
+    name: "3D in-world sprite draw (icon/text + arrow + project)"
+    layer: [presentation]
+    base_refs:
+      - "common/mutators/mutator/waypoints/waypointsprites.qc:Draw_WaypointSprite"
+      - "common/mutators/mutator/waypoints/waypointsprites.qc:drawspritearrow"
+    port_refs:
+      - "game/client/WaypointSpriteLayer.cs:_Draw"
+    constants:
+      - { name: "iconsize", base: "32", port: "24 (hardcoded)", match: false }
+      - { name: "fontsize", base: "12", port: "13 (hardcoded)", match: false }
+      - { name: "edgeoffset_*", base: "0.06 (cvar)", port: "0.06 (hardcoded const)", match: true }
+      - { name: "SPRITE_ARROW_SCALE", base: "1", port: "approx (custom arrow)", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "IconSize 24 / FontSize 13 are a deliberate 'gently smaller than QC' tweak (per the code comment). The off-screen arrow uses a simpler triangle than QC's bordered glyph but serves the same purpose."
+    gaps:
+      - "g_waypointsprite_text / _uppercase / _iconcolor toggles unimplemented (always icon-if-present, mixed-case, white icon)."
+      - "cl_hidewaypoints (0/1/2) and hideflags & 1 (fixed) / & 2 (radar-only) gating not honored (Hideable networked but never consulted)."
+      - "No per-sprite scale (waypointsprite_scale / minscale) at all."
+    verification:
+      - { kind: code-read, ref: "WaypointSpriteLayer._Draw vs Draw_WaypointSprite", result: partial }
+    confidence: high
+    notes: "Live + renders CTF flags. Icon/text/arrow/health-bar present; many cvar-driven knobs hardcoded or absent."
+
+  - id: waypoints.client.fades
+    name: "Distance / edge / crosshair / lifetime fades + blink"
+    layer: [presentation]
+    base_refs:
+      - "common/mutators/mutator/waypoints/waypointsprites.qc:Draw_WaypointSprite"
+      - "common/mutators/mutator/waypoints/waypointsprites.qc:WaypointSprite_Load"
+    port_refs:
+      - "game/client/WaypointSpriteLayer.cs:_Draw"
+    constants:
+      - { name: "distancealphaexponent", base: "2", port: "2 (hardcoded in maxdist ramp)", match: true }
+      - { name: "distancefade{alpha,scale,distmult}", base: "1 / 0.7 / 0.5", port: "none", match: false }
+      - { name: "edgefade{alpha,dist,scale}", base: "0.5 / 50 / 1", port: "none", match: false }
+      - { name: "crosshairfade{alpha,dist,scale}", base: "0.25 / 150 / 1", port: "none", match: false }
+      - { name: "SPRITE_HELPME_BLINK", base: "2 (bright-half multiply)", port: "0.45 (dim-half multiply)", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "distance-fade, edge-fade, crosshair-fade (alpha+scale ramps) entirely unimplemented; only a raw max-distance cull + a single distance ramp is done."
+      - "Lifetime fade is server-computed (FadeAlpha) and networked rather than client-computed from fadetime/lifetime**timealphaexponent; timealphaexponent (1) not applied."
+      - "Blink: only helpme dim-flash modeled (0.45 in the off-half), differing from QC's *2 bright-half scheme; per-def blink absent."
+    verification:
+      - { kind: code-read, ref: "WaypointSpriteLayer fade block vs Draw_WaypointSprite fade block", result: partial }
+    confidence: high
+    notes: "Most of the polish layer (fades/scales) that makes QC waypoints readable at range is missing."
+
+  - id: waypoints.client.cvars_inert
+    name: "Client tuning cvars (g_waypointsprite_*, cl_hidewaypoints) wiring"
+    layer: [presentation]
+    base_refs:
+      - "common/mutators/mutator/waypoints/waypointsprites.qc:WaypointSprite_Load"
+      - "xonotic-client.cfg:g_waypointsprite_alpha"
+    port_refs:
+      - "game/menu/dialogs/DialogSettingsGame.cs:228"
+      - "assets/data/xonotic-data.pk3dir/xonotic-client.cfg:502"
+    constants:
+      - { name: "g_waypointsprite_alpha", base: "1", port: "config default present, READ BY NOTHING", match: false }
+      - { name: "cl_hidewaypoints", base: "0", port: "config default present, READ BY NOTHING", match: false }
+    status:
+      logic: missing
+      values: stub
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "All g_waypointsprite_* cvars + cl_hidewaypoints exist as config defaults and are bound in DialogSettingsGame, but WaypointSpriteLayer reads none of them — the knobs (alpha/scale/fontsize/edgeoffset/crosshairfade/text/hide) have no effect."
+    verification:
+      - { kind: code-read, ref: "WaypointSpriteLayer uses only const EdgeInset/IconSize/FontSize; no Cvars.Get* calls", result: fail }
+    confidence: high
+    notes: "Menu UI is faithful to QC but misleads the player: changing these settings does nothing."
+
+  - id: waypoints.radar.icons
+    name: "Team radar icons from waypoint sprites"
+    layer: [presentation]
+    base_refs:
+      - "common/mutators/mutator/waypoints/waypointsprites.qc:Ent_WaypointSprite"
+      - "common/mutators/mutator/waypoints/all.qh:REGISTER_RADARICON"
+    port_refs:
+      - "game/hud/RadarPanel.cs:277"
+    constants:
+      - { name: "radar icon sprite", base: "gfx/teamradar_icon_<n>", port: "gfx/teamradar_icon_1 / _2", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Radar PING ring pulse (WaypointSprite_Ping → cnt|BIT(7), the expanding radar circle) is a no-op in the port."
+    verification:
+      - { kind: code-read, ref: "RadarPanel iterates net.Waypoints, draws teamradar_icon per RadarIcon>0", result: pass }
+    confidence: medium
+    notes: "Live for CTF flag radar icons (tinted by team radar color). Ping pulse animation absent."

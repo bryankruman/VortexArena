@@ -155,6 +155,10 @@ public partial class PlayerModel : Node3D
     public void Pose(Entity e, float dt, bool cullEnabled = false, bool isLocal = false,
         float distSqToView = 0f, float cullDistSq = 0f)
     {
+        // Render the networked per-entity alpha (Cloaked / fades) every frame, before the skeletal early-out so a
+        // non-skeletal static prop / streaming placeholder also fades. Cheap when unchanged (idempotent).
+        ApplyAlpha(e.Alpha);
+
         if (!Active) return;
 
         float speed2d = MathF.Sqrt(e.Velocity.X * e.Velocity.X + e.Velocity.Y * e.Velocity.Y);
@@ -188,6 +192,80 @@ public partial class PlayerModel : Node3D
     public void ReleaseSkeleton()
     {
         if (Active) { _player.Free(); Active = false; }
+    }
+
+    // --- per-entity alpha render (W1 alpha-net seam) -----------------------------------------------------
+    // The networked Entity.Alpha (default 1 = opaque; the Cloaked mutator seeds default_player_alpha 0.25, fades
+    // set < 1) is rendered as a per-instance transparency on every mesh under this model. We use
+    // GeometryInstance3D.Transparency (a per-INSTANCE float, 0=opaque..1=fully transparent) — NOT a material edit
+    // — because the resolved-model surface materials are CACHED + SHARED across entities by AssetSystem, so
+    // mutating them would fade every player using that texture (the same RC3/RC4 lesson CsqcModelEffects documents).
+    // Per-instance Transparency keeps each player independent and never touches shared materials.
+    //
+    // The mesh list is flattened once and cached, rebuilt when the model node tree changes (a swap / freed mesh /
+    // the placeholder→real handoff) — detected by child count + validity, mirroring CsqcModelEffects.EnsureMeshCache.
+    private readonly List<GeometryInstance3D> _alphaMeshes = new();
+    private int _alphaMeshesChildGen = -1; // cheap staleness key: combined child-count fingerprint of the tree
+    private float _lastAlphaApplied = float.NaN;
+
+    /// <summary>
+    /// Render this entity's networked <see cref="Entity.Alpha"/> as a per-instance transparency on every mesh
+    /// under the model (Cloaked / fades / invisibility). <paramref name="alpha"/> is the QC render alpha: 1 = fully
+    /// opaque (the default), 0..1 = translucent; ≤0 (gib / hidden) clamps to fully transparent. Idempotent — only
+    /// re-walks the tree / re-applies when the value or the mesh set actually changed, so it is cheap per frame.
+    /// </summary>
+    public void ApplyAlpha(float alpha)
+    {
+        // Godot Transparency is the inverse of QC alpha: 0 = opaque, 1 = invisible. Clamp QC alpha to [0,1]
+        // (a negative gib alpha → fully transparent here; EF_NODRAW hiding is handled separately by the csqc pass).
+        float clamped = alpha < 0f ? 0f : (alpha > 1f ? 1f : alpha);
+        float transparency = 1f - clamped;
+
+        EnsureAlphaMeshCache();
+        // Skip the per-mesh interop when nothing changed (value AND the cached set are unchanged).
+        if (transparency == _lastAlphaApplied)
+            return;
+        _lastAlphaApplied = transparency;
+        foreach (GeometryInstance3D mi in _alphaMeshes)
+            if (GodotObject.IsInstanceValid(mi))
+                mi.Transparency = transparency;
+    }
+
+    /// <summary>Rebuild the flattened mesh list when the model tree changed (swap / freed mesh / placeholder→real),
+    /// keyed on a cheap child-fingerprint; otherwise reuse it. A rebuild also forces the next alpha re-apply (the
+    /// new meshes start opaque and must pick up the current value).</summary>
+    private void EnsureAlphaMeshCache()
+    {
+        int gen = ChildFingerprint();
+        bool stale = gen != _alphaMeshesChildGen;
+        if (!stale)
+            for (int i = 0; i < _alphaMeshes.Count; i++)
+                if (!GodotObject.IsInstanceValid(_alphaMeshes[i])) { stale = true; break; }
+        if (!stale)
+            return;
+        _alphaMeshes.Clear();
+        CollectGeometry(this, _alphaMeshes);
+        _alphaMeshesChildGen = gen;
+        _lastAlphaApplied = float.NaN; // fresh meshes are opaque — force a re-apply of the current alpha
+    }
+
+    /// <summary>A cheap fingerprint of the model subtree shape (so a model swap / placeholder drop invalidates the
+    /// cache without a full tree walk every frame). Counts immediate children plus the skeleton's mesh children —
+    /// enough to notice the placeholder→IQM handoff and any node add/remove.</summary>
+    private int ChildFingerprint()
+    {
+        int n = GetChildCount();
+        if (GodotObject.IsInstanceValid(_skeleton))
+            n = n * 31 + _skeleton.GetChildCount();
+        return n;
+    }
+
+    private static void CollectGeometry(Node node, List<GeometryInstance3D> into)
+    {
+        if (node is GeometryInstance3D gi)
+            into.Add(gi);
+        foreach (Node child in node.GetChildren())
+            CollectGeometry(child, into);
     }
 
     // 3.3: per-bone flag — true when this bone currently has a NON-unit pose scale set. Player skeletons are

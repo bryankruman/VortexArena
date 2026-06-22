@@ -1,0 +1,317 @@
+unit: fx-effectinfo
+category: effect
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 10
+  worst_gaps:
+    - "stainsize baseline default diverges (DP {2,2} vs port {1,1}) — 22 of 30 staintex blocks in the shipped effectinfo.txt OMIT stainsize and rely on the baseline, so they get half-size splat decals"
+    - "staincolor baseline default + semantics diverge (DP 0xFFFFFFFF modding-factor on the particle's own colour vs port 0xFFFFFF absolute tint) — wrong splat-decal colour for blocks relying on the default"
+    - "`stainless` keyword is a no-op in the port but in DP it DISABLES stains (sets staintex[0]=-2 + resets stain fields); harmless today (0 occurrences in the shipped file) but a latent logic divergence"
+    - "No unit test covers the effectinfo.txt parser / keyword table / baseline defaults, nor a wire-protocol encode/decode round-trip; verified by code read only"
+features:
+  - id: fx-effectinfo.registry.named_effects
+    name: "Named EFFECT_* registry (all.inc) + ordering/content hash"
+    layer: [shared]
+    base_refs:
+      - "common/effects/all.qh:EFFECT"
+      - "common/effects/all.inc"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:RegisterAll"
+      - "src/XonoticGodot.Common/Gameplay/Effects/Effect.cs:Effects"
+    constants:
+      - { name: "registry_size_bits", base: "BITS(8) (256 max)", port: "Registry<Effect>", match: true }
+      - { name: "EFFECT_Null id", base: "0", port: "0 (registered first)", match: true }
+      - { name: "team variants (red/blue/yellow/pink/neutral)", base: "per-team registry entries", port: "TeamVariant resolver", match: true }
+      - { name: "commented-out legacy per-team variants", base: "omitted in all.inc", port: "omitted", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "EffectsList.cs is a complete ordered port of all.inc; names/trail flags/team variants match; RegisterAll called from GameInit.cs:22", result: pass }
+    confidence: high
+    notes: "Effects.Hash content-hashes EFFECT_* names in order (CL/SV handshake). Trail flag distinguishes pointparticles vs trailparticles. RegisterAll is live (GameInit)."
+
+  - id: fx-effectinfo.emit.send_effect
+    name: "Server effect emission (Send_Effect / pointparticles / trailparticles)"
+    layer: [authority]
+    base_refs:
+      - "common/effects/all.qc:Send_Effect"
+      - "common/effects/all.qc:Send_Effect_Except"
+      - "common/effects/effect.qh:pointparticles"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectEmitter.cs:Emit"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectEmitter.cs:EmitTrail"
+      - "game/net/ServerNet.cs:EffectNetSink.Emit"
+    constants:
+      - { name: "null-effect guard", base: "if(!eff) return", port: "if (effect is null) return", match: true }
+      - { name: "point-effect count-0 guard", base: "if(!trail && !cnt) return", port: "if (!IsTrail && count==0) return", match: true }
+      - { name: "per-recipient exclusion (ignore)", base: "FOREACH_CLIENT(... && it != ignore ...)", port: "ServerNet.FlushEffects skips ce.Except == st.Player", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "EffectEmitter guards match Send_Effect_Except; the live sink is ServerNet.EffectNetSink (set ServerNet.cs:287) -> CaptureEffect -> FlushEffects with Except exclusion", result: pass }
+    confidence: high
+    notes: "Server gameplay (damage/ctf/items/weapons) calls EffectEmitter.Emit; ServerNet's EffectNetSink captures into _effectQueue and FlushEffects networks per recipient. On a listen server ClientWorld.RenderSink ALSO mirrors emissions in-process to the local renderer (wraps the inner net sink)."
+
+  - id: fx-effectinfo.emit.by_name_fallback
+    name: "Emit by effectinfo name (Send_Effect_) — registry scan + engine fallback"
+    layer: [authority]
+    base_refs:
+      - "common/effects/all.qc:Send_Effect_"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectEmitter.cs:EmitByEffectInfoName"
+      - "src/XonoticGodot.Common/Gameplay/Effects/Effect.cs:Effects.ByEffectInfoName"
+    constants:
+      - { name: "registry name scan", base: "linear scan of registered effectinfo names", port: "Effects.ByEffectInfoName", match: true }
+      - { name: "engine fallback when name not registered", base: "__pointparticles(_particleeffectnum(name), ...)", port: "queues EffectRequest with Effect=null + EffectName", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The Effect=null engine-fallback request (unregistered effectinfo name) records the name but there is no DP-engine __pointparticles equivalent client-side; only names that also resolve in the effectinfo.txt catalog render. Used by te_csqc_lightningarc/te_beam (arc_lightning/heal_beam) which are handled by the beam renderer rather than the registry."
+    verification:
+      - { kind: code, ref: "EmitByEffectInfoName resolves via Effects.ByEffectInfoName then falls back to a null-Effect request; matches Send_Effect_ structure", result: pass }
+    confidence: medium
+    notes: "Lightning-arc/beam temp-effects ride this path (TeCsqcLightningArc/TeBeam) and are drawn by BeamRenderer, not the particle catalog. A null-Effect non-beam name would record but not network (WriteEffect returns false on null Effect)."
+
+  - id: fx-effectinfo.net.wire_protocol
+    name: "EFF_NET_* wire encoding/decoding (Net_Write_Effect / net_effect)"
+    layer: [shared]
+    base_refs:
+      - "common/effects/all.qc:Net_Write_Effect"
+      - "common/effects/all.qc:net_effect (NET_HANDLE)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectEmitter.cs:EffectNetProtocol.Encode"
+      - "game/net/ServerNet.cs:WriteEffect"
+      - "game/net/ClientNet.cs:DecodeEffect"
+      - "game/net/NetGame.cs:OnEffectReceived"
+    constants:
+      - { name: "EFF_NET_VELOCITY/COLOR_MIN/COLOR_MAX/COLOR_SAME", base: "BIT(0..3)", port: "1<<0..1<<3", match: true }
+      - { name: "extraflags ordering (vel; colmin; same-vs-max)", base: "vel|colmin|(colmin&&min==max?same:max)", port: "identical in ExtraFlags()", match: true }
+      - { name: "colour quantise", base: "rint(bound(0, 16*c, 255))", port: "round(clamp(16*c,0,255))", match: true }
+      - { name: "colour decode", base: "/16 client read", port: "ClientNet.ReadColor = byte/16f", match: true }
+      - { name: "count byte (point effects only)", base: "WriteByte(eent_net_count)", port: "bytes.Add(count & 0xFF); trail => none", match: true }
+      - { name: "registered effect id framing", base: "WriteRegistered(Effects)", port: "ServerNet writes Effect.RegistryId (ushort) before body", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No encode/decode round-trip unit test; the byte-exact match is established by code read only."
+    verification:
+      - { kind: code, ref: "ServerNet.WriteEffect calls EffectNetProtocol.Encode (live sink, ServerNet.cs:2210); ClientNet.DecodeEffect is the exact inverse (ClientNet.cs:1041) -> EffectReceived -> NetGame.OnEffectReceived -> _render.OnEffect; byte layout diffed vs Net_Write_Effect", result: pass }
+    confidence: high
+    notes: "CORRECTED from the draft's liveness:unknown. The wire protocol is fully live and bidirectional on the real networked path. The draft's gap 'decode side not located/confirmed wired' is RESOLVED: ClientNet.DecodeEffect + ReadColor implement the net_effect NET_HANDLE. Only the test gap remains."
+
+  - id: fx-effectinfo.catalog.file
+    name: "Shipped effectinfo.txt catalog (~800 layered blocks)"
+    layer: [presentation]
+    base_refs:
+      - "data/xonotic-data.pk3dir/effectinfo.txt"
+      - "common/effects/effectinfo.inc"
+    port_refs:
+      - "assets/data/xonotic-data.pk3dir/effectinfo.txt"
+    constants:
+      - { name: "effect block count", base: "800 blocks (violence build)", port: "800 blocks", match: true }
+      - { name: "file size", base: "9043 lines", port: "9043 lines", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: value, ref: "wc/grep: 9043 lines, 800 '^effect ' blocks; staintex=30/staincolor=30/stainsize=8 occurrences; standard violence build; all key weapon/item/CTF names present", result: pass }
+    confidence: high
+    notes: "Same shipped file DarkPlaces parses. Gentle-mode effects are extra named blocks selected by consumers (cl_gentle/sv_gentle), not a separate file."
+
+  - id: fx-effectinfo.parser.tokenize
+    name: "effectinfo.txt parser/tokeniser (CL_Particles_ParseEffectInfo)"
+    layer: [presentation]
+    base_refs:
+      - "darkplaces/cl_particles.c:CL_Particles_ParseEffectInfo"
+      - "common/effects/effectinfo.qc:effectinfo_read"
+    port_refs:
+      - "game/client/EffectInfo.cs:Parse"
+      - "game/client/EffectInfo.cs:Tokenize"
+      - "game/client/EffectInfo.cs:Load"
+    constants:
+      - { name: "comment / quote / newline-terminates handling", base: "COM_ParseToken_Simple", port: "Tokenize scanner", match: true }
+      - { name: "same-named blocks layer into one effect", base: "yes (DP reuses by effectnameindex)", port: "Dictionary<name, List<block>>", match: true }
+      - { name: "case-insensitive name lookup", base: "n/a (engine exact strcmp)", port: "OrdinalIgnoreCase", match: true }
+      - { name: "color/tex/stain ints via strtol base 0", base: "readints = strtol(.,.,0)", port: "H(): 0x hex or decimal (no octal)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port is LENIENT where DP errors: DP's checkparms() aborts a block on wrong arg count and 'command before effect' breaks parsing; port silently skips. Also DP strtol base-0 treats a leading-0 token as octal; port reads it decimal. None occur in the shipped (generated) file, so no observable divergence."
+      - "No unit test covers the parser / keyword table / baseline defaults; verified by code read only."
+    verification:
+      - { kind: code, ref: "Tokenize reproduces DP whitespace/newline/'//'/quote scanner; blocks layer by name; diffed against CL_Particles_ParseEffectInfo:314-479", result: pass }
+    confidence: medium
+    notes: "Lazy-loaded once per map via EffectSystem.EnsureInfoLoaded (NetGame.Warmup, NetGame.cs:948). VFS text loader preferred, disk fallback to assets/data. Miss leaves catalog empty -> heuristic fallback."
+
+  - id: fx-effectinfo.model.baseline_defaults
+    name: "Parsed emitter data model + baseline defaults (particleeffectinfo_t)"
+    layer: [presentation]
+    base_refs:
+      - "darkplaces/cl_particles.c:baselineparticleeffectinfo"
+      - "common/effects/effectinfo.qc:EffectInfo (FIELDS)"
+    port_refs:
+      - "game/client/EffectInfoParticle.cs:EffectInfoEmitter"
+    constants:
+      - { name: "tex default", base: "{63,63}", port: "Tex0=Tex1=63", match: true }
+      - { name: "size default", base: "{1,1,0}", port: "SizeMin=SizeMax=1, SizeIncrease=0", match: true }
+      - { name: "alpha default", base: "{0,256,256}", port: "AlphaMin=0,AlphaMax=256,AlphaFade=256", match: true }
+      - { name: "time default", base: "{16777216,16777216}", port: "TimeMin=TimeMax=16777216", match: true }
+      - { name: "stretchfactor default", base: "1", port: "StretchFactor=1", match: true }
+      - { name: "lighttime default", base: "16777216", port: "LightTime=16777216", match: true }
+      - { name: "lightcolor default", base: "{1,1,1}", port: "LightColor=(1,1,1)", match: true }
+      - { name: "rotate default", base: "{0,360,0,0}", port: "RotateBaseMin=0,Max=360,SpinMin=0,Max=0", match: true }
+      - { name: "color default", base: "{0xFFFFFF,0xFFFFFF}", port: "Color0=Color1=0xFFFFFF", match: true }
+      - { name: "staintex default", base: "{-1,-1}", port: "StainTex0=StainTex1=-1", match: true }
+      - { name: "stainalpha default", base: "{1,1}", port: "StainAlphaMin=StainAlphaMax=1", match: true }
+      - { name: "staincolor default", base: "{0xFFFFFFFF,0xFFFFFFFF} (modding factor; 0x808080 neutral)", port: "0xFFFFFF (absolute tint)", match: false }
+      - { name: "stainsize default", base: "{2,2}", port: "StainSizeMin=StainSizeMax=1", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "stainsize baseline default diverges (DP {2,2} vs port {1,1}). 22 of the 30 staintex-declaring blocks in the shipped file OMIT stainsize, so they inherit the baseline and render at half size — NOT a minor edge case."
+      - "staincolor baseline default + semantics diverge: DP defaults to {0xFFFFFFFF,0xFFFFFFFF} and treats staincolor as a MODDING FACTOR on the particle's own colour (0x808080 = neutral); the port defaults 0xFFFFFF and consumes StainMidColor as an ABSOLUTE tint. Wrong splat tint for blocks relying on the default."
+    verification:
+      - { kind: value, ref: "diffed EffectInfoEmitter field defaults vs baselineparticleeffectinfo (cl_particles.c:201-277); confirmed staincolor={-1,-1}, stainsize={2,2}, rotate={0,360,0,0}", result: fail }
+    confidence: high
+    notes: "All non-stain defaults match exactly. Impact sizing (this audit): 30 blocks set staintex, 30 set staincolor, only 8 set stainsize -> ~22 stain blocks hit the stainsize default mismatch."
+
+  - id: fx-effectinfo.parser.keywords
+    name: "Keyword parsing (type/color/size/alpha/jitter/light/stain/water/...)"
+    layer: [presentation]
+    base_refs:
+      - "common/effects/effectinfo.qc:EFFECTINFO_PARSER"
+      - "darkplaces/cl_particles.c:CL_Particles_ParseEffectInfo"
+    port_refs:
+      - "game/client/EffectInfo.cs:ApplyKeyword"
+      - "game/client/EffectInfo.cs:DefaultsFor"
+    constants:
+      - { name: "type->blend/orientation table", base: "DP particletype[]", port: "DefaultsFor", match: true }
+      - { name: "blood gravity forced to 1", base: "pt_blood gravity=1", port: "info.Gravity=1f on type==Blood", match: true }
+      - { name: "trailspacing -> count = 1/spacing", base: "DP derives countmultiplier", port: "CountMultiplier = 1/TrailSpacing", match: true }
+      - { name: "tex range second-index-exclusive", base: "tex 0 8 = 0..7", port: "Tex0/Tex1 ints", match: true }
+      - { name: "color/staincolor hex (0xRRGGBB)", base: "readints strtol base 0", port: "H() 0x or decimal", match: true }
+      - { name: "`stainless` semantics", base: "staintex[0]=-2; reset staincolor/alpha/size (DISABLES stains)", port: "no-op break", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Engine-only render keywords (lightshadow, lightcubemapnum, lightcorona, forcenearest) are parsed-and-ignored: Godot has no analogue for particle coronas, per-light cubemaps, or nearest-filtering. Unknown keywords are silently ignored rather than warned (DP prints a warning). These are deliberate, cosmetic-only omissions."
+    gaps:
+      - "`stainless` is treated as a no-op, but in DP it actively DISABLES a stain (sets staintex[0]=-2 and resets staincolor/stainalpha/stainsize). A block using `stainless` to suppress an inherited baseline stain would still stain in the port. Harmless TODAY (0 occurrences in the shipped effectinfo.txt) but a latent logic bug — hence logic:partial."
+      - "Engine-only keywords (lightcorona/lightcubemapnum/lightshadow/forcenearest) unmodelled — cosmetic dlight/decal detail lost (intended)."
+    verification:
+      - { kind: code, ref: "ApplyKeyword switch vs EFFECTINFO_PARSER + DP parser (cl_particles.c:398-472); all gameplay keywords present, type table matches; stainless mismatch confirmed against cl_particles.c:468", result: pass }
+    confidence: high
+    notes: "Field consumption confirmed in FaithfulParticleBackend (count/jitter/bounce/friction/gravity/water/stretch/stain/velmult). stainless downgraded logic to partial (was 'parsed-and-ignored' in the draft, which mislabeled DP's disable semantic)."
+
+  - id: fx-effectinfo.consume.lifetime_fallback
+    name: "Heuristic fallback lifetime/burst (BuildFromInfo) approximation"
+    layer: [presentation]
+    base_refs:
+      - "darkplaces/cl_particles.c:CL_NewParticle (life = alpha/min(1,alphafade) or time)"
+    port_refs:
+      - "game/client/EffectInfoParticle.cs:EffectInfoEmitter.Lifetime"
+      - "game/client/EffectSystem.cs:BuildFromInfo"
+    constants:
+      - { name: "lifetime clamp", base: "no clamp (per-particle alpha/time)", port: "Clamp(life, 0.05, 6) midpoint", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: partial
+      presentation: partial
+      audio: na
+      liveness: partial
+    intended_divergence: true
+    divergence_rationale: "Lifetime()/BuildFromInfo is the LEGACY heuristic GpuParticles3D fallback used only when the faithful/modern backends are not wired or for the warm/trail-sprite query. The default faithful backend (cl_particles_modern 0) computes per-particle life exactly (alpha/alphafade or time, whichever first). The clamp + midpoint is a deliberate approximation in the fallback path only."
+    gaps:
+      - "Fallback BuildFromInfo clamps derived life to [0.05,6]s and uses the alpha/time midpoint rather than per-particle; only hit when the routed backend is unavailable."
+    verification:
+      - { kind: code, ref: "EffectSystem.Spawn routes to Router (faithful/modern) first; BuildFromInfo only on un-routed fall-through", result: pass }
+    confidence: medium
+    notes: "Liveness partial: the faithful backend (default) is the live consumer; BuildFromInfo is reachable only as a fallback. Particle simulation parity itself is the separate ParticleSim/dual-system unit (ParticleParityTests)."
+
+  - id: fx-effectinfo.emit.te_builtins
+    name: "te_* temp-effect builtins (te_explosion/te_spark/te_gunshot/te_blood/lightningarc/beams)"
+    layer: [authority]
+    base_refs:
+      - "common/effects/qc/lightningarc.qc:TE_CSQC_ARC"
+      - "darkplaces:te_explosion/te_spark/te_gunshot/te_smallflash (builtins)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectEmitter.cs:TeExplosion"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectEmitter.cs:TeSpark"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectEmitter.cs:TeCsqcLightningArc"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectEmitter.cs:TeBeam"
+    constants:
+      - { name: "te_* -> registered effect name mapping", base: "engine te_* builtins / named effects", port: "Emit(\"NAME\", ...) wrappers", match: true }
+      - { name: "lightning arc carried as beam (END point in velocity)", base: "TE_CSQC_ARC from/to", port: "EmitByEffectInfoName(arc_lightning, from, to, 0)", match: true }
+    status:
+      logic: faithful
+      values: unknown
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The te_* helper -> registry-name mapping (e.g. TeSmallflash -> BLASTER_MUZZLEFLASH, TeGunshot -> MACHINEGUN_IMPACT) is a port convention, not a 1:1 DP te_* semantic; not verified that every live caller hits these wrappers vs emitting the registry effect directly. Beam/arc temp-effects route to BeamRenderer, not the particle catalog."
+    verification:
+      - { kind: code, ref: "EffectEmitter Te* helpers resolve to registered effect names; TeCsqcLightningArc/TeBeam ride the by-name path and are drawn by the beam renderer", result: pass }
+    confidence: low
+    notes: "Added by adversarial pass (draft omitted a row; only the spec port-mapping table mentioned te_*). Caller coverage of these specific wrappers not exhaustively traced; weapon/combo emission largely uses Emit(Effect,...) directly."

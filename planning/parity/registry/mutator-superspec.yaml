@@ -1,0 +1,291 @@
+unit: mutator-superspec
+category: mutator
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 11
+  worst_gaps:
+    - "Entire Super Spectate mutator is unimplemented: g_superspectate cvar does not exist and setting it has no effect (no SuperSpecMutator, not in Mutators.All)."
+    - "No superspec/autospec/superspec_itemfilter/followpowerup/followstrength/followshield spectator console commands; spectators get none of the option toggles or manual follow commands."
+    - "No auto-spectate switching on powerup/mega/flag/item pickup (ItemTouch) or on killer (PlayerDies/followkiller); no pickup-announcement messages."
+    - "No per-client option persistence (superspec-*.options keyed by crypto_idfp); SUPERSPEC_MISSING_UID notification string is registered but dead (no caller, never fires)."
+    - "Scoreboard/serverinfo mutator list never shows the :SS / ', Super Spectators' tags (no BuildMutatorsString/BuildMutatorsPrettyString handler)."
+features:
+  - id: superspec.enable.predicate
+    name: "Enable predicate + registration (expr_evaluate(g_superspectate))"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/superspec/sv_superspec.qc:REGISTER_MUTATOR(superspec, expr_evaluate(autocvar_g_superspectate))"
+    port_refs: []
+    constants:
+      - { name: "g_superspectate (default)", base: "0", port: "none (cvar absent)", match: false }
+      - { name: "registration", base: "REGISTER_MUTATOR via expr_evaluate", port: "no SuperSpecMutator in Mutators.All", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No SuperSpecMutator class exists in src/XonoticGodot.Common/Gameplay/Mutators/; the mutator is not registered in Mutators.All, so MutatorActivation.Apply never adds it. g_superspectate is not a recognized cvar."
+    verification:
+      - { kind: code, ref: "grep -rni superspec|autospec|g_superspectate over src/ and game/ returns only NotificationsList.cs; no Superspec* file in Gameplay/Mutators/", result: fail }
+    confidence: high
+    notes: "Documented deferral: TODO.md:255 lists superspec under 'explicit deferral'; TODO.md:1318 classifies it as admin/niche P3."
+  - id: superspec.state.flag_bitfields
+    name: "Per-client option state (.autospec_flags, .superspec_flags, .superspec_itemfilter)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/superspec/sv_superspec.qc:8-25 (ASF_*/SSF_* consts + .autospec_flags/.superspec_flags/.superspec_itemfilter)"
+    port_refs: []
+    constants:
+      - { name: "ASF_STRENGTH..ASF_FOLLOWKILLER", base: "BIT(0)..BIT(8)", port: "none", match: false }
+      - { name: "ASF_ALL", base: "0xFFFFFF", port: "none", match: false }
+      - { name: "SSF_SILENT/SSF_VERBOSE/SSF_ITEMMSG", base: "BIT(0)/BIT(1)/BIT(2)", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No per-client superspec/autospec option bitfields or item filter string; there is no storage for any superspec preference."
+    verification:
+      - { kind: code, ref: "no ASF_/SSF_ symbols in src/ or game/", result: fail }
+    confidence: high
+    notes: "All option state is purely authority-side per-client fields in Base."
+  - id: superspec.spectate.transfer
+    name: "Spectate transfer helper (superspec_Spectate wrapping Spectate)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/superspec/sv_superspec.qc:27-31 (superspec_Spectate -> Spectate(this, targ))"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No console-driven Spectate(this, targ) transfer API: the port has IsObserver/IsSpectator state and a server SpectatorRules system, but no way to switch a spectator's followed target from a cmd."
+    verification:
+      - { kind: code, ref: "ClientCommandRegistry.cs:57 has only the core 'spectate' command; no spectator-target switch primitive", result: fail }
+    confidence: high
+    notes: "Base relies on the engine Spectate(); the port exposes no equivalent target-switch for mutator code to call."
+  - id: superspec.persistence.options_file
+    name: "Per-client options persistence (load on connect / save on disconnect, crypto_idfp-keyed)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/superspec/sv_superspec.qc:33-61 (superspec_save_client_conf)"
+      - "common/mutators/mutator/superspec/sv_superspec.qc:378-419 (ClientConnect load)"
+      - "common/mutators/mutator/superspec/sv_superspec.qc:437-442 (ClientDisconnect save)"
+    port_refs: []
+    constants:
+      - { name: "options file magic", base: "\"SUPERSPEC_OPTIONSFILE_V1\"", port: "none", match: false }
+      - { name: "local filename", base: "superspec-local.options", port: "none", match: false }
+      - { name: "remote filename", base: "superspec-<uri_escape(crypto_idfp)>.options", port: "none", match: false }
+      - { name: "connect default superspec_flags", base: "SSF_VERBOSE", port: "none", match: false }
+      - { name: "connect default itemfilter", base: "\"\"", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No options-file load on ClientConnect or save on ClientDisconnect; no crypto_idfp-keyed persistence. Spectator superspec/autospec preferences would not be saved or restored even if the rest were ported."
+    verification:
+      - { kind: code, ref: "no superspec-*.options I/O, no SUPERSPEC_OPTIONSFILE_V1 magic anywhere in port", result: fail }
+    confidence: high
+    notes: "Local (listen) host uses a fixed filename; remote clients without a UID are not persisted in Base."
+  - id: superspec.notify.missing_uid
+    name: "Missing-UID notification (delayed-hello think at time+5 -> INFO_SUPERSPEC_MISSING_UID)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/superspec/sv_superspec.qc:370-376 (superspec_hello)"
+      - "common/mutators/mutator/superspec/sv_superspec.qc:390-392 (ClientConnect schedules delayed_hello)"
+      - "common/notifications/all.inc:271 (MSG_INFO SUPERSPEC_MISSING_UID)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:636"
+    constants:
+      - { name: "think delay", base: "time + 5 (s)", port: "none (no scheduler)", match: false }
+      - { name: "notification text", base: "\"^F2You lack a UID, superspec options will not be saved/restored\"", port: "same text (registered string)", match: true }
+      - { name: "notification_INFO_SUPERSPEC_MISSING_UID (default)", base: "2", port: "n/a (no producer)", match: false }
+    status:
+      logic: missing
+      values: faithful
+      timing: missing
+      presentation: stub
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The SUPERSPEC_MISSING_UID notification string is registered (faithful text) but has no caller anywhere in the port (no superspec_hello / delayed-hello equivalent), so it can never fire."
+    verification:
+      - { kind: code, ref: "NotificationsList.cs:636 registers the string; grep finds no Send/emit caller for SUPERSPEC_MISSING_UID", result: fail }
+    confidence: high
+    notes: "Only ported artifact of the whole unit. Text matches Base; dead because the producing mutator is missing."
+  - id: superspec.msg.helper
+    name: "Spectator message helper (superspec_msg: sprint + conditional centerprint by silent/verbose/spamlevel)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/superspec/sv_superspec.qc:63-74 (superspec_msg)"
+    port_refs: []
+    constants:
+      - { name: "centerprint gate", base: "skip if SSF_SILENT, or (spamlevel>1 and !SSF_VERBOSE)", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No superspec message helper: spectators never get the sprint/centerprint pickup or follow announcements, and the silent/verbose/spamlevel gating does not exist."
+    verification:
+      - { kind: code, ref: "no superspec_msg equivalent in port", result: fail }
+    confidence: high
+    notes: "Drives all superspec console/center messaging."
+  - id: superspec.itemfilter.match
+    name: "Item-message classname filter (superspec_filteritem; empty = all)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/superspec/sv_superspec.qc:76-89 (superspec_filteritem)"
+    port_refs: []
+    constants:
+      - { name: "empty filter behavior", base: "match all items", port: "none", match: false }
+      - { name: "match field", base: "item.classname token equality", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No item-pickup-message classname allowlist; the superspec_itemfilter feature is absent."
+    verification:
+      - { kind: code, ref: "no superspec_itemfilter logic in port", result: fail }
+    confidence: high
+    notes: "Tokenizes the per-client filter string and matches item.classname."
+  - id: superspec.itemtouch.autospec_and_msg
+    name: "ItemTouch hook: pickup messages + auto-spectate on powerup/mega/flag/item-msg"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/superspec/sv_superspec.qc:91-139 (MUTATOR_HOOKFUNCTION superspec ItemTouch)"
+    port_refs: []
+    constants:
+      - { name: "spectator gate", base: "IS_SPEC || IS_OBSERVER", port: "none", match: false }
+      - { name: "STRENGTH trigger", base: "item.strength_finished", port: "none", match: false }
+      - { name: "SHIELD trigger", base: "item.invincible_finished", port: "none", match: false }
+      - { name: "MEGA_AR trigger", base: "item.itemdef == ITEM_ArmorMega", port: "none", match: false }
+      - { name: "MEGA_HP trigger", base: "item.itemdef == ITEM_HealthMega", port: "none", match: false }
+      - { name: "FLAG_GRAB trigger", base: "item.classname == \"item_flag_team\"", port: "none", match: false }
+      - { name: "observer_only suppression", base: "ASF_OBSERVER_ONLY skips switch unless true observer", port: "none", match: false }
+      - { name: "return", base: "MUT_ITEMTOUCH_CONTINUE (never blocks pickup)", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No mutator ItemTouch hook in the port (MutatorHooks.cs has no item-touch handler); spectators get no pickup-announcement messages and no auto-follow on Strength/Shield/Mega Armor/Mega Health/flag grab, and ASF_SSIM/ASF_SHOWWHAT/ASF_OBSERVER_ONLY behaviors are absent."
+    verification:
+      - { kind: code, ref: "ItemPickupRules.cs:279 explicitly comments 'the port has no ItemTouch hook chain yet; the common path proceeds' — no MUTATOR_CALLHOOK(ItemTouch), so no superspec spectator pass", result: fail }
+    confidence: high
+    notes: "Core auto-spectate behavior. Depends on the absent ItemTouch shared hook + Spectate transfer + msg helper."
+  - id: superspec.playerdies.followkiller
+    name: "PlayerDies hook: followkiller auto-spectate the attacker"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/superspec/sv_superspec.qc:421-435 (MUTATOR_HOOKFUNCTION superspec PlayerDies)"
+    port_refs: []
+    constants:
+      - { name: "condition", base: "ASF_FOLLOWKILLER && IS_PLAYER(attacker) && it.enemy == victim", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No followkiller behavior: when the player a spectator is watching dies, the camera does not auto-switch to the killer; the show_what follow message is also absent."
+    verification:
+      - { kind: code, ref: "no followkiller / ASF_FOLLOWKILLER logic in port PlayerDies path", result: fail }
+    confidence: high
+    notes: "Base hooks PlayerDies and switches spectators following the victim onto the attacker."
+  - id: superspec.commands.parse
+    name: "Spectator console commands (superspec / autospec / superspec_itemfilter / followpowerup / followstrength / followshield)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/superspec/sv_superspec.qc:141-358 (MUTATOR_HOOKFUNCTION superspec SV_ParseClientCommand)"
+    port_refs: []
+    constants:
+      - { name: "player guard", base: "IS_PLAYER(player) -> return (spectator-only cmds)", port: "none", match: false }
+      - { name: "superspec flags", base: "silent/si, verbose/ve, item_message/im (+ clear)", port: "none", match: false }
+      - { name: "autospec flags", base: "strength/st, shield/sh, mega_health/mh, mega_armor/ma, flag_grab/fg, observer_only/oo, show_what/sw, item_msg/im, followkiller/fk, all/aa (+ clear)", port: "none", match: false }
+      - { name: "follow* cmds", base: "followpowerup (Strength|Shield), followstrength, followshield", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "None of the superspec spectator commands exist: no superspec/autospec option toggles, no superspec_itemfilter management, and no followpowerup/followstrength/followshield manual follow commands. The port HAS a SV_ParseClientCommand-equivalent dispatch (ClientCommandRegistry.cs / Commands.cs) but no MUTATOR_CALLHOOK(SV_ParseClientCommand) chain for a mutator to register these verbs into, so even if the rest were ported there is no seam to hook them."
+    verification:
+      - { kind: code, ref: "ClientCommandRegistry.cs registers core/common/cheat verbs incl. 'spectate' (line 57) but not autospec/superspec/followpowerup/followstrength/followshield; no mutator SV_ParseClientCommand hook chain exists in port", result: fail }
+    confidence: high
+    notes: "followfc [red|blue] from the cvar help text lives in the CTF gametype (sv_ctf.qc:2658), not this mutator, so it is out of scope here. autospec 'item_msg'/'im' maps to ASF_SSIM (BIT 7), distinct from superspec 'item_message'/'im' (SSF_ITEMMSG, BIT 2) — same short form, different flag word, verified Base lines 243/311."
+  - id: superspec.ui.mutator_strings
+    name: "Mutator string tags (:SS machine tag + ', Super Spectators' pretty label)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/superspec/sv_superspec.qc:360-368 (BuildMutatorsString / BuildMutatorsPrettyString)"
+    port_refs: []
+    constants:
+      - { name: "machine tag", base: "\":SS\"", port: "none", match: false }
+      - { name: "pretty label", base: "\", Super Spectators\"", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No BuildMutatorsString / BuildMutatorsPrettyString handler: superspec never appears in the machine mutator tag or the pretty active-mutator label (server browser / scoreboard / serverinfo)."
+    verification:
+      - { kind: code, ref: "no BuildMutatorsString mechanism in port (only a comment reference in RocketFlyingMutator.cs)", result: fail }
+    confidence: high
+    notes: "Shared gap across many ported mutators: the mutator-string builders do not appear to exist in the port."

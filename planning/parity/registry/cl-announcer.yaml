@@ -1,0 +1,265 @@
+unit: cl-announcer
+category: client
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 9
+  worst_gaps:
+    - "Duel title (Announcer_Duel / centerprint_SetDuelTitle) is dead: in 1v1 the 'A vs B' title above the countdown never appears"
+    - "Gametype-name title (Announcer_Gamestart) is dead: centerprint_SetTitle has no live caller, so the title line above the pre-match countdown is blank"
+    - "cl_announcer voice pack + cl_announcer_antispam cvars are inert: HudNotifications hardcodes 'default'/2 and never reads the cvars (values coincidentally match Base defaults), and the AnnouncerOption mutator-hook voice override (overkill) is unported"
+    - "COUNTDOWN_ROUNDSTOP ('Round cannot start', roundstarttime==-1) is registered but never broadcast"
+features:
+  - id: cl-announcer.driver.frame
+    name: "Per-frame announcer driver (gametype gate, gamestart + time)"
+    layer: [presentation]
+    base_refs:
+      - "client/announcer.qc:Announcer"
+    port_refs:
+      - "src/XonoticGodot.Server/AnnouncerController.cs:Tick"
+      - "src/XonoticGodot.Server/GameWorld.cs:OnStartFrame"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "The port has no CSQC announcer timer, so the decision/timing layer (Announcer_Time + the countdown picker) runs server-side and broadcasts via NotificationSystem. Documented in AnnouncerController class summary + GameWorld:616-625. The QC Announcer() gametype!=null gate and the gamestart-then-time call order map onto the server frame."
+    gaps: []
+    verification:
+      - { kind: code, ref: "GameWorld.cs:949 Announcer.Tick() in OnStartFrame; countdown wired GameWorld.cs:614/826", result: pass }
+    confidence: high
+    notes: "Live: Announcer.Tick is invoked every server frame; countdown is driven by the warmup/round handlers. Split across server (timing) + client (audio)."
+  - id: cl-announcer.countdown.numbers
+    name: "Countdown number announcements (3-2-1) + center"
+    layer: [presentation, shared]
+    base_refs:
+      - "client/announcer.qc:Announcer_Countdown"
+      - "common/util.qc:Announcer_PickNumber"
+    port_refs:
+      - "src/XonoticGodot.Server/GameWorld.cs:BroadcastGameStartCountdown"
+      - "src/XonoticGodot.Server/GameWorld.cs:BroadcastRoundStartCountdown"
+      - "src/XonoticGodot.Server/AnnouncerController.cs:PickCountdownNumber"
+      - "src/XonoticGodot.Server/AnnouncerController.cs:CountdownRounded"
+    constants:
+      - { name: "NUM_GAMESTART_n enabled", base: "n<=5", port: "n<=5 (registry Enabled)", match: true }
+      - { name: "NUM_ROUNDSTART_n enabled", base: "n<=3", port: "n<=3 (registry Enabled)", match: true }
+      - { name: "countdown_rounded", base: "floor(0.5+countdown)", port: "floor(0.5+countdown)", match: true }
+      - { name: "game-start NUM gate", base: "!roundstarttime (round modes silent)", port: "Rounds is null", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "CountdownAnnouncerTests: Warmup/Round countdown fires once per whole second (not per frame) -> NUM_GAMESTART_5..1 / NUM_ROUNDSTART_3..1 + COUNTDOWN_* + BEGIN; disabled NUM_ROUNDSTART_5 suppressed", result: pass }
+      - { kind: test, ref: "ClientFeedbackTests: PickCountdownNumber (3/2/1, out-of-range null, RoundStart family) + CountdownRounded floor(0.5+x)", result: pass }
+    confidence: high
+    notes: "AnnceIfEnabled gates on the registry Enabled flag (which encodes the shipped NUM_* defaults), mirroring QC Local_Notification's nent_enabled skip. The PickCountdownNumber helper is auxiliary; the live broadcast uses AnnceIfEnabled directly."
+  - id: cl-announcer.gamestart.prepare
+    name: "PREPARE one-shot on countdown arming (>=5s gate)"
+    layer: [presentation, shared]
+    base_refs:
+      - "client/announcer.qc:Announcer_Gamestart"
+    port_refs:
+      - "src/XonoticGodot.Server/GameWorld.cs:BroadcastGameStartCountdown"
+    constants:
+      - { name: "PREPARE gate", base: "time + 5.0 < startTime (>5s remain)", port: "secondsLeft > 5", match: true }
+      - { name: "one-shot key", base: "previous_game_starttime != startTime", port: "_gameStartCountdownArmed rising edge", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "GameWorld.cs:1243-1267 (_gameStartCountdownArmed rising-edge -> PREPARE once, gated >5s; re-arm on BEGIN)", result: pass }
+      - { kind: test, ref: "CountdownAnnouncerTests.GameStartCountdownBroadcast covers PREPARE-only->5s path (mirror)", result: pass }
+    confidence: high
+    notes: "PREPARE fires exactly once per armed countdown via the armed-second tracker (QC previous_game_starttime one-shot); BEGIN re-arms it. The terminal 0 sends the BEGIN multi (ANNCE_BEGIN + center)."
+  - id: cl-announcer.time.remaining
+    name: "Remaining map-time cues (5/1 min) with hysteresis"
+    layer: [presentation]
+    base_refs:
+      - "client/announcer.qc:Announcer_Time"
+      - "client/announcer.qc:ANNOUNCER_CHECKMINUTE"
+    port_refs:
+      - "src/XonoticGodot.Server/AnnouncerController.cs:Tick"
+      - "src/XonoticGodot.Server/AnnouncerController.cs:CheckMinute"
+    constants:
+      - { name: "arming window", base: "timeleft < m*60 && timeleft > m*60 - 1", port: "same", match: true }
+      - { name: "warmup timeleft", base: "max(0, WARMUP_TIMELIMIT + start - time)", port: "same", match: true }
+      - { name: "match timeleft", base: "max(0, TIMELIMIT*60 + start - time)", port: "same", match: true }
+      - { name: "5-min gate", base: "cl_announcer_maptime >= 2", port: "mode >= 2", match: true }
+      - { name: "1-min gate", base: "cl_announcer_maptime == 1 || == 3", port: "mode == 1 || == 3", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "ClientFeedbackTests: fire-once-per-crossing, re-arm on the way up, mode 1/2/3 gating, intermission + pre-live suppression, warmup-flip re-arm", result: pass }
+    confidence: high
+    notes: "announcer_5min/announcer_1min latches + warmup_stage_prev prime tick reproduced exactly as private fields; fires REMAINING_MIN_n via the AnnounceRemainingMin sink (NotificationSystem broadcast)."
+  - id: cl-announcer.maptime.cvar
+    name: "cl_announcer_maptime mode source + menu mapping"
+    layer: [presentation]
+    base_refs:
+      - "client/announcer.qh:autocvar_cl_announcer_maptime"
+      - "menu/xonotic/dialog_settings_game_messages.qc"
+    port_refs:
+      - "src/XonoticGodot.Server/GameWorld.cs:625"
+      - "game/menu/dialogs/DialogSettingsAudio.cs:107"
+    constants:
+      - { name: "cl_announcer_maptime default", base: "3 (both)", port: "3 (both)", match: true }
+      - { name: "menu '5 min' value", base: "5 (addRange(1,5,4) -> values {1,5})", port: "5", match: true }
+      - { name: "menu 'Disabled'/'1 min'/'Both'", base: "0 / 1 / 3", port: "0 / 1 / 3", match: true }
+      - { name: "read scope", base: "per-client autocvar", port: "server global config store", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Reading cl_announcer_maptime from the server's global config store (rather than per-client) is a consequence of running the announcer server-side and broadcasting globally. Documented in CVARS.md:128. The menu mode values themselves are faithful to Base."
+    gaps: []
+    verification:
+      - { kind: code, ref: "Base dialog_settings_audio.qc:168-171 makeXonoticMixedSlider(cl_announcer_maptime); addRange(1,5,4) (step=4 => values {1,5}) + addText Disabled=0, Both=3 => modes {0,1,5,3}. Port DialogSettingsAudio.cs:108 .Add(Disabled,0)(1 min,1)(5 min,5)(Both,3) — IDENTICAL.", result: pass }
+      - { kind: code, ref: "GameWorld.cs:625 Cvars.FloatOr(cl_announcer_maptime, 3) from server global store; CVARS.md:128", result: pass }
+    confidence: high
+    notes: "CORRECTION (verifier): the draft claimed Base's '5 min' mode is value 2 and the port's '5 min'->5 was a bug. FALSE. Base's shipped audio-settings slider uses addRange(1,5,4) whose third arg is the STEP (mixedslider.qc MixedSlider_addRange) not a count, yielding values {1,5}; '5 min' is literally value 5 in Base. The port matches exactly. The >=2 gate makes any value >=2 behave as '5-min on', so 5 is correct AND canonical. Only the server-global read scope diverges (intended)."
+  - id: cl-announcer.voice.playback
+    name: "Announcer voice playback + antispam + queue"
+    layer: [presentation]
+    base_refs:
+      - "common/notifications/all.qc:Local_Notification_sound"
+      - "common/notifications/all.qc:Local_Notification_Queue_Add"
+      - "common/notifications/all.qc:Local_Notification_Queue_Process"
+      - "common/notifications/all.qc:AnnouncerFilename"
+    port_refs:
+      - "game/hud/HudNotifications.cs:PlayAnnouncer"
+      - "game/hud/HudNotifications.cs:QueueRun"
+      - "game/hud/HudNotifications.cs:ProcessAnnouncerQueue"
+      - "game/net/NetGame.cs:OnNotificationReceived"
+    constants:
+      - { name: "antispam dedup rule", base: "soundfile != prev || time >= prev_time + antispam", port: "same", match: true }
+      - { name: "queuetime 0", base: "guess soundlength(file)", port: "SoundLength lookup / default spacing", match: true }
+      - { name: "queuetime -1", base: "play immediately, no slot", match: true, port: "same" }
+      - { name: "NOTIF_QUEUE_MAX", base: "10", port: "10 (MaxQueueSize)", match: true }
+      - { name: "MSG_ANNCE channel/atten", base: "CH_INFO / ATTEN_NONE (non-positional)", port: "AudioStreamPlayer (non-positional)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "HudNotifications.cs:199-298 (antispam dedup, queue add/process shift-left, sample resolve via AudioLoader sound/announcer/<voice>/<snd>.ogg); live via NetGame.cs:1204-1212 + ProcessAnnouncerQueue NetGame.cs:2104", result: pass }
+    confidence: medium
+    notes: "Faithful by code read against common/notifications/all.qc; no automated test exercises the client audio path, so runtime behavior (actual sample plays, queue spacing) is unverified."
+  - id: cl-announcer.voice.cvars
+    name: "cl_announcer (voice pack) + cl_announcer_antispam wiring"
+    layer: [presentation]
+    base_refs:
+      - "client/announcer.qh:autocvar_cl_announcer"
+      - "client/announcer.qh:autocvar_cl_announcer_antispam"
+      - "client/announcer.qc:AnnouncerOption"
+      - "common/notifications/all.qc:AnnouncerFilename"
+    port_refs:
+      - "game/hud/HudNotifications.cs:AnnouncerVoice"
+      - "game/hud/HudNotifications.cs:AntiSpamInterval"
+    constants:
+      - { name: "cl_announcer default", base: "\"default\"", port: "\"default\" (hardcoded, cvar not read)", match: true }
+      - { name: "cl_announcer_antispam default", base: "2", port: "2f (hardcoded, cvar not read)", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: partial
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "HudNotifications.AnnouncerVoice is hardcoded \"default\" and never assigned from the cl_announcer cvar; changing cl_announcer has no effect (value matches Base default, and only the 'default' pack ships, so harmless in stock content)."
+      - "HudNotifications.AntiSpamInterval is hardcoded 2f and never assigned from the cl_announcer_antispam cvar; the value matches the Base default so behavior is correct out of the box, but the cvar is inert."
+      - "Base AnnouncerFilename resolves the voice pack via AnnouncerOption() = autocvar_cl_announcer + the MUTATOR_CALLHOOK(AnnouncerOption) override (used to swap the announcer voice, e.g. overkill). The port has no AnnouncerOption hook, so a mutator cannot override the announcer voice."
+    verification:
+      - { kind: code, ref: "grep: AnnouncerVoice/AntiSpamInterval set nowhere outside HudNotifications field initializers (only HitSound.cs has an unrelated AntiSpamInterval=0.05f); NetGame wires only AudioLoader/AnnouncerResolver", result: fail }
+      - { kind: code, ref: "grep: no AnnouncerOption mutator hook in src/** or game/** (Base client/announcer.qc:14-20 + client/mutators/events.qh:105)", result: fail }
+    confidence: high
+    notes: "Both cvars exist in xonotic-client.cfg with the Base defaults but are not read by port code. The behavior is correct by default; the gap is configurability (cl_announcer / cl_announcer_antispam user-settability + the mutator voice override), not stock-content correctness."
+  - id: cl-announcer.title.gametype
+    name: "Gametype-name centerprint title above countdown"
+    layer: [presentation]
+    base_refs:
+      - "client/announcer.qc:Announcer_Gamestart"
+      - "client/hud/panel/centerprint.qc:centerprint_SetTitle"
+    port_refs: []
+    constants:
+      - { name: "title text", base: "^BG + MapInfo_Type_ToText(gametype)", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Announcer_Gamestart sets the centerprint title to the gametype display name during the pre-match countdown; CenterPrintPanel.SetTitle exists but has no live caller, so the title line above the countdown is blank."
+    verification:
+      - { kind: code, ref: "grep: CenterPrintPanel.SetTitle has zero call sites in game/**", result: fail }
+    confidence: high
+    notes: "The rendering exists (CenterPrintPanel.cs:162) but nothing drives it. COUNTDOWN_GAMESTART center still shows, only the bold title line is missing."
+  - id: cl-announcer.title.duel
+    name: "Duel title (A vs B) in 1v1 + ROUNDSTOP"
+    layer: [presentation, shared]
+    base_refs:
+      - "client/announcer.qc:Announcer_Duel"
+      - "client/announcer.qc:Announcer_Countdown"
+      - "client/hud/panel/centerprint.qc:centerprint_SetDuelTitle"
+    port_refs: []
+    constants:
+      - { name: "duel title", base: "centerprint_SetDuelTitle(pl1, pl2) on player change", port: "none", match: false }
+      - { name: "ROUNDSTOP center", base: "CENTER_COUNTDOWN_ROUNDSTOP on roundstarttime==-1", port: "registered but unbroadcast", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Announcer_Duel / centerprint_SetDuelTitle is dead: in 1v1 the 'PlayerA vs PlayerB' title above the countdown never appears (CenterPrintPanel.SetDuelTitle has no live caller, and the top-two-players name diff/refresh logic is unported)."
+      - "COUNTDOWN_ROUNDSTOP ('Round cannot start', the roundstarttime==-1 path) is registered in NotificationsList but never broadcast — the round-cannot-start condition is unmodeled in RoundHandler/GameWorld."
+    verification:
+      - { kind: code, ref: "grep: CenterPrintPanel.SetDuelTitle zero call sites; no ROUNDSTOP broadcaster (only the NotificationsList.cs:414 registration)", result: fail }
+    confidence: high
+    notes: "Duel (m_1v1) is recognized elsewhere (ClientWorld Is1v1 field) but the announcer duel-title refresh isn't wired. ROUNDSTOP may be intentionally unreachable if no port gametype produces roundstarttime==-1 — see open question."

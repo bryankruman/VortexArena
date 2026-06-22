@@ -1,0 +1,421 @@
+unit: mutator-nix
+category: mutator
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 14
+  worst_gaps:
+    - "Enable gate omits the instagib/overkill/weaponarena exclusion (IsEnabled = g_nix!=0 only); a direct cvar set can double-activate NIX alongside instagib/overkill."
+    - "OnEntityPreSpawn target_items deletion is NOT ported and has no dispatch site; target_items triggers survive under NIX and can fight it over weapons/ammo."
+    - "ForbidRandomStartWeapons handler is DEAD (zero .Call sites repo-wide); effect moot only while the port grants no random start weapons."
+    - "Per-frame switch re-asserts SwitchWeapon every tick instead of QC's switch-only-when-target-not-owned guard; not bit-identical with g_nix_with_blaster (manual mid-round switch not sticky)."
+    - "BuildMutatorsString / BuildMutatorsPrettyString / SetModname not ported (no such hook chain in the port); NIX contributes no name to the scoreboard/mutator-list string."
+features:
+  - id: mutator-nix.enable.gate
+    name: "Enable predicate (g_nix + arena-mutator exclusion)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nix/sv_nix.qc:34 (REGISTER_MUTATOR nix expr)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/NixMutator.cs:40 (IsEnabled)"
+      - "src/XonoticGodot.Server/GameWorld.cs:511 (MutatorActivation.Apply)"
+    constants:
+      - { name: "g_nix", base: "0", port: "0 (mutators.cfg:145)", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "IsEnabled is `Api.Cvars.GetFloat(\"g_nix\") != 0` only (NixMutator.cs:40-41). QC additionally requires `!MUTATOR_IS_ENABLED(mutator_instagib) && !MUTATOR_IS_ENABLED(ok) && !MapInfo_LoadedGametype.m_weaponarena`. With direct cvar sets, NIX can activate alongside instagib/overkill and the two fight over the per-frame loadout. The stock menu arena radio group hides this in normal play; exposure is console/config only."
+    verification:
+      - { kind: code, ref: "NixMutator.IsEnabled (line 40) vs sv_nix.qc:34; no instagib/ok/weaponarena check present", result: fail }
+      - { kind: code, ref: "[Mutator] discovery -> Mutators.All -> MutatorActivation.Apply (GameWorld.cs:511) activates when g_nix!=0", result: pass }
+    confidence: high
+    notes: "Activation path is live and verified; the missing exclusion is the only gate defect."
+
+  - id: mutator-nix.add.wrinit
+    name: "MUTATOR_ONADD: reset rotation globals + wr_init warm of choosable weapons"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nix/sv_nix.qc:36 (MUTATOR_ONADD)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/NixMutator.cs:54 (Hook)"
+    constants: []
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port resets the rotation globals (nix_weapon/nextweapon/nextchange = 0) and reads cvars, but does NOT run the `FOREACH(Weapons, choosable, it.wr_init(it))` warm-init pass. QC itself comments the per-rotation re-init as 'too slow' and skips it; the ONADD warm is cosmetic/perf and has no observable gameplay effect."
+    verification:
+      - { kind: code, ref: "Hook() resets _nixWeapon/_nixNextWeapon/_nixNextChange + reads cvars; no wr_init loop vs sv_nix.qc:36-44", result: pass }
+    confidence: high
+    notes: "Global reset + cvar read faithful; wr_init warm omitted (cosmetic)."
+
+  - id: mutator-nix.remove.restore
+    name: "MUTATOR_ONREMOVE: restore start_ammo_* + start_weapons loadout"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nix/sv_nix.qc:51 (MUTATOR_ONREMOVE)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/NixMutator.cs:85 (Unhook)"
+    constants: []
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC restores start_ammo_shells/nails/rockets/cells/fuel + STAT(WEAPONS)=start_weapons + best-weapon per slot. Port Unhook only clears weapons, gives blaster, and SwitchToBest — it does NOT restore the start_ammo_* resources or the start_weapons set. Players leaving NIX get a blaster-only loadout, not their normal start kit."
+    verification:
+      - { kind: code, ref: "Unhook (lines 93-103): ClearWeapons + GiveWeapon(blaster) + SwitchToBest; no SetResource(start_ammo_*) / start_weapons restore vs sv_nix.qc:54-69", result: fail }
+    confidence: high
+    notes: "Restore runs on the live unhook path but is a best-effort blaster loadout, not the QC start_ammo_*/start_weapons restore."
+
+  - id: mutator-nix.choose.canchoose
+    name: "NIX_CanChooseWeapon (choosable-weapon filter)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nix/sv_nix.qc:75 (NIX_CanChooseWeapon)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/NixMutator.cs:148 (CanChooseWeapon)"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Omits the `g_weaponarena` sub-branch (keep only g_weaponarena_weapons). Moot because NIX cannot coexist with a weapon arena in Base; would matter only if the missing enable-gate exclusion let them combine. Note: because Normal-flag is required, superweapons (Fireball etc., which lack WEP_FLAG_NORMAL) never enter the NIX pool — see mutator-nix.spawn.loadout."
+    verification:
+      - { kind: code, ref: "CanChooseWeapon (lines 148-154): blaster-when-with_blaster, !MutatorBlocked, require Normal vs sv_nix.qc:75-94", result: pass }
+    confidence: high
+    notes: "blaster-when-with_blaster, WEP_FLAG_MUTATORBLOCKED, WEP_FLAG_NORMAL all matched; only the arena branch is absent."
+
+  - id: mutator-nix.choose.next
+    name: "NIX_ChooseNextWeapon (weighted-random, avoid current)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nix/sv_nix.qc:95 (NIX_ChooseNextWeapon)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/NixMutator.cs:157 (ChooseNextWeapon)"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "RandomSelection_AddFloat(id,1,(id!=current)) reproduced via notCurrent-vs-all pool + Prandom.RangeInt uniform pick (lines 157-172)", result: pass }
+    confidence: high
+    notes: "Uniform over the not-current set (deterministic server-seeded Prandom), falls back to all when current is the only candidate. Faithful to the QC priority-weighting outcome."
+
+  - id: mutator-nix.rotation.engine
+    name: "NIX_GiveCurrentWeapon rotation clock + per-round resync"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nix/sv_nix.qc:105 (NIX_GiveCurrentWeapon)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/NixMutator.cs:175 (GiveCurrentWeapon)"
+    constants:
+      - { name: "g_balance_nix_roundtime", base: "25", port: "25 (cvar, fallback 25)", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "wpn.wr_resetplayer (weapon think-state reset) is not called on the per-round resync. The full-clip prefill for reloadable weapons (QC: weapon_load[nix_weapon] = wpn.reloading_ammo across slots) is also not explicit; the port relies on its lazy weapon-load seeding. Observable outcome largely preserved but not bit-identical."
+    verification:
+      - { kind: code, ref: "dt=ceil(nextchange-time), first-round start-now, nextchange+=roundtime, once-per-round NixLastChangeId gate (lines 183-220) vs sv_nix.qc:105-180", result: pass }
+      - { kind: code, ref: "PlayerPreThink.Call (GameWorld.cs:988) drives it each tick; globals are instance fields (one per process)", result: pass }
+    confidence: high
+    notes: "Round clock/timing bit-faithful. wr_resetplayer + explicit reload prefill are the structural omissions."
+
+  - id: mutator-nix.ammo.refill_trickle
+    name: "Per-weapon ammo wipe/refill + trickle"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nix/sv_nix.qc:130-200 (ammo block)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/NixMutator.cs:203 (resync ammo)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/NixMutator.cs:231 (trickle)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/NixMutator.cs:257 (AmmoTypeOf/AmmoStart/AmmoIncr)"
+    constants:
+      - { name: "g_balance_nix_ammo_shells", base: "60", port: "60", match: true }
+      - { name: "g_balance_nix_ammo_nails", base: "320", port: "320", match: true }
+      - { name: "g_balance_nix_ammo_rockets", base: "160", port: "160", match: true }
+      - { name: "g_balance_nix_ammo_cells", base: "180", port: "180", match: true }
+      - { name: "g_balance_nix_ammo_fuel", base: "100", port: "100", match: true }
+      - { name: "g_balance_nix_ammoincr_shells", base: "2", port: "2", match: true }
+      - { name: "g_balance_nix_ammoincr_nails", base: "6", port: "6", match: true }
+      - { name: "g_balance_nix_ammoincr_rockets", base: "2", port: "2", match: true }
+      - { name: "g_balance_nix_ammoincr_cells", base: "2", port: "2", match: true }
+      - { name: "g_balance_nix_ammoincr_fuel", base: "2", port: "2", match: true }
+      - { name: "g_balance_nix_incrtime", base: "1.6", port: "1.6", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "IT_UNLIMITED_AMMO branch not ported: QC fills to g_pickup_<type>_max when the player has IT_UNLIMITED_AMMO, and skips the trickle entirely in that case. Port always uses g_balance_nix_ammo_<type> and always trickles. Outcome unchanged in stock NIX (IT_UNLIMITED_AMMO is not set), so values are faithful for default play."
+    verification:
+      - { kind: code, ref: "wipe-all 5 resources + refill-current + NixNextIncr trickle (lines 203-236) vs sv_nix.qc:130-200; AmmoTypeOf weapon->resource map vs bal-wep ammo_type", result: pass }
+      - { kind: value, ref: "AmmoStart/AmmoIncr fallbacks (lines 267-285) vs balance-xonotic.cfg:80-89", result: pass }
+    confidence: high
+    notes: "All numeric defaults verified against balance-xonotic.cfg. Logic partial only on the unused IT_UNLIMITED_AMMO path (which also gates the trickle)."
+
+  - id: mutator-nix.weaponset.force
+    name: "Force owned weapon set + switch each frame"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nix/sv_nix.qc:202-219 (STAT(WEAPONS) rewrite + W_SwitchWeapon guard)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/NixMutator.cs:241 (OwnedWeaponSet + SwitchWeapon)"
+    constants: []
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC only calls W_SwitchWeapon when `m_switchweapon != wpn` AND the player does NOT already own m_switchweapon (i.e. a switch is forced only when the current target isn't a now-owned weapon). The port re-asserts Inventory.SwitchWeapon every frame to either the kept-active (blaster/nix) or the nix weapon (lines 248-253). Benign in the common case but not bit-identical; with g_nix_with_blaster a manual mid-round switch should be sticky."
+    verification:
+      - { kind: code, ref: "OwnedWeaponSet.Clear + blaster(if with_blaster) + wpn (lines 244-246) faithful; keepActive/per-frame re-assert (248-253) vs QC W_SwitchWeapon guard (sv_nix.qc:207-219)", result: fail }
+    confidence: medium
+    notes: "Owned-set rewrite faithful; the switch guard is the divergence and needs a runtime check with g_nix_with_blaster."
+
+  - id: mutator-nix.notify.newweapon
+    name: "NIX_NEWWEAPON center notification"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/nix/sv_nix.qc:164 (Send_Notification CENTER_NIX_NEWWEAPON)"
+      - "common/notifications/all.inc:765 (MSG_CENTER_NOTIF NIX_NEWWEAPON, durcnt 1, item_wepname, CPID_NIX)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/NixMutator.cs:217 (NotificationSystem.Center NIX_NEWWEAPON)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:945 (register)"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "register (NotificationsList.cs:945) f1count 0 durcnt 1 item_wepname CPID_NIX text matches all.inc:765; item_wepname resolves weapon-id->name (NotificationTokens.cs:88); suppressed when dt in [1,5] (line 216)", result: pass }
+    confidence: medium
+    notes: "Registration text/args/CPID match QC exactly; arg (weapon-id) order matches. Not runtime-verified on the live HUD."
+
+  - id: mutator-nix.notify.countdown
+    name: "NIX_COUNTDOWN center notification (last 5s)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/nix/sv_nix.qc:181-186 (Send_Notification CENTER_NIX_COUNTDOWN)"
+      - "common/notifications/all.inc:764 (MSG_CENTER_NOTIF NIX_COUNTDOWN, durcnt 2, item_wepname, CPID_NIX, args \"1 f2\")"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/NixMutator.cs:223 (NotificationSystem.Center NIX_COUNTDOWN)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:944 (register)"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "de-duped on NixLastInfoTime != dt; fires only for dt in [1,5] (lines 223-228); args (next-weapon, dt) match QC order; register durcnt 2 / item_wepname / CPID_NIX / ^COUNT text matches all.inc:764", result: pass }
+    confidence: medium
+    notes: "^COUNT durcnt index and live HUD render not runtime-verified; registration and arg order match QC."
+
+  - id: mutator-nix.filter.items
+    name: "FilterItemDefinition (strip items; keep health/armor/powerups by cvar)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nix/sv_nix.qc:237 (FilterItemDefinition)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/NixMutator.cs:107 (OnFilterItemDefinition)"
+      - "src/XonoticGodot.Common/Gameplay/Items/StartItem.cs:90 (FilterItemDefinition.Call)"
+    constants:
+      - { name: "g_nix_with_healtharmor", base: "0", port: "0 (mutators.cfg:147)", match: true }
+      - { name: "g_nix_with_powerups", base: "0", port: "0 (mutators.cfg:148)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Keys off classname tags (item_health*/item_armor*/item_strength|shield|invincible) instead of the registry instanceOf{Health,Armor,Powerup} flags, until the item-class registry exposes those flags. Behaviorally equivalent for stock items."
+    gaps: []
+    verification:
+      - { kind: test, ref: "FilterItemHookTests.cs:124/136/148 Nix_Active_DeletesHealthItem / Nix_WithHealthArmor_KeepsHealthItem / Nix_Active_DeletesAmmoItem", result: pass }
+      - { kind: code, ref: "FilterItemDefinition.Call live at StartItem.cs:90 before the have-pickup gate", result: pass }
+    confidence: high
+    notes: "The only dimension with direct unit-test coverage (3 NIX cases verified); live and faithful for stock items."
+
+  - id: mutator-nix.forbid.throw
+    name: "ForbidThrowCurrentWeapon (no weapon dropping)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nix/sv_nix.qc:222 (ForbidThrowCurrentWeapon)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/NixMutator.cs:125 (OnForbidThrow)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponThrowing.cs:149 (ForbidThrowCurrentWeapon.Call)"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "OnForbidThrow returns true (line 125); ForbidThrowCurrentWeapon.Call live at WeaponThrowing.cs:149,185", result: pass }
+    confidence: high
+    notes: "Faithful and live."
+
+  - id: mutator-nix.spawn.loadout
+    name: "PlayerSpawn loadout override + IT_UNLIMITED_SUPERWEAPONS"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nix/sv_nix.qc:276 (PlayerSpawn)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/NixMutator.cs:129 (OnPlayerSpawn)"
+      - "src/XonoticGodot.Server/ClientManager.cs:542 (PlayerSpawn.Call)"
+    constants: []
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "OnPlayerSpawn sets NixLastChangeId=-1 and calls GiveCurrentWeapon (both faithful) but does NOT set `player.items |= IT_UNLIMITED_SUPERWEAPONS` (QC sv_nix.qc:282). The port HAS a live superweapon-expiry pass (PlayerFrameLogic.SuperweaponTimeout, called every frame via PlayerPowerups at GameWorld.cs:1143) that strips superweapons unless IT_UNLIMITED_SUPERWEAPONS is set. MOOT in stock play: superweapons (e.g. Fireball, SpawnFlags = SuperWeapon|TypeSplash|NoDual, NO WEP_FLAG_NORMAL) fail CanChooseWeapon's Normal-flag requirement, so no superweapon ever enters the NIX rotation. Becomes a live bug only if a superweapon ever becomes choosable (e.g. via the unported g_weaponarena branch)."
+    verification:
+      - { kind: code, ref: "OnPlayerSpawn (lines 129-135): NixLastChangeId=-1 + GiveCurrentWeapon, no IT_UNLIMITED_SUPERWEAPONS vs sv_nix.qc:282", result: fail }
+      - { kind: code, ref: "PlayerSpawn.Call live at ClientManager.cs:542; SuperweaponTimeout live via PlayerPowerups (GameWorld.cs:1143); Fireball.cs:75 lacks WeaponFlags.Normal so excluded by CanChooseWeapon", result: pass }
+    confidence: high
+    notes: "Spawn override is live and faithful; the missing IT_UNLIMITED_SUPERWEAPONS is latent (no superweapon is NIX-choosable under stock flags)."
+
+  - id: mutator-nix.forbid.randomstart
+    name: "ForbidRandomStartWeapons (suppress random start weapons)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nix/sv_nix.qc:271 (ForbidRandomStartWeapons)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/NixMutator.cs:126 (OnForbidRandomStartWeapons)"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Handler returns true (faithful) but is DEAD: zero MutatorHooks.ForbidRandomStartWeapons.Call sites exist repo-wide (only Add/Remove in nix/instagib/melee_only/overkill). Effect is moot only while the port grants no random start weapons; becomes a live bug if such a system lands."
+    verification:
+      - { kind: code, ref: "grep ForbidRandomStartWeapons.Call across src/ -> zero dispatch sites (only HookChain decl at MutatorHooks.cs:334 + Add/Remove in 4 mutators)", result: fail }
+    confidence: high
+    notes: "Same dead-handler pattern as instagib/melee_only/overkill. Logic correct, never invoked."
+
+  - id: mutator-nix.entity.target_items
+    name: "OnEntityPreSpawn: delete target_items triggers"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nix/sv_nix.qc:253 (OnEntityPreSpawn -> delete target_items)"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC's OnEntityPreSpawn hook deletes any `target_items` entity under NIX (they would otherwise change weapons/ammo and fight the rotation). NixMutator has NO OnEntityPreSpawn handler, AND there is no MutatorHooks.OnEntityPreSpawn.Call dispatch site in the port at all. target_items map objects exist (MapObjectsRegistry/TargetUtilities) and would survive under NIX. Low impact (target_items is rare) but a genuine behavioral gap on maps that use it."
+    verification:
+      - { kind: code, ref: "no OnEntityPreSpawn in NixMutator.cs; grep OnEntityPreSpawn.Call across src/ -> zero sites; target_items present in MapObjectsRegistry.cs/TargetUtilities.cs", result: fail }
+    confidence: high
+    notes: "Not ported and no hook chain to carry it."
+
+  - id: mutator-nix.modname.strings
+    name: "BuildMutatorsString / BuildMutatorsPrettyString / SetModname (NIX label)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nix/sv_nix.qc:227 (BuildMutatorsString :NIX)"
+      - "common/mutators/mutator/nix/sv_nix.qc:232 (BuildMutatorsPrettyString , NIX)"
+      - "common/mutators/mutator/nix/sv_nix.qc:285 (SetModname NIX)"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC appends ':NIX'/', NIX' to the mutators string and returns 'NIX' from SetModname (used for the scoreboard mutator list, sv_cmd info, and playerstats modname). The port has no BuildMutatorsString/BuildMutatorsPrettyString/SetModname hook chain (PlayerStats.cs:310 only reads a flat `modname` cvar). NIX contributes nothing to any mutator-name string. Minor (cosmetic/reporting), no gameplay effect."
+    verification:
+      - { kind: code, ref: "grep BuildMutatorsString/SetModname across src/ -> only PlayerStats cvar read + a RocketFlying ref; no NIX hook and no such hook chain", result: fail }
+    confidence: high
+    notes: "Mutator-name string infrastructure absent in the port; cosmetic gap."

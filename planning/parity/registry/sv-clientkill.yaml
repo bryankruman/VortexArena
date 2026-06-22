@@ -1,0 +1,280 @@
+unit: sv-clientkill
+category: server
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 10
+  worst_gaps:
+    - "`/kill` is instant: no g_balance_kill_delay countdown, no kill-indicator entity, no spoken number announcer, no center-print."
+    - "No g_balance_kill_antispam penalty: a player can mash `kill` with no escalating delay (cvar unregistered)."
+    - "selectteam/spectate change team/observer instantly; the killindicator_teamchange deferral, 'already best team' early-out, and per-target countdown center-print are all missing."
+    - "Frozen freezetag/CA players CAN self-kill: the ClientKill mutator hook (Base ft returns FROZEN to block it) is not invoked, and a frozen player is health=1 but not IsDead so CmdKill's IsDead guard misses them — confirmed exploit."
+    - "CTS finish retract respawns the runner (Clients.Spawn) instead of running a silent DEATH_KILL, so the finish self-kill produces no death/obituary/stats."
+    - "Impulse-driven kill (race/cts personal-waypoint clear with g_allow_checkpoints) is absent: the waypoint_clear/wpeditor personal-checkpoint feature is unimplemented in the port."
+features:
+  - id: sv-clientkill.command.kill
+    name: "`kill` console command → suicide"
+    layer: [authority]
+    base_refs:
+      - "server/clientkill.qc:226 ClientKill"
+      - "server/command/cmd.qc:552"
+    port_refs:
+      - "src/XonoticGodot.Server/Commands.cs:1128 CmdKill"
+      - "src/XonoticGodot.Server/Commands.cs:509 (Register \"kill\")"
+    constants: []
+    status:
+      logic: partial
+      values: na
+      timing: partial
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Kills instantly via Combat.Damage(p, null, null, 100000, DeathTypes.Kill); Base defers through ClientKill_TeamChange(this,0) with a countdown."
+      - "Base bails on `this.player_blocked` (and game_stopped); the port only guards spectator/dead, not a player_blocked / game_stopped equivalent."
+      - "Base passes Damage(this,this,this,...) (self as attacker/inflictor); port passes null attacker/inflictor — benign here because DEATH_KILL is special-cased as a self-death, but not literally faithful."
+    verification:
+      - { kind: code, ref: "Commands.cs:1128 CmdKill calls Combat.Damage immediately, no killindicator/countdown; registered Commands.cs:509", result: fail }
+    confidence: high
+    notes: "Outcome (player dies, respawns) is reached, but the deferral state machine is absent. Draft's ClientCommandRegistry.cs:49 ref is the allowlist string, not the registration — corrected to Commands.cs:509."
+  - id: sv-clientkill.countdown.delay
+    name: "g_balance_kill_delay countdown timer before death"
+    layer: [authority]
+    base_refs:
+      - "server/clientkill.qc:94 ClientKill_TeamChange"
+      - "server/clientkill.qc:61 KillIndicator_Think"
+    port_refs: []
+    constants:
+      - { name: "g_balance_kill_delay", base: "2 (s)", port: "unregistered (effectively 0)", match: false }
+      - { name: "round_unstarted_clamp", base: "min(killtime,1)", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No countdown at all; cvar g_balance_kill_delay is registered nowhere in the port (Cvars.cs has neither it nor g_balance_kill_antispam). Death is immediate."
+      - "Missing the round-active-but-not-started clamp to <=1s."
+    verification:
+      - { kind: grep, ref: "g_balance_kill_delay appears in no src file (only xonotic-server.cfg:446 in Base + a planning doc)", result: fail }
+    confidence: high
+    notes: "planning/PLAYER_LOOP_RULES.md lists this as DEFERRED (P2, DEATH5) — currently instant. Base default verified xonotic-server.cfg:446 = 2."
+  - id: sv-clientkill.antispam.penalty
+    name: "g_balance_kill_antispam repeat-use penalty (clientkill_nexttime)"
+    layer: [authority]
+    base_refs:
+      - "server/clientkill.qc:146 ClientKill_TeamChange"
+    port_refs: []
+    constants:
+      - { name: "g_balance_kill_antispam", base: "5 (s); XPM/XDF set 0", port: "unregistered", match: false }
+      - { name: "round_unstarted_antispam_clamp", base: "min(antispam,2)", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No escalating delay on repeated `kill`; the next-allowed-kill carry-forward (clientkill_nexttime; killtime=max(killtime, nexttime-time)) does not exist."
+    verification:
+      - { kind: grep, ref: "g_balance_kill_antispam present in no port source file; Base default xonotic-server.cfg:447 = 5, ruleset-XPM/XDF = 0", result: fail }
+    confidence: high
+    notes: "Carries forward into the next kill's delay in Base; absent here."
+  - id: sv-clientkill.indicator.entity
+    name: "Kill-indicator floating digit entity above the head"
+    layer: [presentation]
+    base_refs:
+      - "server/clientkill.qc:159 ClientKill_TeamChange (spawn killindicator)"
+      - "server/clientkill.qc:61 KillIndicator_Think (setmodel MDL_NUM)"
+    port_refs: []
+    constants:
+      - { name: "scale", base: "0.5", port: "none", match: false }
+      - { name: "origin_offset", base: "'0 0 52'", port: "none", match: false }
+      - { name: "digit_model", base: "MDL_NUM(cnt) for cnt<=10", port: "none", match: false }
+      - { name: "lip_stagger", base: "lip*0.05; clientkilltime floor", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No floating numeric countdown model is attached above the player; nothing is networked for it."
+      - "Clones on g_clones ghosts (the IL_EACH(g_clones) killindicator copy on each non-respawnghost clone) are also absent."
+    verification:
+      - { kind: grep, ref: "no killindicator/KillIndicator symbol in the port src tree", result: fail }
+    confidence: high
+    notes: "CSQC shows MDL_NUM digits 1..10 in Base; entirely missing in port."
+  - id: sv-clientkill.announcer.number
+    name: "Spoken kill countdown announcer (ANNCE_NUM_KILL_n)"
+    layer: [presentation]
+    base_refs:
+      - "server/clientkill.qc:84 KillIndicator_Think (Send_Notification MSG_ANNCE)"
+      - "common/util.qc Announcer_PickNumber (CNT_KILL)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:115"
+      - "src/XonoticGodot.Server/AnnouncerController.cs:192 PickCountdownNumber"
+    constants:
+      - { name: "NUM_KILL announcer set", base: "ANNCE_NUM_KILL_1..10 (CNT_KILL)", port: "NUM_KILL_n defined enabled:false, never sent", match: false }
+    status:
+      logic: missing
+      values: na
+      timing: missing
+      presentation: stub
+      audio: missing
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The spoken 'ten…one' kill countdown is never played; NUM_KILL_n announcer entries exist (NotificationsList.cs:115) but are registered disabled and have no caller."
+      - "AnnouncerController.PickCountdownNumber only handles GameStart/RoundStart kinds — there is no CNT_KILL branch or any NUM_KILL_n send path."
+    verification:
+      - { kind: code, ref: "NotificationsList.cs:115 A(NUM_KILL_n, enabled:false); AnnouncerController.cs:192 has no Kill countdown kind; no CNT_KILL caller", result: fail }
+    confidence: high
+    notes: "Announcer asset entries are present (stub) but dead — no countdown drives them."
+  - id: sv-clientkill.centerprint.teamchange
+    name: "Center-print 'Suicide/Changing to TEAM/Spectating in N'"
+    layer: [presentation]
+    base_refs:
+      - "server/clientkill.qc:188 ClientKill_TeamChange (Send_Notification MSG_CENTER)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:992-998"
+    constants:
+      - { name: "notif set", base: "CENTER_TEAMCHANGE_{SUICIDE,SPECTATE,RED,BLUE,YELLOW,PINK,ALREADYBEST}", port: "strings defined (TEAMCHANGE_*), never emitted by kill path", match: false }
+      - { name: "colormod", base: "black '0 0 0' / grey '0.5 0.5 0.5' / Team_ColorRGB", port: "none", match: false }
+    status:
+      logic: missing
+      values: na
+      timing: missing
+      presentation: stub
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No countdown center-print with live ^COUNT is shown on suicide or team change; the notification strings exist (TEAMCHANGE_SUICIDE/SPECTATE/RED/BLUE/YELLOW/PINK with ^COUNT) but nothing sends them from a kill/teamchange countdown."
+      - "TEAMCHANGE_ALREADYBEST (CENTER, CPID_PREVENT_JOIN) is defined but unreachable since the deferred-teamchange auto-select flow is absent."
+    verification:
+      - { kind: code, ref: "NotificationsList.cs:992-998 defines TEAMCHANGE_* center notifs with ^COUNT; no countdown caller in Commands.cs/Teamplay.cs", result: fail }
+    confidence: high
+    notes: "Strings are faithful (verified line 997 SUICIDE, 996 SPECTATE, 992-995 per-team, 998 ALREADYBEST) but no sender exists."
+  - id: sv-clientkill.teamchange.deferred
+    name: "Deferred team change via killindicator_teamchange (selectteam/spectate)"
+    layer: [authority]
+    base_refs:
+      - "server/clientkill.qc:94 ClientKill_TeamChange"
+      - "server/clientkill.qc:18 ClientKill_Now_TeamChange"
+      - "server/command/cmd.qc:764 (selectteam → ClientKill_TeamChange)"
+      - "server/command/cmd.qc:288,889 (spectate → ClientKill_TeamChange -2)"
+    port_refs:
+      - "src/XonoticGodot.Server/Commands.cs:1112 CmdSelectTeam"
+      - "src/XonoticGodot.Server/Commands.cs:1090 CmdSpectate"
+      - "src/XonoticGodot.Server/Teamplay.cs:215 KillPlayerForTeamChange"
+    constants: []
+    status:
+      logic: partial
+      values: na
+      timing: missing
+      presentation: missing
+      audio: missing
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Team change / spectate happen instantly (set Team + KillPlayerForTeamChange / PutObserverInServer); no killindicator_teamchange deferral, no countdown, no cancel window."
+      - "Missing the auto-select (-1) special cases: defer-to-Join when team<=0 (team_selected=-1 + return), and the 'already best team' early-out (CENTER_TEAMCHANGE_ALREADYBEST). The port's CmdSelectTeam auto path resolves AssignBestTeam and applies it immediately, with an 'already on that team' sprint instead of the center-print."
+      - "Missing the instant-kill shortcut when a silent killindicator (count==1) already exists with killtime<=0."
+    verification:
+      - { kind: code, ref: "CmdSelectTeam (Commands.cs:1112) / CmdSpectate (1090) transition immediately; killindicator_teamchange field does not exist in the port", result: fail }
+    confidence: high
+    notes: "The eventual transition is correct; the timing/deferral/notification layer around it is missing. Base also defers ClientKill_Now_TeamChange via player.qc:519 in some Join flows — not modeled."
+  - id: sv-clientkill.mutator.hooks
+    name: "ClientKill / ClientKill_Now mutator gating (freezetag block, cts/race killtime)"
+    layer: [authority]
+    base_refs:
+      - "server/mutators/events.qh:943 EV_ClientKill / :951 EV_ClientKill_Now"
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:438 (return STAT(FROZEN))"
+      - "common/gametypes/gametype/cts/sv_cts.qc:337 (killtime=0)"
+      - "common/gametypes/gametype/race/sv_race.qc:114 (killtime=0 while qualifying)"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No ClientKill mutator hook: a frozen freezetag/CA player CAN self-kill. CONFIRMED: FreezeTag.cs sets RES_HEALTH=1 + IsFrozen on freeze (not IsDead), so CmdKill's only gates (FragsSpectator / IsDead) miss a frozen player, and Combat.Damage(100000) kills them — defeating the freeze. Base ft hook returns STAT(FROZEN) to forbid it."
+      - "cts/race killtime=0 overrides are moot in the port only because there is no delay; the ClientKill hook + EV_ClientKill_Now hook are both unimplemented."
+    verification:
+      - { kind: code, ref: "CmdKill (Commands.cs:1128) has no frozen/mutator gate; FreezeTag.cs:192/232 frozen!=IsDead; no EV_ClientKill MUTATOR_CALLHOOK equivalent", result: fail }
+    confidence: high
+    notes: "Upgraded from draft's medium to high: independently confirmed no port path blocks a frozen self-kill and frozen state does not satisfy the IsDead guard."
+  - id: sv-clientkill.silent.cts_finish
+    name: "Silent finish kill (ClientKill_Silent, g_cts_finish_kill_delay)"
+    layer: [authority]
+    base_refs:
+      - "server/clientkill.qc:212 ClientKill_Silent"
+      - "common/gametypes/gametype/cts/sv_cts.qc:342 Race_FinalCheckpoint → ClientKill_Silent"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:265 ScheduleRetract"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:272 RetractRunner"
+      - "src/XonoticGodot.Server/GameWorld.cs:1376 (OnFinishRetract = Clients.Spawn)"
+    constants:
+      - { name: "g_cts_finish_kill_delay", base: "2 (s); -1 instant, 0 never", port: "read; positive duration honored, -1 mishandled", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "On delay expiry the port respawns the runner (Clients.Spawn) instead of running a DEATH_KILL, so the finish self-kill yields no death event / obituary / death stat — only a teleport-to-start. It does not use the kill machinery at all."
+      - "The port does not handle the -1 = instant case: ScheduleRetract uses MathF.Max(0f, delay), so g_cts_finish_kill_delay -1 schedules at now+0 (≈instant) BUT 0 = never is NOT honored either — Base 0 means do not kill, while the port schedules a retract at now+0 (fires immediately). Both -1 and 0 collapse to 'retract this frame'."
+    verification:
+      - { kind: code, ref: "Cts.cs:268 ScheduleRetract uses MathF.Max(0,delay); GameWorld.cs:1376 wires OnFinishRetract=Clients.Spawn", result: fail }
+    confidence: high
+    notes: "Positive default (2s) duration matches Base; lethal mechanism differs (respawn vs silent DEATH_KILL). Re-examined the -1/0 semantics: Base -1=instant kill, 0=never kill; the port's Max(0,delay) makes BOTH fire a retract immediately (downgraded values to partial vs draft's 'faithful'). Base default verified gametypes-server.cfg:365 = 2."
+  - id: sv-clientkill.impulse.waypoint_kill
+    name: "Impulse-driven kill on personal-waypoint clear (race/cts checkpoints)"
+    layer: [authority]
+    base_refs:
+      - "server/impulse.qc:505 (waypoint clear → ClientKill)"
+      - "server/impulse.qc:518 (waypoint_clear → ClientKill)"
+    port_refs: []
+    constants:
+      - { name: "g_allow_checkpoints", base: "0", port: "0 (Cvars.cs:330)", match: true }
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base routes the personal-waypoint clear impulse (waypoint_clear*) through ClientKill when (g_cts||g_race) && g_allow_checkpoints, letting a speedrunner reset to their personal checkpoint. The port has no waypoint_clear / wpeditor personal-checkpoint feature at all (only the g_allow_checkpoints cvar shell exists), so this kill caller is absent."
+    verification:
+      - { kind: grep, ref: "no waypoint_clear/ClearPersonal/personal-checkpoint impulse in port src; g_allow_checkpoints cvar present Cvars.cs:330 but unused for a kill", result: fail }
+    confidence: medium
+    notes: "Added in verification — the draft mentioned this Base caller in the spec overview but gave it no feature row. Off-by-default (g_allow_checkpoints 0) and tied to the unported personal-waypoint subsystem, so low practical impact but a genuine unmapped Base caller of ClientKill."

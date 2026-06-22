@@ -1,0 +1,397 @@
+unit: net-entity-state
+category: net
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 13
+  worst_gaps:
+    - "Weapon charge/clip/heat HUD rings never draw: CrosshairPanel charge setters have no live feeder (wepent vortex_charge/clip_load/hagar_load/arc_heat/minelayer_mines + chargepools not networked)"
+    - "No ent_cs enemy-privacy mask (radar_showenemies/SAME_TEAM): every player's origin/health/armor is sent to everyone, PVS-gated only — Base strips private fields for non-teammates"
+    - "Networked anim action state (anim_state/anim_upper_action/anim_lower_action + times) not ported: remote attack/pain/jump torso overlays are reconstructed client-side (LocomotionBlend) from one networked Frame, not the QC animdecide upper/lower split"
+    - "Remote weapon switch animation coarse: only the resolved active weapon is networked, not wepent m_switchweapon/m_switchingweapon"
+    - "No out-of-PVS teammate GPS: Base keeps sending a teammate's coarse ent_cs origin out of PVS (radar blip persists); the port's relevance cull drops the entity entirely"
+    - "Several replicate client cvars unported (cl_autoscreenshot, cl_clippedspectating, cl_autoswitch_cts, cl_handicap*, g_xonoticversion)"
+    - "Animation frame-group cross-fade (cl_lerpanim_maxdelta_framegroups/cl_nolerp) not networked; replaced by client-side LocomotionBlend"
+features:
+  - id: net-entity-state.csqcmodel.change_mask
+    name: "csqcmodel SendFlags change-mask delta channel"
+    layer: [shared]
+    base_refs:
+      - "lib/csqcmodel/sv_model.qc:CSQCModel_Send"
+      - "lib/csqcmodel/cl_model.qc:ENT_CLIENT_MODEL"
+      - "lib/csqcmodel/common.qh:ALLPROPERTIES"
+    port_refs:
+      - "src/XonoticGodot.Net/NetEntity.cs:EntityField"
+      - "src/XonoticGodot.Net/NetEntity.cs:EntityStateCodec.WriteDelta"
+      - "src/XonoticGodot.Net/NetEntity.cs:EntityStateCodec.ReadDelta"
+    constants:
+      - { name: "mask_width_bits", base: "24 (WriteInt24_t)", port: "32 (uint)", match: false }
+      - { name: "origin_quantization", base: "WriteVector 13.3 coord", port: "NetPrecision.Low", match: false }
+      - { name: "angle_quantization", base: "WriteAngle 8-bit", port: "NetPrecision.Low", match: false }
+      - { name: "only_changed_fields_on_wire", base: "true", port: "true", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Unified NetEntityState delta-codec replaces QC's per-entity SendEntity/ReadEntity funcs (csqcmodel + ent_cs + wepent + CSQCProjectile + generic stream) with one change-masked table; the port has no QCVM SendEntity machinery, and DP's own entity delta already works this way. Wire bit-layout differs (32-bit mask, NetPrecision.Low coords) but the only-changed-fields contract and precision class match."
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "NetEntity.cs Diff/WriteDelta/ReadDelta vs CSQCModel_Send", result: pass }
+    confidence: high
+    notes: "Verified by reading NetEntity.cs in full: EntityField is a 32-bit mask; WriteDelta/ReadDelta emit only set fields; Diff compares per field; StatusEffects (bit 16) is what widened the mask past ushort. Field set = a SUBSET of csqcmodel ALLPROPERTIES + entcs radar slice + wepent active weapon. NOT in NetEntityState: scale (BIT12), modelflags/traileffect (BIT2), colormod/glowmod (resolved locally by the appearance hook), v_angle pitch (BIT10, folded into Angles), tag_entity/viewloc, dphitcontentsmask, move_movetype, and the networked anim action state (anim_state/anim_upper/lower_action — see net-entity-state.csqcmodel.anim_state). No dedicated codec unit test located."
+
+  - id: net-entity-state.snapshot.delta_baseline
+    name: "Per-client delta baseline / ack history (DP EntityFrame)"
+    layer: [authority, shared]
+    base_refs:
+      - "lib/csqcmodel/sv_model.qc:CSQCModel_LinkEntity"
+    port_refs:
+      - "src/XonoticGodot.Net/SnapshotDelta.cs:ServerSnapshotHistory"
+      - "src/XonoticGodot.Net/SnapshotDelta.cs:ClientSnapshotHistory"
+      - "game/net/ServerNet.cs:EncodeSnapshot"
+      - "game/net/ClientNet.cs:HandleSnapshot"
+    constants:
+      - { name: "history_capacity_snapshots", base: "engine (DP)", port: "64 (~0.9s@72Hz)", match: unknown }
+      - { name: "delta_against_last_acked", base: "true (DP)", port: "true", match: true }
+    status:
+      logic: faithful
+      values: unknown
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Explicit C# per-client ack/baseline ring replacing DP's engine-side EntityFrame; required because the port has a real client/server split with no shared QCVM. Behavioral contract (deltas vs last acked baseline; lost packet never corrupts; full snapshot when baseline lost) matches DP."
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "SnapshotDelta.cs Encode/Decode + Ack/IsNewer", result: pass }
+    confidence: high
+    notes: "Local player delta-EXCLUDED (excludeEntNum) — mirrors Base never SendEntity-ing the player body so engine prediction stays authoritative."
+
+  - id: net-entity-state.csqcmodel.interpolation
+    name: "Two-snapshot origin/angle interpolation + teleport/stall snap"
+    layer: [presentation]
+    base_refs:
+      - "lib/csqcmodel/interpolate.qc:InterpolateOrigin_Note"
+      - "lib/csqcmodel/interpolate.qc:InterpolateOrigin_Do"
+    port_refs:
+      - "src/XonoticGodot.Net/SnapshotInterpolation.cs:InterpolationBuffer.Note"
+      - "src/XonoticGodot.Net/SnapshotInterpolation.cs:InterpolationBuffer.Sample"
+    constants:
+      - { name: "teleport_snap_dist_u", base: "1000", port: "1000 (TeleportDistance)", match: true }
+      - { name: "stall_snap_interval_s", base: "0.2 (dt>=0.2)", port: "0.2 (MaxInterval)", match: true }
+      - { name: "lerp_excess_clamp", base: "1 + cl_lerpexcess", port: "1 + lerpExcess arg", match: true }
+      - { name: "auto_velocity", base: "IFLAG_AUTOVELOCITY (origin delta)", port: "AutoVelocity=true", match: true }
+      - { name: "angle_blend", base: "fixedvectoangles2 basis blend", port: "BlendAngles fwd/up basis", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Animation frame-group cross-fade (cl_lerpanim_maxdelta_framegroups/cl_nolerp) not networked; replaced by client-side LocomotionBlend — remote animation FRAME blending diverges from Base's networked 2-frame lerp. (The separate networked anim ACTION state is tracked in net-entity-state.csqcmodel.anim_state.)"
+    verification:
+      - { kind: code_read, ref: "InterpolationBuffer.cs constants (TeleportDistance=1000, MaxInterval=0.2, lerpExcess clamp, AutoVelocity, BlendAngles) vs interpolate.qc lines 109-125/133-141 — exact match", result: pass }
+      - { kind: code_read, ref: "ClientNet.cs:961 re.Interp.Note(snap, teleported, ...) — Note is driven per snapshot; SampleRemote (993) samples the render pose", result: pass }
+    confidence: high
+    notes: "Per-remote-entity InterpolationBuffer.Note/Sample, driven each snapshot in ClientNet.HandleSnapshot (verified line 961) and sampled by SampleRemote (line 993). Seam-safe angle blend is the fixedvectoangles2 port. Origin/angle interp is faithful; the animation FRAME-group cross-fade is the partial dimension."
+
+  - id: net-entity-state.csqcmodel.teleport_bit
+    name: "Teleport bit cancels interpolation (EF_TELEPORT_BIT)"
+    layer: [shared]
+    base_refs:
+      - "lib/csqcmodel/sv_model.qc:CSQCModel_CheckUpdate"
+      - "lib/csqcmodel/cl_model.qc:ENT_CLIENT_MODEL (CSQCMODEL_PROPERTY_TELEPORTED)"
+    port_refs:
+      - "src/XonoticGodot.Net/NetEntity.cs:NetEntityFlags.Teleported"
+      - "game/net/ServerNet.cs:teleported (one-tick origin-jump detect)"
+      - "game/net/ClientNet.cs:HandleSnapshot (Teleported -> Interp.Note)"
+    constants:
+      - { name: "tick_jump_threshold", base: "EF_TELEPORT_BIT (explicit on teleport/respawn)", port: "TeleportTickDistance (origin-jump detect)", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Base sets the bit explicitly at the teleport/respawn site (EF_TELEPORT_BIT); the port re-derives it from a one-tick origin-jump past a distance threshold in the snapshot builder. Same observable effect (client snaps instead of lerping) and it also clears the antilag ring (parity with PutPlayerInServer antilag_clear)."
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "ServerNet teleported detect + ClientNet teleported read", result: pass }
+    confidence: medium
+    notes: "Threshold-based detect could miss a small-distance teleport or false-positive a fast mover; acceptable for the snap-vs-lerp decision."
+
+  - id: net-entity-state.csqcmodel.force_updates
+    name: "Forced periodic origin keepalive (CSQCPLAYER_FORCE_UPDATES)"
+    layer: [authority]
+    base_refs:
+      - "lib/csqcmodel/sv_model.qc:CSQCModel_CheckUpdate (CSQCPLAYER_FORCE_UPDATES)"
+      - "common/csqcmodel_settings.qh:CSQCPLAYER_FORCE_UPDATES"
+    port_refs: []
+    constants:
+      - { name: "force_updates_per_sec", base: "4", port: "none (full owner block + deltas every broadcast tick)", match: false }
+      - { name: "CL_MAX_USERCMDS", base: "128", port: "n/a", match: false }
+    status:
+      logic: partial
+      values: missing
+      timing: partial
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: true
+    divergence_rationale: "The port broadcasts a full owner block + entity deltas every server broadcast tick, which is denser than 4 origin sends/sec, so the symptom the keepalive prevents (stale replay buffer / vanishing tag) does not arise on the live path. No explicit keepalive constant is ported."
+    gaps:
+      - "No out-of-PVS teammate GPS: Base keeps sending a teammate's coarse ent_cs origin out of PVS (radar blip persists); the port's relevance cull drops the entity entirely, plus there is no CSQCPLAYER_FORCE_UPDATES keepalive — relies on the dense per-tick broadcast instead."
+    verification:
+      - { kind: grep, ref: "no CSQCPLAYER_FORCE_UPDATES analog in port", result: pass }
+    confidence: medium
+    notes: "The relevance cull (ServerNet.RelevantEntitiesFor) drops the whole entity out of PVS rather than degrading to a GPS-only origin send."
+
+  - id: net-entity-state.entcs.radar_shownames_slice
+    name: "ent_cs GPS slice for radar + shownames teammate health/armor"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/ent_cs.qc:_entcs_send"
+      - "common/ent_cs.qc:entcs_think"
+      - "common/ent_cs.qh:entcs_GetTeam/GetName/GetClientColors"
+    port_refs:
+      - "src/XonoticGodot.Net/NetEntity.cs:NetEntityState (Origin/Health/Armor/Colormap/Model)"
+      - "game/hud/RadarPanel.cs:DrawBlip"
+      - "game/client/ShowNamesLayer.cs"
+    constants:
+      - { name: "health_coding", base: "RES_HEALTH /10 byte, bound 0..255", port: "full short", match: false }
+      - { name: "armor_coding", base: "RES_ARMOR /10 byte", port: "full short", match: false }
+      - { name: "angles_y_coding", base: "/(360/64) byte", port: "NetPrecision.Low full angles", match: false }
+      - { name: "entcs_think_hz", base: "64 (0.015625s)", port: "per broadcast tick", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: partial
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "ent_cs is folded into the unified NetEntityState (Origin/Health/Armor/Colormap/Model) rather than a separate GPS sender; the radar + shownames read it via ClientNet.TryGetRemoteState/SampleRemote. Coding differences (full short vs /10 byte) are cosmetic precision, not a behavioral gap."
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "RadarPanel.DrawBlip + ShowNamesLayer read NetEntityState (Colormap/Health/Armor/Origin)", result: pass }
+    confidence: high
+    notes: "T68 networked the ARMOR slice specifically for the shownames teammate status bar. Spec-state inference (frags/solid) is carried by other channels, not entcs."
+
+  - id: net-entity-state.entcs.privacy_mask
+    name: "ent_cs public/private mask (radar_showenemies / SAME_TEAM)"
+    layer: [authority]
+    base_refs:
+      - "common/ent_cs.qc:_entcs_send (ENTCS_PUBLICMASK gating)"
+      - "common/ent_cs.qc:ENTCS_PUBLICMASK/ENTCS_PRIVATEMASK"
+    port_refs: []
+    constants:
+      - { name: "private_fields", base: "origin, angles_y, health, armor", port: "none (all sent)", match: false }
+      - { name: "public_fields", base: "name, model, skin, colors, frags, handicap, wantsjoin, solid", base_note: "always sent", port: "all sent", match: true }
+      - { name: "enemy_gate", base: "radar_showenemies || SAME_TEAM || !in-game", port: "PVS relevance only", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No ent_cs enemy-privacy mask (radar_showenemies/SAME_TEAM): every player's origin/health/armor is sent to everyone, PVS-gated only — Base strips private fields for non-teammates."
+    verification:
+      - { kind: grep, ref: "no radar_showenemies/showenemies/team-field-filter in ServerNet or src", result: pass }
+    confidence: high
+    notes: "Anti-cheat-relevant: a modified client could read every enemy's exact position/health. Open question whether this is a deferred decision or simply unported."
+
+  - id: net-entity-state.wepent.active_weapon
+    name: "wepent active/held weapon (local viewmodel + remote third-person)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/wepent.qc:WEPENT_NETPROPS (m_weapon)"
+      - "common/wepent.qc:wepent_link"
+    port_refs:
+      - "src/XonoticGodot.Net/NetEntity.cs:NetEntityState.Weapon"
+      - "game/net/ServerNet.cs:WriteOwnerState (ActiveWeaponId)"
+      - "game/net/ClientNet.cs:ActiveWeaponId"
+      - "game/net/ClientEntityView.cs:Player branch -> ViewEntityRenderer"
+      - "game/net/ViewEntityRenderer.cs"
+    constants:
+      - { name: "weapon_id_coding", base: "WriteRegistered(Weapons)", port: "short (registry id)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Local viewmodel weapon rides the full-precision owner block (ActiveWeaponId) rather than a per-slot wepent sender; remote players' held weapon rides NetEntityState.Weapon and is attached third-person by ViewEntityRenderer. Same observable result (correct viewmodel locally, correct held weapon on remotes)."
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "WriteOwnerState + ClientEntityView Player/ViewModel branch", result: pass }
+    confidence: high
+    notes: "The NetEntityKind.ViewModel + Nameplate enum branches in ClientEntityView are DEAD — ServerNet.Classify never returns those kinds; remote weapons attach to the Player entity instead."
+
+  - id: net-entity-state.wepent.charges_clip_heat
+    name: "wepent charge/clip/heat HUD fields (vortex/oknex charge+pool, clip_load/size, hagar_load, minelayer_mines, arc_heat)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/wepent.qc:WEPENT_NETPROPS (vortex_charge, oknex_charge, vortex_chargepool_ammo, oknex_chargepool_ammo, clip_load, clip_size, hagar_load, minelayer_mines, arc_heat_percent)"
+      - "common/wepent.qh"
+    port_refs:
+      - "game/hud/CrosshairPanel.cs:ClipLoad/ClipSize/ChargeFraction/ChargePool/HagarLoad/MineCount/ArcHeat (setters exist, no live feeder)"
+    constants:
+      - { name: "vortex_charge_coding", base: "x255 byte", port: "none (not networked)", match: false }
+      - { name: "oknex_charge_coding", base: "x16 byte", port: "none", match: false }
+      - { name: "clip_load/size_coding", base: "short", port: "none", match: false }
+      - { name: "hagar_load_coding", base: "byte", port: "none", match: false }
+      - { name: "arc_heat_percent_coding", base: "x255 byte", port: "none", match: false }
+      - { name: "minelayer_mines_coding", base: "byte", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: stub
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Weapon charge/clip/heat HUD rings never draw: CrosshairPanel charge setters (ClipLoad/ChargeFraction/ChargePool/HagarLoad/MineCount/ArcHeat) have no live feeder anywhere in game/ — the wepent charge/clip/heat fields are neither networked nor read from local prediction, so the Vortex charge ring, Hagar/Mine-Layer load ring, Arc heat, and reload ring are absent."
+    verification:
+      - { kind: grep, ref: "no assignment to CrosshairPanel.ClipLoad/ChargeFraction/ChargePool/HagarLoad/MineCount/ArcHeat outside the panel itself in game/", result: pass }
+    confidence: medium
+    notes: "Present-but-dead presentation: the panel renders these rings when fed, but nothing feeds them. Needs an in-match Vortex-charge observation to fully confirm (open question)."
+
+  - id: net-entity-state.wepent.switch_alpha_misc
+    name: "wepent switch/alpha/gunalign/porto/tuba/skin viewmodel fields"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/wepent.qc:WEPENT_NETPROPS (m_switchweapon, m_switchingweapon, m_alpha, m_gunalign, porto_v_angle_held, tuba_instrument, skin)"
+    port_refs: []
+    constants:
+      - { name: "m_switchweapon", base: "WriteRegistered(Weapons)", port: "none", match: false }
+      - { name: "m_switchingweapon", base: "WriteRegistered(Weapons)", port: "none", match: false }
+      - { name: "m_alpha", base: "byte (-1..254)/254", port: "none", match: false }
+      - { name: "m_gunalign", base: "byte", port: "none", match: false }
+      - { name: "porto_v_angle_held", base: "byte + WriteAngleVector2D", port: "none", match: false }
+      - { name: "tuba_instrument", base: "byte", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Remote weapon switch animation coarse: only the resolved active weapon is networked, not wepent m_switchweapon/m_switchingweapon — a remote player's weapon raise/lower transition is not reproduced."
+      - "wepent m_alpha (weapon fade), m_gunalign, porto_v_angle_held (Porto held-angle viewmodel), tuba_instrument, viewmodel skin are not networked."
+    verification:
+      - { kind: grep, ref: "no switchweapon/switchingweapon/gunalign/porto/tuba viewmodel networking in port net layer", result: pass }
+    confidence: medium
+    notes: "porto_v_angle_held only matters for Porto; tuba_instrument only for @!#%'n Tuba; both low-impact. switch/switchingweapon is the user-visible one (remote weapon-swap anim)."
+
+  - id: net-entity-state.csqcmodel.appearance_hook
+    name: "csqcmodel appearance hook (force model/colors, unique enemy colors, death-fade)"
+    layer: [presentation]
+    base_refs:
+      - "client/csqcmodel_hooks.qc:CSQCPlayer_ModelAppearance_Apply"
+    port_refs:
+      - "src/XonoticGodot.Engine/Simulation/CsqcModelAppearance.cs"
+      - "game/client/ModelTint.cs"
+    constants:
+      - { name: "unique_color_combo", base: "c1=num%15; c2=(c1+1+floor(num/15))%15; 1024+(c1<<4)+c2", port: "UniqueColormap (same)", match: true }
+      - { name: "deathglow_min_default", base: "cl_deathglow_min 0.5", port: "DeathGlowFactor (deathglowMin arg)", match: true }
+      - { name: "palette_table", base: "lib/color.qh colormapPaletteColor 0..15", port: "ColormapPaletteColor 0..15 (same)", match: true }
+      - { name: "force_color_gametype_gates", base: "1v1 {1,2,3,5}; 2-team {2,4,5}; FFA {1,2}", port: "ForcePlayerColorsEnabled (same)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Friend-color collision is checked against the LOCAL team only, not the full team list (port doesn't network the team list here) — a friend force equal to ANOTHER team's color isn't suppressed (self-documented in CsqcModelAppearance.cs)."
+    verification:
+      - { kind: code_read, ref: "CsqcModelAppearance.cs vs csqcmodel_hooks.qc:141-363; header notes unit tests", result: pass }
+    confidence: high
+    notes: "Pure decision helpers (Godot-free, unit-tested per its header); the Godot glue (ModelTint/ClientWorld) reads cvars + resolves model/colormap."
+
+  - id: net-entity-state.replicate.client_cvars
+    name: "Client->server cvar replication (REPLICATE / cmd sentcvar)"
+    layer: [shared]
+    base_refs:
+      - "common/replicate.qc"
+      - "common/replicate.qh:REPLICATE set"
+      - "lib/replicate.qh:ReplicateVars/ReplicateVars_Start"
+    port_refs:
+      - "game/net/ClientNet.cs:PumpReplicatedCvars"
+      - "game/net/ClientNet.cs:ReplicatedCvars"
+      - "game/net/ServerNet.cs (cl_noantilag consume ~2052)"
+    constants:
+      - { name: "poll_interval_s", base: "0.8 + random()*0.4", port: "0.8 + rand*0.4 (ClientNet.cs:724)", match: true }
+      - { name: "send_all_on_start", base: "ReplicateVars_Start (REPLICATEVARS_SEND_ALL)", port: "_replicateSendAll on accept", match: true }
+      - { name: "change_gated", base: "value != last", port: "value != _replicatedLastSent", match: true }
+      - { name: "replicated_set", base: "cl_autoswitch, cl_autoscreenshot, cl_clippedspectating, cl_autoswitch_cts, cl_handicap(+dmg given/taken), cl_noantilag, g_xonoticversion (+ weaponpriority, notification choices alongside features)", port: "cl_weaponpriority, cl_autoswitch, cl_noantilag, cl_physics + notification_CHOICE_*", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Several replicate client cvars unported: cl_autoscreenshot, cl_clippedspectating, cl_autoswitch_cts, cl_handicap(+damage_given/taken), g_xonoticversion are not in the client's replicated set, so the server can't honor them per-player (clipped spectating, handicap, CTS autoswitch)."
+    verification:
+      - { kind: code_read, ref: "ClientNet.cs:665 ReplicatedCvars = {cl_weaponpriority, cl_autoswitch, cl_noantilag, cl_physics}; :724 _nextReplicateTime = now + 0.8 + rand*0.4; :726 PushReplicatedSet send-all-on-accept — vs replicate.qh full REPLICATE list (autoscreenshot/clippedspectating/autoswitch_cts/handicap*/g_xonoticversion)", result: pass }
+    confidence: high
+    notes: "Cadence (0.8 + random()*0.4, ClientNet.cs:724) + send-all + change-gating verified exact against lib/replicate.qh:48. cl_physics is a port-added preset-select cvar (T54), not a Base REPLICATE entry. cl_weaponpriority + notification_CHOICE_* ARE replicated and live."
+
+  - id: net-entity-state.csqcmodel.anim_state
+    name: "csqcmodel networked anim action state (upper/lower-body action split)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/csqcmodel_settings.qh:CSQCMODEL_EXTRAPROPERTIES (anim_state BIT7, anim_upper_action/anim_upper_time BIT9, anim_lower_action/anim_lower_time BIT8)"
+      - "common/animdecide.qc:animdecide_setaction"
+      - "common/animdecide.qc:animdecide_setstate"
+    port_refs:
+      - "src/XonoticGodot.Engine/Simulation/LocomotionBlend.cs:Split (client-side reconstruction from one networked Frame)"
+    constants:
+      - { name: "anim_state_coding", base: "byte (per-player, BIT7)", port: "none (not networked)", match: false }
+      - { name: "anim_upper_action_coding", base: "char + WriteApproxPastTime (BIT9)", port: "none", match: false }
+      - { name: "anim_lower_action_coding", base: "char + WriteApproxPastTime (BIT8, non-local only)", port: "none", match: false }
+    status:
+      logic: partial
+      values: missing
+      timing: missing
+      presentation: partial
+      audio: na
+      liveness: partial
+    intended_divergence: true
+    divergence_rationale: "Base networks the discrete upper/lower-body ANIMATION ACTION state (animdecide: attack/pain/jump/melee torso overlays + their start times) per player. The port networks ONE Entity.Frame index and reconstructs the legs(run/walk/idle)+torso(aim-pose) split CLIENT-SIDE in LocomotionBlend.Split (driven by the networked velocity + frame). This reproduces the locomotion look but is an APPROXIMATION: a remote player's transient torso ACTION overlays (firing/pain/jump anim) are not authoritatively networked, only inferred — LocomotionBlend.Split's own header documents the torso as a single-frame aim pose and flags the per-action torso overlay as a future seam. Marked intended (the port has no animdecide/CSQCMODEL anim-action machinery) but it IS an observable fidelity gap, hence partial not faithful."
+    gaps:
+      - "Networked anim action state (anim_state/anim_upper_action/anim_lower_action + times, BIT7-9) not ported: remote attack/pain/jump torso overlays are reconstructed client-side (LocomotionBlend.Split) from one networked Frame, not the QC animdecide upper/lower split — so a remote player's firing/pain/jump upper-body animation is approximate."
+    verification:
+      - { kind: code_read, ref: "csqcmodel_settings.qh:71-80 networks anim_state/anim_upper_action/anim_lower_action(+times) for players; LocomotionBlend.cs:1-20,55 reconstructs torso as a single-frame aim pose from Entity.Frame — no networked action field", result: pass }
+      - { kind: grep, ref: "no anim_upper_action/anim_lower_action/anim_state field in NetEntityState (NetEntity.cs) or ServerNet player snapshot", result: pass }
+    confidence: medium
+    notes: "Distinct from the FRAME-group cross-fade gap (interpolation row): that is about lerping between two frames; THIS is about the networked discrete action overlay. Legs locomotion (run/walk/idle from velocity) is live and faithful-looking; the torso ACTION layer is the partial/inferred dimension."

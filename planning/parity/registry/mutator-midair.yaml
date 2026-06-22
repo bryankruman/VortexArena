@@ -1,0 +1,197 @@
+unit: mutator-midair
+category: mutator
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 7
+  worst_gaps:
+    - "Bot bunnyhop-disable (bot_moveskill=0 on spawn) is not implemented: MidairMutator has no PlayerSpawn hook and the port has no bot_moveskill field, so port bots keep bunnyhopping and hug the ground (staying permanently shielded) instead of being forced airborne/huntable."
+    - "BuildMutatorsString/BuildMutatorsPrettyString (`:midair` / `, Midair`) are not produced: the port's only mutator-list analog is GameLog.Init's `:gameinfo:mutators:LIST`, which GameWorld.cs:673 calls with NO mutators arg (always empty); there is no server-browser/scoreboard mutator label at all, so an active midair is invisible in match metadata."
+    - "Setting g_midair_shieldtime 0 or g_midair_damagemultiplier 0 (both valid Base configs) is ignored by the port's `if (x != 0f)` Hook-time override, falling back to C# field defaults (0.5 / 1) instead of the configured 0; the ShieldTime field default 0.5 also disagrees with Base's 0.3."
+    - "g_midair_* cvars are cached once at Hook() instead of read live each frame as in Base, so a mid-match cvar change does not take effect until re-hook."
+features:
+  - id: mutator-midair.enable.predicate
+    name: "g_midair master enable predicate"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/midair/sv_midair.qc:8 (REGISTER_MUTATOR(midair, expr_evaluate(autocvar_g_midair)))"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MidairMutator.cs:IsEnabled"
+    constants:
+      - { name: "g_midair", base: "0", port: "0 (mutators.cfg:86)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port tests `GetFloat(\"g_midair\") != 0` instead of QC `expr_evaluate` (string expr). Equivalent for the stock 0/1 cvar; non-numeric expressions would differ, but that is not a stock config."
+    verification:
+      - { kind: code, ref: "MidairMutator.cs IsEnabled; Hook subscribed via MutatorActivation.Apply at GameWorld.cs:511", result: pass }
+    confidence: high
+    notes: "Hook() runs via MutatorActivation.Apply at boot for every enabled mutator, so an enabled midair is live. Base declares g_midair as a string autocvar (expr); port reads it as float."
+
+  - id: mutator-midair.damage.shield_gate
+    name: "Airborne-only damage: zero damage during post-landing shield window"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/midair/sv_midair.qc:12-26 (MUTATOR_HOOKFUNCTION(midair, Damage_Calculate))"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MidairMutator.cs:OnDamageCalculate"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:219 (MutatorHooks.DamageCalculate.Call)"
+    constants:
+      - { name: "player-vs-player guard", base: "IS_PLAYER(attacker) && IS_PLAYER(target)", port: "EntFlags.Client on both", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "OnDamageCalculate (MidairMutator.cs:64-78) vs sv_midair.qc:17-22; live call at DamageSystem.cs:219, damage/force read back at 220-222", result: pass }
+    confidence: high
+    notes: "time < target.MidairShieldTime → damage=0; else damage *= multiplier. Same player-vs-player guard; mirrordamage (Base slot 5) left untouched in both. Hook chain confirmed live."
+
+  - id: mutator-midair.damage.multiplier
+    name: "Airborne damage multiplier (g_midair_damagemultiplier)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/midair/sv_midair.qc:22 (M_ARGV(4,float) *= autocvar_g_midair_damagemultiplier)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MidairMutator.cs:OnDamageCalculate"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MidairMutator.cs:Hook (lines 49-50)"
+    constants:
+      - { name: "g_midair_damagemultiplier", base: "1", port: "1 (mutators.cfg:88, loaded); C# field default 1", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: partial
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Hook() guards `if (dm != 0f) DamageMultiplier = dm;`, so g_midair_damagemultiplier 0 (valid in Base: airborne hits deal zero damage) is ignored and the C# default 1 is kept — Base reads the autocvar live with no guard at sv_midair.qc:22, so 0 means 0."
+      - "Cvar is cached once at Hook() rather than read live each frame; a mid-match change does not apply until re-hook."
+    verification:
+      - { kind: code, ref: "MidairMutator.cs Hook lines 49-50 + OnDamageCalculate line 72; mutators.cfg:88", result: pass }
+    confidence: high
+    notes: "Stock default (1) matches because mutators.cfg is loaded; only the zero/mid-match edge cases diverge."
+
+  - id: mutator-midair.damage.forcescale
+    name: "Airborne knockback-force scale (g_midair_damageforcescale)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/midair/sv_midair.qc:23-24 (if(autocvar_g_midair_damageforcescale) M_ARGV(6,vector) *= ...)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MidairMutator.cs:OnDamageCalculate (lines 74-75)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MidairMutator.cs:Hook (line 51)"
+    constants:
+      - { name: "g_midair_damageforcescale", base: "1.5", port: "1.5 (mutators.cfg:89, loaded); C# field default 0", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: partial
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Cvar is cached once at Hook() rather than read live each frame; a mid-match change does not apply until re-hook. (The `force *= scale` is correctly guarded by `!= 0` matching Base's truthiness guard, so a 0 cvar leaves force alone as intended.)"
+    verification:
+      - { kind: code, ref: "MidairMutator.cs Hook line 51 + OnDamageCalculate 74-75; mutators.cfg:89", result: pass }
+    confidence: high
+    notes: "DamageForceScale read into a field with default 0 and applied behind `!= 0` (no Hook override guard), faithfully matching Base including the 0-means-leave-alone case; only the cache-at-Hook staleness is a divergence. Live default 1.5 matches because mutators.cfg loads."
+
+  - id: mutator-midair.ground.shield_and_glow
+    name: "On-ground shield arming + EF_ADDITIVE|EF_FULLBRIGHT glow"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/midair/sv_midair.qc:28-38 (MUTATOR_HOOKFUNCTION(midair, PlayerPowerups))"
+      - "server/client.qc:1634 (MUTATOR_CALLHOOK(PlayerPowerups, this, items_prev))"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MidairMutator.cs:OnPlayerPowerups"
+      - "src/XonoticGodot.Server/PlayerFrameLogic.cs:314 (MutatorHooks.PlayerPowerups.Call), called from GameWorld.cs:1143"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/EntityMutatorState.cs:175,178 (EF_FULLBRIGHT=512 / EF_ADDITIVE=32)"
+    constants:
+      - { name: "g_midair_shieldtime", base: "0.3", port: "0.3 (mutators.cfg:87, loaded); C# field default 0.5", match: false }
+      - { name: "EF_ADDITIVE", base: "32", port: "32", match: true }
+      - { name: "EF_FULLBRIGHT", base: "512", port: "512 (was mislabeled 8, fixed per EntityMutatorState.cs:175)", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Hook() guards `if (st != 0f) ShieldTime = st;`, so g_midair_shieldtime 0 (valid: no shield window) is ignored and the C# default 0.5 is kept; the field default 0.5 also disagrees with Base 0.3 whenever the cvar is unset/zero. Base reads the autocvar live at sv_midair.qc:36 (0 means 0). Live stock value (0.3) matches because mutators.cfg loads."
+    verification:
+      - { kind: code, ref: "OnPlayerPowerups (MidairMutator.cs:81-96) vs sv_midair.qc:32-37; live caller GameWorld.cs:1143 gates `!gameStopped && !IsDead` where gameStopped = GameStopped || Time<GameStartTime (1126); EffectFlags values EntityMutatorState.cs:175,178", result: pass }
+    confidence: high
+    notes: "QC `time>=game_starttime` gate is satisfied by the caller's gameStopped gate (GameWorld.cs:1126,1131). Glow is networked via Entity.Effects and rendered for players (CsqcModelEffects). Shield deadline is a monotonic max, matching Base. Bits are only SET while grounded; both Base and port rely on the per-frame effects reset to clear once airborne."
+
+  - id: mutator-midair.bot.disable_bunnyhop
+    name: "Disable bot bunnyhopping on spawn (bot_moveskill = 0)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/midair/sv_midair.qc:40-46 (MUTATOR_HOOKFUNCTION(midair, PlayerSpawn): if(IS_BOT_CLIENT(player)) player.bot_moveskill = 0)"
+      - "server/bot/default/havocbot/havocbot.qc:1315 (skill + bot_moveskill >= bot_ai_bunnyhop_skilloffset)"
+    port_refs: []
+    constants:
+      - { name: "bot_moveskill", base: "0 (forced on midair spawn)", port: "none (no field)", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Bot bunnyhop-disable (bot_moveskill=0 on spawn) is not implemented: under midair, port bots keep bunnyhopping and hug the ground (staying permanently shielded) instead of being forced airborne/huntable."
+      - "No bot_moveskill field exists in the port; MidairMutator does NOT subscribe to the (existing) MutatorHooks.PlayerSpawn chain. Port bot bunnyhop is gated only by Skill vs bot_ai_bunnyhop_skilloffset (BotNavigation.cs:314-315, BotBrain.cs:120), with no midair override. The MidairMutator source comment (lines 12-14) claims it is 'applied there' (the bot layer) but no such code exists."
+    verification:
+      - { kind: code, ref: "grep src/** for bot_moveskill -> only the MidairMutator.cs:13 comment; MutatorHooks.PlayerSpawn chain exists (MutatorHooks.cs:33) but MidairMutator has no PlayerSpawn handler; bunnyhop gated only at BotNavigation.cs:314-315", result: fail }
+    confidence: high
+    notes: "Base: forcing bot_moveskill to 0 keeps skill+bot_moveskill below the bunnyhop skilloffset (and changes dodge logic at havocbot.qc:1189), so the bot stays airborne. Port bots are unaffected by midair. A PlayerSpawn hook + bot_moveskill (or a midair-aware skill offset) would be needed."
+
+  - id: mutator-midair.meta.mutator_strings
+    name: "BuildMutatorsString / BuildMutatorsPrettyString (\":midair\" / \", Midair\")"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/midair/sv_midair.qc:48-51 (MUTATOR_HOOKFUNCTION(midair, BuildMutatorsString): strcat(..., \":midair\"))"
+      - "common/mutators/mutator/midair/sv_midair.qc:53-56 (MUTATOR_HOOKFUNCTION(midair, BuildMutatorsPrettyString): strcat(..., \", Midair\"))"
+    port_refs: []
+    constants:
+      - { name: "mutators-string token", base: ":midair", port: "none (GameLog mutators list always empty)", match: false }
+      - { name: "pretty-string token", base: ", Midair", port: "none (no pretty-string consumer)", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base appends `:midair` to the server mutator-id string (BuildMutatorsString) and `, Midair` to the pretty string (server browser / scoreboard). The port's only analog is GameLog.Init's `:gameinfo:mutators:LIST` line (GameLog.cs:117-121), and its sole caller GameWorld.cs:673 passes NO mutators argument (defaults to null) — so the list is ALWAYS empty for every mutator, midair included."
+      - "There is no BuildMutatorsString/BuildMutatorsPrettyString aggregation in the port: MutatorBase.NetName exists but is never collected into a server-info / scoreboard / browser mutator label. An active midair is invisible in match metadata."
+    verification:
+      - { kind: code, ref: "GameLog.Init (GameLog.cs:114-123) takes mutators=null; GameWorld.cs:673 GameLog.Init(GameType?.NetName ?? DefaultGameType, MapName) — no mutators passed; no other mutator-string aggregator found in src/** or game/**", result: fail }
+    confidence: high
+    notes: "Cosmetic/metadata only (no gameplay effect), but it is a real Base hook the draft omitted by asserting it was 'covered generically via NetName' — it is not. GameLog plumbing for a mutator list exists but is never fed."

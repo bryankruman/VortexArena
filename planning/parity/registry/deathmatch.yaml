@@ -1,0 +1,258 @@
+unit: deathmatch
+category: gametype
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 8
+  worst_gaps:
+    - "Remaining-frags announcer (1/2/3 frags left) never fires — assets exist, no live caller"
+    - "leadlimit / leadlimit_and_fraglimit not checked by the DM win condition"
+    - "Respawn 10-9-8 announcer-countdown value is computed but never presented (no reader of Player.RespawnCountdown)"
+features:
+  - id: deathmatch.gametype.identity
+    name: "Deathmatch gametype registration & identity (dm, FFA, USEPOINTS|PREFERRED)"
+    layer: [shared]
+    base_refs:
+      - "common/gametypes/gametype/deathmatch/deathmatch.qh:INIT(Deathmatch)"
+      - "common/gametypes/gametype/deathmatch/sv_deathmatch.qh:REGISTER_MUTATOR(dm)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs:Deathmatch (ctor)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs:OnInit"
+    constants:
+      - { name: "short_name", base: "dm", port: "dm", match: true }
+      - { name: "display_name", base: "Deathmatch", port: "Deathmatch", match: true }
+      - { name: "teamplay", base: "false (FFA)", port: "TeamGame=false", match: true }
+      - { name: "flags", base: "USEPOINTS|PREFERRED", port: "implicit (frag-based, default mode)", match: true }
+      - { name: "default_pointlimit", base: "30", port: "DefaultFragLimit=30", match: true }
+      - { name: "default_timelimit_min", base: "15", port: "timelimit cvar default 15", match: true }
+      - { name: "default_leadlimit", base: "0", port: "leadlimit cvar default 0 (but DM ignores it)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "deathmatch.qh gametype_init args vs Deathmatch ctor/NetName", result: pass }
+      - { kind: code, ref: "GameWorld.DefaultGameType == \"dm\" → ResolveGameType activates Deathmatch", result: pass }
+    confidence: high
+    notes: "Identity is set in the ctor; OnInit is a documented no-op (no per-match state to seed). m_isAlwaysSupported (always offered on any map) is not ported — a map-pool concern, out of scope here."
+
+  - id: deathmatch.scoring.frag_matrix
+    name: "FFA frag scoring: enemy +1, suicide -1, world/accident death -1"
+    layer: [authority]
+    base_refs:
+      - "server/damage.qc:GiveFrags"
+      - "server/damage.qc:Obituary"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs:OnDeath"
+      - "src/XonoticGodot.Server/Scores.cs:GiveFrags"
+      - "src/XonoticGodot.Server/Scores.cs:Obituary"
+    constants:
+      - { name: "enemy_frag", base: "+1", port: "+1", match: true }
+      - { name: "suicide", base: "-1", port: "-1", match: true }
+      - { name: "world_accident_death", base: "-1 (GiveFrags(targ,targ,-1))", port: "-1", match: true }
+      - { name: "game_stopped_gate", base: "GiveFrags bails if game_stopped", port: "OnDeath bails if MatchEnded", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "OnDeath writes victim.GtDeaths/GtSuicides which have no readers (dead writes); the scoreboard's Deaths/Suicides come from Scores.GiveFrags read-through. Harmless, not player-visible."
+    verification:
+      - { kind: code, ref: "server/damage.qc:GiveFrags 43-79 vs Deathmatch.OnDeath matrix", result: pass }
+      - { kind: code, ref: "Scores.cs ownsScore=false → SP_SCORE read-through from Player.ScoreFrags (no double-count)", result: pass }
+      - { kind: code, ref: "grep readers of GtDeaths/GtSuicides → none outside the write site", result: pass }
+    confidence: high
+    notes: "Scoring is split: Deathmatch owns SP_SCORE (the sort/fraglimit key), Scores fills aux KILLS/DEATHS/SUICIDES read-through to avoid double-counting. Teamkill branch is present but unreachable in FFA (SameTeam guarded false when TeamGame=false)."
+
+  - id: deathmatch.scoring.teamkill_punishing
+    name: "Teamkill punishment escalation (g_teamkill_punishing)"
+    layer: [authority]
+    base_refs:
+      - "server/damage.qc:GiveFrags (teamkills * (teamkills-1) * 0.5 penalty)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs:OnDeath (teamkill branch, flat -1)"
+    constants:
+      - { name: "g_teamkill_punishing", base: "0 (default off)", port: "not read; flat -1 on teamkill", match: false }
+      - { name: "penalty_curve", base: "tk*(tk-1)*0.5 = -1,-2,-4,-7,-11,...", port: "flat -1", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "DM is FFA so this never fires in practice; the escalating teamkill penalty is unmodeled, but unreachable in deathmatch (relevant only to team modes)."
+    verification:
+      - { kind: code, ref: "Deathmatch.SameTeam returns false when TeamGame=false → teamkill branch unreachable in DM", result: pass }
+    confidence: medium
+    notes: "Listed for completeness: the teamkill branch exists in OnDeath but is dead code in FFA. The escalating g_teamkill_punishing curve belongs to the team gametypes' parity rows, not DM. Default off (0) regardless."
+
+  - id: deathmatch.winconditions.fraglimit
+    name: "Point/frag limit ends the match (topscore >= pointlimit)"
+    layer: [authority]
+    base_refs:
+      - "server/world.qc:WinningCondition_Scores (fraglimit_reached)"
+      - "common/gametypes/sv_rules.qc:GameRules_limit_score"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs:FragLimit"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs:UpdateLeaderAndCheckLimit"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs:RecomputeLeader"
+      - "src/XonoticGodot.Server/GameWorld.cs:RunCheckRulesWorld"
+    constants:
+      - { name: "pointlimit_default", base: "30 (fraglimit)", port: "30 (DefaultFragLimit)", match: true }
+      - { name: "limit==0 means unlimited", base: "yes", port: "yes (limit>0 guard)", match: true }
+      - { name: "g_dmlimit cvar", base: "does not exist in Base", port: "checked before fraglimit", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "The port reads a non-Base convenience cvar g_dmlimit before falling back to the engine fraglimit. Base has no g_dmlimit (only TDM has g_tdm_point_limit). With g_dmlimit unset the behavior is identical to Base; it only diverges if an operator sets the invented cvar."
+    gaps: []
+    verification:
+      - { kind: code, ref: "WinningCondition_Scores fraglimit_reached vs Leader.ScoreFrags >= limit", result: pass }
+      - { kind: code, ref: "GameWorld.ActivateGameType → Match.ActivateDeathmatch → dm.Activate (live)", result: pass }
+    confidence: high
+    notes: "MatchEnded latch is checked incrementally in OnDeath and authoritatively each tick via RecomputeLeader over the full roster, then consumed by RunCheckRulesWorld."
+
+  - id: deathmatch.winconditions.leadlimit
+    name: "Lead limit ends the match (topscore - secondscore >= leadlimit) + leadlimit_and_fraglimit"
+    layer: [authority]
+    base_refs:
+      - "server/world.qc:WinningCondition_Scores (leadlimit_reached, leadlimit_and_fraglimit)"
+    port_refs: []
+    constants:
+      - { name: "leadlimit_default", base: "0 (disabled)", port: "0 (cvar exists) but DM never reads it", match: false }
+      - { name: "leadlimit_and_fraglimit", base: "0", port: "0 (cvar exists) but DM never applies it", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Deathmatch.MatchEnded only checks the frag limit; an operator setting leadlimit in DM would see it ignored (the match would not end on a lead margin, nor honor leadlimit_and_fraglimit)."
+    verification:
+      - { kind: code, ref: "grep leadlimit in Deathmatch.cs/MatchController.cs → none; only ClanArena/TDM read a lead cvar", result: fail }
+    confidence: high
+    notes: "Low impact at defaults (leadlimit=0 disables it), but a genuine logic gap vs WinningCondition_Scores. The framework overtime/tie machinery (RunCheckRulesWorld) is present, but the per-gametype leadlimit input is not fed by Deathmatch."
+
+  - id: deathmatch.winconditions.timelimit_overtime
+    name: "Time limit + overtime/sudden-death (tie at limit keeps playing)"
+    layer: [authority]
+    base_refs:
+      - "server/world.qc:WinningCondition_Scores (GetWinningCode/equality)"
+      - "server/world.qc:CheckRules_World (overtime/sudden-death cascade)"
+    port_refs:
+      - "src/XonoticGodot.Server/GameWorld.cs:RunCheckRulesWorld"
+      - "src/XonoticGodot.Server/OverTimeManager.cs"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs:ReportsTie"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs:FfaTie.TopTwoTied"
+    constants:
+      - { name: "timelimit_default_min", base: "15", port: "15", match: true }
+      - { name: "timelimit_seconds", base: "minutes*60 offset by game_starttime", port: "TimeLimitMinutes*60 + GameStartTime", match: true }
+      - { name: "tie_at_limit", base: "StartSuddenDeathOvertime (keep playing)", port: "FfaTie top-two-tied → overtime", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: unknown
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The 'Overtime has begun' announcer/notification path was not verified end-to-end from DM in this audit (framework-owned; audio status unknown)."
+    verification:
+      - { kind: code, ref: "RunCheckRulesWorld cascade vs CheckRules_World world.qc:1741-1860", result: pass }
+      - { kind: code, ref: "FfaTie.TopTwoTied (top two primary scores equal) vs WinningConditionHelper_equality FFA", result: pass }
+    confidence: medium
+    notes: "Win-condition framework (timelimit→overtime→sudden death→intermission) is shared and well-developed; DM feeds it via ReportsTie/FfaTie and the fraglimit latch. Audio for the overtime announcer is framework-owned and not traced here."
+
+  - id: deathmatch.announce.frags_remaining
+    name: "Remaining-frags announcer (1/2/3 frags left)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/gametypes/gametype/deathmatch/sv_deathmatch.qc:MUTATOR_HOOKFUNCTION(dm, Scores_CountFragsRemaining)"
+      - "server/world.qc:WinningCondition_Scores (ANNCE_REMAINING_FRAG_1/2/3 send)"
+    port_refs: []
+    constants:
+      - { name: "announce_thresholds", base: "fragsleft == 1,2,3", port: "none", match: false }
+      - { name: "sounds", base: "misc/1fragleft, 2fragsleft, 3fragsleft", port: "assets defined, never played", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: missing
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Approaching the frag limit in DM, the player never hears '1/2/3 frags left'. The notification (REMAINING_FRAG_1/2/3) and sound (1fragleft/2fragsleft/3fragsleft) assets are registered but no code computes fragsleft or fires them; only the remaining-MINUTES announcer (AnnounceRemainingMin) is wired."
+    verification:
+      - { kind: code, ref: "grep REMAINING_FRAG / fragsleft / AnnounceRemainingFrag across src+game → only asset defs + minutes announcer", result: fail }
+    confidence: high
+    notes: "This is the one behavior the DM unit file uniquely controls (the Scores_CountFragsRemaining hook returning true enables the block). It is entirely absent on the live path."
+
+  - id: deathmatch.respawn.timing
+    name: "Respawn delay scheduling (calculate_player_respawn_time)"
+    layer: [authority]
+    base_refs:
+      - "server/client.qc:calculate_player_respawn_time"
+      - "server/client.qc:PlayerThink (DEAD_* respawn state machine, client.qc:2359-2438)"
+      - "server/client.qh:GAMETYPE_DEFAULTED_SETTING"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Player/RespawnTiming.cs:Calculate"
+      - "src/XonoticGodot.Server/GameWorld.cs:DeadPlayerThink"
+      - "src/XonoticGodot.Server/GameWorld.cs:OnClientMove"
+    constants:
+      - { name: "dm_respawn_delay_small", base: "g_dm_respawn_delay_small 0 → fallback g_respawn_delay_small 2", port: "g_respawn_delay_small (fallback 2)", match: true }
+      - { name: "dm_respawn_delay_large", base: "g_dm_respawn_delay_large 0 → fallback g_respawn_delay_large 2", port: "g_respawn_delay_large (fallback 2)", match: true }
+      - { name: "respawn_delay_max", base: "g_dm_respawn_delay_max 0 → g_respawn_delay_max 5", port: "g_respawn_delay_max (fallback 5)", match: true }
+      - { name: "small_count (FFA)", base: "g_respawn_delay_small_count 0 → 2 in FFA", port: "smallCount<=0 → 2 (non-teamplay)", match: true }
+      - { name: "large_count", base: "g_respawn_delay_large_count 8", port: "fallback 8", match: true }
+      - { name: "player_count_scaling", base: "interpolate small..large by pcount between counts", port: "implemented (same lerp formula)", match: true }
+      - { name: "respawn_waves", base: "g_respawn_waves 0 → ceil((time+sdelay)/waves)*waves", port: "implemented (same ceil-quantize)", match: true }
+      - { name: "respawn_countdown_arm", base: "10-count when sdelay+waves>=5 and wait>1.75s", port: "RespawnCountdown=10 (same condition)", match: true }
+      - { name: "forced_respawn", base: "g_forced_respawn → RESPAWN_FORCE flag", port: "g_forced_respawn → RespawnFlag.Force", match: true }
+      - { name: "GAMETYPE_DEFAULTED_SETTING dm-prefix", base: "reads g_dm_respawn_delay_* first, then g_respawn_delay_*; honors g_respawn_delay_forced", port: "reads only generic g_respawn_delay_*", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: missing
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "RespawnTiming.Calculate reads only the generic g_respawn_delay_* cvars, not the GAMETYPE_DEFAULTED_SETTING gametype-prefixed g_dm_respawn_delay_* (nor g_respawn_delay_forced). Identical at DM defaults (g_dm_*=0 → generic), but a server setting g_dm_respawn_delay_small (or the forced-default flag) would be ignored."
+      - "Respawn 10-9-8 countdown announcer is not presented: Player.RespawnCountdown is computed by RespawnTiming.Calculate but has NO reader/announcer (only SpawnSystem resets it). The respawn-time STAT is networked (RespawnTimeStat) but the spoken 10..1 countdown is absent."
+    verification:
+      - { kind: code, ref: "RespawnTiming.Calculate vs calculate_player_respawn_time client.qc:1399-1485 — pcount scaling, waves ceil-quantize, respawn_time_max, countdown arm, RESPAWN_FORCE all present and matching", result: pass }
+      - { kind: code, ref: "GameWorld.DeadPlayerThink (DEAD_* machine) driven per-tick from OnClientMove (line 1031); on death edge calls RespawnTiming.Calculate (line 1714) which 'Overrides any flat delay a gametype obituary set'", result: pass }
+      - { kind: code, ref: "GAMETYPE_DEFAULTED_SETTING (client.qh:347) resolves g_dm_respawn_delay_small=0 → max(0,g_respawn_delay_small=2)=2 — matches port at defaults", result: pass }
+      - { kind: code, ref: "grep readers of Player.RespawnCountdown → only RespawnTiming write + SpawnSystem reset; no announcer", result: fail }
+    confidence: high
+    notes: "CORRECTS the first-pass claim of a flat-2s respawn with no scaling/waves/countdown/forced-respawn. The live path is GameWorld.DeadPlayerThink → RespawnTiming.Calculate (a faithful port of calculate_player_respawn_time with player-count interpolation, wave quantization, respawn_time_max, countdown arming, and the RESPAWN_FORCE flag). Deathmatch.ScheduleRespawn/RespawnDelay (the flat 2s) is DEAD CODE — explicitly overridden at GameWorld.cs:1713. Remaining real gaps are narrow: the gametype-prefixed delay cvars are not consulted (defaults match), and the 10-count respawn announcer is unspoken."

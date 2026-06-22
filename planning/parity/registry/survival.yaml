@@ -1,0 +1,419 @@
+unit: survival
+category: gametype
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 15
+  worst_gaps:
+    - "The mode's headline rule is dead: no round-timer/match-timeout resolution. EndRoundTimedOut has no caller AND the Common RoundHandler never tests RoundEndTime in its InProgress branch, so 'survive until time runs out' never fires — a hiding prey leaves the round unending. Side-wipe is the only way a round ends."
+    - "No win/role notifications: SURVIVAL_HUNTER_WIN / SURVIVAL_SURVIVOR_WIN / ROUND_TIED / SURVIVAL_SURVIVOR / SURVIVAL_HUNTER are declared but never sent — the player never sees their role at round start nor the win banner at round end."
+    - "No teamkill punishment (g_survival_punish_teamkill, default on): killing an ally does not auto-kill the killer nor dock frags."
+    - "Bots attack allies (Bot_ForbidAttack not ported) and Survival is absent from GameWorld.MatchEnded, so the match never ends via this mode."
+
+features:
+  - id: survival.gametype.registration
+    name: "Gametype registration (surv, USEPOINTS, timelimit=20 pointlimit=12)"
+    layer: [shared]
+    base_refs:
+      - "common/gametypes/gametype/survival/survival.qh:CLASS(Survival)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Survival.cs:Survival()"
+      - "src/XonoticGodot.Server/GameWorld.cs:ResolveGameType"
+    constants:
+      - { name: "net_name", base: "surv", port: "surv", match: true }
+      - { name: "default_match", base: "timelimit=20 pointlimit=12", port: "not modeled here", match: false }
+      - { name: "team_game", base: "USEPOINTS only (no teams)", port: "TeamGame=false", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The registered defaults (timelimit=20 pointlimit=12) and m_isForcedSupported (LMS-map inheritance) are not modeled in the gametype class; map-support inheritance is unverified."
+    verification:
+      - { kind: code, ref: "[GameType] attr + NetName=surv resolves; ResolveGameType maps 'surv' to Survival", result: pass }
+    confidence: high
+    notes: "Registered and selectable. The 'timelimit=20 pointlimit=12' defaults and LMS-map auto-support live in cfg/menu, not audited here."
+
+  - id: survival.round.assign_roles
+    name: "Round start secretly assigns hunters (live-only count, bounded, random pick)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/survival/sv_survival.qc:Surv_RoundStart"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Survival.cs:AssignRoles"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Survival.cs:HunterCount"
+    constants:
+      - { name: "g_survival_hunter_count", base: "0.25", port: "0.25 (cvar; 5f fallback unused)", match: true }
+      - { name: "hunter_count_formula", base: "bound(1, cvar>=1?cvar:floor(live*cvar), live-1)", port: "same", match: true }
+      - { name: "pick_order", base: "FOREACH_CLIENT_RANDOM (Fisher-Yates)", port: "seeded Prandom Fisher-Yates", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: unknown
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "VERIFIED LIVE: AssignRoles runs on the live path via surv.Tick() -> Handler.OnRoundStart (GameWorld.cs:1639). The desync risk is real but does NOT make assignment dead: GameWorld also calls EnableRounds() with NO args (GameWorld.cs:1366), spawning a SECOND, generic Server.RoundHandler (GameWorld.Rounds, DefaultCanRoundStart/End) that drives the live map-reset/respawn gate and never calls AssignRoles. The two handlers run on independent timers (warmup 5 vs the world default), so the secret-role moment and the map-reset/respawn-unlock moment are not guaranteed to coincide. Timing left unknown pending a runtime trace."
+    verification:
+      - { kind: test, ref: "SurvivalRolesTests (live-only count, bound formula, random pick, <2 guard) — 15 survival/status tests pass", result: pass }
+      - { kind: code, ref: "GameWorld.DriveGametypeFrame Survival arm: surv.SetRoster + surv.Tick() drives Handler.OnRoundStart=AssignRoles (live)", result: pass }
+    confidence: high
+    notes: "Algorithm pinned by tests and confirmed live. Re-classified liveness partial->live (assignment IS reached); the dual-handler desync is a timing/logic risk, captured in survival.round.handler."
+
+  - id: survival.round.handler
+    name: "Round-handler driven warmup/countdown/round/end-delay cycle"
+    layer: [authority]
+    base_refs:
+      - "server/round_handler.qc:round_handler_Think"
+      - "common/gametypes/gametype/survival/sv_survival.qc:surv_Initialize"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/RoundHandler.cs:Tick"
+      - "src/XonoticGodot.Server/RoundHandler.cs:Think"
+      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (Survival arm + EnableRounds)"
+    constants:
+      - { name: "round_handler_Init(delay, warmup, timelimit)", base: "(5, g_survival_warmup=10, g_survival_round_timelimit=120)", port: "Handler.Init(enddelay, warmup, rtl) from cvars; C# fallbacks 5/5/180 wrong" }
+      - { name: "countdown_granularity", base: "1 Hz", port: "1 Hz (Server.RoundHandler); Common.RoundHandler decrements per-tick", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: unknown
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Two separate round handlers exist for Survival: Survival.Handler (Common RoundHandler, ticked by surv.Tick) and GameWorld.Rounds (Server RoundHandler, spawned by EnableRounds() with the generic Default predicates). Only the world handler resets the map / gates respawns / broadcasts the countdown; it never calls AssignRoles."
+      - "Survival.Activate hardcodes fallback defaults warmup=5, round_timelimit=180, round_enddelay=5 (Base 10/120/0); harmless only while gametypes-server.cfg is loaded (it is, shipped) — otherwise divergent."
+      - "The Common RoundHandler (Survival.Handler) lacks the 1 Hz countdown throttle and the game_starttime/intermission gates the Server one has."
+    verification:
+      - { kind: code, ref: "ActivateGameType: surv.Activate() builds Handler; EnableRounds() builds GameWorld.Rounds; DriveGametypeFrame ticks surv.Handler; OnEndFrame ticks GameWorld.Rounds", result: fail }
+    confidence: medium
+    notes: "Architectural double-drive. Needs a runtime trace to confirm which handler actually governs the live round and whether the timers desync."
+
+  - id: survival.scoring.bank_validkills
+    name: "Kills bank into validkills during the round (no immediate score)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/survival/sv_survival.qc:MUTATOR_HOOKFUNCTION(surv, GiveFragsForKill)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Survival.cs:OnDeath"
+    constants:
+      - { name: "bank_amount", base: "M_ARGV(2,float) frag delta (=1 stock)", port: "+1 per valid kill (hardcoded)", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: partial
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Banks a fixed +1 per kill rather than the QC frag delta (M_ARGV(2,float) carries GiveFrags' value); matches stock 1-per-kill but diverges under any frag-value multiplier."
+      - "TIMING: QC GiveFragsForKill banks ONLY when `!warmup_stage && round_handler_IsActive() && round_handler_IsRoundStarted()`; the port's OnDeath has NO round-started guard — it banks on any kill with a live attacker while !RoundOver, INCLUDING during the warmup grace period (players are alive + RoundOver is false in warmup). So a warmup-phase kill banks in the port but not in QC. Downgraded timing faithful->partial."
+    verification:
+      - { kind: test, ref: "SurvivalScoringTests.RoundEnd_AwardsBankedKillsAndSideBonuses (pass) — confirms award; no test covers the warmup-banking timing gap", result: pass }
+      - { kind: code, ref: "Survival.OnDeath (Survival.cs:266) banks on `!RoundOver` only — no IsRoundStarted/warmup gate vs QC GiveFragsForKill", result: fail }
+    confidence: high
+    notes: "Frag value is 1-per-kill in the port; QC carries the delta. The QC round-started/warmup gate is absent, so warmup kills can bank — a real timing divergence, not just an implicit invariant."
+
+  - id: survival.scoring.round_end_award
+    name: "Round end awards banked kills + per-side bonuses (survivals/hunts, reward_survival)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/survival/sv_survival.qc:Surv_UpdateScores"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Survival.cs:UpdateScores"
+    constants:
+      - { name: "SP_SURV_SURVIVALS / SP_SURV_HUNTS", base: "survivals (primary) / hunts (secondary)", port: "SURV_SURVIVALS / SURV_HUNTS", match: true }
+      - { name: "g_survival_reward_survival", base: "1 (true)", port: "default-on (cvar)", match: true }
+      - { name: "timeout_survivor_bonus", base: "+1 SCORE to surviving prey if timed_out", port: "same", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: partial
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Live only on a side-wipe (CheckWinningCondition). The timed-out branch (UpdateScores(timedOut:true)) is reachable only through EndRoundTimedOut, which has no caller, so survivors never receive the timer-reached reward in a real match."
+      - "QC also adds banked kills to totalfrags; the port's totalfrags equivalent is not updated here."
+    verification:
+      - { kind: test, ref: "SurvivalScoringTests (RoundEnd award + TimedOut reward unit-tested directly)", result: pass }
+    confidence: high
+    notes: "Award logic faithful and tested in isolation; the timed-out path is correct code but dead on the live path."
+
+  - id: survival.scoring.anonymize
+    name: "Anonymize kills/deaths/suicides/dmg on the scoreboard while a round runs"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/survival/sv_survival.qc:MUTATOR_HOOKFUNCTION(surv, AddPlayerScore)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Survival.cs:AnonymizeScore"
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:AddPlayerScoreHook"
+    constants:
+      - { name: "suppressed_fields", base: "SP_KILLS,SP_DEATHS,SP_SUICIDES,SP_DMG,SP_DMGTAKEN", port: "KILLS,DEATHS,SUICIDES,DMG,DMGTAKEN", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "SurvivalScoringTests.Anonymization_SuppressesKillsAndDeaths", result: pass }
+    confidence: high
+    notes: "Hook installed in Activate, removed in Deactivate; falls through without claiming the write (matches QC)."
+
+  - id: survival.win.side_wipe
+    name: "Side-wipe win latch (hunters win if any hunter alive, else prey)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/survival/sv_survival.qc:Surv_CheckWinner"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Survival.cs:CheckWinningCondition"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: partial
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No end-delay (g_survival_round_enddelay) modeling: QC can defer the resolution and re-check; the port resolves immediately on the first frame both sides aren't alive."
+      - "No tie path notification (ROUND_TIED) when both sides reach zero simultaneously."
+    verification:
+      - { kind: test, ref: "GametypeStatusTests wipes prey then asserts RoundOver + disclosure", result: pass }
+    confidence: high
+    notes: "Latch + winning-side logic faithful; the end-delay and tie messaging are missing."
+
+  - id: survival.win.timeout
+    name: "Round timer / match timeout -> survivors win"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/survival/sv_survival.qc:Surv_CheckWinner (timeout branch)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Survival.cs:EndRoundTimedOut"
+    constants:
+      - { name: "g_survival_round_timelimit", base: "120 (s)", port: "120 via cvar (RoundEndTime armed but unchecked)", match: true }
+      - { name: "g_survival_round_enddelay == -1", base: "wait for match timeout then survivors win", port: "not modeled", match: false }
+    status:
+      logic: missing
+      values: partial
+      timing: missing
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "EndRoundTimedOut() has NO caller. The Handler arms RoundEndTime from g_survival_round_timelimit but nothing checks it, so the round never ends on the timer."
+      - "A prey can simply hide and the round never resolves — the central 'survive until time runs out' rule does not work."
+      - "The round_enddelay==-1 match-timeout-then-survivors-win branch is not modeled."
+    verification:
+      - { kind: code, ref: "EndRoundTimedOut (Survival.cs:378) has NO caller (whole-repo). Worse, the Common RoundHandler.Tick InProgress branch (RoundHandler.cs:124-132) checks ONLY CanRoundEnd() and NEVER compares now>=RoundEndTime, even though RoundEndTime is armed at cs:118 — so the timer cannot fire on either handler. Survival.CanRoundEnd = side-wipe only.", result: fail }
+    confidence: high
+    notes: "Confirmed dead two ways: no caller for EndRoundTimedOut AND the Common RoundHandler never tests RoundEndTime in InProgress. The round resolves on side-wipe only. Highest-impact gap."
+
+  - id: survival.death.eliminate
+    name: "Death eliminates the player for the round (no respawn)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/survival/sv_survival.qc:MUTATOR_HOOKFUNCTION(surv, PlayerDies)"
+      - "common/gametypes/gametype/survival/sv_survival.qc:surv_isEliminated"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Survival.cs:OnDeath"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Survival.cs:IsEliminatedPlayer"
+      - "src/XonoticGodot.Server/GameWorld.cs:RespawnDuePlayers (round-gated)"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: partial
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC sets RESPAWN_FORCE/RESPAWN_SILENT + respawn_time=time+2 and clears the bot queue on death; the port relies on the generic round respawn gate (RespawnDuePlayers skips while a round is live) — the silent-forced-respawn nuance and bot-queue clear are not ported."
+      - "surv_isEliminated also flags joining players (INGAME_JOINING); the port has no joining state, so a late joiner is not marked eliminated until the next AssignRoles."
+    verification:
+      - { kind: code, ref: "OnDeath sets Alive=false; RespawnDuePlayers gated on Rounds.IsRoundStarted; IsEliminatedPlayer feeds the wire eliminated set", result: pass }
+    confidence: medium
+    notes: "Elimination + grey-out work; the late-join forced-observe and silent-respawn details are absent."
+
+  - id: survival.death.punish_teamkill
+    name: "Killing an ally auto-kills the killer + docks frags"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/survival/sv_survival.qc:MUTATOR_HOOKFUNCTION(surv, PlayerDies)"
+      - "common/gametypes/gametype/survival/sv_survival.qc:MUTATOR_HOOKFUNCTION(surv, ClientObituary)"
+    port_refs: []
+    constants:
+      - { name: "g_survival_punish_teamkill", base: "1 (true)", port: "n/a", match: false }
+      - { name: "mirror_damage", base: "Damage(attacker, 100000, DEATH_MIRRORDAMAGE)", port: "none", match: false }
+      - { name: "frag_penalty", base: "-1 (punish) / -2 (no punish) same-status frag", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No teamkill mirror-kill: fragging a same-status player does not kill the attacker."
+      - "No same-status frag penalty (-1 / -2) is applied."
+    verification:
+      - { kind: code, ref: "grep: no punish_teamkill / DEATH_MIRRORDAMAGE / same-status frag adjust in Survival.cs or server", result: fail }
+    confidence: high
+    notes: "Entirely absent. Hidden-role teamkill deterrent is gone."
+
+  - id: survival.net.hidden_role_disclosure
+    name: "Hunter identities hidden from prey mid-round, disclosed at round end"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/gametypes/gametype/survival/sv_survival.qc:SurvivalStatuses_SendEntity"
+      - "common/gametypes/gametype/survival/cl_survival.qc:NET_HANDLE(ENT_CLIENT_SURVIVALSTATUSES)"
+    port_refs:
+      - "src/XonoticGodot.Net/GametypeStatusBlock.cs:Capture (Survival arm)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Survival.cs:DisclosesHuntersTo"
+      - "game/net/ServerNet.cs:Capture call"
+      - "game/net/ClientNet.cs:Deserialize"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "QC uses a CSQC linked entity (survivalStatuses) with a maxclients-block bitfield; the port carries the same data in the per-mode GametypeStatusBlock as a net-id list (the port has stable net ids, not maxclients bit slots). Behaviorally equivalent on the disclosure invariant; the wire shape differs by design."
+    gaps: []
+    verification:
+      - { kind: test, ref: "GametypeStatusTests.Surv_HunterIdsNeverLeakToPreyMidRound_DisclosedAtRoundEnd", result: pass }
+    confidence: high
+    notes: "Anti-cheat invariant (hunters never leak to prey mid-round; everyone gets the set at round end) is pinned and live."
+
+  - id: survival.hud.own_role_tag
+    name: "Mod-icons own-role tag (Hunter red / Survivor green), hidden pre-round"
+    layer: [presentation]
+    base_refs:
+      - "common/gametypes/gametype/survival/cl_survival.qc:HUD_Mod_Survival"
+    port_refs:
+      - "game/hud/ModIconsPanel.cs:DrawSurvival"
+      - "game/net/NetGame.cs:UpdateModIcons (Survival arm)"
+    constants:
+      - { name: "hunter_color", base: "'1 0 0' (red)", port: "(1,0,0)", match: true }
+      - { name: "survivor_color", base: "'0 1 0' (green)", port: "(0,1,0)", match: true }
+      - { name: "pre_round_hide", base: "GAMESTARTTIME/ROUNDSTARTTIME>time || spectating", port: "server sends MyStatus 0 until RoleAssigned; 0 draws nothing", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "UpdateModIcons sets panel.SurvivalStatus from ms.MyStatus; DrawSurvival renders red Hunter/green Survivor; status 0 -> hidden", result: pass }
+    confidence: high
+    notes: "Own-role tag faithful. The pre-round hide is enforced server-side (status 0) rather than via CSQC stat gates."
+
+  - id: survival.presentation.player_colors_and_notifications
+    name: "Player green/red coloring + role/win center & info notifications"
+    layer: [presentation]
+    base_refs:
+      - "common/gametypes/gametype/survival/cl_survival.qc:NET_HANDLE (colormap), MUTATOR_HOOKFUNCTION(cl_surv, ForcePlayercolors_Skip)"
+      - "common/gametypes/gametype/survival/sv_survival.qc:Surv_RoundStart (CENTER_SURVIVAL_SURVIVOR/HUNTER), Surv_CheckWinner (SURVIVAL_*_WIN / ROUND_TIED)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs (declarations only)"
+    constants:
+      - { name: "SURV_COLOR_PREY / SURV_COLOR_HUNTER", base: "51 (green) / 68 (red) colormap override", port: "not applied (tint is team-based)", match: false }
+    status:
+      logic: missing
+      values: partial
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "SURVIVAL_SURVIVOR / SURVIVAL_HUNTER (role at round start) are declared but never sent — the player is never told their role."
+      - "SURVIVAL_HUNTER_WIN / SURVIVAL_SURVIVOR_WIN / ROUND_TIED (round end) are declared but never sent — no win banner."
+      - "No player-model/scoreboard green-prey/red-hunter colormap override (own role at round end is not visually reflected on models)."
+    verification:
+      - { kind: code, ref: "grep: SURVIVAL_*_WIN / SURVIVAL_SURVIVOR / SURV_COLOR have no live sender outside NotificationsList declarations", result: fail }
+    confidence: high
+    notes: "Notifications and coloring declared/possible but never wired on the live path."
+
+  - id: survival.bot.forbid_attack_allies
+    name: "Bots never attack same-status (ally) players"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/survival/sv_survival.qc:MUTATOR_HOOKFUNCTION(surv, Bot_ForbidAttack)"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Bots fire on fellow prey/hunters, breaking the hidden-role dynamic and producing teamkills (which themselves aren't punished — see survival.death.punish_teamkill)."
+    verification:
+      - { kind: code, ref: "grep: no Bot_ForbidAttack / same-status attack veto for Survival in the bot code", result: fail }
+    confidence: high
+    notes: "Not ported. Compounds the missing teamkill punishment."
+
+  - id: survival.notify.last_survivor_alone
+    name: "Last living member of a side gets the 'you are alone' center notify"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/survival/sv_survival.qc:surv_LastPlayerForTeam_Notify"
+      - "common/gametypes/gametype/survival/sv_survival.qc:MUTATOR_HOOKFUNCTION(surv, PlayerDies/ClientDisconnect/MakePlayerObserver)"
+    port_refs: []
+    constants:
+      - { name: "CENTER_ALONE", base: "sent to the now-sole survivor of a status when a same-status ally dies/leaves (round active only)", port: "n/a", match: false }
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "surv_LastPlayerForTeam_Notify (called from PlayerDies, ClientDisconnect, MakePlayerObserver) center-prints CENTER_ALONE to the last remaining same-status player when their second-to-last ally dies or leaves mid-round. Not ported: Survival.OnDeath only flips Alive + re-checks the wipe; there is no last-of-side detection nor CENTER_ALONE send. (CENTER_ALONE is not even declared in the port's NotificationsList for this use.)"
+    verification:
+      - { kind: code, ref: "Survival.OnDeath has no surv_LastPlayerForTeam equivalent; no CENTER_ALONE sender on the survival path", result: fail }
+    confidence: high
+    notes: "Omitted by the first pass. Minor flavor notification, but a real authority-side behavior absent from the port."

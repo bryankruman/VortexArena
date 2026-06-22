@@ -1,0 +1,624 @@
+unit: bot-ai
+category: bot
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 21
+  worst_gaps:
+    - "Only the primary attack is ever driven (ButtonAttack2 is hardcoded false): the per-weapon wr_aim that QC calls each think — which decides SECONDARY fire, charge-up/release, projectile detonation and weapon combos (mortar airburst, electro combo, devastator detonate, hagar burst, vortex charge) — is never invoked, so bots never use alt-fire or detonate/combo."
+    - "Combat movement is invented (periodic strafe-direction flip + health-advantage close/flee bias), not QC havocbot_dodge which sidesteps specific incoming projectiles by their flight path; bots don't specifically dodge a rocket the way stock bots do."
+    - "Bot scripting entirely missing: the bot_cmd command queue (PAUSE/CONTINUE/WAIT/TURN/MOVETO/AIM/PRESSKEY/RELEASEKEY/SELECTWEAPON/IMPULSE/IF/ELSE/FI/BARRIER/SOUND/CC/CONSOLE) does nothing, so map/console bot scripts, cutscene-driven bots, and g_waypointeditor bot driving are inert."
+    - "Weapon picking is a hitscan-at-range / splash-up-close bucket choosing the highest-impulse owned weapon, not the QC ordered far/mid/close priority lists; bots mis-prioritize weapons vs stock (e.g. won't reliably prefer Vortex at long range, Shotgun point-blank)."
+    - "No weapon-combo behaviour (bot_ai_weapon_combo): bots don't hold a weapon for a follow-up combo shot."
+    - "Keyboard-movement emulation missing: port bots emit a fully analog wish-move at all skills, so they strafe/turn more precisely than stock bots below skill 10 (a feel difference; stock low-skill bots have quantized, jerkier movement)."
+    - "Goal rating uses straight-line inverse distance (f*rangebias/(rangebias+dist)) instead of the QC waypoint-cost (Dijkstra) field; bots can prefer a goal near in a straight line but far by path (across a gap/wall), picking worse objectives than stock."
+    - "Idle-reload logic missing: port bots never reload between fights, so reloadable weapons run dry mid-combat more than stock; the skill>=2 held-reload and skill>=5 inventory pre-reload behaviours are absent."
+    - "Jetpack navigation (take off / fly to point / brake-land) is missing: bots can't cross jetpack-only gaps even with bot_ai_navigation_jetpack on."
+
+features:
+  - id: bot-ai.population.fixcount
+    name: "Population fill/trim (bot_number/minplayers/bot_vs_human, one add per frame)"
+    layer: [authority]
+    base_refs:
+      - "server/bot/default/bot.qc:bot_serverframe"
+      - "server/bot/default/bot.qc:bot_fixcount"
+      - "server/bot/default/bot.qc:bot_removenewest"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/BotPopulation.cs:ServerFrame"
+      - "src/XonoticGodot.Server/Bot/BotPopulation.cs:FixCount"
+      - "src/XonoticGodot.Server/Bot/BotPopulation.cs:TargetBotCount"
+      - "src/XonoticGodot.Server/Bot/BotPopulation.cs:RemoveNewest"
+    constants:
+      - { name: "bot_number", base: "0", port: "0 (cvar)", match: true }
+      - { name: "minplayers", base: "0", port: "0 (cvar)", match: true }
+      - { name: "minplayers_per_team", base: "0", port: "0 (cvar)", match: true }
+      - { name: "bot_vs_human", base: "0", port: "0 (cvar)", match: true }
+      - { name: "bot_join_empty", base: "0", port: "0 (cvar)", match: true }
+      - { name: "level-change grace (currentbots>0 && time<5)", base: "5 s", port: "5 s", match: true }
+      - { name: "early sentinel time", base: "2.5 s", port: "2.5 s", match: true }
+      - { name: "spawn-fail backoff", base: "10 s", port: "10 s", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "TargetBotCount read branch-for-branch vs bot_fixcount:623-664", result: pass }
+      - { kind: code, ref: "GameWorld.OnStartFrame:914 Bots.ServerFrame()", result: pass }
+    confidence: high
+    notes: "intermission keep-unless-empty, game-stopped skip, and skill-cvar resync are all ported. QC's waypoint-link re-cost across the bunnyhop threshold has no analogue (port link costs aren't skill-scaled)."
+
+  - id: bot-ai.population.strategytoken
+    name: "Strategy-token rotation (one goal search per frame)"
+    layer: [authority]
+    base_refs:
+      - "server/bot/default/bot.qc:bot_serverframe"
+      - "server/bot/default/bot.qc:bot_relinkplayerlist"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/BotPopulation.cs:RotateStrategyToken"
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:ThinkProduce"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "RotateStrategyToken: pass1 first goal-less non-observer (skip dead), pass2 next non-observer", result: pass }
+    confidence: high
+    notes: "Matches QC: token only walks the non-observer/non-paused bot_list; dead/observer holder still consumes the token so rotation doesn't freeze on a corpse."
+
+  - id: bot-ai.population.namemodel
+    name: "Bot name/model from bots.txt (prefix/suffix, dedup, model path)"
+    layer: [authority]
+    base_refs:
+      - "server/bot/default/bot.qc:bot_setnameandstuff"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/BotPopulation.cs:PickNameAndModel"
+      - "src/XonoticGodot.Server/Bot/BotPopulation.cs:ParseBotFile"
+    constants:
+      - { name: "bot_prefix", base: "[BOT]", port: "[BOT] (cvar)", match: true }
+      - { name: "bot_suffix", base: "(empty)", port: "(empty) (cvar)", match: true }
+      - { name: "model path", base: "models/player/<model>.iqm", port: "models/player/<model>.iqm", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "skin/shirt/pants columns and the 12 per-bot skill-modifier columns of bots.txt are not parsed (name+model only); team-forcing column (argv 5) for bot_vs_human teamplay not honored."
+    verification:
+      - { kind: code, ref: "ParseBotFile splits tab rows, reads f[0] name + f[1] model only", result: fail }
+    confidence: high
+    notes: "Random-among-unused-names prio weighting and '(N)' dedup are ported. The unparsed columns drive the skill-modifier and color gaps elsewhere."
+
+  - id: bot-ai.think.throttle
+    name: "Per-bot think throttle + god mode + ping (bot_think)"
+    layer: [authority]
+    base_refs:
+      - "server/bot/default/bot.qc:bot_think"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:ThinkProduce"
+    constants:
+      - { name: "think interval", base: "bot_ai_thinkinterval 0.05 × min(14/(skill+14),1), floor 0.01", port: "same formula", match: true }
+      - { name: "SUPERBOT think", base: "0.005 s", port: "0.005 s", match: true }
+      - { name: "jump-hold", base: "bot_jump_time + 0.2 s", port: "+0.2 s", match: true }
+      - { name: "bot_god", base: "0", port: "0 (cvar, re-stamped each think)", match: true }
+      - { name: "skill-based ping", base: "bound(0,0.07-0.005*skill+rand*0.01,0.65)", port: "not simulated", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Simulated bot ping/aim-latency (CS(this).ping, bot_aimlatency) is not modeled; bots have zero network latency, so their lead/reaction is slightly sharper than stock at low skill."
+    verification:
+      - { kind: code, ref: "ThinkProduce throttle matches bot_think:62-75", result: pass }
+    confidence: high
+    notes: "Dead/observer respawn-jump edge, campaign+countdown movement holds, and warmup auto-ready all ported."
+
+  - id: bot-ai.aim.aimdir
+    name: "Aim turn + skill error/smoothing (bot_aimdir filters)"
+    layer: [authority]
+    base_refs:
+      - "server/bot/default/aim.qc:bot_aimdir"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/BotAim.cs:AimAt"
+    constants:
+      - { name: "bot_ai_aimskill_offset", base: "1.8", port: "1.8", match: true }
+      - { name: "bot_ai_aimskill_think", base: "1", port: "1", match: true }
+      - { name: "bot_ai_aimskill_mouse", base: "1", port: "1", match: true }
+      - { name: "bot_ai_aimskill_fixedrate", base: "15", port: "15", match: true }
+      - { name: "bot_ai_aimskill_blendrate", base: "2", port: "2", match: true }
+      - { name: "order_mix_1st..5th", base: "0.01/0.075/0.01/0.0375/0.01", port: "0.01/0.075/0.01/0.0375/0.01", match: true }
+      - { name: "order_filter_1st..5th", base: "0.2/0.2/0.1/0.2/0.25", port: "0.2/0.2/0.1/0.2/0.25", match: true }
+      - { name: "enemy_factor", base: "5 enemy / 2 roam", port: "5 / 2", match: true }
+      - { name: "SUPERBOT", base: "skill>100", port: "skill>100", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Aim constants are hardcoded in BotAim (OffsetCvar/ThinkCvar/Mix*/Filt*), not read from the bot_ai_aimskill_* cvars, so server-side aim retuning via those cvars has no effect (values match defaults though)."
+    verification:
+      - { kind: code, ref: "BotAim.AimAt line-compared to bot_aimdir incl. filter cascade, mouseaim, turn rate", result: pass }
+    confidence: high
+    notes: "Near line-for-line port: badaimoffset, 5 cascaded filters, mouseaim think-jitter clock, r=max(fixedrate,blendrate) turn with skill^3 term, SUPERBOT snap."
+
+  - id: bot-ai.aim.fire
+    name: "Fire decision (maxfiredeviation cone + fire timer + LOS)"
+    layer: [authority]
+    base_refs:
+      - "server/bot/default/aim.qc:bot_aim"
+      - "server/bot/default/aim.qc:bot_aimdir"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:AimAndDecideFire"
+      - "src/XonoticGodot.Server/Bot/BotAim.cs:MaxFireDeviation"
+      - "src/XonoticGodot.Server/Bot/BotAim.cs:ShouldFire"
+    constants:
+      - { name: "maxfiredeviation", base: "1000/(dist-9) - 0.35, capped 90", port: "same", match: true }
+      - { name: "accuracy factor f", base: "(accurate?1:1.6)+bound(0,(10-skill)*0.3,3)", port: "same", match: true }
+      - { name: "fire timer", base: "bound(0.1, 0.5-skill*0.05, 0.5)", port: "same", match: true }
+      - { name: "bot_ai_aimskill_firetolerance", base: "1", port: "true (FireTolerance)", match: true }
+      - { name: "long-range fire chance", base: "rand*rand > bound(0,(skill+aggres)*0.05,1)", port: "rand*rand > bound(0,skill*0.05,1) (no aggres term)", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Long-range fire-hesitation chance omits the bot_aggresskill modifier (port uses skill only), so per-bot aggression variance is lost."
+    verification:
+      - { kind: code, ref: "MaxFireDeviation + ShouldFire vs bot_aim/bot_aimdir fire block", result: pass }
+    confidence: high
+    notes: "LOS refusal (trace shotorg->enemy, don't shoot wall/teammate) ported in AimAndDecideFire."
+
+  - id: bot-ai.aim.lead
+    name: "Projectile lead + ballistic arc (bot_shotlead / findtrajectorywithleading)"
+    layer: [authority]
+    base_refs:
+      - "server/bot/default/aim.qc:bot_shotlead"
+      - "server/bot/default/aim.qc:findtrajectorywithleading"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/BotAim.cs:ShotLead"
+      - "src/XonoticGodot.Server/Bot/BotAim.cs:BallisticArc"
+    constants:
+      - { name: "lead time", base: "shotdelay + dist/shotspeed", port: "shotdelay + dist/shotspeed", match: true }
+      - { name: "trajectory search", base: "10 traces, pitch += 0.1, tracetoss onto faked target", port: "closed-form 0.5*g*t^2 drop, 45-deg range guard", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Ballistic aim is a closed-form gravity-drop approximation, not QC's 10-trace tracetoss search; lobbed-weapon aim (mortar/nade) is less accurate, especially with obstacles in the arc, and never traces the world to confirm the toss lands."
+      - "Shot speed is read from g_balance_<wep>_primary_speed/gravity for the single ChosenWeapon, not per-weaponentity with W_WeaponSpeedFactor applied; weapons without those cvars are treated as hitscan (no lead)."
+    verification:
+      - { kind: code, ref: "ShotLead matches bot_shotlead; BallisticArc is a documented approximation of findtrajectorywithleading", result: fail }
+    confidence: medium
+    notes: "Hitscan lead is faithful; the gravity case is the weak spot."
+
+  - id: bot-ai.target.chooseenemy
+    name: "Enemy selection (nearest attackable with LOS, sticky tracking)"
+    layer: [authority]
+    base_refs:
+      - "server/bot/default/havocbot/havocbot.qc:havocbot_chooseenemy"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:ChooseEnemy"
+    constants:
+      - { name: "bot_ai_enemydetectionradius", base: "10000", port: "10000", match: true }
+      - { name: "bot_ai_enemydetectioninterval", base: "2 s", port: "2 s (0.1 SUPERBOT)", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No sticky-enemy window (havocbot_stickenemy_time / bot_ai_enemydetectioninterval_stickingtoenemy 4): the port keeps the current enemy only while still attackable+within the re-scan clock, but doesn't extend tracking through a brief LOS break around a pillar/corner the way stock does."
+      - "No second see-through-transparent (DPCONTENTS_OPAQUE) scan pass and no misc_breakablemodel secondary targeting; bots won't shoot breakables or acquire targets through transparent surfaces."
+      - "SUPERBOT target rating omitted: QC SUPERBOT rates targets by bound(50, health+armor, 250) * distance (prefers killing the weak/close), the port always picks pure nearest regardless of skill."
+    verification:
+      - { kind: code, ref: "ChooseEnemy nearest-attackable+LOS+PVS scan; no stickenemy / transparent / breakable / SUPERBOT-health-rating passes", result: fail }
+    confidence: high
+    notes: "Adds a PVS pre-filter before the LOS trace (conservative optimization, not in QC but no false negatives). bot_nofire/independent-player early-NULL of the enemy (havocbot_chooseenemy:1336) is also not reproduced here — the port instead suppresses only the fire button in the brain."
+
+  - id: bot-ai.target.shouldattack
+    name: "Target eligibility filter (bot_shouldattack)"
+    layer: [authority]
+    base_refs:
+      - "server/bot/default/aim.qc:bot_shouldattack"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:ShouldAttack"
+    constants:
+      - { name: "bot_ignore_bots", base: "0", port: "0 (cvar)", match: true }
+      - { name: "bot_typefrag", base: "0", port: "0 (cvar)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Bot_ForbidAttack mutator hook is not consulted (no mutator can veto a bot target, e.g. invisibility/race-exempt mutators)."
+    verification:
+      - { kind: code, ref: "ShouldAttack vs bot_shouldattack: team/neutral/ignore-bots/takedamage/dead/notarget/alpha/frozen filters present", result: pass }
+    confidence: high
+    notes: "in-chat (typefrag) check present; the only missing branch is the mutator hook."
+
+  - id: bot-ai.weapon.choose
+    name: "Weapon selection by range + combos (havocbot_chooseweapon)"
+    layer: [authority]
+    base_refs:
+      - "server/bot/default/havocbot/havocbot.qc:havocbot_chooseweapon"
+      - "server/bot/default/bot.qc:bot_custom_weapon_priority_setup"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:ChooseWeapon"
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:PickOwned"
+    constants:
+      - { name: "bot_ai_chooseweaponinterval", base: "0.5 s", port: "0.5 s", match: true }
+      - { name: "priority distances", base: "300 / 850 (close/far)", port: "300 / 850", match: true }
+      - { name: "far/mid/close priority lists", base: "explicit per-weapon ordered lists", port: "coarse hitscan/splash bucket + highest-impulse pick", match: false }
+      - { name: "bot_ai_weapon_combo / threshold", base: "1 / 0.4", port: "not implemented", match: false }
+      - { name: "bot_rangepreference (2^pref distance shift)", base: "per-bot", port: "not implemented", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Weapon picking is a hitscan-at-range / splash-up-close bucket choosing the highest-impulse owned weapon, not the QC ordered far/mid/close priority lists; bots mis-prioritize weapons vs stock (e.g. won't reliably prefer Vortex at long range, Shotgun point-blank)."
+      - "No weapon-combo behaviour (bot_ai_weapon_combo): bots don't hold a weapon for a follow-up combo shot."
+      - "No bot_rangepreference shift, so per-bot 'sniper vs spammer' weapon-range personalities are absent."
+    verification:
+      - { kind: code, ref: "ChooseWeapon hitscan/splash buckets, no priority list / combo / rangepref", result: fail }
+    confidence: high
+    notes: "Distance thresholds are read from the real cvar; the selection algorithm itself is simplified."
+
+  - id: bot-ai.weapon.reload
+    name: "Idle weapon reload (havocbot_ai not-attacking branch)"
+    layer: [authority]
+    base_refs:
+      - "server/bot/default/havocbot/havocbot.qc:havocbot_ai"
+    port_refs: []
+    constants:
+      - { name: "held-weapon reload skill gate", base: "skill >= 2", port: "n/a", match: false }
+      - { name: "inventory pre-reload skill gate", base: "skill >= 5", port: "n/a", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Idle-reload logic missing: port bots never reload between fights, so reloadable weapons run dry mid-combat more than stock; the skill>=2 held-reload and skill>=5 inventory pre-reload behaviours are absent."
+    verification:
+      - { kind: code, ref: "no reload impulse driven in BotBrain", result: fail }
+    confidence: high
+    notes: "Whether visible depends on the port's reload/ammo model; flagged as a clear behavioral gap."
+
+  - id: bot-ai.weapon.wr_aim
+    name: "Per-weapon fire driver wr_aim (secondary fire / detonate / combo / charge)"
+    layer: [authority]
+    base_refs:
+      - "server/bot/default/havocbot/havocbot.qc:havocbot_ai"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:AimAndDecideFire"
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:Emit"
+    constants:
+      - { name: "weapon slots driven", base: "MAX_WEAPONSLOTS (all), each wr_aim", port: "1 (primary attack of ChosenWeapon only)", match: false }
+      - { name: "ButtonAttack2 (secondary)", base: "set by wr_aim per weapon", port: "hardcoded false", match: false }
+    status:
+      logic: partial
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Only the primary attack is ever driven (ButtonAttack2 is hardcoded false): the per-weapon wr_aim that QC calls each think — which decides SECONDARY fire, charge-up/release, projectile detonation and weapon combos (mortar airburst, electro combo, devastator detonate, hagar burst, vortex charge) — is never invoked, so bots never use alt-fire or detonate/combo."
+      - "Because wr_aim is bypassed, weapon combos and the lastfiredweapon bookkeeping (feeding bot_ai_weapon_combo in ChooseWeapon) never happen; bots fire only the primary, never detonate/airburst, and never alt-fire."
+    verification:
+      - { kind: code, ref: "Emit sets ButtonAttack2=false unconditionally; no wr_aim / per-weapon-slot loop in BotBrain", result: fail }
+    confidence: high
+    notes: "Distinct from weapon.choose (which weapon) — this row is the FIRE driver (how to fire it). The single-button generic fire is why bot combat reads as primary-spam vs stock alt-fire/detonation play."
+
+  - id: bot-ai.roles.goalrating
+    name: "Roles + goal rating (havocbot_role_generic / objective roles, routerating)"
+    layer: [authority]
+    base_refs:
+      - "server/bot/default/havocbot/roles.qc:havocbot_role_generic"
+      - "server/bot/default/navigation.qc:navigation_routerating"
+      - "server/bot/default/havocbot/havocbot.qc:havocbot_goalrating_items"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/BotRoles.cs:GoalRater.Rate"
+      - "src/XonoticGodot.Server/Bot/BotRoles.cs:RoleGeneric"
+      - "src/XonoticGodot.Server/Bot/BotObjectiveRoles.cs"
+    constants:
+      - { name: "distance metric", base: "navigation_routerating cost over the waypoint graph (Dijkstra path length)", port: "straight-line vlen(goal-from)", match: false }
+      - { name: "rating discount", base: "f * rangebias/(rangebias+pathcost)", port: "f * rangebias/(rangebias+straightdist)", match: false }
+      - { name: "rangebias (items/enemies/roam)", base: "per-rating-call (e.g. items 2000, enemies BOT_RATING_ENEMY)", port: "2000 (all calls)", match: false }
+      - { name: "item value scale", base: "havocbot_goalrating_items ~0.0001, time-item lead for skilled bots", port: "value*ratingScale (no skill-scaled time-item lead)", match: false }
+      - { name: "strategy interval", base: "bot_ai_strategyinterval 7 (5.5 moving target)", port: "7 (cvar); no separate moving-target interval", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Goal rating uses straight-line inverse distance (f*rangebias/(rangebias+dist)) instead of the QC waypoint-cost (Dijkstra) field; bots can prefer a goal near in a straight line but far by path (across a gap/wall), picking worse objectives than stock."
+      - "rangebias is hardcoded 2000 for every rate call (items/enemies/roam) instead of the per-rating-call bias QC uses; relative goal weighting by category is flattened."
+      - "No skill-scaled time-item lead (skilled QC bots pre-rotate to mega/armor as it nears respawn) and no separate _movingtarget (5.5s) strategy interval for goals that can move."
+    verification:
+      - { kind: code, ref: "GoalRater.Rate uses vlen straight-line; SetGoal does A* only AFTER the (straight-line) pick; rangebias 2000 at all call sites in BotRoles/BotObjectiveRoles", result: fail }
+    confidence: high
+    notes: "The role dispatch (generic DM + per-gametype objective roles) IS live and wired; the divergence is purely in the rating distance metric + bias. Per-gametype objective-role fidelity is audited per-gametype, not here."
+
+  - id: bot-ai.move.steer
+    name: "Goal-stack steering + obstacle/step jump (havocbot_movetogoal)"
+    layer: [authority]
+    base_refs:
+      - "server/bot/default/havocbot/havocbot.qc:havocbot_movetogoal"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/BotNavigation.cs:Steer"
+      - "src/XonoticGodot.Server/Bot/BotNavigation.cs:SetGoal"
+    constants:
+      - { name: "stepheight", base: "sv_stepheight", port: "34 (StepHeight const)", match: false }
+      - { name: "jumpstepheight", base: "stepheight + jumpheight*0.85", port: "48 (JumpStepHeight const)", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Step/jump heights are hardcoded constants (34/48) instead of derived from sv_stepheight/sv_jumpvelocity/sv_gravity like QC bot_calculate_stepheightvec; non-default physics cvars won't adjust bot jump reach."
+      - "QC's full movetogoal handling of teleport/ladder/box-volume waypoints, water swim-up, and the per-goal stop/turn logic is partially collapsed; complex waypoint traversal is less robust than stock."
+    verification:
+      - { kind: code, ref: "BotNavigation.Steer pops goals, jumps obstacles/up-steps, handles jump/ladder waypoints", result: pass }
+    confidence: medium
+    notes: "Core 'walk to goal, jump over obstacles' faithful; jetpack/rocketjump branches are separate (missing) features."
+
+  - id: bot-ai.move.bunnyhop
+    name: "Bunnyhopping toward far goals (havocbot_bunnyhop)"
+    layer: [authority]
+    base_refs:
+      - "server/bot/default/havocbot/havocbot.qc:havocbot_bunnyhop"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/BotNavigation.cs:Bunnyhop"
+    constants:
+      - { name: "bot_ai_bunnyhop_skilloffset", base: "7", port: "7 (cvar)", match: true }
+      - { name: "bot_ai_bunnyhop_dir_deviation_max", base: "20", port: "20 (cvar)", match: true }
+      - { name: "bot_ai_bunnyhop_downward_pitch_max", base: "30", port: "30 (cvar, read)", match: true }
+      - { name: "bot_ai_bunnyhop_turn_angle_min/max", base: "4 / 80", port: "4 / 80", match: true }
+      - { name: "bot_ai_bunnyhop_turn_angle_reduction", base: "40", port: "40", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Bunnyhop gating (skill/attacking/speed/ground/water/duck/deviation/jump-distance) vs havocbot_bunnyhop", result: pass }
+    confidence: high
+    notes: "Reads the bunnyhop cvars at runtime; jump-distance-vs-remaining gate present."
+
+  - id: bot-ai.move.danger
+    name: "Danger look-ahead (lava/void/cliff/trigger_hurt) + evade"
+    layer: [authority]
+    base_refs:
+      - "server/bot/default/havocbot/havocbot.qc:havocbot_checkdanger"
+      - "server/bot/default/havocbot/havocbot.qc:havocbot_movetogoal"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/BotDanger.cs:CheckDanger"
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:ThinkProduce"
+    constants:
+      - { name: "down-probe depth", base: "3000 qu", port: "3000 qu", match: true }
+      - { name: "cliff threshold", base: ">100 qu below feet & goal", port: ">100 qu", match: true }
+      - { name: "bot_ai_ignoregoal_timeout", base: "3 s", port: "3 s (cvar)", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Danger evade is brake-only: the QC lateral evadedanger vector (steer along the safe edge, distance scaled by skill) is collapsed into a reverse-velocity brake, so bots back straight off a ledge instead of sidestepping along it."
+      - "No per-waypoint danger-cost accumulation (botframe_updatedangerousobjects / bot_ai_dangerdetection*); routing doesn't avoid chronically dangerous waypoints, only the immediate per-bot probe protects them."
+    verification:
+      - { kind: code, ref: "CheckDanger classifies SKY/cliff/lava/trigger_hurt 0-4; brain treats 1-3 as brake, 4 as unreachable-above-jump", result: pass }
+    confidence: high
+    notes: "The 0-4 classification matches QC; the response (brake vs lateral evade) is the divergence."
+
+  - id: bot-ai.combat.dodge
+    name: "Combat movement (projectile dodge + retreat)"
+    layer: [authority]
+    base_refs:
+      - "server/bot/default/havocbot/havocbot.qc:havocbot_dodge"
+      - "server/bot/default/havocbot/havocbot.qc:havocbot_movetogoal"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:CombatMovement"
+    constants:
+      - { name: "dodge applies", base: "SUPERBOT only (skill>100)", port: "all skills", match: false }
+      - { name: "dodge basis", base: "specific bot_dodge projectiles by flight path", port: "generic strafe flip + HP-bias", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Combat movement is invented (periodic strafe-direction flip + health-advantage close/flee bias), not QC havocbot_dodge which sidesteps specific incoming projectiles by their flight path; bots don't specifically dodge a rocket the way stock bots do."
+      - "The SUPERBOT random-direction combat jitter (havocbot_movetogoal:1280-1307) is not reproduced; only the generic strafe stands in."
+    verification:
+      - { kind: code, ref: "CombatMovement strafe-flip + HP bias blend; no bot_dodge projectile scan", result: fail }
+    confidence: high
+    notes: "Functional (bots strafe and retreat when outgunned) but not a port of the QC dodge algorithm."
+
+  - id: bot-ai.special.jetpack_rocketjump
+    name: "Jetpack navigation + rocketjump/jetpack trigger_hurt escape"
+    layer: [authority]
+    base_refs:
+      - "server/bot/default/havocbot/havocbot.qc:havocbot_movetogoal"
+    port_refs: []
+    constants:
+      - { name: "bot_ai_navigation_jetpack", base: "0", port: "n/a", match: false }
+      - { name: "bot_ai_navigation_jetpack_mindistance", base: "3500", port: "n/a", match: false }
+      - { name: "rocketjump skill gate", base: "skill > 6", port: "n/a", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Jetpack navigation (take off / fly to point / brake-land) is missing: bots can't cross jetpack-only gaps even with bot_ai_navigation_jetpack on."
+      - "Skill>6 trigger_hurt escape (jetpack up, or Devastator rocketjump if HP allows) is missing: bots die in hurt volumes they could have escaped."
+    verification:
+      - { kind: code, ref: "no jetpack/rocketjump branch in BotNavigation/BotBrain", result: fail }
+    confidence: high
+    notes: "Both are niche but cause hard navigation failures / deaths on maps that need them."
+
+  - id: bot-ai.move.keyboard
+    name: "Keyboard-movement emulation (havocbot_keyboard_movement)"
+    layer: [authority]
+    base_refs:
+      - "server/bot/default/havocbot/havocbot.qc:havocbot_keyboard_movement"
+    port_refs: []
+    constants:
+      - { name: "bot_ai_keyboard_distance", base: "250", port: "n/a", match: false }
+      - { name: "bot_ai_keyboard_threshold", base: "0.57", port: "n/a", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Keyboard-movement emulation missing: port bots emit a fully analog wish-move at all skills, so they strafe/turn more precisely than stock bots below skill 10 (a feel difference; stock low-skill bots have quantized, jerkier movement)."
+    verification:
+      - { kind: code, ref: "no keyboard quantization in BotNavigation.Steer (emits analog MoveValues)", result: fail }
+    confidence: high
+    notes: "Affects bot-movement feel/skill-curve, not correctness."
+
+  - id: bot-ai.scripting.commands
+    name: "Bot scripting command queue (bot_cmd / scripting.qc)"
+    layer: [authority]
+    base_refs:
+      - "server/bot/default/scripting.qc:bot_execute_commands"
+      - "server/bot/default/scripting.qc:bot_queuecommand"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Bot scripting entirely missing: the bot_cmd command queue (PAUSE/CONTINUE/WAIT/TURN/MOVETO/AIM/PRESSKEY/RELEASEKEY/SELECTWEAPON/IMPULSE/IF/ELSE/FI/BARRIER/SOUND/CC/CONSOLE) does nothing, so map/console bot scripts, cutscene-driven bots, and g_waypointeditor bot driving are inert."
+    verification:
+      - { kind: code, ref: "no bot_cmd / scripting analogue anywhere in src/.../Bot", result: fail }
+    confidence: high
+    notes: "havocbot_ai runs bot_execute_commands before the AI; the port has no equivalent gate, so scripted bots fall through to normal AI."
+
+  - id: bot-ai.skill.modifiers
+    name: "Skill model: single knob vs 12 per-bot skill columns + autoskill"
+    layer: [authority]
+    base_refs:
+      - "server/bot/default/bot.qc:bot_setnameandstuff"
+      - "server/bot/default/bot.qc:autoskill"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/BotPopulation.cs:ServerFrame"
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:Skill"
+    constants:
+      - { name: "skill (default)", base: "8 (server cfg)", port: "Cvars.Skill seeds BotSkill", match: true }
+      - { name: "per-bot skill modifiers", base: "12 randomized columns (move/dodge/ping/weapon/aggres/range/aim/offset/mouse/think/ai/keyboard)", port: "single BotSkill knob", match: false }
+      - { name: "skill_auto / autoskill", base: "0 / auto-tune to best human", port: "not implemented", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: true
+    divergence_rationale: "The port deliberately folds QC's 12 randomized per-bot skill modifier columns into a single BotSkill knob (documented in BotPopulation/BotBrain). This keeps the same overall skill axis without reading the bots.txt skill columns or simulating per-facet variance; a population of equal-skill bots is more homogeneous than stock, but skill scaling of aim/reaction/aggression is preserved."
+    gaps:
+      - "autoskill/skill_auto is unported (separate from the intended single-knob simplification): the server can't auto-adjust bot skill to match the best human player."
+    verification:
+      - { kind: code, ref: "BotSkill single field; no bots.txt skill columns parsed; ServerFrame autoskill branch noted as unported", result: fail }
+    confidence: high
+    notes: "Single-knob skill is the intended divergence; the missing autoskill auto-tuning is the residual gap inside this row."

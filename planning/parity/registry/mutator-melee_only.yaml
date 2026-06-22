@@ -1,0 +1,259 @@
+unit: mutator-melee_only
+category: mutator
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 10
+  worst_gaps:
+    - "Enable predicate omits the !instagib && !ok && !weaponarena exclusion: melee_only can be active simultaneously with instagib/overkill/an arena gametype (Base keeps it inert in those combos); loadout then depends on hook order."
+    - "SetWeaponArena hook is DEAD (no .Call site) AND the port actively reads g_weaponarena as a bool gate (StartItem.cs:304 suppresses ALL weapon/ammo pickups when g_weaponarena!=0). So melee_only + a configured g_weaponarena wrongly suppresses the medium/large/ammo pickups Base would still spawn."
+    - "Enable cvar read as float (GetFloat!=0) instead of Base expr_evaluate(string) — agrees for 0/1 but not for string expressions."
+    - "ForbidRandomStartWeapons hook is DEAD (no .Call site): with g_weaponarena_random the random-start forbid is not honored."
+    - "Mutator-string tags (:MeleeOnly / ', Melee only Arena') not implemented AND the BuildMutatorsString/BuildMutatorsPrettyString hook chains do not exist in the port at all: melee_only never appears in the active-mutator label or server-browser tag."
+features:
+  - id: melee_only.enable.predicate
+    name: "Enable predicate (g_melee_only and not instagib/overkill/arena)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/melee_only/sv_melee_only.qc:REGISTER_MUTATOR(melee_only,...)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MeleeOnlyMutator.cs:IsEnabled"
+    constants:
+      - { name: "g_melee_only (default)", base: "0", port: "0", match: true }
+      - { name: "cvar read", base: "expr_evaluate(autocvar_g_melee_only) [string expr]", port: "GetFloat(\"g_melee_only\") != 0f [float]", match: false }
+      - { name: "exclude instagib", base: "!MUTATOR_IS_ENABLED(mutator_instagib)", port: "none", match: false }
+      - { name: "exclude overkill", base: "!MUTATOR_IS_ENABLED(ok)", port: "none", match: false }
+      - { name: "exclude weaponarena", base: "!MapInfo_LoadedGametype.m_weaponarena", port: "none", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port reads only g_melee_only != 0; the !instagib && !ok && !weaponarena exclusion is missing, so melee_only can run at the same time as instagib/overkill/an arena (Base would leave it inactive). Loadout outcome then depends on hook order instead of being deterministic."
+      - "Base uses expr_evaluate on the cvar STRING (autocvar_g_melee_only is a string, like rocketflying which the port ports via ExprEvaluate(GetString)); the port uses GetFloat != 0 — equivalent for plain 0/1 but not for string expressions, and a minor type-fidelity divergence vs the Base mutator."
+    verification:
+      - { kind: code, ref: "MeleeOnlyMutator.cs:21-22 reads only g_melee_only via GetFloat; grep over src/ found no instagib/overkill/arena exclusion; no MutatorActivation conflict pass excludes it", result: fail }
+    confidence: high
+    notes: "Comment at MeleeOnlyMutator.cs:20 says exclusion is 'the bootstrap's job' but no bootstrap/MutatorActivation implements it. cvar seeded from port mutators.cfg:178 (verbatim from Base mutators.cfg:178). values downgraded to partial for the float-vs-expr_evaluate read."
+  - id: melee_only.loadout.start_items
+    name: "Start loadout: Shotgun only, zero shells (SetStartItems)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/melee_only/sv_melee_only.qc:MUTATOR_HOOKFUNCTION(melee_only, SetStartItems)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MeleeOnlyMutator.cs:OnSetStartItems"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:ComputeStartItems"
+    constants:
+      - { name: "start_ammo_shells", base: "0", port: "0", match: true }
+      - { name: "start_weapons", base: "WEPSET(SHOTGUN)", port: "SetWeapons(\"shotgun\")", match: true }
+      - { name: "hook order", base: "CBC_ORDER_LAST", port: "HookOrder.Last", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "OnSetStartItems sets AmmoShells=0 + SetWeapons(shotgun); live via SpawnSystem.cs:669 SetStartItems.Call inside ComputeStartItems, reached by ApplyStartLoadout on every non-warmup spawn", result: pass }
+    confidence: medium
+    notes: "Base computes once at config and sets both the live AND the warmup_* globals (warmup_start_ammo_shells/warmup_start_weapons); the port's SetStartItems seam is the NON-warmup path only (ComputeStartItems -> ApplyStartLoadout). Warmup is NOT covered here — see melee_only.loadout.warmup. Not verified in a live match."
+  - id: melee_only.loadout.warmup
+    name: "Warmup loadout also forced to Shotgun/zero shells (warmup_start_weapons/warmup_start_ammo_shells)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/melee_only/sv_melee_only.qc:MUTATOR_HOOKFUNCTION(melee_only, SetStartItems)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MeleeOnlyMutator.cs:OnPlayerSpawn"
+    constants:
+      - { name: "warmup_start_ammo_shells", base: "0", port: "0 (via OnPlayerSpawn, NOT via warmup loadout)", match: true }
+      - { name: "warmup_start_weapons", base: "WEPSET(SHOTGUN)", port: "shotgun-only (via OnPlayerSpawn ClearWeapons+GiveWeapon)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The port's warmup spawn path (SpawnSystem.ApplyWarmupLoadout / GiveWarmupResources, SpawnSystem.cs:742) does NOT call SetStartItems — it unconditionally grants g_warmup_allguns (ALL non-hidden weapons, default true) + 30 shells, so the melee_only SetStartItems hook is bypassed during warmup. Faithful end-state is salvaged ONLY because the port-only OnPlayerSpawn (PlayerSpawn hook, fired AFTER PutPlayerInServer at ClientManager.cs:542 on every spawn incl. warmup) re-clears to shotgun + 0 shells. Remove OnPlayerSpawn and warmup melee_only would break."
+    verification:
+      - { kind: code, ref: "ApplyWarmupLoadout (SpawnSystem.cs:742-781) grants g_warmup_allguns + 30 shells, never calls ComputeStartItems/SetStartItems; OnPlayerSpawn (MeleeOnlyMutator.cs:60-72) runs after it (ClientManager.cs:542) and re-applies shotgun-only/0 shells", result: pass }
+    confidence: medium
+    notes: "CORRECTION vs draft: the draft asserted 'StartLoadout has no warmup twin so warmup implicitly = same loadout' and called OnPlayerSpawn redundant/no-effect. In fact the port DOES have a separate warmup loadout that bypasses the SetStartItems seam, and OnPlayerSpawn is LOAD-BEARING for warmup parity (and for re-clearing the per-respawn weapon set), not redundant. Net observable result matches Base, via a different (port-specific) mechanism."
+  - id: melee_only.loadout.player_spawn_reapply
+    name: "Per-spawn loadout re-apply (port-only PlayerSpawn handler)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/melee_only/sv_melee_only.qc:MUTATOR_HOOKFUNCTION(melee_only, SetStartItems)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MeleeOnlyMutator.cs:OnPlayerSpawn"
+    constants:
+      - { name: "weapons given", base: "(via start_weapons/warmup_start_weapons)", port: "ClearWeapons + GiveWeapon(shotgun) + SwitchToBest", match: true }
+      - { name: "shells set", base: "(via start_ammo_shells/warmup_start_ammo_shells=0)", port: "SetResource(Shells, 0)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Port-only PlayerSpawn handler with no Base counterpart. Base enforces the loadout purely through the start_*/warmup_start_* globals computed once at config; the port's SetStartItems seam covers only the non-warmup spawn path, so this per-spawn re-application is the mechanism that (a) enforces melee_only during WARMUP (where the warmup loadout bypasses SetStartItems and would otherwise grant all-guns+shells) and (b) guarantees the shotgun-only set on every respawn. Same observable loadout as Base, achieved by a port-specific code path."
+    gaps: []
+    verification:
+      - { kind: code, ref: "OnPlayerSpawn live via ClientManager.cs:542 PlayerSpawn.Call (after PutPlayerInServer on every spawn); duplicates/enforces the shotgun-only loadout per spawn", result: pass }
+    confidence: medium
+    notes: "Reclassified intended_divergence:true (draft had false). It is NOT inert redundancy: it is the sole enforcer of melee_only's loadout during warmup. See melee_only.loadout.warmup."
+  - id: melee_only.arena.force_off
+    name: "Force weapon arena off (SetWeaponArena -> 'off')"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/melee_only/sv_melee_only.qc:MUTATOR_HOOKFUNCTION(melee_only, SetWeaponArena)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MeleeOnlyMutator.cs:OnSetWeaponArena"
+    constants:
+      - { name: "arena value", base: "\"off\"", port: "\"off\"", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "MutatorHooks.SetWeaponArena has no .Call site anywhere in the port, so the handler never runs. Impact is REAL (not latent): the port reads g_weaponarena as a bool gate that suppresses ALL weapon/ammo world-item spawns (StartItem.cs:304, GiveItems.cs:161). Base's melee_only forces g_weaponarena to 'off' precisely so those pickups still spawn (melee_only only filters SMALL health/armor). With melee_only + a configured g_weaponarena, the port wrongly suppresses every medium/large health/armor and ammo pickup that Base would keep."
+    verification:
+      - { kind: code, ref: "grep 'SetWeaponArena.Call' over src/ returns nothing; only subscribers found. StartItem.cs:304 / GiveItems.cs:161 read g_weaponarena!=0 as a pickup-suppression gate that melee_only never clears", result: fail }
+    confidence: high
+    notes: "CORRECTION vs draft: draft hedged 'impact depends on whether port reads g_weaponarena... port may not read it.' It DOES read g_weaponarena (StartItem.cs:304), so the dead hook has a concrete pickup-suppression bug under melee_only+arena, not merely latent. Edge config (host must set both cvars). Shared-infra gap (hook dead for all subscribers)."
+  - id: melee_only.weapons.forbid_random_start
+    name: "Forbid random start weapons (ForbidRandomStartWeapons -> true)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/melee_only/sv_melee_only.qc:MUTATOR_HOOKFUNCTION(melee_only, ForbidRandomStartWeapons)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MeleeOnlyMutator.cs:OnForbidRandomStartWeapons"
+    constants:
+      - { name: "return", base: "true", port: "true", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "MutatorHooks.ForbidRandomStartWeapons has no .Call site anywhere in the port; with g_weaponarena_random the random-start-weapons forbid is not honored (could overwrite the shotgun loadout). In practice partly masked by the per-spawn OnPlayerSpawn re-clear, but the hook itself is dead."
+    verification:
+      - { kind: code, ref: "grep 'ForbidRandomStartWeapons.Call' over src/ returns nothing", result: fail }
+    confidence: high
+    notes: "Handler is correct (returns true); never invoked. Shared-infra gap (same hook dead for all subscribers). Low impact: OnPlayerSpawn re-clears the set each spawn anyway."
+  - id: melee_only.weapons.forbid_throw
+    name: "Forbid throwing/dropping current weapon (ForbidThrowCurrentWeapon -> true)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/melee_only/sv_melee_only.qc:MUTATOR_HOOKFUNCTION(melee_only, ForbidThrowCurrentWeapon)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MeleeOnlyMutator.cs:OnForbidThrow"
+    constants:
+      - { name: "return", base: "true", port: "true", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "OnForbidThrow returns true; live via WeaponThrowing.cs:149 and :185 ForbidThrowCurrentWeapon.Call", result: pass }
+    confidence: high
+    notes: "Player cannot disarm out of their only weapon, matching Base."
+  - id: melee_only.items.filter_small
+    name: "Filter out small health/armor pickups (FilterItemDefinition)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/melee_only/sv_melee_only.qc:MUTATOR_HOOKFUNCTION(melee_only, FilterItemDefinition)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MeleeOnlyMutator.cs:OnFilterItemDefinition"
+      - "src/XonoticGodot.Common/Gameplay/Items/StartItem.cs:Build"
+    constants:
+      - { name: "forbidden items", base: "ITEM_HealthSmall, ITEM_ArmorSmall", port: "item_health_small/item_armor_small (ClassName) or health_small/armor_small (NetName)", match: true }
+      - { name: "forbid polarity", base: "hook returns false -> wrapper !negates -> forbid", port: "hook returns true -> forbid", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "OnFilterItemDefinition forbids small health/armor; live via StartItem.cs:90 FilterItemDefinition.Call (returns true => RemoveItem)", result: pass }
+    confidence: high
+    notes: "Polarity correct: QC's !MUTATOR_CALLHOOK negation is folded so port-true == forbid. Matches by classname/netname string (port has no item-def identity registry); NetName hoisted to the hook seam before the hook fires (StartItem.cs:88, documented deviation, same end state)."
+  - id: melee_only.ui.mutator_string_machine
+    name: "Machine mutator tag ':MeleeOnly' (BuildMutatorsString)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/melee_only/sv_melee_only.qc:MUTATOR_HOOKFUNCTION(melee_only, BuildMutatorsString)"
+    port_refs: []
+    constants:
+      - { name: "machine tag", base: "\":MeleeOnly\"", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No BuildMutatorsString handler AND no BuildMutatorsString hook chain exists in the port at all (MutatorHooks.cs has no such chain; RocketFlyingMutator's comment confirms the BuildMutatorsString sub-hook is deliberately skipped). melee_only never contributes the ':MeleeOnly' machine tag to g_mutatormsg / the server browser."
+    verification:
+      - { kind: code, ref: "MeleeOnlyMutator.cs has no mutator-string handler; grep over src/ shows no BuildMutatorsString HookChain in MutatorHooks.cs", result: fail }
+    confidence: high
+    notes: "Shared gap across the whole port: the mutator-string builder infrastructure does not exist, not just the melee_only handler."
+  - id: melee_only.ui.mutator_string_pretty
+    name: "Pretty mutator label ', Melee only Arena' (BuildMutatorsPrettyString)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/melee_only/sv_melee_only.qc:MUTATOR_HOOKFUNCTION(melee_only, BuildMutatorsPrettyString)"
+    port_refs: []
+    constants:
+      - { name: "pretty label", base: "\", Melee only Arena\"", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No BuildMutatorsPrettyString handler AND no such hook chain in the port; the active-mutator / mutator-list UI never shows ', Melee only Arena'."
+    verification:
+      - { kind: code, ref: "MeleeOnlyMutator.cs has no pretty-string handler; no BuildMutatorsPrettyString HookChain in MutatorHooks.cs", result: fail }
+    confidence: high
+    notes: "Same shared-infra absence as the machine tag. Split out from the machine tag into its own row so each Base hook maps to exactly one feature."

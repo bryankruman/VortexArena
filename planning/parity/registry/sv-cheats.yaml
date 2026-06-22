@@ -1,0 +1,514 @@
+unit: sv-cheats
+category: server
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 19
+  worst_gaps:
+    - "cmd usetarget / killtarget are DEAD: the Cheats.Command switch has those cases, but neither verb is Register()ed in Commands.cs nor present in the ClientCommandRegistry allowlist (only god/notarget/noclip/fly/give are), so no client command ever routes to them."
+    - "Cheat impulse GIVE_ALL (99) is DEAD: Cheats.GiveAll exists + is unit-tested but DispatchImpulse routes 'impulse N' only to vehicle + weapon impulses, so impulse 99 (and 30/140/141/142/143/148) is never matched."
+    - "No CopyBody / corpse-clone mechanic (CLONE_MOVING 140 / CLONE_STANDING 142); sv_clones is an unread stub and the gating omits its clone-allowance branch."
+    - "No CheatFrame per-frame hook and no Drag subsystem: cannot pick up/carry/throw entities (cheat or normal-range g_grab_range), no te_lightning1 drag beam, no dragbox/dragpoint race map editor; g_grab_range cvar exists but is never read."
+    - "No SPEEDRUN_INIT/SPEEDRUN personal-waypoint, no TELEPORT (MoveToRandomMapLocation / info_autoscreenshot), no R00T radius nuke, no teleporttotarget, no pointparticles/trailparticles/make/penalty cheat commands."
+features:
+  - id: sv-cheats.gating.cheats_allowed
+    name: "CheatsAllowed — sv_cheats snapshot + dead/observer/maycheat gating"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:CheatsAllowed"
+      - "server/cheats.qc:CheatInit"
+    port_refs:
+      - "src/XonoticGodot.Server/Cheats.cs:Allowed"
+      - "src/XonoticGodot.Server/Cheats.cs:Init"
+    constants:
+      - { name: "sv_cheats (default)", base: "0", port: "0", match: true }
+      - { name: "gamestart_sv_cheats snapshot at init", base: "yes", port: "yes (GameStartCheats)", match: true }
+      - { name: "observer gate threshold", base: "sv_cheats>=2", port: "GameStartCheats>=2", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Missing the sv_clones clone-allowance branch (CHIMPULSE CLONE_* permitted while this.lip < sv_clones regardless of sv_cheats) — moot until the CLONE impulses exist, but the branch is absent."
+      - "Missing the cheat-attempt bprintf logging when a player is refused (Base logs 'Player ... tried to use cheat impulse N / <cmd> / cheat frame N'). The port's Allowed() has no logattempt parameter and silently returns false."
+    verification:
+      - { kind: test, ref: "tests/XonoticGodot.Tests/ServerInfraTests.cs:Cheats_GatedBySvCheats", result: pass }
+      - { kind: code, ref: "Cheats.cs:62-68 vs server/cheats.qc:59-90", result: partial }
+    confidence: high
+    notes: "Core gate (snapshot AND live cvar, dead block, observer<2 block, maycheat override) is faithful and live; only the clone branch and the refusal-logging are absent."
+
+  - id: sv-cheats.accounting.cheatcount
+    name: "Cheat counting (per-player + global) gating campaign progress"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:ADD_CHEATS"
+      - "server/campaign.qc:CampaignPreIntermission"
+    port_refs:
+      - "src/XonoticGodot.Server/Cheats.cs:AddCheats"
+      - "src/XonoticGodot.Server/Cheats.cs:CheatCountTotal"
+      - "src/XonoticGodot.Server/Campaign.cs:PreIntermission"
+      - "src/XonoticGodot.Server/GameWorld.cs:1931"
+    constants:
+      - { name: "campaign save gate", base: "campaign_won && cheatcount_total==0", port: "Won!=0 && cheatCount==0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Campaign.cs:340 vs server/campaign.qc:219", result: pass }
+      - { kind: code, ref: "GameWorld.cs:1931 feeds Cheats.CheatCountTotal into PreIntermission", result: pass }
+    confidence: high
+    notes: "Per-cheat increment + intermission cheatCount==0 gate are faithful and live; both reps (per-player keyed by Player + total) maintained. Note the only live producers of counts are god/notarget/noclip/fly/give; usetarget/killtarget/GiveAll are dead so they never bump the count in a real match."
+
+  - id: sv-cheats.cmd.god
+    name: "cmd god — toggle FL_GODMODE"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:CheatCommand (case god)"
+    port_refs:
+      - "src/XonoticGodot.Server/Cheats.cs:Command (case god)"
+      - "src/XonoticGodot.Server/Commands.cs:532 (Register god -> CmdCheat)"
+      - "src/XonoticGodot.Server/ClientCommandRegistry.cs:92 (allowlist)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:426"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "ServerInfraTests.cs:Cheats_GatedBySvCheats (god ON path + count)", result: pass }
+      - { kind: code, ref: "Registered (Commands.cs:532) AND client-allowed (ClientCommandRegistry.cs:92); DamageSystem.cs:426 honors GodMode on the live damage path", result: pass }
+    confidence: high
+    notes: "BITXOR toggle, ON/OFF echo, DID_CHEAT only on the ON edge — matches Base; godmode honored by DamageSystem (and cleared for explicit kills at DamageSystem.cs:116, matching Base)."
+
+  - id: sv-cheats.cmd.notarget
+    name: "cmd notarget — toggle FL_NOTARGET"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:CheatCommand (case notarget)"
+    port_refs:
+      - "src/XonoticGodot.Server/Cheats.cs:Command (case notarget)"
+      - "src/XonoticGodot.Server/Commands.cs:533 (Register notarget)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:552"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:204"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Cheats.cs:87-92 toggle/echo/count matches Base; registered + allowlisted", result: pass }
+      - { kind: code, ref: "MonsterAI.cs:552/652 / TurretAI.cs:204 filter out EntFlags.NoTarget targets", result: pass }
+    confidence: high
+    notes: "NoTarget honored by monster + turret AI target acquisition; player-vs-player has no AI so the flag's only live consumers are AI entities (as in Base)."
+
+  - id: sv-cheats.cmd.noclip
+    name: "cmd noclip — toggle MOVETYPE_NOCLIP"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:CheatCommand (case noclip)"
+    port_refs:
+      - "src/XonoticGodot.Server/Cheats.cs:Command (case noclip)"
+      - "src/XonoticGodot.Server/Commands.cs:534 (Register noclip)"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "ServerInfraTests.cs:Cheats_NoclipAndFlyToggle", result: pass }
+    confidence: high
+    notes: "Toggle NOCLIP<->WALK, DID_CHEAT only on entering noclip; registered + allowlisted; movetype consumed by movement/damage."
+
+  - id: sv-cheats.cmd.fly
+    name: "cmd fly — toggle MOVETYPE_FLY"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:CheatCommand (case fly)"
+    port_refs:
+      - "src/XonoticGodot.Server/Cheats.cs:Command (case fly)"
+      - "src/XonoticGodot.Server/Commands.cs:535 (Register fly)"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "ServerInfraTests.cs:Cheats_NoclipAndFlyToggle", result: pass }
+    confidence: high
+    notes: "Toggle FLY<->WALK, DID_CHEAT only on entering fly — matches Base; registered + allowlisted."
+
+  - id: sv-cheats.cmd.give
+    name: "cmd give — grant items/weapons/resources"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:CheatCommand (case give)"
+      - "server/items/items.qc:GiveItems"
+    port_refs:
+      - "src/XonoticGodot.Server/Cheats.cs:Command (case give)"
+      - "src/XonoticGodot.Server/Commands.cs:536 (Register give)"
+      - "src/XonoticGodot.Common/Gameplay/Items/GiveItems.cs:Apply"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "ServerInfraTests.cs:Cheats_GiveAll_GrantsWeaponsAndResources (exercises GiveItems.Apply)", result: pass }
+    confidence: high
+    notes: "Routes to the shared GiveItems.Apply; DID_CHEAT iff anything changed. Registered + allowlisted. Give grammar fidelity audited separately as the give unit."
+
+  - id: sv-cheats.cmd.usetarget
+    name: "cmd usetarget — fire a named target (SUB_UseTargets)"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:CheatCommand (case usetarget)"
+    port_refs:
+      - "src/XonoticGodot.Server/Cheats.cs:Command (case usetarget)"
+      - "src/XonoticGodot.Server/Cheats.cs:FireNamedTarget"
+    constants: []
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "DEAD on the live path: 'usetarget' is NOT Register()ed in Commands.cs (only god/notarget/noclip/fly/give are) and NOT in the ClientCommandRegistry allowlist (ClientCommandRegistry.cs:92). The Cheats.Command 'usetarget' case is therefore unreachable from a client cmd. Wiring it requires a Register call + an allowlist entry."
+      - "Logic caveat (only visible if wired): port AddCheats(1) runs even when no target name is given (FireNamedTarget early-returns on empty); Base also DID_CHEATs unconditionally so this is minor."
+    verification:
+      - { kind: code, ref: "grep usetarget in src/XonoticGodot.Server -> only Cheats.cs case; no Register(\"usetarget\"); absent from ClientCommandRegistry allowlist", result: fail }
+    confidence: high
+    notes: "The case spawns a transient .target ent, MapMover.UseTargets, removes it — the FLOW matches Base, but nothing dispatches to it. Downgraded from the draft's claimed liveness:live."
+
+  - id: sv-cheats.cmd.killtarget
+    name: "cmd killtarget — remove a named target (SUB_UseTargets killtarget)"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:CheatCommand (case killtarget)"
+    port_refs:
+      - "src/XonoticGodot.Server/Cheats.cs:Command (case killtarget)"
+      - "src/XonoticGodot.Server/Cheats.cs:FireNamedTarget"
+    constants: []
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "DEAD on the live path: same as usetarget — 'killtarget' is neither Register()ed nor in the ClientCommandRegistry allowlist, so the Cheats.Command 'killtarget' case is unreachable from a client cmd."
+      - "Same empty-arg caveat as usetarget (would AddCheats(1) on empty target name)."
+    verification:
+      - { kind: code, ref: "grep killtarget in src/XonoticGodot.Server -> only Cheats.cs case; no Register(\"killtarget\"); absent from ClientCommandRegistry allowlist", result: fail }
+    confidence: high
+    notes: "Flow matches Base, but no dispatcher routes to it. Downgraded from the draft's claimed liveness:live."
+
+  - id: sv-cheats.impulse.give_all
+    name: "Cheat impulse GIVE_ALL (99) — give all"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:CheatImpulse (case CHIMPULSE_GIVE_ALL)"
+      - "common/impulses/all.qh:156"
+    port_refs:
+      - "src/XonoticGodot.Server/Cheats.cs:GiveAll"
+    constants:
+      - { name: "impulse number", base: "99", port: "99 (in test only; unreferenced by dispatch)", match: false }
+    status:
+      logic: stub
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Cheats.GiveAll exists and is unit-tested but has NO live caller: Commands.DispatchImpulse (Commands.cs:1312) routes 'impulse N' only to VehicleBoarding.Impulse + WeaponImpulses.Handle, so impulse 99 is never matched and the in-game GIVE_ALL bind does nothing."
+    verification:
+      - { kind: code, ref: "DispatchImpulse (Commands.cs:1324-1327) routes only vehicle + weapon impulses; no impulse 99 case", result: fail }
+      - { kind: test, ref: "ServerInfraTests.cs:Cheats_GiveAll_GrantsWeaponsAndResources (calls GiveAll directly, not via impulse)", result: pass }
+    confidence: high
+    notes: "The only impulse-side cheat that has any port code at all — and it's dead. Wiring it requires DispatchImpulse to route impulse 99 to Cheats.GiveAll."
+
+  - id: sv-cheats.impulse.clone
+    name: "Cheat impulses CLONE_MOVING (140) / CLONE_STANDING (142) — CopyBody clones"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:CheatImpulse (CHIMPULSE_CLONE_MOVING / CLONE_STANDING)"
+      - "common/impulses/all.qh:157,159"
+    port_refs: []
+    constants:
+      - { name: "impulse numbers", base: "140 / 142", port: "none", match: false }
+      - { name: "moving clone push", base: "v_forward*300", port: "none", match: false }
+      - { name: "sv_clones (clone cap)", base: "0", port: "0 (dead stub, Cvars.cs:329)", match: true }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No CopyBody / corpse-clone mechanic; the clone impulses do nothing and sv_clones is unread."
+    verification:
+      - { kind: code, ref: "grep CopyBody/CLONE/sv_clones in src/** -> none (cvar stub only)", result: fail }
+    confidence: high
+    notes: "Requires a CopyBody corpse-spawn primitive that the port lacks."
+
+  - id: sv-cheats.impulse.speedrun
+    name: "Cheat impulses SPEEDRUN_INIT (30) / SPEEDRUN (141) — personal waypoint snapshot + restore"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:CheatImpulse (CHIMPULSE_SPEEDRUN_INIT / SPEEDRUN)"
+      - "common/impulses/all.qh:155,158"
+    port_refs: []
+    constants:
+      - { name: "impulse numbers", base: "30 / 141", port: "none", match: false }
+      - { name: "g_allow_checkpoints gates cheat", base: "yes", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No personal_wp snapshot/restore (origin/velocity/resources/weapons/items/statuseffects/pause-timers), no AbortSpeedrun hook, no speedrunning flag handling."
+    verification:
+      - { kind: code, ref: "grep personal_wp/speedrunning in src/** -> none", result: fail }
+    confidence: high
+    notes: "Race/CTS speedrun convenience cheat; entirely absent. SPEEDRUN_INIT itself is not counted as a cheat in Base."
+
+  - id: sv-cheats.impulse.teleport
+    name: "Cheat impulse TELEPORT (143) — emergency teleport to autoscreenshot or random location"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:CheatImpulse (CHIMPULSE_TELEPORT)"
+      - "common/impulses/all.qh:160"
+    port_refs: []
+    constants:
+      - { name: "impulse number", base: "143", port: "none", match: false }
+      - { name: "MoveToRandomMapLocation attempts", base: "100 (sv_cheats<2) / 100000", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No emergency-teleport: neither the info_autoscreenshot path nor MoveToRandomMapLocation exists."
+    verification:
+      - { kind: code, ref: "grep MoveToRandomMapLocation/info_autoscreenshot in src/** -> none", result: fail }
+    confidence: high
+    notes: "Depends on info_autoscreenshot (also missing) and a random-map-location finder the port lacks."
+
+  - id: sv-cheats.impulse.r00t
+    name: "Cheat impulse R00T (148) — nuke a random enemy"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:CheatImpulse (CHIMPULSE_R00T)"
+      - "common/impulses/all.qh:161"
+    port_refs: []
+    constants:
+      - { name: "impulse number", base: "148", port: "none", match: false }
+      - { name: "RadiusDamage dmg/edge/radius/force", base: "1000 / 0 / 128 / 500", port: "none", match: false }
+      - { name: "deathtype", base: "DEATH_CHEAT", port: "no standalone CHEAT row (only DEATH_MURDER_CHEAT used for turrets)", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: missing
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No r00t cheat: missing the random-enemy RadiusDamage(1000), the EFFECT_ROCKET_EXPLODE visual, and the SND_ROCKET_IMPACT sound."
+    verification:
+      - { kind: code, ref: "grep R00T/'404 Sportsmanship' in src/** -> none", result: fail }
+    confidence: high
+    notes: "Has both presentation (rocket explode) and audio (rocket impact) in Base; all absent. Note DEATH_MURDER_CHEAT is a different (turret-murder) deathtype, not the standalone DEATH_CHEAT this uses."
+
+  - id: sv-cheats.cmd.teleporttotarget
+    name: "cmd teleporttotarget — teleport player to a named teleport target"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:CheatCommand (case teleporttotarget)"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No teleporttotarget command: Base spawns cheattriggerteleport + teleport_findtarget + Simple_TeleportPlayer; not implemented (no case, no Register, no allowlist entry)."
+    verification:
+      - { kind: code, ref: "Cheats.cs:Command switch has no teleporttotarget case", result: fail }
+    confidence: high
+    notes: "Distinct from usetarget/killtarget; uses the teleporter machinery."
+
+  - id: sv-cheats.cmd.particles_make
+    name: "cmd pointparticles / trailparticles / make / penalty — debug/effect spawners"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:CheatCommand (cases pointparticles, trailparticles, make, penalty)"
+    port_refs: []
+    constants:
+      - { name: "make func_breakable health", base: "1000", port: "none", match: false }
+      - { name: "make traceline distance", base: "2048", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No pointparticles/trailparticles (effect emission along the crosshair/aim line), no make (spawn a func_breakable model at the aim point), no penalty (race penalty time). None have a Cheats.Command case."
+    verification:
+      - { kind: code, ref: "Cheats.cs:Command switch has no pointparticles/trailparticles/make/penalty cases", result: fail }
+    confidence: high
+    notes: "Mapping/effect debug tooling; pointparticles/trailparticles/make have presentation, all absent. (Note: the map-entity func_pointparticles in PointParticles.cs is unrelated to this cheat command.)"
+
+  - id: sv-cheats.frame.drag
+    name: "CheatFrame + Drag — per-frame object dragging + dragbox/dragpoint map editor"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:CheatFrame"
+      - "server/cheats.qc:Drag"
+      - "server/cheats.qc:CheatCommand (drag* cases)"
+      - "server/cheats.qc:DragBox_Think"
+    port_refs: []
+    constants:
+      - { name: "g_grab_range (non-cheat drag range)", base: "200", port: "200 (dead cvar stub, Cvars.cs:327)", match: true }
+      - { name: "initial dragspeed", base: "64", port: "none", match: false }
+      - { name: "draggee gravity while held", base: "0.00001", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No CheatFrame per-frame hook and no Drag subsystem: cannot pick up/carry/throw entities (cheat or normal-range), no te_lightning1 drag beam."
+      - "No dragbox_spawn/dragpoint_spawn/drag_remove/drag_setcnt/drag_save/drag_saveraceent/drag_clear race-checkpoint map-editor commands."
+      - "g_grab_range cvar exists (Cvars.cs:327) but is never read (no consumer)."
+    verification:
+      - { kind: code, ref: "grep Drag(/CheatFrame/dragbox in src/** -> none (g_grab_range cvar stub only)", result: fail }
+    confidence: high
+    notes: "Large subsystem (object carry + race map editor). CheatFrame is the only cheat entry point invoked every frame in Base; the port has no equivalent per-frame cheat hook."
+
+  - id: sv-cheats.mapent.info_autoscreenshot
+    name: "info_autoscreenshot map entity (observe/screenshot point, teleport target)"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:spawnfunc(info_autoscreenshot)"
+      - "server/cheats.qc:info_autoscreenshot_findtarget"
+    port_refs: []
+    constants:
+      - { name: "g_max_info_autoscreenshot", base: "3", port: "60 (cvar stub, Cvars.cs:328; no spawnfunc reads it)", match: false }
+    status:
+      logic: missing
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No info_autoscreenshot spawnfunc: the entity is dropped on map load and the TELEPORT cheat's preferred destination never exists."
+      - "g_max_info_autoscreenshot cvar exists but with default 60, not Base's 3 (xonotic-server.cfg:643); moot since nothing reads it, but the default is wrong."
+    verification:
+      - { kind: code, ref: "grep info_autoscreenshot in src/** -> none; Cvars.cs:328 g_max_info_autoscreenshot default 60 vs Base 3", result: fail }
+    confidence: high
+    notes: "Map-author entity; the cap cvar exists as a stub but with the wrong default and no consumer."
+
+  - id: sv-cheats.campaign.start_block
+    name: "Campaign behavior when sv_cheats is enabled (load-time bailout)"
+    layer: [authority]
+    base_refs:
+      - "server/campaign.qc:CampaignPreInit"
+    port_refs:
+      - "src/XonoticGodot.Server/Campaign.cs:218 (PreInit sv_cheats bailout)"
+    constants:
+      - { name: "behavior when sv_cheats!=0 at campaign PreInit", base: "Unload + CampaignBailout ('JOLLY CHEATS...')", port: "Unload + Bailout ('cheats are enabled')", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Campaign.cs:206-223 PreInit vs server/campaign.qc:49-69 CampaignPreInit — both: load, unknown-map bailout, then if(sv_cheats) unload+bailout", result: pass }
+    confidence: high
+    notes: "CORRECTION of the draft: Base ALSO refuses to start a campaign level when sv_cheats is set (CampaignPreInit, campaign.qc:63, unload + bailout 'JOLLY CHEATS AHAHAHAHAHAHAH))'). The port's load-time block (Campaign.cs:218) is therefore FAITHFUL, not a stricter divergence. The intermission cheatcount_total==0 save-gate (campaign.qc:219) is a separate, additional gate that is also present and faithful (covered by sv-cheats.accounting.cheatcount)."

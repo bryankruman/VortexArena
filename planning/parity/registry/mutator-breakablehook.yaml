@@ -1,0 +1,148 @@
+unit: mutator-breakablehook
+category: mutator
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 5
+  worst_gaps:
+    - "FFA self-break: shooting your own hook with g_breakablehook_owner 1 in non-teamplay deals 5 splash self-damage and force-removes the hook, because Teams.SameTeam has no DIFF_TEAM non-teamplay (a!=b) case; Base skips the punish branch for a self-hit (owner != owner is false)."
+    - "Base uses autocvar_g_breakablehook / autocvar_g_breakablehook_owner, re-read live on every Damage_Calculate (the .qc literally comments \"// allow toggling mid match?\"). The port snapshots Breakable/BreakableOwner once at Hook() (activation) and never refreshes them. Toggling g_breakablehook_owner 0->1 (or 1->0) mid-match while g_breakablehook stays 1 takes effect immediately in Base but has NO effect in the port until the mutator is re-activated. (g_breakablehook itself toggling on/off is fine because it drives Apply()'s add/remove, which re-runs Hook().)"
+features:
+  - id: breakablehook.activation.enable_cvar
+    name: "Mutator registration + enable via g_breakablehook"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/breakablehook/sv_breakablehook.qc:6 REGISTER_MUTATOR(breakablehook, cvar(\"g_breakablehook\"))"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BreakablehookMutator.cs:35 IsEnabled"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:60 Apply"
+    constants:
+      - { name: "g_breakablehook", base: "0", port: "0", match: true }
+      - { name: "g_breakablehook_owner", base: "0", port: "0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "[Mutator]-discovered into Mutators.All; MutatorActivation.Apply() (MutatorActivation.cs:60-66) walks Mutators.All and Add()s each IsEnabled mutator → Hook() subscribes the handler. Enable predicate reads g_breakablehook live (IsEnabled, BreakablehookMutator.cs:35).", result: pass }
+      - { kind: test, ref: "tests/XonoticGodot.Tests/MutatorBatchT51Tests.cs:102 (Mutators.ByName(\"breakablehook\")) + :522 (IsEnabled under g_breakablehook 1)", result: pass }
+      - { kind: code, ref: "mutators.cfg:466-467 defaults g_breakablehook 0 / g_breakablehook_owner 0 both match port GetFloat default-0 semantics", result: pass }
+    confidence: high
+    notes: "Server-only mutator (_mod.inc is #ifdef SVQC only; no client/HUD/sound component). Enable predicate reads g_breakablehook live; defaults match. Added on the real activation loop, not dead. VERIFIED against Base source."
+
+  - id: breakablehook.damage.gate
+    name: "Gate damage to the grapple chain (own-hook / disabled zeroing)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/breakablehook/sv_breakablehook.qc:16-20 MUTATOR_HOOKFUNCTION(breakablehook, Damage_Calculate) block 1"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BreakablehookMutator.cs:58-68 OnDamageCalculate (block 1)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:219 MutatorHooks.DamageCalculate.Call(ref dc) + write-back :220"
+    constants:
+      - { name: "target.classname guard", base: "\"grapplinghook\"", port: "\"grapplinghook\"", match: true }
+      - { name: "zero-damage condition", base: "!autocvar_g_breakablehook || (!autocvar_g_breakablehook_owner && frag_attacker==frag_target.realowner)", port: "!Breakable || (!BreakableOwner && ReferenceEquals(attacker, owner))", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "DamageSystem.cs:217-222 builds DamageCalculateArgs, Calls the chain live, writes back dc.Damage. Chain is takedamage=Aim with Owner=actor (Hook.cs:206-212,223). RealOwner => Owner (DamageEntityState.cs:135).", result: pass }
+      - { kind: test, ref: "tests/XonoticGodot.Tests/MutatorBatchT51Tests.cs:518 Breakablehook_ZeroesDamage_OnOwnHook_WhenOwnerBreakOff asserts args.Damage==0", result: pass }
+    confidence: high
+    notes: "Independent if-block from the punish branch, matching Base. Self-hit gate uses ReferenceEquals(attacker, owner) == QC frag_attacker==frag_target.realowner. VERIFIED."
+
+  - id: breakablehook.owner.punish_splash
+    name: "Punish hook owner with 5 splash + remove on cross-team break"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/breakablehook/sv_breakablehook.qc:23-28 Damage_Calculate (DIFF_TEAM branch)"
+      - "common/teams.qh:242 DIFF_TEAM"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BreakablehookMutator.cs:71-80 OnDamageCalculate (!Teams.SameTeam branch)"
+      - "src/XonoticGodot.Common/Gameplay/Teams.cs:35 SameTeam"
+    constants:
+      - { name: "owner_splash_damage", base: "5", port: "5f", match: true }
+      - { name: "deathtype", base: "WEP_HOOK.m_id | HITTYPE_SPLASH", port: "WithHitType(FromWeapon(\"hook\"), Splash)", match: true }
+      - { name: "Damage args", base: "Damage(realowner, attacker, attacker, 5, ..., DMG_NOWEP, realowner.origin, '0 0 0')", port: "Combat.Damage(owner, attacker, attacker, 5f, dt, owner.Origin, Vector3.Zero)", match: true }
+      - { name: "force", base: "'0 0 0'", port: "Vector3.Zero", match: true }
+      - { name: "team_test", base: "DIFF_TEAM(attacker, realowner) = teamplay ? (team!=team) : (attacker!=realowner)", port: "!SameTeam(attacker,owner) = !(attacker.Team!=0 && attacker.Team==owner.Team)  (NO teamplay branch, NO entity-inequality case)", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "FFA self-break: shooting your own hook with g_breakablehook_owner 1 in non-teamplay deals 5 splash self-damage and force-removes the hook, because Teams.SameTeam has no DIFF_TEAM non-teamplay (a!=b) case; Base skips the punish branch for a self-hit (owner != owner is false)."
+      - "Non-teamplay enemy breaks coincidentally still fire correctly (both !SameTeam and a!=b true), so the visible defect is scoped to the FFA self-hit edge; teamplay team-vs-team and same-team hits are faithful."
+    verification:
+      - { kind: code, ref: "Truth table SameTeam vs DIFF_TEAM: FFA both Team 0 => SameTeam=false always => !SameTeam=true even when attacker==owner; Base DIFF_TEAM(owner,owner) in FFA = (owner!=owner) = false. Teams.cs:35 has no teamplay branch (cf. teams.qh:242). DIVERGENT.", result: fail }
+      - { kind: code, ref: "Value parity: 5 dmg, hook|splash deathtype (DeathTypes.WithHitType/FromWeapon), owner.Origin, zero force, inflictor=attacker all match (BreakablehookMutator.cs:74-75; Combat.Damage sig DamageContracts.cs:54). DMG_NOWEP weaponentity arg has no functional effect.", result: pass }
+      - { kind: code, ref: "Existing test (MutatorBatchT51Tests.cs:518) is itself a both-Team-0 self-hit (Configure never sets Team, line 66-77) — it triggers the buggy block-2 punish in the port but only asserts args.Damage==0, so the spurious 5 self-splash + removal is UNGUARDED.", result: fail }
+    confidence: high
+    notes: "Combat.Damage routes the punish through the normal damage system; RemoveHook proxied via target.ProjectileDamage (Hook.cs:223). Same SameTeam-vs-DIFF_TEAM class of bug likely affects other team checks (vampirehook, nade orb). A shared DiffTeam(a,b) helper would fix this class uniformly. VERIFIED by Base+port read."
+
+  - id: breakablehook.remove.drop_chain
+    name: "Remove the hook chain when broken (RemoveHook proxy)"
+    layer: [authority]
+    base_refs:
+      - "server/hook.qc:48 RemoveHook"
+      - "common/mutators/mutator/breakablehook/sv_breakablehook.qc:26 RemoveHook(frag_target)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hook.cs:223 ProjectileDamage => RemoveHook"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BreakablehookMutator.cs:79 target.ProjectileDamage?.Invoke"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Port's RemoveHook is private to Hook.cs; the mutator removes the chain by invoking the grapplinghook's own ProjectileDamage callback (Hook.cs:223: (self,attacker) => RemoveHook(actor.WeaponState(slot))), the same encapsulated path used when the chain is shot down normally. Behaviorally equivalent to QC's direct RemoveHook(frag_target): removes the chain entity and clears the owner's weapon hook slot (Hook.cs:279-287)."
+    gaps: []
+    verification:
+      - { kind: code, ref: "Hook.cs:223 wires ProjectileDamage to RemoveHook(actor.WeaponState(slot)); mutator invokes it (BreakablehookMutator.cs:79). RemoveHook (Hook.cs:279-287) removes st.Hook and nulls the slot.", result: pass }
+    confidence: medium
+    notes: "Removal fires only inside the punish branch, so it inherits that branch's FFA self-hit divergence (breakablehook.owner.punish_splash) for WHEN it runs; the removal mechanics themselves are faithful. Note: the port's RemoveHook does NOT explicitly restore MOVETYPE_WALK (comment Hook.cs:286 says the movement system reapplies walk via velocity) whereas QC RemoveHook restores MOVETYPE_WALK if reeling — a minor incidental difference, not specific to this mutator."
+
+  - id: breakablehook.cvar.live_reread
+    name: "Live per-call cvar read (mid-match toggling of breaking rules)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/breakablehook/sv_breakablehook.qc:8-9,18-19 autocvar_g_breakablehook / autocvar_g_breakablehook_owner (read live each Damage_Calculate; .qc:8 comment \"allow toggling mid match?\")"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BreakablehookMutator.cs:47-48 Breakable/BreakableOwner cached in Hook()"
+    constants:
+      - { name: "cvar read cadence", base: "autocvar_ read live on every Damage_Calculate", port: "snapshot once at Hook() activation, never refreshed", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: partial
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base uses autocvar_g_breakablehook / autocvar_g_breakablehook_owner, re-read live on every Damage_Calculate (the .qc literally comments \"// allow toggling mid match?\"). The port snapshots Breakable/BreakableOwner once at Hook() (activation) and never refreshes them. Toggling g_breakablehook_owner 0->1 (or 1->0) mid-match while g_breakablehook stays 1 takes effect immediately in Base but has NO effect in the port until the mutator is re-activated. (g_breakablehook itself toggling on/off is fine because it drives Apply()'s add/remove, which re-runs Hook().)"
+    verification:
+      - { kind: code, ref: "BreakablehookMutator.cs:40-50 Hook() caches both cvars once; OnDamageCalculate (:58-82) reads only the cached fields. No re-read path; grep confirms only BreakablehookMutator.cs reads these cvars.", result: fail }
+    confidence: high
+    notes: "Real but low-severity divergence the first-pass draft buried in prose. Mid-match g_breakablehook_owner toggling is the only affected knob (the enable cvar's toggle is reconciled by MutatorActivation.Apply). Many port mutators cache cvars at Hook() rather than reading autocvar-style; consistent with general port behavior, but Base's explicit mid-match comment makes the intent clear here."

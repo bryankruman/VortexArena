@@ -1,0 +1,299 @@
+unit: turret-mlrs
+category: turret
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 8
+  worst_gaps:
+    - "VOLLYALWAYS not honored: Base completes a started 6-rocket burst even with no enemy (turret_think:1059 branch + turret_firecheck:889 early-return); port RunCombat has no such branch — once enemy is null it Tracks and returns, so the burst aborts the instant the target is lost"
+    - "Target-select scoring biases all default to 1.0: MlrsTurret.Think passes no bias args so rangeBias/sameBias/angleBias/missileBias = 1/1/1/1 vs Base cfg 0.25/0.5/0.5/0 — the bias-weighted score that picks among multiple valid targets is wrong (range/angle over-weighted, sticky samebias doubled)"
+    - "Head-shake on damage NOT implemented: Base turret_damage jolts tur_head.angles by (random-0.5)*damage (a server aim disturbance); port TurretAI.Damage has no head-angle jolt at all (draft wrongly claimed it modeled)"
+    - "shot_spread 0.0125 vs Base 0.05 — rockets ~4x tighter / more accurate than Base"
+    - "target_range_optimal 1500 vs Base 500 — ideal-kill-range scoring prefers ~1500u targets instead of ~500u"
+    - "TFL_AIM_ZPREDICT added (port zPredict:true) vs Base mlrs aim_flags LEAD|SHOTTIMECOMPENSATE only — aim diverges for airborne targets"
+    - "aim_maxpitch 30 vs Base 20 — head pitches 50% further than Base"
+    - "No head ammo-gauge frame animation (tr_think frame 0->6 by remaining ammo); no muzzle te_explosion; no PROJECTILE_ROCKET CSQC trail/light; no client turret_draw (head spin / low-hp sparks+smoke) or death gib toss"
+features:
+  - id: turret-mlrs.identity.def
+    name: "Identity, hitbox, models, spawnflags"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/turrets/turret/mlrs.qh:MLRSTurret"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/MlrsTurret.cs:MlrsTurret"
+    constants:
+      - { name: "mins", base: "'-32 -32 0'", port: "(-32,-32,0)", match: true }
+      - { name: "maxs", base: "'32 32 64'", port: "(32,32,64)", match: true }
+      - { name: "model", base: "models/turrets/base.md3", port: "models/turrets/base.md3", match: true }
+      - { name: "head_model", base: "models/turrets/mlrs.md3", port: "none (no head bone entity)", match: false }
+      - { name: "netname", base: "mlrs", port: "mlrs", match: true }
+      - { name: "fullname", base: "MLRS Turret", port: "MLRS Turret", match: true }
+      - { name: "spawnflags", base: "TUR_FLAG_SPLASH|TUR_FLAG_MEDPROJ|TUR_FLAG_PLAYER", port: "SPLASH(aimSplash)+PLAYER(select) modeled; MEDPROJ cosmetic-only", match: true }
+      - { name: "health", base: "500", port: "500", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Head model (mlrs.md3) not instantiated as a separate tur_head entity; no tag_head attachment (so the ammo-gauge frame has nothing to animate)."
+    verification:
+      - { kind: code_read, ref: "mlrs.qh vs MlrsTurret ctor + Spawn", result: pass }
+    confidence: high
+    notes: "Identity/hitbox/base model/health faithful; the separate head entity + head model are not modeled."
+  - id: turret-mlrs.setup.tr_setup
+    name: "tr_setup: ammo/aim/shoot flags, volley seed, select/track defaults"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/mlrs.qc:21"
+      - "common/turrets/sv_turrets.qc:turret_initialize"
+      - "common/turrets/sv_turrets.qc:turret_respawn"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/MlrsTurret.cs:Spawn"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/MlrsTurret.cs:Think"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:Init"
+    constants:
+      - { name: "ammo_flags", base: "TFL_AMMO_ROCKETS|TFL_AMMO_RECHARGE", port: "ammo pool + recharge (flag bits not modeled)", match: true }
+      - { name: "aim_flags", base: "TFL_AIM_LEAD|TFL_AIM_SHOTTIMECOMPENSATE (+SPLASH auto)", port: "lead+shotTimeCompensate+aimSplash + zPredict(extra)", match: false }
+      - { name: "shoot_flags VOLLYALWAYS", base: "TFL_SHOOT_VOLLYALWAYS set", port: "not modeled (no VOLLYALWAYS branch)", match: false }
+      - { name: "damage_flags HEADSHAKE", base: "TFL_DMG_HEADSHAKE set (jolts tur_head.angles)", port: "not implemented (TurretAI.Damage has no head jolt)", match: false }
+      - { name: "shot_volly", base: "6", port: "6", match: true }
+      - { name: "select_flags", base: "LOS|TEAMCHECK|RANGELIMITS|ANGLELIMITS|PLAYERS", port: "Los|TeamCheck|RangeLimits|AngleLimits|Players", match: true }
+      - { name: "track_type", base: "3 (FLUIDINERTIA)", port: "3 (TrackFluidInertia)", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port adds TFL_AIM_ZPREDICT (zPredict:true); Base mlrs aim_flags is LEAD|SHOTTIMECOMPENSATE only (no Z prediction) — aim diverges for airborne targets."
+      - "TFL_SHOOT_VOLLYALWAYS not modeled (see turret-mlrs.combat.brain): the started-burst-always-completes behavior is absent."
+      - "TFL_DMG_HEADSHAKE not implemented: Base sets it in tr_setup and turret_damage jolts tur_head.angles by (random-0.5)*damage; the port never applies a head jolt on damage (verified: TurretAI.Damage has no such code, MachinegunTurret comment calls headshake 'client-render')."
+    verification:
+      - { kind: code_read, ref: "mlrs.qc tr_setup (aim_flags/shoot_flags/damage_flags) vs MlrsTurret.Think params + TurretAI.Damage", result: fail }
+    confidence: high
+    notes: "Ammo/volley/select/track defaults faithful; aim flags add an extra zPredict, the VOLLYALWAYS shoot flag is dropped, and the HEADSHAKE damage flag is not implemented (the draft wrongly claimed it modeled)."
+  - id: turret-mlrs.spawn.liveness
+    name: "Map spawnfunc wiring + per-frame think (turret_mlrs placed on map)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/mlrs.qc:5"
+      - "common/turrets/sv_turrets.qc:turret_link"
+      - "common/turrets/sv_turrets.qc:turret_initialize"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawnFuncs.cs:54"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:208"
+      - "src/XonoticGodot.Common/GameInit.cs"
+    constants:
+      - { name: "g_turrets master switch", base: "1 (default on)", port: "MasterSwitchEnabled(\"g_turrets\") default-on", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "MapObjectsRegistry.cs:208 registers turret_mlrs -> TurretSpawnFuncs.Mlrs -> Spawn(\"mlrs\") -> Turrets.ByName + def.Spawn + Think re-armed each frame (NextThink=Now); GameInit calls RegisterAll", result: pass }
+    confidence: high
+    notes: "Confirmed live by code read: spawnfunc registered at boot, master-switch gated (MasterSwitchEnabled distinguishes absent from present-and-0), Think re-armed each frame. Not observed in an actual match (whether a loaded stock map places turret_mlrs is unconfirmed)."
+  - id: turret-mlrs.combat.brain
+    name: "Acquire/aim/lead/track/fire combat brain incl. VOLLYALWAYS burst completion + target scoring"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_think"
+      - "common/turrets/sv_turrets.qc:turret_firecheck"
+      - "common/turrets/sv_turrets.qc:turret_fire"
+      - "common/turrets/sv_turrets.qc:turret_aim_generic"
+      - "common/turrets/sv_turrets.qc:turret_select_target"
+      - "common/turrets/sv_turrets.qc:turret_targetscore_generic"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:RunCombat"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Fire"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:SelectTarget"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:ScoreTarget"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/MlrsTurret.cs:Think"
+    constants:
+      - { name: "shot_refire (intra-burst)", base: "0.1", port: "0.1", match: true }
+      - { name: "shot_volly", base: "6", port: "6", match: true }
+      - { name: "shot_volly_refire (reload)", base: "4", port: "4", match: true }
+      - { name: "ammo_recharge", base: "75", port: "75", match: true }
+      - { name: "target_range", base: "3000", port: "3000", match: true }
+      - { name: "target_range_min", base: "500", port: "500", match: true }
+      - { name: "target_range_optimal", base: "500", port: "1500", match: false }
+      - { name: "target_select_rangebias", base: "0.25", port: "1.0 (TurretParams default; not passed)", match: false }
+      - { name: "target_select_samebias", base: "0.5", port: "1.0 (TurretParams default; not passed)", match: false }
+      - { name: "target_select_anglebias", base: "0.5", port: "1.0 (TurretParams default; not passed)", match: false }
+      - { name: "target_select_missilebias", base: "0", port: "1.0 (TurretParams default; not passed)", match: false }
+      - { name: "target_select_playerbias", base: "1", port: "1.0 (default)", match: true }
+      - { name: "targetscan_mindelay", base: "0.1", port: "0.1 (hardcoded)", match: true }
+      - { name: "targetscan_maxdelay", base: "1", port: "0.6 (hardcoded)", match: false }
+      - { name: "aimidle_delay", base: "5", port: "5", match: true }
+      - { name: "g_turrets_nofire mid-think gate", base: "checked in turret_fire", port: "not implemented", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "VOLLYALWAYS not honored: Base turret_think (sv_turrets.qc:1059) has a dedicated branch that aims/tracks/fires to complete a started burst (volly_counter != shot_volly) even with no enemy — checked BEFORE the enemy-null bail — and turret_firecheck (:889) early-returns true while a burst is in progress. Port RunCombat has no such branch: once enemy is null it Tracks and returns, and the per-shot fire gate re-checks range/ammo, so the 6-rocket burst aborts the instant the target is lost instead of finishing. (MlrsTurret.cs:60's comment claiming the volley counter handles this is wrong — the counter only times the long reload.)"
+      - "Target-select scoring biases all wrong: MlrsTurret.Think builds TurretParams without passing any bias args, so they fall back to the ctor defaults (rangeBias=sameBias=angleBias=missileBias=playerBias=1.0). Base mlrs cfg is rangebias 0.25 / samebias 0.5 / anglebias 0.5 / missilebias 0 / playerbias 1. ScoreTarget therefore over-weights the distance + angular terms and doubles the sticky samebias, so among several valid targets the port picks a different one than Base. (missilebias 1-vs-0 is moot because SelectMissiles is not set, so no missile passes ValidTarget.)"
+      - "target_range_optimal 1500 vs Base 500: ScoreTarget's ideal-kill-range (ikr) prefers ~1500u targets instead of ~500u, further changing target selection."
+      - "Framework targetscan_maxdelay hardcoded 0.6 vs Base default 1 (RunCombat:537; shared turret-framework drift)."
+      - "g_turrets_nofire mid-think gate not implemented (only the g_turrets spawn-time master switch) — shared framework concern."
+    verification:
+      - { kind: code_read, ref: "turret_think:1059 VOLLYALWAYS branch + turret_firecheck:889 volly early-return vs RunCombat (no branch, enemy-null bails at :555)", result: fail }
+      - { kind: code_read, ref: "turret_targetscore_generic (ikr=target_range_optimal; biases) vs ScoreTarget + MlrsTurret.Think TurretParams (biases unpassed -> all 1.0; rangeOptimal 1500)", result: fail }
+      - { kind: code_read, ref: "volley/refire/ammo/range constants turrets.cfg vs MlrsTurret consts", result: pass }
+    confidence: high
+    notes: "Acquire/aim/track/fire FLOW and volley/refire/ammo numbers faithful; the defining VOLLYALWAYS burst-completion behavior is missing, ALL target-select biases fall back to 1.0 (draft missed this), and optimal-range + targetscan_maxdelay drift."
+  - id: turret-mlrs.head.track
+    name: "Head rotation: FluidInertia track + aim clamps"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_track"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Track"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/MlrsTurret.cs:Think"
+    constants:
+      - { name: "aim_speed", base: "100", port: "100", match: true }
+      - { name: "aim_maxrot", base: "360", port: "360", match: true }
+      - { name: "aim_maxpitch", base: "20", port: "30", match: false }
+      - { name: "track_type", base: "3 (FLUIDINERTIA)", port: "3 (TrackFluidInertia)", match: true }
+      - { name: "track_accel_pitch", base: "0.5", port: "0.5 (param default)", match: true }
+      - { name: "track_accel_rot", base: "0.7", port: "0.5 (param default, not passed)", match: false }
+      - { name: "track_blendrate", base: "0.2", port: "0.35 (param default, not passed)", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "aim_maxpitch 30 vs Base 20 (head pitches 50% further)."
+      - "track_accel_rot 0.7 / track_blendrate 0.2 not passed (MlrsTurret.Think omits them, so TurretParams defaults 0.5 / 0.35 apply), so the FluidInertia head slew dynamics differ from the mlrs cfg values."
+    verification:
+      - { kind: code_read, ref: "turrets.cfg mlrs aim/track cvars vs MlrsTurret.Think params (no trackAccelRot/trackBlendRate args) + TurretParams ctor defaults (0.5/0.35) + TurretAI.Track", result: fail }
+    confidence: high
+    notes: "Track type + aim speed + maxrot match; pitch clamp over-loosened, and the inertia accel-rot/blendrate fall back to framework defaults (0.5/0.35) rather than the mlrs cfg values (0.7/0.2) — corrected: blendrate default is 0.35, not 0.5 as the draft stated."
+  - id: turret-mlrs.anim.ammogauge
+    name: "tr_think head ammo-gauge frame (0 full .. 6 empty by remaining ammo)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/turrets/turret/mlrs.qc:11"
+    port_refs: []
+    constants:
+      - { name: "frame formula", base: "bound(0, 6 - floor(0.1 + ammo/shot_dmg), 6)", port: "none", match: false }
+      - { name: "frame range", base: "0..6 (300hp ammo / 50 dmg)", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No head ammo-gauge: Base tr_think maps remaining ammo to head model frame 0 (full) .. 6 (empty) every think and nets it; port has neither the head entity nor any frame handling (explicitly deferred as cosmetic in MlrsTurret.cs)."
+    verification:
+      - { kind: code_read, ref: "mlrs.qc:11 tr_think vs MlrsTurret (no frame code; tr_think has no port counterpart)", result: fail }
+    confidence: high
+    notes: "Pure cosmetic gauge driven by tr_think; entirely absent in the port."
+  - id: turret-mlrs.weapon.fire
+    name: "MLRSTurretAttack: 6-rocket splash volley (unguided, shootable, travel-time fuse)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/mlrs_weapon.qc:6"
+      - "common/turrets/sv_turrets.qc:turret_projectile"
+      - "common/turrets/sv_turrets.qc:turret_projectile_explode"
+      - "common/turrets/turret.qh:tr_attack"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/MlrsTurret.cs:Attack"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:Projectile"
+    constants:
+      - { name: "shot_dmg", base: "50", port: "50", match: true }
+      - { name: "edge_damage", base: "0", port: "0", match: true }
+      - { name: "shot_radius (RadiusDamage)", base: "125", port: "125", match: true }
+      - { name: "shot_speed", base: "2000", port: "2000", match: true }
+      - { name: "shot_force", base: "25", port: "25", match: true }
+      - { name: "shot_spread", base: "0.05", port: "0.0125", match: false }
+      - { name: "projectile size", base: "6", port: "6", match: true }
+      - { name: "projectile health (shootable)", base: "10", port: "10", match: true }
+      - { name: "lifetime", base: "9 (turret_projectile)", port: "9", match: true }
+      - { name: "fuse", base: "max(tur_impacttime, (shot_radius 125 *2)/shot_speed) [AI path]", port: "max(distAimPos/speed, (500*2)/speed) — uses AimSplashRadius 500 not 125", match: false }
+      - { name: "deathtype", base: "DEATH_TURRET_MLRS", port: "DeathTypes.TurretMlrs", match: true }
+      - { name: "missile_flags", base: "MIF_SPLASH", port: "splash via radius damage", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: partial
+      presentation: missing
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "shot_spread 0.0125 vs Base 0.05 — rockets ~4x tighter / more accurate."
+      - "Fuse floor uses AimSplashRadius 500 (the player-branch shot_radius override) instead of the AI-turret per-shot shot_radius 125. In Base mlrs_weapon.qc the actor.shot_radius=500 is set ONLY in the isPlayer branch (:19); for an AI turret the fuse uses 125, so Base's floor is (125*2)/2000=0.125s vs the port's (500*2)/2000=0.5s. Affects only self-detonation timing of rockets that fly past everything."
+      - "No muzzle te_explosion on rocket spawn (Base wr_think:26 calls te_explosion at missile.origin)."
+      - "Rocket is a bare projectile: no PROJECTILE_ROCKET CSQC trail / dynamic light."
+    verification:
+      - { kind: code_read, ref: "mlrs_weapon.qc wr_think + turret_projectile vs MlrsTurret.Attack + TurretSpawn.Projectile", result: pass }
+      - { kind: code_read, ref: "DeathTypes.cs:274 TurretMlrs registered (DeathCategory.Turret); Api.Sound.Play weapons/rocket_fire on fire", result: pass }
+    confidence: high
+    notes: "Damage/radius/speed/force/health/lifetime/deathtype faithful and fire sound plays; spread quartered, fuse uses the 500 player-branch override, muzzle explosion + rocket trail absent."
+  - id: turret-mlrs.damage.lifecycle
+    name: "Damage gating, head-shake, death + respawn"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_damage"
+      - "common/turrets/sv_turrets.qc:turret_die"
+      - "common/turrets/sv_turrets.qc:turret_respawn"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Damage"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Die"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Respawn"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:Init"
+    constants:
+      - { name: "respawntime", base: "60", port: "60 (Init default)", match: true }
+      - { name: "inactive/dead take no damage", base: "yes", port: "yes", match: true }
+      - { name: "friendlyfire gate", base: "g_friendlyfire", port: "g_friendlyfire", match: true }
+      - { name: "head-shake on damage", base: "TFL_DMG_HEADSHAKE (tur_head.angles += (random-0.5)*dmg)", port: "NOT implemented", match: false }
+      - { name: "respawn resets ammo/volley", base: "ammo=ammo_max, volly=shot_volly", port: "Respawn resets ammo=AmmoMax, volly", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: unknown
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Head-shake on damage NOT implemented: Base turret_damage adds (random-0.5)*damage to tur_head.angles.x (a server-side aim disturbance that throws off the next shots when the turret is under fire). TurretAI.Damage applies friendly-fire scaling + retaliation + knockback but never jolts the head angles — the draft wrongly listed this faithful."
+      - "No client death presentation: Base cl_turrets.qc turret_die plays SND_ROCKET_IMPACT + EFFECT_ROCKET_EXPLODE and tosses base-gibN.md3 + head_model gibs; port has no turret death gib/effect counterpart."
+      - "No client turret_draw (cl_turrets.qc): the head does not visibly spin (angles += avelocity*dt) and a damaged MLRS emits no low-health sparks (<127 hp -> te_spark) or smoke (<85 EFFECT_SMOKE_LARGE / <32 EFFECT_SMOKE_SMALL)."
+    verification:
+      - { kind: code_read, ref: "turret_damage (headshake at sv_turrets.qc:~227) vs TurretAI.Damage (no head jolt) + Die/Respawn (respawnTime 60 default == mlrs cfg)", result: fail }
+      - { kind: code_read, ref: "cl_turrets.qc turret_draw/turret_die (shared) has no port counterpart", result: fail }
+    confidence: high
+    notes: "Damage friendly-fire gating + death/respawn lifecycle faithful and respawn delay correct (60 == cfg); but the server HEADSHAKE aim jolt is absent (not just the cosmetic client draw), so logic downgraded to partial."

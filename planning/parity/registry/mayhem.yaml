@@ -1,0 +1,369 @@
+unit: mayhem
+category: gametype
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 13
+  worst_gaps:
+    - "Players spawn with only the Blaster, not the full arsenal: the SetWeaponArena hook (most_available) is DEAD — no Call site in the port."
+    - "timelimit=15 gametype default is never applied (port reads the global timelimit cvar)."
+    - "DEATH_CAMP environmental-suicide penalty omitted (no campcheck deathtype in the port)."
+features:
+  - id: mayhem.identity.registration
+    name: "Gametype identity + registration (mayhem netname, FFA, USEPOINTS, limit defaults)"
+    layer: [authority, shared]
+    base_refs:
+      - "common/gametypes/gametype/mayhem/mayhem.qh:CLASS(mayhem)"
+      - "common/gametypes/gametype/mayhem/sv_mayhem.qc:mayhem_Initialize"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Mayhem.cs:Mayhem (ctor/OnInit)"
+      - "src/XonoticGodot.Server/GameWorld.cs:ResolveGameType"
+      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (case Mayhem)"
+    constants:
+      - { name: "netname", base: "mayhem", port: "mayhem", match: true }
+      - { name: "teamgame", base: "false (FFA)", port: "false", match: true }
+      - { name: "pointlimit_default", base: "1000", port: "1000", match: true }
+      - { name: "leadlimit_default", base: "0", port: "0", match: true }
+      - { name: "timelimit_default", base: "15 (min)", port: "global timelimit cvar (not set on select)", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "timelimit=15 gametype_init default is not applied when Mayhem is selected; the port uses whatever global timelimit is set."
+    verification:
+      - { kind: code, ref: "GameWorld.ResolveGameType/ActivateGameType + Mayhem ctor", result: pass }
+    confidence: high
+    notes: "Pointlimit/leadlimit defaults are correctly hardcoded (1000/0). m_legacydefaults says timelimit 20 but gametype_init says 15; neither is applied."
+
+  - id: mayhem.score.recompute
+    name: "MayhemCalculatePlayerScore — recompute SP_SCORE from damage+frags (methods 1/2/3)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/mayhem/sv_mayhem.qc:MayhemCalculatePlayerScore"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Mayhem.cs:MayhemScoring.Calculate"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Mayhem.cs:MayhemScoring.Rint"
+    constants:
+      - { name: "scoring_upscaler", base: "20", port: "20 (cvar/default)", match: true }
+      - { name: "scoring_kill_weight", base: "0.25", port: "0.25", match: true }
+      - { name: "scoring_damage_weight", base: "0.75", port: "0.75", match: true }
+      - { name: "spawn_hp_armor_divisor", base: "start_health+start_armorvalue (200+200=400)", port: "g_mayhem_start_health+_armor (400)", match: true }
+      - { name: "fixedpoint_scale", base: "x100 / floor(/100)", port: "x100f / floor(/100f)", match: true }
+      - { name: "rint", base: "round half away from zero", port: "Rint half away from zero", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "line-by-line vs MayhemCalculatePlayerScore methods 1/2/3, suicide_weight, x100/100", result: pass }
+    confidence: high
+    notes: "Recompute is invoked from OnDeath and from the SplitHealthArmor accrual; SP_SCORE is written via GameScores.AddToPlayer. Exact in-match numbers not runtime-verified."
+
+  - id: mayhem.score.damage_accrual
+    name: "PlayerDamage_SplitHealthArmor — accrue total_damage_dealt (enemy +, self/world -)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/mayhem/sv_mayhem.qc:MUTATOR_HOOKFUNCTION(mayhem, PlayerDamage_SplitHealthArmor)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Mayhem.cs:MayhemScoring.AccrueSplitHealthArmor"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Mayhem.cs:Mayhem.OnSplitHealthArmor"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:401 (PlayerDamageSplitHealthArmor.Call)"
+    constants:
+      - { name: "damage_weight_zero_earlyout", base: "if !damage_weight return", port: "if DamageWeight==0 return", match: true }
+      - { name: "useful_damage", base: "frag_damage - max(0, dmg - take - save)", port: "fragDamage - excess", match: true }
+      - { name: "spawnshield_block_ge1", base: "StatusEffects_active(SpawnShield) && blockdamage>=1 → return", port: "HasSpawnShield(SpawnShieldExpire>now) && blockdamage>=1 → return", match: true }
+      - { name: "env_suicide_set", base: "KILL,DROWN,HURTTRIGGER,CAMP,LAVA,SLIME,SWAMP", port: "Kill,Drown,Void,Lava,Slime,Swamp (no CAMP)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "DEATH_CAMP (campcheck) is omitted from the environmental-suicide subtraction (the port models no campcheck death), so a campcheck suicide would not be penalized. The port has no campcheck deathtype at all, so no such death is produced — latent, not currently observable."
+    verification:
+      - { kind: code, ref: "AccrueSplitHealthArmor vs QC; hook fires unconditionally at DamageSystem.cs:401", result: pass }
+      - { kind: code, ref: "MayhemScoring.HasSpawnShield uses SpawnShieldExpire>now, identical to DamageSystem.HasSpawnShield (DamageSystem.cs:730) — the port's uniform spawn-shield model; QC StatusEffects_active(SpawnShield) equivalence VERIFIED, not approximate", result: pass }
+    confidence: high
+    notes: "Hook is fired with the TRUE FragAttacker/FragDeathType/pre-split FragDamage, so the self/world cases accrue correctly. DEATH_HURTTRIGGER maps to the port's Void tag. Spawn-shield read is the SAME model the whole DamageSystem uses (the StatusEffects catalog deliberately keeps SpawnShield on the entity) — equivalence confirmed, so this is NOT an unverified concern."
+
+  - id: mayhem.score.per_kill
+    name: "Per-kill score driver (QC GiveFragsForKill: zero direct frag + recompute attacker)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/mayhem/sv_mayhem.qc:MUTATOR_HOOKFUNCTION(mayhem, GiveFragsForKill)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Mayhem.cs:Mayhem.OnDeath"
+      - "src/XonoticGodot.Server/Scores.cs:Obituary (OwnsScore gating)"
+    constants:
+      - { name: "direct_frag_suppressed", base: "M_ARGV(2)=0 (no +1)", port: "OwnsScore=false → Obituary never writes SP_SCORE", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Port routes the per-kill recompute through the Combat.Death bus (OnDeath) and suppresses the +1 frag by running Scores in non-owning mode (OwnsScore=false) rather than subscribing to a GiveFragsForKill hook. Observable result (no ±1 frag; score == the recompute) matches Base; the kills/teamkills/suicides aux columns are still maintained by the obituary so the recompute reads them."
+    gaps: []
+    verification:
+      - { kind: code, ref: "Scores.GiveFrags/Add gated by OwnsScore (false under GameWorld); Mayhem.OnDeath calls Calculate", result: pass }
+    confidence: high
+    notes: "Verified there is no SP_SCORE double-count: Obituary records only aux columns when OwnsScore is false."
+
+  - id: mayhem.loadout.start_items
+    name: "SetStartItems — spawn health/armor/ammo + unlimited-ammo flag (200/200/60/320/160/180/0)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/mayhem/sv_mayhem.qc:MUTATOR_HOOKFUNCTION(mayhem, SetStartItems)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Mayhem.cs:Mayhem.OnSetStartItems"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:669 (SetStartItems.Call)"
+    constants:
+      - { name: "start_health", base: "200", port: "200", match: true }
+      - { name: "start_armor", base: "200", port: "200", match: true }
+      - { name: "start_ammo_shells", base: "60", port: "60", match: true }
+      - { name: "start_ammo_nails", base: "320", port: "320", match: true }
+      - { name: "start_ammo_rockets", base: "160", port: "160", match: true }
+      - { name: "start_ammo_cells", base: "180", port: "180", match: true }
+      - { name: "start_ammo_fuel", base: "0", port: "0", match: true }
+      - { name: "unlimited_ammo_when", base: "!g_use_ammunition || g_mayhem_unlimited_ammo", port: "same", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "OnSetStartItems vs QC; SetStartItems.Call live at SpawnSystem.cs:669", result: pass }
+    confidence: high
+    notes: "Sets HP/armor/ammo only; weapons come from the (dead) weapon-arena hook — see mayhem.loadout.weapon_arena."
+
+  - id: mayhem.loadout.weapon_arena
+    name: "SetWeaponArena — grant the full arsenal (most_available) at spawn"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/mayhem/sv_mayhem.qc:MUTATOR_HOOKFUNCTION(mayhem, SetWeaponArena)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Mayhem.cs:Mayhem.OnSetWeaponArena"
+    constants:
+      - { name: "g_mayhem_weaponarena", base: "most_available (all weapons)", port: "most_available (set, but never read)", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Players spawn with only the Blaster (SpawnSystem.DefaultLoadout) instead of the full arsenal: the MutatorHooks.SetWeaponArena chain has NO .Call site anywhere in the port, so OnSetWeaponArena is never invoked. The single biggest gameplay divergence in Mayhem."
+    verification:
+      - { kind: code, ref: "grep: SetWeaponArena has only .Add/.Remove, no .Call; DefaultLoadout = {blaster}", result: fail }
+    confidence: high
+    notes: "Whole SetWeaponArena chain is dead (also affects TeamMayhem, Instagib, Melee, Overkill). Engine-seam defect, not Mayhem-specific logic — the handler itself is a faithful port."
+
+  - id: mayhem.combat.damage_nullify
+    name: "Damage_Calculate — nullify self-damage (when selfdamage off) and always nullify fall damage"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/mayhem/sv_mayhem.qc:MUTATOR_HOOKFUNCTION(mayhem, Damage_Calculate)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Mayhem.cs:Mayhem.OnDamageCalculate"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:219 (DamageCalculate.Call)"
+    constants:
+      - { name: "g_mayhem_selfdamage", base: "0 (self-damage off)", port: "0", match: true }
+      - { name: "live_target_only", base: "IS_PLAYER && !IS_DEAD (corpses gib)", port: "Client flag && !dead && !corpse", match: true }
+      - { name: "fall_always_nullified", base: "DEATH_FALL → 0", port: "DeathTypes.Fall → 0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "OnDamageCalculate vs QC; DamageCalculate.Call live at DamageSystem.cs:219", result: pass }
+    confidence: high
+    notes: "Corpse gibbing preserved (live-target gate). Blaster/rocket self-jumps are free, matching Base."
+
+  - id: mayhem.combat.regen_rot
+    name: "PlayerRegen — disable health/armor regen and rot"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/mayhem/sv_mayhem.qc:MUTATOR_HOOKFUNCTION(mayhem, PlayerRegen)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Mayhem.cs:Mayhem.OnPlayerRegen"
+      - "src/XonoticGodot.Server/PlayerFrameLogic.cs:46 (PlayerRegen.Call)"
+    constants:
+      - { name: "g_mayhem_regenerate", base: "0", port: "0", match: true }
+      - { name: "g_mayhem_rot", base: "0", port: "0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "The port's PlayerRegen hook surface is narrower than QC's — it returns a single 'disable' bool instead of separately zeroing the regen arg (M_ARGV 2) and the rot arg (M_ARGV 3). With the stock defaults (both off) QC's `return (!regenerate && !rot)` is exactly the port's `return !regenerate && !rot`, so the observable result is identical; this is a deliberate narrower seam, not a defect. It would only diverge if one of g_mayhem_regenerate / g_mayhem_rot were enabled independently (non-default)."
+    gaps:
+      - "If g_mayhem_regenerate XOR g_mayhem_rot were set (non-default), the port cannot independently zero one arg — it returns a single disable bool. Non-default config only; faithful in every shipped config."
+    verification:
+      - { kind: code, ref: "OnPlayerRegen returns !regen && !rot (Mayhem.cs:516); QC sv_mayhem.qc:77-84 identical for both-off; PlayerRegen.Call live at PlayerFrameLogic.cs:46", result: pass }
+    confidence: high
+    notes: "Default config (both 0) is bit-identical to QC. The narrower hook surface is the only divergence and only matters in a non-shipped config; flagged intended (logic faithful in every default/shipped config, not 'partial')."
+
+  - id: mayhem.items.filter
+    name: "FilterItem — powerup + pickup-item spawning rules"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/mayhem/sv_mayhem.qc:MUTATOR_HOOKFUNCTION(mayhem, FilterItem)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Mayhem.cs:Mayhem.OnFilterItemDefinition"
+      - "src/XonoticGodot.Common/Gameplay/Items/StartItem.cs:90 (FilterItemDefinition.Call)"
+    constants:
+      - { name: "g_mayhem_powerups", base: "1", port: "1", match: true }
+      - { name: "g_mayhem_pickup_items", base: "0", port: "0", match: true }
+      - { name: "g_mayhem_pickup_items_remove_weapons_and_ammo", base: "1", port: "1", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Item-class detection is by hardcoded classname string lists (item_strength/_shield/_invincible powerups; item_* ammo; weapon_* pickups) instead of the QC itemdef.instanceOfPowerup/Ammo/WeaponPickup flags — a custom/modded item could be misclassified."
+    verification:
+      - { kind: code, ref: "OnFilterItemDefinition branch-by-branch vs QC; FilterItemDefinition.Call live at StartItem.cs:90", result: pass }
+    confidence: medium
+    notes: "Branch order and cvar reads match QC exactly; only the powerup/ammo/weapon detection mechanism differs (classname vs itemdef flag)."
+
+  - id: mayhem.weapons.forbid_throw
+    name: "ForbidThrowCurrentWeapon — players cannot drop their weapon"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/mayhem/sv_mayhem.qc:MUTATOR_HOOKFUNCTION(mayhem, ForbidThrowCurrentWeapon)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Mayhem.cs:Mayhem.OnForbidThrowCurrentWeapon"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponThrowing.cs:149,185 (ForbidThrowCurrentWeapon.Call)"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "OnForbidThrowCurrentWeapon returns true; ForbidThrowCurrentWeapon.Call live at WeaponThrowing.cs:149,185", result: pass }
+    confidence: high
+    notes: "Always-true; the chain is live (unlike SetWeaponArena)."
+
+  - id: mayhem.match.limits_overtime
+    name: "Point/lead limit end-of-match + FFA tie → overtime"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/mayhem/sv_mayhem.qc:mayhem_Initialize (GameRules_limit_score/lead)"
+      - "common/gametypes/gametype/mayhem/mayhem.qh:gametype_init (pointlimit=1000 leadlimit=0)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Mayhem.cs:RecomputeLeader/PointLimit/LeadLimit/ReportsTie"
+      - "src/XonoticGodot.Server/GameWorld.cs:DriveGametypeFrame (case Mayhem)"
+      - "src/XonoticGodot.Server/GameWorld.cs:CheckRulesAndIntermission (ReportsTie)"
+    constants:
+      - { name: "pointlimit", base: "1000", port: "1000", match: true }
+      - { name: "leadlimit", base: "0 (no lead limit)", port: "0", match: true }
+      - { name: "ffa_tie_overtime", base: "WinningConditionHelper_equality (top-two tied)", port: "FfaTie.TopTwoTied", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "RecomputeLeader enforces point+lead limit each frame via DriveGametypeFrame; ReportsTie wired in CheckRulesAndIntermission", result: pass }
+    confidence: high
+    notes: "Limit cvar -1 fallback to gametype default handled. Timed-tie overtime participates via ReportsTie."
+
+  - id: mayhem.match.reset
+    name: "reset_map_players — zero total_damage_dealt on round/map reset"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/mayhem/sv_mayhem.qc:MUTATOR_HOOKFUNCTION(mayhem, reset_map_players)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Mayhem.cs:Mayhem.ResetMapPlayers"
+      - "src/XonoticGodot.Server/GameWorld.cs:2408 (ResetMap → ResetMapPlayers)"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "ResetMapPlayers zeroes GtTotalDamageDealt; called from GameWorld.ResetMap:2408", result: pass }
+    confidence: high
+    notes: "Freshly-spawned players default GtTotalDamageDealt to 0, so Activate needs no extra zeroing."
+
+  - id: mayhem.menu.describe_support
+    name: "Menu describe + map-support gating (m_isAlwaysSupported / m_isForcedSupported / m_configuremenu)"
+    layer: [presentation, shared]
+    base_refs:
+      - "common/gametypes/gametype/mayhem/mayhem.qc:METHOD(mayhem, describe)"
+      - "common/gametypes/gametype/mayhem/mayhem.qh:m_isAlwaysSupported/m_isForcedSupported/m_configuremenu"
+    port_refs: []
+    constants:
+      - { name: "point_limit_slider", base: "200..2000 step 100", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: true
+    divergence_rationale: "Menu blurb (describe), the point-limit configure slider, and map-pool support gating (m_isAlwaysSupported/m_isForcedSupported) are MENUQC / map-pool concerns explicitly deferred in the port's class header (cross-boundary, not gameplay)."
+    gaps:
+      - "No menu description, no point-limit slider, no automatic DM/TDM-map support gating for Mayhem in the port's menu/map pool."
+    verification:
+      - { kind: code, ref: "no port symbol for describe/m_configuremenu/m_is*Supported", result: fail }
+    confidence: high
+    notes: "Out of gameplay scope; tracked for completeness. The frags-remaining-suppression hook is commented out (dead) in Base too, so not a port gap."

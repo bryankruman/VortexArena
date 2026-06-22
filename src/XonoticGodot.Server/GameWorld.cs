@@ -104,6 +104,30 @@ public sealed class GameWorld
     /// <summary>The round flow state machine (round-based modes); spawned lazily via <see cref="EnableRounds"/>.</summary>
     public RoundHandler? Rounds { get; private set; }
 
+    /// <summary>
+    /// Per-frame round-prep step (set by <see cref="ActivateGameType"/> for round-based modes): feed the live
+    /// roster to the active gametype so the round handler's CheckTeams/CheckWinner predicates see it. Runs each
+    /// frame right before <see cref="RoundHandler.Think"/>.
+    /// </summary>
+    private Action? _roundPrep;
+
+    /// <summary>
+    /// Per-frame round-sync step (set by <see cref="ActivateGameType"/>): after <see cref="RoundHandler.Think"/>
+    /// advances the live handler, mirror its <see cref="RoundHandler.RoundEndTime"/>/<see cref="RoundHandler.RoundsPlayed"/>
+    /// into the gametype's own handler so its CheckWinner/overtime reads stay in lockstep (QC round_handler_GetEndTime).
+    /// </summary>
+    private Action? _roundSync;
+
+    /// <summary>
+    /// QC <c>default_player_alpha</c>: the spawn alpha every player loadout starts from, seeded at worldspawn by
+    /// <see cref="MutatorHooks.FireSetDefaultAlpha"/> (1 = opaque; Cloaked lowers it to g_balance_cloaked_alpha;
+    /// Running Guns sets it to 0). Read by the per-spawn player loadout (SpawnSystem). Default 1 until Boot seeds it.
+    /// </summary>
+    public float DefaultPlayerAlpha { get; private set; } = 1f;
+
+    /// <summary>QC <c>default_weapon_alpha</c>: the spawn alpha for the held weapon model (see <see cref="DefaultPlayerAlpha"/>).</summary>
+    public float DefaultWeaponAlpha { get; private set; } = 1f;
+
     /// <summary>End-of-match intermission state (winner, scoreboard freeze, map-change timer).</summary>
     public Intermission Intermission { get; } = new();
 
@@ -510,6 +534,12 @@ public sealed class GameWorld
         //     handlers run. Idempotent (MutatorBase.Added guard), so a later ruleset change can re-converge.
         MutatorActivation.Apply();
 
+        // 5b′) QC worldspawn SetDefaultAlpha(): seed default_player_alpha / default_weapon_alpha now that the
+        // enabled mutators are subscribed (Cloaked lowers the player alpha to g_balance_cloaked_alpha 0.25;
+        // Running Guns makes the player invisible but the gun visible). The per-spawn player loadout reads
+        // DefaultPlayerAlpha (see SpawnSystem) so cloaked/running-guns invisibility composes from this seed.
+        (DefaultPlayerAlpha, DefaultWeaponAlpha) = MutatorHooks.FireSetDefaultAlpha(1f, 1f);
+
         // 5c) [T35] wire the world-item pipeline seams BEFORE the map entities spawn:
         //  - StartItem.GameStartTimeProvider feeds the powerup/superweapon initial-respawn offset (QC
         //    game_starttime) so powerups don't spawn during the countdown.
@@ -545,6 +575,20 @@ public sealed class GameWorld
         MapObjectsRegistry.RunPostSpawn();
         if (GameType is Assault assaultMode)
             assaultMode.ResolveObjectiveGraph();
+
+        // QC ka_SpawnBalls (sv_keepaway.qc) — the single world ball is spawned PROCEDURALLY at map start (unlike
+        // Nexball, which places balls from map entities). SpawnBall had no caller, so no ball ever existed and no
+        // (Team)Keepaway scoring could fire. Spawn it now that the spawnpoints exist (RandomMapLocation samples them),
+        // so the host-side ball lifecycle (touch=pickup, think=relocate) is live.
+        switch (GameType)
+        {
+            case Keepaway ka:
+                ka.SpawnBall(XonoticGodot.Common.Gameplay.BallEntity.RandomMapLocation(System.Numerics.Vector3.Zero));
+                break;
+            case TeamKeepaway tka:
+                tka.SpawnBall(XonoticGodot.Common.Gameplay.BallEntity.RandomMapLocation(System.Numerics.Vector3.Zero));
+                break;
+        }
 
         // 6a) finalize warpzones now that every entity exists (QC WarpZone_StartFrame, deferred to frame 1):
         //     derive each trigger_warpzone brush's plane from its geometry (+ any trigger_warpzone_position
@@ -818,7 +862,8 @@ public sealed class GameWorld
     /// CA-style "needs ≥2 players on ≥2 teams to start; round ends when ≤1 team has survivors", but a
     /// gametype can pass its own. Safe to call once after <see cref="Boot"/>.
     /// </summary>
-    public RoundHandler EnableRounds(Func<bool>? canStart = null, Func<bool>? canEnd = null, Action? onRoundStart = null)
+    public RoundHandler EnableRounds(Func<bool>? canStart = null, Func<bool>? canEnd = null, Action? onRoundStart = null,
+        float? endDelay = null, float? countdown = null, float? roundTimeLimit = null)
     {
         Rounds ??= new RoundHandler { GameStartTime = GameStartTime };
         // QC reset_map(false) on the next round: re-spawn players + reset map objects, preserving the score.
@@ -828,6 +873,10 @@ public sealed class GameWorld
             canStart ?? DefaultCanRoundStart,
             canEnd ?? DefaultCanRoundEnd,
             onRoundStart);
+        // QC round_handler_Init(the_delay, the_count, the_round_timelimit): a round-based gametype overrides the
+        // 5/5/180 default with its own cvars (e.g. CA's 7s end-delay + 10s warmup, FreezeTag's, …).
+        if (endDelay is float d && countdown is float c && roundTimeLimit is float rtl)
+            Rounds.Init(d, c, rtl);
         return Rounds;
     }
 
@@ -1203,7 +1252,14 @@ public sealed class GameWorld
         {
             Rounds.GameStartTime = GameStartTime;
             Rounds.IntermissionRunning = Intermission.Running;
+            // QC: the round's canRoundStart/canRoundEnd callbacks (the gametype's CheckTeams/CheckWinner) read the
+            // live roster each frame — feed it to the active round-based gametype BEFORE the handler polls them.
+            _roundPrep?.Invoke();
             Rounds.Think();
+            // Mirror the live handler's round timing into the gametype's own RoundHandler so the gametype's
+            // CheckWinner / overtime reads (e.g. CA's round-timelimit stalemate, Onslaught's overtime decay) see
+            // the same round_endtime / rounds_played the live handler advanced (QC round_handler_GetEndTime()).
+            _roundSync?.Invoke();
         }
 
         // 3) end-of-match check + intermission (QC CheckRules_World → NextLevel, then IntermissionThink).
@@ -1287,6 +1343,10 @@ public sealed class GameWorld
     /// </summary>
     private void ActivateGameType()
     {
+        // Reset any per-frame round hooks from a prior Boot (campaign level change re-activates a gametype on the
+        // same world); only the active round-based gametype's case below re-installs them.
+        _roundPrep = null;
+        _roundSync = null;
         switch (GameType)
         {
             case Deathmatch dm:
@@ -1309,7 +1369,22 @@ public sealed class GameWorld
             case ClanArena ca:
                 ca.Activate();
                 Scores.TeamScoreSource = ca.GetTeamRounds;   // CA's "team score" is its round wins
-                EnableRounds();                        // CA is round-based
+                // QC round_handler_Spawn(CA_CheckTeams, CA_CheckWinner, CA_RoundStart): drive the LIVE handler off
+                // CA's real predicates (CheckTeams gate, CheckWinner → round-timelimit stalemate via PreventStalemate)
+                // instead of the generic defaults, and use CA's grace/timelimit/end-delay cvars (10s warmup etc).
+                {
+                    RoundHandler caRounds = EnableRounds(
+                        ca.CheckTeams,
+                        () => ca.CheckWinner() != 0,
+                        onRoundStart: null,
+                        endDelay: Cvars.FloatOr("g_ca_round_enddelay", 5f),
+                        countdown: Cvars.FloatOr("g_ca_warmup", 5f),
+                        roundTimeLimit: Cvars.FloatOr("g_ca_round_timelimit", 180f));
+                    // CA's CheckWinner reads ca.Handler.RoundEndTime for the round-timelimit stalemate branch; mirror
+                    // the live handler's timing into CA's own handler each frame, and feed it the live roster.
+                    _roundPrep = () => ca.SetRoster(Clients.Players);
+                    _roundSync = () => MirrorRoundTiming(caRounds, ca.Handler);
+                }
                 break;
 
             // ---- the remaining team / objective modes ----
@@ -1342,7 +1417,26 @@ public sealed class GameWorld
             case FreezeTag ft:
                 ft.Activate();
                 Scores.TeamScoreSource = ft.GetTeamRounds;
-                EnableRounds();                              // FreezeTag is round-based
+                // QC round_handler_Spawn(freezetag_CheckTeams, freezetag_CheckWinner, …): drive the live handler off
+                // FT's real predicates + its warmup/timelimit/end-delay cvars (so the round ends when a team is fully
+                // frozen, not via the generic dead-team default), with the thaw-everyone OnRoundStart.
+                {
+                    RoundHandler ftRounds = EnableRounds(
+                        ft.CheckTeams,
+                        () => ft.CheckWinner() != 0,
+                        // QC freezetag round_handler_Spawn roundStart (Frozen.Clear): thaw everyone at the start of a
+                        // new round. FreezeTag exposes the per-player Unfreeze; iterate the roster (no public bulk thaw).
+                        onRoundStart: () =>
+                        {
+                            var roster = Clients.Players;
+                            for (int i = 0; i < roster.Count; i++) ft.Unfreeze(roster[i]);
+                        },
+                        endDelay: Cvars.FloatOr("g_freezetag_round_enddelay", 5f),
+                        countdown: Cvars.FloatOr("g_freezetag_warmup", 5f),
+                        roundTimeLimit: Cvars.FloatOr("g_freezetag_round_timelimit", 180f));
+                    _roundPrep = () => ft.SetRoster(Clients.Players);
+                    _roundSync = () => MirrorRoundTiming(ftRounds, ft.Handler);
+                }
                 break;
             case Onslaught ons:
                 ons.Activate();
@@ -1615,7 +1709,9 @@ public sealed class GameWorld
             case Mayhem m: m.RecomputeLeader(Clients.Players); break;   // FFA: leader + point/lead limit
             case TeamMayhem tm: tm.UpdateLeaderAndCheckLimit(); break;  // team: ST_SCORE leader + limit
             case Tdm tdm: tdm.UpdateLeaderAndCheckLimit(); break;
-            case ClanArena ca: ca.CheckRound(Clients.Players); break;   // CA resolves rounds
+            // CA: the round is now resolved on the LIVE round handler path (OnEndFrame → Rounds.Think → CA.CheckWinner),
+            // so DON'T also call CheckRound here (that would double-award the round). The roster is fed via _roundPrep.
+            case ClanArena: break;
             case Ctf ctf: ctf.Tick(); ctf.UpdateLeaderAndCheckLimit(); ctf.UpdateCaptureShields(Clients.Players); break;
             case Domination dom: dom.Tick(); break;                     // tick variant scores; round variant no-ops here
             case Onslaught ons:
@@ -1626,9 +1722,10 @@ public sealed class GameWorld
             case FreezeTag ft:
                 // QC PlayerPreThink revive loop: feed the live roster, then accumulate/decay revive progress and
                 // auto-thaw frozen players each frame (without this the thaw ring never fills + nobody is revived).
+                // The round itself is now resolved on the LIVE round handler path (OnEndFrame → Rounds.Think →
+                // FT.CheckWinner), so DON'T also call CheckRound here (that would double-award the round).
                 ft.SetRoster(Clients.Players);
                 ft.ReviveTick(Simulation.FrameTime);
-                ft.CheckRound(Clients.Players);
                 break;
             case TeamKeepaway tka: tka.CheckPointLimit(); break;
             case Nexball nb: nb.CheckGoalLimit(); break;
@@ -2510,6 +2607,19 @@ public sealed class GameWorld
         FreezeTag ft => ft.TeamCount,
         _ => 2,
     };
+
+    /// <summary>
+    /// Mirror the live (Server) round handler's round timing onto a gametype-owned (Common) round handler so the
+    /// gametype's CheckWinner / overtime reads (which consult their OWN <c>Handler.RoundEndTime</c>) match the
+    /// round the live handler advanced (QC round_handler_GetEndTime()). No-op if the gametype handler is null.
+    /// </summary>
+    private static void MirrorRoundTiming(RoundHandler live, XonoticGodot.Common.Gameplay.RoundHandler? owned)
+    {
+        if (owned is null)
+            return;
+        owned.RoundEndTime = live.RoundEndTime;
+        owned.RoundsPlayed = live.RoundsPlayed;
+    }
 
     /// <summary>Default round-start predicate (QC CA CheckTeams): ≥2 players spread over ≥2 active teams.</summary>
     private bool DefaultCanRoundStart()

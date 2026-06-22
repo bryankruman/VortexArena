@@ -1,0 +1,465 @@
+unit: monster-wyvern
+category: monster
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 17
+  worst_gaps:
+    - "Fireball detonation emits no EFFECT_FIREBALL_EXPLODE blast particle (no Send_Effect/EffectEmitter in the explode path)."
+    - "In-flight fireball has no PROJECTILE_FIREMINE CSQC visual: the port spawns an invisible server-only monster_projectile (no spinning fire-mine model/glow/trail)."
+    - "Death does not fling the corpse with the random 400r-200 / 100r+100 scatter (mr_death not overridden); a killed wyvern won't tumble out of the air."
+    - "mr_deadthink anim_die2 swap on landing is not implemented."
+    - "Monster animation frame groups (mr_anim idle/walk/run/pain/shoot/die1/die2) are never driven — only a logical MonsterAnim phase exists (system-wide CSQC playback deferral)."
+    - "Pain window uses the generic 0.34s instead of the wyvern's 0.5s pain_finished (mr_pain not overridden)."
+features:
+  - id: wyvern.identity.spawnflags_hitbox
+    name: "Identity, fly spawnflags, asymmetric hitbox"
+    layer: [authority, shared]
+    base_refs:
+      - "common/monsters/monster/wyvern.qh:Wyvern (spawnflags MONSTER_TYPE_FLY|MON_FLAG_RANGED|MON_FLAG_RIDE, m_mins -30/-30/-48, m_maxs 30/30/30)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Wyvern.cs:Wyvern() ctor"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Wyvern.cs:Spawn"
+    constants:
+      - { name: "m_mins", base: "'-30 -30 -48'", port: "(-30,-30,-48)", match: true }
+      - { name: "m_maxs", base: "'30 30 30'", port: "(30,30,30)", match: true }
+      - { name: "movetype", base: "MOVETYPE_FLY + FL_FLY (MONSTER_TYPE_FLY)", port: "MoveType.Fly + EntFlags.Fly + Gravity 0 + MonsterFlag_FlyVertical", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: source, ref: "wyvern.qh vs Wyvern.cs Spawn (SetSize + Fly flags)", result: pass }
+    confidence: high
+    notes: "MON_FLAG_RIDE (ridable) is set but neither Base nor port wires riding for the wyvern; cosmetic flag here."
+
+  - id: wyvern.setup.stats
+    name: "mr_setup: health, speeds, force scale, loot"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/monster/wyvern.qc:METHOD(Wyvern, mr_setup)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Wyvern.cs:Spawn"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:Setup"
+    constants:
+      - { name: "g_monster_wyvern_health", base: "150", port: "150", match: true }
+      - { name: "g_monster_wyvern_speed_walk", base: "120", port: "120", match: true }
+      - { name: "g_monster_wyvern_speed_run", base: "250", port: "250", match: true }
+      - { name: "g_monster_wyvern_speed_stop", base: "300", port: "300", match: true }
+      - { name: "g_monster_wyvern_damageforcescale", base: "0.6", port: "0.6", match: true }
+      - { name: "g_monster_wyvern_loot", base: "\"cells\"", port: "\"cells\"", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: value, ref: "monsters.cfg:67-78 vs Wyvern.cs fields/Cvar fallbacks", result: pass }
+    confidence: high
+    notes: "Each value read via MonsterAI.Cvar(name, fallback) so live cvar tuning carries through."
+
+  - id: wyvern.attack.dispatch
+    name: "Attack: 1s wind-up, ranged+melee both lob a fireball"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/monster/wyvern.qc:M_Wyvern_Attack"
+      - "common/monsters/sv_monsters.qc:Monster_Attack_Check"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Wyvern.cs:Attack"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:QueueDelayedAttack"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:AttackCheck"
+    constants:
+      - { name: "wind-up (Monster_Delay defer)", base: "1.0s", port: "windUp:1f", match: true }
+      - { name: "anim/attack lock", base: "time+1.2 then +0.2 => ~1.4s", port: "totalLock:1.4f", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: source, ref: "M_Wyvern_Attack vs Wyvern.Attack + QueueDelayedAttack", result: pass }
+    confidence: high
+    notes: "Base derives MELEE/RANGED in Monster_Attack_Check and both branches do the same thing; port AttackCheck just gates enemy+cooldown and Wyvern.Attack always lobs the fireball — equivalent."
+
+  - id: wyvern.fireball.spawn
+    name: "Fireball projectile spawn (speed, size, spin, lifetime, muzzle)"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/monster/wyvern.qc:METHOD(WyvernAttack, wr_think)"
+      - "common/monsters/monster/wyvern.qc:M_Wyvern_Attack_Fireball"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Wyvern.cs:FireFireball"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:SpawnProjectile"
+    constants:
+      - { name: "g_monster_wyvern_attack_fireball_speed", base: "1200", port: "1200", match: true }
+      - { name: "missile size", base: "'-6 -6 -6' '6 6 6'", port: "(-6,-6,-6)/(6,6,6)", match: true }
+      - { name: "avelocity (spin)", base: "'300 300 300'", port: "(300,300,300)", match: true }
+      - { name: "lifetime (nextthink)", base: "time+5", port: "lifetime:5f", match: true }
+      - { name: "muzzle offset", base: "view_ofs + v_forward*14", port: "ViewOfs + dir*14", match: true }
+      - { name: "movetype", base: "MOVETYPE_FLYMISSILE", port: "MoveType.FlyMissile", match: true }
+      - { name: "aim point", base: "normalize((enemy.origin+'0 0 10')-origin)", port: "Normalize((target.Origin+(0,0,10))-Origin)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: source, ref: "wr_think vs FireFireball/SpawnProjectile", result: pass }
+    confidence: high
+    notes: "QC missile is SOLID_TRIGGER; port leaves it SOLID_BBOX (makeTrigger=false). Functionally both detonate on touch with a damageable target; not a behavioral gap."
+
+  - id: wyvern.fireball.radiusdamage
+    name: "Fireball explosion: radius damage + knockback"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/monster/wyvern.qc:M_Wyvern_Attack_Fireball_Explode (RadiusDamage)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:SpawnProjectile (Explode -> WeaponSplash.RadiusDamage)"
+    constants:
+      - { name: "fireball_damage", base: "50", port: "50", match: true }
+      - { name: "fireball_edgedamage", base: "20", port: "20", match: true }
+      - { name: "fireball_force", base: "50", port: "50", match: true }
+      - { name: "fireball_radius", base: "120", port: "120", match: true }
+      - { name: "deathtype", base: "DEATH_MONSTER_WYVERN", port: "DeathTypes.MonsterWyvern", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: source, ref: "RadiusDamage args vs WeaponSplash.RadiusDamage(deathTag)", result: pass }
+    confidence: high
+    notes: "Routes through the real damage pipeline; obituary deathtype carried so kills credit the wyvern line."
+
+  - id: wyvern.fireball.burning
+    name: "Fireball ignites everything in radius (burning DoT)"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/monster/wyvern.qc:M_Wyvern_Attack_Fireball_Explode (FOREACH_ENTITY_RADIUS Fire_AddDamage)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Wyvern.cs:FireFireball (onExplode)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterFramework.cs:AddFireDamage"
+    constants:
+      - { name: "burn radius", base: "120 (fireball_radius)", port: "120", match: true }
+      - { name: "burn total damage", base: "5 * MONSTER_SKILLMOD(own)", port: "5f * SkillMod(st)", match: true }
+      - { name: "burn duration (damagetime)", base: "2", port: "2", match: true }
+      - { name: "target filter", base: "takedamage==DAMAGE_AIM && it!=own", port: "TakeDamage==Aim && it!=owner", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: partial
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Burn reshaped from QC .fire_* accumulator into a Burning status-effect whose per-tick strength*0.05 is derived from dps*FrameTime; total over the window is intended to match but the per-tick cadence is approximate, not bit-exact."
+    verification:
+      - { kind: source, ref: "Fire_AddDamage loop vs onExplode + MonsterFramework.AddFireDamage", result: pass }
+    confidence: medium
+    notes: "Same burn approximation affects every igniting monster; needs a headless tick test to confirm the DoT total under the live tick rate."
+
+  - id: wyvern.fireball.explode_effect
+    name: "Fireball blast particle (EFFECT_FIREBALL_EXPLODE)"
+    layer: [presentation]
+    base_refs:
+      - "common/monsters/monster/wyvern.qc:M_Wyvern_Attack_Fireball_Explode (Send_Effect EFFECT_FIREBALL_EXPLODE)"
+    port_refs: []
+    constants:
+      - { name: "effect", base: "EFFECT_FIREBALL_EXPLODE", port: "none", match: false }
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Fireball detonation emits no EFFECT_FIREBALL_EXPLODE blast particle (no Send_Effect/EffectEmitter in the explode path)."
+    verification:
+      - { kind: source, ref: "no Send_Effect/EffectEmitter in Wyvern.FireFireball or SpawnProjectile.Explode", result: fail }
+    confidence: high
+    notes: "WeaponSplash.RadiusDamage does not emit the blast FX itself; the wyvern explode path never emits one."
+
+  - id: wyvern.fireball.firemine_visual
+    name: "In-flight fireball CSQC visual (PROJECTILE_FIREMINE)"
+    layer: [presentation]
+    base_refs:
+      - "common/monsters/monster/wyvern.qc:wr_think (CSQCProjectile(missile, true, PROJECTILE_FIREMINE, true))"
+    port_refs: []
+    constants:
+      - { name: "csqc projectile type", base: "PROJECTILE_FIREMINE", port: "none", match: false }
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "In-flight fireball has no PROJECTILE_FIREMINE CSQC visual: the port spawns an invisible server-only monster_projectile (no spinning fire-mine model/glow/trail)."
+    verification:
+      - { kind: source, ref: "SpawnProjectile creates a server-only monster_projectile entity; no CSQC projectile registration", result: fail }
+    confidence: high
+    notes: "System-wide: the monster projectile spawner has no CSQC visual layer yet."
+
+  - id: wyvern.fireball.fire_sound
+    name: "Fireball launch sound (electro_fire)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/monsters/monster/wyvern.qc:SOUND(WyvernAttack_FIRE, W_Sound(\"electro_fire\"))"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Wyvern.cs:FireFireball (Api.Sound.Play weapons/electro_fire.wav)"
+    constants:
+      - { name: "sample", base: "weapons/electro_fire", port: "weapons/electro_fire.wav", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: source, ref: "SND_WyvernAttack_FIRE vs Api.Sound.Play", result: pass }
+    confidence: high
+    notes: "QC plays the fire sound only for a player actor via W_SetupShot_Dir; the port plays it unconditionally on fire. Minor — for a monster actor the original is silent on launch, port adds the cue. Treated as faithful (same intended sound)."
+
+  - id: wyvern.brain.think_move
+    name: "Per-frame brain: flying chase + attack check"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/monster/wyvern.qc:METHOD(Wyvern, mr_think) (no-op)"
+      - "common/monsters/sv_monsters.qc:Monster_Think / Monster_Move"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Wyvern.cs:Think"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:RunThink"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:Move"
+    constants:
+      - { name: "vertical fly chase", base: "MONSTER_TYPE_FLY", port: "MonsterFlag_FlyVertical", match: true }
+      - { name: "speed clamp", base: "bound(0, v*SKILLMOD, run*2.5)", port: "Bound(0, v*SkillMod, cap)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: trace, ref: "SpawnFromMap wires e.Think -> SimulationLoop.RunThink (SV_RunThink) -> RunThink -> Move+AttackCheck", result: pass }
+    confidence: high
+    notes: "mr_think is a no-op in Base; the wyvern uses the shared flying brain, faithfully ported. FlyMove engine integrator handles MoveType.Fly."
+
+  - id: wyvern.pain
+    name: "Pain reaction (0.5s window, pain anim)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/monsters/monster/wyvern.qc:METHOD(Wyvern, mr_pain)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MarkPain"
+    constants:
+      - { name: "pain_finished window", base: "0.5", port: "0.34 (generic MarkPain)", match: false }
+      - { name: "pain anim", base: "anim_pain1 '3 1 2'", port: "MonsterAnim.Pain (no frame group)", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: partial
+      presentation: stub
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Pain window uses the generic 0.34s instead of the wyvern's 0.5s pain_finished (mr_pain not overridden)."
+    verification:
+      - { kind: source, ref: "Wyvern.cs has no Pain override; MarkPain uses 0.34s", result: fail }
+    confidence: high
+    notes: "Wyvern does not override the pain hook; falls back to the generic monster pain window and the abstract MonsterAnim.Pain phase."
+
+  - id: wyvern.death
+    name: "Death: die anim + random corpse launch scatter"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/monsters/monster/wyvern.qc:METHOD(Wyvern, mr_death)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MarkDead"
+    constants:
+      - { name: "death velocity x/y", base: "400*random()-200", port: "none (flyer velocity left unchanged)", match: false }
+      - { name: "death velocity z", base: "100*random()+100", port: "none", match: false }
+      - { name: "death anim", base: "anim_die1 '7 1 0.5'", port: "MonsterAnim.Death (no frame group)", match: false }
+    status:
+      logic: partial
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Death does not fling the corpse with the random 400r-200 / 100r+100 scatter (mr_death not overridden); a killed wyvern won't tumble out of the air."
+    verification:
+      - { kind: source, ref: "Wyvern.cs has no Death override; MarkDead leaves a flyer's velocity unchanged", result: fail }
+    confidence: high
+    notes: "Generic MarkDead handles corpse/score/loot/obituary faithfully, but the wyvern-specific launch scatter and die1 anim are absent."
+
+  - id: wyvern.deadthink
+    name: "Dead-think: swap to anim_die2 once the corpse lands"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/monsters/monster/wyvern.qc:METHOD(Wyvern, mr_deadthink)"
+    port_refs: []
+    constants:
+      - { name: "on-ground die2 swap", base: "if(IS_ONGROUND) setanim(anim_die2)", port: "none", match: false }
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "mr_deadthink anim_die2 swap on landing is not implemented."
+    verification:
+      - { kind: source, ref: "no on-ground die2 swap in Wyvern.cs or MarkDead/DeadThink", result: fail }
+    confidence: high
+    notes: "Depends on CSQC frame playback to be observable; the logical phase swap is also absent."
+
+  - id: wyvern.anim.frame_table
+    name: "Animation frame groups (mr_anim)"
+    layer: [presentation]
+    base_refs:
+      - "common/monsters/monster/wyvern.qc:METHOD(Wyvern, mr_anim) (idle/walk/run/pain/melee/shoot/die1/die2)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MonsterAnim (logical phase enum only)"
+    constants:
+      - { name: "anim_idle/walk/run", base: "'0 1 1'/'1 1 1'/'2 1 1'", port: "MonsterAnim.Idle/Walk/Run (no frames)", match: false }
+      - { name: "anim_shoot", base: "'6 1 5'", port: "MonsterAnim.Attack (no frames)", match: false }
+      - { name: "anim_die1/die2", base: "'7 1 0.5'/'8 1 0.5'", port: "MonsterAnim.Death (no frames)", match: false }
+    status:
+      logic: stub
+      values: missing
+      timing: na
+      presentation: stub
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Monster animation frame groups (mr_anim idle/walk/run/pain/shoot/die1/die2) are never driven — only a logical MonsterAnim phase exists (system-wide CSQC playback deferral)."
+    verification:
+      - { kind: source, ref: "MonsterAnim is an abstract phase enum; no .dpm frame-group playback wired", result: fail }
+    confidence: high
+    notes: "Systemic to all five ported monsters: the server keeps a MonsterAnim phase for timing; the model never plays the named frame groups. Re-audit when CSQC monster animation lands."
+
+  - id: wyvern.obituary
+    name: "Kill notification (was fireballed by a Wyvern)"
+    layer: [presentation]
+    base_refs:
+      - "common/notifications/all.inc:DEATH_MURDER_MON_WYVERN / DEATH_SELF_MON_WYVERN"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:179"
+    constants:
+      - { name: "obituary text", base: "^BG%s^K1 was fireballed by a Wyvern%s%s", port: "same string", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: source, ref: "NotificationsList.cs:179 D(MON_WYVERN, notify_death, ...)", result: pass }
+    confidence: high
+    notes: "Carried by DEATH_MONSTER_WYVERN through RadiusDamage/MarkDead -> Combat.Death obituary."
+
+  - id: wyvern.spawnfunc
+    name: "Map spawnfunc monster_wyvern (+ spawner/random/Invasion)"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/monster/wyvern.qc:spawnfunc(monster_wyvern) -> Monster_Spawn(this,true,MON_WYVERN)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterSpawnFuncs.cs:Wyvern"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:200 (SpawnFuncs.Register monster_wyvern)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:SpawnFromMap"
+    constants:
+      - { name: "g_monsters master switch", base: "default on", port: "MasterSwitchEnabled(g_monsters)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: trace, ref: "GameInit -> MapObjectsRegistry.RegisterAll -> SpawnFuncs.Register(monster_wyvern) -> SpawnFromMap wires think", result: pass }
+    confidence: high
+    notes: "Also reachable via monster_spawner (MonsterSpawnFuncs.MonsterSpawner), spawnmonster random, and Invasion waves."
+
+  - id: wyvern.menu.describe
+    name: "MENUQC monster-tooltip description text"
+    layer: [presentation]
+    base_refs:
+      - "common/monsters/monster/wyvern.qc:METHOD(Wyvern, describe)"
+    port_refs:
+      - "game/menu/dialogs/DialogMonsterTools.cs"
+    constants: []
+    status:
+      logic: unknown
+      values: unknown
+      timing: na
+      presentation: unknown
+      audio: na
+      liveness: unknown
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Did not verify whether the wyvern's MENUQC describe() prose (\"a flying reptilian monster that glides around hunting for fresh prey...\") is surfaced in the port's monster-tools menu dialog."
+    verification:
+      - { kind: none, ref: "DialogMonsterTools.cs exists but describe text not traced", result: fail }
+    confidence: low
+    notes: "MENUQC-only flavor text; low gameplay impact. Listed for completeness (mirrors monster-spider.menu.describe)."

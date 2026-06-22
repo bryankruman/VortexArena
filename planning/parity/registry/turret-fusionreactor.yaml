@@ -1,0 +1,242 @@
+unit: turret-fusionreactor
+category: turret
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 8
+  worst_gaps:
+    - "No client presentation at all: turrets have no networked ENT_CLIENT_TURRET entity in the port, so the reactor renders nothing — no model, no ammo-scaled head spin (Base '0 250 0'*ammo/ammo_max), no waypoint sprite/healthbar, no death/gib FX."
+    - "te_smallflash at each recharged recipient is not emitted (the EffectEmitter.TeSmallflash API exists but the reactor only references it in a comment)."
+    - "Recharge cadence diverges: the port tops up ALL eligible allies per shot_refire (0.2s), whereas Base advances attack_finished_single after the first turret_fire in the sweep so it tops up ONE ally per 0.2s — the port powers a cluster ~N× faster."
+    - "Recipient TFL_AMMO_ENERGY check is missing: IsRechargeableAlly accepts any same-team alive turret_* without verifying the recipient uses energy ammo (harmless today since all offensive turrets use energy, but not faithful)."
+    - "respawntime is 60 (TurretSpawn.Init default) instead of the cfg's 90 — FusionReactorTurret.Spawn doesn't pass the cfg value."
+features:
+  - id: turret-fusionreactor.identity.def
+    name: "Identity / model / hitbox / support class flags"
+    layer: [shared, authority]
+    base_refs:
+      - "common/turrets/turret/fusionreactor.qh:FusionReactor (CLASS / REGISTER_TURRET)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/FusionReactorTurret.cs:FusionReactorTurret (ctor + Spawn SetSize)"
+    constants:
+      - { name: "netname", base: "fusreac", port: "fusreac", match: true }
+      - { name: "m_name", base: "Fusion Reactor", port: "Fusion Reactor", match: true }
+      - { name: "model", base: "models/turrets/base.md3", port: "models/turrets/base.md3", match: true }
+      - { name: "head_model", base: "models/turrets/reactor.md3", port: "none (no head entity)", match: false }
+      - { name: "m_mins", base: "'-34 -34 0'", port: "(-34,-34,0)", match: true }
+      - { name: "m_maxs", base: "'34 34 90'", port: "(34,34,90)", match: true }
+      - { name: "spawnflags", base: "TUR_FLAG_SUPPORT|TUR_FLAG_AMMOSOURCE", port: "doc-only (no flags int; behavior hardcoded as support)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "head_model (reactor.md3) is not carried — no head entity exists in the port turret model."
+      - "TUR_FLAG_SUPPORT/AMMOSOURCE are not stored as flags; support behavior is hardcoded in the C# class instead of derived from spawnflags. (Verified TUR_FLAG_AMMOSOURCE is declared but NEVER read anywhere in Base qcsrc — purely declarative — so its omission is functionally harmless; TUR_FLAG_SUPPORT only selects turret_targetscore_support, which the reactor never invokes since it has no targetscore-driven path.)"
+    verification:
+      - { kind: code-read, ref: "fusionreactor.qh vs FusionReactorTurret.cs ctor+Spawn", result: pass }
+    confidence: high
+    notes: "Body identity/bbox faithful; the head model + support-scoring-by-flag are absent (support scoring is moot here anyway since the reactor never uses targetscore)."
+
+  - id: turret-fusionreactor.setup.tr_setup
+    name: "Setup flags: energy+recharge ammo, own-team range-limited targeting, HITALLVALID, no aim/track, head spin seed"
+    layer: [shared, authority]
+    base_refs:
+      - "common/turrets/turret/fusionreactor.qc:tr_setup"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/FusionReactorTurret.cs:Select / Spawn / ValidTarget"
+    constants:
+      - { name: "target_select_flags", base: "TEAMCHECK|OWNTEAM|RANGELIMITS", port: "SelectTeamCheck|SelectOwnTeam|SelectRangeLimits", match: true }
+      - { name: "ammo_flags", base: "TFL_AMMO_ENERGY|TFL_AMMO_RECHARGE", port: "implicit (ammo pool + per-frame regen)", match: true }
+      - { name: "shoot_flags", base: "TFL_SHOOT_HITALLVALID", port: "Think loops all valid allies", match: true }
+      - { name: "aim_flags", base: "TFL_AIM_NO", port: "no aiming", match: true }
+      - { name: "track_flags", base: "TFL_TRACK_NO", port: "no head track", match: true }
+      - { name: "tur_head.scale", base: "0.75", port: "none", match: false }
+      - { name: "tur_head.avelocity (initial)", base: "'0 50 0'", port: "none", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Initial head spin (50 deg/s) and head scale 0.75 are not applied — no head entity / no client render."
+    verification:
+      - { kind: code-read, ref: "tr_setup flags vs FusionReactorTurret.Select + Think + ValidTarget", result: pass }
+    confidence: high
+    notes: "Targeting/ammo flags faithfully fold into the C# Think + ValidTarget. Head presentation is the only divergence."
+
+  - id: turret-fusionreactor.recharge.sweep
+    name: "HITALLVALID per-think recharge sweep (find same-team turrets in range, top each up)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_think (TFL_SHOOT_HITALLVALID branch)"
+      - "common/turrets/turret/fusionreactor.qc:tr_attack"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/FusionReactorTurret.cs:Think"
+    constants:
+      - { name: "shot_dmg (ammo per top-up)", base: "20", port: "20", match: true }
+      - { name: "shot_refire", base: "0.2", port: "0.2", match: true }
+      - { name: "target_range", base: "1024", port: "1024", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: partial
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Recharge cadence diverges: the port refills ALL eligible allies on each shot_refire tick; Base advances attack_finished_single inside turret_fire after the FIRST recipient, and turret_fusionreactor_firecheck's attack_finished_single[0]>time gate then rejects the rest that same think — so Base tops up only ONE ally per 0.2s. The port powers a multi-turret cluster ~N× faster than Base AND drains its own ammo ~N× faster per tick (N*20 vs 20)."
+    verification:
+      - { kind: code-read, ref: "sv_turrets.qc:1022-1040 HITALLVALID loop + turret_fire (960-983) refire reset + firecheck (fusionreactor.qc:15) refire gate vs FusionReactorTurret.Think whole-sweep AttackFinished gate (lines 55,77-78)", result: fail }
+    confidence: high
+    notes: "Top-up amount/cap/own-ammo-spend-per-recipient are bit-faithful; the divergence is purely how the 0.2s refire gate interacts with the multi-target loop (per-recipient one-shot in Base vs whole-sweep in the port). Verified against actual Base loop + the per-fire attack_finished_single reset."
+
+  - id: turret-fusionreactor.firecheck
+    name: "Per-recipient firecheck (same team, alive, in range, recipient not full, own ammo, recipient uses energy)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/fusionreactor.qc:turret_fusionreactor_firecheck"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/FusionReactorTurret.cs:Think (inline checks) / IsRechargeableAlly / ValidTarget"
+    constants:
+      - { name: "own-ammo gate", base: "this.ammo >= shot_dmg", port: "st.Ammo < ShotDamage -> break", match: true }
+      - { name: "recipient-not-full gate", base: "targ.ammo < targ.ammo_max", port: "allyState.Ammo >= AmmoMax -> continue", match: true }
+      - { name: "same-team gate", base: "this.team == targ.team", port: "TurretAI.SameTeam", match: true }
+      - { name: "alive gate", base: "!IS_DEAD(targ)", port: "ally.Health <= 0 -> reject", match: true }
+      - { name: "range gate", base: "vdist(<= target_range)", port: "ValidTarget range / FindInRadius(TargetRange)", match: true }
+      - { name: "recipient energy gate", base: "targ.ammo_flags & TFL_AMMO_ENERGY", port: "MISSING", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Missing TFL_AMMO_ENERGY recipient check: IsRechargeableAlly accepts any same-team alive turret_* without verifying the recipient uses energy ammo (harmless today, not faithful)."
+    verification:
+      - { kind: code-read, ref: "turret_fusionreactor_firecheck vs Think inline gates + IsRechargeableAlly", result: fail }
+    confidence: high
+    notes: "All numeric/team/range/full gates match; only the recipient ammo-type flag check is dropped."
+
+  - id: turret-fusionreactor.ammo.regen
+    name: "Self ammo regeneration (recharge toward ammo_max each frame)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_think (ammo regen block)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/FusionReactorTurret.cs:Think (ammo regen)"
+    constants:
+      - { name: "ammo_max", base: "100", port: "100", match: true }
+      - { name: "ammo_recharge", base: "100 (per second)", port: "100", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "ammo += ammo_recharge*frametime capped vs Think st.Ammo regen", result: pass }
+    confidence: high
+    notes: "Frame-time-scaled regen capped at ammo_max, matching Base."
+
+  - id: turret-fusionreactor.fx.attack
+    name: "te_smallflash at recharged recipient + ammo-scaled head spin"
+    layer: [presentation, authority]
+    base_refs:
+      - "common/turrets/turret/fusionreactor.qc:tr_attack (te_smallflash)"
+      - "common/turrets/turret/fusionreactor.qc:tr_think (head avelocity = '0 250 0'*ammo/ammo_max)"
+      - "common/turrets/cl_turrets.qc:turret_draw (head angle integration)"
+    port_refs: []
+    constants:
+      - { name: "head avelocity scale", base: "'0 250 0' * ammo/ammo_max", port: "none", match: false }
+      - { name: "smallflash origin", base: "0.5*(enemy.absmin+enemy.absmax)", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No client presentation at all: turrets have no networked ENT_CLIENT_TURRET entity in the port, so the reactor renders nothing — no model, no ammo-scaled head spin (Base '0 250 0'*ammo/ammo_max, up to 250 deg/s), no waypoint sprite/healthbar, no death/gib FX."
+      - "te_smallflash at each recipient is not emitted (EffectEmitter.TeSmallflash exists but is only mentioned in a Think comment, never called)."
+    verification:
+      - { kind: code-read, ref: "tr_attack/tr_think FX vs FusionReactorTurret.Think (comment-only, no Emit)", result: fail }
+    confidence: high
+    notes: "Pure presentation feedback. The smallflash is cheap to wire (API present); the head spin depends on the whole-family turret client-render gap."
+
+  - id: turret-fusionreactor.spawn.lifecycle
+    name: "Spawnfunc + master switch + think wiring + damage/use/death/respawn"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/fusionreactor.qc:spawnfunc(turret_fusionreactor)"
+      - "common/turrets/sv_turrets.qc:turret_initialize / turret_link / turret_use / turret_damage / turret_die / turret_respawn"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawnFuncs.cs:FusionReactor / Spawn"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:Init"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Use / Damage / Die / Respawn / EnsureDeathHook"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:216 (SpawnFuncs.Register turret_fusionreactor)"
+      - "src/XonoticGodot.Engine/Simulation/SimulationLoop.cs:RunThink"
+    constants:
+      - { name: "g_turrets master switch", base: "1 (0 disables)", port: "MasterSwitchEnabled", match: true }
+      - { name: "health", base: "700", port: "700", match: true }
+      - { name: "respawntime", base: "90", port: "60 (TurretSpawn.Init default; cfg value not passed)", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "respawntime is 60 (Init default) instead of cfg 90: FusionReactorTurret.Spawn omits the respawnTime argument."
+    verification:
+      - { kind: code-read, ref: "spawnfunc registration + RunThink driver chain", result: pass }
+      - { kind: liveness-trace, ref: "MapObjectsRegistry.cs:216 -> SpawnFuncs.TrySpawn -> TurretSpawnFuncs.Spawn sets e.Think -> SimulationLoop.RunThink invokes it", result: pass }
+    confidence: high
+    notes: "Gameplay spawn + per-frame think + damage/use/death/respawn are live on the real map-entity path (when g_turrets!=0). Only the respawn timer value is off."
+
+  - id: turret-fusionreactor.mutator.validtarget_hook
+    name: "FusionReactor_ValidTarget mutator override hook"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/fusionreactor.qc:turret_fusionreactor_firecheck (MUTATOR_CALLHOOK FusionReactor_ValidTarget)"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The FusionReactor_ValidTarget mutator hook (lets a mutator force-accept/reject a recharge target) is not implemented; no stock Xonotic mutator registers it, so it is presently inert in Base too."
+    verification:
+      - { kind: code-read, ref: "MUTATOR_CALLHOOK in firecheck vs no port hook", result: fail }
+    confidence: medium
+    notes: "Cross-boundary on the port mutator-hook system. No stock content depends on it, so the gameplay impact is currently nil; recorded for completeness."

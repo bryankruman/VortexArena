@@ -1,0 +1,500 @@
+unit: physics-player
+category: physics
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 16
+  worst_gaps:
+    - "The secret movement-input cheat sequence ('xwxwxsxsxaxdxaxdx1x ' decoded from the button mask each tick -> CHIMPULSE_GIVE_ALL) that triggers CHIMPULSE_GIVE_ALL is not implemented (cheat-only, low impact)."
+    - "Footstep cadence differs: Base nextstep = time + 0.3 + random()*0.1 (jittered), the port uses a fixed 0.3s interval with no random component; and the port Footsteps/CheckHitground ignore autocvar_g_footsteps so footsteps cannot be disabled server-side."
+    - "func_water waterlevel-from-volume override (physics.qc:280-299) is NOT computed in LadderMove, and the viewloc 1D-rail sub-cases (ladder wishvel.z = movement_old.x; water wishvel.z = -160 + a separate viewloc accel path) are not ported — inert on stock Xonotic maps but real Base branches."
+    - "sys_phys_fixspeed cl_*speed stuffcmd absent (replaced by client-side wishmove scaling -- intended)."
+    - "g_physics_clientselect non-default presets (CPMA/Warsow/etc.) are wired (Resolve/FromValues/PresetProvider) but have NO golden-trace coverage; only the stock Xonotic preset is verified byte-exact."
+features:
+  - id: physics-player.core.branch_selection
+    name: "PM_Main branch selection (waterjump/PM_Physics-hook/fly/swim/ladder/jetpack/ground/air)"
+    layer: [shared]
+    base_refs:
+      - "ecs/systems/physics.qc:sys_phys_update"
+    port_refs:
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:Move"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "PlayerPhysics.Move branch chain vs physics.qc:98-180 (waterjump -> PM_Physics hook -> noclip/fly/IsFlying -> swim -> ladder -> jetpack -> ground -> air, in order)", result: pass }
+      - { kind: code, ref: "GameInit installs PlayerPhysics; GameWorld.cs:1089/1100 + BotBrain + PredictionBuffer drive Movement.Move", result: pass }
+    confidence: high
+    notes: "Full ordered branch chain reproduced. Conveyor velocity-fix/restore, dead-player early-return (with water-velocity halving + postupdate), PM_Physics hook gated on Count>0, IsFlying hook, postupdate bookkeeping (lastground/conveyor/lastflags/WasSpectatorLastTick) all present. Shared client+server. NOTE: Base SVQC sets this.angles = eY * v_angle.y (yaw-only) at physics.qc:84-85; the port sets the FULL view angles (incl. pitch) on player.Angles in GameWorld.cs:1044 — intended for the port's render aim-pose, and the movement branches read input.ViewAngles not player.Angles, so movement math is unaffected."
+
+  - id: physics-player.ground.friction
+    name: "Ground/edge friction (PHYS_FRICTION_REPLICA_DT geometric form)"
+    layer: [shared]
+    base_refs:
+      - "ecs/systems/physics.qc:sys_phys_simulate"
+    port_refs:
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:GroundMove"
+    constants:
+      - { name: "sv_friction", base: "6", port: "6", match: true }
+      - { name: "sv_friction_slick", base: "0.5", port: "0.5", match: true }
+      - { name: "sv_stopspeed", base: "100", port: "100", match: true }
+      - { name: "PHYS_FRICTION_REPLICA_DT", base: "1/256 (0.00390625)", port: "0.00390625f", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "GroundMove friction block vs physics.qc:424-460 (geometric/linear transition + slick fric select)", result: pass }
+      - { kind: test, ref: "MovementParityTests forward_jump_arc/bunnyhop_chain golden traces", result: pass }
+    confidence: high
+    notes: "k9er's tick-rate-independent geometric friction ((1-friction*dt_r)^(dt/dt_r) with linear sub-stopspeed transition) ported verbatim. Edge-friction TODO in QC is also unimplemented in Base, so parity holds."
+
+  - id: physics-player.ground.accelerate
+    name: "Ground accelerate (simple Quake accel, slick variant)"
+    layer: [shared]
+    base_refs:
+      - "ecs/systems/physics.qc:sys_phys_simulate"
+    port_refs:
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:GroundMove"
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:GroundBranch"
+    constants:
+      - { name: "sv_accelerate", base: "15", port: "15", match: true }
+      - { name: "sv_slickaccelerate", base: "15", port: "15", match: true }
+      - { name: "sv_maxspeed", base: "360", port: "360", match: true }
+      - { name: "ducked wishspeed scale", base: "0.5", port: "0.5", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "GroundMove accel block vs physics.qc:461-470 (addspeed/accelspeed, ONSLICK->slickaccelerate)", result: pass }
+    confidence: high
+    notes: "wishspeed capped to maxspeed, ducked halves it, addspeed = wishspeed - vel·wishdir, accelspeed = min(accel*dt*wishspeed, addspeed). Slick uses sv_slickaccelerate. Matches Base."
+
+  - id: physics-player.air.qw_accelerate
+    name: "Air QW accelerate (PM_Accelerate: airaccel_qw clamp/stretch + sideways friction)"
+    layer: [shared]
+    base_refs:
+      - "common/physics/player.qc:PM_Accelerate"
+    port_refs:
+      - "src/XonoticGodot.Common/Physics/PMAccelerate.cs:Accelerate"
+    constants:
+      - { name: "sv_airaccelerate", base: "2", port: "2", match: true }
+      - { name: "sv_airaccel_qw", base: "-0.8", port: "-0.8", match: true }
+      - { name: "sv_airaccel_qw_stretchfactor", base: "2", port: "2", match: true }
+      - { name: "sv_airaccel_sideways_friction", base: "0", port: "0", match: true }
+      - { name: "sv_airspeedlimit_nonqw", base: "900", port: "900", match: true }
+      - { name: "sv_maxairspeed", base: "360", port: "360", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "PMAccelerate.Accelerate vs player.qc:280-341 (speedclamp, vel_straight/perpend split, AdjustAirAccelQW speedlimit ramp, negative-sidefric braking clamp, speedclamp re-project)", result: pass }
+      - { kind: test, ref: "MovementParityTests strafe_jump_air golden trace", result: pass }
+    confidence: high
+    notes: "1:1 float translation incl. the speedlimit AdjustAirAccelQW ramp and the negative-sidefric 'braking' clamp. GAMEPLAYFIX_Q2AIRACCELERATE exposed but off (Xonotic default), matching Base."
+
+  - id: physics-player.air.strafe_blends
+    name: "Air strafe blends + airstop + airstrafeaccel_qw (GeomLerp/strafity)"
+    layer: [shared]
+    base_refs:
+      - "ecs/systems/physics.qc:sys_phys_simulate"
+    port_refs:
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:AirBranch"
+      - "src/XonoticGodot.Common/Physics/PMAccelerate.cs:GeomLerp"
+    constants:
+      - { name: "sv_airstopaccelerate", base: "3", port: "3", match: true }
+      - { name: "sv_airstopaccelerate_full", base: "0", port: "false", match: true }
+      - { name: "sv_airstrafeaccelerate", base: "18", port: "18", match: true }
+      - { name: "sv_maxairstrafespeed", base: "100", port: "100", match: true }
+      - { name: "sv_airstrafeaccel_qw", base: "-0.95", port: "-0.95", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Air branch does NOT apply maxspeed_mod (physics.qc:169-174 scales com_phys_acc_rate_air/vel_max by min(mod,1) and airstop/strafe by full mod). Inert for live players: only the !IS_PLAYER spectator sets mod != 1, and a spectator ALWAYS takes the fly branch (MOVETYPE_NOCLIP/FLY), never the air branch — so the air maxspeed_mod fold is genuinely unreachable on the live path."
+    verification:
+      - { kind: code, ref: "AirBranch vs physics.qc:309-371 (airstop sinusoidal/full, strafity GeomLerp speed+accel, airstrafeaccel_qw re-stretch, airaccel_qw chosen branch)", result: pass }
+    confidence: high
+    notes: "strafity = IsMoveInDirection(-90)+(+90); GeomLerp blends for max-air-strafe-speed and strafe-accel; airstop sinusoidal slow-down (full variant off). All ported with matching constants. The unreachable maxspeed_mod fold noted as a gap for completeness but does not affect any normal player or spectator."
+
+  - id: physics-player.air.cpm_aircontrol
+    name: "CPM air control (CPM_PM_Aircontrol: curve momentum toward wishdir)"
+    layer: [shared]
+    base_refs:
+      - "common/physics/player.qc:CPM_PM_Aircontrol"
+    port_refs:
+      - "src/XonoticGodot.Common/Physics/PMAccelerate.cs:Aircontrol"
+    constants:
+      - { name: "sv_aircontrol", base: "100", port: "100", match: true }
+      - { name: "sv_aircontrol_power", base: "2", port: "2", match: true }
+      - { name: "sv_aircontrol_penalty", base: "0", port: "0", match: true }
+      - { name: "sv_aircontrol_flags", base: "0", port: "0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "PMAccelerate.Aircontrol vs player.qc:234-268 (movity key-mix, k=2*movity-1, crouch wishspeed bound, dot^power penalty bleed, 32*|aircontrol| redirect)", result: pass }
+    confidence: high
+    notes: "The heart of CPM/Xonotic air movement. Aircontrol_flags branches (backwards/sidewards/crouch BIT0/1/2) ported even though stock flags=0. IEEERemainder used for QC remainder() in IsMoveInDirection."
+
+  - id: physics-player.air.warsowbunny
+    name: "Warsow-bunny air accel (PM_AirAccelerate)"
+    layer: [shared]
+    base_refs:
+      - "common/physics/player.qc:PM_AirAccelerate"
+    port_refs:
+      - "src/XonoticGodot.Common/Physics/PMAccelerate.cs:AirAccelerate"
+    constants:
+      - { name: "sv_warsowbunny_turnaccel", base: "0 (path disabled)", port: "0", match: true }
+      - { name: "sv_warsowbunny_accel", base: "0.1593", port: "0.1593", match: true }
+      - { name: "sv_warsowbunny_topspeed", base: "925", port: "925", match: true }
+      - { name: "sv_warsowbunny_backtosideratio", base: "0.8", port: "0.8", match: true }
+      - { name: "sv_warsowbunny_airforwardaccel", base: "1.00001 (physics.cfg:33 g_physics_xonotic_*)", port: "1.00001f (Defaults)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "PMAccelerate.AirAccelerate vs player.qc:343-375", result: pass }
+      - { kind: value, ref: "physics.cfg:33 sets g_physics_xonotic_warsowbunny_airforwardaccel 1.00001 (ALL presets set 1.00001); port Defaults=1.00001f", result: pass }
+    gaps:
+      - "g_physics_clientselect non-default presets (CPMA/Warsow/etc.) — which is the ONLY way this Warsow-bunny path goes live — are wired (Resolve/FromValues/PresetProvider) but have NO golden-trace coverage; only the stock Xonotic preset is verified byte-exact, so this path's behavior under a real preset is unproven."
+    confidence: high
+    notes: "CORRECTION vs draft: the draft claimed airforwardaccel had no .cfg default (Base reads 0 when unset) and flagged match:false — that was WRONG. physics.cfg sets g_physics_<preset>_warsowbunny_airforwardaccel 1.00001 for EVERY preset incl. xonotic, so the port's 1.00001f is exact (match:true, values:faithful, value-gap removed). DEAD at the stock preset (selected only when sv_warsowbunny_turnaccel != 0, default 0); ported for fidelity with warsow/xdf/cpma presets that set turnaccel — but those presets are not golden-trace-verified."
+
+  - id: physics-player.jump.playerjump
+    name: "PlayerJump (guards, jumpspeedcap, landing friction, jump velocity)"
+    layer: [shared]
+    base_refs:
+      - "common/physics/player.qc:PlayerJump"
+      - "common/physics/player.qc:CheckPlayerJump"
+    port_refs:
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:PlayerJump"
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:CheckPlayerJump"
+    constants:
+      - { name: "sv_jumpvelocity", base: "260", port: "260", match: true }
+      - { name: "sv_jumpvelocity_crouch", base: "0 (use jumpvelocity)", port: "0", match: true }
+      - { name: "sv_jumpspeedcap_min", base: "nan (disabled)", port: "NaN", match: true }
+      - { name: "sv_jumpspeedcap_max", base: "nan (disabled)", port: "NaN", match: true }
+      - { name: "sv_jumpspeedcap_max_disable_on_ramps", base: "1", port: "true", match: true }
+      - { name: "sv_friction_on_land", base: "0", port: "0", match: true }
+      - { name: "sv_track_canjump", base: "0", port: "false", match: true }
+      - { name: "sv_doublejump", base: "0", port: "false", match: true }
+      - { name: "landing-friction airtime threshold", base: "0.3 s", port: "0.3 s", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: partial
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base PlayerJump (SVQC) gates the jump grunt on autocvar_g_jump_grunt and plays it via PlayerSound(playersound_jump) AND calls animdecide_setaction(ANIMACTION_JUMP); the port plays a fixed player/jump.wav (server-only, prediction-gated) UNCONDITIONALLY — no g_jump_grunt gate (stock g_jump_grunt is 0, so Base plays NO jump grunt by default, but the port always does), and does not drive the jump anim-action. AUDIO divergence: the port emits a jump sound where stock Base is silent."
+    verification:
+      - { kind: code, ref: "PlayerJump vs player.qc:386-498 (frozen/typing/water/air guards, PlayerJump hook, speedcap baseline + ramp tracebox, landing friction)", result: pass }
+      - { kind: code, ref: "player.qc:494 `if (autocvar_g_jump_grunt) PlayerSound(...)` — port PlayerPhysics.cs:896-897 plays player/jump.wav with NO g_jump_grunt gate", result: fail }
+      - { kind: test, ref: "MovementParityTests forward_jump_arc/bunnyhop_chain golden traces (jump velocity + ramp speedcap)", result: pass }
+    confidence: high
+    notes: "Water-jump (swimming -> velocity_z = maxspeed*0.7), viewloc water sub-case (doublejump+0.7 mjumpheight+trackJump), jumpspeedcap ramp tracebox, landing friction, PlayerJump mutator hook (multijump/walljump/bloodloss) all ported. Jump-velocity math is byte-faithful. The audio is downgraded to partial: stock g_jump_grunt=0 means Base is silent on a normal jump but the port always plays player/jump.wav (cosmetic but audibly divergent)."
+
+  - id: physics-player.water.swim
+    name: "Swimming (water friction/accel, hold-jump rise, dive, frozen-resurface)"
+    layer: [shared]
+    base_refs:
+      - "ecs/systems/physics.qc:sys_phys_simulate"
+    port_refs:
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:SwimMove"
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:CheckWater"
+    constants:
+      - { name: "water wishspeed scale", base: "0.7", port: "0.7", match: true }
+      - { name: "submerged hold-jump rise", base: "maxspeed*0.7", port: "maxspeed*0.7", match: true }
+      - { name: "shallow hold-jump rise", base: "200", port: "200", match: true }
+      - { name: "QW waterjump-out launch", base: "fwd*50, z=310", port: "fwd*50, z=310", match: true }
+      - { name: "drift-to-bottom speed", base: "-60", port: "-60", match: true }
+      - { name: "viewloc drift speed", base: "-160", port: "(not ported)", match: false }
+      - { name: "frozen resurface (submerged, vz>=-70)", base: "z=160", port: "z=160", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: unknown
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Viewloc (1D-rail) water sub-cases not ported: physics.qc:269-270 sets wishvel.z = -160 when this.viewloc, and physics.qc:408-416 runs a SEPARATE accel path (plain addspeed accel, no PM_Accelerate QW pass) when in a viewloc. The port always runs the non-viewloc path. Inert on stock Xonotic maps (no 1D viewloc rails), so logic:partial not missing."
+      - "Liveness of the swim path on a live water map not behaviorally confirmed this audit (depends on CheckWater correctly setting WaterLevel from map liquid contents — the SUPERCONTENTS bitmasks are mirrored as literals and untested against a real BSP water volume here)."
+    verification:
+      - { kind: code, ref: "SwimMove vs physics.qc:377-422 (water friction 1-dt*friction, 0.7 wishspeed, accel, hold-jump rise, crouch-dive, frozen-resurface) + QW waterjump physics.qc:218-247; CheckWater vs _Movetype_CheckWater", result: pass }
+    confidence: medium
+    notes: "Non-viewloc water physics ported faithfully incl. the QW water-jump-out launch and frozen-resurface. logic downgraded to partial for the unported viewloc sub-cases. liveness:unknown — code reachable from the branch chain but no in-game water-map check was run."
+
+  - id: physics-player.ladder
+    name: "Ladder climb (gravity-free, func_water override)"
+    layer: [shared]
+    base_refs:
+      - "ecs/systems/physics.qc:sys_phys_simulate"
+    port_refs:
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:LadderMove"
+    constants: []
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: unknown
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "func_water waterlevel-from-volume override (physics.qc:280-299: clamp wishvel to ladder_entity.speed, set watertype=skin, compute waterlevel from origin.z+view_ofs.z vs ladder maxs_z) is NOT computed in LadderMove — the port only EARLY-RETURNS from CheckWater for a func_water ladder (PlayerPhysics.cs:949) but never fills the waterlevel/watertype from the volume bounds, so a func_water ladder gives WaterLevelNone."
+      - "Viewloc ladder sub-case (physics.qc:277-278: wishvel.z = movement_old.x) not ported."
+    verification:
+      - { kind: code, ref: "LadderMove vs physics.qc:275-300 + 200-216 (air-friction half-step with com_phys_gravity folded out, full-3D PM_Accelerate)", result: pass }
+      - { kind: code, ref: "func_water waterlevel computation physics.qc:280-299 — absent from LadderMove (CheckWater only skips the probe)", result: fail }
+    confidence: medium
+    notes: "Gravity-free climb via the half-step that cancels the WalkMove gravity. Reachable from the branch chain (player.LadderEntity != null). func_water + viewloc ladder sub-cases unported (rare map features); logic:partial. Not behaviorally tested on a ladder map this audit."
+
+  - id: physics-player.jetpack
+    name: "Jetpack thrust (PM_jetpack closed-form, fuel drain, pauseregen)"
+    layer: [shared]
+    base_refs:
+      - "common/physics/player.qc:PM_jetpack"
+    port_refs:
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:PMJetpack"
+    constants:
+      - { name: "g_jetpack_acceleration_side", base: "1200", port: "1200", match: true }
+      - { name: "g_jetpack_acceleration_up", base: "600", port: "600", match: true }
+      - { name: "g_jetpack_antigravity", base: "0.8", port: "0.8", match: true }
+      - { name: "g_jetpack_maxspeed_side", base: "1500", port: "1500", match: true }
+      - { name: "g_jetpack_maxspeed_up", base: "600", port: "600", match: true }
+      - { name: "g_jetpack_fuel", base: "8 /s", port: "8", match: true }
+      - { name: "g_jetpack_reverse_thrust", base: "0 (off)", port: "0", match: true }
+      - { name: "g_balance_pause_fuel_regen", base: "2", port: "2 (PauseFuelRegen)", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: unknown
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Jetpack tunables are HARDCODED constants in PlayerPhysics (JetpackAccelSide etc.), not read from g_jetpack_* cvars via FromCvars — a server retuning the jetpack won't take effect; the baked values match the stock cfg exactly so it is values:partial not values:missing."
+      - "PM_jetpack maxspd_mod factor (player.qc:742 maxairspd *= max(1, maxspd_mod)) is hardcoded to max(1,1)=1 in the port (PlayerPhysics.cs:670); inert for a normal player (maxspeed_mod==1) but a spectator/high-speed-mod jetpack would diverge — unreachable in practice."
+      - "cl_jetpack_jump is pinned ON / mode-1 semantics (JetpackJumpEnabled const); QC mode 2 (latched thrust between frames) is not modelled."
+    verification:
+      - { kind: code, ref: "PMJetpack vs player.qc:735-840 (unit-sphere closed-form best-accel over a_side/a_up/a_add, fxy/fz caps, fuel TakeResource, pauseregen, reverse-thrust branch)", result: pass }
+    confidence: medium
+    notes: "Closed-form thrust math ported verbatim incl. the reverse-thrust crouch branch. Liveness unknown: reached only when the Jetpack item is held + activated; not behaviorally tested. values:partial because the g_jetpack_* tunables are baked as constants rather than cvar-read."
+
+  - id: physics-player.crouch
+    name: "Crouch hull resize + view offset (PM_ClientMovement_UpdateStatus)"
+    layer: [shared]
+    base_refs:
+      - "common/physics/player.qc:PM_ClientMovement_UpdateStatus"
+    port_refs:
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:UpdateCrouch"
+    constants:
+      - { name: "PL_MIN/PL_MAX (stand)", base: "-16 -16 -24 / 16 16 45 (autocvar_sv_player_*)", port: "-16 -16 -24 / 16 16 45", match: true }
+      - { name: "PL_VIEW_OFS (stand)", base: "0 0 35 (autocvar_sv_player_viewoffset)", port: "0 0 35 (StandViewOfs)", match: true }
+      - { name: "PL_CROUCH_MIN/MAX", base: "-16 -16 -24 / 16 16 25", port: "-16 -16 -24 / 16 16 25", match: true }
+      - { name: "PL_CROUCH_VIEW_OFS", base: "0 0 20", port: "0 0 20 (CrouchViewOfs)", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Viewloc force-crouch (player.qc:192-193: viewloc && !(VIEWLOC_FREEMOVE) && movement.x < 0 => do_crouch=true) is NOT ported."
+      - "have_hook force-uncrouch (player.qc:175-195: a grappling hook held in any weapon slot forces do_crouch=false) is NOT ported — the port models the frozen/dead/PlayerCanCrouch-hook force-false but not the hook or in-vehicle (PHYS_INVEHICLE) force-false sub-cases."
+      - "Q1BSP crouch-disable (PL_CROUCH_MAX.z == PL_MAX.z => do_crouch=false, player.qc:207-208) not modelled (Xonotic maps are Q3BSP, so inert)."
+    verification:
+      - { kind: code, ref: "UpdateCrouch vs PM_ClientMovement_UpdateStatus:170-232 (do_crouch decision, setsize, view_ofs, stand-up tracebox, PlayerCanCrouch hook)", result: pass }
+    confidence: high
+    notes: "Hull values match autocvar_sv_player_* exactly. Stand-up only when the standing hull fits (tracebox). Drives IsDucked which the ground/air branches read for the 0.5 wishspeed halving. PlayerCanCrouch mutator hook (bloodloss) wired. logic:partial for the unported viewloc/hook/in-vehicle force sub-cases (edge cases on stock maps)."
+
+  - id: physics-player.integrator.walkmove_flymove
+    name: "Slide-and-step collision integrator (SV_WalkMove / SV_FlyMove + stair step/down)"
+    layer: [shared]
+    base_refs:
+      - "common/physics/movetypes/walk.qc:_Movetype_Physics_Walk"
+      - "common/physics/movetypes/movetypes.qc:_Movetype_FlyMove"
+    port_refs:
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:WalkMove"
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:FlyMove"
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:PushEntity"
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:ClipVelocity"
+    constants:
+      - { name: "sv_stepheight", base: "31", port: "31", match: true }
+      - { name: "sv_gameplayfix_stepdown", base: "2", port: "2", match: true }
+      - { name: "sv_gameplayfix_stepdown_maxspeed", base: "400", port: "400", match: true }
+      - { name: "MAX_CLIP_PLANES", base: "5", port: "5", match: true }
+      - { name: "STOP_EPSILON (clip snap)", base: "0.1", port: "0.1", match: true }
+      - { name: "onground normal_z threshold", base: "0.7", port: "0.7", match: true }
+      - { name: "GRAVITYUNAFFECTEDBYTICRATE", base: "on (half-step)", port: "on", match: true }
+      - { name: "NOGRAVITYONGROUND", base: "on", port: "on", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "(1) sv_step_upspeed_scale (1) / sv_step_upspeed_max (-1) are a PORT EXTENSION that can scale/cap the upward velocity carried through a step-up; at the stock defaults they are a strict no-op (only act on positive velocity.z > the cap), so stair traversal and the stair_step_up golden trace are byte-identical to Base. (2) NudgeOutOfSolid (DP SV_NudgeOutOfSolid) is added as a desync-prevention recovery gated on sv_gameplayfix_nudgeoutofsolid (DP default ON)."
+    gaps:
+      - "SV_WallFriction (the explicit up/forward step's wall-parallel velocity scale) is a deliberate no-op in BOTH Base (stock QC _Movetype_WallFriction body commented out) and the port — so it matches, but a modded server that un-comments _Movetype_WallFriction would diverge."
+    verification:
+      - { kind: code, ref: "FlyMove/WalkMove vs movetypes.qc _Movetype_FlyMove + walk.qc _Movetype_Physics_Walk (gravity half-step, clip-plane crease, immediate stair up/forward/down, DOWNTRACEONGROUND, gameplayfix_stepdown, stuck-revert)", result: pass }
+      - { kind: test, ref: "MovementParityTests stair_step_up golden trace", result: pass }
+    confidence: high
+    notes: "Gravity half-step (GRAVITYUNAFFECTEDBYTICRATE) with NOGRAVITYONGROUND skip, MAX_CLIP_PLANES crease handling, immediate in-loop stair-step, DOWNTRACEONGROUND floor re-acquire, the up/forward/down stair recovery with stuck-revert, jumpstep guard, and the gameplayfix_stepdown step-down all ported."
+
+  - id: physics-player.movement_sounds
+    name: "Footsteps + landing sounds (PM_Footsteps / PM_check_hitground)"
+    layer: [authority]
+    base_refs:
+      - "common/physics/player.qc:PM_Footsteps"
+      - "common/physics/player.qc:PM_check_hitground"
+    port_refs:
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:Footsteps"
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:CheckHitground"
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:UpdateMovementSounds"
+    constants:
+      - { name: "autocvar_g_footsteps master gate", base: "1 (xonotic-server.cfg:306)", port: "(no gate)", match: false }
+      - { name: "footstep speed threshold", base: "sv_maxspeed*0.6", port: "MaxSpeed*0.6", match: true }
+      - { name: "footstep interval (nextstep)", base: "0.3 + random()*0.1", port: "0.3 (fixed, no random)", match: false }
+      - { name: "footstep grounded-recency gate", base: "time < lastground + 0.2", port: "(replaced by since-last-footstep throttle)", match: false }
+      - { name: "landing nextstep suppression", base: "0.3 + random()*0.1", port: "fixed (LastFootstepTime=now)", match: false }
+      - { name: "ducked footsteps", base: "silent (IS_DUCKED return)", port: "silent", match: true }
+      - { name: "muffled landing while ducked", base: "VOL_MUFFLED", port: "VolMuffled", match: true }
+      - { name: "NOSTEPS/METALSTEPS surface select", base: "Q3SURFACEFLAG_*", port: "Q3SurfaceFlag*", match: true }
+    status:
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: na
+      audio: partial
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port Footsteps/CheckHitground ignore autocvar_g_footsteps — Base returns early when g_footsteps==0 (server-side disable), the port always plays footsteps."
+      - "Footstep cadence differs: Base nextstep = time + 0.3 + random()*0.1 (jittered), the port uses a fixed 0.3s interval with no random component — audibly more regular."
+      - "Base PM_Footsteps gates on `time >= this.lastground + 0.2 return` (only within 0.2s of the last grounded tick) AND the nextstep window `(time > nextstep) || (time < nextstep-10)`; the port uses a since-last-footstep throttle instead. Behaves similarly while continuously grounded but is not a 1:1 reproduction."
+      - "Base also returns from PM_check_hitground when on a ladder or holding an active grappling hook; the port only bails on swimming."
+    verification:
+      - { kind: code, ref: "Footsteps vs player.qc:689-708 (g_footsteps gate, lastground+0.2 gate, maxspeed*0.6 threshold, nextstep jitter)", result: fail }
+      - { kind: code, ref: "CheckHitground vs player.qc:664-687 (wasFlying, swim/ladder/hook bail, nextstep jitter, NOSTEPS/METALSTEPS)", result: fail }
+    confidence: high
+    notes: "NEW ROW (draft had no movement-sound feature). Both footstep and landing sounds ARE produced on the live server tick (UpdateMovementSounds, server-gated and suppressed on prediction replays), so liveness:live and the surface/volume selection is faithful — but the TIMING (fixed interval vs jittered nextstep), the missing g_footsteps master gate, and the ladder/hook bail are divergent, hence logic/values/timing/audio:partial."
+
+  - id: physics-player.spectator_control
+    name: "Spectator free-flight speed ladder (sys_phys_spectator_control)"
+    layer: [authority]
+    base_refs:
+      - "ecs/systems/sv_physics.qc:sys_phys_spectator_control"
+      - "ecs/systems/sv_physics.qc:sys_phys_fixspeed"
+    port_refs:
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:SpectatorControl"
+    constants:
+      - { name: "sv_spectator_speed_multiplier", base: "no inline QC default (autocvar float -> 0 unset; cfg 1.5)", port: "read raw (no fallback)", match: true }
+      - { name: "sv_spectator_speed_multiplier_min", base: "1", port: "1", match: true }
+      - { name: "sv_spectator_speed_multiplier_max", base: "5", port: "5", match: true }
+      - { name: "ladder step", base: "+/-0.5; impulse 1-9 -> 1+0.5*(i-1)", port: "same", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "sys_phys_fixspeed's stuffcmd of cl_forwardspeed/back/side/up is NOT ported; the net input layer instead scales the wishmove against sv_maxspeed so the wishspeed magnitude is reached the same way. The spectator maxspeed_mod factor IS applied (mp.ApplyHighSpeed + Accelerate *= mod + move *= mod) so SPECTATORSPEED still scales fly speed."
+    gaps:
+      - "sys_phys_fixspeed cl_*speed stuffcmd absent (replaced by client-side wishmove scaling — intended)."
+    verification:
+      - { kind: code, ref: "SpectatorControl vs sv_physics.qc:67-103 (impulse ranges 1-19/200-209/220-229, +/-0.5 bound, reset on 11, 1+0.5*(i-1), lastclassname!=STR_PLAYER step gate)", result: pass }
+    confidence: high
+    notes: "The lastclassname-gated step (only steps when already a spectator last tick) is modelled via WasSpectatorLastTick. Observer takes the fly branch (MOVETYPE_NOCLIP/FLY) and SPECTATORSPEED scales both vel_max and accel + the local wishmove. min/max defaults (1/5) match the inline QC defaults; multiplier read raw like QC."
+
+  - id: physics-player.specialcommand
+    name: "PM_check_specialcommand (xwxw... button cheat-code -> give-all)"
+    layer: [authority]
+    base_refs:
+      - "common/physics/player.qc:PM_check_specialcommand"
+      - "common/physics/player.qc:SpecialCommand"
+    port_refs: []
+    constants:
+      - { name: "sequence", base: "\"xwxwxsxsxaxdxaxdx1x \"", port: "n/a", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The secret movement-input cheat sequence (each tick decodes PHYS_INPUT_BUTTON_MASK -> a character, advances a position pointer through 'xwxwxsxsxaxdxaxdx1x ', resets on mismatch) that triggers CHIMPULSE_GIVE_ALL via SpecialCommand (when sv_cheats or maycheat) is not implemented — entering the konami-style code does nothing. Cheat-only, low gameplay impact, but a real Base feature."
+    verification:
+      - { kind: code, ref: "grep specialcommand/xwxwxsxs/Plugh over src/ -> no matches", result: fail }
+    confidence: high
+    notes: "Base decodes the button mask each tick in sys_phys_override -> PM_check_specialcommand and advances specialcommand_pos; completing it runs SpecialCommand -> CheatImpulse(CHIMPULSE_GIVE_ALL). Entirely absent from the port physics path. (sys_phys_override's PlayerPhysplug hook is a separate vehicle/plugin seam, also not on this path.)"

@@ -76,6 +76,43 @@ public sealed class DamageSystem : IDamageSystem
     /// <summary>Guards against the QC <c>Damage()</c> recursing forever through mirror damage (the QC re-enters once).</summary>
     [ThreadStatic] private static bool _inMirror;
 
+    // ===============================================================================================
+    //  Wave-1 "damage-channel" seam surface (the stable contract Wave-2 gameplay code depends on).
+    //
+    //  1. STRING deathtype/hittype channel — <see cref="Apply"/> carries the full string deathtype
+    //     (DeathTypes.* base tag + "|hittype" suffix tokens) end-to-end: monster/turret/vehicle/special
+    //     deaths ride the <c>deathTag</c> override (WeaponSplash.RadiusDamage / Combat.Damage(string)),
+    //     and HITTYPE bits (SPLASH/SECONDARY/BOUNCE/ARMORPIERCE/SOUND/SPAM) ride the suffix tokens.
+    //     The int-keyed weapon path (WeaponFiring.ApplyDamage(int)) maps the weapon id to its NetName tag;
+    //     callers that need a hittype on the int path tag it with <see cref="SplashDeathType"/> /
+    //     <see cref="DeathTypes.WithHitType"/> and pass the resulting STRING to <c>Combat.Damage</c>.
+    //
+    //  2. Per-entity damage/force scaling — <see cref="ApplyKnockback"/> consults the per-entity
+    //     <see cref="Entity.DamageForceScale"/> (0 = immovable; players fall back to g_player_damageforcescale),
+    //     and the gametype possession matrices (Keepaway/TKA ballcarrier, FreezeTag frozen-immunity) +
+    //     the Midair multiplier rewrite damage/force through the <c>Damage_Calculate</c> hook below — there
+    //     is no separate per-entity damage scalar in QC, the hook IS the scaling channel.
+    //
+    //  3. Damage-path mutator hooks — both fire live from this file on every applicable hit:
+    //     <see cref="MutatorHooks.DamageCalculate"/> (Apply, after the global factors / before self-damage,
+    //     in/out damage+mirror+force) and <see cref="MutatorHooks.PlayerDamaged"/> +
+    //     <see cref="GameHooks.PlayerDamageSplitHealthArmor"/> (PlayerDamage, post-subtract).
+    // ===============================================================================================
+
+    /// <summary>
+    /// QC <c>deathtype | HITTYPE_SPLASH</c> (server/damage.qc:917-920): the canonical tagging a
+    /// splash/blast caller applies to an INDIRECT victim's deathtype so the kill-message/effect layer can
+    /// tell a splash kill from a direct hit. RadiusDamage ORs this onto every victim that is NOT the
+    /// <c>directHit</c> entity and whose death is not a special (non-weapon) death; the direct-hit entity
+    /// and special deaths keep the plain tag. Idempotent (see <see cref="DeathTypes.WithHitType"/>). This is
+    /// the seam the (separately-owned) WeaponSplash.RadiusDamage / WeaponFiring.ApplyDamage indirect path
+    /// calls so the HITTYPE_SPLASH bit is set in exactly one place.
+    /// </summary>
+    public static string SplashDeathType(string deathType)
+        => DeathTypes.IsSpecial(deathType)
+            ? deathType                                       // QC: specials keep the plain deathtype
+            : DeathTypes.WithHitType(deathType, DeathTypes.Splash);
+
     public float Apply(in DamageInfo info)
     {
         Entity targ = info.Target;

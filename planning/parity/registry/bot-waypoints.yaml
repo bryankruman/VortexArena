@@ -1,0 +1,501 @@
+unit: bot-waypoints
+category: bot
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 18
+  worst_gaps:
+    - "Static per-waypoint danger bias (.dmg) absent from routing: Base adds each waypoint's dmg to its A*/Dijkstra cost so routes pre-emptively detour around lava/rocket zones; the port routes on pure link cost and only reacts to danger at the last moment via the live per-frame brake (BotDanger)."
+    - "Link travel-cost is not skill-dependent: Base waypoint_getlinearcost divides by sv_maxspeed*1.25 for skill>=bot_ai_bunnyhop_skilloffset (7); the port always uses base speed, so high-skill route costs differ and can change tie-break routes."
+    - "JUMP-source fall-cost variant is NOT implemented in the port's TravelCost: Base adds jumpheight_time + sqrt((height+jumpheight)/(g/2)) for a WAYPOINTFLAG_JUMP source, but the port computes plain sqrt(height/(g/2)) regardless of the fromIsJump flag (the parameter is threaded through but unused in the cost)."
+    - "Runtime auto-waypointing/pruning toward players (botframe_autowaypoints / botframe_deleteuselesswaypoints) and runtime item/teleporter waypoint injection on shipped (.waypoints-bearing) maps are absent: the graph is static after load."
+    - "No steerlib library and no waypoint editor / .waypoints/.cache/.hardwired writers: flocking/swarm/traceavoid/beamsteer primitives are missing and the port is a read-only graph consumer (cannot author or re-save graphs)."
+features:
+  - id: bot-waypoints.graph.node_model
+    name: "Waypoint node + box/point model and flag bits"
+    layer: [authority]
+    base_refs:
+      - "server/bot/default/waypoints.qc:waypoint_spawn"
+      - "server/bot/api.qh:WAYPOINTFLAG_*"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/Waypoint.cs:Waypoint"
+      - "src/XonoticGodot.Server/Bot/Waypoint.cs:WaypointFlags"
+    constants:
+      - { name: "WAYPOINTFLAG_GENERATED", base: "BIT(23)", port: "1<<23", match: true }
+      - { name: "WAYPOINTFLAG_ITEM", base: "BIT(22)", port: "1<<22", match: true }
+      - { name: "WAYPOINTFLAG_TELEPORT", base: "BIT(21)", port: "1<<21", match: true }
+      - { name: "WAYPOINTFLAG_PERSONAL", base: "BIT(19)", port: "1<<19", match: true }
+      - { name: "WAYPOINTFLAG_LADDER", base: "BIT(15)", port: "1<<15", match: true }
+      - { name: "WAYPOINTFLAG_JUMP", base: "BIT(14)", port: "1<<14", match: true }
+      - { name: "WAYPOINTFLAG_CROUCH", base: "BIT(12)", port: "1<<12", match: true }
+      - { name: "WAYPOINTFLAG_SUPPORT", base: "BIT(11)", port: "1<<11", match: true }
+      - { name: "max_links_per_wp", base: "32 (wp00..wp31)", port: "32 (AutoLink cap; uncapped on file load)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "File-load link path (LoadLinks/LoadHardwiredLinks) appends unsorted with no 32-link cap; Base keeps wp00..wp31 sorted by cost and drops the furthest when full. A* tolerates this; route results unaffected unless a node exceeds 32 cache links."
+      - "Box move_out_of_solid / setsize-to-zero collapse of point waypoints (waypoint_spawn) not replicated; the port keeps the parsed mins/maxs verbatim (m1==m2 -> IsBox false). Behaviorally equivalent for navigation."
+    verification:
+      - { kind: code, ref: "Waypoint.cs:WaypointFlags vs api.qh BIT() values (all 8 navigation bits re-read, match)", result: pass }
+    confidence: high
+    notes: "Bit values match Base exactly (re-verified against api.qh). 32 flat fields collapse to one List<WaypointLink>; A* tolerates the unsorted/uncapped adjacency so route results are unaffected."
+
+  - id: bot-waypoints.graph.link_cost
+    name: "Link travel-cost model (linear + fall-time + water/crouch)"
+    layer: [authority]
+    base_refs:
+      - "server/bot/default/waypoints.qc:waypoint_gettravelcost"
+      - "server/bot/default/waypoints.qc:waypoint_getlinearcost"
+      - "server/bot/default/waypoints.qc:waypoint_getlinkcost"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/Waypoint.cs:TravelCost"
+      - "src/XonoticGodot.Server/Bot/Waypoint.cs:LinearCost"
+    constants:
+      - { name: "sv_maxspeed", base: "320", port: "320 (MaxSpeed)", match: true }
+      - { name: "sv_gravity", base: "800", port: "800 (Gravity)", match: true }
+      - { name: "jumpheight_vec.z", base: "~130 (from sv_jumpvelocity 270)", port: "130 (JumpHeight)", match: true }
+      - { name: "bunnyhop speed factor", base: "1.25 if skill>=bot_ai_bunnyhop_skilloffset(7)", port: "always 1.0 (base speed)", match: false }
+      - { name: "underwater speed factor", base: "0.7", port: "0.7 (approximated as whole-segment scale)", match: false }
+      - { name: "crouch speed factor", base: "0.5", port: "0.5 (approximated as whole-segment scale)", match: false }
+      - { name: "JUMP-source fall cost", base: "jumpheight_time + sqrt((height+jh)/(g/2))", port: "plain sqrt(height/(g/2)) (fromIsJump unused)", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Cost is not skill-dependent: Base divides distance by sv_maxspeed*1.25 for skill>=bot_ai_bunnyhop_skilloffset (7); the port always uses base speed, so high-skill path costs differ and can change tie-break route choices."
+      - "JUMP-source fall-cost variant NOT implemented: Base uses jumpheight_time + sqrt((height+jumpheight_vec.z)/(g/2)) when the source has WAYPOINTFLAG_JUMP; the port's TravelCost takes a fromIsJump arg but never uses it in the fall term — it always computes the non-jump sqrt(height/(g/2)). (The draft incorrectly claimed the jump-source variant matched.)"
+      - "Water/crouch endpoints applied as a whole-segment speed multiplier rather than Base's (c + slowcost)/2 half-path average; both-endpoints-submerged/crouched should be the pure underwater/crouched linear cost (Base early-returns it), which the multiplier approximates but does not equal."
+    verification:
+      - { kind: code, ref: "side-by-side TravelCost vs waypoint_gettravelcost:1028-1063 + waypoint_getlinearcost:1010-1026", result: partial }
+    confidence: high
+    notes: "Non-jump fall-time term sqrt(height/(g/2)) with max(flatcost,fallcost) matches. Three real divergences: skill speedup, the unused JUMP-source variant, and the half-path water/crouch math (whole-segment scale, not Base's averaging/early-return)."
+
+  - id: bot-waypoints.graph.autolink
+    name: "Auto-relink (waypoint_think): PVS + distance + bidirectional tracewalk"
+    layer: [authority]
+    base_refs:
+      - "server/bot/default/waypoints.qc:waypoint_think"
+      - "server/bot/default/waypoints.qc:waypoint_schedulerelinkall"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/Waypoint.cs:AutoLink"
+    constants:
+      - { name: "max_link_dist_xy", base: "1050 (100 for crouch<->normal)", port: "1050 (no crouch special-case)", match: false }
+      - { name: "pvs_cull", base: "checkpvs before tracewalk", port: "none", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No PVS cull: Base culls candidate links by checkpvs before tracewalking; the port does distance + tracewalk only (slower, may keep links Base culls)."
+      - "No crouch<->normal short-link special case (Base caps those at 100qu, not 1050qu)."
+      - "Box / JUMP / SUPPORT directional link forbidding not replicated: Base forbids specific outgoing/incoming directions for boxes, JUMP and SUPPORT (waypoints.qc:1212-1237); the port skips teleport/jump/ladder/custom/support sources wholesale instead."
+    verification:
+      - { kind: code, ref: "AutoLink vs waypoint_think:1180-1239 (per-direction tracewalk + forbidding)", result: partial }
+    confidence: medium
+    notes: "Liveness partial: AutoLink only runs when no .waypoints.cache ships (shipped maps load precomputed links and skip it). Tracewalk gate rejects through-wall links so behavior is close despite missing PVS."
+
+  - id: bot-waypoints.file.load_waypoints
+    name: "Load .waypoints node file (waypoint_loadall) with .race fallback"
+    layer: [authority]
+    base_refs:
+      - "server/bot/default/waypoints.qc:waypoint_loadall"
+      - "server/bot/default/waypoints.qc:GET_GAMETYPE_EXTENSION"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/Waypoint.cs:LoadFromText"
+      - "src/XonoticGodot.Server/GameWorld.cs:LoadWaypointNetwork"
+    constants:
+      - { name: "WAYPOINT_VERSION", base: "1.04", port: "parsed (not enforced)", match: false }
+      - { name: "gametype_extension", base: ".race in Race else \"\"", port: ".race in Race else \"\"", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Symmetry header parsed but unused (no editor to mirror with); WAYPOINT_VERSION parsed but not gated/warned on."
+    verification:
+      - { kind: code, ref: "LoadFromText triple parse + .race fallback in GameWorld.LoadWaypointNetwork:2472", result: pass }
+    confidence: high
+    notes: "Quoted-vector parsing (vtos single-quoted, leading-space components) handled correctly per TryParseVec; this was a real prior bug that zeroed the graph."
+
+  - id: bot-waypoints.file.load_links
+    name: "Load .waypoints.cache precompiled links (waypoint_load_links)"
+    layer: [authority]
+    base_refs:
+      - "server/bot/default/waypoints.qc:waypoint_load_links"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/Waypoint.cs:LoadLinks"
+    constants:
+      - { name: "endpoint_match_radius", base: "1 unit (findradius 1)", port: "1 unit (spatial-hash FindAt)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No version/time gating against the .waypoints file (Base discards a stale cache and triggers schedulerelinkall); the port loads whatever cache it's given."
+    verification:
+      - { kind: code, ref: "LoadLinks from*to parse + FindAt(1u) spatial hash", result: pass }
+    confidence: high
+    notes: "Spatial-hash FindAt within 1u replaces Base findradius; this is the path that lets shipped maps skip the O(N^2) AutoLink tracewalk."
+
+  - id: bot-waypoints.file.load_hardwired
+    name: "Load .waypoints.hardwired map-maker links (waypoint_load_hardwiredlinks)"
+    layer: [authority]
+    base_refs:
+      - "server/bot/default/waypoints.qc:waypoint_load_hardwiredlinks"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/Waypoint.cs:LoadHardwiredLinks"
+    constants:
+      - { name: "endpoint_match_radius", base: "5 units (findradius 5)", port: "5 units", match: true }
+      - { name: "special_link_marker", base: "leading '*'", port: "leading '*' (stripped, still loaded)", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Hardwired links are marked with the CustomJp flag as a stand-in (no dedicated wphwXX mirror / hardwired concept), so links cannot be identified for save/round-trip; the special-link '*'-prefix is loaded the same as a normal link rather than getting Base's special-link source-type filter."
+    verification:
+      - { kind: code, ref: "LoadHardwiredLinks comment/* handling + FindAt(5u)", result: pass }
+    confidence: medium
+    notes: "Read path is faithful; the marker semantics only matter for re-export, which the port doesn't do."
+
+  - id: bot-waypoints.file.save
+    name: "Save .waypoints/.cache/.hardwired writers (waypoint_saveall/_save_links/_save_hardwiredlinks)"
+    layer: [authority]
+    base_refs:
+      - "server/bot/default/waypoints.qc:waypoint_saveall"
+      - "server/bot/default/waypoints.qc:waypoint_save_links"
+      - "server/bot/default/waypoints.qc:waypoint_save_hardwiredlinks"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port is a read-only consumer: no .waypoints/.cache/.hardwired file writers, so authored graphs cannot be saved or round-tripped."
+    verification:
+      - { kind: code, ref: "no save symbol in Waypoint.cs / Server.Bot (grep)", result: pass }
+    confidence: high
+    notes: "Acceptable for a player-facing port (maps ship pre-authored files); flagged as missing dev tooling."
+
+  - id: bot-waypoints.auto.spawnforitem
+    name: "Auto item/spawn waypoints (waypoint_spawnforitem)"
+    layer: [authority]
+    base_refs:
+      - "server/bot/default/waypoints.qc:waypoint_spawnforitem"
+      - "server/bot/default/waypoints.qc:waypoint_spawnforitem_force"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/Waypoint.cs:GenerateFromEntities"
+    constants:
+      - { name: "bot_waypoints_for_items", base: "= g_waypoints_for_items cvar gate", port: "implicit (always generates on items)", match: false }
+      - { name: "floor_snap", base: "waypoint_fixorigin tracedown + item absmin.z - PL_MIN.z", port: "fixed +24 z offset", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Only runs in the no-.waypoints-file auto-generate path; on maps that ship a .waypoints file the port does NOT inject runtime item/teleporter waypoints (Base always does waypoint_spawnforitem at item spawn, snapping to the item)."
+      - "bot_waypoints_for_items (= g_waypoints_for_items) gate not honored; floor-snapping uses a fixed +24 z offset rather than Base's waypoint_fixorigin tracedown."
+    verification:
+      - { kind: code, ref: "GenerateFromEntities item/spawn branch; ForMap only auto-generates when no file", result: partial }
+    confidence: medium
+    notes: "Bots on shipped maps rely on the authored item waypoints baked into the .waypoints file, so the missing runtime item waypoints mostly affect file-less maps."
+
+  - id: bot-waypoints.auto.spawnforteleporter
+    name: "Auto teleporter/jumppad/warpzone waypoints (waypoint_spawnforteleporter/_wz)"
+    layer: [authority]
+    base_refs:
+      - "server/bot/default/waypoints.qc:waypoint_spawnforteleporter"
+      - "server/bot/default/waypoints.qc:waypoint_spawnforteleporter_wz"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/Waypoint.cs:GenerateFromEntities"
+    constants: []
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No warpzone-angle math (Base makevectors(warpzone_angles) src/dest projection) and no oblique-warpzone JUMP flag; jumppad push-time cost is approximated (Base uses trigger_push_get_push_time / the auto-link cost), the port uses the plain travel cost."
+      - "Generated-graph path only; shipped maps use authored teleport waypoints from the file."
+    verification:
+      - { kind: code, ref: "GenerateFromEntities teleport/jumppad box branch vs waypoint_spawnforteleporter_wz:2030-2049", result: partial }
+    confidence: medium
+    notes: "Creates a Generated|Teleport box with one-way link to destination, matching the core shape; warpzone specifics missing."
+
+  - id: bot-waypoints.path.findnearest
+    name: "Nearest-waypoint query (navigation_findnearestwaypoint)"
+    layer: [authority]
+    base_refs:
+      - "server/bot/default/navigation.qc:navigation_findnearestwaypoint"
+      - "server/bot/default/navigation.qc:navigation_findnearestwaypoint_withdist_except"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/Waypoint.cs:Nearest"
+    constants:
+      - { name: "search_dist", base: "1050 (bestdist)", port: "1050 (maxDist)", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No jumppad-fallback (Base returns a reachable jumppad's nearest waypoint when no plain waypoint is reachable); no walkfromwp (walk-TO vs walk-FROM) direction distinction in the reachability tracewalk."
+    verification:
+      - { kind: code, ref: "Nearest box-contains then nearest-reachable tracewalk vs navigation_findnearestwaypoint", result: pass }
+    confidence: high
+    notes: "Box-contains short-circuit + nearest-first reachable scan match the QC intent; the reachability gate uses BotTracewalk like QC's tracewalk."
+
+  - id: bot-waypoints.path.markroutes
+    name: "Shortest-path search over the graph (navigation_markroutes Dijkstra flood) + danger bias"
+    layer: [authority]
+    base_refs:
+      - "server/bot/default/navigation.qc:navigation_markroutes"
+      - "server/bot/default/navigation.qc:navigation_markroutes_checkwaypoint"
+      - "server/bot/default/navigation.qc:navigation_markroutes_nearestwaypoints"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/Waypoint.cs:FindPath"
+    constants:
+      - { name: "nearest_seed_increment_onground", base: "750 (max 50000)", port: "n/a (A* from single Nearest node)", match: false }
+      - { name: "nearest_seed_increment_air", base: "500 (max 1500)", port: "n/a", match: false }
+      - { name: "per_waypoint_danger_bias", base: "+ wp.dmg added to wpcost per node", port: "none (pure link cost)", match: false }
+      - { name: "unwalkable_link_cost", base: "999 sentinel skipped", port: "999 sentinel skipped (link.Cost >= 999)", match: true }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Port uses A* between the two nearest nodes (start, goal) instead of Base's single-source Dijkstra flood with per-edict scratch state. Both yield an optimal least-cost path over the cost terms both implement; the port re-plans per goal so it doesn't need Base's all-pairs flood, and keeping cost/back-pointer state out of the immutable node lets one WaypointNetwork be shared across all bots. The algorithm-shape change is intentional; the missing .dmg danger term and skill-cost term (gaps) are NOT part of the intended divergence and must be re-added on top."
+    gaps:
+      - "No per-waypoint danger bias: Base adds each waypoint's .dmg (set by botframe_updatedangerousobjects, navigation.qc:1134-1165 cost2 = cost + wp.dmg) so routes statically detour around lava/rockets; the port's A* uses pure link cost and routes through danger-marked waypoints. (Mitigated at runtime by the live per-frame BotDanger brake — see bot-waypoints.steer.checkdanger — but the bot still picks the dangerous route then brakes/aborts rather than routing around it.)"
+      - "No expanding multi-seed nearest search (Base seeds several near waypoints with radius growth on-ground 750/max 50000, air 500/max 1500); the port routes from the single Nearest node."
+    verification:
+      - { kind: code, ref: "FindPath A* vs navigation_markroutes:1080-1167 (wp.dmg per-node bias) + nearestwaypoints:1106-1120 seed growth", result: partial }
+    confidence: high
+    notes: "The A* shape is an intended-equivalent design change; the missing .dmg danger term and the single-seed start are genuine gaps layered on top. .dmg is purely runtime (botframe_updatedangerousobjects), so the gap affects live-combat detours, not static authored routing."
+
+  - id: bot-waypoints.path.routetogoal
+    name: "Route building onto the goal stack (navigation_routetogoal + goalstack)"
+    layer: [authority]
+    base_refs:
+      - "server/bot/default/navigation.qc:navigation_routetogoal"
+      - "server/bot/default/navigation.qc:navigation_pushroute"
+      - "server/bot/default/navigation.qc:navigation_poproute"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/BotNavigation.cs:SetGoal"
+      - "src/XonoticGodot.Server/Bot/BotNavigation.cs:PushRoute"
+      - "src/XonoticGodot.Server/Bot/BotNavigation.cs:PopRoute"
+    constants:
+      - { name: "goalstack_depth", base: "32 (goalcurrent + goalstack01..31)", port: "32 (MaxGoals)", match: true }
+      - { name: "strategyinterval_movingtarget", base: "5.5", port: "n/a (moving-target shortcut absent)", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Teleport-goal forcing (push wp00 destination, set goalentity), dynamic/moving-target shortcut (bot_ai_strategyinterval_movingtarget 5.5) and the item incoming-link walkability cache are simplified/absent; the port pushes the A* node chain + goal directly."
+    verification:
+      - { kind: code, ref: "SetGoal early-out tracewalk + reverse path push vs routetogoal", result: pass }
+    confidence: high
+    notes: "Stack structure, direct-reachable early-out (CanWalkStraight via BotTracewalk), and front-to-back ordering match QC; the per-goal-type optimizations are the simplification."
+
+  - id: bot-waypoints.steer.movetogoal
+    name: "Steering / path follow (havocbot_movetogoal: jump/crouch/ladder/obstacle/brake/bunnyhop)"
+    layer: [authority]
+    base_refs:
+      - "server/bot/default/havocbot/havocbot.qc:havocbot_movetogoal"
+      - "server/bot/default/havocbot/havocbot.qc:havocbot_checkgoaldistance"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/BotNavigation.cs:Steer"
+      - "src/XonoticGodot.Server/Bot/BotNavigation.cs:CheckGoalProgress"
+    constants:
+      - { name: "bot_ai_ignoregoal_timeout", base: "3", port: "3 (cvar)", match: true }
+      - { name: "stepheight", base: "stepheightvec.z (~34)", port: "34 (StepHeight)", match: true }
+      - { name: "jumpstepheight", base: "jumpstepheightvec.z (~48)", port: "48 (JumpStepHeight)", match: true }
+      - { name: "checkgoaldistance_timeout", base: "0.5 s", port: "0.5 s", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Obstacle avoidance is a single forward step/jump-height tracebox probe rather than Base's steerlib trident/funnel sweep (see bot-waypoints.steer.steerlib); lateral evade is folded into a straight -velocity brake (BotBrain do_break), a documented simplification of Base's AI_STATUS_DANGER_AHEAD sidestep."
+    verification:
+      - { kind: code, ref: "Steer jump/crouch/ladder/brake blocks + CheckGoalProgress vs havocbot_movetogoal / havocbot_checkgoaldistance", result: pass }
+    confidence: high
+    notes: "Jump/crouch/ladder traversal and the no-progress watchdog (0.5s, 10qu shrink, 20 floor) are faithful ports with matching constants. The bunnyhop and danger-probe sub-features are split out into their own rows."
+
+  - id: bot-waypoints.steer.bunnyhop
+    name: "Bunnyhop maintenance (havocbot_bunnyhop)"
+    layer: [authority]
+    base_refs:
+      - "server/bot/default/havocbot/havocbot.qc:havocbot_bunnyhop"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/BotNavigation.cs:Bunnyhop"
+    constants:
+      - { name: "bot_ai_bunnyhop_skilloffset", base: "7", port: "7 (cvar)", match: true }
+      - { name: "bot_ai_bunnyhop_dir_deviation_max", base: "20", port: "20 (cvar)", match: true }
+      - { name: "jump_distance_formula", base: "52.661 + 0.606*vel + dz", port: "52.661 + 0.606*vel + dz", match: true }
+      - { name: "skill_term", base: "skill + bot_moveskill >= skilloffset", port: "Skill >= skilloffset (no per-bot moveskill)", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Skill gate uses Skill alone; Base adds per-bot bot_moveskill (skill + bot_moveskill >= skilloffset, havocbot.qc:1315), so a bot near the threshold may bunnyhop differently."
+      - "Base forbids bunnyhop when evadedanger || do_break is set this frame; the port computes Bunnyhop inside Steer before the BotBrain danger brake runs, so a braking bot can still have WantJump set from bunnyhop."
+    verification:
+      - { kind: code, ref: "Bunnyhop gating (skill/attack/onground/crouch/water/deviation/jump-distance) vs havocbot_bunnyhop:1315", result: pass }
+    confidence: high
+    notes: "Core gating (attack/onground/crouch/water/deviation cone/jump-distance-vs-remaining) and the jump-distance formula are faithful with matching constants; the moveskill term and the danger suppression are the two divergences."
+
+  - id: bot-waypoints.steer.checkdanger
+    name: "Per-frame danger probe (havocbot_checkdanger: void/cliff/lava/trigger_hurt)"
+    layer: [authority]
+    base_refs:
+      - "server/bot/default/havocbot/havocbot.qc:havocbot_checkdanger"
+      - "server/bot/default/havocbot/havocbot.qc:havocbot_movetogoal (danger handling block)"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/BotDanger.cs:CheckDanger"
+      - "src/XonoticGodot.Server/Bot/BotDanger.cs:HitsTriggerHurt"
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:Think (danger block ~282-320)"
+    constants:
+      - { name: "down_probe", base: "3000 (dst_ahead - '0 0 3000')", port: "3000 (DownProbe)", match: true }
+      - { name: "cliff_drop", base: "min(feet, goal.z) - 100", port: "min(feetZ, goalZ) - 100", match: true }
+      - { name: "Q3SURFACEFLAG_SKY", base: "0x4", port: "0x4", match: true }
+      - { name: "bot_ai_ignoregoal_timeout", base: "3 (unreachable-goal ignore)", port: "3 (cvar)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "trigger_hurt detection is a single swept-AABB overlap of the fall column against each trigger_hurt's box rather than Base's traceline-then-tracebox two-step (same accept set per the port's note, but no antilag/per-frame box tightening)."
+      - "When danger is detected the response is a -velocity brake + (for player/high-goal cases) clearroute+ignoregoal; Base's lateral AI_STATUS_DANGER_AHEAD sidestep evade vector is not reproduced (folded into the straight brake)."
+    verification:
+      - { kind: code, ref: "BotDanger.CheckDanger 5-way classify (0 safe / 1 sky / 2 cliff / 3 lava-slime / 4 trigger_hurt) vs havocbot_checkdanger:401-444; wired at BotBrain.cs:291", result: pass }
+    confidence: high
+    notes: "NEW ROW the draft omitted entirely. This is a faithful, LIVE port of havocbot_checkdanger: eye->ahead traceline, 3000qu down-trace, sky/cliff/lava-slime/trigger_hurt classification with matching constants. The draft wrongly characterized danger handling as merely 'a straight -velocity brake' — the real-time hazard classification exists and is wired (BotBrain.cs:291). (The STATIC route-cost .dmg bias is still missing — see bot-waypoints.path.markroutes.)"
+
+  - id: bot-waypoints.steer.steerlib
+    name: "steerlib primitives (arrive/attract/repel/flock/swarm/traceavoid/beamsteer/wander)"
+    layer: [authority]
+    base_refs:
+      - "server/steerlib.qc:steerlib_flock"
+      - "server/steerlib.qc:steerlib_traceavoid"
+      - "server/steerlib.qc:steerlib_beamsteer"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No steerlib library: flocking/swarm/traceavoid/beamsteer primitives absent (group flocking, the trident/funnel traceavoid obstacle steering, and beamsteer). Bots do not flock and use the simpler single-probe avoidance in Steer + the BotDanger fall probe."
+    verification:
+      - { kind: code, ref: "no steerlib symbols in Server.Bot; Steer hand-rolls a subset (grep)", result: pass }
+    confidence: high
+    notes: "Base steerlib is used mostly by monsters/vehicles/turrets and some bot avoidance; the bot path here folds in only pull + brake + the BotDanger probe."
+
+  - id: bot-waypoints.editor
+    name: "Waypoint editor (spawn/remove from editor, symmetry, hardwire, autowaypoints)"
+    layer: [authority]
+    base_refs:
+      - "server/bot/default/waypoints.qc:waypoint_spawn_fromeditor"
+      - "server/bot/default/waypoints.qc:botframe_autowaypoints"
+      - "server/bot/default/waypoints.qc:botframe_deleteuselesswaypoints"
+      - "server/bot/default/waypoints.qc:waypoint_getSymmetricalPoint"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No in-game waypoint editor: cannot place/remove/hardwire/mirror waypoints (g_waypointeditor*); no editor visualization (waypoint model, link lightning beams, colormod by flag)."
+      - "No runtime auto-waypointing toward players (botframe_autowaypoints) or useless-waypoint pruning (botframe_deleteuselesswaypoints): the loaded graph is static."
+    verification:
+      - { kind: code, ref: "no editor/symmetry/autowaypoint symbols in Server.Bot; BotPopulation.cs:190 explicitly notes botframe_updatedangerousobjects unported", result: pass }
+    confidence: high
+    notes: "Dev authoring tooling; not required for players to use bots on shipped maps. Symmetry header is parsed (LoadFromText) but there is no editor to consume it."

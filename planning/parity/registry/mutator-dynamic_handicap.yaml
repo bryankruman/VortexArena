@@ -1,0 +1,238 @@
+unit: mutator-dynamic_handicap
+category: mutator
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 8
+  worst_gaps:
+    - "Handicap recomputes on only 2 events (PlayerSpawn, PlayerDies) vs Base's 4 functional hooks; the AddedPlayerScore(SP_SCORE) post-write hook has no port equivalent (port only has the pre-write AddPlayerScoreHook), so caps/objective/non-kill score gains do not re-handicap until the next spawn or death."
+    - "ClientDisconnect and MakePlayerObserver do not trigger a recompute (no such hooks exist in MutatorHooks), so the mean stays stale after a player leaves or switches to spectator."
+    - "HANDICAP_DISABLED() gate dropped: the port would run dynamic handicap in CTS/RACE if the cvar is set, where Base hard-disables it."
+    - "handicap_level is never computed/networked (no symbol anywhere in port), so the scoreboard player_handicap icon has no data (Base colors it by level)."
+    - "BuildMutatorsString/PrettyString entries (\":handicap\" / \", Dynamic handicap\") absent: active dynamic_handicap is not advertised in the server mutator list."
+features:
+  - id: dynamic_handicap.compute.update_handicap
+    name: "Per-player forced-handicap computation from mean SP_SCORE"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/dynamic_handicap/sv_dynamic_handicap.qc:DynamicHandicap_UpdateHandicap"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DynamicHandicapMutator.cs:UpdateHandicap"
+    constants:
+      - { name: "g_dynamic_handicap_scale", base: "0.2", port: "0.2 (read from cvar in Hook; C# field initializer is 1 but overwritten)", match: true }
+      - { name: "g_dynamic_handicap_exponent", base: "1", port: "1", match: true }
+      - { name: "formula", base: "h=|(score-mean)*scale|^exp; sign by below-mean; >=0 -> +1 else 1/(|h|+1)", port: "identical", match: true }
+      - { name: "mean_pool", base: "FOREACH_CLIENT(IS_PLAYER) for mean; FOREACH_CLIENT(true) for apply", port: "FindByClass(player)+Client flag for BOTH mean and apply", match: false }
+      - { name: "score_type", base: "PlayerScore_Get -> float (stored in float field)", port: "GameScores.Get -> int", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Apply pass: Base sets a handicap on EVERY connected client (FOREACH_CLIENT(true), incl. observers); port iterates players only. Harmless functionally (observers take no damage) but a behavioral diff if an observer's stored handicap is ever read."
+      - "Score representation: Base scores are float-typed (PlayerScore_Get), port GameScores.Get returns int. Equivalent in normal play (score deltas are integers), but a fractional Base score would differ."
+    verification:
+      - { kind: read, ref: "sv_dynamic_handicap.qc:32-67 vs DynamicHandicapMutator.cs:74-104 (formula/sign/fold line-by-line)", result: pass }
+      - { kind: read, ref: "mean = float totalScore / int totalPlayers -> C# float division, matches QC", result: pass }
+      - { kind: test, ref: "MutatorBatchT51Tests.DynamicHandicap_HandicapsAboveMeanPlayer (scale 0.1, strong score 100>weak 0 => strong give>1, weak give<1)", result: pass }
+    confidence: high
+    notes: "Formula, sign rule, fold and the +1 / 1/(|h|+1) branches all match Base exactly. Cvars read into fields in Hook() (the =1 initializers are overwritten). Test exercises UpdateHandicap() directly, not the live trigger path."
+
+  - id: dynamic_handicap.compute.clamp
+    name: "Handicap clamp to [min, max] with Base's conditional bounds"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/dynamic_handicap/sv_dynamic_handicap.qc:DynamicHandicap_ClampHandicap"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DynamicHandicapMutator.cs:ClampHandicap"
+    constants:
+      - { name: "g_dynamic_handicap_min", base: "0", port: "0", match: true }
+      - { name: "g_dynamic_handicap_max", base: "0", port: "0", match: true }
+      - { name: "min_active_when", base: "min >= 0", port: "min >= 0", match: true }
+      - { name: "max_active_when", base: "max > 0", port: "max > 0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: read, ref: "sv_dynamic_handicap.qc:69-82 vs DynamicHandicapMutator.cs:107-112", result: pass }
+    confidence: high
+    notes: "Default min 0 floors at 0 (active); default max 0 is inert (max only applies when >0). Both conditions ported verbatim."
+
+  - id: dynamic_handicap.apply.damage_scaling
+    name: "Forced handicap scales dealt/taken damage in the damage pipeline"
+    layer: [authority]
+    base_refs:
+      - "server/player.qc:243-249"
+      - "server/handicap.qc:Handicap_GetTotalHandicap"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:PlayerDamage(342-349)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:HandicapTotal(783-789)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageEntityState.cs:HandicapGive,HandicapTake"
+    constants:
+      - { name: "gate", base: "!DEATH_ISSPECIAL(deathtype)", port: "!DeathTypes.IsSpecial(deathType)", match: true }
+      - { name: "victim_scale", base: "damage *= GetTotalHandicap(this,true)", port: "damage *= HandicapTotal(targ,true)", match: true }
+      - { name: "attacker_scale", base: "if (this != attacker && IS_PLAYER(attacker)) damage /= GetTotalHandicap(attacker,false)", port: "if (attacker!=null && !ref-eq && IsPlayer(attacker)) damage /= give (guarded give!=0)", match: true }
+      - { name: "default_handicap", base: "1 (disabled / value<=0 guard)", port: "1 (v<=0 -> 1)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port folds Base's forced x voluntary (cl_handicap) split into the single HandicapGive/HandicapTake fields; there is NO voluntary cl_handicap layer at all. Equivalent for THIS mutator (voluntary defaults to 1), but a separate gap for the broader handicap system."
+    verification:
+      - { kind: read, ref: "DamageSystem.cs:342-349 vs player.qc:243-249 (gate, victim *=, attacker /= with this!=attacker && IS_PLAYER) — exact", result: pass }
+      - { kind: read, ref: "HandicapTotal: non-client -> 1; v<=0 -> 1 (DamageSystem.cs:783-789)", result: pass }
+    confidence: high
+    notes: "Attacker-side branch matches Base verbatim including the IS_PLAYER(attacker) guard. The give!=0 guard in the port is dead in practice (HandicapTotal never returns 0)."
+
+  - id: dynamic_handicap.enable.predicate
+    name: "Mutator enable: g_dynamic_handicap AND not CTS/RACE"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/dynamic_handicap/sv_dynamic_handicap.qc:86"
+      - "server/handicap.qh:57 (HANDICAP_DISABLED)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DynamicHandicapMutator.cs:IsEnabled"
+    constants:
+      - { name: "g_dynamic_handicap", base: "0", port: "0", match: true }
+      - { name: "HANDICAP_DISABLED gate", base: "IS_GAMETYPE(CTS) || IS_GAMETYPE(RACE)", port: "absent (cvar only)", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "HANDICAP_DISABLED() gate dropped: in CTS or RACE the port would activate dynamic handicap if g_dynamic_handicap is set, whereas Base hard-disables all handicap (and this mutator) in those gametypes (handicap.qh:57)."
+    verification:
+      - { kind: read, ref: "DynamicHandicapMutator.cs:42-43 (cvar only, no gametype guard) vs sv_dynamic_handicap.qc:86 + handicap.qh:57", result: fail }
+    confidence: high
+    notes: "Code comment mislabels HANDICAP_DISABLED as 'a sv_cheats/forced-handicap-lock gate' — it is actually the CTS/RACE gametype gate. Low practical impact (handicap rarely run in race) but a real behavioral diff."
+
+  - id: dynamic_handicap.triggers.recompute
+    name: "Recompute on roster/score change (4 functional hooks in Base)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/dynamic_handicap/sv_dynamic_handicap.qc:98-120 (ClientDisconnect, PutClientInServer, MakePlayerObserver, AddedPlayerScore)"
+      - "server/scores.qc:377 (MUTATOR_CALLHOOK(AddedPlayerScore) — post-write event)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DynamicHandicapMutator.cs:OnPlayerSpawn,OnPlayerDies"
+      - "src/XonoticGodot.Server/ClientManager.cs:542 (PlayerSpawn.Call — live)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:552 (PlayerDies.Call — live)"
+    constants:
+      - { name: "trigger_count", base: "4 functional (ClientDisconnect, PutClientInServer, MakePlayerObserver, AddedPlayerScore=SP_SCORE)", port: "2 (PlayerSpawn, PlayerDies)", match: false }
+    status:
+      logic: partial
+      values: na
+      timing: partial
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Missing AddedPlayerScore(SP_SCORE) recompute: Base fires the POST-write AddedPlayerScore hook (scores.qc:377) on every SP_SCORE delta; the port's GameScores.AddToPlayer fires only the PRE-write AddPlayerScoreHook (veto/rewrite) and NO post-write event — so caps, objective points, KH/Dom/CTF scoring and any non-death score change do not re-handicap until the player's next spawn or death."
+      - "ClientDisconnect does not recompute: no ClientDisconnect hook exists in MutatorHooks, so the mean stays stale (still counting the departed player) until someone else spawns or dies."
+      - "MakePlayerObserver does not recompute: no MakePlayerObserver hook exists, so switching to spectator does not re-balance the remaining players until the next spawn/death."
+    verification:
+      - { kind: read, ref: "MutatorHooks.cs has NO AddedPlayerScore/ClientDisconnect/MakePlayerObserver/PutClientInServer chains; mutator subscribes only PlayerSpawn/PlayerDies", result: fail }
+      - { kind: read, ref: "GameScores.AddToPlayer (GameScores.cs:409-428) fires only the pre-write AddPlayerScoreHook; no post-write recompute", result: fail }
+      - { kind: read, ref: "PlayerSpawn.Call live ClientManager.cs:542; PlayerDies.Call live DamageSystem.cs:552", result: pass }
+    confidence: high
+    notes: "PlayerSpawn ~= PutClientInServer (faithful). PlayerDies partially covers frag scoring (a kill is a death). The other 2 Base roster hooks and the AddedPlayerScore score-delta hook have no port hook chain at all. Base's AddedPlayerScore (post-write) is a DISTINCT event from AddPlayerScore (pre-write); the port only ported the latter."
+
+  - id: dynamic_handicap.apply.invalid_value_guard
+    name: "Handicap_SetForcedHandicap value<=0 error guard"
+    layer: [authority]
+    base_refs:
+      - "server/handicap.qc:81-94 (Handicap_SetForcedHandicap: error() if value <= 0)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:HandicapTotal(787-788)"
+    constants:
+      - { name: "on_value<=0", base: "error() — hard fault", port: "treated as 1 (HandicapTotal: v<=0 -> 1f)", match: false }
+    status:
+      logic: partial
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port does not error on a non-positive forced handicap; it silently treats v<=0 as 1 at read time (HandicapTotal). Base would error() (server fault) on a <=0 SetForcedHandicap. Unreachable in practice: the +1 / 1/(|h|+1) fold keeps dynamic-handicap values strictly positive, and the default min clamp of 0 is never actually hit. Captured as a behavioral divergence, not a live bug."
+    verification:
+      - { kind: read, ref: "handicap.qc:85 error() vs DamageSystem.cs:788 v<=0 -> 1f", result: fail }
+    confidence: high
+    notes: "Effectively a benign hardening difference — the port is MORE tolerant. No row in the draft covered this; added for completeness."
+
+  - id: dynamic_handicap.present.handicap_level
+    name: "handicap_level int networked to client for scoreboard icon color"
+    layer: [authority, presentation]
+    base_refs:
+      - "server/handicap.qc:Handicap_UpdateHandicapLevel(104-115)"
+      - "server/handicap.qh:60-66 (.handicap_level, HANDICAP_MAX_LEVEL_EQUIVALENT=2.0, range 0..16)"
+    port_refs: []
+    constants:
+      - { name: "HANDICAP_MAX_LEVEL_EQUIVALENT", base: "2.0", port: "none", match: false }
+      - { name: "level_range", base: "0..16 via floor(map_bound_ranges((take+give)/2, 1, 2.0, 0, 16))", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port never computes or networks handicap_level (no handicap_level/handicapLevel symbol anywhere in src/ or game/), so the scoreboard's player_handicap icon has no data and is never colored by handicap strength. Base updates it inside Handicap_SetForcedHandicap and replicates it to clients."
+    verification:
+      - { kind: grep, ref: "no handicap_level / handicapLevel symbol anywhere in port src/ or game/", result: fail }
+    confidence: high
+    notes: "Cosmetic. No scoreboard handicap-icon consumer exists in the port today either, so end-to-end the gap is invisible until that icon is added."
+
+  - id: dynamic_handicap.present.mutator_string
+    name: "BuildMutatorsString / BuildMutatorsPrettyString entries"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/dynamic_handicap/sv_dynamic_handicap.qc:88-96"
+    port_refs: []
+    constants:
+      - { name: "string_token", base: '":handicap"', port: "none", match: false }
+      - { name: "pretty_token", base: '", Dynamic handicap"', port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Active dynamic_handicap is not advertised in the server's mutator list string / pretty string, so server browsers and the scoreboard mutator line will not show it. The port has a BuildMutatorsString hook concept (used by RocketFlyingMutator) but dynamic_handicap does not subscribe it."
+    verification:
+      - { kind: grep, ref: "no BuildMutatorsString/Pretty :handicap token in port; DynamicHandicapMutator does not subscribe BuildMutatorsString", result: fail }
+    confidence: medium
+    notes: "Cosmetic server-list metadata. The BuildMutatorsString hook chain exists in the port (RocketFlyingMutator uses it), so this is a missing subscription rather than a missing facility."

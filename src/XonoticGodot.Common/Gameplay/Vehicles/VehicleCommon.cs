@@ -335,6 +335,14 @@ namespace XonoticGodot.Common.Gameplay
             vehic.Velocity = Vector3.Zero;
             vehic.VehicleFlags |= VehicleFlags.IsVehicle;
 
+            // QC vehicles_spawn:1117 — this.event_damage = vehicles_damage. The vehicle carries its OWN
+            // .event_damage as a GtEventDamage shim: DamageSystem.EventDamage routes a non-player edict with a
+            // GtEventDamage to it and returns, so a shot vehicle runs the per-weapon damagerate + shield-then-
+            // health split + knockback + death-eject (DamageVehicle) instead of taking armor-split PLAYER damage.
+            // This is the seam Wave-2 vehicles depend on: it makes DamageVehicle (bit-faithful but previously
+            // test-only) actually run on the live damage path.
+            vehic.GtEventDamage = EventDamage;
+
             // QC: return to spawn (this.angles = pos2; setorigin(this, pos1)).
             vehic.Angles = vehic.SpawnAngles;
             if (Api.Services is not null)
@@ -386,6 +394,20 @@ namespace XonoticGodot.Common.Gameplay
         // =====================================================================================
         // DAMAGE — port of vehicles_damage() (sv_vehicles.qc ~625): shield-then-health, death eject.
         // =====================================================================================
+
+        /// <summary>
+        /// The vehicle's installed <c>.event_damage</c> (QC <c>vehicles_damage</c>) — the
+        /// <see cref="Framework.Entity.GtEventDamage"/> shim wired in <see cref="SpawnVehicle"/>. The headless
+        /// <see cref="Damage.DamageSystem.EventDamage"/> routes every non-player edict with a <c>GtEventDamage</c>
+        /// here (and returns), exactly as it does for turrets / monsters / Onslaught objectives — so a vehicle
+        /// victim runs the vehicle damage rules (<see cref="DamageVehicle"/>) instead of being treated as a
+        /// player. This is a thin adapter: <c>GtEventDamage</c> orders the args
+        /// <c>(self, inflictor, attacker, deathtype, damage, hitloc, force)</c> whereas <see cref="DamageVehicle"/>
+        /// takes <c>(damage, deathType)</c> — this method just reorders.
+        /// </summary>
+        public static void EventDamage(Entity vehic, Entity? inflictor, Entity? attacker, string deathType,
+            float damage, Vector3 hitLoc, Vector3 force)
+            => DamageVehicle(vehic, inflictor, attacker, damage, deathType, hitLoc, force);
 
         /// <summary>
         /// Port of the core of <c>vehicles_damage()</c> (sv_vehicles.qc): route incoming damage through the

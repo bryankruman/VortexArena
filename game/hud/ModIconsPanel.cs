@@ -31,7 +31,7 @@ namespace XonoticGodot.Game.Hud;
 public partial class ModIconsPanel : HudPanel
 {
     /// <summary>Which gametype's objective renderer to draw (QC <c>gametype.m_modicons</c> selection).</summary>
-    public enum ModIconsMode { None, Ctf, Keyhunt, Domination, ClanArena, FreezeTag, Survival, Assault }
+    public enum ModIconsMode { None, Ctf, Keyhunt, Domination, ClanArena, FreezeTag, Survival, Assault, Keepaway }
 
     /// <summary>The active renderer; <see cref="ModIconsMode.None"/> draws nothing (QC: no m_modicons set).</summary>
     public ModIconsMode Mode { get; set; } = ModIconsMode.None;
@@ -69,6 +69,17 @@ public partial class ModIconsPanel : HudPanel
     /// shipped <c>as_defend</c>/<c>as_destroy</c> skin art. Stock Xonotic has no Assault modicons renderer,
     /// so this is fed by the port's net layer when it knows the role; 0 keeps parity (panel blank).</summary>
     public int AssaultStatus { get; set; }
+
+    /// <summary>Keepaway (QC <c>HUD_Mod_Keepaway</c>): true when the LOCAL player carries the ball (QC
+    /// <c>STAT(OBJECTIVE_STATUS) &amp; KA_CARRYING</c>). The port networks the carrier's net id in the status block;
+    /// <see cref="NetGame"/> resolves it against the local net id and sets this. The carrying icon flashes
+    /// (<c>blink</c>) + does the QC status-change expand transition; false draws nothing.</summary>
+    public bool KeepawayCarrying { get; set; }
+
+    // QC kaball_prevstatus / kaball_statuschange_time: the carrying-state edge + the time it last flipped, so the
+    // expanding-icon transition (drawpic_aspect_skin_expanding) plays for the first ~0.5s after pickup/loss.
+    private bool _kaPrevCarrying;
+    private double _kaStatusChangeTime;
 
     // ---- CTF flag-status bit layout (QC common/gametypes/gametype/ctf/ctf.qh CTF_*_FLAG_TAKEN) ----
     // Each flag's 2-bit status is packed at a multiplier base; status = (stat / base) & 3:
@@ -130,6 +141,7 @@ public partial class ModIconsPanel : HudPanel
             case ModIconsMode.FreezeTag:  DrawCaStyle(LayoutCvar("freezetag_layout")); break;
             case ModIconsMode.Survival:   DrawSurvival(); break;
             case ModIconsMode.Assault:    DrawAssault(); break;
+            case ModIconsMode.Keepaway:   DrawKeepaway(); break;
             default: return; // None: draw nothing
         }
     }
@@ -642,6 +654,44 @@ public partial class ModIconsPanel : HudPanel
             int fontSize = (int)Mathf.Clamp(box.Size.Y * 0.5f, 10f, 28f);
             DrawTextCentered(new Vector2(box.Position.X, box.Position.Y + (box.Size.Y - fontSize) * 0.5f),
                 box.Size.X, destroy ? "Destroy" : "Defend", col, fontSize);
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------ Keepaway
+    // Port of HUD_Mod_Keepaway (cl_keepaway.qc): one centered keepawayball_carrying icon shown only while the
+    // LOCAL player holds the ball (KA_CARRYING). The carrying flag pulses (blink 0.85/0.15/5) and a status-change
+    // expand transition (drawpic_aspect_skin_expanding) plays for the first ~0.5s after the carry state flips.
+    private void DrawKeepaway()
+    {
+        double now = CurrentTime();
+
+        // QC: kaball != kaball_prevstatus → record the change time (drives the expand transition's elapsed clock).
+        if (KeepawayCarrying != _kaPrevCarrying)
+        {
+            _kaStatusChangeTime = now;
+            _kaPrevCarrying = KeepawayCarrying;
+        }
+
+        if (!KeepawayCarrying)
+            return; // QC mod_active is forced 1, but with no carry there's nothing to draw → blank panel
+
+        DrawBackground();
+
+        float kaAlpha = Blink(0.85f, 0.15f, 5f, now);
+        float f = Mathf.Clamp((float)(now - _kaStatusChangeTime) * 2f, 0f, 1f); // QC bound(0, elapsed*2, 1)
+
+        var box = new Rect2(Vector2.Zero, Size2);
+        float a = LiveFgAlpha * kaAlpha * f;
+        if (!DrawIconAspect(box, "keepawayball_carrying", a))
+        {
+            // Stand-in so the carry indicator is never invisible: a small ball glyph + "BALL" tag.
+            Rect2 fit = AspectFit(box, 1f);
+            var col = new Color(1f, 0.85f, 0.2f, a);
+            DrawRect(new Rect2(fit.Position.X + fit.Size.X * 0.3f, fit.Position.Y + fit.Size.Y * 0.18f,
+                fit.Size.X * 0.4f, fit.Size.Y * 0.4f), col);
+            int sz = (int)Mathf.Clamp(fit.Size.Y * 0.28f, 8f, 16f);
+            DrawTextCentered(new Vector2(fit.Position.X, fit.Position.Y + fit.Size.Y * 0.62f),
+                fit.Size.X, "BALL", new Color(1f, 1f, 1f, a), sz);
         }
     }
 

@@ -1,0 +1,347 @@
+unit: weapon-porto
+category: weapon
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 11
+  worst_gaps:
+    - "Strength launch-speed boost is DEAD: Attack queries StatusEffectsCatalog.ByName(\"buff_strength\"), but the powerup is registered as \"strength\" (buffs use the buff_ prefix, the Strength powerup does not), so the lookup returns null and the speed multiply never runs — a porto fired under Strength flies at base speed, not Base's 3x. (The hardcoded StrengthForce=4 vs balance default 3 is moot while the branch is dead.)"
+    - "No portal-aim trajectory preview: Base draws a reflecting red/blue Draw_CylindricLine polyline (Porto_Draw) showing where the in/out portals would land while you hold porto — the port renders nothing, the most visible porto-specific view feature is absent."
+    - "W_Porto_Touch decision tree is incomplete AND its audio is wrong: no slick/clip reflect-and-continue (SND_PORTO_BOUNCE never plays, portals get placed where Base bounces off), no noimpact fail, no creature-hit ignore, no not-owner delete, no CheckWireframeBox surface-size gate; and the port plays porto/create on EVERY world touch (twice on success: once in OnTouch, again in PlacePortal) instead of create-on-success / unsupported-on-fail / bounce-on-slick."
+    - "porto_forbidden is dead (read in WrThink but never set or decremented — no porto_ticker SV_StartFrame mutator, no race respawn setter), and there is no W_Porto_Remove / wr_resetplayer death-or-respawn cleanup of porto_current or the live projectile (a porto in flight or a placed portal can outlive its owner's death)."
+    - "Non-secondary aim-hold (porto_v_angle) is broken-by-construction: WrThink(Primary) runs every tick and unconditionally clears PortoVAngleHeld, so the held angle captured on a secondary tick is wiped before the next primary fire can use it. Dormant in stock play (secondary defaults on)."
+features:
+  - id: weapon-porto.identity.attributes
+    name: "Weapon identity, models, color, flags, ammo type"
+    layer: [shared, presentation]
+    base_refs:
+      - "common/weapons/weapon/porto.qh:CLASS(PortoLaunch)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Porto.cs:Porto()"
+    constants:
+      - { name: "ammo_type", base: "RES_NONE", port: "n/a (infinite ammo)", match: true }
+      - { name: "m_color", base: "'0.404 0.545 0.937'", port: "(0.404,0.545,0.937)", match: true }
+      - { name: "spawnflags", base: "TYPE_OTHER|SUPERWEAPON|NODUAL|NOTRUEAIM", port: "TypeOther|SuperWeapon|NoDual|NoTrueAim", match: true }
+      - { name: "view/world/item model", base: "h_porto.iqm / v_porto.md3 / g_porto.md3", port: "same", match: true }
+      - { name: "crosshair", base: "gfx/crosshairporto size 0.6", port: "n/a (not set on Porto.cs)", match: false }
+      - { name: "impulse", base: "0", port: "0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Crosshair string/size (crosshairporto, 0.6) not carried on the port weapon (cosmetic)."
+    verification:
+      - { kind: code, ref: "Porto.cs ctor vs porto.qh CLASS(PortoLaunch)", result: pass }
+    confidence: high
+    notes: "Auto-registered via [Weapon] attribute; superweapon, weaponstart 0 (map-placed only). Verified live via WeaponFireGate.cs:500 + WeaponFireDriver."
+
+  - id: weapon-porto.fire.launch
+    name: "Fire: eye-shot launch of the bouncing portal projectile"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/porto.qc:W_Porto_Attack"
+      - "server/weapons/tracing.qh:W_SetupProjVelocity_Basic"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Porto.cs:Attack"
+    constants:
+      - { name: "primary/secondary speed", base: "1000 qu/s", port: "1000 (cvar-seeded)", match: true }
+      - { name: "W_SetupShot recoil", base: "4", port: "4", match: true }
+      - { name: "spread / speed_up / speed_z", base: "0 / 0 / 0", port: "0 / 0 / 0", match: true }
+      - { name: "model scale", base: "4", port: "render scale 4 (ProjectileCatalog); entity scale not set", match: true }
+      - { name: "movetype", base: "MOVETYPE_BOUNCEMISSILE", port: "MoveType.BounceMissile", match: true }
+      - { name: "FL_PROJECTILE flag", base: "FL_PROJECTILE (32768)", port: "EntFlags.Item (256) (mislabeled)", match: false }
+      - { name: "eye-shot override", base: "w_shotdir=v_forward; w_shotorg projected onto eye ray", port: "dir=forward from eye", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "gren.Flags set to EntFlags.Item (256) but commented 'QC FL_PROJECTILE'; the port has no FL_PROJECTILE flag (32768). Mostly inert for porto but the projectile is not flagged as a projectile."
+      - "right_vector (portal roll axis) is stored in AVelocity but is never reflected on bounce, so portal orientation is approximate."
+    verification:
+      - { kind: code, ref: "Porto.cs:Attack vs porto.qc:W_Porto_Attack; WeaponFireDriver.cs:155 drives WrThink->Attack live", result: pass }
+    confidence: high
+    notes: "porto/fire(.wav resolved to .ogg) played; CSQCProjectile PORTO_RED/BLUE realised in ProjectileCatalog. EditProjectile mutator hook is called. Plays live via WeaponFireDriver."
+
+  - id: weapon-porto.fire.refire_gate
+    name: "Fire gating: single-portal latch + porto_forbidden + refire"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/porto.qc:wr_think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Porto.cs:WrThink"
+    constants:
+      - { name: "primary/secondary refire", base: "1.5 s", port: "1.5 (cvar-seeded)", match: true }
+      - { name: "primary/secondary animtime", base: "0.3 s", port: "0.3 (cvar-seeded)", match: true }
+      - { name: "porto_current single-portal latch", base: "yes", port: "yes (st.PortoCurrent)", match: true }
+      - { name: "porto_forbidden gate", base: "decremented each SV_StartFrame by porto_ticker mutator; set on race respawn", port: "read but never set/decremented", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "porto_forbidden is dead: WrThink reads st.PortoForbidden but nothing ever sets it (no race respawn setter) or decrements it (no porto_ticker SV_StartFrame mutator port). In Race/CTS, Base blocks re-firing a porto across a respawn; the port does not."
+    verification:
+      - { kind: code, ref: "Porto.cs:WrThink + grep: PortoForbidden (EntityWeaponState.cs:279) has no setter/decrementer in src/", result: fail }
+    confidence: high
+    notes: "porto_current + PrepareAttack refire gate are faithful and live (WeaponFireDriver); only the forbidden gate is inert."
+
+  - id: weapon-porto.fire.aim_hold
+    name: "Secondary aim-hold (porto_v_angle) in non-secondary mode"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/porto.qc:wr_think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Porto.cs:WrThink"
+    constants:
+      - { name: "g_balance_porto_secondary", base: "1 (default)", port: "true (cvar-seeded)", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Broken-by-construction: WrThink(Primary) is called EVERY tick by WeaponFireDriver and the non-secondary branch unconditionally executes `else { PortoVAngleHeld = false }`, wiping the angle captured on the preceding secondary tick before any primary fire can read it. Base processes both buttons in one wr_think call and only clears the hold when ATCK2 is released. So the held-angle override never takes effect."
+      - "Only reachable when g_balance_porto_secondary=0 (non-default); dormant in stock play."
+    verification:
+      - { kind: code, ref: "Porto.cs:WrThink non-secondary branch vs WeaponFireDriver.cs:155 (Primary every tick)", result: fail }
+    confidence: medium
+    notes: "Default xonotic balance has secondary=1, so this whole branch is dormant in stock play; the hold logic is nonfunctional regardless. Downgraded liveness unknown->dead."
+
+  - id: weapon-porto.touch.placement_tree
+    name: "On-touch portal placement decision tree (in/out/combined red->blue)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/porto.qc:W_Porto_Touch"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Porto.cs:OnTouch"
+    constants:
+      - { name: "type 0 -> in-portal only", base: "Portal_SpawnInPortalAtTrace", port: "PlacePortal(isIn=true)+Success", match: true }
+      - { name: "type 1 -> out-portal only", base: "Portal_SpawnOutPortalAtTrace", port: "PlacePortal(isIn=false)+Success", match: true }
+      - { name: "type -1 -> red in, flip blue, then out", base: "EF_RED->EF_BLUE chaining", port: "EffectRed->EffectBlue chaining", match: true }
+      - { name: "slick/clip reflect-and-continue", base: "yes (SND_PORTO_BOUNCE + reflect right_vector/angles)", port: "missing", match: false }
+      - { name: "noimpact fail", base: "yes (SND_PORTO_UNSUPPORTED + Fail)", port: "missing", match: false }
+      - { name: "creature-hit ignore", base: "yes (downtrace test)", port: "missing", match: false }
+      - { name: "not-owner delete", base: "yes (playerid mismatch + SND_PORTO_UNSUPPORTED)", port: "missing", match: false }
+      - { name: "CheckWireframeBox 96x96x96 surface-size gate", base: "yes (in Porto_Draw preview; placement relies on Portal_Spawn* size checks)", port: "missing", match: false }
+      - { name: "create sound timing", base: "SND_PORTO_CREATE only inside success branch (once)", port: "porto/create played on every touch + again in PlacePortal (twice on success)", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: partial
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No slick/clip branch: porto does not reflect-and-keep-flying off slick/clip surfaces, and SND_PORTO_BOUNCE is never played."
+      - "No noimpact-surface fail: a hit on a sky/noimpact face that Base rejects places a portal in the port."
+      - "No creature-hit ignore and no not-owner delete branch."
+      - "Audio is wrong: OnTouch plays porto/create unconditionally on every world hit (before deciding success/fail), and PlacePortal plays it AGAIN — so a successful single-portal placement plays create twice, and a (would-be) fail still plays create instead of unsupported. Base plays SND_PORTO_CREATE once on success, SND_PORTO_UNSUPPORTED on fail, SND_PORTO_BOUNCE on slick."
+      - "OnTouch treats any world-brush hit as a valid flat surface and always places; uses negated velocity (not the impact plane normal) as the portal normal — orientation is approximate."
+    verification:
+      - { kind: code, ref: "Porto.cs:OnTouch (lines 190,197,211,246) vs porto.qc:W_Porto_Touch (sounds gated per-branch)", result: fail }
+    confidence: high
+    notes: "Headless touch lacks per-contact surface flags / plane normal; the port acknowledges this in comments. In/out/combined branching itself is structurally present and live, but the surface-flag-dependent branches and the per-branch sounds are absent/wrong."
+
+  - id: weapon-porto.touch.portal_spawn
+    name: "Realise the placed portal (Portal_SpawnIn/OutPortalAtTrace) as a warpzone"
+    layer: [authority]
+    base_refs:
+      - "server/portals.qc:Portal_SpawnInPortalAtTrace"
+      - "server/portals.qc:Portal_SpawnOutPortalAtTrace"
+      - "server/portals.qc:Portal_Connect"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Porto.cs:PlacePortal"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Porto.cs:PortalSpawner"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:PlacePortoPortal"
+      - "src/XonoticGodot.Server/GameWorld.cs:388"
+    constants:
+      - { name: "in/out pair link", base: "Portal_Connect two-way transform", port: "Warpzones.PlacePortoPortal pair link", match: true }
+      - { name: "portal angles", base: "fixedvectoangles2(plane_normal, right_vector)", port: "normal from -velocity (FixedVecToAngles in warpzone)", match: false }
+      - { name: "portal bbox", base: "'-48 -48 -48' / '48 48 48'", port: "n/a (warpzone unit)", match: false }
+      - { name: "g_balance_portal_health", base: "200", port: "n/a (warpzone unit)", match: false }
+      - { name: "g_balance_portal_lifetime", base: "15 s (refreshed per use)", port: "n/a (warpzone unit)", match: false }
+    status:
+      logic: partial
+      values: unknown
+      timing: unknown
+      presentation: unknown
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "The port realises porto portals as the warpzone subsystem (linked warpzone pair via Warpzones.PlacePortoPortal) rather than a dedicated portal entity with MDL_PORTAL/health/SOLID_BSP. The teleport transform is shared with warpzones. Portal health/damage/lifetime/expire-explode behavior is delegated to (and audited by) the warpzone unit, not this weapon unit."
+    gaps:
+      - "Portal angle derivation uses only the surface normal (from negated velocity), not Base's fixedvectoangles2(normal, right_vector); right_vector is never carried through the bounce, so portal roll may differ."
+      - "Portal health (200, damageable) / 15 s lifetime / expire (porto/expire) + explode (porto/explode + ROCKET_EXPLODE) and MDL_PORTAL visuals are not realised here (warpzone-unit scope)."
+    verification:
+      - { kind: code, ref: "GameWorld.cs:388 wires Porto.PortalSpawner -> Warpzones.PlacePortoPortal; confirmed live in Boot", result: pass }
+    confidence: medium
+    notes: "PortalSpawner is wired LIVE in GameWorld.Boot (line 388), so placement reaches the warpzone manager on the real match path. Whether the realised warpzone teleports correctly + expires at 15s is unverified here (warpzone unit owns it)."
+
+  - id: weapon-porto.lifecycle.lifetime_self_destruct
+    name: "Lifetime self-destruct + success cleanup (Think/Fail/Success)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/porto.qc:W_Porto_Think"
+      - "common/weapons/weapon/porto.qc:W_Porto_Fail"
+      - "common/weapons/weapon/porto.qc:W_Porto_Success"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Porto.cs:PortoFail"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Porto.cs:PortoSuccess"
+    constants:
+      - { name: "lifetime (nextthink)", base: "5 s", port: "5 (cvar-seeded)", match: true }
+      - { name: "clear porto_current on end", base: "yes", port: "yes", match: true }
+      - { name: "Think-fail not-owner delete", base: "yes (playerid mismatch -> plain delete, no fail)", port: "missing (PortoFail runs regardless of owner)", match: false }
+      - { name: "throwable-drop on soft fail", base: "yes (W_ThrowNewWeapon if weaponthrowable + still has porto)", port: "missing", match: false }
+      - { name: "Portal_ClearWithID on combined fail (cnt<0)", base: "yes", port: "missing", match: false }
+      - { name: "fail sound", base: "W_Porto_Fail plays NO sound (sound is the caller's, on touch only)", port: "PortoFail plays porto/unsupported on EVERY lifetime expiry", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: partial
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No throwable-drop: when a combined porto fails softly Base can drop it as a pickup (W_ThrowNewWeapon) with CENTER_PORTO_FAILED; the port just deletes."
+      - "No Portal_ClearWithID/Portal_ClearAll on a combined-shot fail that already placed the in-portal."
+      - "PortoFail plays porto/unsupported on a pure lifetime timeout; Base's W_Porto_Fail plays no sound itself (the unsupported cue belongs to the touch-fail path only). Spurious sound when a porto simply expires unspent."
+      - "PortoSuccess always resolves the owner's weapon slot as new WeaponSlot(0); for a slot>0 (future dual-wield) the latch clear would target the wrong slot."
+      - "No Think-time not-owner delete: Base's W_Porto_Think deletes (no fail) if playerid mismatched; the port's PortoFail runs uniformly."
+    verification:
+      - { kind: code, ref: "Porto.cs:PortoFail/PortoSuccess vs porto.qc:W_Porto_Think/_Fail/_Success", result: fail }
+    confidence: medium
+    notes: "Self-destruct timer is faithful and live. The center-print notifications (CENTER_PORTO_CREATED_IN/OUT/FAILED) are also absent throughout."
+
+  - id: weapon-porto.lifecycle.death_reset_cleanup
+    name: "Death / respawn cleanup (W_Porto_Remove, wr_resetplayer)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/porto.qc:W_Porto_Remove"
+      - "common/weapons/weapon/porto.qc:wr_resetplayer"
+      - "server/portals.qc:Portal_ClearAll"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "On player death/reset Base clears porto_current and hard-fails the live projectile (W_Porto_Remove) and clears all of the player's portals (Portal_ClearAll). The port has no such hook: a porto in flight or a placed portal can survive its owner's death."
+    verification:
+      - { kind: code, ref: "grep: no W_Porto_Remove / wr_resetplayer / porto_current cleanup on death in port", result: fail }
+    confidence: high
+    notes: "Portal cleanup-on-death is a player-observable gap if porto is ever live in a match."
+
+  - id: weapon-porto.presentation.trajectory_preview
+    name: "Portal-aim trajectory preview (Porto_Draw reflecting red/blue polyline)"
+    layer: [presentation]
+    base_refs:
+      - "common/weapons/weapon/porto.qc:Porto_Draw"
+    port_refs: []
+    constants:
+      - { name: "polyline length", base: "16 points, up to 2 portals/reflections", port: "n/a", match: false }
+      - { name: "line color", base: "red before 1st portal, blue after", port: "n/a", match: false }
+      - { name: "line width", base: "Draw_CylindricLine width 4", port: "n/a", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "While holding porto (non-secondary mode), Base draws a reflecting red/blue cylindric-line polyline (with the same slick-continue / noimpact-stop / CheckWireframeBox size checks the placement uses) predicting where the in/out portals will land. The port renders nothing — the signature porto view feature is absent."
+    verification:
+      - { kind: code, ref: "grep: no Porto_Draw / polyline / trajectory preview in src/ or game/", result: fail }
+    confidence: high
+    notes: "Most visible porto-specific presentation gap. The CheckWireframeBox 96^3 size gate lives here in Base (not the touch path)."
+
+  - id: weapon-porto.presentation.projectile_render
+    name: "Projectile render (PORTO_RED / PORTO_BLUE, trail, scale)"
+    layer: [presentation]
+    base_refs:
+      - "common/weapons/weapon/porto.qc:W_Porto_Attack (CSQCProjectile PROJECTILE_PORTO_RED/BLUE)"
+    port_refs:
+      - "game/client/ProjectileCatalog.cs:165"
+      - "game/client/ProjectileCatalog.cs:167"
+    constants:
+      - { name: "render scale", base: "4", port: "ModelScale 4f", match: true }
+      - { name: "trail", base: "wizspike-class pale energy spike", port: "TR_WIZSPIKE", match: true }
+      - { name: "red->blue type swap on chaining", base: "yes (CSQCProjectile change type)", port: "PortoRed/PortoBlue types exist; runtime swap via Effects flip", match: true }
+      - { name: "bounce collision mode", base: "MOVETYPE_BOUNCEMISSILE planar bounce", port: "CollisionMode.Bounce", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: unknown
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Net-side CSQCProjectile type swap on red->blue chaining is done by flipping EF_RED/EF_BLUE on the entity; whether the client re-classifies it to PortoBlue mid-flight (ProjectileCatalog.Has(\"porto\") returns PortoRed unconditionally at line 261) is unverified — the blue variant may not actually render."
+    verification:
+      - { kind: code, ref: "ProjectileCatalog.cs:165-167 PortoRed/PortoBlue descs; line 261 classifier returns PortoRed only", result: pass }
+    confidence: medium
+    notes: "Catalog entries present (scale 4, TR_WIZSPIKE, red/blue glow). In-match render not runtime-verified (porto rarely placed); the runtime red->blue reclassification is suspect."
+
+  - id: weapon-porto.fire.strength_boost
+    name: "Strength powerup launch-speed boost"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/porto.qc:W_Porto_Attack (StatusEffects_active(STATUSEFFECT_Strength))"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Porto.cs:Attack"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Porto.cs:StrengthForce"
+    constants:
+      - { name: "strength status-effect name", base: "STATUSEFFECT_Strength (netname \"strength\")", port: "queried as \"buff_strength\" -> ByName returns null", match: false }
+      - { name: "g_balance_powerup_strength_force", base: "3 (balance-xonotic.cfg:237)", port: "4 (hardcoded StrengthForce, and never applied)", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "DEAD: Attack does `StatusEffectsCatalog.ByName(\"buff_strength\")`, but the Strength powerup is registered as \"strength\" (StatusEffects.cs:109); only buffs carry the buff_ prefix and there is no buff_strength. The lookup returns null, the `is { } str` pattern fails, and the `speed *= StrengthForce` line never runs. A porto fired under Strength launches at base speed. Every other Strength consumer (e.g. Ctf.cs:801) correctly uses ByName(\"strength\")."
+      - "Even if the name were fixed, StrengthForce is hardcoded to 4 (nexuiz25 balance), not read from g_balance_powerup_strength_force (xonotic default 3); it also won't track a runtime balance/ruleset change."
+    verification:
+      - { kind: code, ref: "Porto.cs:140 ByName(\"buff_strength\") vs StatusEffects.cs:109 R(new StatusEffectDef(\"strength\")) and Ctf.cs:801 ByName(\"strength\")", result: fail }
+      - { kind: value, ref: "balance-xonotic.cfg:237 (=3) vs Porto.cs:275 StrengthForce=4f", result: fail }
+    confidence: high
+    notes: "Two compounding defects: wrong status-effect name (boost never applies = dead) AND wrong constant (4 vs 3). Draft claimed logic:faithful/liveness:live — both downgraded. The =4 matches the nexuiz25 balance, not the default xonotic balance."

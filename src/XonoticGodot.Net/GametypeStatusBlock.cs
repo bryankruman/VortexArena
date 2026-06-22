@@ -39,7 +39,20 @@ public static class GametypeStatusBlock
         FreezeTag = 2,
         KeyHunt = 3,
         Survival = 4,
+        // [W1-mod-icons] the objective-feed modes added by Wave 1 so each gametype can push its mod-icon state:
+        Ctf = 5,         // QC STAT(OBJECTIVE_STATUS) flag-status pack (ctf_FlagcarrierStatus): per-team taken/lost/carrying
+        Domination = 6,  // QC STAT(DOM_TOTAL_PPS / DOM_PPS_*): the points-per-second mod-icon (set_dom_state)
+        Keepaway = 7,    // QC the KA_CARRYING mod-icon: who (net id) is currently carrying the ball (0 = nobody)
     }
+
+    // [W1-mod-icons] QC ctf.qh CTF_* OBJECTIVE_STATUS bit layout (2 bits per team slot: 1=taken, 2=lost,
+    // 3=carrying), so the dormant client CTF mod-icon decode reads exactly the Base stat. Reproduced here so the
+    // packing lives next to the wire so Ctf.cs (Wave 2) feeds state, not bit math.
+    private const uint CtfRedFlagTaken = 1;     // red slot base; <<2 per subsequent team
+    private const uint CtfNeutralFlagTaken = 256;
+    private const uint CtfFlagNeutral = 2048;   // one-flag CTF marker
+    private const uint CtfShielded = 4096;      // a flag is base-shielded (mod icon stays active)
+    private const uint CtfStalemate = 8192;     // anti-stall stalemate flash
 
     /// <summary>
     /// Team color code (<see cref="Teams.Red"/>/Blue/Yellow/Pink = 4/13/12/9) → 1-based team INDEX
@@ -84,6 +97,23 @@ public static class GametypeStatusBlock
                 w.WriteULong(kh.PackKeyState(viewer)); // QC kh_update_state, incl. the per-recipient 31 slot
                 return true;
 
+            case Ctf ctf:
+                WriteHeader(w, Kind.Ctf, viewer, ctf.TeamCount);
+                w.WriteULong(PackCtfStatus(ctf, viewer)); // QC STAT(OBJECTIVE_STATUS): per-recipient flag-status pack
+                return true;
+
+            case Domination dom:
+                WriteHeader(w, Kind.Domination, viewer, dom.TeamCount);
+                WriteDominationPps(w, dom); // QC STAT(DOM_TOTAL_PPS / DOM_PPS_*): the pps mod-icon
+                return true;
+
+            case Keepaway ka:
+                WriteHeader(w, Kind.Keepaway, viewer, 0); // FFA: no visible teams (QC the KA_CARRYING icon only)
+                // The net id of the current ball carrier (0 = nobody holds it) — drives the KA_CARRYING mod-icon
+                // and the carrier waypoint. netIdOf is the stable wire id (ServerNet.NetIdFor); 0 when ball-less.
+                w.WriteUShort(ka.Ball.Carrier is { } carrier ? netIdOf(carrier) : 0);
+                return true;
+
             case Survival surv:
                 WriteHeader(w, Kind.Survival, viewer, 0); // roleplay-FFA: no visible teams (QC USEPOINTS only)
                 // Own role: 0 until the roles are live (the client hides the panel on 0 — QC's
@@ -116,6 +146,76 @@ public static class GametypeStatusBlock
     {
         for (int i = 0; i < Teams.All.Length; i++)
             w.WriteByte(System.Math.Clamp(aliveOf(Teams.All[i]), 0, 255));
+    }
+
+    /// <summary>
+    /// [W1-mod-icons] Build the per-recipient QC STAT(OBJECTIVE_STATUS) CTF flag-status pack
+    /// (sv_ctf.qc ctf PlayerPreThink): one 2-bit field per team slot (red,blue,yellow,pink at bits 0/2/4/6, the
+    /// neutral flag at bit 8) — 1 = taken (an enemy carries it), 2 = lost (dropped on the map), 3 = carrying
+    /// (the RECIPIENT carries it). Plus the one-flag marker, the recipient's capture-shield bit, and (Wave-2)
+    /// the stalemate bit. Carrying-vs-taken is recipient-relative, so this is computed per viewer.
+    /// </summary>
+    private static uint PackCtfStatus(Ctf ctf, Player viewer)
+    {
+        uint status = 0;
+        // Slot base shifts: red=CTF_RED_FLAG_TAKEN(1)<<0, then <<2 per team; neutral uses its own base (256).
+        foreach (FlagState flag in ctf.Flags.Values)
+        {
+            uint takenBase = flag.HomeTeam == Teams.None
+                ? CtfNeutralFlagTaken
+                : CtfRedFlagTaken << (2 * SlotIndex(flag.HomeTeam));
+            if (flag.HomeTeam == Teams.None)
+                status |= CtfFlagNeutral; // a neutral flag exists → one-flag CTF display
+
+            switch (flag.Status)
+            {
+                case FlagStatus.Carried:
+                case FlagStatus.Passing:
+                    // 1 = taken (someone else holds it) / 3 = carrying (the recipient holds it).
+                    status |= ReferenceEquals(flag.Carrier, viewer) ? takenBase * 3u : takenBase * 1u;
+                    break;
+                case FlagStatus.Dropped:
+                    status |= takenBase * 2u; // lost
+                    break;
+            }
+        }
+        if (viewer.GtCaptureShielded)
+            status |= CtfShielded;
+        // CTF_STALEMATE is a Wave-2 Ctf.cs producer (stalemate detection) — the bit is reserved here.
+        return status;
+    }
+
+    /// <summary>Red/Blue/Yellow/Pink → 0..3 slot index for the 2-bit OBJECTIVE_STATUS field (the neutral flag
+    /// uses its own base and never calls this).</summary>
+    private static int SlotIndex(int teamCode) => System.Math.Max(0, TeamIndexOf(teamCode) - 1);
+
+    /// <summary>
+    /// [W1-mod-icons] QC STAT(DOM_TOTAL_PPS / DOM_PPS_RED/BLUE/YELLOW/PINK) (set_dom_state) — the Domination
+    /// points-per-second mod-icon. Computed from the control points each team owns: a point contributes
+    /// <c>amount/rate</c> points/second to its owner team (QC per-point .frags/.wait, overridden by
+    /// g_domination_point_amt/_rate). Written total then the four team values in red,blue,yellow,pink order.
+    /// </summary>
+    private static void WriteDominationPps(BitWriter w, Domination dom)
+    {
+        System.Span<float> pps = stackalloc float[4]; // red, blue, yellow, pink
+        float total = 0f;
+        // Domination.PointAmount/PointRate already resolve g_domination_point_amt/_rate (with the QC fallbacks),
+        // so each owned point contributes amount/rate points/second to its team. Per-point .frags/.wait overrides
+        // (cp.PerPointAmt/PerPointRate) are a Wave-2 Domination refinement once those cvars route per point.
+        float amt = dom.PointAmount;
+        float rate = dom.PointRate;
+        float perPoint = rate > 0f ? amt / rate : 0f;
+        foreach (ControlPoint cp in dom.Points)
+        {
+            int slot = TeamIndexOf(cp.OwnerTeam) - 1;
+            if (slot < 0 || slot > 3)
+                continue; // unowned / neutral point contributes no pps
+            pps[slot] += perPoint;
+            total += perPoint;
+        }
+        w.WriteFloat(total);
+        for (int i = 0; i < 4; i++)
+            w.WriteFloat(pps[i]);
     }
 
     /// <summary>
@@ -164,6 +264,16 @@ public static class GametypeStatusBlock
         public int MyStatus;
         /// <summary>Disclosed hunter net ids (own side mid-round; everyone once the round is over).</summary>
         public System.Collections.Generic.HashSet<int> HunterNetIds = new();
+
+        /// <summary>[W1-mod-icons] CTF QC STAT(OBJECTIVE_STATUS) flag-status pack (2-bit per-team
+        /// taken/lost/carrying + neutral/shielded/stalemate bits) — feeds ModIconsPanel.ObjectiveStatus in CTF.</summary>
+        public uint ObjectiveStatus;
+        /// <summary>[W1-mod-icons] Domination pps: index 0 = total, 1..4 = red,blue,yellow,pink (QC
+        /// STAT(DOM_TOTAL_PPS / DOM_PPS_*)) — feeds the Domination mod-icon panel.</summary>
+        public float[] DominationPps = new float[5];
+        /// <summary>[W1-mod-icons] Keepaway: the net id of the current ball carrier (0 = nobody) — feeds the
+        /// KA_CARRYING mod-icon and carrier waypoint.</summary>
+        public int CarrierNetId;
     }
 
     /// <summary>Read a status block (the inverse of <see cref="Capture"/>'s writes). Returns null on a bad
@@ -171,7 +281,7 @@ public static class GametypeStatusBlock
     public static Decoded? Deserialize(ref BitReader r)
     {
         int mode = r.ReadByte();
-        if (mode < (int)Kind.ClanArena || mode > (int)Kind.Survival)
+        if (mode < (int)Kind.ClanArena || mode > (int)Kind.Keepaway)
             return null; // unknown mode: build-parity should make this unreachable
         var d = new Decoded
         {
@@ -194,6 +304,16 @@ public static class GametypeStatusBlock
                 d.MyStatus = r.ReadByte();
                 ReadIdList(ref r, d.HunterNetIds);
                 ReadIdList(ref r, d.EliminatedNetIds);
+                break;
+            case Kind.Ctf:
+                d.ObjectiveStatus = r.ReadULong();
+                break;
+            case Kind.Domination:
+                for (int i = 0; i < d.DominationPps.Length; i++)
+                    d.DominationPps[i] = r.ReadFloat();
+                break;
+            case Kind.Keepaway:
+                d.CarrierNetId = r.ReadUShort();
                 break;
         }
         return r.BadRead ? null : d;

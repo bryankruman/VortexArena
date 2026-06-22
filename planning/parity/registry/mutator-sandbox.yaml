@@ -1,0 +1,421 @@
+unit: mutator-sandbox
+category: mutator
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 14
+  worst_gaps:
+    - "Entire server-side sandbox mutator is unimplemented: no object can be spawned, edited, dragged, or persisted with g_sandbox 1."
+    - "No `sandbox` console command / object_* subcommand handler exists on the server (the data alias reaches no backend)."
+    - "Sandbox Tools menu opens and its controls move, but every action button is a no-op (commands logged inert, no server backend)."
+    - "Object material impact particles + impact sounds never play (no object touch handler)."
+    - "Per-map object storage (auto-save every 5s / auto-load at map start) is missing — builds never persist."
+features:
+  - id: mutator-sandbox.core.registration
+    name: "Mutator activation via g_sandbox + onadd autoload"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:REGISTER_MUTATOR"
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:MUTATOR_ONADD"
+    port_refs: []
+    constants:
+      - { name: "g_sandbox", base: "0", port: "0 (cfg ships, never read)", match: true }
+      - { name: "g_sandbox_storage_autoload", base: "1", port: "1 (cfg ships, never read)", match: true }
+      - { name: "g_sandbox_storage_autosave", base: "5", port: "5 (cfg ships, never read)", match: true }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No SandboxMutator in the port mutator registry; g_sandbox does nothing when set."
+    verification:
+      - { kind: grep, ref: "ls src/.../Gameplay/Mutators/ = no SandboxMutator.cs (57 mutators listed, none sandbox); grep sandbox in src/ = only 2 unrelated doc-comments (ServerHooks.cs, GameLog.cs)", result: fail }
+      - { kind: code, ref: "all 16 g_sandbox* + cl_sandbox_clipboard defaults in port assets/data/.../mutators.cfg are byte-identical to Base mutators.cfg:95-110", result: pass }
+    confidence: high
+    notes: "g_sandbox* defaults ship in assets/data/.../mutators.cfg IDENTICAL to Base (verified line-by-line), and commands.cfg ships `alias sandbox \"cmd g_sandbox ${* ?}\"` — but no gameplay code reads any of them. REGISTER_MUTATOR(sandbox, expr_evaluate(autocvar_g_sandbox)) + MUTATOR_ONADD (IL_NEW, autosave_time seed, autoload) have no port counterpart."
+
+  - id: mutator-sandbox.object.spawn
+    name: "object_spawn — create object entity from a model in front of player"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:sandbox_ObjectSpawn"
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:SV_ParseClientCommand(object_spawn)"
+    port_refs: []
+    constants:
+      - { name: "g_sandbox_editor_distance_spawn", base: "200", port: "none", match: false }
+      - { name: "g_sandbox_editor_flood_s", base: "1", port: "none", match: false }
+      - { name: "g_sandbox_editor_maxobjects", base: "1000", port: "none", match: false }
+      - { name: "spawn_solid", base: "SOLID_BBOX", port: "none", match: false }
+      - { name: "spawn_movetype", base: "MOVETYPE_TOSS", port: "none", match: false }
+      - { name: "spawn_takedamage", base: "DAMAGE_AIM", port: "none", match: false }
+      - { name: "damageforcescale", base: "1", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No `object` entity class and no object_spawn command; spawning a model is impossible."
+      - "Flood timer, maxobjects cap, fexists model check, and forward-trace placement all absent."
+    verification:
+      - { kind: grep, ref: "grep object_spawn|ObjectSpawn in src/ = none (only menu command string)", result: fail }
+    confidence: high
+    notes: "Base traces v_forward*200 from view origin (WarpZone_TraceLine) and sets angles_y to view yaw."
+
+  - id: mutator-sandbox.object.think_grab
+    name: "Per-object think: grab-class assignment + owner UID resync + CSQC update"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:sandbox_ObjectFunction_Think"
+    port_refs: []
+    constants:
+      - { name: "g_sandbox_editor_free", base: "1", port: "none", match: false }
+      - { name: "grab_values", base: "0 none / 1 owner / 3 anyone", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No per-object think; .grab is never computed so the drag system would have nothing to gate on."
+      - "Owner-entity resync (rebind realowner from crypto_idfp each frame, clear on disconnect) absent."
+    verification:
+      - { kind: grep, ref: "no sandbox think handler in src/", result: fail }
+    confidence: high
+    notes: "Reschedules nextthink=time each frame; bots can never own objects."
+
+  - id: mutator-sandbox.object.touch_material_fx
+    name: "Object touch: material impact particles + impact sounds (velocity-scaled)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:sandbox_ObjectFunction_Touch"
+    port_refs: []
+    constants:
+      - { name: "g_sandbox_object_material_velocity_min", base: "100", port: "none", match: false }
+      - { name: "g_sandbox_object_material_velocity_factor", base: "0.002", port: "none", match: false }
+      - { name: "touch_timer_rate_s", base: "0.1", port: "none", match: false }
+      - { name: "impact_sound_variants", base: "5 (impact_<mat>_1..5.wav)", port: "none", match: false }
+      - { name: "effect_count_range", base: "1..10 (ceil(intensity*10))", port: "none", match: false }
+      - { name: "sound_channel/atten", base: "CH_TRIGGER / VOL_BASE*intensity / ATTEN_NORM", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: missing
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Material objects never play impact_<material> particles or object/impact_<material>_N.wav sounds on collision."
+    verification:
+      - { kind: grep, ref: "no touch handler / impact_ effect or sound emit for sandbox in src/", result: fail }
+    confidence: high
+    notes: "intensity = avg(|this.vel|,|toucher.vel|); rate-limited to 0.1s; default materials metal/stone/wood/flesh."
+
+  - id: mutator-sandbox.object.edit_get
+    name: "Edit-target trace + ownership permission check"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:sandbox_ObjectEdit_Get"
+    port_refs: []
+    constants:
+      - { name: "g_sandbox_editor_distance_edit", base: "300", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No crosshair trace to select an object; range + classname + per-owner edit-rights gating all absent."
+    verification:
+      - { kind: grep, ref: "no sandbox_ObjectEdit_Get equivalent in src/", result: fail }
+    confidence: high
+    notes: "Permission: unowned object OR player owns it OR g_sandbox_editor_free>=2."
+
+  - id: mutator-sandbox.object.edit_properties
+    name: "object_edit — skin/alpha/color_main/color_glow/frame/scale/solidity/physics/force/material"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:SV_ParseClientCommand(object_edit)"
+    port_refs: []
+    constants:
+      - { name: "solidity_map", base: "0->SOLID_TRIGGER / 1->SOLID_BBOX", port: "none", match: false }
+      - { name: "physics_map", base: "0->MOVETYPE_NONE / 1->MOVETYPE_TOSS / 2->MOVETYPE_PHYSICS", port: "none", match: false }
+      - { name: "force_field", base: "damageforcescale", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "None of the per-property editors exist; objects cannot be recolored, rescaled, made solid/physical, etc."
+    verification:
+      - { kind: grep, ref: "no object_edit handler in src/", result: fail }
+    confidence: high
+    notes: "Base has a known missing-break fall-through: solidity case falls into physics case."
+
+  - id: mutator-sandbox.object.scale
+    name: "Object scale clamp + mins/maxs resize"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:sandbox_ObjectEdit_Scale"
+    port_refs: []
+    constants:
+      - { name: "g_sandbox_object_scale_min", base: "0.1", port: "none", match: false }
+      - { name: "g_sandbox_object_scale_max", base: "2", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No scale handling; bound(0.1,f,2), model re-set, and RoundPerfectVector size fix (#2742) absent."
+    verification:
+      - { kind: grep, ref: "no sandbox scale code in src/", result: fail }
+    confidence: high
+    notes: "Menu slider exposes 0.25..2 step 0.05 but the engine clamp is 0.1..2."
+
+  - id: mutator-sandbox.object.attach
+    name: "object_attach get/set/remove — child object attachment to tag/bone"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:sandbox_ObjectAttach_Set"
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:sandbox_ObjectAttach_Remove"
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:SV_ParseClientCommand(object_attach)"
+    port_refs: []
+    constants:
+      - { name: "attach_movetype", base: "MOVETYPE_FOLLOW", port: "none", match: false }
+      - { name: "attach_solid", base: "SOLID_NOT", port: "none", match: false }
+      - { name: "MAX_STORAGE_ATTACHMENTS", base: "16", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Objects cannot be attached to one another; persisted old_solid/old_movetype restore-on-detach absent."
+    verification:
+      - { kind: grep, ref: "no object_attach handler in src/", result: fail }
+    confidence: high
+    notes: "Set persists old_solid/old_movetype; Remove restores origin from gettaginfo and clears spin."
+
+  - id: mutator-sandbox.object.remove
+    name: "object_remove — delete object + detach children + clear selections"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:sandbox_ObjectRemove"
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:SV_ParseClientCommand(object_remove)"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No object_remove; objects cannot be deleted, decrement object_count, or detach their children."
+    verification:
+      - { kind: grep, ref: "no object_remove handler in src/", result: fail }
+    confidence: high
+    notes: "Also clears any player's object_attach selection pointing at the removed object."
+
+  - id: mutator-sandbox.object.duplicate
+    name: "object_duplicate copy/paste via clipboard cvar"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:SV_ParseClientCommand(object_duplicate)"
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:sandbox_ObjectPort_Save"
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:sandbox_ObjectPort_Load"
+    port_refs: []
+    constants:
+      - { name: "clipboard_cvar", base: "cl_sandbox_clipboard", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Copy (serialize object props to a client cvar) and paste (respawn from cvar) are absent."
+    verification:
+      - { kind: grep, ref: "no object_duplicate handler in src/", result: fail }
+    confidence: high
+    notes: "Paste shares the flood + maxobjects gates with object_spawn."
+
+  - id: mutator-sandbox.object.claim_info
+    name: "object_claim + object_info object/mesh/attachments"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:SV_ParseClientCommand(object_claim)"
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:SV_ParseClientCommand(object_info)"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Cannot claim ownership of an object or print its owner/dates/mesh-tags/attachment info."
+    verification:
+      - { kind: grep, ref: "no object_claim/object_info handler in src/", result: fail }
+    confidence: high
+    notes: "Claim requires a player UID (crypto_idfp); updates netname then crypto_idfp."
+
+  - id: mutator-sandbox.storage.persist
+    name: "Per-map object storage: save/load + 5s auto-save + autoload at map start"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:sandbox_Database_Save"
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:sandbox_Database_Load"
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:MUTATOR_HOOKFUNCTION(sandbox, SV_StartFrame)"
+    port_refs: []
+    constants:
+      - { name: "g_sandbox_storage_name", base: "default", port: "default (cfg only, unread)", match: false }
+      - { name: "g_sandbox_storage_autosave", base: "5", port: "5 (cfg only, unread)", match: false }
+      - { name: "g_sandbox_storage_autoload", base: "1", port: "1 (cfg only, unread)", match: false }
+      - { name: "storage_path", base: "sandbox/storage_<name>_<map>.txt", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Builds never persist: no per-map text storage, no 5s auto-save tick, no autoload at map start."
+    verification:
+      - { kind: grep, ref: "no sandbox_Database_Save/_Load equivalent in src/", result: fail }
+    confidence: high
+    notes: "Serializes origin/angles/model/skin/alpha/colormod/glowmod/frame/scale/solid/movetype/force/material + db owner/dates; children in slots 1..16."
+
+  - id: mutator-sandbox.drag.grab
+    name: "Drag/grab integration: carry objects with +button8 gated by .grab"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:Drag (grab switch on e.grab)"
+      - "server/cheats.qc:Drag_Begin"
+      - "server/cheats.qc:Drag_Finish"
+    port_refs: []
+    constants:
+      - { name: "g_grab_range", base: "200", port: "none", match: false }
+      - { name: "drag_movetype", base: "MOVETYPE_WALK (gravity ~0.00001)", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No object-drag system; the 'drag object' (+button8) key does nothing, objects cannot be physically carried."
+    verification:
+      - { kind: grep, ref: "no Drag_Begin/Drag_Finish/.grab consumer in src/", result: fail }
+    confidence: high
+    notes: "Shared generic drag system (also used by g_monsters_edit); grab classes 0/1/2/3 = no/owner/team/anyone."
+
+  - id: mutator-sandbox.hooks.gating
+    name: "readonly mode + Sandbox_DragAllowed/SaveAllowed/EditAllowed mutator hooks"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:SV_ParseClientCommand (readonly/EditAllowed gate)"
+      - "server/mutators/events.qh:Sandbox_DragAllowed"
+      - "server/mutators/events.qh:Sandbox_SaveAllowed"
+      - "server/mutators/events.qh:Sandbox_EditAllowed"
+    port_refs: []
+    constants:
+      - { name: "g_sandbox_readonly", base: "0", port: "none", match: false }
+      - { name: "g_sandbox_info", base: "1", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Read-only mode and the three Sandbox_* hooks (drag/save/edit veto) are absent; no other mutator can gate sandbox."
+    verification:
+      - { kind: grep, ref: "no Sandbox_DragAllowed/SaveAllowed/EditAllowed in src/", result: fail }
+    confidence: high
+    notes: "g_sandbox_info controls server LOG verbosity (1=spawn/remove, 2=also edits)."
+
+  - id: mutator-sandbox.menu.tools_dialog
+    name: "Sandbox Tools menu dialog (cvar inputs + command buttons)"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/dialog_sandboxtools.qc:XonoticSandboxToolsDialog_fill"
+    port_refs:
+      - "game/menu/dialogs/DialogSandboxTools.cs:BuildUi"
+      - "game/Shell.cs:188 (\"sandbox\" => new DialogSandboxTools())"
+    constants:
+      - { name: "slider_skin_frame", base: "0..99 step 1", port: "0..99 step 1", match: true }
+      - { name: "slider_alpha", base: "0.1..1 step 0.05", port: "0.1..1 step 0.05", match: true }
+      - { name: "slider_scale", base: "0.25..2 step 0.05", port: "0.25..2 step 0.05", match: true }
+      - { name: "slider_force", base: "0..10 step 0.5", port: "0..10 step 0.5", match: true }
+      - { name: "clipboard_cvar", base: "cl_sandbox_clipboard", port: "cl_sandbox_clipboard", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Dialog opens and controls move, but every action button is a no-op: the `sandbox …` commands route to MenuCommand and are logged inert (no server backend exists)."
+      - "No in-game entry point: the Shell `\"sandbox\"` factory key is reached ONLY via the dev/CI `--menu-screen sandbox` flag (Shell.cs ShowScreen dispatch). No menu button or keybind opens it in a normal match (Base opens it via the `menu_showsandboxtools` keybind, which has no port equivalent)."
+    verification:
+      - { kind: code, ref: "DialogSandboxTools.cs read in full vs dialog_sandboxtools.qc: all cvar names, slider ranges (skin/frame 0..99/1, alpha 0.1..1/0.05, scale 0.25..2/0.05, force 0..10/0.5), and command strings match Base exactly", result: pass }
+      - { kind: code, ref: "Shell.cs:188 `\"sandbox\" => new DialogSandboxTools()` is the ONLY reference; grep game/+src/ found no button/keybind that pushes it — only the --menu-screen dev dispatch", result: fail }
+      - { kind: code, ref: "DialogSandboxTools.cs doc-comment confirms buttons drive a server backend 'XonoticGodot does not have yet', logged inert via MenuCommand", result: fail }
+    confidence: high
+    notes: "UI is a faithful 1:1 port of XonoticSandboxToolsDialog_fill (verified line-by-line). Downgraded liveness partial->dead: not only do the command outputs hit no backend, the dialog itself has no normal-match entry point (dev --menu-screen flag only)."

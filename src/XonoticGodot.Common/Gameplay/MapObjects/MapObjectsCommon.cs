@@ -76,6 +76,17 @@ namespace XonoticGodot.Common.Framework
         public float Volume;          // QC .volume — sound volume (0-1, default set by spawnfunc)
         public float Atten;           // QC .atten — sound attenuation (0 = global, higher = tighter radius)
 
+        // --- legacy plat sound overrides (QC .sound1 .sound2 — backwards-compat for old maps, plat.qc) ---
+        // QC plat_spawn: `if (this.sound1) this.noise = this.sound1; if (this.sound2) this.noise1 = this.sound2;`
+        // ("backwards compatibility because people don't use already existing fields"). The `sounds` selector
+        // itself reuses the existing Entity.Sounds (EntityMapObjectStateExtra.cs).
+        public string Sound1 = "";    // QC .sound1 — legacy plat move-sound override
+        public string Sound2 = "";    // QC .sound2 — legacy plat stop-sound override
+
+        // --- per-corner / per-mover ease curve string (QC .platmovetype — "start end [force]") ---
+        // Parsed by SUB_SetPlatMoveType into PlatMoveStart/PlatMoveEnd (path_corner, func_train, func_plat).
+        public string Platmovetype = ""; // QC .platmovetype — raw spawn-key string ("" = default linear)
+
         // NOTE: QC .pushltime (jumppad/teleport effect debounce) is promoted on the partial Entity by the
         // damage pipeline (Damage/DamageEntityState.cs PushLTime) — it is the SAME QC field reused for the
         // credited-attacker window; we share it rather than redeclare it here.
@@ -748,6 +759,194 @@ namespace XonoticGodot.Common.Gameplay
         {
             if (Api.Services is not null && !string.IsNullOrEmpty(sample))
                 Api.Sound.Play(e, ch, sample);
+        }
+
+        // ====================================================================
+        //  Centerprint seam (QC centerprint(client, s) builtin #73)
+        // ====================================================================
+
+        /// <summary>
+        /// Host-wired centerprint sink for map-object free-text messages (door <c>.message</c>,
+        /// jumppad/secret/trigger <c>.message</c>, keylock "Unlocked!"). QC calls the engine builtin
+        /// <c>centerprint(client, s)</c> which middles arbitrary text on a real client's HUD; the headless
+        /// gameplay layer can't reach the client directly, so the host assigns this delegate (it forwards the
+        /// text to the networked centerprint channel, the same place <see cref="NotificationSystem"/> drains
+        /// to). Left null in unit tests / a non-listen path — <see cref="Centerprint"/> then no-ops, exactly
+        /// like QC printing to a bot/world. Mirrors the other host seams (SpawnEntityHandler / GiveItemHandler).
+        /// </summary>
+        public static System.Action<Entity /*client*/, string /*message*/>? CenterprintHandler;
+
+        /// <summary>
+        /// Port of the QC <c>centerprint(actor, this.message)</c> map-object call: middle-print
+        /// <paramref name="message"/> on <paramref name="actor"/> when it is a real client and the message is
+        /// non-empty. Routes through the host-wired <see cref="CenterprintHandler"/> (the centerprint
+        /// networking seam); a no-op when no client / no message / no handler. Every func_/trigger_/target_
+        /// map object that QC centerprints a free-text <c>.message</c> calls this one method.
+        /// </summary>
+        public static void Centerprint(Entity? actor, string? message)
+        {
+            if (actor is null || string.IsNullOrEmpty(message))
+                return;
+            if ((actor.Flags & EntFlags.Client) == 0)
+                return;
+            CenterprintHandler?.Invoke(actor, message);
+        }
+
+        // ====================================================================
+        //  Event-damage seam (QC .event_damage — per-entity damage callback)
+        // ====================================================================
+
+        // The mechanism (Entity.GtEventDamage, dispatched by DamageSystem.EventDamage for non-player edicts)
+        // already exists; these are the shared install/clear helpers so every shootable map object
+        // (func_button shootable, func_breakable, func_door_secret, multi_eventdamage, …) wires it uniformly
+        // — keeping Wave-2 unit code one line and the field name out of each call site.
+
+        /// <summary>QC <c>.event_damage</c> callback shape: (self, inflictor, attacker, deathType, damage, hitloc, force).</summary>
+        public delegate void EventDamageHandler(
+            Entity self, Entity? inflictor, Entity? attacker, string deathType, float damage, Vector3 hitLoc, Vector3 force);
+
+        /// <summary>
+        /// Install a per-entity event-damage handler (QC <c>this.event_damage = …</c>). The damage pipeline
+        /// (<c>DamageSystem.EventDamage</c>) invokes it for any non-player target that has one set, so a
+        /// shootable brush (button/breakable/secret door) reacts to being hit without going through the player
+        /// kill path. Pass <see cref="MarkDamageable"/> first if the entity must also be <c>SOLID</c> + take
+        /// damage to receive hits.
+        /// </summary>
+        public static void InstallEventDamage(Entity e, EventDamageHandler handler)
+            => e.GtEventDamage = (self, infl, atk, dt, dmg, loc, frc) => handler(self, infl, atk, dt, dmg, loc, frc);
+
+        /// <summary>Remove an entity's event-damage handler (QC clears <c>.event_damage</c> on death/disable).</summary>
+        public static void ClearEventDamage(Entity e) => e.GtEventDamage = null;
+
+        /// <summary>
+        /// QC's shootable-brush damage setup: a high <c>.health</c> and <c>.takedamage = DAMAGE_AIM</c> so the
+        /// brush is hittable (its event_damage decides what a hit does). <paramref name="health"/> defaults to
+        /// the QC convention 10000 (effectively unkillable — the brush opens/fires on any hit instead of dying).
+        /// </summary>
+        public static void MarkDamageable(Entity e, float health = 10000f)
+        {
+            e.Health = health;
+            e.MaxHealthMover = health;
+            e.TakeDamage = DamageMode.Aim;
+        }
+
+        // ====================================================================
+        //  sounds-key soundpack selection (QC .sounds / .sound1 / .sound2)
+        // ====================================================================
+
+        /// <summary>
+        /// Port of the func_door soundpack selection (door.qc:693): <c>sounds &gt; 0</c> (or a Q3-imported door,
+        /// which always has sounds) selects the medieval/metal medplat pack onto <c>.noise2</c> (move) and
+        /// <c>.noise1</c> (stop). With <c>sounds == 0</c> the caller's defaults (the spawnfunc's own
+        /// noise1/noise2) are left untouched. CPMA/QL <c>sound_start/sound_end</c> overrides are map-pack file
+        /// probes the headless layer can't do and are skipped (documented gap).
+        /// </summary>
+        public static void ApplyDoorSounds(Entity e, bool q3compat = false)
+        {
+            if (e.Sounds > 0 || q3compat)
+            {
+                e.Noise2 = "plats/medplat1.wav";
+                e.Noise1 = "plats/medplat2.wav";
+            }
+        }
+
+        /// <summary>
+        /// Port of the func_plat soundpack selection (plat.qc:80-97): <c>sounds == 1</c> -&gt; plat1/plat2,
+        /// <c>sounds == 2</c> (or Q3-imported) -&gt; medplat1/medplat2, onto <c>.noise</c> (move) + <c>.noise1</c>
+        /// (stop); then the legacy <c>.sound1</c>/<c>.sound2</c> overrides win if present. The spawnfunc's own
+        /// plat1/plat2 default stands when <c>sounds == 0</c> and no override.
+        /// </summary>
+        public static void ApplyPlatSounds(Entity e, bool q3compat = false)
+        {
+            if (e.Sounds == 1)
+            {
+                e.Noise = "plats/plat1.wav";
+                e.Noise1 = "plats/plat2.wav";
+            }
+            if (e.Sounds == 2 || q3compat)
+            {
+                e.Noise = "plats/medplat1.wav";
+                e.Noise1 = "plats/medplat2.wav";
+            }
+            // QC backwards-compat: explicit legacy overrides take precedence over the pack.
+            if (!string.IsNullOrEmpty(e.Sound1))
+                e.Noise = e.Sound1;
+            if (!string.IsNullOrEmpty(e.Sound2))
+                e.Noise1 = e.Sound2;
+        }
+
+        /// <summary>
+        /// Port of the func_door_secret soundpack selection (door_secret.qc): <c>sounds &gt; 0</c> picks the
+        /// medieval/metal pack (move/stop on <c>.noise2</c>/<c>.noise1</c>) — same shape as the door pack.
+        /// </summary>
+        public static void ApplySecretSounds(Entity e)
+        {
+            if (e.Sounds > 0)
+            {
+                e.Noise2 = "plats/medplat1.wav";
+                e.Noise1 = "plats/medplat2.wav";
+            }
+        }
+
+        // ====================================================================
+        //  set_platmovetype (platforms.qc) + cubic_speedfunc_is_sane (lib/math.qh)
+        // ====================================================================
+
+        /// <summary>
+        /// Port of <c>set_platmovetype</c> (platforms.qc:209): parse the <c>.platmovetype</c> spawn-key string
+        /// ("start end [force]") into <see cref="Entity.PlatMoveStart"/>/<see cref="Entity.PlatMoveEnd"/>. One
+        /// token sets both ends; a 3rd "force" token skips the sanity check. Returns false (and leaves the
+        /// values parsed) on an insane reverse curve — QC <c>objerror</c>s there; the headless caller treats a
+        /// false return as "reject this mover / keep linear". A null/empty string leaves the port's existing
+        /// defaults (PlatMoveStart/End = 1, linear) untouched so stock movers are unaffected.
+        /// </summary>
+        public static bool SetPlatMoveType(Entity e, string? s)
+        {
+            if (string.IsNullOrWhiteSpace(s))
+                return true; // no key — keep the existing (linear) defaults
+
+            string[] argv = s.Split((char[]?)null, System.StringSplitOptions.RemoveEmptyEntries);
+            int n = argv.Length;
+
+            // QC stof() yields 0 for an unparsable token.
+            e.PlatMoveStart = n > 0 ? (int)StofFloat(argv[0]) : 0;
+            e.PlatMoveEnd = n > 1 ? (int)StofFloat(argv[1]) : e.PlatMoveStart;
+
+            if (n > 2 && argv[2] == "force")
+                return true; // no checking, return immediately (QC)
+
+            if (!CubicSpeedFuncIsSane(e.PlatMoveStart, e.PlatMoveEnd))
+                return false; // QC objerror: "platform would go in reverse"
+
+            return true;
+        }
+
+        /// <summary>QC stof(): parse a leading float, 0 on failure (used by the platmovetype tokenizer).</summary>
+        private static float StofFloat(string s)
+            => float.TryParse(s, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out float v) ? v : 0f;
+
+        /// <summary>
+        /// Port of <c>cubic_speedfunc_is_sane</c> (lib/math.qh:138): reject ease curves whose speed function
+        /// would reverse the mover (negative speed factors, or a curve whose first-derivative zeros fall inside
+        /// 0..1). Used by <see cref="SetPlatMoveType"/> to validate a mapper's platmovetype.
+        /// </summary>
+        public static bool CubicSpeedFuncIsSane(float startSpeedFactor, float endSpeedFactor)
+        {
+            if (startSpeedFactor < 0f || endSpeedFactor < 0f)
+                return false;
+
+            // The possible zeros of the first derivative are outside 0..1 (QC "better" check).
+            if (startSpeedFactor <= 3f && endSpeedFactor <= 3f)
+                return true;
+
+            // Otherwise the first derivative must have no zeros at all (an ellipse condition, QC).
+            float se = startSpeedFactor + endSpeedFactor;
+            float s_e = startSpeedFactor - endSpeedFactor;
+            if (3f * (se - 4f) * (se - 4f) + s_e * s_e <= 12f)
+                return true;
+
+            return false;
         }
 
         /// <summary>setorigin through the facade when present, else a plain assignment (headless tests).</summary>

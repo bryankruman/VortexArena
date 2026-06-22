@@ -1,0 +1,490 @@
+unit: monster-framework
+category: monster
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 15
+  worst_gaps:
+    - "Monster sound system is a stub: only sight/pain/death fixed-path cues play; the .sounds-file GlobalSound system, idle/melee/attack/ranged/spawn cues, the body-impact placeholder, the g_monsters_sounds gate, and the msound_delay throttle are all missing."
+    - "Healthbar waypoint sprite (g_monsters_healthbars, WP_Monster) not implemented: no monster health bars, no per-hit health update, even with the cvar on."
+    - "Team/skill colors unported: monster_setupcolors (skill-keyed colormap + glowmod) and monster_changeteam (team radar icon) have no port equivalent."
+    - "Miniboss EF_RED red-glow tint not set: minibosses are visually indistinguishable from regular monsters."
+    - "Round-restart reset sweep is DEAD: MonsterAI.Reset/ResetAll exist but ResetMapObjects only deletes projectiles — no entity .reset pass ever fires, so monsters are not restored on a round restart."
+    - "Enemy-retention re-check omits QC's LOS re-traceline + frozen-enemy + alpha-fade drops, so an acquired enemy that breaks line of sight or freezes stays the enemy until out of range."
+    - "g_monsters_quake_resize (MONSTER_SIZE_QUAKE x1.3) and g_monsters_playerclip_collisions (DPCONTENTS_PLAYERCLIP) not ported."
+    - "Targeting refinements are no-ops: crouch 75% range scaling, alpha<0.5 fade gate, and the checkpvs coarse cull (traceline-only); typefrag/chat target gate not ported."
+features:
+  - id: monster-framework.spawn.master_switch
+    name: "Master switch + validity + skill cull (Monster_Spawn front)"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/sv_monsters.qc:1388 (Monster_Spawn)"
+      - "common/monsters/sv_monsters.qc:1414 (MONSTERSKILL_NOT* cull)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:328 (SpawnFromMap)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:523 (ShouldCullForSkill)"
+    constants:
+      - { name: "g_monsters", base: "1 (0 on ruleset-XPM)", port: "1 (MasterSwitchEnabled !autocvar semantics)", match: true }
+      - { name: "MONSTERSKILL_NOTEASY/MEDIUM/HARD", base: "BIT(8)/BIT(9)/BIT(10)", port: "1<<8 / 1<<9 / 1<<10", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "MasterSwitchEnabled distinguishes unset(=on) from present-0(=off); ruleset-XPM g_monsters 0 suppresses", result: pass }
+      - { kind: code, ref: "ShouldCullForSkill keys on resolved st.Skill vs sv_monsters.qc:1414", result: pass }
+    confidence: high
+    notes: "Master switch, MON_Null guard, team-clear, and Quake skill culling all match. (QC's g_monsters check + IL_PUSH/precache bookkeeping at 1398-1405 is engine-list housekeeping, not gameplay.)"
+
+  - id: monster-framework.spawn.setup
+    name: "Field stamping + defaults (Monster_Spawn_Setup / Setup)"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/sv_monsters.qc:1319 (Monster_Spawn_Setup)"
+      - "common/monsters/sv_monsters.qc:1445 (engine field stamping)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:201 (Setup)"
+    constants:
+      - { name: "g_monsters_target_range", base: "2000", port: "2000", match: true }
+      - { name: "g_monsters_attack_range", base: "120", port: "120", match: true }
+      - { name: "g_monsters_damageforcescale", base: "0.8", port: "0.8", match: true }
+      - { name: "g_monsters_respawn_delay", base: "20", port: "20", match: true }
+      - { name: "g_monsters_spawnshieldtime", base: "2", port: "2", match: true }
+      - { name: "default RES_ARMOR", base: "bound(0.2, 0.5*SKILLMOD, 0.9)", port: "Bound(0.2, 0.5*SkillMod, 0.9)", match: true }
+      - { name: "wander_delay / wander_distance", base: "2 / 600", port: "2 / 600", match: true }
+      - { name: "default RES_HEALTH (unset)", base: "100", port: "def.StartHealth (per-monster) else 100 via mr_setup", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "g_fullbrightplayers->EF_FULLBRIGHT, g_nodepthtestplayers->EF_NODEPTHTEST and g_monsters_edit->grab presentation/cheat flags are not applied at setup (QC Monster_Spawn:1483-1485)."
+      - "view_ofs = 0.35*maxs.z, the drop-to-floor tracebox + nudgeoutofsolid, and FL_FLY/FL_SWIM-from-type are folded into each descriptor's Spawn rather than the shared Setup (faithful effect, different placement)."
+    verification:
+      - { kind: code, ref: "Setup seeds health/armor/ranges/respawn/spawnshield with cfg-matching fallbacks; values diffed vs monsters.cfg", result: pass }
+    confidence: high
+    notes: "Shared stamping faithful; the only setup-time misses are cosmetic/cheat effect flags (gap)."
+
+  - id: monster-framework.spawn.miniboss
+    name: "Miniboss setup (Monster_Miniboss_Setup)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/monsters/sv_monsters.qc:521 (Monster_Miniboss_Setup)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:244 (Setup miniboss block)"
+    constants:
+      - { name: "g_monsters_miniboss_chance", base: "5", port: "0 fallback (reads cvar; cfg default 5)", match: true }
+      - { name: "g_monsters_miniboss_healthboost", base: "100", port: "100", match: true }
+      - { name: "g_monsters_miniboss_loot", base: '"vortex"', port: '"vortex"', match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port flags IsMiniboss and adds the health boost + miniboss loot, but never sets Effects |= EF_RED, so a miniboss has no red glow and looks identical to a normal monster (QC sets it at setup AND re-applies on respawn)."
+      - "QC re-applies EF_RED on a RESPAWNED miniboss (Monster_Miniboss_Setup:523-528 early-return branch); the port's Respawn does not preserve/re-flag IsMiniboss-driven effects (moot until EF_RED is ported)."
+      - "MonsterCheckBossFlag mutator hook (lets a mutator veto miniboss status, clearing MINIBOSS) is not ported."
+    verification:
+      - { kind: code, ref: "Setup miniboss block sets st.IsMiniboss + health, no EF_RED; grep for EF_RED on monster = none", result: fail }
+    confidence: high
+    notes: "Values faithful (chance, boost, loot list); the EF_RED presentation tint, its respawn re-apply, and the boss-veto hook are missing."
+
+  - id: monster-framework.lifecycle.appear_use_touch
+    name: "Appear / Use / Touch acquisition (Monster_Appear/Use/Touch)"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/sv_monsters.qc:985 (Monster_Appear_Check)"
+      - "common/monsters/sv_monsters.qc:598 (Monster_Use)"
+      - "common/monsters/sv_monsters.qc:510 (Monster_Touch)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:345 (appear defer + use)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:394 (Use = acquire attacker)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:991 (Touch)"
+    constants:
+      - { name: "MONSTERFLAG_APPEAR", base: "BIT(1)", port: "1<<1", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "APPEAR defers think + installs Use(adopt activator -> spawn); Touch aggroes a non-monster bump after spawn_time", result: pass }
+    confidence: high
+    notes: "Appear/use/touch acquisition all match; APPEAR descriptors recovered via _appearDefs (QC .monsterdef)."
+
+  - id: monster-framework.target.validtarget
+    name: "Target validity (Monster_ValidTarget)"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/sv_monsters.qc:101 (Monster_ValidTarget)"
+      - "common/monsters/sv_monsters.qc:70 (monster_facing)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:546 (ValidTarget)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:588 (MonsterFacing)"
+    constants:
+      - { name: "g_monsters_lineofsight", base: "1", port: "1", match: true }
+      - { name: "g_monsters_target_infront", base: "0", port: "0", match: true }
+      - { name: "g_monsters_target_infront_range", base: "0.3", port: "0.3", match: true }
+      - { name: "g_monsters_target_infront_2d", base: "1", port: "1", match: true }
+      - { name: "g_monsters_typefrag", base: "1", port: "not implemented (gate is no-op)", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "PVS line-of-sight uses a traceline only; QC also does checkpvs(eye, targ) before the trace. Traceline is stricter so behavior is close, but a different-PVS-leaf but traceline-visible target would be acquired where QC would not."
+      - "Alpha-fade gate (QC alpha<0.5 && alpha!=0 rejects) is a no-op: the headless Entity has no alpha field, so a faded/cloaked target stays targetable."
+      - "Typefrag/chat gate not ported: QC rejects a chatting target when !g_monsters_typefrag (matches default-1; diverges only when g_monsters_typefrag 0)."
+      - "Vehicle-vs-melee rejection (QC: IS_VEHICLE(targ) && !MON_FLAG_RANGED) not in ValidTarget; the port's ValidTarget has no vehicle gate at all."
+      - "game_stopped / time<game_starttime pre-match guard is deferred to other layers (Move gates on game_stopped; ValidTarget itself doesn't)."
+    verification:
+      - { kind: code, ref: "ValidTarget covers self/dead/notarget/team/follow/lineofsight-trace/facing-cone; missing checkpvs+alpha+typefrag+vehicle+prematch", result: fail }
+    confidence: high
+    notes: "Core rejection set + facing cone faithful; the misses are the coarse PVS cull, alpha, typefrag, vehicle-melee, prematch, and crouch (next row)."
+
+  - id: monster-framework.target.find_enemycheck
+    name: "Target acquisition + enemy retention (Monster_FindTarget / Monster_Enemy_Check)"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/sv_monsters.qc:137 (Monster_FindTarget)"
+      - "common/monsters/sv_monsters.qc:1243 (Monster_Enemy_Check)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:608 (FindTarget)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:644 (EnemyCheck)"
+    constants:
+      - { name: "crouch range scale", base: "*0.75", port: "*0.75 (but IsCrouching => false, so never applied)", match: false }
+      - { name: "enemy recheck cadence", base: "time + 1 (1s)", port: "Now + 1f", match: true }
+    status:
+      logic: partial
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: partial
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Enemy-RETENTION re-check is incomplete. QC Monster_Enemy_Check drops the held enemy on: LOS re-traceline blocked (trace_fraction<1 && trace_ent!=enemy), STAT(FROZEN, enemy), and alpha<0.5. The port's EnemyCheck (MonsterAI.cs:646-662) drops only on freed/dead/health<1/notarget/takedamage/out-of-range — so an enemy that ducks behind a wall or freezes is RETAINED until it strays out of target_range."
+      - "Crouch 75% range scaling is dead: IsCrouching always returns false (no crouch flag on the headless Entity), so crouching gives no stealth/range benefit vs QC."
+      - "QC scans the g_monster_targets intrusive list (anything with .monster_attack); the port scans FindInRadius for players (+ other monsters only in teamplay). Behaviorally equivalent for the stock target set."
+      - "Sight sound on acquisition uses the fixed path monsters/<name>_sight.wav (see the sound row); QC uses the .sounds-driven GlobalSound."
+    verification:
+      - { kind: code, ref: "FindTarget keeps closest valid within target_range; EnemyCheck drops dead/oor/notarget/undamageable but NOT los-re-trace/frozen/alpha; recheck 1s", result: fail }
+    confidence: high
+    notes: "Acquisition + the 1s throttle are faithful; the retention re-check loses QC's LOS/frozen/alpha drops, and crouch scaling is dead."
+
+  - id: monster-framework.move.brain
+    name: "Movement brain (Monster_Move / Move_Target / WanderTarget)"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/sv_monsters.qc:784 (Monster_Move)"
+      - "common/monsters/sv_monsters.qc:624 (Monster_Move_Target)"
+      - "common/monsters/sv_monsters.qc:605 (Monster_WanderTarget)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:680 (Move)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:782 (MoveTarget)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:828 (WanderTarget)"
+    constants:
+      - { name: "speed cap", base: "bound(0, base*SKILLMOD, base*2.5)", port: "Bound(0, base*SkillMod, base*2.5)", match: true }
+      - { name: "yaw turn clamp", base: "+-25 deg/frame (shortangle_f)", port: "Clamp(ShortAngle, -25, 25)", match: true }
+      - { name: "MONSTER_MOVE_* states", base: "FOLLOW1/WANDER2/SPAWNLOC3/NOMOVE4/ENEMY5", port: "1/2/3/4/5", match: true }
+      - { name: "MONSTER_SKILLMOD", base: "0.5 + skill*0.09", port: "0.5f + Skill*((1.2-0.3)/10)", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: partial
+      presentation: na
+      audio: partial
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "movelib_move_simple / movelib_brake_simple are approximated with a fixed 0.4 lerp / (1 - stopspeed*0.01) decay 'so behavior is stable regardless of frametime' rather than the QC frametime-scaled accel — timing/feel diverges slightly from the frametime-dependent original."
+      - "monster_follow team-desync prune is partial: QC Monster_Move clears monster_follow when the leader is DIFF_TEAM (with g_monsters_teams) OR spec OR observer (sv_monsters.qc:860-863); the port's Move never re-prunes the follow target."
+      - "Halt-condition set is reduced: the port gates Move on frozen/swim/spawn_time but does NOT include the full QC set — MonsterMove mutator hook, game_stopped, draggedby, round-not-started, time<game_starttime, campaign_bots_may_start. (Note: the port's RunThink spawn-time gate covers part, but game_stopped/round/campaign halts are absent from the monster move path.)"
+      - "steerlib_attract2 (the QC steering blend toward moveto with leadahead 500/0.95) is replaced by a direct (moveto-origin) yaw turn; the steer-prediction smoothing is not modeled."
+      - "Idle voice (Monster_Sound(idle, 7, true)) when enemy-less is not emitted (see the sound row)."
+    verification:
+      - { kind: code, ref: "MoveTarget movestate switch, +-25 yaw clamp, 2.5x speed cap, wander truncate-trace all match; movelib lerp + steerlib approximated; halt set reduced", result: pass }
+    confidence: high
+    notes: "Pathing state machine + caps faithful; the movelib/steerlib approximations, the reduced halt set, and the absent follow-prune are the fidelity caveats."
+
+  - id: monster-framework.move.danger
+    name: "Edge/lava danger avoidance (Monster_CheckDanger)"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/sv_monsters.qc:711 (Monster_CheckDanger)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterFramework.cs:249 (CheckDanger)"
+    constants:
+      - { name: "lethal fall threshold", base: "1024 chasing / 100 wandering", port: "1024 / 100", match: true }
+      - { name: "danger codes", base: "1 sky / 2 fall / 3 lava-slime / 4 hurt-trigger", port: "1 / 2 / 3 (4 omitted)", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The hurt-trigger danger code (4) — tracebox_hits_trigger_hurt against the path ahead — is not ported (both fly/swim and ground branches), so monsters won't proactively avoid trigger_hurt brushes."
+    verification:
+      - { kind: code, ref: "Ground+fly branches return sky(1)/fall(2;1024/100)/lava-slime(3); no trigger_hurt(4) check", result: fail }
+    confidence: high
+    notes: "Fall/sky/lava avoidance faithful with matching thresholds; only the trigger_hurt avoidance branch is missing."
+
+  - id: monster-framework.attack.dispatch
+    name: "Attack gating + dispatch (Monster_Attack_Check)"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/sv_monsters.qc:452 (Monster_Attack_Check)"
+      - "common/monsters/sv_monsters.qc:85 (monster_makevectors)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:897 (AttackCheck)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:908 (FaceTarget)"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: partial
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC selects the attack TYPE (melee vs ranged) in Monster_Attack_Check from enemy distance and passes it into monster_attackfunc; the port's AttackCheck only gates on enemy+cooldown and re-derives melee/ranged inside each descriptor's Attack. Equivalent outcome, different split."
+      - "The infront-facing gate in Attack_Check (autocvar_g_monsters_target_infront || MONSTERFLAG_INFRONT) is not re-checked in AttackCheck (it is checked in ValidTarget at acquisition)."
+      - "QC plays monstersound_melee on a successful (==1) attack from inside Attack_Check; the port has no melee voice cue (see the sound row)."
+    verification:
+      - { kind: code, ref: "AttackCheck faces the enemy then calls Def.Attack when off cooldown; per-attack cooldowns set inside each Attack", result: pass }
+    confidence: high
+    notes: "Gating + aim faithful; the melee/ranged split moved into each monster's Attack rather than the dispatcher; the melee success voice is absent."
+
+  - id: monster-framework.attack.primitives
+    name: "Melee / leap / projectile primitives (Monster_Attack_Melee/Leap + projectile spawns)"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/sv_monsters.qc:388 (Monster_Attack_Melee)"
+      - "common/monsters/sv_monsters.qc:414 (Monster_Attack_Leap_Check / Leap)"
+      - "common/monsters/sv_monsters.qc:243 (Monster_Delay)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:1072 (MeleeAttack)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:1099 (Leap) + 1129 (TraceToss)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:1151 (QueueDelayedAttack) + 1167 (QueueCombo) + 1192 (SpawnProjectile)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterFramework.cs:114 (HomeProjectile) + 185 (ChainedZaps)"
+    constants:
+      - { name: "melee damage scale", base: "damg * MONSTER_SKILLMOD", port: "damage * SkillMod", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "TraceToss is a stepped-traceline approximation of QC tracetoss (deterministic, ~4s/80 steps) rather than the engine's exact ballistic toss; close enough to gate 'will I land on my enemy', not bit-exact."
+    verification:
+      - { kind: code, ref: "MeleeAttack traceline+Damage*skillmod; Leap gates grounded/cooldown/tracetoss-hits-enemy; Monster_Delay -> QueueDelayedAttack/Combo; projectile spawner with homing/zap hooks", result: pass }
+    confidence: high
+    notes: "All shared attack primitives ported and used by the five monsters; tracetoss is the only approximation."
+
+  - id: monster-framework.damage.pain_death
+    name: "Pain / death / corpse (Monster_Damage / Monster_Dead / Monster_Dead_Damage)"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/sv_monsters.qc:1083 (Monster_Damage)"
+      - "common/monsters/sv_monsters.qc:1036 (Monster_Dead)"
+      - "common/monsters/sv_monsters.qc:1018 (Monster_Dead_Damage)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:1439 (MonsterEventDamage)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:1297 (MarkPain) + 1360 (MarkDead)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:1474 (MonsterDeadDamage)"
+    constants:
+      - { name: "monster RES_ARMOR block", base: "armor stored as small fraction; block=RES_ARMOR/100 (zombie RES_ARMOR=g_monsters_armor_blockpercent 0.5)", port: "armorBlock = ArmorValue/100", match: true }
+      - { name: "pain window", base: "(per-monster mr_pain, e.g. zombie 0.34)", port: "PainFinished = Now + 0.34f", match: true }
+      - { name: "pain sound delay", base: "1.2 (Monster_Sound pain)", port: "not implemented (no msound_delay)", match: false }
+      - { name: "live gib threshold", base: "HEALTH <= -100 || DEATH_KILL", port: "Health <= -100 || isKill", match: true }
+      - { name: "corpse gib threshold", base: "HEALTH <= -50", port: "Health <= -50", match: true }
+      - { name: "corpse lifetime", base: "time + 5", port: "Now + 5f", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: partial
+      presentation: na
+      audio: partial
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "damageforcescale double-apply (generic apply-push in DamageSystem.ApplyKnockback + the MarkPain self-push) is intentionally retained because QC does the same double-add for a pushable monster (recon section 8); removing either would halve monster knockback vs Base. event_heal/Monster_Heal as a per-entity delegate is also intentionally not modeled — the mage heals directly via HealPulse."
+    gaps:
+      - "INVINCIBLE/SpawnShield/armor-split/gib-threshold/scoring/respawn-trigger all faithful; the audio side (pain sound 1.2s delay throttle + the spamsound SND_BODYIMPACT1 body-impact placeholder on every non-drown/fire hit) and the take>50/>100 extra gib splashes are not implemented (client VFX/audio)."
+      - "QC restores target2 = oldtarget2 on death for a redirected-patrol respawn; the port has no .oldtarget2 (documented minor deferral)."
+      - "WaypointSprite_UpdateHealth on each hit + WaypointSprite_Kill on death are no-ops (no WP_Monster; see healthbar row)."
+      - "QC Monster_Dead swaps to mdl_dead corpse model + CSQCModel_UnlinkEntity + clears dphitcontentsmask BODY; the port sets DeadState/Solid.Corpse but the model-swap is presentation (deferred)."
+    verification:
+      - { kind: code, ref: "MonsterEventDamage dispatches live-vs-corpse on DeadState; armor split, gib thresholds (-100/-50), corpse lifetime +5, SUB_UseTargets, MonsterDies bonus all present", result: pass }
+      - { kind: test, ref: "tests/XonoticGodot.Tests/MonsterDamageDeathTests.cs", result: pass }
+    confidence: high
+    notes: "Damage/death rules + values faithful; the double-push and direct-heal are intended divergences; pain/body-impact audio throttle is a gap."
+
+  - id: monster-framework.lifecycle.respawn_reset
+    name: "Respawn + round-restart reset + scoring (Monster_Respawn / Monster_Reset / score)"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/sv_monsters.qc:547 (Monster_Respawn_Check)"
+      - "common/monsters/sv_monsters.qc:567 (Monster_Dead_Fade / Respawn)"
+      - "common/monsters/sv_monsters.qc:999 (Monster_Reset)"
+      - "common/monsters/sv_monsters.qc:1049 (score_kill / monsters_killed)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:1557 (RespawnCheck) + 1569 (Respawn)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:1502 (Reset) + 1531 (ResetAll)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/EntityMonsterReset.cs:19 (Entity.Reset delegate)"
+      - "src/XonoticGodot.Server/GameWorld.cs:2439 (ResetMapObjects — does NOT call Entity.Reset)"
+    constants:
+      - { name: "g_monsters_respawn", base: "1", port: "1", match: true }
+      - { name: "g_monsters_respawn_delay", base: "20", port: "20", match: true }
+      - { name: "g_monsters_score_kill", base: "0", port: "0", match: true }
+      - { name: "g_monsters_score_spawned", base: "0", port: "0", match: true }
+      - { name: "MONSTER_RESPAWN_DEATHPOINT", base: "BIT(4)", port: "respawn at death point supported", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Round-restart reset is DEAD. Entity.Reset is installed (=MonsterAI.Reset) and ResetAll exists, but the live reset_map path (GameWorld.ResetMapObjects, GameWorld.cs:2439) only removes projectiles — it never iterates entities calling e.Reset. So on a round restart natural monsters are NOT restored to spawn / SPAWNED monsters are NOT removed via this hook. (Verified: no e.Reset?.Invoke caller anywhere on the server path.)"
+      - "Respawn re-stamp is a subset of Monster_Spawn (health/solid/takedamage/spawnshield/think) and does not re-run monster_setupcolors or re-flag miniboss EF_RED (moot until those are ported)."
+    verification:
+      - { kind: code, ref: "RespawnCheck honors AlwaysRespawn/NORESPAWN/g_monsters_respawn; Respawn (driven LIVE by DeadThink) restores at spawn or death point after delay; score awarded to a client killer for natural", result: pass }
+      - { kind: code, ref: "ResetMapObjects (GameWorld.cs:2439) deletes only projectiles; no Entity.Reset sweep -> MonsterAI.Reset/ResetAll have no live caller", result: fail }
+    confidence: high
+    notes: "Respawn (the corpse-fade revive) is live + faithful; scoring/counters faithful; the round-restart per-entity reset is present-but-dead."
+
+  - id: monster-framework.spawn_drivers.stats
+    name: "Spawn drivers + monster_spawner + map-stats (spawnmonster / monster_spawner / monsters_setstatus)"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/sv_spawn.qc:12 (spawnmonster)"
+      - "common/monsters/sv_spawner.qc:6 (spawner_use / monster_spawner)"
+      - "common/monsters/sv_monsters.qc:34 (monsters_setstatus)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:418 (SpawnMonster)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterSpawnFuncs.cs:49 (MonsterSpawner) + 72 (SpawnerUse)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:195 (spawnfunc registration)"
+      - "src/XonoticGodot.Server/GameWorld.cs:2158 (SpawnFuncs.TrySpawn live loop)"
+      - "game/net/NetGame.cs:2960 (scoreboard MonstersTotal/Killed feed)"
+    constants:
+      - { name: "g_monsters_owners", base: "1", port: "1", match: true }
+      - { name: "g_monsters_teams", base: "1", port: "1", match: true }
+      - { name: "g_monsters_max / _perplayer", base: "20 / 0", port: "20 / 0 (enforced in editmob command only, like QC)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "editmob spawn disabled-message divergence: QC prints 'Monster spawning is disabled' when g_monsters_max<=0 || g_monsters_max_perplayer<=0; the port instead falls through to the count checks (same gating outcome — per-player 0 = off — different message text). Command-layer cosmetic."
+    verification:
+      - { kind: code, ref: "spawnmonster random/anyrandom/by-netname + owner/team/follow/moveflags; spawner emits up to .count owned monsters; monstersTotal++/killed++ natural-only; NetGame feeds scoreboard", result: pass }
+      - { kind: code, ref: "monster_zombie/golem/shambler(alias)/mage/spider/wyvern/spawner registered in SpawnFuncs (MapObjectsRegistry.cs:195-202), invoked by GameWorld.cs:2158", result: pass }
+    confidence: high
+    notes: "All spawn entry points + the stat feed are live and faithful (Invasion SpawnMonsterDef also routes here); only the editmob disabled-message text differs."
+
+  - id: monster-framework.presentation.team_colors
+    name: "Team / skill colors + radar (monster_setupcolors / monster_changeteam)"
+    layer: [presentation, authority]
+    base_refs:
+      - "common/monsters/sv_monsters.qc:172 (monster_setupcolors)"
+      - "common/monsters/sv_monsters.qc:200 (monster_changeteam)"
+    port_refs: []
+    constants:
+      - { name: "skill colormaps", base: "1126/1075/1228/1092/1160 by skill tier (else team/owner color)", port: "not implemented", match: false }
+      - { name: "team radar icon", base: "RADARICON_DANGER, Team_ColorRGB / '1 0 0'", port: "not implemented", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "monster_setupcolors (called from Monster_Spawn:1526 for a natural monster) sets .colormap + .glowmod by team / owner / skill tier so monsters are tinted by difficulty; the port never sets colormap/glowmod, so all monsters share the base skin tint."
+      - "monster_changeteam (team radar icon update + IL_PUSH g_monster_targets + colormap) is not ported; teamplay monster team-recoloring and the danger radar icon are absent."
+    verification:
+      - { kind: code, ref: "grep colormap/glowmod/monster_setupcolors/changeteam/RADARICON in src+game monster code = none", result: fail }
+    confidence: high
+    notes: "Whole color/radar presentation layer for monsters is unported. Off the critical gameplay path but a visible Base feature the draft omitted."
+
+  - id: monster-framework.presentation.healthbar_sounds_anim
+    name: "Presentation: healthbar sprite + monster sounds + CSQC anim"
+    layer: [presentation, authority]
+    base_refs:
+      - "common/monsters/sv_monsters.qc:1366 (WaypointSprite_Spawn WP_Monster, g_monsters_healthbars)"
+      - "common/monsters/sv_monsters.qc:261 (get_monster_model_datafilename / Monster_Sounds_*)"
+      - "common/monsters/sv_monsters.qc:368 (Monster_Sound)"
+      - "common/monsters/sv_monsters.qc:1212 (Monster_Anim / CSQCMODEL_AUTOUPDATE)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:666 (sight sound) / 1322 (pain) / 1370 (death)"
+    constants:
+      - { name: "g_monsters_healthbars", base: "0", port: "not implemented (no WP_Monster)", match: false }
+      - { name: "g_monsters_sounds", base: "1", port: "not implemented (no gate)", match: false }
+      - { name: "monster sound cues", base: "8 (death/sight/ranged/melee/pain/spawn/idle/attack) via .sounds GlobalSound", port: "3 fixed paths (sight/pain/death)", match: false }
+      - { name: "idle voice delay / pain delay", base: "7 / 1.2 (msound_delay throttle)", port: "not implemented", match: false }
+    status:
+      logic: partial
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: partial
+      liveness: partial
+    intended_divergence: true
+    divergence_rationale: "CSQC per-frame model frame playback (Monster_Anim frame groups, mr_anim, CSQCMODEL_AUTOUPDATE) is intentionally render-deferred — the headless authority port maintains only the server-side animation PHASE (idle/walk/run/attack/pain/death) that drives timing, the same authority/presentation split used by the turret and vehicle ports. The healthbar sprite and the full .sounds sound system are NOT intended divergences — they are unported features (gaps)."
+    gaps:
+      - "Healthbar waypoint sprite (WP_Monster) entirely missing: no floating health bar above monsters, no WaypointSprite_UpdateMaxHealth/Health on hit, no _Kill on death, even with g_monsters_healthbars 1."
+      - "Monster sound system is a stub: only sight/pain/death play via fixed paths monsters/<name>_{sight,pain,death}.wav. No .sounds-file GlobalSound lookup, no skin-keyed Monster_Sounds_Update, no idle/melee/attack/ranged/spawn cues, no spamsound body-impact placeholder, no g_monsters_sounds gate, no msound_delay throttle (so idle voice cadence 7s + pain throttle 1.2s are absent and pain/death can spam)."
+      - "MONSTER_SIZE_QUAKE x1.3 resize (g_monsters_quake_resize, default 1) not ported — no MONSTER_SIZE_QUAKE handling at all; latent today since no port monster carries the flag, but a SIZE_QUAKE monster would spawn at base size."
+      - "g_monsters_playerclip_collisions (DPCONTENTS_PLAYERCLIP on the hit-contents mask, default 1) not ported — the port doesn't model dphitcontentsmask, so monsters ignore playerclip brushes."
+    verification:
+      - { kind: code, ref: "grep WP_Monster/healthbars/EF_RED/GlobalSound/.sounds/msound_delay/quake_resize/playerclip across src+game = none; only 3 Api.Sound.Play fixed-path calls in MonsterAI", result: fail }
+    confidence: high
+    notes: "The biggest residual cluster: healthbar sprite + the full monster sound system + quake-resize/playerclip. CSQC frame playback is the intended-divergence render deferral."

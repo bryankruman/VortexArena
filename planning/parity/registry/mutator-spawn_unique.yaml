@@ -1,0 +1,157 @@
+unit: mutator-spawn_unique
+category: mutator
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 5
+  worst_gaps:
+    - "ExprEvaluate is a simplified bool parser (\"\"/\"0\"/\"false\"->false): it does NOT reproduce Base expr_evaluate's full grammar (empty string -> TRUE in Base but FALSE in port; +/- prefixes, cvar-name terms, and the >=,<=,>,<,==,!=,===,!== binops all unsupported). Inert for the stock g_spawn_unique 0/1 use, divergent only for an exotic expression-string cvar value."
+features:
+  - id: mutator-spawn_unique.enable.cvar
+    name: "Enable predicate via g_spawn_unique (expr_evaluate)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/spawn_unique/sv_spawn_unique.qc:3 REGISTER_MUTATOR(spawn_unique, expr_evaluate(autocvar_g_spawn_unique))"
+      - "common/mutators/mutator/spawn_unique/sv_spawn_unique.qh:3 autocvar_g_spawn_unique"
+      - "lib/cvar.qh:48 expr_evaluate"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SpawnUniqueMutator.cs:27 IsEnabled"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SpawnUniqueMutator.cs:71 ExprEvaluate"
+    constants:
+      - { name: "g_spawn_unique (default)", base: "0", port: "0", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port ExprEvaluate(\"\"/\"0\"/\"false\")->false, else true. Base expr_evaluate (lib/cvar.qh:48) is a full mini-expression evaluator: empty string tokenizes to 0 terms and returns TRUE (port returns false); a leading '+'/'-' prefix and the >=,<=,>,<,==,!=,===,!== binops + bare-cvar-name terms are all unsupported in the port. For the stock numeric value (g_spawn_unique 0 or 1) both agree, so the live behavior matches; the divergence is reachable only if a host sets g_spawn_unique to an expression string or empty."
+    verification:
+      - { kind: value-diff, ref: "Base mutators.cfg:569 (set g_spawn_unique 0) == port assets/data/xonotic-data.pk3dir/mutators.cfg:569", result: pass }
+      - { kind: code-read, ref: "Base lib/cvar.qh:48-103 expr_evaluate full grammar vs port SpawnUniqueMutator.cs:71-77 simplified parser — agree on \"0\"/\"1\", differ on empty/expression strings", result: fail }
+      - { kind: code-read, ref: "MutatorActivation.Apply (GameWorld.cs:511) -> Add -> Hook() subscribes both handlers when IsEnabled; Remove/Unhook when disabled", result: pass }
+    confidence: high
+    notes: >
+      Registered via [Mutator] source-gen (Mutators.ByName(\"spawn_unique\") asserted non-null in T19
+      tests). Default-off matches Base. The expr_evaluate simplification is a real but practically-inert edge
+      divergence — kept as logic: partial rather than na because it is a behavioral mismatch, not a port convention.
+
+  - id: mutator-spawn_unique.state.su_last_point
+    name: "Per-player last-spawnpoint memory (su_last_point)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/spawn_unique/sv_spawn_unique.qh:5 .entity su_last_point"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SpawnUniqueMutator.cs:31 _lastPoint (ConditionalWeakTable<Entity,StrongRef>)"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: >
+      Base stores the last spawnpoint in a per-edict field (.entity su_last_point); the port holds it in a
+      ConditionalWeakTable<Entity, StrongRef> keyed on the player entity instead of adding a per-mutator
+      field to Entity/Player. GC-safe (entry drops when the player is collected) and behaviorally identical
+      (a per-player Entity?). Same pattern stale_move_negation / vampirehook use.
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "OnPlayerSpawn writes _lastPoint[player]=spot (SpawnUniqueMutator.cs:62-68); OnSpawnScore reads it via ReferenceEquals (cs:53-59)", result: pass }
+    confidence: high
+    notes: "Identity-based memory, not coordinate-based; ReferenceEquals matches QC entity '==' comparison."
+
+  - id: mutator-spawn_unique.spawn_score.demote_repeat_spot
+    name: "Spawn_Score hook: demote the player's last spawnpoint to priority 0.1"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/spawn_unique/sv_spawn_unique.qc:5 MUTATOR_HOOKFUNCTION(spawn_unique, Spawn_Score)"
+      - "server/spawnpoints.qc:298 MUTATOR_CALLHOOK(Spawn_Score, this, spot, spawn_score)"
+      - "server/mutators/events.qh:609 EV_Spawn_Score (ARGV0 player, ARGV1 spot, ARGV2 vector in/out: x=prio y=dist)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SpawnUniqueMutator.cs:53 OnSpawnScore"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:433-435 MutatorHooks.SpawnScore.Call"
+    constants:
+      - { name: "demoted priority (spawn_score.x)", base: "0.1", port: "0.1", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: unit-test, ref: "tests/XonoticGodot.Tests/MutatorBatchT19Tests.cs:514 SpawnUnique_DropsScore_OnLastSpawnPoint (spotA->0.1, spotB stays 10) — PASSED (dotnet test, 1/1)", result: pass }
+      - { kind: code-read, ref: "SpawnSystem.ScoreSpot fires MutatorHooks.SpawnScore.Call(ref ss) per candidate (SpawnSystem.cs:434), unconditionally inside the live SelectSpawnPoint scoring loop", result: pass }
+    confidence: high
+    notes: >
+      Overwrites priority (.x) to 0.1; weight (.y) untouched, as in QC. Args struct exposes both Priority(.x)
+      and Weight(.y). The 0.1 keeps the spot selectable (prio >= 0 survives the bad-spot filter) but loses the
+      WeightedPick preference to any spot still at prio 10/0, so the last spot is reused only when nothing else
+      is free.
+
+  - id: mutator-spawn_unique.player_spawn.record_spot
+    name: "PlayerSpawn hook: record the spawnpoint just used"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/spawn_unique/sv_spawn_unique.qc:17 MUTATOR_HOOKFUNCTION(spawn_unique, PlayerSpawn)"
+      - "server/client.qc:814 MUTATOR_CALLHOOK(PlayerSpawn, this, spot)"
+      - "server/mutators/events.qh:44 EV_PlayerSpawn (ARGV0 player, ARGV1 spot-or-NULL)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SpawnUniqueMutator.cs:62 OnPlayerSpawn"
+      - "src/XonoticGodot.Server/ClientManager.cs:541-542 MutatorHooks.PlayerSpawn.Call(new PlayerSpawnArgs(p, sp.Value.Source))"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: unit-test, ref: "tests/XonoticGodot.Tests/MutatorBatchT19Tests.cs:523 (PlayerSpawn records spotA) — PASSED", result: pass }
+      - { kind: code-read, ref: "ClientManager.Spawn fires PlayerSpawn.Call(p, sp.Value.Source) (ClientManager.cs:542). Arg order matches Base ARGV0=player/ARGV1=spot. Source is the same Entity ScoreSpot scored (ToSpawnPoint(chosen).Source, SpawnSystem.cs:501), so ReferenceEquals round-trips across respawns", result: pass }
+    confidence: high
+    notes: >
+      Fired on every spawn/respawn from the live Spawn() path. SpawnPoint.Source carries the same persistent
+      map spawnpoint Entity (FindByClass, recurs across respawns) that Spawn_Score later compares, so the
+      identity round-trip is intact. The ClientManager inline comment writes the arg order \"spot, this\" but
+      the code passes (player, spot) correctly.
+
+  - id: mutator-spawn_unique.net.serverside_only
+    name: "Server-side only: su_last_point never networked, no CSQC/HUD presence"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/spawn_unique/sv_spawn_unique.qc (SVQC-only via _mod.inc #ifdef SVQC; no cl_/CSQC file, no .SendFlags)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SpawnUniqueMutator.cs (no net/HUD code; _lastPoint is a private server-side table)"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "Base mutator dir has only sv_*.qc/.qh + _mod files (no cl_/CSQC); _mod.inc guards include with #ifdef SVQC. Port mutator has no networking/HUD surface", result: pass }
+    confidence: high
+    notes: >
+      Documents the absence of a client/networking dimension (added by the verifier so the spec's
+      \"purely server-side, never networked\" claim is anchored to a feature row). Nothing to network and
+      nothing to render, hence presentation/audio na and liveness na (no client code to be live).

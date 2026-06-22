@@ -1,0 +1,95 @@
+# Xonotic ↔ XonoticGodot Parity System
+
+This directory is the **single source of truth** for how faithfully the Godot/C# port
+reproduces the original Xonotic gameplay and presentation, and where it falls short.
+
+It exists so that "find what's missing or wrong vs. the original" is a **repeatable,
+machine-checkable process**, not a one-off audit. Each prior ad-hoc audit
+(`HUD_PARITY_CONTRACT.md`, `weapon-effects-parity.md`, `warpzone-base-vs-port-audit-*.md`,
+`graphics-settings-audit-*.md`) folds into this structure.
+
+## Ground truth
+
+- **Reference (the spec):** original Xonotic QuakeC at `../Base/data/xonotic-data.pk3dir/qcsrc`
+- **Pinned reference revision:** `v0.8.6-1779-g863cd3e84` (from `csprogs-xonotic-v0.8.6-1779-g863cd3e84.pk3`)
+- **Subject under test:** this repo — gameplay in `src/XonoticGodot.Common/Gameplay/**` and
+  `src/XonoticGodot.Server/**`; presentation/client in `game/**` and `src/XonoticGodot.Engine/**`.
+
+The QuakeC is authoritative. When the port disagrees with Base, the port is wrong **unless**
+the row is explicitly marked `intended_divergence: true` with a rationale.
+
+## Layout
+
+| Path | What |
+|---|---|
+| `SCHEMA.md` | The exact YAML row schema + status/dimension vocabulary. **Read before editing any registry file.** |
+| `SPEC-TEMPLATE.md` | Template for a per-unit algorithm spec doc. |
+| `registry/<unit>.yaml` | Machine-readable parity rows for one subsystem unit (the source of truth). |
+| `specs/<unit>.md` | Human-readable algorithm/behavior spec for that unit (the "how it works"). |
+| `INDEX.md` | Generated: full feature list + per-dimension status, one line per feature. |
+| `PARITY-GAPS.md` | Generated: gaps ranked by gameplay impact. The actionable backlog. |
+| `NEEDS-INGAME-CHECK.md` | Generated: rows whose presentation/liveness code-reading couldn't confirm — the manual in-game verify queue. |
+| `PORTING-PLAN.md` | Generated: the **wave-based execution plan** for closing the gaps (how to do the work, in parallel). See below. |
+
+## The two workflows
+
+1. **Build/refresh the map** (heavy, occasional) — fan out over Base subsystems, extract the
+   exhaustive feature inventory + algorithms + constants, locate port counterparts, classify
+   parity per dimension, adversarially verify "faithful"/"live" claims, write `registry/` + `specs/`.
+2. **Continuous parity-diff** (`.claude/workflows/parity-diff`, the reusable one) — consumes the
+   registry as the baseline, re-locates port code, re-checks liveness, diffs cvar/constant values
+   vs Base, runs/observes flagged features, and reports **drift** (status regressions, new gaps,
+   newly-fixed rows). Emits a delta report and updates the registry.
+
+## Closing the gaps: the porting plan
+
+[PORTING-PLAN.md](PORTING-PLAN.md) is the execution plan that turns `PARITY-GAPS.md` into actual
+work, organized into **4 dependency-ordered waves** sized for maximum parallelism:
+
+- **Wave 1 — shared seams.** The handful of cross-cutting capabilities (round-handler tick, projectile
+  networking, shared weapon-fire FX/audio, input/impulse routing, the mod-icon feed, …) that live in
+  *hot files* the rest of the work depends on. This is the only real bottleneck; the rest fans out from it.
+- **Wave 2 — gameplay leaves.** Every gameplay unit's own-file gaps. One agent per file (~160), mutually
+  independent once Wave 1 lands.
+- **Wave 3 — presentation.** Client/HUD/FX/audio that renders the server state produced in Wave 2.
+- **Wave 4 — verification.** Build, in-game checks, and a `parity-diff` re-baseline proving the gaps closed.
+
+**How to follow it:**
+1. Do the waves **in order**; inside a wave, run the rows **in parallel**.
+2. **One agent owns one file** — never let two agents edit the same file in the same wave. The hot files
+   are reserved to Wave 1 precisely so Waves 2–3 are conflict-free.
+3. Each row names the **file** to edit and the **shard(s)** (`registry/<shard>.yaml` + `specs/<shard>.md`)
+   that hold its exact gaps, Base symbols, and constants — the shard is the work order.
+4. After each wave, run the wave's **exit criteria** (build + tests + `parity-diff`) before starting the next.
+5. After a `parity-diff --update` shrinks the gap set, **regenerate the plan** so it always reflects what's left.
+
+The plan is generated, not hand-maintained: `tools/parity-plan-deps.*` analysis feeds
+`tools/parity-plan-gen.py`, which writes `PORTING-PLAN.md` (and persists `_plan-analysis.json`).
+
+## Running it
+
+```sh
+# Regenerate INDEX.md, PARITY-GAPS.md, NEEDS-INGAME-CHECK.md from the registry shards:
+python tools/parity-assemble.py
+
+# Regenerate the wave-based PORTING-PLAN.md from the persisted dependency analysis:
+python tools/parity-plan-gen.py
+
+# Re-check parity and report drift (regressions/fixes/new gaps/unmapped Base features).
+# Report only (does not touch the registry):
+Workflow { name: "parity-diff", args: { scope: "all", mode: "diff", dateLabel: "2026-06-22" } }
+# Re-audit one category or specific units, and rewrite the registry in place:
+Workflow { name: "parity-diff", args: { scope: "weapon", mode: "update" } }
+Workflow { name: "parity-diff", args: { scope: ["ctf", "freezetag"], mode: "diff" } }
+```
+
+`scope` = `"all"` | a `category` (e.g. `weapon`, `gametype`) | an array of unit ids. `mode` = `diff`
+(report only) | `update` (rewrite the registry with current truth). Writes `DRIFT-<dateLabel>.md`.
+
+## Why dimensions, not a single status
+
+A feature can be logic-perfect yet visually broken (the CTF flag that doesn't rotate), or
+present in the code yet **never called on the live path** (gibs that never spawn, a dead-wired
+`ModelLoader`). A single done/not-done flag hides exactly the bugs we care about, so every
+feature is scored independently on: **logic, values, timing, presentation, audio, liveness**.
+See `SCHEMA.md`.

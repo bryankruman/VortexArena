@@ -1,0 +1,226 @@
+unit: mutator-offhand_blaster
+category: mutator
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 8
+  worst_gaps:
+    - "Offhand blaster can never fire in a match: no input button bit (InputButtons has no hook/offhand bit), no wire field, and BindTable.SetButton has no 'hook' case, so the `+hook` bind sets nothing and OffhandFirePressed is never written true on the server. The entire offhand-fire path is dead."
+    - "BuildMutatorsString/BuildMutatorsPrettyString not ported: the mutator never appears in any machine/pretty mutator-list string (scoreboard/serverinfo/menu); GameLog.Init is even called with no mutator list."
+    - "Client gameplay-tips line ('offhand blaster is enabled, press <key> to use it') not shown — no gameplay-tips builder exists in the port."
+features:
+  - id: offhand_blaster.enable.register
+    name: "Mutator enable via g_offhand_blaster cvar"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/offhand_blaster/sv_offhand_blaster.qc:REGISTER_MUTATOR (expr_evaluate(autocvar_g_offhand_blaster))"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OffhandBlasterMutator.cs:IsEnabled"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:Apply"
+    constants:
+      - { name: "g_offhand_blaster", base: "\"0\" (string cvar; expr_evaluate)", port: "0 (Cvars.GetFloat != 0)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "IsEnabled => Api.Cvars.GetFloat(\"g_offhand_blaster\") != 0; MutatorActivation.Apply() called live at GameWorld.cs:511 (Add/Remove reconcile against IsEnabled)", result: pass }
+      - { kind: value, ref: "Base mutators.cfg:435 'set g_offhand_blaster 0' == port assets/data/xonotic-data.pk3dir/mutators.cfg:435 'set g_offhand_blaster 0'", result: pass }
+    confidence: high
+    notes: "Port reads the cvar as a float (!=0); Base uses expr_evaluate on a string. Equivalent for the 0/1 default; would differ only for exotic string values ('true'/expressions). Verified Apply() is the live activation loop."
+  - id: offhand_blaster.spawn.assign
+    name: "Assign Blaster to player offhand slot on spawn"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/offhand_blaster/sv_offhand_blaster.qc:MUTATOR_HOOKFUNCTION(offhand_blaster, PlayerSpawn) — player.offhand = OFFHAND_BLASTER"
+      - "common/weapons/weapon/blaster.qh:STATIC_INIT(OFFHAND_BLASTER)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OffhandBlasterMutator.cs:OnPlayerSpawn"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "OnPlayerSpawn sets player.OffhandWeapon = \"blaster\"; MutatorHooks.PlayerSpawn.Call fired live at ClientManager.cs:542", result: pass }
+    confidence: high
+    notes: "QC sets player.offhand = OFFHAND_BLASTER (a singleton); port stores the offhand as the string \"blaster\" on Entity.OffhandWeapon. The assignment itself is reachable/live even though the fire it gates is dead."
+  - id: offhand_blaster.fire.offhand_think
+    name: "Offhand fire: hold +hook to fire a Blaster shot without switching weapons"
+    layer: [authority, shared]
+    base_refs:
+      - "common/weapons/weapon/blaster.qc:OffhandBlaster.offhand_think (l.138-147)"
+      - "server/weapons/weaponsystem.qc:~610-618 (key_pressed = PHYS_INPUT_BUTTON_HOOK && !vehicle; weaponUseForbidden clears it; off.offhand_think dispatch)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OffhandBlasterMutator.cs:OnPlayerPreThink"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OffhandBlasterMutator.cs:FireOffhand"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Blaster.cs:WrThink (slot.Index >= MaxWeaponSlots)"
+    constants:
+      - { name: "blaster_primary_refire", base: "0.7", port: "0.7 (Primary.Refire / fallback)", match: true }
+      - { name: "refire * W_WeaponRateFactor(actor)", base: "scaled by rate factor", port: "refire only (no scaling)", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: na
+      audio: faithful
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "DEAD on the live path: no input button maps to the offhand fire. InputButtons (src/XonoticGodot.Net/InputCommand.cs) has only Attack/Jump/Attack2/Zoom/Crouch/Use — no hook/offhand bit, and the C2S wire payload (Serialize) carries no such bit. BindTable.SetButton has no 'hook' case, so a bound `+hook` press is a no-op. OffhandFirePressed is only ever READ (HookMutator, NadesMutator, here) and never assigned `= true` anywhere in src/ or game/."
+      - "Refire gate omits W_WeaponRateFactor scaling (Base: jump_interval = time + refire * W_WeaponRateFactor(actor)); identical at default rate 1.0, diverges under handicap/rate-factor cvars."
+      - "No vehicle / weaponUseForbidden suppression of the offhand fire (Base clears key_pressed in a vehicle or when weapon use is forbidden — frozen/eliminated). Latent because the path can't fire at all."
+    verification:
+      - { kind: code, ref: "grep src/ game/ for OffhandFirePressed= : zero writes of true. InputButtons enum has no hook bit; BindTable.SetButton switch has no 'hook' case", result: fail }
+      - { kind: code, ref: "FireOffhand gates on OffhandNextThink and calls Blaster.WrThink on slot index == MaxWeaponSlots (ungated by PrepareAttack); refire fallback 0.7 matches Base", result: pass }
+    confidence: high
+    notes: "Fire logic mirrors Base structurally (dedicated high slot ~ Base weaponentities[1], refire-gated, aims from view angles). Triple-confirmed dead: the trigger signal has no producer anywhere up the input/net stack. The same dead button also strands HookMutator's and the nade offhand-throw's +hook paths (NadesMutator reads OffhandFirePressed too; NadeAltButton, by contrast, IS written by NadeThrow). Spec comment 'offhand laser parameters' is inaccurate — Base uses the ordinary W_Blaster_Attack for both offhand and in-hand."
+  - id: offhand_blaster.fire.blaster_attack
+    name: "Blaster primary projectile fired by the offhand (damage/force/speed)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/blaster.qc:W_Blaster_Attack"
+      - "common/weapons/weapon/blaster.qc:W_Blaster_Touch"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Blaster.cs:Attack"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Blaster.cs:OnTouch"
+    constants:
+      - { name: "damage", base: "20", port: "20", match: true }
+      - { name: "edgedamage", base: "10", port: "10", match: true }
+      - { name: "radius", base: "60", port: "60", match: true }
+      - { name: "force", base: "375", port: "375", match: true }
+      - { name: "force_zscale", base: "1", port: "1", match: true }
+      - { name: "speed", base: "6000", port: "6000", match: true }
+      - { name: "spread", base: "0", port: "0", match: true }
+      - { name: "lifetime", base: "5", port: "5", match: true }
+      - { name: "delay", base: "0", port: "0", match: true }
+      - { name: "shotangle", base: "0", port: "0", match: true }
+      - { name: "animtime", base: "0.1", port: "0.1", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Reachable from the offhand only through the dead offhand-fire button, so the offhand never actually spawns this projectile in a match. (The in-hand Blaster, covered by the weapon audit, IS live — this dead status is the offhand entry point only.)"
+    verification:
+      - { kind: value, ref: "Blaster.Configure vs bal-wep-xonotic.cfg g_balance_blaster_primary_* (damage 20, edge 10, radius 60, force 375, zscale 1, speed 6000, spread 0, refire 0.7, animtime 0.1, delay 0, lifetime 5, shotangle 0)", result: pass }
+      - { kind: code, ref: "Attack/OnTouch mirror W_Blaster_Attack/W_Blaster_Touch (RadiusDamage, fly bolt, impact sound/effect)", result: pass }
+    confidence: high
+    notes: "The Blaster weapon itself is fully ported and faithful (weapon audit). Listed here because the offhand reuses it; liveness=dead reflects the offhand entry point only."
+  - id: offhand_blaster.precedence.over_hook
+    name: "Offhand blaster overrides the grappling hook offhand when both enabled"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/offhand_blaster/offhand_blaster.qc:describe (\"overrides the hook mutator, since they use the same bind\")"
+      - "common/mutators/mutator/hook/sv_hook.qc:PlayerSpawn (.offhand = OFFHAND_HOOK)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OffhandBlasterMutator.cs:OnPlayerSpawn"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/HookMutator.cs:OnPlayerSpawn"
+      - "src/XonoticGodot.Common/Framework/Registry.cs:Sort (ordinal RegistryName)"
+      - "src/XonoticGodot.Common/Framework/Hooks.cs:HookChain.Add/Call (registration-order within bucket)"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Registry<MutatorBase>.Sort sorts ordinal by RegistryName(=NetName). 'grappling_hook' (g=0x67) < 'offhand_blaster' (o=0x6F). MutatorActivation.Apply iterates Mutators.All in that order calling Hook()/Add; HookChain.Add appends and Call runs in registration order within the default HookOrder.Any bucket. So OffhandBlasterMutator.OnPlayerSpawn runs AFTER HookMutator.OnPlayerSpawn → OffhandWeapon='blaster' is the last writer, winning. Matches Base's documented override.", result: pass }
+    confidence: high
+    notes: "UPGRADED from unknown: precedence is deterministic and correct via the ordinal NetName sort + registration-order hook dispatch. The HookMutator source comment ('the registry NetName sort makes offhand_blaster run AFTER grappling_hook') is verified accurate. The override only affects the OffhandWeapon assignment (live); the fire it would gate is dead for both."
+  - id: offhand_blaster.report.mutators_string
+    name: "Mutator appears in BuildMutatorsString / BuildMutatorsPrettyString"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/offhand_blaster/sv_offhand_blaster.qc:MUTATOR_HOOKFUNCTION(offhand_blaster, BuildMutatorsString)"
+      - "common/mutators/mutator/offhand_blaster/sv_offhand_blaster.qc:MUTATOR_HOOKFUNCTION(offhand_blaster, BuildMutatorsPrettyString)"
+    port_refs: []
+    constants:
+      - { name: "machine_token", base: "\":offhand_blaster\"", port: "none", match: false }
+      - { name: "pretty_token", base: "\", Offhand blaster\"", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "BuildMutatorsString/BuildMutatorsPrettyString not ported: the mutator is absent from the scoreboard/serverinfo/menu mutator list. The only mutator-list builder in the port (GameLog.Init's ':gameinfo:mutators:' line) is fed a caller-supplied enumerable that is passed as null at the one call site (GameWorld.cs:673) — so even that list is empty, and it is not the BuildMutatorsString hook."
+    verification:
+      - { kind: code, ref: "No BuildMutatorsString/PrettyString hook chain or per-mutator implementation in src/ or game/. GameLog.Init(gametype, map) called with no mutators arg → empty :gameinfo:mutators: line.", result: fail }
+    confidence: high
+    notes: "Cross-cutting gap shared by most mutators (RocketFlyingMutator's doc mentions a BuildMutatorsString sub-hook but no such chain exists). Tracked here per the per-mutator Base hook."
+  - id: offhand_blaster.tips.gameplay_hint
+    name: "Client gameplay-tips line announcing the offhand blaster bind"
+    layer: [presentation]
+    base_refs:
+      - "common/mutators/mutator/offhand_blaster/cl_offhand_blaster.qc:MUTATOR_HOOKFUNCTION(cl_offhand_blaster, BuildGameplayTipsString)"
+    port_refs: []
+    constants:
+      - { name: "tip_text", base: "\"^3offhand blaster^8 is enabled, press ^3<key>^8 to use it\"", port: "none", match: false }
+      - { name: "MUT_OFFHAND_BLASTER", base: "24 (common/util.qh)", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Gameplay-tips line ('offhand blaster is enabled, press <key>') not shown to the client; no BuildGameplayTipsString / gameplay-tips builder exists in src/ or game/ (grep found none), and the mutator-active bitfield (mut_is_active / MUT_OFFHAND_BLASTER=24) is not networked to the client."
+    verification:
+      - { kind: code, ref: "grep src/ game/ for GameplayTips / 'offhand blaster is enabled' / BuildGameplayTips — zero matches", result: fail }
+    confidence: high
+    notes: "Client-side CSQC tip; depends on the mutator active-bitfield (mut_is_active(MUT_OFFHAND_BLASTER)) plant a +hook key lookup (getcommandkey), neither of which is wired in the port. The associated +hook bind is itself dead (see fire.offhand_think)."
+  - id: offhand_blaster.menu.describe
+    name: "Menu mutator-info describe text"
+    layer: [presentation]
+    base_refs:
+      - "common/mutators/mutator/offhand_blaster/offhand_blaster.qc:METHOD(MutatorOffhandBlaster, describe)"
+      - "common/mutators/mutator/offhand_blaster/offhand_blaster.qh:CLASS(MutatorOffhandBlaster) message=\"Offhand blaster\""
+    port_refs: []
+    constants:
+      - { name: "menu_name", base: "\"Offhand blaster\"", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Menu mutator-info describe text not ported: the multi-paragraph description (gives all players a Blaster offhand used with hook, can fire any time but ordinary secondary can't be used, laser-jumping, overrides the hook mutator) has no port equivalent. No 'offhand' entry exists in any menu dialog (DialogMutators / DialogMediaGuide)."
+    verification:
+      - { kind: code, ref: "grep game/menu for 'offhand'/'blaster' describe — no offhand_blaster mutator-info entry. Base has no create-game checkbox either (no menu/.../dialog_multiplayer_create_mutators ref); only the MENUQC describe info page.", result: fail }
+    confidence: medium
+    notes: "MENUQC-only descriptive text shown on the mutator-info / media-guide page. Base has NO create-game mutators-dialog checkbox for offhand_blaster (it's cvar/console-toggled), so the only menu surface is this describe text."

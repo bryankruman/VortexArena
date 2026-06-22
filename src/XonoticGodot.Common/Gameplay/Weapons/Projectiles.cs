@@ -1,4 +1,6 @@
 using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Gameplay.Damage;
+using XonoticGodot.Common.Services;
 
 namespace XonoticGodot.Common.Gameplay;
 
@@ -37,5 +39,89 @@ public static class Projectiles
     {
         e.Solid = Solid.Corpse;
         e.DpHitContentsMask = SuperContentsSolid | SuperContentsBody | SuperContentsCorpse;
+    }
+
+    /// <summary>
+    /// [W1-projectile-net] Make a damageable projectile actually shootable — route incoming RadiusDamage onto its
+    /// <see cref="Entity.ProjectileDamage"/> shoot-down callback (QC <c>W_*_Grenade_Damage</c> →
+    /// <c>W_PrepareExplosionByDamage</c>). The damage pipeline already dispatches a non-player victim's
+    /// <see cref="Entity.GtEventDamage"/> (DamageSystem.EventDamage), so installing this shim there is what
+    /// finally lets a player shoot a grenade/rocket/mine/orb/tag/bolt out of the air — the per-weapon
+    /// <c>ProjectileDamage</c> delegates are otherwise dead (never invoked except by BreakablehookMutator).
+    ///
+    /// <para>The weapon must already have set <see cref="Entity.TakeDamage"/> = <see cref="DamageMode.Yes"/>,
+    /// seeded <see cref="Entity.Health"/> (the projectile's shoot-down hp) and assigned
+    /// <see cref="Entity.ProjectileDamage"/>. Call this AFTER those (and after MUTATOR EditProjectile). The shim:</para>
+    /// <list type="number">
+    ///   <item>halts on already-dead (hp &lt;= 0) — recursion guard, QC <c>W_*_Damage</c> first line;</item>
+    ///   <item>runs the <see cref="CheckProjectileDamage"/> <c>g_projectiles_damage</c> gate (per
+    ///         <paramref name="exception"/>) — under the stock <c>g_projectiles_damage -2</c> only an explicit
+    ///         exception (electro combo / hagar join / ML mines) passes, exactly like Base;</item>
+    ///   <item>subtracts <paramref name="damage"/> from <see cref="Entity.Health"/> (QC
+    ///         <c>TakeResource(this, RES_HEALTH, damage)</c>);</item>
+    ///   <item>fires <see cref="Entity.ProjectileDamage"/> (the weapon's W_PrepareExplosionByDamage explode/knock
+    ///         handler), passing the attacker, when (and only when) hp has reached 0 — a graze that doesn't
+    ///         deplete the projectile no longer detonates it.</item>
+    /// </list>
+    ///
+    /// <paramref name="exception"/> is the QC <c>W_CheckProjectileDamage</c> exception value (default −1 = "no
+    /// exceptions"; a weapon that is meant to be combo-able regardless of <c>g_projectiles_damage</c> — electro
+    /// orb, hagar, ML mine — passes <c>1</c>).
+    /// </summary>
+    public static void MakeShootable(Entity e, float exception = -1f)
+    {
+        e.GtEventDamage = (self, inflictor, attacker, deathType, damage, _, _) =>
+            ShootDown(self, inflictor, attacker, deathType, damage, exception);
+    }
+
+    /// <summary>
+    /// The installed shoot-down shim (QC <c>W_*_Grenade_Damage</c> generalized). Kept internal so the weapons can
+    /// also call the gate directly if they need the bool result. <paramref name="damage"/> is the (already
+    /// armor/teamplay-resolved) damage the pipeline computed for this non-player victim.
+    /// </summary>
+    private static void ShootDown(Entity self, Entity? inflictor, Entity? attacker, string deathType,
+        float damage, float exception)
+    {
+        if (self.Health <= 0f)
+            return; // already exploding (recursion guard — QC GetResource(this, RES_HEALTH) <= 0)
+        if (!CheckProjectileDamage(inflictor?.RealOwner, self.RealOwner, deathType, exception))
+            return; // g_projectiles_damage says to halt
+
+        self.Health -= damage; // QC TakeResource(this, RES_HEALTH, damage)
+        if (self.Health > 0f)
+            return; // graze: the projectile survives — do NOT detonate (W_PrepareExplosionByDamage only fires at <=0)
+
+        // QC W_PrepareExplosionByDamage: stop taking damage, then run the weapon's explode handler (the per-weapon
+        // ProjectileDamage callback — e.g. Mortar.Explode, Arc.ExplodeBolt, Minelayer.OnMineDamage). The callback
+        // owns the actual burst (and a HP-aware callback like Minelayer's knock-loose can still branch on hp).
+        self.TakeDamage = DamageMode.No;
+        self.ProjectileDamage?.Invoke(self, attacker);
+    }
+
+    /// <summary>
+    /// Port of <c>W_CheckProjectileDamage</c> (server/weapons/common.qc:45) — the <c>g_projectiles_damage</c>
+    /// ladder deciding whether a projectile may take this damage. <paramref name="inflictorOwner"/> is the
+    /// damaging projectile's owner (or the attacker), <paramref name="projOwner"/> the shot-at projectile's
+    /// owner, <paramref name="exception"/> the per-call override (−1 = none). Mirrors Base exactly:
+    /// −2 never, −1 exception-only, 0 contents+exception, 1 self+contents+exception, 2 all (exception overrides).
+    /// </summary>
+    public static bool CheckProjectileDamage(Entity? inflictorOwner, Entity? projOwner, string deathType, float exception)
+    {
+        bool isFromContents = deathType == DeathTypes.Lava || deathType == DeathTypes.Slime;
+        bool isFromOwner = ReferenceEquals(inflictorOwner, projOwner) && projOwner is not null;
+        bool isFromException = exception != -1f;
+
+        float mode = Api.Cvars.GetFloat("g_projectiles_damage");
+
+        if (mode <= -2f)
+            return false; // no damage to projectiles at all
+        if (mode == -1f)
+            return isFromException;                       // exception-only
+        if (mode == 0f)
+            return isFromException || isFromContents;     // contents + exception
+        if (mode == 1f)
+            return isFromException || isFromContents || isFromOwner; // self + contents + exception
+        // mode == 2 (or any other value): allow all damage (exception is moot — already true).
+        return true;
     }
 }

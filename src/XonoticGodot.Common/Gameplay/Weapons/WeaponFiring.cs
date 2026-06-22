@@ -198,18 +198,29 @@ public static class WeaponFiring
     /// <paramref name="headshotMultiplier"/> is nonzero and the segment passes through the victim's
     /// <see cref="Headshot"/> box, the running <c>damage</c> is scaled and the shooter gets the
     /// ANNCE_HEADSHOT announce, QC tracing.qc:528-529). Deferred (render/online): antilag takeback,
-    /// warpzones, EFFECT_BULLET tracer, accuracy bookkeeping.
+    /// warpzones, accuracy bookkeeping.
+    ///
+    /// <para><b>Tracer</b> (W1-weaponfire-fx seam): pass <paramref name="tracerEffect"/> — the weapon's bullet
+    /// trail effect name (QC <c>tracer_effect</c>, e.g. "RIFLE"/"RIFLE_WEAK"/"TR_NEXUIZPLASMA") — to draw the
+    /// signature tracer. Faithful to QC's <c>fireBullet_trace_callback</c> + the per-penetration
+    /// <c>trailparticles</c>: a trail is swept from the segment start to each hit, but only for segments longer
+    /// than QC's threshold (16u for the open-air leg, 4u for an in-solid leg through a player) so a point-blank
+    /// shot doesn't spam a zero-length trail. null (the default) keeps the old no-tracer behavior.</para>
     /// </summary>
     public static Entity? FireBullet(Entity actor, Vector3 start, Vector3 dir, float range, float damage,
         int deathType, float spread, float solidPenetration,
         float falloffHalflife = 0f, float falloffMinDist = 0f, float falloffMaxDist = 0f,
-        float force = 0f, float falloffForceHalflife = 0f, float headshotMultiplier = 0f)
+        float force = 0f, float falloffForceHalflife = 0f, float headshotMultiplier = 0f,
+        string? tracerEffect = null)
     {
         LagComp.Begin(actor); // rewind other players to the shooter's view-time for fair hit-reg (antilag.qc)
         try
         {
         dir = CalculateSpread(QMath.Normalize(dir), spread, mustNormalize: true);
         Vector3 end = start + dir * range;
+
+        // [W1-weaponfire-fx] resolve the bullet tracer trail effect once (QC fireBullet's tracer_effect arg).
+        Effect? tracer = string.IsNullOrEmpty(tracerEffect) ? null : Effects.ByName(tracerEffect);
 
         float solidPenetrationFraction = 1f;
         float damageFraction = 1f;
@@ -230,6 +241,7 @@ public static class WeaponFiring
             // target. On a non-warpzone map this is exactly the plain trace. After a crossing, the running aim
             // direction and the segment end are rotated into the far-side frame so the penetration loop continues
             // straight on the far side (the accumulated transform is the C# WarpZone_trace_transform).
+            Vector3 segStart = cur; // this segment's start, for the tracer trail (QC fireBullet_trace_callback)
             WarpzoneTraceResult wzr = Api.Trace.TraceLineWarpzone(cur, end, MoveFilter.Normal, actor);
             TraceResult tr = wzr.Trace;
             cur = tr.EndPos;
@@ -240,6 +252,12 @@ public static class WeaponFiring
                 dir = QMath.Normalize(wzr.Transform.TransformDirection(dir));
                 end = wzr.Transform.TransformPoint(end);
             }
+
+            // [W1-weaponfire-fx] open-air tracer trail (QC fireBullet_trace_callback): sweep the trail from the
+            // segment start to the impact, but only when the segment is long enough (>16u) so a point-blank shot
+            // doesn't draw a degenerate zero-length tracer.
+            if (tracer is not null && (cur - segStart).Length() > 16f)
+                EffectEmitter.EmitTrail(tracer, segStart, cur);
 
             if (tr.Fraction >= 1f) break;                          // hit nothing -> done
             if ((tr.DpHitQ3SurfaceFlags & Q3SurfaceFlagSky) != 0) break; // sky stops the bullet
@@ -303,6 +321,13 @@ public static class WeaponFiring
             float fractionUsed = distTaken / maxDist;
             solidPenetrationFraction = MathF.Max(0f, solidPenetrationFraction - solidPenetrationFraction * fractionUsed);
             damageFraction = MathF.Pow(solidPenetrationFraction, ballisticsExponent);
+
+            // [W1-weaponfire-fx] in-solid tracer (QC tracing.qc:520): only show the trail when the bullet passes
+            // THROUGH a player (a non-BSP entity), and the crossed span is >4u, so the otherwise-invisible
+            // penetration leg is visible.
+            if (tracer is not null && hit is not null && hit.Solid != Solid.Bsp
+                && (through.EndPos - cur).Length() > 4f)
+                EffectEmitter.EmitTrail(tracer, cur, through.EndPos);
 
             cur = through.EndPos;
         }
@@ -413,6 +438,104 @@ public static class WeaponFiring
         return first;
         }
         finally { LagComp.End(); }
+    }
+
+    // =========================================================================
+    //  [W1-weaponfire-fx] Shared weapon-fire FX / audio hooks (tracer above; ricochet, casing eject, melee
+    //  woosh here). These wire the Common-side emission seams (EffectEmitter / SoundSystem) that already exist
+    //  but had no live caller, so every hitscan/melee weapon's signature FX+audio is reachable from one place.
+    //  Wave-2 weapon ports call these from their wr_think/impact paths instead of re-deriving the QC formulas.
+    // =========================================================================
+
+    /// <summary>Brass-casing kind — QC <c>casingtype</c> (common/effects/qc/casings.qc): the bullet shell vs
+    /// the bigger shotgun shell, which differ in model/bounce/lifetime on the client.</summary>
+    public enum CasingType
+    {
+        /// <summary>QC casingtype 0/3 — the small brass bullet casing (machinegun/rifle/okmg).</summary>
+        Bullet = 0,
+        /// <summary>QC casingtype 1 — the larger shotgun shell.</summary>
+        Shell = 1,
+    }
+
+    /// <summary>
+    /// Shared bullet-impact FX + ricochet audio (W1-weaponfire-fx) — the C# successor to each bullet weapon's
+    /// <c>wr_impacteffect</c> (e.g. machinegun.qc:417-421): emit the impact particle puff at the surface and,
+    /// unless the shot is silent, play a random ricochet ping (QC <c>SND_RIC_RANDOM</c> on CH_SHOTS). This wires
+    /// the previously-dead <see cref="SoundSystem.PlayRic"/> (registered, zero callers) so every hitscan weapon's
+    /// signature ricochet finally sounds.
+    /// </summary>
+    /// <param name="actor">The shooter — the ricochet is emitted on them (QC <c>sound(actor, …)</c>).</param>
+    /// <param name="impactPos">The surface impact point (QC <c>w_org</c>, the trace endpoint).</param>
+    /// <param name="backoff">The impact surface normal (QC <c>w_backoff</c>) — the puff sprays back along it.</param>
+    /// <param name="impactEffect">The weapon's impact effect name (e.g. "MACHINEGUN_IMPACT", "RIFLE_IMPACT").</param>
+    /// <param name="silent">QC <c>w_issilent</c> — when set the ricochet sound is suppressed (the puff still plays).</param>
+    public static void BulletImpactFx(Entity actor, Vector3 impactPos, Vector3 backoff,
+        string impactEffect, bool silent = false)
+    {
+        // QC wr_impacteffect: org2 = w_org + w_backoff*2; pointparticles(EFFECT, org2, w_backoff*1000, 1).
+        if (!string.IsNullOrEmpty(impactEffect))
+            EffectEmitter.Emit(impactEffect, impactPos + backoff * 2f, backoff * 1000f);
+
+        // QC: if (!w_issilent) sound(actor, CH_SHOTS, SND_RIC_RANDOM(), VOL_BASE, ATTN_NORM).
+        if (!silent && actor is not null)
+            SoundSystem.PlayRic(actor);
+    }
+
+    /// <summary>
+    /// Eject a spent brass casing (W1-weaponfire-fx) — the C# successor to QC <c>SpawnCasing</c>
+    /// (common/effects/qc/casings.qc), called by the bullet weapons (machinegun.qc:111, rifle.qc:41,
+    /// shotgun.qc:82, okmachinegun/okhmg) when <c>g_casings &gt;= 2</c>. Computes the QC eject velocity in the
+    /// shooter's view frame — <c>(rand*50+50)·right − (rand*25+25)·forward + (70−rand*5)·up</c> — and queues a
+    /// casing emission through the effect sink so the client spawns the shell (the existing
+    /// <c>EffectSystem.SpawnCasing</c> consumer). Uses the deterministic <see cref="Prandom"/> so server and
+    /// predicting client agree (ADR-0010). No-op unless <c>g_casings &gt;= 2</c> (QC's gate) and the actor is a
+    /// player (only players have a view weapon to eject from).
+    /// </summary>
+    /// <param name="actor">The shooting player (supplies the muzzle origin + view basis).</param>
+    /// <param name="muzzle">The casing spawn origin — typically the shot origin (QC weapon <c>spawnorigin</c>).</param>
+    /// <param name="type">Bullet shell vs shotgun shell (QC <c>casingtype</c>).</param>
+    public static void EjectCasing(Entity actor, Vector3 muzzle, CasingType type = CasingType.Bullet)
+    {
+        if (actor is null || (actor.Flags & EntFlags.Client) == 0) return;
+        // QC gate: casings only spawn at g_casings >= 2 (1 = gibs only). Default is 2, so they normally eject.
+        if (Api.Services is not null && Api.Cvars.GetFloat("g_casings") < 2f) return;
+
+        QMath.AngleVectors(actor.Angles, out Vector3 forward, out Vector3 right, out Vector3 up);
+        // QC SpawnCasing eject velocity (machinegun.qc:111 et al), deterministic PRNG.
+        Vector3 vel = (Prandom.Float() * 50f + 50f) * right
+                    - (Prandom.Float() * 25f + 25f) * forward
+                    + (70f - Prandom.Float() * 5f) * up;
+
+        // Route the casing through the effect sink as a velocity-carrying emission (the casing temp-entity isn't
+        // a registered Effect, so use the effectinfo-name fallback path; the client's casing consumer reads the
+        // velocity off the request). The casing kind is encoded in the effectinfo name so the client picks the
+        // shell vs bullet model. (A dedicated casing net-temp belongs in EffectEmitter — see seam todos.)
+        string casingName = type == CasingType.Shell ? "casing_shell" : "casing_bullet";
+        EffectEmitter.EmitByEffectInfoName(casingName, muzzle, vel, 1, except: null);
+    }
+
+    /// <summary>
+    /// Melee swing FX + woosh audio (W1-weaponfire-fx) — the shared seam for the shotgun/arena melee swing
+    /// (QC shotgun.qc: <c>W_Shotgun_Attack2</c> plays <c>SND_SHOTGUN_MELEE</c> on swing-start and
+    /// <c>W_Shotgun_Melee_Think</c> emits <c>EFFECT_SHOTGUN_WOOSH</c> per swing trace). Call once per swing
+    /// (the start sound) and/or per trace (the woosh effect). Both args are optional so a caller can emit just
+    /// the effect or just the sound.
+    /// </summary>
+    /// <param name="actor">The swinging player (the swing sound is emitted on them).</param>
+    /// <param name="wooshPos">The swing-trace endpoint where the woosh particle plays (QC <c>trace_endpos</c>).</param>
+    /// <param name="wooshDir">The swing path direction the woosh sprays along (QC <c>-melee_path</c>).</param>
+    /// <param name="wooshEffect">The woosh effect name (e.g. "SHOTGUN_WOOSH"); null/empty skips the particle.</param>
+    /// <param name="swingSound">The swing-start sound name (e.g. "SHOTGUN_MELEE"); null/empty skips the audio.</param>
+    public static void MeleeWoosh(Entity actor, Vector3 wooshPos, Vector3 wooshDir,
+        string? wooshEffect = "SHOTGUN_WOOSH", string? swingSound = null)
+    {
+        // QC W_Shotgun_Melee_Think: Send_Effect(EFFECT_SHOTGUN_WOOSH, trace_endpos, -melee_path, 1).
+        if (!string.IsNullOrEmpty(wooshEffect))
+            EffectEmitter.Emit(wooshEffect, wooshPos, wooshDir, 1);
+
+        // QC W_Shotgun_Attack2: sound(actor, CH_WEAPON_A, SND_SHOTGUN_MELEE, VOL_BASE, ATTEN_NORM).
+        if (!string.IsNullOrEmpty(swingSound) && actor is not null)
+            SoundSystem.PlayOn(actor, swingSound);
     }
 
     // =========================================================================

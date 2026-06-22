@@ -1,0 +1,407 @@
+unit: turret-walker
+category: turret
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 12
+  worst_gaps:
+    - "Locomotion collapses 12 gaits to walk/run/idle/melee: no idle roam/wander, no last-seen pursuit, no waypoint path-following (walker_move_path/findtarget/turret_checkpoint), no swim/jump/strafe/turn/pain gaits — an idle walker brakes in place instead of wandering/patrolling"
+    - "Body-yaw turn rate is framerate-scaled (port: turny*frameTime) vs Base per-frame raw degrees (turny applied each think, nextthink=time): at ~60fps the port body turns ~60x slower than Base, so a chasing walker barely faces its heading"
+    - "No head entity (walker_head_minigun.md3): the minigun head never visibly tracks/spins; track_type FluidInertia(3) vs Base STEPMOTOR(1)"
+    - "Rocket launch sound wrong: plays weapons/rocket_fire.wav vs Base SND_TUR_WALKER_FIRE = hagar_fire"
+    - "Lead-aim shot speed 34920 vs Base shot_speed 18000 (aim lead overshoots)"
+    - "No walk/run/melee animation frames (turrets_setframe + TNSF_MOVE) and no CSQC walker_draw (ground-align, head spin, low-hp te_spark)"
+    - "No rocket te_explosion launch flash and no walker_rocket_loop up-and-over maneuver (1% chance on launch AND 1% per in-flight think)"
+    - "No minigun EFFECT_BLASTER_MUZZLEFLASH / EFFECT_BULLET tracer"
+features:
+  - id: turret-walker.identity.def
+    name: "Identity, hitbox, models, spawnflags"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/turrets/turret/walker.qh:WalkerTurret"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/WalkerTurret.cs:WalkerTurret"
+    constants:
+      - { name: "mins", base: "'-70 -70 0'", port: "(-70,-70,0)", match: true }
+      - { name: "maxs", base: "'70 70 95'", port: "(70,70,95)", match: true }
+      - { name: "model", base: "models/turrets/walker_body.md3", port: "models/turrets/walker_body.md3", match: true }
+      - { name: "head_model", base: "walker_head_minigun.md3", port: "none (no head bone entity)", match: false }
+      - { name: "netname", base: "walker", port: "walker", match: true }
+      - { name: "health", base: "500", port: "500", match: true }
+      - { name: "spawnflags", base: "TUR_FLAG_PLAYER|TUR_FLAG_MOVE", port: "movable=true (MOVE); PLAYER select implicit", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Head model (walker_head_minigun.md3) not instantiated as a separate tur_head entity; no tag attachment, so the minigun head never visibly tracks."
+    verification:
+      - { kind: code_read, ref: "walker.qh vs WalkerTurret ctor + Spawn", result: pass }
+    confidence: high
+    notes: "Identity/hitbox/body model/health faithful; head bone not modeled."
+  - id: turret-walker.setup.tr_setup
+    name: "tr_setup: SlideBox/Step creature, select flags, ammo flags, home pose"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/walker.qc:568"
+      - "common/turrets/sv_turrets.qc:turret_initialize"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/WalkerTurret.cs:Spawn"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:Init"
+    constants:
+      - { name: "solid", base: "SOLID_SLIDEBOX", port: "Solid.SlideBox", match: true }
+      - { name: "movetype", base: "MOVETYPE_STEP", port: "MoveType.Step", match: true }
+      - { name: "takedamage", base: "DAMAGE_AIM", port: "DamageMode.Aim", match: true }
+      - { name: "select_flags", base: "PLAYERS|RANGELIMITS|TEAMCHECK|LOS", port: "Players|RangeLimits|TeamCheck|Los|AngleLimits", match: false }
+      - { name: "ammo_flags", base: "BULLETS|RECHARGE|RECIEVE", port: "ammo pool 4000/recharge 100 (flags not modeled)", match: true }
+      - { name: "ammo_max", base: "4000", port: "4000", match: true }
+      - { name: "ammo_recharge", base: "100", port: "100", match: true }
+      - { name: "aim_flags", base: "TFL_AIM_LEAD", port: "lead=true", match: true }
+      - { name: "ground-snap home pose", base: "tracebox down 10000, origin = endpos+'0 0 4'", port: "uses e.Origin directly (no ground snap)", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port adds SelectAngleLimits; Base walker tr_setup does NOT include ANGLELIMITS (it turns the body to face, not angle-gated acquisition)."
+      - "No ground-snap home pose (Base tracebox-drops the spawn to the floor and stores pos1/pos2); port treats the map origin as the home pose."
+    verification:
+      - { kind: code_read, ref: "walker.qc tr_setup vs Spawn/Init", result: pass }
+    confidence: high
+    notes: "Core creature setup + ammo/lead faithful; select-flag set differs (extra ANGLELIMITS) and the ground-snap is missing."
+  - id: turret-walker.spawn.liveness
+    name: "Map spawnfunc wiring + per-frame think (turret_walker placed on map)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/walker.qc:350"
+      - "common/turrets/sv_turrets.qc:turret_link"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawnFuncs.cs:Walker"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:214"
+    constants:
+      - { name: "g_turrets master switch", base: "1 (default on)", port: "MasterSwitchEnabled default-on", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "MapObjectsRegistry registers turret_walker -> Spawn resolves Turrets.ByName(walker) -> def.Spawn + re-armed Think", result: pass }
+    confidence: high
+    notes: "Confirmed wired: spawnfunc registered, descriptor auto-registered via [Turret], Think re-armed each frame. Whether a shipped map actually places one is unconfirmed."
+  - id: turret-walker.combat.brain
+    name: "Acquire/aim/fire combat brain (shared turret_think framework)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_think"
+      - "common/turrets/sv_turrets.qc:turret_select_target"
+      - "common/turrets/sv_turrets.qc:turret_firecheck"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:RunCombat"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/WalkerTurret.cs:Think"
+    constants:
+      - { name: "targetscan_mindelay", base: "0.1", port: "0.1", match: true }
+      - { name: "targetscan_maxdelay", base: "1", port: "0.6 (hardcoded)", match: false }
+      - { name: "aimidle_delay", base: "5", port: "5", match: true }
+      - { name: "target_range", base: "5000", port: "5000", match: true }
+      - { name: "target_range_optimal", base: "100", port: "100", match: true }
+      - { name: "firetolerance_dist", base: "100", port: "100", match: true }
+      - { name: "walker_firecheck (no-fire while ANIM_MELEE)", base: "yes", port: "MeleeUntil gate in Think", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Framework targetscan_maxdelay hardcoded 0.6 vs Base default 1 (shared turret-framework concern, affects walker rescan cadence)."
+    verification:
+      - { kind: code_read, ref: "RunCombat vs turret_think/firecheck; Think MeleeUntil gate vs walker_firecheck", result: pass }
+    confidence: medium
+    notes: "Combat flow + fire-while-melee block faithful; maxdelay value drift is framework-wide."
+  - id: turret-walker.drive.chase
+    name: "tr_think locomotion: chase enemy (run/walk) + body yaw"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/walker.qc:421"
+      - "common/turrets/turret/walker.qc:249"
+      - "common/turrets/turret/walker.qc:463"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/WalkerTurret.cs:DoMovement"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretMath.cs:SteerAttract2"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretMath.cs:MoveSimple"
+    constants:
+      - { name: "speed_run", base: "300", port: "300", match: true }
+      - { name: "speed_walk", base: "200", port: "200", match: true }
+      - { name: "run/walk threshold", base: "dist>500", port: "dist>500", match: true }
+      - { name: "turn_run", base: "7", port: "7", match: true }
+      - { name: "turn_walk", base: "15", port: "15", match: true }
+      - { name: "attract2 params", base: "(0.5,500,0.95)", port: "(0.5,500,0.95)", match: true }
+      - { name: "move friction (move_simple blendrate)", base: "0.6", port: "0.6", match: true }
+      - { name: "body-yaw turn step", base: "angles.y += bound(-turny, shortangle, turny) — raw degrees PER THINK (no frametime)", port: "angles.y += bound(-turny*frameTime, diff, turny*frameTime) — degrees PER SECOND", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: partial
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Body-yaw turn rate is framerate-scaled: Base applies the raw turn_walk(15)/turn_run(7) increment once PER THINK (turret_think runs every frame with nextthink=time, so the body turns turny degrees/frame ~= turny*tickrate deg/s); the port (DoMovement) multiplies by frameTime, so it turns only turny deg/s. At ~60fps the port body yaws ~60x slower, so a chasing walker lags badly behind its heading. (NOTE: the shared head Track motor IS correctly frametime-scaled in both — turret_track uses aim_speed*frametime — this divergence is specific to the walker locomotion gait turn.)"
+    verification:
+      - { kind: code_read, ref: "walker.qc tr_think enemy branch + ANIM_WALK/RUN switch vs DoMovement chase; turny applied raw per-think (walker.qc:539-543) vs turny*frameTime (WalkerTurret.cs:198-199); turret_think nextthink=time (sv_turrets.qc:993)", result: fail }
+    confidence: high
+    notes: "Speeds/threshold/attract2/friction faithful; the per-gait BODY turn rate is the one divergence — frametime-scaled in the port vs per-frame in Base, making the chasing body slow to face its heading."
+  - id: turret-walker.drive.idle_roam
+    name: "Idle roam/wander + last-seen pursuit + waypoint path following"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/walker.qc:356"
+      - "common/turrets/turret/walker.qc:279"
+      - "common/turrets/turret/walker.qc:326"
+    port_refs: []
+    constants:
+      - { name: "idle stop time", base: "1 + random*5", port: "none", match: false }
+      - { name: "roam walk time", base: "4 + random*2 (TSL_ROAM, 50%)", port: "none", match: false }
+      - { name: "last-seen chase window", base: "<=10s and within 128u", port: "none", match: false }
+      - { name: "wander moveto blend", base: "moveto*0.9 + (origin+v_forward*500+randomvec*400)*0.1", port: "none", match: false }
+      - { name: "path node proximity", base: "64 (turret_checkpoint chain)", port: "none", match: false }
+      - { name: "speed_roam", base: "100", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No idle roaming/wander: an enemy-less walker just brakes in place (DoMovement enemy==null -> BrakeSimple) instead of the LOS-probe random wander, ANIM_NO/ANIM_WALK idle cycle, or TSL_ROAM behavior."
+      - "No last-seen pursuit (enemy_last_loc/enemy_last_time): the walker forgets the enemy's last position instead of chasing it for up to 10s."
+      - "No waypoint path-following (walker_move_path / walker_findtarget / turret_checkpoint graph) — a walker with a target set does not patrol its path chain."
+    verification:
+      - { kind: code_read, ref: "DoMovement enemy==null branch (brake only) vs walker.qc no-enemy roam/path block", result: fail }
+    confidence: high
+    notes: "Entire idle/roam/last-seen/path locomotion subtree absent; only the active chase + idle brake are ported."
+  - id: turret-walker.drive.gaits_extra
+    name: "Extra gaits: swim / jump / land / pain / strafe / turn"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/turrets/turret/walker.qc:471"
+      - "common/turrets/turret/walker.qc:249"
+    port_refs: []
+    constants:
+      - { name: "speed_swim", base: "200", port: "none", match: false }
+      - { name: "speed_jump", base: "800", port: "none", match: false }
+      - { name: "turn_swim", base: "10", port: "none", match: false }
+      - { name: "turn_strafe", base: "5", port: "none", match: false }
+      - { name: "turn", base: "20 (ANIM_TURN)", port: "none", match: false }
+      - { name: "swim bob", base: "vz += sin(time*4)*8", port: "none", match: false }
+      - { name: "pain defer", base: "walker_setnoanim 0.25", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No waterlevel handling / SWIM gait (pitch toward target, swim turn, sinusoidal bob): a walker in deep water does not swim."
+      - "No JUMP (velocity.z += speed_jump), LAND, PAIN (recoil-into-noanim), STRAFE_L/R, or standalone TURN gaits."
+    verification:
+      - { kind: code_read, ref: "walker.qc animflag switch (SWIM/JUMP/LAND/PAIN/STRAFE/TURN) vs DoMovement (only walk/run/idle/melee)", result: fail }
+    confidence: high
+    notes: "6 of the 12 gait states are unported; gameplay-relevant ones are SWIM (water maps) and JUMP."
+  - id: turret-walker.weapon.minigun
+    name: "WalkerTurretAttack: near-hitscan minigun (fireBullet + force)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/walker_weapon.qc:6"
+      - "common/turrets/sv_turrets.qc:fireBullet path"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/WalkerTurret.cs:Attack"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretCombat.cs:FireBullet"
+    constants:
+      - { name: "shot_dmg", base: "5", port: "5", match: true }
+      - { name: "shot_spread", base: "0.025", port: "0.025", match: true }
+      - { name: "shot_force", base: "10", port: "10", match: true }
+      - { name: "shot_refire", base: "0.05", port: "0.05", match: true }
+      - { name: "shot_volly", base: "10", port: "10", match: true }
+      - { name: "shot_volly_refire", base: "1", port: "1", match: true }
+      - { name: "shot_speed (lead-aim)", base: "18000", port: "34920", match: false }
+      - { name: "deathtype", base: "DEATH_TURRET_WALK_GUN", port: "DeathTypes.TurretWalkGun", match: true }
+      - { name: "fire sound", base: "uzi_fire", port: "weapons/uzi_fire.wav", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: missing
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Lead-aim shot speed 34920 vs Base shot_speed 18000 (the minigun is hitscan so muzzle ballistics are unaffected, but the lead-prediction point overshoots a moving target)."
+      - "No EFFECT_BLASTER_MUZZLEFLASH at the head tag and no EFFECT_BULLET tracer on fire."
+    verification:
+      - { kind: test, ref: "MonsterTurretVehicleObituaryTests (shared turret-gun deathtype, walker-gun call site)", result: pass }
+      - { kind: code_read, ref: "walker_weapon.qc wr_think + fireBullet vs Attack/FireBullet", result: pass }
+    confidence: high
+    notes: "Bullet damage/spread/force/refire/deathtype/sound faithful; lead shot-speed inflated; muzzleflash/tracer missing."
+  - id: turret-walker.weapon.rocket
+    name: "Rocket volley: 4 homing rockets + reload (walker_fire_rocket / walker_rocket_think)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/walker.qc:204"
+      - "common/turrets/turret/walker.qc:108"
+      - "common/turrets/turret/walker.qc:435"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/WalkerTurret.cs:FireRocket"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/GuidedProjectile.cs:WalkerRocketThink"
+    constants:
+      - { name: "rocket_damage", base: "45", port: "45", match: true }
+      - { name: "rocket_radius", base: "150", port: "150", match: true }
+      - { name: "rocket_force", base: "150", port: "150", match: true }
+      - { name: "rocket_speed", base: "1000", port: "1000", match: true }
+      - { name: "rocket_turnrate", base: "0.05", port: "0.05", match: true }
+      - { name: "rocket_range", base: "4000", port: "4000", match: true }
+      - { name: "rocket_range_min", base: "500", port: "500", match: true }
+      - { name: "rocket_refire (reload)", base: "10", port: "10", match: true }
+      - { name: "burst size", base: "4 rockets, 0.2s apart", port: "4 rockets, 0.2s apart", match: true }
+      - { name: "rocket hp / TTL", base: "25 / time+9", port: "25 / ttl 9", match: true }
+      - { name: "jitter re-roll", base: "0.5s, randomvec*min(edist,...)", port: "0.5s, Prandom.Vec*min(edist,...)", match: true }
+      - { name: "launch sound", base: "SND_TUR_WALKER_FIRE = hagar_fire", port: "weapons/rocket_fire.wav", match: false }
+      - { name: "te_explosion launch flash", base: "yes", port: "none", match: false }
+      - { name: "walker_rocket_loop maneuver (1%)", base: "yes (up-and-over): 1% on launch (walker_fire_rocket) AND 1% per in-flight think (walker_rocket_think)", port: "none", match: false }
+      - { name: "deathtype", base: "DEATH_TURRET_WALK_ROCKET", port: "DeathTypes.TurretWalkRocket", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: partial
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Rocket launch sound wrong: plays weapons/rocket_fire.wav vs Base hagar_fire."
+      - "No te_explosion launch flash at the rocket muzzle."
+      - "No walker_rocket_loop up-and-over maneuver (Base: 1% chance on LAUNCH (walker_fire_rocket) and 1% per in-flight think to enter loop->loop2->loop3); port rockets only ever steer straight-pull."
+      - "No tag_rocket01/tag_rocket02 alternation (port has no head tags; fires from a single muzzle org)."
+    verification:
+      - { kind: code_read, ref: "walker_fire_rocket + walker_rocket_think vs FireRocket + WalkerRocketThink", result: pass }
+    confidence: high
+    notes: "Ballistics/damage/burst/jitter/steer-pull faithful; the loop maneuver, launch flash, tag alternation, and correct launch sound are missing."
+  - id: turret-walker.weapon.melee
+    name: "Melee bite (walker_melee_do_dmg): radius hit in front"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/walker_weapon.qc:51"
+      - "common/turrets/turret/walker.qc:423"
+      - "common/turrets/turret/walker.qc:514"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/WalkerTurret.cs:DoMovement"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/WalkerTurret.cs:ScheduleMelee"
+    constants:
+      - { name: "melee_range", base: "100", port: "100", match: true }
+      - { name: "melee_damage", base: "100", port: "100", match: true }
+      - { name: "melee_force", base: "600", port: "600", match: true }
+      - { name: "facing gate", base: "|wish_angle.y| < 15", port: "|wishAngle.Y| < 15", match: true }
+      - { name: "findradius", base: "origin + v_forward*128, 32", port: "origin + fwd*128, 32", match: true }
+      - { name: "damage defer", base: "0.21s", port: "0.21s", match: true }
+      - { name: "swing lock (setnoanim)", base: "0.41s", port: "0.41s (MeleeUntil)", match: true }
+      - { name: "deathtype", base: "DEATH_TURRET_WALK_MELEE", port: "DeathTypes.TurretWalkMelee", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "walker_melee_do_dmg + ANIM_MELEE defers vs DoMovement melee branch + ScheduleMelee", result: pass }
+    confidence: high
+    notes: "Melee range/facing/radius/damage/force and the deferred-damage + swing-lock timings all faithful."
+  - id: turret-walker.head.track
+    name: "Head rotation: track type + aim clamps"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_track"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Track"
+    constants:
+      - { name: "aim_speed", base: "45", port: "45", match: true }
+      - { name: "aim_maxrot", base: "90", port: "90", match: true }
+      - { name: "aim_maxpitch", base: "15", port: "15", match: true }
+      - { name: "track_type", base: "1 (STEPMOTOR)", port: "3 (FluidInertia)", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "track_type FluidInertia(3) vs Base STEPMOTOR(1): the head aims with blended inertia/wobble instead of Base's hard per-frame angle clamp."
+    verification:
+      - { kind: code_read, ref: "turrets.cfg track_type 1 vs TurretParams trackType TrackFluidInertia in Think", result: fail }
+    confidence: high
+    notes: "Aim speed + clamps match; tracker type diverges (STEPMOTOR vs FluidInertia)."
+  - id: turret-walker.client.draw
+    name: "CSQC walker_draw + locomotion anim frames"
+    layer: [presentation]
+    base_refs:
+      - "common/turrets/turret/walker.qc:615"
+      - "common/turrets/turret/walker.qc:558"
+      - "common/turrets/sv_turrets.qc:turrets_setframe"
+    port_refs: []
+    constants:
+      - { name: "groundalign4point", base: "(300,100,0.25,45)", port: "none", match: false }
+      - { name: "spark health threshold", base: "127", port: "none", match: false }
+      - { name: "spark chance/frame", base: "0.15", port: "none", match: false }
+      - { name: "client movetype", base: "MOVETYPE_BOUNCE + gravity 1", port: "none", match: false }
+      - { name: "anim frames", base: "12-state animflag via turrets_setframe + TNSF_MOVE", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No walk/run/melee animation frames (turrets_setframe(animflag) + TNSF_MOVE net): the walker model never plays its gait animations."
+      - "No CSQC walker_draw: no 4-point ground-align over terrain, no head avelocity spin, and damaged walkers (<127 hp) do not emit te_spark."
+    verification:
+      - { kind: code_read, ref: "no client draw / turrets_setframe counterpart for walker", result: fail }
+    confidence: high
+    notes: "Pure presentation/anim layer; entirely absent in the port."

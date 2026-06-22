@@ -1,0 +1,465 @@
+unit: vehicle-raptor
+category: vehicle
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 14
+  worst_gaps:
+    - "No presentation at all: no rotor spinners/anglefix, no takeoff/land model animation frame, no cosmetic bomb/tail models, no muzzle/explosion/CSQC-projectile FX, no flare flame glow."
+    - "No CSQC HUD/crosshair: missing the dual reticle + the dropmark bomb-impact marker (a real aiming aid the pilot loses) + the aux lock crosshair color feedback."
+    - "Engine fly sound (SND_VEH_RAPTOR_SPEED every ~7.96s) and death tumble SND_ROCKET_IMPACT not played."
+    - "bomblet_alt (750) immediate clear-fall burst test unported — bombs always fall bomblet_time (0.5s) before bursting unless they touch."
+    - "Bomblet touch detonation is INSTANT — QC delays it by random()*bomblet_explode_delay (0.4s); the explode-delay constant is effectively unported."
+    - "vr_impact / bouncepain '1 4 1000' entirely unported — the raptor takes no occupant shake/damage when it slams into terrain while bouncing."
+features:
+  - id: raptor.spawn.setup
+    name: "Spawn / setup (hitbox, resources, capability flags, sub-entities)"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/raptor.qc:vr_spawn"
+      - "common/vehicles/vehicle/raptor.qc:vr_setup"
+      - "common/vehicles/vehicle/raptor.qh"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Raptor.cs:Spawn"
+    constants:
+      - { name: "health", base: "250", port: "250", match: true }
+      - { name: "shield", base: "200", port: "200", match: true }
+      - { name: "energy (seed)", base: "1", port: "1", match: true }
+      - { name: "respawntime", base: "40", port: "40", match: true }
+      - { name: "mins", base: "'-80 -80 0'", port: "'-80 -80 0'", match: true }
+      - { name: "maxs", base: "'80 80 70'", port: "'80 80 70'", match: true }
+      - { name: "damageforcescale", base: "0.25", port: "0.25", match: true }
+      - { name: "mass", base: "1", port: "not set (engine default)", match: false }
+      - { name: "bouncefactor", base: "0.2", port: "not set (uses engine default)", match: false }
+      - { name: "bouncestop", base: "0", port: "not set", match: false }
+      - { name: "DPCONTENTS_LIQUIDSMASK (sinks, !swim)", base: "OR'd into dphitcontentsmask", port: "NOT set", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Cosmetic sub-entities not created: no raptor_spinner rotor entities (engine_left/right), no raptor_rotor_anglefix, no bomb1/bomb2/tur_head cosmetic models (gun1/gun2 ARE created for aim)."
+      - "mass=1 not set on the entity (Base sets mass 1 for the bounce-missile physics tuning) — relies on engine default."
+      - "bouncefactor 0.2 / bouncestop 0 not applied (mass-1 bounce-missile physics tuning) — relies on engine defaults; affects how the chassis rebounds off geometry."
+      - "DPCONTENTS_LIQUIDSMASK not OR'd into the hit-contents mask, so the raptor does not sink in water as Base does when g_vehicle_raptor_swim=0 (default)."
+    verification:
+      - { kind: code, ref: "Raptor.cs:Spawn vs raptor.qc:vr_spawn/vr_setup value diff", result: pass }
+    confidence: high
+    notes: "Capability flags (VHF_HASSHIELD/SHIELDREGEN/ENERGYREGEN, HEALTHREGEN off at default 0) match vr_setup. The bounce-physics tuning (mass/bouncefactor/bouncestop) and the liquid-sink mask are dropped, so chassis bounce + water behavior diverge slightly from Base."
+
+  - id: raptor.liveness.spawnfunc
+    name: "Map placement spawnfunc + live think wiring"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/raptor.qc:spawnfunc(vehicle_raptor)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleSpawnFuncs.cs:Raptor"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:220"
+      - "src/XonoticGodot.Engine/Simulation/SimulationLoop.cs:281"
+    constants:
+      - { name: "master cvar g_vehicle_raptor", base: "true", port: "g_vehicle_raptor (default-on)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "vehicle_raptor registered MapObjectsRegistry.cs:220 -> VehicleSpawnFuncs.Raptor -> Spawn; SimulationLoop pumps ent.Think gated by NextThink", result: pass }
+      - { kind: test, ref: "VehicleRuntimeTests.Impulse_Raptor_SetsBombAndFlareModes spawns vehicle_raptor via SpawnVehicle + boards via UseKey", result: pass }
+    confidence: high
+    notes: "BSP entity-lump loader instantiates hand-placed raptors via the registered spawnfunc; the generic engine think-pump drives the vehicle every tick. Verified the spawnfunc gate (MasterSwitchEnabled) matches QC absent-vs-0 semantics."
+
+  - id: raptor.enter
+    name: "Board / enter (vr_enter)"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/raptor.qc:vr_enter"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Raptor.cs:Enter"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleBoarding.cs:Enter"
+    constants:
+      - { name: "default W2 mode", base: "RSM_BOMB", port: "RaptorMode.Bomb", match: true }
+      - { name: "movetype on enter", base: "MOVETYPE_BOUNCEMISSILE", port: "MoveType.BounceMissile", match: true }
+      - { name: "velocity nudge", base: "'0 0 1'", port: "'0 0 1'", match: true }
+      - { name: "delay seed", base: "time + bombs_refire", port: "Time + BombsRefire", match: true }
+      - { name: "lip seed", base: "time", port: "VehReloadStart = Time", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "tur_head.exteriormodeltoclient owner-binding and CSQCVehicleSetup (client viewport/HUD) not done here (cross-boundary client/net)."
+      - "Carried-flag reparent ('-20 0 96') not modeled (CTF-on-raptor edge): a flag carried while boarding the raptor will not be repositioned to the cockpit mount."
+    verification:
+      - { kind: code, ref: "Raptor.cs:Enter; VehicleBoarding.Enter guards/hooks", result: pass }
+      - { kind: test, ref: "VehicleRuntimeTests board path (UseKey) asserts pl.Vehicle == raptor, W2Mode == Bomb", result: pass }
+    confidence: high
+    notes: "Boarding is live via PlayerUseKey port wired into ServerNet +use. Player vehicle_health/shield 0..100% seed folded into VehicleCommon.EnterVehicle rather than Enter."
+
+  - id: raptor.takeoff
+    name: "Vertical takeoff sequence (raptor_takeoff)"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/raptor.qc:raptor_takeoff"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Raptor.cs:Takeoff"
+    constants:
+      - { name: "takefftime", base: "1.5", port: "1.5", match: true }
+      - { name: "frame target", base: "25", port: "25", match: true }
+      - { name: "rise clamp", base: "min(vel.z*1.5, 256)", port: "min(vel.z*1.5, 256)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: missing
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Animation frame ramp tracked (VehAnimFrame) but drives no visible model; rotor avelocity ramp (90 + frame/25*25000) absent (no rotor entities)."
+      - "Engine fly sound (SND_VEH_RAPTOR_SPEED every 7.955812s) not played during takeoff."
+      - "Buttons are NOT cleared during takeoff (QC zeroes ATCK/ATCK2/CROUCH each takeoff tick); player input could leak through the takeoff phase since the port routes flight only when VehSoundState==1."
+    verification:
+      - { kind: code, ref: "Raptor.cs:Takeoff vs raptor_takeoff frame/rise math", result: pass }
+    confidence: high
+    notes: "Hand-off to flight modeled with VehSoundState 0->1 (QC PlayerPhysplug raptor_takeoff -> raptor_frame at frame 25). Port Takeoff only ramps frame+rise; the regen/player-mirror happen in the shared Think tail."
+
+  - id: raptor.flight_controller
+    name: "Free-flight avelocity controller (raptor_frame physics)"
+    layer: [shared]
+    base_refs:
+      - "common/vehicles/vehicle/raptor.qc:raptor_frame"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Raptor.cs:Frame"
+    constants:
+      - { name: "movestyle", base: "1", port: "1", match: true }
+      - { name: "turnspeed", base: "200", port: "200", match: true }
+      - { name: "pitchspeed", base: "50", port: "50", match: true }
+      - { name: "pitchlimit", base: "45", port: "45", match: true }
+      - { name: "speed_forward", base: "1700", port: "1700", match: true }
+      - { name: "speed_strafe", base: "2200", port: "2200", match: true }
+      - { name: "speed_up", base: "2300", port: "2300", match: true }
+      - { name: "speed_down", base: "2000", port: "2000", match: true }
+      - { name: "friction", base: "2", port: "2", match: true }
+      - { name: "avelocity damping", base: "*0.9", port: "*0.9", match: true }
+      - { name: "strafe roll clamp", base: "bound(-30, .z + move.y/strafe, 30)", port: "same", match: true }
+      - { name: "pitch bias fwd/back", base: "+5 / -20", port: "+5 / -20", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: missing
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Engine fly sound (every 7.955812s) not played."
+      - "No visible model pitch/roll/yaw pose beyond entity angles; player glue origin+'0 0 32' done but no cockpit/exterior model."
+    verification:
+      - { kind: code, ref: "Raptor.cs:Frame vs raptor_frame yaw/pitch/thrust/hover-flip step-by-step; FixedVecToAngles confirmed equivalent to QC df=vectoangles+df.x=-df.x", result: pass }
+      - { kind: test, ref: "VehicleRuntimeTests Drive_* (racer-driven, same shared seam) — input reaches the controller seam, velocity builds", result: pass }
+    confidence: high
+    notes: "Hover-flip guard (|angles.z|>50 + jump -> crouch), yaw-relative thrust (movestyle 1), roll-on-strafe with 0.95 decay all present. Pitch math (vang.x negate + FixedVecToAngles df + ShortAngles wrap + bias clamp) verified equivalent to QC."
+
+  - id: raptor.cannon_aim_lock
+    name: "Twin-cannon turret aim + target lock + lead predict"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/raptor.qc:raptor_frame"
+      - "common/vehicles/sv_vehicles.qc:vehicles_locktarget"
+      - "common/vehicles/sv_vehicles.qc:vehicle_aimturret"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Raptor.cs:Frame"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Raptor.cs:PredictAim"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehiclePhysicsHelpers.cs:AimTurret"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehiclePhysicsHelpers.cs:LockTarget"
+    constants:
+      - { name: "cannon_turnspeed", base: "120", port: "120", match: true }
+      - { name: "cannon_turnlimit", base: "20", port: "20", match: true }
+      - { name: "cannon_pitchlimit_up", base: "12", port: "12", match: true }
+      - { name: "cannon_pitchlimit_down", base: "32", port: "32", match: true }
+      - { name: "cannon_locktarget", base: "1", port: "1", match: true }
+      - { name: "cannon_locking_time", base: "0.2", port: "0.2", match: true }
+      - { name: "cannon_locking_releasetime", base: "0.45", port: "0.45", match: true }
+      - { name: "cannon_locked_time", base: "1", port: "1", match: true }
+      - { name: "cannon_predicttarget", base: "1", port: "true", match: true }
+      - { name: "predict iterations", base: "4", port: "4", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Aux lock crosshair color feedback (red==1 / green>0.5 / blue<0.5 by lock strength, UpdateAuxiliaryXhair) is client-only and not drawn."
+      - "locktarget==2 alternate direct-trace lock path unimplemented (default is 1, so off the live path)."
+    verification:
+      - { kind: code, ref: "Raptor.cs:Frame lock block + PredictAim vs raptor_frame locktarget==1 branch; LockTarget/AimTurret helpers reviewed", result: pass }
+    confidence: medium
+    notes: "Both gun1 & gun2 slewed by AimTurret with the same limits/turnspeed; 4-iteration lead solve at cannon_speed matches QC. Lock/locking/locked sounds played in LockTarget. AimTurret uses an Euler-subtract approximation of QC's AnglesTransform left-divide; behaviorally close but not bit-identical — hence medium."
+
+  - id: raptor.cannon_fire
+    name: "Primary fire — twin laser cannon (1-1-2-2 cadence)"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/raptor_weapons.qc:RaptorCannon.wr_think"
+      - "common/vehicles/vehicle/raptor_weapons.qc:RaptorCannon.wr_checkammo1"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Raptor.cs:FireCannon"
+    constants:
+      - { name: "cannon_cost", base: "1", port: "1", match: true }
+      - { name: "cannon_damage", base: "10", port: "10", match: true }
+      - { name: "cannon_radius", base: "60", port: "60", match: true }
+      - { name: "cannon_force", base: "25", port: "25", match: true }
+      - { name: "cannon_speed", base: "24000", port: "24000", match: true }
+      - { name: "cannon_spread", base: "0.01", port: "0.01", match: true }
+      - { name: "cannon_refire", base: "0.033333", port: "0.033333", match: true }
+      - { name: "refire double on 4th", base: "*(1 + ((cnt+1)>=4))", port: "same", match: true }
+      - { name: "deathtype", base: "DEATH_VH_RAPT_CANNON", port: "DeathTypes.VhRaptCannon", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No EFFECT_RAPTOR_MUZZLEFLASH and no CSQCProjectile (PROJECTILE_RAPTORCANNON) visual for the cannon bolt (server hit logic only)."
+      - "Spread sampling differs from Base: QC does normalize(dir + randomvec()*spread) (a cube offset added to forward, perturbing forward too); the port uses Prandom.Spread (uniform-in-disc projected onto right/up). Distribution shape differs — negligible at spread 0.01 but not bit-faithful."
+    verification:
+      - { kind: code, ref: "Raptor.cs:FireCannon vs RaptorCannon.wr_think alternating gun/energy/spread/refire", result: pass }
+      - { kind: test, ref: "VehicleRuntimeTests.Drive_PrimaryFire_SpawnsAVehicleProjectile (shared spawner)", result: pass }
+    confidence: high
+    notes: "Alternating gun1(<=2)/gun2(>2, reset at >=4) tag origins, energy gate (wr_checkammo1) + cnt regen-pause stamp (VehRegenPauseTime), lasergun_fire.wav fire sound all match. Only the spread RNG model and the muzzle/projectile FX diverge."
+
+  - id: raptor.bombs
+    name: "Secondary — cluster bombs burst into bomblets"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/raptor_weapons.qc:RaptorBomb.wr_think"
+      - "common/vehicles/vehicle/raptor_weapons.qc:raptor_bombdrop"
+      - "common/vehicles/vehicle/raptor_weapons.qc:raptor_bomb_burst"
+      - "common/vehicles/vehicle/raptor_weapons.qc:raptor_bomblet_touch"
+      - "common/vehicles/vehicle/raptor_weapons.qc:raptor_bomblet_boom"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Raptor.cs:DropBombs"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Raptor.cs:DropOneBomb"
+    constants:
+      - { name: "bombs_refire", base: "5", port: "5", match: true }
+      - { name: "bomblets", base: "8", port: "8", match: true }
+      - { name: "bomblet_damage", base: "55", port: "55", match: true }
+      - { name: "bomblet_edgedamage", base: "25", port: "25", match: true }
+      - { name: "bomblet_radius", base: "350", port: "350", match: true }
+      - { name: "bomblet_force", base: "150", port: "150", match: true }
+      - { name: "bomblet_spread", base: "0.4", port: "0.4", match: true }
+      - { name: "bomblet_explode_delay", base: "0.4 (random()*delay on touch)", port: "NOT APPLIED (instant boom on touch)", match: false }
+      - { name: "bomblet_time (fall)", base: "0.5", port: "0.5", match: true }
+      - { name: "bomblet safety fuse", base: "time+5", port: "time+5", match: true }
+      - { name: "bomb cnt (clear-fall window)", base: "time+10", port: "NOT set", match: false }
+      - { name: "bomblet_alt", base: "750", port: "NOT IMPLEMENTED", match: false }
+      - { name: "deathtype", base: "DEATH_VH_RAPT_BOMB", port: "DeathTypes.VhRaptBomb", match: true }
+    status:
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: missing
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "bomblet_alt (750) immediate clear-fall burst test unported: bombs always fall bomblet_time (0.5s) before bursting (or burst on touch), instead of the QC line-of-fall altitude test that bursts early when there's clear air (or the bomb is within bomblet_radius of the owner) below."
+      - "Bomblet touch detonation is INSTANT: the port calls Boom immediately on touch, but QC schedules the boom for time + random()*bomblet_explode_delay (0.4s) after the bomblet touches ground. The explode-delay constant is effectively unported, so cluster bomblets all detonate simultaneously on impact instead of in a short staggered burst."
+      - "No CSQCProjectile visual (PROJECTILE_RAPTORBOMB / RAPTORBOMBLET) for bomb/bomblet, no Damage_DamageInfo (DEATH_VH_RAPT_FRAGMENT) fragment effect on burst."
+    verification:
+      - { kind: code, ref: "Raptor.cs:DropOneBomb burst loop vs raptor_bomb_burst/raptor_bomblet_touch split; touch-delay diff confirmed", result: pass }
+    confidence: high
+    notes: "Two bombs from bombmount_left/right, MakeTrigger (self-transparent), 8 bomblets with spread, touch(not owner)->boom, RadiusDamage values exact. The bomblet_alt early-burst branch AND the random touch-detonation delay are both missing; timing downgraded to partial because the staggered-boom behavior is lost."
+
+  - id: raptor.flares
+    name: "Secondary — decoy flares (missile seduction)"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/raptor_weapons.qc:RaptorFlare.wr_think"
+      - "common/vehicles/vehicle/raptor_weapons.qc:raptor_flare_think"
+      - "common/vehicles/vehicle/raptor_weapons.qc:raptor_flare_damage"
+      - "common/vehicles/vehicle/raptor_weapons.qc:raptor_flare_touch"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Raptor.cs:FireFlares"
+    constants:
+      - { name: "flare_refire", base: "5", port: "5", match: true }
+      - { name: "flare count", base: "3", port: "3", match: true }
+      - { name: "flare_lifetime", base: "10", port: "10", match: true }
+      - { name: "flare_chase", base: "0.9", port: "0.9", match: true }
+      - { name: "flare_range", base: "2000", port: "2000", match: true }
+      - { name: "flare health", base: "20", port: "20", match: true }
+      - { name: "flare gravity", base: "0.15", port: "0.15", match: true }
+      - { name: "flare velocity", base: "0.25*vel + (fwd+rnd*0.25)*-500", port: "same", match: true }
+      - { name: "think interval", base: "0.1", port: "0.1", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No EF_FLAME flare glow / MDL_VEH_RAPTOR_FLARE model / scale 0.5 (decoy is invisible but functional)."
+      - "Flare damage uses Health<=0 -> remove inline rather than the dedicated raptor_flare_damage event_damage hook; behaviorally equivalent (a shot flare with health 20 dies)."
+    verification:
+      - { kind: code, ref: "Raptor.cs:FireFlares retarget loop vs raptor_flare_think (enemy==owner, range, random()>chase)", result: pass }
+    confidence: medium
+    notes: "Flare retarget loop matches; takedamage YES (shootable flare) modeled. Seduction depends on guided-projectile .enemy tracking + VehGuideMode>=0 gate (the FindByClass(\"vehicles_projectile\") + proj.VehGuideMode>=0 filter) being correct for the missiles it seduces — not separately re-verified here. QC scans g_projectiles (any guided rocket) without a guide-mode>=0 filter, so the port's filter could miss/over-match some projectile classes."
+
+  - id: raptor.mode_switch
+    name: "Secondary mode switch (bomb/flare select + cycle)"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/raptor.qc:raptor_impulse"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Raptor.cs:SetMode"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Raptor.cs:CycleMode"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleBoarding.cs:Impulse"
+    constants:
+      - { name: "RSM_BOMB / RSM_FLARE", base: "1 / 2", port: "1 / 2", match: true }
+      - { name: "group1->bomb, group2->flare", base: "yes", port: "imp 1/2", match: true }
+      - { name: "next/prev cycle wrap", base: "RSM_FIRST..RSM_LAST", port: "imp 10/11/12 wrap", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "CSQCVehicleSetup (client HUD reticle update on mode change) not done (client concern)."
+    verification:
+      - { kind: test, ref: "VehicleRuntimeTests.Impulse_Raptor_SetsBombAndFlareModes (set imp 1/2 + cycle/wrap imp 10) — live through VehicleBoarding.Impulse", result: pass }
+    confidence: high
+    notes: "Routed live through Commands.cs -> VehicleBoarding.Impulse before weapon impulses; verified by the impulse test exercising the real seated path."
+
+  - id: raptor.exit_land
+    name: "Exit / auto-land (raptor_exit, raptor_land)"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/raptor.qc:raptor_exit"
+      - "common/vehicles/vehicle/raptor.qc:raptor_land"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Raptor.cs:Exit"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Raptor.cs:Land"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleBoarding.cs:Exit"
+    constants:
+      - { name: "eject velocity", base: "(v_up + v_forward*0.25)*750", port: "same", match: true }
+      - { name: "fast-exit velocity", base: "normalize(vel)*maxairspeed*2 + z200", port: "same", match: true }
+      - { name: "slow-exit velocity", base: "vel*0.5 + z10", port: "same", match: true }
+      - { name: "land descend", base: "vel*0.9 + '0 0 -1800'*(hgt/256)*ft", port: "same", match: true }
+      - { name: "land level", base: "angles.x*=0.95; angles.z*=0.95", port: "same", match: true }
+      - { name: "land settle hgt", base: "< 16", port: "< 16", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Land animation frame from altitude (hgt<128: (hgt/128)*25) + rotor spin tracked-but-invisible (no model)."
+      - "antilag_clear on exit + CSQCVehicleSetup viewport restore are cross-boundary (net/client)."
+    verification:
+      - { kind: code, ref: "Raptor.cs:Exit/Land vs raptor_exit/raptor_land eject + descend math", result: pass }
+      - { kind: test, ref: "VehicleRuntimeTests exit path (shared seam)", result: pass }
+    confidence: high
+    notes: "FindGoodExit resolves safe exit spot; living raptor installs the Land think on exit. Land uses Altitude(512) + the same descend/level math; hands back to Think (vehicles_think) at hgt<16."
+
+  - id: raptor.impact
+    name: "Bounce impact damage / occupant shake (vr_impact, bouncepain)"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/raptor.qc:vr_impact (METHOD Raptor)"
+      - "common/vehicles/sv_vehicles.qc:vehicles_impact"
+    port_refs: []
+    constants:
+      - { name: "bouncepain", base: "'1 4 1000' (deglobalaccel, damagemultiplier, minspeed)", port: "NOT IMPLEMENTED", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: missing
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "vr_impact entirely unported: when a raptor (MOVETYPE_BOUNCEMISSILE) slams into geometry above the minspeed (1000), Base calls vehicles_impact(1, 4, 1000) to apply occupant shake + scaled crash damage. The port has no impact handler anywhere in the Vehicles namespace, so the raptor takes no crash damage and the pilot feels no impact shake."
+    verification:
+      - { kind: code, ref: "grep Impact|bouncepain across src/**/Gameplay/Vehicles — no handler found; no generic vehicles_impact dispatch", result: fail }
+    confidence: high
+    notes: "Base wires vr_impact via the touch path of the bounce-missile chassis. Absent in the port (consistent with bouncefactor/bouncestop/mass also being dropped from Spawn). Affects ramming damage and the crash-feel of hard landings."
+
+  - id: raptor.death
+    name: "Death tumble + blowup (vr_death, raptor_diethink, raptor_blowup)"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/raptor.qc:vr_death"
+      - "common/vehicles/vehicle/raptor.qc:raptor_diethink"
+      - "common/vehicles/vehicle/raptor.qc:raptor_blowup"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Raptor.cs:Death"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Raptor.cs:Blowup"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:458"
+    constants:
+      - { name: "diethink wait", base: "time + 5 + random()*5", port: "time + 5 + Range(0,5)", match: true }
+      - { name: "death z-impulse", base: "velocity.z += 600", port: "+= 600", match: true }
+      - { name: "tumble avelocity", base: "'0 0.5 1'*400*(rnd-rnd)", port: "same", match: true }
+      - { name: "blowup damage", base: "250", port: "250", match: true }
+      - { name: "blowup edgedamage", base: "15", port: "15", match: true }
+      - { name: "blowup radius", base: "250", port: "250", match: true }
+      - { name: "blowup force", base: "250", port: "250", match: true }
+      - { name: "deathtype", base: "DEATH_VH_RAPT_DEATH", port: "DeathTypes.VhRaptDeath", match: true }
+      - { name: "diethink small-explosion chance", base: "random()<0.05", port: "NOT IMPLEMENTED", match: false }
+      - { name: "colormod (dying tint)", base: "'-0.5 -0.5 -0.5'", port: "NOT set", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: missing
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No EFFECT_EXPLOSION_MEDIUM on death (findbetterlocation), no per-think 5% EFFECT_EXPLOSION_SMALL + SND_ROCKET_IMPACT during the tumble (TODO marked in Death think)."
+      - "Dying colormod '-0.5 -0.5 -0.5' (darkened wreck tint) not applied (cosmetic)."
+    verification:
+      - { kind: code, ref: "Raptor.cs:Death/Blowup vs vr_death/raptor_diethink/raptor_blowup; Death invoked live via VehicleCommon.cs:458 when health<=0", result: pass }
+      - { kind: test, ref: "MonsterTurretVehicleObituaryTests / NotificationPolishTests cover vh_raptor_* death strings", result: pass }
+    confidence: high
+    notes: "Tumble + delayed touch/timeout blowup + reset-to-SpawnPos respawn (respawntime 40) all present; Death is wired live (VehicleCommon vehicles_damage path ejects pilot then calls VehicleDef.Death). Only the cosmetic explosion FX/sound/colormod during the tumble are missing."

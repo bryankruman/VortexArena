@@ -1,0 +1,406 @@
+unit: weapon-vortex
+category: weapon
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 14
+  worst_gaps:
+    - "Charge ring on the crosshair is DEAD: the HUD render path exists and is correct, but CrosshairPanel.ChargeFraction/ChargePool have ZERO writers in the repo (verified: only match is the unrelated _useChargePool field) and vortex_charge is server-only state, never networked — so the player gets NO on-screen feedback while charging (the core skill mechanic is invisible)."
+    - "Beam is not charge-scaled (sqrt(charge) alpha/spacing) and not team-color-tinted (vortex_glowcolor) — looks identical at every charge level and ignores team colors. (Also blocked by charge not being networked.)"
+    - "No yoda (mid-air rail kill) or impressive (consecutive long-range hit) announcements; the cues are registered in NotificationsList but never fired, and FireRailgunBullet never sets the yoda/impressive_hits flags."
+    - "Player-model charge glow (wr_glow / vortex_glowcolor) not ported — carrier model does not brighten as charge builds. (Added as weapon-vortex.fx.charge_glow.)"
+    - "No nexwhoosh beam fly-by sound to nearby players; overcharge zap sound plays at flat volume (no charge-proportional VOL_BASE ramp)."
+features:
+  - id: weapon-vortex.charge.regen_passive
+    name: "Passive charge regen toward charge_limit"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/vortex.qc:W_Vortex_Charge"
+      - "common/weapons/weapon/vortex.qc:wr_think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vortex.cs:Charge"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vortex.cs:WrThink"
+    constants:
+      - { name: "g_balance_vortex_charge_rate", base: "0.6", port: "0.6", match: true }
+      - { name: "g_balance_vortex_charge_limit", base: "1", port: "1", match: true }
+      - { name: "g_balance_vortex_charge_start", base: "0.5", port: "0.5", match: true }
+      - { name: "g_balance_vortex_charge_always", base: "0", port: "0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: codetrace, ref: "WrThink(Primary) calls Charge() each tick; driver runs it every tick", result: pass }
+      - { kind: value, ref: "bal-wep-xonotic.cfg:340 vs Vortex.cs:92", result: pass }
+    confidence: high
+    notes: "Driver runs WrThink once/tick at full frametime; QC runs twice/frame at frametime/2 — same per-second rate."
+
+  - id: weapon-vortex.charge.regen_velocity
+    name: "Velocity charging (charge while moving fast)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/vortex.qc:MUTATOR_HOOKFUNCTION(vortex_charge, GetPressedKeys)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vortex.cs:WrThink"
+    constants:
+      - { name: "g_balance_vortex_charge_velocity_rate", base: "0", port: "0", match: true }
+      - { name: "g_balance_vortex_charge_minspeed", base: "400", port: "400", match: true }
+      - { name: "g_balance_vortex_charge_maxspeed", base: "800", port: "800", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: codetrace, ref: "Vortex.cs:134-143 folds the GetPressedKeys hook into per-tick WrThink(Primary)", result: pass }
+    confidence: medium
+    notes: "Stock OFF (rate 0). QC's GetPressedKeys hook runs per input frame for the held weapon; folding into per-tick WrThink(Primary) is equivalent since the driver calls it every tick. Not exercised at stock balance."
+
+  - id: weapon-vortex.charge.secondary_ladder
+    name: "Zoom-charge / chargepool / sec-ammo charging ladder"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/vortex.qc:wr_think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vortex.cs:WrThink"
+    constants:
+      - { name: "g_balance_vortex_charge_rot_pause", base: "0", port: "0", match: true }
+      - { name: "g_balance_vortex_secondary_chargepool", base: "0", port: "0", match: true }
+      - { name: "g_balance_vortex_secondary_chargepool_regen", base: "0.15", port: "0.15", match: true }
+      - { name: "g_balance_vortex_secondary_chargepool_pause_regen", base: "1", port: "1", match: true }
+      - { name: "g_balance_vortex_secondary_ammo", base: "2", port: "2", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: codetrace, ref: "Vortex.cs:163-228 ports all three charge paths; driver calls WrThink(Secondary) only while ATK2 held", result: pass }
+    confidence: high
+    notes: "Three-path ladder (chargepool / sec-ammo / free) + pool depletion + pauseregen push, all faithful. The port relies on the driver calling WrThink(Secondary) only on ATK2 held as the stand-in for QC's fire&2 / zoom-key gate."
+
+  - id: weapon-vortex.charge.chargepool_regen
+    name: "Chargepool regen + health-regen pause"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/vortex.qc:wr_think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vortex.cs:WrThink"
+    constants:
+      - { name: "g_balance_vortex_secondary_chargepool_regen", base: "0.15", port: "0.15", match: true }
+      - { name: "g_balance_vortex_secondary_chargepool_pause_regen", base: "1", port: "1", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: codetrace, ref: "Vortex.cs:147-153 — regen after pause window + push actor.PauseRegenFinished", result: pass }
+    confidence: medium
+    notes: "Stock OFF (chargepool 0). Logic faithful; pauseregen interaction depends on the shared health-regen reading PauseRegenFinished, not separately re-verified here."
+
+  - id: weapon-vortex.attack.charge_damage
+    name: "Charge-scaled damage/force + charge consume on fire"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/vortex.qc:W_Vortex_Attack"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vortex.cs:Attack"
+    constants:
+      - { name: "g_balance_vortex_primary_damage", base: "80", port: "80", match: true }
+      - { name: "g_balance_vortex_primary_force", base: "200", port: "200", match: true }
+      - { name: "g_balance_vortex_charge_mindmg", base: "40", port: "40", match: true }
+      - { name: "g_balance_vortex_charge_shot_multiplier", base: "0", port: "0", match: true }
+      - { name: "recoil (W_SetupShot arg 4)", base: "5", port: "5", match: true }
+      - { name: "g_balance_vortex_primary_armorpierce", base: "0", port: "0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: codetrace, ref: "Vortex.cs:256-271 — charge = mindmg/dmg + (1-mindmg/dmg)*vortex_charge; consume *= ChargeShotMul AFTER", result: pass }
+      - { kind: value, ref: "bal-wep-xonotic.cfg:338,345,352,357 vs Configure()", result: pass }
+    confidence: high
+    notes: "armorpierce HITTYPE flag from balance is not separately threaded into the death type in the port's Attack (stock 0, so no observable effect); falloff cvars passed through (all 0 stock)."
+
+  - id: weapon-vortex.attack.railgun_pierce
+    name: "Hitscan rail: pierce all targets, exponential falloff dmg+force, stop at world"
+    layer: [authority, shared]
+    base_refs:
+      - "server/weapons/tracing.qc:FireRailgunBullet"
+      - "lib/math.qh:ExponentialFalloff"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:FireRailgunBullet"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:ExponentialFalloff"
+    constants:
+      - { name: "g_balance_vortex_primary_damagefalloff_mindist", base: "0", port: "0", match: true }
+      - { name: "g_balance_vortex_primary_damagefalloff_maxdist", base: "0", port: "0", match: true }
+      - { name: "g_balance_vortex_primary_damagefalloff_halflife", base: "0", port: "0", match: true }
+      - { name: "g_balance_vortex_primary_damagefalloff_forcehalflife", base: "0", port: "0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: partial
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The nexwhoosh beam fly-by sound (FireRailgunBullet plays SND_NEXWHOOSH to nearby real clients along the beam) is deferred — no whoosh when a rail passes near you."
+    verification:
+      - { kind: codetrace, ref: "WeaponFiring.cs:335-416 — pierce list, falloff on dmg+force, accuracy credit min(dmg,totaldmg), headshotNotify wired", result: pass }
+      - { kind: codetrace, ref: "WeaponFiring.cs:333 comment lists nexwhoosh + beam particle as deferred", result: fail }
+    confidence: high
+    notes: "Vortex passes headshot_notify=false (no headshot announce), matching QC. Warpzone + antilag handled. Audio gap is the fly-by whoosh only."
+
+  - id: weapon-vortex.attack.overcharge_sound
+    name: "Overcharge zap sound when charge > charge_animlimit"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/vortex.qc:W_Vortex_Attack"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vortex.cs:Attack"
+    constants:
+      - { name: "g_balance_vortex_charge_animlimit", base: "0.5", port: "0.5", match: true }
+      - { name: "overcharge volume ramp", base: "VOL_BASE * (charge - 0.5*animlimit)/(1 - 0.5*animlimit)", port: "default volume (flat)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: partial
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Overcharge sound is played at default volume; QC scales VOL_BASE by (charge - 0.5*animlimit)/(1 - 0.5*animlimit) so it gets louder the more overcharged — the port plays a flat-volume nexcharge."
+    verification:
+      - { kind: codetrace, ref: "Vortex.cs:279-280 — Api.Sound.Play(actor, SoundChannel.Body, weapons/nexcharge.wav) gated by `ChargeAnimLimit > 0 && charge > ChargeAnimLimit`; trigger condition matches QC exactly, no volume arg", result: pass }
+    confidence: high
+    notes: "Corrected from draft logic:partial -> faithful: the trigger gate (animlimit>0 AND charge>animlimit) is bit-faithful to QC; the ONLY divergence is the missing charge-proportional volume ramp, which is purely an audio-dimension defect. CH_WEAPON_B in QC vs the port's Body channel is the intended channel mapping."
+
+  - id: weapon-vortex.fx.beam
+    name: "Charged beam particle (EFFECT_VORTEX_BEAM) with charge-scale + team tint"
+    layer: [presentation]
+    base_refs:
+      - "common/weapons/weapon/vortex.qc:NET_HANDLE(TE_CSQC_VORTEXBEAMPARTICLE)"
+      - "common/weapons/weapon/vortex.qc:vortex_glowcolor"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vortex.cs:Attack"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:VORTEX_BEAM"
+    constants:
+      - { name: "beam alpha/spacing scale", base: "sqrt(charge)", port: "none (constant)", match: false }
+      - { name: "cl_tracers_teamcolor tint", base: "vortex_glowcolor(colors, charge)", port: "none", match: false }
+      - { name: "cl_particles_oldvortexbeam", base: "selects EFFECT_VORTEX_BEAM_OLD", port: "registered but not selected", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Beam is emitted at a constant intensity: alpha/fade/trail-spacing are NOT scaled by sqrt(charge), so a barely-charged shot and a full shot look identical."
+      - "In team modes (cl_tracers_teamcolor), the beam is NOT tinted to the shooter's team color via vortex_glowcolor — it always uses the default beam color."
+      - "cl_particles_oldvortexbeam does not switch to the legacy EFFECT_VORTEX_BEAM_OLD beam."
+    verification:
+      - { kind: codetrace, ref: "Vortex.cs:292 EffectEmitter.Emit('VORTEX_BEAM', org, hit, 0) — no charge/color args; EffectsList.cs:85 registers it as a plain trail", result: fail }
+    confidence: high
+    notes: "Beam IS drawn and broadcast (EffectNetSink), so the wire is live; the charge-driven visual modulation and team tint are missing. Note charge level is server-only (not networked), so any port-side tint/scale would need the charge value sent to clients first."
+
+  - id: weapon-vortex.fx.charge_glow
+    name: "Player-model charge glow (wr_glow / vortex_glowcolor)"
+    layer: [presentation]
+    base_refs:
+      - "common/weapons/weapon/vortex.qc:wr_glow"
+      - "common/weapons/weapon/vortex.qc:vortex_glowcolor"
+    port_refs: []
+    constants:
+      - { name: "wr_glow", base: "vortex_glowcolor(actor_colors, max(0.25, vortex_charge))", port: "none", match: false }
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC's wr_glow brightens the wielder's player model proportionally to vortex_charge (via vortex_glowcolor, team-tinted, f scaled by charge_animlimit). The port has no wr_glow override and emits no charge-driven player-model glow — the carrier looks identical regardless of charge. Also blocked by charge not being networked to clients."
+    verification:
+      - { kind: codetrace, ref: "Grep wr_glow/glowcolor/VortexGlow over src+game -> only OkNex.cs doc comment; no glow override on Vortex; no player-model glow feeder", result: fail }
+    confidence: high
+    notes: "Re-scan addition (the first-pass summary mentioned wr_glow but had no feature row). Cosmetic; charge being server-only is the shared root cause with the dead charge ring and the un-scaled beam tint."
+
+  - id: weapon-vortex.fx.impact_muzzle
+    name: "Impact burst + muzzle flash"
+    layer: [presentation]
+    base_refs:
+      - "common/weapons/weapon/vortex.qc:wr_impacteffect"
+      - "common/weapons/weapon/vortex.qc:W_Vortex_Attack"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vortex.cs:Attack"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:VORTEX_IMPACT"
+    constants:
+      - { name: "EFFECT_VORTEX_IMPACT", base: "boxparticles, no inherited velocity", port: "VORTEX_IMPACT at hit", match: true }
+      - { name: "EFFECT_VORTEX_MUZZLEFLASH", base: "models/nexflash.md3 + effect", port: "VORTEX_MUZZLEFLASH at muzzle", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: codetrace, ref: "Vortex.cs:296-297 emits VORTEX_IMPACT (zero velocity) + VORTEX_MUZZLEFLASH; neximpact sound at hit", result: pass }
+    confidence: medium
+    notes: "Impact burst, muzzle flash, and neximpact sound all wired and broadcast. Not runtime-verified visually; the muzzle-flash MD3 model attachment vs particle-only is not separately confirmed."
+
+  - id: weapon-vortex.hud.charge_ring
+    name: "Charge ring (+ chargepool inner ring) on the crosshair"
+    layer: [presentation]
+    base_refs:
+      - "common/weapons/weapon/vortex.qc:wr_think (vortex_charge stat)"
+    port_refs:
+      - "game/hud/CrosshairPanel.cs:DrawStatRing"
+    constants:
+      - { name: "crosshair_ring_vortex", base: "1", port: "1 (read)", match: true }
+      - { name: "vortex_charge networked to client", base: "yes (STAT)", port: "no (server-only EntityWeaponState)", match: false }
+    status:
+      logic: stub
+      values: faithful
+      timing: na
+      presentation: stub
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The crosshair charge ring NEVER fills: DrawStatRing reads CrosshairPanel.ChargeFraction / ChargePool, which are never assigned anywhere in the repo (grep: zero writers), so ChargeRingValue always returns 0."
+      - "vortex_charge is server-only state (EntityWeaponState) and is not present in any network snapshot/stat, so the client has no charge data to feed the ring even if the feeder existed."
+      - "The chargepool inner ring (and its moving-average fallback) is likewise never driven."
+    verification:
+      - { kind: codetrace, ref: "Grep `.ChargeFraction =` / `.ChargePool =` over src+game (excl. bin) -> ZERO assignments; the only hit is the unrelated `_useChargePool = true` (CrosshairPanel.cs:874). ChargeRingValue (CrosshairPanel.cs:961) returns 0 when ChargeFraction < 0 (its -1 default).", result: fail }
+      - { kind: codetrace, ref: "VortexCharge written only by server gameplay (Vortex.cs/OkNex.cs); no snapshot/stat carries it to the client", result: fail }
+    confidence: high
+    notes: "Upgraded draft confidence medium -> high: the dead feeder is grep-conclusive, not a runtime hunch. Full ring rendering logic is present and correct (CrosshairPanel.cs:847-895, DrawStatRing) but ChargeFraction stays at its -1 default forever, so the ring never draws. With stock cvars charge sits at 0.5 -> 1.0, so the ring SHOULD be visible — the player currently sees nothing."
+
+  - id: weapon-vortex.zoom.secondary_scope
+    name: "Secondary = zoom scope (reticle_nex) at stock balance"
+    layer: [presentation]
+    base_refs:
+      - "common/weapons/weapon/vortex.qc:wr_zoom"
+      - "common/weapons/weapon/vortex.qc:wr_zoomdir"
+      - "common/weapons/weapon/vortex.qh:w_reticle"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vortex.cs:ZoomOnSecondary"
+      - "game/net/NetGame.cs:2381"
+      - "game/net/NetGame.cs:2420"
+    constants:
+      - { name: "g_balance_vortex_secondary", base: "0", port: "0", match: true }
+      - { name: "w_reticle", base: "gfx/reticle_nex", port: "gfx/reticle_nex", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: codetrace, ref: "ZoomOnSecondary => !Secondary; NetGame weaponZoom = ZoomOnSecondary && Attack2Held; reticle fed UpdateReticle", result: pass }
+    confidence: high
+    notes: "With secondary enabled the zoom is disabled and ATK2 fires the (stock-zero-damage) secondary — the port's ZoomOnSecondary => !Cvars.Secondary mirrors wr_zoomdir."
+
+  - id: weapon-vortex.ammo.reload_checkammo
+    name: "Cells ammo, forced reload, checkammo1/2, charge seed"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/vortex.qc:wr_checkammo1"
+      - "common/weapons/weapon/vortex.qc:wr_checkammo2"
+      - "common/weapons/weapon/vortex.qc:wr_resetplayer"
+      - "common/weapons/weapon/vortex.qc:wr_reload"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vortex.cs:CheckAmmoPrimary"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vortex.cs:CheckAmmoSecondary"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vortex.cs:ForcedReload"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vortex.cs:WrSetup"
+    constants:
+      - { name: "g_balance_vortex_primary_ammo", base: "6", port: "6", match: true }
+      - { name: "g_balance_vortex_pickup_ammo", base: "30", port: "30 (registry)", match: true }
+      - { name: "g_balance_vortex_reload_ammo", base: "0", port: "0", match: true }
+      - { name: "g_balance_vortex_reload_time", base: "2", port: "2", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Charge / chargepool seed runs on weapon switch-in (WrSetup) instead of respawn (QC wr_resetplayer): the port has no per-weapon respawn-reset hook, so the seed is attached to the switch-in path. Documented in Vortex.cs:300-311. Effect: switching away and back re-seeds vortex_charge to charge_start (0.5); generally favorable (lowers, never raises, a full charge) and not exploitable."
+    gaps: []
+    verification:
+      - { kind: codetrace, ref: "CheckAmmoPrimary/Secondary + ForcedReload + WrSetup match vortex.qc:198-202,281-315", result: pass }
+    confidence: high
+    notes: "Reloadable flag set but reload_ammo 0 stock = not actually reloaded; forced-reload path inert at stock balance."
+
+  - id: weapon-vortex.achievements
+    name: "Yoda (mid-air rail kill) + Impressive (consecutive long-range hit) announcements"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/vortex.qc:W_Vortex_Attack"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: missing
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No yoda achievement: the port does not capture IsFlying(actor) at fire time nor fire ANNCE_ACHIEVEMENT_YODA on a mid-air rail kill."
+      - "No impressive achievement: the port tracks neither impressive_hits nor actor.vortex_lasthit, so the every-other long-range-hit ANNCE_ACHIEVEMENT_IMPRESSIVE never plays."
+    verification:
+      - { kind: codetrace, ref: "Grep yoda/impressive/vortex_lasthit over src/** -> only registered in NotificationsList, never fired by Vortex", result: fail }
+    confidence: high
+    notes: "The announcement cues exist in NotificationsList/SoundsList but the Vortex never triggers them. Depends on yoda/impressive_hits flags that FireRailgunBullet/the trace would need to set (also not modeled)."

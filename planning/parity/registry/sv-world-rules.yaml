@@ -1,0 +1,455 @@
+unit: sv-world-rules
+category: server
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 18
+  worst_gaps:
+    - "Post-warmup/restart countdown is 5s, not Base's RESTART_COUNTDOWN=10s."
+    - "g_start_delay pre-match join window missing: dedicated servers lose the 15s 'everyone joins first' delay; match starts immediately."
+    - "Ready-majority counts bots and the whole roster (ceil) instead of humans only (rint, min factor 0.5) — warmup may never end on a bot-filled server."
+    - "No minplayers / sv_teamnagger gate on ending warmup; COUNTDOWN_STOP_MINPLAYERS/BADTEAMS never sent."
+    - "sv_ready_restart_after_countdown unimplemented and default inverted (port 1, Base 0): map always resets at countdown start."
+    - "g_warmup_limit default is -1 in the port but 180 in Base xonotic-server.cfg: default-config warmup never times out."
+    - "serverflags (SERVERFLAG_ALLOW_FULLBRIGHT / SERVERFLAG_FORBID_PICKUPTIMER) from readlevelcvars not ported: sv_allow_fullbright / sv_forbid_pickuptimer have no server feed."
+features:
+  - id: sv-world-rules.boot.worldspawn
+    name: "worldspawn map-init bookkeeping"
+    layer: [authority]
+    base_refs:
+      - "server/world.qc:spawnfunc(worldspawn)"
+      - "server/world.qc:InitGameplayMode"
+    port_refs:
+      - "src/XonoticGodot.Server/GameWorld.cs:Boot"
+      - "src/XonoticGodot.Server/GameWorld.cs:ApplyWorldspawn"
+    constants:
+      - { name: "matchid_format", base: "<counter>.<unixtime>.<rand6>", port: "MapName", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "matchid is just the map name (GameLog.MatchId = MapName), not the QC <counter>.<unixtime>.<rand6> id (weakens eventlog match correlation)."
+      - "No ServerProgsDB load, no support-entity spawn pass at boot (RandomSeed/PingPLReport/Cheat covered separately)."
+    verification:
+      - { kind: code, ref: "GameWorld.Boot + ApplyWorldspawn + WireServerInfrastructure(GameLog.MatchId=MapName, GameWorld.cs:671) vs world.qc:763/949", result: partial }
+    confidence: high
+    notes: "Boot handles gravity/fog/music worldspawn keys, matchid, and reply precompute; the heavy QC init list (DB, mapinfo enumerate, q3 compat) is host/engine-side. Map_MarkAsRecent IS ported (MapRotation.MarkAsRecent)."
+  - id: sv-world-rules.cvars.changes_log
+    name: "cvar_changes / cvar_purechanges server-list log"
+    layer: [authority]
+    base_refs:
+      - "server/world.qc:cvar_changes_init"
+    port_refs:
+      - "src/XonoticGodot.Server/CommandReplies.cs:BuildCvarChanges"
+    constants:
+      - { name: "header_default_server", base: "// this server runs at default server settings", port: "same", match: true }
+      - { name: "header_default_gameplay", base: "// this server runs at default gameplay settings", port: "same", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "BuildCvarChanges vs cvar_changes_init: value!=default scan, _-skip, both exclude passes, header strings", result: pass }
+    confidence: high
+    notes: "Drives the server browser pure/impure flag; faithful including the gameplay-irrelevant second exclude pass."
+  - id: sv-world-rules.warmup.stage
+    name: "Warmup stage entry + limit resolution"
+    layer: [authority]
+    base_refs:
+      - "server/world.qc:readlevelcvars"
+      - "server/command/vote.qc:ReadyCount"
+    port_refs:
+      - "src/XonoticGodot.Server/WarmupController.cs:Begin"
+      - "src/XonoticGodot.Server/WarmupController.cs:ResolveWarmupLimit"
+    constants:
+      - { name: "g_warmup", base: "0", port: "0", match: true }
+      - { name: "g_warmup_limit", base: "180 (xonotic-server.cfg)", port: "-1 (Cvars.cs:124)", match: false }
+      - { name: "g_warmup_majority_factor", base: "0.8", port: "0.8", match: true }
+    status:
+      logic: partial
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "g_warmup_limit default is -1 in the port but 180 in Base xonotic-server.cfg: default-config warmup never times out."
+      - "No g_warmup>1 'minimum N players (incl bots)' mode and no map_minplayers resolution (g_warmup -1 lower-bound) — warmup_limit -1 'wait for players' lower-bound logic is absent."
+    verification:
+      - { kind: code, ref: "WarmupController.Begin/ResolveWarmupLimit vs readlevelcvars:2199-2213; xonotic-server.cfg:37 (180) vs Cvars.cs:124 (-1)", result: partial }
+    confidence: high
+    notes: "Limit resolution (0 -> timelimit*60) is faithful; the shipped default and the >1/map-minplayers variants are not."
+  - id: sv-world-rules.warmup.serverflags
+    name: "readlevelcvars serverflags (fullbright / pickuptimer)"
+    layer: [authority]
+    base_refs:
+      - "server/world.qc:readlevelcvars"
+    port_refs: []
+    constants:
+      - { name: "SERVERFLAG_ALLOW_FULLBRIGHT", base: "from sv_allow_fullbright", port: "none", match: false }
+      - { name: "SERVERFLAG_FORBID_PICKUPTIMER", base: "from sv_forbid_pickuptimer", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "readlevelcvars sets the SERVERFLAG_ALLOW_FULLBRIGHT / SERVERFLAG_FORBID_PICKUPTIMER bits in `serverflags` (networked to clients) from sv_allow_fullbright / sv_forbid_pickuptimer; the port has no `serverflags` global at all. The client cannot gate fullbright player rendering or hide the item-pickup timer accordingly."
+    verification:
+      - { kind: code, ref: "grep serverflags/SERVERFLAG/sv_allow_fullbright/sv_forbid_pickuptimer across src/ — no match; readlevelcvars:2189-2195", result: fail }
+    confidence: high
+    notes: "Newly found (draft omitted): these are the only two readlevelcvars side-effects besides warmup that belong to world-rules; both unported. Player-observable on servers that set sv_allow_fullbright or sv_forbid_pickuptimer."
+  - id: sv-world-rules.warmup.ready_count
+    name: "ReadyCount ready-up majority + countdown abort"
+    layer: [authority]
+    base_refs:
+      - "server/command/vote.qc:ReadyCount"
+    port_refs:
+      - "src/XonoticGodot.Server/WarmupController.cs:ReadyCountCheck"
+      - "src/XonoticGodot.Server/WarmupController.cs:ToggleReady"
+    constants:
+      - { name: "majority_count_basis", base: "humans only (human_players)", port: "whole roster incl bots", match: false }
+      - { name: "majority_rounding", base: "rint(human_players * bound(0.5, factor, 1))", port: "ceil(roster * clamp(factor,0,1)), min 1", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: faithful
+      presentation: missing
+      audio: missing
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Ready-majority counts bots and the whole roster (ceil) instead of humans only (rint, min factor 0.5) — threshold can differ by one and warmup may never end on a bot-filled server."
+      - "No minplayers / sv_teamnagger badteams gate on ending warmup; the countdown-abort-back-to-warmup path and COUNTDOWN_STOP_MINPLAYERS/COUNTDOWN_STOP_BADTEAMS notifications are never sent."
+      - "No infinite->timed warmup switch (warmup_limit<=0 && game_starttime<=time path) and no GiveWarmupResources re-give on countdown abort."
+      - "No timeout_status guard: Base ReadyCount aborts early while a timeout is active/pending."
+    verification:
+      - { kind: code, ref: "ReadyCountCheck (WarmupController.cs:146-160, roster.Count + ceil) vs ReadyCount:558-616 (humans_ready/rint/minplayers/badteams/timeout_status)", result: partial }
+    confidence: high
+    notes: "The majority trigger fires, but the human/bot basis, rounding, minplayers gate, badteams gate, timeout guard, and the COUNTDOWN_STOP notifications are all absent."
+  - id: sv-world-rules.warmup.ready_restart
+    name: "ReadyRestart / ReadyRestart_force match-restart flow"
+    layer: [authority]
+    base_refs:
+      - "server/command/vote.qc:ReadyRestart"
+      - "server/command/vote.qc:ReadyRestart_force"
+    port_refs:
+      - "src/XonoticGodot.Server/WarmupController.cs:ReadyRestart"
+      - "src/XonoticGodot.Server/GameWorld.cs:RestartMatch"
+    constants:
+      - { name: "RESTART_COUNTDOWN", base: "10 (vote.qh:66)", port: "5 (WarmupController.RestartCountdown)", match: false }
+      - { name: "campaign_countdown", base: "3", port: "RestartCountdown(5)", match: false }
+      - { name: "sv_ready_restart_after_countdown", base: "0 (xonotic-server.cfg:24)", port: "1 (Cvars.cs:128) and unimplemented", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Post-warmup/restart countdown is 5s (RestartCountdown), not Base's RESTART_COUNTDOWN=10s."
+      - "sv_ready_restart_after_countdown branch unimplemented and default inverted (port 1, Base 0): reset_map always runs immediately, never deferred to a restart_timer think at game_starttime."
+      - "No teamplay_lockonrestart team lock, no sv_spectate==2 demotion, no re-join of queued (wants_join) players, no per-player allowed_timeouts reset, no alivetime_start clear."
+      - "Campaign 3s countdown not honored (uses the 5s restart countdown)."
+    verification:
+      - { kind: code, ref: "WarmupController.ReadyRestart (cs:206-226) vs ReadyRestart_force:441-524; RestartCountdown=5 (cs:28) vs RESTART_COUNTDOWN=10 (vote.qh:66)", result: partial }
+    confidence: high
+    notes: "Core restart (clear ready, arm countdown, reset_map, clear overtime via RestartMatch) is present; the surrounding policy branches and the exact 10s/3s timings are not."
+  - id: sv-world-rules.warmup.reset_map
+    name: "reset_map: full map/player reset on restart"
+    layer: [authority]
+    base_refs:
+      - "server/command/vote.qc:reset_map"
+    port_refs:
+      - "src/XonoticGodot.Server/GameWorld.cs:ResetMap"
+      - "src/XonoticGodot.Server/GameWorld.cs:ResetMapObjects"
+    constants: []
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Entity .reset/.reset2 pass is thin: only projectile-class entities are deleted; per-entity reset callbacks (movers/items back to spawn, team_saved restore) are not driven through the FOREACH_ENTITY_FLOAT_ORDERED reset list, and the waypoint/assault .reset2 second pass is absent."
+      - "No accuracy_reset / player_powerups_remove_all / Inventory_clear per-client pass; no shuffleteams_on_reset_map or reset_map_global/reset_map_players mutator hooks (Mayhem/TeamMayhem total_damage_dealt is the only ported per-player reset)."
+    verification:
+      - { kind: code, ref: "ResetMap (cs:2398-2432) / ResetMapObjects (cs:2439-2451, projectile-only delete) vs reset_map:351-430", result: partial }
+    confidence: high
+    notes: "Score clear (real restart), round reset, per-player zero-velocity + Spawn (PutClientInServer), and projectile deletion are present and correctly gated on time<=game_starttime; the entity reset-callback ordering and per-client powerup/inventory/accuracy reset are simplified."
+  - id: sv-world-rules.checkrules.cascade
+    name: "CheckRules_World per-frame win cascade"
+    layer: [authority]
+    base_refs:
+      - "server/world.qc:CheckRules_World"
+    port_refs:
+      - "src/XonoticGodot.Server/GameWorld.cs:RunCheckRulesWorld"
+      - "src/XonoticGodot.Server/GameWorld.cs:CheckRulesAndIntermission"
+    constants:
+      - { name: "warmup/pre-start limit zeroing", base: "warmup_stage || time<=game_starttime", port: "same", match: true }
+      - { name: "timelimit offset", base: "timelimit += game_starttime", port: "same", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: missing
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "WinningCondition_RanOutOfSpawns (team spawn-exhaustion draw/win, g_spawn_useallspawns) is not ported."
+      - "leadlimit / leadlimit_and_fraglimit AND/OR semantics are not evaluated in the world layer (win comes purely from the gametype MatchEnded latch + tie report)."
+      - "The fragsleft 'N frags remaining' ANNCE_REMAINING_FRAG_{1,2,3} announcer is missing."
+      - "The CheckRules_World mutator hook (M_ARGV status override) is not invoked."
+    verification:
+      - { kind: code, ref: "RunCheckRulesWorld (cs:1807-1881) + CheckRulesAndIntermission (cs:1776, live each tick) vs CheckRules_World:1725-1861 + WinningCondition_Scores:1560-1639", result: partial }
+    confidence: high
+    notes: "The timelimit->overtime->suddendeath->revert ordering and the warmup/pre-start gating are faithful; the spawn-exhaustion, leadlimit, frags-remaining-announcer, and mutator-hook branches are absent."
+  - id: sv-world-rules.checkrules.overtime
+    name: "Overtime / sudden-death (InitiateSuddenDeath/Overtime/GetWinningCode)"
+    layer: [authority]
+    base_refs:
+      - "server/world.qc:InitiateSuddenDeath"
+      - "server/world.qc:InitiateOvertime"
+      - "server/world.qc:GetWinningCode"
+    port_refs:
+      - "src/XonoticGodot.Server/OverTimeManager.cs"
+    constants:
+      - { name: "timelimit_overtime", base: "2 (min)", port: "2", match: true }
+      - { name: "timelimit_overtimes", base: "0", port: "0", match: true }
+      - { name: "timelimit_suddendeath", base: "5 (min)", port: "5", match: true }
+      - { name: "OVERTIME_SUDDENDEATH", base: "BITS(24)=16777216", port: "1<<24", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: partial
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "STAT(OVERTIMES) is not networked to clients (the HUD OVERTIME banner has no server feed) — deferred per T42."
+      - "race/qualifying race_StartCompleting branch deliberately omitted (those modes latch their own winner)."
+    verification:
+      - { kind: code, ref: "OverTimeManager vs world.qc:1467-1536; constants vs Cvars.cs:114-116 (2/0/5) + xonotic-server.cfg", result: pass }
+    confidence: high
+    notes: "Decision logic, constants, sentinel handling (overtimesadded=-1), and the just-begun-suddendeath revert are all faithful; only the client networking of the overtime stat is deferred."
+  - id: sv-world-rules.nextlevel.intermission
+    name: "NextLevel + intermission entry / map-change timer"
+    layer: [authority]
+    base_refs:
+      - "server/world.qc:NextLevel"
+    port_refs:
+      - "src/XonoticGodot.Server/GameWorld.cs:NextLevel"
+      - "src/XonoticGodot.Server/Intermission.cs"
+    constants:
+      - { name: "sv_mapchange_delay", base: "5", port: "5 (Cvars.cs:132)", match: true }
+      - { name: "empty_server_exittime", base: "-1", port: "-1", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "target_music_kill and the MatchEnd_BeforeScores/MatchEnd mutator hooks at NextLevel are not invoked here."
+      - "The bprint team/player 'wins the match' broadcast lines are handled by the notification layer, not this path (verify coverage in sv-notification)."
+    verification:
+      - { kind: code, ref: "GameWorld.NextLevel (cs:1912) + Intermission.Begin vs world.qc:1404-1464", result: pass }
+    confidence: high
+    notes: "Winner marking, :gameover eventlog, playerstats report, campaign pre-intermission, demo stop, and exittime = time + sv_mapchange_delay (or -1 empty) are all present."
+  - id: sv-world-rules.entity.randomseed
+    name: "RandomSeed shared-RNG broadcast entity"
+    layer: [authority, presentation]
+    base_refs:
+      - "server/world.qc:RandomSeed_Spawn"
+      - "server/world.qc:RandomSeed_Think"
+    port_refs: []
+    constants:
+      - { name: "reroll_period_s", base: "5", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No shared server->client RNG seed: client-side random effects cannot be kept deterministic with the server."
+    verification:
+      - { kind: code, ref: "grep RandomSeed across src/ — no match", result: fail }
+    confidence: high
+    notes: "Networked entity (ENT_CLIENT_RANDOMSEED, RandomSeed_Send) rerolled every 5s; absent in the port."
+  - id: sv-world-rules.entity.pingplreport
+    name: "PingPLReport ping/packet-loss client report"
+    layer: [authority, presentation]
+    base_refs:
+      - "server/world.qc:PingPLReport_Spawn"
+      - "server/world.qc:PingPLReport_Think"
+    port_refs: []
+    constants:
+      - { name: "LATENCY_THINKRATE", base: "10 (s)", port: "none", match: false }
+      - { name: "report_period_s", base: "3 / maxclients", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No server->client ping / packet-loss / movement-loss report; scoreboard ping column and playerstats latency have no feed."
+    verification:
+      - { kind: code, ref: "grep PingPLReport/ping_packetloss/PINGPLREPORT across src/ — no match", result: fail }
+    confidence: high
+    notes: "TE_CSQC_PINGPLREPORT round-robins one client per think (3/maxclients s); records latency for playerstats every LATENCY_THINKRATE=10 s; absent in the port."
+  - id: sv-world-rules.boot.lightstyles
+    name: "Animated lightstyle table install"
+    layer: [authority, presentation]
+    base_refs:
+      - "server/world.qc:spawnfunc(worldspawn)"
+    port_refs: []
+    constants:
+      - { name: "lightstyle_count", base: "12 named (0-11) + style 63", port: "0", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The 12 named animated lightstyles (flicker/pulse/candle/strobe, world.qc:882-920) plus style 63 are not installed at worldspawn: map lights driven by a style index will not animate."
+    verification:
+      - { kind: code, ref: "grep lightstyle install in GameWorld.Boot — none (the only lightstyle hits are entity fields in DynamicLight/MapObjectFieldsExtra, not the worldspawn table)", result: fail }
+    confidence: medium
+    notes: "Whether any shipped map relies on these animated styles is unverified; the table itself (lightstyle(0..11)+lightstyle(63)) is absent."
+  - id: sv-world-rules.misc.start_delay
+    name: "g_start_delay pre-match join window"
+    layer: [authority]
+    base_refs:
+      - "server/world.qc:readlevelcvars"
+    port_refs: []
+    constants:
+      - { name: "g_start_delay", base: "0 (listen) / 15 (dedicated) (xonotic-common.cfg:185-186)", port: "none (0)", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "g_start_delay pre-match join window missing: with warmup off, the match starts immediately (GameStartTime 0) instead of time + g_start_delay; dedicated servers lose the 15s 'everyone joins first' delay."
+    verification:
+      - { kind: code, ref: "grep start_delay/StartDelay across src/ — no match; readlevelcvars:2221-2222 sets game_starttime = time + g_start_delay when !warmup && !campaign", result: fail }
+    confidence: high
+    notes: "The port's Begin() arms only the 5s restart countdown when warmup is off; there is no read of g_start_delay (default 0 listen / 15 dedicated)."
+  - id: sv-world-rules.misc.max_shot_distance
+    name: "max_shot_distance from world bounds"
+    layer: [authority, shared]
+    base_refs:
+      - "server/world.qc:InitGameplayMode"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:MaxShotDistance"
+    constants:
+      - { name: "max_shot_distance", base: "min(230000, vlen(world.maxs-world.mins)) per-map (default 32768 in constants.qh)", port: "fixed 32768f", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The global hitscan/aim clamp is a fixed constant 32768 in the port (WeaponFiring.MaxShotDistance / TurretAI.MaxShotDistance), NOT recomputed per-map from world bounds (min(230000, vlen(maxs-mins))). On maps whose diagonal exceeds 32768qu, hitscan/trueaim/turret traces stop short of where Base would reach; on tiny maps Base would clamp tighter than 32768."
+    verification:
+      - { kind: code, ref: "WeaponFiring.cs:39 MaxShotDistance=32768f (used as SetupShot default range); TurretAI.cs:132=32768f vs world.qc:731 max_shot_distance = min(230000, vlen(world.maxs-world.mins))", result: fail }
+    confidence: medium
+    notes: "Corrected from draft 'per-weapon ranges': the port uses ONE fixed 32768qu constant (the QC constants.qh default), not the per-map world-bounds recompute. Live (every hitscan SetupShot uses it). Behavioral impact bounded by maps with diagonal > 32768qu."
+  - id: sv-world-rules.misc.redirection
+    name: "RedirectionThink server redirect"
+    layer: [authority]
+    base_refs:
+      - "server/world.qc:RedirectionThink"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No server-redirect / mass-reconnect command (sv_redirect_target / quit_and_redirect)."
+    verification:
+      - { kind: code, ref: "grep RedirectionThink/sv_redirect across src/ — no match", result: fail }
+    confidence: high
+    notes: "Admin convenience feature; low gameplay impact."
+  - id: sv-world-rules.misc.shutdown
+    name: "Shutdown: persist DB/bans + slowmo/playerstats/bot teardown"
+    layer: [authority]
+    base_refs:
+      - "server/world.qc:Shutdown"
+    port_refs:
+      - "src/XonoticGodot.Server/GameWorld.cs:Shutdown"
+    constants: []
+    status:
+      logic: partial
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "GameWorld.Shutdown is a near-no-op (only unsubscribes a cvar-changed handler). The QC Shutdown's slowmo-reset-on-active-timeout (cvar_set slowmo orig_slowmo when timeout_status==TIMEOUT_ACTIVE), the unfinished-match PlayerStats_GameReport(false), and bot_endgame are not performed on world teardown."
+      - "Ban_SaveBans / ServerProgsDB persistence on shutdown: bans persist on add (Bans.Save at mutation) so the on-shutdown save is largely covered, but the persistent server DB (ServerProgsDB save/dump) has no port analogue here."
+    verification:
+      - { kind: code, ref: "GameWorld.Shutdown (cs:877-880) vs world.qc:2618-2670", result: partial }
+    confidence: medium
+    notes: "Newly found (draft mentioned only in spec prose, no row). A live match abandoned mid-game (not via NextLevel) loses the unfinished playerstats report and leaves slowmo stuck if a timeout was active. Some pieces (ban save, finished-match report via NextLevel) are covered on the normal path."

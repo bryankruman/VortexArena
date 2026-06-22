@@ -1,0 +1,389 @@
+unit: cl-teamradar
+category: client
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 13
+  worst_gaps:
+    - "Maximized fullscreen radar entirely absent: no m-bind, no fullscreen tactical overview, no separate maximized rotation/zoom/scale runtime."
+    - "Clickable maximized radar absent: no ONS spawn-point select (cmd ons_spawn), no teleport-click, no mouse/key/ESC/showscores input, no 'Click to select…' prompt, no icon hover-glow."
+    - "Onslaught radar links (ENT_CLIENT_RADARLINK / draw_teamradar_link) not networked or drawn — ONS radar shows control points but no connection lines."
+    - "Ping pulses missing: a teammate/objective ping draws no expanding gfx/teamradar_ping ring on the radar (teamradar_times bit-7 stamping + pulse loop unported; ServerNet writes RadarIcon&0xFF, dropping the ping bit)."
+    - "Registered cvar defaults are luma-skin values (scale 8192, foreground_alpha 1), not the QC code defaults (4096 / 0.8) teamradar_loadcvars applies when unset."
+    - "Zoom/scale is a RangeUnits=2500 + scale/4 heuristic, not the Base mi_scale/scale2d bigsize/normalsize blend; current_zoomfraction modes 0/1 collapse to static endpoints so the +zoom-follow behavior is lost."
+    - "hud_panel_radar enable cvar (0/1/2) is not honored at runtime: no disable, no team-only gating, no '2'=show-in-non-team-modes; the only live radar is the standalone NetGame instance (discovered HUD panel force-hidden)."
+
+features:
+  - id: cl-teamradar.transform.coords
+    name: "World/texcoord/2D coordinate transforms"
+    layer: [presentation]
+    base_refs:
+      - "client/teamradar.qc:teamradar_3dcoord_to_texcoord"
+      - "client/teamradar.qc:teamradar_texcoord_to_2dcoord"
+      - "client/teamradar.qc:teamradar_2dcoord_to_texcoord"
+      - "client/teamradar.qc:teamradar_texcoord_to_3dcoord"
+    port_refs:
+      - "game/hud/RadarPanel.cs:WorldToScreen"
+    constants:
+      - { name: "rotate basis", base: "Rotate(in, teamradar_angle) then screen-Y negate, scale teamradar_size", port: "delta-rotate by radarYaw then -Y, *worldToPixels", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port works directly in world units (no normalized texcoord stage); the inverse texcoord<->2D transforms (teamradar_2dcoord_to_texcoord / teamradar_texcoord_to_3dcoord) used only by the clickable map are not ported (no consumer exists yet)."
+      - "v_flipped (mirrored-view X flip) is not applied on any transform."
+    verification:
+      - { kind: code, ref: "RadarPanel.WorldToScreen vs teamradar_texcoord_to_2dcoord (verified line-by-line: subtract center, Rotate, -Y, scale)", result: pass }
+    confidence: high
+    notes: "Forward transform matches; inverse + v_flipped only matter once the clickable/maximized map exists."
+
+  - id: cl-teamradar.background.minimap
+    name: "Minimap background image (gfx/<map>_radar / _mini)"
+    layer: [presentation]
+    base_refs:
+      - "client/teamradar.qc:draw_teamradar_background"
+      - "client/main.qc:CSQC_Parse_StuffCmd (minimapname/mi_min/mi_max load, ~line 139)"
+    port_refs:
+      - "game/hud/RadarPanel.cs:DrawPanel (minimap quad)"
+      - "game/net/NetGame.cs:1258"
+    constants:
+      - { name: "image lookup", base: "gfx/<short>_radar then gfx/<short>_mini else \"\"", port: "gfx/<MapName>_radar then _mini (TextureCache.GetFirst)", match: true }
+      - { name: "bounds", base: "mi_min/mi_max from worldspawn minimap texcoords", port: "BSP Models[0].Mins/Maxs XY", match: partial }
+      - { name: "flags", base: "DRAWFLAG_SCREEN | DRAWFLAG_MIPMAP, color '1 1 1'*fg, alpha 1", port: "DrawPolygon, color (1,1,1,fgAlpha)", match: partial }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base resolves mi_min/mi_max from minimap texcoords (get_mi_min_max_texcoords); port uses raw BSP worldspawn model bounds, which can differ from a hand-authored _radar texcoord rect (misalignment on maps whose minimap rect != BSP bounds)."
+      - "Base hard-gates the WHOLE small radar on minimapname != \"\" (radar.qc:203 early-return): no minimap image => no radar at all. Port always draws the dark playfield + blips even when no image resolves — a behavioral divergence (radar shows on imageless maps)."
+    verification:
+      - { kind: code, ref: "NetGame feeds MapName + BSP bounds; DrawPanel draws rotated textured quad with yinvert UVs", result: pass }
+    confidence: medium
+    notes: "Image + bounds wired live in NetGame; alignment depends on BSP bounds matching the authored minimap rect, and the port draws even when no image (Base would blank)."
+
+  - id: cl-teamradar.blip.player
+    name: "Team-colored player facing-arrow blip"
+    layer: [presentation]
+    base_refs:
+      - "client/teamradar.qc:draw_teamradar_player"
+    port_refs:
+      - "game/hud/RadarPanel.cs:DrawPlayerArrow"
+      - "game/hud/RadarPanel.cs:DrawArrowQuad"
+      - "game/hud/RadarPanel.cs:DrawBlip"
+    constants:
+      - { name: "backing quad offsets", base: "(+f*3, +r*4-f*2.5, -f*2, -r*4-f*2.5)", port: "DrawArrowQuad(3,4,2.5,2)", match: true }
+      - { name: "colored quad offsets", base: "(+f*2, +r*3-f*2, -f, -r*3-f*2)", port: "DrawArrowQuad(2,3,2,1)", match: true }
+      - { name: "own-player color", base: "'1 1 1' (white), contrast black", port: "LocalColorTint ~white, contrast black", match: true }
+      - { name: "alpha", base: "panel_fg_alpha", port: "fgAlpha (folds LiveFgAlpha)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "vertex offsets + MAKE_VECTORS/screen-Y flip + right=(-fwd.y,fwd.x) match draw_teamradar_player", result: pass }
+    confidence: high
+    notes: "Port adds a dead-player 0.35-alpha dim not in Base (DrawBlip); cosmetic, not a regression."
+
+  - id: cl-teamradar.blip.enumeration
+    name: "entcs player enumeration (all players, local last)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/radar.qc:HUD_Radar (AL_EACH(_entcs) + draw_teamradar_player(self) last)"
+    port_refs:
+      - "game/hud/RadarPanel.cs:DrawPanel (RemoteIds loop + center local arrow)"
+    constants:
+      - { name: "team color", base: "Team_ColorRGB(entcs_GetTeam)", port: "TeamColor(Colormap) matching NUM_TEAM_* RGBs (0xFF0F0F/0x0F0FFF/0xFFFF0F/0xFF0FFF)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port filters the net entity feed to Player/Nameplate kinds; Base walks the dedicated entcs slice (m_entcs_private). Functionally equivalent for players, but no entcs-private subtleties (e.g. spectated/unconnected slots)."
+    verification:
+      - { kind: code, ref: "RemoteIds loop draws remote players (skips localId), local drawn at center last in white", result: pass }
+    confidence: high
+    notes: "Local player drawn last/on top at center in white, matching Base ordering (draw_teamradar_player current_player last)."
+
+  - id: cl-teamradar.icon.objective
+    name: "Objective radar icons (CTF flags / DOM / KH / waypoints)"
+    layer: [presentation]
+    base_refs:
+      - "client/teamradar.qc:draw_teamradar_icon"
+      - "common/mutators/mutator/waypoints/all.qh:REGISTER_RADARICON (all ids resolve m_radaricon 0 or 1)"
+      - "common/mutators/mutator/waypoints/waypointsprites.qc:spritelookupcolor (~line 220)"
+    port_refs:
+      - "game/hud/RadarPanel.cs:DrawPanel (waypoint loop)"
+      - "game/net/ServerNet.cs:955"
+      - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs:RadarIcon"
+    constants:
+      - { name: "icon sprite", base: "gfx/teamradar_icon_<m_radaricon>; EVERY core RADARICON id is 0 (none) or 1, so the only sprite Base ever draws is gfx/teamradar_icon_1", port: "gfx/teamradar_icon_1 (icon_2 branch is unreachable: RadarIcon is only ever 0/1)", match: true }
+      - { name: "icon size", base: "fixed '8 8 0' px centered (-'4 4 0')", port: "clamp(radius*0.07, 7, 12) px centered", match: false }
+      - { name: "tint", base: "spritelookupcolor(it, icon.netname, teamradar_color)", port: "networked wp.Color (server-side resolved)", match: partial }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Icon size is a radius-relative clamp (radius*0.07, 7..12px), not the fixed 8x8 px Base draws — sizing diverges, especially on a large/maximized radar."
+      - "Port has a spurious binary icon_1/icon_2 selector keyed on RadarIcon==2, but no port code path ever sets RadarIcon to 2 (Ctf sets 1; ServerNet sends RadarIcon&0xFF and all Base ids are 0/1), so the icon_2 branch is dead — harmless but misleading vs the per-registry m_radaricon design."
+      - "Tint relies on the server having pre-resolved wp.Color; the client-side spritelookupcolor fallback (per-weapon/item m_color, flag-carrier color) is not modeled client-side."
+    verification:
+      - { kind: code, ref: "RADARICON registry (all.qh:41-61) all = 0/1; port DrawPanel waypoint loop draws icon_1 sized radius*0.07 vs Base fixed 8x8", result: partial }
+    confidence: high
+    notes: "CORRECTED from draft: the sprite NAME actually matches (Base only ever draws icon_1; icon_2 is unreachable port dead code, not a missing sprite). Real divergence is the icon SIZE (radius-relative vs fixed 8x8) and client-side tint resolution."
+
+  - id: cl-teamradar.icon.ping
+    name: "Ping pulse rings (gfx/teamradar_ping, teamradar_times)"
+    layer: [presentation]
+    base_refs:
+      - "client/teamradar.qc:draw_teamradar_icon (ping loop over teamradar_times)"
+      - "common/mutators/mutator/waypoints/waypointsprites.qc:NET_HANDLE (bit-7 stamps teamradar_times, ~line 188)"
+    port_refs: []
+    constants:
+      - { name: "MAX_TEAMRADAR_TIMES", base: "32", port: "none", match: false }
+      - { name: "pulse window", base: "dt in (0,1)s, size '2 2 0'*teamradar_size*dt, alpha (1-dt)*a, DRAWFLAG_ADDITIVE", port: "none", match: false }
+      - { name: "ping bit", base: "icon byte bit 7 stamps teamradar_times[ring]", port: "ServerNet writes RadarIcon&0xFF (bit 7 dropped)", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Ping pulses missing: a teammate/objective ping draws no expanding gfx/teamradar_ping ring on the radar; neither the per-icon teamradar_times array, the bit-7 net stamping, nor the additive pulse loop is ported (ServerNet sends RadarIcon&0xFF, masking off the ping bit)."
+    verification:
+      - { kind: grep, ref: "no teamradar_ping / teamradar_times / ping-pulse code in port; ServerNet.cs:955 sends RadarIcon&0xFF", result: fail }
+    confidence: high
+    notes: "Neither the per-icon time array nor the network stamping is ported."
+
+  - id: cl-teamradar.links.onslaught
+    name: "Onslaught radar links (control-point connection lines)"
+    layer: [presentation, shared]
+    base_refs:
+      - "client/teamradar.qc:draw_teamradar_link"
+      - "client/teamradar.qc:NET_HANDLE(ENT_CLIENT_RADARLINK)"
+      - "client/hud/panel/radar.qc:IL_EACH(g_radarlinks ...) (line 301)"
+    port_refs: []
+    constants:
+      - { name: "link colors", base: "colormapPaletteColor(colors&0x0F) / ((colors&0xF0)/0x10)", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Onslaught radar links (ENT_CLIENT_RADARLINK / draw_teamradar_link / g_radarlinks) not networked or drawn — ONS radar shows control points but no connection lines."
+    verification:
+      - { kind: grep, ref: "no RADARLINK / g_radarlinks / draw_teamradar_link in port (only Base + onslaught spec mention it)", result: fail }
+    confidence: high
+    notes: "Depends on Onslaught being in scope at all for the port (see registry/onslaught.yaml)."
+
+  - id: cl-teamradar.maximized.map
+    name: "Maximized fullscreen tactical radar (m bind)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/radar.qc:HUD_Radar_Show_Maximized"
+      - "client/hud/panel/radar.qc:HUD_Radar (maximized branch, lines 212-230)"
+    port_refs:
+      - "game/menu/dialogs/DialogHudPanelRadar.cs (config UI only)"
+    constants:
+      - { name: "maximized_size bound", base: "0.2..1 of screen, centered, always default border", port: "none (no runtime; cvar registered but never consumed)", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Maximized fullscreen radar entirely absent: no m-bind (+hud_panel_radar_maximized → cl_cmd hud radar 1), no fullscreen tactical overview, no separate maximized rotation/zoom/scale runtime, no default-border swap."
+    verification:
+      - { kind: grep, ref: "no HUD_Radar_Show_Maximized / hud_panel_radar_maximized equivalent in port; DialogHudPanelRadar configures _maximized_* cvars but nothing consumes them", result: fail }
+    confidence: high
+    notes: "Config dialog exposes the cvars (incl maximized rotation/scale/zoom); no draw/state path implements the maximized map."
+
+  - id: cl-teamradar.maximized.click
+    name: "Clickable radar: ONS spawn-point select + teleport, input/mouse/ESC"
+    layer: [presentation, authority]
+    base_refs:
+      - "client/hud/panel/radar.qc:HUD_Radar_Mouse"
+      - "client/hud/panel/radar.qc:HUD_Radar_InputEvent"
+      - "client/hud/panel/radar.qc:HUD_Radar_Clickable"
+    port_refs: []
+    constants:
+      - { name: "spawn command", base: "localcmd cmd ons_spawn x y z at picked world point", port: "none", match: false }
+      - { name: "hover-glow", base: "within 8px of icon: gfx/teamradar_icon_glow 16x16 at 1.5x brightened color", port: "none", match: false }
+      - { name: "prompt", base: "'Click to select spawn/teleport location' (health-gated)", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No clickable ONS spawn-point selection (cmd ons_spawn), no teleport-click, no mouse/key input handling (MOUSE1/MOUSE2/ESC/console-key passthrough), no dead+showscores temp-hide, no 'Click to select…' prompt, no icon hover-glow."
+    verification:
+      - { kind: grep, ref: "no ons_spawn / HUD_Radar_Mouse / HUD_Radar_InputEvent / teamradar_icon_glow equivalent in port", result: fail }
+    confidence: high
+    notes: "The entire interactive layer of the maximized radar is unported; depends on the maximized map existing first."
+
+  - id: cl-teamradar.cvar.rotation
+    name: "Rotation modes (player-aligned vs cardinal lock)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/radar.qc:HUD_Radar_GetAngle"
+    port_refs:
+      - "game/hud/RadarPanel.cs:DrawPanel (radarYawDeg)"
+      - "game/menu/dialogs/DialogHudPanelRadar.cs (rotation slider 0..4)"
+    constants:
+      - { name: "rotation modes", base: "0=player, 1=west,2=south,3=east,4=north (five modes; rotate alias cycles 0..4)", port: "0=player, !0 => 90*rotation (handles any int incl 4; dialog exposes 0..4)", match: true }
+      - { name: "player-aligned angle", base: "(view_angles.y - 90) * DEG2RAD", port: "localYaw - 90 deg", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "v_flipped not applied (a mirrored view would not flip the radar)."
+      - "maximized_rotation cvar is only consumed by the (missing) maximized path; the small-radar rotation is faithful."
+    verification:
+      - { kind: code, ref: "radarYawDeg = rotation!=0 ? 90*rotation : localYaw-90 vs HUD_Radar_GetAngle; runtime 90*rotation covers mode 4; dialog (DialogHudPanelRadar:74-76) exposes all 5", result: pass }
+    confidence: high
+    notes: "CORRECTED from draft: runtime 90*rotation handles ALL modes including 4 (north), and the dialog exposes 0..4 — the only stale bit is the source code comment saying '1..3'. values now faithful."
+
+  - id: cl-teamradar.cvar.zoomscale
+    name: "Zoom / scale blend (bigsize vs normalsize)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/radar.qc:HUD_Radar_GetZoomFactor"
+      - "client/hud/panel/radar.qc:HUD_Radar (teamradar_size bigsize/normalsize blend, lines 260-295)"
+    port_refs:
+      - "game/hud/RadarPanel.cs:GetZoomFactor"
+      - "game/hud/RadarPanel.cs:DrawPanel (rangeUnits blend)"
+    constants:
+      - { name: "hud_panel_radar_scale default", base: "4096 (teamradar_loadcvars when 0)", port: "registered 8192 (luma); draw falls back to 4096 only when <=0/non-finite", match: false }
+      - { name: "ScaleReferenceDivisor", base: "mi_scale/scale2d-derived normalsize, vlen_maxnorm2d", port: "scale/4 heuristic + RangeUnits=2500 bigsize", match: false }
+      - { name: "zoommode 0", base: "current_zoomfraction (live +zoom lerp)", port: "0 (static normal)", match: false }
+      - { name: "zoommode 1", base: "1 - current_zoomfraction", port: "1 (static big)", match: false }
+      - { name: "zoommode 2/3", base: "0 (normal) / 1 (big)", port: "0 / 1", match: true }
+      - { name: "center", base: "zoom*mi_center + (1-zoom)*view_origin", port: "always selfOrigin (no big-zoom recentering)", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Zoom/scale is a RangeUnits=2500 + scale/4 heuristic, not the Base mi_scale/scale2d bigsize/normalsize blend; current_zoomfraction modes 0/1 collapse to static endpoints so the +zoom-follow behavior is lost."
+      - "Base recenters the radar between view_origin (normal) and mi_center (big) by the zoom factor; port always centers on the self origin, so 'fit whole arena' never recenters on the map center."
+    verification:
+      - { kind: code, ref: "GetZoomFactor + ScaleReferenceDivisor=4 vs HUD_Radar bigsize/normalsize + teamradar_origin3d blend", result: fail }
+    confidence: high
+    notes: "Coverage and zoom-in behavior differ; the actual arena-fit big size is approximated by a fixed 2500u range, and the big-zoom map-center recentering is unported."
+
+  - id: cl-teamradar.cvar.defaults
+    name: "cvar registration + defaults / panel enable + visibility"
+    layer: [presentation]
+    base_refs:
+      - "client/teamradar.qc:teamradar_loadcvars"
+      - "client/hud/panel/radar.qc:HUD_Radar (hud_panel_radar 0/1/2 gating, lines 191-194)"
+      - "client/hud/panel/radar.qh"
+      - "_hud_common.cfg:26 (hud_panel_radar 1, \"2\"=non-team)"
+    port_refs:
+      - "game/hud/RadarPanel.cs:RegisterDefaults"
+      - "game/hud/HudManager.cs:108 (StartHiddenIds hides discovered radar)"
+      - "game/net/NetGame.cs:1249 (standalone instance)"
+    constants:
+      - { name: "foreground_alpha default", base: "0.8 * panel_fg_alpha (when unset)", port: "registered 1; draw falls back to 0.8 only when <=0/non-finite", match: false }
+      - { name: "scale default", base: "4096 (when unset)", port: "registered 8192", match: false }
+      - { name: "maximized_scale", base: "luma 5120 / luminos 8192", port: "registered 5120", match: partial }
+      - { name: "maximized_rotation", base: "luma 1", port: "registered 0", match: false }
+      - { name: "hud_panel_radar_size default", base: "128 (x; y mirrors x when 0)", port: "no analogue (live control size / 2500u range)", match: false }
+      - { name: "hud_panel_radar enable", base: "1 (0=off, 2=show in non-team modes)", port: "no enable / non-team gating at runtime", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Registered cvar defaults are luma-skin values (scale 8192, foreground_alpha 1, maximized_rotation 0), not the QC code defaults (4096 / 0.8 / luma 1) teamradar_loadcvars applies when unset; a user who never touches the cvar gets 8192/1."
+      - "hud_panel_radar enable cvar (0/1/2) not honored at runtime: no disable, no team-only gating, no '2'=show-in-non-team-modes. The dialog exposes Disable/Team/Always but nothing consumes it."
+      - "Discovered HUD-registry radar is force-hidden (HudManager StartHiddenIds 'radar'), so only the standalone NetGame instance (256x256 at 24,24) is live."
+    verification:
+      - { kind: code, ref: "RegisterDefaults (RadarPanel.cs:124-138) vs teamradar_loadcvars + skin cfgs; HudManager StartHiddenIds:108-111; NetGame.cs:1249", result: fail }
+    confidence: high
+    notes: "Liveness partial: one live standalone radar; the discovered panel is dead, and hud_panel_radar 0/1/2 gating is absent (always-on standalone)."
+
+  - id: cl-teamradar.mutator.hook
+    name: "TeamRadar_Draw mutator hook (allow extra blips on radar)"
+    layer: [presentation, shared]
+    base_refs:
+      - "client/hud/panel/radar.qc:MUTATOR_CALLHOOK(TeamRadar_Draw) (line 303)"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No TeamRadar_Draw client mutator hook: mutators cannot add custom blips/icons to the radar, and the hook's return value (which Base ORs into the per-icon team-match gate for hover-glow visibility) is unmodeled."
+    verification:
+      - { kind: grep, ref: "no TeamRadar_Draw hook in port", result: fail }
+    confidence: medium
+    notes: "Low-impact unless a ported mutator wants to draw on the radar; folds into the broader client mutator-hook gap."

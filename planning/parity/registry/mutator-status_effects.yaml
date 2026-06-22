@@ -1,0 +1,413 @@
+unit: mutator-status_effects
+category: mutator
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 13
+  worst_gaps:
+    - "Burn damage is wrong AND frame-rate-dependent: Tick deals strength*0.05 per server frame; at TicRate 1/72 that is ~3.6x the intended DPS per second (Base = fire_damagepersec*frametime summed to dps/s). Base's Fire_AddDamage dps/time stacking + fire hitsound + fire_owner attribution + DEATH_FIRE deathtype are all absent (port passes the unregistered string \"burning\")."
+    - "Per-effect m_tick mechanics collapsed: no EF_FLAME/EF_SHOCK/EF_ADDITIVE|EF_FULLBRIGHT .effects flags, no water/frozen self-extinguish for burning, no SpawnShield post-game_starttime shimmer, no Stunned shock aura — the generic port Tick has no per-effect dispatch."
+    - "m_persistent / SetPersistent mechanism is DEAD (no caller, no per-frame PERSISTENT recompute). Unlimited-superweapon persistence is faked by re-applying a 999s timer, so the networked PERSISTENT bit is never set (HUD infinity for unlimited SW comes from the items-flag path, not the effect flag)."
+    - "Frozen ice block (MDL_ICE follow entity) + RemoveGrapplingHooks-on-freeze unimplemented; Base's local full-screen blue CSQC drawfill self-flash replaced by a per-model colormod (intended)."
+    - "No status-effect mass-clear hooks on PlayerDies/MonsterDies/ClientDisconnect/MakePlayerObserver/reset_map_global/PutClientInServer (Base removeall+clearall); stale timers can survive death/respawn/map reset, and SpectateCopy effect-aliasing is absent."
+    - "Removal sounds (m_sound_rm: Burning steam_burst, Stunned ons_spark1, Superweapon POWEROFF) and the superweapon play_countdown beep are never emitted on removal/expiry."
+features:
+  - id: status_effects.framework.registry
+    name: "StatusEffects registry + StatusEffect base class (32 slots, m_id, attribs)"
+    layer: [shared]
+    base_refs:
+      - "common/mutators/mutator/status_effects/all.qh:REGISTRY(StatusEffects,32)"
+      - "common/mutators/mutator/status_effects/all.qh:CLASS(StatusEffect)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/StatusEffects.cs:StatusEffectsCatalog.RegisterAll"
+      - "src/XonoticGodot.Common/GameInit.cs:26"
+    constants:
+      - { name: "REGISTRY size", base: "32", port: "Registry<StatusEffectDef> (unbounded; sized by count)", match: true }
+      - { name: "m_lifetime default", base: "30", port: "0 on def (HUD falls back to StatusEffectLifetime=30)", match: true }
+      - { name: "m_color/m_icon/m_name/m_sound/m_sound_rm/m_persistent on def", base: "present", port: "dropped (HUD uses PowerupMeta table; no sound/persistent methods)", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "StatusEffectDef drops m_color/m_icon/m_name/m_sound/m_sound_rm and the m_persistent/m_tick/m_remove methods; def is data-poor (HUD reconstructs label/icon/color from a separate PowerupMeta table in PowerupsPanel)."
+    verification:
+      - { kind: code, ref: "RegisterAll seeds frozen/burning/spawnshield(10)/stunned(10)/superweapon + webbed + strength/shield/speed/invisibility + 13 buffs; called at GameInit.cs:26", result: pass }
+    confidence: high
+    notes: "Framework registry is live; all 5 own-dir effects present. Other members (Webbed, powerups, buffs) registered here but owned by their units."
+
+  - id: status_effects.framework.flags_enums
+    name: "ACTIVE/PERSISTENT flags + REMOVE_NORMAL/TIMEOUT/CLEAR enums"
+    layer: [shared]
+    base_refs:
+      - "common/mutators/mutator/status_effects/all.qh:20"
+      - "common/mutators/mutator/status_effects/all.qh:26"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/StatusEffects.cs:StatusEffectFlags"
+      - "src/XonoticGodot.Common/Gameplay/StatusEffects.cs:StatusEffectRemoval"
+    constants:
+      - { name: "FLAG_ACTIVE", base: "BIT(0)", port: "1<<0", match: true }
+      - { name: "FLAG_PERSISTENT", base: "BIT(1)", port: "1<<1", match: true }
+      - { name: "REMOVE_NORMAL/TIMEOUT/CLEAR", base: "0/1/2", port: "0/1/2", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "StatusEffectRemoval.Clear and .Timeout enum values exist but no live caller passes them: the port's Remove() always behaves like NORMAL-minus-sound, and timed expiry in Tick() just RemoveAt's without invoking a removal_type path. So the removal-type branching the enum encodes is dead."
+    verification:
+      - { kind: code, ref: "enum values mirror QC bit/index; grep shows StatusEffectRemoval never passed to Remove() (Remove takes only (Entity,def))", result: pass }
+    confidence: high
+    notes: "Enums are correct but the removal-type dispatch they model is not exercised — Remove() has no removal_type parameter at all."
+
+  - id: status_effects.framework.apply
+    name: "StatusEffects_apply (set timer+flags, auto ACTIVE, mark dirty, eff_time<=time guard)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/status_effects/status_effects.qc:StatusEffects_apply"
+      - "common/mutators/mutator/status_effects/sv_status_effects.qc:m_apply"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/StatusEffects.cs:StatusEffectsCatalog.Apply"
+    constants:
+      - { name: "guard eff_time<=time => no-op", base: "yes", port: "no (Apply always applies; duration<=0 stored as ExpireTime=0 = permanent)", match: false }
+      - { name: "auto-set ACTIVE flag", base: "yes", port: "yes (Flags|=Active)", match: true }
+      - { name: "replace (not add) timer", base: "replace", port: "replace", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Apply lacks Base's eff_time<=time early-return guard. Base no-ops a non-future apply; the port instead treats duration<=0 as ExpireTime=0 which the Tick reads as PERMANENT (never times out) — a semantic divergence at the duration<=0 boundary, exploited intentionally by SuperweaponTimeout (999s) and by FreezeTag/NadeIce passing 0 for until-thawed."
+    verification:
+      - { kind: code, ref: "live Apply sites confirmed: DamageSystem.ApplyFrozen/ApplyBurning, GiveItems(superweapon/powerup/buff), ItemPickupRules, BuffsMutator(buff+stunned), NadeIceBoom, NadeNapalmBoom, Fireball x2, MonsterFramework, PhaserTurret, SpawnSystem(superweapon), FreezeTag", result: pass }
+    confidence: high
+    notes: "Refresh-if-present path matches Base replace semantics and is widely live. The duration<=0 => permanent behavior is load-bearing for the bespoke superweapon persistence."
+
+  - id: status_effects.framework.remove
+    name: "StatusEffects_remove (zero timer+flags, removal sound if NORMAL & active & !persistent)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/status_effects/sv_status_effects.qc:m_remove"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/StatusEffects.cs:StatusEffectsCatalog.Remove"
+    constants:
+      - { name: "play m_sound_rm on NORMAL removal", base: "yes", port: "no", match: false }
+      - { name: "removal_type parameter", base: "int removal_type (NORMAL/TIMEOUT/CLEAR)", port: "absent (Remove(Entity,def) only)", match: false }
+    status:
+      logic: partial
+      values: na
+      timing: na
+      presentation: na
+      audio: missing
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Remove never plays m_sound_rm (Base: sound(actor,CH_TRIGGER,m_sound_rm) on NORMAL removal when active and not persistent)."
+      - "Remove takes no removal_type and runs no per-effect m_remove mechanics (e.g. Frozen_ice_remove, clearing EF_FLAME/EF_SHOCK/EF_ADDITIVE) — it only deletes the list entry and dirty-marks."
+    verification:
+      - { kind: code, ref: "live Remove sites: FreezeTag (thaw), GiveItems x3, CompatRemaps, MonsterAI(shield), BuffsMutator, WeaponThrowing(superweapon)", result: pass }
+    confidence: high
+    notes: "List-removal + dirty-mark is correct; the per-effect removal mechanics and the audio cue are missing."
+
+  - id: status_effects.framework.tick
+    name: "StatusEffects_tick — per-frame: PERSISTENT recompute, timeout removal, per-effect m_tick"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/status_effects/status_effects.qc:StatusEffects_tick"
+      - "common/mutators/mutator/status_effects/sv_status_effects.qc:m_tick"
+      - "common/mutators/mutator/status_effects/sv_status_effects.qc:SV_StartFrame hook"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/StatusEffects.cs:StatusEffectsCatalog.Tick"
+      - "src/XonoticGodot.Server/GameWorld.cs:1138"
+    constants:
+      - { name: "tick scope", base: "all g_damagedbycontents ents with .statuseffects, not MOVETYPE_NOCLIP", port: "live, non-observer, non-dead players only (PlayerPostThink)", match: false }
+      - { name: "PERSISTENT recompute per tick (BITSET via m_persistent)", base: "yes", port: "no (no per-effect dispatch)", match: false }
+      - { name: "per-effect m_tick dispatch", base: "FOREACH active -> it.m_tick", port: "single hardcoded burning branch; no other effect ticks", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: missing
+      audio: missing
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Tick has no per-effect dispatch: it expires timers + applies a hardcoded burn hit, but never recomputes PERSISTENT, never runs per-effect m_tick (EF_FLAME/EF_SHOCK/EF_ADDITIVE|FULLBRIGHT), and never self-extinguishes burning in water/while frozen."
+      - "Tick scope is live players only (skips observers/dead via the GameWorld.cs:1131 guard), not all damagedbycontents entities — monsters tick burning via their own MonsterFramework path; a non-player non-monster ignite would not tick at all."
+      - "Burn damage in Tick is strength*0.05 per server FRAME (not per second, not *frametime), so it is frame-rate-dependent: at TicRate 1/72 it deals ~3.6x the intended dps/s; only at a 20tps frame would it coincidentally equal dps*frametime."
+    verification:
+      - { kind: code, ref: "Tick(p,Time) called per live player in PlayerPostThink (GameWorld.cs:1138), gated on !observer && !gameStopped && !IsDead (GameWorld.cs:1122-1138)", result: pass }
+      - { kind: code, ref: "SimulationLoop.TicRate = 1f/72f; Tick burn uses literal 0.05f not Api.Clock.FrameTime -> ~3.6x dps", result: pass }
+    confidence: high
+    notes: "Expiry path is live and correct for timed effects; the per-effect mechanics layer (burning dps/visuals/extinguish, stunned/spawnshield visuals, persistence) is collapsed away, and the burn rate is both wrong-magnitude and frame-rate-dependent."
+
+  - id: status_effects.framework.gettime
+    name: "StatusEffects_gettime (timer read with still-active-this-frame clamp)"
+    layer: [shared]
+    base_refs:
+      - "common/mutators/mutator/status_effects/status_effects.qc:StatusEffects_gettime"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/StatusEffects.cs:ActiveStatusEffect.ExpireTime (read directly by consumers)"
+    constants:
+      - { name: "eff_time<time => return time", base: "yes", port: "no (raw ExpireTime read)", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: partial
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No gettime wrapper; consumers read ExpireTime directly so the 'effect still active for the current frame even past end time' clamp (eff_time<time => time) is not reproduced. Note this matters MORE in Base than for the port because Base's Fire_AddDamage stacking math calls StatusEffects_gettime(Burning) for fireendtime — the port's flat burn never reads a clamped fireend, so the absence is benign for the port's (already-divergent) burn path."
+    verification:
+      - { kind: code, ref: "no StatusEffects_gettime analogue; ExpireTime read in PowerupsPanel/SuperweaponTimeout/Has", result: pass }
+    confidence: medium
+    notes: "Functionally minor for the port; the clamp's main Base consumer (fire dps stacking) is itself unported."
+
+  - id: status_effects.framework.persistent
+    name: "m_persistent flag (passive grant: no timeout) + SetPersistent + per-frame recompute"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/status_effects/sv_status_effects.qc:m_tick(persistent recompute)"
+      - "common/mutators/mutator/status_effects/all.qh:m_persistent"
+      - "common/mutators/mutator/status_effects/status_effect/burning.qc:m_persistent"
+      - "common/mutators/mutator/status_effects/status_effect/superweapons.qc:m_persistent"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/StatusEffects.cs:StatusEffectsCatalog.SetPersistent"
+    constants: []
+    status:
+      logic: stub
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "SetPersistent has exactly one occurrence (its own definition) and NO caller anywhere in src/ or game/. No per-frame pass recomputes the PERSISTENT flag from any m_persistent (burning-in-lava or unlimited-superweapons)."
+      - "Unlimited-superweapon persistence is faked by re-applying a 999s timer in SuperweaponTimeout, so the networked PERSISTENT bit is never set on the superweapon effect; the HUD infinity glyph for unlimited SW is produced from the items-flag path (PowerupsPanel:248), not from a PERSISTENT effect."
+    verification:
+      - { kind: grep, ref: "grep SetPersistent across src/+game/ returns only the definition line (StatusEffects.cs:195)", result: pass }
+    confidence: high
+    notes: "Tick DOES read the Persistent flag to skip timeout, so the no-timeout half would work if anything set the flag — but nothing does."
+
+  - id: status_effects.framework.removeall_lifecycle
+    name: "removeall/clearall on death, disconnect, observer, map reset, PutClientInServer; SpectateCopy alias"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/status_effects/sv_status_effects.qc:PlayerDies"
+      - "common/mutators/mutator/status_effects/sv_status_effects.qc:MonsterDies"
+      - "common/mutators/mutator/status_effects/sv_status_effects.qc:ClientDisconnect"
+      - "common/mutators/mutator/status_effects/sv_status_effects.qc:MakePlayerObserver"
+      - "common/mutators/mutator/status_effects/sv_status_effects.qc:reset_map_global"
+      - "common/mutators/mutator/status_effects/sv_status_effects.qc:PutClientInServer"
+      - "common/mutators/mutator/status_effects/sv_status_effects.qc:SpectateCopy"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No status-effect mass-clear on PlayerDies/MonsterDies/ClientDisconnect/MakePlayerObserver/reset_map_global/PutClientInServer; cleanup relies on per-feature paths (e.g. FreezeTag thaw). Stale burning/stunned/superweapon timers can survive death/respawn or map reset."
+      - "Base's SpectateCopy alias (client.statuseffects = spectatee.statuseffects) so a spectator sees the spectatee's effects has no port analogue here (the per-entity blob networking covers some of this, but the explicit spectatee-effect aliasing is absent)."
+    verification:
+      - { kind: grep, ref: "no StatusEffects removeall/clearall analogue tied to PlayerDies/MonsterDies/ClientDisconnect/observer/reset; Remove is per-def only", result: pass }
+    confidence: medium
+    notes: "Player-spawn paths reapply spawnshield(via SpawnShieldExpire)/superweapon fresh, masking some staleness; the death/reset clear hooks are genuinely absent. Not runtime-verified."
+
+  - id: status_effects.net.entity
+    name: "ENT_CLIENT_STATUSEFFECTS networking (grouped bitmap + per-effect time+flags)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/status_effects/status_effects.qh:StatusEffects_Write"
+      - "common/mutators/mutator/status_effects/status_effects.qh:NET_HANDLE(ENT_CLIENT_STATUSEFFECTS)"
+      - "common/mutators/mutator/status_effects/status_effects.qh:StatusEffects_customize"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/StatusEffects.cs:StatusEffectsCatalog.Write/Read/Flush"
+      - "src/XonoticGodot.Net/NetEntity.cs:82"
+    constants:
+      - { name: "groups_minor", base: "8", port: "8 (GroupsMinor)", match: true }
+      - { name: "groups_major", base: "4", port: "4 (GroupsMajor)", match: true }
+      - { name: "wire layout", base: "majorBits(Writebits 4) -> per set group minorBits(Writebits 8) -> WriteFloat time + WriteByte flags", port: "majorBits byte -> per group minorBits byte -> 4-byte float time + byte flags", match: true }
+      - { name: "delta vs statuseffects_store entity", base: "delta (only changed effects sent)", port: "full per-entity snapshot each changed tick", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Port writes a full per-entity status-effect snapshot each changed tick (gated by a _dirty set mirroring SendFlags=0xFFFFFF) instead of delta-encoding against a separate statuseffects_store entity. The major/minor bit layout and per-effect (float time, byte flags) payload are identical; per-effect delta-encoding was deemed optional. Bandwidth cost only."
+    verification:
+      - { kind: code, ref: "Write/Read round-trip mirrors QC Writebits order; majorBits/minorBits walk + per-id float+byte; blob carried on NetEntity (EntityField.StatusEffects = 1<<16, mask widened to 32-bit) and decoded by ClientEntityView", result: pass }
+    confidence: high
+    notes: "StatusEffects_customize (owner + spectators only) is approximated by the per-entity NetEntity blob. Round-trip implemented; full-snapshot vs delta is the only deliberate change."
+
+  - id: status_effects.hud.powerups_feed
+    name: "Client HUD powerups feed (HUD_Powerups_add -> m_tick -> addPowerupItem)"
+    layer: [presentation]
+    base_refs:
+      - "common/mutators/mutator/status_effects/cl_status_effects.qc:HUD_Powerups_add"
+      - "common/mutators/mutator/status_effects/cl_status_effects.qc:m_tick"
+      - "common/mutators/mutator/status_effects/status_effect/superweapons.qc:m_tick(CSQC)"
+    port_refs:
+      - "game/hud/PowerupsPanel.cs:AppendPlayerPowerups"
+    constants:
+      - { name: "remaining time clamp", base: "bound(0, time-now, 99)", port: "Clamp(ExpireTime-now,0,99)", match: true }
+      - { name: "m_lifetime (HUD bar scale)", base: "30 default / spawnshield+stunned 10", port: "def.Lifetime if >0 else 30 fallback", match: true }
+      - { name: "hidden effects skipped", base: "yes (m_hidden)", port: "yes (def.Hidden)", match: true }
+      - { name: "PERSISTENT -> infinity glyph", base: "yes (statuseffect_flags & PERSISTENT)", port: "infinite = ExpireTime<=0 (permanent), NOT the PERSISTENT flag", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Infinity glyph is driven by ExpireTime<=0 (permanent timer) rather than the networked PERSISTENT flag, because nothing sets PERSISTENT (see framework.persistent). For unlimited superweapons the glyph still appears, but via the separate items-flag fallback (PowerupsPanel:248), not the effect. Behaviorally close; flag-derivation diverges."
+    verification:
+      - { kind: code, ref: "AppendPlayerPowerups iterates Entity.StatusEffects, skips def.Hidden, clamps time 0..99, lifetime fallback 30, infinite when ExpireTime<=0; jetpack/fuelregen/unlimited-SW shown infinite via items bits", result: pass }
+    confidence: high
+    notes: "Drives strength/shield/speed/invisibility/superweapon + buffs onto the HUD. label/icon/color from PowerupMeta table (def lost m_color/m_icon). Indexed iteration guards against concurrent list mutation."
+
+  - id: status_effects.burning
+    name: "Burning effect (EF_FLAME, Fire_AddDamage/ApplyDamage, water/frozen extinguish, lava persistence, removal sound)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/status_effects/status_effect/burning.qc:m_tick"
+      - "common/mutators/mutator/status_effects/status_effect/burning.qc:m_remove"
+      - "common/mutators/mutator/status_effects/status_effect/burning.qc:m_persistent"
+      - "server/damage.qc:Fire_AddDamage"
+      - "server/damage.qc:Fire_ApplyDamage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/StatusEffects.cs:Tick (burning branch: Combat.Damage(strength*0.05,\"burning\"))"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:ApplyBurning"
+      - "game/client/ClientWorld.cs:1123 (per-frame EF_FLAME particle burst on burning entities)"
+    constants:
+      - { name: "m_color", base: "'1 0.62 0'", port: "n/a (def drops color; effect hidden)", match: false }
+      - { name: "m_hidden / m_lifetime", base: "true / 10", port: "Hidden=true / 0 (not on HUD)", match: true }
+      - { name: "m_sound_rm", base: "desertfactory/steam_burst (SND_Burning_Remove)", port: "none", match: false }
+      - { name: "lava persistence cvar", base: "g_balance_contents_playerdamage_lava_burn=0 (default off)", port: "not implemented (default-off anyway)", match: true }
+      - { name: "burn damage model", base: "fire_damagepersec*min(frametime,fireend-time)/frame; dps from d/t stacking (Fire_AddDamage)", port: "strength*0.05/server-frame flat (~3.6x dps at 72tps; frame-rate dependent)", match: false }
+      - { name: "deathtype + owner attribution", base: "DEATH_FIRE + fire_owner + fire hitsound", port: "string \"burning\" (unregistered; Fire maps to \"FIRE\") + s.Source; no hitsound", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: partial
+      audio: missing
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Burn damage uses strength*0.05 per server frame (frame-rate-dependent, ~3.6x intended dps at TicRate 1/72), not Base's Fire_AddDamage dps/time stacking + Fire_ApplyDamage (fire_damagepersec*frametime) per tick. DamageEntityState has FireDamagePerSec/FireOwner/FireDeathType fields but the burn path never uses them."
+      - "Deathtype passed is the raw string \"burning\" which is not a registered death type (Base uses DEATH_FIRE -> \"FIRE\"); burn-kill obituaries/hitsound differ; owner attribution is via s.Source not fire_owner chain."
+      - "EF_FLAME .effects flag never set on the actor (Base sets/clears it in m_tick/m_remove). NOTE: a client-side EF_FLAME PARTICLE burst IS emitted per frame on burning entities (ClientWorld.cs:1123-1124), so there is a flame visual, just not the .effects-flag mechanism."
+      - "Burning doesn't self-extinguish in non-lava water or while frozen (Base m_tick removes it); no steam_burst removal sound; lava-burn persistence (cvar default 0) not implemented."
+    verification:
+      - { kind: code, ref: "ApplyBurning live (Fireball x2, NadeNapalmBoom, MonsterFramework); Tick burning branch deals strength*0.05; ignite sites pass strength=dps (Fireball rate, napalm dd)", result: pass }
+      - { kind: code, ref: "ClientWorld.cs:1123 Effects.Spawn(\"EF_FLAME\",...) per frame when HasStatusEffect(e,Burning)", result: pass }
+    confidence: high
+    notes: "Ignite is live and a flame particle visual exists; the damage curve is both magnitude-wrong and frame-rate-dependent, the deathtype is unregistered, and the extinguish/audio mechanics are absent."
+
+  - id: status_effects.frozen
+    name: "Frozen effect (ice model block, RemoveGrapplingHooks, lava/STAT_FROZEN extinguish, blue overlay)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/status_effects/status_effect/frozen.qc:Frozen_ice_create"
+      - "common/mutators/mutator/status_effects/status_effect/frozen.qc:m_apply"
+      - "common/mutators/mutator/status_effects/status_effect/frozen.qc:m_tick(SVQC extinguish + CSQC drawfill)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:ApplyFrozen"
+      - "game/client/ClientWorld.cs:1072 (frozen colormod tint)"
+    constants:
+      - { name: "m_color", base: "'0 0.62 1'", port: "FrozenColormod (0.45,0.65,1.15) per-model tint", match: false }
+      - { name: "ice model", base: "MDL_ICE block at origin-'0 0 16', alpha 0.5, random frame 0..20, think follows owner", port: "none", match: false }
+      - { name: "RemoveGrapplingHooks on first apply", base: "yes", port: "no", match: false }
+      - { name: "SVQC extinguish in lava/STAT_FROZEN", base: "yes (m_remove NORMAL)", port: "no per-effect tick", match: false }
+      - { name: "CSQC self overlay", base: "full-screen drawfill '0.25 0.90 1' * hud_colorflash_alpha*0.3 additive", port: "per-model colormod on the frozen player's mesh", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Frozen is shown via an icy-blue per-model colormod on the frozen player's mesh (ClientWorld.cs:1072) so every frozen player reads as frozen map-wide, rather than Base's local-only full-screen blue CSQC drawfill self-flash. Deliberate presentation choice (visible to all observers, not just the frozen viewer)."
+    gaps:
+      - "No MDL_ICE block entity spawned around a status-frozen entity; no RemoveGrapplingHooks on freeze; no SVQC lava/STAT_FROZEN auto-extinguish (no per-effect tick)."
+      - "Base's local full-screen blue freeze flash (CSQC drawfill) for the frozen viewer is not implemented (only the model tint)."
+    verification:
+      - { kind: code, ref: "ApplyFrozen live (NadeIceBoom:105, FreezeTag:235); ClientWorld:1072 applies FrozenColormod when HasStatusEffect(e,Frozen)", result: pass }
+    confidence: medium
+    notes: "FreezeTag gametype freeze (FrozenStat) is a separate system; this row is the status-effect frozen (ice nade / FreezeTag-applied frozen def). Model-tint divergence intended; ice block + grapple-detach + self-flash are genuine gaps."
+
+  - id: status_effects.spawnshield_stunned_superweapon
+    name: "SpawnShield (EF_ADDITIVE|FULLBRIGHT), Stunned (EF_SHOCK), Superweapon (persistence + countdown sound)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/status_effects/status_effect/spawnshield.qc:m_tick/m_remove"
+      - "common/mutators/mutator/status_effects/status_effect/stunned.qc:m_tick/m_remove"
+      - "common/mutators/mutator/status_effects/status_effect/superweapons.qc:m_persistent"
+      - "server/client.qc (superweapon play_countdown SND_POWEROFF)"
+    port_refs:
+      - "src/XonoticGodot.Server/PlayerFrameLogic.cs:SuperweaponTimeout"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:HasSpawnShield (Entity.SpawnShieldExpire)"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:605 (player spawnshield via SpawnShieldExpire, NOT the status effect)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:384 (stunned via disability buff)"
+    constants:
+      - { name: "spawnshield m_lifetime", base: "10", port: "10 (def Lifetime)", match: true }
+      - { name: "stunned m_lifetime", base: "10", port: "10 (def Lifetime)", match: true }
+      - { name: "g_balance_superweapons_time", base: "30", port: "30 (CvarOr default at SpawnSystem:726 / GiveItems:162)", match: true }
+      - { name: "player spawnshield via status effect", base: "StatusEffects_apply(SpawnShield)", port: "NOT a status effect for players — Entity.SpawnShieldExpire timer on the damage entity", match: false }
+      - { name: "SpawnShield EF_ADDITIVE|EF_FULLBRIGHT shimmer (after game_starttime)", base: "yes", port: "not applied", match: false }
+      - { name: "Stunned EF_SHOCK aura", base: "yes", port: "no", match: false }
+      - { name: "Superweapon PERSISTENT via m_persistent + m_sound_rm POWEROFF + play_countdown", base: "yes", port: "no (999s re-apply fakes persistence; no sounds)", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: missing
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Player spawnshield is NOT modeled as the spawnshield status effect at all — it is a bespoke Entity.SpawnShieldExpire timer on the damage entity (SpawnSystem:605, read by DamageSystem.HasSpawnShield). The registered spawnshield status def is only applied to monsters via MonsterFramework. So the EF_ADDITIVE|EF_FULLBRIGHT post-game_starttime shimmer is never produced for players."
+      - "Stunned EF_SHOCK aura not applied; stunned is applied as a status effect by the disability buff (BuffsMutator:384) but the shock visual + the (Base-disabled) Shock_ApplyDamage are absent. Base's STAT(FROZEN) auto-remove for stunned is also absent (no per-effect tick)."
+      - "Superweapon persistence done by re-applying a 999s timer in SuperweaponTimeout (PERSISTENT flag never set); no SND_POWEROFF removal sound and no play_countdown beep on the countdown."
+    verification:
+      - { kind: code, ref: "SuperweaponTimeout: strips superweapons on lapse / re-applies 999f when IT_UNLIMITED_SUPERWEAPONS (PlayerFrameLogic:325-347, live via PlayerPowerups); player spawnshield via SpawnSystem:605 SpawnShieldExpire; stunned via BuffsMutator:384", result: pass }
+    confidence: high
+    notes: "Superweapon strip/countdown gameplay is live and effect-correct; the flag/audio fidelity diverges. SpawnShield-for-players is a separate timer entirely (not the unified statuseffect storage), so liveness of the spawnshield-status-effect path for players is effectively dead — only monsters use it."

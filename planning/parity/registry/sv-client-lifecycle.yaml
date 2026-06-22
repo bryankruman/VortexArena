@@ -1,0 +1,627 @@
+unit: sv-client-lifecycle
+category: server
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 22
+  worst_gaps:
+    - "Join queue + team-selection ordering (queuePlayer / TeamBalance_JoinBestTeam priority pass, queued-team dibs conflict) not modeled: in team modes the queued-team conflict resolution and best-team-by-skill ordering are absent; PutPlayerInServer's own wants_join>0 / bot_forced_team / TeamBalance_JoinBestTeam team-assign is also not run (the port pre-assigns at connect only)."
+    - "joinAllowed is reduced to MIN_SPEC_TIME + lockteams: version-mismatch, forced-spectator (TEAM_FORCE_SPECTATOR), playban, g_maxping, and the queue/nJoinAllowed (g_maxplayers/GetPlayerLimit/bots_would_leave) gates are all missing — a mismatched/banned/high-ping/over-cap client can still join, and no CENTER_JOIN_PREVENT*/PLAYBAN/PING/VERSIONMISMATCH centerprints fire."
+    - "ShowRespawnCountdown announcer (10-9-8 CNT_RESPAWN) never fires: RespawnTiming computes RespawnCountdown but DeadPlayerThink never calls ShowRespawnCountdown to decrement it / play Announcer_PickNumber(CNT_RESPAWN, n)."
+    - "player_regen fuel: the port regenerates fuel whenever the regen pause has lapsed, but Base gates fuel REGEN on the IT_FUEL_REGEN item flag (jetpack pickup) AND skips the whole fuel block under IT_UNLIMITED_AMMO — so a port player regenerates fuel with no fuel-regen pickup."
+    - "The networked PRESSED_KEYS stat is never set server-side: the local-player HUD pressedkeys/strafe panel works from client-side bind state, but a SPECTATED player's held keys (PressedKeysPanel.PressedKeysOverride) are never fed, and the observer-clears-PRESSED_KEYS path is absent."
+    - "sv_maxidle idle-kick / move-to-spectator is entirely missing: idle players are never kicked or demoted; the idle countdown bangs (SND TALK2) and CENTER_DISCONNECT_IDLING / CENTER_MOVETOSPEC_IDLING / INFO_QUIT_KICK_IDLING never appear, and parm_idlesince alivetime afk-gating is not modeled."
+    - "The time < game_starttime spawn-shield/pause countdown extension is NOT applied: a player who spawns during the pre-match countdown loses spawn protection and starts rotting earlier than Base (explicit SpawnSystem TODO)."
+    - "No server->client welcome channel: clientstuff/FixClientCvars/cl_jumpspeedcap_min-max/cl_shootfromfixedorigin stuffcmds, clientversion request, _teams_available, sv_notice_join/SendWelcomeMessage MOTD, Send_NextMap_To_Player, ClientInit_misc per-client init entity, Handicap_Initialize, playban/chatban, model_randomizer — none modeled."
+    - "PutObserverInServer omits SelectObservePoint/observe-spawn placement, despawn EFFECT_SPAWN, vote/ready recount, the SPECTATE_WARNING block, and RES_ARMOR=g_balance_armor_start; sv_spectate-disabled spectator kick (SPECTATE_WARNING / INFO_QUIT_KICK_SPECTATING) absent."
+    - "UpdateChatBubble (chat/minigame-busy bubble over a typing player) is not modeled; version nag, nameless/too-long/invisible-name enforcement (sv_name_maxlength), GOD MODE info, and the PlayerPreThink misc dispatch (PlayerUseKey edge as a unit, SetZoomState, teamkill/taunt voice sounds, target_voicescript_next) are missing or scattered."
+    - "DrownPlayer surfaced-after-out-of-air gasp does not play playersound_gasp."
+features:
+  - id: sv-client-lifecycle.connect.client_connect
+    name: "ClientConnect: accept a client as an observer"
+    layer: [authority]
+    base_refs:
+      - "server/client.qc:ClientConnect"
+    port_refs:
+      - "src/XonoticGodot.Server/ClientManager.cs:ClientConnect"
+      - "src/XonoticGodot.Server/GameWorld.cs:InfraClientConnect"
+      - "game/net/ServerNet.cs:DriveConnect (admit ~1054)"
+    constants:
+      - { name: "MIN_SPEC_TIME", base: "1 s", port: "1 s (ClientManager.MinSpecTime)", match: true }
+      - { name: "version_nagtime", base: "time + 10 + random()*10", port: "none", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Connect-side server->client channel deferred (see connect.fix_client_cvars_welcome row): no clientstuff/FixClientCvars/clientversion/_teams_available stuffcmds, no sv_notice_join/MOTD, no Handicap_Initialize/playban/chatban, no model_randomizer, no Send_NextMap."
+      - "Player_DetermineForcedTeam / forced-team-otherwise spectator routing not modeled (team is pre-assigned via AssignBestTeam only)."
+    verification:
+      - { kind: code, ref: "game/net/ServerNet.cs:1054 ClientConnect admit; ClientManager.cs:149-222", result: pass }
+    confidence: high
+    notes: "Connect is LIVE and registers the client everywhere (entity table, sim, scores, roster); fires ban/event-log/stats/anticheat/timeout/CHAT_CONNECT and ends in the QC observer-on-connect invariant (IsObserver, FRAGS_SPECTATOR, MOVETYPE_NONE/SOLID_NOT). Bots auto-Join at connect."
+
+  - id: sv-client-lifecycle.connect.fix_client_cvars_welcome
+    name: "FixClientCvars / SendWelcomeMessage / ClientInit_misc: server->client welcome + cvar push"
+    layer: [authority, presentation]
+    base_refs:
+      - "server/client.qc:FixClientCvars"
+      - "server/client.qc:SendWelcomeMessage"
+      - "server/client.qc:ClientInit_misc"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No server->client stuffcmd/welcome channel: FixClientCvars (cl_jumpspeedcap_min/max, cl_shootfromfixedorigin, prediction/gentle), clientstuff, cmd clientversion, set _teams_available, sv_notice_join/SendWelcomeMessage (MOTD/hostname/map/mutators), Send_NextMap_To_Player, and the ClientInit_misc per-client init entity (armor-blockpercent, damagepush speedfactor, fog, serverflags, g_trueaim_minrange, hook/arc shot origins) are all unmodeled."
+      - "The port instead pushes a few physics-relevant cvars via per-client replicated-cvar tables; there is no MOTD, no version request, and no per-client init-entity carrying the server's damage/fog/trueaim constants."
+    verification:
+      - { kind: code, ref: "grep: no FixClientCvars/SendWelcomeMessage/sv_notice_join/_teams_available in src+game", result: fail }
+    confidence: high
+    notes: "Split out of the connect row: a whole server->client config/welcome subsystem QC runs in ClientConnect. The replicated-cvar table is a partial functional stand-in for the physics cvars only."
+
+  - id: sv-client-lifecycle.join.join_player
+    name: "Join: observer -> live player"
+    layer: [authority]
+    base_refs:
+      - "server/client.qc:Join"
+    port_refs:
+      - "src/XonoticGodot.Server/ClientManager.cs:Join"
+    constants: []
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: missing
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Join queue + team-selection ordering not modeled: the queued_join TeamBalance_AreEqual two-pass (queued-team dibs first pass + strongest-autoselect-by-skill second pass, player_with_dibs conflict) is absent; the port autoselects via a single connect-time AssignBestTeam."
+      - "Campaign Join branch (campaign_bots_may_start / ReadyRestart) only partially modeled (CampaignHostAutojoin opts the host in); the bot-start ReadyRestart trigger is not in ClientManager.Join."
+      - "Join notifications missing: INFO_JOIN_PLAY (FFA), CENTER_JOIN_PLAY_TEAM / CENTER_JOIN_PLAY_TEAM_QUEUECONFLICT (team), ANNCE_BEGIN for a queued player; Kill_Notification(CPID_PREVENT_JOIN) clear not modeled."
+    verification:
+      - { kind: code, ref: "ClientManager.cs:230-246 Join", result: pass }
+    confidence: high
+    notes: "Core path (clear observer phase + Spawn) is LIVE; the team-selection/queue/notification layer is deferred."
+
+  - id: sv-client-lifecycle.join.join_allowed
+    name: "joinAllowed gates"
+    layer: [authority]
+    base_refs:
+      - "server/client.qc:joinAllowed"
+      - "server/client.qc:nJoinAllowed"
+      - "server/client.qc:GetPlayerLimit"
+    port_refs:
+      - "src/XonoticGodot.Server/ClientManager.cs:JoinAllowed"
+    constants:
+      - { name: "MIN_SPEC_TIME", base: "1 s", port: "1 s", match: true }
+      - { name: "g_maxping", base: "0 (off)", port: "none", match: false }
+      - { name: "g_maxplayers", base: "0 (off) -> GetPlayerLimit/nJoinAllowed", port: "none", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: faithful
+      presentation: missing
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Only MIN_SPEC_TIME + (teamplay && lockteams) enforced. Missing: version_mismatch, Player_GetForcedTeamIndex==TEAM_FORCE_SPECTATOR, g_playban_list, g_maxping (ping<=0 too-soon + ping>maxping), and the whole QueueNeeded/queuePlayer/ShowTeamSelection + nJoinAllowed/GetPlayerLimit/g_maxplayers/bots_would_leave capacity gate."
+      - "No CENTER_JOIN_PREVENT / CENTER_JOIN_PREVENT_VERSIONMISMATCH / CENTER_JOIN_PLAYBAN / CENTER_JOIN_PREVENT_PING / CENTER_TEAMCHANGE_LOCKED centerprints for blocked joins."
+    verification:
+      - { kind: code, ref: "ClientManager.cs:256-265 JoinAllowed", result: pass }
+    confidence: high
+    notes: "Reduced gate; the deferred subsystems (version/ban/ping/queue/maxplayers) aren't modeled. lockteams IS mirrored from GameWorld."
+
+  - id: sv-client-lifecycle.spawn.put_player_in_server
+    name: "PutPlayerInServer: place + load out a spawning player"
+    layer: [authority]
+    base_refs:
+      - "server/client.qc:PutPlayerInServer"
+      - "server/client.qc:PutClientInServer"
+    port_refs:
+      - "src/XonoticGodot.Server/ClientManager.cs:Spawn"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:PutPlayerInServer"
+    constants:
+      - { name: "player_scale", base: "0.8125", port: "0.8125 (Q3-format branch deferred)", match: true }
+      - { name: "g_player_damageforcescale", base: "2", port: "2 (Cvar fallback)", match: true }
+      - { name: "z_nudge", base: "1 - mins.z - 24", port: "1 - mins.z - 24", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "In-PutPlayerInServer team assignment (bot_forced_team / wants_join>0 SetPlayerTeam / TeamBalance_JoinBestTeam) is not run here — the port pre-assigns the team once at connect, so a mid-match team change or wants_join preference isn't honored on respawn."
+      - "SUB_UseTargets(spot) (spawnpoint .target firing on spawn, with the assault/race target-suppression hack) is NOT modeled in this path (TargetUtilities owns SUB_UseTargets but nothing calls it for the spawn spot)."
+      - "wr_resetplayer + reload-all-reloadable-weapons-on-spawn (weapon_load = reloading_ammo) and CL_SpawnWeaponentity per slot are flagged as client/networking concerns and not done server-side."
+      - "FixPlayermodel resolves every player+bot to sv_defaultplayermodel (client playermodel cvar not plumbed); faithful stand-in but not the real per-client model. No GiveRandomWeapons / ForbidRandomStartWeapons branch."
+    verification:
+      - { kind: code, ref: "SpawnSystem.cs:509-642 PutPlayerInServer; ClientManager.cs:506-548 Spawn", result: pass }
+    confidence: high
+    notes: "Loadout/hull/placement/PlayerSpawn hook faithful and LIVE; spawn shield + pause timers set here (see spawn_shield row for the countdown caveat). The IsCorpse/Alpha/BallisticsDensity respawn-cleanup is a port-only correctness fix, not a divergence."
+
+  - id: sv-client-lifecycle.spawn.spawn_shield
+    name: "Spawn shield + spawn-time regen/rot pause timers"
+    layer: [authority]
+    base_refs:
+      - "server/client.qc:PutPlayerInServer (g_spawnshieldtime / pause_*_spawn / countdown extension)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:PutPlayerInServer"
+    constants:
+      - { name: "g_spawnshieldtime", base: "1 s", port: "1 s (CvarOr)", match: true }
+      - { name: "g_balance_pause_health_rot_spawn", base: "5 s", port: "5 s", match: true }
+      - { name: "g_balance_pause_armor_rot_spawn", base: "5 s", port: "5 s", match: true }
+      - { name: "g_balance_pause_fuel_rot_spawn", base: "10 s", port: "10 s", match: true }
+      - { name: "g_balance_pause_health_regen_spawn", base: "0 s", port: "0 s", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: partial
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The (!sv_ready_restart_after_countdown && time < game_starttime) countdown extension (roll shield + pauserotarmor/health + pauseregen forward by game_starttime - time) is NOT applied: a player who spawns during the pre-match countdown loses spawn protection and starts rotting earlier than Base. Note Base does NOT extend pauserotfuel_finished in this block; only shield + armor-rot + health-rot + regen."
+    verification:
+      - { kind: code, ref: "SpawnSystem.cs:600-637 (explicit TODO comment)", result: fail }
+    confidence: high
+    notes: "Base shield + pause primes are faithful; only the countdown-window extension is missing (SpawnSystem TODO: needs a match-time handle)."
+
+  - id: sv-client-lifecycle.observer.put_observer_in_server
+    name: "PutObserverInServer: demote to free-fly observer"
+    layer: [authority]
+    base_refs:
+      - "server/client.qc:PutObserverInServer"
+    port_refs:
+      - "src/XonoticGodot.Server/ClientManager.cs:PutObserverInServer"
+    constants:
+      - { name: "g_balance_armor_start", base: "RES_ARMOR set to this for observer", port: "0 (set to 0, not g_balance_armor_start)", match: false }
+      - { name: "g_maxplayers_spectator_blocktime", base: "used for SPECTATE_WARNING", port: "none", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Omits: SelectObservePoint / observe-spawn placement (the port keeps the current origin instead), despawn EFFECT_SPAWN when alive, VoteCount/ReadyCount recount, the SPECTATE_WARNING / sv_maxplayers_spectator_blocktime block, CHAT_NOSPECTATORS notice, and the is_forced/use_spawnpoint signature (the port has no is_forced/use_spawnpoint params)."
+      - "RES_ARMOR is set to 0; QC sets it to g_balance_armor_start (cosmetic for the spectator HUD)."
+    verification:
+      - { kind: code, ref: "ClientManager.cs:380-433 PutObserverInServer", result: pass }
+    confidence: medium
+    notes: "Strips body/weapons/solidity, sets MOVETYPE_FLY_WORLDONLY + FRAGS_SPECTATOR sentinel; LIVE via the spectate command path, but observe-point selection + spectator-block notifications are absent."
+
+  - id: sv-client-lifecycle.observer.observer_think
+    name: "ObserverOrSpectatorThink: join-on-fire + spectate cycling"
+    layer: [authority]
+    base_refs:
+      - "server/client.qc:ObserverOrSpectatorThink"
+    port_refs:
+      - "src/XonoticGodot.Server/ClientManager.cs:ObserverOrSpectatorThink"
+      - "game/net/ServerNet.cs:DriveObserverJoins (~497)"
+    constants:
+      - { name: "MIN_SPEC_TIME grace", base: "1 s", port: "1 s", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "SpectatePrev (impulse 12/16/19/220-229), the IMP_weapon_drop CAMERA_SPECTATOR cycle, MinigameImpulse handling, the +use clippedspectating MOVETYPE_FLY toggle, and the sv_spectate 2 'spectating not allowed' block are not modeled."
+    verification:
+      - { kind: code, ref: "ServerNet.cs:512 calls Clients.ObserverOrSpectatorThink; ClientManager.cs:283-371", result: pass }
+    confidence: high
+    notes: "+jump join (FL_JUMPRELEASED-gated), +attack SpectateNext, +attack2 free-fly, SpectateCopy each tick, and the delayed autojoin are LIVE per accepted human peer."
+
+  - id: sv-client-lifecycle.observer.autojoin_delayed
+    name: "Delayed autojoin for a real client (PlayerPreThink)"
+    layer: [authority]
+    base_refs:
+      - "server/client.qc:PlayerPreThink (autojoin_checked block ~2708)"
+    port_refs:
+      - "src/XonoticGodot.Server/ClientManager.cs:ObserverOrSpectatorThink (autojoin tail ~343)"
+    constants:
+      - { name: "MIN_SPEC_TIME", base: "1 s", port: "1 s", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "g_maxping / forced-team (TEAM_FORCE_SPECTATOR) / AutoJoinOnConnection mutator hook / (!teamplay || g_balance_teams) gates deferred. The QC `ping > 0` precondition (delay until centreprints work) is not modeled. sv_spectate and g_campaign holds ARE honored."
+    verification:
+      - { kind: code, ref: "ClientManager.cs:343-371", result: pass }
+    confidence: high
+    notes: "A human autojoins after MIN_SPEC_TIME unless sv_spectate/g_campaign holds it; CampaignHostAutojoin opts the listen host out of the campaign hold. The early-join-requested (autojoin_checked<0) retry matches QC."
+
+  - id: sv-client-lifecycle.dead.respawn_state_machine
+    name: "Dead-player respawn state machine (DEAD_DYING..RESPAWNING)"
+    layer: [authority]
+    base_refs:
+      - "server/client.qc:PlayerThink (dead branch ~2359)"
+    port_refs:
+      - "src/XonoticGodot.Server/GameWorld.cs:DeadPlayerThink"
+    constants:
+      - { name: "respawn retry interval", base: "1 s", port: "1 s", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "ShowRespawnCountdown is NOT called from DeadPlayerThink (see dead.respawn_countdown_announce); the speedrun/g_race_qualifying personal-respawn early branch and player_anim are not in this path."
+    verification:
+      - { kind: code, ref: "GameWorld.cs:1698-1763 DeadPlayerThink; DamageSystem sets DeadFlag.Dying", result: pass }
+    confidence: high
+    notes: "Button-gated DYING->DEAD->RESPAWNABLE->RESPAWNING with RESPAWN_FORCE/DENY/SILENT handling and STAT(RESPAWN_TIME) (negate while respawning) is faithful and matches QC line-for-line; bots advance via their own jump input. Presentation downgraded only because the countdown announcer is unwired."
+
+  - id: sv-client-lifecycle.dead.respawn_timing
+    name: "calculate_player_respawn_time (pcount-scaled delay)"
+    layer: [authority]
+    base_refs:
+      - "server/client.qc:calculate_player_respawn_time"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Player/RespawnTiming.cs:Calculate"
+    constants:
+      - { name: "g_respawn_delay_small", base: "2 s", port: "2 s", match: true }
+      - { name: "g_respawn_delay_large", base: "2 s", port: "2 s", match: true }
+      - { name: "g_respawn_delay_max", base: "5 s", port: "5 s", match: true }
+      - { name: "g_respawn_delay_large_count", base: "8", port: "8", match: true }
+      - { name: "g_respawn_waves", base: "0", port: "0", match: true }
+      - { name: "g_forced_respawn", base: "0", port: "0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "CalculateRespawnTime mutator hook (a mode overriding the delay) not modeled; GAMETYPE_DEFAULTED_SETTING per-gametype overrides resolve via cvar fallbacks rather than the gametype default table."
+    verification:
+      - { kind: code, ref: "RespawnTiming.cs:22-76 Calculate", result: pass }
+    confidence: high
+    notes: "pcount scaling, wave quantize, respawn_time_max, RESPAWN_FORCE-from-g_forced_respawn all faithful; bots NOT special-forced (matches QC + the bot input stream)."
+
+  - id: sv-client-lifecycle.dead.respawn_countdown_announce
+    name: "ShowRespawnCountdown: 10-9-8 respawn announcer"
+    layer: [authority, presentation]
+    base_refs:
+      - "server/client.qc:ShowRespawnCountdown"
+    port_refs: []
+    constants:
+      - { name: "respawn_countdown start", base: "10 (sdelay+waves>=5 && wait>1.75s)", port: "computed in RespawnTiming.RespawnCountdown but unused", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: missing
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "ShowRespawnCountdown announcer (10-9-8 CNT_RESPAWN) never fires: RespawnTiming sets Player.RespawnCountdown but DeadPlayerThink never calls a ShowRespawnCountdown equivalent to decrement it or play Announcer_PickNumber(CNT_RESPAWN, n). The 0.5s overlap-prevention guard is also unported."
+    verification:
+      - { kind: code, ref: "grep: no ShowRespawnCountdown / CNT_RESPAWN consumer in src+game; DeadPlayerThink has no countdown call", result: fail }
+    confidence: high
+    notes: "Dead players waiting for a >=5s respawn should hear the voiced countdown; they don't. RespawnCountdown is computed (RespawnTiming.cs:64) but dead code."
+
+  - id: sv-client-lifecycle.frame.player_regen
+    name: "player_regen: health/armor/fuel regen + rot"
+    layer: [authority]
+    base_refs:
+      - "server/client.qc:player_regen"
+      - "server/client.qc:RotRegen"
+      - "server/client.qc:CalcRegen"
+      - "server/client.qc:CalcRot"
+    port_refs:
+      - "src/XonoticGodot.Server/PlayerFrameLogic.cs:Regen"
+      - "src/XonoticGodot.Server/GameWorld.cs:OnPlayerPostThink (~1134)"
+    constants:
+      - { name: "g_balance_health_regen", base: "0.1", port: "cvar", match: true }
+      - { name: "g_balance_health_regenstable", base: "100", port: "cvar", match: true }
+      - { name: "g_balance_health_rot", base: "0.1", port: "cvar", match: true }
+      - { name: "g_balance_health_rotstable", base: "100", port: "cvar", match: true }
+      - { name: "CalcRegen/CalcRot snap window", base: "0.25", port: "0.25", match: true }
+      - { name: "fuel regen gate", base: "items & IT_FUEL_REGEN; skip all fuel if IT_UNLIMITED_AMMO", port: "ungated (regens whenever pause lapsed)", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Fuel REGEN is not gated on the IT_FUEL_REGEN item flag (QC client.qc:1748 `(this.items & ITEM_FuelRegen.m_itemid)`); the port regenerates fuel whenever the shared regen pause has lapsed, so a player regenerates fuel with NO fuel-regen (jetpack) pickup."
+      - "QC skips the ENTIRE fuel block (regen AND rot) when IT_UNLIMITED_AMMO; the port always runs fuel rot/regen. The PlayerRegen mutator hook's in/out tuning slots (max_mod/regen_mod/rot_mod/limit_mod + per-health overrides) are reduced to a single disable-return."
+    verification:
+      - { kind: code, ref: "PlayerFrameLogic.cs:41-92 (fuel block lines 81-91 ungated); Base client.qc:1744-1753", result: fail }
+    confidence: high
+    notes: "Health/armor RotRegen + CalcRegen/CalcRot snap behavior, rot-to-death (DEATH_ROT), and the unified-pause-timer storage (REGEN1/2/3 fixes) are faithful and LIVE. The fuel-regen item gate + IT_UNLIMITED_AMMO skip are the divergences; at stock defaults (no jetpack, no unlimited ammo) the visible effect is small but a player who never picked up fuel-regen still regenerates fuel."
+
+  - id: sv-client-lifecycle.frame.drown_player
+    name: "DrownPlayer: air timer + drown damage"
+    layer: [authority]
+    base_refs:
+      - "server/client.qc:DrownPlayer"
+    port_refs:
+      - "src/XonoticGodot.Server/PlayerFrameLogic.cs:DrownPlayer"
+    constants:
+      - { name: "g_balance_contents_drowndelay", base: "10 s", port: "10 s (FloatOr)", match: true }
+      - { name: "g_balance_contents_playerdamage_drowning", base: "10", port: "cvar", match: true }
+      - { name: "g_balance_contents_damagerate", base: "0.2", port: "0.2 (FloatOr)", match: true }
+      - { name: "drown pain gate", base: "0.5 s", port: "0.5 s", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: missing
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Surfaced-after-running-out-of-air gasp does not play playersound_gasp (the surface branch only resets AirFinished; QC plays PlayerSound(playersound_gasp) when AIR_FINISHED was set and < time)."
+    verification:
+      - { kind: code, ref: "PlayerFrameLogic.cs:157-188", result: pass }
+    confidence: high
+    notes: "Air timer + 2 Hz DEATH_DROWN damage faithful; the game_stopped || time<game_starttime || vehicle || frozen gates match QC; only the gasp SFX is missing."
+
+  - id: sv-client-lifecycle.frame.contents_fall_damage
+    name: "CreatureFrame liquids + fall damage (per-frame)"
+    layer: [authority]
+    base_refs:
+      - "server/main.qc:CreatureFrame_Liquids"
+      - "server/main.qc:CreatureFrame_hotliquids"
+      - "server/main.qc:CreatureFrame_FallDamage"
+    port_refs:
+      - "src/XonoticGodot.Server/PlayerFrameLogic.cs:ContentsDamage"
+      - "src/XonoticGodot.Server/PlayerFrameLogic.cs:FallDamage"
+      - "src/XonoticGodot.Server/GameWorld.cs:CreatureFrameAll (~970)"
+    constants:
+      - { name: "g_balance_contents_damagerate", base: "0.2", port: "0.2 (FloatOr)", match: true }
+      - { name: "g_balance_falldamage_*", base: "minspeed/factor/maxdamage cvars", port: "cvar", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "PlayerFrameLogic.cs:195-291; GameWorld.cs:970-971", result: pass }
+    confidence: medium
+    notes: "Lava/slime contents damage (frozen-player instant-kill branch included), in-water bookkeeping, fall damage (vertical-only branch + dead-minspeed) and the g_maxspeed shooting-star kill are faithful and LIVE per server frame. Strictly this is CreatureFrame (server/main.qc) not client.qc, but it is the per-player per-frame slice this lifecycle unit wraps."
+
+  - id: sv-client-lifecycle.frame.player_powerups
+    name: "player_powerups: superweapon countdown + PlayerPowerups hook"
+    layer: [authority]
+    base_refs:
+      - "server/client.qc:player_powerups"
+      - "server/client.qc:player_powerups_remove_all"
+    port_refs:
+      - "src/XonoticGodot.Server/PlayerFrameLogic.cs:PlayerPowerups"
+      - "src/XonoticGodot.Server/PlayerFrameLogic.cs:SuperweaponTimeout"
+    constants:
+      - { name: "g_balance_superweapons_time", base: "applied at spawn/pickup", port: "status-effect time", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: missing
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "MF_ROCKET jetpack modelflag (IT_USING_JETPACK), EF_NODEPTHTEST/EF_FULLBRIGHT (g_nodepthtestplayers/g_fullbrightplayers), the EF_NODEPTHTEST clear-each-frame, and player_powerups_remove_all-on-death are not modeled."
+      - "The SUPERWEAPON pickup/lost/broken centerprints (CENTER_SUPERWEAPON_PICKUP/LOST/BROKEN) + INFO_SUPERWEAPON_PICKUP notification + play_countdown(SND_POWEROFF) are absent."
+    verification:
+      - { kind: code, ref: "PlayerFrameLogic.cs:304-354", result: pass }
+    confidence: medium
+    notes: "Superweapon expiry/strip + the PlayerPowerups tail hook (instagib/overkill) fire and the IT_UNLIMITED_SUPERWEAPONS keep-pinned branch matches QC; the visual/notification/sound side of powerups is absent."
+
+  - id: sv-client-lifecycle.frame.pressed_keys
+    name: "GetPressedKeys: PRESSED_KEYS stat for the HUD"
+    layer: [authority, presentation]
+    base_refs:
+      - "server/client.qc:GetPressedKeys"
+    port_refs:
+      - "game/hud/PressedKeysPanel.cs:LocalPressedKeys (client-side stand-in for the local player)"
+    constants:
+      - { name: "KEY_* bit order", base: "FORWARD/BACK/RIGHT/LEFT/JUMP/CROUCH/ATCK/ATCK2", port: "matched in PressedKeysPanel KEY_* consts", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The server never sets the networked PRESSED_KEYS stat (no GetPressedKeys-equivalent in the per-frame path). The local-player HUD pressedkeys/strafe panel works because PressedKeysPanel computes the bitmask CLIENT-SIDE from local bind state, but a SPECTATED player's held keys (PressedKeysPanel.PressedKeysOverride) are never fed by the net layer, and the QC observer-clears-PRESSED_KEYS rule (PlayerPostThink) is absent."
+      - "GetPressedKeys mutator hook + the IS_DUCKED crouch-key workaround are not modeled server-side."
+    verification:
+      - { kind: code, ref: "PressedKeysPanel.cs:42-60,103-220 (PressedKeysOverride never set); grep: no server PRESSED_KEYS set", result: fail }
+    confidence: high
+    notes: "Corrected from the draft's 'HUD cannot display held keys': the LOCAL player's panel is faithful (client-side bind sampling). The gap is the server-authoritative stat for the spectated case + observer-clear."
+
+  - id: sv-client-lifecycle.frame.idle_kick
+    name: "sv_maxidle idle-kick / move-to-spectator + alivetime afk-gate"
+    layer: [authority]
+    base_refs:
+      - "server/client.qc:PlayerFrame (sv_maxidle block ~2982)"
+      - "server/client.qc:PlayerFrame (alivetime parm_idlesince ~2858)"
+    port_refs: []
+    constants:
+      - { name: "sv_maxidle", base: "0 (off)", port: "none", match: false }
+      - { name: "sv_maxidle_playertospectator", base: "0", port: "none", match: false }
+      - { name: "sv_maxidle_minplayers", base: "0", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: missing
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Idle players are never kicked or demoted to spectator; the idle countdown bangs (SND TALK2 at countdown_time), CENTER_DISCONNECT_IDLING / CENTER_MOVETOSPEC_IDLING centerprints, and INFO_QUIT_KICK_IDLING / INFO_MOVETOSPEC_IDLING notifications never appear."
+      - "The alivetime parm_idlesince afk-gate (pause alivetime accrual after 30s idle) is not modeled, so xonstat skill-per-second would be skewed by afk time."
+    verification:
+      - { kind: code, ref: "grep: no sv_maxidle / parm_idlesince / idlekick in src+game", result: fail }
+    confidence: high
+    notes: "Off by default in Base too, but a server raising sv_maxidle gets no behavior in the port; afk alivetime gate also absent."
+
+  - id: sv-client-lifecycle.frame.spectator_kick
+    name: "sv_spectate-disabled spectator kick + SPECTATE_WARNING"
+    layer: [authority]
+    base_refs:
+      - "server/client.qc:PlayerFrame (sv_spectate check ~2884)"
+    port_refs: []
+    constants:
+      - { name: "g_maxplayers_spectator_blocktime", base: "spectator grace before kick", port: "none", match: false }
+      - { name: "sv_spectate", base: "1 (on)", port: "read for autojoin hold only", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "When sv_spectate is disabled, QC warns then drops a client that stays a spectator/observer past g_maxplayers_spectator_blocktime (SPECTATE_WARNING MSG_MULTI then INFO_QUIT_KICK_SPECTATING + dropclient_schedule). The port reads sv_spectate only to gate the autojoin hold; it never warns or kicks a stuck spectator."
+    verification:
+      - { kind: code, ref: "grep: no SPECTATE_WARNING / INFO_QUIT_KICK_SPECTATING / spectator_blocktime in src+game", result: fail }
+    confidence: high
+    notes: "New row split from the observer rows: this is the PlayerFrame enforcement, distinct from PutObserverInServer's one-shot warning."
+
+  - id: sv-client-lifecycle.frame.name_and_version
+    name: "Version nag + nameless/too-long/invisible name enforcement + GOD MODE info"
+    layer: [authority]
+    base_refs:
+      - "server/client.qc:PlayerFrame (version nag ~2924; name check ~2900; godmode ~2950)"
+    port_refs: []
+    constants:
+      - { name: "sv_name_maxlength", base: "64", port: "none", match: false }
+      - { name: "version_nagtime", base: "time + 10 + random()*10", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Outdated/old-client/beta version-nag INFO notifications (INFO_VERSION_OUTDATED/OLD/BETA via vercmp + version_nagtime) never sent."
+      - "Names are not truncated to sv_name_maxlength, invisible names not replaced with Player#<id>, the :name: event-log line and 'name was truncated/invisible' sprints are absent."
+      - "GOD MODE info (INFO_GODMODE_OFF when FL_GODMODE drops) not modeled."
+    verification:
+      - { kind: code, ref: "grep: no version_nag / sv_name_maxlength / INFO_GODMODE_OFF in src+game", result: fail }
+    confidence: medium
+    notes: "Administrative/cosmetic; absence is observable (long/invisible names persist, no version warnings)."
+
+  - id: sv-client-lifecycle.frame.prethink_misc
+    name: "PlayerPreThink misc: PlayerUseKey edge, SetZoomState, voice sounds, chat bubble"
+    layer: [authority, presentation]
+    base_refs:
+      - "server/client.qc:PlayerPreThink (usekey/zoom/voice ~2691)"
+      - "server/client.qc:UpdateChatBubble"
+      - "server/client.qc:SetZoomState"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Buttons.cs (+use consumers)"
+    constants: []
+    status:
+      logic: partial
+      values: na
+      timing: na
+      presentation: missing
+      audio: missing
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "UpdateChatBubble (the chatbubble.spr / minigame_busy bubble over a typing or minigame-busy player, ChatBubbleThink + ShowChatBubble hook) is not modeled — no visible 'is typing' bubble."
+      - "The PlayerPreThink +use edge dispatch (PlayerUseKey) is not a single ported function: individual +use consumers (buttons/vehicles/ctf) read the button directly, but the usekeypressed edge tracker + PlayerUseKey routing (and its spectate/minigame branches) are scattered/absent."
+      - "SetZoomState (server-side weapon-zoom state for the zoom HUD/FOV net stat) and the PreThink teamkill_soundtime/taunt_soundtime voice sounds + target_voicescript_next are not driven from a lifecycle PreThink."
+    verification:
+      - { kind: code, ref: "grep: no UpdateChatBubble/ChatBubble/SetZoomState/usekeypressed/teamkill_soundtime in src; +use only in mapobject/vehicle consumers", result: fail }
+    confidence: medium
+    notes: "Grab-bag of PlayerPreThink/PostThink cosmetic+dispatch bits. Zoom may be partly client-render; the chat bubble + server voice-sound timers are genuinely absent."
+
+  - id: sv-client-lifecycle.disconnect.client_disconnect
+    name: "ClientDisconnect: teardown"
+    layer: [authority]
+    base_refs:
+      - "server/client.qc:ClientDisconnect"
+    port_refs:
+      - "src/XonoticGodot.Server/ClientManager.cs:ClientDisconnect"
+      - "src/XonoticGodot.Server/GameWorld.cs:InfraClientDisconnect"
+      - "game/net/ServerNet.cs:DriveDisconnect (~638)"
+    constants: []
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "ignore-list cleanup, Portal_ClearAll/RemoveGrapplingHooks, chatbubble/killindicator/personal/g_counters delete, vehicle exit, minigame part, WaypointSprite_PlayerGone, ReadyCount/VoteCount-on-leave, player_powerups_remove_all (poweroff sound), sv_hook_lastleave, and TeamBalance_RemoveExcessPlayers / QueuedPlayersTagIn are not all modeled."
+    verification:
+      - { kind: code, ref: "ServerNet.cs:638; ClientManager.cs:554-578; GameWorld.cs InfraClientDisconnect", result: pass }
+    confidence: high
+    notes: "Removes from roster/scores/sim/entity table, clears FL_CLIENT + FL_PICKUPITEMS, fires CHAT_DISCONNECT + EFFECT_SPAWN puff + stats finalize + :part: event log. The deeper per-subsystem cleanups are partial."

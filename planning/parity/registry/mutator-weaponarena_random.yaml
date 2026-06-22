@@ -1,0 +1,181 @@
+unit: mutator-weaponarena_random
+category: mutator
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 6
+  worst_gaps:
+    - "Arena weapon set never populated on the live path: port lacks the base g_weaponarena -> start_weapons expansion, so ComputeStartItems yields only {blaster}; the random pool is {blaster} -> real-match players get at most the blaster on spawn and never a fresh weapon on frag."
+    - "GiveFragsForKill omits the warmup branch (Base swaps from WARMUP_START_WEAPONS during warmup, start_weapons otherwise); port always uses ArenaWepSet()."
+features:
+  - id: mutator-weaponarena_random.registration
+    name: "Mutator registration + enable predicate"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/weaponarena_random/_mod.inc"
+      - "common/mutators/mutator/weaponarena_random/sv_weaponarena_random.qc:REGISTER_MUTATOR"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/WeaponArenaRandomMutator.cs:WeaponArenaRandomMutator"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:Apply"
+    constants:
+      - { name: "enable_predicate", base: "REGISTER_MUTATOR(...,true) = always added", port: "IsEnabled = g_weaponarena!=0 && g_weaponarena_random!=0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Port gates IsEnabled on the two arena cvars instead of QC's always-added + per-hook !g_weaponarena_random early-return; behaviorally equivalent (QC hooks no-op when random off), avoids subscribing inert handlers. Registered via [Mutator] source-gen into Mutators.All; Apply() live at GameWorld.cs:511."
+    gaps: []
+    verification:
+      - { kind: code, ref: "[Mutator] attr -> RegistryGenerator -> Registry<MutatorBase>; MutatorActivation.Apply at GameWorld.cs:511", result: pass }
+    confidence: high
+    notes: "Source-gen registration confirmed (RegistryGenerator scans MutatorAttributeName); no explicit per-mutator register line."
+
+  - id: mutator-weaponarena_random.setstartitems
+    name: "SetStartItems: latch random cvars (gated by g_weaponarena)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/weaponarena_random/sv_weaponarena_random.qc:6"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/WeaponArenaRandomMutator.cs:OnSetStartItems"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:669"
+    constants:
+      - { name: "g_weaponarena_random", base: "0", port: "0", match: true }
+      - { name: "g_weaponarena_random_with_blaster", base: "1", port: "1", match: true }
+      - { name: "gating", base: "g_weaponarena_random = g_weaponarena ? cvar : 0", port: "same", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "MutatorHooks.SetStartItems.Call at SpawnSystem.cs:669; ReadCvars gating matches QC", result: pass }
+      - { kind: value, ref: "xonotic-server.cfg:223-224 (port copy) == Base defaults", result: pass }
+    confidence: high
+    notes: "Hook does not edit the loadout (QC leaves start_weapons to the base arena code); just refreshes cached cvars."
+
+  - id: mutator-weaponarena_random.playerspawn
+    name: "PlayerSpawn: replace owned set with random N-subset (keep blaster)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/weaponarena_random/sv_weaponarena_random.qc:16"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/WeaponArenaRandomMutator.cs:OnPlayerSpawn"
+      - "src/XonoticGodot.Server/ClientManager.cs:542"
+    constants:
+      - { name: "with_blaster set-aside/re-add", base: "&= ~WEPSET(BLASTER) then |= WEPSET(BLASTER)", port: "Remove(blaster) then Add(blaster)", match: true }
+      - { name: "draw_count", base: "g_weaponarena_random", port: "RandomCount", match: true }
+      - { name: "owned_set_replaced (not OR'd)", base: "STAT(WEAPONS)=W_RandomWeapons(...)", port: "OwnedWeaponSet = chosen", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Arena weapon set never populated on the live path: port lacks the base g_weaponarena -> start_weapons expansion, so on spawn player.OwnedWeaponSet is the DefaultLoadout {blaster}; drawing N from {blaster} yields only the blaster. Logic is correct but starved of input (the base-arena dependency is missing). Tests mask this by manually seeding a wide owned set (MutatorBatchT19Tests.cs:589)."
+    verification:
+      - { kind: code, ref: "MutatorHooks.PlayerSpawn.Call at ClientManager.cs:542, after PutPlayerInServer set the loadout — handler IS invoked on the real spawn path", result: pass }
+      - { kind: test, ref: "MutatorBatchT19Tests.WeaponArenaRandom_PlayerSpawn_GivesRandomSubset / _WithBlaster_AlwaysKeepsBlaster (seeded pool)", result: pass }
+      - { kind: code, ref: "SpawnSystem.DefaultLoadout = {blaster}; ComputeStartItems starts from {blaster} and no SetStartItems mutator adds arena weapons; no g_weaponarena string->weaponset expansion anywhere in port", result: fail }
+    confidence: high
+    notes: "Liveness corrected partial->live (baseline conflated 'effectively no-op' with 'not wired'): the handler IS invoked on every real spawn — the defect is the starved pool, captured as a values gap (subset is degenerate). Verified player.OwnedWeaponSet is a public FIELD on Entity (EntityGameplayState.cs:13), so attacker.OwnedWeaponSet.Add()/Remove() mutate in place; the by-value WepSet struct copies inside RandomWeapons don't alias the field — no silent-no-op bug. Blaster set-aside (have.Remove on a value copy) then re-add then assign-back is correct."
+
+  - id: mutator-weaponarena_random.givefragsforkill
+    name: "GiveFragsForKill: swap culprit weapon for a new random one"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/weaponarena_random/sv_weaponarena_random.qc:26"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/WeaponArenaRandomMutator.cs:OnGiveFragsForKill"
+      - "src/XonoticGodot.Server/Scores.cs:520"
+    constants:
+      - { name: "suicide skip", base: "if(targ==attacker) return", port: "ReferenceEquals(targ,attacker) return", match: true }
+      - { name: "culprit detection", base: "DEATH_WEAPONOF(deathtype) else held; not-owned fallback to held", port: "DeathTypes.WeaponNetNameOf else held; same fallback", match: true }
+      - { name: "with_blaster no-swap", base: "if(with_blaster && culprit==WEP_BLASTER) skip", port: "same", match: true }
+      - { name: "no-pick guard", base: "if(scratch) add+drop else keep culprit", port: "if(!pick.IsEmpty) add+drop", match: true }
+      - { name: "swap pool", base: "warmup ? WARMUP_START_WEAPONS : start_weapons, minus owned, minus culprit", port: "ArenaWepSet() (no warmup branch), minus owned, minus culprit", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Swap pool starved: ArenaWepSet() = ComputeStartItems() = {blaster}; after removing owned+culprit nothing remains, so no weapon is ever added on a frag in a real match (same root cause as the spawn gap: missing g_weaponarena->start_weapons expansion)."
+      - "GiveFragsForKill omits the warmup branch (Base: scratch = warmup_stage ? WARMUP_START_WEAPONS : start_weapons; port always uses ArenaWepSet() with no WarmupStage consult). WarmupStage exists in the port (NotificationSystem.cs:181) and WARMUP_START_WEAPONS = weapons_all() under g_warmup_allguns is absent, so this is a real omission, not just starvation."
+    verification:
+      - { kind: code, ref: "MutatorHooks.GiveFragsForKill.Call at Scores.cs:520 with weaponEntity=null — handler IS invoked on every enemy frag; culprit fallback maps QC wep_ent.m_weapon to Inventory.CurrentWeapon(attacker)", result: pass }
+      - { kind: test, ref: "MutatorBatchT19Tests.WeaponArenaRandom_GiveFragsForKill_SwapsCulpritWeapon (seeded owned set, drop verified)", result: pass }
+      - { kind: code, ref: "ArenaWepSet()->ComputeStartItems() yields {blaster} (no g_weaponarena expansion); no warmup_start_weapons distinction; WarmupStage not consulted", result: fail }
+    confidence: high
+    notes: "Liveness corrected partial->live (handler is reached on the real scoring path; defect is the empty pool + missing warmup branch, not reachability). LOGIC downgraded faithful->partial: the warmup-vs-normal pool selection branch is genuinely missing (a control-flow omission, not merely a value gap). Per-frag swap control flow (suicide skip, culprit detection + not-owned fallback, with_blaster no-swap, if(pick) drop-guard, switch-to-best when held gone) is otherwise faithful. Scoring path carries no weapon entity (matches QC null wep_ent fallback)."
+
+  - id: mutator-weaponarena_random.w_randomweapons
+    name: "W_RandomWeapons: uniform pick without replacement"
+    layer: [shared]
+    base_refs:
+      - "common/weapons/all.qc:178"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/WeaponArenaRandomMutator.cs:RandomWeapons"
+    constants:
+      - { name: "weights", base: "RandomSelection_AddEnt weight 1,1 (uniform)", port: "reservoir 1/count (uniform)", match: true }
+      - { name: "without replacement", base: "remaining &= ~chosen each draw", port: "remaining.Remove(chosen) each draw", match: true }
+      - { name: "early stop", base: "chosen_ent == NULL -> stop", port: "chosen is null -> break", match: true }
+      - { name: "rng_source", base: "engine random() (nondeterministic)", port: "Prandom.RangeInt (deterministic, ADR-0010)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "RNG is the deterministic Prandom (ADR-0010 project-wide determinism rule) instead of engine random(); distribution is uniform either way, so the only observable difference is reproducibility, not balance."
+    gaps: []
+    verification:
+      - { kind: test, ref: "MutatorBatchT19Tests.WeaponArenaRandom_RandomWeapons_PicksRequestedCount_WithoutReplacement", result: pass }
+    confidence: high
+    notes: "Returns <= n when the pool runs out (verified: asking 5 from a 1-weapon pool returns 1)."
+
+  - id: mutator-weaponarena_random.arena_weaponset_dep
+    name: "Base weapon-arena loadout (g_weaponarena -> start_weapons) — dependency"
+    layer: [authority]
+    base_refs:
+      - "server/world.qc:readplayerstartcvars"
+      - "server/world.qc:weaponarena_available_all_update"
+      - "server/world.qc:weaponarena_available_most_update"
+      - "server/world.qc:weaponarena_available_devall_update"
+    port_refs: []
+    constants:
+      - { name: "g_weaponarena values", base: "0 | off | all | most | all_available | most_available | devall | <weapon list>", port: "treated as bool only (no string parse / weaponset)", match: false }
+      - { name: "start_weapons / g_weaponarena_weapons", base: "the arena weapon set the random pick draws from", port: "none (DefaultLoadout = {blaster})", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Arena weapon set never populated on the live path: port lacks the base g_weaponarena -> start_weapons expansion, so ComputeStartItems yields only {blaster}; the random pool is {blaster} -> real-match players get at most the blaster on spawn and never a fresh weapon on frag."
+    verification:
+      - { kind: code, ref: "grep g_weaponarena across port src: read only as a boolean (StartItem.cs:304, WeaponThrowing.cs:264, GiveItems.cs:161); no weapons_all/most/list expansion; SpawnSystem.DefaultLoadout = {blaster}", result: fail }
+    confidence: high
+    notes: "This is the true owner of the headline gap. weaponarena_random's own code is correct; it is starved because this base dependency is absent. Likely belongs to a separate 'weaponarena'/start-items unit; flagged here so the parity rollup is complete."

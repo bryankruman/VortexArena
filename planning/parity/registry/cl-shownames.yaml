@@ -1,0 +1,358 @@
+unit: cl-shownames
+category: client
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-22"
+summary:
+  feature_count: 13
+  worst_gaps:
+    - "Self/spectatee own-tag is dead: local player never in RemoteIds, so chase + hud_shownames_self draws nothing and the 1s spectatee-switch grace is unmodelled"
+    - "entcs_GetAlpha factor not applied: a tag stays full-alpha while its player model is mid-fade (spawn shield / invisibility / respawn)"
+    - "sameteam is derived client-side from (Colormap & 0xFF)==LocalTeam, not QC's server-gated m_entcs_private; health/armor are read from the always-present remote slice rather than only the private (teammate) slice — a potential enemy health/armor info-parity divergence"
+    - "Name is never truncated: QC textShortenToWidth(name, box width) clamps the tag to its drawing area; the port draws the full name centered with no width clamp"
+    - "LOS trace is a Fraction>=0.99 heuristic, not the QC trace_networkentity/entnum self-exclusion check"
+features:
+  - id: cl-shownames.core.master_enable
+    name: "Master enable + per-client iteration"
+    layer: [presentation]
+    base_refs:
+      - "client/shownames.qc:Draw_ShowNames_All"
+    port_refs:
+      - "game/client/ShowNamesLayer.cs:_Draw"
+      - "game/net/NetGame.cs:SetupCameraAndHud"
+    constants:
+      - { name: "hud_shownames", base: "1", port: "1", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "ShowNamesLayer.cs:_Draw gated on CvarBool(hud_shownames); instantiated+AddChild NetGame.cs:1283-1286; fed NetGame.cs:2461-2466", result: pass }
+      - { kind: code, ref: "ShownamesPanel.cs:RegisterDefaults seeds all 19 hud_shownames_* cvars via HudConfig reflection", result: pass }
+      - { kind: test, ref: "ShowNamesTests.CvarDefaults_MatchShippedBaseValues / EveryCvar_IsPrefixedHudShownames", result: pass }
+    confidence: high
+    notes: "VERIFIED live: ShowNamesLayer instantiated + AddChild in SetupCameraAndHud (line 1283), fed each frame from NetGame._Process (2461), _Process->QueueRedraw->_Draw. Iterates ClientNet.RemoteIds filtered to NetEntityKind.Player (QC iterates per-maxclient entcs slots) — equivalent set."
+  - id: cl-shownames.gate.team_enemy
+    name: "Team / enemy visibility gate"
+    layer: [presentation]
+    base_refs:
+      - "client/shownames.qc:Draw_ShowNames"
+      - "client/shownames.qc:Draw_ShowNames_All (m_entcs_private -> sameteam)"
+    port_refs:
+      - "game/client/ShowNamesLayer.cs:_Draw"
+    constants:
+      - { name: "hud_shownames_enemies", base: "1", port: "1", match: true }
+      - { name: "sameteam source", base: "entcs.m_entcs_private (server-gated private slice)", port: "(Colormap & 0xFF) == LocalTeam (client-side compare)", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "sameteam mechanism differs: QC sets sameteam ONLY when the server sends the private entcs slice (m_entcs_private, networked to teammates/self); the port derives it client-side from a colormap-team equality compare. The enemy-gate result matches in the common case, but the authority differs and the port can register sameteam from local data before/without the server's private-slice gate."
+    verification:
+      - { kind: code, ref: "ShowNamesLayer.cs:170 (sameteam = teamplay && (s.Colormap&0xFF)==LocalTeam && !isSelf); QC Draw_ShowNames_All:237 sets sameteam from entcs.m_entcs_private", result: fail }
+      - { kind: test, ref: "ShowNamesTests.Enemy_IsOnlyShown_WhenEnemiesCvarSet / SameTeam_RequiresTeamplay_AndMatchingTeam", result: pass }
+    confidence: high
+    notes: "Enemy gate (!sameteam && !hud_shownames_enemies -> skip) is faithful; the underlying sameteam derivation is a different (client-side) mechanism than QC's server-gated private slice."
+  - id: cl-shownames.gate.self_spectatee
+    name: "Own-tag in chase + spectatee-switch window"
+    layer: [presentation]
+    base_refs:
+      - "client/shownames.qc:Draw_ShowNames"
+    port_refs:
+      - "game/client/ShowNamesLayer.cs:_Draw"
+    constants:
+      - { name: "hud_shownames_self", base: "0", port: "0", match: true }
+      - { name: "spectatee_status grace (s)", base: "1", port: "none", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Local player is predicted, never in ClientNet.RemoteIds (HandleSnapshot skips LocalNetId), so the chase + hud_shownames_self self branch never executes: no own tag in third-person."
+      - "The spectatee-switch grace window (spectatee_status > 0 && time <= spectatee_status_changed_time + 1) is not implemented at all."
+    verification:
+      - { kind: code, ref: "ShowNamesLayer.cs:155-167 (self branch gated on ChaseActive+hud_shownames_self; comment confirms self never in RemoteIds); spectatee window absent", result: fail }
+    confidence: high
+    notes: "Self branch present verbatim for forward-compat but unreachable on the live path; the spectatee grace window is absent entirely."
+  - id: cl-shownames.los.traceline
+    name: "Line-of-sight occlusion test"
+    layer: [presentation]
+    base_refs:
+      - "client/shownames.qc:Draw_ShowNames"
+    port_refs:
+      - "game/client/ShowNamesLayer.cs:TraceVisible"
+    constants:
+      - { name: "trace move type", base: "MOVE_NOMONSTERS", port: "MoveFilter.NoMonsters", match: true }
+      - { name: "hit predicate", base: "!(trace_fraction<1 && trace_networkentity!=entnum && trace_ent.entnum!=entnum)", port: "Fraction>=0.99", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "The port can't map a remote player to a trace-set entnum (the remote isn't a distinct trace edict client-side), so QC's trace_networkentity/trace_ent.entnum self-exclusion is approximated by treating Fraction>=0.99 (essentially reached the target) as clear LOS. Falls back to visible when no trace service is up, matching the radar's degrade-to-shown."
+    gaps:
+      - "Tag occlusion can flicker when thin geometry (or the target's own client-side collision) sits right at the eye-line, where QC would exclude the player edict and keep the tag."
+    verification:
+      - { kind: code, ref: "ShowNamesLayer.cs:477-487 (TraceVisible: Trace + Fraction>=0.99); QC Draw_ShowNames:62-63", result: fail }
+    confidence: high
+    notes: "Teammates skip the trace entirely when crosshairdistance==0 (ShowNamesLayer.cs:184), exactly like QC line 56-58."
+  - id: cl-shownames.fade.ramp
+    name: "Six-branch fade ramp (dead/blocked/offscreen/overlap/team/enemy)"
+    layer: [presentation]
+    base_refs:
+      - "client/shownames.qc:Draw_ShowNames"
+    port_refs:
+      - "game/client/ShowNamesLayer.cs:_Draw"
+    constants:
+      - { name: "SHOWNAMES_FADESPEED", base: "4", port: "4", match: true }
+      - { name: "SHOWNAMES_FADEDELAY", base: "0", port: "0", match: true }
+      - { name: "dead fade scale", base: "0.25", port: "0.25", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "ShowNamesLayer.cs:237-265 (branch order dead/blocked-enemy/offscreen/overlap/sameteam/enemy + speed*frametime steps + fadedelay reset on blocked enemy) vs QC:101-130", result: pass }
+      - { kind: test, ref: "ShowNamesTests.DeadBranch_FadesAtQuarterSpeed.. / BlockedEnemy.. / TeammateInView.. / Overlap.. / EnemyFadeIn.. / FadeDelay_ConstantIsZero", result: pass }
+    confidence: high
+    notes: "Branch order + per-frame speed*frametime steps + fadedelay reset on blocked enemy all reproduced exactly."
+  - id: cl-shownames.crosshairdistance.gate
+    name: "Crosshair-distance proximity gate"
+    layer: [presentation]
+    base_refs:
+      - "client/shownames.qc:Draw_ShowNames"
+    port_refs:
+      - "game/client/ShowNamesLayer.cs:_Draw"
+    constants:
+      - { name: "hud_shownames_crosshairdistance", base: "0", port: "0", match: true }
+      - { name: "hud_shownames_crosshairdistance_time", base: "5", port: "5", match: true }
+      - { name: "hud_shownames_crosshairdistance_antioverlap", base: "0", port: "0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "ShowNamesLayer.cs:200-212 (d*d > w*w+h*h pointtime stamp + crosshairdistance_time decay -> overlap=1, else overlap=0 when !antioverlap) vs QC:68-78", result: pass }
+    confidence: high
+    notes: "Default off; when set, pointtime stamp + crosshairdistance_time decay match QC."
+  - id: cl-shownames.antioverlap.box
+    name: "Anti-overlap (farther of two overlapping tags fades)"
+    layer: [presentation]
+    base_refs:
+      - "client/shownames.qc:Draw_ShowNames"
+    port_refs:
+      - "game/client/ShowNamesLayer.cs:_Draw"
+      - "game/client/ShowNamesLayer.cs:BoxesOverlap"
+    constants:
+      - { name: "hud_shownames_antioverlap", base: "1", port: "1", match: true }
+      - { name: "hud_shownames_antioverlap_minalpha", base: "0.4", port: "0.4", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "ShowNamesLayer.cs:219-234 (box-overlap + vlen2 distance compare; QC uses all prior-frame boxes, port mixes prior-frame self box with this-frame already-processed boxes)", result: pass }
+    confidence: medium
+    notes: "Port tests the current tag's prior-frame box vs already-processed tags' current-frame boxes (QC uses all prior-frame boxes); converges within a frame — a 1-frame refinement, not a defect."
+  - id: cl-shownames.distance.fade
+    name: "Distance fade + hard cull"
+    layer: [presentation]
+    base_refs:
+      - "client/shownames.qc:Draw_ShowNames"
+    port_refs:
+      - "game/client/ShowNamesLayer.cs:_Draw"
+    constants:
+      - { name: "hud_shownames_mindistance", base: "1000", port: "1000", match: true }
+      - { name: "hud_shownames_maxdistance", base: "5000", port: "5000", match: true }
+      - { name: "max_shot_distance", base: "32768 (initial; reset by world bounds at map load)", port: "32768 (hardcoded const)", match: true }
+      - { name: "ALPHA_MIN_VISIBLE", base: "0.003", port: "0.003", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Minor: max_shot_distance is a hardcoded 32768 const in the port; in Base it is initialised to 32768 but reset from world mins/maxs at map load (weapon.qh:245), so on maps with larger bounds the QC hard-cull ceiling differs. Negligible (both are far past hud_shownames_maxdistance's 5000 default, which is the binding limit)."
+    verification:
+      - { kind: code, ref: "ShowNamesLayer.cs:276-300 (a *= (f - max(0,dist-min))/f, f=max-min; min(maxdistance, max_shot_distance) ceiling) vs QC:145-160", result: pass }
+      - { kind: test, ref: "ShowNamesTests.DistanceFade_ScalesLinearlyBetweenMinAndMax", result: pass }
+    confidence: high
+    notes: "Distance-fade curve + min/max ceiling reproduced. Port adds f>0 guards (harmless when max>min, which holds for defaults)."
+  - id: cl-shownames.resize.distance
+    name: "Distance resize (shrink, floor 0.5)"
+    layer: [presentation]
+    base_refs:
+      - "client/shownames.qc:Draw_ShowNames"
+    port_refs:
+      - "game/client/ShowNamesLayer.cs:_Draw"
+    constants:
+      - { name: "hud_shownames_resize", base: "1", port: "1", match: true }
+      - { name: "resize floor", base: "0.5", port: "0.5", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "ShowNamesLayer.cs:302-320 (resize = 0.5 + 0.5*(f - max(0,dist-min))/f; geometry re-anchor myPos += ...) vs QC:163-177", result: pass }
+      - { kind: test, ref: "ShowNamesTests.Resize_ShrinksWithDistance_NeverBelowHalf", result: pass }
+    confidence: high
+    notes: "resize floor 0.5 + the myPos re-anchor about the centre reproduced."
+  - id: cl-shownames.status.bar
+    name: "Teammate health/armor status bar"
+    layer: [presentation]
+    base_refs:
+      - "client/shownames.qc:Draw_ShowNames"
+    port_refs:
+      - "game/client/ShowNamesLayer.cs:DrawStatusBar"
+    constants:
+      - { name: "hud_shownames_status", base: "1", port: "1", match: true }
+      - { name: "hud_shownames_statusbar_height", base: "4", port: "4", match: true }
+      - { name: "hud_shownames_statusbar_highlight", base: "1", port: "1", match: true }
+      - { name: "hud_panel_healtharmor_maxhealth", base: "200", port: "200", match: true }
+      - { name: "hud_panel_healtharmor_maxarmor", base: "200", port: "200", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Bar is drawn as flat colored rects (DrawRect), not the QC HUD_Panel_DrawProgressBar with the nametag_statusbar skin image, so it lacks the skinned texture look."
+    verification:
+      - { kind: code, ref: "ShowNamesLayer.cs:326-334 box adj + 369-387 (health red rightAlign / armor green leftAlign / 0.7 grey highlight backing) vs QC:183-208", result: pass }
+      - { kind: test, ref: "ShowNamesTests.StatusBar_OnlyForLivingTeammates_WhenStatusOn / HealthAndArmor_RoundTripTogether_ForATeammateTag", result: pass }
+    confidence: medium
+    notes: "Teammate-only + alive + status-cvar gating, half-width split, red/green, highlight backing all faithful; skin-image fidelity (nametag_statusbar gfx) not reproduced — flat rects + black backing instead."
+  - id: cl-shownames.name.decolorize
+    name: "Name draw + decolorize + width-truncation"
+    layer: [presentation]
+    base_refs:
+      - "client/shownames.qc:Draw_ShowNames"
+    port_refs:
+      - "game/client/ShowNamesLayer.cs:DrawName"
+    constants:
+      - { name: "hud_shownames_decolorize", base: "1", port: "1", match: true }
+      - { name: "hud_shownames_aspect", base: "8", port: "8", match: true }
+      - { name: "hud_shownames_fontsize", base: "12", port: "12", match: true }
+      - { name: "hud_shownames_alpha", base: "0.7", port: "0.7", match: true }
+      - { name: "hud_shownames_offset", base: "52", port: "52", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No width truncation: QC textShortenToWidth(name, namewidth=mySize.x) clamps the name to its drawing-area width before drawcolorcodedstring; the port (DrawName) draws the full name centered with NO width clamp, so long names overflow the tag box. (The draft's claim that truncation is present is incorrect.)"
+      - "Name comes from the scoreboard name slice (ResolveScoreboardName, NetGame.cs:2733), not a dedicated entcs name stream; if the scoreboard row is missing the name is empty and the tag shows no text (status bar still draws)."
+      - "Port adds a 1px black drop-shadow behind the name (DrawString offset, alpha*0.7); QC's drawcolorcodedstring has no shadow."
+    verification:
+      - { kind: code, ref: "ShowNamesLayer.cs:405-435 (Strip/Parse + center on anchor; drop-shadow; NO textShortenToWidth) vs QC:212-219", result: fail }
+      - { kind: test, ref: "ShowNamesTests.Decolorize_FollowsTheModeAndTeamplay", result: pass }
+    confidence: high
+    notes: "decolorize 0/1/2 + teamplay rule + center-on-anchor reproduced. Two presentation divergences (no width clamp, added drop-shadow) and the scoreboard name source."
+  - id: cl-shownames.alpha.entcs_getalpha
+    name: "entcs_GetAlpha model-alpha factor + ShowNames_Draw mutator hook"
+    layer: [presentation]
+    base_refs:
+      - "client/shownames.qc:Draw_ShowNames"
+      - "common/ent_cs.qh:entcs_GetAlpha"
+      - "client/mutators/events.qh:EV_ShowNames_Draw"
+    port_refs: []
+    constants:
+      - { name: "entcs_GetAlpha factor", base: "remote CSQC model alpha (0->1, <0->0)", port: "fixed 1", match: false }
+    status:
+      logic: partial
+      values: missing
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "entcs_GetAlpha factor not applied: QC multiplies enemy/self tag alpha by the remote player's CSQC model render alpha (ent_cs.qh:164), so a fading model's tag fades with it; the port leaves the factor at 1, so the tag stays full-alpha while the model fades (spawn shield, invisibility, respawn fade)."
+      - "MUTATOR_CALLHOOK(ShowNames_Draw) not invoked (no-op in stock Base — no shipped mutator implements MUTATOR_HOOKFUNCTION(*, ShowNames_Draw); confirmed by grep — but a custom mutator hooking it would not run)."
+    verification:
+      - { kind: code, ref: "ShowNamesLayer.cs:267-269 (factor left at 1, comment); no MUTATOR_CALLHOOK(ShowNames_Draw) equivalent", result: fail }
+      - { kind: code, ref: "Base grep: only the events.qh:241-246 hook definition + the shownames.qc:139 CALLHOOK exist; zero MUTATOR_HOOKFUNCTION(*, ShowNames_Draw)", result: pass }
+    confidence: high
+    notes: "Mutator-hook gap is harmless in stock gameplay; the entcs_GetAlpha gap is observable on fading/cloaked models."
+  - id: cl-shownames.entcs.private_healtharmor
+    name: "entcs private-slice gating of health/armor (enemy zeroing)"
+    layer: [presentation]
+    base_refs:
+      - "client/shownames.qc:Draw_ShowNames_All"
+      - "common/ent_cs.qc:m_entcs_private"
+    port_refs:
+      - "game/client/ShowNamesLayer.cs:_Draw"
+    constants:
+      - { name: "enemy health/armor on tag", base: "zeroed (private slice withheld from enemies)", port: "read from remote state regardless", match: false }
+    status:
+      logic: partial
+      values: na
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC only populates healthvalue/RES_ARMOR from the private entcs slice the server sends to teammates/self; enemies get zeroed health/armor (Draw_ShowNames_All:237-248). The port reads s.Health/s.Armor from the always-present remote state regardless of team. Visible result matches today because the status bar is teammate-gated, but if the port's net layer streams enemy health/armor to clients it is exposed where QC withholds it (info-parity divergence; depends on ServerNet entity-state gating)."
+    verification:
+      - { kind: code, ref: "ShowNamesLayer.cs:344-345 (tag.Health/Armor = s.Health/s.Armor unconditionally); QC Draw_ShowNames_All:237 gates on entcs.m_entcs_private", result: fail }
+    confidence: medium
+    notes: "Not visible in stock play (bar is teammate-only); flagged as a behavioral/info-parity divergence pending a check of whether ServerNet zeroes enemy health/armor for the viewer."
