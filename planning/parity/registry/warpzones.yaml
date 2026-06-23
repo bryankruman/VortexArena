@@ -7,7 +7,7 @@ summary:
   worst_gaps:
     - "No client portal render: the warpzone surface is a static dark mirror placeholder (HeroMaterials.BuildPortal), not a SubViewport camera view of the linked OUT plane — you cannot see through a warpzone."
     - "No client view rotate across the seam (WarpZone_FixView / ENT_CLIENT_WARPZONE_TELEPORTED unported) — crossing snaps the camera."
-    - "Warpzone crossing is not client-predicted (TriggerTouch.PredictTeleportsAmbient handles trigger_teleport only) — the server teleport arrives as a rubber-band correction."
+    - "Warpzone crossing is STILL not client-predicted on the live path: TriggerTouch.PredictWarpzonesAmbient was ADDED (Wave-2) but has NO caller — EntityMovementStep calls only PredictJumppadsAmbient + PredictTeleportsAmbient — so the server teleport still arrives as a rubber-band correction (dead code)."
     - "No near-clip fix / roll-kill at the seam (WarpZone_FixNearClip / cl_rollkillspeed unported)."
     - "func_camera / func_warpzone_camera (fixed dpcamera view) not implemented."
     - "trigger_warpzone_reconnect + WarpZone_Think (runtime/moving-warpzone re-link) not implemented — links computed once at init."
@@ -157,10 +157,11 @@ features:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:WarpzoneManager.Teleport"
       - "src/XonoticGodot.Engine/Simulation/TriggerTouch.cs:Run"
     constants:
-      - { name: "cross-into-plane gate", base: "WarpZone_PlaneDist(this, origin+view_ofs) < 0", port: "Dot(velocity, InForward) > 0 -> skip (moving-out gate)", match: false }
+      - { name: "cross-into-plane gate", base: "WarpZone_PlaneDist(this, origin+view_ofs) >= 0 -> skip (server.qc:193)", port: "Dot((origin+view_ofs) - InOrigin, InForward) >= 0 -> skip", match: true }
+      - { name: "same-frame re-teleport guard", base: "time <= warpzone_teleport_finishtime -> return (server.qc:186,355)", port: "_teleportFinishTime[e]; now <= finish -> return (Warpzone.cs:210)", match: true }
       - { name: "interp cancel", base: "oldorigin = to + EF_TELEPORT_BIT", port: "OldOrigin = newOrigin (no EF_TELEPORT)", match: false }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
@@ -169,14 +170,15 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Port gates the warp on velocity direction (Dot(velocity, InForward) > 0 -> skip) rather than QC's plane-side test WarpZone_PlaneDist(this, origin+view_ofs) >= 0 -> return (server.qc:193). VERIFIED divergent: an entity loitering exactly ON or just past the plane with outward/zero velocity is NOT teleported by the port even though it has crossed the seam, whereas QC teleports it as soon as it is past the plane regardless of velocity sign; the port also lacks the view_ofs offset in the side test."
       - "The frame-back re-trace (WarpZone_Teleport f0/f1 double-touch avoidance, server.qc:80) and WarpZoneLib_MoveOutOfSolid stuck-recovery are not ported."
-      - "warpzone_teleport_finishtime / warpzone_teleport_time same-frame re-teleport guard not modeled (server.qc:186,355; relies on the touch not re-firing). WarpZone_Projectile_Touch (the projectile .move_touch filter that aborts a stray impact and re-teleports on the same frame, server.qc:344) and the WARPZONELIB_REMOVEHACK-gated WarpZone_CheckProjectileImpact impact-filter are absent — a rocket that touches the trigger and a wall in the same frame could detonate on the seam instead of passing through."
+      - "WarpZone_Projectile_Touch (the projectile .move_touch filter that aborts a stray impact and re-teleports on the same frame, server.qc:344) and the WARPZONELIB_REMOVEHACK-gated WarpZone_CheckProjectileImpact impact-filter are absent — a rocket that touches the trigger and a wall in the same frame could detonate on the seam instead of passing through."
+      - "The QC pre-gate skip for move_movetype == MOVETYPE_NONE/MOVETYPE_FOLLOW || tag_entity (server.qc:189) is not modeled (the .Touch lambda guards on Solid.Not only)."
+      - "EF_TELEPORT_BIT is not toggled on the crossing (interp cancel is done via OldOrigin = newOrigin only)."
     verification:
       - { kind: unit_test, ref: "WarpzoneTests.Teleport_WarpsEntityAndPreservesMomentum / Teleport_SkipsWhenMovingOutOfZone", result: pass }
-      - { kind: code, ref: "VERIFIER: Base WarpZone_Touch server.qc:181-223 vs Warpzone.cs:186-206 — gate, EF_TELEPORT, finishtime guard, projectile touch", result: partial }
+      - { kind: code, ref: "RE-AUDIT 2026-06-22: Wave-2 replaced the velocity-direction gate with the Base plane-side test Dot((origin+view_ofs)-InOrigin, InForward) >= 0 -> skip (Warpzone.cs:219-221), exactly WarpZone_PlaneDist(this, origin+view_ofs) >= 0 (common.qc:476 PlaneDist = (v-warpzone_origin)*warpzone_forward; server.qc:193). Same-frame finishtime guard added (Warpzone.cs:209-214,234). Both verified faithful.", result: pass }
     confidence: high
-    notes: "Trigger .Touch set in SpawnFromBrush/SpawnTriggerFor; fired by TriggerTouch.Run on the per-tick TouchAreaGrid pass (SimulationLoop). avelocity also transformed. VERIFIER: confirmed momentum-preserving transform is correct + live; logic stays 'partial' for the gate + projectile-touch + finishtime-guard gaps above."
+    notes: "FIX (Wave-2): logic partial->faithful. The two baseline gate gaps are CLOSED — the cross-into-plane test now matches Base's plane-side semantics (an entity past the seam with outward/zero velocity IS teleported, with the view_ofs offset), and the warpzone_teleport_finishtime same-frame re-teleport guard is implemented (one-frame hold, _teleportFinishTime keyed per entity, pruned on free). Trigger .Touch set in SpawnFromBrush/SpawnTriggerFor; fired by TriggerTouch.Run on the per-tick TouchAreaGrid pass. avelocity also transformed. Remaining open: f0/f1 re-trace, MoveOutOfSolid, projectile-touch filter, movetype pre-gate, EF_TELEPORT."
   - id: warpzones.teleport.usetargets
     name: "Fire warpzone targets on a crossing (SUB_UseTargets)"
     layer: [authority]
@@ -184,10 +186,13 @@ features:
       - "lib/warpzone/server.qc:WarpZone_Touch"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:Teleport"
-    constants: []
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:UseTargetsEx"
+    constants:
+      - { name: "this skip mask", base: "SUB_UseTargets_SkipTargets(this, ..., BIT(1)|BIT(3)) (server.qc:218)", port: "UseTargetsEx(trig, e, trig, SkipTarget1|SkipTarget3)", match: true }
+      - { name: "partner (this.enemy) skip mask", base: "SUB_UseTargets_SkipTargets(this.enemy, ..., BIT(1)|BIT(2)) (server.qc:219)", port: "UseTargetsEx(partnerTrig, e, e, SkipTarget1|SkipTarget2)", match: true }
     status:
-      logic: partial
-      values: na
+      logic: faithful
+      values: faithful
       timing: na
       presentation: na
       audio: na
@@ -195,11 +200,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Port fires UseTargets on the trigger only; QC fires SUB_UseTargets_SkipTargets on BOTH this and this.enemy with specific skip bitmasks (BIT(1)|BIT(3) / BIT(1)|BIT(2)). Partner-zone target relays won't trigger."
+      - "Minor: for the THIS-zone relay the port passes trigger=trig where Base passes trigger=toucher (BIT-skipped slots are unaffected; only matters if a relayed handler reads the trigger edict). Functionally equivalent for the common cases."
     verification:
-      - { kind: code, ref: "Warpzone.cs:203 MapMover.UseTargets(trig, e, trig)", result: partial }
-    confidence: medium
-    notes: "Rare in practice (most warpzones carry no .target relay)."
+      - { kind: code, ref: "RE-AUDIT 2026-06-22: Wave-2 added wz.Partner (QC this.enemy, set in Link/LinkPair) and fires UseTargetsEx on BOTH this (SkipTarget1|SkipTarget3) and this.enemy (SkipTarget1|SkipTarget2), matching server.qc:218-219. SkipTarget1/2/3 = BIT(1)/BIT(2)/BIT(3) verified (MapObjectsCommon.cs:339-341).", result: pass }
+    confidence: high
+    notes: "FIX (Wave-2): logic partial->faithful. The partner-zone relay (this.enemy) is now fired with the correct BIT masks. Rare in practice (most warpzones carry no .target relay) but now matches Base."
   - id: warpzones.combat.traceline
     name: "Hitscan/aim traces cross seamless portals (16-zone guard)"
     layer: [shared]
@@ -238,7 +243,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponSplash.cs:76"
     constants:
       - { name: "radius recurse clamp", base: "bound(0, rad - vlen(org_new-org0_new), rad - 8)", port: "Clamp(rad - dist_to_zone_plane, 0, rad - 8)", match: false }
-      - { name: "blacklist classnames", base: "is_pure + weaponentity/exteriorweaponentity/sprite_waypoint/waypoint/spawnfunc/weaponchild/chatbubbleentity/buff_model + target_*/info_*", port: "same minus is_pure() (uses IsFreed + empty-classname)", match: false }
+      - { name: "blacklist classnames", base: "is_pure + weaponentity/exteriorweaponentity/sprite_waypoint/waypoint/spawnfunc/weaponchild/chatbubbleentity/buff_model + target_*/info_*", port: "same; Wave-2 added a partial is_pure approx (Solid.Not && empty classname) but no Entity.PureData flag yet", match: false }
       - { name: "per-victim distance", base: "WarpZoneLib_NearestPointOnBox(it.mins,it.maxs,org0)", port: "entity center (wz.InOrigin/org distance)", match: false }
     status:
       logic: faithful
@@ -254,7 +259,7 @@ features:
     verification:
       - { kind: unit_test, ref: "WarpzoneTraceTests.FindRadius_Reaches_A_Victim_Only_Through_A_Portal / FindRadius_Skips_Blacklisted_Classnames", result: pass }
     confidence: high
-    notes: "WeaponSplash uses hit.LocalBlastOrigin (portal-shifted blast frame) for distance/force/LOS; LOS trace itself is warpzone-aware (WeaponSplash.cs:161). VERIFIER: rad-8 clamp + blacklist classnames confirmed against common.qc:562/652; values downgraded faithful->partial for the distance-metric + is_pure nuances above (still intended-equivalent, not a regression)."
+    notes: "WeaponSplash uses hit.LocalBlastOrigin (portal-shifted blast frame) for distance/force/LOS; LOS trace itself is warpzone-aware (WeaponSplash.cs:161). VERIFIER: rad-8 clamp + blacklist classnames confirmed against common.qc:562/652; values stay partial for the distance-metric + is_pure nuances above (still intended-equivalent, not a regression). RE-AUDIT 2026-06-22: Wave-2 added a partial is_pure branch in IsBadEntity (Solid.Not && empty classname; WarpzoneRadiusQuery.cs:438) — but Base already returns true for empty classname unconditionally (common.qc \"\" switch case), so the new branch is largely redundant and does NOT fully model is_pure (= pure_data && SOLID_NOT); still no Entity.PureData flag. No status change; not a regression."
   - id: warpzones.porto
     name: "Porto-weapon portals realised as warpzones"
     layer: [authority]
@@ -365,23 +370,25 @@ features:
     base_refs:
       - "lib/warpzone/client.qc:WarpZone_FixPMove"
       - "lib/warpzone/server.qc:WarpZone_Teleport"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Engine/Simulation/TriggerTouch.cs:PredictWarpzonesAmbient"
     constants: []
     status:
-      logic: missing
+      logic: stub
       values: na
       timing: missing
       presentation: missing
       audio: na
-      liveness: na
+      liveness: dead
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "TriggerTouch.PredictTeleportsAmbient (TriggerTouch.cs:139) predicts trigger_teleport only, never trigger_warpzone, so a warpzone crossing arrives as a server-authoritative correction snap (rubber-band) instead of a predicted seamless transition."
+      - "DEAD CODE: Wave-2 added TriggerTouch.PredictWarpzonesAmbient (TriggerTouch.cs:192) that warps the prediction carrier through a linked zone + stamps .fixangle, BUT it has NO live caller — game/net/EntityMovementStep.cs invokes only PredictJumppadsAmbient (:91) and PredictTeleportsAmbient (:98), never PredictWarpzonesAmbient. So a warpzone crossing STILL arrives as a server-authoritative correction snap (rubber-band); the feature is unwired."
+      - "Even if wired, the predictor uses the OLD velocity-direction gate (Dot(velocity, InForward) > 0 -> skip; TriggerTouch.cs:225) which Wave-2 REPLACED on the authoritative path (Warpzone.cs now uses the plane-side test). Its docstring claims the gate matches authority EXACTLY, but it does not — a wired version would mis-predict relative to the server and re-introduce a reconcile snap."
     verification:
-      - { kind: code, ref: "TriggerTouch.cs:147 FindByClass(\"trigger_teleport\") — no trigger_warpzone branch", result: fail }
+      - { kind: code, ref: "RE-AUDIT 2026-06-22: grep PredictWarpzonesAmbient -> defined TriggerTouch.cs:192, ZERO callers (EntityMovementStep.cs calls Jumppads+Teleports only). Plus gate mismatch vs the fixed authoritative Teleport.", result: fail }
     confidence: high
-    notes: "Primary runtime break #4. Pairs with the missing FixView/render."
+    notes: "Primary runtime break #4 — STILL OPEN. Pairs with the missing FixView/render. Wave-2 wrote the method but did not wire it into EntityMovementStep, and it carries the stale velocity gate; effectively a no-op."
   - id: warpzones.camera
     name: "func_camera / func_warpzone_camera (fixed dpcamera security-camera view)"
     layer: [authority, presentation]

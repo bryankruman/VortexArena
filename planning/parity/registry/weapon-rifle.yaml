@@ -5,11 +5,11 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 16
   worst_gaps:
-    - "Reloadable magazine + reload (clip 80, 2s, forced reload) dead on the live path: the clip IS seeded to 80 (driver seeds reloadable weapons) but FireBullets drains the raw bullet pool (TakeResource) so the clip never decrements, there is no forced-reload branch, and the secondary reload flag is ignored — the rifle never reloads"
-    - "Secondary kills print WEAPON_RIFLE_MURDER not *_MURDER_HAIL: FireBullets passes deathType=RegistryId, and the int->string ApplyDamage path has NO channel to carry HITTYPE_SECONDARY at all (architectural, not just a missing OR)"
-    - "Primary tracer trail (tr_rifle) never emitted — effect registered but dead; the rifle's signature visible tracer is missing"
-    - "Accuracy FIRED credit never registered: SetupShot is called without wep/maxDamage, so the rifle never increments the accuracy% denominator (rifle-specific omission; MachineGun shares it)"
-    - "Bullet-impact random ricochet sound (SND_RIC_RANDOM) never plays; brass casing ejection (g_casings>=2) not ported"
+    - "Secondary kills still print WEAPON_RIFLE_MURDER not *_MURDER_HAIL: FireBullets passes deathType=RegistryId only, and the int->string firing/damage API still has no channel to carry HITTYPE_SECONDARY (UNCHANGED by Wave-2 — architectural)"
+    - "Brass casing ejection is wired in code (EjectCasing called with the correct g_casings>=2 gate + QC eject velocity) but DEAD on the live path: EmitByEffectInfoName(\"casing_bullet\") yields a null-Effect request that the server net encoder (ServerNet.WriteEffect / EffectNetProtocol.Encode) drops, and the client never routes the name to EffectSystem.SpawnCasing — so no shell is networked or rendered"
+    - "Rifle-specific bot wr_aim still missing: BotAim gained live aim-skill cvar reads but NOT the probabilistic primary/secondary 'riflemooth' toggle, the force-primary>1000u rule, or bot_aim (1000000,0,0.001); bots still never use the rifle secondary"
+    - "Zoom-from-eye shot re-aim still not ported (headless server has no zoom button); low impact, only matters while scoped"
+    - "wr_resetplayer (rifle_accumulator reset on spawn across all slots) still not ported; benign at stock bursttime 0"
 features:
   - id: rifle.identity
     name: "Rifle registration & identity (flags, color, ammo, models, impulse)"
@@ -40,16 +40,16 @@ features:
     verification:
       - { kind: code, ref: "rifle.qh ATTRIBs vs Rifle.cs ctor", result: pass }
     confidence: high
-    notes: "bot_pickupbasevalue 7000, crosshair gfx/crosshairrifle (size 0.6), reticle gfx/reticle_nex, no muzzle model (MDL_Null). Nexuiz-compat spawnfuncs weapon_campingrifle/weapon_sniperrifle alias WEP_RIFLE. (Verifier note: the ctor's spawnflags/color/models/ammo confirmed line-by-line against rifle.cs:54-64.)"
+    notes: "Unchanged by Wave-2. bot_pickupbasevalue 7000, crosshair gfx/crosshairrifle (size 0.6), reticle gfx/reticle_nex, no muzzle model (MDL_Null). Nexuiz-compat spawnfuncs weapon_campingrifle/weapon_sniperrifle alias WEP_RIFLE."
 
   - id: rifle.think.gates
-    name: "wr_think gates — refire + burst-budget accumulator, primary/secondary routing"
+    name: "wr_think gates — refire + burst-budget accumulator, primary/secondary routing, forced/secondary reload"
     layer: [authority]
     base_refs:
       - "common/weapons/weapon/rifle.qc:wr_think"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:WrThink"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireDriver.cs:Frame"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:WrThink (cs:113)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireDriver.cs:Frame (cs:155 — WrThink(Primary) every tick)"
       - "src/XonoticGodot.Server/GameWorld.cs:WeaponThink"
     constants:
       - { name: "bursttime", base: "0", port: "0", match: true }
@@ -58,6 +58,8 @@ features:
       - { name: "primary_refire", base: "1.2", port: "1.2", match: true }
       - { name: "secondary_refire", base: "0.9", port: "0.9", match: true }
       - { name: "secondary_enable", base: "secondary 1", port: "SecondaryEnabled true", match: true }
+      - { name: "forced-reload branch (top of wr_think)", base: "reload_ammo && clip_load < min(pri,sec ammo)", port: "ReloadingAmmo()!=0 && ClipLoad < min(Primary.Ammo,Secondary.Ammo) (cs:121)", match: true }
+      - { name: "secondary `reload` flag branch", base: "WEP_CVAR_SEC(reload) -> W_Reload", port: "SecondaryReload -> WrReload (cs:150-152)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -67,13 +69,12 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Forced-reload branch at the top of wr_think (g_balance_rifle_reload_ammo && clip_load < min(ammo)) is not ported. NOT moot the way the draft claimed: the base ReloadingAmmo() resolves g_balance_rifle_reload_ammo=80 (>0) and the driver seeds ClipLoad=80, so in faithful behavior this branch WOULD eventually fire — it's only inert because the clip is never drained (see rifle.ammo.decrease)."
+    gaps: []
     verification:
-      - { kind: code, ref: "rifle.qc:wr_think 123-152 vs Rifle.WrThink — accumulator-before-prepareattack order preserved", result: pass }
-      - { kind: code, ref: "GameWorld.cs:1166-1182 WeaponThink -> WeaponFireDriver.Frame -> Rifle.WrThink (live, every tick)", result: pass }
+      - { kind: code, ref: "rifle.qc:wr_think 123-152 vs Rifle.WrThink — forced-reload + secondary-reload branches now present (cs:121-123, 150-152), accumulator-before-prepareattack order preserved", result: pass }
+      - { kind: code, ref: "WeaponFireDriver.cs:155 calls WrThink(Primary) EVERY tick regardless of buttons -> the top-of-think forced-reload branch is reachable once the clip empties", result: pass }
     confidence: high
-    notes: "Verifier traced the live path: GameWorld.WeaponThink(p) -> WeaponFireDriver.Frame -> WrThink(Primary) every tick + WrThink(Secondary) when ATCK2 held (WeaponFireDriver.cs:155-157). Accumulator gate runs before PrepareAttack so the burst budget doesn't advance the refire timer. Inert at stock burstcost/bursttime 0."
+    notes: "WAVE-2 FIX: the forced-reload branch (was the documented gap in the baseline) and the secondary `reload` flag branch are now ported and live; both resolve g_balance_rifle_reload_ammo (80) live via ReloadingAmmo() and route to the generic WrReload. Accumulator gate runs before PrepareAttack so the burst budget doesn't advance the refire timer. Inert at stock burstcost/bursttime 0; secondary_reload 0 so the secondary fires (reload branch skipped)."
 
   - id: rifle.bullethail
     name: "Held-fire bullethail continuation (W_Rifle_BulletHail/_Continue)"
@@ -99,13 +100,13 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "rifle.qc:59-92 vs Rifle.BulletHail/Continue (QC secondary->primary-refire quirk preserved at Rifle.cs:181)", result: pass }
-      - { kind: test, ref: "tests/XonoticGodot.Tests/RifleBulletHailTests.cs (verifier confirmed file present)", result: pass }
+      - { kind: code, ref: "rifle.qc:59-92 vs Rifle.BulletHail/Continue (QC secondary->primary-refire quirk preserved)", result: pass }
+      - { kind: test, ref: "tests/XonoticGodot.Tests/RifleBulletHailTests.cs (present)", result: pass }
     confidence: high
-    notes: "OFF at stock bullethail 0 (one volley per pull). Test config turns it on and confirms repeated volleys gated by animtime + burst budget. The continuation re-checks the burst accumulator (QC's continuation doesn't, but it's a documented intent-preserving addition, noted in the port comment)."
+    notes: "Unchanged by Wave-2. OFF at stock bullethail 0 (one volley per pull). Test config turns it on and confirms repeated volleys gated by animtime + burst budget."
 
   - id: rifle.fire.bullet
-    name: "W_Rifle_FireBullet — fire `shots` piercing hitscan bullets (damage/spread/penetration/falloff/force/headshot)"
+    name: "W_Rifle_FireBullet — fire `shots` piercing hitscan bullets (damage/spread/penetration/falloff/force/headshot/accuracy)"
     layer: [authority]
     base_refs:
       - "common/weapons/weapon/rifle.qc:W_Rifle_FireBullet"
@@ -113,9 +114,11 @@ features:
       - "common/weapons/calculations.qc:W_CalculateSpread"
       - "lib/math.qh:ExponentialFalloff"
       - "server/weapons/tracing.qc:Headshot"
+      - "server/weapons/tracing.qc:W_SetupShot (maxdamage accuracy_add)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:FireBullets"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:FireBullets (cs:246)"
       - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:FireBullet"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:SetupShot (Fired accuracy credit, cs:112)"
       - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:CalculateSpread"
       - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:ExponentialFalloff"
       - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:Headshot"
@@ -136,6 +139,7 @@ features:
       - { name: "g_ballistics_solidpenetration_exponent", base: "1", port: "1 (const)", match: true }
       - { name: "g_ballistics_mindistance", base: "1", port: "1 (const)", match: true }
       - { name: "W_SetupShot recoil", base: "2", port: "2", match: true }
+      - { name: "W_SetupShot maxdamage (accuracy FIRED)", base: "dmg * shots", port: "bal.Damage * shots (cs:260)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -145,14 +149,13 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Accuracy FIRED credit is NOT registered for the rifle: FireBullets calls WeaponFiring.SetupShot WITHOUT the wep/maxDamage args (Rifle.cs:225), so WeaponAccuracyEvents.Fired is never invoked and the accuracy% denominator (QC W_SetupShot maxdamage arg) never grows for rifle shots. Vortex.cs:275 passes wep/maxDamage; the rifle (and MachineGun) do not. Rifle-specific omission the first pass missed entirely."
+    gaps: []
     verification:
       - { kind: code, ref: "rifle.qc:5-36 vs Rifle.FireBullets argument-by-argument", result: pass }
       - { kind: code, ref: "tracing.qc:363-537 fireBullet_falloff penetration/falloff/headshot loop vs WeaponFiring.FireBullet", result: pass }
-      - { kind: code, ref: "Rifle.cs:225 SetupShot(... no wep/maxDamage) vs Vortex.cs:275 (wep:this, maxDamage:mydmg) — accuracy FIRED credit skipped", result: fail }
+      - { kind: code, ref: "Rifle.cs:260 SetupShot(wep:this, maxDamage:bal.Damage*shots) -> WeaponFiring.SetupShot cs:112 WeaponAccuracyEvents.Fired(actor, wep, maxDamage) for client actors", result: pass }
     confidence: high
-    notes: "Bullet math (spread style 0 via deterministic Prandom, solid-penetration multi-hit, exponential falloff, force, headshot AABB) all confirmed faithful constant-by-constant. The headshot path is present but inert (rifle headshot_multiplier 0). Deferred at the shared WeaponFiring level (not rifle-specific): antilag takeback IS present (LagComp.Begin/End) — verifier note: draft's blanket 'antilag deferred' is partly stale; warpzone transforms + trueaim-minrange clamp remain deferred. The accuracy FIRED-credit gap above IS rifle-specific."
+    notes: "WAVE-2 FIX: the rifle-specific accuracy FIRED-credit gap is closed — FireBullets now passes wep/maxDamage so the accuracy% denominator grows (same path Vortex uses). Bullet math (deterministic Prandom spread, solid-penetration multi-hit, exponential falloff, force, headshot AABB) all confirmed faithful constant-by-constant; headshot path present but inert (rifle multiplier 0). Shared-level deferred items remain (warpzone transforms, trueaim-minrange clamp); antilag takeback IS present (LagComp.Begin/End)."
 
   - id: rifle.ammo.decrease
     name: "W_DecreaseAmmo — clip-aware ammo consumption per shot"
@@ -161,14 +164,14 @@ features:
       - "common/weapons/weapon/rifle.qc:W_Rifle_FireBullet (W_DecreaseAmmo call)"
       - "server/weapons/weaponsystem.qc:W_DecreaseAmmo"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:FireBullets (actor.TakeResource)"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireGate.cs:DecreaseAmmo (the correct, unused-by-rifle sink)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:FireBullets (DecreaseAmmo, cs:254)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireGate.cs:DecreaseAmmo (cs:324, clip-aware)"
     constants:
       - { name: "primary_ammo", base: "10", port: "10", match: true }
       - { name: "secondary_ammo", base: "10", port: "10", match: true }
-      - { name: "drain target", base: "clip_load (reloadable)", port: "raw bullet pool (TakeResource)", match: false }
+      - { name: "drain target", base: "clip_load (reloadable)", port: "clip_load via DecreaseAmmo (cs:254)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: na
       presentation: na
@@ -176,12 +179,11 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Rifle is RELOADABLE with ReloadingAmmo()=80 (resolved from g_balance_rifle_reload_ammo via the base virtual, WeaponFireGate.cs:382), so QC W_DecreaseAmmo drains the magazine (weapon_load[]); the port calls actor.TakeResource and drains the shared bullet pool, leaving clip_load pinned at the seeded 80 forever. The clip-aware sink (WeaponFireGate.DecreaseAmmo) exists and handles the reloadable branch correctly — the rifle just doesn't call it."
+    gaps: []
     verification:
-      - { kind: code, ref: "Rifle.cs:221 actor.TakeResource vs WeaponFireGate.cs:324-343 DecreaseAmmo (clip-aware) vs OkMachineGun.cs:112 (uses DecreaseAmmo)", result: fail }
+      - { kind: code, ref: "Rifle.cs:254 DecreaseAmmo(actor, slot, bal.Ammo) -> WeaponFireGate.cs:324-343 (reloadable branch drains st.ClipLoad + persists weapon_load[])", result: pass }
     confidence: high
-    notes: "CORRECTION to first pass: the draft claimed 'sibling OK weapons correctly call DecreaseAmmo — the rifle should too' and implied the MachineGun does. Verifier found the MachineGun (rifle's CLOSEST sibling, also Reloadable) ALSO uses actor.TakeResource (MachineGun.cs:139/214/277) and its own comment says 'reload_ammo isn't modeled' — so ONLY the Overkill weapons (OkMachineGun/OkHmg/OkRpc) actually use DecreaseAmmo. The per-shot AMOUNT (10) is correct; only the SINK is wrong. Root of rifle.reload being dead."
+    notes: "WAVE-2 FIX: FireBullets previously called actor.TakeResource and drained the shared bullet pool, pinning the clip at the seeded 80; it now calls the clip-aware DecreaseAmmo, so the magazine (clip_load) actually decrements. This is the lynchpin that makes rifle.reload's forced-reload branch fire. Per-shot amount (10) was already correct; only the sink was wrong, now fixed."
 
   - id: rifle.reload
     name: "Reload system (wr_reload, forced reload, secondary `reload` flag, wr_checkammo clip term)"
@@ -193,31 +195,35 @@ features:
       - "common/weapons/weapon/rifle.qc:wr_checkammo2"
       - "server/weapons/weaponsystem.qc:W_Reload"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:CheckAmmoPrimary"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:CheckAmmoSecondary"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireGate.cs:WReload (generic, present but never reached for rifle)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:WrThink (forced+secondary reload, cs:121-123/150-152)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:ReloadingAmmoMin (cs:110)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:CheckAmmoPrimary/Secondary (clip term, cs:294-301)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireGate.cs:WrReload/WReload/WReloadedAndReady (cs:197-316)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireDriver.cs:BeginRaise (clip seed, cs:278-282)"
     constants:
-      - { name: "reload_ammo (magazine)", base: "80", port: "80 (ReloadingAmmo() resolves it live; clip seeded to 80 but never drained)", match: false }
-      - { name: "reload_time", base: "2", port: "2 (ReloadingTime() resolves it live, but WReload never reached for rifle)", match: false }
-      - { name: "secondary_reload", base: "0", port: "not consulted", match: false }
-      - { name: "g_balance_rifle_reload_ammo (forced)", base: "80", port: "not consulted (no forced-reload branch in WrThink)", match: false }
-      - { name: "wr_checkammo clip term", base: "pool OR weapon_load[id]", port: "pool only", match: false }
+      - { name: "reload_ammo (magazine)", base: "80", port: "80 (ReloadingAmmo() resolves g_balance_rifle_reload_ammo live; clip seeded full, now drained)", match: true }
+      - { name: "reload_time", base: "2", port: "2 (ReloadingTime() resolves g_balance_rifle_reload_time live)", match: true }
+      - { name: "secondary_reload", base: "0", port: "g_balance_rifle_secondary_reload 0 (SecondaryReload, consulted cs:150)", match: true }
+      - { name: "g_balance_rifle_reload_ammo (forced)", base: "80", port: "ReloadingAmmo()!=0 forced-reload branch (cs:121)", match: true }
+      - { name: "wr_checkammo clip term", base: "pool OR weapon_load[id]", port: "pool OR GetWeaponLoad (cs:294-301)", match: true }
+      - { name: "reload sound", base: "SND_RELOAD (weapons/reload.wav)", port: "weapons/reload.wav (WeaponFireGate.cs:266)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
-      audio: missing
-      liveness: dead
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The rifle never reloads: FireBullets drains the pool (rifle.ammo.decrease) so clip_load never decrements (it's seeded to 80 by the driver and stays there), the forced-reload branch at the top of wr_think is absent, the secondary `reload` flag is ignored, and CheckAmmoPrimary/Secondary omit the weapon_load[] clip term that QC wr_checkammo1/2 OR in. No SND_RELOAD, no 2s downtime, no 80-round cap — the rifle's defining reload cadence is absent on the live path."
+      - "MINOR (single-slot OK): CheckAmmoPrimary/Secondary read the clip term from WeaponState(WeaponSlot(0)) hardcoded, while the firing path uses the actual slot — for the standard single-slot case (slot 0) this is correct and live, but a non-zero weapon slot would read the wrong clip. Edge case, not exercised in stock play."
     verification:
-      - { kind: code, ref: "Rifle.cs:250-253 CheckAmmo* (pool only) vs rifle.qc:154-166 wr_checkammo1/2 (pool + clip)", result: fail }
-      - { kind: code, ref: "Rifle.WrThink has no forced-reload branch (cf rifle.qc:125-129) and no secondary-reload branch (cf rifle.qc:142-143); OkMachineGun.cs:84-89 shows the pattern the rifle is missing", result: fail }
+      - { kind: code, ref: "Rifle.cs:121-123 forced reload + 150-152 secondary reload -> WeaponFireGate.WrReload -> WReload (2s schedule -> WReloadedAndReady tops clip from pool); reachable every tick via WeaponFireDriver.cs:155", result: pass }
+      - { kind: code, ref: "Rifle.cs:294-301 CheckAmmo* now OR the GetWeaponLoad clip term vs rifle.qc:154-166 wr_checkammo1/2; wired live via WeaponFireGate.WrCheckAmmo dispatch (cs:494)", result: pass }
+      - { kind: code, ref: "WeaponFireDriver.BeginRaise cs:278-282 seeds clip to ReloadingAmmo()=80 on raise (SeedClipIfFresh)", result: pass }
     confidence: high
-    notes: "CORRECTION to first pass: the generic plumbing is even more present than the draft implied — WeaponFireDriver.cs:278-282 ALREADY seeds the rifle's clip to 80 on raise (Reloadable + ReloadingAmmo()!=0), so the magazine exists live; it just never drains and there's no reload trigger. Fix = route FireBullets through DecreaseAmmo + add the forced + secondary reload branches + the clip term in CheckAmmo (mirroring OkMachineGun)."
+    notes: "WAVE-2 FIX (the baseline's #1 worst gap, fully closed): the rifle now reloads on the live path. Clip seeded full (80) on raise, drained by DecreaseAmmo, and once it drops below min(10,10) the top-of-WrThink forced-reload branch fires the generic WrReload — 2s downtime, weapons/reload.wav, refill-from-pool, 80-round cap. Secondary `reload` flag consulted (0 stock). CheckAmmo now ORs the persistent magazine term so a loaded clip + drained pool no longer reads as out-of-ammo. No new tests added; verified by code trace only."
 
   - id: rifle.deathtype.secondary
     name: "HITTYPE_SECONDARY deathtype flag → secondary kill-message variant (hail)"
@@ -226,7 +232,7 @@ features:
       - "common/weapons/weapon/rifle.qc:W_Rifle_Attack2 (m_id | HITTYPE_SECONDARY)"
       - "common/weapons/weapon/rifle.qc:wr_killmessage"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:FireBullets (deathType = RegistryId)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:FireBullets (deathType = RegistryId, cs:265)"
       - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:81-85 (rifle case)"
       - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:ApplyDamage (int->string deathTag map)"
     constants:
@@ -241,11 +247,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Secondary rifle kills print WEAPON_RIFLE_MURDER instead of WEAPON_RIFLE_MURDER_HAIL. Deeper than 'a missing OR': FireBullets passes deathType=RegistryId (an int), and WeaponFiring.ApplyDamage maps it via DeathTypes.FromWeapon(NetName) which produces ONLY the base weapon tag with no HITTYPE suffix — the int->string firing API has no channel to carry HITTYPE_SECONDARY into the deathtype at all. The suffix machinery (DeathTypes.WithHitType / `|secondary`) and the DeathMessages rifle branch (keys HAIL off `sec`) both exist and are faithful; the secondary flag simply never reaches them."
+      - "UNCHANGED by Wave-2. Secondary rifle kills still print WEAPON_RIFLE_MURDER instead of WEAPON_RIFLE_MURDER_HAIL: FireBullets passes deathType=RegistryId (an int) and the int->string firing/damage API (ApplyDamage / DeathTypes.FromWeapon) has no channel to carry HITTYPE_SECONDARY into the deathtype. The suffix machinery (DeathTypes.WithHitType / `|secondary`) and the DeathMessages rifle HAIL branch both exist and are faithful; the flag simply never reaches them."
     verification:
-      - { kind: code, ref: "Rifle.cs:229 deathType=RegistryId; WeaponFiring.cs:507-523 ApplyDamage drops all HITTYPE bits; DeathMessages.cs:81-85 keys HAIL off DeathTypes.HasHitType(deathType, Secondary)", result: fail }
+      - { kind: code, ref: "Rifle.cs:265 deathType=RegistryId (comment still 'cosmetic'); the firing API drops all HITTYPE bits; DeathMessages.cs:81-85 keys HAIL off HasHitType(Secondary)", result: fail }
     confidence: high
-    notes: "The kill-message SELECTION (DeathMessages rifle case) is faithful — it never receives the SECONDARY flag. PIERCING variants (HITTYPE_BOUNCE) are dead in Base too (the rifle path never sets HITTYPE_BOUNCE). Verifier note: this is an architectural gap in the shared firing->damage API, not a one-line rifle fix; it affects every weapon whose kill message branches on HITTYPE (machinegun snipe, hagar burst, etc.)."
+    notes: "STILL OPEN. Architectural gap in the shared firing->damage API, not a one-line rifle fix; affects every weapon whose kill message branches on HITTYPE (machinegun snipe, hagar burst). Cross-ref fx-deathtypes unit."
 
   - id: rifle.fx.muzzleflash
     name: "Muzzle flash effect (EFFECT_RIFLE_MUZZLEFLASH)"
@@ -254,7 +260,7 @@ features:
       - "common/weapons/weapon/rifle.qc:W_Rifle_FireBullet (W_MuzzleFlash)"
       - "common/effects/all.inc:EFFECT(RIFLE_MUZZLEFLASH, rifle_muzzleflash)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:FireBullets (EffectEmitter.Emit RIFLE_MUZZLEFLASH)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:FireBullets (EffectEmitter.Emit RIFLE_MUZZLEFLASH, cs:289)"
       - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:96"
     constants:
       - { name: "effect", base: "rifle_muzzleflash", port: "rifle_muzzleflash", match: true }
@@ -269,9 +275,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "EffectsList.cs:96 RIFLE_MUZZLEFLASH->rifle_muzzleflash; Rifle.cs:246 EffectEmitter.Emit(..., except: actor)", result: pass }
+      - { kind: code, ref: "EffectsList.cs:96 RIFLE_MUZZLEFLASH->rifle_muzzleflash; Rifle.cs:289 EffectEmitter.Emit(..., except: actor)", result: pass }
     confidence: medium
-    notes: "Effect name + emission verified (Emit with except:actor so the firer's first-person view doesn't get the world muzzleflash). The actual particle render is the generic EffectSystem name-classified path — not visually verified in-game, hence medium."
+    notes: "Unchanged by Wave-2. Emit with except:actor so the firer's first-person view doesn't get the world muzzleflash. Actual particle render via the generic name-classified EffectSystem path; not visually verified in-game, hence medium."
 
   - id: rifle.fx.impact
     name: "Bullet impact effect (EFFECT_RIFLE_IMPACT == machinegun_impact)"
@@ -280,10 +286,13 @@ features:
       - "common/weapons/weapon/rifle.qc:wr_impacteffect"
       - "common/effects/all.inc:EFFECT(RIFLE_IMPACT, machinegun_impact)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:FireBullets (EffectEmitter.Emit RIFLE_IMPACT)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:FireBullets (WeaponFiring.BulletImpactFx RIFLE_IMPACT, cs:279)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:BulletImpactFx (cs:471)"
       - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:95"
     constants:
       - { name: "effect", base: "machinegun_impact", port: "machinegun_impact", match: true }
+      - { name: "impact origin", base: "org2 = w_org + w_backoff*2", port: "impactPos + backoff*2 (WeaponFiring.cs)", match: true }
+      - { name: "impact velocity", base: "w_backoff * 1000", port: "backoff * 1000", match: true }
     status:
       logic: faithful
       values: faithful
@@ -294,11 +303,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Path differs: the port emits RIFLE_IMPACT server-side per bullet inside FireBullets off a world-only re-trace (Rifle.cs:238-242); Base emits it CSQC in wr_impacteffect off the Damage_DamageInfo feed. The effect NAME matches, but the port's impact normal comes from a separate world trace rather than the damage feed's surface, and the per-bullet server emit is a different fan-out than the CSQC damageinfo path — remote-client render not verified, so presentation downgraded faithful->partial."
+      - "Emit PATH still diverges from Base: the port emits RIFLE_IMPACT server-side per bullet inside FireBullets off a world-only re-trace; Base emits it CSQC in wr_impacteffect off the Damage_DamageInfo feed. The effect NAME + the org2/backoff offsets now match QC, but the per-bullet server emit is a different fan-out than the CSQC damageinfo path — remote-client render not visually verified."
     verification:
-      - { kind: code, ref: "EffectsList.cs:95 RIFLE_IMPACT->machinegun_impact; Rifle.cs:238-242 server-side world-trace emit vs rifle.qc:213-216 CSQC wr_impacteffect", result: pass }
+      - { kind: code, ref: "EffectsList.cs:95 RIFLE_IMPACT->machinegun_impact; Rifle.cs:279 -> WeaponFiring.BulletImpactFx (now applies QC's org2 = pos + backoff*2 offset)", result: pass }
     confidence: medium
-    notes: "backoff (impact normal) computed from a world-only trace; falls back to -shotdir when no surface hit. Verifier downgraded presentation to partial (draft had faithful) because the emit PATH diverges and the draft's own gap text admits it 'may render differently for remote clients'."
+    notes: "IMPROVED by Wave-2 (now routes through the shared BulletImpactFx, which applies the QC org2 = w_org + w_backoff*2 offset the prior direct Emit omitted), but presentation stays partial because the server-emit path still diverges from Base's CSQC damageinfo path. backoff (impact normal) from a world-only trace; falls back to -shotdir when no surface hit."
 
   - id: rifle.fx.tracer
     name: "Bullet tracer trail (EFFECT_RIFLE primary / EFFECT_RIFLE_WEAK secondary)"
@@ -308,25 +317,30 @@ features:
       - "server/weapons/tracing.qc:fireBullet_falloff (trailparticles tracer_effect)"
       - "common/effects/all.inc:EFFECT(RIFLE, tr_rifle) / EFFECT(RIFLE_WEAK, tr_rifle_weak)"
     port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:FireBullets (tracerEffect = RIFLE/RIFLE_WEAK, cs:267/273)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:FireBullet (tracerEffect param + EmitTrail, cs:241-259/322-329)"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectEmitter.cs:EmitTrail (cs:237)"
       - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:97-98"
     constants:
-      - { name: "primary_tracer", base: "1 (tr_rifle)", port: "read into Primary.Tracer but unused", match: false }
-      - { name: "secondary_tracer", base: "0 (tr_rifle_weak)", port: "read into Secondary.Tracer but unused", match: false }
+      - { name: "primary_tracer", base: "1 (tr_rifle)", port: "Primary.Tracer 1 -> 'RIFLE'", match: true }
+      - { name: "secondary_tracer", base: "0 (tr_rifle_weak)", port: "Secondary.Tracer 0 -> 'RIFLE_WEAK'", match: true }
+      - { name: "open-air trail threshold", base: "vdist(hit-start, >, 16)", port: "(cur-segStart).Length() > 16 (cs:258)", match: true }
+      - { name: "in-solid (through player) trail threshold", base: "vdist(trace_endpos-start, >, 4) && hit.solid != SOLID_BSP", base_ref: "tracing.qc:519-520", port: "Solid != Bsp && (through.EndPos-cur).Length() > 4 (cs:326-328)", match: true }
     status:
-      logic: missing
-      values: stub
+      logic: faithful
+      values: faithful
       timing: na
-      presentation: missing
+      presentation: faithful
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "No tracer trail is drawn: Rifle.FireBullets never passes a tracer effect to WeaponFiring.FireBullet, and FireBullet has no tracer parameter / trailparticles emission (its own docstring lists 'EFFECT_BULLET tracer' as deferred). The RIFLE/RIFLE_WEAK trail effects are registered (EffectsList.cs:97-98) but have no live caller, so the primary's signature tracer (tracer 1) is invisible."
+    gaps: []
     verification:
-      - { kind: code, ref: "EffectsList.cs:97-98 register tr_rifle/_weak isTrail:true; no Emit caller; WeaponFiring.FireBullet (cs:203) has no tracer arg + docstring defers EFFECT_BULLET tracer", result: fail }
+      - { kind: code, ref: "EffectsList.cs:97-98 register tr_rifle/_weak isTrail:true; Rifle.cs:267/273 pass tracerEffect; WeaponFiring.FireBullet EmitTrail per segment (16u open-air, 4u in-solid) matches tracing.qc:357/519-520", result: pass }
+      - { kind: code, ref: "EmitTrail uses Sink.Emit(EffectRequest{Effect=non-null RIFLE/RIFLE_WEAK}) -> ServerNet.WriteEffect encodes (trail branch) -> client Spawn handles trail; networks live (unlike the casing null-Effect path)", result: pass }
     confidence: high
-    notes: "Rifle.cs:39/82/95 read Primary.Tracer/Secondary.Tracer from cvars but never use them. A faithful fix needs a tracer-effect parameter threaded into FireBullet + a trailparticles emission per traced segment."
+    notes: "WAVE-2 FIX: the rifle's signature visible tracer is now drawn. FireBullet gained a tracerEffect parameter + per-segment trailparticles emission; the rifle passes 'RIFLE'/'RIFLE_WEAK' (tracer!=0 selects the strong trail, exactly QC's ternary). Thresholds (16u/4u) match Base constant-for-constant. The effects are REGISTERED (non-null) so they actually network and render, unlike the casing emit."
 
   - id: rifle.audio.fire
     name: "Fire sound (SND_RIFLE_FIRE primary / SND_RIFLE_FIRE2 secondary)"
@@ -336,14 +350,42 @@ features:
       - "common/weapons/weapon/rifle.qc:W_Rifle_Attack2 (SND_RIFLE_FIRE2)"
       - "common/weapons/weapon/rifle.qh:SOUND(RIFLE_FIRE/FIRE2)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:FireBullets (Api.Sound.Play campingrifle_fire.wav)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:FireBullets (Api.Sound.Play, cs:286-287)"
     constants:
       - { name: "primary sound", base: "campingrifle_fire", port: "campingrifle_fire", match: true }
-      - { name: "secondary sound", base: "campingrifle_fire2", port: "campingrifle_fire (wrong)", match: false }
+      - { name: "secondary sound", base: "campingrifle_fire2", port: "campingrifle_fire2 (branches on secondary)", match: true }
       - { name: "channel", base: "CH_WEAPON_A", port: "SoundChannel.Weapon", match: true }
     status:
       logic: faithful
-      values: partial
+      values: faithful
+      timing: na
+      presentation: na
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Rifle.cs:286-287 secondary ? campingrifle_fire2.wav : campingrifle_fire.wav vs rifle.qc:47/52 SND_RIFLE_FIRE / SND_RIFLE_FIRE2; campingrifle_fire2.ogg present in assets", result: pass }
+    confidence: high
+    notes: "WAVE-2 FIX: the secondary now plays campingrifle_fire2 (was hardcoded to the primary cue). Channel CH_WEAPON_A == SoundChannel.Weapon. The port's direct Api.Sound.Play bypasses the QC W_SetupShot pSound seam but is functionally equivalent (minor)."
+
+  - id: rifle.audio.ric
+    name: "Bullet impact ricochet sound (SND_RIC_RANDOM)"
+    layer: [presentation]
+    base_refs:
+      - "common/weapons/weapon/rifle.qc:wr_impacteffect (sound CH_SHOTS, SND_RIC_RANDOM, !w_issilent)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:FireBullets (WeaponFiring.BulletImpactFx, cs:279)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:BulletImpactFx (SoundSystem.PlayRic, cs:471)"
+      - "src/XonoticGodot.Common/Gameplay/Sounds/SoundSystem.cs:PlayRic (cs:195)"
+    constants:
+      - { name: "ricochet sound", base: "SND_RIC_RANDOM (ric1/ric2/ric3, weapons/ric*)", port: "RIC1..3 via PlayRic->PickRegistered (weapons/ric*)", match: true }
+      - { name: "silence gate", base: "!w_issilent", port: "BulletImpactFx silent param (default false)", match: true }
+      - { name: "channel", base: "CH_SHOTS", port: "PlayOn default channel (not CH_SHOTS)", match: false }
+    status:
+      logic: faithful
+      values: faithful
       timing: na
       presentation: na
       audio: partial
@@ -351,60 +393,40 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Secondary fire plays the PRIMARY sound (campingrifle_fire) instead of campingrifle_fire2; FireBullets (Rifle.cs:245) hardcodes the primary cue regardless of fire mode — it does not branch on `secondary`."
+      - "MINOR channel mismatch: Base plays SND_RIC_RANDOM on CH_SHOTS; the port's PlayRic->PlayOn uses the RIC sound's default channel hint (Weapon), not CH_SHOTS. Inaudible difference in practice (affects only same-channel sound cutoff), but not byte-faithful."
     verification:
-      - { kind: code, ref: "Rifle.cs:245 hardcoded weapons/campingrifle_fire.wav vs rifle.qc:47/52 SND_RIFLE_FIRE / SND_RIFLE_FIRE2", result: fail }
+      - { kind: code, ref: "Rifle.cs:279 BulletImpactFx -> WeaponFiring.cs BulletImpactFx -> SoundSystem.PlayRic -> PickRegistered('RIC') -> PlayOn; RIC1..3 registered (SoundsList.cs:68, weapons/ric*) + ric1-3.ogg present", result: pass }
     confidence: high
-    notes: "Channel CH_WEAPON_A == SoundChannel.Weapon (faithful). Primary cue correct. Verifier note: QC actually routes the cue through W_SetupShot's pSound arg, not a direct sound() call in the attack func — the port's direct Api.Sound.Play is functionally fine but bypasses the W_SetupShot sound seam (minor)."
-
-  - id: rifle.audio.ric
-    name: "Bullet impact ricochet sound (SND_RIC_RANDOM)"
-    layer: [presentation]
-    base_refs:
-      - "common/weapons/weapon/rifle.qc:wr_impacteffect (sound CH_SHOTS, SND_RIC_RANDOM)"
-    port_refs: []
-    constants:
-      - { name: "ricochet sound", base: "SND_RIC_RANDOM (ric1/ric2/ric3)", port: "none", match: false }
-    status:
-      logic: missing
-      values: missing
-      timing: na
-      presentation: na
-      audio: missing
-      liveness: na
-    intended_divergence: false
-    divergence_rationale: null
-    gaps:
-      - "No ricochet sound on bullet impact: wr_impacteffect plays a random SND_RIC_RANDOM (unless w_issilent); the port emits the impact particle (rifle.fx.impact) but no sound."
-    verification:
-      - { kind: code, ref: "Rifle.FireBullets emits RIFLE_IMPACT but no Ric sound (no Api.Sound.Play for impact); rifle.qc:217-218 sound(actor, CH_SHOTS, SND_RIC_RANDOM())", result: fail }
-    confidence: high
-    notes: "Same gap exists on the MachineGun. A shared bullet-impact-ricochet path (gated on !w_issilent) would fix both."
+    notes: "WAVE-2 FIX: the previously-missing impact ricochet now plays. PlayRic picks a deterministic ric1..3 (Prandom) and routes through the standard live PlayOn sound seam. NOTE: emitted server-side per bullet inside FireBullets (broadcast) rather than CSQC-local like Base; this matches the rifle.fx.impact server-emit divergence. Same fix now also serves the MachineGun. Only residual: CH_SHOTS channel."
 
   - id: rifle.casings
     name: "Brass casing ejection (g_casings >= 2)"
     layer: [presentation]
     base_refs:
       - "common/weapons/weapon/rifle.qc:W_Rifle_FireBullet (SpawnCasing, casing type 3)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:FireBullets (WeaponFiring.EjectCasing, cs:283)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:EjectCasing (cs:497)"
     constants:
-      - { name: "g_casings gate", base: ">= 2", port: "none", match: false }
-      - { name: "casing type", base: "3", port: "none", match: false }
+      - { name: "g_casings gate", base: ">= 2", port: ">= 2 (EjectCasing reads g_casings, cs in WeaponFiring)", match: true }
+      - { name: "casing type", base: "3 (bullet)", port: "CasingType.Bullet -> 'casing_bullet'", match: true }
+      - { name: "eject velocity", base: "(rand*50+50)*right - (rand*25+25)*fwd + (70-rand*5)*up", port: "same formula, deterministic Prandom", match: true }
+      - { name: "networked to client", base: "Send_Effect / temp-entity", port: "null-Effect request DROPPED by net encoder", match: false }
     status:
-      logic: missing
-      values: missing
+      logic: partial
+      values: faithful
       timing: na
       presentation: missing
-      audio: missing
-      liveness: na
+      audio: na
+      liveness: dead
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No casing is ejected when g_casings >= 2; Base spawns a brass shell (type 3) with a randomized eject velocity (rifle.qc:38-42). Rifle.cs has no g_casings read / SpawnCasing call."
+      - "WIRED IN CODE BUT DEAD ON THE LIVE PATH: EjectCasing is called with the correct g_casings>=2 gate and the exact QC eject velocity, but it emits via EmitByEffectInfoName('casing_bullet', ...) which produces an EffectRequest with Effect=null. ServerNet.WriteEffect / EffectNetProtocol.Encode DROP any null-Effect request (return false), so the casing never networks. Even if it reached a client, Spawn('casing_bullet') routes to the generic particle-burst path, NOT EffectSystem.SpawnCasing (which spawns the real brass MD3/IQM shell with bounce physics) — there is no name->SpawnCasing routing. No brass shell is rendered."
     verification:
-      - { kind: code, ref: "no g_casings/SpawnCasing reference in Rifle.cs; rifle.qc:38-42 SpawnCasing", result: fail }
+      - { kind: code, ref: "Rifle.cs:283 EjectCasing -> WeaponFiring.cs EmitByEffectInfoName('casing_bullet') -> EffectEmitter.cs:233 Sink.Emit(EffectRequest{Effect=null}); ServerNet.cs:2227 WriteEffect drops null-Effect; ClientNet decodes only by Effects.ById; EffectSystem.Spawn never routes the name to SpawnCasing", result: fail }
     confidence: high
-    notes: "Cross-cutting: casings unported for all bullet weapons (same gap on MachineGun). Cross-ref the cpuoptimization-branch gibs/casings epic in memory — casings have zero live callers across the port."
+    notes: "STILL OPEN (classic 'compiles but isn't wired'). Closing it needs a dedicated casing net temp-entity (or registering casing_bullet/casing_shell as real Effects) AND a client route from the decoded request to EffectSystem.SpawnCasing. Cross-cutting: same dead path now also affects MachineGun (CasingType.Bullet) and Shotgun (CasingType.Shell), which also call EjectCasing."
 
   - id: rifle.zoom_eye
     name: "Zoom-from-eye shot re-aim (BUTTON_ZOOM/ZOOMSCRIPT) + wr_zoom/wr_zoomdir"
@@ -414,7 +436,7 @@ features:
       - "common/weapons/weapon/rifle.qc:wr_zoom (SVQC & CSQC)"
       - "common/weapons/weapon/rifle.qc:wr_zoomdir"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:FireBullets (comment: zoom kept as trueaim, cs:226-227)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:FireBullets (comment: zoom kept as trueaim, cs:262-263)"
       - "game/client/ReticleOverlay.cs"
     constants:
       - { name: "zoom re-aim", base: "w_shotdir = v_forward when zoomed", port: "none (keeps trueaim origin)", match: false }
@@ -429,11 +451,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "When zoomed, Base re-aims the rifle shot straight from the eye (w_shotdir = v_forward) for pixel-accurate long shots; the port keeps the trueaim origin (the headless server input has no zoom button). Low impact: only matters while scoped, and the secondary-zoom path is OFF at stock secondary 1."
+      - "UNCHANGED by Wave-2. When zoomed, Base re-aims the rifle shot straight from the eye (w_shotdir = v_forward) for pixel-accurate long shots; the port keeps the trueaim origin (the headless server input has no zoom button). Low impact: only matters while scoped, and the secondary-zoom path is OFF at stock secondary 1."
     verification:
-      - { kind: code, ref: "Rifle.cs:226-227 comment (zoom not wired); rifle.qc:16-20 zoom re-aim block", result: fail }
+      - { kind: code, ref: "Rifle.cs:262-263 comment (zoom not wired); rifle.qc:16-20 zoom re-aim block", result: fail }
     confidence: medium
-    notes: "Generic +zoom reticle (gfx/reticle_nex) is handled by ReticleOverlay. Rifle does not override ZoomOnSecondary, matching stock secondary 1 (ATCK2 fires, doesn't zoom)."
+    notes: "STILL OPEN. Generic +zoom reticle (gfx/reticle_nex) handled by ReticleOverlay. Rifle does not override ZoomOnSecondary, matching stock secondary 1 (ATCK2 fires, doesn't zoom)."
 
   - id: rifle.bot_aim
     name: "Bot aim — riflemooth primary/secondary toggle (wr_aim)"
@@ -457,11 +479,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Bots never use the rifle's secondary: the weapon-specific wr_aim (probabilistic primary/secondary 'riflemooth' toggle, forced primary beyond 1000 units, bot_aim 1000000/0/0.001) is not ported; the generic BotAim drives only primary fire."
+      - "UNCHANGED for the rifle. Wave-2 made BotAim read its generic aim-skill cvars (bot_ai_aimskill_*) live each frame, but did NOT add the rifle-specific wr_aim: the probabilistic primary/secondary 'riflemooth' toggle, the forced-primary-beyond-1000-units rule, and the bot_aim 1000000/0/0.001 tuning are still absent; bots still drive only primary fire."
     verification:
-      - { kind: code, ref: "no rifle-specific wr_aim port; BotAim.cs is generic (no per-weapon pri/sec toggle)", result: fail }
-    confidence: medium
-    notes: "Same class of gap as the MachineGun bot wr_aim."
+      - { kind: code, ref: "BotAim.cs diff is generic aim-skill cvar live-reads (offset/think/mouse/fixedrate/blendrate/mix*/filt*/firetolerance); no per-weapon pri/sec toggle, no rifle wr_aim", result: fail }
+    confidence: high
+    notes: "STILL OPEN. Same class of gap as the MachineGun bot wr_aim. The Wave-2 BotAim change is a real but unrelated improvement (server-side aim retuning now takes effect via cvars)."
 
   - id: rifle.resetplayer
     name: "wr_resetplayer — burst accumulator reset on spawn"
@@ -481,8 +503,8 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Rifle's wr_resetplayer (resets rifle_accumulator across all weapon slots to time - bursttime on spawn) is not ported. Only OkNex/Vortex implement wr_resetplayer in the port. Benign at stock bursttime 0 (the accumulator's bound() in WrThink self-corrects within a tick), so it never bites at default balance — but it is a real missing hook (verifier added this row; the first pass mentioned it only in prose under think.gates and gave it no feature row)."
+      - "UNCHANGED by Wave-2. Rifle's wr_resetplayer (resets rifle_accumulator across all weapon slots to time - bursttime on spawn) is still not ported. Only OkNex/Vortex implement wr_resetplayer in the port. Benign at stock bursttime 0 (the accumulator's Bound() in WrThink self-corrects within a tick)."
     verification:
-      - { kind: code, ref: "grep wr_resetplayer/ResetPlayer in Weapons/* -> only OkNex.cs:112, Vortex.cs:300; no Rifle reset", result: fail }
+      - { kind: code, ref: "grep ResetPlayer in Weapons/* -> only OkNex.cs, Vortex.cs; no Rifle reset; RifleAccumulator never reset on spawn", result: fail }
     confidence: high
-    notes: "New row added by the adversarial verifier. RifleAccumulator field exists (EntityWeaponState.cs:335) but is never reset on spawn for the rifle."
+    notes: "STILL OPEN. RifleAccumulator field exists (EntityWeaponState.cs) but is never reset on spawn for the rifle."

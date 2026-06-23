@@ -5,11 +5,11 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 14
   worst_gaps:
-    - "target_spawnpoint forced-spawn redirection is dead: target_spawnpoint_use sets Entity.SpawnPointTarg (EntityMapObjectStateExtra.cs:61) but SelectSpawnPoint never reads it (Base returns this.spawnpoint_targ before any scoring), so a map scripting a player's next spawn location has no effect."
-    - "No move-out-of-solid relocation (g_spawnpoints_auto_move_out_of_solid, default 1): Base nudges an in-solid spawnpoint out at link time; the port only traces startsolid at selection time and drops the spot, so a map with all spots embedded can have every spot filtered out (then falls back to placing the player in solid)."
-    - "Spawn sound SND_SPAWN (cl_spawn_event_sound, half of g_spawn_alloweffects 3) is never played: the port emits the EFFECT_SPAWN particle burst on spawn but no audio cue."
-    - "The spawned player model gets no EF_TELEPORT_BIT | EF_RESTARTANIM_BIT: Base sets the teleport sparkle + anim-restart effect bits on respawn (server/client.qc:630); the port relies on an origin particle burst instead."
-    - "Emergency fallback diverges: Base re-filters with targetcheck=false when the first filter empties (fixes improperly-repacked maps); the port skips that and jumps straight to scoring every spot at prio 0 (places the player in solid via the prio-0 path)."
+    - "target_spawnpoint forced-spawn redirection is dead: target_spawnpoint_use sets Entity.SpawnPointTarg (EntityMapObjectStateExtra.cs:61) but SelectSpawnPoint never reads it (Base returns this.spawnpoint_targ before any scoring), so a map scripting a player's next spawn location has no effect. UNCHANGED by Wave-1/2."
+    - "No move-out-of-solid relocation (g_spawnpoints_auto_move_out_of_solid, default 1): Base nudges an in-solid spawnpoint out at link time; the port only traces startsolid at selection time and drops the spot, so a map with all spots embedded can have every spot filtered out (then falls back to placing the player in solid). UNCHANGED by Wave-1/2 (a MapVolumes.MoveOutOfSolid helper exists for conveyor nudges but is NOT wired into spawnpoint relocation)."
+    - "Spawn sound SND_SPAWN (cl_spawn_event_sound, half of g_spawn_alloweffects 3) is never played: the port emits the EFFECT_SPAWN particle burst on spawn but no audio cue. UNCHANGED."
+    - "The spawned player model gets no EF_TELEPORT_BIT | EF_RESTARTANIM_BIT: Base sets the teleport sparkle + anim-restart effect bits on respawn (server/client.qc:630); the port relies on an origin particle burst instead. UNCHANGED."
+    - "NEW DEFECT (Wave-2): the idle spawn-point glow's per-team tint is mis-mapped. SpawnPointParticles.TeamColorRgb switches on team 1/2/3/4, but a spawnpoint's e.Team carries the port's CSQC team encoding Teams.Red/Blue/Yellow/Pink = 4/13/12/9 — so a RED spot is tinted PINK (case 4) and blue/yellow/pink spots fall through to white/untinted. The baseline gap (untinted) is replaced, not fixed; the correct table (cf. Ctf.TeamRadarColor) switches on Teams.Red etc."
 features:
   - id: sv-spawnpoints.select.select_spawn_point
     name: "SelectSpawnPoint: gather, filter, weighted 50/50 pick"
@@ -293,9 +293,9 @@ features:
       - "game/client/SpawnPointParticles.cs"
     constants:
       - { name: "cl_spawn_point_particles", base: "1 (on)", port: "read (gated)", match: true }
-      - { name: "cl_spawn_point_dist_max", base: "cvar draw-cull distance", port: "DrawDistance 2000 qu (hardcoded)", match: false }
+      - { name: "cl_spawn_point_dist_max", base: "1200 (0 ⇒ no cull)", port: "reads cl_spawn_point_dist_max (0 ⇒ no cull)", match: true }
       - { name: "EFFECT", base: "EFFECT_SPAWNPOINT (spawn_point_neutral)", port: "SPAWNPOINT", match: true }
-      - { name: "team color", base: "Team_ColorRGB(team-1)", port: "none (untinted SPAWNPOINT)", match: false }
+      - { name: "team color table", base: "Team_ColorRGB switches on NUM_TEAM (CSQC 4/13/12/9)", port: "TeamColorRgb switches on 1/2/3/4 — WRONG (e.Team is 4/13/12/9)", match: false }
     status:
       logic: faithful
       values: partial
@@ -304,14 +304,14 @@ features:
       audio: na
       liveness: live
     intended_divergence: true
-    divergence_rationale: "Upstream emits per render-frame via boxparticles in Spawn_Draw; the port uses a 0.2s pulse timer through the EffectSystem accumulator (same per-point average rate). Distance cull uses a fixed 2000 qu DrawDistance rather than reading cl_spawn_point_dist_max."
+    divergence_rationale: "Upstream emits per render-frame via boxparticles in Spawn_Draw; the port uses a 0.2s pulse timer through the EffectSystem accumulator (same per-point average rate). The distance cull now reads cl_spawn_point_dist_max (DrawDistance is only a fallback if the cvar is unreadable); the per-team tint is ATTEMPTED but mis-mapped (see gaps) — not an intended divergence, a bug."
     gaps:
-      - "Draw-distance cull is a hardcoded 2000 qu rather than the cl_spawn_point_dist_max cvar."
-      - "Per-team color (Team_ColorRGB(team-1) per the spot's team, client/spawnpoints.qc:19) is NOT applied — the port emits the neutral SPAWNPOINT effect at every spot regardless of team, so team-colored spawn glows are missing."
+      - "NEW DEFECT (Wave-2): the per-team tint is mis-mapped. SpawnPointParticles.TeamColorRgb switches on team == 1/2/3/4, but a spawnpoint's e.Team carries Teams.Red/Blue/Yellow/Pink = 4/13/12/9 (the port's CSQC team encoding, set by SpawnSystem.TeamForClass / DetectTeamSpawns). Net result: a RED spot (Team 4) hits case 4 and is tinted PINK; blue(13)/yellow(12)/pink(9) spots fall through to white (untinted). The fix-shaped change replaced the baseline 'untinted' gap with an incorrect-color one (red is now wrong). Correct table: switch on Teams.Red/Blue/Yellow/Pink as Ctf.TeamRadarColor does."
     verification:
-      - { kind: code, ref: "SpawnPointParticles.cs:45-86 vs client/spawnpoints.qc:8-22", result: pass }
-    confidence: medium
-    notes: "Live as a Node3D in the client world; gated by cl_spawn_point_particles. Per-spot glow over the same spawn classnames, distance-culled to the camera. The team-color is genuinely missing (the spot's team is discovered but only the origin is emitted); the draft listed this as 'unverified' — confirmed MISSING by code read."
+      - { kind: code, ref: "SpawnPointParticles.cs (TeamColorRgb switch 1/2/3/4) vs Teams.cs:12-15 (Red=4/Blue=13/Yellow=12/Pink=9) vs Ctf.cs:379-386 (correct table) vs client/spawnpoints.qc:19 Team_ColorRGB(this.team-1) with CSQC NUM_TEAM 4/13/12/9", result: fail }
+      - { kind: code, ref: "dist-max: SpawnPointParticles.cs reads MenuState.Cvars cl_spawn_point_dist_max (default 1200), cull only when >0 — matches Base Spawn_Draw 'if(dodraw && autocvar_cl_spawn_point_dist_max)'", result: pass }
+    confidence: high
+    notes: "Live as a Node3D in the client world; gated by cl_spawn_point_particles. WAVE-2 CLOSED: the draw-distance cull now reads the cl_spawn_point_dist_max cvar (default 1200, 0 ⇒ draw everything) instead of the old hardcoded 2000 qu — faithful. WAVE-2 NOT CLOSED (and made worse for red): the per-team tint was added but the color table indexes the wrong team encoding (1/2/3/4 vs the actual 4/13/12/9), so red glows pink and the rest stay untinted. Fixing it is a one-line table swap to switch on Teams.Red/Blue/Yellow/Pink."
 
   - id: sv-spawnpoints.mutator.spawn_near_teammate
     name: "spawn_near_teammate: bias/relocate spawn near a teammate"
@@ -336,11 +336,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "In the ignore_spawnpoint relocation branch, the per-offset sky-surface reject (Q3SURFACEFLAG_SKY), the lava/slime pointcontents reject, the tracebox_hits_trigger_hurt hurt-volume reject, and the g_nades nade-in-range reject are deferred (a faithful superset that may keep a spot QC would reject); weaponLocked and PHYS_INPUT_BUTTON_CHAT gates are always false (no plumbed input/weapon-lock); closetodeath uses the player's current origin not .death_origin."
+      - "Residual relocation-branch defers (Wave-2 narrowed but did not close this): tracebox_hits_trigger_hurt (hurt-volume reject) and the g_nades nade-in-range reject are still skipped (a faithful superset that may keep a spot QC would reject); weaponLocked and PHYS_INPUT_BUTTON_CHAT gates are always false (no plumbed input/weapon-lock); closetodeath uses the player's current origin not .death_origin. The sky-surface (Q3SURFACEFLAG_SKY=0x4) and lava/slime/water pointcontents (SUPERCONTENTS liquids mask 0x70) rejects are NOW applied (TryOffset:317,322) — previously deferred."
     verification:
-      - { kind: code, ref: "SpawnNearTeammateMutator.cs vs sv_spawn_near_teammate.qc (full); [Mutator] + MutatorHooks.SpawnScore/PlayerSpawn", result: pass }
+      - { kind: code, ref: "SpawnNearTeammateMutator.cs vs sv_spawn_near_teammate.qc (full); [Mutator] + MutatorHooks.SpawnScore(SpawnSystem.cs:434)/PlayerSpawn(ClientManager.cs:570, runs AFTER PutPlayerInServer:550 so FixAngle overwrite is live)", result: pass }
+      - { kind: code, ref: "ExprEvaluate vs lib/cvar.qh:48-103 BINOP chain — operator-order divergence (port checks >/< last) is behaviorally equivalent (no ==/!=/===/!== substring contains > or <); the ==-before-=== quirk is preserved faithfully", result: pass }
     confidence: high
-    notes: "Live behind g_spawn_near_teammate (default off). Spawn_Score bias (200/100), the random reservoir over in-band teammates, the look-at facing (FixedVecToAngles == vectoangles + pitch-flip), the per-team-of-1 advantage guard, the msnt_timer cooldown, and the 6 trace offsets are faithful. Per-spot/per-player state held in ConditionalWeakTable (QC used .msnt_lookat/.msnt_timer edict fields). Off by default in stock play."
+    notes: "Live behind g_spawn_near_teammate (default off; IsEnabled now uses the faithful expr_evaluate so a ruleset value like '!g_assault !g_freezetag' resolves correctly). Spawn_Score bias (200/100), the random reservoir over in-band teammates, the look-at facing, the per-team-of-1 advantage guard, the msnt_timer cooldown, and the 6 trace offsets are faithful. WAVE-2 CLOSED: (1) the sky + lava/slime/water rejects in the relocation TryOffset (constants verified vs Base Q3SURFACEFLAG_SKY=4 and SuperContents liquids 0x70); (2) both look-at and relocation facing now latch into the networked FixAngle/FixAngleAngles channel (FaceAngles), so the spawn orientation actually reaches the client (Angles alone was overwritten by the client's input view next tick); (3) ExprEvaluate is now a faithful expr_evaluate interpreter. Per-spot/per-player state held in ConditionalWeakTable. Off by default in stock play."
 
   - id: sv-spawnpoints.mutator.spawn_unique
     name: "spawn_unique: demote the player's last spawnpoint"

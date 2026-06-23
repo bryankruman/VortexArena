@@ -5,17 +5,21 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 22
   worst_gaps:
-    - "Join queue + team-selection ordering (queuePlayer / TeamBalance_JoinBestTeam priority pass, queued-team dibs conflict) not modeled: in team modes the queued-team conflict resolution and best-team-by-skill ordering are absent; PutPlayerInServer's own wants_join>0 / bot_forced_team / TeamBalance_JoinBestTeam team-assign is also not run (the port pre-assigns at connect only)."
+    - "Join queue + team-selection ordering (queuePlayer / TeamBalance_JoinBestTeam priority pass, queued-team dibs conflict) not modeled: in team modes the queued-team conflict resolution and best-team-by-skill ordering are absent; PutPlayerInServer's own wants_join>0 / bot_forced_team / TeamBalance_JoinBestTeam team-assign is also not run (the port pre-assigns at connect only). (Wave-2 added the JOIN_PLAY / JOIN_PLAY_TEAM notification tail; the queue-conflict / ANNCE_BEGIN branches stay deferred.)"
     - "joinAllowed is reduced to MIN_SPEC_TIME + lockteams: version-mismatch, forced-spectator (TEAM_FORCE_SPECTATOR), playban, g_maxping, and the queue/nJoinAllowed (g_maxplayers/GetPlayerLimit/bots_would_leave) gates are all missing — a mismatched/banned/high-ping/over-cap client can still join, and no CENTER_JOIN_PREVENT*/PLAYBAN/PING/VERSIONMISMATCH centerprints fire."
-    - "ShowRespawnCountdown announcer (10-9-8 CNT_RESPAWN) never fires: RespawnTiming computes RespawnCountdown but DeadPlayerThink never calls ShowRespawnCountdown to decrement it / play Announcer_PickNumber(CNT_RESPAWN, n)."
-    - "player_regen fuel: the port regenerates fuel whenever the regen pause has lapsed, but Base gates fuel REGEN on the IT_FUEL_REGEN item flag (jetpack pickup) AND skips the whole fuel block under IT_UNLIMITED_AMMO — so a port player regenerates fuel with no fuel-regen pickup."
+    - "ShowRespawnCountdown announcer (10-9-8 CNT_RESPAWN) never fires: RespawnTiming computes RespawnCountdown but DeadPlayerThink never calls ShowRespawnCountdown to decrement it / play Announcer_PickNumber(CNT_RESPAWN, n). STILL OPEN after Wave-2."
     - "The networked PRESSED_KEYS stat is never set server-side: the local-player HUD pressedkeys/strafe panel works from client-side bind state, but a SPECTATED player's held keys (PressedKeysPanel.PressedKeysOverride) are never fed, and the observer-clears-PRESSED_KEYS path is absent."
     - "sv_maxidle idle-kick / move-to-spectator is entirely missing: idle players are never kicked or demoted; the idle countdown bangs (SND TALK2) and CENTER_DISCONNECT_IDLING / CENTER_MOVETOSPEC_IDLING / INFO_QUIT_KICK_IDLING never appear, and parm_idlesince alivetime afk-gating is not modeled."
-    - "The time < game_starttime spawn-shield/pause countdown extension is NOT applied: a player who spawns during the pre-match countdown loses spawn protection and starts rotting earlier than Base (explicit SpawnSystem TODO)."
+    - "The time < game_starttime spawn-shield/pause countdown extension is NOT applied: a player who spawns during the pre-match countdown loses spawn protection and starts rotting earlier than Base (explicit SpawnSystem TODO — still present after Wave-2)."
     - "No server->client welcome channel: clientstuff/FixClientCvars/cl_jumpspeedcap_min-max/cl_shootfromfixedorigin stuffcmds, clientversion request, _teams_available, sv_notice_join/SendWelcomeMessage MOTD, Send_NextMap_To_Player, ClientInit_misc per-client init entity, Handicap_Initialize, playban/chatban, model_randomizer — none modeled."
-    - "PutObserverInServer omits SelectObservePoint/observe-spawn placement, despawn EFFECT_SPAWN, vote/ready recount, the SPECTATE_WARNING block, and RES_ARMOR=g_balance_armor_start; sv_spectate-disabled spectator kick (SPECTATE_WARNING / INFO_QUIT_KICK_SPECTATING) absent."
+    - "PutObserverInServer still omits SelectObservePoint/observe-spawn placement, vote/ready recount, the SPECTATE_WARNING block, RemoveGrapplingHooks/Portal_ClearAll, and the is_forced/use_spawnpoint signature; sv_spectate-disabled spectator kick (SPECTATE_WARNING / INFO_QUIT_KICK_SPECTATING) absent. (Wave-2 DID add the despawn EFFECT_SPAWN puff + RES_ARMOR=g_balance_armor_start.)"
     - "UpdateChatBubble (chat/minigame-busy bubble over a typing player) is not modeled; version nag, nameless/too-long/invisible-name enforcement (sv_name_maxlength), GOD MODE info, and the PlayerPreThink misc dispatch (PlayerUseKey edge as a unit, SetZoomState, teamkill/taunt voice sounds, target_voicescript_next) are missing or scattered."
-    - "DrownPlayer surfaced-after-out-of-air gasp does not play playersound_gasp."
+    - "DrownPlayer surfaced-after-out-of-air gasp does not play playersound_gasp (still a comment, not played)."
+  wave2_fixes:
+    - "frame.player_regen: fuel REGEN now gated on IT_FUEL_REGEN ownership AND the whole fuel block skipped under IT_UNLIMITED_AMMO — line-for-line with Base client.qc:1744-1753; vehicle-exit-before-DEATH_ROT also ported. logic partial->faithful."
+    - "observer.put_observer_in_server: despawn EFFECT_SPAWN puff on a live->observer demote (live) + RES_ARMOR=g_balance_armor_start (was 0). values/presentation partial->faithful (subsystem gaps remain)."
+    - "join.join_player: INFO_JOIN_PLAY (FFA) / CENTER_JOIN_PLAY_TEAM_<col> (team) join notifications now fired on the live join path. presentation missing->partial."
+    - "spawn.put_player_in_server: g_weaponarena expansion (ExpandWeaponArena) + ItemFlags folded into start_items — an arena's IT_UNLIMITED_AMMO/IT_UNLIMITED_SUPERWEAPONS now actually reach the spawned player (row stays logic:partial; in-spawn team assign / SUB_UseTargets unchanged)."
 features:
   - id: sv-client-lifecycle.connect.client_connect
     name: "ClientConnect: accept a client as an observer"
@@ -84,19 +88,19 @@ features:
       logic: partial
       values: faithful
       timing: faithful
-      presentation: missing
-      audio: missing
+      presentation: partial
+      audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
       - "Join queue + team-selection ordering not modeled: the queued_join TeamBalance_AreEqual two-pass (queued-team dibs first pass + strongest-autoselect-by-skill second pass, player_with_dibs conflict) is absent; the port autoselects via a single connect-time AssignBestTeam."
       - "Campaign Join branch (campaign_bots_may_start / ReadyRestart) only partially modeled (CampaignHostAutojoin opts the host in); the bot-start ReadyRestart trigger is not in ClientManager.Join."
-      - "Join notifications missing: INFO_JOIN_PLAY (FFA), CENTER_JOIN_PLAY_TEAM / CENTER_JOIN_PLAY_TEAM_QUEUECONFLICT (team), ANNCE_BEGIN for a queued player; Kill_Notification(CPID_PREVENT_JOIN) clear not modeled."
+      - "Queue-conflict + queued-player branches still deferred: CENTER_JOIN_PLAY_TEAM_QUEUECONFLICT (depends on the unmodeled wants_join/player_with_dibs queue) and ANNCE_BEGIN for a queued player are not fired; Kill_Notification(CPID_PREVENT_JOIN) clear not modeled."
     verification:
-      - { kind: code, ref: "ClientManager.cs:230-246 Join", result: pass }
+      - { kind: code, ref: "ClientManager.cs:230-258 Join (Wave-2 notification tail); NotificationsList.cs:669-672 JOIN_PLAY*; live caller Commands.cs:1121 Clients.Join", result: pass }
     confidence: high
-    notes: "Core path (clear observer phase + Spawn) is LIVE; the team-selection/queue/notification layer is deferred."
+    notes: "WAVE-2: the join tail now fires INFO_JOIN_PLAY (FFA, '<name> is now playing') and CENTER_JOIN_PLAY_TEAM_<col> (team, to the joiner) via NotificationSystem on the LIVE join path (cmd join → Clients.Join). presentation missing->partial. The QUEUECONFLICT / ANNCE_BEGIN notifications and the team-selection/queue ordering remain deferred. audio is na (the join itself has no SFX; the queued-player ANNCE_BEGIN announcer is part of the deferred queue path)."
 
   - id: sv-client-lifecycle.join.join_allowed
     name: "joinAllowed gates"
@@ -154,11 +158,11 @@ features:
       - "In-PutPlayerInServer team assignment (bot_forced_team / wants_join>0 SetPlayerTeam / TeamBalance_JoinBestTeam) is not run here — the port pre-assigns the team once at connect, so a mid-match team change or wants_join preference isn't honored on respawn."
       - "SUB_UseTargets(spot) (spawnpoint .target firing on spawn, with the assault/race target-suppression hack) is NOT modeled in this path (TargetUtilities owns SUB_UseTargets but nothing calls it for the spawn spot)."
       - "wr_resetplayer + reload-all-reloadable-weapons-on-spawn (weapon_load = reloading_ammo) and CL_SpawnWeaponentity per slot are flagged as client/networking concerns and not done server-side."
-      - "FixPlayermodel resolves every player+bot to sv_defaultplayermodel (client playermodel cvar not plumbed); faithful stand-in but not the real per-client model. No GiveRandomWeapons / ForbidRandomStartWeapons branch."
+      - "FixPlayermodel resolves every player+bot to sv_defaultplayermodel (client playermodel cvar not plumbed); faithful stand-in but not the real per-client model. GiveRandomWeapons IS wired (randomCount>0 branch); the ForbidRandomStartWeapons hook is not dispatched."
     verification:
-      - { kind: code, ref: "SpawnSystem.cs:509-642 PutPlayerInServer; ClientManager.cs:506-548 Spawn", result: pass }
+      - { kind: code, ref: "SpawnSystem.cs:660-790 ComputeStartItems+ExpandWeaponArena (Wave-2); :838-843 GiveRandomWeapons; ClientManager.cs Spawn", result: pass }
     confidence: high
-    notes: "Loadout/hull/placement/PlayerSpawn hook faithful and LIVE; spawn shield + pause timers set here (see spawn_shield row for the countdown caveat). The IsCorpse/Alpha/BallisticsDensity respawn-cleanup is a port-only correctness fix, not a divergence."
+    notes: "Loadout/hull/placement/PlayerSpawn hook faithful and LIVE; spawn shield + pause timers set here (see spawn_shield row for the countdown caveat). WAVE-2 reworked the loadout: ComputeStartItems now runs the SetWeaponArena hook → ExpandWeaponArena (all/most/devall/none/name-list keywords), grants IT_UNLIMITED_AMMO|IT_UNLIMITED_SUPERWEAPONS for an active arena, and folds the loadout ItemFlags into start_items via StartItemFlagBits — so an arena's unlimited ammo/superweapons now actually reaches Entity.Items (previously dropped). Row stays logic:partial because in-PutPlayerInServer team assignment + SUB_UseTargets(spot) are still not run here. The _available arena variants fall back to the no-map-weapons full set (no port map-weapon set) — a known minor divergence. The IsCorpse/Alpha/BallisticsDensity respawn-cleanup is a port-only correctness fix, not a divergence."
 
   - id: sv-client-lifecycle.spawn.spawn_shield
     name: "Spawn shield + spawn-time regen/rot pause timers"
@@ -197,24 +201,23 @@ features:
     port_refs:
       - "src/XonoticGodot.Server/ClientManager.cs:PutObserverInServer"
     constants:
-      - { name: "g_balance_armor_start", base: "RES_ARMOR set to this for observer", port: "0 (set to 0, not g_balance_armor_start)", match: false }
+      - { name: "g_balance_armor_start", base: "RES_ARMOR set to this for observer", port: "Cvars.FloatOr(g_balance_armor_start, 0) (Wave-2)", match: true }
       - { name: "g_maxplayers_spectator_blocktime", base: "used for SPECTATE_WARNING", port: "none", match: false }
     status:
       logic: partial
-      values: partial
+      values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Omits: SelectObservePoint / observe-spawn placement (the port keeps the current origin instead), despawn EFFECT_SPAWN when alive, VoteCount/ReadyCount recount, the SPECTATE_WARNING / sv_maxplayers_spectator_blocktime block, CHAT_NOSPECTATORS notice, and the is_forced/use_spawnpoint signature (the port has no is_forced/use_spawnpoint params)."
-      - "RES_ARMOR is set to 0; QC sets it to g_balance_armor_start (cosmetic for the spectator HUD)."
+      - "Still omits: SelectObservePoint / observe-spawn placement (the port keeps the current origin instead), VoteCount/ReadyCount recount, the SPECTATE_WARNING / sv_maxplayers_spectator_blocktime block, CHAT_NOSPECTATORS notice, RemoveGrapplingHooks/Portal_ClearAll, alivetime PlayerStats report, and the is_forced/use_spawnpoint signature (the port has no is_forced/use_spawnpoint params)."
     verification:
-      - { kind: code, ref: "ClientManager.cs:380-433 PutObserverInServer", result: pass }
-    confidence: medium
-    notes: "Strips body/weapons/solidity, sets MOVETYPE_FLY_WORLDONLY + FRAGS_SPECTATOR sentinel; LIVE via the spectate command path, but observe-point selection + spectator-block notifications are absent."
+      - { kind: code, ref: "ClientManager.cs:400-444 PutObserverInServer; live callers Commands.cs:1055/1074/1136/1461 (spectate/playban/minigame); Base client.qc:268-366", result: pass }
+    confidence: high
+    notes: "Strips body/weapons/solidity, sets MOVETYPE_FLY_WORLDONLY + FRAGS_SPECTATOR sentinel; LIVE via the spectate/playban/minigame command paths. WAVE-2 added the two faithful pieces flagged in the baseline: (1) the despawn EFFECT_SPAWN puff when demoting a live (health>=1) player — same EffectEmitter.Emit(\"SPAWN\") used by the verified disconnect path; (2) RES_ARMOR is now g_balance_armor_start (Cvars.FloatOr) instead of 0, matching QC client.qc:366. liveness upgraded partial->live (the function IS the live spectate path). The remaining gaps are the observe-point selection + spectator-block + recount subsystems."
 
   - id: sv-client-lifecycle.observer.observer_think
     name: "ObserverOrSpectatorThink: join-on-fire + spectate cycling"
@@ -363,9 +366,9 @@ features:
       - { name: "g_balance_health_rot", base: "0.1", port: "cvar", match: true }
       - { name: "g_balance_health_rotstable", base: "100", port: "cvar", match: true }
       - { name: "CalcRegen/CalcRot snap window", base: "0.25", port: "0.25", match: true }
-      - { name: "fuel regen gate", base: "items & IT_FUEL_REGEN; skip all fuel if IT_UNLIMITED_AMMO", port: "ungated (regens whenever pause lapsed)", match: false }
+      - { name: "fuel regen gate", base: "items & IT_FUEL_REGEN; skip all fuel if IT_UNLIMITED_AMMO", port: "items & ItemFlag.FuelRegen; whole fuel block skipped if items & UnlimitedAmmo (Wave-2)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
@@ -374,12 +377,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Fuel REGEN is not gated on the IT_FUEL_REGEN item flag (QC client.qc:1748 `(this.items & ITEM_FuelRegen.m_itemid)`); the port regenerates fuel whenever the shared regen pause has lapsed, so a player regenerates fuel with NO fuel-regen (jetpack) pickup."
-      - "QC skips the ENTIRE fuel block (regen AND rot) when IT_UNLIMITED_AMMO; the port always runs fuel rot/regen. The PlayerRegen mutator hook's in/out tuning slots (max_mod/regen_mod/rot_mod/limit_mod + per-health overrides) are reduced to a single disable-return."
+      - "The PlayerRegen mutator hook's in/out tuning slots (max_mod/regen_mod/rot_mod/limit_mod + per-health overrides) are still reduced to a single disable-return — a mode that retunes regen via the hook (rather than disabling it) is not honored. Stock modes only use the disable path, so this is a latent partial on the hook surface, not the regen logic itself."
     verification:
-      - { kind: code, ref: "PlayerFrameLogic.cs:41-92 (fuel block lines 81-91 ungated); Base client.qc:1744-1753", result: fail }
+      - { kind: code, ref: "PlayerFrameLogic.cs:87-102 (Wave-2: `if ((p.Items & UnlimitedAmmo)==0)` wraps the fuel block; fuelRegenFt gated on `now>PauseRegenFinished && ownsFuelRegen`); Base client.qc:1744-1753 — line-for-line; FuelRegen flag fed by GiveItems.cs/PowerupItem.cs/HookMutator SetStartItems; live caller GameWorld.cs:1183", result: pass }
     confidence: high
-    notes: "Health/armor RotRegen + CalcRegen/CalcRot snap behavior, rot-to-death (DEATH_ROT), and the unified-pause-timer storage (REGEN1/2/3 fixes) are faithful and LIVE. The fuel-regen item gate + IT_UNLIMITED_AMMO skip are the divergences; at stock defaults (no jetpack, no unlimited ammo) the visible effect is small but a player who never picked up fuel-regen still regenerates fuel."
+    notes: "WAVE-2 closed the fuel divergence exactly: fuel REGEN is now gated on BOTH (time>pauseregen_finished) AND ITEM_FuelRegen ownership, and the ENTIRE fuel block (regen + rot) is skipped under IT_UNLIMITED_AMMO — matching Base client.qc:1744-1753 line-for-line. The IT_FUEL_REGEN bit is genuinely fed (item pickup GiveItems/FuelRegenItem, and the hook mutator's SetStartItems via the new FUEL_REGEN tag), so the gate isn't an over-correction. Wave-2 also ported the vehicle-exit (VHEF_RELEASE) before the DEATH_ROT damage. Health/armor RotRegen + CalcRegen/CalcRot snap behavior, rot-to-death, and the unified-pause-timer storage remain faithful and LIVE. logic partial->faithful; the only residual is the unmodeled PlayerRegen retune slots (kept as a gap)."
 
   - id: sv-client-lifecycle.frame.drown_player
     name: "DrownPlayer: air timer + drown damage"

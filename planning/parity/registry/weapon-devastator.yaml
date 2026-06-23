@@ -5,11 +5,11 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 10
   worst_gaps:
-    - "Shoot-down is DEAD, not merely incomplete: a flying rocket installs a ProjectileDamage callback but the damage pipeline (DamageSystem.EventDamage) only dispatches GtEventDamage for non-players and otherwise falls to PlayerDamage. NOTHING invokes Entity.ProjectileDamage except BreakablehookMutator (hooks). So a rocket can never be shot down on the live path, its 30hp is never subtracted, and W_Devastator_Damage/W_CheckProjectileDamage/W_PrepareExplosionByDamage are all absent."
-    - "Per-weapon bot aim/auto-detonation (wr_aim: guide-rate-scaled lead prediction, skill>=2 detonation decision from self/team/enemy predicted damage, skill>=7 self-kill veto) is entirely unported — no WrAim override exists; bots fire via a generic brain (BotBrain.cs:334 explicitly defers it)."
-    - "Airshot achievement (ANNCE_ACHIEVEMENT_AIRSHOT) is never triggered: W_Devastator_Explode's DAMAGE_AIM/IS_PLAYER/DIFF_TEAM/!IS_DEAD/IsFlying direct-hit detection is not ported, so a mid-air rocket direct kill plays no airshot announce (the notification + sound exist but are dead for this weapon)."
-    - "W_Devastator_Unregister (clear owner.lastrocket on explode) is not faithfully ported: contact Explode never clears st.LastRocket at all, and DoRemoteExplode clears only the HARDCODED slot-0 LastRocket (ignores the rocket's actual weaponentity slot). Combined with the missing wr_resetplayer this leaves stale lastrocket references."
-    - "Rocket-jump remote variant (remote_jump*, AllowRocketJumping hook, velocity bump, separate remote_jump RadiusDamage) is entirely unported; stock remote_jump 0 makes it inert by default but the rocketflying-boost path is incomplete. deathtype HITTYPE_BOUNCE flag is never set, so the kill-message splash/direct split (wr_killmessage) cannot classify a timed-out/remote rocket and is itself unported."
+    - "Per-weapon bot aim/auto-detonation (wr_aim: guide-rate-scaled lead prediction, skill>=2 detonation decision from self/team/enemy predicted damage, skill>=7 self-kill veto) is STILL entirely unported — no WrAim override exists; bots fire via a generic brain (BotBrain.cs:335 still explicitly defers it). This is now the single largest remaining gap."
+    - "Rocket-jump remote variant (remote_jump*, AllowRocketJumping hook, velocity bump, separate remote_jump RadiusDamage) is STILL unported; stock remote_jump 0 makes it inert by default but the rocketflying-boost damage path is incomplete."
+    - "Ammo-refund auto-switch (cnt=m_id; ATTACK_FINISHED=time; m_switchweapon=w_getbestweapon when out of rockets after a blast) is STILL not ported on either contact or remote explode."
+    - "wr_resetplayer (clear lastrocket + rl_release on all slots on death) is STILL not overridden for the Devastator; Unregister(self) on explode now clears lastrocket per-rocket, but a respawn/reset does not proactively clear a still-live rocket reference + rl_release."
+    - "missile.damagedbycontents / IL_PUSH(g_damagedbycontents) (a rocket explodes when it enters lava/slime) is STILL not ported — the port's contents-damage loop iterates only the live player roster (GameWorld.cs), not projectiles."
 features:
   - id: weapon-devastator.fire.launch
     name: "Primary fire: launch accelerating rocket (rl_release latch, refire gate, ammo)"
@@ -46,7 +46,7 @@ features:
       - { kind: test, ref: "RocketFlyingGateTests.Devastator_GateField_SeededFromDetonateDelay (drives real WrThink->Attack)", result: pass }
       - { kind: code, ref: "GameWorld.WeaponThink -> WeaponFireDriver.Frame -> WrThink live chain (bot+human share the per-tick input cache)", result: pass }
     confidence: high
-    notes: "rl_release latch (WeaponSlotState.RlRelease) + guidestop read live; PrepareAttack is the refire/ammo/READY gate. Fire sound played from Attack rather than SetupShot's sound arg, same cue. Live chain re-confirmed: GameWorld drives WeaponFireDriver.Frame each tick."
+    notes: "rl_release latch (WeaponSlotState.RlRelease) + guidestop read live; PrepareAttack is the refire/ammo/READY gate. wr_setup now overridden (WrSetup sets RlRelease=true) and called live by WeaponFireDriver.cs:273 on switch-in. Fire sound played from Attack rather than SetupShot's sound arg, same cue."
 
   - id: weapon-devastator.flight.acceleration
     name: "Rocket acceleration from speedstart toward speed"
@@ -55,25 +55,25 @@ features:
       - "common/weapons/weapon/devastator.qc:W_Devastator_Think"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Devastator.cs:OnThink"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Devastator.cs:WeaponSpeedFactor"
     constants:
       - { name: "speed", base: "1300", port: "1300", match: true }
       - { name: "speedaccel", base: "1300", port: "1300", match: true }
-      - { name: "W_WeaponSpeedFactor (g_weaponspeedfactor)", base: "1 (multiplies speed + speedaccel*frametime)", port: "not applied (the cvar IS read in WeaponImpulses.cs but NOT here)", match: false }
+      - { name: "W_WeaponSpeedFactor (g_weaponspeedfactor)", base: "1 (multiplies speed + speedaccel*frametime)", port: "1 (now applied to BOTH speed and speedaccel*frametime via WeaponSpeedFactor())", match: true }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "W_WeaponSpeedFactor is omitted on both speed and speedaccel*frametime: identical at the default g_weaponspeedfactor 1, but the rocket flies/accelerates at the wrong speed if that cvar is changed. Verified the multiplier exists in the port (WeaponImpulses.cs reads g_weaponspeedfactor) yet Devastator.OnThink never applies it."
+    gaps: []
     verification:
-      - { kind: code, ref: "OnThink: velSpeed = Cvars.Speed - velAlong; += forward*min(SpeedAccel*FrameTime, velSpeed). No W_WeaponSpeedFactor multiply.", result: pass }
+      - { kind: code, ref: "OnThink: speedFactor=WeaponSpeedFactor(); velSpeed = Speed*speedFactor - velAlong; += forward*min(SpeedAccel*speedFactor*FrameTime, velSpeed). W_WeaponSpeedFactor now applied on both terms (devastator.qc:198-200).", result: pass }
     confidence: high
-    notes: "Acceleration math (velspeed = speed - velocity.forward, clamp the per-tick add) is exact apart from the dropped speed-factor multiplier."
+    notes: "FIXED vs baseline: W_WeaponSpeedFactor was dropped on both speed and speedaccel; OnThink now multiplies both by WeaponSpeedFactor() (reads g_weaponspeedfactor, positive-only, default 1) — matches Base. Acceleration math (velspeed = speed - velocity.forward, clamp the per-tick add) exact."
 
   - id: weapon-devastator.flight.laser_guide
     name: "Laser guiding: steer rocket toward owner aim (guiderate-capped, goal-point lead)"
@@ -94,20 +94,18 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "EFFECT_ROCKET_GUIDE particle is NOT emitted on the first guide tick (QC Send_Effect at devastator.qc:243); only the rocket_mode sound is played (verified: OnThink lines 246-250 play the sound, no EffectEmitter.Emit). The effect is registered (EffectsList.cs:108 ROCKET_GUIDE) so this is a dead emit, not a missing asset."
       - "WarpZone RefSys transforms on the aim ray (desireddir/desiredorigin) are dropped — guiding through a warpzone aims in the unwarped frame."
       - "Dual-wield movedir offset (dv) is omitted — but QC also zeroes dv unless dual-wielding, so faithful on the live single-slot path."
-      - "QC gate also checks !PHYS_INPUT_BUTTON_ATCK2 (holding secondary suspends guiding); the port gate omits the secondary-held suppression."
     verification:
-      - { kind: code, ref: "SteerTo quadratic + goal-point steering match devastator.qc:154-175,235-236; guideratedelay ramp present; gate (lastrocket,!rl_release,guiderate>0,time>pushltime,owner alive) present", result: pass }
+      - { kind: code, ref: "SteerTo quadratic + goal-point steering match devastator.qc:154-175,235-236; guideratedelay ramp present; gate (lastrocket,!rl_release,!ButtonAttack2,guiderate>0,time>pushltime,owner alive) present; EFFECT_ROCKET_GUIDE now emitted on first guide tick (OnThink:271)", result: pass }
     confidence: high
-    notes: "SteerTo quadratic-blend faithfully ported (larger-root selection, antiparallel refuse). Guide-active rocket_mode.wav on CH_WEAPON_B (SoundChannel.Body)."
+    notes: "FIXED vs baseline: (1) EFFECT_ROCKET_GUIDE particle is now emitted on the first guide tick (EffectEmitter.Emit ROCKET_GUIDE, OnThink:271) — was a dead emit; (2) the QC !PHYS_INPUT_BUTTON_ATCK2 guide-suppression (holding secondary suspends guiding) is now in the gate (!st.ButtonAttack2). SteerTo quadratic-blend faithfully ported; guide-active rocket_mode.wav on CH_WEAPON_B. Remaining gaps are warpzone refsys + dual-wield offset (both inert on the live single-slot non-warpzone path)."
 
   - id: weapon-devastator.explode.contact
     name: "Contact / lifetime explosion: radius damage + force_xyscale knockback"
@@ -118,6 +116,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Devastator.cs:Explode"
       - "src/XonoticGodot.Common/Gameplay/Weapons/Devastator.cs:OnTouch"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Devastator.cs:Unregister"
       - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponSplash.cs:RadiusDamage"
     constants:
       - { name: "damage", base: "80", port: "80", match: true }
@@ -127,7 +126,7 @@ features:
       - { name: "force_xyscale", base: "1 (scales X/Y, Z stays 1)", port: "1 (X/Y, Z=1)", match: true }
       - { name: "damageforcescale", base: "0", port: "0", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: faithful
@@ -136,15 +135,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Airshot achievement detection (DAMAGE_AIM + IS_PLAYER + DIFF_TEAM + !IS_DEAD + IsFlying(directhit) -> ANNCE_ACHIEVEMENT_AIRSHOT) is not ported (verified: only a doc-comment in Devastator.cs references airshot; no Send_Notification)."
-      - "W_Devastator_Unregister (clear owner.lastrocket) is NOT called on contact explode — Explode never touches st.LastRocket (DoRemoteExplode clears only slot-0)."
-      - "Ammo-refund auto-switch (cnt = m_id; ATTACK_FINISHED = time; m_switchweapon = w_getbestweapon when out of rockets) is not ported."
-      - "Lifetime-expiry HITTYPE_BOUNCE deathtype flag is not set, so the kill-message splash/direct classification cannot distinguish a timed-out rocket."
+      - "Ammo-refund auto-switch (cnt = m_id; ATTACK_FINISHED = time; m_switchweapon = w_getbestweapon when out of rockets) is not ported (devastator.qc:47-56)."
     verification:
       - { kind: test, ref: "DevastatorForceXyScaleTests.ContactExplode_ForceXyScale_ScalesXY_NotZ / ZeroXyScale_LeavesForceUnscaled", result: pass }
-      - { kind: code, ref: "WeaponSplash.RadiusDamage(self, origin, damage, edge, radius, owner, RegistryId, force, forceScale:(xy,xy,1), directHit) matches QC force_xyzscale + directhitentity LOS-skip", result: pass }
+      - { kind: code, ref: "WeaponSplash.RadiusDamage(self, origin, damage, edge, radius, owner, RegistryId, force, forceScale:(xy,xy,1), directHit, deathTag) matches QC force_xyzscale + directhitentity LOS-skip; airshot + Unregister + HITTYPE_BOUNCE-on-timeout now present", result: pass }
     confidence: high
-    notes: "RadiusDamage forceScale (xyscale,xyscale,1) + directHit LOS-skip faithful (test-pinned). Explosion FX (ROCKET_EXPLODE) + impact sound (rocket_impact) emitted server-side via EffectEmitter (host swaps in a networking sink)."
+    notes: "FIXED vs baseline: (1) airshot achievement now detected+announced (see explode.airshot row); (2) W_Devastator_Unregister now called on contact explode (Unregister scans ALL slots, clears matching lastrocket); (3) lifetime-expiry now sets HITTYPE_BOUNCE (bounced:true in the timeout branch) so wr_killmessage classifies a timed-out rocket as SPLASH. RadiusDamage forceScale (xyscale,xyscale,1) + directHit LOS-skip faithful (test-pinned). Only the ammo-refund auto-switch remains open."
 
   - id: weapon-devastator.explode.remote
     name: "Secondary remote detonation (rl_detonate_later + spawnshield/proximity gate)"
@@ -165,7 +161,7 @@ features:
       - { name: "remote_force", base: "300", port: "300", match: true }
       - { name: "remote force shaping", base: "plain RadiusDamage '1 1 1' (no force_xyscale)", port: "plain RadiusDamage (no shaping)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: faithful
@@ -174,15 +170,14 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Rocket-jump variant (remote_jump / remote_jump_radius 100 / remote_jump_damage 70 / remote_jump_force 450 / remote_jump_velocity_z_add 0/min 400/max 1500 + the AllowRocketJumping mutator hook + the velocity bump) is entirely unported. Stock remote_jump 0 keeps it inert by default."
-      - "deathtype HITTYPE_BOUNCE flag is not OR'd into the remote blast deathtype (kill-message classification)."
-      - "DoRemoteExplode clears only the HARDCODED slot-0 LastRocket (WeaponSlot(0)) instead of W_Devastator_Unregister scanning all MAX_WEAPONSLOTS for the rocket's actual slot."
-      - "Ammo-refund auto-switch on remote explode is not ported (same as contact)."
+      - "Rocket-jump variant (remote_jump / remote_jump_radius 100 / remote_jump_damage 70 / remote_jump_force 450 / remote_jump_velocity_z_add 0/min 400/max 1500 + the AllowRocketJumping mutator hook + the velocity bump + the separate rocketjump RadiusDamage) is entirely unported. Stock remote_jump 0 keeps it inert by default."
+      - "Ammo-refund auto-switch on remote explode is not ported (same as contact, devastator.qc:128-136)."
+      - "wr_think secondary gate omits the QC `m_switchweapon == thiswep` precondition (you can only remote-detonate while the Devastator is the active weapon); the port flags any owned rocket regardless of active weapon. Minor; rl_detonate_later still gated by spawnshield/proximity."
     verification:
       - { kind: test, ref: "RocketFlyingGateTests.Devastator_RocketFlying_DetonatesImmediately / Devastator_NoMutator_HeldByDetonateDelayTimer", result: pass }
-      - { kind: code, ref: "Gate (timer vs proximity via Entity.ProjectileDetonateTime) + remote blast values + rl_detonate_later latch (DeadState=Dying) + rocket_det sound faithful", result: pass }
+      - { kind: code, ref: "Gate (timer vs proximity via Entity.ProjectileDetonateTime) + remote blast values + rl_detonate_later latch (DeadState=Dying) + rocket_det sound; DoRemoteExplode now ORs HITTYPE_BOUNCE on deathtype + calls Unregister (all slots)", result: pass }
     confidence: high
-    notes: "Remote gate + blast values + the rl_detonate_later latch + rocket_det sound are faithful and test-pinned; the rocket-jump boost path, deathtype flagging, ammo refund and the multi-slot unregister are the gaps."
+    notes: "FIXED vs baseline: (1) DoRemoteExplode now ORs HITTYPE_BOUNCE onto the remote-blast deathtype (DeathTypes.WithHitType Bounce) so wr_killmessage classifies it SPLASH; (2) W_Devastator_Unregister now clears lastrocket on ALL slots (Unregister) instead of the hardcoded slot-0-only clear. Remaining: rocket-jump boost path, ammo refund, and the m_switchweapon secondary precondition."
 
   - id: weapon-devastator.rocket.shootdown
     name: "Shootable rocket (event_damage destroys it -> explode)"
@@ -192,28 +187,29 @@ features:
       - "common/weapons/weapon/devastator.qc:W_Devastator_Attack (DAMAGE_YES + SetResource HEALTH)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Devastator.cs:Attack"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Devastator.cs:Explode"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Projectiles.cs:MakeShootable"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Projectiles.cs:CheckProjectileDamage"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:EventDamage"
     constants:
-      - { name: "health", base: "30", port: "30 (set on the missile, never subtracted; no live consumer)", match: false }
+      - { name: "health", base: "30", port: "30 (now subtracted by the MakeShootable shim; explode at hp<=0)", match: true }
+      - { name: "W_CheckProjectileDamage exception", base: "-1 (no exceptions)", port: "-1", match: true }
+      - { name: "g_projectiles_damage (stock balance-xonotic)", base: "-2 (no projectile damage at all)", port: "-2", match: true }
     status:
-      logic: partial
-      values: partial
-      timing: na
+      logic: faithful
+      values: faithful
+      timing: faithful
       presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "DEAD: Entity.ProjectileDamage is installed on the missile but the damage pipeline NEVER invokes it for a flying rocket. DamageSystem.EventDamage routes non-players ONLY through GtEventDamage (else falls to PlayerDamage); a 'rocket' has no GtEventDamage. The ONLY ProjectileDamage invoker in src/ is BreakablehookMutator (hooks). So a rocket cannot be shot down on the live path."
-      - "Even if invoked, the port explodes on the FIRST ProjectileDamage event rather than TakeResource(HEALTH, damage) and only exploding at health<=0; 30hp is set but never depleted incrementally (no W_PrepareExplosionByDamage)."
-      - "W_CheckProjectileDamage (g_projectiles_damage) gate is not modeled."
-      - "missile.damagedbycontents / IL_PUSH(g_damagedbycontents) (rocket explodes in lava/slime) is not ported."
+      - "missile.damagedbycontents / IL_PUSH(g_damagedbycontents) (rocket explodes when it enters lava/slime) is not ported — the port's contents-damage loop iterates only the live player roster, not projectiles."
     verification:
-      - { kind: code, ref: "Devastator.cs:185 missile.ProjectileDamage = (self,attacker) => Explode(self,null); Health = Cvars.Health (never read/subtracted)", result: fail }
-      - { kind: code, ref: "grep ProjectileDamage across src/: invoked ONLY by BreakablehookMutator.cs:79; DamageSystem.EventDamage has no ProjectileDamage dispatch", result: fail }
+      - { kind: code, ref: "Devastator.Attack:209 calls Projectiles.MakeShootable(missile, exception:-1) which installs GtEventDamage; DamageSystem.EventDamage:331-335 dispatches GtEventDamage for any non-player damageable victim -> LIVE shoot-down path", result: pass }
+      - { kind: code, ref: "MakeShootable shim: hp<=0 recursion guard, CheckProjectileDamage(g_projectiles_damage) gate, Health -= damage, fires ProjectileDamage (Explode bounced:true) only at hp<=0 — matches W_Devastator_Damage -> W_PrepareExplosionByDamage (devastator.qc:270-282)", result: pass }
     confidence: high
-    notes: "DOWNGRADED from draft liveness:unknown -> dead and confidence medium -> high after tracing the damage pipeline: there is no live caller. This is the canonical port failure mode (code exists, no wiring)."
+    notes: "FIXED vs baseline (dead->live, partial->faithful): the canonical port-failure-mode gap is CLOSED. Wave-2 added Projectiles.MakeShootable which installs the shoot-down on GtEventDamage (the channel DamageSystem.EventDamage actually dispatches for non-player damageables), wraps W_CheckProjectileDamage + incremental RES_HEALTH subtraction, and only detonates at hp<=0 with HITTYPE_BOUNCE. Under stock balance-xonotic g_projectiles_damage -2 no projectile is shootable at all — faithful to Base (it is only shootable when the cvar permits). Sole remaining gap: lava/slime damagedbycontents."
 
   - id: weapon-devastator.firer.transparency
     name: "Rocket transparent to firer (PROJECTILE_MAKETRIGGER SOLID_CORPSE)"
@@ -241,10 +237,10 @@ features:
     verification:
       - { kind: test, ref: "RocketFlyingGateTests.Devastator_Rocket_IsSolidCorpse_TransparentToFirer", result: pass }
     confidence: high
-    notes: "The fix for 'the rocket detonates on its own firer while walking forward'; verified by test."
+    notes: "The fix for 'the rocket detonates on its own firer while walking forward'; verified by test. Unchanged this pass."
 
   - id: weapon-devastator.ammo.checkammo_reload
-    name: "Ammo check / reload / reset-on-death"
+    name: "Ammo check / reload / reset-on-death / kill-message"
     layer: [authority]
     base_refs:
       - "common/weapons/weapon/devastator.qc:wr_checkammo1"
@@ -255,29 +251,30 @@ features:
       - "common/weapons/weapon/devastator.qc:wr_killmessage"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Devastator.cs:CheckAmmoPrimary"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Devastator.cs:WrSetup"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:SelectKillMessage (devastator branch)"
     constants:
       - { name: "reload_ammo", base: "0 (no clip reload)", port: "0 (base ReloadingAmmo)", match: true }
       - { name: "reload_time", base: "2 s", port: "n/a (no clip reload)", match: true }
       - { name: "switchdelay_raise/drop", base: "0.2 s", port: "0.2 s (base SwitchDelay*)", match: true }
       - { name: "pickup_ammo", base: "40", port: "not in weapon (item side)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "wr_resetplayer (clear lastrocket + rl_release on all slots on death/reset, 'no revenge from the grave') is not ported on the weapon. Partially mitigated by the OnThink owner-alive gate, but lastrocket is never explicitly cleared and rl_release is never reset on death."
-      - "wr_setup (rl_release = 1 on equip) is not overridden; the latch defaults are relied on instead."
-      - "wr_killmessage split (HITTYPE_BOUNCE|HITTYPE_SPLASH -> MURDER_SPLASH vs MURDER_DIRECT) is not implemented; the port never sets those deathtype flags so the classification is impossible."
+      - "wr_resetplayer (clear lastrocket + rl_release on all slots on death/reset, 'no revenge from the grave') is not overridden for the Devastator. Mitigated: Explode/DoRemoteExplode now call Unregister (per-rocket lastrocket clear) and the OnThink owner-alive gate stops a dead owner's guiding — but a still-live rocket on respawn is not proactively unregistered and rl_release is not reset on death."
       - "wr_suicidemessage (WEAPON_DEVASTATOR_SUICIDE) not separately verified in the port."
     verification:
-      - { kind: code, ref: "CheckAmmoPrimary returns rockets >= ammo (wr_checkammo1 #else branch); secondary checkammo (false) implicit; WrReload not overridden", result: partial }
-    confidence: medium
-    notes: "checkammo1 (rockets >= ammo) faithful. reset/setup latch handling and the kill-message classification are the gaps."
+      - { kind: code, ref: "CheckAmmoPrimary returns rockets >= ammo (wr_checkammo1 #else branch); secondary checkammo (false) implicit; WrSetup overridden (RlRelease=true on equip) + called live by WeaponFireDriver.cs:273", result: pass }
+      - { kind: code, ref: "wr_killmessage: DeathMessages.cs:55 keys on (bounce || splash) -> WEAPON_DEVASTATOR_MURDER_SPLASH else MURDER_DIRECT; both notifications registered (NotificationsList.cs:1124-1125); obituary path live via Scores.EmitObituary -> SelectKillMessage", result: pass }
+    confidence: high
+    notes: "FIXED vs baseline (partial->faithful, partial->live): (1) wr_setup now overridden (WrSetup) and live; (2) wr_killmessage split (HITTYPE_BOUNCE|HITTYPE_SPLASH -> MURDER_SPLASH vs MURDER_DIRECT) now fully implemented end-to-end — the Devastator now sets HITTYPE_BOUNCE on timeout/remote/shootdown, RadiusDamage tags indirect victims HITTYPE_SPLASH, and DeathMessages classifies it on the live obituary path. checkammo1 (rockets >= ammo) faithful. Remaining: wr_resetplayer override and an unverified suicide message."
 
   - id: weapon-devastator.presentation.flight_fx
     name: "Flying rocket model/trail/spin/light/fly-sound + muzzle flash"
@@ -306,12 +303,41 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Muzzle-flash MODEL (models/flash.md3) is not attached at the muzzle — only the ROCKET_MUZZLEFLASH particle effect is emitted (verified Attack: EffectEmitter.Emit ROCKET_MUZZLEFLASH, no flash-model attach)."
+      - "Muzzle-flash MODEL (models/flash.md3) is not attached at the muzzle — only the ROCKET_MUZZLEFLASH particle effect is emitted (Attack: EffectEmitter.Emit ROCKET_MUZZLEFLASH, no flash-model attach)."
       - "Crosshair image/size (gfx/crosshairrocketlauncher, 0.7) not audited in this pass."
     verification:
       - { kind: code, ref: "ProjectileCatalog.cs Rocket entry (model/scale/spin/trail/light/loopsound) + Classify('rocket'); EffectEmitter Sink swapped by host for networking", result: pass }
     confidence: medium
-    notes: "Flying rocket presentation wired via the projectile catalog (live when the host wires ProjectileRenderer). Liveness PARTIAL pending a runtime confirmation the server-spawned 'rocket' reaches the client renderer in a match."
+    notes: "Unchanged this pass. Flying rocket presentation wired via the projectile catalog (live when the host wires ProjectileRenderer). Liveness PARTIAL pending a runtime confirmation the server-spawned 'rocket' reaches the client renderer in a match; muzzle-flash model + crosshair are the presentation gaps."
+
+  - id: weapon-devastator.explode.airshot
+    name: "Airshot achievement on a mid-air direct enemy kill (ANNCE_ACHIEVEMENT_AIRSHOT)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/devastator.qc:W_Devastator_Explode (airshot detection)"
+      - "common/physics/player.qc:IsFlying"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Devastator.cs:Explode (airshot block)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Devastator.cs:IsFlying"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationSystem.cs:Announce"
+    constants:
+      - { name: "airshot test", base: "DAMAGE_AIM + IS_PLAYER + DIFF_TEAM + !IS_DEAD + IsFlying(directhit)", port: "DamageMode.Aim + Flags.Client + !SameTeam + !same + DeadFlag.No + IsFlying", match: true }
+      - { name: "IsFlying clearance", base: "24u below, not onground, not swimming (waterlevel<2)", port: "24u down-trace Fraction>=1, !OnGround, WaterLevel<2", match: true }
+      - { name: "announce", base: "ANNCE_ACHIEVEMENT_AIRSHOT", port: "Announce(owner, ACHIEVEMENT_AIRSHOT)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Explode:367-371 tests directHit takedamage==Aim + Client flag + !SameTeam + !same + DeadFlag.No + IsFlying, then NotificationSystem.Announce(owner, ACHIEVEMENT_AIRSHOT). ACHIEVEMENT_AIRSHOT registered (NotificationsList.cs:81). Contact path passes directHit=toucher.", result: pass }
+    confidence: high
+    notes: "ADDED + FIXED vs baseline (was a gap under explode.contact). The airshot achievement is now detected and announced on a mid-air direct enemy kill. Matches W_Devastator_Explode:21-24. Same Announce + IsFlying pattern as Mortar (Mortar.cs:288). Owner taken from self.Owner (== realowner). Live on the contact path (only contact carries a directHit)."
 
   - id: weapon-devastator.bot.aim
     name: "Per-weapon bot aim + auto-detonation (wr_aim)"
@@ -334,9 +360,9 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "wr_aim is entirely unported: no WrAim override on Devastator. Bots fire via the generic brain (BotBrain.cs:334 explicitly notes 'the deferred per-weapon wr_aim')."
+      - "wr_aim is STILL entirely unported: no WrAim override on Devastator. Bots fire via the generic brain (BotBrain.cs:335 still explicitly defers the per-weapon wr_aim)."
       - "Missing: guide-rate-scaled projectile-speed lead (simulating guiding by aiming as if faster), shot-accuracy relaxation for guidable rockets, skill>=2 detonation decision from predicted self/team/enemy splash damage, skill>=7 self-kill veto, and the 'don't fire a new shot while detonating' interlock."
     verification:
-      - { kind: code, ref: "grep WrAim/wr_aim across src/: no Devastator override; BotBrain.cs:334 defers it", result: fail }
+      - { kind: code, ref: "grep WrAim/wr_aim across src/: no Devastator override; BotBrain.cs:335 still defers it", result: fail }
     confidence: high
-    notes: "ADDED in verification pass — the draft summary mentioned bot wr_aim but had no feature row for it. Bots can fire the Devastator (generic aim) but with none of the rocket-specific guiding/detonation intelligence."
+    notes: "STILL OPEN — unchanged by Wave-1/2. Bots can fire the Devastator (generic aim) but with none of the rocket-specific guiding/detonation intelligence. This is now the single largest remaining Devastator gap."

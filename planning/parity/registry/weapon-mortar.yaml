@@ -5,10 +5,9 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 11
   worst_gaps:
-    - "No CSQC projectile model/trail: the grenade is invisible in flight (NetEntityKind.Projectile defined but never assigned; no PROJECTILE_GRENADE vs PROJECTILE_GRENADE_BOUNCING model/trail)."
-    - "Grenade shoot-down is DEAD: the ProjectileDamage callback is set but DamageSystem.EventDamage only routes non-player victims through GtEventDamage, never ProjectileDamage (cross-weapon gap, same as Seeker/Minelayer) — a player cannot shoot a grenade out of the air."
-    - "Airshot achievement announcement (ANNCE_ACHIEVEMENT_AIRSHOT) on a direct hit to an airborne enemy is not implemented."
-    - "EFFECT_HAGAR_BOUNCE bounce particle is not emitted on a grenade bounce (only the bounce sound plays)."
+    - "No CSQC projectile model/trail: the grenade is invisible in flight (NetEntityKind.Projectile defined but still assigned nowhere; Attack sets no client model; no PROJECTILE_GRENADE vs PROJECTILE_GRENADE_BOUNCING distinction)."
+    - "Secondary remote-detonate-primary cannot be enabled by a server cfg: Configure() still never seeds RemoteDetonatePrimary / RemoteMinBounceCount from the cvars (they stay false/0). The sweep logic is present + correct but the gate is dead. Matches the STOCK default (remote_detonateprimary 0), so default play is unaffected."
+    - "Damage_DamageInfo blast-effect networking still deferred (shared WeaponSplash gap, render-only)."
 features:
   - id: mortar.identity
     name: "Weapon identity, flags, models, color"
@@ -39,7 +38,7 @@ features:
     verification:
       - { kind: code_read, ref: "mortar.qh:14-75 vs Mortar.cs ctor", result: pass }
     confidence: high
-    notes: "NOTRUEAIM flag honored: Attack sets dir = forward (v_forward), not the trueaim crosshair direction. Legacy netname 'grenadelauncher' handled by the compat remap layer."
+    notes: "Unchanged by Waves 1/2. NOTRUEAIM flag honored: Attack sets dir = forward (v_forward), not the trueaim crosshair direction. Legacy netname 'grenadelauncher' handled by the compat remap layer."
 
   - id: mortar.primary.attack
     name: "Primary: impact grenade launch (type 0)"
@@ -78,7 +77,7 @@ features:
       - { kind: value_diff, ref: "bal-wep-xonotic.cfg:133-149 vs Mortar.Configure", result: pass }
       - { kind: code_read, ref: "mortar.qc:161-210 vs Mortar.cs:Attack; live via WeaponFireDriver.RunSlot -> WrThink", result: pass }
     confidence: high
-    notes: "MOVETYPE_BOUNCE grenade launched along forward + up arc. ProjectileVelocity is a faithful W_SetupProjVelocity_Explicit port (newton_style off). Refire/animtime via base PrepareAttack."
+    notes: "MOVETYPE_BOUNCE grenade launched along forward + up arc. ProjectileVelocity is a faithful W_SetupProjVelocity_Explicit port (newton_style off). Refire/animtime via base PrepareAttack. EFFECT GRENADE_MUZZLEFLASH + grenade_fire sound emitted. Unchanged status vs baseline (visual still the only gap)."
 
   - id: mortar.secondary.attack
     name: "Secondary: bouncing grenade launch (type 1)"
@@ -113,7 +112,7 @@ features:
       - { kind: value_diff, ref: "bal-wep-xonotic.cfg:152-169 vs Mortar.Configure", result: pass }
       - { kind: code_read, ref: "mortar.qc:212-259 vs Mortar.cs:Attack(secondary)", result: pass }
     confidence: high
-    notes: "Secondary uses a single timed think at lifetime; on first bounce OnTouch reschedules to time+lifetime_bounce (0.5s fuse), faithfully reproducing adaptor_think2use rescheduling."
+    notes: "Secondary uses a single timed think at lifetime; on first bounce OnTouch reschedules to time+lifetime_bounce (0.5s fuse), faithfully reproducing adaptor_think2use rescheduling. Unchanged vs baseline."
 
   - id: mortar.grenade.bounce
     name: "Grenade bounce physics + contact handling (Touch1/Touch2)"
@@ -125,25 +124,23 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Mortar.cs:OnTouch"
       - "src/XonoticGodot.Engine/Simulation/MoveTypePhysics.cs:RunEntity"
     constants:
-      - { name: "bouncefactor", base: "0.5", port: "0.5 (hardcoded in MoveTypePhysics, not read from entity)", match: true }
-      - { name: "bouncestop", base: "0.075", port: "0.075 (hardcoded in MoveTypePhysics)", match: true }
+      - { name: "bouncefactor", base: "0.5", port: "0.5 (g_balance_mortar_bouncefactor, now READ by MoveTypePhysics from ent.BounceFactor)", match: true }
+      - { name: "bouncestop", base: "0.075", port: "0.075 (g_balance_mortar_bouncestop, now READ from ent.BounceStop)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Per-entity BounceFactor/BounceStop fields set by Attack are DEAD: MoveTypePhysics hardcodes 0.5/0.075 and never reads them. Equal to the mortar's config values, so bounce is correct today, but g_balance_mortar_bouncefactor/_bouncestop overrides would have no effect."
-      - "EFFECT_HAGAR_BOUNCE particle is not emitted on a bounce (Base Send_Effect(EFFECT_HAGAR_BOUNCE) in Touch1/Touch2); only the bounce sound plays."
+    gaps: []
     verification:
-      - { kind: code_read, ref: "mortar.qc:96-159 vs Mortar.cs:OnTouch; bounce reflection in MoveTypePhysics.cs:161-182", result: pass }
-      - { kind: grep, ref: "no engine code reads ent.BounceFactor/BounceStop; MoveTypePhysics hardcodes bf=0.5 bouncestop=60/800", result: partial }
+      - { kind: code_read, ref: "mortar.qc:96-159 vs Mortar.cs:OnTouch; bounce reflection in MoveTypePhysics.cs:168-188 now reads ent.BounceFactor/BounceStop", result: pass }
+      - { kind: code_read, ref: "Mortar.cs:256 EffectEmitter.Emit('HAGAR_BOUNCE', ...) on bounce; effect registered EffectsList.cs:101", result: pass }
     confidence: high
-    notes: "Impact (player or type 0) detonates; type 1 plays grenade_bounce1 + increments bounce count. Engine MOVETYPE_BOUNCE integrator reflects velocity (clip by 1+bf, rest below sv_gravity*bouncestop on a floor) under gravity."
+    notes: "FIXED both baseline gaps. (1) BounceFactor/BounceStop are no longer dead: MoveTypePhysics.cs now reads the per-entity ent.BounceFactor/ent.BounceStop (`bf = ent.BounceFactor==0 ? 0.5 : ent.BounceFactor`, same for bouncestop) — defaults still 0.5/0.075 (match), and g_balance_mortar_bounce* overrides now take effect. The bounce math also moved to the signed d = normal.velocity (grenadebouncedownslopes default 1), MORE Base-faithful, no regression. (2) EFFECT_HAGAR_BOUNCE is now emitted on a type-1 bounce alongside the grenade_bounce1 sound. Impact (player or type 0) detonates; type 1 counts + fuses; type 2 (non-default stick) freezes in place."
 
   - id: mortar.grenade.lifetime_detonation
     name: "Lifetime timeout + remote-detonate think (Think1)"
@@ -165,12 +162,11 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Primary timeout/remote-detonate does not OR HITTYPE_BOUNCE onto the deathtype (Base does). Cosmetic only: the obituary keys on HITTYPE_SECONDARY, not BOUNCE, so no message change."
+    gaps: []
     verification:
-      - { kind: code_read, ref: "mortar.qc:83-94 vs Mortar.cs:OnThink; driven each tick by MoveTypePhysics (NextThink=time primary, timed secondary)", result: pass }
+      - { kind: code_read, ref: "mortar.qc:83-94 vs Mortar.cs:OnThink; timeout path now Explode(bounced:true) -> HITTYPE_BOUNCE OR'd onto deathtype (Mortar.cs:229,296)", result: pass }
     confidence: high
-    notes: "Primary re-thinks every tick; explodes once time past the lifetime deadline, or when the remote-detonate latch is set and bounce count >= minbouncecnt."
+    notes: "FIXED the baseline cosmetic gap: the forced (timeout) detonation now ORs HITTYPE_BOUNCE onto the deathtype (Explode called with bounced:true, which adds DeathTypes.Bounce), matching mortar.qc:88. Primary re-thinks every tick; explodes once time past the lifetime deadline, or when the remote-detonate latch (DeadState) is set and bounce count >= minbouncecnt."
 
   - id: mortar.grenade.shootdown
     name: "Shootable grenade -> explode when destroyed (W_Mortar_Grenade_Damage)"
@@ -179,29 +175,31 @@ features:
       - "common/weapons/weapon/mortar.qc:W_Mortar_Grenade_Damage"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Mortar.cs:Attack"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Projectiles.cs:MakeShootable"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:EventDamage"
     constants:
-      - { name: "primary_health", base: "15", port: "15 (set, but never depleted — callback dead)", match: true }
-      - { name: "secondary_health", base: "30", port: "30 (set, but never depleted — callback dead)", match: true }
+      - { name: "primary_health", base: "15", port: "15", match: true }
+      - { name: "secondary_health", base: "30", port: "30", match: true }
       - { name: "primary_damageforcescale", base: "0", port: "0", match: true }
       - { name: "secondary_damageforcescale", base: "4", port: "4", match: true }
+      - { name: "g_projectiles_damage (stock)", base: "-2 (no damage to projectiles)", port: "-2 (balance-xonotic.cfg:202)", match: true }
+      - { name: "W_CheckProjectileDamage exception", base: "-1 (no exceptions)", port: "-1", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "DEAD on the live path: gren.ProjectileDamage is assigned but NEVER invoked. DamageSystem.EventDamage (DamageSystem.cs:294) routes every non-player victim through GtEventDamage and returns; only BreakablehookMutator invokes ProjectileDamage, and a grenade is not a hook. Mortar never sets GtEventDamage either, so a grenade takes no damage handler at all — it cannot be shot down. Same cross-weapon gap as Seeker/Minelayer/Hagar."
-      - "Even if it were wired, the ProjectileDamage delegate detonates on ANY incoming damage rather than subtracting from RES_HEALTH and bursting only at hp<=0; a graze that wouldn't destroy the grenade in Base would still detonate it (no W_PrepareExplosionByDamage accumulation)."
-      - "W_CheckProjectileDamage (g_projectiles_damage friendly/team gate) not reproduced on the shoot-down path."
+    gaps: []
     verification:
-      - { kind: code_read, ref: "mortar.qc:71-81 vs Mortar.cs:195 gren.ProjectileDamage=Explode", result: partial }
-      - { kind: grep, ref: "ProjectileDamage?.Invoke called only by BreakablehookMutator.cs:79; DamageSystem.cs:294 EventDamage routes non-players via GtEventDamage only", result: fail }
+      - { kind: code_read, ref: "mortar.qc:71-81 vs Projectiles.ShootDown: hp<=0 guard, W_CheckProjectileDamage gate, TakeResource(RES_HEALTH,damage), fire callback only at hp<=0", result: pass }
+      - { kind: code_read, ref: "DamageSystem.cs:331-334 EventDamage routes a non-player victim with GtEventDamage through it; Mortar installs GtEventDamage via MakeShootable (Mortar.cs:207)", result: pass }
+      - { kind: value_diff, ref: "g_projectiles_damage -2 stock => CheckProjectileDamage returns false (mode<=-2) => grenade not shootable in default play, exactly as Base", result: pass }
     confidence: high
-    notes: "Health and damageforcescale are set on the grenade and it is DAMAGE_YES, but the shoot-down is unreachable: the damage pipeline never calls a grenade's ProjectileDamage. Downgraded from the draft's 'liveness: live' — corrected by tracing DamageSystem.EventDamage, which matches the documented Seeker/Minelayer shoot-down findings exactly."
+    notes: "FIXED: the baseline DEAD/partial shoot-down is now live and faithful. Wave-1 wired the missing seam — DamageSystem.EventDamage now dispatches a non-player victim's GtEventDamage, and Projectiles.MakeShootable installs a shim there that (a) guards hp<=0, (b) runs the g_projectiles_damage gate (W_CheckProjectileDamage, exception -1), (c) subtracts the damage from RES_HEALTH, (d) fires the per-weapon ProjectileDamage (Mortar.Explode) ONLY at hp<=0 — so a graze no longer detonates, matching W_PrepareExplosionByDamage. Under the STOCK g_projectiles_damage -2 the gate returns false, so a default-balance grenade is NOT shootable — and that is Base-faithful (Base gates the same way); the feature becomes live when a server raises g_projectiles_damage."
 
   - id: mortar.explosion.radiusdamage
     name: "Explosion: radius damage + knockback + remove"
@@ -232,12 +230,11 @@ features:
     divergence_rationale: null
     gaps:
       - "Damage_DamageInfo blast-effect networking deferred (shared WeaponSplash gap, render-only)."
-      - "directhitentity is not passed to RadiusDamage (Base passes it so the direct hit skips the LOS reduction); the port's RadiusDamage takes directHit but Mortar.Explode does not supply it. Minor: only affects LOS sampling on the directly-struck target."
     verification:
       - { kind: value_diff, ref: "bal-wep-xonotic.cfg vs Mortar.Configure (damage/edge/radius/force both modes)", result: pass }
-      - { kind: code_read, ref: "mortar.qc:5-31 / 38-64 -> WeaponSplash.RadiusDamage (faithful RadiusDamageForSource port)", result: pass }
+      - { kind: code_read, ref: "mortar.qc:5-31 / 38-64 -> WeaponSplash.RadiusDamage; directHit now PASSED through (Mortar.cs:302)", result: pass }
     confidence: high
-    notes: "Core/edge falloff, nearest-point distance metric, LOS sampling, and force scaling all in the shared splash helper. Explosion particle + impact sound emitted server-side (port convention)."
+    notes: "FIXED the baseline directhitentity gap: Explode now supplies directHit to RadiusDamage (Mortar.cs:302), so the directly-struck target skips the blast LOS reduction exactly as Base passes directhitentity through. Core/edge falloff, nearest-point distance metric, LOS sampling, and force scaling all in the shared splash helper. Only the Damage_DamageInfo blast-effect networking (render-only) remains deferred."
 
   - id: mortar.secondary.remote_detonate
     name: "Secondary remote-detonate of own primaries (remote_detonateprimary)"
@@ -250,7 +247,7 @@ features:
       - { name: "secondary_remote_detonateprimary", base: "0 (off)", port: "RemoteDetonatePrimary never seeded -> false", match: false }
       - { name: "primary_remote_minbouncecnt", base: "0", port: "RemoteMinBounceCount never seeded -> 0", match: false }
     status:
-      logic: partial
+      logic: faithful
       values: partial
       timing: faithful
       presentation: na
@@ -259,12 +256,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Configure() never assigns RemoteDetonatePrimary / RemoteMinBounceCount from the cvars; they stay false/0. Matches the STOCK default (remote_detonateprimary 0), so the remote-detonate branch is never taken in default play and the feature cannot be enabled by a server cfg."
+      - "Configure() still never assigns RemoteDetonatePrimary / RemoteMinBounceCount from the cvars; they stay false/0. Matches the STOCK default (remote_detonateprimary 0, remote_minbouncecnt 0), so the remote-detonate branch is never taken in default play AND the feature cannot be enabled by a server cfg."
       - "When the flag is (conceptually) on, the SND_MORTAR_DET cue is wired (grenade_det.wav on CH_WEAPON_B) but the branch never runs because the flag is dead."
     verification:
-      - { kind: code_read, ref: "mortar.qc:304-342 fire&2 branch vs Mortar.cs:WrThink; Configure (Mortar.cs:65-99) never sets the two fields", result: fail }
+      - { kind: code_read, ref: "mortar.qc:304-342 fire&2 branch vs Mortar.cs:WrThink:118-134 (sweep logic present + correct); Configure (Mortar.cs:66-100) never sets the two fields", result: fail }
+      - { kind: value_diff, ref: "bal-wep-xonotic.cfg:144,164 both default 0 -> port stock-correct but un-overridable", result: pass }
     confidence: high
-    notes: "The detonate-sweep logic itself is present and correct (flags every owned live grenade via DeadState latch, plays det sound if any found), but it is unreachable because the gating cvar is never read. Default-inactive feature with a wiring gap."
+    notes: "STILL OPEN (unchanged vs baseline). The detonate-sweep logic itself is present and correct (FindByClass('grenade'), flags every owned live grenade via the DeadState latch, plays det sound if any found), but it is unreachable because the gating cvar is never read by Configure. Default-inactive feature with a wiring gap."
 
   - id: mortar.fx.projectile_visual
     name: "In-flight grenade model + trail (CSQCProjectile)"
@@ -285,36 +283,37 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The flying grenade has no visible model and no smoke trail: Attack never sets a net Kind or model, and NetEntityKind.Projectile (NetEntity.cs:14) is defined but assigned nowhere in the codebase."
+      - "The flying grenade still has no visible model and no smoke trail: Attack never sets a net Kind or model, and NetEntityKind.Projectile (NetEntity.cs:14) remains defined-but-assigned-nowhere across the whole codebase (CSQCProjectile is unimplemented for every weapon)."
       - "No primary-vs-bounce model distinction (PROJECTILE_GRENADE vs PROJECTILE_GRENADE_BOUNCING)."
     verification:
-      - { kind: grep, ref: "NetEntityKind. assigned nowhere; Mortar.Attack sets no Model", result: fail }
-    confidence: medium
-    notes: "Server-side gameplay (collision/damage/bounce) is fully simulated; this is purely the client-visible projectile rendering. 'medium' because a generic client model path keyed off e.Model could exist but Attack sets no model, so the working conclusion is invisible-in-flight."
+      - { kind: grep, ref: "NetEntityKind.Projectile assigned nowhere; Mortar.Attack sets no Model; Wave-2 added a net Alpha field but no projectile model", result: fail }
+    confidence: high
+    notes: "STILL OPEN (unchanged vs baseline). Server-side gameplay (collision/damage/bounce) is fully simulated; this is purely the client-visible projectile rendering, which no weapon ports yet. Upgraded confidence to high: confirmed by grep that NetEntityKind.Projectile is assigned nowhere and Attack sets no model."
 
   - id: mortar.fx.airshot
     name: "Airshot achievement announcement"
     layer: [authority]
     base_refs:
       - "common/weapons/weapon/mortar.qc:W_Mortar_Grenade_Explode (ANNCE_ACHIEVEMENT_AIRSHOT)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Mortar.cs:Explode"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Mortar.cs:IsFlying"
     constants: []
     status:
-      logic: missing
+      logic: faithful
       values: na
       timing: na
       presentation: na
-      audio: missing
-      liveness: dead
+      audio: faithful
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Explode has no direct-hit airborne-enemy check; ANNCE_ACHIEVEMENT_AIRSHOT is never sent to the owner on a flying direct hit. The announcer cue exists (NotificationsList.cs:81, SoundsList.cs:283 'airshot') but is unused by the mortar path."
+    gaps: []
     verification:
-      - { kind: code_read, ref: "mortar.qc:5-10 airshot block has no counterpart in Mortar.cs:Explode", result: fail }
-      - { kind: grep, ref: "no AIRSHOT reference in any weapon/explosion code path", result: fail }
+      - { kind: code_read, ref: "mortar.qc:5-10 / 40-43 vs Mortar.cs:Explode:282-288 — DAMAGE_AIM + IS_PLAYER + DIFF_TEAM + !IS_DEAD + IsFlying gate, Announce(owner,'ACHIEVEMENT_AIRSHOT')", result: pass }
+      - { kind: code_read, ref: "IsFlying (Mortar.cs:311) ports the onground/swimming/24u-clearance test; Announce + cue registered NotificationsList.cs:81 'airshot'", result: pass }
     confidence: high
-    notes: "Requires the IsFlying(direct-hit) + DIFF_TEAM test and a NOTIF_ONE announce; neither is wired. Distinct from the explosion damage feature."
+    notes: "FIXED: missing/dead -> faithful/live. On a direct hit (OnTouch -> Explode with directHit set), Explode now tests directHit is a flying, different-team, alive player and sends ANNCE_ACHIEVEMENT_AIRSHOT to the owner BEFORE the entity is removed, matching mortar.qc. Reachable on the live path via the contact handler. DIFF_TEAM uses Teams.SameTeam; owner via self.Owner (== RealOwner alias)."
 
   - id: mortar.notifications.killmessages
     name: "Bounce-vs-explode kill / suicide obituary"
@@ -339,4 +338,4 @@ features:
     verification:
       - { kind: code_read, ref: "mortar.qc:363-377 vs DeathMessages.cs (secondary -> BOUNCE, else EXPLODE) + NotificationsList registrations", result: pass }
     confidence: high
-    notes: "MORTAR_MURDER/SUICIDE_BOUNCE vs _EXPLODE all registered and selected by the secondary-fire flag (= HITTYPE_SECONDARY), matching Base."
+    notes: "Unchanged by Waves 1/2. MORTAR_MURDER/SUICIDE_BOUNCE vs _EXPLODE all registered and selected by the secondary-fire / HITTYPE_BOUNCE flag, matching Base."

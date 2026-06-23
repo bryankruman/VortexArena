@@ -5,10 +5,10 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 13
   worst_gaps:
-    - "Visible beam is a SPARK-PARTICLE TRAIL (effectinfo arc_beam = `type spark` trailspacing 10), NOT a cylindric beam: the BeamRenderer route is DEAD for arc (arc_beam is registered isTrail:true so it classifies as Trail, never EiOrientation.Beam) — no Draw_ArcBeam bezier sweep, muzzle flash, per-beam_type thickness/color, or hit/muzzle lights."
-    - "Beam can't start with 1-5 cells (CheckAmmoPrimary uses `cells >= beam_ammo (6)`) where Base wr_checkammo1 needs only `cells > 0`; weapon auto-switches away. Confirmed bug, live via WeaponAmmo.Check."
-    - "Bolt secondary fires the whole bolt_count burst in one WrThink call (no bolt_refire spacing, no bolt_refire2 tail, no ammo-fraction scaling) — dormant at stock bolt_count 1."
-    - "Arc_Smoke (overheat smoke/fire particles + SND_ARC_LOOP_OVERHEAT) entirely missing; overheat jam duration is fixed time+overheat_max not time+heat/cooldown_speed; heat-% HUD stat + drop/pickup heat migration unported."
+    - "Visible beam is still a SPARK-PARTICLE TRAIL (effectinfo arc_beam = `type spark` trailspacing 10), NOT a cylindric beam: arc_beam is registered isTrail:true so it classifies as Trail, never EiOrientation.Beam — no Draw_ArcBeam bezier sweep, muzzle flash, per-beam_type thickness/color, or hit/muzzle lights. UNCHANGED by Wave-1/2."
+    - "Arc_Smoke (overheat smoke/fire particles + SND_ARC_LOOP_OVERHEAT) still entirely missing; heat-% HUD stat (Arc_GetHeat_Percent / arc_heat_percent) still not networked. UNCHANGED by Wave-1/2."
+    - "Heat drop/pickup migration + reset-on-death (wr_drop/pickup/resetplayer/playerdeath) still unported. UNCHANGED."
+    - "Bolt secondary still fires the whole bolt_count burst in one WrThink call (no per-bolt bolt_refire spacing, no bolt_refire2 tail, no ammo-fraction scaling) — dormant at stock bolt_count 1. UNCHANGED."
 features:
   - id: weapon-arc.identity.attributes
     name: "Weapon identity / attributes (ammo, impulse, flags, color, models, crosshair, muzzle effect)"
@@ -35,11 +35,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Muzzle effect EFFECT_ARC_MUZZLEFLASH and the flash.md3 muzzle model are not carried/emitted (no muzzle flash on the beam or bolt). crosshair gfx/crosshairhlac size 0.7 is a CSQC attribute not carried in the headless Arc.cs (HUD-side concern)."
+      - "Muzzle effect EFFECT_ARC_MUZZLEFLASH and the flash.md3 muzzle model are not carried/emitted (no muzzle flash on the beam or bolt). crosshair gfx/crosshairhlac size 0.7 is a CSQC attribute not carried in the headless Arc.cs (HUD-side concern). UNCHANGED by Wave-1/2."
     verification:
       - { kind: value-diff, ref: "arc.qh vs Arc.cs ctor + Configure", result: pass }
     confidence: high
-    notes: "Core identity (ammo/impulse/flags/color/models) is exact; downgraded presentation from the draft's 'faithful' because the muzzle flash effect/model is genuinely absent."
+    notes: "Core identity (ammo/impulse/flags/color/models) is exact; presentation stays partial because the muzzle flash effect/model is genuinely absent. Wave-1/2 did not touch this row."
 
   - id: weapon-arc.beam.dps_core
     name: "Continuous beam DPS: per-tick trace + damage scaled by frametime/ammo coefficient"
@@ -64,12 +64,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Damage applied along a single straight trace; Base traces a multi-segment bezier (control point pulled toward wantdir by tightness) so the beam body can clip geometry differently near a swept corner. Endpoint hit-reg matches."
-      - "Base also damages the FIRST entity along the path with the antilag-takeback trace (WarpZone_traceline_antilag); the port uses a plain client/server trace (no antilag, no warpzone transform). Identical without warpzones/antilag."
+      - "Damage applied along a single straight trace; Base traces a multi-segment bezier (control point pulled toward wantdir by tightness) so the beam body can clip geometry differently near a swept corner. Endpoint hit-reg matches. UNCHANGED."
+      - "Wave-2 added a LagComp.Begin/End bracket around the damage trace (Arc.cs:301-307) to mirror Base WarpZone_traceline_antilag, BUT LagComp.Provider is never installed anywhere (no ILagCompensation implementation is registered — Net/AntilagBuffer.cs:147 LagCompensation does NOT implement the Common interface), so the bracket is a no-op on every path: NO actual antilag take-back/restore occurs. The seam exists but produces no behavior; the underlying plain trace (no warpzone transform either) is what still runs. Identical to Base only when no warpzones/antilag would have mattered."
     verification:
-      - { kind: code-read, ref: "Arc.cs:BeamTick (coefficient/ammo/damage) vs W_Arc_Beam_Think arc.qc:260-460", result: pass }
+      - { kind: code-read, ref: "Arc.cs:BeamTick (coefficient/ammo/damage) vs W_Arc_Beam_Think arc.qc", result: pass }
+      - { kind: grep, ref: "no assignment to LagComp.Provider anywhere in src/ (excluding bin) -> Begin/End are null-op", result: pass }
     confidence: high
-    notes: "coefficient = min(frametime, curr_ammo/rootammo) and SetResource(max(0, curr - rootammo*frametime)) match Base exactly (Arc.cs:230-237)."
+    notes: "coefficient = min(frametime, curr_ammo/rootammo) and SetResource(max(0, curr - rootammo*frametime)) match Base exactly (Arc.cs:254-261). Wave-2 antilag bracket is a non-functional seam (Provider null); not counted as a fix and not a regression (Base behavior was already identical sans antilag)."
 
   - id: weapon-arc.beam.curve_direction
     name: "Beam direction curving toward aim, limited by max angle + return speed"
@@ -94,19 +95,22 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "tightness / degreespersegment / distancepersegment / ARC_MAX_SEGMENTS loaded but unused: no bezier control point, no segmentation. The beam_dir blend math itself is bit-faithful."
+      - "tightness / degreespersegment / distancepersegment / ARC_MAX_SEGMENTS loaded but unused: no bezier control point, no segmentation. The beam_dir blend math itself is bit-faithful. UNCHANGED."
     verification:
-      - { kind: code-read, ref: "Arc.cs:255-268 blend (max_blendfactor + Clamp(1-returnspeed*dt) + Normalize) vs arc.qc:319-332", result: pass }
+      - { kind: code-read, ref: "Arc.cs:274-293 blend (maxBlend + Clamp(1-returnspeed*dt) + Normalize) vs arc.qc", result: pass }
     confidence: high
-    notes: "max_blendfactor + bound(0, 1-returnspeed*dt, max) + normalize(wantdir*(1-b)+beamdir*b) matches Base exactly."
+    notes: "maxBlend + Clamp(1-returnspeed*dt, 0, max) + normalize(wantdir*(1-b)+beamdir*b) matches Base exactly. Wave-2 did not touch this row."
 
   - id: weapon-arc.beam.heal_teammates
     name: "Beam heals teammates (health + armor) instead of damaging"
     layer: [authority]
     base_refs:
       - "common/weapons/weapon/arc.qc:W_Arc_Beam_Think"
+      - "server/damage.qc:Heal"
+      - "server/player.qc:PlayerHeal"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Arc.cs:BeamTick"
+      - "src/XonoticGodot.Common/Gameplay/Items/Resources.cs:GiveResourceWithLimit"
     constants:
       - { name: "beam_healing_hps", base: "50", port: "50", match: true }
       - { name: "beam_healing_hmax", base: "150", port: "150", match: true }
@@ -115,7 +119,7 @@ features:
       - { name: "burst_healing_hps", base: "100", port: "100", match: true }
       - { name: "burst_healing_aps", base: "100", port: "100", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
@@ -124,12 +128,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Health heal is a raw 'if newHp <= hpLimit then set' (Arc.cs:291-293) rather than Base Heal() (which clamps to the limit and respects the health-rot pause). With hps*coef pushing newHp PAST the limit, the port DROPS the heal entirely instead of clamping to the limit as Base does — a real divergence near the cap."
-      - "Armor heal does not refresh pauserotarmor_finished (Base arc.qc:417 sets it to max(..., time + g_balance_pause_armor_rot)); armor will start rotting again immediately in the port."
+      - "Minor residual: Base routes the health heal through Heal()->PlayerHeal which also early-outs on game_stopped/frozen/dead/spectator. The port calls GiveResourceWithLimit(Health) directly, gated only by the beam's own same-team/live-damageable check — so a frozen/just-dying teammate could in principle still receive a tick of healing. Edge-case only; the clamping behavior itself now matches."
     verification:
-      - { kind: code-read, ref: "Arc.cs:284-297 vs arc.qc:407-421", result: pass }
+      - { kind: code-read, ref: "Arc.cs:317-337 vs arc.qc:407-421 + server/player.qc:615 PlayerHeal + Resources.cs:145 GiveResourceWithLimit (clamps amount=limit-current)", result: pass }
     confidence: high
-    notes: "Same-team gate uses actor.Team != 0 && hit.Team == actor.Team (Base SAME_TEAM). is_player set for client/body/monster matches Base."
+    notes: "FIXED in Wave-2: health heal now uses GiveResourceWithLimit (Arc.cs:328) which CLAMPS the post-give total to hmax (players) / LimitNone (non-players) instead of DROPPING the heal entirely once it would push past hmax (the prior `if newHp <= limit then set` bug). Armor heal now refreshes PauseRotArmorFinished = max(.., time + g_balance_pause_armor_rot) (Arc.cs:335-336) matching arc.qc:417. Both baseline gaps closed; logic upgraded partial->faithful."
 
   - id: weapon-arc.beam.falloff
     name: "Exponential distance falloff on beam damage + force"
@@ -155,9 +158,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code-read, ref: "WeaponFiring.ExponentialFalloff:589-596 (pow(0.5, (clamp(d,min,max)-min)/half)) vs lib/math.qh", result: pass }
+      - { kind: code-read, ref: "WeaponFiring.ExponentialFalloff (pow(0.5, (clamp(d,min,max)-min)/half)) vs lib/math.qh", result: pass }
     confidence: high
-    notes: "Stock defaults disable falloff (halflifedist 0 -> Arc.cs:302 branch returns multiplier 1). Port computes distance from shot origin (Base uses warpzone-untransformed origin); identical without warpzones."
+    notes: "Stock defaults disable falloff (halflifedist 0 -> Arc.cs:343 branch returns multiplier 1). Port computes distance from shot origin (Base uses warpzone-untransformed origin); identical without warpzones. Wave-2 did not touch this row."
 
   - id: weapon-arc.beam.heat_overheat
     name: "Barrel heat accumulation, overheat jam, and cooldown"
@@ -168,32 +171,33 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Arc.cs:BeamTick"
       - "src/XonoticGodot.Common/Gameplay/Weapons/Arc.cs:BeamCooldown"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Arc.cs:CooldownSpeed"
     constants:
       - { name: "beam_heat", base: "0", port: "0", match: true }
       - { name: "burst_heat", base: "5", port: "5", match: true }
       - { name: "overheat_max", base: "5", port: "5", match: true }
       - { name: "overheat_min", base: "3", port: "3", match: true }
       - { name: "cooldown", base: "2.5", port: "2.5", match: true }
-      - { name: "beam_refire", base: "0.25", port: "0.25 (not used in cooldown branch)", match: false }
-      - { name: "cooldown_release", base: "0", port: "0 (unused)", match: false }
+      - { name: "beam_refire", base: "0.25", port: "0.25 (used in CooldownSpeed below overheat_min)", match: true }
+      - { name: "cooldown_release", base: "0", port: "0 (still unused)", match: false }
     status:
       logic: partial
       values: faithful
-      timing: partial
+      timing: faithful
       presentation: missing
       audio: partial
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Overheat jam duration is fixed `time + overheat_max` (5s) (Arc.cs:219); Base sets `time + beam_heat/cooldown_speed` (arc.qc:243)."
-      - "Cooldown speed is always `cooldown` (BeamCooldown:204); Base picks `heat/beam_refire` when heat <= overheat_min and 0 while bursting (arc.qc:226-231); cooldown_release ignored."
-      - "Heat-% HUD stat (Arc_GetHeat_Percent / arc_heat_percent) not networked; no HUD heat bar."
-      - "EFFECT_ARC_OVERHEAT particle on the overheat jam (arc.qc:236) is not emitted; only SND_ARC_STOP plays."
+      - "Structural divergence (UNCHANGED): Base stores beam_heat on the beam ENTITY (arc_beam) and DELETES that entity when the beam ends — heat is gone, and arc_overheat/arc_cooldown are pure timestamps used for the HUD %% and the re-fire gate. The port keeps heat as a persistent slot-state value (st.BeamHeat) drained over time by BeamCooldown. Observably close at stock values; not bit-structurally identical."
+      - "cooldown_release still ignored (Arc.cs CooldownSpeed has no cooldown_release branch); Base sets arc_overheat when (cooldown_release || overheat). Dormant at stock cooldown_release 0."
+      - "Heat-%% HUD stat (Arc_GetHeat_Percent / arc_heat_percent) still not networked; no HUD heat bar. UNCHANGED."
+      - "EFFECT_ARC_OVERHEAT particle on the overheat jam (arc.qc:236) is still not emitted; only SND_ARC_STOP plays. UNCHANGED."
     verification:
-      - { kind: code-read, ref: "Arc.cs:215-227 + BeamCooldown:202-207 vs arc.qc:215-258", result: pass }
+      - { kind: code-read, ref: "Arc.cs:205-251 BeamCooldown/CooldownSpeed/jam vs arc.qc:215-258", result: pass }
     confidence: high
-    notes: "With stock beam_heat 0 the primary beam never heats, so primary overheat is dormant; only the burst beam (bolt=0, burst_heat 5) heats."
+    notes: "FIXED in Wave-2 (2 of the 4 baseline gaps): (1) overheat-jam duration is now `time + heat/cooldown_speed` (Arc.cs:242-243) not a fixed `time + overheat_max`, matching arc.qc:243; (2) CooldownSpeed (Arc.cs:219-226) now picks per-state `cooldown` (heat>overheat_min) / `heat/beam_refire` (below, non-burst) / 0 (bursting), matching arc.qc:225-231 — so timing upgraded partial->faithful and beam_refire now matches. Still partial on logic (HUD stat + overheat particle absent, persistent-slot-heat structure, cooldown_release). With stock beam_heat 0 the primary never heats; only the burst beam (bolt=0, burst_heat 5) heats."
 
   - id: weapon-arc.beam.burst_variant
     name: "Burst beam (secondary when bolt=0): higher damage/heat/ammo beam"
@@ -218,12 +222,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Port recomputes burst = `ATCK2 held && !bolt` fresh each tick (Arc.cs:173,176); Base latches `beam_bursting = true` on the beam entity, so a burst beam KEEPS bursting after ATCK2 is released until the beam ends (arc.qc:205-209,571). The latch is not modeled."
-      - "ARC_BT_BURST visual thickness (14) and burst beam color/visuals absent (depends on beam.visual feature)."
+      - "Port recomputes burst = `ATCK2 held && !bolt` fresh each tick (Arc.cs:173,176); Base latches `beam_bursting = true` on the beam entity, so a burst beam KEEPS bursting after ATCK2 is released until the beam ends (arc.qc:205-209,571). The latch (st.BeamBursting) is still not modeled. UNCHANGED."
+      - "ARC_BT_BURST visual thickness (14) and burst beam color/visuals absent (depends on beam.visual feature). UNCHANGED."
     verification:
-      - { kind: code-read, ref: "Arc.cs:170-177 burst gate vs arc.qc:204-212,568,585", result: pass }
+      - { kind: code-read, ref: "Arc.cs:170-177 burst gate vs arc.qc:204-212,568,585; grep no beam_bursting/BeamBursting in Arc.cs", result: pass }
     confidence: medium
-    notes: "Stock bolt=1 makes this path inactive; only relevant with g_balance_arc_bolt 0."
+    notes: "Stock bolt=1 makes this path inactive; only relevant with g_balance_arc_bolt 0. Wave-2 did not add the bursting latch. The checkammo2 burst-beam branch and the heat-jam cooldown_speed fixes (other rows) do feed this mode correctly when active."
 
   - id: weapon-arc.bolt.secondary_burst
     name: "Bolt secondary: fire a burst of bouncing explosive bolts"
@@ -252,13 +256,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Whole bolt_count burst fires in ONE WrThink call (one PrepareAttack, a for-loop over Bolt.Count at Arc.cs:331); Base fires one bolt per bolt_refire via misc_bulletcounter counting up from -to_shoot, enforcing bolt_refire2 only after the last bolt (arc.qc:184-191,625). Dormant at stock bolt_count 1."
-      - "Ammo: port consumes flat bolt_ammo once (Arc.cs:324); Base scales to_shoot by min(1, ammo/bolt_ammo) and W_DecreaseAmmo(min(bolt_ammo, ammo)) (arc.qc:610-621). Dormant at bolt_count 1."
-      - "No muzzle flash (Base W_MuzzleFlash at arc.qc:146); the bolt's recoil/W_SetupShot recoil 2 is applied."
+      - "Whole bolt_count burst fires in ONE WrThink call (one PrepareAttack, a for-loop over Bolt.Count at Arc.cs:372); Base fires one bolt per bolt_refire via misc_bulletcounter counting up from -to_shoot, enforcing bolt_refire2 only after the last bolt. Dormant at stock bolt_count 1. UNCHANGED."
+      - "Ammo: port consumes flat bolt_ammo once (Arc.cs:365); Base scales to_shoot by min(1, ammo/bolt_ammo) and W_DecreaseAmmo(min(bolt_ammo, ammo)). Dormant at bolt_count 1. UNCHANGED."
+      - "No muzzle flash (Base W_MuzzleFlash); the bolt's recoil/W_SetupShot recoil 2 is applied. UNCHANGED."
     verification:
-      - { kind: code-read, ref: "Arc.cs:322-364 AttackBoltBurst vs arc.qc:142-192,599-627", result: pass }
+      - { kind: code-read, ref: "Arc.cs:363-411 AttackBoltBurst vs arc.qc:142-192,599-627", result: pass }
     confidence: high
-    notes: "ProjectileCatalog renders ArcBolt (TR_WIZSPIKE trail, GlowSprite, Bounce). SND_ARC_BOLT_FIRE (electro_fire2) played once per burst (Arc.cs:363) — Base plays it per bolt via W_SetupShot; matches at bolt_count 1."
+    notes: "ProjectileCatalog renders ArcBolt. SND_ARC_BOLT_FIRE (electro_fire2) played once per burst (Arc.cs:410) — Base plays it per bolt via W_SetupShot; matches at bolt_count 1. Wave-2 added Projectiles.MakeShootable to the spawned bolt (see explode_bounce row) but did not change the burst loop / refire2 / ammo-fraction shape."
 
   - id: weapon-arc.bolt.explode_bounce
     name: "Bolt impact: bounce-or-explode with radius damage + shoot-down"
@@ -270,6 +274,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Arc.cs:BoltTouch"
       - "src/XonoticGodot.Common/Gameplay/Weapons/Arc.cs:ExplodeBolt"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Projectiles.cs:MakeShootable"
     constants:
       - { name: "bolt_damage", base: "25", port: "25", match: true }
       - { name: "bolt_edgedamage", base: "12.5", port: "12.5", match: true }
@@ -290,12 +295,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Touch player-detect uses (TakeDamage==Aim || Flags.Client) (Arc.cs:369); Base keys on toucher.takedamage==DAMAGE_AIM only (arc.qc:116). Behaviorally equivalent for players; the extra Flags.Client OR is a subtle predicate diff."
-      - "Shoot-down (W_Arc_Bolt_Damage) detonates immediately on any damage (Arc.cs:354 ExplodeBolt); Base subtracts damage from RES_HEALTH and only explodes when HP<=0 (arc.qc:99-111), so a partial-damage hit leaves the bolt alive in Base but kills it in the port."
+      - "Bounce path (bolt_bounce_count > 0) does not clear owner, set HITTYPE_BOUNCE, or emit EFFECT_BALL_SPARKS like Base; dormant at stock bolt_bounce_count 0."
     verification:
-      - { kind: code-read, ref: "Arc.cs:367-401 BoltTouch/ExplodeBolt vs arc.qc:76-140", result: pass }
+      - { kind: code-read, ref: "Arc.cs:414-450 BoltTouch/ExplodeBolt + Projectiles.cs:71-99 MakeShootable/ShootDown vs arc.qc:76-140", result: pass }
+      - { kind: code-read, ref: "DamageSystem.cs:331 dispatches GtEventDamage for non-player victims -> MakeShootable shim is live", result: pass }
     confidence: high
-    notes: "RadiusDamage via WeaponSplash with bolt_* values is exact. EFFECT_ELECTRO_IMPACT + SND_ARC_BOLT_IMPACT on explode (Arc.cs:395-399). The shoot-down HP-threshold gap added vs the draft."
+    notes: "FIXED in Wave-2 (both baseline gaps closed): (1) BoltTouch now keys solely on `other.TakeDamage == DamageMode.Aim` (Arc.cs:418), dropping the extra Flags.Client OR, matching arc.qc:116; (2) shoot-down now routes through Projectiles.MakeShootable -> ShootDown which SUBTRACTS damage from RES_HEALTH and only fires ExplodeBolt at HP<=0 (Projectiles.cs:90-98), so a partial-damage graze leaves the bolt alive — matching W_Arc_Bolt_Damage (arc.qc:99-111). Live via DamageSystem.EventDamage (non-player GtEventDamage dispatch). RadiusDamage/EFFECT_ELECTRO_IMPACT/SND_ARC_BOLT_IMPACT unchanged + correct. Status upgraded logic partial->faithful."
 
   - id: weapon-arc.checkammo
     name: "Ammo checks (wr_checkammo1/2) + out-of-ammo auto-switch"
@@ -306,13 +311,14 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Arc.cs:CheckAmmoPrimary"
       - "src/XonoticGodot.Common/Gameplay/Weapons/Arc.cs:CheckAmmoSecondary"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireGate.cs:WeaponAmmo.Check"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireGate.cs:493 (WeaponAmmo.Check Arc case)"
     constants:
-      - { name: "beam_ammo gate", base: "cells > 0 (any)", port: "cells >= 6", match: false }
+      - { name: "beam_ammo gate", base: "!beam_ammo || cells > 0", port: "Beam.Ammo==0 || cells > 0", match: true }
       - { name: "bolt_ammo gate", base: "cells >= bolt_ammo (1)", port: "cells >= 1", match: true }
+      - { name: "burst-beam gate (bolt=0)", base: "overheat_max>0 && (!burst_ammo || cells>0)", port: "OverheatMax>0 && (BurstAmmo==0 || cells>0)", match: true }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: na
       presentation: na
       audio: na
@@ -320,12 +326,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Primary beam requires `cells >= beam_ammo (6)` (Arc.cs:412); Base wr_checkammo1 is `(!beam_ammo || cells > 0)` i.e. needs only cells > 0 (arc.qc:666). A player with 1-5 cells fires the beam in Base but auto-switches away in the port. Confirmed real bug."
-      - "Burst-beam branch of wr_checkammo2 (bolt=0: `overheat_max>0 && (!burst_ammo || cells>0)`, arc.qc:676-678) is not reproduced — port uses `cells >= burst_ammo (15)` (Arc.cs:416) for the burst-beam mode."
+      - "Minor: Base wr_checkammo2 bolt branch also counts reloaded `weapon_load` (cells >= bolt_ammo from the reserve) as satisfying; the port has no per-weapon reload reserve, so this OR-term is absent. Irrelevant without the reload system (g_balance_arc_reload_ammo 0 at stock)."
     verification:
-      - { kind: value-diff, ref: "Arc.cs:412,416 vs arc.qc:664-679; dispatch confirmed live at WeaponFireGate.cs:493 (Arc case) -> CheckAmmoWithAutoSwitch -> SwitchToOtherWeapon", result: fail }
+      - { kind: value-diff, ref: "Arc.cs:464-476 vs arc.qc:664-679; dispatch confirmed live at WeaponFireGate.cs:493 -> CheckAmmoWithAutoSwitch -> SwitchToOtherWeapon", result: pass }
     confidence: high
-    notes: "Dispatched live via WeaponAmmo.Check (Arc case, WeaponFireGate.cs:493) into the fire gate auto-switch. The bolt gate matches at stock values."
+    notes: "FIXED in Wave-2 (both baseline gaps closed): primary CheckAmmoPrimary is now `Beam.Ammo==0 || cells > 0` (Arc.cs:465), matching `!beam_ammo || GetResource>0` — a player with 1-5 cells now keeps firing the beam instead of auto-switching (the confirmed bug). Secondary burst-beam branch is now `OverheatMax>0 && (BurstAmmo==0 || cells>0)` (Arc.cs:475) matching arc.qc:676-678. Bolt gate `cells >= bolt_ammo` already matched. Dispatched live via WeaponAmmo.Check (Arc case, WeaponFireGate.cs:493) into the auto-switch. Status upgraded partial->faithful."
 
   - id: weapon-arc.beam.visual
     name: "Visible beam rendering (Draw_ArcBeam / ENT_CLIENT_ARC_BEAM)"
@@ -351,14 +356,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "CORRECTION vs draft: the beam does NOT route through BeamRenderer.Beam. arc_beam is registered isTrail:true (EffectsList.cs:51), and EffectSystem.ClassifyUncached checks the trail flag FIRST (line 676) so it classifies as Trail, never reaching the EffectClass.Beam route (line 695). The arc_beam effectinfo block is `type spark` trailspacing 10 with NO `orientation beam` line, so BuildFromInfo's EiOrientation.Beam route (line 1116) is also never taken. The beam renders as a SPARK PARTICLE TRAIL swept origin->endpos, not a cylindric beam."
-      - "No dedicated networked beam entity (ENT_CLIENT_ARC_BEAM): the beam is re-emitted as an arc_beam trail each SERVER tick and drawn STRAIGHT, not the curving bezier sweep."
-      - "Missing spinning MDL_ARC_MUZZLEFLASH flash entity, per-beam_type thickness (8/14), beam color, hit/muzzle dynamic lights (ARC_BT_HIT hitlight 20 / muzzlelight 50), heal-beam variant visuals (ARC_BEAM_HEAL), and team-color tint."
+      - "The beam does NOT route through BeamRenderer.Beam. arc_beam is registered isTrail:true (EffectsList.cs:51), classified as Trail first, so the EffectClass.Beam route is never reached; the arc_beam effectinfo block is `type spark` trailspacing 10 with no `orientation beam` line, so the EiOrientation.Beam route is also never taken. Renders as a SPARK PARTICLE TRAIL swept origin->endpos, not a cylindric beam. UNCHANGED by Wave-1/2."
+      - "No dedicated networked beam entity (ENT_CLIENT_ARC_BEAM): the beam is re-emitted as an arc_beam trail each SERVER tick and drawn STRAIGHT, not the curving bezier sweep. UNCHANGED."
+      - "Missing spinning MDL_ARC_MUZZLEFLASH flash entity, per-beam_type thickness (8/14), beam color, hit/muzzle dynamic lights (ARC_BT_HIT hitlight 20 / muzzlelight 50), heal-beam variant visuals (ARC_BEAM_HEAL registered but not emitted on the heal branch), and team-color tint. UNCHANGED."
     verification:
-      - { kind: code-read, ref: "EffectsList.cs:51 isTrail:true + EffectSystem.cs:676 trail-first classify + effectinfo.txt:8172 arc_beam `type spark` no-orientation", result: pass }
-      - { kind: code-read, ref: "ClientWorld.cs:332 Effects.Beams wired non-null; route exists but unreached for arc", result: pass }
+      - { kind: code-read, ref: "EffectsList.cs:51 isTrail:true + EffectSystem trail-first classify + effectinfo arc_beam `type spark` no-orientation", result: pass }
     confidence: high
-    notes: "Liveness UPGRADED unknown->live: a spark particle trail IS emitted every tick along the beam (so the beam is faintly visible), but it is the WRONG visual and the BeamRenderer/Draw_ArcBeam fidelity is absent. The draft's BeamRenderer.Beam port_ref was incorrect and is removed."
+    notes: "A spark particle trail IS emitted every tick along the beam (so the beam is faintly visible), but it is the WRONG visual and Draw_ArcBeam fidelity is absent. Wave-1/2 did not touch the beam rendering."
 
   - id: weapon-arc.heat_persistence
     name: "Heat drop/pickup migration + reset on death (wr_drop/pickup/resetplayer/playerdeath)"
@@ -380,11 +384,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "arc_overheat / arc_cooldown are not migrated to a dropped Arc and restored on pickup (Base wr_drop/wr_pickup arc.qc:684-700), and not cleared on reset/death (wr_resetplayer/wr_playerdeath arc.qc:701-716). The port keeps heat on the slot state (st.BeamHeat/ArcOverheat) with no drop/pickup/death hooks. Mostly dormant since primary beam_heat is 0."
+      - "arc_overheat / arc_cooldown are not migrated to a dropped Arc and restored on pickup (Base wr_drop/wr_pickup), and not cleared on reset/death (wr_resetplayer/wr_playerdeath). The port keeps heat on the slot state (st.BeamHeat/ArcOverheat) with no drop/pickup/death hooks. Mostly dormant since primary beam_heat is 0. UNCHANGED by Wave-1/2 (WeaponThrowing.cs:50 notes no port weapon implements wr_drop yet)."
     verification:
-      - { kind: grep, ref: "no wr_drop/wr_pickup/arc_overheat-migration in Arc.cs", result: fail }
+      - { kind: grep, ref: "no wr_drop/wr_pickup/arc_overheat-migration in Arc.cs; only st.BeamHeat/ArcOverheat in EntityWeaponState", result: fail }
     confidence: high
-    notes: "New feature row added by the verifier (the draft folded this into beam.heat_overheat notes without a row)."
+    notes: "Still missing. Wave-1/2 did not add a drop/pickup/death hook for arc heat."
 
   - id: weapon-arc.smoke_overheat_fx
     name: "Arc_Smoke: overheat smoke, overheat fire particles, overheat loop sound"
@@ -403,8 +407,8 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No heat-fraction EFFECT_ARC_SMOKE while heating, no EFFECT_ARC_OVERHEAT_FIRE while overheated+firing, and no SND_ARC_LOOP_OVERHEAT loop (with its stop-on-cool/switch logic). The barrel never visibly/audibly smokes or jams."
+      - "No heat-fraction EFFECT_ARC_SMOKE while heating, no EFFECT_ARC_OVERHEAT_FIRE while overheated+firing, and no SND_ARC_LOOP_OVERHEAT loop (with its stop-on-cool/switch logic). The barrel never visibly/audibly smokes or jams. UNCHANGED by Wave-1/2."
     verification:
-      - { kind: grep, ref: "EffectsList registers ARC_SMOKE/ARC_OVERHEAT/ARC_OVERHEAT_FIRE (lines 55-57) but no caller emits them; arc_smoke_sound state absent", result: fail }
+      - { kind: grep, ref: "EffectsList registers ARC_SMOKE/ARC_OVERHEAT/ARC_OVERHEAT_FIRE (EffectsList.cs:55-57) but no caller emits them; arc_smoke_sound state absent", result: fail }
     confidence: high
-    notes: "EffectsList registers ARC_SMOKE/ARC_OVERHEAT/ARC_OVERHEAT_FIRE but nothing emits them; Arc_Smoke is called every tick at the top of Base wr_think (arc.qc:566) and is entirely unported."
+    notes: "EffectsList registers ARC_SMOKE/ARC_OVERHEAT/ARC_OVERHEAT_FIRE but nothing emits them; Arc_Smoke is called every tick at the top of Base wr_think (arc.qc:566) and is entirely unported. Wave-1/2 did not address this."

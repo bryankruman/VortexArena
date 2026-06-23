@@ -5,9 +5,9 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 7
   worst_gaps:
-    - "Per-client cl_multijump opt-in/out/cap is NOT implemented: a player who sets cl_multijump 0 (opt out) or cl_multijump 2+ still gets multijump in the port; Base disables it for that client (>1 -> return, and a 0/falsey client value also fails the ready-gate truthiness factor so the ready flag never arms). The g_multijump_client server-default (used when cl_multijump==-1) is parsed but never read."
-    - "maxspeed gate uses Horiz2D (xy speed) but Base vdist(player.velocity,<=,maxspeed) is the full 3D speed including velocity_z -- when g_multijump_maxspeed>0 the port allows re-jumps Base would reject (and vice versa) near the cap. Default g_multijump_maxspeed=0 makes this inert, so it only bites a non-default ruleset."
-    - "The serverinfo/scoreboard active-mutators list (BuildMutatorsString ':multijump' / BuildMutatorsPrettyString ', Multi jump') is not produced for this mutator."
+    - "Per-client cl_multijump opt-out/cap (cl_multijump 0 or 2+) is still non-functional: the gate LOGIC was added (>1 -> return; the ready-gate truthiness factor; -1 -> g_multijump_client substitution), but its data source ClientMultijumpProvider is DEAD -- no host code ever assigns it (unlike the analogous Inventory.PriorityProvider, wired at Commands.cs:324). It always returns -1, so every client is treated as 'server decides' and the per-client opt-out/cap can never fire. The g_multijump_client server default IS now read and honored."
+    - "The serverinfo/scoreboard active-mutators list (BuildMutatorsString ':multijump' / BuildMutatorsPrettyString ', Multi jump') is still not produced for this mutator; no central active-mutators aggregator exists in the port."
+    - "multijump_count is not networked as a stat; whether predicted client re-jump grants stay synced with the server tally near the count limit is still untraced."
 features:
   - id: mutator-multijump.enable.registration
     name: "Registration + enable cvar (g_multijump is both switch and extra-jump count)"
@@ -17,7 +17,7 @@ features:
       - "common/stats.qh:153,167 (int autocvar_g_multijump; REGISTER_STAT(MULTIJUMP, INT, autocvar_g_multijump))"
       - "mutators.cfg:474 (set g_multijump 0)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/MultijumpMutator.cs:39-40 (IsEnabled), :45-62 (Hook caches tuning cvars)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MultijumpMutator.cs:59-60 (IsEnabled), :65-84 (Hook caches tuning cvars)"
       - "src/XonoticGodot.Server/GameWorld.cs:511 (MutatorActivation.Apply on the live boot path)"
       - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:60-69 (Apply: only IsEnabled mutators are Hook()ed)"
     constants:
@@ -37,7 +37,7 @@ features:
     verification:
       - { kind: code, ref: "[Mutator] attr -> Mutators.All; MutatorActivation.Apply() at GameWorld.cs:511 calls Add()->Hook() only for IsEnabled mutators; Hook() subscribes PlayerPhysics + PlayerJump chains", result: pass }
     confidence: high
-    notes: "The cvar value is simultaneously the enable switch AND the extra-jump count (-1 = infinite). CSQC registers always-true and reads STAT(MULTIJUMP); the port runs a single shared physics path and only hooks the mutator when g_multijump!=0, so its in-hook `MaxJumps==0 -> return` guard is effectively dead (mirrors Base CSQC's `if(!PHYS_MULTIJUMP) return` which IS meaningful there because CSQC is always-registered). Tuning cvars are cached in Hook() from the loaded mutators.cfg store; a mid-match g_multijump* change is not re-read until Apply() re-runs (same caching pattern as bloodloss; no live-reread test was performed)."
+    notes: "Unchanged by Wave-2. The cvar value is simultaneously the enable switch AND the extra-jump count (-1 = infinite). CSQC registers always-true and reads STAT(MULTIJUMP); the port runs a single shared physics path and only hooks the mutator when g_multijump!=0, so its in-hook `MaxJumps==0 -> return` guard is effectively dead (mirrors Base CSQC's `if(!PHYS_MULTIJUMP) return`). Tuning cvars are cached in Hook() from the loaded mutators.cfg store; a mid-match g_multijump* change is not re-read until Apply() re-runs (same caching pattern as bloodloss; no live-reread test was performed)."
 
   - id: mutator-multijump.counter.ground_reset
     name: "Reset the per-air-time extra-jump counter on landing (PlayerPhysics hook)"
@@ -46,7 +46,7 @@ features:
       - "common/mutators/mutator/multijump/multijump.qc:36-47 (MUTATOR_HOOKFUNCTION(multijump, PlayerPhysics))"
       - "common/stats.qh:165-166 (.int multijump_count; REGISTER_STAT(MULTIJUMP_COUNT, INT, this.multijump_count))"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/MultijumpMutator.cs:71-78 (OnPlayerPhysics)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MultijumpMutator.cs:93-100 (OnPlayerPhysics)"
       - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:188-189 (MutatorHooks.PlayerPhysics.Call each physics step)"
       - "src/XonoticGodot.Common/Gameplay/Mutators/EntityMutatorState.cs:50 (int MultijumpCount)"
     constants:
@@ -65,7 +65,7 @@ features:
     verification:
       - { kind: code, ref: "OnPlayerPhysics subscribed to MutatorHooks.PlayerPhysics; called at PlayerPhysics.cs:189 each physics step (fired at the exact QC point: after frozen/blocked + conveyor velocity-fix, before the movement branch)", result: pass }
     confidence: high
-    notes: "Base CSQC additionally copies the networked stat into the local field (player.multijump_count = PHYS_MULTIJUMP_COUNT) BEFORE the on-ground reset, for prediction sync (#ifdef CSQC, multijump.qc:40-42). The port has no explicit stat-copy step (see counter.networking row); whether the predicted client count stays synced with the server tally is unresolved."
+    notes: "Unchanged by Wave-2. Base CSQC additionally copies the networked stat into the local field (player.multijump_count = PHYS_MULTIJUMP_COUNT) BEFORE the on-ground reset, for prediction sync (#ifdef CSQC, multijump.qc:40-42). The port has no explicit stat-copy step (see counter.networking row)."
 
   - id: mutator-multijump.jump.rejump_grant
     name: "Midair re-jump grant: ready-gate debounce + count/speed/maxspeed gates + add-vs-set z (PlayerJump hook)"
@@ -76,34 +76,32 @@ features:
       - "common/physics/player.qh:205 (IS_JUMP_HELD = !(flags & FL_JUMPRELEASED); FL_JUMPRELEASED = BIT(12))"
       - "common/stats.qh:163 (REGISTER_STAT(MULTIJUMP_SPEED, FLOAT))"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/MultijumpMutator.cs:81-136 (OnPlayerJump), :86 (IS_JUMP_HELD mapping), :138-149 (Horiz2D, JumpVelocity)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MultijumpMutator.cs:103-167 (OnPlayerJump), :116 (IS_JUMP_HELD mapping), :118 (ready-gate truthiness factor now present), :126 (3D maxspeed via Velocity.Length()), :169-180 (Horiz2D, JumpVelocity)"
       - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:759-792 (CheckPlayerJump host; calls PlayerJump only on ButtonJump||ButtonJetpack; sets JumpReleased when jump not held), :819-823 (PlayerJumpArgs build + pj.Multijump writeback), :841 (doublejump bypasses the airborne early-out)"
       - "src/XonoticGodot.Common/Gameplay/Mutators/EntityMutatorState.cs:50,52 (MultijumpCount, MultijumpReady)"
     constants:
-      - { name: "ready gate", base: "!IS_JUMP_HELD && !IS_ONGROUND && client_multijump -> ready=true else false", port: "!jumpHeld && !OnGround -> ready=true else false (client_multijump truthiness factor OMITTED)", match: false }
+      - { name: "ready gate", base: "!IS_JUMP_HELD && !IS_ONGROUND && client_multijump -> ready=true else false", port: "!jumpHeld && !OnGround && clientMultijump != 0 -> ready=true else false (truthiness factor now present)", match: true }
       - { name: "count gate", base: "PHYS_MULTIJUMP_COUNT < phys_multijump || phys_multijump == -1", port: "MaxJumps == -1 || MultijumpCount < MaxJumps", match: true }
       - { name: "speed gate", base: "velocity_z > PHYS_MULTIJUMP_SPEED (FLOAT, default -999999)", port: "Velocity.Z > MinSpeed (-999999f)", match: true }
-      - { name: "maxspeed gate", base: "g_multijump_maxspeed==0 || vdist(player.velocity,<=,maxspeed) [3D vlen]", port: "MaxSpeed==0f || Horiz2D(player) <= MaxSpeed [2D xy only]", match: false }
+      - { name: "maxspeed gate", base: "g_multijump_maxspeed==0 || vdist(player.velocity,<=,maxspeed) [3D vlen]", port: "MaxSpeed==0f || player.Velocity.Length() <= MaxSpeed [3D, now matches vdist]", match: true }
       - { name: "add-mode (g_multijump_add=1)", base: "M_ARGV(2)=true unconditionally (core adds jumpvel on top of z)", port: "args.Multijump=true", match: true }
       - { name: "set-mode (g_multijump_add=0)", base: "if velocity_z<jumpvelocity: M_ARGV(2)=true; velocity_z=0 (core then re-adds -> z==jumpvel)", port: "if Velocity.Z<jumpVel: Multijump=true; Velocity.Z=0", match: true }
       - { name: "count increment", base: "if phys_multijump > 0: ++multijump_count (NOT incremented when -1/infinite)", port: "if MaxJumps > 0: MultijumpCount++", match: true }
       - { name: "ready reset after grant", base: "multijump_ready = false (require release+press again)", port: "MultijumpReady = false", match: true }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "The ready-gate's client_multijump truthiness factor is omitted: Base requires client_multijump to be truthy to arm multijump_ready, so a falsey/0 client value never even arms a re-jump; the port always arms it from the server setting (see jump.client_gate row)."
-      - "maxspeed gate uses Horiz2D (xy speed) but Base vdist(player.velocity,<=,maxspeed) is the full 3D speed including velocity_z -- when g_multijump_maxspeed>0 the port allows re-jumps that Base would reject (and vice versa) near the cap. Default g_multijump_maxspeed=0 makes this inert, so it only bites a non-default ruleset."
+    gaps: []
     verification:
-      - { kind: code, ref: "OnPlayerJump subscribed to the PlayerJump chain; host calls it only on a jump/jetpack press (CheckPlayerJump:759) exactly like Base CheckPlayerJump:542; pj.Multijump written back at PlayerPhysics.cs:823, honored at line 841", result: pass }
-    confidence: medium
-    notes: "Core logic (ready-gate press/release debounce via FL_JUMPRELEASED<->EntFlags.JumpReleased, count/speed gates, add-vs-set z branch where z is zeroed then re-added by the core jump to land exactly at jumpvelocity, count increment, ready-reset) is faithful and live, fired on the same gameplay path (jump pressed). Two divergences vs Base: (a) the omitted client_multijump factor in the ready gate; (b) the 2D-vs-3D maxspeed comparison. JumpVelocity() reads sv_jumpvelocity (260 fallback) -- matches the core PlayerJump mjumpheight source for the common no-crouch case; Base's PHYS_JUMPVELOCITY honors the crouch jumpvelocity, the port's set-mode threshold uses the non-crouch value (minor edge case)."
+      - { kind: code, ref: "OnPlayerJump subscribed to the PlayerJump chain; host calls it only on a jump/jetpack press (CheckPlayerJump:759) exactly like Base CheckPlayerJump:542; pj.Multijump written back at PlayerPhysics.cs:823, honored at line 841. Wave-2 added the `&& clientMultijump != 0` ready-gate factor (MultijumpMutator.cs:118) and changed maxspeed from Horiz2D to Velocity.Length() (line 126).", result: pass }
+    confidence: high
+    notes: "FIXED by Wave-2 (both prior divergences closed): (a) the previously-omitted client_multijump truthiness factor is now present in the ready gate (`&& clientMultijump != 0`); (b) the maxspeed comparison is now the full 3D speed Velocity.Length(), matching Base vdist (was 2D Horiz2D). Core logic (press/release debounce via FL_JUMPRELEASED<->EntFlags.JumpReleased, count/speed gates, add-vs-set z branch, count increment, ready-reset) remains faithful and live, fired on the jump-pressed path. Confidence raised to high. Residual minor edge: JumpVelocity() reads sv_jumpvelocity (260 fallback) -- matches the core PlayerJump mjumpheight source for the common no-crouch case; Base's PHYS_JUMPVELOCITY honors the crouch jumpvelocity, the port's set-mode threshold uses the non-crouch value (minor edge case, unchanged from baseline). NOTE: the clientMultijump value here is sourced from the same dead provider tracked in jump.client_gate; on the default path it resolves to ClientDefault=1, which is truthy, so the factor matches Base default behavior."
 
   - id: mutator-multijump.jump.client_gate
     name: "Per-client cl_multijump opt-in/out/cap with g_multijump_client server default"
@@ -113,28 +111,28 @@ features:
       - "common/mutators/mutator/multijump/multijump.qh:4 (REPLICATE_INIT(int, cvar_cl_multijump))"
       - "common/stats.qh:158,164 (bool autocvar_g_multijump_client = true; REGISTER_STAT(MULTIJUMP_CLIENT, BOOL, autocvar_g_multijump_client))"
       - "mutators.cfg:473,475 (seta cl_multijump -1; set g_multijump_client 1)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MultijumpMutator.cs:46 (ClientDefault field), :54 (ClientMultijumpProvider hook -- DEAD, never assigned), :82 (ClientDefault read from g_multijump_client cvar), :110-114 (gate: provider->-1->ClientDefault substitution, >1 -> return)"
     constants:
-      - { name: "cl_multijump (replicated per-client field) default", base: "-1 (server decides)", port: "none (no replicated cl_multijump field; never read)", match: false }
-      - { name: "g_multijump_client (STAT MULTIJUMP_CLIENT, the server default for cl_multijump==-1) default", base: "1 (true)", port: "none (cvar present in store but never read)", match: false }
-      - { name: "disable rule", base: "client_multijump > 1 -> return (no multijump for this client)", port: "none", match: false }
+      - { name: "cl_multijump (replicated per-client field) default", base: "-1 (server decides)", port: "ClientMultijumpProvider returns -1 when unwired -- and it IS always unwired (no host assigns it)", match: false }
+      - { name: "g_multijump_client (STAT MULTIJUMP_CLIENT, the server default for cl_multijump==-1) default", base: "1 (true)", port: "ClientDefault = (int)Cvars.GetFloat(\"g_multijump_client\") -> 1 (mutators.cfg:475); now read and honored", match: true }
+      - { name: "disable rule", base: "client_multijump > 1 -> return (no multijump for this client)", port: "clientMultijump > 1 -> return (logic present, but clientMultijump can never exceed ClientDefault since the per-client source is dead)", match: false }
     status:
-      logic: missing
-      values: missing
+      logic: partial
+      values: partial
       timing: na
       presentation: missing
       audio: na
-      liveness: na
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "A player who sets cl_multijump 0 (opt out) or cl_multijump 2+ still gets multijump in the port; Base disables it for that client (>1 -> return, and a falsey client value also fails the ready-gate truthiness factor so the ready flag never arms)."
-      - "g_multijump_client (the server-side per-client default applied when cl_multijump == -1) is parsed from mutators.cfg but never read; the port always uses the global server setting."
-      - "No replicated cl_multijump field/cvar exists in the port."
+      - "The per-client opt-out/cap is non-functional: ClientMultijumpProvider (the QC cvar_cl_multijump REPLICATE source) is declared but NEVER assigned by any host code. The analogous Inventory.PriorityProvider IS wired (Commands.cs:324 via GetClientCvar(p,\"cl_weaponpriority\")); the multijump equivalent was added as a seam but left dead. It always returns -1, so a client who sets cl_multijump 0 or 2+ is still treated as 'server decides' and still gets multijump."
+      - "Because the per-client value can never be 0, the rejump_grant ready-gate truthiness factor (`clientMultijump != 0`) can also never gate to false on the default path -- it only ever sees ClientDefault."
     verification:
-      - { kind: code, ref: "grep across port src/** and game/**: no cl_multijump or g_multijump_client read anywhere (only the source comment at MultijumpMutator.cs:16 acknowledging the deferral)", result: fail }
+      - { kind: code, ref: "grep -rn ClientMultijumpProvider over src/**: only the declaration (line 54) and the read (line 110) inside MultijumpMutator itself; no assignment anywhere. By contrast PriorityProvider has a live assignment at Commands.cs:324. g_multijump_client IS now read at MultijumpMutator.cs:82.", result: fail }
     confidence: high
-    notes: "CORRECTION to draft: cl_multijump and g_multijump_client are TWO distinct things. cl_multijump is the per-client REPLICATE field (cvar_cl_multijump; declared int in the .qh but REPLICATE'd as bool in the .qc -- a Base type quirk, irrelevant to the port). g_multijump_client is STAT(MULTIJUMP_CLIENT) (BOOL), the server-side default substituted when cl_multijump==-1. The port implements neither. Functionally: in a default server (every client cl_multijump -1) the result is identical to Base because the substituted g_multijump_client 1 is truthy and <=1; the gap only manifests when a client opts out/caps or an admin changes g_multijump_client. Documented in-code, but it is a behavioral gap not a deliberate design change, so flagged missing rather than intended_divergence."
+    notes: "PARTIAL FIX by Wave-2. Two of the three constants moved: (1) the g_multijump_client SERVER DEFAULT is now read from the cvar store (ClientDefault) and honored in the -1 substitution -- this closes the previously-missing server-default portion and is LIVE/faithful on the default path; (2) the gate LOGIC (>1 -> return; -1 -> default; truthiness factor) is now coded. BUT the per-client portion is still effectively MISSING because its data source (ClientMultijumpProvider) is dead -- a textbook 'compiles but isn't wired' seam. Functionally: in a default server (every client cl_multijump -1) the result matches Base, exactly as before; the gap that remains is the per-client opt-out/cap, which still cannot fire. Status downgraded from baseline's all-missing to partial (server-default live, per-client dead). To fully close: assign ClientMultijumpProvider in the server Commands ctor like PriorityProvider, reading the replicated cl_multijump value."
 
   - id: mutator-multijump.jump.dodging_redirect
     name: "Dodging horizontal-velocity redirect toward movement wish on a re-jump (g_multijump_dodging)"
@@ -143,7 +141,7 @@ features:
       - "common/mutators/mutator/multijump/multijump.qc:84-108 (PHYS_MULTIJUMP_DODGING redirect inside the granted branch; vlen(vec2(velocity)); makevectors(v_angle_y*'0 1 0'); wishdir*curspeed; keep z)"
       - "common/stats.qh:157,160 (float autocvar_g_multijump_dodging = 1; REGISTER_STAT(MULTIJUMP_DODGING, INT, autocvar_g_multijump_dodging))"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/MultijumpMutator.cs:114-129 (dodging branch, runs only when args.Multijump granted)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MultijumpMutator.cs:149-160 (dodging branch, runs only when args.Multijump granted)"
     constants:
       - { name: "g_multijump_dodging default", base: "1 (REGISTER_STAT INT; cvar declared float)", port: "1 -> bool true", match: true }
       - { name: "input gate", base: "PHYS_CS.movement_x != 0 || movement_y != 0", port: "MovementForward != 0 || MovementRight != 0", match: true }
@@ -163,7 +161,7 @@ features:
     verification:
       - { kind: code, ref: "dodging branch inside OnPlayerJump runs only when args.Multijump was granted (same chain liveness as rejump_grant); input gate + curspeed + yaw-only makevectors + redirect all line up with multijump.qc:86-107", result: pass }
     confidence: medium
-    notes: "Base's commented-out SVQC branch (antilag-averaged topspeed via antilag_takebackavgvelocity, multijump.qc:92-99) is NOT in the shipping path -- the live Base path is plain vlen(vec2(velocity)), which the port matches. g_multijump_dodging is an INT stat in Base (any non-zero truthy); the port stores a bool -- equivalent for all normal values. Yaw-source equivalence (ViewAngles.Y vs v_angle_y) is structurally correct but unverified against a live view-angle frame, hence medium confidence."
+    notes: "Unchanged by Wave-2. Base's commented-out SVQC branch (antilag-averaged topspeed via antilag_takebackavgvelocity, multijump.qc:92-99) is NOT in the shipping path -- the live Base path is plain vlen(vec2(velocity)), which the port matches. g_multijump_dodging is an INT stat in Base (any non-zero truthy); the port stores a bool -- equivalent for all normal values. Yaw-source equivalence (ViewAngles.Y vs v_angle_y) is structurally correct but unverified against a live view-angle frame, hence medium confidence."
 
   - id: mutator-multijump.counter.networking
     name: "multijump_count networked as a stat for client prediction sync"
@@ -189,7 +187,7 @@ features:
     verification:
       - { kind: code, ref: "MultijumpCount is a field on EntityMutatorState; no stat-replication or CSQC copy step found, but the port's shared-physics/prediction model was not fully traced for this unit", result: fail }
     confidence: low
-    notes: "Base relies on REGISTER_STAT to ship multijump_count to CSQC so client prediction of the re-jump matches the server. The port's prediction architecture (single shared physics path) may make this moot or may need an explicit sync -- unresolved. Marked unknown/low per the no-inflated-confidence rule; a runtime/prediction check is needed to resolve it."
+    notes: "Unchanged by Wave-2. Base relies on REGISTER_STAT to ship multijump_count to CSQC so client prediction of the re-jump matches the server. The port's prediction architecture (single shared physics path) may make this moot or may need an explicit sync -- unresolved. Marked unknown/low per the no-inflated-confidence rule; a runtime/prediction check is needed to resolve it."
 
   - id: mutator-multijump.presentation.mutator_list_string
     name: "Active-mutators serverinfo/scoreboard string (:multijump / , Multi jump)"
@@ -210,8 +208,8 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The serverinfo/scoreboard active-mutators list (BuildMutatorsString ':multijump' / BuildMutatorsPrettyString ', Multi jump') is not produced for this mutator."
+      - "The serverinfo/scoreboard active-mutators list (BuildMutatorsString ':multijump' / BuildMutatorsPrettyString ', Multi jump') is not produced for this mutator. No central active-mutators aggregator exists in the port (confirmed: no BuildMutatorsString / active_mutators / mutators_list producer found in src/)."
     verification:
-      - { kind: code, ref: "no BuildMutatorsString/PrettyString equivalent for multijump in MultijumpMutator; no central per-mutator name aggregation found feeding it during this audit", result: fail }
-    confidence: medium
-    notes: "No BuildMutatorsString equivalent for multijump found. Cosmetic -- does not affect gameplay. Confidence medium because the port MAY aggregate the active-mutator name list centrally (e.g. from MutatorBase.NetName='multijump') rather than per-mutator; that central path was not audited here, so the ':multijump' code tag might be derivable while the pretty ', Multi jump' label is not."
+      - { kind: code, ref: "grep -rn BuildMutatorsString/active_mutators/MutatorsString over src/**: zero producers (only parity-plan + spec docs mention it). Mutators carry NetName='multijump' but nothing aggregates them into a serverinfo/scoreboard string.", result: fail }
+    confidence: high
+    notes: "Unchanged by Wave-2 (STILL OPEN). Cosmetic -- does not affect gameplay. Confidence raised to high this audit: a direct grep confirms there is no central BuildMutatorsString equivalent anywhere in the port, so neither the ':multijump' code tag nor the ', Multi jump' pretty label is produced. This is the most pervasive shared gap across all mutators (per the parity-plan analysis); fixing it is a framework-level task, not multijump-specific."

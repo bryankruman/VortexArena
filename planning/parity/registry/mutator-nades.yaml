@@ -5,9 +5,9 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 21
   worst_gaps:
-    - "The throw input is dead: InputCommand.InputButtons (src/XonoticGodot.Net/InputCommand.cs:11) has NO nade/offhand/hook/weapon_drop bit (only Attack/Jump/Attack2/Zoom/Crouch/Use), and Entity.OffhandFirePressed is ASSIGNED NOWHERE in src/ (verified: only HookMutator/OffhandBlasterMutator/NadesMutator READ it; NadeAltButton is set only inside NadeThrow itself, never by input). So OffhandThink runs every tick with keyPressed=false and a player can never prime or throw a nade. NadeThrow.CheckThrow (the weapon_drop path) has no caller (NadesMutator does not subscribe ForbidThrowCurrentWeapon). The entire subsystem (charge, toss, all 11 booms, pickup, shoot-down, orbs) is dead on the live path — same wire as the offhand hook/blaster (TODO.md T11)."
+    - "STILL OPEN after Wave-2 (re-verified 2026-06-22): the throw input is dead. InputCommand.InputButtons (src/XonoticGodot.Net/InputCommand.cs:11) STILL has NO nade/offhand/hook/weapon_drop bit (only Attack/Jump/Attack2/Zoom/Crouch/Use), and Entity.OffhandFirePressed is STILL ASSIGNED NOWHERE in src/ (only HookMutator/OffhandBlasterMutator/NadesMutator READ it; NadeAltButton is set only inside NadeThrow itself, never by input). So OffhandThink runs every tick with keyHeld=false and a player can never prime or throw a nade. NadeThrow.CheckThrow (the weapon_drop path) still has no caller (NadesMutator does not subscribe ForbidThrowCurrentWeapon). Wave-2 touched the input/offhand layer (ClientNet replicated-cvar set, OffhandBlaster refire-factor) but added NO nade/offhand input bit. The entire subsystem (charge, toss, all 11 booms, pickup, shoot-down, orbs) remains dead on the live path — same wire as the offhand hook/blaster (TODO.md T11)."
     - "All presentation is missing (headless port): no projectile model/trail (nade_customize/spawn_held_nade trail), no orb 3D model + 2D color flash (orb_draw/orb_draw2d), no darkness blind overlay (HUD_DarkBlinking) + SND_BLIND, no spawn-loc EF_STARDUST, no DrawAmmoNades bonus-nade ammo-panel icon. The only wired piece — the held-nade charge ring (CrosshairPanel.NadeTimer) — never shows because no nade can be primed."
-    - "Lifecycle cleanup hooks are NOT ported: NadesMutator subscribes ONLY PlayerSpawn/PlayerPreThink/PlayerDies/DamageCalculate. MakePlayerObserver / ClientDisconnect / reset_map_global (nades_RemovePlayer = nades_Clear + RemoveBonus + delete spawnloc), PutClientInServer (RemoveBonus), SpectateCopy (copy nade stats to spectator), VehicleEnter (toss held nade), and DropSpecialItems (toss held nade) are all unsubscribed/absent — a held nade, banked bonus, or spawn marker leaks across observer/disconnect/round-reset, and a player entering a vehicle keeps a primed nade. nades_Clear/RemoveBonus exist as methods but have no live caller for these paths."
+    - "Lifecycle cleanup is only PARTLY ported (Wave-2 progress): NadesMutator now subscribes PlayerSpawn/PlayerPreThink/PlayerDies/DamageCalculate + VehicleEnter (NEW: tosses the held nade on boarding, faithful to sv_nades.qc:667, and VehicleEnter.Call has live sites in VehicleBoarding.cs). STILL absent: MakePlayerObserver / ClientDisconnect / reset_map_global (nades_RemovePlayer = nades_Clear + RemoveBonus + delete spawnloc), PutClientInServer (RemoveBonus), SpectateCopy (copy nade stats to spectator), DropSpecialItems (toss held nade) — their HookChains do not even exist in MutatorHooks (only VehicleEnter does). So a held nade, banked bonus, or spawn marker still leaks across observer/disconnect/round-reset/death-drop. nades_Clear/RemoveBonus exist but have no live caller on those paths."
     - "nade_damage omits the melee-slap branch (force*10, damage=max_health*0.1 for melee primary/secondary weapons) and the Nade_Damage mutator hook; napalm ball damageforcescale 4 is not applied (modeled as Burning status, no knockback); pokenade monster_lifetime (150s despawn) is missing; freezetag revive-nade suppresses damage but never unfreezes/revives (FreezeTag seam); ice revival_time<1.5s re-freeze skip omitted."
 features:
   - id: mutator-nades.enable.predicate
@@ -587,26 +587,27 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Nades/NadeThrow.cs:Clear"
       - "src/XonoticGodot.Common/Gameplay/Nades/NadeBonus.cs:RemoveBonus"
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadesMutator.cs:OnVehicleEnter"
     constants: []
     status:
-      logic: missing
+      logic: partial
       values: na
       timing: na
       presentation: na
       audio: na
-      liveness: dead
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "NadesMutator.Hook subscribes ONLY PlayerSpawn/PlayerPreThink/PlayerDies/DamageCalculate. The QC cleanup hooks are NOT ported: MakePlayerObserver / ClientDisconnect / reset_map_global (nades_RemovePlayer = nades_Clear + RemoveBonus + delete nade_spawnloc), PutClientInServer (RemoveBonus). nades_Clear/RemoveBonus exist as methods but have no live caller on these paths -> a held nade, banked bonus, or spawn marker leaks across observer/disconnect/round-reset."
-      - "VehicleEnter (toss the held nade on boarding) is NOT subscribed by NadesMutator even though the VehicleEnter HookChain exists in the port (MutatorHooks.cs:432) — a player keeps a primed nade in a vehicle."
-      - "DropSpecialItems (toss held nade) has no port hook at all (no DropSpecialItems HookChain)."
-      - "SpectateCopy (copy NADE_TIMER/NADE_BONUS_TYPE/NADE_BONUS/NADE_BONUS_SCORE/pokenade_type to the spectator) has no port hook — a spectator's nade HUD ring / bonus state is not mirrored from the spectatee."
+      - "STILL MISSING: MakePlayerObserver / ClientDisconnect / reset_map_global (nades_RemovePlayer = nades_Clear + RemoveBonus + delete nade_spawnloc) and PutClientInServer (RemoveBonus) are not ported — their HookChains do not exist in MutatorHooks at all. nades_Clear/RemoveBonus exist as methods but have no live caller on these paths -> a held nade, banked bonus, or spawn marker leaks across observer/disconnect/round-reset."
+      - "STILL MISSING: DropSpecialItems (toss held nade on death-drop) has no port hook at all (no DropSpecialItems HookChain)."
+      - "STILL MISSING: SpectateCopy (copy NADE_TIMER/NADE_BONUS_TYPE/NADE_BONUS/NADE_BONUS_SCORE/pokenade_type to the spectator) has no port hook — a spectator's nade HUD ring / bonus state is not mirrored from the spectatee."
     verification:
-      - { kind: code, ref: "grep MakePlayerObserver|ClientDisconnect|reset_map_global|PutClientInServer|SpectateCopy|DropSpecialItems|VehicleEnter in Nades/ -> only doc comments; no .Add subscription", result: fail }
-      - { kind: code, ref: "MutatorHooks has VehicleEnter but no MakePlayerObserver/ClientDisconnect/reset_map_global/SpectateCopy/DropSpecialItems chains", result: fail }
+      - { kind: code, ref: "Wave-2 (commit ec788f7): NadesMutator.Hook now adds MutatorHooks.VehicleEnter (NadesMutator.cs:58); OnVehicleEnter tosses player.Nade with Toss(player,true,(0,0,100),max(NadeWait,Time+0.05)) == sv_nades.qc:667 toss_nade args -> faithful", result: pass }
+      - { kind: code, ref: "VehicleEnter.Call live in VehicleBoarding.cs:192/223 (boarding path) -> the new hook IS live", result: pass }
+      - { kind: code, ref: "grep MakePlayerObserver|ClientDisconnect|reset_map_global|PutClientInServer|SpectateCopy|DropSpecialItems in Nades/.Add -> none; MutatorHooks has only VehicleEnter chain, none of the other five", result: fail }
     confidence: high
-    notes: "Mostly moot while the throw input is dead (a player can never hold a nade or bank a usable bonus), but these are real omitted Base hooks and the cleanup leak becomes live the moment the input wire lands. SpectateCopy is the most observable (HUD mirror)."
+    notes: "Wave-2 closed the VehicleEnter bullet: the held-nade toss on boarding is now ported AND live (faithful toss args). The four remaining cleanup hooks are still absent (their chains don't exist). All remain effectively moot while the throw input is dead (a player can't hold a nade or bank a usable bonus), but they are real omitted Base hooks and the leaks become live the moment the input wire lands. SpectateCopy is the most observable (HUD mirror). logic upgraded missing->partial, liveness dead->partial (1 of 5 hooks now live)."
 
   - id: mutator-nades.damage.freezetag_revive
     name: "Damage_Calculate: freezetag revive-nade"

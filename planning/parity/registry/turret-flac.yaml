@@ -5,13 +5,13 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 10
   worst_gaps:
-    - "aim_maxpitch hardcoded 90 vs Base 35 — port head aims far outside the real ±35° flak cone (acquires high/low missiles it shouldn't)"
-    - "target scoring biases not passed to RunCombat — uses TurretParams defaults (rangeBias=1, angleBias=1) instead of Base rangebias 0.25 / anglebias 0.5, so target-selection preference diverges"
-    - "respawntime uses TurretSpawn default 60 vs Base 90 — destroyed FLAC respawns 30s too early"
     - "port turret_die does a min(ammo,50) RadiusDamage death blast that Base does NOT — the Base blast (sv_turrets.qc:182) is commented out; the port adds an unintended on-death explosion"
-    - "shot_spread 0.0125 vs Base 0.02; target_range_optimal 2000 vs Base 1250 — value drift"
-    - "all presentation missing: PROJECTILE_HAGAR trail, BLASTER muzzleflash, head-frame cycle, head-shake, head model/bone"
+    - "fuse time uses DistAimPos/shotSpeed (muzzle->aim distance) instead of Base tur_impacttime, which comes from a forward tracebox to trace_endpos (sv_turrets.qc:523) — diverges when geometry stops the shot short"
+    - "all presentation missing: PROJECTILE_HAGAR trail, BLASTER muzzleflash, head-frame cycle, TFL_DMG_HEADSHAKE head-shake, head model/bone"
     - "hidden player FLAC weapon (FlacAttack, impulse 5) not implemented"
+    - "respawn schedules at now+respawntime; Base nextthink = time + respawntime - 0.2 (minor 0.2s timing offset)"
+  notable_fixes_since_last_audit:
+    - "Wave-2 closed the four numeric/aim gaps that dominated the prior audit: shot_spread 0.0125->0.02, target_range_optimal 2000->1250, aim_maxpitch 90->35, respawntime 60->90, the target_select_*bias weights (rangebias 0.25 / anglebias 0.5 / playerbias 0) now passed, the track accel_rot 0.7 / blendrate 0.2 now passed, and the unintended zPredict aim flag removed."
 features:
   - id: turret-flac.identity.spawn
     name: "FLAC turret identity, hitbox, model, health, map spawn"
@@ -34,7 +34,7 @@ features:
       - { name: "team default", base: "FLOAT_MAX", port: "float.MaxValue", match: true }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: na
       presentation: missing
       audio: na
@@ -46,7 +46,7 @@ features:
     verification:
       - { kind: code, ref: "FlacTurret ctor + TurretSpawn.Init; MapObjectsRegistry.cs:209 registers turret_flac", result: pass }
     confidence: high
-    notes: "Identity/hitbox/health/body-model faithful. Head model + bone are presentation, deferred in port. spawnflags TUR_FLAG_SPLASH|FASTPROJ|MISSILE are Base attribs that drive behaviour folded into the port's fire/aim params, not stored as a port flag field."
+    notes: "Identity/hitbox/health/body-model faithful. Head model + bone are presentation, deferred in port. spawnflags TUR_FLAG_SPLASH|FASTPROJ|MISSILE are Base attribs folded into the port's fire/aim params, not stored as a port flag field. (values upgraded partial->faithful: the only constant mismatch left is the head model, which is presentation, not a numeric value.)"
 
   - id: turret-flac.spawnfunc.liveness
     name: "turret_flac map spawnfunc wired to a live per-frame think"
@@ -74,7 +74,7 @@ features:
       - { kind: code, ref: "MapObjectsRegistry.RegisterAll registers turret_flac (line 209); called from GameInit.cs:21; TurretSpawnFuncs.Spawn arms NextThink=Now each frame; g_turrets default 1 confirmed in both Base + port turrets.cfg", result: pass }
       - { kind: unverified, ref: "not observed in a running match; no flac-specific test (only generic MLRS turret-projectile obituary test)", result: unknown }
     confidence: medium
-    notes: "Wiring is complete and on the real BSP entity-lump path. Unexercised by any test; whether stock maps place turret_flac is an open question. ruleset-XPM sets g_turrets 0 (turrets off in XPM), but default ruleset leaves it on."
+    notes: "Wiring complete and on the real BSP entity-lump path. Unexercised by any test; whether stock maps place turret_flac is open. ruleset-XPM sets g_turrets 0; default ruleset leaves it on."
 
   - id: turret-flac.target.select_flags
     name: "Target filtering: missiles-only, no turrets, team, range (anti-projectile role)"
@@ -100,9 +100,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "FlacTurret.Select matches tr_setup flags; range/min match turrets.cfg:69-70", result: pass }
+      - { kind: code, ref: "FlacTurret.Select matches tr_setup flags (verified against flac.qc tr_setup NOTURRETS|MISSILESONLY); range/min match turrets.cfg:69-70", result: pass }
     confidence: high
-    notes: "The anti-projectile role (only shoots enemy missiles) is correctly modeled by MISSILESONLY + NOTURRETS + TeamCheck. Note port LOS flag is not set in Select (Base default flags include LOS-style validation); LOS gate only runs when SelectLos is present — Base sv_turrets default target_select_flags do include LOS, so omitting it is a minor logic narrowing, but LOS for a missiles-only flak turret rarely matters."
+    notes: "The anti-projectile role (only shoots enemy missiles) is correctly modeled by MISSILESONLY + NOTURRETS + TeamCheck. Base default target_select_flags include LOS; port Select omits LOS, a minor logic narrowing that rarely matters for a missiles-only flak turret."
 
   - id: turret-flac.target.scoring_biases
     name: "Target-selection scoring biases (range/angle/missile/player/same)"
@@ -111,29 +111,28 @@ features:
       - "common/turrets/sv_turrets.qc:turret_targetscore_generic"
       - "turrets.cfg:73-77 (g_turrets_unit_flac_target_select_*bias)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Turrets/FlacTurret.cs:Think (TurretParams)"
-      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:ScoreTarget,TurretParams(defaults)"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/FlacTurret.cs:23-46,77-83 (bias consts -> TurretParams)"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:ScoreTarget(300-333),SelectTarget"
     constants:
-      - { name: "rangebias", base: "0.25", port: "1 (TurretParams default, not passed)", match: false }
-      - { name: "anglebias", base: "0.5", port: "1 (default, not passed)", match: false }
-      - { name: "missilebias", base: "1", port: "1 (default)", match: true }
-      - { name: "playerbias", base: "0", port: "1 (default; moot — MISSILESONLY rejects players)", match: false }
-      - { name: "samebias", base: "1", port: "1 (default)", match: true }
+      - { name: "rangebias", base: "0.25", port: "0.25 (RangeBias const, passed)", match: true }
+      - { name: "anglebias", base: "0.5", port: "0.5 (AngleBias const, passed)", match: true }
+      - { name: "missilebias", base: "1", port: "1 (MissileBias const, passed)", match: true }
+      - { name: "playerbias", base: "0", port: "0 (PlayerBias const, passed; moot — MISSILESONLY rejects players)", match: true }
+      - { name: "samebias", base: "1", port: "1 (SameBias const, passed)", match: true }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: na
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "FlacTurret.Think constructs TurretParams without rangeBias/angleBias/playerBias args, so it uses the struct defaults (rangeBias=1, angleBias=1, playerBias=1) instead of Base rangebias 0.25 / anglebias 0.5 / playerbias 0; target-selection preference among multiple in-range missiles diverges (Base weights angle/range much lower relative to the missile bonus)."
+    gaps: []
     verification:
-      - { kind: code, ref: "FlacTurret.Think TurretParams ctor omits rangeBias/angleBias/playerBias (verified against TurretParams default args: rangeBias=1, angleBias=1, playerBias=1, missileBias=1, sameBias=1)", result: fail }
+      - { kind: code, ref: "FlacTurret.Think now passes rangeBias:0.25 sameBias:1 angleBias:0.5 missileBias:1 playerBias:0; TurretAI.ScoreTarget (lines 325-328) applies dScore*RangeBias + aScore*AngleBias + mScore*MissileBias + pScore*PlayerBias, and SelectTarget seeds the sticky enemy with *SameBias (line 352)", result: pass }
     confidence: high
-    notes: "ScoreTarget logic is faithful; only the per-unit bias weights are wrong (left at defaults). playerbias mismatch is harmless (players already filtered by MISSILESONLY). missilebias and samebias happen to match the defaults."
+    notes: "FIXED since prior audit. Wave-2 added the five per-unit bias constants and threads them into TurretParams; ScoreTarget/SelectTarget consume all five and the values now match turrets.cfg exactly. playerbias 0 is harmless either way (players already filtered by MISSILESONLY)."
 
   - id: turret-flac.aim.lead_compensate
     name: "Lead aim + shot-traveltime compensation (intercept a fast missile)"
@@ -142,25 +141,24 @@ features:
       - "common/turrets/turret/flac.qc:tr_setup (aim_flags = LEAD|SHOTTIMECOMPENSATE)"
       - "common/turrets/sv_turrets.qc:turret_aim_generic"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Turrets/FlacTurret.cs:Think (lead:true, shotTimeCompensate:true, zPredict:true)"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/FlacTurret.cs:Think (lead:true, shotTimeCompensate:true; zPredict NOT set)"
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:AimPoint"
     constants:
-      - { name: "aim_flags", base: "TFL_AIM_LEAD | TFL_AIM_SHOTTIMECOMPENSATE", port: "lead + shotTimeCompensate (+zPredict extra)", match: false }
+      - { name: "aim_flags", base: "TFL_AIM_LEAD | TFL_AIM_SHOTTIMECOMPENSATE", port: "lead + shotTimeCompensate (zPredict default false)", match: true }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Port adds zPredict:true (gravity-arc lead) which Base FLAC tr_setup does NOT set (Base aim_flags is only LEAD|SHOTTIMECOMPENSATE). zPredict only fires for non-OnGround WALK/STEP/TOSS/BOUNCE-movetype targets; flak shells target FLYMISSILE projectiles, so in practice it never triggers — but it is an unintended extra aim flag (logic divergence)."
+    gaps: []
     verification:
-      - { kind: code, ref: "tr_setup aim_flags (LEAD|SHOTTIMECOMPENSATE only) vs FlacTurret.Think params (lead, shotTimeCompensate, zPredict); AimPoint.ZPredict gated on IsGroundAffected(WALK/STEP/TOSS/BOUNCE) && !OnGround", result: fail }
+      - { kind: code, ref: "Base flac.qc tr_setup aim_flags = TFL_AIM_LEAD | TFL_AIM_SHOTTIMECOMPENSATE (verified); FlacTurret.Think now passes only lead+shotTimeCompensate (zPredict argument dropped, defaults false). TurretParams.ZPredict false => AimPoint skips the gravity-arc branch", result: pass }
     confidence: high
-    notes: "Lead + shot-traveltime compensation faithful (the core intercept math). Extra zPredict flag is a minor unintended divergence; effectively inert for FLYMISSILE missile targets (which are not ground-affected movetypes)."
+    notes: "FIXED since prior audit. Wave-2 removed the unintended zPredict:true argument, so the port aim flag set is now exactly LEAD|SHOTTIMECOMPENSATE, matching Base. The core intercept math (lead by refire + shot traveltime) was already faithful."
 
   - id: turret-flac.aim.track_motor
     name: "Head track motor (fluid-inertia) + per-axis aim limits"
@@ -169,32 +167,30 @@ features:
       - "common/turrets/sv_turrets.qc:turret_track"
       - "turrets.cfg:83-90 (aim_speed/maxrot/maxpitch/track_*)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Turrets/FlacTurret.cs:Think (aimMaxPitch/aimMaxRot/trackType)"
-      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Track,TurretParams(defaults)"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/FlacTurret.cs:35,48-51,79-83 (aimMaxPitch/track consts -> TurretParams)"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Track(456-522)"
     constants:
       - { name: "aim_speed", base: "200", port: "200", match: true }
       - { name: "aim_maxrot", base: "360", port: "360", match: true }
-      - { name: "aim_maxpitch", base: "35", port: "90", match: false }
+      - { name: "aim_maxpitch", base: "35", port: "35 (AimMaxPitch const, passed)", match: true }
       - { name: "track_type", base: "3 (fluid-inertia)", port: "TrackFluidInertia (3)", match: true }
-      - { name: "track_accel_pitch", base: "0.5", port: "0.5 (TurretParams default)", match: true }
-      - { name: "track_accel_rot", base: "0.7", port: "0.5 (default, not passed)", match: false }
-      - { name: "track_blendrate", base: "0.2", port: "0.35 (default, not passed)", match: false }
+      - { name: "track_accel_pitch", base: "0.5", port: "0.5 (TrackAccelPitch const, passed)", match: true }
+      - { name: "track_accel_rot", base: "0.7", port: "0.7 (TrackAccelRot const, passed)", match: true }
+      - { name: "track_blendrate", base: "0.2", port: "0.2 (TrackBlendRate const, passed)", match: true }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "aim_maxpitch hardcoded 90 vs Base 35: the port head can pitch nearly straight up/down, so it aims at and acquires missiles far outside the real flak cone."
-      - "track_accel_rot (port default 0.5 vs Base 0.7) and track_blendrate (port default 0.35 vs Base 0.2) not passed to TurretParams, so head-slew inertia feel differs."
+    gaps: []
     verification:
-      - { kind: code, ref: "FlacTurret.Think aimMaxPitch:90 vs turrets.cfg:85 (35); trackAccelRot/trackBlendRate left at TurretParams defaults (0.5/0.35) vs cfg 0.7/0.2", result: fail }
+      - { kind: code, ref: "FlacTurret.Think now passes aimMaxPitch:35, trackAccelPitch:0.5, trackAccelRot:0.7, trackBlendRate:0.2; TurretAI.Track TrackFluidInertia branch (lines 494-521) consumes TrackAccelPitch/TrackAccelRot/TrackBlendRate and clamps per axis to aimMaxPitch/aimMaxRot. All match turrets.cfg:84-90", result: pass }
     confidence: high
-    notes: "Track motor type + speed + maxrot + accel_pitch faithful. aim_maxpitch is the impactful mismatch (changes acquisition cone)."
+    notes: "FIXED since prior audit. aim_maxpitch (90->35) was the impactful fix (restores the real flak acquisition cone); track accel_rot (0.5->0.7) and blendrate (0.35->0.2) now passed, restoring the head-slew inertia feel. Track motor type/speed/maxrot were already faithful."
 
   - id: turret-flac.fire.flak_shell
     name: "Flak shell fire: fast splash projectile + timed air-burst fuse"
@@ -202,7 +198,7 @@ features:
     base_refs:
       - "common/turrets/turret/flac_weapon.qc:METHOD(FlacAttack, wr_think)"
       - "common/turrets/turret/flac_weapon.qc:turret_flac_projectile_think_explode"
-      - "common/turrets/sv_turrets.qc:turret_projectile,turret_fire,turret_do_updates"
+      - "common/turrets/sv_turrets.qc:turret_projectile,turret_fire,turret_do_updates (tur_impacttime sv_turrets.qc:523)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Turrets/FlacTurret.cs:Attack"
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:Projectile"
@@ -213,8 +209,8 @@ features:
       - { name: "shot_speed", base: "9000", port: "9000", match: true }
       - { name: "shot_force", base: "25", port: "25", match: true }
       - { name: "shot_refire", base: "0.1", port: "0.1", match: true }
-      - { name: "shot_spread", base: "0.02", port: "0.0125", match: false }
-      - { name: "target_range_optimal", base: "1250", port: "2000", match: false }
+      - { name: "shot_spread", base: "0.02", port: "0.02", match: true }
+      - { name: "target_range_optimal", base: "1250", port: "1250", match: true }
       - { name: "ammo_max", base: "1000", port: "1000", match: true }
       - { name: "ammo_recharge", base: "100", port: "100", match: true }
       - { name: "aim_firetolerance_dist", base: "150", port: "150", match: true }
@@ -224,11 +220,11 @@ features:
       - { name: "snap radius", base: "shot_radius*3", port: "ShotRadius*3", match: true }
       - { name: "lifetime fallback nextthink", base: "time + 9", port: "now + 9", match: true }
       - { name: "fuse jitter", base: "random()*0.01 - random()*0.01", port: "Prandom.Float()*0.01 - Prandom.Float()*0.01", match: true }
-      - { name: "fuse base time", base: "tur_impacttime = vlen(tur_shotorg - trace_endpos)/shot_speed (forward tracebox)", port: "DistAimPos / shot_speed (no forward trace)", match: false }
+      - { name: "fuse base time", base: "tur_impacttime = vlen(tur_shotorg - trace_endpos)/shot_speed (forward tracebox, sv_turrets.qc:523)", port: "DistAimPos / shot_speed (no forward trace)", match: false }
       - { name: "missile_flags", base: "MIF_SPLASH | MIF_PROXY", port: "n/a (no missile_flags field; behaviour folded into the fuse think)", match: false }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: partial
       presentation: missing
       audio: faithful
@@ -236,46 +232,48 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "shot_spread 0.0125 vs Base 0.02 — flak cone tighter than spec."
-      - "target_range_optimal 2000 vs Base 1250 — killzone distance-score peak shifted outward (affects scoring not damage)."
       - "Fuse time uses DistAimPos/shotSpeed (muzzle->aim distance) instead of Base tur_impacttime, which comes from a forward tracebox (sv_turrets.qc:510-523) to trace_endpos; diverges when geometry would stop the shot short of the aim point."
-      - "Presentation missing: PROJECTILE_HAGAR shell trail (the turret_projectile spawns with className 'turret_projectile', so the client classifier never maps it to ProjectileType.Flac/FLAC_TRAIL), EFFECT_BLASTER_MUZZLEFLASH, head-frame cycle (++frame wrap 4)."
+      - "Presentation missing: PROJECTILE_HAGAR shell trail (turret_projectile spawns with className 'turret_projectile', so the client classifier never maps it to a Flac/FLAC_TRAIL projectile type), EFFECT_BLASTER_MUZZLEFLASH, head-frame cycle (++frame wrap 4)."
     verification:
-      - { kind: code, ref: "FlacTurret.Attack reproduces snap-to-enemy + edge==core RadiusDamage; shot_dmg/radius/speed/force/refire match turrets.cfg:60-65; shot_spread (0.0125) + range_optimal (2000) literals differ", result: fail }
+      - { kind: code, ref: "shot_spread now 0.02 (turrets.cfg:64), target_range_optimal now 1250 (turrets.cfg:71); FlacTurret.Attack reproduces snap-to-enemy + edge==core RadiusDamage; shot_dmg/radius/speed/force/refire match turrets.cfg:60-65", result: pass }
+      - { kind: code, ref: "fuse base time still DistAimPos/ShotSpeed (FlacTurret.Attack:105) vs Base forward-traced tur_impacttime (sv_turrets.qc:523)", result: fail }
       - { kind: code, ref: "fire sound weapons/hagar_fire.wav played on SoundChannel.Weapon (matches SND_FlacAttack_FIRE = W_Sound(hagar_fire))", result: pass }
     confidence: high
-    notes: "The signature flak mechanic (timed fuse + air-burst snap-to-enemy + full-radius damage) is faithfully reproduced. Damage/radius/speed/force/refire match. Spread + range_optimal literals and the fuse-time derivation drifted; all client FX missing; fire sound correct."
+    notes: "FIXED since prior audit: shot_spread (0.0125->0.02) and target_range_optimal (2000->1250) now match Base, so values is faithful. STILL OPEN: the fuse-time derivation (DistAimPos vs forward-traced trace_endpos) and all client FX. The signature flak mechanic (timed fuse + air-burst snap-to-enemy + full-radius damage) and the fire sound were already faithful."
 
   - id: turret-flac.lifecycle.respawn
     name: "Death + respawn timer (and the port's extra death blast)"
     layer: [authority]
     base_refs:
-      - "common/turrets/sv_turrets.qc:turret_die,turret_hide,turret_respawn"
+      - "common/turrets/sv_turrets.qc:turret_die(166),turret_hide,turret_respawn (nextthink = time + respawntime - 0.2, line 162)"
       - "turrets.cfg:58 (g_turrets_unit_flac_respawntime 90)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Die,Respawn,EnsureDeathHook"
-      - "src/XonoticGodot.Common/Gameplay/Turrets/FlacTurret.cs:Spawn (no respawnTime arg)"
-      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:Init (respawnTime default 60)"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Die(739-771),Respawn,EnsureDeathHook,EventDamage(710-732)"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/FlacTurret.cs:Spawn (respawnTime: RespawnTime=90)"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:Init (st.RespawnTime=respawnTime), GtEventDamage shim"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:280,324-334 (EventDamage routes non-player edicts via GtEventDamage)"
     constants:
-      - { name: "respawntime", base: "90", port: "60 (TurretSpawn.Init default; FlacTurret passes none)", match: false }
+      - { name: "respawntime", base: "90", port: "90 (FlacTurret.Spawn passes respawnTime: RespawnTime)", match: true }
+      - { name: "respawn nextthink offset", base: "time + respawntime - 0.2 (sv_turrets.qc:162)", port: "now + respawntime (no -0.2)", match: false }
       - { name: "death blast", base: "NONE — RadiusDamage(min(ammo,50)...) is commented out (sv_turrets.qc:182)", port: "min(ammo,50) RadiusDamage at 250 radius (DEATH_TURRET)", match: false }
     status:
       logic: partial
       values: partial
-      timing: partial
+      timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "respawntime 60 vs Base 90: FlacTurret.Spawn calls TurretSpawn.Init without a respawnTime, so it uses the generic 60s default — a destroyed FLAC reactivates 30s early."
-      - "Port TurretAI.Die fires a min(ammo,50) RadiusDamage death blast (250 radius, force min(ammo,50)*5, DEATH_TURRET); Base turret_die has this blast COMMENTED OUT (sv_turrets.qc:182) — Base turrets do not explode on death. The port adds an unintended on-death AoE. The port comment cites sv_turrets.qc:182 as the source, but that line is dead code in Base."
+      - "Port TurretAI.Die (lines 751-755) still fires a min(ammo,50) RadiusDamage death blast (250 radius, force min(ammo,50)*5, DEATH_TURRET); Base turret_die has this blast COMMENTED OUT (sv_turrets.qc:182) — Base turrets do not explode on death. The port adds an unintended on-death AoE. STILL OPEN."
+      - "Respawn schedules at now + respawntime; Base schedules nextthink = time + respawntime - 0.2 (sv_turrets.qc:162). Minor 0.2s timing offset (turret_hide already runs ~0.2s into the death sequence in Base)."
     verification:
-      - { kind: code, ref: "FlacTurret.Spawn -> TurretSpawn.Init(...shotVolly:0) with no respawnTime; default 60 vs turrets.cfg:58 (90)", result: fail }
-      - { kind: code, ref: "Base sv_turrets.qc:182 RadiusDamage in turret_die is commented out; port TurretAI.Die:693-697 actively does the blast", result: fail }
+      - { kind: code, ref: "FlacTurret.Spawn now calls TurretSpawn.Init(... respawnTime: RespawnTime) with RespawnTime=90; TurretSpawn.Init sets st.RespawnTime=respawnTime (line 74). Matches turrets.cfg:58 (90)", result: pass }
+      - { kind: code, ref: "Base sv_turrets.qc:182 RadiusDamage in turret_die is commented out; port TurretAI.Die:751-755 actively does the blast", result: fail }
+      - { kind: code, ref: "death/respawn now driven by a LIVE event_damage path: DamageSystem.Apply(280)->EventDamage(324)->GtEventDamage(331-333)->TurretAI.EventDamage->TakeResource health + Combat.Death->OnAnyDeath(648-654)->Die. The pre-damage gate (TurretAI.Damage) now runs on the live path (Wave-2 wired the GtEventDamage shim in TurretSpawn.Init)", result: pass }
     confidence: high
-    notes: "Respawn-restore (Respawn) faithful. Two divergences: respawn-time value (60 vs 90) and an extra death blast the port produces that Base does not. Base turret_die only unsolidifies + hides (EF_NODRAW) + schedules turret_respawn after respawntime."
+    notes: "FIXED since prior audit: respawntime now 90 (was generic 60 default) — values mismatch narrowed to the -0.2 offset only. Wave-2 also made the turret damage->death path genuinely LIVE (event_damage shim routed through DamageSystem), so the pre-damage gate + retaliation in TurretAI.Damage now actually run. STILL OPEN: the extra death blast Base does not produce. logic stays partial because of the unintended blast."
 
   - id: turret-flac.obituary.death_message
     name: "FLAC kill obituary / death notification (DEATH_TURRET_FLAC)"
@@ -304,7 +302,7 @@ features:
       - { kind: code, ref: "FlacTurret.Attack RadiusDamage passes deathTag: DeathTypes.TurretFlac; DeathTypes.Reg(TurretFlac, Turret, DEATH_SELF_TURRET_FLAC); NotificationsList registers TURRET_FLAC + DEATH_SELF_TURRET_FLAC", result: pass }
       - { kind: unverified, ref: "no flac-specific obituary test; generic test (MonsterTurretVehicleObituaryTests.cs:200) exercises TurretMlrs through the same TurretSpawn.Projectile/RadiusDamage path", result: unknown }
     confidence: high
-    notes: "The FLAC death-tag flows through RadiusDamage as the string deathTag (dual-deathtype model) and resolves to the correct self/murder obituary lines, which are registered in NotificationsList. The generic turret-projectile obituary path is unit-tested (with MLRS); FLAC reuses it identically."
+    notes: "Unchanged since prior audit. The FLAC death-tag flows through RadiusDamage as the string deathTag (dual-deathtype model) and resolves to the correct self/murder obituary lines registered in NotificationsList. The generic turret-projectile obituary path is unit-tested with MLRS; FLAC reuses it identically."
 
   - id: turret-flac.weapon.player_form
     name: "Hidden player FLAC weapon (FlacAttack, impulse 5)"
@@ -331,4 +329,4 @@ features:
     verification:
       - { kind: code, ref: "no FlacAttack / WEP_FLAC player weapon in src (only the turret FlacTurret); flac references in src are all turret/sound/effect/notification", result: fail }
     confidence: high
-    notes: "Shares wr_think with the turret in Base (branches on IS_PLAYER). Only the turret-AI path is ported. The player form is a hidden developer feature."
+    notes: "Unchanged since prior audit. Shares wr_think with the turret in Base (branches on IS_PLAYER). Only the turret-AI path is ported. The player form is a hidden developer feature, out of Wave-1/2 scope."

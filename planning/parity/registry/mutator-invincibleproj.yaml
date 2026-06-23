@@ -5,9 +5,8 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 5
   worst_gaps:
-    - "Enabling g_invincible_projectiles has no observable effect: projectiles cannot be shot down on the live port damage path (DamageSystem.EventDamage routes non-player targets only through GtEventDamage and returns — it NEVER invokes the per-projectile ProjectileDamage callback the weapons install), so there is nothing for the mutator to prevent. The only live ProjectileDamage caller is BreakablehookMutator.cs:79 (grapple chain)."
-    - "Active-mutators string never gains 'Invincible Projectiles' / ':InvincibleProjectiles' (BuildMutatorsString + BuildMutatorsPrettyString hooks not ported); scoreboard/server-browser won't advertise the mutator."
-    - "Client-side active-mutator detection (MUT_INVINCIBLE_PROJECTILES, util.qc:300 / util.qh:60) not ported — the port has no active_mutators / mut_set_active surface at all (zero hits for active_mutators/mut_set_active), so the menu/server-browser 'active mutators' list can never light up this mutator."
+    - "Active-mutators string never gains 'Invincible Projectiles' / ':InvincibleProjectiles' (BuildMutatorsString + BuildMutatorsPrettyString hooks still not ported; no port chain emits a mutator token/display string); scoreboard/server-browser won't advertise the mutator."
+    - "Client-side active-mutator detection (MUT_INVINCIBLE_PROJECTILES, util.qc:300 / util.qh:60) still not ported — the port has no active_mutators / mut_set_active surface at all (zero hits), so the menu/server-browser 'active mutators' list can never light up this mutator."
 features:
   - id: mutator-invincibleproj.core.register
     name: "Mutator registration + enable predicate (g_invincible_projectiles)"
@@ -17,7 +16,8 @@ features:
       - "mutators.cfg:116"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/InvincibleProjectilesMutator.cs:13 (class) / :18 (IsEnabled)"
-      - "src/XonoticGodot.Server/GameWorld.cs:511 (MutatorActivation.Apply)"
+      - "src/XonoticGodot.Server/GameWorld.cs:535 (MutatorActivation.Apply)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:60 Apply / :29 Add (subscribes Hook() for enabled mutators)"
     constants:
       - { name: "g_invincible_projectiles (default)", base: "0", port: "0", match: true }
     status:
@@ -31,10 +31,10 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "InvincibleProjectilesMutator [Mutator] -> Mutators.All; NetName='invincibleprojectiles'; MutatorActivation.Apply() at GameWorld.cs:511 on the live server boot path subscribes Hook() for enabled mutators", result: pass }
-      - { kind: value, ref: "assets/data/.../mutators.cfg:116 'set g_invincible_projectiles 0 ...' == Base mutators.cfg:116 (byte-identical incl. description)", result: pass }
+      - { kind: code, ref: "InvincibleProjectilesMutator [Mutator] -> Mutators.All; NetName='invincibleprojectiles'; MutatorActivation.Apply() (GameWorld.cs:535, was :511) iterates Mutators.All and Add()s every IsEnabled mutator, which calls mut.Hook() subscribing OnEditProjectile to the EditProjectile chain. Live server boot path.", result: pass }
+      - { kind: value, ref: "assets/data/xonotic-data.pk3dir/mutators.cfg:116 'set g_invincible_projectiles 0 \"disable any damage to projectiles ...\"' == Base mutators.cfg:116 byte-identical incl. description", result: pass }
     confidence: high
-    notes: "Registered and activated on the live server boot path; IsEnabled reads the cvar via the facade. QC's string-cvar expr_evaluate reduced to GetFloat(...) != 0 — equivalent for the default and the menu 0/1 values (a non-numeric truthy string like 'on' would differ, but the menu/cfg never sets one)."
+    notes: "Registered + activated on the live server boot path; IsEnabled reads the cvar via the facade (GetFloat(\"g_invincible_projectiles\") != 0). QC's string-cvar expr_evaluate reduced to a float-nonzero test — equivalent for the default and the menu 0/1 values (a non-numeric truthy string like 'on' would differ, but the menu/cfg never sets one). Activation call site moved GameWorld.cs:511->:535 in the Wave-2 edit; still the same live boot path."
 
   - id: mutator-invincibleproj.core.editprojectile_zero_health
     name: "EditProjectile: zero a fired projectile's health so it can't be shot down"
@@ -43,8 +43,10 @@ features:
       - "common/mutators/mutator/invincibleproj/sv_invincibleproj.qc:6-15 MUTATOR_HOOKFUNCTION(invincibleprojectiles, EditProjectile)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/InvincibleProjectilesMutator.cs:35 OnEditProjectile"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:363-369 EditProjectile chain + EditProjectileArgs"
-      - "src/XonoticGodot.Common/Gameplay/Items/Resources.cs:42-70 GetResource/SetResourceExplicit"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:389-395 EditProjectileArgs + EditProjectile chain"
+      - "src/XonoticGodot.Common/Gameplay/Items/Resources.cs:42-70 GetResource/SetResourceExplicit (Health -> Entity.Health)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Projectiles.cs:71-99 MakeShootable/ShootDown (the now-live shoot-down path)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:331-335 EventDamage -> GtEventDamage dispatch"
     constants:
       - { name: "projectile RES_HEALTH set value", base: "0", port: "0", match: true }
       - { name: "guard: only projectiles with health", base: "if(GetResource(proj,RES_HEALTH))", port: "if(proj.GetResource(Health) != 0f)", match: true }
@@ -54,16 +56,16 @@ features:
       timing: faithful
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Enabling g_invincible_projectiles produces no observable behavioral change: shootable projectiles already cannot be shot down on the live path. Weapons install per-projectile shoot-down callbacks (Entity.ProjectileDamage: Devastator.cs:185, Electro.cs:321, Hagar/Mortar/Minelayer/Seeker/Arc/Fireball/OkRpc/Hook), but DamageSystem.EventDamage (DamageSystem.cs:294-298) routes a non-player target ONLY through targ.GtEventDamage and returns — it NEVER invokes targ.ProjectileDamage. The QC g_projectiles_damage / W_CheckProjectileDamage gate is absent (0 hits). So the mutator's health-zeroing defends a mechanic that does not fire on the live path."
+    gaps: []
     verification:
-      - { kind: code, ref: "OnEditProjectile: if (proj.GetResource(Health) != 0f) proj.SetResourceExplicit(Health, 0f) == QC if(GetResource(proj,RES_HEALTH)) SetResourceExplicit(proj,RES_HEALTH,0). GetResource(Health)/SetResourceExplicit -> Entity.Health (Resources.cs:44,60), the same field weapons seed (Devastator missile.Health at :162, Electro orb.Health at :308). EditProjectile.Call fired AFTER the health seed (Devastator seeds :162 calls :191; Electro orb seeds :308 calls :334; Electro primary bolt sets no health so the guard skips it, matching QC).", result: pass }
-      - { kind: code, ref: "Liveness of shoot-down: only live ProjectileDamage?.Invoke across src/ is BreakablehookMutator.cs:79 (grapple chain). DamageSystem.EventDamage has no projectile branch (DamageSystem.cs:287-304). grep g_projectiles_damage/W_CheckProjectileDamage in port = 0 hits.", result: fail }
+      - { kind: code, ref: "OnEditProjectile: if (proj.GetResource(Health) != 0f) proj.SetResourceExplicit(Health, 0f) == QC if(GetResource(proj,RES_HEALTH)) SetResourceExplicit(proj,RES_HEALTH,0). GetResource(Health)/SetResourceExplicit map to Entity.Health (Resources.cs:44,60) — the same field weapons seed AND the same field ShootDown reads.", result: pass }
+      - { kind: code, ref: "LIVENESS NOW WIRED (was partial): Wave-1 added Projectiles.MakeShootable (Projectiles.cs:71), which installs e.GtEventDamage = ShootDown. The pre-existing DamageSystem.EventDamage (DamageSystem.cs:331-335) routes a non-player victim with GtEventDamage!=null through that closure on the live damage path. ShootDown's first line is `if (self.Health <= 0f) return;` (Projectiles.cs:85) — so a projectile whose Health the mutator zeroed never even reaches the g_projectiles_damage gate or detonation. Result: enabling g_invincible_projectiles now produces the real observable effect (projectiles cannot be shot down).", result: pass }
+      - { kind: code, ref: "Live callers of MakeShootable confirmed on weapon-fire: Devastator.cs:209, Electro.cs:358, Hagar.cs:167/196/255, Mortar.cs:207, Minelayer.cs:188, Seeker.cs:237/442, Arc.cs:406 — each fires from the weapon's projectile-spawn path. EditProjectile.Call also fired per-projectile in the same spawn paths (Devastator:202, Electro:363, Mortar:215, etc.). Ordering of MakeShootable vs EditProjectile is irrelevant: ShootDown reads self.Health lazily at hit time, after EditProjectile has zeroed it.", result: pass }
     confidence: high
-    notes: "Mutator handler itself is faithful AND live (its EditProjectile handler runs and zeroes health). liveness:partial because the subsystem it modifies (projectile shoot-down) is dead on the live path, so the net player-observable effect is nil. Cross-cutting weapons/damage port gap, not a defect in the mutator's own logic — it would become correct the moment ProjectileDamage is dispatched from the damage pipeline. (Adversarially re-verified: the draft's 'EventDamage never invokes ProjectileDamage' claim is correct.)"
+    notes: "FIX vs baseline: previously liveness:partial because the projectile shoot-down subsystem was dead on the live path (EventDamage routed non-player victims only through GtEventDamage, and no weapon installed a shoot-down GtEventDamage, so per-projectile ProjectileDamage callbacks were never invoked). Wave-1's Projectiles.MakeShootable closes that: it installs a GtEventDamage shoot-down shim that EventDamage already dispatches, so the mechanic the mutator defends is now genuinely produced. With Health=0, ShootDown's recursion guard short-circuits before the damage subtract/detonate, matching QC's W_*_Damage first-line GetResource(this,RES_HEALTH)<=0 return. Mutator handler is faithful AND now fully live."
 
   - id: mutator-invincibleproj.string.machine
     name: "BuildMutatorsString — append ':InvincibleProjectiles' to active-mutators token string"
@@ -83,11 +85,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No port chain emits ':InvincibleProjectiles'; the port has no active-mutators token-string assembly (only BuildMutatorsString reference in the port is a comment in RocketFlyingMutator.cs)."
+      - "No port chain emits ':InvincibleProjectiles'; the port still has no active-mutators token-string assembly. There is NO BuildMutatorsString HookChain anywhere in src/ (grep for a HookChain<...BuildMutators...> = 0 hits) — only doc-comment mentions in RocketFlyingMutator.cs / SuperSpecMutator.cs / PowerupsMutator.cs."
     verification:
-      - { kind: code, ref: "grep BuildMutatorsString / ':InvincibleProjectiles' across src+game -> only a comment in RocketFlyingMutator.cs, no emitter", result: fail }
+      - { kind: code, ref: "grep BuildMutatorsString / ':InvincibleProjectiles' across src+game -> only comments, no emitter and no hook chain", result: fail }
     confidence: high
-    notes: "Feeds server-browser / stats consumers in Base (colon-separated machine token string). Part of a larger missing active-mutators-string surface shared across mutators."
+    notes: "Unchanged by Waves 1-2. Feeds server-browser / stats consumers in Base (colon-separated machine token string). Part of a larger missing active-mutators-string surface shared across mutators."
 
   - id: mutator-invincibleproj.string.pretty
     name: "BuildMutatorsPrettyString — append ', Invincible Projectiles' to display string"
@@ -107,11 +109,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Scoreboard / HUD / server-browser will not display 'Invincible Projectiles' as an active mutator (BuildMutatorsPrettyString hook not ported; no pretty active-mutators string assembled). The create-game menu checkbox (input side) IS present at game/menu/dialogs/DialogMutators.cs:181."
+      - "Scoreboard / HUD / server-browser will not display 'Invincible Projectiles' as an active mutator (BuildMutatorsPrettyString hook still not ported; no pretty active-mutators string assembled). The create-game menu checkbox (input side) IS present at game/menu/dialogs/DialogMutators.cs:181."
     verification:
       - { kind: code, ref: "grep 'Invincible Projectiles' across src+game -> only DialogMutators.cs:181 checkbox (input), no display-string emitter", result: fail }
     confidence: high
-    notes: "The input/menu surface (checkbox) exists; the server-assembled active-mutators display label does not."
+    notes: "Unchanged by Waves 1-2. The input/menu surface (checkbox) exists; the server-assembled active-mutators display label does not."
 
   - id: mutator-invincibleproj.client.active_mut_flag
     name: "Client active-mutators detection flag (MUT_INVINCIBLE_PROJECTILES)"
@@ -132,8 +134,8 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The Base GetActiveMutators-style scan (util.qc:280-330) walks the active_mutators cvar (or, when empty, the live cvars) and calls mut_set_active(MUT_INVINCIBLE_PROJECTILES) + appends the translated name when g_invincible_projectiles is set, so the menu / server-browser 'active mutators' list and any MUT_ bitmask consumer can light up this mutator. The port has NO active_mutators / mut_set_active / MUT_ flag surface (grep across src+game = 0 hits), so this detection path is entirely absent."
+      - "The Base GetActiveMutators-style scan (util.qc:280-330) walks the active_mutators cvar (or, when empty, the live cvars) and calls mut_set_active(MUT_INVINCIBLE_PROJECTILES) + appends the translated name when g_invincible_projectiles is set, so the menu / server-browser 'active mutators' list and any MUT_ bitmask consumer can light up this mutator. The port still has NO active_mutators / mut_set_active / MUT_ flag surface (grep across src+game = 0 hits)."
     verification:
       - { kind: code, ref: "grep active_mutators / mut_set_active / MUT_INVINCIBLE / ActiveMutators across src+game -> 0 hits", result: fail }
     confidence: high
-    notes: "ADDED by adversarial verifier — the draft mentioned util.qc:300 in spec prose but had no registry row. This is a CLIENT-side cvar-driven detection (distinct from the two server-side BuildMutatorsString hooks above), part of a port-wide-missing active-mutators surface shared by every mutator."
+    notes: "Unchanged by Waves 1-2. CLIENT-side cvar-driven detection (distinct from the two server-side BuildMutatorsString hooks above), part of a port-wide-missing active-mutators surface shared by every mutator."

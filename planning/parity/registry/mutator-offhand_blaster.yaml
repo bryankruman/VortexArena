@@ -5,9 +5,9 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 8
   worst_gaps:
-    - "Offhand blaster can never fire in a match: no input button bit (InputButtons has no hook/offhand bit), no wire field, and BindTable.SetButton has no 'hook' case, so the `+hook` bind sets nothing and OffhandFirePressed is never written true on the server. The entire offhand-fire path is dead."
-    - "BuildMutatorsString/BuildMutatorsPrettyString not ported: the mutator never appears in any machine/pretty mutator-list string (scoreboard/serverinfo/menu); GameLog.Init is even called with no mutator list."
-    - "Client gameplay-tips line ('offhand blaster is enabled, press <key> to use it') not shown — no gameplay-tips builder exists in the port."
+    - "STILL DEAD after Wave-1/2: the offhand blaster can never fire in a match. The input wire was NOT added — InputButtons (src/XonoticGodot.Net/InputCommand.cs:11-20) still has only Attack/Jump/Attack2/Zoom/Crouch/Use (no hook/offhand bit), the C2S Serialize payload carries no such bit, and Entity.OffhandFirePressed has ZERO assignments anywhere in src/ or game/ (verified by grep — only read by HookMutator/NadesMutator/OffhandBlasterMutator). The whole offhand-fire path remains unreachable. This was the #1 baseline gap and the PORTING-PLAN headline; it is untouched."
+    - "BuildMutatorsString/BuildMutatorsPrettyString still not ported: no hook chain or per-mutator implementation exists; the mutator never appears in any machine/pretty mutator-list string. GameLog.Init (GameWorld.cs:717) is still called with no mutators arg → empty ':gameinfo:mutators:' line."
+    - "Client gameplay-tips line and the menu describe text still not ported — no BuildGameplayTipsString builder and no 'offhand' menu entry exist in the port (grep found none)."
 features:
   - id: offhand_blaster.enable.register
     name: "Mutator enable via g_offhand_blaster cvar"
@@ -30,10 +30,10 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "IsEnabled => Api.Cvars.GetFloat(\"g_offhand_blaster\") != 0; MutatorActivation.Apply() called live at GameWorld.cs:511 (Add/Remove reconcile against IsEnabled)", result: pass }
+      - { kind: code, ref: "IsEnabled => Api.Cvars.GetFloat(\"g_offhand_blaster\") != 0; MutatorActivation.Apply() called live at GameWorld.cs:535 (line shifted from 511 in baseline; Add/Remove reconcile against IsEnabled)", result: pass }
       - { kind: value, ref: "Base mutators.cfg:435 'set g_offhand_blaster 0' == port assets/data/xonotic-data.pk3dir/mutators.cfg:435 'set g_offhand_blaster 0'", result: pass }
     confidence: high
-    notes: "Port reads the cvar as a float (!=0); Base uses expr_evaluate on a string. Equivalent for the 0/1 default; would differ only for exotic string values ('true'/expressions). Verified Apply() is the live activation loop."
+    notes: "Unchanged by Wave-1/2 (still faithful/live). Port reads the cvar as a float (!=0); Base uses expr_evaluate on a string. Equivalent for the 0/1 default; would differ only for exotic string values."
   - id: offhand_blaster.spawn.assign
     name: "Assign Blaster to player offhand slot on spawn"
     layer: [authority]
@@ -54,9 +54,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "OnPlayerSpawn sets player.OffhandWeapon = \"blaster\"; MutatorHooks.PlayerSpawn.Call fired live at ClientManager.cs:542", result: pass }
+      - { kind: code, ref: "OnPlayerSpawn sets player.OffhandWeapon = \"blaster\"; MutatorHooks.PlayerSpawn.Call fired live at ClientManager.cs:570 (line shifted from 542 in baseline)", result: pass }
     confidence: high
-    notes: "QC sets player.offhand = OFFHAND_BLASTER (a singleton); port stores the offhand as the string \"blaster\" on Entity.OffhandWeapon. The assignment itself is reachable/live even though the fire it gates is dead."
+    notes: "Unchanged by Wave-1/2. QC sets player.offhand = OFFHAND_BLASTER (a singleton); port stores the offhand as the string \"blaster\" on Entity.OffhandWeapon. The assignment itself is reachable/live even though the fire it gates is dead."
   - id: offhand_blaster.fire.offhand_think
     name: "Offhand fire: hold +hook to fire a Blaster shot without switching weapons"
     layer: [authority, shared]
@@ -66,13 +66,14 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/OffhandBlasterMutator.cs:OnPlayerPreThink"
       - "src/XonoticGodot.Common/Gameplay/Mutators/OffhandBlasterMutator.cs:FireOffhand"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OffhandBlasterMutator.cs:WeaponRateFactor"
       - "src/XonoticGodot.Common/Gameplay/Weapons/Blaster.cs:WrThink (slot.Index >= MaxWeaponSlots)"
     constants:
       - { name: "blaster_primary_refire", base: "0.7", port: "0.7 (Primary.Refire / fallback)", match: true }
-      - { name: "refire * W_WeaponRateFactor(actor)", base: "scaled by rate factor", port: "refire only (no scaling)", match: false }
+      - { name: "refire * W_WeaponRateFactor(actor)", base: "scaled by 1/g_weaponratefactor + WeaponRateFactor mutator hook", port: "now scaled via WeaponRateFactor(player) helper (g_weaponratefactor + WeaponRateFactor.Call hook)", match: true }
     status:
       logic: partial
-      values: partial
+      values: faithful
       timing: partial
       presentation: na
       audio: faithful
@@ -80,14 +81,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "DEAD on the live path: no input button maps to the offhand fire. InputButtons (src/XonoticGodot.Net/InputCommand.cs) has only Attack/Jump/Attack2/Zoom/Crouch/Use — no hook/offhand bit, and the C2S wire payload (Serialize) carries no such bit. BindTable.SetButton has no 'hook' case, so a bound `+hook` press is a no-op. OffhandFirePressed is only ever READ (HookMutator, NadesMutator, here) and never assigned `= true` anywhere in src/ or game/."
-      - "Refire gate omits W_WeaponRateFactor scaling (Base: jump_interval = time + refire * W_WeaponRateFactor(actor)); identical at default rate 1.0, diverges under handicap/rate-factor cvars."
-      - "No vehicle / weaponUseForbidden suppression of the offhand fire (Base clears key_pressed in a vehicle or when weapon use is forbidden — frozen/eliminated). Latent because the path can't fire at all."
+      - "STILL DEAD on the live path (the baseline #1 gap is UNCHANGED): no input button maps to the offhand fire. InputButtons (src/XonoticGodot.Net/InputCommand.cs:11-20) still has only Attack/Jump/Attack2/Zoom/Crouch/Use — no hook/offhand bit — and the C2S Serialize payload carries no such bit. Entity.OffhandFirePressed is assigned NOWHERE in src/ or game/ (grep: zero writes), so OnPlayerPreThink's `if (player.OffhandFirePressed)` is always false. FireOffhand has no caller on the real match path."
+      - "No vehicle / weaponUseForbidden suppression of the offhand fire. Base (weaponsystem.qc:610-612) computes key_pressed = PHYS_INPUT_BUTTON_HOOK(actor) && !actor.vehicle, then clears it if weaponUseForbidden(actor) (frozen/eliminated/etc.). The port's OnPlayerPreThink only guards on Flags&Client and DeadState — no vehicle/forbidden check. Latent because the path can't fire at all."
     verification:
-      - { kind: code, ref: "grep src/ game/ for OffhandFirePressed= : zero writes of true. InputButtons enum has no hook bit; BindTable.SetButton switch has no 'hook' case", result: fail }
-      - { kind: code, ref: "FireOffhand gates on OffhandNextThink and calls Blaster.WrThink on slot index == MaxWeaponSlots (ungated by PrepareAttack); refire fallback 0.7 matches Base", result: pass }
+      - { kind: code, ref: "grep 'OffhandFirePressed *=' over src/ and game/ -> zero matches (verified 2026-06-22). InputButtons enum (InputCommand.cs:11-20) has no hook bit; no BindTable 'hook' case exists.", result: fail }
+      - { kind: code, ref: "Wave-2 added WeaponRateFactor scaling: FireOffhand now does `OffhandNextThink = now + refire * WeaponRateFactor(player)`, and WeaponRateFactor() does 1/g_weaponratefactor then MutatorHooks.WeaponRateFactor.Call. That hook chain has LIVE producers (BuffsMutator.cs:97, PowerupsMutator.cs:95 register it; WeaponFireGate.cs:429 is the in-hand caller), so the scaling is genuine, not a default-1 stub. Matches Base jump_interval = time + refire*W_WeaponRateFactor(actor).", result: pass }
     confidence: high
-    notes: "Fire logic mirrors Base structurally (dedicated high slot ~ Base weaponentities[1], refire-gated, aims from view angles). Triple-confirmed dead: the trigger signal has no producer anywhere up the input/net stack. The same dead button also strands HookMutator's and the nade offhand-throw's +hook paths (NadesMutator reads OffhandFirePressed too; NadeAltButton, by contrast, IS written by NadeThrow). Spec comment 'offhand laser parameters' is inaccurate — Base uses the ordinary W_Blaster_Attack for both offhand and in-hand."
+    notes: "Wave-2 CLOSED the values gap: the W_WeaponRateFactor scaling that the baseline flagged as missing (match:false) is now present and correct (helper mirrors WeaponFireGate.WeaponRateFactor, hook has live producers). Fire logic still mirrors Base structurally (dedicated high slot ~ Base weaponentities[1], refire-gated, aims from view angles). BUT the feature is STILL DEAD: the trigger signal (OffhandFirePressed / a +hook input bit) still has no producer anywhere up the input/net stack — the PORTING-PLAN's headline input-wire fix was NOT done. The same dead button still strands HookMutator's and the nade offhand-throw's +hook paths. timing kept `partial` because the vehicle/weaponUseForbidden suppression is still absent."
   - id: offhand_blaster.fire.blaster_attack
     name: "Blaster primary projectile fired by the offhand (damage/force/speed)"
     layer: [authority]
@@ -109,6 +109,7 @@ features:
       - { name: "delay", base: "0", port: "0", match: true }
       - { name: "shotangle", base: "0", port: "0", match: true }
       - { name: "animtime", base: "0.1", port: "0.1", match: true }
+      - { name: "g_projectiles_interact", base: "1 (balance-xonotic.cfg:203)", port: "1 (Wave-2: OnTouch temporarily sets DamageForceScale=1 on a touched FL_PROJECTILE so the blast can deflect it)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -119,12 +120,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Reachable from the offhand only through the dead offhand-fire button, so the offhand never actually spawns this projectile in a match. (The in-hand Blaster, covered by the weapon audit, IS live — this dead status is the offhand entry point only.)"
+      - "Reachable from the offhand only through the dead offhand-fire button, so the offhand never actually spawns this projectile in a match. (The in-hand Blaster, covered by the weapon audit, IS live — this dead status is the offhand entry point only; UNCHANGED from baseline.)"
     verification:
       - { kind: value, ref: "Blaster.Configure vs bal-wep-xonotic.cfg g_balance_blaster_primary_* (damage 20, edge 10, radius 60, force 375, zscale 1, speed 6000, spread 0, refire 0.7, animtime 0.1, delay 0, lifetime 5, shotangle 0)", result: pass }
-      - { kind: code, ref: "Attack/OnTouch mirror W_Blaster_Attack/W_Blaster_Touch (RadiusDamage, fly bolt, impact sound/effect)", result: pass }
+      - { kind: code, ref: "Attack/OnTouch mirror W_Blaster_Attack/W_Blaster_Touch (RadiusDamage, fly bolt, impact sound/effect). Wave-2 added the g_projectiles_interact==1 deflect hack (OnTouch sets DamageForceScale=1 on a touched projectile, restores after RadiusDamage) — a small fidelity improvement to the shared Blaster touch; fields DamageForceScale + EntFlags.Item exist, change compiles.", result: pass }
     confidence: high
-    notes: "The Blaster weapon itself is fully ported and faithful (weapon audit). Listed here because the offhand reuses it; liveness=dead reflects the offhand entry point only."
+    notes: "The Blaster weapon itself is fully ported and faithful (weapon audit), and Wave-2 nudged it slightly closer to Base via the projectiles-interact deflect hack. Listed here because the offhand reuses it; liveness=dead reflects the offhand entry point only (UNCHANGED — the offhand can't reach it)."
   - id: offhand_blaster.precedence.over_hook
     name: "Offhand blaster overrides the grappling hook offhand when both enabled"
     layer: [authority]
@@ -148,9 +149,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "Registry<MutatorBase>.Sort sorts ordinal by RegistryName(=NetName). 'grappling_hook' (g=0x67) < 'offhand_blaster' (o=0x6F). MutatorActivation.Apply iterates Mutators.All in that order calling Hook()/Add; HookChain.Add appends and Call runs in registration order within the default HookOrder.Any bucket. So OffhandBlasterMutator.OnPlayerSpawn runs AFTER HookMutator.OnPlayerSpawn → OffhandWeapon='blaster' is the last writer, winning. Matches Base's documented override.", result: pass }
+      - { kind: code, ref: "Registry<MutatorBase>.Sort sorts ordinal by RegistryName(=NetName). 'grappling_hook' (g=0x67) < 'offhand_blaster' (o=0x6F). MutatorActivation.Apply iterates Mutators.All in that order calling Hook()/Add; HookChain.Add appends and Call runs in registration order. So OffhandBlasterMutator.OnPlayerSpawn runs AFTER HookMutator.OnPlayerSpawn → OffhandWeapon='blaster' is the last writer, winning. Matches Base's documented override.", result: pass }
     confidence: high
-    notes: "UPGRADED from unknown: precedence is deterministic and correct via the ordinal NetName sort + registration-order hook dispatch. The HookMutator source comment ('the registry NetName sort makes offhand_blaster run AFTER grappling_hook') is verified accurate. The override only affects the OffhandWeapon assignment (live); the fire it would gate is dead for both."
+    notes: "Unchanged by Wave-1/2. Precedence is deterministic and correct via the ordinal NetName sort + registration-order hook dispatch. The override only affects the OffhandWeapon assignment (live); the fire it would gate is dead for both."
   - id: offhand_blaster.report.mutators_string
     name: "Mutator appears in BuildMutatorsString / BuildMutatorsPrettyString"
     layer: [authority]
@@ -171,11 +172,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "BuildMutatorsString/BuildMutatorsPrettyString not ported: the mutator is absent from the scoreboard/serverinfo/menu mutator list. The only mutator-list builder in the port (GameLog.Init's ':gameinfo:mutators:' line) is fed a caller-supplied enumerable that is passed as null at the one call site (GameWorld.cs:673) — so even that list is empty, and it is not the BuildMutatorsString hook."
+      - "STILL MISSING after Wave-1/2: BuildMutatorsString/BuildMutatorsPrettyString not ported. No such hook chain or per-mutator implementation exists in src/ or game/ (grep finds only doc-comment references in CloakedMutator/PowerupsMutator/RocketFlyingMutator/SuperSpecMutator). The only mutator-list builder (GameLog.Init's ':gameinfo:mutators:' line, GameLog.cs:117) is still fed null at its sole call site (GameWorld.cs:717) — so even that list is empty, and it is not the BuildMutatorsString hook."
     verification:
-      - { kind: code, ref: "No BuildMutatorsString/PrettyString hook chain or per-mutator implementation in src/ or game/. GameLog.Init(gametype, map) called with no mutators arg → empty :gameinfo:mutators: line.", result: fail }
+      - { kind: code, ref: "No BuildMutatorsString/PrettyString hook chain or per-mutator implementation in src/ or game/. GameLog.Init(gametype, map) at GameWorld.cs:717 called with no mutators arg → empty :gameinfo:mutators: line.", result: fail }
     confidence: high
-    notes: "Cross-cutting gap shared by most mutators (RocketFlyingMutator's doc mentions a BuildMutatorsString sub-hook but no such chain exists). Tracked here per the per-mutator Base hook."
+    notes: "Cross-cutting gap shared by most mutators; unchanged by Wave-1/2. Tracked here per the per-mutator Base hook."
   - id: offhand_blaster.tips.gameplay_hint
     name: "Client gameplay-tips line announcing the offhand blaster bind"
     layer: [presentation]
@@ -195,11 +196,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Gameplay-tips line ('offhand blaster is enabled, press <key>') not shown to the client; no BuildGameplayTipsString / gameplay-tips builder exists in src/ or game/ (grep found none), and the mutator-active bitfield (mut_is_active / MUT_OFFHAND_BLASTER=24) is not networked to the client."
+      - "STILL MISSING after Wave-1/2: gameplay-tips line ('offhand blaster is enabled, press <key>') not shown to the client. No BuildGameplayTipsString / gameplay-tips builder exists in src/ or game/ (grep found none), and the mutator-active bitfield (mut_is_active / MUT_OFFHAND_BLASTER=24) is not networked to the client."
     verification:
-      - { kind: code, ref: "grep src/ game/ for GameplayTips / 'offhand blaster is enabled' / BuildGameplayTips — zero matches", result: fail }
+      - { kind: code, ref: "grep src/ game/ for GameplayTip / 'offhand blaster is enabled' / BuildGameplayTips — zero matches (verified 2026-06-22)", result: fail }
     confidence: high
-    notes: "Client-side CSQC tip; depends on the mutator active-bitfield (mut_is_active(MUT_OFFHAND_BLASTER)) plant a +hook key lookup (getcommandkey), neither of which is wired in the port. The associated +hook bind is itself dead (see fire.offhand_think)."
+    notes: "Client-side CSQC tip; unchanged by Wave-1/2. Depends on the mutator active-bitfield (mut_is_active(MUT_OFFHAND_BLASTER)) plus a +hook key lookup (getcommandkey), neither wired in the port. The associated +hook bind is itself dead (see fire.offhand_think)."
   - id: offhand_blaster.menu.describe
     name: "Menu mutator-info describe text"
     layer: [presentation]
@@ -219,8 +220,8 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Menu mutator-info describe text not ported: the multi-paragraph description (gives all players a Blaster offhand used with hook, can fire any time but ordinary secondary can't be used, laser-jumping, overrides the hook mutator) has no port equivalent. No 'offhand' entry exists in any menu dialog (DialogMutators / DialogMediaGuide)."
+      - "STILL MISSING after Wave-1/2: menu mutator-info describe text not ported. The multi-paragraph description (gives all players a Blaster offhand used with hook, can fire any time but ordinary secondary can't be used, laser-jumping, overrides the hook mutator) has no port equivalent. No 'offhand' entry exists in any menu dialog (grep game/ for 'offhand' — zero matches)."
     verification:
-      - { kind: code, ref: "grep game/menu for 'offhand'/'blaster' describe — no offhand_blaster mutator-info entry. Base has no create-game checkbox either (no menu/.../dialog_multiplayer_create_mutators ref); only the MENUQC describe info page.", result: fail }
+      - { kind: code, ref: "grep game/ for 'offhand'/'blaster' describe — no offhand_blaster mutator-info entry (verified 2026-06-22). Base has no create-game checkbox either; only the MENUQC describe info page.", result: fail }
     confidence: medium
-    notes: "MENUQC-only descriptive text shown on the mutator-info / media-guide page. Base has NO create-game mutators-dialog checkbox for offhand_blaster (it's cvar/console-toggled), so the only menu surface is this describe text."
+    notes: "MENUQC-only descriptive text shown on the mutator-info / media-guide page; unchanged by Wave-1/2. Base has NO create-game mutators-dialog checkbox for offhand_blaster (cvar/console-toggled), so the only menu surface is this describe text."

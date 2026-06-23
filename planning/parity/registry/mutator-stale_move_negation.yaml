@@ -5,8 +5,7 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 5
   worst_gaps:
-    - "BuildMutatorsString/BuildMutatorsPrettyString unported: mutator never appears in the server-browser / mutator-list string (whole mutator-string subsystem is absent in the port)."
-    - "Tunable cvar zero-guards: explicit `g_smneg_bonus_asymptote 0` or `g_smneg_cooldown_factor 0` are silently rejected (port keeps the default), where Base would honor 0. Edge-case only; the seeded defaults (4 / 0.25) match Base."
+    - "BuildMutatorsString/BuildMutatorsPrettyString unported: mutator never appears in the server-browser / mutator-list string (whole mutator-string subsystem is still absent in the port — no BuildMutators hook chain exists in MutatorHooks)."
 features:
   - id: smneg.registration.enable
     name: "Mutator registration + g_smneg enable predicate"
@@ -16,7 +15,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/StaleMoveNegationMutator.cs:IsEnabled"
       - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:Apply"
-      - "src/XonoticGodot.Server/GameWorld.cs:511"
+      - "src/XonoticGodot.Server/GameWorld.cs:535"
     constants:
       - { name: "g_smneg", base: "false (mutators.cfg 0)", port: "g_smneg != 0", match: true }
     status:
@@ -30,10 +29,10 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "reflection [Mutator] -> Registry<MutatorBase> -> Mutators.All -> MutatorActivation.Apply() at GameWorld.cs:511 (verified, in the live ChangeLevel/ActivateGameType path) -> Hook()", result: pass }
-      - { kind: test, ref: "MutatorBatchT19Tests.cs:99 Assert.NotNull(Mutators.ByName(\"stale_move_negation\")); :155 Boot((\"g_smneg\",\"1\")) activates it", result: pass }
+      - { kind: code, ref: "reflection [Mutator] -> Registry<MutatorBase> -> Mutators.All -> MutatorActivation.Apply() at GameWorld.cs:535 (verified, in the live ChangeLevel/ActivateGameType path) -> Hook(). Activation call shifted 511->535 by surrounding Wave-2 edits; MutatorActivation.cs itself unchanged on this branch.", result: pass }
+      - { kind: test, ref: "MutatorBatchT19Tests.cs Assert.NotNull(Mutators.ByName(\"stale_move_negation\")); Boot((\"g_smneg\",\"1\")) activates it (test unchanged on this branch)", result: pass }
     confidence: high
-    notes: "REGISTER_MUTATOR(mutator_smneg, autocvar_g_smneg) <-> IsEnabled gate (g_smneg!=0). Apply() is the live STATIC_INIT_LATE analogue, confirmed at GameWorld.cs:511 inside the gametype-activation path. IsEnabled also requires Api.Services!=null (port harness guard, no Base analogue, behaviorally inert on the live path)."
+    notes: "REGISTER_MUTATOR(mutator_smneg, autocvar_g_smneg) <-> IsEnabled gate (g_smneg!=0). Apply() is the live STATIC_INIT_LATE analogue, confirmed at GameWorld.cs:535 inside the gametype-activation path. IsEnabled also requires Api.Services!=null (port harness guard, no Base analogue, behaviorally inert on the live path). Unchanged by Wave-1/2."
 
   - id: smneg.tunables
     name: "Tunable cvars + defaults (bonus, asymptote, cooldown_factor, start_health)"
@@ -42,6 +41,7 @@ features:
       - "common/mutators/mutator/stale_move_negation/sv_stale_move_negation.qc:AUTOCVAR"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/StaleMoveNegationMutator.cs:Hook"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/StaleMoveNegationMutator.cs:ReadFloat"
       - "src/XonoticGodot.Common/Gameplay/Mutators/StaleMoveNegationMutator.cs:StartHealth"
     constants:
       - { name: "g_smneg_bonus", base: "true (1)", port: "true", match: true }
@@ -57,12 +57,12 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Zero-guards in Hook(): `if (a != 0f) BonusAsymptote = a;` and `if (cf != 0f) CooldownFactor = cf;` mean an explicit cvar value of 0 is ignored (default kept). Base honors 0 (degenerate). Defaults are seeded from mutators.cfg (4 / 0.25) so normal play matches; only a deliberate 0 diverges."
+    gaps: []
     verification:
-      - { kind: value, ref: "port mutators.cfg:542-545 == Base mutators.cfg:542-545; balance-xonotic.cfg:23 g_balance_health_start 100; Cvars.cs:161 seeds g_balance_health_start 100; ConfigLoader loads mutators.cfg so asymptote/cooldown reach the store", result: pass }
+      - { kind: code, ref: "Wave-2 (git diff main..HEAD StaleMoveNegationMutator.cs) replaced the `if (a != 0f) BonusAsymptote = a;` / `if (cf != 0f) CooldownFactor = cf;` zero-guards with the new ReadFloat(name, fallback) helper, which returns the seeded default ONLY when the raw cvar string is empty/unset and otherwise honors the literal value (incl. an explicit 0) — now bit-faithful to Base reading autocvar_g_smneg_bonus_asymptote / autocvar_g_smneg_cooldown_factor directly.", result: pass }
+      - { kind: value, ref: "port mutators.cfg:542-545 == Base mutators.cfg:542-545 (byte-identical, re-verified); balance-xonotic.cfg g_balance_health_start 100; ConfigLoader loads mutators.cfg so asymptote/cooldown reach the store; StartHealth() reads g_balance_health_start with a 100 fallback matching the xonotic default", result: pass }
     confidence: high
-    notes: "Defaults read in Hook() from the cvar store (mutators.cfg-seeded). g_smneg_bonus uses ReadBool with a proper empty-string fallback (correctly returns false when set to 0). StartHealth() reads g_balance_health_start with a 100 fallback matching the xonotic balance default."
+    notes: "FIXED in Wave-2: the explicit-0 edge case (baseline gap) is closed. Hook() now reads all three tunables via ReadBool/ReadFloat that distinguish 'unset cvar -> keep seeded default' from 'explicit value -> honored', so a deliberate `g_smneg_bonus_asymptote 0` or `g_smneg_cooldown_factor 0` is now honored exactly as Base would (degenerate but faithful). Defaults seeded from mutators.cfg (4 / 0.25) so normal play already matched. g_smneg_bonus uses ReadBool (correctly returns false when set to 0)."
 
   - id: smneg.multiplier_curve
     name: "smneg_multiplier(weight) atan/tan damage-scale curve"
@@ -88,10 +88,10 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "line-by-line diff of Multiplier vs smneg_multiplier; QMath.Pi == M_PI (3.14159265358979)", result: pass }
-      - { kind: test, ref: "MutatorBatchT19Tests.cs:153 StaleMoveNegation_MultiplierDecreasesWithWeight asserts f(0)>f(50)>f(200) (curve exercised at runtime)", result: pass }
+      - { kind: code, ref: "line-by-line diff of Multiplier vs smneg_multiplier; QMath.Pi == M_PI (3.14159265358979). Method body unchanged by Wave-1/2 (git diff touches only Hook/ReadFloat).", result: pass }
+      - { kind: test, ref: "MutatorBatchT19Tests.cs StaleMoveNegation_MultiplierDecreasesWithWeight asserts f(0)>f(50)>f(200) (curve exercised at runtime)", result: pass }
     confidence: high
-    notes: "Verbatim port. Both the staleness (x>0) and bonus (x<=0) branches present and unit-tested as monotonically decreasing in weight."
+    notes: "Verbatim port. Both the staleness (x>0) and bonus (x<=0) branches present and unit-tested as monotonically decreasing in weight. Unchanged by Wave-1/2."
 
   - id: smneg.damage_calculate_hook
     name: "Damage_Calculate hook: scale damage+force, accumulate weight, decay other weapons"
@@ -101,7 +101,7 @@ features:
       - "qcsrc/server/damage.qc:601"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/StaleMoveNegationMutator.cs:OnDamageCalculate"
-      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:219"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:256"
     constants:
       - { name: "damage scale", base: "M_ARGV(4) *= f", port: "args.Damage *= f", match: true }
       - { name: "force scale", base: "M_ARGV(6) *= f", port: "args.Force *= f", match: true }
@@ -119,10 +119,10 @@ features:
     divergence_rationale: "Per-attacker per-weapon weight stored in a ConditionalWeakTable keyed by the attacker entity instead of QC's per-CS() .float x_smneg_weight[] field. Behaviorally identical: server-only, non-networked, lives for the match; chosen to avoid adding an Entity field. Deathtype is a string (project-wide) vs QC int+DEATH_WEAPONMASK; WeaponNetNameOf empty is the faithful analogue of DEATH_WEAPONOF==WEP_Null. The Base FOREACH `it != WEP_Null` guard is automatically satisfied: this port registers NO Null weapon, so Weapons.All holds only real weapons and the loop's `other.RegistryId == wid` skip mirrors `it != w`."
     gaps: []
     verification:
-      - { kind: code, ref: "hook fires at DamageSystem.cs:219 (MutatorHooks.DamageCalculate.Call) AFTER global g_weapondamage/forcefactor (lines 204-214) and BEFORE the self-damage percent (line 225-226) — same pipeline position as Base damage.qc:601", result: pass }
-      - { kind: test, ref: "MutatorBatchT19Tests.cs:167 StaleMoveNegation_RepeatedSameWeapon_ScalesDamageDown drives Combat.Damage 7x with the same weapon; asserts last hit < first hit (full live damage path: Combat.Damage -> DamageSystem -> hook)", result: pass }
+      - { kind: code, ref: "hook fires at DamageSystem.cs:256 (MutatorHooks.DamageCalculate.Call) AFTER global g_weapondamage/forcefactor (lines 242-251) and BEFORE the self-damage percent (line 263) — same pipeline position as Base damage.qc:601. Hook position re-verified (line shifted 219->256 by Wave-2 edits, ordering relative to factors/self-damage unchanged). OnDamageCalculate body unchanged by Wave-1/2.", result: pass }
+      - { kind: test, ref: "MutatorBatchT19Tests.cs StaleMoveNegation_RepeatedSameWeapon_ScalesDamageDown drives Combat.Damage 7x with the same weapon; asserts last hit < first hit (full live damage path: Combat.Damage -> DamageSystem -> hook)", result: pass }
     confidence: high
-    notes: "Event-driven decay (per hit), no timers — identical to Base. Both early-out and the staleness decay are exercised end-to-end through the real damage pipeline in the unit test. Hook ordering: Base default order; port HookChain is registration order (no CBC_ORDER_LAST in Base for smneg)."
+    notes: "Event-driven decay (per hit), no timers — identical to Base. Both early-out and the staleness decay are exercised end-to-end through the real damage pipeline in the unit test. Unchanged by Wave-1/2."
 
   - id: smneg.mutator_string
     name: "BuildMutatorsString / BuildMutatorsPrettyString advertisement"
@@ -144,8 +144,8 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "BuildMutatorsString/BuildMutatorsPrettyString unported: mutator never appears in the server-browser / mutator-list string (whole mutator-string subsystem is absent in the port)."
+      - "BuildMutatorsString/BuildMutatorsPrettyString unported: mutator never appears in the server-browser / mutator-list string. STILL OPEN after Wave-1/2: no BuildMutators/BuildMutatorsPretty HookChain exists in MutatorHooks.cs (the 30 chains there cover damage/spawn/physics/alpha/vehicle/etc. but not the mutator-string event). All BuildMutatorsString references in src/ (Cloaked, Powerups, RocketFlying, SuperSpec) are comments noting the feature is unported."
     verification:
-      - { kind: code, ref: "grep for BuildMutators/MutatorsPretty across src and game found no hook chain", result: fail }
+      - { kind: code, ref: "grep BuildMutators|MutatorsString|MutatorsPretty across src: only 4 doc-comment mentions, zero hook-chain definitions; MutatorHooks.cs has no BuildMutators chain. smneg.cs registers no such hook.", result: fail }
     confidence: high
-    notes: "Cosmetic only; shared by every mutator that has these hooks. The port has no mutator-string subsystem at all, so this is a subsystem-wide absence, not specific to smneg."
+    notes: "Cosmetic only; shared by every mutator that has these hooks. The port has no mutator-string subsystem at all, so this is a subsystem-wide absence, not specific to smneg. Unchanged by Wave-1/2."

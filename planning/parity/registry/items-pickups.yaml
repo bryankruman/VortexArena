@@ -5,11 +5,11 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 12
   worst_gaps:
-    - "cl_autoswitch / CTS autoswitch NOT ported in Item_GiveTo: picking up a better weapon never auto-switches to it (the re-selection block is inline in QC Item_GiveTo, items.qc:525-545/652-681; no autoswitch is reachable from any pickup path)"
+    - "cl_autoswitch / CTS autoswitch logic now PORTED in Item_GiveTo (head+tail), but DEAD on the live path: the AutoswitchProvider/CtsAutoswitchProvider/CtsActiveProvider seams are declared and never assigned (Commands.cs wires Inventory.PriorityProvider at boot but NOT these), so AutoswitchEnabled()==false always — picking up a better weapon still never auto-switches in a real match"
     - "respawn-countdown waypoint sprites + per-second ITEMRESPAWNCOUNTDOWN sound missing: long-respawn megas/powerups show no radar countdown and no ticking sound"
     - "team-item random selection (Item_FindTeam) not wired: maps grouping items by team spawn/respawn each independently instead of one-at-a-time"
     - "simple items (sv_simple_items, Base default 1) not ported: always renders the 3D model, never the flat _simple sprite"
-    - "FuelRegen/Jetpack pickup center-prints not sent; distance alpha-fade (g_items_maxdist/cl_items_fadedist) confirmed NOT wired client-side (far items pop, no fade)"
+    - "distance alpha-fade (g_items_maxdist/cl_items_fadedist) confirmed NOT wired client-side (far items pop, no fade). NOTE: FuelRegen/Jetpack pickup center-prints are now FIXED (live+faithful, Wave-2)."
 features:
   - id: items-pickups.def.resource_items
     name: "Health / Armor / Ammo item definitions, models, colors, sounds, bboxes"
@@ -100,29 +100,29 @@ features:
     constants:
       - { name: "7 resource gives (health/armor/shells/bullets/rockets/cells/fuel)", base: "Item_GiveAmmoTo x7", port: "GiveAmmoTo x7", match: true }
       - { name: "at-cap refusal (live item)", base: "player>=ammomax && pickup_anyway<=0 -> false", port: "same", match: true }
-      - { name: "negative amount = take", base: "TakeResourceWithLimit", port: "TakeResource", match: partial }
+      - { name: "negative amount = take", base: "TakeResourceWithLimit", port: "TakeResource (TakeResourceWithLimit added to Resources.cs but NOT called here — dead helper)", match: partial }
       - { name: "IT_PICKUPMASK held-flag transfer", base: "items & ~player.items & IT_PICKUPMASK", port: "same", match: true }
       - { name: "team item always eaten", base: "if(item.team) pickedup=true", port: "if(Team!=0) pickedUp=true", match: true }
-      - { name: "cl_autoswitch / CTS autoswitch on weapon give", base: "Item_GiveTo head+tail (_switchweapon, w_getbestweapon, W_SwitchWeapon_Force)", port: "NOT present in ItemGiveTo (no autoswitch anywhere on the pickup path)", match: false }
-      - { name: "FuelRegen/Jetpack pickup center-print", base: "CENTER_ITEM_FUELREGEN_GOT / CENTER_ITEM_JETPACK_GOT", port: "not sent (IT_PICKUPMASK flag granted silently)", match: false }
+      - { name: "cl_autoswitch / CTS autoswitch on weapon give", base: "Item_GiveTo head+tail (_switchweapon, w_getbestweapon, W_SwitchWeapon_Force)", port: "logic ported (ItemGiveTo head ll.68-83 + tail ll.135-155) but gated on AutoswitchProvider which is NEVER WIRED -> always off; DEAD", match: false }
+      - { name: "FuelRegen/Jetpack pickup center-print", base: "CENTER_ITEM_FUELREGEN_GOT / CENTER_ITEM_JETPACK_GOT", port: "ItemGiveTo ll.106-116: NotificationSystem.Center(ITEM_FUELREGEN_GOT/ITEM_JETPACK_GOT) on the live give path", match: true }
     status:
       logic: partial
       values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: live
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "VERIFIER (downgrade logic faithful->partial): Base Item_GiveTo carries the cl_autoswitch / CTS-autoswitch weapon RE-SELECTION block INLINE (items.qc:525-545 captures _switchweapon, :652-681 force-switches to w_getbestweapon after the give). The port's ItemGiveTo omits it entirely — no autoswitch implementation is reachable from any pickup path (grep: GetBestWeapon exists in Inventory but Inventory.GiveWeapon / ItemGiveTo never call it). Picking up a better weapon does NOT auto-switch to it. The draft's claim that this is 'audited under the weapon units' is wrong: the logic lives in THIS function."
-      - "Base Item_GiveTo sends CENTER_ITEM_FUELREGEN_GOT / CENTER_ITEM_JETPACK_GOT when those held items are first granted (items.qc:581-587); the port grants the IT_PICKUPMASK flag silently (no center-print)."
-      - "negative-amount take uses TakeResource (clamp via SetResource) rather than QC TakeResourceWithLimit — behaviorally equivalent for stock items (no item carries a negative amount in stock play)."
+      - "STILL OPEN (reframed dead, was missing): Wave-2 ported the cl_autoswitch / CTS-autoswitch re-selection block faithfully (head ItemPickupRules.cs:68-83 captures wantSwitch; tail :135-155 force-switches to Inventory.GetBestWeapon). BUT it is DEAD: it gates on AutoswitchProvider/CtsAutoswitchProvider/CtsActiveProvider (ItemPickupRules.cs:175-189), and NONE of those Func seams is ever assigned. Commands.cs:324 wires Inventory.PriorityProvider at server boot but NOT these — the replicated cl_autoswitch value sits in Commands._autoswitch (GetAutoswitch) with no bridge to the pickup path. So AutoswitchEnabled() returns false always and picking up a better weapon still never auto-switches in a real match. (Supporting Inventory.GetBestWeapon/SwitchWeapon/ClientHasWeapon all exist and work.)"
+      - "negative-amount take: TakeResourceWithLimit was ADDED to Resources.cs (faithful to sv_resources.qc:205) but GiveAmmoTo still calls TakeResource(res,-amount) (ItemPickupRules.cs:241-242); the new helper has zero callers. Behaviorally equivalent for stock items (no stock item carries a negative amount), so still cosmetic-partial."
     verification:
-      - { kind: code_read, ref: "Item_GiveTo (items.qc:522-684) vs ItemGiveTo line-by-line — autoswitch block + fuelregen/jetpack notif absent in port", result: fail }
-      - { kind: unit_test, ref: "ItemSpawnTouchTests.HealthMega_AtCap_NotTaken + WeaponPickup_GivesWeaponInBothReps", result: pass }
+      - { kind: code_read, ref: "ItemGiveTo (ItemPickupRules.cs:62-160) vs Item_GiveTo (items.qc:522-684): autoswitch logic now PRESENT but gated on unwired providers (grep AutoswitchProvider = decl-only, no assignment); fuelregen/jetpack Center now present+live", result: fail }
+      - { kind: code_read, ref: "Commands.cs:324 wires Inventory.PriorityProvider only; ItemPickupRules.AutoswitchProvider/CtsAutoswitchProvider/CtsActiveProvider have NO assignment site anywhere in the solution", result: fail }
+      - { kind: unit_test, ref: "ItemSpawnTouchTests.HealthMega_AtCap_NotTaken + WeaponPickup_GivesWeaponInBothReps + Jetpack_Touch_GivesBitAndFuel (no autoswitch/center-print-specific test added)", result: pass }
     confidence: high
-    notes: "Resource gives, weapon-grant (dual-rep), powerup *_finished timers, and IT_PICKUPMASK held-flag transfer are all faithful. The two missing pieces are the autoswitch re-selection (logic) and the powerup-item center-prints (notification) — both inline in QC Item_GiveTo, neither ported."
+    notes: "FIXED this wave: FuelRegen/Jetpack center-prints (live+faithful, gated on IsPowerup + newly-granted flag exactly like QC items.qc:581-587, via NotificationSystem.Center on the live ItemGiveTo path). STILL the autoswitch re-selection is dead (logic ported, provider unwired) — the one remaining piece to make logic faithful is one line in Commands' boot wiring (AutoswitchProvider = e => GetAutoswitch(p), plus the cts/g_cts seams). Resource gives, weapon-grant (dual-rep), powerup *_finished timers, and IT_PICKUPMASK transfer remain faithful."
 
   - id: items-pickups.give.powerup_stack
     name: "Powerup timer application (stack vs refresh, g_powerups_stack)"
@@ -329,7 +329,7 @@ features:
       - { name: "FilterItem hook (delete on true)", base: "MUTATOR_CALLHOOK(FilterItem)", port: "MutatorHooks.FilterItemDefinition", match: true }
       - { name: "animation class (ANIMATE1/2, spawnflag 1024)", base: "powerup/weapon=1, health/armor=2, 1024 suppresses", port: "same", match: true }
       - { name: "###item### findnearest target", base: "powerup/weapon/non-small health+armor/keys", port: "same", match: true }
-      - { name: "q3compat origin z += -15 - mins.z", base: "applied", port: "NOT applied", match: false }
+      - { name: "q3compat origin z += -15 - mins.z", base: "applied", port: "code ADDED (StartItem.cs:231-241) but gated on Q3CompatProvider which is NEVER WIRED -> no-op; DEAD", match: false }
     status:
       logic: faithful
       values: faithful
@@ -340,8 +340,8 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "q3compat item origin offset (z += -15 - mins.z) not applied — items on pure Quake3/QL maps sit ~15qu low / partly sunk into the floor."
-      - "item_armor1 always maps to ArmorMedium; Base spawns ArmorSmall (shard) on a Q3 map (autocvar_sv_mapformat_is_quake3) — no live q3compat flag in the port's spawn layer."
+      - "q3compat item origin offset (z += -15 - mins.z): code now ADDED (StartItem.cs:228-241) but gated on Q3CompatProvider, which is declared at StartItem.cs:50 and NEVER assigned anywhere — so it no-ops. Items on pure Quake3/QL maps still sit ~15qu low / partly sunk into the floor. The offset becomes faithful the moment a host wires Q3CompatProvider to real .arena/.defi detection."
+      - "item_armor1 always maps to ArmorMedium; Base spawns ArmorSmall (shard) on a Q3 map (autocvar_sv_mapformat_is_quake3) — no live q3compat flag in the port's spawn layer (same unwired Q3CompatProvider story)."
       - "g_pickup_items shipped default is 1 in the port's Cvars seed vs Base -1; live DM behavior matches (the -1/unset path proceeds), but a gametype relying on the -1 gametype-default branch differs from the seeded value."
     verification:
       - { kind: code_read, ref: "GameWorld.SpawnMapEntities -> SpawnFuncs.TrySpawn; MapObjectsRegistry.RegisterAll -> ItemSpawnFuncs.Register (booted by GameInit)", result: pass }

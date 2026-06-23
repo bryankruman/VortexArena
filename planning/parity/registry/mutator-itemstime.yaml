@@ -5,11 +5,11 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 10
   worst_gaps:
-    - "No CSQC itemstime net message: the HUD feed is host-only (NetGame.cs:2068 guards it with `if (_server is not null)`); a pure remote client on a dedicated/separate server never receives item respawn times and the panel stays empty."
-    - "Enable-gate inverted: Base HUD_ItemsTime shows only to spectators (mode 1) or spectators+warmup+STAT(ITEMSTIME)==2 (mode 2), so an ALIVE player in a normal round sees nothing with stock cvars; the port's ItemsTimePanel never consults spectatee/warmup and NetGame.cs:2092 force-sets Visible=true whenever the mutator is enabled."
-    - "STAT(ITEMSTIME) (= live sv_itemstime value) is not modeled in the port: no client stat carries the 0/1/2 tier, which is why both the enable-gate and the spectator waypoint gate cannot be reproduced."
-    - "Per-player send tiers + observer/spawn/connect sync hooks (SetTimesForAllPlayers warmup/observer/sv_itemstime==2 gate, ResetTimesForPlayer, MakePlayerObserver/PlayerSpawn/ClientConnect) are not implemented (single local host view, no per-client networked state)."
-    - "Spectator/warmup respawn waypoint sprites for timed items (g_waypointsprite_itemstime default 2, SPRITERULE_SPECTATOR) are not implemented."
+    - "No CSQC itemstime net message: the HUD feed is host-only (NetGame.cs:2068 guards it with `if (_server is not null)`); a pure remote client on a dedicated/separate server never receives item respawn times and the panel stays empty. UNCHANGED after Wave-1/2."
+    - "Enable-gate inverted: Base HUD_ItemsTime shows only to spectators (mode 1) or spectators+warmup+STAT(ITEMSTIME)==2 (mode 2), so an ALIVE player in a normal round sees nothing with stock cvars; the port's ItemsTimePanel never consults spectatee/warmup and NetGame.cs:2092 force-sets Visible=true whenever the mutator is enabled. UNCHANGED after Wave-1/2."
+    - "STAT(ITEMSTIME) (= live sv_itemstime value) is not modeled in the port: no client stat carries the 0/1/2 tier, which is why both the enable-gate and the spectator waypoint gate cannot be reproduced. UNCHANGED after Wave-1/2."
+    - "Per-player send tiers + observer/spawn/connect sync hooks (SetTimesForAllPlayers warmup/observer/sv_itemstime==2 gate, ResetTimesForPlayer, MakePlayerObserver/PlayerSpawn/ClientConnect) are not implemented (single local host view, no per-client networked state). UNCHANGED after Wave-1/2."
+    - "Spectator/warmup respawn waypoint sprites for timed items (g_waypointsprite_itemstime default 2, SPRITERULE_SPECTATOR) are not implemented. UNCHANGED after Wave-1/2."
 features:
   - id: mutator-itemstime.set.timed_items
     name: "Tracked timed-item set (powerups + mega/big health+armor + superweapons aggregate)"
@@ -37,7 +37,7 @@ features:
       - { kind: test, ref: "tests/XonoticGodot.Tests/MutatorBatchT51Tests.cs:Itemstime_PublishesRespawnTime_ForTimedItem", result: pass }
       - { kind: code, ref: "ItemstimeMutator.TimedItemClasses vs Item_ItemsTime_Allow (powerups Strength/Shield + mega/big H+A)", result: pass }
     confidence: high
-    notes: "Set matches Base. Superweapon weapon-pickups map to the single aggregate slot via weapon_<netname> classnames where Weapon.IsSuperWeapon, mirroring WEPSET_SUPERWEAPONS. The Base powerup set is exactly Strength+Shield (the two instanceOfPowerup items), which the port enumerates explicitly."
+    notes: "Set matches Base. Superweapon weapon-pickups map to the single aggregate slot via weapon_<netname> classnames where Weapon.IsSuperWeapon, mirroring WEPSET_SUPERWEAPONS. The Base powerup set is exactly Strength+Shield (the two instanceOfPowerup items), which the port enumerates explicitly. Wave-1/2 left this row untouched (verified: ItemstimeMutator.cs diff is doc-comment-only)."
 
   - id: mutator-itemstime.producer.times_table
     name: "Server it_times table: min scheduled respawn time per timed item"
@@ -61,13 +61,13 @@ features:
       audio: na
       liveness: live
     intended_divergence: true
-    divergence_rationale: "Base updates it_times event-driven (SetTime/UpdateTime called at each item pickup / respawn-schedule in items.qc). The port instead re-scans all live world items every server frame (OnStartFrame -> Recompute) reading each item's ScheduledRespawnTime. The published value is identical (min cooldown across copies); only the trigger differs. Documented in ItemstimeMutator.cs comments (lines 64-65, 89-93)."
+    divergence_rationale: "Base updates it_times event-driven (SetTime/UpdateTime called at each item pickup / respawn-schedule in items.qc). The port instead re-scans all live world items every server frame (OnStartFrame -> Recompute) reading each item's ScheduledRespawnTime. The published value is identical (min cooldown across copies); only the trigger differs. Documented in ItemstimeMutator.cs comments (lines 77-78, 102-106)."
     gaps: []
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/MutatorBatchT51Tests.cs:Itemstime_PublishesRespawnTime_ForTimedItem (t=20 on cooldown)", result: pass }
-      - { kind: code, ref: "GameWorld.cs:511 MutatorActivation.Apply -> Add -> Hook -> SvStartFrame.Add; GameWorld.cs:943 MutatorHooks.FireStartFrame pumps it every server frame", result: pass }
+      - { kind: code, ref: "GameWorld.cs:535 MutatorActivation.Apply -> Add -> Hook -> SvStartFrame.Add; GameWorld.cs:992 MutatorHooks.FireStartFrame pumps it every server frame", result: pass }
     confidence: high
-    notes: "Reads Entity.ScheduledRespawnTime set by the item respawn scheduler (ItemPickupRules). Verified LIVE: sv_itemstime default 1 -> IsEnabled true -> MutatorActivation.Apply (GameWorld.cs:511) calls Add->Hook, and MutatorHooks.SvStartFrame is fired every server frame (GameWorld.cs:943)."
+    notes: "Reads Entity.ScheduledRespawnTime set by the item respawn scheduler (ItemPickupRules). Verified LIVE: sv_itemstime default 1 -> IsEnabled true -> MutatorActivation.Apply (GameWorld.cs:535, shifted from 511 by the Wave-1/2 +123-line GameWorld edit) calls Add->Hook, and MutatorHooks.FireStartFrame is fired every server frame (GameWorld.cs:992). The mutator's Recompute/Hook logic is byte-identical to baseline (doc-comment-only diff)."
 
   - id: mutator-itemstime.producer.available_encoding
     name: "Negative 'another copy available now' encoding"
@@ -91,7 +91,7 @@ features:
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/MutatorBatchT51Tests.cs:Itemstime_NegativeEncoding_WhenAnotherCopyAvailable (asserts -30)", result: pass }
     confidence: high
-    notes: "When one copy is up and another is on cooldown, the min cooldown time is sent negated; the panel decodes it as 'available now' + a still-running countdown. Test asserts -30 for the two-copy case. hasMin flag correctly distinguishes 'no cooldown copy yet' from min==0 (matches QC's `t == 0 || it.scheduledrespawntime < t` guard)."
+    notes: "When one copy is up and another is on cooldown, the min cooldown time is sent negated; the panel decodes it as 'available now' + a still-running countdown. Test asserts -30 for the two-copy case. hasMin flag correctly distinguishes 'no cooldown copy yet' from min==0 (matches QC's `t == 0 || it.scheduledrespawntime < t` guard). Unchanged by Wave-1/2."
 
   - id: mutator-itemstime.net.csqc_sync
     name: "CSQC itemstime net message (per-client respawn-time sync)"
@@ -113,12 +113,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No itemstime net message exists in XonoticGodot.Net (REGISTER_NET_TEMP(itemstime) / IT_Write / NET_HANDLE not ported). Item times are fed directly from the local server mutator to the local HUD in NetGame.cs:2090-2093, guarded by `if (_server is not null)`. A pure remote client (dedicated/separate server) never receives times and the items-time panel stays empty."
+      - "No itemstime net message exists in XonoticGodot.Net (REGISTER_NET_TEMP(itemstime) / IT_Write / NET_HANDLE not ported). Item times are fed directly from the local server mutator to the local HUD in NetGame.cs:2090-2093, guarded by `if (_server is not null)`. A pure remote client (dedicated/separate server) never receives times and the items-time panel stays empty. STILL OPEN after Wave-1/2 (grep of src/XonoticGodot.Net for itemstime -> zero matches; NetGame.cs branch diff is mod-icons only, not itemstime)."
     verification:
-      - { kind: code, ref: "grep itemstime/ItemsTime across src/XonoticGodot.Net -> no matches", result: fail }
-      - { kind: code, ref: "NetGame.cs:2068 host-only guard `if (_server is not null)`", result: fail }
+      - { kind: code, ref: "grep itemstime/ItemsTime/IT_Write across src/XonoticGodot.Net -> no matches (2026-06-22)", result: fail }
+      - { kind: code, ref: "NetGame.cs:2068 host-only guard `if (_server is not null)` (unchanged)", result: fail }
     confidence: high
-    notes: "Single-listen-server architecture currently makes this host-only. Whether that is an intended simplification or a true gap is an open question for the owner (see spec Open questions)."
+    notes: "Single-listen-server architecture currently makes this host-only. Whether that is an intended simplification or a true gap is an open question for the owner (see spec Open questions). Wave-1/2 only added an acknowledging doc-comment in ItemstimeMutator.cs; no net message was implemented."
 
   - id: mutator-itemstime.producer.per_player_tiers
     name: "Per-player send tiers + observer/spawn/connect sync hooks"
@@ -143,11 +143,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The per-client send gate (only spectators/warmup get times in a live round unless sv_itemstime==2 via SetTimesForAllPlayers), and the MakePlayerObserver / PlayerSpawn / ClientConnect / reset_map_global sync+reset hooks (SetTimesForPlayer / ResetTimesForPlayer / ResetTimes) are not implemented. There is no per-player networked itemstime state in the port."
+      - "The per-client send gate (only spectators/warmup get times in a live round unless sv_itemstime==2 via SetTimesForAllPlayers), and the MakePlayerObserver / PlayerSpawn / ClientConnect / reset_map_global sync+reset hooks (SetTimesForPlayer / ResetTimesForPlayer / ResetTimes) are not implemented. There is no per-player networked itemstime state in the port. STILL OPEN after Wave-1/2 (the mutator still hooks only MutatorHooks.SvStartFrame in Hook(); no observer/spawn/connect/reset hooks added)."
     verification:
-      - { kind: code, ref: "ItemstimeMutator hooks only MutatorHooks.SvStartFrame (Hook()); no observer/spawn/connect/reset_map_global hooks", result: fail }
+      - { kind: code, ref: "ItemstimeMutator.Hook() adds only MutatorHooks.SvStartFrame; no observer/spawn/connect/reset_map_global hooks (2026-06-22)", result: fail }
     confidence: high
-    notes: "Folded away by the single-view + host-only feed. The observable consequence (always-visible to alive players) is realized via the enable-gate feature below. Note the port also lacks Item_ItemsTime_ResetTimes / SetTimesForPlayer (the per-client reset/full-sync primitives)."
+    notes: "Folded away by the single-view + host-only feed. The observable consequence (always-visible to alive players) is realized via the enable-gate feature below. Note the port also lacks Item_ItemsTime_ResetTimes / SetTimesForPlayer (the per-client reset/full-sync primitives). Wave-1/2 added a doc-comment acknowledging this but no implementation."
 
   - id: mutator-itemstime.hud.enable_gate
     name: "Panel enable gate (spectator/warmup/STAT(ITEMSTIME) visibility)"
@@ -172,11 +172,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Base draws the panel only for spectators (mode 1) or spectators+warmup+STAT(ITEMSTIME)==2 (mode 2). With stock cvars (hud_panel_itemstime=2, sv_itemstime=1) an ALIVE player in a normal round sees NOTHING. The port's ItemsTimePanel never consults spectatee_status / warmup_stage / STAT(ITEMSTIME), and NetGame.cs:2092 force-sets Visible=true whenever the mutator is enabled, so an alive player sees the panel always - the opposite of Base."
+      - "Base draws the panel only for spectators (mode 1) or spectators+warmup+STAT(ITEMSTIME)==2 (mode 2). With stock cvars (hud_panel_itemstime=2, sv_itemstime=1) an ALIVE player in a normal round sees NOTHING. The port's ItemsTimePanel never consults spectatee_status / warmup_stage / STAT(ITEMSTIME), and NetGame.cs:2092 force-sets Visible=true whenever the mutator is enabled, so an alive player sees the panel always - the opposite of Base. STILL OPEN after Wave-1/2 (ItemsTimePanel.cs and NetGame.cs:2090-2093 itemstime block both unchanged on the branch)."
     verification:
-      - { kind: code, ref: "ItemsTimePanel has no ResolveVisible override and no spectatee/warmup/ITEMSTIME read (grep: only a doc-comment mention); NetGame.cs:2092 Visible=true", result: fail }
+      - { kind: code, ref: "ItemsTimePanel has no ResolveVisible override and no spectatee/warmup/ITEMSTIME read (grep: only a doc-comment mention); NetGame.cs:2092 Visible=true (unchanged 2026-06-22)", result: fail }
     confidence: high
-    notes: "The panel enable DEFAULT value (2) and the layout/behavior cvars are faithful; only the dynamic gate (who/when) diverges. The spectatee/warmup/STAT(ITEMSTIME) context is never available to the panel because STAT(ITEMSTIME) is not modeled (see net.itemstime_stat)."
+    notes: "The panel enable DEFAULT value (2) and the layout/behavior cvars are faithful; only the dynamic gate (who/when) diverges. The spectatee/warmup/STAT(ITEMSTIME) context is never available to the panel because STAT(ITEMSTIME) is not modeled (see net.itemstime_stat). Wave-1/2 made no change here."
 
   - id: mutator-itemstime.net.itemstime_stat
     name: "STAT(ITEMSTIME) client stat (= live sv_itemstime tier)"
@@ -196,11 +196,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The client-visible STAT(ITEMSTIME) (the networked 0/1/2 sv_itemstime tier) is not registered in the port. Both the panel enable gate (mode 2) and the spectator waypoint gate (mode 2) depend on it, so neither can reproduce the 'also alive players when sv_itemstime==2' behavior even if the rest were wired."
+      - "The client-visible STAT(ITEMSTIME) (the networked 0/1/2 sv_itemstime tier) is not registered in the port. Both the panel enable gate (mode 2) and the spectator waypoint gate (mode 2) depend on it, so neither can reproduce the 'also alive players when sv_itemstime==2' behavior even if the rest were wired. STILL OPEN after Wave-1/2 (grep ITEMSTIME stat across src + game -> only doc-comments, no REGISTER_STAT analogue)."
     verification:
-      - { kind: code, ref: "grep ITEMSTIME stat across src + game -> only a doc-comment in ItemsTimePanel.cs; no stat registered", result: fail }
+      - { kind: code, ref: "grep ITEMSTIME stat across src + game -> only doc-comments in ItemsTimePanel.cs/ItemstimeMutator.cs; no stat registered (2026-06-22)", result: fail }
     confidence: high
-    notes: "Underlying cause shared by the enable-gate and waypoint rows. Surfaced as its own row so the missing stat is tracked independently of its two consumers."
+    notes: "Underlying cause shared by the enable-gate and waypoint rows. Surfaced as its own row so the missing stat is tracked independently of its two consumers. Wave-1/2 made no change."
 
   - id: mutator-itemstime.hud.draw
     name: "HUD draw: grid layout, countdown, color/blink, checkmark, progress bar, expanding flash"
@@ -234,12 +234,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "hud_panel_itemstime_hidebig (Base default 0/false) is not registered in the port; the catalog always shows Big Health/Armor (matches the stock default false, but a user setting hidebig 1 would have no effect)."
-      - "The _hud_configure HUD-editor preview (Base Item_ItemsTime_GetTime returns fake times: ArmorMega+8, ArmorBig+0, HealthMega+0, Strength+4) is not ported; the port panel has no hud-configure preview path, so the items-time panel shows nothing in the HUD editor."
+      - "hud_panel_itemstime_hidebig (Base default 0/false) is not registered/consumed in the port: there IS an orphan menu checkbox for it (DialogHudPanelItemsTime.cs:80) but the cvar is neither registered in ItemsTimePanel.RegisterCvars nor read by DrawPanel, so toggling it has no effect (the catalog always shows Big Health/Armor). Matches the stock default false, but a user setting hidebig 1 is silently dead. PRE-EXISTING; unchanged by Wave-1/2."
+      - "The _hud_configure HUD-editor preview (Base Item_ItemsTime_GetTime returns fake times: ArmorMega+8, ArmorBig+0, HealthMega+0, Strength+4) is not ported; the port panel has no hud-configure preview path, so the items-time panel shows nothing in the HUD editor. PRE-EXISTING; unchanged by Wave-1/2."
     verification:
-      - { kind: code, ref: "ItemsTimePanel.DrawItemsTimeItem vs DrawItemsTimeItem (grid/color/blink/checkmark/bar/flash); GetRowCount vs HUD_GetRowCount; Blink vs blink_synced", result: pass }
+      - { kind: code, ref: "ItemsTimePanel.DrawItemsTimeItem vs DrawItemsTimeItem (grid/color/blink/checkmark/bar/flash); GetRowCount vs HUD_GetRowCount; Blink vs blink_synced (ItemsTimePanel.cs unchanged on branch)", result: pass }
     confidence: medium
-    notes: "Thorough faithful port incl. the exact HUD_GetRowCount formula, blink_synced (start_time=0,start_pos=0), color thresholds, progress bar baralign, and the expanding-box size factor. Live on host path via NetGame feed. Visual fidelity is source-verified, not screenshot-verified; checkmark/progressbar/icon skin-art presence in the port skin not confirmed (graceful tinted-swatch fallback exists). The _hud_configure preview and hidebig are the only draw-side gaps."
+    notes: "Thorough faithful port incl. the exact HUD_GetRowCount formula, blink_synced (start_time=0,start_pos=0), color thresholds, progress bar baralign, and the expanding-box size factor. Live on host path via NetGame feed. Visual fidelity is source-verified, not screenshot-verified; checkmark/progressbar/icon skin-art presence in the port skin not confirmed (graceful tinted-swatch fallback exists). The _hud_configure preview and hidebig are the only draw-side gaps. ItemsTimePanel.cs has no branch diff."
 
   - id: mutator-itemstime.hud.feed_host
     name: "Host-side HUD feed (CurrentTimes -> ItemsTimePanel each frame)"
@@ -261,11 +261,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The times reach the panel only on the listen-host (`if (_server is not null)`). The published table itself is faithful (CurrentTimes); the delivery mechanism is a direct local push instead of the per-client networked IT_Write, so a remote client gets nothing (see net.csqc_sync)."
+      - "The times reach the panel only on the listen-host (`if (_server is not null)`). The published table itself is faithful (CurrentTimes); the delivery mechanism is a direct local push instead of the per-client networked IT_Write, so a remote client gets nothing (see net.csqc_sync). STILL OPEN after Wave-1/2 (the NetGame.cs:2090-2093 itemstime feed block is unchanged; the only NetGame branch diff is the unrelated mod-icons CTF/Domination/Keepaway dispatch)."
     verification:
-      - { kind: code, ref: "NetGame.cs:2090-2093: Mutators.ByName('itemstime') -> SetItemTimes(itm.CurrentTimes) inside `if (_server is not null)`", result: pass }
+      - { kind: code, ref: "NetGame.cs:2090-2093: Mutators.ByName('itemstime') -> SetItemTimes(itm.CurrentTimes) inside `if (_server is not null)` (unchanged 2026-06-22)", result: pass }
     confidence: high
-    notes: "Liveness=partial: live on the listen-server host, dead for a pure remote client. Values/timing faithful because the table content matches Base; only the transport diverges."
+    notes: "Liveness=partial: live on the listen-server host, dead for a pure remote client. Values/timing faithful because the table content matches Base; only the transport diverges. Wave-1/2 made no change to this feed."
 
   - id: mutator-itemstime.waypoints.spectator_sprites
     name: "Spectator/warmup respawn waypoint sprites for timed items"
@@ -286,8 +286,8 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No waypointsprite_itemstime / SPRITERULE_SPECTATOR support in the port: timed (SpectatorOnly) items (mega health/armor) get no spectator/warmup respawn-countdown waypoint sprite (Item_RespawnCountdown sets SPRITERULE_SPECTATOR + WaypointSprite_UpdateBuildFinished at time+ITEM_RESPAWN_TICKS), and the g_waypointsprite_itemstime cvar (default 2) is unregistered. Also depends on the unmodeled STAT(ITEMSTIME)."
+      - "No waypointsprite_itemstime / SPRITERULE_SPECTATOR support in the port: timed (SpectatorOnly) items (mega health/armor) get no spectator/warmup respawn-countdown waypoint sprite (Item_RespawnCountdown sets SPRITERULE_SPECTATOR + WaypointSprite_UpdateBuildFinished at time+ITEM_RESPAWN_TICKS), and the g_waypointsprite_itemstime cvar (default 2) is unregistered. Also depends on the unmodeled STAT(ITEMSTIME). STILL OPEN after Wave-1/2 (grep across src + game -> no matches)."
     verification:
-      - { kind: code, ref: "grep waypointsprite_itemstime / SPRITERULE_SPECTATOR / g_waypointsprite_itemstime across src + game -> no matches", result: fail }
+      - { kind: code, ref: "grep waypointsprite_itemstime / SPRITERULE_SPECTATOR / g_waypointsprite_itemstime across src + game -> no matches (2026-06-22)", result: fail }
     confidence: medium
-    notes: "Tied to itemstime but lives in the waypoints subsystem; cross-listed here as part of the unit's spectator behavior. The gate (mode 1 spectating / mode 2 also warmup+STAT(ITEMSTIME)==2) mirrors the HUD enable gate."
+    notes: "Tied to itemstime but lives in the waypoints subsystem; cross-listed here as part of the unit's spectator behavior. The gate (mode 1 spectating / mode 2 also warmup+STAT(ITEMSTIME)==2) mirrors the HUD enable gate. Wave-1/2 made no change."

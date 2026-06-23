@@ -6,7 +6,7 @@ summary:
   feature_count: 16
   worst_gaps:
     - "The secret movement-input cheat sequence ('xwxwxsxsxaxdxaxdx1x ' decoded from the button mask each tick -> CHIMPULSE_GIVE_ALL) that triggers CHIMPULSE_GIVE_ALL is not implemented (cheat-only, low impact)."
-    - "Footstep cadence differs: Base nextstep = time + 0.3 + random()*0.1 (jittered), the port uses a fixed 0.3s interval with no random component; and the port Footsteps/CheckHitground ignore autocvar_g_footsteps so footsteps cannot be disabled server-side."
+    - "Movement-sound cadence is now Base-faithful (g_footsteps gate + 0.3+random()*0.1 jitter + nextstep window + ladder bail all ported in Wave-2); residuals: the lastground+0.2 gate is functionally inert because the port updates LastGroundTime BEFORE UpdateMovementSounds runs (so it reads now), and PM_check_hitground's active-grappling-hook bail is still unported (hook is not yet a shared Entity field)."
     - "func_water waterlevel-from-volume override (physics.qc:280-299) is NOT computed in LadderMove, and the viewloc 1D-rail sub-cases (ladder wishvel.z = movement_old.x; water wishvel.z = -160 + a separate viewloc accel path) are not ported — inert on stock Xonotic maps but real Base branches."
     - "sys_phys_fixspeed cl_*speed stuffcmd absent (replaced by client-side wishmove scaling -- intended)."
     - "g_physics_clientselect non-default presets (CPMA/Warsow/etc.) are wired (Resolve/FromValues/PresetProvider) but have NO golden-trace coverage; only the stock Xonotic preset is verified byte-exact."
@@ -417,33 +417,35 @@ features:
       - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:CheckHitground"
       - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:UpdateMovementSounds"
     constants:
-      - { name: "autocvar_g_footsteps master gate", base: "1 (xonotic-server.cfg:306)", port: "(no gate)", match: false }
-      - { name: "footstep speed threshold", base: "sv_maxspeed*0.6", port: "MaxSpeed*0.6", match: true }
-      - { name: "footstep interval (nextstep)", base: "0.3 + random()*0.1", port: "0.3 (fixed, no random)", match: false }
-      - { name: "footstep grounded-recency gate", base: "time < lastground + 0.2", port: "(replaced by since-last-footstep throttle)", match: false }
-      - { name: "landing nextstep suppression", base: "0.3 + random()*0.1", port: "fixed (LastFootstepTime=now)", match: false }
+      - { name: "autocvar_g_footsteps master gate", base: "1 (xonotic-server.cfg:306)", port: "GetString(\"g_footsteps\")==\"0\" => return; unset treated as on", match: true }
+      - { name: "footstep speed threshold", base: "sv_maxspeed*0.6 (vdist 3D)", port: "MaxSpeed*0.6 (Vec2LenSq XY-only)", match: true }
+      - { name: "footstep interval (nextstep)", base: "0.3 + random()*0.1", port: "FootstepIntervalBase 0.3f + FootstepJitter() (random*0.1f)", match: true }
+      - { name: "footstep grounded-recency gate", base: "time < lastground + 0.2", port: "now < LastGroundTime + 0.2f (ported, but inert — see gaps)", match: true }
+      - { name: "nextstep re-arm window", base: "(time > nextstep) || (time < nextstep-10)", port: "now > LastFootstepTime || now < LastFootstepTime-10f", match: true }
+      - { name: "landing nextstep suppression", base: "nextstep = time + 0.3 + random()*0.1", port: "LastFootstepTime = now + 0.3f + FootstepJitter()", match: true }
       - { name: "ducked footsteps", base: "silent (IS_DUCKED return)", port: "silent", match: true }
       - { name: "muffled landing while ducked", base: "VOL_MUFFLED", port: "VolMuffled", match: true }
       - { name: "NOSTEPS/METALSTEPS surface select", base: "Q3SURFACEFLAG_*", port: "Q3SurfaceFlag*", match: true }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: partial
       presentation: na
-      audio: partial
+      audio: faithful
       liveness: live
-    intended_divergence: false
-    divergence_rationale: null
+    intended_divergence: true
+    divergence_rationale: "The cosmetic random()*0.1 footstep-cadence jitter is drawn from a dedicated server-local System.Random (FootstepJitterRng), NOT the shared deterministic Prandom stream. Base's jitter is under #ifdef SVQC (server-only), so reproducing it from the shared Prandom would advance a stream the predicting client also consumes (spread/effects) and desync the seed. The value distribution (uniform 0..0.1 added to 0.3) is identical to Base; only the RNG SOURCE differs."
     gaps:
-      - "Port Footsteps/CheckHitground ignore autocvar_g_footsteps — Base returns early when g_footsteps==0 (server-side disable), the port always plays footsteps."
-      - "Footstep cadence differs: Base nextstep = time + 0.3 + random()*0.1 (jittered), the port uses a fixed 0.3s interval with no random component — audibly more regular."
-      - "Base PM_Footsteps gates on `time >= this.lastground + 0.2 return` (only within 0.2s of the last grounded tick) AND the nextstep window `(time > nextstep) || (time < nextstep-10)`; the port uses a since-last-footstep throttle instead. Behaves similarly while continuously grounded but is not a 1:1 reproduction."
-      - "Base also returns from PM_check_hitground when on a ladder or holding an active grappling hook; the port only bails on swimming."
+      - "lastground+0.2 gate is FUNCTIONALLY INERT due to update ordering: the port sets player.LastGroundTime = Now() at PlayerPhysics.cs:333-334 (sys_phys_postupdate) BEFORE calling UpdateMovementSounds at :338, so when Footsteps reads it LastGroundTime == now and `now >= LastGroundTime + 0.2` is always false. Base sets lastground in sys_phys_postupdate AFTER PM_Footsteps (physics.qc:91 vs :188), so its lastground lags one tick and the gate genuinely suppresses the first grounded frame after a >0.2s fall. The port's landing frame is instead covered by CheckHitground setting LastFootstepTime to a future time, so the audible result matches on continuous ground and on normal landings — but the gate itself is not a 1:1 reproduction of Base's intent."
+      - "PM_check_hitground's active-grappling-hook bail (player.qc:671-676: any weaponentity.hook held => return) is still unported — the hook is not yet a shared Entity field. The ladder bail (player.qc:670) IS now reproduced via player.LadderEntity."
+      - "Minor: Base's speed gate is vdist(this.velocity, <=, ...) over the FULL 3D velocity; the port uses Vec2LenSq (XY only) and a strict `<` (vs Base `<=`). On ground velocity.z is ~0 (NOGRAVITYONGROUND), so the difference is negligible, but it is not byte-identical at the threshold."
     verification:
-      - { kind: code, ref: "Footsteps vs player.qc:689-708 (g_footsteps gate, lastground+0.2 gate, maxspeed*0.6 threshold, nextstep jitter)", result: fail }
-      - { kind: code, ref: "CheckHitground vs player.qc:664-687 (wasFlying, swim/ladder/hook bail, nextstep jitter, NOSTEPS/METALSTEPS)", result: fail }
+      - { kind: code, ref: "Footsteps (PlayerPhysics.cs:1663-1688) vs player.qc:689-708: g_footsteps gate (=='0' return), IS_DUCKED, lastground+0.2, maxspeed*0.6, nextstep window (time>nextstep||time<nextstep-10), nextstep=time+0.3+random()*0.1, NOSTEPS/METALSTEPS", result: pass }
+      - { kind: code, ref: "CheckHitground (PlayerPhysics.cs:1639-1658) vs player.qc:664-687: wasFlying latch, swimming bail, ladder bail (LadderEntity), nextstep jitter, FALL/FALL_METAL + VOL_MUFFLED while ducked", result: pass }
+      - { kind: value, ref: "g_footsteps default 1 (xonotic-server.cfg:306); port treats unset as on so default matches", result: pass }
+      - { kind: code, ref: "lastground update ORDER: PlayerPhysics.cs:333-334 (set) precedes :338 (UpdateMovementSounds) — gate reads now, inert; Base order is reversed (physics.qc:91 then :188)", result: fail }
     confidence: high
-    notes: "NEW ROW (draft had no movement-sound feature). Both footstep and landing sounds ARE produced on the live server tick (UpdateMovementSounds, server-gated and suppressed on prediction replays), so liveness:live and the surface/volume selection is faithful — but the TIMING (fixed interval vs jittered nextstep), the missing g_footsteps master gate, and the ladder/hook bail are divergent, hence logic/values/timing/audio:partial."
+    notes: "Wave-2 closed 3 of the 4 baseline gaps: the autocvar_g_footsteps master gate, the 0.3+random()*0.1 jittered cadence (server-local RNG so the shared Prandom stream is untouched — a correct deliberate divergence), the nextstep re-arm window, and the ladder leg of the PM_check_hitground bail are all now ported and live on the server tick (UpdateMovementSounds, prediction-gated). logic+values+audio upgraded to faithful. timing kept at partial for ONE residual: the lastground+0.2 gate is inert because LastGroundTime is updated before Footsteps runs (the audible behavior still matches Base on continuous ground / normal landings via the nextstep future-time). Still open: the grappling-hook bail in CheckHitground (needs a shared hook Entity field), and the 2D-vs-3D speed-gate micro-difference. No golden-trace/test coverage for footsteps (code-verified only)."
 
   - id: physics-player.spectator_control
     name: "Spectator free-flight speed ladder (sys_phys_spectator_control)"

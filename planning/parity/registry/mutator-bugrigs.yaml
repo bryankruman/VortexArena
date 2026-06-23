@@ -60,7 +60,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/BugrigsMutator.cs:61 Hook"
       - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs Apply"
-      - "src/XonoticGodot.Server/GameWorld.cs:511 MutatorActivation.Apply()"
+      - "src/XonoticGodot.Server/GameWorld.cs:535 MutatorActivation.Apply()"
     constants: []
     status:
       logic: faithful
@@ -73,9 +73,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "[Mutator] attr -> Mutators.All -> MutatorActivation.Apply (GameWorld.cs:511, on the live server boot path, comment 5b) -> Hook() Adds _onPmPhysics to MutatorHooks.PMPhysics + _onPlayerPhysics to MutatorHooks.PlayerPhysics", result: pass }
+      - { kind: code, ref: "[Mutator] attr -> Mutators.All -> MutatorActivation.Apply (GameWorld.cs:535, on the live server boot path, comment 5b) -> Hook() Adds _onPmPhysics to MutatorHooks.PMPhysics + _onPlayerPhysics to MutatorHooks.PlayerPhysics", result: pass }
     confidence: high
-    notes: "Apply() is on the live server boot path (GameWorld.cs:511, before map entities spawn). Idempotent Add mirrors QC m_added. Hook() also calls SetVars()."
+    notes: "Apply() is on the live server boot path (GameWorld.cs:535, before map entities spawn). Idempotent Add mirrors QC m_added. Hook() also calls SetVars()."
   - id: mutator-bugrigs.pm_physics.replace_move
     name: "PM_Physics hook fully replaces the move with RaceCarPhysics"
     layer: [shared]

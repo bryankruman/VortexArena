@@ -5,9 +5,9 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 8
   worst_gaps:
-    - "Active-mutators string/scoreboard signalling is entirely unported: SVQC BuildMutatorsString/PrettyString (:bloodloss / , Blood loss), util.qc GameType_GetMutatorByName row (MUT_BLOODLOSS, g_bloodloss>0), and the CSQC mut_set_active(MUT_BLOODLOSS) HUD active-mutator icon all have no port equivalent."
+    - "Active-mutators string/scoreboard signalling is entirely unported: SVQC BuildMutatorsString/PrettyString (:bloodloss / , Blood loss), util.qc GameType_GetMutatorByName row (MUT_BLOODLOSS, g_bloodloss>0), and the CSQC mut_set_active(MUT_BLOODLOSS) HUD active-mutator icon all have no port equivalent (the port has NO active-mutators string mechanism at all)."
     - "CSQC client-prediction hooks (PlayerCanCrouch/PlayerJump with the extra STAT(HEALTH)>0 guard, REGISTER_STAT(BLOODLOSS), REGISTER_MUTATOR(bloodloss,true)) are unported — acceptable because the port runs a headless server sim with no CSQC prediction, but it means crouch/jump are NOT locally predicted (server-round-trip latency vs Base)."
-    - "Threshold cached at Hook() time, not re-read live — a mid-match g_bloodloss change is ignored until MutatorActivation.Apply() re-runs."
+    - "MENUQC describe paragraph (stun + impaired movement + rapid health drain) is condensed to a one-line tooltip on the menu checkbox/slider."
 features:
   - id: mutator-bloodloss.enable.registration
     name: "Registration + enable cvar (g_bloodloss is both switch and threshold)"
@@ -17,11 +17,11 @@ features:
       - "common/stats.qh:330-332 (autocvar_g_bloodloss + REGISTER_STAT(BLOODLOSS, FLOAT, autocvar_g_bloodloss))"
       - "xonotic-server.cfg:304 (set g_bloodloss 0)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/BloodlossMutator.cs:26-27 (IsEnabled => Cvars.GetFloat(\"g_bloodloss\") != 0f)"
-      - "src/XonoticGodot.Server/GameWorld.cs:511 (MutatorActivation.Apply)"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:60-69 (Apply → Add → Hook)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BloodlossMutator.cs:30-31 (IsEnabled => Cvars.GetFloat(\"g_bloodloss\") != 0f)"
+      - "src/XonoticGodot.Server/GameWorld.cs:535 (MutatorActivation.Apply)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs (Apply → Add → Hook)"
     constants:
-      - { name: "g_bloodloss default", base: "0 (disabled)", port: "0 via cvar; never reads the 25f field fallback on the live path", match: true }
+      - { name: "g_bloodloss default", base: "0 (disabled)", port: "0 via cvar; no static 25f field fallback any more (Threshold is now a live cvar read)", match: true }
       - { name: "enable predicate", base: "autocvar_g_bloodloss truthy (non-zero)", port: "GetFloat(\"g_bloodloss\") != 0f", match: true }
     status:
       logic: faithful
@@ -35,9 +35,9 @@ features:
     gaps:
       - "Base REGISTER_STAT(BLOODLOSS) networks the threshold to CSQC for crouch/jump prediction; the port has no STAT(BLOODLOSS) and no CSQC mutator registration. Faithful in effect (server-authoritative) but the prediction path is absent."
     verification:
-      - { kind: code, ref: "[Mutator] BloodlossMutator in Mutators.All; MutatorActivation.Apply at GameWorld.cs:511 on the live server boot; IsEnabled reads g_bloodloss", result: pass }
+      - { kind: code, ref: "[Mutator] BloodlossMutator in Mutators.All; MutatorActivation.Apply at GameWorld.cs:535 on the live server boot; IsEnabled reads g_bloodloss", result: pass }
     confidence: high
-    notes: "The cvar value is simultaneously the enable switch AND the health threshold. Base has NO IsEnabled-side exclusion (unlike instagib/arena/nix) — REGISTER_MUTATOR keys directly on the cvar — so the port's bare != 0f is faithful (no missing-exclusion gap). Menu greys it out under g_instagib but that is UI-only."
+    notes: "The cvar value is simultaneously the enable switch AND the health threshold. Base has NO IsEnabled-side exclusion (unlike instagib/arena/nix) — REGISTER_MUTATOR keys directly on the cvar — so the port's bare != 0f is faithful (no missing-exclusion gap). Menu greys it out under g_instagib but that is UI-only. Wave-2 removed the dead 25f field; enable predicate unchanged."
 
   - id: mutator-bloodloss.rot.tick
     name: "Periodic health-rot tick (PlayerPreThink) with randomized cadence"
@@ -47,13 +47,13 @@ features:
       - "common/deathtypes/all.inc:29 REGISTER_DEATHTYPE(ROT, DEATH_SELF_ROT, ...)"
       - "server/damage.qc:483 Damage() + :614-615 (targ==attacker → damage *= g_balance_selfdamagepercent)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/BloodlossMutator.cs:60-87 (OnPlayerPreThink)"
-      - "src/XonoticGodot.Server/GameWorld.cs:986-988 (PlayerPreThink.Call on the live per-client move)"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/EntityMutatorState.cs:38 (BloodlossTimer)"
-      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:225-226 (self-damage *= 0.65)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BloodlossMutator.cs:58-85 (OnPlayerPreThink)"
+      - "src/XonoticGodot.Server/GameWorld.cs:1037 (PlayerPreThink.Call on the live per-client move OnClientMove)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/EntityMutatorState.cs (BloodlossTimer)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:262-263 (self-damage *= g_balance_selfdamagepercent 0.65 when attacker==targ)"
     constants:
       - { name: "damage per tick (requested)", base: "1 hp", port: "1f", match: true }
-      - { name: "damage per tick (effective)", base: "1 * g_balance_selfdamagepercent = 0.65 hp (self-damage)", port: "1 * 0.65 = 0.65 hp (DamageSystem.cs:225 applies the same self-damage cut)", match: true }
+      - { name: "damage per tick (effective)", base: "1 * g_balance_selfdamagepercent = 0.65 hp (self-damage)", port: "1 * 0.65 = 0.65 hp (DamageSystem.cs:263 applies the same self-damage cut when attacker==targ)", match: true }
       - { name: "deathtype", base: "DEATH_ROT (DEATH_SELF_ROT, DMG_NOWEP, no obituary, special/non-weapon)", port: "\"rot\" string; IsSpecial(\"rot\")==true so weapon damage/force factors skipped (both default 1); armor NOT bypassed (matches Base)", match: true }
       - { name: "next-tick interval", base: "time + 0.5 + random()*0.5 s (uniform [0.5,1.0])", port: "now + 0.5f + Prandom.Float()*0.5f", match: true }
       - { name: "damage src", base: "player,player,player force '0 0 0'", port: "(player,player,player) Vector3.Zero", match: true }
@@ -69,7 +69,7 @@ features:
     gaps:
       - "No runtime/automated test confirms the rot tick cadence or that the rot damage actually removes health in a live match (static + cross-file trace only; no bloodloss test in tests/)."
     confidence: medium
-    notes: "Guards verified: game_stopped → VehicleCommon.GameStopped (BloodlossMutator.cs:66); IS_DEAD → DeadState==DeadFlag.No; IS_PLAYER → EntFlags.Client (the port-wide mutator IsPlayer convention). VERIFIED both Base and port multiply the 1-hp rot by g_balance_selfdamagepercent (0.65) because target==attacker — so the effective drain is ~0.65 hp/tick in BOTH; the draft's 'just removes 1 hp' note was imprecise but the dimension is still faithful (port matches Base). 'rot' is non-special-armor (armor applies in both)."
+    notes: "Guards verified: game_stopped → VehicleCommon.GameStopped (BloodlossMutator.cs:64); IS_DEAD → DeadState==DeadFlag.No; IS_PLAYER → EntFlags.Client. Live caller re-verified: GameWorld.OnClientMove fires MutatorHooks.PlayerPreThink.Call per client every tick (GameWorld.cs:1037). VERIFIED both Base and port multiply the 1-hp rot by g_balance_selfdamagepercent (0.65) because target==attacker (DamageSystem.cs:262 ReferenceEquals(attacker,targ)) — effective drain ~0.65 hp/tick in BOTH. 'rot' is non-special-armor (armor applies in both). Wave-2 left this row unchanged."
 
   - id: mutator-bloodloss.rot.vehicle_eject
     name: "Eject the player from any vehicle on each rot tick (VHEF_RELEASE)"
@@ -77,7 +77,7 @@ features:
     base_refs:
       - "common/mutators/mutator/bloodloss/bloodloss.qc:23-24 (vehicles_exit(player.vehicle, VHEF_RELEASE))"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/BloodlossMutator.cs:76-77 (ExitVehicle Release)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BloodlossMutator.cs:74-75 (ExitVehicle Release)"
       - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:230 (ExitVehicle)"
     constants:
       - { name: "exit flag", base: "VHEF_RELEASE", port: "VehicleExitFlag.Release", match: true }
@@ -93,7 +93,7 @@ features:
     gaps:
       - "Liveness depends on the rot tick reaching a vehicle-occupying player below threshold; not exercised by any test, and the port's vehicle mode is itself only partially live."
     confidence: medium
-    notes: "Base QC flags this as a TODO ('boots player out of their vehicle each health rot tick'); the port faithfully replicates that quirk. VehicleCommon.ExitVehicle is a real API."
+    notes: "Base QC flags this as a TODO ('boots player out of their vehicle each health rot tick'); the port faithfully replicates that quirk. VehicleCommon.ExitVehicle is a real API. Unchanged by Wave-2."
 
   - id: mutator-bloodloss.move.forced_crouch
     name: "Forced crouch while at/below threshold (PlayerCanCrouch, SVQC)"
@@ -102,8 +102,8 @@ features:
       - "common/mutators/mutator/bloodloss/bloodloss.qc:31-36 SVQC MUTATOR_HOOKFUNCTION(PlayerCanCrouch)"
       - "common/physics/player.qc:~198-203 (do_crouch pre-clamped false for vehicle/frozen/dead, THEN MUTATOR_CALLHOOK(PlayerCanCrouch))"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/BloodlossMutator.cs:90-95 (OnPlayerCanCrouch)"
-      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:1005-1013 (UpdateCrouch: pre-clamp dead/frozen → PlayerCanCrouch.Call → read DoCrouch back)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BloodlossMutator.cs:88-93 (OnPlayerCanCrouch)"
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs (UpdateCrouch: pre-clamp dead/frozen → PlayerCanCrouch.Call → read DoCrouch back)"
     constants:
       - { name: "trigger", base: "RES_HEALTH <= autocvar_g_bloodloss → do_crouch=true (no HEALTH>0 guard in SVQC)", port: "Health <= Threshold → DoCrouch=true (no Health>0 guard)", match: true }
     status:
@@ -118,7 +118,7 @@ features:
     gaps:
       - "CSQC variant (bloodloss.qc:58-62) adds a STAT(HEALTH)>0 guard so a corpse isn't predicted-crouched. The port has no CSQC prediction at all, so crouch is server-authoritative only (no local prediction); behaviourally matches SVQC, but is not locally predicted."
     confidence: high
-    notes: "Port mirrors SVQC exactly (no health>0 guard). The call site (PlayerPhysics.cs:1007-1008) pre-clamps doCrouch=false for dead/frozen BEFORE the hook, identically to player.qc; a below-threshold corpse can be re-forced to crouch in BOTH SVQC and the port (the CSQC-only health>0 guard is the only divergence and it lives on a path the port doesn't have)."
+    notes: "Port mirrors SVQC exactly (no health>0 guard). The call site pre-clamps doCrouch=false for dead/frozen BEFORE the hook, identically to player.qc; a below-threshold corpse can be re-forced to crouch in BOTH SVQC and the port (the CSQC-only health>0 guard is the only divergence and it lives on a path the port doesn't have). Now reads Threshold live (cvar) instead of a cached value — still matches Base behaviour. Unchanged hook logic by Wave-2."
 
   - id: mutator-bloodloss.move.jump_block
     name: "Cannot jump while at/below threshold (PlayerJump returns true, SVQC)"
@@ -127,7 +127,7 @@ features:
       - "common/mutators/mutator/bloodloss/bloodloss.qc:38-44 SVQC MUTATOR_HOOKFUNCTION(PlayerJump)"
       - "common/physics/player.qc:~403 (if (MUTATOR_CALLHOOK(PlayerJump,...)) return true; aborts the jump)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/BloodlossMutator.cs:98-103 (OnPlayerJump → return true)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BloodlossMutator.cs:96-101 (OnPlayerJump → return true)"
       - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:819-821 (PlayerJump.Call → if true, return early)"
       - "src/XonoticGodot.Common/Framework/Hooks.cs:39-47 (HookChain.Call ORs handler returns)"
     constants:
@@ -144,7 +144,7 @@ features:
     gaps:
       - "CSQC variant (bloodloss.qc:63-67) adds STAT(HEALTH)>0; the port has no CSQC prediction, so jump-block is server-authoritative only (no local prediction)."
     confidence: high
-    notes: "VERIFIED HookChain.Call (Hooks.cs:45 `handled |= cb`) ORs returns, so a true return aborts the jump exactly like QC's `if (MUTATOR_CALLHOOK(PlayerJump,...)) return true;`. Live call site PlayerPhysics.cs:820 returns (true, multijump) on a true hook."
+    notes: "VERIFIED HookChain.Call (Hooks.cs:45 `handled |= cb`) ORs returns, so a true return aborts the jump exactly like QC's `if (MUTATOR_CALLHOOK(PlayerJump,...)) return true;`. Live call site PlayerPhysics.cs:820 returns early on a true hook. Now reads Threshold live (cvar). Unchanged hook logic by Wave-2."
 
   - id: mutator-bloodloss.threshold.live_reread
     name: "Threshold value tracks the g_bloodloss cvar mid-match"
@@ -152,22 +152,23 @@ features:
     base_refs:
       - "common/mutators/mutator/bloodloss/bloodloss.qc:21,34,42 (autocvar_g_bloodloss read live on every hook call)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/BloodlossMutator.cs:21,44-47 (Threshold cached once in Hook())"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BloodlossMutator.cs:25 (private float Threshold => Api.Cvars.GetFloat(\"g_bloodloss\") — live cvar read property)"
     constants:
-      - { name: "read cadence", base: "live cvar read every hook call", port: "cached at Hook(); only refreshed by re-running MutatorActivation.Apply()", match: false }
+      - { name: "read cadence", base: "live cvar read every hook call", port: "live cvar read every hook call (Threshold is now an expression-bodied property: Api.Cvars.GetFloat(\"g_bloodloss\"))", match: true }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: na
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Mid-match g_bloodloss cvar change is not re-read by the running mutator (cached threshold); only a re-run of MutatorActivation.Apply() refreshes it. Match-start value is always correct."
+    gaps: []
+    verification:
+      - { kind: code, ref: "BloodlossMutator.cs:25 Threshold is `=> Api.Services is not null ? Api.Cvars.GetFloat(\\\"g_bloodloss\\\") : 0f`; each hook (PreThink/CanCrouch/Jump) reads Threshold per call, so a mid-match cvar change is observed on the next hook call", result: pass }
     confidence: high
-    notes: "In normal play Apply() runs after the cfg loads, so the cached threshold is correct at match start; the divergence only manifests on a live cvar change without re-converge. The 25f field fallback is non-Base, but unreachable on the live path: IsEnabled gates on cvar != 0 before Hook() runs, and Hook() only overwrites Threshold when the cvar read is != 0, so on the live path Threshold always equals the real cvar value (never 25f)."
+    notes: "FIXED in Wave-2 (commit ec788f7): Threshold changed from a static field cached at Hook() time to an expression-bodied property that reads g_bloodloss live on every access, exactly matching Base which reads autocvar_g_bloodloss directly in each HOOKFUNCTION. The dead 25f field fallback and the Hook()-time `if (t != 0f) Threshold = t` caching block were removed. A mid-match g_bloodloss change now takes effect immediately (next hook call), closing the only logic/values divergence on this row. Property guards on Api.Services (returns 0f pre-services) — moot on the live path because IsEnabled already gates on services + cvar != 0."
 
   - id: mutator-bloodloss.presentation.active_mutator_signalling
     name: "Active-mutators serverinfo + scoreboard/HUD signalling (BuildMutatorsString, util MUT_BLOODLOSS row, CSQC mut_set_active)"
@@ -192,9 +193,9 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The serverinfo/scoreboard active-mutators list will not include 'Blood loss', and the CSQC active-mutator HUD icon (mut_set_active(MUT_BLOODLOSS)) never lights up — the port has NO active-mutator signalling mechanism at all (no mut_set_active / MUT_BLOODLOSS / BuildMutatorsString equivalent found across src/ or game/)."
+      - "The serverinfo/scoreboard active-mutators list will not include 'Blood loss', and the CSQC active-mutator HUD icon (mut_set_active(MUT_BLOODLOSS)) never lights up — the port has NO active-mutator signalling mechanism at all (no mut_set_active / MUT_BLOODLOSS / BuildMutatorsString equivalent found across src/ or game/). Re-confirmed unported after Wave-2."
     confidence: high
-    notes: "Broadened from the draft's BuildMutatorsString-only row: Base signals an active bloodloss mutator through THREE paths (SVQC mutators-string hooks, util.qc GameType active-mutator row, CSQC mut_set_active HUD icon), all keyed on g_bloodloss>0 (note: '> 0', slightly stricter than the mutator's own non-zero enable). None are ported. Cosmetic only — no gameplay effect. The active-mutator-list gap is generic across the port's mutators, not bloodloss-specific."
+    notes: "STILL OPEN after Wave-2. Base signals an active bloodloss mutator through THREE paths (SVQC mutators-string hooks, util.qc GameType active-mutator row, CSQC mut_set_active HUD icon), all keyed on g_bloodloss>0 (note: '> 0', slightly stricter than the mutator's own non-zero enable). None are ported (CloakedMutator.cs:17 explicitly notes 'the port has no active-mutators pretty-string mechanism yet'). Cosmetic only — no gameplay effect. The active-mutator-list gap is generic across the port's mutators, not bloodloss-specific."
 
   - id: mutator-bloodloss.menu.dialog
     name: "Multiplayer-create mutators dialog (slider 10-50 + enable checkbox, g_instagib dependency, describe text)"
@@ -221,4 +222,4 @@ features:
     gaps:
       - "The full MENUQC describe paragraph (bloodloss.qc:72-79, two sentences on stun/impaired movement/rapid health drain) is reduced to a one-line tooltip on the checkbox/slider."
     confidence: high
-    notes: "Slider, checkbox values, and the g_instagib grey-out all match Base. Only the long describe text is condensed to a tooltip — a minor presentation gap. Split out from the draft (which folded the menu into the mutator-list row's notes) so it has its own auditable row."
+    notes: "Slider, checkbox values, and the g_instagib grey-out all match Base. Only the long describe text is condensed to a tooltip — a minor presentation gap. Unchanged by Wave-2 (a menu file, not a gameplay file)."

@@ -5,11 +5,11 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 14
   worst_gaps:
-    - "Entire server-side sandbox mutator is unimplemented: no object can be spawned, edited, dragged, or persisted with g_sandbox 1."
-    - "No `sandbox` console command / object_* subcommand handler exists on the server (the data alias reaches no backend)."
-    - "Sandbox Tools menu opens and its controls move, but every action button is a no-op (commands logged inert, no server backend)."
-    - "Object material impact particles + impact sounds never play (no object touch handler)."
-    - "Per-map object storage (auto-save every 5s / auto-load at map start) is missing — builds never persist."
+    - "Wave-2 added a faithful, self-contained SandboxMutator.cs (all object/edit/attach/storage/think/touch logic + every cvar default), and the mutator IS activated on the live path (MutatorActivation.Apply at GameWorld.cs:535) with its SvStartFrame think-tick pumped (MutatorHooks.FireStartFrame in the GameWorld loop) — BUT the entire command-dispatch surface is dead: HandleCommand has zero callers, `g_sandbox`/`sandbox` is not in ClientCommandRegistry, and there is no SV_ParseClientCommand mutator-hook seam."
+    - "Every host seam is unwired (all null): Trace (no crosshair selection; spawns land at player origin), Store (no save/load/autoload, clipboard inert), CryptoIdfpProvider/NetNameProvider/ViewYawProvider (no UID/owner/view-yaw), SetRealClients (never called → owner-UID resync no-ops on an empty roster), OnMaterialEffect/PrintTo."
+    - "Net result in a real match: with g_sandbox 1 NO object can be spawned, edited, dragged, claimed, or persisted — the logic exists but is unreachable from the player. Code went missing→faithful, but liveness stays dead for everything that needs the command surface or a host seam."
+    - "Drag/grab (+button8) integration is still entirely absent (no Drag/Drag_Begin/Drag_Finish; .grab is computed by the think tick but nothing consumes it)."
+    - "The three Sandbox_* mutator hooks (DragAllowed/SaveAllowed/EditAllowed) have no port hook-chain; gating is approximated on g_sandbox_readonly only (TODOs in source)."
 features:
   - id: mutator-sandbox.core.registration
     name: "Mutator activation via g_sandbox + onadd autoload"
@@ -17,27 +17,31 @@ features:
     base_refs:
       - "common/mutators/mutator/sandbox/sv_sandbox.qc:REGISTER_MUTATOR"
       - "common/mutators/mutator/sandbox/sv_sandbox.qc:MUTATOR_ONADD"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:IsEnabled"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:Hook"
+      - "src/XonoticGodot.Server/GameWorld.cs:535 (MutatorActivation.Apply)"
     constants:
-      - { name: "g_sandbox", base: "0", port: "0 (cfg ships, never read)", match: true }
-      - { name: "g_sandbox_storage_autoload", base: "1", port: "1 (cfg ships, never read)", match: true }
-      - { name: "g_sandbox_storage_autosave", base: "5", port: "5 (cfg ships, never read)", match: true }
+      - { name: "g_sandbox", base: "0", port: "0", match: true }
+      - { name: "g_sandbox_storage_autoload", base: "1", port: "1", match: true }
+      - { name: "g_sandbox_storage_autosave", base: "5", port: "5", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No SandboxMutator in the port mutator registry; g_sandbox does nothing when set."
+      - "MUTATOR_ONADD autoload calls DatabaseLoad(), but Store is null on the live path, so the autoload is inert (returns immediately) — no storage file is ever read in a real match."
     verification:
-      - { kind: grep, ref: "ls src/.../Gameplay/Mutators/ = no SandboxMutator.cs (57 mutators listed, none sandbox); grep sandbox in src/ = only 2 unrelated doc-comments (ServerHooks.cs, GameLog.cs)", result: fail }
-      - { kind: code, ref: "all 16 g_sandbox* + cl_sandbox_clipboard defaults in port assets/data/.../mutators.cfg are byte-identical to Base mutators.cfg:95-110", result: pass }
+      - { kind: code, ref: "SandboxMutator is [Mutator]-attributed; MutatorActivation.Apply() (live at GameWorld.cs:535) reconciles IsEnabled→Hook(). IsEnabled = g_sandbox != 0. Hook() seeds autosave_time, clears object list, subscribes SvStartFrame.", result: pass }
+      - { kind: code, ref: "all 15 g_sandbox* + cl_sandbox_clipboard defaults in port assets/.../mutators.cfg byte-identical to Base mutators.cfg:95-110", result: pass }
+      - { kind: code, ref: "DatabaseLoad() bails when Store is null; no host wires Store (grep: zero `.Store =` callers)", result: fail }
     confidence: high
-    notes: "g_sandbox* defaults ship in assets/data/.../mutators.cfg IDENTICAL to Base (verified line-by-line), and commands.cfg ships `alias sandbox \"cmd g_sandbox ${* ?}\"` — but no gameplay code reads any of them. REGISTER_MUTATOR(sandbox, expr_evaluate(autocvar_g_sandbox)) + MUTATOR_ONADD (IL_NEW, autosave_time seed, autoload) have no port counterpart."
+    notes: "FIXED vs baseline (missing→faithful, na→live): the mutator now genuinely registers and activates on g_sandbox 1 via MutatorActivation.Apply (live). Cvar reads are real. Residual: the onadd autoload is wired but inert because the file-IO Store seam is null."
 
   - id: mutator-sandbox.object.spawn
     name: "object_spawn — create object entity from a model in front of player"
@@ -45,161 +49,184 @@ features:
     base_refs:
       - "common/mutators/mutator/sandbox/sv_sandbox.qc:sandbox_ObjectSpawn"
       - "common/mutators/mutator/sandbox/sv_sandbox.qc:SV_ParseClientCommand(object_spawn)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:ObjectSpawn"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:HandleCommand(object_spawn)"
     constants:
-      - { name: "g_sandbox_editor_distance_spawn", base: "200", port: "none", match: false }
-      - { name: "g_sandbox_editor_flood_s", base: "1", port: "none", match: false }
-      - { name: "g_sandbox_editor_maxobjects", base: "1000", port: "none", match: false }
-      - { name: "spawn_solid", base: "SOLID_BBOX", port: "none", match: false }
-      - { name: "spawn_movetype", base: "MOVETYPE_TOSS", port: "none", match: false }
-      - { name: "spawn_takedamage", base: "DAMAGE_AIM", port: "none", match: false }
-      - { name: "damageforcescale", base: "1", port: "none", match: false }
+      - { name: "g_sandbox_editor_distance_spawn", base: "200", port: "200", match: true }
+      - { name: "g_sandbox_editor_flood (s)", base: "1", port: "1", match: true }
+      - { name: "g_sandbox_editor_maxobjects", base: "1000", port: "1000", match: true }
+      - { name: "spawn_solid", base: "SOLID_BBOX", port: "Solid.BBox", match: true }
+      - { name: "spawn_movetype", base: "MOVETYPE_TOSS", port: "MoveType.Toss", match: true }
+      - { name: "spawn_takedamage", base: "DAMAGE_AIM", port: "DamageMode.Aim", match: true }
+      - { name: "damageforcescale", base: "1", port: "1", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
       presentation: missing
       audio: na
-      liveness: na
+      liveness: dead
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No `object` entity class and no object_spawn command; spawning a model is impossible."
-      - "Flood timer, maxobjects cap, fexists model check, and forward-trace placement all absent."
+      - "DEAD: HandleCommand has zero callers — `g_sandbox`/`sandbox` is not in ClientCommandRegistry and no SV_ParseClientCommand hook routes the client command, so object_spawn can never run in a match."
+      - "Trace seam (crosshair WarpZone_TraceLine forward 200) is null on the live path, so even if reached, spawns land at the player origin, not the forward trace endpoint."
+      - "ModelExists() is permissive (TODO: no IModelService.fexists), so the Base non-existent-model rejection is not enforced."
+      - "presentation: CSQCMODEL_AUTOINIT (object→client networking) has no port seam — a spawned object would not render on clients."
     verification:
-      - { kind: grep, ref: "grep object_spawn|ObjectSpawn in src/ = none (only menu command string)", result: fail }
+      - { kind: code, ref: "ObjectSpawn + HandleCommand(object_spawn) implement flood timer, maxobjects cap, model-arg check, forward-trace placement, view-yaw angles, owner-UID/info setup — logic/values match Base line-by-line", result: pass }
+      - { kind: grep, ref: "grep HandleCommand outside SandboxMutator.cs = none; grep g_sandbox in ClientCommandRegistry = none; no SvParseClientCommand seam in MutatorHooks", result: fail }
     confidence: high
-    notes: "Base traces v_forward*200 from view origin (WarpZone_TraceLine) and sets angles_y to view yaw."
+    notes: "FIXED on logic/values/timing (missing→faithful). STILL OPEN on liveness (dead): no command path reaches it. Trace + CSQC seams unwired."
 
   - id: mutator-sandbox.object.think_grab
     name: "Per-object think: grab-class assignment + owner UID resync + CSQC update"
     layer: [authority]
     base_refs:
       - "common/mutators/mutator/sandbox/sv_sandbox.qc:sandbox_ObjectFunction_Think"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:ObjectThink"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:OnStartFrame"
     constants:
-      - { name: "g_sandbox_editor_free", base: "1", port: "none", match: false }
-      - { name: "grab_values", base: "0 none / 1 owner / 3 anyone", port: "none", match: false }
+      - { name: "g_sandbox_editor_free", base: "1", port: "1", match: true }
+      - { name: "grab_values", base: "0 none / 1 owner / 3 anyone", port: "0/1/3", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
+      logic: partial
+      values: faithful
+      timing: faithful
       presentation: missing
       audio: na
-      liveness: na
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No per-object think; .grab is never computed so the drag system would have nothing to gate on."
-      - "Owner-entity resync (rebind realowner from crypto_idfp each frame, clear on disconnect) absent."
+      - "Think tick IS pumped live (OnStartFrame iterates _objects each frame), but _objects is always empty because nothing can spawn — so it never does meaningful work."
+      - "Owner-UID resync depends on SetRealClients() + CryptoIdfpProvider, both unwired (roster is always empty, provider null) → realowner never resolves."
+      - "Sandbox_DragAllowed mutator-hook veto has no port chain; grab is gated on g_sandbox_readonly only (TODO in source)."
+      - "presentation: CSQCMODEL_AUTOUPDATE has no port seam."
     verification:
-      - { kind: grep, ref: "no sandbox think handler in src/", result: fail }
+      - { kind: code, ref: "ObjectThink computes grab (readonly→0, free<2 && uid→1, else 3) and resyncs realowner from UID — faithful; OnStartFrame is subscribed to MutatorHooks.SvStartFrame which IS fired in GameWorld loop", result: pass }
+      - { kind: grep, ref: "no `.SetRealClients(` / `.CryptoIdfpProvider =` callers anywhere; _realClients defaults to Array.Empty", result: fail }
     confidence: high
-    notes: "Reschedules nextthink=time each frame; bots can never own objects."
+    notes: "FIXED partially (missing→partial logic, na→partial liveness): the think loop is genuinely on the live per-frame path, but operates on an empty set and its UID-resync inputs are unwired. DragAllowed hook still absent."
 
   - id: mutator-sandbox.object.touch_material_fx
     name: "Object touch: material impact particles + impact sounds (velocity-scaled)"
     layer: [authority, presentation]
     base_refs:
       - "common/mutators/mutator/sandbox/sv_sandbox.qc:sandbox_ObjectFunction_Touch"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:ObjectTouch"
     constants:
-      - { name: "g_sandbox_object_material_velocity_min", base: "100", port: "none", match: false }
-      - { name: "g_sandbox_object_material_velocity_factor", base: "0.002", port: "none", match: false }
-      - { name: "touch_timer_rate_s", base: "0.1", port: "none", match: false }
-      - { name: "impact_sound_variants", base: "5 (impact_<mat>_1..5.wav)", port: "none", match: false }
-      - { name: "effect_count_range", base: "1..10 (ceil(intensity*10))", port: "none", match: false }
-      - { name: "sound_channel/atten", base: "CH_TRIGGER / VOL_BASE*intensity / ATTEN_NORM", port: "none", match: false }
+      - { name: "g_sandbox_object_material_velocity_min", base: "100", port: "100", match: true }
+      - { name: "g_sandbox_object_material_velocity_factor", base: "0.002", port: "0.002", match: true }
+      - { name: "touch_timer_rate_s", base: "0.1", port: "0.1", match: true }
+      - { name: "impact_sound_variants", base: "5 (impact_<mat>_1..5.wav)", port: "ceil(random()*5)", match: true }
+      - { name: "effect_count_range", base: "1..10 (ceil(intensity*10))", port: "ceil(intensity*10)", match: true }
+      - { name: "sound_channel/atten", base: "CH_TRIGGER / VOL_BASE*intensity / ATTEN_NORM", port: "TriggerAuto / 1*intensity / 1", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
       presentation: missing
-      audio: missing
-      liveness: na
+      audio: partial
+      liveness: dead
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Material objects never play impact_<material> particles or object/impact_<material>_N.wav sounds on collision."
+      - "DEAD: no touch handler is wired to the engine collision callback — ObjectTouch has no live caller (objects never spawn, and there is no settouch seam routing world touches into it)."
+      - "presentation: the impact_<material> particle effect is not registered in the port EffectSystem; ObjectTouch falls back to an OnMaterialEffect delegate which is null/unwired."
+      - "audio: sound playback uses the right cue (object/impact_<mat>_N.wav, channel/atten faithful) but is unreachable; precache of the 5 variants is deferred to lazy Play (intentional)."
     verification:
-      - { kind: grep, ref: "no touch handler / impact_ effect or sound emit for sandbox in src/", result: fail }
+      - { kind: code, ref: "ObjectTouch: intensity=avg(|vel|), >=min gate, offset+factor clamp, 0.1s rate-limit, ceil(random*5) variant, count=ceil(intensity*10) — all faithful to Base", result: pass }
+      - { kind: grep, ref: "no settouch/collision callback routes into ObjectTouch; OnMaterialEffect has no `=` assignment anywhere", result: fail }
     confidence: high
-    notes: "intensity = avg(|this.vel|,|toucher.vel|); rate-limited to 0.1s; default materials metal/stone/wood/flesh."
+    notes: "FIXED on logic/values/timing/audio-cue (missing→faithful). STILL OPEN: dead (no touch wiring), particle effect unregistered."
 
   - id: mutator-sandbox.object.edit_get
     name: "Edit-target trace + ownership permission check"
     layer: [authority]
     base_refs:
       - "common/mutators/mutator/sandbox/sv_sandbox.qc:sandbox_ObjectEdit_Get"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:ObjectEditGet"
     constants:
-      - { name: "g_sandbox_editor_distance_edit", base: "300", port: "none", match: false }
+      - { name: "g_sandbox_editor_distance_edit", base: "300", port: "300", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: faithful
+      values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: dead
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No crosshair trace to select an object; range + classname + per-owner edit-rights gating all absent."
+      - "DEAD: depends on the Trace seam (null on live path) and is only reachable from HandleCommand (no callers); ObjectEditGet returns null when Trace is null, so nothing is ever selectable."
     verification:
-      - { kind: grep, ref: "no sandbox_ObjectEdit_Get equivalent in src/", result: fail }
+      - { kind: code, ref: "ObjectEditGet: range + classname-via-hit + per-owner gate (unowned OR free>=2 OR mine) — faithful to Base permission ladder", result: pass }
+      - { kind: grep, ref: "Trace property has no `.Trace =` assignment; ObjectEditGet returns null when Trace==null", result: fail }
     confidence: high
-    notes: "Permission: unowned object OR player owns it OR g_sandbox_editor_free>=2."
+    notes: "FIXED logic/values (missing→faithful). STILL OPEN: dead (Trace seam unwired + no command caller)."
 
   - id: mutator-sandbox.object.edit_properties
     name: "object_edit — skin/alpha/color_main/color_glow/frame/scale/solidity/physics/force/material"
     layer: [authority]
     base_refs:
       - "common/mutators/mutator/sandbox/sv_sandbox.qc:SV_ParseClientCommand(object_edit)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:HandleCommand(object_edit)"
     constants:
-      - { name: "solidity_map", base: "0->SOLID_TRIGGER / 1->SOLID_BBOX", port: "none", match: false }
-      - { name: "physics_map", base: "0->MOVETYPE_NONE / 1->MOVETYPE_TOSS / 2->MOVETYPE_PHYSICS", port: "none", match: false }
-      - { name: "force_field", base: "damageforcescale", port: "none", match: false }
+      - { name: "solidity_map", base: "0->SOLID_TRIGGER / 1->SOLID_BBOX", port: "0->Trigger / 1->BBox", match: true }
+      - { name: "physics_map", base: "0->MOVETYPE_NONE / 1->MOVETYPE_TOSS / 2->MOVETYPE_PHYSICS", port: "0->None / 1->Toss / 2->Push", match: false }
+      - { name: "force_field", base: "damageforcescale", port: "DamageForceScale", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
+      logic: faithful
+      values: partial
+      timing: na
       presentation: missing
       audio: na
-      liveness: na
+      liveness: dead
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "None of the per-property editors exist; objects cannot be recolored, rescaled, made solid/physical, etc."
+      - "DEAD: object_edit lives in HandleCommand (no callers)."
+      - "values: physics 2 maps to MoveType.Push (engine value 7), but Base MOVETYPE_PHYSICS is a distinct higher value — the numeric movetype differs (no real physics-engine behavior backs it either way, so behaviorally moot, but the stored/serialized movetype byte diverges)."
+      - "The faithful Base solidity→physics fall-through (missing break;) IS preserved (goto case \"physics\")."
     verification:
-      - { kind: grep, ref: "no object_edit handler in src/", result: fail }
+      - { kind: code, ref: "all property cases present; solidity-falls-into-physics quirk reproduced via goto case; material precache deferred (intentional)", result: pass }
+      - { kind: code, ref: "EntityEnums.cs: MoveType.Push = 7; Base MOVETYPE_PHYSICS != 7 → physics-2 movetype value diverges; serialized as (float)physics in save/load so round-trips internally consistent but not Base-byte-identical", result: fail }
     confidence: high
-    notes: "Base has a known missing-break fall-through: solidity case falls into physics case."
+    notes: "FIXED logic (missing→faithful, incl. the break-fallthrough quirk). values:partial — physics-2 movetype enum mismatch. STILL OPEN: dead (no command caller)."
 
   - id: mutator-sandbox.object.scale
     name: "Object scale clamp + mins/maxs resize"
     layer: [authority]
     base_refs:
       - "common/mutators/mutator/sandbox/sv_sandbox.qc:sandbox_ObjectEdit_Scale"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:ObjectEditScale"
     constants:
-      - { name: "g_sandbox_object_scale_min", base: "0.1", port: "none", match: false }
-      - { name: "g_sandbox_object_scale_max", base: "2", port: "none", match: false }
+      - { name: "g_sandbox_object_scale_min", base: "0.1", port: "0.1", match: true }
+      - { name: "g_sandbox_object_scale_max", base: "2", port: "2", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: faithful
+      values: faithful
       timing: na
       presentation: missing
       audio: na
-      liveness: na
+      liveness: dead
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No scale handling; bound(0.1,f,2), model re-set, and RoundPerfectVector size fix (#2742) absent."
+      - "DEAD: only reached from object_edit/ObjectPortLoad, both unreachable on the live path."
+      - "Model re-set + mins/maxs resize depend on the entity service (Edict); headless/unwired path skips them."
     verification:
-      - { kind: grep, ref: "no sandbox scale code in src/", result: fail }
+      - { kind: code, ref: "ObjectEditScale: clamp(0.1,f,2), SetModel reset, RoundPerfectVector(mins*scale)/(maxs*scale) (#2742) via Round-to-1/8 — faithful", result: pass }
+      - { kind: grep, ref: "callers are ObjectEditScale<-object_edit/ObjectPortLoad, all gated behind dead command/store paths", result: fail }
     confidence: high
-    notes: "Menu slider exposes 0.25..2 step 0.05 but the engine clamp is 0.1..2."
+    notes: "FIXED logic/values (missing→faithful), RoundPerfectVector reproduced. STILL OPEN: dead."
 
   - id: mutator-sandbox.object.attach
     name: "object_attach get/set/remove — child object attachment to tag/bone"
@@ -208,26 +235,31 @@ features:
       - "common/mutators/mutator/sandbox/sv_sandbox.qc:sandbox_ObjectAttach_Set"
       - "common/mutators/mutator/sandbox/sv_sandbox.qc:sandbox_ObjectAttach_Remove"
       - "common/mutators/mutator/sandbox/sv_sandbox.qc:SV_ParseClientCommand(object_attach)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:ObjectAttachSet"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:ObjectAttachRemove"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:HandleCommand(object_attach)"
     constants:
-      - { name: "attach_movetype", base: "MOVETYPE_FOLLOW", port: "none", match: false }
-      - { name: "attach_solid", base: "SOLID_NOT", port: "none", match: false }
-      - { name: "MAX_STORAGE_ATTACHMENTS", base: "16", port: "none", match: false }
+      - { name: "attach_movetype", base: "MOVETYPE_FOLLOW", port: "MoveType.Follow", match: true }
+      - { name: "attach_solid", base: "SOLID_NOT", port: "Solid.Not", match: true }
+      - { name: "MAX_STORAGE_ATTACHMENTS", base: "16", port: "16", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: faithful
+      values: faithful
       timing: na
       presentation: missing
       audio: na
-      liveness: na
+      liveness: dead
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Objects cannot be attached to one another; persisted old_solid/old_movetype restore-on-detach absent."
+      - "DEAD: object_attach get/set/remove live in HandleCommand (no callers)."
+      - "presentation: setattachment (engine tag-follow) has no port seam — attached children store the tag and old_solid/old_movetype faithfully but are not actually tag-followed (TODO in source)."
     verification:
-      - { kind: grep, ref: "no object_attach handler in src/", result: fail }
+      - { kind: code, ref: "Set persists OldSolid/OldMoveType, sets Follow/Not/takedamage=false; Remove restores per-child state, freezes angles, clears spin — faithful; 16-slot cap honored in save", result: pass }
+      - { kind: grep, ref: "HandleCommand(object_attach) has no caller; setattachment TODO not implemented", result: fail }
     confidence: high
-    notes: "Set persists old_solid/old_movetype; Remove restores origin from gettaginfo and clears spin."
+    notes: "FIXED logic/values (missing→faithful). STILL OPEN: dead + no real tag-follow."
 
   - id: mutator-sandbox.object.remove
     name: "object_remove — delete object + detach children + clear selections"
@@ -235,23 +267,26 @@ features:
     base_refs:
       - "common/mutators/mutator/sandbox/sv_sandbox.qc:sandbox_ObjectRemove"
       - "common/mutators/mutator/sandbox/sv_sandbox.qc:SV_ParseClientCommand(object_remove)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:ObjectRemove"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:HandleCommand(object_remove)"
     constants: []
     status:
-      logic: missing
+      logic: faithful
       values: na
       timing: na
       presentation: missing
       audio: na
-      liveness: na
+      liveness: dead
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No object_remove; objects cannot be deleted, decrement object_count, or detach their children."
+      - "DEAD: object_remove lives in HandleCommand (no callers)."
     verification:
-      - { kind: grep, ref: "no object_remove handler in src/", result: fail }
+      - { kind: code, ref: "ObjectRemove: detach children (ObjectAttachRemove), clear stale _attachSelection entries pointing at e, delete edict, --object_count — faithful to Base", result: pass }
+      - { kind: grep, ref: "HandleCommand(object_remove) has no caller", result: fail }
     confidence: high
-    notes: "Also clears any player's object_attach selection pointing at the removed object."
+    notes: "FIXED logic (missing→faithful). STILL OPEN: dead."
 
   - id: mutator-sandbox.object.duplicate
     name: "object_duplicate copy/paste via clipboard cvar"
@@ -260,24 +295,30 @@ features:
       - "common/mutators/mutator/sandbox/sv_sandbox.qc:SV_ParseClientCommand(object_duplicate)"
       - "common/mutators/mutator/sandbox/sv_sandbox.qc:sandbox_ObjectPort_Save"
       - "common/mutators/mutator/sandbox/sv_sandbox.qc:sandbox_ObjectPort_Load"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:HandleCommand(object_duplicate)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:ObjectPortSave"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:ObjectPortLoad"
     constants:
-      - { name: "clipboard_cvar", base: "cl_sandbox_clipboard", port: "none", match: false }
+      - { name: "clipboard_cvar", base: "cl_sandbox_clipboard", port: "cl_sandbox_clipboard", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
       presentation: na
       audio: na
-      liveness: na
+      liveness: dead
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Copy (serialize object props to a client cvar) and paste (respawn from cvar) are absent."
+      - "DEAD: copy/paste live in HandleCommand (no callers)."
+      - "Copy pushes the serialized object to the client cvar via Store.SetClipboard (stuffcmd equivalent), but Store is null on the live path → clipboard write is inert."
+      - "Paste shares the flood + maxobjects gates with object_spawn (faithful)."
     verification:
-      - { kind: grep, ref: "no object_duplicate handler in src/", result: fail }
+      - { kind: code, ref: "copy: ObjectPortSave(e,false) + escape quotes + SetClipboard; paste: flood/empty/cap checks then ObjectPortLoad — faithful; ObjectPortSave/Load serializer reproduces the slot layout, %.9v vectors, ftos, db columns", result: pass }
+      - { kind: grep, ref: "no caller for HandleCommand; Store has no `.Store =` assignment (SetClipboard inert)", result: fail }
     confidence: high
-    notes: "Paste shares the flood + maxobjects gates with object_spawn."
+    notes: "FIXED logic/values/timing (missing→faithful), incl. a faithful textual serializer. STILL OPEN: dead + clipboard store unwired."
 
   - id: mutator-sandbox.object.claim_info
     name: "object_claim + object_info object/mesh/attachments"
@@ -285,23 +326,27 @@ features:
     base_refs:
       - "common/mutators/mutator/sandbox/sv_sandbox.qc:SV_ParseClientCommand(object_claim)"
       - "common/mutators/mutator/sandbox/sv_sandbox.qc:SV_ParseClientCommand(object_info)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:HandleCommand(object_claim)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:HandleCommand(object_info)"
     constants: []
     status:
-      logic: missing
+      logic: faithful
       values: na
       timing: na
       presentation: missing
       audio: na
-      liveness: na
+      liveness: dead
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Cannot claim ownership of an object or print its owner/dates/mesh-tags/attachment info."
+      - "DEAD: claim/info live in HandleCommand (no callers); also need CryptoIdfpProvider/NetNameProvider/PrintTo (all null)."
+      - "object_info mesh: tag enumeration (FOR_EACH_TAG) needs the model-skeleton service — not implemented (TODO); mesh subcommand prints the header but no tag list."
     verification:
-      - { kind: grep, ref: "no object_claim/object_info handler in src/", result: fail }
+      - { kind: code, ref: "claim: UID check, owner-name update, already-mine short-circuit, crypto_idfp set — faithful; info object/attachments faithful; info mesh stubs the tag loop", result: pass }
+      - { kind: grep, ref: "no HandleCommand caller; CryptoIdfpProvider/NetNameProvider/PrintTo unassigned", result: fail }
     confidence: high
-    notes: "Claim requires a player UID (crypto_idfp); updates netname then crypto_idfp."
+    notes: "FIXED logic (missing→faithful) except the mesh tag-enumeration TODO. STILL OPEN: dead + UID/print seams unwired."
 
   - id: mutator-sandbox.storage.persist
     name: "Per-map object storage: save/load + 5s auto-save + autoload at map start"
@@ -310,27 +355,33 @@ features:
       - "common/mutators/mutator/sandbox/sv_sandbox.qc:sandbox_Database_Save"
       - "common/mutators/mutator/sandbox/sv_sandbox.qc:sandbox_Database_Load"
       - "common/mutators/mutator/sandbox/sv_sandbox.qc:MUTATOR_HOOKFUNCTION(sandbox, SV_StartFrame)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:DatabaseSave"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:DatabaseLoad"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:OnStartFrame"
     constants:
-      - { name: "g_sandbox_storage_name", base: "default", port: "default (cfg only, unread)", match: false }
-      - { name: "g_sandbox_storage_autosave", base: "5", port: "5 (cfg only, unread)", match: false }
-      - { name: "g_sandbox_storage_autoload", base: "1", port: "1 (cfg only, unread)", match: false }
-      - { name: "storage_path", base: "sandbox/storage_<name>_<map>.txt", port: "none", match: false }
+      - { name: "g_sandbox_storage_name", base: "default", port: "default", match: true }
+      - { name: "g_sandbox_storage_autosave", base: "5", port: "5", match: true }
+      - { name: "g_sandbox_storage_autoload", base: "1", port: "1", match: true }
+      - { name: "storage_path", base: "sandbox/storage_<name>_<map>.txt", port: "delegated to IObjectStore (host builds path)", match: false }
     status:
-      logic: missing
-      values: missing
-      timing: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
       presentation: na
       audio: na
-      liveness: na
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Builds never persist: no per-map text storage, no 5s auto-save tick, no autoload at map start."
+      - "The 5s auto-save TICK is genuinely live (OnStartFrame is on the fired MutatorHooks.SvStartFrame chain, autosave_time seeded correctly), but DatabaseSave bails when Store is null → no file is ever written; likewise DatabaseLoad bails → no autoload."
+      - "No host wires IObjectStore (file IO + path = sandbox/storage_<name>_<map>.txt), so per-map persistence is inert in a real match."
+      - "Sandbox_SaveAllowed mutator-hook veto has no port chain (TODO)."
     verification:
-      - { kind: grep, ref: "no sandbox_Database_Save/_Load equivalent in src/", result: fail }
+      - { kind: code, ref: "OnStartFrame: gate on autosave==0, time<autosave_time, reschedule, DatabaseSave; header line + per-parent ObjectPortSave(true) — faithful. DatabaseLoad parses lines, skips //#, ObjectPortLoad(true). Subscribed to live SvStartFrame.", result: pass }
+      - { kind: grep, ref: "no `.Store =` assignment; DatabaseSave/Load early-return on null Store", result: fail }
     confidence: high
-    notes: "Serializes origin/angles/model/skin/alpha/colormod/glowmod/frame/scale/solid/movetype/force/material + db owner/dates; children in slots 1..16."
+    notes: "FIXED on logic/values/timing and the autosave TICK is live (na→partial). STILL OPEN: actual persistence dead because the IObjectStore file-IO seam is unwired; SaveAllowed hook absent."
 
   - id: mutator-sandbox.drag.grab
     name: "Drag/grab integration: carry objects with +button8 gated by .grab"
@@ -353,11 +404,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No object-drag system; the 'drag object' (+button8) key does nothing, objects cannot be physically carried."
+      - "STILL MISSING: no Drag/Drag_Begin/Drag_Finish system. The think tick computes .grab (e.Grab) but nothing consumes it; +button8 does nothing; objects cannot be physically carried."
     verification:
-      - { kind: grep, ref: "no Drag_Begin/Drag_Finish/.grab consumer in src/", result: fail }
+      - { kind: grep, ref: "no Drag_Begin/Drag_Finish/+button8 grab consumer in src/ or game/; e.Grab is written by ObjectThink but never read", result: fail }
     confidence: high
-    notes: "Shared generic drag system (also used by g_monsters_edit); grab classes 0/1/2/3 = no/owner/team/anyone."
+    notes: "UNCHANGED from baseline (still missing). The shared generic drag system (also used by g_monsters_edit) was not ported. Only the .grab classification half exists (and even that is on an empty object set)."
 
   - id: mutator-sandbox.hooks.gating
     name: "readonly mode + Sandbox_DragAllowed/SaveAllowed/EditAllowed mutator hooks"
@@ -367,25 +418,29 @@ features:
       - "server/mutators/events.qh:Sandbox_DragAllowed"
       - "server/mutators/events.qh:Sandbox_SaveAllowed"
       - "server/mutators/events.qh:Sandbox_EditAllowed"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:HandleCommand (ReadOnly gate)"
     constants:
-      - { name: "g_sandbox_readonly", base: "0", port: "none", match: false }
-      - { name: "g_sandbox_info", base: "1", port: "none", match: false }
+      - { name: "g_sandbox_readonly", base: "0", port: "0", match: true }
+      - { name: "g_sandbox_info", base: "1", port: "1", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: partial
+      values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: dead
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Read-only mode and the three Sandbox_* hooks (drag/save/edit veto) are absent; no other mutator can gate sandbox."
+      - "g_sandbox_readonly IS read and gates HandleCommand + grab class, but HandleCommand is dead (no caller), so the readonly gate is unreachable."
+      - "The three Sandbox_* veto hooks (DragAllowed/SaveAllowed/EditAllowed) have NO port hook-chain — no other mutator can gate sandbox. Source has explicit TODOs noting the chain is missing; each call site is approximated as 'readonly only'."
+      - "g_sandbox_info IS read and gates the (currently no-op) server LOG verbosity faithfully."
     verification:
-      - { kind: grep, ref: "no Sandbox_DragAllowed/SaveAllowed/EditAllowed in src/", result: fail }
+      - { kind: code, ref: "ReadOnly/Info cvars read; HandleCommand prints the readonly message and bails; ObjectThink readonly→grab 0 — faithful where reachable", result: pass }
+      - { kind: grep, ref: "no Sandbox_DragAllowed/SaveAllowed/EditAllowed hook chain in src/; TODO comments confirm gating is readonly-only", result: fail }
     confidence: high
-    notes: "g_sandbox_info controls server LOG verbosity (1=spawn/remove, 2=also edits)."
+    notes: "FIXED partially: readonly + info cvars now read (missing→partial). STILL OPEN: the three Sandbox_* hooks absent; readonly gate dead because HandleCommand has no caller."
 
   - id: mutator-sandbox.menu.tools_dialog
     name: "Sandbox Tools menu dialog (cvar inputs + command buttons)"
@@ -411,11 +466,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Dialog opens and controls move, but every action button is a no-op: the `sandbox …` commands route to MenuCommand and are logged inert (no server backend exists)."
-      - "No in-game entry point: the Shell `\"sandbox\"` factory key is reached ONLY via the dev/CI `--menu-screen sandbox` flag (Shell.cs ShowScreen dispatch). No menu button or keybind opens it in a normal match (Base opens it via the `menu_showsandboxtools` keybind, which has no port equivalent)."
+      - "Dialog opens and controls move, but every action button is a no-op: the `sandbox …` command strings still route to MenuCommand and are logged inert. Wave-2 added a server-side SandboxMutator backend, but the menu/console commands are NOT routed to its HandleCommand (no SV_ParseClientCommand seam, `g_sandbox` not in ClientCommandRegistry), so the buttons remain dead end-to-end."
+      - "No in-game entry point: the Shell `\"sandbox\"` factory key is reached ONLY via the dev/CI `--menu-screen sandbox` flag. No menu button or keybind opens it in a normal match (Base uses the `menu_showsandboxtools` keybind, no port equivalent)."
     verification:
-      - { kind: code, ref: "DialogSandboxTools.cs read in full vs dialog_sandboxtools.qc: all cvar names, slider ranges (skin/frame 0..99/1, alpha 0.1..1/0.05, scale 0.25..2/0.05, force 0..10/0.5), and command strings match Base exactly", result: pass }
-      - { kind: code, ref: "Shell.cs:188 `\"sandbox\" => new DialogSandboxTools()` is the ONLY reference; grep game/+src/ found no button/keybind that pushes it — only the --menu-screen dev dispatch", result: fail }
-      - { kind: code, ref: "DialogSandboxTools.cs doc-comment confirms buttons drive a server backend 'XonoticGodot does not have yet', logged inert via MenuCommand", result: fail }
+      - { kind: code, ref: "DialogSandboxTools.cs: all cvar names, slider ranges (skin/frame 0..99/1, alpha 0.1..1/0.05, scale 0.25..2/0.05, force 0..10/0.5), command strings match Base exactly", result: pass }
+      - { kind: code, ref: "DialogSandboxTools.cs doc-comment still says buttons drive a backend the port 'does not have yet', logged inert via MenuCommand; grep confirms `sandbox` commands reach no server handler", result: fail }
+      - { kind: code, ref: "Shell.cs:188 is the only reference; no button/keybind pushes it (dev --menu-screen only)", result: fail }
     confidence: high
-    notes: "UI is a faithful 1:1 port of XonoticSandboxToolsDialog_fill (verified line-by-line). Downgraded liveness partial->dead: not only do the command outputs hit no backend, the dialog itself has no normal-match entry point (dev --menu-screen flag only)."
+    notes: "UI unchanged from baseline (faithful, dead). The Wave-2 SandboxMutator did NOT close the dialog's deadness: the command-routing seam between the menu/console and HandleCommand is still missing, and there is still no normal-match entry point. NOT a regression — same status, with the gap description updated to reflect that a backend now exists but is unrouted."

@@ -5,12 +5,12 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 12
   worst_gaps:
-    - "Hitscan spread distribution differs: Base default g_hitscan_spread_style=4 (clamped 2D gaussian on the aim plane) but the port's CalculateSpread only implements style 0 (forward + solid sphere then normalized) — the 12-pellet scatter density profile is not Base-faithful (verified: balance-xonotic.cfg:209 sets 4; WeaponFiring.CalculateSpread has no style switch)."
-    - "Melee slap kill never tags HITTYPE_SECONDARY: Shotgun.Melee calls ApplyDamage with the bare RegistryId, and ApplyDamage maps that to FromWeapon(NetName) with no hittype bit, so the obituary always shows WEAPON_SHOTGUN_MURDER, never WEAPON_SHOTGUN_MURDER_SLAP — the selector branch in DeathMessages.cs:91 is dead for the slap."
-    - "No shell-casing eject on fire: Base default g_casings=2 (>=1 ejects a shotgun casing per shot, shotgun.qc:78) but the port shotgun never spawns one (EffectSystem.SpawnCasing exists but has no shotgun caller)."
-    - "Impact ricochet sound (5% chance / 0.25 s throttle, SND_RIC_RANDOM) is never played (SoundSystem.PlayRic exists but no caller) and the melee woosh (EFFECT_SHOTGUN_WOOSH) is registered but never emitted."
-    - "Melee is collapsed to a single-tick pass instead of Base's traces-spread-over-melee_time think loop with a melee_delay (0.25 s) wind-up; all damage lands on one frame, no mid-swing ramp/escape window and no melee_no_doubleslap abort."
-    - "g_ballistics_mindistance hardcoded to 1 in FireBullet vs cfg default 2 (xonotic-server.cfg:470) — penetrates walls thinner than Base allows."
+    - "Hitscan spread distribution STILL style 0: Base default g_hitscan_spread_style=4 (gauss-2D on the aim plane, balance-xonotic.cfg:209) but WeaponFiring.CalculateSpread still implements only style 0 (dir + randomvec()*spread, normalized) — the 12-pellet scatter density profile remains non-Base-faithful. UNCHANGED by Waves 1-2."
+    - "Shell-casing eject is server-wired but client-DEAD: Shotgun.Attack now calls WeaponFiring.EjectCasing (live, gated, deterministic velocity) which emits effect-name 'casing_shell', but NO sink maps that name to EffectSystem.SpawnCasing — RenderSink routes it to EffectSystem.Spawn('casing_shell',…) which resolves to a null effect and falls into the generic particle path, never a real brass casing. SpawnCasing still has ZERO callers (grep). Also the eject up-velocity uses the machinegun value (70 - rand*5) not the shotgun's (30 - rand*5, shotgun.qc:81), and the gate is g_casings>=2 vs Base shotgun's g_casings>=1."
+    - "Out-of-ammo auto-melee fallback is wired-but-BROKEN: WrThink now has the emptyPrimaryAutoMelee branch, but it gates on PrepareAttack(actor, slot, FireMode.Secondary) which requires st.ButtonAttack2 held — on an empty PRIMARY press ATK2 is NOT held, so PrepareAttack returns false and the auto-melee never fires. Looks wired, is dead."
+    - "Melee is still collapsed to a single-tick pass: no melee_delay (0.25s) wind-up and no melee_time (0.15s) multi-frame think; all damage lands on one frame. melee_no_doubleslap still not modeled. UNCHANGED by Waves 1-2."
+    - "g_ballistics_mindistance still hardcoded to 1 in FireBullet vs cfg default 2 (xonotic-server.cfg:470) — penetrates walls thinner than Base allows. UNCHANGED."
+    - "Impact ricochet now plays but UN-throttled: BulletImpactFx calls SoundSystem.PlayRic on EVERY pellet impact (~12/shot) with no 5%-chance / 0.25s-prevric throttle (shotgun.qc:404-409), so the ricochet sounds far too often vs Base."
 
 features:
   - id: weapon-shotgun.primary.attack_fan
@@ -40,12 +40,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Antilag takeback is per-pellet (inside FireBullet/LagComp.Begin) rather than ONCE for the whole volley as Base does outside the loop (shotgun.qc:23-26 antilag_takeback_all); functionally equivalent hit-reg but redundant rewind work per pellet."
+      - "Antilag takeback is still per-pellet (inside FireBullet/LagComp.Begin) rather than ONCE for the whole volley as Base does outside the loop (shotgun.qc:23-26 antilag_takeback_all); functionally-equivalent hit-reg but redundant rewind work per pellet."
     verification:
-      - { kind: code, ref: "Shotgun.Attack + Configure; constants vs bal-wep-xonotic.cfg:47-58", result: pass }
-      - { kind: code, ref: "live path GameWorld.cs:1182 -> WeaponFireDriver.Frame -> WrThink -> Attack (XonoticGodot.Server/GameWorld.cs)", result: pass }
+      - { kind: code, ref: "Shotgun.Attack: TakeResource + SetupShot(maxDamage=damage*bullets) + 12x FireBullet; constants via Bal() match bal-wep-xonotic.cfg", result: pass }
+      - { kind: code, ref: "live path GameWorld.cs:1231 -> WeaponFireDriver.Frame -> WrThink(Primary) -> Attack", result: pass }
     confidence: high
-    notes: "Fires 12 independent FireBullet pellets after one shell decrement and SetupShot. Balance constants read from the same g_balance_shotgun_primary_* cvars via Bal(). Live path re-verified: GameWorld.cs:1182 is in XonoticGodot.Server (draft cited the Common path — corrected)."
+    notes: "Unchanged by Waves 1-2 on the core fan; still faithful. WrThink now also runs the (broken) auto-melee branch and casing/ricochet seams, but the 12-pellet primary blast itself is intact."
 
   - id: weapon-shotgun.primary.spread_style
     name: "Pellet spread distribution (hitscan spread style)"
@@ -68,11 +68,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Port's CalculateSpread only does style 0 (dir + randomvec()*spread, normalized — calculations.qc case 0); Base default is style 4 (gauss-2D: gsl_ran_ugaussian per axis * sigma, clamped to W_SPREAD_GAUSS_MAX_STDEV, then cliptoplane onto the aim plane). The 12-pellet scatter cone has a different (denser-centre, plane-constrained) density profile than Base."
+      - "STILL OPEN (untouched by Waves 1-2): CalculateSpread only does style 0 (dir + randomvec()*spread, normalized — calculations.qc case 0); Base default is style 4 (gauss-2D: per-axis ugaussian * sigma, clamped, cliptoplane onto the aim plane). The pellet cone has a different (denser-centre, plane-constrained) density profile than Base."
     verification:
-      - { kind: code, ref: "WeaponFiring.CalculateSpread (single style-0 branch, no style switch) vs W_CalculateSpread (8 styles, cvar default 4 per balance-xonotic.cfg:209)", result: fail }
+      - { kind: code, ref: "WeaponFiring.CalculateSpread (single style-0 branch, no style switch) vs W_CalculateSpread (8 styles, cvar default 4)", result: fail }
     confidence: high
-    notes: "Same divergence affects every fireBullet weapon (MG, rifle, vortex spread etc.), not just the shotgun. Base style 4 is materially different from style 0 (2D gaussian vs sphere)."
+    notes: "Affects every fireBullet weapon, not just shotgun. Verified Base balance-xonotic.cfg:209 sets 4; nexuiz25 sets 0. No change in the Wave-2 WeaponFiring rewrite."
 
   - id: weapon-shotgun.primary.firebullet_falloff
     name: "Per-pellet trace: falloff + solid penetration + force"
@@ -98,13 +98,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "g_ballistics_mindistance hardcoded to 1 instead of the cfg default 2 (xonotic-server.cfg:470) — bullets penetrate walls thinner than Base allows (thin patches treated as 1u thick vs 2u)."
-      - "g_ballistics_penetrate_clips (default 1, xonotic-server.cfg:473) / weapclip handling not modeled; warpzone trace IS handled, but the EFFECT_BULLET_WEAK render tracer is deferred."
+      - "STILL OPEN: g_ballistics_mindistance hardcoded to 1f (WeaponFiring.cs:235) instead of cfg default 2 — bullets penetrate walls thinner than Base allows. Untouched by Waves 1-2."
+      - "g_ballistics_penetrate_clips (default 1) / weapclip handling still not modeled. (Warpzone sweep + a bullet tracer trail WERE added in the Wave-1 fx seam, but those are orthogonal to the mindistance/clips gaps.)"
     verification:
-      - { kind: code, ref: "WeaponFiring.FireBullet penetration loop + ExponentialFalloff vs tracing.qc fireBullet_falloff", result: pass }
-      - { kind: code, ref: "ballisticsMinDistance=1f literal (WeaponFiring.cs:224) vs g_ballistics_mindistance default 2 (xonotic-server.cfg:470)", result: fail }
+      - { kind: code, ref: "WeaponFiring.FireBullet penetration loop (damage_fraction = penFrac^exponent) + ExponentialFalloff vs tracing.qc fireBullet_falloff", result: pass }
+      - { kind: code, ref: "ballisticsMinDistance=1f literal (WeaponFiring.cs:235) vs g_ballistics_mindistance default 2", result: fail }
     confidence: high
-    notes: "Penetration math (damage_fraction = penFrac^exponent), double-hit/self-hit guard, sky/out-of-world stop, warpzone-aware sweep all faithful. Falloff disabled by default (halflife 0). Two ballistics cvars hardcoded rather than read; exponent value happens to match the default."
+    notes: "Penetration math, double-hit/self-hit guard, sky/out-of-world stop, warpzone-aware sweep all faithful. Wave-1 added an optional tracer trail (tracerEffect arg) — the shotgun does not pass one (Base shotgun has no tracer), so no behavioral change for shotgun. The two ballistics cvars remain hardcoded; exponent value happens to match."
 
   - id: weapon-shotgun.primary.setupshot_recoil
     name: "W_SetupShot: trueaim, muzzle offset, recoil punch"
@@ -127,13 +127,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Trueaim minrange clamp (g_trueaim_minrange=44) not implemented; at point-blank the shot direction can differ slightly from Base."
-      - "Antilag takeback + accuracy hitplot bookkeeping deferred (noted in SetupShot docstring)."
+      - "STILL OPEN: trueaim minrange clamp (g_trueaim_minrange=44) not implemented; at point-blank the shot direction can differ slightly from Base."
+      - "Antilag takeback + accuracy hitplot bookkeeping deferred. (Accuracy FIRED credit IS wired now via WeaponAccuracyEvents.Fired; antilag is per-shot LagComp inside FireBullet, not the SetupShot-level takeback.)"
     verification:
       - { kind: code, ref: "WeaponFiring.SetupShot vs tracing.qc W_SetupShot_Dir_ProjectileSize_Range", result: pass }
-      - { kind: code, ref: "g_norecoil cfg default 1 (xonotic-server.cfg:232) — port reads the cvar at WeaponFiring.cs:119 so recoil is correctly suppressed when cfg is loaded; the inline code comment 'default off' is wrong but behaviour is faithful", result: pass }
+      - { kind: code, ref: "recoil gated on g_norecoil (WeaponFiring.cs:118-120); cfg default 1 suppresses — faithful in practice", result: pass }
     confidence: medium
-    notes: "Recoil punch is gated on g_norecoil exactly as QC; Base default 1 suppresses it, and the port reads the cvar, so this is faithful in practice (NOT a values defect). The real value gap is the missing trueaim minrange clamp. Recoil applies to players only; muzzle offset from registered tag_shot or DefaultMuzzleOffset."
+    notes: "Recoil punch correctly gated on g_norecoil; Base default 1 suppresses it. Muzzle offset reads the registered per-model tag_shot (MuzzleOffsetFor) with DefaultMuzzleOffset fallback. The real value gap is the missing trueaim minrange clamp. Unchanged by Waves 1-2 in any material way."
 
   - id: weapon-shotgun.primary.refire_timer
     name: "Primary refire gating via private shotgun_primarytime"
@@ -159,9 +159,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "WrThink parks ShotgunPrimaryTime + PrepareAttack(attackTime=animtime); matches QC passing animtime into weapon_prepareattack (shotgun.qc:290) and parking refire in shotgun_primarytime (shotgun.qc:308)", result: pass }
+      - { kind: code, ref: "WrThink parks ShotgunPrimaryTime + PrepareAttack(attackTime=animtime); matches QC passing animtime into weapon_prepareattack (shotgun.qc:290) and parking refire in shotgun_primarytime", result: pass }
     confidence: high
-    notes: "The private-timer-vs-shared-ATTACK_FINISHED split (refire 0.75 parked privately, shared timer held only animtime 0.2 so a melee can follow a blast immediately) is reproduced faithfully."
+    notes: "The private-timer-vs-shared-ATTACK_FINISHED split (refire 0.75 parked privately, shared timer held only animtime 0.2 so a melee can follow a blast immediately) remains faithfully reproduced. Unchanged."
 
   - id: weapon-shotgun.secondary.melee_swing
     name: "Secondary melee slap (swing-arc damage + multihit)"
@@ -192,14 +192,14 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Swing executes as a single pass over the whole arc on one tick instead of Base spreading melee_traces across melee_time (0.15 s) via a re-scheduled think (shotgun.qc:88-191); damage lands instantly with no mid-swing ramp, so a target can't move out of a partially-completed swing as in Base."
-      - "melee_delay (0.25 s wind-up before the swing lands — Base schedules W_Shotgun_Melee_Think at time + melee_delay, shotgun.qc:201) is read into the balance struct but NOT applied; the port slaps on the same tick. This is the 'takes a moment to land' behaviour the in-game weapon guide describes (shotgun.qc:421-422)."
-      - "melee_no_doubleslap (abort the swing if the owner died, shotgun.qc:104-108) not modeled — no MeleeNoDoubleslap field/branch."
+      - "STILL OPEN: swing executes as a single pass over the whole arc on one tick instead of Base spreading melee_traces across melee_time (0.15s) via a re-scheduled think (shotgun.qc:88-191); damage lands instantly with no mid-swing ramp, so a target can't move out of a partially-completed swing."
+      - "STILL OPEN: melee_delay (0.25s wind-up — Base schedules W_Shotgun_Melee_Think at time + melee_delay, shotgun.qc:201) is read into the balance struct (MeleeDelay=0.25) but NOT applied; the slap lands the same tick. The class docstring now explicitly acknowledges this is left out."
+      - "STILL OPEN: melee_no_doubleslap (abort the swing if the owner died, shotgun.qc:104-108) not modeled."
     verification:
       - { kind: code, ref: "Shotgun.Melee swing_factor=(1-i/traces)*2-1, damage*min(1,swing_factor+1), multihit dedupe vs W_Shotgun_Melee_Think", result: pass }
-      - { kind: code, ref: "no melee_delay scheduling / no MeleeNoDoubleslap field in Shotgun.cs; Configure reads MeleeDelay=0.25 but Melee never uses it", result: fail }
+      - { kind: code, ref: "no melee_delay scheduling / no MeleeNoDoubleslap field; Configure reads MeleeDelay=0.25 but Melee never uses it", result: fail }
     confidence: high
-    notes: "Damage scaling formula and multi-hit-per-swing dedupe match Base. Downgraded logic faithful->partial and added a values gap: the draft marked logic faithful + values faithful, but the missing melee_delay wind-up + no_doubleslap are genuine logic/value omissions (melee_delay is read but ignored), not purely a timing-WHEN difference."
+    notes: "Damage scaling + multi-hit dedupe still match Base. The Wave-2 change ADDED the woosh fx emission per trace and routed the swing damage through the secondary-tagged Combat.Damage (fixing the slap obituary — see notify.killmessage), but did NOT add the melee_delay wind-up or the multi-frame think, so the timing/logic gaps persist."
 
   - id: weapon-shotgun.secondary.melee_routing
     name: "Secondary routing: melee gate + out-of-ammo auto-melee + alt triple-shot"
@@ -225,14 +225,14 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Out-of-ammo primary auto-melee fallback (QC: (fire&1) && !IS_BOT_CLIENT && shells<=0 && clip_load==0 routes to melee, shotgun.qc:343) is not wired in WrThink — an empty primary press does nothing instead of slapping."
-      - "Alt triple-shot (secondary==2) fires a single W_Shotgun_Attack instead of the staged Frame1->Frame2 3-blast sequence (and its dry-fire W_SwitchWeapon_Force when out of ammo). Non-default mode."
-      - "When secondary==2 the port schedules with Secondary.Refire/Animtime (1.25/1.15) but Base uses the SEPARATE alt_refire/alt_animtime (1.2/0.2, shotgun.qc:334-335) — so even the single-blast triple path has the wrong refire/anim timing. Added values mismatch."
+      - "Out-of-ammo primary auto-melee fallback is now PRESENT in WrThink (the emptyPrimaryAutoMelee branch) but is BROKEN: it gates on PrepareAttack(actor, slot, FireMode.Secondary), which checks st.ButtonAttack2 (WeaponFireGate.cs:60). On an empty PRIMARY press ATK2 is NOT held, so PrepareAttack returns false and the auto-melee never fires. Net behavior unchanged from baseline (an empty primary press still does nothing) — it now LOOKS wired but isn't."
+      - "Alt triple-shot (secondary==2) still fires a single Attack (W_Shotgun_Attack) instead of the staged Frame1->Frame2 3-blast sequence + its dry-fire W_SwitchWeapon_Force. Non-default mode."
+      - "When secondary==2 the port schedules with Secondary.Refire/Animtime (1.25/1.15) but Base uses the SEPARATE alt_refire/alt_animtime (1.2/0.2, shotgun.qc:334-335) — the single-blast triple path still has the wrong refire/anim timing."
     verification:
-      - { kind: code, ref: "Shotgun.WrThink secondary branch vs shotgun.qc:275-352", result: fail }
-      - { kind: code, ref: "secondary==2 path in WrThink uses Secondary.Refire (1.25) not alt_refire (1.2) and Secondary.Animtime (1.15) not alt_animtime (0.2)", result: fail }
+      - { kind: code, ref: "WrThink secondary branch vs shotgun.qc:275-352", result: fail }
+      - { kind: code, ref: "emptyPrimaryAutoMelee -> PrepareAttack(FireMode.Secondary) -> held = st.ButtonAttack2 (false on a primary press) -> returns false; auto-melee dead", result: fail }
     confidence: high
-    notes: "Default melee secondary works (liveness partial: melee live, triple-shot + auto-melee dead). Added a values gap: the draft marked values faithful for this row, but the secondary==2 path uses the wrong refire/animtime cvars (Secondary.* instead of alt_*)."
+    notes: "Default melee secondary works (live). The auto-melee branch was ADDED but its button gate dooms it (ATK2 check on an ATK1 press). Triple-shot single-blast + its alt timing remain wrong. Liveness still partial (melee live; auto-melee + triple-shot dead)."
 
   - id: weapon-shotgun.ammo.checkammo_reload
     name: "Ammo checks + reload"
@@ -244,26 +244,28 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Shotgun.cs:CheckAmmoPrimary"
       - "src/XonoticGodot.Common/Gameplay/Weapons/Shotgun.cs:CheckAmmoSecondary"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireGate.cs:WrReload/WReload/WReloadedAndReady"
     constants:
       - { name: "ammo_type", base: "RES_SHELLS", port: "ResourceType.Shells", match: true }
       - { name: "pickup_ammo", base: "15 (bal-wep-xonotic.cfg:46)", port: "not read in Shotgun.cs", match: false }
-      - { name: "reload_ammo / reload_time", base: "0 / 2", port: "reloadable flag set; clip timing deferred to driver", match: false }
+      - { name: "reload_ammo / reload_time", base: "0 / 2", port: "reloadable flag set; generic WReload pipeline now in WeaponFireGate (reads g_balance_shotgun_reload_*)", match: true }
     status:
       logic: faithful
       values: partial
-      timing: unknown
+      timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "wr_checkammo1/2 in Base also count the clip load (weapon_load[m_id] >= ammo) as an OR term (shotgun.qc:357,370); the port checks only the resource pool (GetResource >= ammo), so with a reloadable clip the port's ammo gate could differ. reload_ammo defaults 0 so no clip is used by default, making this moot for default play."
-      - "Clip reload (clip_load/clip_size, W_Reload, RELOAD sound) timing is deferred to the shared driver (T6)."
+      - "wr_checkammo1/2 in Base also OR the clip load (weapon_load[m_id] >= ammo) (shotgun.qc:357,370); the port's CheckAmmoPrimary checks only GetResource >= ammo. reload_ammo defaults 0 so no clip is used by default — moot for default play, latent if reload_ammo is ever set."
+      - "pickup_ammo (15) still not read in Shotgun.cs (item-pickup concern, not the weapon's checkammo)."
     verification:
       - { kind: code, ref: "CheckAmmoPrimary/Secondary vs wr_checkammo1/2 (melee free, triple uses primary ammo); port omits the weapon_load OR-term", result: pass }
+      - { kind: code, ref: "WeaponFireGate.WReload/WReloadedAndReady now port W_Reload (reload sound, scheduled think, clip transfer) generically", result: pass }
     confidence: medium
-    notes: "Ammo gate logic faithful for the default no-clip case; reload mechanics + the clip-load OR-term are shared-system concerns. Downgraded confidence note: the clip OR-term omission is a latent logic divergence if reload_ammo is ever set."
+    notes: "Wave-1/2 added the shared generic reload pipeline (WeaponFireGate.WReload) so reload timing is no longer merely 'deferred to driver' — upgraded timing unknown->faithful. The clip-load OR-term in checkammo is still omitted (latent). Default no-clip ammo gate faithful."
 
   - id: weapon-shotgun.bot.wr_aim
     name: "Bot aim: melee vs ranged selection"
@@ -283,11 +285,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No WrAim override on the port Shotgun: bots do not press ATCK2 (melee) when an enemy is within melee_range (vdist <= 120), nor the bot_aim ranged path tuning for the pellet fan."
+      - "STILL MISSING: no WrAim override on Shotgun (only WrThink/Configure/Attack/Melee/CheckAmmo*). Bots do not press ATCK2 (melee) when an enemy is within melee_range (vdist <= 120), nor the bot_aim ranged tuning for the pellet fan. Untouched by Waves 1-2."
     verification:
-      - { kind: code, ref: "no WrAim/wr_aim symbol in Shotgun.cs (only WrThink/Configure/CheckAmmo*)", result: fail }
+      - { kind: code, ref: "grep WrAim/wr_aim in Shotgun.cs -> no match", result: fail }
     confidence: high
-    notes: "Affects bot close-quarters behavior with the shotgun; bots fall back to whatever generic aim the bot brain provides. Confidence raised high->the absence is unambiguous (no override exists)."
+    notes: "Bots fall back to the generic bot-brain aim. Absence is unambiguous and unchanged."
 
   - id: weapon-shotgun.fx.muzzle_impact
     name: "Muzzleflash + bullet-impact particle"
@@ -297,9 +299,10 @@ features:
       - "common/weapons/weapon/shotgun.qc:wr_impacteffect (CSQC, shotgun.qc:400-410)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Shotgun.cs:Attack"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:BulletImpactFx"
       - "src/XonoticGodot.Common/Gameplay/Effects/EffectEmitter.cs:Emit"
       - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:43-44 (SHOTGUN_IMPACT/MUZZLEFLASH registered)"
-      - "game/net/ServerNet.cs:287 (EffectNetSink) ; game/client/ClientWorld.cs:352 (RenderSink)"
+      - "game/net/ServerNet.cs (EffectNetSink) ; game/client/ClientWorld.cs:352 (RenderSink)"
     constants:
       - { name: "muzzleflash effect", base: "EFFECT_SHOTGUN_MUZZLEFLASH + uziflash.md3 model", port: "SHOTGUN_MUZZLEFLASH particle (uziflash.md3 model attachment not verified)", match: false }
       - { name: "impact effect emission", base: "EFFECT_SHOTGUN_IMPACT in CSQC wr_impacteffect, once per networked impact", port: "SHOTGUN_IMPACT emitted server-side per pellet via an EXTRA WorldOnly trace (~12/shot)", match: false }
@@ -311,15 +314,15 @@ features:
       audio: na
       liveness: live
     intended_divergence: true
-    divergence_rationale: "Impact effect is emitted server-side per pellet via EffectEmitter (with an extra WorldOnly trace in Shotgun.Attack to find the surface) rather than from a CSQC wr_impacteffect, because the port has no CSQC layer. The effect sink IS live on both ends (ServerNet EffectNetSink networks it; ClientWorld RenderSink renders it), so the particle reaches the client — but the design networks ~12 point-effects per shot instead of Base's one-per-impact CSQC call, and runs a redundant trace the FireBullet already performed."
+    divergence_rationale: "Impact effect is emitted server-side per pellet (an extra WorldOnly trace in Shotgun.Attack finds the surface, then WeaponFiring.BulletImpactFx emits SHOTGUN_IMPACT) rather than from a CSQC wr_impacteffect, because the port has no CSQC layer. The effect sink is live on both ends (ServerNet EffectNetSink networks it; ClientWorld RenderSink renders it). The Wave-1 change moved the per-pellet impact-puff emission into the shared BulletImpactFx seam but kept the per-pellet model (~12 point-effects + ~12 redundant WorldOnly traces per shot)."
     gaps:
-      - "Muzzleflash uziflash.md3 model attachment not verified to render (only the particle effect is emitted)."
-      - "SHOTGUN_IMPACT is emitted per pellet server-side (~12/shot) via a second WorldOnly trace, not the single CSQC w_org + w_backoff*2 impact; also it emits on the world hit point even when the pellet actually struck a player (the extra trace is WorldOnly, ignoring entities)."
+      - "Muzzleflash uziflash.md3 model attachment still not verified to render (only the SHOTGUN_MUZZLEFLASH particle is emitted)."
+      - "SHOTGUN_IMPACT is still emitted per pellet server-side (~12/shot) via a second WorldOnly trace, not the single CSQC w_org + w_backoff*2 impact; it emits on the world hit point even when the pellet struck a player (the extra trace is WorldOnly, ignoring entities)."
     verification:
-      - { kind: code, ref: "Shotgun.Attack EffectEmitter.Emit + EffectsList.cs:43-44 SHOTGUN_IMPACT/MUZZLEFLASH registered", result: pass }
-      - { kind: code, ref: "effect sink is live: ServerNet.cs:287 installs EffectNetSink, ClientWorld.cs:352 installs RenderSink (REFUTES draft's 'may only hit headless recorder' hedge)", result: pass }
+      - { kind: code, ref: "Shotgun.Attack: extra WorldOnly trace per pellet -> backoff -> WeaponFiring.BulletImpactFx(SHOTGUN_IMPACT); EffectsList.cs:43-44 registered", result: pass }
+      - { kind: code, ref: "effect sink live: ServerNet EffectNetSink + ClientWorld RenderSink (ClientWorld.cs:352)", result: pass }
     confidence: medium
-    notes: "Effects ARE registered, emitted on the live fire path, and reach a live networking+render sink (draft's headless-recorder doubt is refuted). The remaining open items are the per-pellet vs per-impact count, the WorldOnly-trace mismatch when a pellet hits a player, and the unverified muzzleflash MODEL attachment. Liveness confirmed live."
+    notes: "Behaviorally equivalent to baseline (the puff was already emitted per-pellet); Wave-1 only relocated the emission into BulletImpactFx and added the ricochet sound alongside it. Per-pellet-vs-per-impact count, the WorldOnly-trace mismatch on player hits, and the unverified muzzleflash MODEL remain open."
 
   - id: weapon-shotgun.fx.impact_ricochet_audio
     name: "Impact ricochet sound + melee woosh + casing eject"
@@ -329,29 +332,36 @@ features:
       - "common/weapons/weapon/shotgun.qc:W_Shotgun_Melee_Think (EFFECT_SHOTGUN_WOOSH, shotgun.qc:126)"
       - "common/weapons/weapon/shotgun.qc:W_Shotgun_Attack (SpawnCasing when g_casings>=1, shotgun.qc:78-83)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Sounds/SoundSystem.cs:195:PlayRic (exists, NO caller)"
-      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:45 (SHOTGUN_WOOSH registered, NO emitter)"
-      - "game/client/EffectSystem.cs:630:SpawnCasing (exists, NO shotgun caller)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:BulletImpactFx (calls SoundSystem.PlayRic — NOW LIVE)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:MeleeWoosh (emits SHOTGUN_WOOSH — NOW LIVE)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:EjectCasing (emits 'casing_shell' — server-live, client-DEAD)"
+      - "src/XonoticGodot.Common/Gameplay/Sounds/SoundSystem.cs:195:PlayRic (RIC group ric1..ric3 registered)"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:45 (SHOTGUN_WOOSH registered)"
+      - "game/client/EffectSystem.cs:630:SpawnCasing (STILL no caller — not reachable from the 'casing_shell' effect-name)"
     constants:
-      - { name: "ricochet chance / throttle", base: "5% / 0.25 s (prevric)", port: "not played", match: false }
-      - { name: "g_casings (default)", base: "2 (>=1 ejects shotgun casing; xonotic-server.cfg:231)", port: "no casing emitted", match: false }
+      - { name: "ricochet chance / throttle", base: "5% / 0.25 s (prevric)", port: "played on EVERY pellet impact (~12/shot), no 5%/throttle gate", match: false }
+      - { name: "g_casings shotgun gate", base: ">=1 ejects shotgun casing (shotgun.qc:78; cvar doc xonotic-server.cfg:231)", port: "EjectCasing gates >=2", match: false }
+      - { name: "casing eject up-velocity", base: "(30 - rand*5) * v_up (shotgun.qc:81)", port: "(70 - rand*5) * up (machinegun value)", match: false }
+      - { name: "casing renders on client", base: "yes (casings net temp -> CSQC casing entity)", port: "NO — 'casing_shell' name never reaches EffectSystem.SpawnCasing", match: false }
     status:
-      logic: missing
-      values: missing
+      logic: partial
+      values: partial
       timing: missing
-      presentation: missing
-      audio: missing
-      liveness: na
+      presentation: partial
+      audio: partial
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No impact ricochet sound: the 5%-chance, 0.25 s-throttled SND_RIC_RANDOM on bullet impact is never played (SoundSystem.PlayRic has zero callers — verified by grep)."
-      - "No melee woosh: EFFECT_SHOTGUN_WOOSH per swing trace is registered (EffectsList.cs:45) but has zero emitters."
-      - "No shell-casing eject on fire even though g_casings defaults to 2; EffectSystem.SpawnCasing exists but has no shotgun (or any weapon) caller."
+      - "Ricochet sound NOW PLAYS (SoundSystem.PlayRic wired live via BulletImpactFx, RIC group resolves to ric1..ric3) but is UN-throttled: it fires on every pellet impact (~12/shot) with no 5%-chance / 0.25 s prevric gate (shotgun.qc:404-409), so it sounds far too often vs Base."
+      - "Melee woosh NOW EMITS: Shotgun.Melee calls WeaponFiring.MeleeWoosh per swing trace, emitting the registered SHOTGUN_WOOSH effect — closed."
+      - "Casing eject is server-wired (Shotgun.Attack -> EjectCasing, gated + deterministic velocity) but the client never spawns a real brass casing: EjectCasing emits effect-name 'casing_shell', which RenderSink routes to EffectSystem.Spawn('casing_shell',…) -> null effect -> generic particle path; EffectSystem.SpawnCasing still has ZERO callers (grep). Plus the up-velocity uses the machinegun value (70) not the shotgun's (30) and the gate is >=2 vs Base's >=1."
     verification:
-      - { kind: code, ref: "grep: SHOTGUN_WOOSH only at EffectsList.cs:45 (registration, no emit); PlayRic only at SoundSystem.cs:195 (def, no call); SpawnCasing has no weapon caller", result: fail }
+      - { kind: code, ref: "BulletImpactFx -> SoundSystem.PlayRic (no throttle); MeleeWoosh -> Emit('SHOTGUN_WOOSH'); both called from Shotgun.Attack/Melee", result: pass }
+      - { kind: code, ref: "EjectCasing -> EmitByEffectInfoName('casing_shell'); NO sink maps that name to SpawnCasing; SpawnCasing grep = 0 callers", result: fail }
+      - { kind: code, ref: "SoundSystem.cs:42 RIC group (ric1..ric3) registered; EffectsList.cs:45 SHOTGUN_WOOSH registered", result: pass }
     confidence: high
-    notes: "All three are present-but-dead on the shotgun path: the renderers/pickers exist (PlayRic, SpawnCasing, SHOTGUN_WOOSH registered) but nothing on the shotgun fire/impact/melee path invokes them. Confirmed via grep across src+game."
+    notes: "Mixed result. FIXED: melee woosh now emits; ricochet sound now plays (PlayRic live). STILL OPEN: ricochet has no 5%/0.25s throttle (over-plays); casing eject never produces a visible casing on the client (SpawnCasing still dead) and uses the wrong up-velocity + gate. Upgraded liveness na->partial (ric+woosh live, casing client-dead)."
 
   - id: weapon-shotgun.notify.killmessage
     name: "Obituary: slap vs blast kill message + suicide line"
@@ -361,23 +371,23 @@ features:
       - "common/weapons/weapon/shotgun.qc:wr_suicidemessage (shotgun.qc:383-386)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:91 (SelectKillMessage shotgun branch)"
-      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs (SelectSuicideMessage shotgun -> THINKING_WITH_PORTALS)"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Shotgun.cs:Melee (ApplyDamage call) ; WeaponFiring.cs:ApplyDamage"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Shotgun.cs:Melee (slapDeathType via DeathTypes.WithHitType + Combat.Damage)"
+      - "src/XonoticGodot.Server/Scores.cs:643 (EmitObituary -> SelectKillMessage with full deathType)"
     constants:
-      - { name: "murder slap notif", base: "(HITTYPE_SECONDARY) ? WEAPON_SHOTGUN_MURDER_SLAP : WEAPON_SHOTGUN_MURDER", port: "selector present, but melee never tags HITTYPE_SECONDARY so MURDER_SLAP is unreachable", match: false }
+      - { name: "murder slap notif", base: "(HITTYPE_SECONDARY) ? WEAPON_SHOTGUN_MURDER_SLAP : WEAPON_SHOTGUN_MURDER", port: "slap now tags |secondary so MURDER_SLAP is reached; blast -> MURDER", match: true }
       - { name: "suicide notif", base: "WEAPON_THINKING_WITH_PORTALS", port: "WEAPON_THINKING_WITH_PORTALS", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "The slap kill message (WEAPON_SHOTGUN_MURDER_SLAP) is unreachable: Shotgun.Melee calls ApplyDamage(victim, actor, swingDamage, RegistryId, ...) with the bare weapon RegistryId, and WeaponFiring.ApplyDamage maps deathType via DeathTypes.FromWeapon(NetName) with NO HITTYPE_SECONDARY bit. Base tags the melee Damage() with WEP_SHOTGUN.m_id | HITTYPE_SECONDARY (shotgun.qc:152), so DeathMessages.SelectKillMessage (which keys on `sec`) always returns WEAPON_SHOTGUN_MURDER for the shotgun, never _SLAP."
+    gaps: []
     verification:
-      - { kind: code, ref: "DeathMessages.cs:91 selector handles sec correctly, but Shotgun.Melee + WeaponFiring.ApplyDamage cannot carry the secondary hittype (ApplyDamage signature is int deathType only)", result: fail }
+      - { kind: code, ref: "Shotgun.Melee builds slapDeathType = WithHitType(FromWeapon('shotgun'), Secondary) and calls Combat.Damage(... slapDeathType ...) directly", result: pass }
+      - { kind: code, ref: "Combat.Damage carries DeathType string -> Scores.EmitObituary -> SelectKillMessage(WeaponNetNameOf, deathType) -> sec true -> WEAPON_SHOTGUN_MURDER_SLAP", result: pass }
     confidence: high
-    notes: "NEW feature the draft omitted entirely. The central selector is faithful (blast -> MURDER, slap -> MURDER_SLAP) and the primary blast message is correct, but the melee damage path drops the HITTYPE_SECONDARY bit so the slap obituary is dead. Suicide line is faithful."
+    notes: "FIXED: the slap now tags HITTYPE_SECONDARY (DeathTypes.Secondary suffix) and routes through Combat.Damage with the tagged string, so the |secondary suffix survives to Scores.EmitObituary -> SelectKillMessage -> WEAPON_SHOTGUN_MURDER_SLAP. Blast still tags no suffix -> WEAPON_SHOTGUN_MURDER. Suicide line faithful. Upgraded logic partial->faithful, liveness partial->live."

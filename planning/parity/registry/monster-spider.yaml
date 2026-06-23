@@ -5,11 +5,11 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 17
   worst_gaps:
-    - "Webbed status does NOT slow a hit PLAYER: the spiderweb PlayerPhysics_UpdateStats hook (STAT(MOVEVARS_HIGHSPEED) *= 0.5 while webbed) is not ported (no Webbed read anywhere in PlayerPhysics.cs), so the spider's signature crowd-control has no effect on players."
-    - "Web projectile renders with the WRONG visual: QC nets it as CSQCProjectile PROJECTILE_ELECTRO (ebomb orb model + TR_NEXUIZPLASMA plasma trail + electro_fly LOOP sound). Port spawns it as a Bounce projectile with NetName='spider'/ClassName='monster_projectile' which ProjectileCatalog.Resolve maps to the GENERIC fallback (no electro orb, no plasma trail, no electro_fly loop) — not invisible, but wrong."
-    - "Web explosion emits no EFFECT_ELECTRO_IMPACT particle: QC M_Spider_Attack_Web_Explode fires Send_Effect(EFFECT_ELECTRO_IMPACT); the port onExplode lambda omits it (the ELECTRO_IMPACT effect id IS registered + reachable — Electro/Arc use it)."
-    - "No monster client frame animation: the DPM frame-group map (mr_anim: walk/run/shoot/melee/pain1-2/die1-2/idle) is not driven for monsters — no client anim decider consumes the server's logical MonsterAnim phase, so the spider renders static (does not visibly walk/bite/web/pain/die-animate). Shared monster-presentation gap."
-    - "Spider mr_pain/mr_death specialisation absent: QC picks a random pain1/pain2 (with pain_finished = animstate_endtime) and random die1/die2; the port uses the generic MarkPain (fixed 0.34s pain window, generic Pain phase) and generic MarkDead (generic Death phase). Decoupled from the (unported) anim length."
+    - "Webbed status STILL does NOT slow a hit PLAYER: the spiderweb PlayerPhysics_UpdateStats hook (STAT(MOVEVARS_HIGHSPEED) *= 0.5 while webbed) is NOT ported. Re-verified post-wave: the Wave-2 PlayerPhysics.cs edit only reworked footstep cadence (jitter RNG + g_footsteps gate + ladder bail); grep 'Webbed' across src still matches only Spider.cs/MonsterAI.cs/StatusEffects.cs/MonsterFramework.cs — NONE in PlayerPhysics.cs. A webbed player runs at full speed; the spider's signature crowd-control has no effect on players. The integration seam (player.SpeedMultiplier *= mp.HighSpeed via the PlayerPhysics mutator hook) exists and is unused for this."
+    - "No monster client frame animation: the DPM frame-group map (mr_anim: walk/run/shoot/melee/pain1-2/die1-2/idle) is still not driven for monsters. The Wave-2 CsqcModelAppearance/CsqcModelEffectFlags are PLAYER-model appearance (force-model/colors/glow/death-fade) — they do NOT consume the server's MonsterAnim phase. MonsterAI.cs:1058-1059 still explicitly defers CSQC monster frame playback, so the spider renders static (no visible walk/bite/web/pain/die animation). Shared monster-presentation gap, all five monsters."
+    - "Spider mr_pain/mr_death specialisation absent: QC picks random pain1/pain2 (pain_finished = animstate_endtime) and random die1/die2; the port still uses the generic MarkPain (fixed 0.34s window, generic Pain phase) and generic MarkDead (generic Death phase). Decoupled from the (unported) anim length."
+    - "Pain/death/melee/sight/idle/spawn voice cues are port-invented: the Base spider has NO .sounds file (verified: only golem.dpm_0.sounds and zombie.dpm_0.sounds exist, no spider.dpm_*.sounds), so QC Monster_Sound resolves sample=\"\" and sound7 plays an EMPTY sample (silence) for these cues. The port's MonsterSound hardcodes monsters/spider_<cue>.wav whenever the def has a model, so it emits voice sounds the Base spider is silent for. Faithful in throttle/gate/structure to Monster_Sound, divergent in the actual cue source."
+    - "Player-wielded SpiderAttack weapon (impulse 9, IS_PLAYER path: attack_range 60, weapon_prepareattack, Monster_FindTarget) still unported — reachable only via MON_FLAG_RIDE monster-riding (no riding mode) or dev tooling; low gameplay impact."
 features:
   - id: monster-spider.identity.registration
     name: "Spider monster type registration + identity (model, name, hitbox, spawnflags)"
@@ -36,11 +36,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Spider.qh spawnflags (MON_FLAG_MELEE|RANGED|RIDE) are not represented on the port descriptor; RIDE is moot (no monster-riding mode), MELEE/RANGED are advisory (the Attack picks by distance regardless)."
+      - "Spider.qh spawnflags (MON_FLAG_MELEE|RANGED|RIDE) are not represented on the port descriptor; RIDE is moot (no monster-riding mode), MELEE/RANGED are advisory (the Attack picks by distance regardless). Unchanged by Wave-1/2."
     verification:
-      - { kind: code, ref: "Spider.cs ctor + Spawn SetSize; [Monster] attribute -> Monsters.ByName(\"spider\"); MonsterTurretVehicleObituaryTests resolves Monsters.ByName(\"spider\")", result: pass }
+      - { kind: code, ref: "Spider.cs ctor (NetName/DisplayName/Model/StartHealth=180) + Spawn SetSize(-30 -30 -25 / 30 30 30); [Monster] attribute -> Monsters.ByName(\"spider\"); MonsterSpawnFuncs.Spider -> Spawn(e,\"spider\")", result: pass }
     confidence: high
-    notes: "Registered via [Monster]; resolved by net name 'spider' in Monsters.ByName, wired to the monster_spider spawnfunc. Model path verified in Spider.cs ctor (not the model file itself)."
+    notes: "Registered via [Monster]; resolved by net name 'spider' in Monsters.ByName, wired to the monster_spider spawnfunc. Model path verified in Spider.cs ctor (not the model file itself). No change in Wave-1/2."
 
   - id: monster-spider.spawn.map_placement
     name: "monster_spider map spawnfunc (Monster_Spawn this true MON_SPIDER)"
@@ -49,7 +49,7 @@ features:
       - "common/monsters/monster/spider.qc:spawnfunc(monster_spider)"
       - "common/monsters/sv_monsters.qc:Monster_Spawn"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterSpawnFuncs.cs:Spider"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterSpawnFuncs.cs:30 (Spider)"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:199"
       - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:SpawnFromMap"
     constants: []
@@ -64,10 +64,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "SpawnFuncs.Register(\"monster_spider\", MonsterSpawnFuncs.Spider) -> Spawn(e,\"spider\") -> SpawnFromMap(Monsters.ByName(\"spider\"))", result: pass }
-      - { kind: test, ref: "InvasionSpawnTests: spawnmob roster resolves \"spider\" in the wave monster list", result: pass }
+      - { kind: code, ref: "MonsterSpawnFuncs.Spider(Entity) => Spawn(e,\"spider\") (MonsterSpawnFuncs.cs:30); registered for the monster_spider map entity; reachable via BSP entity lump, Invasion, and editmob/spawnmob", result: pass }
     confidence: high
-    notes: "Live via 3 routes: BSP map entity lump (this spawnfunc), Invasion gametype (Invasion.SpawnMonsterDef), and editmob/spawnmob console command. g_monsters defaults on; per-player editmob cap defaults 0 (off)."
+    notes: "Live via 3 routes: BSP map entity lump (this spawnfunc), Invasion gametype, and editmob/spawnmob console command. Wave-2 added a spawn voice cue (MonsterAI.Setup:311 -> MonsterSound 'spawn', gated by g_monsters_sounds); QC fires Monster_Sound(monstersound_spawn,...) at Monster_Spawn_Setup:1364 but the Base spider has no .sounds file, so it plays silence (the port plays monsters/spider_spawn.wav)."
 
   - id: monster-spider.setup.mr_setup
     name: "mr_setup: health / speeds / loot / damageforcescale defaults"
@@ -78,7 +77,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Monsters/Spider.cs:Spawn"
       - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:Setup"
     constants:
-      - { name: "g_monster_spider_health", base: "180", port: "180", match: true }
+      - { name: "g_monster_spider_health", base: "180", port: "180 (cvar-read)", match: true }
       - { name: "g_monster_spider_speed_walk", base: "400", port: "400", match: true }
       - { name: "g_monster_spider_speed_run", base: "500", port: "500", match: true }
       - { name: "g_monster_spider_speed_stop", base: "100", port: "100", match: true }
@@ -93,20 +92,19 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Spider.cs Spawn does NOT re-read g_monster_spider_health via a cvar (unlike walk/run/stop/forcescale/loot which it does); health is seeded from the ctor's StartHealth=180 fallback in MonsterAI.Setup. Matches the monsters.cfg default but ignores a server override of g_monster_spider_health (the four speed/loot/forcescale cvars ARE read)."
+    gaps: []
     verification:
-      - { kind: value, ref: "monsters.cfg g_monster_spider_* vs Spider.cs Spawn MonsterAI.Cvar() reads; health via StartHealth=180 + SkillMod scaling in Setup", result: pass }
+      - { kind: code, ref: "Spider.cs:49 sets StartHealth = MonsterAI.Cvar(\"g_monster_spider_health\", StartHealth) BEFORE Setup; Setup seeds e.Health from def.StartHealth then *= SkillMod, matching QC health=cvar; health*=skillmod ordering. Speed/loot/forcescale cvar-read at spawn (Spider.cs:54-58). All defaults verified in monsters.cfg (health 180, walk 400, run 500, stop 100, forcescale 0.6, loot health_medium).", result: pass }
     confidence: high
-    notes: "Speed/loot/forcescale are cvar-read at spawn with monsters.cfg defaults as fallback; health uses the ctor default and receives MONSTER_SKILLMOD scaling in shared Setup like QC."
+    notes: "Wave-2 CLOSED the prior gap: Spider.cs:49 re-reads g_monster_spider_health into StartHealth before Setup, so a server override is honoured (previously seeded only from the ctor StartHealth=180 fallback). All six setup constants cvar-read with monsters.cfg-matching defaults. Re-verified against monsters.cfg lines 24/14-30."
 
   - id: monster-spider.attack.bite
     name: "Melee bite (Monster_Attack_Melee, DEATH_MONSTER_SPIDER)"
     layer: [authority]
     base_refs:
-      - "common/monsters/monster/spider.qc:M_Spider_Attack (MELEE branch)"
-      - "common/monsters/monster/spider.qc:METHOD(SpiderAttack, wr_think) fire&2"
+      - "common/monsters/monster/spider.qc:wr_think fire&2 (Monster_Attack_Melee call)"
       - "common/monsters/sv_monsters.qc:Monster_Attack_Melee"
+      - "common/monsters/sv_monsters.qc:Monster_Attack_Check:467 (monstersound_melee on connect)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Monsters/Spider.cs:Attack"
       - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MeleeAttack"
@@ -119,29 +117,29 @@ features:
       values: faithful
       timing: faithful
       presentation: partial
-      audio: na
+      audio: partial
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "QC bite picks a random melee anim (anim_melee vs anim_shoot) via setanim; port sets only the generic Attack anim phase (no random selection, no client frame playback) — presentation only."
-      - "QC NPC bite uses actor.attack_range (= g_monsters_attack_range 120); the player-wielded path forces attack_range 60. Port uses st.AttackRange (120) for the NPC path (faithful); the 60 player path is part of the unported player-wielded SpiderAttack (see monster-spider.attack.player_wielded)."
+      - "QC bite picks a random melee anim (anim_melee vs anim_shoot via setanim); port sets only the generic Attack anim phase (no random selection, no client frame playback) — presentation only."
+      - "QC NPC bite uses actor.attack_range (= g_monsters_attack_range 120); the player-wielded path forces attack_range 60. Port uses st.AttackRange for the NPC path (faithful); the 60 player path is part of the unported player-wielded SpiderAttack (see monster-spider.attack.player_wielded)."
+      - "MeleeAttack plays a connecting-melee voice cue via MonsterSound(\"melee\") = monsters/spider_melee.wav. QC Monster_Attack_Check:467 DOES call Monster_Sound(monstersound_melee) on a connecting swing (attack_success==1), BUT the Base spider has no .sounds file so monstersound_melee resolves to \"\" and sound7 plays silence. The port emits a port-invented melee sound here (audio na -> partial)."
     verification:
-      - { kind: code, ref: "Spider.Attack dist<=AttackRange -> MeleeAttack(BiteDamage,...) traceline+Combat.Damage*SkillMod", result: pass }
-      - { kind: test, ref: "MonsterTurretVehicleObituaryTests.SpiderBite_RealAttack_TagsMonsterSpider: spider.Attack melee tags DeathTypes.MonsterSpider, obituary picks monster line", result: pass }
+      - { kind: code, ref: "Spider.Attack dist<=AttackRange -> MeleeAttack(BiteDamage 35,...,BiteDelay 1.5, DeathTypes.MonsterSpider) traceline+Combat.Damage*SkillMod; MeleeAttack returns true on a connecting hit and then calls MonsterSound(self,st,\"melee\",0,false,Voice) (MonsterAI.cs:1164) — mirrors QC Monster_Attack_Check==1 sound", result: pass }
     confidence: high
-    notes: "Port re-derives MELEE vs RANGED from enemy distance inside Spider.Attack rather than via the monster_attackfunc(MONSTER_ATTACK_*) dispatch; net behavior matches. attack_range = g_monsters_attack_range (120) from shared Setup. Removed the prior audit/native-bite audio:partial claim — the bite plays no QC sound of its own (sound is via the body-impact path in Monster_Damage), so audio is na here."
+    notes: "Damage logic/values/timing unchanged + faithful. Wave-2 added the QC-structural melee voice call inside MeleeAttack's hit branch (gated by g_monsters_sounds); it plays a sound the Base spider is silent for (no .sounds), so audio downgraded na->partial. Not a logic regression. Verified: QC's monstersound_melee is fired in Monster_Attack_Check (not inside Monster_Attack_Melee), keying off attack_success==1; the port's placement inside the hit branch is structurally equivalent."
 
   - id: monster-spider.attack.web_projectile
     name: "Ranged web projectile (bouncing plasma, no direct damage)"
     layer: [authority]
     base_refs:
-      - "common/monsters/monster/spider.qc:M_Spider_Attack (RANGED branch)"
+      - "common/monsters/monster/spider.qc:wr_think fire&1"
       - "common/monsters/monster/spider.qc:M_Spider_Attack_Web"
-      - "common/monsters/monster/spider.qc:METHOD(SpiderAttack, wr_think) fire&1"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Monsters/Spider.cs:FireWeb"
       - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:SpawnProjectile"
+      - "game/client/ProjectileCatalog.cs:247 (electro_orb -> ProjectileType.Electro)"
     constants:
       - { name: "g_monster_spider_attack_web_range", base: "800", port: "800", match: true }
       - { name: "g_monster_spider_attack_web_delay", base: "3", port: "3", match: true }
@@ -152,23 +150,23 @@ features:
       - { name: "proj lifetime (nextthink)", base: "time+5", port: "5", match: true }
       - { name: "proj size", base: "-4 -4 -4 / 4 4 4", port: "-4 -4 -4 / 4 4 4", match: true }
       - { name: "movetype", base: "MOVETYPE_BOUNCE", port: "MoveType.Bounce", match: true }
+      - { name: "csqc visual", base: "PROJECTILE_ELECTRO (electro orb)", port: "ProjectileType.Electro (NetName=electro_orb)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Wrong client visual (not invisible): QC nets it CSQCProjectile(proj, true, PROJECTILE_ELECTRO, true) = electro ORB (ebomb model + TR_NEXUIZPLASMA trail + electro_fly LOOP sound). Port spawns ClassName='monster_projectile' NetName='spider', MoveType.Bounce. ServerNet.Classify -> Projectile (it IS networked), and ProjectileCatalogKey(\"monster_projectile\",\"spider\") -> ProjectileCatalog.Resolve does NOT match electro_orb/electro/elaser/spiderrocket -> Generic fallback. So it renders as a generic projectile, missing the orb model, plasma trail, and electro_fly loop."
       - "Muzzle origin differs: QC sets origin to CENTER_OR_VIEWOFS(this) then W_SetupProjVelocity; port uses owner.Origin+ViewOfs+dir*14 (SpawnProjectile). Minor spawn-point offset."
       - "QC bot_dodge / MIF_SPLASH|MIF_ARC / damagedbycontents flags not modeled (bot dodge-rating 0 anyway; affects bot avoidance + contents detonation)."
     verification:
-      - { kind: code, ref: "FireWeb -> SpawnProjectile(damage 0, radius 25, Bounce, bounce 0.3/0.05, lifetime 5, makeTrigger) + Velocity.Z += web_speed_up; ServerNet.Classify(monster_projectile,Bounce,Owner) -> Projectile; ProjectileCatalog.Resolve(\"monster_projectile spider\") -> Generic", result: pass }
+      - { kind: code, ref: "FireWeb -> SpawnProjectile(damage 0, radius 25, Bounce, bounce 0.3/0.05, lifetime 5, makeTrigger) + Velocity.Z += web_speed_up 150; web.NetName=\"electro_orb\" (Spider.cs:133) -> ProjectileCatalog.Has(s,\"electro_orb\",\"electro\") (ProjectileCatalog.cs:247) -> ProjectileType.Electro. Web range 800 / delay 3 / speed 1300 all verified against monsters.cfg.", result: pass }
     confidence: high
-    notes: "Web deals NO impact damage (RadiusDamage with damage 0/edge 0); the slow is the payload. proj.takedamage=No (shootableHealth 0), faithful to QC DAMAGE_NO + RES_HEALTH 500. To fix the visual: set NetName to something ProjectileCatalog maps to electro_orb (e.g. 'electro_orb'), or add a 'spider'->Electro catalog entry."
+    notes: "Wave-2 CLOSED the wrong-visual gap: web.NetName overridden to electro_orb AFTER SpawnProjectile, so the client Classify resolves ProjectileType.Electro (the QC PROJECTILE_ELECTRO orb visual + plasma trail + electro_fly loop). Re-verified safe: the deathtype is carried via the deathType arg (DeathTypes.MonsterSpider), and the Webbed self-exclusion filter keys off the VICTIM's NetName (\"spider\") not the projectile's, so the rename does not break exclusion. Web deals NO impact damage; the slow is the payload."
 
   - id: monster-spider.web.applies_webbed
     name: "Web explosion applies STATUSEFFECT_Webbed in radius (except spiders)"
@@ -178,14 +176,14 @@ features:
       - "common/monsters/monster/spider.qh:REGISTER_STATUSEFFECT(Webbed)"
       - "common/mutators/mutator/status_effects/status_effects.qc:StatusEffects_apply"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Monsters/Spider.cs:FireWeb (onExplode)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Spider.cs:117 (FireWeb onExplode)"
       - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterFramework.cs:Webbed/ApplyFor"
-      - "src/XonoticGodot.Common/Gameplay/StatusEffects.cs:106 (webbed register), 128 (Apply)"
+      - "src/XonoticGodot.Common/Gameplay/StatusEffects.cs:158 (webbed register)"
     constants:
       - { name: "web radius", base: "25", port: "25", match: true }
       - { name: "g_monster_spider_attack_web_damagetime", base: "7", port: "7", match: true }
       - { name: "StatusEffects_apply 4th arg", base: "0 (eff_flags, NOT strength)", port: "strength 1 + Active flag", match: true }
-      - { name: "Webbed m_lifetime", base: "10 (CLIENT HUD progressbar scale only; Webbed is m_hidden so unused)", port: "0 (StatusEffectDef.Lifetime unset; never read for hidden effects)", match: true }
+      - { name: "Webbed m_lifetime", base: "10 (CLIENT HUD progressbar scale only; Webbed is m_hidden so unused)", port: "0 (Lifetime unset; never read for hidden effects)", match: true }
       - { name: "exclude self", base: "it.monsterdef != MON_SPIDER", port: "it.NetName != \"spider\"", match: true }
     status:
       logic: faithful
@@ -198,9 +196,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "onExplode FindInRadius(25) filter (it!=p, takedamage, alive, health>0, !spider) -> ApplyFor(Webbed, 7s). QC StatusEffects_apply(...,time+7,0): the 0 is eff_flags not strength; Apply sets ExpireTime=now+duration (no m_lifetime clamp — QC has none either, m_lifetime is HUD-only).", result: pass }
+      - { kind: code, ref: "onExplode FindInRadius(25) filter (it!=p, takedamage, alive, health>0, NetName!=spider) -> MonsterFramework.ApplyFor(Webbed, 7s) (Spider.cs:117-124). Webbed registered Hidden=true (StatusEffects.cs:158); re-verified the Wave-2 StatusEffects.cs diff (burning/spawnshield/stunned tick rework) did NOT touch the Webbed register. Base FOREACH_ENTITY_RADIUS conditions matched 1:1.", result: pass }
     confidence: high
-    notes: "CORRECTION over the draft: (1) the QC '0' 4th arg is eff_flags, NOT a strength of 0 — the port's strength 1 is fine (webbed has no per-strength behavior). (2) QC m_lifetime=10 is a CLIENT HUD-progressbar parameter (cl_status_effects.qc:19 addPowerupItem), NOT a server duration cap; StatusEffects_apply uses the absolute eff_time with no m_lifetime clamp. Webbed is m_hidden (no HUD element — spider.qh #if 0 disables its name/icon), so m_lifetime is entirely moot. Both prior 'value mismatch' gaps were false. Filter mirrors QC FOREACH_ENTITY_RADIUS conditions; Webbed self-registers in StatusEffects.cs + MonsterFramework (same instance, idempotent)."
+    notes: "Unchanged in behavior by Wave-1/2; the StatusEffects.cs diff added unrelated tick plumbing (burning/spawnshield/stunned), Webbed register intact (Hidden=true). Filter mirrors QC FOREACH_ENTITY_RADIUS; eff_flags vs strength clarified in a prior audit and still correct (QC passes 0 = no eff_flags; the port's strength 1 is the activation, not the QC strength field)."
 
   - id: monster-spider.web.player_slow
     name: "Webbed PLAYER move-speed slow (spiderweb PlayerPhysics_UpdateStats: HIGHSPEED *= 0.5)"
@@ -220,11 +218,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The spider's signature crowd-control has NO effect on players: nothing in PlayerPhysics (UpdateStats) checks STATUSEFFECT_Webbed to halve MOVEVARS_HIGHSPEED. Verified: grep Webbed in PlayerPhysics.cs returns NO matches. A webbed player runs at full speed. Only the monster-vs-monster slow (web.monster_slow) is ported."
+      - "STILL OPEN after Wave-1/2. Nothing in PlayerPhysics (UpdateStats) checks STATUSEFFECT_Webbed to halve MOVEVARS_HIGHSPEED. Re-verified post-wave: grep 'Webbed' across src matches only Spider.cs/MonsterAI.cs/StatusEffects.cs/MonsterFramework.cs — NONE in PlayerPhysics.cs. The Wave-2 PlayerPhysics.cs diff (git diff main...HEAD) only reworked footstep cadence (jitter RNG + g_footsteps gate + ladder bail) — entirely unrelated to the web slow. A webbed player runs at full speed; only the monster-vs-monster slow (web.monster_slow) is ported."
     verification:
-      - { kind: code, ref: "Grep 'Webbed' across src: matches only Spider.cs/MonsterAI.cs/StatusEffects.cs/MonsterFramework.cs — NONE in PlayerPhysics.cs", result: fail }
+      - { kind: code, ref: "Grep 'Webbed' across src: NO match in PlayerPhysics.cs (only Monsters/* + StatusEffects.cs). git diff main...HEAD PlayerPhysics.cs = footstep cadence only (FootstepJitterRng, g_footsteps gate, LadderEntity bail).", result: fail }
     confidence: high
-    notes: "PlayerPhysics already supports a player speed multiplier (Speed powerup, entrap nade x0.5, buffs adjust MOVEVARS_HIGHSPEED-class stats — see MovementParameters/PhysicsPreset/NadeEntrapBoom). A spiderweb-equivalent hook reading the Webbed status to halve highspeed would close this — the integration point exists."
+    notes: "The integration point EXISTS: PlayerPhysics seeds player.SpeedMultiplier = mp.HighSpeed then fires the PlayerPhysics mutator hook and folds SpeedMultiplier into ApplyHighSpeed (the Speed powerup / entrap nade / buffs all ride this). A spiderweb-equivalent handler reading the Webbed status to set SpeedMultiplier *= 0.5 would close this. Not addressed by Wave-1/2."
 
   - id: monster-spider.web.monster_slow
     name: "Webbed MONSTER move-speed slow (spiderweb MonsterMove hook: run/walk *= 0.5)"
@@ -232,7 +230,7 @@ features:
     base_refs:
       - "common/monsters/monster/spider.qc:MUTATOR_HOOKFUNCTION(spiderweb, MonsterMove)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:757-758 (Move)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:832-834 (Move)"
     constants:
       - { name: "run/walk multiplier while webbed", base: "0.5", port: "0.5", match: true }
     status:
@@ -246,33 +244,34 @@ features:
     divergence_rationale: "QC implements this as a MonsterMove mutator hook; the port folds the same 0.5 multiplier directly into MonsterAI.Move's speed computation (no separate mutator-hook chain for monster movement). Same observable effect; structurally inlined."
     gaps: []
     verification:
-      - { kind: code, ref: "MonsterAI.Move:757 if StatusEffectsCatalog.Has(self, Webbed) speed *= 0.5f (after SkillMod + cap)", result: pass }
+      - { kind: code, ref: "MonsterAI.Move:833-834 if StatusEffectsCatalog.Has(self, MonsterFramework.Webbed) speed *= 0.5f (after SkillMod + cap). Re-verified line 833 post-wave.", result: pass }
     confidence: high
-    notes: "Applies to a monster caught in another spider's web (the QC FOREACH excludes only MON_SPIDER, so a non-spider monster gets webbed and slowed)."
+    notes: "Still live + faithful (now at line 833, moved by the Wave-2 match-halt/follow-prune insertions; logic unchanged). Applies to a non-spider monster caught in another spider's web (the QC FOREACH excludes only MON_SPIDER; the port's web filter excludes NetName==spider)."
 
   - id: monster-spider.web.electro_impact_fx
     name: "Web explosion EFFECT_ELECTRO_IMPACT particle"
     layer: [presentation]
     base_refs:
       - "common/monsters/monster/spider.qc:M_Spider_Attack_Web_Explode (Send_Effect EFFECT_ELECTRO_IMPACT)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Spider.cs:114 (FireWeb onExplode)"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:71 (ELECTRO_IMPACT register)"
     constants:
-      - { name: "effect", base: "EFFECT_ELECTRO_IMPACT", port: "none", match: false }
+      - { name: "effect", base: "EFFECT_ELECTRO_IMPACT", port: "ELECTRO_IMPACT (electro_impact)", match: true }
     status:
       logic: na
       values: na
       timing: na
-      presentation: missing
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Port FireWeb onExplode does not emit EFFECT_ELECTRO_IMPACT; QC fires Send_Effect(EFFECT_ELECTRO_IMPACT, origin) at the web's impact origin. The ELECTRO_IMPACT effect id IS registered (EffectsList.cs) and reachable (Electro.cs / Arc.cs / PlasmaTurret.cs emit it), so the effect exists — just not called here."
+    gaps: []
     verification:
-      - { kind: code, ref: "Spider.FireWeb onExplode lambda body has no EffectEmitter.Emit; EffectsList registers ELECTRO_IMPACT; Electro/Arc/PlasmaTurret reference it", result: fail }
+      - { kind: code, ref: "Spider.FireWeb onExplode calls EffectEmitter.Emit(\"ELECTRO_IMPACT\", p.Origin) (Spider.cs:114); EffectEmitter.Emit(string,...) exists (EffectEmitter.cs:214) and resolves via Effects.ByName; ELECTRO_IMPACT registered (EffectsList.cs:71 -> effectinfo 'electro_impact'). Base fires Send_Effect(EFFECT_ELECTRO_IMPACT, this.origin, '0 0 0', 1) at the web impact origin.", result: pass }
     confidence: high
-    notes: "One-line fix: emit ELECTRO_IMPACT at p.Origin inside the onExplode lambda."
+    notes: "Wave-2 CLOSED this gap: the one-line emit was added in onExplode at p.Origin. Effect id registered + reachable (Electro/Arc also emit it). Same impact origin as QC. Re-verified the emit + register both present post-wave."
 
   - id: monster-spider.attack.web_sound
     name: "Web fire sound (electro_fire2)"
@@ -282,7 +281,7 @@ features:
       - "common/monsters/monster/spider.qc:M_Spider_Attack_Web (sound CH_SHOTS)"
       - "common/monsters/monster/spider.qc:wr_think (W_SetupShot_Dir SND_SpiderAttack_FIRE)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Monsters/Spider.cs:121"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Spider.cs:138"
     constants:
       - { name: "sound", base: "weapons/electro_fire2", port: "weapons/electro_fire2.wav", match: true }
     status:
@@ -295,11 +294,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "QC plays the fire sound TWICE (W_SetupShot_Dir passes SND_SpiderAttack_FIRE during wr_think, then M_Spider_Attack_Web does an explicit sound() on CH_SHOTS); the port plays it once (single Api.Sound.Play in FireWeb). Likely intentional de-dup but a divergence from QC's double cue."
+      - "QC plays the fire sound TWICE (W_SetupShot_Dir passes SND_SpiderAttack_FIRE during wr_think, then M_Spider_Attack_Web does an explicit sound() on CH_SHOTS); the port plays it once (single Api.Sound.Play in FireWeb). Unchanged by Wave-1/2. Likely intentional de-dup but a divergence from QC's double cue."
     verification:
-      - { kind: code, ref: "FireWeb: single Api.Sound.Play(e, SoundChannel.Weapon, weapons/electro_fire2.wav); QC fires it via W_SetupShot_Dir AND M_Spider_Attack_Web", result: pass }
+      - { kind: code, ref: "FireWeb:138 single Api.Sound.Play(e, SoundChannel.Weapon, weapons/electro_fire2.wav); QC fires it via W_SetupShot_Dir AND M_Spider_Attack_Web", result: pass }
     confidence: medium
-    notes: "Single play is arguably more correct; flagged as a structure divergence, not a clear bug."
+    notes: "Single play is arguably more correct; flagged as a structure divergence, not a clear bug. No change in Wave-1/2."
 
   - id: monster-spider.attack.player_wielded
     name: "Player-wielded SpiderAttack weapon (impulse 9, WEP_FLAG_HIDDEN|SPECIALATTACK)"
@@ -322,11 +321,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The SpiderAttack weapon's IS_PLAYER(actor) path (a player wielding the hidden spider attack via impulse 9 / monster-riding or dev tooling) is not ported: no SpiderAttack weapon in the port (the port's Spider re-derives melee/ranged inside Monster.Attack and never goes through a Weapon). The player path uses weapon_prepareattack timing, attack_range=60, and Monster_FindTarget self-targeting — all absent."
+      - "STILL OPEN. The SpiderAttack weapon's IS_PLAYER(actor) path (a player wielding the hidden spider attack via impulse 9 / monster-riding or dev tooling) is not ported: no SpiderAttack weapon in the port (the port's Spider re-derives melee/ranged inside Monster.Attack and never goes through a Weapon). The player path uses weapon_prepareattack timing, attack_range=60, and Monster_FindTarget self-targeting — all absent. Not addressed by Wave-1/2."
     verification:
-      - { kind: code, ref: "No SPIDER_ATTACK weapon / impulse 9 in the port; Spider.Attack is NPC-only (no IS_PLAYER branch)", result: fail }
+      - { kind: code, ref: "No SPIDER_ATTACK weapon / impulse 9 in the port; Spider.Attack is NPC-only (no IS_PLAYER branch). Re-confirmed against the wr_think IS_PLAYER branches in Base spider.qc.", result: fail }
     confidence: high
-    notes: "Low gameplay impact: the player-wielded spider attack is reachable only via MON_FLAG_RIDE monster-riding (no riding mode in the port) or dev impulse tooling. Listed for Base-coverage completeness. The NPC path (the normal spider) is fully ported."
+    notes: "Low gameplay impact: reachable only via MON_FLAG_RIDE monster-riding (no riding mode in the port) or dev impulse tooling. Listed for Base-coverage completeness. The NPC path (the normal spider) is fully ported."
 
   - id: monster-spider.anim.mr_anim
     name: "DPM frame-group animation map (mr_anim: melee/die/shoot/idle/pain/walk frames)"
@@ -351,11 +350,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The spider's DPM frame-group mapping is not driven anywhere: monsters do not run a client animation decider (Monster_Anim / animdecide). The server tracks a logical MonsterAnim phase (Idle/Walk/Run/Attack/Pain/Death — set in MonsterAI.Move/MarkPain/MarkDead) but no client frame playback consumes it for monsters, so the rendered spider does not visibly walk/bite/web/die-animate. Confirmed by the explicit deferral note in MonsterAI.RunThink (CSQC monster animation frame playback NOTE)."
+      - "STILL OPEN. The spider's DPM frame-group mapping is not driven anywhere: monsters do not run a client animation decider (Monster_Anim / animdecide). The server tracks a logical MonsterAnim phase (Idle/Walk/Run/Attack/Pain/Death — set in MonsterAI.Move/MeleeAttack/MarkPain/MarkDead) but no client frame playback consumes it for monsters, so the rendered spider does not visibly walk/bite/web/die-animate. The Wave-2 CsqcModelAppearance / CsqcModelEffectFlags are PLAYER-model appearance (force-model/colors/glow/death-fade); they do not touch monster frame groups. MonsterAI.cs:1058-1059 still explicitly defers CSQC monster anim frame playback."
     verification:
-      - { kind: code, ref: "No spider/monster anim_* frame map in src or game; MonsterAI.RunThink:982 explicitly defers CSQC monster anim frame playback; logical st.Anim phase maintained but unconsumed", result: fail }
+      - { kind: code, ref: "No spider/monster anim_* frame map in src or game; CsqcModelAppearance.cs is player force-model/color only (no MonsterAnim consumer); MonsterAI.cs:1058-1059 explicit 'CSQC monster animation frame playback' deferral comment; logical st.Anim phase maintained but unconsumed", result: fail }
     confidence: high
-    notes: "Logical phase is maintained server-side; the missing piece is the CSQC frame-group playback for monster models — a SHARED monster-presentation gap, not spider-specific (all five monsters have mr_anim maps; none are wired)."
+    notes: "Logical phase is maintained server-side; the missing piece is the CSQC frame-group playback for monster models — a SHARED monster-presentation gap, not spider-specific (all five monsters have mr_anim maps; none are wired). Not addressed by Wave-1/2."
 
   - id: monster-spider.pain.mr_pain
     name: "Pain reaction + anim (mr_pain: random pain1/pain2, pain_finished)"
@@ -368,6 +367,7 @@ features:
     constants:
       - { name: "pain anim", base: "random anim_pain1/pain2", port: "generic MonsterAnim.Pain", match: false }
       - { name: "pain_finished", base: "animstate_endtime (anim length)", port: "Now + 0.34", match: false }
+      - { name: "pain sound throttle", base: "Monster_Sound(monstersound_pain, 1.2, delaytoo)", port: "MonsterSound(\"pain\", 1.2, delaytoo)", match: true }
     status:
       logic: faithful
       values: partial
@@ -378,12 +378,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Spider mr_pain (random pain1/pain2 + pain_finished = animstate_endtime) is not specialised; the generic MarkPain sets a fixed 0.34s pain window (MonsterAI.cs:1320) and a generic Pain phase. The pain-window duration is decoupled from the (unported) anim length."
-      - "Pain sound: port plays monsters/spider_pain.wav (MonsterAI.MarkPain); QC base spider has no .sounds file and falls back to the body-impact spamsound in Monster_Damage. Cue source differs."
+      - "STILL OPEN: Spider mr_pain (random pain1/pain2 + pain_finished = animstate_endtime) is not specialised; the generic MarkPain sets a fixed 0.34s pain window and a generic Pain phase. The pain-window duration is decoupled from the (unported) anim length."
+      - "Pain sound source still divergent: the port plays monsters/spider_pain.wav (via the Wave-2 throttled MonsterSound, 1.2s delaytoo gate matching QC Monster_Sound structure). QC's Monster_Sound(monstersound_pain,...) resolves the sample from the spider's .sounds file — but the Base spider has NO .sounds file (verified), so monstersound_pain = \"\" plays silence. The port emits a port-invented pain sound the Base spider is silent for."
     verification:
-      - { kind: code, ref: "Spider has no MarkPain override; uses MonsterAI.MarkPain (PainFinished = Now+0.34f, st.Anim=Pain, plays monsters/spider_pain.wav)", result: partial }
+      - { kind: code, ref: "Spider has no MarkPain override; uses MonsterAI.MarkPain (PainFinished = Now+0.34f, st.Anim=Pain). Wave-2 rerouted the pain sound to MonsterSound(self,st,\"pain\",1.2f,true,Body) (MonsterAI.cs:1400) — adds the QC 1.2s throttle (delaytoo) + g_monsters_sounds gate (faithful structure), still plays the port-invented monsters/spider_pain.wav.", result: partial }
     confidence: high
-    notes: "Damage math (armor split via healtharmor_applydamage in MonsterEventDamage, skillmod, double knockback, SpawnShield/INVINCIBLE/Shield gates) is handled faithfully in the shared path; only the spider-specific anim flavor + pain-window timing differ."
+    notes: "Damage math (armor split, skillmod, double knockback, SpawnShield/INVINCIBLE/Shield gates) handled faithfully in the shared path. Wave-2 made the pain CUE more QC-faithful in throttle/gate (Monster_Sound structure: msound_delay throttle field added) but did NOT close the flagged gaps: the anim flavor + pain-window timing are still generic, and the cue source still diverges from Base's (silent) spider."
 
   - id: monster-spider.death.mr_death
     name: "Death reaction + anim (mr_death: random die1/die2)"
@@ -408,12 +408,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Spider mr_death (random die1/die2 frame group) is not specialised; generic MarkDead sets the Death phase with no client frame playback, so a killed spider does not play its death animation."
-      - "Death sound: port plays monsters/spider_death.wav (MarkDead); QC base spider has no .sounds file (placeholder/silent). Cue source differs (same nature as the pain-sound divergence)."
+      - "STILL OPEN: Spider mr_death (random die1/die2 frame group) is not specialised; generic MarkDead sets the Death phase with no client frame playback, so a killed spider does not play its death animation."
+      - "Death sound source still divergent: the port plays monsters/spider_death.wav (via the Wave-2 MonsterSound(\"death\",0,false,Voice), QC-structural); QC's Monster_Sound(monstersound_death) resolves to \"\" for the Base spider (no .sounds file = silence). Port-invented cue."
     verification:
-      - { kind: code, ref: "Spider has no MarkDead override; MonsterAI.MarkDead: corpse Solid.Corpse/Toss, loot drop, death sound, +5s lifetime, gib at -100 (live) / -50 (corpse), MonsterDies->NadeBonus, scoring", result: pass }
+      - { kind: code, ref: "Spider has no MarkDead override; MonsterAI.MarkDead: corpse Solid.Corpse/Toss, loot drop, +5s lifetime, gib at -100 (live) / -50 (corpse), MonsterDies->NadeBonus, scoring. Wave-2 rerouted the death sound to MonsterSound(self,st,\"death\",0f,false,Voice) (MonsterAI.cs:1448).", result: pass }
     confidence: high
-    notes: "Corpse->fade/respawn, loot drop, scoring (g_monsters_score_kill), MonsterDies->NadeBonus all handled in shared MarkDead/DeadThink faithfully; only the visible die anim + the exact death-sound source are absent/divergent."
+    notes: "Corpse->fade/respawn, loot drop, scoring (g_monsters_score_kill), MonsterDies->NadeBonus all faithful. Wave-2 made the death cue QC-structural (Monster_Sound, g_monsters_sounds gate) but the visible die anim is still absent and the cue source still diverges from Base's silent spider."
 
   - id: monster-spider.think.brain
     name: "Per-frame brain: enemy acquire, move, attack-check (Monster_Think)"
@@ -441,11 +441,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Spider.mr_think in QC is a trivial return-true (no per-type logic); the port Think -> RunThink matches. The shared move steering uses a FIXED 0.4 velocity blend (movelib_move_simple approximation, MonsterAI.MoveSimple:851) rather than QC's frametime-scaled blend — a documented determinism choice, shared by all monsters; flagged timing:partial (frame-rate-independent but not the QC frametime curve)."
+      - "Spider.mr_think in QC is a trivial return-true (no per-type logic); the port Think -> RunThink matches. The shared move steering uses a FIXED 0.4 velocity blend (movelib_move_simple approximation) rather than QC's frametime-scaled blend — a documented determinism choice, shared by all monsters; flagged timing:partial."
     verification:
-      - { kind: code, ref: "Spider.Think -> RunThink; SpawnFromMap sets e.Think to re-arm NextThink=Now each call; SimulationLoop SV_RunThink fires due thinks -> brain runs every server frame", result: pass }
+      - { kind: code, ref: "Spider.Think -> RunThink; SimulationLoop SV_RunThink fires due thinks -> brain runs every server frame", result: pass }
     confidence: high
-    notes: "Liveness confirmed: SimulationLoop.SV_RunThink (sv_phys SV_RunThink port) drives entity .Think when NextThink due; the spider self-reschedules every frame exactly like QC Monster_Think."
+    notes: "Wave-2 ENRICHED the shared brain: Monster_Enemy_Check now drops a LOS-blocked (traceline, tr.Ent != enemy) or frozen enemy (MonsterAI.cs:678-700); ValidTarget + Monster_Move now honour the match-halt/prematch gate via MatchHalted() (game_stopped || time<game_starttime); Monster_Move prunes a stale follow-leader (different team / left active play) and emits a 7s-throttled idle voice cue. These move the shared path CLOSER to QC (Monster_ValidTarget/Monster_Move parity) — no spider-specific regression. Liveness confirmed via SimulationLoop.SV_RunThink."
 
   - id: monster-spider.respawn.cycle
     name: "Death fade / respawn cycle (Monster_Dead_Fade, Monster_Dead_Think)"
@@ -472,28 +472,28 @@ features:
     verification:
       - { kind: code, ref: "DeadThink: after +5s corpse lifetime -> RespawnCheck -> Respawn at spawn point (or death point), restore health, 20s delay; else fade+remove at time+3", result: pass }
     confidence: medium
-    notes: "Respawn-at-death-point (MONSTER_RESPAWN_DEATHPOINT) modeled; the corpse-fade visual (SUB_SetFade) is the client's concern — the port just removes after time+3 (presentation unverified)."
+    notes: "Respawn-at-death-point (MONSTER_RESPAWN_DEATHPOINT) modeled; corpse-fade visual is the client's concern. Wave-2 added EF_RED (=128) re-apply on a respawned miniboss (MonsterAI.cs:1733, Respawn) — faithful to QC Monster_Miniboss_Setup:523; not spider-specific. No regression."
 
   - id: monster-spider.menu.describe
     name: "MENUQC monster-tooltip description text"
     layer: [presentation]
     base_refs:
-      - "common/monsters/monster/spider.qc:METHOD(Spider, describe)"
-    port_refs:
-      - "game/menu/dialogs/DialogMonsterTools.cs"
-    constants: []
+      - "common/monsters/monster/spider.qc:METHOD(Spider, describe):256"
+    port_refs: []
+    constants:
+      - { name: "describe prose", base: "The Spider is a large mechanically-enhanced arachnoid adept at hunting speedy enemies.", port: "none", match: false }
     status:
-      logic: unknown
-      values: unknown
+      logic: na
+      values: missing
       timing: na
-      presentation: unknown
+      presentation: missing
       audio: na
-      liveness: unknown
+      liveness: na
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Did not verify whether the spider's MENUQC describe() prose (\"large mechanically-enhanced arachnoid...\") is surfaced in the port's monster-tools menu dialog."
+      - "STILL OPEN (refined from 'unknown' to 'missing'). Confirmed: the spider's MENUQC describe() prose (\"The Spider is a large mechanically-enhanced arachnoid adept at hunting speedy enemies.\", spider.qc:256) is NOT surfaced in the port. DialogMonsterTools.cs is the spawn/edit tool (a radio group of monster netnames + Spawn/Remove/movetarget/recolor buttons, faithful to dialog_monstertools.qc) — it does NOT display any per-monster describe() tooltip text. No other port path surfaces the describe prose. Not touched by Wave-1/2."
     verification:
-      - { kind: none, ref: "DialogMonsterTools.cs exists but describe text not traced", result: fail }
-    confidence: low
-    notes: "MENUQC-only flavor text; low gameplay impact. Listed for completeness."
+      - { kind: code, ref: "DialogMonsterTools.cs:24 lists (\"spider\",\"Spider\") as a spawn-type radio option only; no describe() prose anywhere in the dialog or src. Base describe() at spider.qc:252-256.", result: fail }
+    confidence: medium
+    notes: "MENUQC-only flavor text; low gameplay impact. Now confirmed missing (was unknown in the prior audit) — the port's monster-tools dialog is the editor, not a describe-tooltip surface. Listed for completeness."

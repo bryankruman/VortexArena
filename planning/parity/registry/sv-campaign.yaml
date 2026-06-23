@@ -5,11 +5,12 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 14
   worst_gaps:
-    - "target_levelwarp does nothing in a campaign: CampaignLevelWarpHandler/IsCampaign seams are never wired by the host (dead)."
-    - "target_changelevel campaign win-credit is dead: NextLevelHandler unassigned + the QC `campaign_forcewin = true` (real-client-touched stage win) line has no port equivalent, so a map that ends a stage via target_changelevel never registers the win."
-    - "g_campaign_forceteam is registered but never read: a campaign team-mode level cannot force the player onto a given team."
-    - "Campaign_Invalid (checks current gametype + mapname match the loaded level, else CampaignBailout) is not ported: a level whose actual map/gametype diverges from the file is not detected or aborted server-side. Base calls it at the end of both CampaignPreInit and the start of CampaignPostInit."
-    - "Confirmed wired ONLY into bot MOVEMENT (BotPopulation.MovementHeld + BotBrain pre-game hold). The round-handler campaign gate (Base round_handler.qc:38) is EXPLICITLY DEFERRED in the port (RoundHandler.cs comment: 'Deferred: ... campaign bot gating')."
+    - "target_levelwarp STILL does nothing in a campaign: CampaignLevelWarpHandler/IsCampaign are still never assigned outside tests (Wave-2 added an Assault.cs CONSUMER of IsCampaign but no host assignment), so the entity is dead and its campaign gate short-circuits."
+    - "target_changelevel campaign win-credit STILL dead: NextLevelHandler unassigned in production + the QC `campaign_forcewin = true` (real-client-touched stage win) line still has no port equivalent, so a map that ends a stage via target_changelevel never registers the win."
+    - "g_campaign_forceteam: Wave-2 added Teamplay.DetermineForcedTeam (reads it) + AssignBestTeam (honors it), but DetermineForcedTeam has NO live caller (the connect path calls AssignBestTeam directly), so the forced-team table is never populated and the cvar still has no effect (logic present, dead)."
+    - "Campaign_Invalid: Wave-2 added Campaign.Validate() and calls it live in PreInit/PostInit, but its map/gametype probes (LoadedMapName/GametypeMismatch) are never wired by the host, so it skips both checks and cannot detect a mismatch (guard present but inert)."
+    - "Campaign_GetLevelNum: Wave-2 added Campaign.LevelNum (level+1) but nothing reads or networks it, so the welcome/info dialog still cannot show 'Level N'."
+    - "campaign_bots_may_start: still wired ONLY into bot MOVEMENT (BotPopulation.MovementHeld + BotBrain pre-game hold). The round-handler campaign gate (Base round_handler.qc:38) remains EXPLICITLY DEFERRED in the port (RoundHandler.cs:41 'Deferred: ... campaign bot gating')."
 features:
   - id: sv-campaign.file.parse
     name: "Campaign .txt quoted-CSV parse (CampaignFile_Load)"
@@ -85,7 +86,12 @@ features:
       - "server/campaign.qc:CampaignPreInit"
       - "server/campaign.qc:Campaign_Invalid"
     port_refs:
-      - "src/XonoticGodot.Server/GameWorld.cs:Boot (gametype resolution, line 461-462)"
+      - "src/XonoticGodot.Server/GameWorld.cs:Boot (gametype resolution, line 485)"
+      - "src/XonoticGodot.Server/Campaign.cs:Validate (Campaign_Invalid)"
+      - "src/XonoticGodot.Server/Campaign.cs:PreInit (calls Validate at tail)"
+      - "src/XonoticGodot.Server/Campaign.cs:PostInit (calls Validate at entry)"
+      - "src/XonoticGodot.Server/Campaign.cs:LoadedMapName (host probe, UNWIRED)"
+      - "src/XonoticGodot.Server/Campaign.cs:GametypeMismatch (host probe, UNWIRED)"
     constants: []
     status:
       logic: partial
@@ -93,15 +99,16 @@ features:
       timing: na
       presentation: na
       audio: na
-      liveness: live
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Campaign_Invalid (checks current gametype + mapname match the loaded level, else CampaignBailout) is not ported: a level whose actual map/gametype diverges from the file is not detected or aborted server-side. Base calls it at the end of both CampaignPreInit and the start of CampaignPostInit."
+      - "Wave-2 ADDED Campaign.Validate() (the Campaign_Invalid logic — gametype-mismatch + map-mismatch → Bailout) and CALLS it live at the tail of PreInit and the entry of PostInit. BUT the two probes it reads (LoadedMapName / GametypeMismatch) are NEVER assigned by the host (GameWorld.cs:730-731 wires only Campaign.Log + OnLevelTransition). With both probes null, Validate() skips both checks and always returns true — so the guard is present but INERT: a level whose actual map/gametype diverges from the file is still not detected or aborted."
     verification:
-      - { kind: code, ref: "no Campaign_Invalid equivalent; PreInit feeds CurrentGametype to the host (gameTypeName) but never revalidates the resolved map/gametype", result: fail }
+      - { kind: code, ref: "Campaign.Validate exists + is invoked from PreInit (Campaign.cs:264) and PostInit (Campaign.cs:311); PreInit itself is live (GameWorld.cs:485)", result: pass }
+      - { kind: grep, ref: "Campaign.LoadedMapName / Campaign.GametypeMismatch have ZERO assignments in src/ + game/ (only Campaign.Log + Campaign.OnLevelTransition are wired at GameWorld.cs:730-731) — both probes null → Validate skips both checks", result: fail }
     confidence: high
-    notes: "The menu pre-resolves the map so a mismatch is unlikely in practice, but the server-side guard is absent. MapInfo_SwitchGameType itself is reproduced indirectly: PreInit's CurrentGametype drives Boot's gameTypeName."
+    notes: "Partial fix this wave: the Campaign_Invalid decision logic now exists AND is reached on the live boot path, but the host map/gametype probes are unwired so it cannot actually detect a mismatch (liveness downgraded faithful→partial accordingly: the call is live, the effect is not). MapInfo_SwitchGameType is still reproduced indirectly: PreInit's CurrentGametype drives Boot's gameTypeName."
 
   - id: sv-campaign.preinit.abort
     name: "Bailout paths: unknown map + cheats (CampaignBailout)"
@@ -157,7 +164,7 @@ features:
     verification:
       - { kind: unit_test, ref: "CampaignFlowTests.PostInit_AppliesLevelLimits / PostInit_DefaultKeywordLeavesCvarUntouched / PostInit_FragPlusLeadSplit", result: pass }
     confidence: high
-    notes: "Permanent cvar_set (not settemp), matching QC. Port omits the Campaign_Invalid recheck QC does at PostInit entry (see gametype_switch row)."
+    notes: "Permanent cvar_set (not settemp), matching QC. Wave-2 ADDED the QC Campaign_Invalid recheck at PostInit entry (now calls Validate before applying limits — see gametype_switch row), but that recheck is inert until the host wires the map/gametype probes."
 
   - id: sv-campaign.bots.may_start
     name: "campaign_bots_may_start: hold bots/rounds/monsters until the human spawns"
@@ -378,11 +385,14 @@ features:
       - "server/teamplay.qc:385"
       - "server/teamplay.qc:938"
     port_refs:
-      - "src/XonoticGodot.Server/Cvars.cs:373"
+      - "src/XonoticGodot.Server/Cvars.cs:379 (registration)"
+      - "src/XonoticGodot.Server/Teamplay.cs:DetermineForcedTeam (Player_DetermineForcedTeam — reads g_campaign_forceteam, line 122-162; NO LIVE CALLER)"
+      - "src/XonoticGodot.Server/Teamplay.cs:AssignBestTeam (honors HasRealForcedTeam, line 244-246)"
     constants:
       - { name: "g_campaign_forceteam default", base: "0", port: "0", match: true }
+      - { name: "forced-team index (1..4) honored in balance", base: "team_forced 1..4 → that team", port: "DetermineForcedTeam stores 1..4; AssignBestTeam early-outs on HasRealForcedTeam", match: true }
     status:
-      logic: missing
+      logic: stub
       values: faithful
       timing: na
       presentation: na
@@ -391,11 +401,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "g_campaign_forceteam is registered but never read: a campaign team-mode level cannot force the player onto a given team."
+      - "Wave-2 ADDED Teamplay.DetermineForcedTeam (QC Player_DetermineForcedTeam) which reads g_campaign_forceteam when isCampaign and stores the 1..4 forced index, and AssignBestTeam (line 244) now honors HasRealForcedTeam. BUT DetermineForcedTeam has ZERO live callers anywhere in src/ + game/ — it is referenced only in its own definition + docstrings. The connect path (ClientManager.cs:181) calls AssignBestTeam directly without ever calling DetermineForcedTeam first, so the _forcedTeam table is never populated, HasRealForcedTeam is always false, and g_campaign_forceteam still has NO effect. The cvar is read inside a method that never runs on the live path → still dead."
     verification:
-      - { kind: code, ref: "grep: g_campaign_forceteam appears only in the Cvars.cs registration (line 373), never read in the port; Base reads it in teamplay.qc (team_forced + TeamBalance_GetTeamFromIndex)", result: fail }
+      - { kind: code, ref: "Teamplay.DetermineForcedTeam reads g_campaign_forceteam (Teamplay.cs:131); AssignBestTeam honors HasRealForcedTeam (Teamplay.cs:244)", result: pass }
+      - { kind: grep, ref: "DetermineForcedTeam has ZERO callers in src/ + game/ (grep finds only its definition + <see cref> docstrings); the live connect path ClientManager.cs:181 calls AssignBestTeam WITHOUT first calling DetermineForcedTeam → _forcedTeam never populated → g_campaign_forceteam still inert", result: fail }
     confidence: high
-    notes: "Base: teamplay.qc:385 sets player.team_forced = autocvar_g_campaign_forceteam when valid; :938 picks the forced team in balance. The port's teamplay consults neither. (bot.qc:185 has only a commented-out reference in Base too.)"
+    notes: "Partial fix this wave: the campaign team-force LOGIC now exists and is correct, and the balance code that would honor it is wired — but the populating call (DetermineForcedTeam on connect) is missing, so the feature is still dead on the live path. Base: teamplay.qc:385 sets player.team_forced = autocvar_g_campaign_forceteam on connect; :938 picks it in balance. Logic upgraded missing→stub (placeholder method exists, no-ops because uncalled); liveness still dead."
 
   - id: sv-campaign.welcome.levelnum
     name: "Campaign level number in the welcome/info message (Campaign_GetLevelNum)"
@@ -403,12 +414,13 @@ features:
     base_refs:
       - "server/campaign.qc:Campaign_GetLevelNum"
       - "server/client.qc:1080 (SendWelcomeMessage)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Server/Campaign.cs:LevelNum (Campaign_GetLevelNum = Level + 1; NEVER READ/NETWORKED)"
     constants:
-      - { name: "level num", base: "campaign_level + 1 (networked in SendWelcomeMessage when g_campaign)", port: "not networked", match: false }
+      - { name: "level num", base: "campaign_level + 1 (networked in SendWelcomeMessage when g_campaign)", port: "Campaign.LevelNum = Level+1 computed, but not networked/read", match: false }
     status:
-      logic: missing
-      values: na
+      logic: stub
+      values: faithful
       timing: na
       presentation: missing
       audio: na
@@ -416,8 +428,9 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Base's SendWelcomeMessage writes a campaign flag + Campaign_GetLevelNum() (level+1) so the client welcome/info dialog shows 'Level N'; the port's welcome/MOTD path has no campaign-level branch (no Campaign_GetLevelNum equivalent, not networked)."
+      - "Wave-2 ADDED the Campaign.LevelNum property (QC Campaign_GetLevelNum = campaign_level + 1), but it is NEVER read or networked anywhere in src/ + game/. There is no SendWelcomeMessage equivalent that consults it, and DialogWelcome still has no campaign-level field. The value is computed but never reaches the client → the welcome/info dialog still cannot show 'Level N'."
     verification:
-      - { kind: code, ref: "grep: no GetLevelNum/Campaign level networking in src/ or game/; DialogWelcome has no campaign-level field", result: fail }
-    confidence: medium
-    notes: "Cosmetic info-dialog feature (the campaign level number shown on the welcome screen). The HUD/menu campaign list separately shows progress, so the missing welcome line is low-impact. Marked presentation+logic missing, dead."
+      - { kind: code, ref: "Campaign.LevelNum exists (Campaign.cs:81 → Level + 1, value correct)", result: pass }
+      - { kind: grep, ref: "Campaign.LevelNum has ZERO readers in src/ + game/ (only its own definition); no SendWelcomeMessage / welcome-message campaign-level networking path; DialogWelcome has no campaign-level field", result: fail }
+    confidence: high
+    notes: "Partial fix this wave: the Campaign_GetLevelNum VALUE now exists (LevelNum property, correct level+1) but the networking/presentation side is still entirely absent — no consumer reads it and no welcome-channel carries it. Logic upgraded missing→stub (the getter exists, unused); presentation still missing, liveness still dead. Cosmetic info-dialog feature; the HUD/menu campaign list separately shows progress, so low-impact."

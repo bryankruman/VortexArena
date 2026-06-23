@@ -5,13 +5,13 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 16
   worst_gaps:
-    - "Normal health/armor pickups are not filtered out of Overkill maps (Base blocks ArmorMedium+ArmorBig by default; HealthMega/ArmorMega toggle-off by default); item economy wrong."
-    - "Strength/Shield powerups are not replaced by HMG/RPC superweapon pickups; those superweapons are unobtainable from the map."
-    - "Player-death loot drop is a non-functional entity: it never runs the item spawn pipeline (no Touch handler, no def.ItemInit), so the dropped loot cannot be picked up — it just despawns."
     - "Monsters drop no loot and their normal drop is not suppressed (MonsterDropItem hook chain does not exist in the port)."
     - "Secondary Blaster does not work during the round countdown (Overkill does not subscribe the live PlayerPreThink chain)."
     - "No item-respawn waypoints for surviving health/armor; no OK items injected into the random-items pool (neither hook chain exists)."
-    - "SetWeaponArena('off') and ForbidRandomStartWeapons handlers are dead: no caller fires those hook chains anywhere in the port."
+    - "ForbidRandomStartWeapons handler is dead: FireForbidRandomStartWeapons has no caller anywhere in the port."
+    - "Enable predicate is narrower than Base: missing the !instagib / !weaponarena-gametype / g_mod_balance==\"Overkill\" guards (can double-activate)."
+    - "MUTATOR_ONADD precache_all_playermodels(ok_player) and the g_overkill_items list are never built (player model + random-pool source missing)."
+    - "Mod-name strings (':OK', ', Overkill', SetModname 'Overkill') and the cl_overkill cvar_settemp sync are absent."
 features:
   - id: overkill.enable.predicate
     name: "Mutator enable predicate (g_overkill + guards)"
@@ -33,39 +33,41 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Port enables on g_overkill != 0 only; Base also requires !MUTATOR_IS_ENABLED(mutator_instagib), MapInfo_LoadedGametype.m_weaponarena == false, and cvar_string(\"g_mod_balance\") == \"Overkill\". Port can activate Overkill rules without the Overkill balance/guards, and can double-activate alongside instagib or a weapon-arena gametype."
+      - "Port enables on g_overkill != 0 only; Base also requires !MUTATOR_IS_ENABLED(mutator_instagib), MapInfo_LoadedGametype.m_weaponarena == false, and cvar_string(\"g_mod_balance\") == \"Overkill\". Port can activate Overkill rules without the Overkill balance/guards, and can double-activate alongside instagib or a weapon-arena gametype. UNCHANGED by Wave-2."
     verification:
-      - { kind: code, ref: "OverkillMutator.IsEnabled reads only g_overkill; MutatorActivation.Apply adds when IsEnabled — verified live boot path", result: pass }
+      - { kind: code, ref: "OverkillMutator.IsEnabled reads only g_overkill (OverkillMutator.cs:70-71); MutatorActivation.Apply adds when IsEnabled (MutatorActivation.cs:64) — verified live boot path", result: pass }
     confidence: high
-    notes: "Mutator is registered and activated on the live boot path; only the enable predicate is narrower than Base. Base default for g_overkill is an empty string (declared `string autocvar_g_overkill;`), not literal \"0\"; both are falsey."
+    notes: "Mutator is registered and activated on the live boot path; only the enable predicate is narrower than Base. Base default for g_overkill is an empty string, not literal \"0\"; both are falsey."
   - id: overkill.onadd.precache_and_itemblock
     name: "MUTATOR_ONADD: precache ok_player models, set item mutator-block flags, build g_overkill_items list"
     layer: [authority]
     base_refs:
       - "common/mutators/mutator/overkill/sv_overkill.qh:REGISTER_MUTATOR(ok) MUTATOR_ONADD"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs:Hook (filter cvar reads)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs:OnFilterItemDefinition (the actual block)"
     constants:
-      - { name: "g_overkill_filter_healthmega", base: "0", port: "none", match: false }
-      - { name: "g_overkill_filter_armormedium", base: "1", port: "none", match: false }
-      - { name: "g_overkill_filter_armorbig", base: "1", port: "none", match: false }
-      - { name: "g_overkill_filter_armormega", base: "0", port: "none", match: false }
+      - { name: "g_overkill_filter_healthmega", base: "0", port: "g_overkill_filter_healthmega (default false)", match: true }
+      - { name: "g_overkill_filter_armormedium", base: "1", port: "g_overkill_filter_armormedium (ReadFilterCvar dflt true)", match: true }
+      - { name: "g_overkill_filter_armorbig", base: "1", port: "g_overkill_filter_armorbig (ReadFilterCvar dflt true)", match: true }
+      - { name: "g_overkill_filter_armormega", base: "0", port: "g_overkill_filter_armormega (default false)", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: partial
+      values: faithful
       timing: na
       presentation: missing
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "ok_player models are never precached / forced as the default player model."
-      - "Health/armor ITEM_FLAG_MUTATORBLOCKED flags are never set (the four g_overkill_filter_* cvars are not read anywhere)."
-      - "g_overkill_items list (used by the random-items injection) is never built."
+      - "ok_player models are never precached / forced as the default player model (precache_all_playermodels equivalent absent)."
+      - "g_overkill_items list (the random-items injection source) is never built."
+      - "Mechanism differs: Base ONADD sets ITEM_FLAG_MUTATORBLOCKED on the four items at add-time; the port instead reads the four filter cvars in Hook() and enforces the block per-spawn in the FilterItem hook (overkill.filter row). End behavior (which items are blocked, with which defaults) now matches — but the ONADD spawnflag-blocking and ONREMOVE clear are not modeled."
     verification:
-      - { kind: code, ref: "no precache_all_playermodels / item-block / g_overkill_items equivalent in OverkillMutator; the four g_overkill_filter_* cvars have zero readers in src/", result: fail }
+      - { kind: code, ref: "Hook() reads all four g_overkill_filter_* cvars with correct defaults (OverkillMutator.cs:118-121, ReadFilterCvar 127-131); OnFilterItemDefinition enforces them live (292-295). No precache / g_overkill_items list build.", result: partial }
     confidence: high
-    notes: "Port has no MUTATOR_ONADD/ONREMOVE equivalent for this mutator."
+    notes: "Wave-2 FIX of the item-block half: the four filter cvars are now read (with Base-correct medium/big=1 defaults) and enforced via FilterItem. Player-model precache + g_overkill_items list remain missing; no MUTATOR_ONADD/ONREMOVE seam exists."
   - id: overkill.weapons.unblock
     name: "ok_weapons mutator: unblock the five OK weapons (WEP_FLAG_MUTATORBLOCKED)"
     layer: [authority]
@@ -85,7 +87,7 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No ok_weapons sub-mutator gating the OK weapons behind (g_overkill_weapons || ok). Whether the OK weapons are WEP_FLAG_MUTATORBLOCKED outside Overkill — and unblocked under it — is not enforced via this hook; the OK weapons exist as direct registrations."
+      - "No ok_weapons sub-mutator gating the OK weapons behind (g_overkill_weapons || ok). Whether the OK weapons are WEP_FLAG_MUTATORBLOCKED outside Overkill — and unblocked under it — is not enforced via this hook; the OK weapons exist as direct registrations. UNCHANGED by Wave-2."
     verification:
       - { kind: code, ref: "Ok* weapon classes exist; no ok_weapons mutator / WEP_FLAG_MUTATORBLOCKED gating found", result: partial }
     confidence: low
@@ -111,9 +113,9 @@ features:
     divergence_rationale: "Port checks IsPlayer(target) only and drops Base's explicit (IS_VEHICLE || IS_TURRET) target branch; vehicles/turrets route their own damage and are largely unported, so the player subset is the faithful core. The force-zero keeps the self/frozen/dead guard, the damage-zero is unconditional under keepdamage=0 — both matching Base."
     gaps: []
     verification:
-      - { kind: code, ref: "OnDamageCalculate added at HookOrder.Last; DamageCalculate.Call live at DamageSystem.cs:219; deathtype matched via WeaponNetNameOf == \"blaster\"; guards (self/frozen/dead/keepforce, keepdamage) match Base", result: pass }
+      - { kind: code, ref: "OnDamageCalculate added at HookOrder.Last (OverkillMutator.cs:93); DamageCalculate.Call live at DamageSystem.cs:256; deathtype matched via WeaponNetNameOf == \"blaster\"; guards (self/frozen/dead/keepforce, keepdamage) match Base", result: pass }
     confidence: high
-    notes: "Both keep-cvars default 0, so default OK secondary blaster does no damage/force to others; self-jump preserved. Matches WEP_BLASTER deathtype specifically (the OK secondary routes through the blaster), consistent with Base DEATH_ISWEAPON(...,WEP_BLASTER)."
+    notes: "Both keep-cvars default 0, so default OK secondary blaster does no damage/force to others; self-jump preserved. UNCHANGED by Wave-2 (was already faithful/live)."
   - id: overkill.loot.drop_player
     name: "ok_DropItem on player death (random loot, launched off corpse)"
     layer: [authority]
@@ -123,27 +125,27 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs:OnPlayerDies"
       - "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs:DropItem"
+      - "src/XonoticGodot.Common/Gameplay/Items/StartItem.cs:SpawnLoot"
     constants:
       - { name: "g_overkill_loot_player", base: "armor_small", port: "armor_small", match: true }
       - { name: "g_overkill_loot_player_time", base: "5", port: "5", match: true }
       - { name: "drop_origin_z", base: "+32", port: "+32", match: true }
       - { name: "drop_velocity", base: "'0 0 200' + normalize(att-vic)*500", port: "(0,0,200)+away*500", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
-      timing: partial
-      presentation: missing
+      timing: faithful
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Dropped loot never runs the item spawn pipeline (Base ok_DropItem → Item_Initialise; port StartItem sets item.Touch = ItemPickupRules.ItemTouch + runs def.ItemInit). The port's DropItem hand-rolls a Toss entity with EntFlags.Item but NO Touch handler and NO ItemInit, so it has no model and cannot be picked up — it simply despawns at NextThink. The drop is effectively non-functional as a pickup."
-      - "Port splits the item list literally on spaces; the Base \"random\" keyword (drop any allowed normal item) and the \"\" (disabled) sentinel are not specially handled."
+      - "Minor: the Base \"random\" keyword (drop any allowed normal item) is stubbed to fall back to armor_small (the port's item registry has no filtered normal-item group). The \"\" (disabled) sentinel IS handled (RandomFromList returns null on empty). Default loot is armor_small, so this only affects servers that set g_overkill_loot_player \"random\"."
     verification:
-      - { kind: code, ref: "OnPlayerDies → DropItem; PlayerDies.Call live at DamageSystem.cs:552; DropItem builds an edict that bypasses StartItem/ItemInit (no Touch handler, no model) — compare StartItem.cs:70,131", result: partial }
+      - { kind: code, ref: "OnPlayerDies → DropItem (OverkillMutator.cs:184); PlayerDies.Call live at DamageSystem.cs:589; DropItem now routes through StartItem.SpawnLoot (OverkillMutator.cs:255) — the same MOVETYPE_TOSS loot pipeline thrown weapons use (StartItem.cs:71, SetupLoot 175): real model, Touch=ItemPickupRules.ItemTouch (StartItem.cs:144), despawn timer, anti-instant-pick. Launch math + lifetime defaults match Base.", result: pass }
     confidence: high
-    notes: "Launch math + defaults match; entity construction diverges hard from the item pipeline — the loot is launched but not actually collectible."
+    notes: "MAJOR Wave-2 FIX: the drop is now collectible. Baseline DropItem hand-rolled a Toss edict with no Touch handler / no model that just despawned; it now runs the full StartItem loot pipeline so the loot has a model and a working pickup. Only the rarely-used \"random\" keyword remains a fallback stub."
   - id: overkill.loot.drop_monster
     name: "ok_DropItem on monster death (+ suppress normal drop)"
     layer: [authority]
@@ -163,9 +165,9 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Monsters drop no Overkill loot and their normal drop is not suppressed. No MonsterDropItem hook chain exists in the port (MutatorHooks has no such chain), so there is nothing to subscribe."
+      - "Monsters drop no Overkill loot and their normal drop is not suppressed. No MonsterDropItem hook chain exists in the port (grep MonsterDropItem.Call → zero hits), so there is nothing to subscribe. UNCHANGED by Wave-2."
     verification:
-      - { kind: code, ref: "no MonsterDropItem hook chain or handler anywhere in src/", result: fail }
+      - { kind: code, ref: "no MonsterDropItem hook chain or handler anywhere in src/ (grep MonsterDropItem.Call → 0)", result: fail }
     confidence: high
     notes: "Monsters are themselves largely unported, but the hook chain/handler is absent regardless."
   - id: overkill.respawn.remember_restore_weapon
@@ -189,9 +191,9 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Port records/restores only slot 0: OnPlayerDies stores Inventory.CurrentWeapon(target) into OkLastWeapon[0] and nulls slots 1..MAX_WEAPONSLOTS; Base captures every slot's m_switchweapon (ok_lastwep[MAX_WEAPONSLOTS]). Low practical impact — Overkill loadouts occupy slot 0 only, so slots>0 are Null in Base too — but the per-slot capture is not faithfully reproduced."
+      - "Port records/restores only slot 0: OnPlayerDies stores Inventory.CurrentWeapon(target) into OkLastWeapon[0] and nulls slots 1..MAX_WEAPONSLOTS; Base captures every slot's m_switchweapon (ok_lastwep[MAX_WEAPONSLOTS]). Low practical impact — Overkill loadouts occupy slot 0 only — but the per-slot capture is not faithfully reproduced. UNCHANGED by Wave-2."
     verification:
-      - { kind: code, ref: "OnPlayerDies stores slot 0 only (OverkillMutator.cs:148-150); OnPlayerSpawn restores slot 0 with HMG->MG/RPC->Nex mapping (OverkillMutator.cs:164-172)", result: partial }
+      - { kind: code, ref: "OnPlayerDies stores slot 0 only (OverkillMutator.cs:188-191); OnPlayerSpawn restores slot 0 with HMG->MG/RPC->Nex mapping (OverkillMutator.cs:205-213)", result: partial }
     confidence: high
     notes: "Base PlayerWeaponSelect is folded into the port PlayerSpawn handler (after GiveLoadout); the HMG->MG / RPC->Nex mapping is faithful, slot coverage is slot-0-only."
   - id: overkill.loadout.start_items
@@ -217,9 +219,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "OnSetStartItems added at HookOrder.Last; SetStartItems.Call live at SpawnSystem.cs:669; GiveLoadout also re-applied in OnPlayerSpawn", result: pass }
+      - { kind: code, ref: "OnSetStartItems added at HookOrder.Last (OverkillMutator.cs:99); SetStartItems.Call live at SpawnSystem.cs:711; GiveLoadout also re-applied in OnPlayerSpawn", result: pass }
     confidence: high
-    notes: "Base sets start_weapons = warmup_start_weapons = ok_start_items; the port loadout is a single set so warmup equality is implied but not separately modeled."
+    notes: "Base sets start_weapons = warmup_start_weapons = ok_start_items; the port loadout is a single set so warmup equality is implied but not separately modeled. UNCHANGED by Wave-2 (was already faithful/live)."
   - id: overkill.countdown.blaster
     name: "PlayerPreThink: allow secondary Blaster during round countdown"
     layer: [authority]
@@ -237,9 +239,9 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "During an active-but-not-started round, pressing ATCK2 does not fire the secondary Blaster: Overkill does not subscribe the PlayerPreThink chain (which IS live — PlayerPreThink.Call at GameWorld.cs:988). Players cannot blaster-jump during the countdown, and the button is not consumed."
+      - "During an active-but-not-started round, pressing ATCK2 does not fire the secondary Blaster: Overkill does not subscribe the PlayerPreThink chain (which IS live — PlayerPreThink.Call at GameWorld.cs:1037). Players cannot blaster-jump during the countdown, and the button is not consumed. UNCHANGED by Wave-2."
     verification:
-      - { kind: code, ref: "OverkillMutator subscribes 7 chains, none is PlayerPreThink; the chain itself is live at GameWorld.cs:988", result: fail }
+      - { kind: code, ref: "OverkillMutator subscribes 8 chains (OverkillMutator.cs:93-100), none is PlayerPreThink; the chain itself is live at GameWorld.cs:1037", result: fail }
     confidence: high
     notes: "Only matters in round-based gametypes (e.g. CA/freezetag) run under Overkill; the live seam exists, Overkill simply never wires onto it."
   - id: overkill.filter.items_and_powerup_replace
@@ -247,27 +249,27 @@ features:
     layer: [authority]
     base_refs:
       - "common/mutators/mutator/overkill/sv_overkill.qc:MUTATOR_HOOKFUNCTION(ok, FilterItem)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs:OnFilterItemDefinition"
     constants:
-      - { name: "g_overkill_powerups_replace", base: "1", port: "none", match: false }
-      - { name: "respawntime_superweapon", base: "g_pickup_respawntime_superweapon", port: "none", match: false }
+      - { name: "g_overkill_powerups_replace", base: "1 (mutators.cfg)", port: "g_overkill_powerups_replace (live cvar read)", match: true }
+      - { name: "respawntime_superweapon", base: "g_pickup_respawntime_superweapon", port: "g_pickup_respawntime_superweapon", match: true }
+      - { name: "pickup_anyway", base: "true", port: "PickupAnyway = 1", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "HealthMega/ArmorMedium/ArmorBig/ArmorMega are not filtered from the map (Base blocks ArmorMedium+ArmorBig by default via the filter cvars); item economy diverges."
-      - "item_strength is not replaced by a WEP_OVERKILL_HMG pickup and item_shield is not replaced by a WEP_OVERKILL_RPC pickup; the HMG/RPC superweapons are unobtainable from the map."
-      - "ok_item-flagged loot is not allowed through (no FilterItem subscription at all)."
+      - "Minor: Base copies the original item's full field set (Item_CopyFields) onto the replacement and sets ok_item + lifetime=-1; the port spawns a fresh weapon pickup at the same Origin via StartItem.Spawn with PickupAnyway + the superweapon respawn time. The replacement weapon is allowed back through FilterItem via the classname fall-through (it is not item_strength/shield) rather than via an ok_item flag — functionally equivalent, no recursion. ok_item flag itself is unmodeled (ItemIsLoot stands in for the loot case)."
     verification:
-      - { kind: code, ref: "FilterItemDefinition.Call is live at StartItem.cs:90 and receives the live item edict (so filter AND powerup-replace are both wireable here); OverkillMutator does NOT subscribe it (MeleeOnly/Hook/Nix/Duel/Mayhem do)", result: fail }
+      - { kind: code, ref: "OnFilterItemDefinition subscribed (OverkillMutator.cs:100); FilterItemDefinition.Call live at StartItem.cs:103; receives the live item edict with ClassName already set to CanonicalSpawnFunc (StartItem.cs:79). Block switch matches item_health_mega/armor_medium/armor_big/armor_mega (292-295) using the correct filter cvars. item_strength→okhmg, item_shield→okrpc replacement spawns a real pickup at item.Origin (311-320) gated on g_powerups && PowerupsReplace, else forbids the powerup. ItemSpawnFuncs maps NetName→classname so the matches hit (item_shield via ShieldItem.NetName \"invincible\").", result: pass }
     confidence: high
-    notes: "The port's FilterItemDefinition seam, despite the name, passes the live item entity at the items.qc:1031 FilterItem callsite — Overkill could implement both the filter and the powerup->superweapon copy here; it simply never wires onto it."
+    notes: "MAJOR Wave-2 FIX (missing→faithful/live). Overkill now subscribes FilterItemDefinition: blocks HealthMega/ArmorMedium/ArmorBig/ArmorMega per the filter cvars (medium/big on by default, matching Base), replaces Strength→HMG / Shield→RPC superweapon pickups, and lets ok_item loot through (ItemIsLoot guard). g_overkill_powerups_replace effective default is 1 (mutators.cfg), read live."
   - id: overkill.randomitems.inject_ok_items
     name: "RandomItems_GetRandomItemClassName: weighted OK item/weapon pool"
     layer: [authority]
@@ -286,7 +288,7 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "When random items are enabled under Overkill, the OK item set (g_overkill_items + weapon_okhmg/okrpc with their g_<prefix>_*_probability weights) is not injected into the random roll. The port's RandomItemsMutator.GetRandomItemClassName does NOT fire a mod-injection hook chain (RandomItemsMutator.cs:152 explicitly notes no subscriber is modeled), so there is no chain for Overkill to override."
+      - "When random items are enabled under Overkill, the OK item set (g_overkill_items + weapon_okhmg/okrpc with their g_<prefix>_*_probability weights) is not injected into the random roll. The port's RandomItemsMutator.GetRandomItemClassName does NOT fire a mod-injection hook chain, so there is no chain for Overkill to override. UNCHANGED by Wave-2 (also gated on the missing g_overkill_items list, overkill.onadd row)."
     verification:
       - { kind: code, ref: "no RandomItems_GetRandomItemClassName mutator hook chain; RandomItemsMutator.GetRandomItemClassName always falls to the vanilla pick", result: fail }
     confidence: high
@@ -311,7 +313,7 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No respawn-timer waypoints are shown for HealthMega/ArmorMedium/ArmorBig/ArmorMega under Overkill. No Item_RespawnCountdown / Item_ScheduleRespawn mutator hook chains exist in the port (the item pipeline has its own ScheduleRespawn but no mutator override seam)."
+      - "No respawn-timer waypoints are shown for HealthMega/ArmorMedium/ArmorBig/ArmorMega under Overkill. No Item_RespawnCountdown / Item_ScheduleRespawn mutator hook chains exist in the port. UNCHANGED by Wave-2."
     verification:
       - { kind: code, ref: "no Item_RespawnCountdown / Item_ScheduleRespawn mutator hook chain or Overkill handler in src/", result: fail }
     confidence: high
@@ -335,9 +337,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "OnForbidThrow returns true; ForbidThrowCurrentWeapon.Call live at WeaponThrowing.cs:149,185", result: pass }
+      - { kind: code, ref: "OnForbidThrow returns true (OverkillMutator.cs:324); ForbidThrowCurrentWeapon.Call live at WeaponThrowing.cs:149,185", result: pass }
     confidence: high
-    notes: null
+    notes: "UNCHANGED by Wave-2 (was already faithful/live)."
   - id: overkill.forbid.random_start_weapons
     name: "ForbidRandomStartWeapons -> true"
     layer: [authority]
@@ -356,11 +358,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Handler exists and returns true, but the ForbidRandomStartWeapons hook chain has NO caller anywhere in the port (no ForbidRandomStartWeapons.Call in src/), so it never runs. Instagib/Nix/MeleeOnly subscribe the same dead chain — none of them takes effect either."
+      - "Handler exists and returns true, but the ForbidRandomStartWeapons chain only fires inside FireForbidRandomStartWeapons (MutatorHooks.cs:356-360), which has NO caller anywhere in the port (grep FireForbidRandomStartWeapons → only the definition). So it never runs. Instagib/Nix/MeleeOnly subscribe the same dead chain — none takes effect either. UNCHANGED by Wave-2 (contrast SetWeaponArena, which DID get a live caller)."
     verification:
-      - { kind: code, ref: "grep ForbidRandomStartWeapons.Call across src/ → zero hits; only Add/Remove subscriptions exist", result: fail }
+      - { kind: code, ref: "ForbidRandomStartWeapons.Call only at MutatorHooks.cs:359 inside FireForbidRandomStartWeapons; FireForbidRandomStartWeapons has zero callers in src/", result: fail }
     confidence: high
-    notes: null
+    notes: "Still dead: the spawn path that should call FireForbidRandomStartWeapons (the random-start-weapons branch) never invokes it."
   - id: overkill.set_weapon_arena_off
     name: "SetWeaponArena -> 'off'"
     layer: [authority]
@@ -370,20 +372,19 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs:OnSetWeaponArena"
     constants: []
     status:
-      logic: stub
+      logic: faithful
       values: na
       timing: na
       presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Handler exists and sets args.Arena = \"off\", but the SetWeaponArena hook chain has NO caller anywhere in the port (no SetWeaponArena.Call in src/), so it never runs. Instagib/MeleeOnly/Mayhem/TeamMayhem subscribe the same dead chain — Overkill cannot force weapon-arena off if an arena path is later added."
+    gaps: []
     verification:
-      - { kind: code, ref: "grep SetWeaponArena.Call across src/ → zero hits; only Add/Remove subscriptions exist", result: fail }
+      - { kind: code, ref: "OnSetWeaponArena sets args.Arena = \"off\" and returns false to continue the chain (OverkillMutator.cs:327-331); SetWeaponArena.Call is now LIVE in ComputeStartItems (SpawnSystem.cs:679) and the warmup loadout path (SpawnSystem.cs:892), and the resolved arena drives ExpandWeaponArena. Verified the overkill enable path adds the handler.", result: pass }
     confidence: high
-    notes: null
+    notes: "Wave-2 FIX (dead→live, stub→faithful). The baseline marked this dead — SpawnSystem now calls SetWeaponArena.Call directly on both the live start-items and warmup paths, so Overkill's force-\"off\" is honored, suppressing any configured g_weaponarena. (FireSetWeaponArena wrapper is unused; the direct .Call sites are the live ones.)"
   - id: overkill.naming.mod_strings
     name: "Mod-name strings: BuildMutatorsString ':OK', PrettyString ', Overkill', SetModname 'Overkill'; cl g_overkill cvar_settemp"
     layer: [authority, presentation]
@@ -407,7 +408,7 @@ features:
     divergence_rationale: null
     gaps:
       - "Server browser / scoreboard mutator string does not show ':OK' / ', Overkill'; the mod name is not set to 'Overkill' (no BuildMutatorsString/BuildMutatorsPrettyString/SetModname hook chains or Overkill handlers)."
-      - "Client cl_overkill cvar_settemp(g_overkill,1) sync is absent."
+      - "Client cl_overkill cvar_settemp(g_overkill,1) sync is absent. UNCHANGED by Wave-2."
     verification:
       - { kind: code, ref: "no BuildMutatorsString/SetModname overkill handlers or chains in src/", result: fail }
     confidence: high

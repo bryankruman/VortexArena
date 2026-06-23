@@ -5,12 +5,12 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 16
   worst_gaps:
-    - "radarmap / gettaginfo / animbench / bbox / trace / stuffto / adminmsg / anticheat(cmd) / delrec / database / effectindexdump / make_mapinfo / printstats: not registered as commands (missing)"
-    - "Vote spectator-exclusion is dead: VoteController.IsPlayer never wired in GameWorld (defaults true), so sv_vote_nospectators 2 does not drop spectator ballots; also missing the QC IS_PLAYER||INGAME real-player union"
-    - "vote call is missing the QC timeout_status guard: a vote (other than timein) can be called while a timeout is active, which Base forbids; sv_vote_gamestart pre-match gate also unchecked"
-    - "Vote timelimit-vote bound diverges: port clamps to FloatOr(timelimit_min,0)..FloatOr(timelimit_max,9999) and never registers those cvars, so the effective range is 0..9999 not Base 5..60; map parse also skips ValidateMap/MapInfo_FixName/recent-map + per-command arg restriction (sv_vote_command_restriction_*); movetoX/allready special parsing absent"
-    - "Timeout pause hard-freezes the sim instead of Base slowmo=0.0001 (no inching); no ANNCE_TIMEOUT/PREPARE + no per-second center-print countdown"
-    - "cointoss result is deterministic off the clock LSB, not random() — predictable/biased"
+    - "radarmap / gettaginfo / animbench / bbox / trace / stuffto / adminmsg / anticheat(cmd) / delrec / database / effectindexdump / make_mapinfo / printstats: still not registered as commands (missing)"
+    - "REGRESSION: the new vote 'allready' warmup gate reads VoteController.WarmupStage which is NEVER wired in GameWorld (defaults () => false), so an allready vote is now ALWAYS rejected with 'Game already started' even during warmup — previously it fell through and was votable"
+    - "Wave-2 added the QC timeout_status / game_starttime / IS_CLIENT vote-call guards in VoteController.CmdCall/CmdMaster, but TimeoutActive/GameStartTime/IsClient/WarmupStage/InGame are NONE of them wired in GameWorld.WireCommandsWarmupVoting — the new guard code is present but DEAD (defaults make every new branch a no-op)"
+    - "Timeout slowmo + per-second CENTER_TIMEOUT countdown + ANNCE_PREPARE machinery added to TimeoutController, but ApplySlowmo/CenterPrintBeginning/CenterPrintEnding/AnnouncePrepare sinks are NOT wired in GameWorld — pause is still a hard freeze (IsPaused) with no inching, no countdown center-print, no announce"
+    - "Vote spectator-exclusion remains dead: VoteController.IsPlayer + the new InGame are both unwired (default true/false), so sv_vote_nospectators 2 still never drops spectator ballots"
+    - "map/nextmap vote parse still skips ValidateMap/MapInfo_FixName/recent-map; per-command arg restriction (VoteCommand_checkargs / sv_vote_command_restriction_*) still absent"
 features:
   - id: sv-commands-votes.dispatch.client_parse
     name: "Client command dispatch (cmd <verb>) + privilege split + flood/UTF-8/ban pre-gates"
@@ -40,9 +40,9 @@ features:
     gaps: []
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/ClientCommandSecurityTests.cs", result: pass }
-      - { kind: code, ref: "ClientCommandRegistry.cs:205-219 TryPassFlood strict < semantics; :148-162 minigame partial exempt; :175-189 UTF-8 round-trip; ServerNet 3-gate then Commands.Execute(isServerConsole:false)", result: pass }
+      - { kind: code, ref: "ClientCommandRegistry.cs TryPassFlood strict < semantics; minigame partial exempt; UTF-8 round-trip; ServerNet 3-gate then Commands.Execute(isServerConsole:false)", result: pass }
     confidence: high
-    notes: "VERIFIED. 3 pre-gates (UTF-8 round-trip, Ban_MaybeEnforceBanOnce, per-client flood with strict < semantics + minigame partial exemption) and the CLIENT/SERVER split are ported bit-for-bit and applied on the live net path. FloodExempt set + ClientCommands allowlist match QC reg.qh."
+    notes: "Unchanged by Wave-1/2. 3 pre-gates (UTF-8 round-trip, Ban_MaybeEnforceBanOnce, per-client flood strict < with minigame partial exemption) and the CLIENT/SERVER split are bit-for-bit on the live net path."
 
   - id: sv-commands-votes.dispatch.server_console
     name: "Server-console dispatch (sv_cmd) + builtin command table"
@@ -63,12 +63,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "~13 SERVER_COMMANDS unimplemented (see sv-commands-votes.debug_tools.missing row); the dispatch shell itself is faithful."
+      - "~13 SERVER_COMMANDS still unimplemented (see sv-commands-votes.debug_tools.missing row); the dispatch shell itself is faithful."
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/ServerClientCommandsTests.cs", result: pass }
-      - { kind: code, ref: "Commands.cs:362-400 Execute gate + :440-587 RegisterBuiltins", result: pass }
+      - { kind: code, ref: "Commands.cs Execute gate + RegisterBuiltins", result: pass }
     confidence: high
-    notes: "VERIFIED. Port collapses CLIENT/SERVER/COMMON/GENERIC/BAN registries into one _commands table; the QC privilege boundary is restored by ClientCommandRegistry and the isServerConsole gate in Execute (lines 384-388)."
+    notes: "Unchanged by Wave-1/2. Port collapses CLIENT/SERVER/COMMON/GENERIC/BAN registries into one _commands table; the QC privilege boundary is restored by ClientCommandRegistry and the isServerConsole gate in Execute."
 
   - id: sv-commands-votes.vote.call
     name: "vote call — open a whitelisted call-vote (guard chain + caller auto-yes + cooldown)"
@@ -79,12 +79,12 @@ features:
       - "src/XonoticGodot.Server/VoteController.cs:CmdCall"
     constants:
       - { name: "sv_vote_call", base: "1", port: "1 (cvar)", match: true }
-      - { name: "sv_vote_timeout", base: "24", port: "24 (cvar); fallback const 30", match: false }
+      - { name: "sv_vote_timeout", base: "24", port: "24 (cvar); fallback const now 24", match: true }
       - { name: "sv_vote_wait", base: "120", port: "120 (cvar)", match: true }
       - { name: "sv_vote_limit", base: "160", port: "160 (cvar)", match: true }
     status:
       logic: partial
-      values: partial
+      values: faithful
       timing: faithful
       presentation: partial
       audio: missing
@@ -92,16 +92,14 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "MISSING the QC timeout_status guard: VoteCommand_call rejects calling any vote except literally 'timein' while a timeout is active; the port's CmdCall has no timeout check, so a player can open an arbitrary vote mid-timeout."
-      - "sv_vote_gamestart pre-match gate not checked: QC rejects calling a vote before game_starttime unless sv_vote_gamestart; the port allows it (CmdCall has no time<game_starttime branch)."
-      - "MISSING the !IS_CLIENT(caller) 'Only connected clients can vote' guard (low impact: the port's caller is always a connected client)."
-      - "VoteController.DefaultTimeout fallback is 30s vs Base sv_vote_timeout default 24s (only used if the cvar is unset)."
+      - "Wave-2 ADDED the QC gate chain in the correct order (sv_vote_gamestart/game_starttime, IS_CLIENT, timeout_status && cmd!='timein') but the predicates are UNWIRED in GameWorld: VoteController.TimeoutActive defaults () => false, GameStartTime defaults () => 0f (so Now < 0 is never true), IsClient defaults _ => true. Net effect: the timeout-active guard and the pre-match game_starttime guard never fire — the new code is present but DEAD on the live path."
+      - "MISSING the !IS_CLIENT(caller) guard in effect (IsClient unwired, default true) — low impact, the caller is generally already connected."
       - "ANNCE_VOTE_CALL announce + the networked Nagger vote HUD are not emitted by this core (broadcast text only)."
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/ServerInfraTests.cs:Vote_CallAndPass_SinglePlayerAutoMajority", result: pass }
-      - { kind: code, ref: "VoteController.cs:116-162 CmdCall — no timeout_status / game_starttime branch (cf. vote.qc:1008-1027)", result: fail }
+      - { kind: code, ref: "VoteController.cs:144-158 new gamestart/IsClient/timeout_status branches present; GameWorld.cs:682-687 wires Roster/FindPlayer/Broadcast/WarmupOrIntermission ONLY — TimeoutActive/GameStartTime/IsClient never assigned (grep 'Voting.TimeoutActive=' -> no match)", result: fail }
     confidence: high
-    notes: "Downgraded logic faithful->partial: the timeout-active and game_starttime gates are both absent. Voteban check, sv_vote_call, already-called, spectator gate, wait cooldown, nasty-char + whitelist parse, caller auto-yes are present and live."
+    notes: "FIX: DefaultTimeout const 30->24 now matches Base sv_vote_timeout (values upgraded partial->faithful). The timeout/gamestart logic gaps are now 'code exists but unwired/dead' rather than 'absent'; behaviorally unchanged from baseline. Voteban check, sv_vote_call, already-called, spectator gate, wait cooldown, nasty-char + whitelist parse, caller auto-yes remain present and live."
 
   - id: sv-commands-votes.vote.parse_whitelist
     name: "VoteCommand_parse — whitelist match, nasty-char sanitize, command rewriting"
@@ -120,11 +118,13 @@ features:
       - { name: "nasty chars", base: "; \\n \\r $", port: "; \\n \\r $", match: true }
       - { name: "map/chmap -> gotomap normalize", base: "VoteCommand_checkreplacements", port: "ApplyReplacements", match: true }
       - { name: "fraglimit range", base: "0..999999", port: "0..999999", match: true }
-      - { name: "timelimit range", base: "timelimit_min(5)..timelimit_max(60)", port: "FloatOr(timelimit_min,0)..FloatOr(timelimit_max,9999); cvars never registered -> effective 0..9999", match: false }
+      - { name: "timelimit range", base: "timelimit_min(5)..timelimit_max(60)", port: "FloatOr(timelimit_min,5)..FloatOr(timelimit_max,60) — fallbacks now match Base", match: true }
+      - { name: "kick rewrite form", base: "kick # <index> <reason>", port: "kick # <index> <reason>", match: true }
+      - { name: "kickban rewrite form", base: "kickban # <index> <bantime> <masksize> ~", port: "kickban # <index> g_ban_default_bantime g_ban_default_masksize ~", match: true }
       - { name: "restart rewrite", base: "defer 1 restart", port: "defer 1 restart", match: true }
     status:
       logic: partial
-      values: partial
+      values: faithful
       timing: na
       presentation: na
       audio: na
@@ -132,16 +132,14 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "timelimit vote bound is wrong unless the server cfg sets timelimit_min/max: the port reads them via FloatOr with fallbacks 0 and 9999, and never registers the Base defaults (5 / 60). With an un-set cvar store the votable range is 0..9999 vs Base 5..60."
-      - "map/nextmap parse does not run ValidateMap/MapInfo_FixName nor the sv_vote_override_mostrecent recent-map block: an invalid or recently-played map name is accepted into the vote."
+      - "REGRESSION: the new 'allready' case rejects unless WarmupStage() is true, but VoteController.WarmupStage is NEVER wired in GameWorld (defaults () => false) — so an allready vote is now ALWAYS rejected with 'Game already started. Use the resetmatch command...' even during warmup. Baseline let it fall through (votable, though un-gated). Net: allready voting is now broken in the common warmup case."
+      - "map/nextmap parse still does not run ValidateMap/MapInfo_FixName nor the sv_vote_override_mostrecent recent-map block: an invalid or recently-played map name is accepted into the vote."
       - "No per-command arg restriction (VoteCommand_checkargs / sv_vote_command_restriction_<cmd> charlist + min-arg count) is applied."
-      - "movetoauto/movetored/... and the warmup-only 'allready' special parse branches are absent (fall through to verbatim pass-through; allready is NOT gated to warmup as QC requires)."
-      - "kick/kickban parse resolves the victim by name and emits `kick <name>` rather than the QC `kick # <index> ...` form, and kickban does not append the g_ban_default_bantime/masksize/~ arguments."
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/ServerInfraTests.cs:Vote_CheckNasty_RejectsInjection / Vote_CheckInList_WholeWordAndMapNormalization", result: pass }
-      - { kind: code, ref: "VoteController.cs:554-562 timelimit FloatOr 0/9999; :528-545 map/nextmap no ValidateMap; :516-527 kick by-name", result: fail }
+      - { kind: code, ref: "VoteController.cs:605-613 timelimit FloatOr 5/60 (FIXED); :564-577 kick/kickban now '# <index>' form (FIXED); :550-562 movetoX cases added (FIXED); :619-624 allready gated on unwired WarmupStage() (REGRESSION); :579-587 map still no ValidateMap", result: fail }
     confidence: high
-    notes: "Sanitizer + whitelist + fraglimit/restart rewrites match QC. Corrected the timelimit constant to match:false (FloatOr fallback 0/9999 vs Base 5/60, cvars unregistered). Map-validation, per-arg restriction, allready-warmup gate, and the QC kick/kickban index form are the missing pieces."
+    notes: "FIXES: timelimit fallback 0/9999 -> 5/60 (now matches Base, no wiring needed — pure const default); kick/kickban now emit the QC 'kick # <index> ...' form with kickban appending g_ban_default_bantime/masksize/~; movetoauto/movetored/... special parse cases added. REGRESSION: allready warmup gate added but its predicate is unwired -> always rejects. STILL OPEN: ValidateMap/recent-map and checkargs/sv_vote_command_restriction."
 
   - id: sv-commands-votes.vote.count
     name: "VoteCount — tally, thresholds, spectator exclusion, accept/reject/timeout resolution"
@@ -166,13 +164,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "VoteController.IsPlayer is never wired in GameWorld (defaults to _ => true): the realPlayers subset == all clients, so the spectator-exclusion branch (!spectators_allowed && realPlayers>0) never actually drops spectator ballots under sv_vote_nospectators 2."
-      - "Real-player count uses only IsPlayer(it); QC counts IS_PLAYER(it) || INGAME(it) (a player queued/joined this round also counts). Moot while IsPlayer is unwired, but a divergence once it is."
+      - "Wave-2 changed the real-player predicate to IsPlayer(it) || InGame(it) (correct QC IS_PLAYER||INGAME shape) but BOTH predicates are unwired in GameWorld: IsPlayer defaults _ => true and InGame defaults _ => false. realPlayers therefore still == all clients, so the spectator-exclusion branch (!spectators_allowed && realPlayers>0) STILL never drops spectator ballots under sv_vote_nospectators 2."
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/ServerInfraTests.cs:Vote_Reject_WhenMajorityNo", result: pass }
-      - { kind: code, ref: "GameWorld.cs grep 'Voting.IsPlayer' -> no match (unwired); Timeout.IsPlayerOf IS wired at :693", result: fail }
+      - { kind: code, ref: "VoteController.cs:384 real = IsPlayer(it) || InGame(it); GameWorld.cs grep 'Voting.IsPlayer'/'Voting.InGame' -> no match (both unwired)", result: fail }
     confidence: high
-    notes: "0-player auto-accept, early accept/reject, of-voted timeout, master playerlimit guard, threshold math all faithful. liveness downgraded to partial: the spectator-exclusion path is reachable code but dead in effect because its predicate (IsPlayer) is unwired."
+    notes: "No effective change from baseline. The IS_PLAYER||INGAME union was added (closes the moot count-divergence note) but the spectator-exclusion path is still dead because its predicate is unwired. Threshold math, 0-player auto-accept, early accept/reject, of-voted timeout, master playerlimit guard all remain faithful."
 
   - id: sv-commands-votes.vote.resolve
     name: "VoteAccept / VoteReject / VoteTimeout / VoteStop + VoteThink"
@@ -204,9 +201,9 @@ features:
       - "ANNCE_VOTE_ACCEPT / ANNCE_VOTE_FAIL announcer cues are not played (presentation/audio handled in host, not invoked here)."
       - "VoteSpam drops the QC 'didn't have to vote' wording variant (always prints 'didn't vote'); cosmetic broadcast-text divergence."
     verification:
-      - { kind: code, ref: "GameWorld.cs:926 Voting.Think() pumped per server frame; VotePassed -> Commands.Execute; VoteController.cs:415-445 Accept/Reject/Timeout/Spam", result: pass }
+      - { kind: code, ref: "GameWorld.cs:975 Voting.Think() pumped per server frame; VotePassed -> Commands.Execute; VoteController.cs Accept/Reject/Timeout/Spam", result: pass }
     confidence: high
-    notes: "On pass, master vote grants master and never runs a command; normal vote runs parsed command through the bus; caller wait reward/penalty (0 / sv_vote_stop) match QC."
+    notes: "Unchanged by Wave-1/2. On pass, master vote grants master and never runs a command; normal vote runs parsed command through the bus; caller wait reward/penalty (0 / sv_vote_stop) match QC."
 
   - id: sv-commands-votes.vote.master
     name: "vote master — login / do <cmd> / call master-vote"
@@ -229,16 +226,16 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "sv_vote_master_ids (auto-login by crypto fingerprint on connect) is not honored."
-      - "'master do <cmd>' runs the parsed command immediately via VotePassed; QC runs it through localcmd too but the parsed 'restart' rewrite (defer 1) is shared via Parse, so this is mostly faithful. The master-vote call branch also omits the timeout_status guard (same gap as vote.call)."
+      - "sv_vote_master_ids (auto-login by crypto fingerprint on connect) is still not honored."
+      - "Wave-2 ADDED the timeout_status guard to the master-vote-call branch (CmdMaster), but VoteController.TimeoutActive is unwired (defaults () => false) so the guard is DEAD — same root cause as vote.call."
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/ServerInfraTests.cs:Vote_MasterLogin_GrantsAndDoRuns", result: pass }
-      - { kind: code, ref: "VoteController.cs:164-221 CmdMaster — master-vote branch lacks timeout_status guard (cf. vote.qc:1170-1173)", result: fail }
+      - { kind: code, ref: "VoteController.cs:237-238 master-vote timeout_status guard present; GameWorld.cs does not wire Voting.TimeoutActive (dead)", result: fail }
     confidence: high
-    notes: "login (password), do (whitelist = commands+master_commands), and call-master-vote branches all present; master status persists across a vote reset like QC .vote_master. Logic downgraded to partial for the missing master-ids and the master-vote-call timeout guard."
+    notes: "login (password), do (whitelist = commands+master_commands), and call-master-vote branches all present and live; master status persists across a vote reset like QC .vote_master. The new master-vote timeout guard is present-but-dead; master-ids still absent."
 
   - id: sv-commands-votes.timeout.state_machine
-    name: "timeout / timein — LEADTIME→ACTIVE→resume pause with per-player allowance"
+    name: "timeout / timein — LEADTIME->ACTIVE->resume pause with per-player allowance"
     layer: [authority]
     base_refs:
       - "server/command/common.qc:CommonCommand_timeout"
@@ -248,30 +245,31 @@ features:
       - "src/XonoticGodot.Server/TimeoutController.cs:CallTimeout"
       - "src/XonoticGodot.Server/TimeoutController.cs:CallTimein"
       - "src/XonoticGodot.Server/TimeoutController.cs:Think"
+      - "src/XonoticGodot.Server/TimeoutController.cs:EmitCountdown"
     constants:
       - { name: "sv_timeout", base: "0", port: "0 (cvar)", match: true }
       - { name: "sv_timeout_length", base: "120", port: "120 (cvar)", match: true }
       - { name: "sv_timeout_number", base: "2", port: "2 (cvar)", match: true }
       - { name: "sv_timeout_leadtime", base: "4", port: "4 (cvar)", match: true }
       - { name: "sv_timeout_resumetime", base: "3", port: "3 (cvar)", match: true }
-      - { name: "TIMEOUT_SLOWMO_VALUE", base: "0.0001 (slowmo)", port: "hard freeze (IsPaused)", match: false }
+      - { name: "TIMEOUT_SLOWMO_VALUE", base: "0.0001 (slowmo)", port: "0.0001 const exists (SlowmoValue) but ApplySlowmo sink unwired -> hard freeze in effect", match: false }
     status:
       logic: faithful
       values: partial
       timing: partial
       presentation: missing
       audio: missing
-      liveness: live
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Pause is a hard freeze (IsPaused treated like game_stopped) rather than Base slowmo=0.0001 extreme slow-motion: players cannot inch during the pause as they can in Base."
-      - "No ANNCE_TIMEOUT / ANNCE_PREPARE announcer cues and no per-second CENTER_TIMEOUT_BEGINNING/ENDING countdown center-print (broadcast text only)."
+      - "Wave-2 ADDED slowmo machinery (SlowmoValue 0.0001 const + ApplySlowmo sink + OrigSlowmo capture/restore) to TimeoutController.Think, but ApplySlowmo is NOT wired in GameWorld and the world's GameStopped still includes Timeout.IsPaused (a hard freeze). So the engine slowmo cvar is never set and players still cannot inch during the pause — the slowmo gap is unchanged (code present but dead)."
+      - "Wave-2 ADDED per-second CENTER_TIMEOUT_BEGINNING/ENDING center-print + ANNCE_PREPARE machinery (EmitCountdown firing CenterPrintBeginning/CenterPrintEnding/AnnouncePrepare), but those sinks are NOT wired in GameWorld -> no countdown center-print and no announce cue are produced (broadcast text only). Presentation/audio still missing in effect."
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/ServerInfraTests.cs:Timeout_LeadThenPauseThenResume", result: pass }
-      - { kind: code, ref: "GameWorld.cs:693 Timeout.IsPlayerOf wired; Timeout.Think() pumped per frame; TimeoutController.cs:73-98 full guard chain", result: pass }
+      - { kind: code, ref: "GameWorld.cs:734-738 wires Timeout.VoteActive/Warmup/GameStartTime/IsPlayerOf/Broadcast ONLY; grep 'Timeout.ApplySlowmo'/'Timeout.CenterPrint'/'Timeout.AnnouncePrepare' -> no match; GameWorld.cs:1003 GameStopped still includes Timeout.IsPaused (hard freeze)", result: fail }
     confidence: high
-    notes: "VERIFIED. Guard chain (no vote, not warmup unless allowed, not pre-game, allowance, must-be-player via the WIRED IsPlayerOf, not-too-late), early-resume shortening, per-player allowance all faithful. Slowmo-vs-freeze + missing announce/centerprint are the gaps."
+    notes: "No effective change from baseline. The slowmo + countdown + announce machinery now EXISTS in TimeoutController but every host sink is unwired (dead), so the pause is still a hard freeze with no inching, no center-print countdown, no ANNCE_PREPARE. liveness downgraded to partial (the new presentation/slowmo paths are reachable code but dead in effect). Guard chain, early-resume shortening, per-player allowance, IsPlayerOf-wired must-be-player check all remain faithful and live."
 
   - id: sv-commands-votes.ban.ip_id_masks
     name: "Ban IP/idfp mask derivation + IsClientBanned + idmode"
@@ -299,7 +297,7 @@ features:
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/ServerInfraTests.cs:Bans_GetClientIp_* / Bans_IdMode_* / Bans_CryptoIdBan_AlwaysWins", result: pass }
     confidence: high
-    notes: "Crypto-id ban always wins; idmode IP-ban-only-catches-anonymous; local/bot addresses rejected. Matches QC."
+    notes: "Unchanged by Wave-1/2. Crypto-id ban always wins; idmode IP-ban-only-catches-anonymous; local/bot addresses rejected. Matches QC."
 
   - id: sv-commands-votes.ban.insert_persist
     name: "Ban_Insert / Ban_Delete / Ban_View + g_banned_list persistence + KickBan + enforce"
@@ -335,7 +333,7 @@ features:
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/ServerInfraTests.cs:Bans_InsertAndCheck_ByIp / Bans_Delete_RemovesBan / Bans_SaveLoad_RoundTripsThroughCvar", result: pass }
     confidence: high
-    notes: "Prolong-never-shorten, soonest-expiring eviction (refuse if victim longer), v1 round-trip, unban #N index stability all faithful."
+    notes: "Unchanged by Wave-1/2. Prolong-never-shorten, soonest-expiring eviction, v1 round-trip, unban #N index stability all faithful."
 
   - id: sv-commands-votes.ban.sync_online
     name: "Online cross-server ban-list sync (uri_get / g_ban_sync_*)"
@@ -360,7 +358,7 @@ features:
       - "No cross-server ban sync: bans are local-only; banlist providers/trusted-servers cvars are inert."
     verification: []
     confidence: high
-    notes: "Default g_ban_sync_uri is empty in Base too, so default-config behavior is unaffected; only servers that configure sync diverge."
+    notes: "Unchanged. Default g_ban_sync_uri is empty in Base too, so default-config behavior is unaffected; only servers that configure sync diverge."
 
   - id: sv-commands-votes.ban.prefix_lists
     name: "mute / playban / voteban prefix-list bans (g_chatban/playban/voteban_list)"
@@ -373,8 +371,10 @@ features:
       - "src/XonoticGodot.Server/Bans.cs:PlayerInList"
       - "src/XonoticGodot.Server/Bans.cs:AddToList"
       - "src/XonoticGodot.Server/Bans.cs:RemoveFromList"
+      - "src/XonoticGodot.Server/Bans.cs:IsPlayBanned"
       - "src/XonoticGodot.Server/Commands.cs:CmdMute"
       - "src/XonoticGodot.Server/Commands.cs:CmdPlayBan"
+      - "src/XonoticGodot.Server/Commands.cs:CmdJoin"
     constants:
       - { name: "g_chatban_list/g_playban_list/g_voteban_list", base: "\"\"", port: "cvars", match: true }
     status:
@@ -386,12 +386,12 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "playban does not move the player into a minigame when g_playban_minigames is set (sets FragsSpectator only)."
+    gaps: []
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/ServerInfraTests.cs:Bans_PrefixList_MuteMatchesByIpAndId", result: pass }
+      - { kind: code, ref: "Commands.cs:1455-1465 CmdPlayBan now PutObserverInServer + (g_playban_minigames) Minigames.Part; :1101-1112 CmdJoin Join_Try playban gate", result: pass }
     confidence: high
-    notes: "Prefix (findinlist_abbrev) matching by IP and crypto id, dedup add, rebuild-on-remove all faithful; mute sets live Player.Muted, playban forces spectate. The voteban_list is consumed live by VoteController.CmdCall/CmdSelect."
+    notes: "FIX: playban now runs the REAL observer transition (ClientManager.PutObserverInServer) instead of only flipping FRAGS_SPECTATOR, AND parts the player from any in-progress minigame when g_playban_minigames (QC part_minigame). The load-bearing QC Join_Try playban gate was also added to CmdJoin (a non-INGAME g_playban_list client is refused the join). Prefix matching, dedup add, rebuild-on-remove, live Player.Muted, voteban consumed by VoteController all remain faithful."
 
   - id: sv-commands-votes.common.info_commands
     name: "who / time / records / rankings / ladder / lsmaps / printmaplist / teamstatus / info / cvar_changes"
@@ -408,7 +408,7 @@ features:
       - "src/XonoticGodot.Server/Commands.cs:CmdCvarChanges"
       - "src/XonoticGodot.Server/CommandReplies.cs"
     constants:
-      - { name: "sv_status_privacy", base: "cvar (who hides ip/crypto)", port: "not honored", match: false }
+      - { name: "sv_status_privacy", base: "cvar (who hides ip/crypto)", port: "not honored (who gates address behind IsServerConsole only)", match: false }
     status:
       logic: partial
       values: partial
@@ -419,12 +419,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "who omits the ping / packetloss / jointime / crypto_id columns and the sv_status_privacy hiding (only prints index/name/team/bot/address; address shown only on server console)."
-      - "time prints only the sim clock (CmdTime is a one-liner) — missing framestart/realtime/hires/uptime/localtime/gmtime readouts."
+      - "who still omits the ping / packetloss / jointime / crypto_id columns and the sv_status_privacy hiding (only prints index/name/team/bot/address; address shown only on server console)."
     verification:
-      - { kind: code, ref: "Commands.cs:1499-1536 CmdWho/CmdTime/CmdCvarChanges; :577-581 records/rankings/lsmaps/printmaplist/ladder via Replies", result: pass }
+      - { kind: code, ref: "Commands.cs:1567-1581 CmdTime now prints time/frame start/realtime/uptime/localtime/gmtime (FIXED); CmdWho still reduced-column; records/rankings/lsmaps/printmaplist/ladder via Replies", result: pass }
     confidence: high
-    notes: "VERIFIED. records/rankings/ladder/lsmaps/printmaplist/info/cvar_changes/cvar_purechanges present and live via CommandReplies; who/time are reduced-column ports. who DOES gate address behind ctx.IsServerConsole (a partial sv_status_privacy approximation)."
+    notes: "FIX: time now prints the multi-readout block (time, frame start, realtime, uptime, localtime, gmtime) mapping the sim clock + host process clock, closing the baseline 'one-liner sim clock only' gap. records/rankings/ladder/lsmaps/printmaplist/info/cvar_changes/cvar_purechanges remain present and live via CommandReplies. who is still a reduced-column port (sv_status_privacy approximated only by the IsServerConsole address gate)."
 
   - id: sv-commands-votes.common.cointoss
     name: "cointoss — random coin flip broadcast"
@@ -433,22 +432,24 @@ features:
       - "server/command/sv_cmd.qc:GameCommand_cointoss"
     port_refs:
       - "src/XonoticGodot.Server/Commands.cs:CmdCoinToss"
-    constants: []
+    constants:
+      - { name: "default labels", base: "^1HEADS / ^4TAILS", port: "^1HEADS / ^4TAILS", match: true }
+      - { name: "custom-option prefix", base: "^7 on argv(1)/argv(2)", port: "^7 on Arg(1)/Arg(2)", match: true }
+      - { name: "flip source", base: "random() > 0.5 -> result1", port: "Prandom.Float() > 0.5 -> result1", match: true }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: na
       presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Result is derived deterministically from the sim-clock millisecond LSB ((int)(time*1000) & 1) rather than random(): predictable and biased, not a fair flip."
+    gaps: []
     verification:
-      - { kind: code, ref: "Commands.cs:966-976 deterministic clock-LSB flip", result: fail }
+      - { kind: code, ref: "Commands.cs:990-1004 CmdCoinToss uses Prandom.Float() (PCG-XSH-RR, unbiased) with ^1HEADS/^4TAILS defaults and ^7 custom prefixes; QC sv_cmd.qc:491-493 match", result: pass }
     confidence: high
-    notes: "VERIFIED. Broadcasts the chosen label like Base (default HEADS/TAILS); only the randomness source diverges (headless-determinism artifact, not yet marked intended)."
+    notes: "FIX: the deterministic clock-LSB flip ((int)(time*1000)&1) is replaced with Common.Math.Prandom.Float() > 0.5f (a proper unbiased PCG PRNG = QC random()), AND the default labels are corrected to QC's ^1HEADS/^4TAILS with the ^7-prefixed custom-option form. The 'predictable/biased' defect is gone and presentation now matches Base. (Prandom is deterministic-per-seed for client prediction, but the seed is unpredictable so the flip is fair — not the old clock artifact.)"
 
   - id: sv-commands-votes.admin.teamplay_match
     name: "allready / resetmatch / lockteams / unlockteams / shuffleteams / moveplayer / allspec / nospectators / gametype / extendmatchtime / reducematchtime"
@@ -458,13 +459,16 @@ features:
       - "server/command/sv_cmd.qc:GameCommand_lockteams"
       - "server/command/sv_cmd.qc:GameCommand_moveplayer"
       - "server/command/sv_cmd.qc:GameCommand_shuffleteams"
+      - "server/command/sv_cmd.qc:changematchtime"
     port_refs:
       - "src/XonoticGodot.Server/Commands.cs:CmdAllReady"
       - "src/XonoticGodot.Server/Commands.cs:CmdLockTeams"
       - "src/XonoticGodot.Server/Commands.cs:CmdMovePlayer"
       - "src/XonoticGodot.Server/Commands.cs:CmdShuffleTeams"
+      - "src/XonoticGodot.Server/Commands.cs:ChangeMatchTime"
     constants:
-      - { name: "extend/reduce step", base: "timelimit_increment cvar (default 5 min)", port: "fixed 60s (1 min)", match: false }
+      - { name: "extend/reduce step", base: "timelimit_increment/decrement (default 5 min)", port: "FloatOr(timelimit_increment/decrement,5)*60s", match: true }
+      - { name: "changematchtime clamp", base: "[timelimit_min,timelimit_max]*60, mi>=10, +cur offset, unlimited/min/max bails", base_alt: "sv_cmd.qc:48", port: "full QC clamp ported", match: true }
     status:
       logic: faithful
       values: partial
@@ -475,12 +479,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "shuffleteams uses a deterministic round-robin over a stable order rather than QC FOREACH_CLIENT_RANDOM (not randomized)."
-      - "extend/reducematchtime step a fixed 60s rather than reading the QC timelimit_increment/decrement cvar."
+      - "shuffleteams still uses a deterministic round-robin over a stable order rather than QC FOREACH_CLIENT_RANDOM (not randomized)."
     verification:
-      - { kind: code, ref: "Commands.cs:659-672 ChangeMatchTime fixed 60s; :998-1017 CmdShuffleTeams round-robin", result: pass }
+      - { kind: code, ref: "Commands.cs:451-455 reduce/extendmatchtime read timelimit_increment/decrement*60 (FIXED); :662-690 ChangeMatchTime replicates QC changematchtime clamp (FIXED); :998-1017 CmdShuffleTeams round-robin (still non-random)", result: pass }
     confidence: medium
-    notes: "Team admin verbs route to the live Teamplay/Clients systems; behavior is faithful in shape, with the randomness/step-size value deviations noted."
+    notes: "FIX: extend/reducematchtime now read timelimit_increment/decrement (default 5 min) instead of a fixed 60s, and ChangeMatchTime now replicates the full QC changematchtime clamp (mi>=10, +current-time offset, [min,max]*60 bounds, unlimited/already-min/already-max bails). values upgraded toward faithful; the only remaining value/logic deviation is shuffleteams' non-random round-robin."
 
   - id: sv-commands-votes.debug_tools.missing
     name: "radarmap / gettaginfo / animbench / bbox / trace / stuffto / adminmsg / anticheat(cmd) / delrec / database / effectindexdump / make_mapinfo / printstats"
@@ -505,8 +508,7 @@ features:
     gaps:
       - "radarmap is not registered: no in-game radar-image (XPM) generation for the minimap."
       - "gettaginfo / animbench / bbox / trace / stuffto / adminmsg / anticheat / delrec / database / effectindexdump / make_mapinfo / printstats console verbs are unimplemented (no Register() calls)."
-      - "No Base 'getmodel' command exists; the unit hint's getmodel maps to no Base symbol (closest is gettaginfo)."
     verification:
-      - { kind: code, ref: "Commands.cs grep radarmap|gettaginfo|stuffto|adminmsg|anticheat -> no Register() calls", result: fail }
+      - { kind: code, ref: "Commands.cs grep Register(\"radarmap|gettaginfo|stuffto|adminmsg|anticheat...\") -> no matches", result: fail }
     confidence: high
-    notes: "Most are offline-mapper / admin-debug tools (radarmap is #ifdef RADARMAP). NOTE: the anticheat DETECTION subsystem IS ported (src/XonoticGodot.Server/AntiCheat.cs — the QC anticheat.qc Mean detectors run live); only the `sv_cmd anticheat` report-generation COMMAND is absent. Not on the live match path, but absent."
+    notes: "Unchanged by Wave-1/2. Most are offline-mapper / admin-debug tools (radarmap is #ifdef RADARMAP). The anticheat DETECTION subsystem IS ported (AntiCheat.cs runs live); only the `sv_cmd anticheat` report-generation COMMAND is absent. Not on the live match path, but absent."

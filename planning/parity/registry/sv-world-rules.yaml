@@ -3,15 +3,15 @@ category: server
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-22"
 summary:
-  feature_count: 18
+  feature_count: 17
   worst_gaps:
-    - "Post-warmup/restart countdown is 5s, not Base's RESTART_COUNTDOWN=10s."
-    - "g_start_delay pre-match join window missing: dedicated servers lose the 15s 'everyone joins first' delay; match starts immediately."
-    - "Ready-majority counts bots and the whole roster (ceil) instead of humans only (rint, min factor 0.5) — warmup may never end on a bot-filled server."
-    - "No minplayers / sv_teamnagger gate on ending warmup; COUNTDOWN_STOP_MINPLAYERS/BADTEAMS never sent."
-    - "sv_ready_restart_after_countdown unimplemented and default inverted (port 1, Base 0): map always resets at countdown start."
-    - "g_warmup_limit default is -1 in the port but 180 in Base xonotic-server.cfg: default-config warmup never times out."
     - "serverflags (SERVERFLAG_ALLOW_FULLBRIGHT / SERVERFLAG_FORBID_PICKUPTIMER) from readlevelcvars not ported: sv_allow_fullbright / sv_forbid_pickuptimer have no server feed."
+    - "g_warmup_limit default is -1 in the port but 180 in Base xonotic-server.cfg: default-config warmup never times out."
+    - "sv_ready_restart_after_countdown unimplemented and default inverted (port 1, Base 0): map always resets at countdown start."
+    - "ReadyCount minplayers/badteams abort path + COUNTDOWN_STOP_MINPLAYERS/BADTEAMS notifications coded but DEAD: MapMinPlayers/OnCountdownStop/TimeoutActive seams are never wired by the host (MinPlayers=0, badteams hardcoded false), so the countdown-abort-to-warmup never fires."
+    - "g_start_delay logic now live but the cvar is unregistered, so the dedicated-server 15s join window collapses to 0 (effective value always 0)."
+    - "Campaign 3s ready-restart countdown + teamplay_lockonrestart team-lock coded (CampaignCountdown/OnLockTeams) but DEAD: CampaignActive is never set, teamplay_lockonrestart is unregistered + OnLockTeams unwired."
+    - "RandomSeed / PingPLReport / animated-lightstyle worldspawn entities and max_shot_distance per-map recompute still absent (unchanged by Wave 1/2)."
 features:
   - id: sv-world-rules.boot.worldspawn
     name: "worldspawn map-init bookkeeping"
@@ -78,7 +78,7 @@ features:
       - { name: "g_warmup_limit", base: "180 (xonotic-server.cfg)", port: "-1 (Cvars.cs:124)", match: false }
       - { name: "g_warmup_majority_factor", base: "0.8", port: "0.8", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: partial
       timing: faithful
       presentation: na
@@ -88,11 +88,11 @@ features:
     divergence_rationale: null
     gaps:
       - "g_warmup_limit default is -1 in the port but 180 in Base xonotic-server.cfg: default-config warmup never times out."
-      - "No g_warmup>1 'minimum N players (incl bots)' mode and no map_minplayers resolution (g_warmup -1 lower-bound) — warmup_limit -1 'wait for players' lower-bound logic is absent."
+      - "map_minplayers resolution is only partially live: the g_warmup>1 'minimum N players (incl bots)' branch works (ResolveMinPlayers uses the cvar value), but the g_warmup<0 lower-bound map minimum comes from the MapMinPlayers host seam which is never wired (returns 0), so the '-1 = map-set minimum' lower bound is inert."
     verification:
-      - { kind: code, ref: "WarmupController.Begin/ResolveWarmupLimit vs readlevelcvars:2199-2213; xonotic-server.cfg:37 (180) vs Cvars.cs:124 (-1)", result: partial }
+      - { kind: code, ref: "WarmupController.Begin (cs:142-155, campaign/g_warmup<0||>1->limit -1 / ==1->ResolveWarmupLimit) + ResolveMinPlayers vs readlevelcvars:2199-2213; g_start_delay path live; xonotic-server.cfg:37 (180) vs Cvars.cs:124 (-1); MapMinPlayers seam unwired (grep: no Warmup.MapMinPlayers setter)", result: partial }
     confidence: high
-    notes: "Limit resolution (0 -> timelimit*60) is faithful; the shipped default and the >1/map-minplayers variants are not."
+    notes: "WAVE-2 FIX: Begin() now faithfully mirrors readlevelcvars — campaign forces warmup off, g_warmup<0||>1 ⇒ infinite limit, ==1 ⇒ timed limit (0->timelimit*60); the g_warmup>1 minplayers branch is live. STILL OPEN: the shipped g_warmup_limit default (-1 vs 180) and the g_warmup<0 map-minplayers lower bound (MapMinPlayers seam dead)."
   - id: sv-world-rules.warmup.serverflags
     name: "readlevelcvars serverflags (fullbright / pickuptimer)"
     layer: [authority]
@@ -126,26 +126,25 @@ features:
       - "src/XonoticGodot.Server/WarmupController.cs:ReadyCountCheck"
       - "src/XonoticGodot.Server/WarmupController.cs:ToggleReady"
     constants:
-      - { name: "majority_count_basis", base: "humans only (human_players)", port: "whole roster incl bots", match: false }
-      - { name: "majority_rounding", base: "rint(human_players * bound(0.5, factor, 1))", port: "ceil(roster * clamp(factor,0,1)), min 1", match: false }
+      - { name: "majority_count_basis", base: "humans only (human_players)", port: "humans only (IsBot skip)", match: true }
+      - { name: "majority_rounding", base: "rint(human_players * bound(0.5, factor, 1))", port: "Round(humans * clamp(factor,0.5,1), ToEven)", match: true }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: faithful
       presentation: missing
       audio: missing
-      liveness: live
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Ready-majority counts bots and the whole roster (ceil) instead of humans only (rint, min factor 0.5) — threshold can differ by one and warmup may never end on a bot-filled server."
-      - "No minplayers / sv_teamnagger badteams gate on ending warmup; the countdown-abort-back-to-warmup path and COUNTDOWN_STOP_MINPLAYERS/COUNTDOWN_STOP_BADTEAMS notifications are never sent."
-      - "No infinite->timed warmup switch (warmup_limit<=0 && game_starttime<=time path) and no GiveWarmupResources re-give on countdown abort."
-      - "No timeout_status guard: Base ReadyCount aborts early while a timeout is active/pending."
+      - "minplayers / sv_teamnagger badteams abort path is CODED but DEAD on the live match path: MinPlayers is 0 unless g_warmup>1 (the MapMinPlayers host seam is never wired), badteams is hardcoded false (no TeamBalance_SizeDifference feed), and OnCountdownStop/TimeoutActive are never wired — so the countdown-abort-back-to-warmup branch and COUNTDOWN_STOP_MINPLAYERS/COUNTDOWN_STOP_BADTEAMS notifications never actually fire in a real match."
+      - "No GiveWarmupResources re-give on countdown abort (the abort path itself is dead anyway; loadout re-give deferred to SpawnSystem)."
+      - "timeout_status guard is coded (TimeoutActive seam) but unwired, so a ready-count is not actually blocked during an active/pending timeout."
     verification:
-      - { kind: code, ref: "ReadyCountCheck (WarmupController.cs:146-160, roster.Count + ceil) vs ReadyCount:558-616 (humans_ready/rint/minplayers/badteams/timeout_status)", result: partial }
+      - { kind: code, ref: "ReadyCountCheck (WarmupController.cs:212-272: human-only humansReady/humanPlayers, rint via Round(...,ToEven), bound(0.5,factor,1), minplayers/badteams abort, infinite->timed switch) vs ReadyCount:553-616. Liveness: human-majority core LIVE via ToggleReady->ReadyCountCheck; minplayers/badteams/timeout/notification seams DEAD (grep: no Warmup.MapMinPlayers/OnCountdownStop/TimeoutActive setter).", result: partial }
     confidence: high
-    notes: "The majority trigger fires, but the human/bot basis, rounding, minplayers gate, badteams gate, timeout guard, and the COUNTDOWN_STOP notifications are all absent."
+    notes: "WAVE-2 FIX: the ready-up majority is now Base-faithful — counts humans only, rint (round-half-to-even) of human_players * bound(0.5, g_warmup_majority_factor, 1), with the humans_ready>0 guard. The structural minplayers/badteams abort, infinite->timed switch, and timeout guard are all CODED faithfully but DEAD because their host seams (MapMinPlayers, OnCountdownStop, TimeoutActive, team-balance) are never wired, so badteams=false and MinPlayers=0 on every real match; the COUNTDOWN_STOP notifications never reach a client (presentation/audio missing)."
   - id: sv-world-rules.warmup.ready_restart
     name: "ReadyRestart / ReadyRestart_force match-restart flow"
     layer: [authority]
@@ -156,27 +155,26 @@ features:
       - "src/XonoticGodot.Server/WarmupController.cs:ReadyRestart"
       - "src/XonoticGodot.Server/GameWorld.cs:RestartMatch"
     constants:
-      - { name: "RESTART_COUNTDOWN", base: "10 (vote.qh:66)", port: "5 (WarmupController.RestartCountdown)", match: false }
-      - { name: "campaign_countdown", base: "3", port: "RestartCountdown(5)", match: false }
+      - { name: "RESTART_COUNTDOWN", base: "10 (vote.qh:66)", port: "10 (WarmupController.RestartCountdown)", match: true }
+      - { name: "campaign_countdown", base: "3", port: "3 (WarmupController.CampaignCountdown) but DEAD", match: false }
       - { name: "sv_ready_restart_after_countdown", base: "0 (xonotic-server.cfg:24)", port: "1 (Cvars.cs:128) and unimplemented", match: false }
     status:
       logic: partial
       values: partial
-      timing: partial
+      timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Post-warmup/restart countdown is 5s (RestartCountdown), not Base's RESTART_COUNTDOWN=10s."
       - "sv_ready_restart_after_countdown branch unimplemented and default inverted (port 1, Base 0): reset_map always runs immediately, never deferred to a restart_timer think at game_starttime."
-      - "No teamplay_lockonrestart team lock, no sv_spectate==2 demotion, no re-join of queued (wants_join) players, no per-player allowed_timeouts reset, no alivetime_start clear."
-      - "Campaign 3s countdown not honored (uses the 5s restart countdown)."
+      - "teamplay_lockonrestart team lock is CODED (OnLockTeams seam) but DEAD: teamplay_lockonrestart is unregistered as a cvar (FloatOr returns 0) AND OnLockTeams is never wired by the host. No sv_spectate==2 demotion, no re-join of queued (wants_join) players, no per-player allowed_timeouts reset, no alivetime_start clear."
+      - "Campaign 3s countdown is CODED (CampaignCountdown=3 via the CampaignActive branch) but DEAD: CampaignActive is never set by the host, so a campaign restart still takes the 10s RESTART_COUNTDOWN path."
     verification:
-      - { kind: code, ref: "WarmupController.ReadyRestart (cs:206-226) vs ReadyRestart_force:441-524; RestartCountdown=5 (cs:28) vs RESTART_COUNTDOWN=10 (vote.qh:66)", result: partial }
+      - { kind: code, ref: "WarmupController.ReadyRestart (cs:318-348) vs ReadyRestart_force:441-524; RestartCountdown=10 (cs:28) == RESTART_COUNTDOWN=10 (vote.qh:66); CampaignActive/OnLockTeams seams DEAD (grep: no Warmup.CampaignActive/OnLockTeams setter); teamplay_lockonrestart not registered (grep Cvars.cs)", result: partial }
     confidence: high
-    notes: "Core restart (clear ready, arm countdown, reset_map, clear overtime via RestartMatch) is present; the surrounding policy branches and the exact 10s/3s timings are not."
+    notes: "WAVE-2 FIX: the post-warmup/restart countdown is now Base-correct at 10s (RESTART_COUNTDOWN). The CampaignCountdown(3s) and OnLockTeams(teamplay_lockonrestart) branches were added but are DEAD — their host seams (CampaignActive, OnLockTeams) are never wired and teamplay_lockonrestart is unregistered. sv_ready_restart_after_countdown and the per-player policy (spectate demotion, requeue, timeout/alivetime reset) remain unimplemented."
   - id: sv-world-rules.warmup.reset_map
     name: "reset_map: full map/player reset on restart"
     layer: [authority]
@@ -365,24 +363,25 @@ features:
     layer: [authority]
     base_refs:
       - "server/world.qc:readlevelcvars"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Server/WarmupController.cs:Begin"
     constants:
-      - { name: "g_start_delay", base: "0 (listen) / 15 (dedicated) (xonotic-common.cfg:185-186)", port: "none (0)", match: false }
+      - { name: "g_start_delay", base: "0 (listen) / 15 (dedicated) (xonotic-common.cfg:185-186)", port: "FloatOr(g_start_delay,0) — cvar unregistered ⇒ always 0", match: false }
     status:
-      logic: missing
-      values: missing
-      timing: missing
+      logic: faithful
+      values: partial
+      timing: faithful
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "g_start_delay pre-match join window missing: with warmup off, the match starts immediately (GameStartTime 0) instead of time + g_start_delay; dedicated servers lose the 15s 'everyone joins first' delay."
+      - "g_start_delay is now read on the live no-warmup path (Begin: GameStartTime = Now + g_start_delay, campaign ⇒ 0), matching readlevelcvars, BUT the g_start_delay cvar is never registered in Cvars.cs, so FloatOr falls back to 0 unconditionally — the dedicated-server 15s join window is not honored (effective value always 0, same observable behavior as before for the default config)."
     verification:
-      - { kind: code, ref: "grep start_delay/StartDelay across src/ — no match; readlevelcvars:2221-2222 sets game_starttime = time + g_start_delay when !warmup && !campaign", result: fail }
+      - { kind: code, ref: "WarmupController.Begin (cs:158-163): float startDelay = CampaignActive ? 0 : Cvars.FloatOr(\"g_start_delay\",0); GameStartTime = Now + startDelay — vs readlevelcvars:2220-2221. g_start_delay NOT in Cvars.cs registry (grep), so the 15s dedicated default cannot apply.", result: partial }
     confidence: high
-    notes: "The port's Begin() arms only the 5s restart countdown when warmup is off; there is no read of g_start_delay (default 0 listen / 15 dedicated)."
+    notes: "WAVE-2 PARTIAL FIX: the read-and-apply logic is now present and live (was entirely absent). Remaining gap is purely the unregistered cvar / missing if_dedicated 15s default — a server that explicitly `set g_start_delay N` would now work, but the stock dedicated 15s window does not."
   - id: sv-world-rules.misc.max_shot_distance
     name: "max_shot_distance from world bounds"
     layer: [authority, shared]

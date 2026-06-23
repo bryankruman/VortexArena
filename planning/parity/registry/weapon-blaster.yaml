@@ -5,9 +5,9 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 11
   worst_gaps:
-    - "no bot weapon-aim (wr_aim/bot_aim) or bot_dodge: bots neither lead the Blaster nor dodge incoming bolts"
-    - "g_projectiles_interact projectile-vs-projectile direct hit not implemented: a bolt can't be shot/knocked by other projectiles"
+    - "bot_dodge/bot_dodgerating projectile-danger list still missing: bots now LEAD the Blaster (generic ShotLead) but do NOT specifically dodge incoming bolts; Blaster.Attack omits the bolt's bot_dodge=true/bot_dodgerating assignment"
     - "no networked PROJECTILE_BLASTER flying-bolt trail/sprite (CSQCProjectile client render)"
+    - "trueaim_minrange clamp (g_trueaim_minrange) still not applied in shot setup"
 features:
   - id: weapon-blaster.identity.registration
     name: "Blaster identity, flags, models, infinite ammo"
@@ -39,10 +39,10 @@ features:
     gaps:
       - "model/anim/crosshair fidelity (view/world/item models, gfx/crosshairlaser, weaponlaser image) not audited here — names declared only."
     verification:
-      - { kind: code_read, ref: "blaster.qh ATTRIBs vs Blaster.cs ctor (verified: Impulse/SpawnFlags/Color/ViewModel/WorldModel/ItemModel match)", result: pass }
-      - { kind: code_read, ref: "WeaponAmmo.Check: Blaster => true (WeaponFireGate.cs:480)", result: pass }
+      - { kind: code_read, ref: "blaster.qh ATTRIBs vs Blaster.cs ctor (Impulse/SpawnFlags/Color/ViewModel/WorldModel/ItemModel match); unchanged by Wave-1/2", result: pass }
+      - { kind: code_read, ref: "WeaponAmmo.Check: Blaster => true (WeaponFireGate.cs)", result: pass }
     confidence: high
-    notes: "Identity and infinite ammo verified against Blaster.cs:38-49. Legacy 'laser' netname / weapon_laser Nexuiz-compat spawnfunc not separately modeled (no impact on stock play)."
+    notes: "Identity and infinite ammo verified against Blaster.cs:38-49. Untouched by the Wave-1/2 implementation. Legacy 'laser' netname / weapon_laser Nexuiz-compat spawnfunc not separately modeled (no impact on stock play)."
 
   - id: weapon-blaster.primary.attack
     name: "Primary fire spawns the blaster bolt (W_Blaster_Attack)"
@@ -59,6 +59,7 @@ features:
       - { name: "deathtype", base: "WEP_BLASTER.m_id", port: "RegistryId", match: true }
       - { name: "fire sound", base: "SND_BLASTER_FIRE (lasergun_fire) on CH_WEAPON_B", port: "weapons/lasergun_fire.wav on SoundChannel.Weapon", match: true }
       - { name: "muzzle flash", base: "W_MuzzleFlash / EFFECT_BLASTER_MUZZLEFLASH", port: "EffectEmitter.Emit(\"BLASTER_MUZZLEFLASH\") => laser_muzzleflash", match: true }
+      - { name: "projectile flag", base: "FL_PROJECTILE", port: "EntFlags.Item (FL_PROJECTILE stand-in)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -71,11 +72,11 @@ features:
     gaps:
       - "fire sound is on the port's single SoundChannel.Weapon; QC uses CH_WEAPON_B specifically (cosmetic channel-routing nuance, same cue)."
     verification:
-      - { kind: code_read, ref: "blaster.qc:52-94 vs Blaster.Attack (Blaster.cs:127-172): s_forward, SetupShot(recoil 3), velocity, MakeTrigger, Touch/Think wiring, EditProjectile, immediate-think tail all present", result: pass }
-      - { kind: code_read, ref: "live: GameWorld.cs:1182 (XonoticGodot.Server) WeaponFireDriver.Frame -> WeaponFireDriver.cs:155 weapon.WrThink(slot0,Primary)", result: pass }
-      - { kind: code_read, ref: "EFFECT names registered: EffectsList.cs:39-40 (BLASTER_IMPACT=laser_impact, BLASTER_MUZZLEFLASH=laser_muzzleflash)", result: pass }
+      - { kind: code_read, ref: "blaster.qc:52-94 vs Blaster.Attack (Blaster.cs:127-172): s_forward, SetupShot(recoil 3), velocity, MakeTrigger, Touch/Think wiring, Flags=EntFlags.Item, EditProjectile, immediate-think tail all present", result: pass }
+      - { kind: code_read, ref: "live: WeaponFireDriver.Frame -> weapon.WrThink(slot0,Primary)", result: pass }
+      - { kind: code_read, ref: "EFFECT names registered: EffectsList.cs (BLASTER_IMPACT=laser_impact, BLASTER_MUZZLEFLASH=laser_muzzleflash)", result: pass }
     confidence: high
-    notes: "s_forward = v_forward*cos(shotangle)+v_up*sin(shotangle); MUTATOR_CALLHOOK(EditProjectile) before the delay-0 immediate-think tail, both reproduced. CORRECTED vs draft: the fire sound (lasergun_fire) AND muzzle flash (laser_muzzleflash) ARE produced server-side in Attack — draft marked audio/presentation 'na', upgraded to faithful."
+    notes: "s_forward = v_forward*cos(shotangle)+v_up*sin(shotangle); MUTATOR_CALLHOOK(EditProjectile) before the delay-0 immediate-think tail, both reproduced. Wave-1/2 left the attack body intact and added missile.Flags=EntFlags.Item (FL_PROJECTILE), enabling the interact path below."
 
   - id: weapon-blaster.primary.balance
     name: "Primary balance constants (damage/force/speed/radius/refire/lifetime)"
@@ -111,9 +112,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: value_diff, ref: "bal-wep-xonotic.cfg:26-43 (all 12 primary cvars read from Base) vs Blaster.Configure fallbacks (Blaster.cs:51-65) — exact match", result: pass }
+      - { kind: value_diff, ref: "bal-wep-xonotic.cfg:26-43 (all 12 primary cvars) vs Blaster.Configure fallbacks — exact match; unchanged by Wave-1/2", result: pass }
     confidence: high
-    notes: "All 12 primary cvars + recoil 3 + switchdelay 0.1 verified against Base config. Values read live from the cvar store (Bal helper) with these as stock fallbacks."
+    notes: "All 12 primary cvars + recoil 3 + switchdelay 0.1 verified against Base config. Values read live from the cvar store (Bal helper) with these as stock fallbacks. Untouched by the Wave-1/2 implementation."
 
   - id: weapon-blaster.shot.setup
     name: "Shot setup (W_SetupShot_Dir: trueaim, muzzle origin, punchangle)"
@@ -136,11 +137,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "trueaim minrange clamp (g_trueaim_minrange) not applied; antilag takeback deferred (no effect for the blaster which fires antilag=false). Warpzone trueaim IS implemented (WeaponFiring.cs:136-143)."
+      - "trueaim minrange clamp (g_trueaim_minrange) STILL not applied (Wave-1/2 added LagComp.Begin/End to WeaponFiring but no minrange clamp). Antilag takeback now wired generally, but has no effect for the blaster which fires antilag=false. Warpzone trueaim IS implemented (WeaponFiring.cs)."
     verification:
-      - { kind: code_read, ref: "tracing.qc W_SetupShot_Dir vs WeaponFiring.SetupShot (WeaponFiring.cs:105-172): eye->trueaim trace, muzzle-offset nudge, punchangle_x=-recoil all present; warpzone trueaim present", result: pass }
+      - { kind: code_read, ref: "tracing.qc W_SetupShot_Dir vs WeaponFiring.SetupShot: eye->trueaim trace, muzzle-offset nudge, punchangle_x=-recoil all present; warpzone trueaim present; grep trueaim_minrange in WeaponFiring.cs -> no match", result: pass }
     confidence: high
-    notes: "Eye->trueaim trace, muzzle-offset nudge and punchangle_x=-recoil match. Per-model tag_shot muzzle offset registered from parsed models; falls back to a generic offset on a tag-less/dedicated path. Recoil only applied to clients with g_norecoil off."
+    notes: "Eye->trueaim trace, muzzle-offset nudge and punchangle_x=-recoil match. Per-model tag_shot muzzle offset registered from parsed models; falls back to a generic offset on a tag-less/dedicated path. Recoil only applied to clients with g_norecoil off. Wave-1/2 wired LagComp into SetupShot (no-op for the antilag=false blaster); trueaim_minrange remains the one open gap."
 
   - id: weapon-blaster.shot.velocity
     name: "Bolt launch velocity (W_SetupProjVelocity_Explicit)"
@@ -166,9 +167,9 @@ features:
     gaps:
       - "g_projectiles_newton_style velocity inheritance not modeled; matches the stock default 0 (no inheritance), so no observable divergence in stock play."
     verification:
-      - { kind: code_read, ref: "W_SetupProjVelocity_Explicit vs WeaponFiring.ProjectileVelocity (WeaponFiring.cs:572-582): speed*normalize(dir), spread folded in, up/z 0", result: pass }
+      - { kind: code_read, ref: "W_SetupProjVelocity_Explicit vs WeaponFiring.ProjectileVelocity: speed*normalize(dir), spread folded in, up/z 0; unchanged by Wave-1/2", result: pass }
     confidence: high
-    notes: "velocity = speed * normalize(w_shotdir); up/z launch 0, spread 0. angles=vectoangles(velocity) set in Blaster.Attack (Blaster.cs:147)."
+    notes: "velocity = speed * normalize(w_shotdir); up/z launch 0, spread 0. angles=vectoangles(velocity) set in Blaster.Attack. Untouched by Wave-1/2."
 
   - id: weapon-blaster.bolt.think_lifetime
     name: "Bolt think: MOVETYPE_FLY + remove after lifetime (W_Blaster_Think)"
@@ -191,15 +192,15 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "CSQCProjectile(PROJECTILE_BLASTER) client trail/sprite not networked: the flying bolt has no DP-style render trail."
+      - "CSQCProjectile(PROJECTILE_BLASTER) client trail/sprite STILL not networked: the flying bolt has no DP-style render trail (Wave-1/2 added no client-render seam for the bolt)."
     verification:
-      - { kind: code_read, ref: "blaster.qc:44-50 vs Blaster.OnThink (Blaster.cs:175-180): MoveType.Fly + SUB_Remove at +lifetime", result: pass }
-      - { kind: code_read, ref: "MoveTypePhysics.cs:75-78 Fly case -> runThink + PhysicsToss; PushEntity(doTouch:true) at line 144 fires Touch during the step", result: pass }
+      - { kind: code_read, ref: "blaster.qc:44-50 vs Blaster.OnThink: MoveType.Fly + SUB_Remove at +lifetime; unchanged by Wave-1/2", result: pass }
+      - { kind: code_read, ref: "MoveTypePhysics Fly case -> runThink + PhysicsToss; PushEntity(doTouch:true) fires Touch during the step", result: pass }
     confidence: high
-    notes: "Bolt is stepped every server tick (movement + Touch + Think) by SimulationLoop/MoveTypePhysics; Fly routes through PhysicsToss with runThink; PushEntity doTouch:true fires the bolt Touch. SUB_Remove at +lifetime reproduced. Only the client trail is missing."
+    notes: "Bolt is stepped every server tick (movement + Touch + Think) by SimulationLoop/MoveTypePhysics; SUB_Remove at +lifetime reproduced. Only the client trail is missing — unchanged by Wave-1/2."
 
   - id: weapon-blaster.bolt.touch_radiusdamage
-    name: "Bolt impact: radius damage + knockback with force_zscale (W_Blaster_Touch / RadiusDamageForSource)"
+    name: "Bolt impact: radius damage + knockback with force_zscale + g_projectiles_interact (W_Blaster_Touch / RadiusDamageForSource)"
     layer: [authority]
     base_refs:
       - "common/weapons/weapon/blaster.qc:W_Blaster_Touch"
@@ -213,7 +214,9 @@ features:
       - { name: "force", base: "375", port: "375", match: true }
       - { name: "force_xyzscale.z", base: "force_zscale=1", port: "(1,1,force_zscale)", match: true }
       - { name: "blast center", base: "origin+(mins+maxs)*0.5", port: "origin+(Mins+Maxs)*0.5", match: true }
-      - { name: "direct-hit (toucher)", base: "full dmg, skip LOS box test", port: "directHit=other (LOS skipped at WeaponSplash.cs:142)", match: true }
+      - { name: "direct-hit (toucher)", base: "full dmg, skip LOS box test", port: "directHit=other (LOS skipped at WeaponSplash.cs)", match: true }
+      - { name: "g_projectiles_interact gate", base: "==1 && (toucher.flags & FL_PROJECTILE) && !toucher.damageforcescale", port: "==1 && (other.Flags & EntFlags.Item) && other.DamageForceScale==0", match: true }
+      - { name: "g_projectiles_interact default", base: "1", port: "1 (balance-xonotic.cfg:203, bundled)", match: true }
       - { name: "impact sound", base: "SND_LASERIMPACT (laserimpact) CSQC wr_impacteffect", port: "weapons/laserimpact.wav (server-side ImpactSound)", match: true }
     status:
       logic: faithful
@@ -225,14 +228,14 @@ features:
     intended_divergence: true
     divergence_rationale: "QC plays the impact sound + impact particle CLIENT-side in CSQC wr_impacteffect (at w_org along w_backoff); the port emits both server-side from OnTouch (project-wide pattern, see WeaponSplash.ImpactSound docs). Cue (laserimpact) and blast position match; the exact w_backoff plane-normal is approximated by -normalize(velocity)."
     gaps:
-      - "g_projectiles_interact==1 path missing: when an interacting projectile (damageforcescale 0) touches the bolt, Base temporarily sets its damageforcescale=1 so the blast knocks it around; the port does not, so projectile-vs-projectile knockback is absent."
-      - "impact particle uses -normalize(velocity) as the w_backoff plane normal (approximation, not the exact surface normal); CSQCProjectile networking of the impact is server-emitted instead."
+      - "impact particle uses -normalize(velocity) as the w_backoff plane normal (approximation, not the exact surface normal); CSQCProjectile networking of the impact is server-emitted instead of CSQC-rendered."
     verification:
-      - { kind: code_read, ref: "blaster.qc:5-42 vs Blaster.OnTouch (Blaster.cs:184-200): event_damage=func_null reproduced by Touch=null; force_xyzscale.z=force_zscale; center=origin+(mins+maxs)*0.5; directHit=other", result: pass }
-      - { kind: code_read, ref: "damage.qc RadiusDamageForSource vs WeaponSplash.RadiusDamage: falloff core->edge, per-axis force scale (only nonzero components), directHit skips LOS, force tracks damage fraction", result: pass }
-      - { kind: code_read, ref: "ImpactSound -> Api.Sound.Play(SoundChannel.ShotsAuto, laserimpact); BLASTER_IMPACT effect emitted", result: pass }
+      - { kind: code_read, ref: "blaster.qc:5-42 (incl. interact hack lines 15-22,38-39) vs Blaster.OnTouch (Blaster.cs:184-217): event_damage=func_null reproduced by Touch=null; g_projectiles_interact==1 + FL_PROJECTILE + !damageforcescale -> set damageforcescale=1 then restore 0; force_xyzscale.z; center; directHit=other -- bit-for-bit match", result: pass }
+      - { kind: value_diff, ref: "g_projectiles_interact default: balance-xonotic.cfg:203 set 1 in BOTH Base and assets/data/.../balance-xonotic.cfg -> interact path live under stock play", result: pass }
+      - { kind: code_read, ref: "projectiles set Flags=EntFlags.Item (Devastator/Electro/Mortar/Hagar/etc.) and default DamageForceScale=0 -> the interact predicate is genuinely reachable when a bolt touches another projectile", result: pass }
+      - { kind: code_read, ref: "damage.qc RadiusDamageForSource vs WeaponSplash.RadiusDamage: falloff, per-axis force scale, directHit skips LOS, force tracks damage fraction", result: pass }
     confidence: high
-    notes: "Splash falloff, per-axis force_zscale, self-jump eye-aimed force, adaptive through-floor LOS sampling all in WeaponSplash. CORRECTED vs draft: impact sound (laserimpact) IS produced — draft marked audio 'na', upgraded to faithful with intended_divergence (server-side emit). The g_projectiles_interact hack is the one logic gap."
+    notes: "FIX (Wave-1/2): the g_projectiles_interact==1 hack is now ported faithfully (Blaster.cs:188-208) — a blaster bolt that touches another projectile (FL_PROJECTILE / EntFlags.Item, damageforcescale 0) temporarily sets its damageforcescale=1 so the blast knocks it, then restores 0; the cvar gate (==1, NOT 2) and default (1) match Base. The only residual is presentation (server-side impact emit + approximated plane normal, intended_divergence)."
 
   - id: weapon-blaster.refire.gate
     name: "Refire/animtime gate (weapon_prepareattack + weapon_thinkf)"
@@ -258,9 +261,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code_read, ref: "weaponsystem.qc weapon_prepareattack vs WeaponFireGate.PrepareAttack (WeaponFireGate.cs:52-127): held-button check, WS_READY gate, ATTACK_FINISHED refire gate, spawn-shield drop, WeaponRateFactor, animtime->ready think", result: pass }
+      - { kind: code_read, ref: "weaponsystem.qc weapon_prepareattack vs WeaponFireGate.PrepareAttack: held-button check, WS_READY gate, ATTACK_FINISHED refire gate, spawn-shield drop, WeaponRateFactor, animtime->ready think; unchanged by Wave-1/2", result: pass }
     confidence: high
-    notes: "ATTACK_FINISHED gate, WS_READY check, animtime->ready think and the WeaponRateFactor mutator hook all ported. Blaster.RefireFor/AnimtimeFor return Primary.Refire/Animtime (cvar-seeded). In-hand path goes through PrepareAttack (Blaster.cs:79)."
+    notes: "ATTACK_FINISHED gate, WS_READY check, animtime->ready think and the WeaponRateFactor mutator hook all ported. In-hand path goes through PrepareAttack. Untouched by Wave-1/2."
 
   - id: weapon-blaster.secondary.lastweapon
     name: "Secondary = switch back to previous weapon (W_LastWeapon), not a fire mode"
@@ -286,9 +289,9 @@ features:
       - "QC gates the switch on m_switchweapon == WEP_BLASTER (the weapon being switched TO); the port gates on ActiveWeaponId == RegistryId (the currently active weapon). Functionally equivalent in steady state, but during a switch-in-progress the precise guard window may differ (minor edge case)."
       - "fallback when no previous weapon recorded picks best-owned-by-impulse; QC W_LastWeapon relies on the tracked previous selection (cnt) — minor edge-case behavior on a first-ever secondary press."
     verification:
-      - { kind: code_read, ref: "blaster.qc:111-116 + selection.qc:W_LastWeapon vs Blaster.LastWeapon (Blaster.cs:98-113): reads Entity.LastWeaponId (QC .cnt), falls back to best owned weapon", result: pass }
+      - { kind: code_read, ref: "blaster.qc:111-116 + selection.qc:W_LastWeapon vs Blaster.LastWeapon: reads Entity.LastWeaponId (QC .cnt), falls back to best owned weapon; unchanged by Wave-1/2", result: pass }
     confidence: medium
-    notes: "Secondary is a weapon-switch, not refire-gated. Port reads Entity.LastWeaponId (QC .cnt). The m_switchweapon vs ActiveWeaponId guard is a slightly different gate (not runtime-verified that LastWeaponId is always populated correctly by the switch system)."
+    notes: "Secondary is a weapon-switch, not refire-gated. Port reads Entity.LastWeaponId (QC .cnt). The m_switchweapon vs ActiveWeaponId guard is a slightly different gate (not runtime-verified that LastWeaponId is always populated correctly by the switch system). Untouched by Wave-1/2."
 
   - id: weapon-blaster.offhand.fire
     name: "Offhand blaster (g_offhand_blaster mutator) fires without switching weapons"
@@ -298,50 +301,56 @@ features:
       - "common/mutators/mutator/offhand_blaster/sv_offhand_blaster.qc"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/OffhandBlasterMutator.cs:FireOffhand"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OffhandBlasterMutator.cs:WeaponRateFactor"
       - "src/XonoticGodot.Common/Gameplay/Weapons/Blaster.cs:WrThink"
     constants:
-      - { name: "jump_interval refire", base: "refire * W_WeaponRateFactor(actor)", port: "refire (rate factor NOT applied in offhand path)", match: false }
+      - { name: "jump_interval refire", base: "refire * W_WeaponRateFactor(actor)", port: "refire * WeaponRateFactor(actor)", match: true }
       - { name: "slot", base: "weaponentities[1]", port: "slot MaxWeaponSlots (ungated, fired directly)", match: true }
       - { name: "makevectors(v_angle)", base: "uses actor view angles", port: "WrThink->Attack uses actor.Angles", match: true }
     status:
       logic: faithful
-      values: partial
-      timing: partial
+      values: faithful
+      timing: faithful
       presentation: na
       audio: na
       liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "offhand refire interval uses raw Primary.Refire (0.7) without W_WeaponRateFactor scaling (OffhandBlasterMutator.cs:78-79), so a speed-powerup/buff player's offhand blaster doesn't fire faster (the in-hand blaster does, via PrepareAttack's rate factor)."
+      - "Live only when g_offhand_blaster is set (default 0 in mutators.cfg:435), so liveness stays partial — but when enabled the behaviour is now faithful."
     verification:
-      - { kind: code_read, ref: "blaster.qc:138-147 OffhandBlaster.offhand_think vs OffhandBlasterMutator.FireOffhand (OffhandBlasterMutator.cs:66-80): jump_interval gate present, but refire not multiplied by W_WeaponRateFactor", result: pass }
+      - { kind: code_read, ref: "blaster.qc:138-147 OffhandBlaster.offhand_think (jump_interval = time + refire * W_WeaponRateFactor) vs OffhandBlasterMutator.FireOffhand (OffhandBlasterMutator.cs:78-79): OffhandNextThink = now + refire * WeaponRateFactor(player) -- now MATCHES", result: pass }
+      - { kind: code_read, ref: "OffhandBlasterMutator.WeaponRateFactor: 1/g_weaponratefactor then MUTATOR_CALLHOOK(WeaponRateFactor, f, actor) via MutatorHooks.WeaponRateFactor (hook exists, MutatorHooks.cs:144) -- mirrors WeaponFireGate.WeaponRateFactor", result: pass }
       - { kind: code_read, ref: "IsEnabled = g_offhand_blaster != 0 (default 0); wired via PlayerSpawn + PlayerPreThink hooks", result: pass }
-    confidence: medium
-    notes: "Live only when g_offhand_blaster is set (default off) -> liveness partial. Fires the same W_Blaster_Attack via an ungated high slot (MaxWeaponSlots) which bypasses PrepareAttack; refire gated by OffhandNextThink but without the rate factor (confirmed missing in code)."
+    confidence: high
+    notes: "FIX (Wave-1/2): the offhand refire interval now applies W_WeaponRateFactor (OffhandBlasterMutator.cs adds a local WeaponRateFactor that calls the same 1/g_weaponratefactor + WeaponRateFactor mutator hook the in-hand path uses), so a speed-powerup/buff player's offhand blaster fires faster exactly like the in-hand one. Baseline values:partial/timing:partial -> faithful. Still fires via an ungated high slot (MaxWeaponSlots) bypassing PrepareAttack, gated by OffhandNextThink. Liveness stays partial (mutator default off)."
 
   - id: weapon-blaster.bot.aim_dodge
-    name: "Bot weapon aim (wr_aim) + bot_dodge of incoming bolts"
+    name: "Bot weapon aim (wr_aim projectile lead) + bot_dodge of incoming bolts"
     layer: [authority]
     base_refs:
       - "common/weapons/weapon/blaster.qc:wr_aim"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:AimAndDecideFire"
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:CurrentShotSpeed"
+      - "src/XonoticGodot.Server/Bot/BotAim.cs:ShotLead"
     constants:
-      - { name: "bot_aim(speed, 0, lifetime, false, true)", base: "leads target for projectile", port: "none", match: false }
-      - { name: "bot_dodge / bot_dodgerating", base: "true / damage", port: "none", match: false }
+      - { name: "bot_aim(speed, 0, lifetime, false, true) lead", base: "leads target for projectile (speed 6000)", port: "generic ShotLead(enemyCenter, enemy.Velocity, CurrentShotSpeed()); blaster speed read from g_balance_blaster_primary_speed (6000)", match: true }
+      - { name: "bot_dodge / bot_dodgerating", base: "true / damage (bolt registered in g_bot_dodge danger list)", port: "none (Blaster.Attack omits bot_dodge=true/bot_dodgerating; no projectile-danger list)", match: false }
     status:
-      logic: missing
-      values: missing
+      logic: partial
+      values: partial
       timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Bots have no per-weapon aim lead for the Blaster (wr_aim/bot_aim absent), so projectile-lead accuracy is not modeled."
-      - "Bots do not dodge incoming blaster bolts (g_bot_dodge list / bot_dodgerating not implemented; Attack does not set bot_dodge on the bolt either)."
+      - "bot_dodge/bot_dodgerating projectile-danger list NOT implemented: bots do not specifically avoid incoming blaster bolts. Blaster.Attack sets no bot_dodge=true/bot_dodgerating=damage on the bolt, and there is no danger-list/dodge-rating registry in src/.../Bot (BotDanger covers only trigger_hurt/fall hazards). The generic CombatMovement strafe is evasive combat movement, not the QC bolt-specific avoidance."
+      - "lead is a GENERIC engine-level projectile lead (BotBrain.ShotLead using the weapon's speed cvar), not the per-weapon wr_aim hook; faithful in effect for the blaster (leads at speed 6000), but the wr_aim/bot_aim weapon-dispatch seam itself is not modeled."
     verification:
-      - { kind: code_read, ref: "grep wr_aim/bot_aim/bot_dodge across src/ -> no symbols; Blaster.Attack does not set bot_dodge/bot_dodgerating on the bolt", result: pass }
+      - { kind: code_read, ref: "BotBrain.AimAndDecideFire: shotSpeed = CurrentShotSpeed() (non-hitscan weapon reads g_balance_<wep>_primary_speed); lead = Aim.ShotLead(enemyCenter, enemy.Velocity, shotSpeed); the bot LEADS the blaster bolt", result: pass }
+      - { kind: code_read, ref: "grep DodgeRating|bot_dodge|DodgeList|RegisterDanger across src/.../Bot -> no projectile-dodge system; Blaster.Attack (Blaster.cs:127-172) sets no bot_dodge/bot_dodgerating on the missile", result: pass }
     confidence: high
-    notes: "Port-wide bot-combat gap, surfaced here for the Blaster. No bot weapon-aim/dodge system exists in src/.../Gameplay/Bots. Confirmed Blaster.cs:Attack omits the QC bot_dodge=true/bot_dodgerating=damage assignment entirely."
+    notes: "PARTIAL FIX (Wave-1/2): the aim/lead half is now closed -- a generic ShotLead in BotBrain leads non-hitscan weapons by their speed cvar, so bots lead the Blaster (baseline 'no per-weapon aim lead' gap resolved in effect). The dodge half is STILL OPEN: no bot_dodge/bot_dodgerating danger-list, and the bolt is not flagged as dodgeable. Baseline logic/values were 'missing' -> now 'partial' (lead present, dodge absent)."

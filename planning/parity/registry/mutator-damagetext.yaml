@@ -9,7 +9,7 @@ summary:
     - "World drift reduced to a vertical world-Z rise: QC offsets the number along the view basis (velocity_world/offset_world along forward/right/up) before projecting; the port keeps only the Z component as a world-up rise (hardcoded 0.0254 inch->meter scale) and drops the forward/right offsets, so the number doesn't track the view-relative placement Base uses."
     - "Color codes not rendered: the draw uses Godot DrawString (plain) instead of drawcolorcodedstring2, so ^x color codes in cl_damagetext_format render literally; font is the Godot fallback font (no drawfontscale crisp-scaling), not the Xonotic HUD font."
     - "Server visibility tiers collapsed: no Net_LinkEntity; DrainPending is a host-local queue consumed only on the host path (NetGame.cs:2068 'if (_server is not null)'), so sv_damagetext 1/3 (spectators-only, all-players) and spectator/observer filtering are not modeled and a pure remote client sees no damage text (intended host-only divergence)."
-    - "ClientDisconnect dent_attackers clear is missing (no ClientDisconnect mutator hook), and the ui_damagetext settings menu tab has no port counterpart."
+    - "ClientDisconnect dent_attackers clear is missing (no ClientDisconnect mutator hook exists in MutatorHooks), and the ui_damagetext settings menu tab has no port counterpart. (2026-06-22 re-audit: Wave-1/2 added only a doc comment acknowledging the ClientDisconnect gap — no fix.)"
 features:
   - id: damagetext.sv.player_damaged_producer
     name: "Server PlayerDamaged producer (build + queue a damage-number event)"
@@ -118,11 +118,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No ClientDisconnect hook: a disconnecting attacker's entry is not removed from every victim's DentAttackers set (the mutator only subscribes PlayerDamaged + PlayerSpawn). If a new player reuses the same Entity reference/slot, the STOP_ACCUMULATION first-hit gate can mis-fire. Edge case; no ClientDisconnect mutator hook appears to be exposed at all."
+      - "No ClientDisconnect hook: a disconnecting attacker's entry is not removed from every victim's DentAttackers set (the mutator only subscribes PlayerDamaged + PlayerSpawn). If a new player reuses the same Entity reference/slot, the STOP_ACCUMULATION first-hit gate can mis-fire. Edge case; MutatorHooks exposes no ClientDisconnect hook at all (grep of MutatorHooks.cs finds none). Wave-2 added only a documentation comment (DamagetextMutator.cs:74-82) acknowledging this gap and noting it keys on the live Entity ref so a reused slot is a different object and the stale entry is inert in practice; the explicit clear is STILL omitted."
     verification:
-      - { kind: codetrace, ref: "DamagetextMutator.cs:87-93 Hook() subscribes only PlayerDamaged + PlayerSpawn; no ClientDisconnect handler; grep confirms absent", result: fail }
+      - { kind: codetrace, ref: "DamagetextMutator.cs:97-103 Hook() subscribes only PlayerDamaged + PlayerSpawn; no ClientDisconnect handler; MutatorHooks.cs grep confirms no ClientDisconnect hook exists", result: fail }
     confidence: high
-    notes: "Representation differs (HashSet<Entity> keyed by Entity ref vs fixed bit array keyed by etof-1) but the live semantics match except the disconnect path. The STOP_ACCUMULATION add + PlayerSpawn clear are faithful."
+    notes: "2026-06-22 re-audit: Wave-1/2 left this gap open. The only damagetext edit on claude/parity-port-waves is a 10-line XML-doc comment (DamagetextMutator.cs:74-82) describing the missing ClientDisconnect clear and the Entity-ref mitigation — no behavioral change, no hook added. Representation still differs (HashSet<Entity> keyed by Entity ref vs fixed bit array keyed by etof-1); live semantics match except the disconnect path. STOP_ACCUMULATION add + PlayerSpawn clear remain faithful."
   - id: damagetext.net.wire_and_visibility_tiers
     name: "Wire encode/decode + sv_damagetext visibility tiers (spectators/attacker/all)"
     layer: [authority, presentation]

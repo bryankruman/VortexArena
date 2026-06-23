@@ -5,12 +5,11 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 25
   worst_gaps:
-    - "slowdown is DEAD: SwampThink stamps it.SwampSlug + the 0.5 swamp_slowdown, but NO code in PlayerPhysics/MovementParameters reads SwampSlug.SwampSlowdown (Base player.qc:50 maxspd_mod) — players are damaged but move at full speed (the whole point of a swamp)"
-    - "MultiTouch is MISSING the team-gate (this.team / INVERT_TEAMS) AND the pressedkeys gate — a team-restricted or key-gated trigger_multiple fires for the wrong team / without the key held"
-    - "swamp obituary uses DeathTypes.Void instead of DeathTypes.Swamp (which exists, unused) — a swamp kill prints the void death message"
-    - "counter/keylock 'sequence' notifications: port hardcodes a misc/talk.wav play that Base does NOT emit for MSG_CENTER notifications (CENTER_SEQUENCE_*, CENTER_DOOR_LOCKED_*) — the center-print countdown TEXT ('N more..'/'sequence complete'/keylist) is dropped and a wrong sound is added"
-    - "no client 2.5D side-scroller camera consumer: the server stamps player.ViewLoc each frame but the view is never locked to the start->end line, so the camera region has no visible effect"
-    - "trigger_magicear ported but UNWIRED: no say/chat pipeline calls MagicEarProcessAllEars, so the chat-trigger ears are dead on the live path"
+    - "slowdown is STILL DEAD: SwampThink now clears+restamps SwampSlug faithfully (g_swamped list) and damages with DeathTypes.Swamp, but NO code in PlayerPhysics/MovementParameters reads SwampSlug.SwampSlowdown into maxspd_mod (Base player.qc:50) — players are damaged but still move at full speed. The Wave-2 swamp rework fixed the obituary + claim logic but NOT the movement reader (the headline gap). RE-CONFIRMED 2026-06-22: grep finds only writers (Triggers.cs:690/716/738) + the field def — no reader."
+    - "centerprint TEXT seam is UNWIRED: Wave-2 added MapMover.Centerprint(...) calls (secret 'You found a secret!', keylock 'Unlocked!', message-jumppad) but MapObjectsCommon.CenterprintHandler is never assigned anywhere (grep = 0 assignments, only the decl at :782 + the invoke at :797), so every Centerprint() no-ops — the visible center-print text still does not appear on the live path. RE-CONFIRMED 2026-06-22."
+    - "MultiTouch pressedkeys gate STILL missing — Entity.PressedKeys now EXISTS (EntityMutatorState.cs:24, fed by the dodging mutator) but MultiTouch never reads it AND the trigger's own this.pressedkeys parse-field is unported, so the gate (Triggers.cs:156-158) is still skipped; a key-gated trigger_multiple still fires without the player holding the keys. (The team-gate half was CLOSED this wave.)"
+    - "no client 2.5D side-scroller camera consumer (trigger_viewlocation): server still stamps player.ViewLoc each frame but the view is never locked to the start->end line — unchanged."
+    - "all map-object .reset bodies remain dormant: GameWorld.ResetMapObjects() now exists but only deletes projectiles — it does NOT call e.Reset(e), so monoflop/flipflop/multivibrator/relay*/gamestart/target_music reset handlers are installed but never driven."
 features:
   - id: mapobject-triggers.common.sub_usetargets
     name: "SUB_UseTargets — delay / killtarget / message / target_random fire primitive"
@@ -36,7 +35,7 @@ features:
     verification:
       - { kind: code_read, ref: "triggers.qc:SUB_UseTargets_Ex vs MapObjectsCommon.UseTargetsEx", result: pass }
     confidence: high
-    notes: "delay->DelayedUse think, killtarget delete, target_random weighted reservoir, skiptargets bitmask all ported faithfully. Fired live by every trigger below."
+    notes: "delay->DelayedUse think, killtarget delete, target_random weighted reservoir, skiptargets bitmask all ported faithfully. Fired live by every trigger below. Unchanged this wave."
 
   - id: mapobject-triggers.multi.trigger_multiple
     name: "trigger_multiple / trigger_once — repeatable/one-shot volume trigger"
@@ -56,6 +55,7 @@ features:
       - { name: "sounds 1/2/3", base: "misc/secret.wav / misc/talk.wav / misc/trigger1.wav", port: "same", match: true }
       - { name: "ONLY_PLAYERS", base: "BIT(14)", port: "1<<14", match: true }
       - { name: "ALL_ENTITIES", base: "BIT(1)", port: "1<<1", match: true }
+      - { name: "INVERT_TEAMS gate", base: "((spawnflags&INVERT_TEAMS)==0)==(team!=toucher.team)", port: "exact match (noInvert == (Team != toucher.Team))", match: true }
     status:
       logic: partial
       values: partial
@@ -66,15 +66,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "MultiTouch is MISSING the team-gate (this.team / INVERT_TEAMS) — a team-restricted trigger_multiple fires for the wrong team"
-      - "MultiTouch is MISSING the pressedkeys check (CS(toucher).pressedkeys & this.pressedkeys) — a key-gated trigger fires without the player holding the keys"
-      - "CTS client-specific .wait buffers (multi.qc triggertimes buf_create / bufstr_get keyed by client number) not ported: the port uses the single shared nextthink, so per-client re-trigger timing in CTS/Race diverges (wait==-1 finish lines are masked; mid-course checkpoints are not)"
-      - "multi_eventdamage NOSPLASH splash-immunity (DEATH_ISSPECIAL + HITTYPE_SPLASH) + team-attacker gate not reproduced in the OnDeath shootable-trigger hook"
-      - "q3compat wait defaults (0.5 / wait-forever) + q3compat red/blue spawnflag-1/2 team filter not applied"
+      - "MultiTouch is MISSING the pressedkeys check (CS(toucher).pressedkeys & this.pressedkeys, Base multi.qc:135-137) — Entity.PressedKeys now EXISTS (EntityMutatorState.cs:24, written by the dodging mutator) but MultiTouch (Triggers.cs:156-158) never reads it AND the trigger's own this.pressedkeys parse-field is unported, so the gate is still skipped and a key-gated trigger fires without the player holding the keys (the only remaining MultiTouch logic gap; the comment at the gate site documents the omission)"
+      - "CTS client-specific .wait buffers (multi.qc triggertimes buf_create / bufstr_get keyed by client number) not ported: the port uses the single shared nextthink, so per-client re-trigger timing in CTS/Race diverges"
+      - "q3compat wait defaults (0.5 / wait-forever) + q3compat red/blue spawnflag-1/2 team filter not applied (no q3 path)"
     verification:
-      - { kind: code_read, ref: "multi.qc vs Triggers.cs MultiTouch/MultiTrigger/OnDeath", result: fail }
+      - { kind: code_read, ref: "multi.qc:multi_touch/multi_eventdamage vs Triggers.cs MultiTouch (team gate now byte-faithful)/OnDeath (NOSPLASH + team-attacker now present)", result: pass }
     confidence: high
-    notes: "ONLY_PLAYERS gate, rearm window, fire-once/rearm scheduling, shootable (health) path via the Death hook, and sounds are faithful. The omitted team/pressedkeys gates in MultiTouch are the substantive logic gap (verified absent: MultiTouch only checks ALL_ENTITIES + movedir facing)."
+    notes: "WAVE-2 FIX: the multi_touch TEAM gate (this.team / INVERT_TEAMS) is now ported and byte-identical to Base, and the multi_eventdamage NOSPLASH (DEATH_ISSPECIAL + HITTYPE_SPLASH) splash-immunity + team-attacker gate are now reproduced in OnDeath. STILL OPEN (re-confirmed 2026-06-22): the pressedkeys gate — Entity.PressedKeys exists now but MultiTouch doesn't consume it and this.pressedkeys is unported — plus the CTS per-client buffers + q3compat. Downgraded from 2 missing team gates to 1 missing keys gate."
 
   - id: mapobject-triggers.hurt.trigger_hurt
     name: "trigger_hurt — damage volume"
@@ -90,8 +88,9 @@ features:
       - { name: "creature cooldown", base: "1s (q3compat non-HURT_SLOW 0.05s)", port: "1s (no q3 path)", match: false }
       - { name: "deathtype", base: "DEATH_HURTTRIGGER (routes to DEATH_SELF/MURDER_VOID notif, all.inc:11)", port: "DeathTypes.Void", match: true }
       - { name: "default message", base: "\"was in the wrong place\"", port: "same", match: true }
+      - { name: "INVERT_TEAMS gate", base: "((spawnflags&INVERT_TEAMS)==0)==(team!=toucher.team)", port: "exact match", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
@@ -100,12 +99,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "non-creature branch has no toucher.damagedbytriggers gate (port lacks the field) — any non-creature toucher is damaged every touch, where Base gates on toucher.damagedbytriggers"
-      - "q3compat creature cooldown 0.05s and q3 default dmg 5 not applied (1s/10000 hard-coded)"
+      - "q3compat creature cooldown 0.05s and q3 default dmg 5 not applied (1s/10000 hard-coded, no q3 path)"
     verification:
-      - { kind: code_read, ref: "hurt.qc vs Triggers.cs HurtTouch/HurtUse; all.inc:11 HURTTRIGGER->VOID notif", result: pass }
+      - { kind: code_read, ref: "hurt.qc vs Triggers.cs HurtTouch (team gate now present; non-creature now gated on IsPushable as the damagedbytriggers stand-in); all.inc:11 HURTTRIGGER->VOID notif", result: pass }
     confidence: high
-    notes: "team/INVERT gate, 1s creature throttle, use-attacker takeover, and stock dmg=10000 are faithful. DEATH_HURTTRIGGER->Void is correct: all.inc REGISTER_DEATHTYPE(HURTTRIGGER,...VOID...) routes the hurt obituary to the void notification."
+    notes: "WAVE-2 FIX: the team/INVERT gate is now ported, and the non-creature branch now gates on MapMover.IsPushable (the port's stand-in for toucher.damagedbytriggers, same set as TargetUtilities) instead of damaging every non-creature toucher unconditionally — closing the baseline 'no damagedbytriggers gate' gap. 1s creature throttle, use-attacker takeover, stock dmg=10000, DEATH_HURTTRIGGER->Void all faithful. Logic upgraded partial->faithful."
 
   - id: mapobject-triggers.heal.trigger_heal
     name: "trigger_heal / target_heal — heal volume / relay"
@@ -123,23 +121,22 @@ features:
       - { name: "health (per-tick)", base: "10", port: "10", match: true }
       - { name: "max_health (topoff cap)", base: "200", port: "200", match: true }
       - { name: "noise default", base: "misc/mediumhealth.wav", port: "misc/mediumhealth.wav", match: true }
-      - { name: "HEAL_SOUND_ALWAYS", base: "spawnflag (always play even if not healed)", port: "NOT honored", match: false }
+      - { name: "HEAL_SOUND_ALWAYS", base: "BIT(2)", port: "1<<2 (HealSoundAlways)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
-      audio: partial
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "HEAL_SOUND_ALWAYS spawnflag not honored: Base plays the heal sound when (playthesound || healed); the port only plays it when actually healed (before < cap), so a topped-off creature in a HEAL_SOUND_ALWAYS field is silent"
       - "Base trigger_heal_touch only runs EXACTTRIGGER_TOUCH when is_trigger (targetname==\"\"); the port path does no exact-trigger clip (warpzone clip out of scope) — net effect on stock maps is none"
     verification:
-      - { kind: code_read, ref: "heal.qc vs Triggers.cs HealSetup/TargetHealSetup/HealTouch", result: pass }
+      - { kind: code_read, ref: "heal.qc:trigger_heal_touch (playthesound||healed) vs Triggers.cs HealTouch; heal.qh HEAL_SOUND_ALWAYS=BIT(2) vs HealSoundAlways=1<<2", result: pass }
     confidence: high
-    notes: "ADDED row (draft omitted this implemented family). Creature-only gate, takedamage/dead gate, per-toucher triggerhealtime cooldown (delay), Heal-up-to-cap, registered live (trigger_heal/target_heal in MapObjectsRegistry). Only HEAL_SOUND_ALWAYS branch differs."
+    notes: "WAVE-2 FIX: HEAL_SOUND_ALWAYS is now honored — the port computes healed = (before < cap) and plays the heal sound when (playTheSound || healed), exactly like Base. Constant 1<<2 matches BIT(2). Audio upgraded partial->faithful; the spawnflag gap is closed. Creature-only/takedamage/dead gates + per-toucher triggerhealtime cooldown + heal-up-to-cap remain faithful."
 
   - id: mapobject-triggers.gravity.trigger_gravity
     name: "trigger_gravity — gravity zone + non-sticky exit checker"
@@ -171,7 +168,7 @@ features:
     verification:
       - { kind: code_read, ref: "gravity.qc vs Triggers.cs Gravity* (checker think, .cnt priority, sticky vs restore)", result: pass }
     confidence: high
-    notes: "Per-toucher checker entity, frame-count decrement, .cnt zone-priority arbitration, sticky-vs-restore, and the gravity-change sound all reproduced. Legacy targetname/use toggle + START_DISABLED present. (UpdateCSQCProjectile is a net concern, out of scope.)"
+    notes: "Per-toucher checker entity, frame-count decrement, .cnt zone-priority arbitration, sticky-vs-restore, gravity-change sound all reproduced. Unchanged this wave."
 
   - id: mapobject-triggers.impulse.trigger_impulse
     name: "trigger_impulse — radial / directional / accel force fields"
@@ -205,7 +202,7 @@ features:
     verification:
       - { kind: code_read, ref: "impulse.qc vs Triggers.cs ImpulseTouch* (all 3 modes + lastpushtime dt + FALLOFF + strength**dt + accel_power)", result: pass }
     confidence: high
-    notes: "Ticrate-independent accel (strength**dt), FALLOFF none/linear/inv, SPEEDTARGET accel cap (8*dt*str), per-toucher lastpushtime timestep, accel_power, and cvar multipliers (default 1) all faithful. CSQC client-side prediction touch (impulse.qc NET_HANDLE) not ported (net), but the server touch is the gameplay authority."
+    notes: "Ticrate-independent accel (strength**dt), FALLOFF none/linear/inv, SPEEDTARGET accel cap, per-toucher lastpushtime timestep, accel_power, cvar multipliers all faithful. Unchanged this wave."
 
   - id: mapobject-triggers.push.trigger_push
     name: "trigger_push / target_push / trigger_push_velocity — jumppads"
@@ -236,14 +233,14 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "no centerprint(this.message) on a message-jumppad (jumppads.qc:392-393)"
-      - "no animdecide_setaction(ANIMACTION_JUMP) jump pose on launch (jumppads.qc:402)"
-      - "no jumppadcount / jumppadsused bookkeeping (jumppads.qc:379-405) — affects multi-jumppad kill-credit + the jump anim gate"
+      - "message-jumppad center-print: Wave-2 added MapMover.Centerprint(targ, this.message) at the launch site, but MapObjectsCommon.CenterprintHandler is unwired (0 assignments), so the centerprint still produces no visible text on the live path"
+      - "no animdecide_setaction(ANIMACTION_JUMP) jump pose on launch (jumppads.qc:402) — needs the cross-file anim seam"
+      - "no jumppadcount / jumppadsused multi-pad bookkeeping (jumppads.qc:379-405) — affects multi-jumppad kill-credit + the jump anim gate"
       - "q3compat gravity correction (grav /= 750/800) and the q3 target_push 1.5s debounce not applied"
     verification:
-      - { kind: code_read, ref: "jumppads.qc vs Jumppads.cs (ballistic solver, solve_quadratic, velocity pads, PUSH_ONCE, sound debounce) + client prediction; centerprint/animdecide/jumppadcount confirmed present in Base, absent in port", result: pass }
+      - { kind: code_read, ref: "jumppads.qc:392-405 vs Jumppads.cs JumppadPush (pushltime/istypefrag reset now present; centerprint call present but handler unwired; animdecide/jumppadcount still absent)", result: pass }
     confidence: high
-    notes: "Ballistic solver incl. up/down-jump root selection, weighted-random dest, no-target movedir push, velocity pads (add/bidir/clamp), team-pad ownership, and the 0.2s sound/flash debounce are faithful. Runs on both server post-move and client prediction. Bot waypoint trajectory probing (trigger_push_test) intentionally lives in the bot layer."
+    notes: "WAVE-2 PARTIAL FIX: the kill-credit reset (targ.PushLTime=0 / targ.IsTypeFrag=false, jumppads.qc:404-405) is now ported. The message-jumppad centerprint CALL was added but the host Centerprint seam is unwired, so it is dead presentation. animdecide JUMP pose + jumppadcount/jumppadsused still open. Ballistic solver, weighted-random dest, velocity pads, team-pad ownership, 0.2s debounce remain faithful; runs on server + client prediction."
 
   - id: mapobject-triggers.swamp.trigger_swamp
     name: "trigger_swamp — slow + damage players inside"
@@ -257,8 +254,8 @@ features:
     constants:
       - { name: "dmg default", base: "5", port: "5", match: true }
       - { name: "swamp_interval default", base: "1", port: "1", match: true }
-      - { name: "swamp_slowdown default", base: "0.5", port: "0.5 (stored, never read)", match: false }
-      - { name: "deathtype", base: "DEATH_SWAMP", port: "DeathTypes.Void", match: false }
+      - { name: "swamp_slowdown default", base: "0.5", port: "0.5 (stored, STILL never read)", match: false }
+      - { name: "deathtype", base: "DEATH_SWAMP", port: "DeathTypes.Swamp", match: true }
     status:
       logic: partial
       values: partial
@@ -269,12 +266,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "slowdown is DEAD: SwampThink stamps it.SwampSlug = self and the 0.5 swamp_slowdown, but NO code in PlayerPhysics/MovementParameters reads SwampSlug.SwampSlowdown (Base player.qc:50 maxspd_mod) — players are damaged but move at full speed (verified: grep of Physics/* finds no SwampSlug/SwampSlowdown reader)"
-      - "obituary uses DeathTypes.Void instead of DeathTypes.Swamp (DeathTypes.Swamp exists at DeathTypes.cs:90 and is unused) — a swamp kill prints the void death message, not 'You got stuck in a swamp!' (NotificationsList.cs:858 DEATH_SELF_SWAMP exists but is never reached)"
+      - "slowdown is STILL DEAD: SwampThink stamps it.SwampSlug + the 0.5 swamp_slowdown, but NO code in PlayerPhysics/MovementParameters reads SwampSlug.SwampSlowdown as maxspd_mod (Base player.qc:50: maxspd_mod *= (swampslug.active==ACTIVE_ACTIVE) ? swampslug.swamp_slowdown : 1). Verified: grep of Physics/* finds writers in Triggers.cs + the field def only — no reader; PlayerPhysics maxspeedMod is built from spectator-speed only and player.SpeedMultiplier rides HighSpeed/powerups, never swamp. Players are damaged but move at full speed — the whole point of a swamp."
     verification:
-      - { kind: code_read, ref: "swamp.qc + player.qc:50 vs Triggers.cs SwampThink; grep for SwampSlowdown reads in Physics = none", result: fail }
+      - { kind: code_read, ref: "swamp.qc + player.qc:50 vs Triggers.cs SwampThink (now g_swamped clear/restamp + DeathTypes.Swamp); grep for SwampSlowdown reads in Physics = none (still)", result: fail }
     confidence: high
-    notes: "The damage-over-interval half (radius scan, per-player interval, dmg=5/interval=1) is live and faithful. The slowdown half (the whole point of a swamp) is stamped but never consumed by movement — the headline gap of this unit. liveness=partial because the damage path is live but the slowdown path is dead."
+    notes: "WAVE-2 FIXES: (1) the obituary now uses DeathTypes.Swamp -> 'SWAMP' -> DEATH_SELF_SWAMP notification (DeathMessages.cs:215, NotificationsList.cs:858) instead of the void death message; (2) the claim logic now mirrors QC's g_swamped intrusive list (clear-then-restamp each frame, skip a player whose current swamp is ACTIVE). STILL OPEN (headline): the slowdown half is never consumed by movement, so a swamp damages but does not slow. liveness stays partial (damage + obituary live; slowdown dead)."
 
   - id: mapobject-triggers.secret.trigger_secret
     name: "trigger_secret — secrets-found counter trigger"
@@ -293,17 +289,18 @@ features:
       logic: faithful
       values: faithful
       timing: na
-      presentation: partial
+      presentation: missing
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "secrets_found / secrets_total are counted (MapObjectsState) but never surfaced — no 'N secrets found' notification/HUD line (Base also lacks a built-in surface here, so this is latent)"
+      - "centerprint TEXT still not surfaced: Wave-2 added MapMover.Centerprint(toucher, this.message) ('You found a secret!') but MapObjectsCommon.CenterprintHandler is never assigned (0 assignments), so the call no-ops — the secret-found text is still invisible. (The audible misc/secret.wav still fires via SUB_UseTargets.)"
+      - "secrets_found / secrets_total are counted (MapObjectsState) but the count is never surfaced as a 'N secrets found' HUD line (Base also lacks a built-in surface — latent)"
     verification:
-      - { kind: code_read, ref: "secret.qc vs Triggers.cs SecretSetup/SecretTouch", result: pass }
+      - { kind: code_read, ref: "secret.qc vs Triggers.cs SecretTouch (Centerprint call added); MapObjectsCommon.CenterprintHandler assignment search = none", result: pass }
     confidence: high
-    notes: "Player-only touch, ++secrets_found, SUB_UseTargets (which plays the secret noise + centerprints the message audibly), fire-once disarm, ++secrets_total at spawn, sound map (1/2/3), delay=0 all faithful. Only the surfacing of the count is missing."
+    notes: "Player-only touch, ++secrets_found, SUB_UseTargets (plays the secret noise), fire-once disarm, ++secrets_total, sound map all faithful. WAVE-2 added the centerprint CALL but the host seam to deliver it is unwired, so the visible text remains missing (presentation: missing, downgraded from the baseline 'partial' to reflect that the call is dead until the handler is wired)."
 
   - id: mapobject-triggers.counter.trigger_counter
     name: "trigger_counter — fire after N uses (+ per-player)"
@@ -320,23 +317,22 @@ features:
       - { name: "COUNTER_FIRE_AT_COUNT", base: "BIT(2)", port: "1<<2", match: true }
       - { name: "COUNTER_PER_PLAYER", base: "BIT(3)", port: "1<<3", match: true }
       - { name: "SPAWNFLAG_NOMESSAGE", base: "BIT(0)", port: "1<<0", match: true }
-      - { name: "sequence notif sound", base: "none (Send_Notification MSG_CENTER is text-only)", port: "misc/talk.wav (hardcoded play)", match: false }
+      - { name: "sequence notif sound", base: "none (Send_Notification MSG_CENTER is text-only)", port: "none (invented misc/talk.wav REMOVED)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
       presentation: missing
-      audio: partial
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "CENTER_SEQUENCE_COMPLETED / _COUNTER / _COUNTER_FEWMORE notifications: the center-print countdown TEXT ('N more..' / 'sequence complete') is dropped (presentation: missing)"
-      - "audio DIVERGENCE: Base counter_use sends MSG_CENTER notifications which carry NO sound; the port substitutes a hardcoded misc/talk.wav play that Base does not emit — wrong cue, not a faithful reproduction"
+      - "CENTER_SEQUENCE_COMPLETED / _COUNTER / _COUNTER_FEWMORE notifications: the center-print countdown TEXT ('N more..' / 'sequence complete') is still dropped — no localized-notification channel for these MSG_CENTER strings yet (presentation: missing)"
     verification:
-      - { kind: code_read, ref: "counter.qc:counter_use vs Triggers.cs CounterUse (per-player store, respawntime, fire-at-count); Send_Notification MSG_CENTER carries no sound", result: fail }
+      - { kind: code_read, ref: "counter.qc:counter_use vs Triggers.cs CounterUse — both branches now emit NO sound (the invented misc/talk.wav play2 calls were removed, matching the text-only MSG_CENTER notifications)", result: pass }
     confidence: high
-    notes: "Shared + per-(counter,player) count, COUNTER_FIRE_AT_COUNT, respawntime re-arm, and counter_reset (incl. per-player store cleanup) faithful. The notification handling diverges in BOTH directions: missing text + an invented talk.wav."
+    notes: "WAVE-2 FIX (audio divergence closed): the port no longer plays a hardcoded misc/talk.wav on the sequence-complete / few-more notifications — Base emits no sound there, and now neither does the port. audio upgraded partial->faithful. Shared + per-player count, COUNTER_FIRE_AT_COUNT, respawntime re-arm, counter_reset all faithful. STILL OPEN: the center-print TEXT (presentation: missing)."
 
   - id: mapobject-triggers.relay.trigger_relay
     name: "trigger_relay / target_relay / target_delay / trigger_delay"
@@ -366,7 +362,7 @@ features:
     verification:
       - { kind: code_read, ref: "relay.qc + delay.qc vs Triggers.cs Relay/TargetDelay/Delay*", result: pass }
     confidence: high
-    notes: "trigger_relay/target_relay (active-gated SUB_UseTargets), target_delay (wait->delay fallback), and trigger_delay (own-think deferred fire capturing the activator) all faithful. .reset bodies dormant (no reset infra)."
+    notes: "trigger_relay/target_relay (active-gated SUB_UseTargets), target_delay (wait->delay fallback), trigger_delay (own-think deferred fire capturing the activator) all faithful. .reset bodies dormant. Unchanged this wave."
 
   - id: mapobject-triggers.monoflop.trigger_monoflop
     name: "trigger_monoflop — one input -> one ON + one delayed OFF"
@@ -393,11 +389,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "monoflop_reset wired (MonoflopReset) but not driven by reset infra (GameWorld.ResetMapObjects is a stub) — re-arms ON state across a match reset only once a reset hook calls it"
+      - "monoflop_reset wired (MonoflopReset) but NOT driven by reset infra — GameWorld.ResetMapObjects() now exists but only deletes projectiles; it does not call e.Reset(e), so the ON-state re-arm never fires on a match reset"
     verification:
-      - { kind: code_read, ref: "monoflop.qc vs LogicGates.cs Monoflop* (rising-edge ON, re-arm timer, fixed variant, think OFF)", result: pass }
+      - { kind: code_read, ref: "monoflop.qc vs LogicGates.cs Monoflop*; GameWorld.ResetMapObjects (no e.Reset call)", result: pass }
     confidence: high
-    notes: "Rising-edge ON fire, re-arm-each-press vs fixed (set-once) timer, and the delayed OFF think with this.enemy as activator all faithful."
+    notes: "Rising-edge ON fire, re-arm-each-press vs fixed timer, delayed OFF think all faithful. .reset still dormant (ResetMapObjects does not dispatch .Reset). Unchanged this wave."
 
   - id: mapobject-triggers.flipflop.trigger_flipflop
     name: "trigger_flipflop — pass only every 2nd event"
@@ -420,11 +416,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - ".reset (spawnfunc_trigger_flipflop perfect resetter) dormant — no reset infra"
+      - ".reset (perfect resetter) dormant — ResetMapObjects does not dispatch .Reset"
     verification:
       - { kind: code_read, ref: "flipflop.qc vs LogicGates.cs FlipflopUse (toggle latch, fire on ON, active-gate)", result: pass }
     confidence: high
-    notes: "ADDED row (draft omitted this implemented family). Active-gated toggle latch, fires SUB_UseTargets only on the ON flip, START_ENABLED initial state — all faithful. Registered live."
+    notes: "Active-gated toggle latch, fires SUB_UseTargets only on the ON flip, START_ENABLED initial state faithful. Unchanged this wave."
 
   - id: mapobject-triggers.multivibrator.trigger_multivibrator
     name: "trigger_multivibrator — free-running on/off oscillator"
@@ -452,11 +448,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "multivibrator_reset dormant (no reset infra) — only runs the targeted-init branch at spawn"
+      - "multivibrator_reset dormant — ResetMapObjects does not dispatch .Reset (only the targeted-init branch runs at spawn)"
     verification:
       - { kind: code_read, ref: "multivibrator.qc vs LogicGates.cs Multivibrator* (cyclestart floor math, state-flip fire, nextthink scheduling)", result: pass }
     confidence: high
-    notes: "ADDED row (draft omitted). Free-running phase math (floor((time+phase)/period)*period - phase), state-flip SUB_UseTargets, toggle start/stop, and the +0.01 boundary nudge all match QC. Registered live + thinks via SimulationLoop.RunThink."
+    notes: "Free-running phase math, state-flip SUB_UseTargets, toggle start/stop, +0.01 boundary nudge all match QC. Registered live + thinks via SimulationLoop.RunThink. Unchanged this wave."
 
   - id: mapobject-triggers.disablerelay.trigger_disablerelay
     name: "trigger_disablerelay — flip ACTIVE<->NOT on named targets"
@@ -477,11 +473,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - ".reset dormant (no reset infra)"
+      - ".reset dormant — ResetMapObjects does not dispatch .Reset"
     verification:
       - { kind: code_read, ref: "disablerelay.qc vs LogicGates.cs DisableRelayUse (per-target ACTIVE<->NOT flip + (!a)==(!b) misuse log)", result: pass }
     confidence: high
-    notes: "ADDED row (draft omitted). Active-gated, flips each named target's active state, logs the all-on/all-off misconfiguration like QC LOG_INFO. Registered live."
+    notes: "Active-gated, flips each named target's active state, logs the all-on/all-off misconfiguration. Unchanged this wave."
 
   - id: mapobject-triggers.relay_if.trigger_relay_if
     name: "trigger_relay_if — cvar-compare gate"
@@ -503,11 +499,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - ".reset dormant (no reset infra)"
+      - ".reset dormant — ResetMapObjects does not dispatch .Reset"
     verification:
       - { kind: code_read, ref: "relay_if.qc vs LogicGates.cs RelayIfUse (cvar_string(netname)==cvar_string(message), NEGATE)", result: pass }
     confidence: high
-    notes: "ADDED row (draft omitted). Compares the two named cvars' string values, NEGATE inverts, active-gated, fires SUB_UseTargets on a match. Registered live; cvar reads via the Api.Cvars facade."
+    notes: "Compares the two named cvars' string values, NEGATE inverts, active-gated, fires SUB_UseTargets on a match. Unchanged this wave."
 
   - id: mapobject-triggers.relay_teamcheck.trigger_relay_teamcheck
     name: "trigger_relay_teamcheck — team gate on the activator"
@@ -530,11 +526,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - ".reset (team_saved restore) dormant — no reset infra"
+      - ".reset (team_saved restore) dormant — ResetMapObjects does not dispatch .Reset"
     verification:
       - { kind: code_read, ref: "relay_teamcheck.qc vs LogicGates.cs RelayTeamCheckUse (team match / INVERT diff-team / NOTEAM for teamless activator)", result: pass }
     confidence: high
-    notes: "ADDED row (draft omitted). Teamed activator fires on SameTeam (or DIFF_TEAM when INVERT); teamless activator fires only when NOTEAM. Registered live."
+    notes: "Teamed activator fires on SameTeam (or DIFF_TEAM when INVERT); teamless fires only when NOTEAM. Unchanged this wave."
 
   - id: mapobject-triggers.relay_activators.relay_activate
     name: "relay_activate / relay_deactivate / relay_activatetoggle — set targets' active state"
@@ -559,11 +555,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - ".reset (relay_activators_init doubles as reset) dormant — no reset infra"
+      - ".reset (relay_activators_init doubles as reset) dormant — ResetMapObjects does not dispatch .Reset"
     verification:
       - { kind: code_read, ref: "relay_activators.qc vs LogicGates.cs RelayActivatorsUse (per-target .setactive(.cnt), generic_setactive fallback)", result: pass }
     confidence: high
-    notes: "ADDED row (draft omitted). Each variant stamps .cnt then shares relay_activators_use, calling each target's .setactive (or generic_setactive). GenericSetActive (triggers.qc) ported. Registered live."
+    notes: "Each variant stamps .cnt then shares relay_activators_use, calling each target's .setactive (or generic_setactive). Unchanged this wave."
 
   - id: mapobject-triggers.gamestart.trigger_gamestart
     name: "trigger_gamestart — fire targets at game start, then delete"
@@ -576,7 +572,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/LogicGates.cs:GamestartUse"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/LogicGates.cs:AdaptorThink2Use"
     constants:
-      - { name: "fire time", base: "game_starttime + wait", port: "GameStartTime + wait", match: true }
+      - { name: "fire time", base: "game_starttime + wait", port: "GameStartTime + wait (via provider)", match: true }
     status:
       logic: faithful
       values: partial
@@ -585,14 +581,14 @@ features:
       audio: na
       liveness: partial
     intended_divergence: true
-    divergence_rationale: "game_starttime defaults to 0 in the headless gametype (the host applies the real match countdown upstream); the no-wait branch uses a same-frame think instead of QC's InitializeEntity(INITPRIO_FINDTARGET) because the port has no priority-init pass for this family. Both are deliberate port-infra adaptations, faithful in net effect on a t=0 start."
+    divergence_rationale: "game_starttime defaults to 0 in the headless gametype (the host applies the real match countdown upstream); the no-wait branch uses a same-frame think instead of QC's InitializeEntity(INITPRIO_FINDTARGET) because the port has no priority-init pass for this family. Both are deliberate port-infra adaptations, faithful on a t=0 start. A GameStartTimeProvider seam now exists for fidelity but is not wired on the live path (see gaps)."
     gaps:
-      - "GameStartTime defaults to 0 unless a host sets it — the wait>0 branch fires relative to 0, not the real countdown end, unless wired"
-      - ".reset2 dormant (no reset infra)"
+      - "GameStartTime fidelity: Wave-2 added LogicGates.GameStartTimeProvider, but the host wires only StartItem.GameStartTimeProvider (GameWorld.cs:550), NOT LogicGates.GameStartTimeProvider — so the wait>0 branch still fires relative to 0, not the real countdown end"
+      - ".reset2 dormant — ResetMapObjects does not dispatch .Reset"
     verification:
-      - { kind: code_read, ref: "gamestart.qc vs LogicGates.cs Gamestart* (adaptor_think2use, fire+delete)", result: pass }
+      - { kind: code_read, ref: "gamestart.qc vs LogicGates.cs Gamestart* + GameStartTimeProvider; GameWorld.cs:550 wires StartItem not LogicGates", result: pass }
     confidence: medium
-    notes: "ADDED row (draft omitted). Fires targets then deletes; wait schedules a think at game_starttime+wait. Registered live, but timing fidelity depends on the host stamping GameStartTime (hence partial/partial)."
+    notes: "Fires targets then deletes; wait schedules a think at game_starttime+wait. A GameStartTimeProvider hook was added this wave but is NOT wired (only StartItem's is), so live timing still defaults to t=0 — unchanged in net effect. Stays partial/partial."
 
   - id: mapobject-triggers.magicear.trigger_magicear
     name: "trigger_magicear — chat pattern match -> SUB_UseTargets / text replace"
@@ -605,6 +601,8 @@ features:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/LogicGates.cs:MagicEarSetup"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/LogicGates.cs:MagicEarProcessMessage"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/LogicGates.cs:MagicEarProcessAllEars"
+      - "src/XonoticGodot.Server/Chat.cs:Say"
+      - "src/XonoticGodot.Server/Commands.cs:CmdSay"
     constants:
       - { name: "MAGICEAR_* spawnflags", base: "BIT(0..9)", port: "1<<0..1<<9", match: true }
     status:
@@ -613,17 +611,16 @@ features:
       timing: na
       presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "UNWIRED on the live path: no say/chat pipeline in the port calls MagicEarProcessAllEars, so registered ears never see a message (the spawnfunc registers + links the list, but it is dead)"
       - "TUBA melody match branch (MAGICEAR_TUBA / W_Tuba_HasPlayed) out of scope — a TUBA ear returns msgin unchanged"
-      - "strdecolorize is a no-op (chat has no color codes yet) so MAGICEAR_NODECOLORIZE is inert"
+      - "strdecolorize is a no-op (chat color codes minimal) so MAGICEAR_NODECOLORIZE is largely inert"
     verification:
-      - { kind: code_read, ref: "magicear.qc vs LogicGates.cs MagicEar* (pattern *x*/x*/*x/exact match, replace modes, range gate, CONTINUE chaining); grep for a say-pipeline caller = none", result: fail }
+      - { kind: code_read, ref: "magicear.qc vs LogicGates.cs MagicEar*; Chat.cs:142 calls MagicEarProcessAllEars; Commands.cs:459 registers 'say'->CmdSay->Chat.Say; NetGame.cs:742/775 wires Commands.ChatToPlayer on the live listen-server path (both stock + threaded branches)", result: pass }
     confidence: high
-    notes: "ADDED row (draft omitted). The string-match core (all four wildcard branches, replace-whole/replace-substring/range-gate/CONTINUE chaining) is a faithful port, but there is NO live caller — the chat say pipeline does not exist, so this is dead. TUBA is deliberately out of scope."
+    notes: "WAVE-2 FIX (liveness dead->live): a server chat engine (XonoticGodot.Server/Chat.cs, Say) was added and CmdSay/CmdSayTeam/CmdTell route through it; Chat.Say:142 calls MagicEarProcessAllEars on every non-empty player say, and NetGame wires Commands.ChatToPlayer on the live path so CmdSay takes the Chat.Say branch (not the legacy broadcast). Registered ears now see live chat messages. The string-match core (4 wildcard branches, replace modes, range gate, CONTINUE chaining) remains faithful; logic stays partial only for the out-of-scope TUBA branch."
 
   - id: mapobject-triggers.keylock.trigger_keylock
     name: "trigger_keylock — fire target when all required keys supplied"
@@ -646,19 +643,19 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: missing
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "CENTER_DOOR_LOCKED_ALSONEED / _NEED notifications (with item_keys_keylist text) are dropped — the port plays the sound (noise1/noise2) but not the center-print 'you need the X key' text"
-      - "unlocked-message centerprint(this.message) ('Unlocked!') not surfaced (presentation only; the sound + target fire are faithful)"
+      - "unlock centerprint TEXT still not surfaced: Wave-2 added MapMover.Centerprint(toucher, this.message) ('Unlocked!') on the all-keys branch, but MapObjectsCommon.CenterprintHandler is unwired (0 assignments), so the call no-ops — the unlock text is still invisible (the sound + target fire are faithful)"
+      - "CENTER_DOOR_LOCKED_ALSONEED / _NEED notifications (with item_keys_keylist text) are still dropped — the port plays noise1/noise2 but not the 'you need the X key' center-print text"
       - "PS(toucher) per-stats key store: the port reads toucher.ItemKeys directly (no PS indirection) — equivalent on the server path"
     verification:
-      - { kind: code_read, ref: "keylock.qc vs Triggers.cs Keylock* (item_keys_usekey consume, all-keys vs some-keys branch, target/target2, killtarget, self-remove, no-keys delete)", result: pass }
+      - { kind: code_read, ref: "keylock.qc vs Triggers.cs Keylock* (Centerprint('Unlocked!') call added); CenterprintHandler assignment search = none", result: pass }
     confidence: high
-    notes: "ADDED row (draft omitted this implemented family). Player-only, consumes matching itemkeys, fires target2 on the wait cooldown with some keys, fires target + kills killtarget + removes self with all keys, removes itself if no itemkeys specified. Registered live. Only the CENTER_DOOR_LOCKED text + unlock centerprint are unported (presentation)."
+    notes: "Player-only, consumes matching itemkeys, fires target2 on cooldown with some keys, fires target + kills killtarget + removes self with all keys. WAVE-2 added the 'Unlocked!' centerprint CALL, but the host seam to deliver it is unwired, so the visible text is still missing (presentation: missing, downgraded from baseline 'partial'). The CENTER_DOOR_LOCKED keylist text is also still unported."
 
   - id: mapobject-triggers.teleport.trigger_teleport
     name: "trigger_teleport / target_teleporter — player teleport source"
@@ -670,27 +667,31 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Teleporters.cs:TeleportSetup"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Teleporters.cs:SimpleTeleportPlayer"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Teleporters.cs:TeleportPlayer"
       - "src/XonoticGodot.Engine/Simulation/TriggerTouch.cs:PredictTeleportsAmbient"
     constants:
       - { name: "TELEPORT_OBSERVERS_ONLY", base: "BIT(0)", port: "1<<0", match: true }
       - { name: "TELEPORT_KEEP_SPEED", base: "BIT(1) (skips MIN/MAXSPEED clamp)", port: "1<<1 (no-op: clamps unported)", match: true }
       - { name: "exit offset", base: "1 - mins.z - 24", port: "1 - mins.z - 24", match: true }
       - { name: "out-velocity", base: "v_forward * vlen(velocity)", port: "forward * |velocity|", match: true }
+      - { name: "teleport sound", base: "misc/teleport.wav (CH_TRIGGER, gated by TELEPORT_FLAG_SOUND)", port: "same (TeleportSound default, SoundChannel.Item)", match: true }
+      - { name: "exit-flash offset", base: "to + v_forward*32 (and from)", port: "to + toForward*32 (and from)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
       presentation: faithful
-      audio: unknown
+      audio: faithful
       liveness: live
     intended_divergence: true
-    divergence_rationale: "TELEPORT_MINSPEED/MAXSPEED STAT clamps (and therefore the KEEP_SPEED branch that skips them) are out of scope: those stats default to 0 in stock physics, so omitting the clamp is a no-op on stock maps. Bot waypoint trajectory probing and CSQC send/recv are also deliberately deferred."
+    divergence_rationale: "TELEPORT_MINSPEED/MAXSPEED STAT clamps (and the KEEP_SPEED branch that skips them) are out of scope: those stats default to 0 in stock physics, so omitting the clamp is a no-op on stock maps. TeleportRoundGateSuppressed() is a seam-stub returning false: the !g_race/!g_cts + round-pre-start telefrag suppression needs a gametype/round-state accessor not reachable from this file (faithful on non-race stock play). Bot waypoint probing and CSQC send/recv also deferred."
     gaps:
       - "TELEPORT_MIN/MAXSPEED magnitude clamps not implemented (no-op on stock maps where the stats are 0)"
+      - "telefrag !g_race/!g_cts + round-pre-start suppression stubbed (TeleportRoundGateSuppressed() returns false) — over-telefrags only in race/cts/round-pre-start, faithful otherwise"
     verification:
-      - { kind: code_read, ref: "teleport.qc + teleporters.qc:Simple_TeleportPlayer vs Teleporters.cs + client prediction pass", result: pass }
-    confidence: medium
-    notes: "Dest resolve (single cached enemy vs weighted-random + telefrag-avoid), velocity reproject along dest mangle, .speed cap, RemoveGrapplingHooks, both-end teleport flash, SUB_UseTargets at teleporter+dest faithful. Single-dest teleporters also predicted client-side. Audio (teleport sound cue) not verified this pass."
+      - { kind: code_read, ref: "teleport.qc + teleporters.qc:Simple_TeleportPlayer/TeleportPlayer vs Teleporters.cs (team-ownership gate added; sound now via MapMover.Sound CH_TRIGGER under pushltime debounce; both-end flash under debounce; TELEPORT_FLAG telefrag gate)", result: pass }
+    confidence: high
+    notes: "WAVE-2 FIXES: (1) audio resolved from unknown->faithful — the teleport sound is now genuinely emitted (misc/teleport.wav via MapMover.Sound on CH_TRIGGER) under the 0.2s pushltime debounce, gated by TELEPORT_FLAG_SOUND; (2) the team-ownership gate (teamplay-gated this.team = actor.team in TeleportUse + the INVERT_TEAMS DIFF_TEAM check in TeleportActive) is now ported; (3) the telefrag gate now honors the TELEPORT_FLAG_TDEATH/FORCE_TDEATH bits. Dest resolve, velocity reproject, both-end flash (now correctly under the debounce, matching Base), SUB_UseTargets, single-dest client prediction faithful. Confidence raised high."
 
   - id: mapobject-triggers.music.target_music
     name: "target_music / trigger_music — map music overrides"
@@ -701,6 +702,7 @@ features:
       - "common/mapobjects/target/music.qc:TargetMusic_Advance"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/TargetMusic.cs:TargetMusicSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/TargetMusic.cs:TargetMusicUse"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/TargetMusic.cs:TriggerMusicSetup"
       - "game/client/MusicPlayer.cs:UpdateSources"
     constants:
@@ -720,10 +722,11 @@ features:
     divergence_rationale: null
     gaps:
       - "fade curve approximated: the client uses a two-AudioStreamPlayer A/B crossfade rather than QC's per-source state easing by frametime/fade_time (in) and frametime/fade_rate (out)"
+      - "target_music_reset / trigger_music_reset handlers are now installed but NOT driven (ResetMapObjects does not dispatch .Reset), so the round-restart re-assert of the default track is dormant"
     verification:
-      - { kind: code_read, ref: "music.qc vs TargetMusic.cs + game/client/MusicPlayer.cs (3-layer priority scan + lifetime window + 0.2s touch-freshness)", result: pass }
-    confidence: medium
-    notes: "3-layer priority + lifetime window (MusicLifetime/MusicActivationTime evaluated in MusicPlayer) + trigger_music touch-freshness (0.2s) are read live by the client MusicPlayer each frame (shared-process listen server). Track selection faithful; the exact fade ramp differs."
+      - { kind: code_read, ref: "music.qc vs TargetMusic.cs (target_music_use now gates on a real-client activator; reset handlers installed) + MusicPlayer.cs (3-layer priority + lifetime + 0.2s touch)", result: pass }
+    confidence: high
+    notes: "WAVE-2 IMPROVEMENT: target_music_use now reproduces QC's gates — a null / non-client trigger source no longer activates the override (only a real player does), and reset handlers were installed (though not yet driven). 3-layer priority + lifetime window + trigger touch-freshness read live by the client MusicPlayer. Track selection faithful; the fade ramp still differs. Confidence raised high."
 
   - id: mapobject-triggers.viewloc.trigger_viewlocation
     name: "trigger_viewlocation + target_viewlocation_start/end — 2.5D camera regions"
@@ -750,8 +753,8 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "no client 2.5D side-scroller camera consumer: the server stamps player.ViewLoc each frame but the view is never locked to the start->end line, so the camera region has no visible effect"
+      - "no client 2.5D side-scroller camera consumer: the server stamps player.ViewLoc each frame but the view is never locked to the start->end line, so the camera region has no visible effect (unchanged this wave)"
     verification:
-      - { kind: code_read, ref: "viewloc.qc vs ViewLocation.cs (anchor resolve at INITPRIO_FINDTARGET, per-frame clear+re-stamp, angle fold)", result: pass }
+      - { kind: code_read, ref: "viewloc.qc vs ViewLocation.cs (anchor resolve at INITPRIO_FINDTARGET, per-frame clear+re-stamp, angle fold) — no diff this wave", result: pass }
     confidence: high
-    notes: "Server half faithful and live: anchors resolved post-spawn (RunDeferredInit), per-frame think clears+re-stamps .viewloc via box-overlap (NOT touch, matching QC). The CSQC camera that consumes .viewloc is unported (port client is free-look), so liveness is partial — the stamp goes nowhere visible."
+    notes: "Server half faithful and live: anchors resolved post-spawn, per-frame think clears+re-stamps .viewloc via box-overlap. The CSQC camera that consumes .viewloc is still unported (port client is free-look), so liveness stays partial. Unchanged this wave."

@@ -5,13 +5,10 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 12
   worst_gaps:
-    - "item_key* entirely missing: no key spawnfunc registered, so keys never spawn and key-gated doors/keylocks can never be opened"
-    - "SUB_CalcMove default easing WRONG: port defaults platmovetype_start/end = 1/1 (forced LINEAR), Base defaults 0/0 (smoothstep ease -2t^3+3t^2) — EVERY long door/plat/train move is uneased linear instead of S-curved, and set_platmovetype is unported so a mapper platmovetype key is ignored on every mover"
-    - "dynlight renders no light: server state machine runs but there is no realtime dynamic-light consumer, so authored map lights are invisible"
-    - "func_clientwall distance-fade not rendered: fade_start/fade_end/alpha_max/alpha_min/fade_vertical_offset + PVS alpha-cull (Ent_Wall_PreDraw) are stored on the entity but no renderer applies them — a distance-faded clientwall does not fade"
+    - "dynlight renders no light: server state machine runs (incl. full path-travel) but there is still no realtime dynamic-light consumer, so authored map lights are invisible"
+    - "func_clientwall distance-fade not rendered: fade_start/fade_end/alpha_max/alpha_min/fade_vertical_offset + PVS alpha-cull (Ent_Wall_PreDraw) are stored on the entity but no renderer applies them, and the antiwall solid-toggle relay (g_clientmodel_use) is unported"
     - "bgmscript ADSR not ported: func_clientwall/func_pointparticles never animate alpha/position/emission to the map music"
-    - "dynlight path-follow parks on its first path_corner instead of traveling the corner chain"
-    - "path_corner set_platmovetype not ported: a func_train's per-corner ease/turn string overrides are ignored"
+    - "item_key pickup centerprint is silently dropped: KeySetup/KeyTouch grant the keys (live) but the CenterprintHandler sink is never wired, so the 'You've picked up the X key!' message no-ops; MF_ROTATE key spin is also dropped (no Entity.ModelFlags)"
 features:
   - id: mapobject-misc.laser.server_logic
     name: "misc_laser damage + detector think (aim, trace, team gate, enter/exit latch)"
@@ -43,10 +40,10 @@ features:
     divergence_rationale: "End effect is resolved by NAME (Entity.LaserEndEffect) instead of QC's particle-effect integer .cnt, and the detector latch uses a dedicated Entity.LaserHitLatch bool instead of QC's .count field (a mapper-set count no longer pre-latches). No shipped map uses a numeric cnt key. Net_LinkEntity/laser_SendEntity is dropped (the client reads the shared entity off the ambient facade). Documented in Laser.cs."
     gaps: []
     verification:
-      - { kind: code, ref: "Laser.cs:42-243 vs laser.qc:12-121,215-288 line-by-line — aim, endpoint, trace gate, detector enter/exit latch, INVERT team truth-table, dmg<0 instakill, dmg*frametime, DEATH_HURTTRIGGER->Void all match", result: pass }
-      - { kind: code, ref: "MapObjectsRegistry.cs:133 registers misc_laser -> Laser.LaserSetup", result: pass }
+      - { kind: code, ref: "Laser.cs unchanged by Wave-1/2 (git diff main..HEAD = empty); LASER_BEAM_MAXLENGTH=32768 / MAXWORLDSIZE=1048576 confirmed vs laser.qh:32,34 — aim, endpoint, trace gate, detector enter/exit latch, INVERT team truth-table, dmg<0 instakill, dmg*frametime, DEATH_HURTTRIGGER->Void all match", result: pass }
+      - { kind: code, ref: "MapObjectsRegistry.cs:135 registers misc_laser -> Laser.LaserSetup", result: pass }
     confidence: high
-    notes: "VERIFIED. Counterintuitive team gate (non-inverted team laser damages SAME-team touchers) mirrored verbatim. QC detector latch uses .count (laser.qh:10 / laser.qc:95-110); port uses LaserHitLatch bool — confirmed deliberate. INITPRIO_FINDTARGET enemy lookup deferred to first active think (LaserTargetSearched) rather than a spawn pass — same net effect."
+    notes: "VERIFIED unchanged by Wave-1/2 (Laser.cs has no diff vs main). Counterintuitive team gate (non-inverted team laser damages SAME-team touchers) mirrored verbatim. INITPRIO_FINDTARGET enemy lookup deferred to first active think rather than a spawn pass — same net effect."
 
   - id: mapobject-misc.laser.beam_render
     name: "misc_laser beam + end effect + dynamic light (Draw_Laser)"
@@ -57,9 +54,10 @@ features:
       - "game/client/LaserRenderer.cs:LaserRenderer"
     constants:
       - { name: "beam texture", base: "particles/laserbeam", port: "particles/laserbeam.tga", match: true }
-      - { name: "sliding texcoord", base: "time*3", port: "none (static)", match: false }
-      - { name: "end fx rate", base: "drawframetime*1000 every frame", port: "throttled ~10 Hz", match: false }
-      - { name: "additive when no alpha", base: "alpha 0.5 DRAWFLAG_ADDITIVE", port: "approximated", match: false }
+      - { name: "sliding texcoord", base: "time*3", port: "Uv1Offset = -now*3 (animated, tiled along beam)", match: true }
+      - { name: "end fx SKY/NOIMPACT suppress", base: "Draw_Laser:333 sky||noimpact => no particles/dlight", port: "hitSurface gated on !sky && !noImpact", match: true }
+      - { name: "end fx rate", base: "drawframetime*1000 every frame", port: "throttled ~10 Hz (EndFxInterval=0.1)", match: false }
+      - { name: "additive when no alpha", base: "alpha 0.5 DRAWFLAG_ADDITIVE", port: "approximated (AlphaKey>0 normal else additive 0.5)", match: false }
     status:
       logic: faithful
       values: partial
@@ -70,13 +68,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Beam texture's sliding texcoord (time*3) is not animated — the beam looks static rather than scrolling."
-      - "End-point particle bursts are throttled to ~10 Hz per laser rather than emitted every frame (drawframetime*1000)."
+      - "End-point particle bursts are still throttled to ~10 Hz per laser (EndFxInterval=0.1f) rather than emitted every frame (drawframetime*1000)."
       - "Client trace runs at the server tick origin (no InterpolateOrigin_Do) — negligible since stock-map lasers are static."
     verification:
-      - { kind: code, ref: "LaserRenderer.cs:1-200 header + ClientWorld.cs:338 instantiation (Lasers = new LaserRenderer)", result: pass }
+      - { kind: code, ref: "LaserRenderer.cs:256-261 Uv1Scale tiling + Uv1Offset=-now*TexScrollRate(3); LaserRenderer.cs:216-221 hitSurface gated on Q3SURFACEFLAG_SKY|NOIMPACT; EndFxInterval=0.1f still present at line 43", result: pass }
     confidence: medium
-    notes: "Crossed-quad ribbon + persistent OmniLight3D stand in for Draw_CylindricLine + adddynamiclight(endpos, modelscale, beam_color*5). Live on listen-server/demo via ambient-facade scan; idles on a pure --connect client (established seam). Not observed in-game this pass (medium confidence on the visual)."
+    notes: "PARTIAL FIX (Wave-2), re-confirmed this pass. The two baseline gaps that were code-fixable are closed: the beam texcoord scrolls (time*3 via per-frame Uv1Offset, tiled along the ribbon) and the end fx are suppressed on SKY *and* NOIMPACT faces (Draw_Laser:333). Residual partials: end-fx still ~10Hz not per-frame, no InterpolateOrigin. Live on listen-server/demo via ambient-facade scan; idles on a pure --connect client. Not observed in-game this pass (medium confidence on the actual visual)."
 
   - id: mapobject-misc.follow.attach_follow
     name: "misc_follow attach / MOVETYPE_FOLLOW ride at spawn"
@@ -84,28 +81,32 @@ features:
     base_refs:
       - "common/mapobjects/misc/follow.qc:follow_init"
       - "common/mapobjects/misc/follow.qc:spawnfunc(misc_follow)"
+      - "lib/util.qc:attach_sameorigin"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Follow.cs:FollowInit"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Follow.cs:FollowSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Follow.cs:AttachSameOrigin"
     constants:
       - { name: "FOLLOW_ATTACH", base: "BIT(0)", port: "1<<0", match: true }
       - { name: "FOLLOW_LOCAL", base: "BIT(1)", port: "1<<1", match: true }
+      - { name: "tagscale = vlen(v_forward)^-2", base: "1/(flen*flen)", port: "1f/(flen*flen)", match: true }
+      - { name: "t_left = v_right * -tagscale", base: "yes", port: "vRight * -tagscale", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "attach_sameorigin's tag-relative origin/angle bake (gettaginfo/gettagindex + AnglesTransform basis change) is deferred; the port issues the parent SetAttachment but not the tag-space transform — a tag-attached entity may sit at the parent origin rather than the exact tag pose."
+    gaps: []
     verification:
-      - { kind: code, ref: "Follow.cs:79-157 vs follow.qc:5-69 line-by-line — jointtype-persist, !src&&!dst guard, FOLLOW_ATTACH/LOCAL branches, dst.solid=SOLID_NOT, follow_sameorigin relative view_ofs/v_angle all match", result: pass }
-      - { kind: code, ref: "MapObjectsRegistry.cs:178 misc_follow -> Follow.FollowSetup; RunPostSpawn:309 drains Follow.RunDeferredInit", result: pass }
+      - { kind: code, ref: "Follow.cs:80-133 vs follow.qc:5-64 — jointtype-persist, !src&&!dst guard, FOLLOW_ATTACH/LOCAL branches, dst.solid=SOLID_NOT, follow_sameorigin relative view_ofs/v_angle all match", result: pass }
+      - { kind: code, ref: "Follow.cs:151-196 AttachSameOrigin vs util.qc:2057-2095 — gettaginfo tag pose, tagscale, tag-local origin dots, fixedmakevectors pitch-flip + FixedVecToAngles2 round trip; headless fallback to bare parent link when no model service", result: pass }
+      - { kind: code, ref: "MapObjectsRegistry.cs:192 misc_follow -> Follow.FollowSetup; RunPostSpawn (line 323) drains Follow.RunDeferredInit; RunPostSpawn called on the live server path at GameWorld.cs:575", result: pass }
     confidence: high
-    notes: "VERIFIED. Deferred to INITPRIO_FINDTARGET via pending-init queue drained in RunPostSpawn (MapObjectsRegistry.cs:300-310)."
+    notes: "FIXED (Wave-2), re-confirmed. The baseline gap (tag-relative origin/angle bake deferred) is closed: AttachSameOrigin bakes the entity into the parent tag's local space via Api.Models.TryGetTag + QMath.FixedVecToAngles2, with a documented headless fallback to the bare parent link. Deferred to INITPRIO_FINDTARGET via the pending-init queue drained in RunPostSpawn (live on the real match path)."
 
   - id: mapobject-misc.dynlight.server_state
     name: "dynlight static/follow/tag/path modes + toggle + reset (server)"
@@ -114,11 +115,15 @@ features:
       - "common/mapobjects/misc/dynlight.qc:spawnfunc(dynlight)"
       - "common/mapobjects/misc/dynlight.qc:dynlight_find_aiment"
       - "common/mapobjects/misc/dynlight.qc:dynlight_find_target"
+      - "common/mapobjects/misc/dynlight.qc:dynlight_find_path"
       - "common/mapobjects/misc/dynlight.qc:dynlight_use"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/DynamicLight.cs:DynlightSetup"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/DynamicLight.cs:FindAiment"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/DynamicLight.cs:FindTarget"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/DynamicLight.cs:FindPath"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/DynamicLight.cs:PathNext"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/DynamicLight.cs:PathWait"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/DynamicLight.cs:DynlightUse"
     constants:
       - { name: "light_lev default", base: "200", port: "200", match: true }
@@ -126,22 +131,23 @@ features:
       - { name: "path speed default", base: "100", port: "100", match: true }
       - { name: "think interval", base: "0.1s", port: "0.1s", match: true }
       - { name: "START_OFF / NOSHADOW / FOLLOW", base: "BIT(0)/BIT(1)/BIT(2)", port: "1<<0/1<<1/1<<2", match: true }
+      - { name: "path-follow corner walk", base: "setthink(train_next) — travels chain", port: "PathNext/PathWait walk corner chain via CalcMove(Linear)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
       audio: na
       liveness: live
-    intended_divergence: false
-    divergence_rationale: null
-    gaps:
-      - "Path-following dynlight snaps onto its first path_corner and PARKS (FindPath sets origin then installs NO think; TrainNext is private to MovingBrushes); it never travels the corner chain that QC's setthink(train_next) would walk."
+    intended_divergence: true
+    divergence_rationale: "The path-following branch reimplements a dynlight-specialised train_next/train_wait inline (PathNext/PathWait) on the public MapMover.CalcMove seam rather than calling MovingBrushes.TrainNext, because a dynlight is a zero-size point light that exposes none of the bbox/TRAIN_CURVE/TRAIN_TURN/NEEDACTIVATION keys the full func_train pather handles. Net behavior (travel corner chain at .speed, fire each corner's targets, honour per-corner .wait/.speed) matches QC's train_next reuse. Documented in DynamicLight.cs header."
+    gaps: []
     verification:
-      - { kind: code, ref: "DynamicLight.cs:64-243 vs dynlight.qc:39-156 line-by-line — defaults, lefty, four-mode dispatch, FindAiment/FindTarget MOVETYPE_FOLLOW+owner+view_ofs, DynlightUse/SetActive light_lev<->lefty toggle, DynlightReset all match", result: pass }
-      - { kind: code, ref: "MapObjectsRegistry.cs:173 dynlight registered; RunPostSpawn:307 drains DynamicLight.RunDeferredInit", result: pass }
+      - { kind: code, ref: "DynamicLight.cs:69-291 vs dynlight.qc:39-156 — defaults (light_lev=200, color='1 1 1', speed=100, nextthink time+0.1 all confirmed in Base), four-mode dispatch, FindAiment/FindTarget MOVETYPE_FOLLOW+owner+view_ofs, DynlightUse/SetActive toggle, DynlightReset all match", result: pass }
+      - { kind: code, ref: "DynamicLight.cs:177-237 FindPath/PathNext/PathWait vs dynlight.qc:62-73 (setthink train_next) — FindFirstByTargetName lookahead, target chain advance, per-corner wait/speed, UseTargets on arrival; toggle (.Use) + spin (avelocity) preserved independent of think", result: pass }
+      - { kind: code, ref: "MapObjectsRegistry.cs:187 dynlight registered; RunPostSpawn (line 321) drains DynamicLight.RunDeferredInit; RunPostSpawn is called on the live path at GameWorld.cs:575", result: pass }
     confidence: high
-    notes: "VERIFIED. Static/FOLLOW/tag-attach/toggle/reset/spin faithful and live. Only the path-travel branch parks (FindPath.cs:173-189 explicitly documents the park). The render half is a separate feature (dynlight.render)."
+    notes: "FIXED (Wave-2), re-confirmed. The baseline park-on-first-corner gap is closed: a path-following dynlight now travels the full path_corner chain (PathNext/PathWait built on CalcMove). Static/FOLLOW/tag-attach/toggle/reset/spin remain faithful and live. The render half is a separate feature (dynlight.render) and is still missing."
 
   - id: mapobject-misc.dynlight.render
     name: "dynlight realtime light (radius/color/style render)"
@@ -160,11 +166,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No DP-style realtime dynamic-light consumer: a dynlight ticks/toggles/follows on the server but emits no visible light. Where a map authored a moving or pulsing light, the player sees nothing."
+      - "No DP-style realtime dynamic-light consumer: a dynlight now ticks/toggles/follows/TRAVELS on the server but still emits no visible light. Where a map authored a moving or pulsing light, the player sees nothing."
     verification:
-      - { kind: code, ref: "DynamicLight.cs:14-17 header: 'There is NO dlight RENDER consumer yet'; no OmniLight3D/light spawn for dynlight in game/", result: fail }
+      - { kind: code, ref: "DynamicLight.cs:18-21 header still states 'There is NO dlight RENDER consumer yet'; grep OmniLight3D across game/client/: only LaserRenderer end-fx light + csqc-fx/projectile/viewmodel/warm-fx lights, no dynlight spawn", result: fail }
     confidence: high
-    notes: "VERIFIED. Deferred to T4 realtime-light territory per the port header. Base's pflags lines are commented out, but the DP engine still drives a realtime light from light_lev/color/style — the port has neither."
+    notes: "STILL OPEN. Deferred to T4 realtime-light territory per the port header; unchanged by Wave-1/2. Base's pflags lines are commented out, but the DP engine still drives a realtime light from light_lev/color/style — the port has neither."
 
   - id: mapobject-misc.keys.item_key
     name: "item_key* pickup keys (spawn, touch, grant itemkeys, model rotate)"
@@ -173,31 +179,43 @@ features:
       - "common/mapobjects/misc/keys.qc:spawnfunc(item_key)"
       - "common/mapobjects/misc/keys.qc:item_key_touch"
       - "common/mapobjects/misc/keys.qc:spawn_item_key"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:KeySetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:SpawnItemKey"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:KeyTouch"
     constants:
-      - { name: "default model", base: "models/keys/key.md3", port: "n/a", match: false }
-      - { name: "GOLD/SILVER/BRONZE ids", base: "BIT(0)/BIT(1)/BIT(2)", port: "n/a", match: false }
-      - { name: "RED/BLUE/GREEN keycards", base: "BIT(3)/BIT(4)/BIT(5)", port: "n/a", match: false }
-      - { name: "MASTER key", base: "0xffffff", port: "n/a", match: false }
-      - { name: "key bbox", base: "'-16 -16 -56'..'16 16 0' +32z", port: "n/a", match: false }
-      - { name: "item_key1->SILVER / item_key2->GOLD (legacy swap)", base: "BIT(1)/BIT(0)", port: "n/a", match: false }
-      - { name: "modelflags", base: "MF_ROTATE | EF_LOWPRECISION", port: "n/a", match: false }
+      - { name: "default model", base: "models/keys/key.md3", port: "models/keys/key.md3", match: true }
+      - { name: "GOLD/SILVER/BRONZE ids", base: "BIT(0)/BIT(1)/BIT(2)", port: "1<<0/1<<1/1<<2", match: true }
+      - { name: "RED/BLUE/GREEN keycards", base: "BIT(3)/BIT(4)/BIT(5)", port: "1<<3/1<<4/1<<5", match: true }
+      - { name: "MASTER key", base: "0xffffff", port: "0xffffff", match: true }
+      - { name: "colormod GOLD/SILVER/BRONZE", base: "'1 .9 0'/'.9 .9 .9'/'.6 .25 0'", port: "(1,.9,0)/(.9,.9,.9)/(.6,.25,0)", match: true }
+      - { name: "colormod RED/BLUE/GREEN/MASTER", base: "'.9 0 0'/'0 0 .9'/'0 .9 0'/'1 .25 .25'", port: "verbatim", match: true }
+      - { name: "key bbox", base: "'-16 -16 -56'..'16 16 0' +32z", port: "(-16,-16,-56)..(16,16,0) +32z", match: true }
+      - { name: "item_key1->SILVER / item_key2->GOLD (legacy swap)", base: "BIT(1)/BIT(0)", port: "1<<1/1<<0", match: true }
+      - { name: "modelflags MF_ROTATE", base: "set", port: "dropped (no Entity.ModelFlags)", match: false }
+      - { name: "EF_LOWPRECISION", base: "set", port: "EfLowPrecision (4194304)", match: true }
+      - { name: "FLOATING spawnflag -> noalign -> MOVETYPE_NONE else TOSS", base: "yes", port: "yes", match: true }
+      - { name: "pickup sound", base: "play2(toucher, SND(ITEMPICKUP))", port: "MapMover.Sound(toucher, TriggerAuto, .Noise)", match: true }
+      - { name: "pickup centerprint", base: "centerprint(toucher, message)", port: "MapMover.Centerprint (handler unwired -> no-op)", match: false }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
-      audio: missing
-      liveness: na
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: faithful
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No item_key / item_key1 / item_key2 / item_key_gold/silver/master spawnfunc is registered in MapObjectsRegistry, so a map's key entity spawns nothing: no model, no MF_ROTATE spin, no DropToFloor, no pickup sound, no centerprint, and no itemkeys bits granted to the player."
-      - "Because keys are never acquired, any trigger_keylock or key-gated func_door can never be opened — the player is permanently locked out of that area."
+      - "item_key pickup centerprint ('You've picked up the X key!') is silently dropped: MapMover.Centerprint(toucher, this.Message) IS called (MapObjectsRegistry.cs:441) but MapObjectsCommon.CenterprintHandler (declared MapObjectsCommon.cs:782) is never assigned anywhere in game/ or src/ (grep = 0 assignments), so Centerprint no-ops on the live path."
+      - "MF_ROTATE key spin is dropped — the port's Entity carries no ModelFlags field (grep for ModelFlags/MF_ROTATE on Entity = none), so the key model sits static instead of rotating (documented at SpawnItemKey, MapObjectsRegistry.cs:413)."
+      - "item_keys_names[lowestbit] save (for keylist display strings) and the Q3COMPAT_COMMON QL +8z origin nudge are omitted (no Q3-compat global; the latter documented)."
     verification:
-      - { kind: code, ref: "grep item_key across src/game: no spawnfunc registration in MapObjectsRegistry.cs; only the keylock CONSUMER (item_keys_usekey) exists in Triggers.cs/Doors.cs", result: fail }
+      - { kind: code, ref: "MapObjectsRegistry.cs:154-159 registers item_key/item_key1/item_key2/item_key_gold/silver/master with correct BIT pre-stamps; KeySetup/SpawnItemKey/KeyTouch (lines 349-448) vs keys.qc:77-264 — multi-bit reject (excl. master), per-id netname/colormod, bbox, TOSS/NONE, touch grant + fire-target-once-with-blanked-message all match", result: pass }
+      - { kind: code, ref: "consumer chain consistent: KeyTouch grants toucher.ItemKeys (line 439); Doors.cs and Triggers.cs read player/toucher.ItemKeys (same Entity.ItemKeys field) — a granted key now actually opens a keylock/key-gated door", result: pass }
+      - { kind: grep, ref: "CenterprintHandler: only declaration at MapObjectsCommon.cs:782, NO assignment anywhere outside planning/ -> Centerprint no-ops; ModelFlags/MF_ROTATE: no Entity field", result: fail }
     confidence: high
-    notes: "VERIFIED missing. The keylock consumer side is present but useless without a key source. Both the SVQC and CSQC item_keys_usekey variants exist in Base (keys.qc:4-38); only the server consumer is ported. Unknown whether any stock map ships a key/locked-door pair."
+    notes: "MOSTLY FIXED (Wave-2), re-confirmed. The baseline worst-gap (keys never spawn, key-gated areas permanently locked) is closed: all six key classnames are registered, the grant logic + pickup sound are live, and the consumer chain (Doors/Triggers reading the same Entity.ItemKeys) means a picked-up key actually unlocks. Residual presentation gaps: the centerprint sink is unwired (host never assigns CenterprintHandler) and MF_ROTATE spin is dropped. Touch uses toucher.ItemKeys where QC uses PS(toucher).itemkeys, but the port consolidates both onto Entity.ItemKeys consistently across producer and consumer."
 
   - id: mapobject-misc.teleport_dest.marker
     name: "info_teleport_destination / misc_teleporter_dest endpoint"
@@ -220,10 +238,10 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "Teleporters.cs:55-62 TeleportDestSetup vs teleport_dest.qc:29-49 — mangle=angles, angles cleared, setorigin, index", result: pass }
-      - { kind: code, ref: "MapObjectsRegistry.cs:114-115 registers both classnames -> TeleportDestSetup", result: pass }
+      - { kind: code, ref: "Teleporters.cs TeleportDestSetup unchanged by the Wave-2 Teleporters diff (diff does not touch TeleportDestSetup) vs teleport_dest.qc:29-49 — mangle=angles, angles cleared, setorigin, index", result: pass }
+      - { kind: code, ref: "MapObjectsRegistry.cs:116-117 registers both classnames -> TeleportDestSetup", result: pass }
     confidence: high
-    notes: "VERIFIED. Passive findable edict (indexed by targetname); the .cnt/.speed reorient+reproject is consumed by the trigger_teleport path. CSQC net-link (ENT_CLIENT_TELEPORT_DEST) unnecessary (shared-entity seam). QC's no-targetname objerror is a headless no-op (entity stays inert)."
+    notes: "VERIFIED unchanged by Wave-1/2 (the Teleporters.cs Wave-2 diff does not touch TeleportDestSetup). Passive findable edict (indexed by targetname); the reorient+reproject is consumed by the trigger_teleport path. CSQC net-link unnecessary (shared-entity seam)."
 
   - id: mapobject-misc.corner.path_corner
     name: "path_corner waypoint + per-corner platmovetype override (set_platmovetype)"
@@ -233,23 +251,26 @@ features:
       - "common/mapobjects/platforms.qc:set_platmovetype"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/MovingBrushes.cs:PathCornerSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:SetPlatMoveType"
     constants:
-      - { name: "platmovetype string parse -> platmovetype_start/end", base: "set_platmovetype(this, platmovetype) tokenizes 2 floats", port: "not ported", match: false }
+      - { name: "platmovetype string parse -> platmovetype_start/end", base: "set_platmovetype(this, platmovetype) tokenizes up to 2 floats + optional 'force'", port: "MapMover.SetPlatMoveType(this, Platmovetype) — same tokenizer", match: true }
+      - { name: "one-token sets both ends", base: "n==1 -> end=start", port: "PlatMoveEnd = n>1 ? argv[1] : PlatMoveStart", match: true }
+      - { name: "cubic_speedfunc_is_sane reject", base: "lib/math.qh:138", port: "CubicSpeedFuncIsSane (verbatim ellipse condition)", match: true }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "PathCornerSetup only sets origin + indexes the corner; it does not call set_platmovetype, so a corner's platmovetype string (per-corner ease curve / turn override) is ignored — a func_train moves with its default easing through that corner. The TRAIN_TURN spawnflag IS honored; only the per-corner platmovetype-string override is missing."
+    gaps: []
     verification:
-      - { kind: code, ref: "MovingBrushes.cs:246-251 PathCornerSetup (origin+index only) vs corner.qc:44-51 (set_platmovetype) and platforms.qc:209-235 (the unported tokenizer)", result: fail }
+      - { kind: code, ref: "MovingBrushes.cs:246-252 PathCornerSetup now calls MapMover.SetPlatMoveType(this, Platmovetype) before origin/index; func_train TrainNext (line 363-372) restores the corner's PlatMoveStart/End or re-parses the train's own key — matches corner.qc:44-51 + train_next", result: pass }
+      - { kind: code, ref: "MapObjectsCommon.cs:909-940 SetPlatMoveType vs platforms.qc:209-235 — stof tokenizer, n==0/1/2 branches, 'force' skip, CubicSpeedFuncIsSane gate (false return = reject mover); Platmovetype promoted onto the edict BEFORE the spawnfunc runs", result: pass }
     confidence: high
-    notes: "VERIFIED. set_platmovetype is NOT ported anywhere (grep: no SetPlatMoveType; PlatMoveStart/End only ever get the constructor default + the controller copy). Tightly coupled to the subs.calcmove default-easing divergence below: since no path sets platmovetype_start/end, they keep the port's 1/1 default."
+    notes: "FIXED (Wave-2), re-confirmed. The baseline gap (set_platmovetype unported, corner platmovetype string ignored) is closed: PathCornerSetup now parses the corner's per-corner ease/turn string, and func_train's TrainNext applies the corner override or restores the train default. SetPlatMoveType is also wired into func_plat and func_train spawnfuncs."
 
   - id: mapobject-misc.subs.calcmove
     name: "SUB_CalcMove / SUB_CalcAngleMove mover driver (linear + bezier + cubic_speedfunc)"
@@ -266,7 +287,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:CalcAngleMove"
     constants:
       - { name: "linear cutoff", base: "traveltime < 0.15", port: "< 0.15f", match: true }
-      - { name: "platmovetype_start/end DEFAULT", base: "0/0 (QC float default) => smoothstep ease cubic_speedfunc(0,0,t) = -2t^3+3t^2", port: "PlatMoveStart=1/PlatMoveEnd=1 => forced LINEAR branch (cubic_speedfunc(1,1,t)=t)", match: false }
+      - { name: "platmovetype_start/end DEFAULT", base: "0/0 (QC float default) => smoothstep ease cubic_speedfunc(0,0,t) = -2t^3+3t^2", port: "PlatMoveStart=0/PlatMoveEnd=0 (field default) => smoothstep ease", match: true }
       - { name: "explicit-linear platmovetype", base: "start==1 && end==1", port: "PlatMoveStart==1 && PlatMoveEnd==1", match: true }
       - { name: "non-positive traveltime fallback", base: "0.001", port: "0.001f", match: true }
       - { name: "angle short cutoff", base: "traveltime < 0.1", port: "< 0.1f", match: true }
@@ -274,21 +295,19 @@ features:
       - { name: "cubic_speedfunc", base: "(((s+e-2)x -2s-e+3)x +s)x", port: "verbatim", match: true }
     status:
       logic: faithful
-      values: partial
-      timing: partial
+      values: faithful
+      timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "DEFAULT EASING WRONG: QC .platmovetype_start/_end are uninitialized floats (default 0), so a mover with no platmovetype key fails the (start==1 && end==1) linear test and runs the bezier branch with cubic_speedfunc(0,0,t) = -2t^3+3t^2 (smoothstep ease-in-out). The port hardcodes PlatMoveStart=PlatMoveEnd=1, which makes (==1 && ==1) always true => EVERY long (>=0.15s) door/plat/train move runs the LINEAR branch (constant velocity) instead of the eased S-curve. Short (<0.15s) moves match (both linear). Path geometry is unaffected (straight-line midpoint control either way); only the speed profile diverges."
-      - "set_platmovetype is unported (see corner.path_corner), so even a mapper-set platmovetype key on any mover is silently ignored — there is no path that ever sets PlatMoveStart/End to anything but the 1/1 default."
+    gaps: []
     verification:
-      - { kind: code, ref: "MapObjectsCommon.cs:109-110 PlatMoveStart=1/PlatMoveEnd=1 defaults vs QC field default 0; subs.qc:309 linear test (start==1 && end==1); CubicSpeedFunc(0,0,t) = -2t^3+3t^2 (ease) vs CubicSpeedFunc(1,1,t) = t (linear)", result: fail }
-      - { kind: code, ref: "MapObjectsCommon.cs:511-707 CalcMove/CalcMoveBezier/CalcMoveControllerThink/CalcAngleMove vs subs.qc:114-389 — branch split, controller sub-entity, cubic_speedfunc, PlatMoveTurn drive, .ltime scheduling, SUB_CalcMoveDone snap+think1 otherwise faithful", result: pass }
+      - { kind: code, ref: "MapObjectsCommon.cs:125-126 PlatMoveStart/End default 0 (uninitialized, matching QC float default) — the (start==1 && end==1) linear shortcut (line 548) FAILS by default, so long movers run the bezier branch with cubic_speedfunc(0,0,t) = -2t^3+3t^2 (smoothstep ease), exactly as Base", result: pass }
+      - { kind: code, ref: "MapObjectsCommon.cs:527-707 CalcMove/CalcMoveBezier/CalcMoveControllerThink/CalcAngleMove vs subs.qc:114-389 — branch split, controller sub-entity, cubic_speedfunc, .ltime scheduling, SUB_CalcMoveDone snap+think1 all faithful; SetPlatMoveType now feeds non-default curves from a mapper platmovetype key", result: pass }
     confidence: high
-    notes: "CORRECTED from draft (was all-faithful, no gap). The structural port is faithful, but the platmovetype default flip means stock movers are linear where Base is smoothstep-eased — a real timing/values divergence on the most-live feature in the unit. Used by every door/plat/train/button. Not yet observed in-game; severity (cosmetic vs noticeable) unconfirmed but the curve difference is mathematically real for any move >= 0.15s."
+    notes: "FIXED (Wave-2), re-confirmed. The baseline default-easing divergence is closed: PlatMoveStart/End default to 0/0 (matching QC's uninitialized float fields), so every stock door/plat/train >= 0.15s move runs the smoothstep S-curve instead of forced linear. A mapper-set platmovetype key flows through SetPlatMoveType (see corner.path_corner). Used by every door/plat/train/button — the most-live feature in the unit, now timing/values-faithful. Curve correctness verified by code; in-game feel not separately observed (severity was cosmetic anyway)."
 
   - id: mapobject-misc.bgmscript.adsr
     name: "bgmscript map-music ADSR animation (func_clientwall / func_pointparticles)"
@@ -316,9 +335,9 @@ features:
     gaps:
       - "No bgmscript ADSR envelope: a func_clientwall / func_pointparticles carrying a .bgmscript key does not animate its alpha / origin / angles / emission to the map's .bgs music script — the prop is static instead of pulsing to the soundtrack. doBGMScript / BGMScript_InitEntity / the .bgs loader are absent."
     verification:
-      - { kind: code, ref: "grep bgmscript across src/game: only documented as out-of-scope in MapModels.cs:13 / PointParticles.cs headers; no doBGMScript/.bgs loader; Ent_Wall_Draw (models.qc:261-289) not ported", result: fail }
+      - { kind: code, ref: "grep bgmscript/doBGMScript/Ent_Wall_PreDraw across game/ + src/: only documented as out-of-scope (MapModels.cs:11-12, MapParticleEmitters.cs:19, PointParticles.cs:14); no consumer added by Wave-1/2", result: fail }
     confidence: high
-    notes: "VERIFIED missing. Explicitly scoped out in the MapModels.cs:13 header ('bgmscript ADSR animation are out of scope (no shipped stock map depends on them)'). The ENT_CLIENT_WALL fade keys ride the entity but the bgmscript animation itself is absent."
+    notes: "STILL OPEN. Explicitly scoped out in the MapModels.cs / PointParticles.cs / MapParticleEmitters.cs headers as a documented residual ('bgmscript ADSR is out of scope — no shipped stock map depends on it'). Unchanged by Wave-1/2."
 
   - id: mapobject-misc.models.props_walls
     name: "models.qc decoration props + static walls (spawn/solid/drop/colormap)"
@@ -348,11 +367,11 @@ features:
     intended_divergence: true
     divergence_rationale: "The g_clientmodel_* Net_LinkEntity (ENT_CLIENT_WALL) stream is omitted: the listen-server/demo client reads the shared entity off the ambient facade (the seam every client fx uses). No shipped stock map depends on the antiwall relay or bgmscript on these. Documented in MapModels.cs."
     gaps:
-      - "Colormap value is stored on Entity.ColorMapOverride but render consumption (team-tinting the prop) is a follow-up seam — a colormapped prop is not actually recolored on screen yet."
+      - "Colormap value is stored on Entity.ColorMapOverride but render consumption (team-tinting the prop) is a follow-up seam — a colormapped prop is not actually recolored on screen yet (grep ColorMapOverride: only stored at MapModels.cs/MapObjectFieldsExtra.cs, no renderer consumer)."
     verification:
-      - { kind: code, ref: "MapModels.cs:31-141 vs models.qc:17-218 line-by-line; all 8 classnames registered (MapObjectsRegistry.cs:143-145 + the misc_*/illusionary set); solid/SetModel order, DropBySpawnflags 3 branches, colormap teamplay path all match", result: pass }
+      - { kind: code, ref: "MapModels.cs unchanged by Wave-1/2 (git diff main..HEAD = empty) vs models.qc:17-218; all classnames registered in MapObjectsRegistry.cs; solid/SetModel order, DropBySpawnflags 3 branches, colormap teamplay path all match", result: pass }
     confidence: high
-    notes: "VERIFIED. func_wall/func_clientwall/func_static get Solid.Bsp + inline brush via SetModel (real ClipToEntities collision). DropToFloor runs inline (INITPRIO_DROPTOFLOOR). The colormap/fade-render/bgmscript pieces are separate presentation features (see clientwall_fade + bgmscript.adsr rows)."
+    notes: "VERIFIED unchanged by Wave-1/2 (MapModels.cs has no diff vs main). func_wall/func_clientwall/func_static get Solid.Bsp + inline brush via SetModel. DropToFloor runs inline. The colormap-render/clientwall-fade/bgmscript pieces are separate presentation features."
 
   - id: mapobject-misc.models.clientwall_fade
     name: "func_clientwall distance-fade + PVS alpha-cull + antiwall solid-toggle (Ent_Wall_PreDraw / g_clientmodel_use)"
@@ -377,10 +396,10 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "func_clientwall distance-fade is not rendered: fade_start/fade_end/alpha_max/alpha_min/fade_vertical_offset are parsed onto the Entity (MapObjectFieldsExtra.cs:61-65,127-131) but NO renderer applies Ent_Wall_PreDraw's distance-fade alpha formula or its PVS alpha-cull — a clientwall meant to fade out with distance stays fully opaque."
+      - "func_clientwall distance-fade is not rendered: fade_start/fade_end/alpha_max/alpha_min/fade_vertical_offset are parsed onto the Entity (MapObjectFieldsExtra.cs) but NO renderer applies Ent_Wall_PreDraw's distance-fade alpha formula or its PVS alpha-cull — a clientwall meant to fade out with distance stays fully opaque. (The only FadeEndDist consumer is WeatherSystem.cs:166 for rain/snow draw distance, an unrelated coincidental field name.)"
       - "The antiwall relay (g_clientmodel_use: trigger sets antiwall_flag to toggle a func_clientwall/func_clientillusionary between its default_solid and SOLID_NOT, with the .inactive flag hiding it) is not ported — a map that toggles a clientwall solid/visible via a trigger has no effect."
     verification:
-      - { kind: code, ref: "MapObjectFieldsExtra.cs:61-65 stores FadeStartDist/FadeEndDist/AlphaMax/AlphaMin/FadeVerticalOffset; grep FadeStart/AlphaMax across game/: no wall renderer consumes them (only particle/effect files match)", result: fail }
-      - { kind: code, ref: "grep antiwall across src/game: no g_clientmodel_use / antiwall_flag / inactive solid-toggle port", result: fail }
+      - { kind: code, ref: "MapObjectFieldsExtra.cs stores FadeStartDist/FadeEndDist/AlphaMax/AlphaMin/FadeVerticalOffset; grep across game/ + src/: no wall renderer consumes them (only WeatherSystem rain/snow drawdist matches FadeEndDist)", result: fail }
+      - { kind: grep, ref: "antiwall / g_clientmodel_use / antiwall_flag across game/ + src/ (excl. planning): no port", result: fail }
     confidence: high
-    notes: "NEW ROW (draft omitted this; it had claimed the fade keys 'ride the entity for it', implying it worked). The draft's models.props_walls divergence_rationale folds antiwall+bgmscript away but the distance-fade is a distinct, observable presentation gap. No shipped stock map is known to depend on these; severity low for stock content but a correctness hole for custom maps."
+    notes: "STILL OPEN. Unchanged by Wave-1/2. No shipped stock map is known to depend on these; severity low for stock content but a correctness hole for custom maps."

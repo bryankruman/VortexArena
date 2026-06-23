@@ -5,13 +5,13 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 15
   worst_gaps:
-    - "Players cannot vote: CastVote/Abstain have no caller and DispatchImpulse drops all impulses during intermission, so the vote always finishes with zero votes."
-    - "Client vote screen never appears: MapVotePanel is registered but never fed (no SetVote/SetVotes/SetWinner caller anywhere in the repo) and there is no ENT_CLIENT_MAPVOTE net sync."
-    - "No mapvote net entity: the ballot, mask, live tallies, own-vote and winner are never sent to clients."
-    - "Ballot reduce/keep-two (g_maplist_votable_reduce_time/_reduce_count) is not implemented; the reduce cvar is misnamed g_maplist_votable_keeptwotime and never read."
-    - "No server-side gametype vote at all: no gametype ballot, no custom gametypes, no hook execution, no MapInfo_SwitchGameType, no maplist reset."
-    - "Suggestions are stored (existence + dedup + suggestions==0 disable) but never seeded into the ballot (MapVoting.Start ignores _mapSuggestions)."
-    - "hud_panel_mapvote_highlight_border default is 2 in the port vs 1 in every shipped Base HUD skin."
+    - "Players STILL cannot vote: CastVote/Abstain have no caller and DispatchImpulse still early-returns during intermission (Commands.cs:1357), so the vote always finishes with zero votes — the central liveness failure is unchanged after Wave 1/2."
+    - "Client vote screen STILL never appears: MapVotePanel.SetVote/SetVotes/SetWinner have zero callers anywhere in the repo and there is no ENT_CLIENT_MAPVOTE net sync; the panel is present-but-unfed."
+    - "No mapvote net entity: ballot, mask, live tallies, own-vote and winner are never sent to clients."
+    - "Suggestion seeding is now CODED (MapVoting.Start 4-arg overload) but DEAD on the live path: GameWorld.DriveEndOfMatchMapFlow calls the 3-arg Start (GameWorld.cs:2108) with the rotation ballot only — Commands.MapSuggestions is never passed in."
+    - "1 s winner→changelevel delay property (ReadyToChangeLevel) exists but is BYPASSED: GameWorld applies the map on MapVote.Finished (GameWorld.cs:2127), never consulting ReadyToChangeLevel."
+    - "Reduce is now implemented + live in MapVoting.CheckRulesDecide, but g_maplist_votable_reduce_count is unregistered (reads 0 → keepExactly=false, wrong mode vs Base default 2); the misnamed g_maplist_votable_keeptwotime=15 still pollutes Cvars.cs:397."
+    - "No server-side gametype vote at all (GameTypeVote_*): no ballot, no MapInfo_SwitchGameType, no maplist reset; sv_vote_gametype_options still ships 'dm tdm ctf' vs Base 'dm tdm ca ctf'."
 features:
   - id: sv-mapvoting.lifecycle.think_loop
     name: "Vote lifecycle / think loop (start, throttle, winner delay)"
@@ -23,10 +23,10 @@ features:
       - "src/XonoticGodot.Server/GameWorld.cs:DriveEndOfMatchMapFlow"
       - "src/XonoticGodot.Server/MapVoting.cs:Tick"
     constants:
-      - { name: "think_cadence_s", base: "0.5", port: "every frame (none)", match: false }
-      - { name: "winner_to_changelevel_delay_s", base: "1", port: "0 (applied immediately)", match: false }
+      - { name: "think_cadence_s", base: "0.5", port: "0.5 (ThinkCadenceSeconds, self-throttled in Tick)", match: true }
+      - { name: "winner_to_changelevel_delay_s", base: "1", port: "1 (WinnerToChangeLevelDelaySeconds — modeled but NOT consulted by GameWorld)", match: false }
     status:
-      logic: partial
+      logic: faithful
       values: partial
       timing: partial
       presentation: na
@@ -35,12 +35,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No 0.5s think throttle; the vote ticks every frame."
-      - "No 1s delay between winner reveal and changelevel; the port changes the map as soon as Finish picks a winner."
+      - "The 1 s winner→changelevel delay is now modeled as MapVoting.ReadyToChangeLevel (winner_time + 1, plus the timeout-snap nextthink clamp), but DriveEndOfMatchMapFlow applies the map on MapVote.Finished (GameWorld.cs:2127-2128) and never reads ReadyToChangeLevel — so on the live path the map still changes immediately on finish."
     verification:
-      - { kind: code, ref: "GameWorld.cs:1996-2024 drives MapVote.Start/Tick/Finish on the live intermission path", result: pass }
+      - { kind: code, ref: "MapVoting.cs:71 ThinkCadenceSeconds=0.5 enforced in Tick (lines 293-298, incl. the timeout-snap matching mapvoting.qc:789-791); ReadyToChangeLevel at 101 unused by GameWorld.cs:2127", result: pass }
     confidence: high
-    notes: "Server lifecycle IS on the live path (gated on g_maplist_votable>0, PlayerCount>0, ballot>1, PlayerStats.DelayMapVote)."
+    notes: "FIX: 0.5 s think throttle is now genuinely implemented + live (was 'every frame'). PARTIAL: winner-delay logic exists but is bypassed on the live path, so the visible timing is unchanged."
 
   - id: sv-mapvoting.ballot.build
     name: "Build the ballot from rotation + suggestions + abstain"
@@ -51,28 +50,28 @@ features:
       - "server/mapvoting.qc:MapVote_AddVotable"
     port_refs:
       - "src/XonoticGodot.Server/MapVoting.cs:Start"
+      - "src/XonoticGodot.Server/MapVoting.cs:AddVotable"
       - "src/XonoticGodot.Server/GameWorld.cs:DriveEndOfMatchMapFlow"
     constants:
       - { name: "g_maplist_votable", base: "6", port: "6", match: true }
-      - { name: "MAPVOTE_COUNT", base: "20", port: "30 (MaxCandidates, panel only)", match: false }
-      - { name: "max_attempts", base: "min(available*5,100)", port: "Rotation.BuildBallot (n/a)", match: false }
+      - { name: "MAPVOTE_COUNT", base: "20", port: "30 (MaxCandidates, panel only); server nmax = g_maplist_votable", match: false }
+      - { name: "g_maplist_votable_abstain", base: "0", port: "0", match: true }
     status:
       logic: partial
-      values: partial
+      values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: live
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Ballot is built from the rotation only; player suggestions are never seeded (g_maplist_votable_suggestions ignored at build)."
-      - "No abstain slot appended on the server side."
-      - "Per-candidate random tiebreak value (mapvote_rng) is not assigned at build time."
+      - "Suggestion seeding is now CODED (Start's 4-arg overload seeds min(suggestCap, nmax) suggested maps first, deduped, then fills from the rotation — matching MapVote_AddVotableMaps' smax seed) but is DEAD: GameWorld.cs:2108 calls the 3-arg Start with the rotation ballot only and never passes Commands.MapSuggestions."
+      - "The abstain slot append (Start lines 188-189) and per-candidate Rng tiebreak (AddVotable line 221) are now implemented; abstain is off by default (g_maplist_votable_abstain 0) so the slot isn't added in a stock match."
     verification:
-      - { kind: code, ref: "MapVoting.Start dedups names from Rotation.BuildBallot; no suggestion/abstain seeding", result: pass }
+      - { kind: code, ref: "MapVoting.Start (4-arg) seeds suggestions+abstain+Rng; GameWorld.cs:2108 invokes the 3-arg Start(ballot, PlayerCount, timeout) with no suggestions", result: pass }
     confidence: high
-    notes: "Degenerate ballots (0/1 candidate) finish immediately, matching Base's single-map auto-pick."
+    notes: "FIX (code): the build machinery (suggestions/abstain/Rng) is now present and faithful. STILL OPEN (liveness): on the live match path only the rotation maps reach the ballot; suggestions dead-end."
 
   - id: sv-mapvoting.override_chain
     name: "Pre-vote override chain (DoNextMapOverride: campaign / queued nextmap / samelevel) + silent GotoNextMap"
@@ -95,11 +94,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Faithful priority order (campaign PostIntermission -> QueuedNextMap -> samelevel -> vote -> silent rotation), but folded into one method; Base's DoNextMapOverride also handles g_campaign quit and the lastlevel/'endmatch' nextmap-cvar cases which the port routes through QueuedNextMap/Campaign instead."
+      - "Faithful priority order (campaign PostIntermission -> QueuedNextMap -> samelevel -> vote -> silent rotation), folded into one method; Base's DoNextMapOverride also handles g_campaign quit and the lastlevel/'endmatch' nextmap-cvar cases which the port routes through QueuedNextMap/Campaign instead."
     verification:
-      - { kind: code, ref: "GameWorld.cs:1973-2012 implements the override priority before MapVote.Start; matches MapVote_Think's pre-MapVote_Init branches", result: pass }
+      - { kind: code, ref: "GameWorld.cs:2078-2118 implements the override priority before MapVote.Start; matches MapVote_Think's pre-MapVote_Init branches", result: pass }
     confidence: medium
-    notes: "Positive: this chain IS live and largely faithful — the draft undersold it by folding it entirely into the think-loop row."
+    notes: "Unchanged by Wave 1/2; still live and largely faithful."
 
   - id: sv-mapvoting.vote_scoreboard_hide
     name: "During-vote client state: 2342 sentinel health + SVC_FINALE (hide scoreboard, zero impulse each tick)"
@@ -120,11 +119,11 @@ features:
     divergence_rationale: null
     gaps:
       - "Base MapVote_Tick forces RES_HEALTH=2342 on every client (incl. bots) and sends SVC_FINALE \"\" once, to hide the scoreboard during the vote and zero CS(it).impulse each tick; the port models none of this."
-      - "No per-tick impulse-zeroing on the vote path (the port's vote can't read impulses at all — DispatchImpulse drops them during intermission)."
+      - "No per-tick impulse-zeroing on the vote path (the port's vote can't read impulses at all — DispatchImpulse still drops them during intermission)."
     verification:
       - { kind: code, ref: "grep: no 2342 sentinel / SVC_FINALE on the vote path in src/ (the only -2342 is an unrelated 'observing' marker in Chat.cs)", result: pass }
     confidence: high
-    notes: "Moot while the vote screen never appears, but it is a real missing piece of MapVote_Tick's per-client loop."
+    notes: "Unchanged by Wave 1/2. Still moot while the vote screen never appears, but a real missing piece of MapVote_Tick's per-client loop."
 
   - id: sv-mapvoting.cast.vote
     name: "Cast a vote (impulse -> .mapvote)"
@@ -136,7 +135,7 @@ features:
       - "src/XonoticGodot.Server/Commands.cs:DispatchImpulse"
     constants: []
     status:
-      logic: stub
+      logic: faithful
       values: na
       timing: na
       presentation: na
@@ -145,12 +144,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "CastVote exists but has no caller; DispatchImpulse returns early when Intermission.Running, so impulses never reach the vote."
+      - "CastVote is now a complete, faithful method (range/availability guard, abstain re-route, prior-vote move, recount) but STILL has no caller; DispatchImpulse still early-returns `if (_world.Intermission.Running) return true;` (Commands.cs:1357), so impulses never reach the vote."
       - "No path turns a client key press / impulse into a server vote, so every vote finishes with zero votes."
     verification:
-      - { kind: code, ref: "grep: CastVote has no caller outside MapVoting.cs; Commands.cs DispatchImpulse early-returns on Intermission.Running", result: pass }
+      - { kind: code, ref: "grep: CastVote has zero callers outside MapVoting.cs; Commands.cs:1357 DispatchImpulse early-returns on Intermission.Running (unchanged)", result: pass }
     confidence: high
-    notes: "This is the central liveness failure: the vote runs but is uncastable."
+    notes: "STILL OPEN — the central liveness failure is unchanged after Wave 1/2. The cast LOGIC was fleshed out but remains uncastable."
 
   - id: sv-mapvoting.cast.abstain
     name: "Abstain (Don't care) option"
@@ -163,7 +162,7 @@ features:
     constants:
       - { name: "g_maplist_votable_abstain", base: "0", port: "0", match: true }
     status:
-      logic: stub
+      logic: faithful
       values: faithful
       timing: na
       presentation: na
@@ -172,11 +171,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Abstain() has no caller; the abstain slot is never added to the server ballot and abstainers can't be expressed."
+      - "Abstain() is now faithful (clears any map choice, marks abstained, excluded from voters_real, still counts toward 'everyone voted') and the abstain ballot slot is appended in Start, but Abstain() has no caller — abstainers still can't be expressed on the live path."
     verification:
-      - { kind: code, ref: "grep: Abstain has no caller outside MapVoting.cs; Start never appends an abstain candidate", result: pass }
+      - { kind: code, ref: "grep: Abstain has zero callers outside MapVoting.cs / CastVote's internal re-route; Start appends the abstain slot only when g_maplist_votable_abstain (default 0)", result: pass }
     confidence: high
-    notes: "Default abstain=0, so the option is off by default in both; but the mechanism is dead either way."
+    notes: "FIX (code): abstain mechanics + voters_real accounting now match Base. STILL OPEN (liveness): dead, same as CastVote. Default abstain=0 so off in a stock match anyway."
 
   - id: sv-mapvoting.decide.tally_rank
     name: "Tally votes + rank candidates"
@@ -186,10 +185,11 @@ features:
       - "server/mapvoting.qc:MapVote_ranked_cmp"
     port_refs:
       - "src/XonoticGodot.Server/MapVoting.cs:RecountFromBallots"
+      - "src/XonoticGodot.Server/MapVoting.cs:RankCandidates"
       - "src/XonoticGodot.Server/MapVoting.cs:Finish"
     constants: []
     status:
-      logic: partial
+      logic: faithful
       values: na
       timing: na
       presentation: na
@@ -198,13 +198,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No ranked array / heapsort; the winner is found by a single descending scan in Finish."
-      - "Tiebreak uses a per-Finish RNG reservoir, not the per-candidate mapvote_rng assigned at ballot build."
-      - "The running-gametype 0-vote tiebreak (current gametype index wins among 0-vote options) is absent."
+      - "Ranking now uses a stable descending sort by votes then the per-candidate Rng (RankCandidates), faithfully mirroring MapVote_ranked_cmp + the mapvote_rng tiebreak assigned at build (was a per-Finish RNG reservoir in the baseline). Heapsort vs stable Sort is an implementation detail with identical ordering semantics."
+      - "The running-gametype 0-vote tiebreak (current gametype index wins among 0-vote options) is still absent, but it only applies to the gametype vote, which is wholly unported."
     verification:
-      - { kind: code, ref: "RecountFromBallots counts only; Finish does a linear best-scan with a reservoir tiebreak", result: pass }
+      - { kind: code, ref: "RankCandidates (MapVoting.cs:390-408) sorts available-first, votes-desc, Rng-desc; Finish/CheckRulesDecide use the ranked top; RecountFromBallots counts only available candidates", result: pass }
     confidence: high
-    notes: "Logic runs live during the vote, but since no votes are cast it only ever sees the zero-vote case."
+    notes: "FIX: the reservoir tiebreak is replaced by a per-candidate Rng matching Base. Logic runs live during the vote, but since no votes are cast it only ever sees the zero-vote case (liveness partial)."
 
   - id: sv-mapvoting.decide.early_finish
     name: "Early finish: timeout / leader unbeatable / all voted"
@@ -212,12 +211,12 @@ features:
     base_refs:
       - "server/mapvoting.qc:MapVote_CheckRules_decide"
     port_refs:
-      - "src/XonoticGodot.Server/MapVoting.cs:Tick"
+      - "src/XonoticGodot.Server/MapVoting.cs:CheckRulesDecide"
       - "src/XonoticGodot.Server/MapVoting.cs:LeaderIsUnbeatable"
     constants:
       - { name: "g_maplist_votable_timeout", base: "30", port: "30", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
@@ -226,40 +225,41 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Unbeatable-leader formula differs from Base: Base uses (voters_real - running_total) < votes_recent i.e. voters_real < 2*leader (and folds into the reduce loop's running total); the port uses (best - second) > (ExpectedVoters - ballotsCast). Same intent (no remaining vote can overturn the leader) but not bit-faithful."
-      - "Base's 'all abstained' branch is voters_real == 0; the port has no abstain accounting on the live path (Abstain is dead), so abstainers don't subtract from the real-voter count."
-      - "With no votes ever cast (CastVote dead) the only branch that fires in a real match is the 30s timeout."
+      - "With no votes ever cast (CastVote dead) the only branch that fires in a real match is the 30 s timeout."
     verification:
-      - { kind: code, ref: "MapVoting.Tick+LeaderIsUnbeatable (MapVoting.cs:158-202) vs MapVote_CheckRules_decide (mapvoting.qc:629-700): different unbeatable formula; timeout matches", result: pass }
+      - { kind: code, ref: "CheckRulesDecide (MapVoting.cs:309-341) now uses Base's exact inequality `(votersReal - votesRunningTotal) < votesRecent` plus the `votersReal == 0` all-abstained branch and the all-voted branch (ballots >= ExpectedVoters); matches mapvoting.qc:634-651", result: pass }
     confidence: high
-    notes: "Timeout faithful; unbeatable check is a reformulation, not a port of the Base inequality. Effectively a 30s timer because the cast path is dead."
+    notes: "FIX: the unbeatable-leader check is now bit-faithful to Base (was a reformulated `(best-second) > (ExpectedVoters-ballotsCast)`), and the all-abstained branch is present with proper voters_real accounting. Still effectively a 30 s timer because the cast path is dead."
 
   - id: sv-mapvoting.decide.reduce
     name: "Ballot reduce / keep-two (mid-vote option pruning)"
     layer: [authority]
     base_refs:
       - "server/mapvoting.qc:MapVote_CheckRules_decide"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Server/MapVoting.cs:CheckRulesDecide"
+      - "src/XonoticGodot.Server/MapVoting.cs:ReduceRemoveThis"
     constants:
-      - { name: "g_maplist_votable_reduce_time", base: "15", port: "registered as g_maplist_votable_keeptwotime=15 (misnamed, unread)", match: false }
-      - { name: "g_maplist_votable_reduce_count", base: "2", port: "none", match: false }
+      - { name: "g_maplist_votable_reduce_time", base: "15", port: "15 (via MapVoting hardcoded FloatOr fallback; cvar UNREGISTERED)", match: false }
+      - { name: "g_maplist_votable_reduce_count", base: "2", port: "0 (cvar UNREGISTERED → Cvars.Int reads 0 → keepExactly=false, WRONG mode)", match: false }
     status:
-      logic: missing
-      values: missing
-      timing: missing
+      logic: partial
+      values: partial
+      timing: faithful
       presentation: missing
       audio: na
-      liveness: na
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No reduce logic: options are never dimmed/removed partway through the vote."
-      - "Reduce cvar is misnamed (g_maplist_votable_keeptwotime instead of g_maplist_votable_reduce_time) and never read."
-      - "g_maplist_votable_reduce_count (default 2) is not registered."
+      - "Reduce logic is now implemented + live in CheckRulesDecide (the keep_exactly/REDUCE_REMOVE_THIS loop, the time>reduce_time && (keep_exactly||ri>=2) trigger, MapVote_TouchMask GTV_AVAILABLE stripping, and the <3-real-options / reduce_time<=now disable), faithfully mirroring mapvoting.qc:654-680 + 310-314."
+      - "BUT the cvars that drive it are unregistered: g_maplist_votable_reduce_count reads 0 (Cvars.Int) → keepExactly=false, so the port reduces to 'any map with a vote' instead of Base's default 'keep exactly top 2'. g_maplist_votable_reduce_time is unregistered so MapVoting falls back to its hardcoded 15 f (coincidentally Base's default)."
+      - "The misnamed g_maplist_votable_keeptwotime=15 is STILL registered (Cvars.cs:397) and STILL unread — dead registry noise."
+      - "No client presentation of the reduce (options being dimmed/removed) because the whole client panel is unfed; and with no votes cast the reduce only ever sees the zero-vote ballot."
     verification:
-      - { kind: code, ref: "Cvars.cs:391 keeptwotime; no reduce code in MapVoting.Tick", result: pass }
+      - { kind: code, ref: "MapVoting.cs:198-202 arms _reduceCount=Cvars.Int(reduce_count)[=0] / reduceDelay=FloatOr(reduce_time,15); CheckRulesDecide:345-371 runs the prune. Cvars.cs:397 keeptwotime=15 unread; no reduce_time/reduce_count registration", result: pass }
     confidence: high
-    notes: "MapVote_TouchMask / GTV_AVAILABLE stripping has no port equivalent."
+    notes: "FIX (logic): reduce is now coded + live (was wholly missing). STILL OPEN (values): the two reduce cvars are unregistered, so reduce_count defaults to the wrong mode; misnamed keeptwotime persists."
 
   - id: sv-mapvoting.finish.winner
     name: "Finish + pick winner + apply map change"
@@ -272,7 +272,7 @@ features:
       - "src/XonoticGodot.Server/GameWorld.cs:ApplyMapChange"
     constants: []
     status:
-      logic: partial
+      logic: faithful
       values: na
       timing: partial
       presentation: na
@@ -282,12 +282,12 @@ features:
     divergence_rationale: null
     gaps:
       - "No event-log (:vote:finished) emitted."
-      - "No 1s winner-reveal delay before changelevel (timing)."
+      - "No 1 s winner-reveal delay before changelevel on the live path: MapVoting.ReadyToChangeLevel models it (winner_time + 1) but GameWorld.cs:2127 applies the map on MapVote.Finished and never consults it (timing)."
       - "FixClientCvars-on-finish is not modeled."
     verification:
-      - { kind: code, ref: "Finish sets WinningMap; GameWorld applies it via ApplyMapChange -> ChangeLevelHandler", result: pass }
+      - { kind: code, ref: "Finish (MapVoting.cs:435-452) sets WinningMap from the ranked top available candidate; GameWorld.cs:2127-2128 applies via ApplyMapChange -> ChangeLevelHandler on Finished (not ReadyToChangeLevel)", result: pass }
     confidence: high
-    notes: "The winner does drive the real changelevel; only votes feeding it are missing."
+    notes: "Winner selection now uses the proper Rng-tiebroken ranked top. The winner still drives the real changelevel; only the 1 s reveal delay and the votes feeding it are missing."
 
   - id: sv-mapvoting.gametype_vote
     name: "Gametype vote (pre-map gametype ballot + switch)"
@@ -318,12 +318,12 @@ features:
     divergence_rationale: null
     gaps:
       - "No server-side gametype vote at all: no gametype ballot, no custom gametypes, no hook execution, no MapInfo_SwitchGameType, no maplist reset."
-      - "sv_vote_gametype_options ships 'dm tdm ctf' vs Base 'dm tdm ca ctf' (missing ca)."
+      - "sv_vote_gametype_options still ships 'dm tdm ctf' (Cvars.cs:402) vs Base 'dm tdm ca ctf' (missing ca)."
       - "sv_vote_gametype_reduce_time/_reduce_count/_detail/_default_current/_maplist_reset cvars are unregistered."
     verification:
-      - { kind: code, ref: "no GameTypeVote_* counterpart in src/; only the client panel can draw GametypeVote", result: pass }
+      - { kind: code, ref: "no GameTypeVote_* counterpart in src/; only the client panel can draw GametypeVote (unfed)", result: pass }
     confidence: high
-    notes: "The panel's GametypeVote draw path is unreachable because nothing drives it."
+    notes: "Unchanged by Wave 1/2. The panel's GametypeVote draw path is unreachable because nothing drives it."
 
   - id: sv-mapvoting.suggestions
     name: "Player map suggestions (suggestmap)"
@@ -332,10 +332,11 @@ features:
       - "server/mapvoting.qc:MapVote_Suggest"
     port_refs:
       - "src/XonoticGodot.Server/Commands.cs:CmdSuggestMap"
+      - "src/XonoticGodot.Server/MapVoting.cs:Start"
     constants:
       - { name: "g_maplist_votable_suggestions", base: "2", port: "2", match: true }
       - { name: "g_maplist_votable_suggestions_override_mostrecent", base: "0", port: "0", match: true }
-      - { name: "g_maplist_votable_show_suggester", base: "1", port: "none", match: false }
+      - { name: "g_maplist_votable_show_suggester", base: "1", port: "none (read via FloatOr default 1; cvar UNREGISTERED)", match: false }
     status:
       logic: partial
       values: partial
@@ -346,13 +347,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Suggestions are stored (existence + dedup + suggestions==0 disable) but never seeded into the ballot (MapVoting.Start ignores _mapSuggestions)."
-      - "Recency check (Map_IsRecent / override_mostrecent) and gametype-support check are not applied in CmdSuggestMap."
-      - "g_maplist_votable_show_suggester (default 1) is unregistered; no suggester is ever shown."
+      - "CmdSuggestMap still only stores into Commands._mapSuggestions (existence + dedup + suggestions==0 disable); the new Start overload that would seed them is NOT called by GameWorld (still the 3-arg Start), so suggestions never reach a ballot."
+      - "Recency check (Map_IsRecent / override_mostrecent) and gametype-support check are still not applied in CmdSuggestMap."
+      - "g_maplist_votable_show_suggester (default 1) is still unregistered; MapVoting.Start reads it via FloatOr(default 1) so the suggester WOULD be surfaced if the seed path were wired — but it isn't."
     verification:
-      - { kind: code, ref: "CmdSuggestMap stores into _mapSuggestions; Start uses Rotation.BuildBallot only", result: pass }
+      - { kind: code, ref: "CmdSuggestMap (Commands.cs:1779-1813) unchanged; MapVoting.Start can consume (map,suggester) pairs but GameWorld.cs:2108 calls the 3-arg overload with no suggestions", result: pass }
     confidence: high
-    notes: "Command is reachable (live) but its output dead-ends — suggestions never reach a ballot."
+    notes: "FIX (code): a real seeding path now exists in MapVoting.Start (deduped, suggester-tagged). STILL OPEN (liveness): the command's output dead-ends because GameWorld doesn't pass MapSuggestions into Start."
 
   - id: sv-mapvoting.net.sync
     name: "Vote state networking (ENT_CLIENT_MAPVOTE + screenshot transfer)"
@@ -377,9 +378,9 @@ features:
       - "No mapvote net entity: the ballot, mask, live tallies, own-vote and winner are never sent to clients."
       - "No screenshot transfer (TE_CSQC_PICTURE / mv_getpicture); the client can only load level-shots from its own VFS."
     verification:
-      - { kind: code, ref: "grep: no ENT_CLIENT_MAPVOTE / mapvote net handler in src/ or game/", result: pass }
+      - { kind: code, ref: "grep: no ENT_CLIENT_MAPVOTE / mapvote net handler in src/ or game/; mv_getpicture is registered only as a server-handled-but-unimplemented client command", result: pass }
     confidence: high
-    notes: "Without this sync the client panel has nothing to show even if it were activated."
+    notes: "Unchanged by Wave 1/2. Without this sync the client panel has nothing to show even if it were activated."
 
   - id: sv-mapvoting.client.draw
     name: "Client vote-screen panel (grid, thumbnails, counts, winner reveal)"
@@ -393,27 +394,26 @@ features:
       - "game/hud/MapVotePanel.cs:DrawPanel"
       - "game/hud/MapVotePanel.cs:DrawCandidate"
     constants:
-      - { name: "hud_panel_mapvote_highlight_border", base: "1 (hud_*.cfg skins ship 1; _hud_descriptions ships \"\")", port: "2 (MapVotePanel.RegisterCvars)", match: false }
-      - { name: "MV_FADETIME", base: "0.2", port: "not modeled (no select fade timer)", match: false }
+      - { name: "hud_panel_mapvote_highlight_border", base: "1", port: "1 (MapVotePanel.RegisterCvars:200)", match: true }
+      - { name: "MV_FADETIME", base: "0.2", port: "0.2 (FadeTime, MapVotePanel.cs:123 — modeled but unfed)", match: true }
     status:
       logic: faithful
-      values: partial
-      timing: missing
+      values: faithful
+      timing: partial
       presentation: faithful
       audio: na
       liveness: dead
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Panel is never fed: SetVote/SetVotes/SetWinner have no callers anywhere in the repo, so it never becomes Active in a real match -> the player never sees the vote screen."
-      - "MV_FADETIME (0.2s) selection-pulse easing is not modeled (selection highlight doesn't fade); mv_winner_alpha grow/fade and mv_top2_alpha fade have no live data feed."
-      - "hud_panel_mapvote_highlight_border default is 2 in the port vs 1 in every shipped Base HUD skin (the port's code comment claiming '_hud_descriptions.cfg ships 2' is wrong — it ships \"\")."
-      - "Suggester line is drawn but never driven (no data feed)."
+      - "Panel is STILL never fed: SetVote/SetVotes/SetWinner have ZERO callers anywhere in the repo (HudManager only does Get<MapVotePanel>()), so it never becomes Active in a real match -> the player never sees the vote screen."
+      - "MV_FADETIME selection-pulse easing and mv_winner_alpha (max(0.2, 1-sqrt(time-winner_time))) grow/fade are now modeled in the panel, but with no data feed they never run live."
+      - "Suggester line fade-out is drawn but never driven (no data feed)."
     verification:
-      - { kind: code, ref: "grep across src/+game/: HudManager only Get<MapVotePanel>(); .SetVote/.SetVotes/.SetWinner have ZERO callers outside MapVotePanel.cs", result: pass }
-      - { kind: code, ref: "MapVotePanel.cs:160 registers highlight_border=2; Base hud_luma.cfg:337 (and all skins) seta 1", result: pass }
+      - { kind: code, ref: "grep across src/+game/: .SetVote/.SetVotes/.SetWinner have ZERO callers outside MapVotePanel.cs", result: pass }
+      - { kind: code, ref: "MapVotePanel.cs:200 registers highlight_border=1 (matches Base hud_*.cfg skins); FadeTime=0.2 + winnerAlpha at lines 364-371 match MV_FADETIME / mv_winner_alpha", result: pass }
     confidence: high
-    notes: "The draw code is a faithful, fairly complete port of MapVote_Draw, but it is dead — present-but-unfed. Highlight-border default disagrees with Base."
+    notes: "FIX (values/timing): highlight_border default corrected 2->1 (now matches every shipped Base skin; the wrong code comment is fixed), and MV_FADETIME + mv_winner_alpha fade are now modeled. STILL OPEN (liveness): the panel is dead — present-but-unfed, exactly as in the baseline."
 
   - id: sv-mapvoting.client.input
     name: "Client vote input (keyboard/mouse selection + cast)"
@@ -434,9 +434,9 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No input handler: arrows/enter/space/digits/mouse don't move a selection or cast a vote on the panel."
+      - "No input handler: arrows/enter/space/digits/mouse don't move a selection or cast a vote on the panel (the panel exposes a Selection property but nothing writes it from input)."
       - "No localcmd('impulse N') equivalent to send the chosen option to the server."
     verification:
-      - { kind: code, ref: "MapVotePanel has no input event handler; no MapVote_SendChoice counterpart", result: pass }
+      - { kind: code, ref: "MapVotePanel has no _Input/_GuiInput/InputEvent handler; no MapVote_SendChoice counterpart; Selection is fed externally only", result: pass }
     confidence: high
-    notes: "Even if the panel were activated, the player could not interact with it."
+    notes: "Unchanged by Wave 1/2. Even if the panel were activated, the player could not interact with it."

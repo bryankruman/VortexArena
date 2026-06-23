@@ -5,11 +5,10 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 10
   worst_gaps:
-    - "Shield reduces damage ~80% in port (MarkPain: take*=(1-blockpercent)) vs ~0.8% in Base (healtharmor_applydamage with RES_ARMOR/100) — mage is ~100x too tanky while shielded"
-    - "Self-heal eligibility wrong: Base heals self via the monster branch (health<max_health, ALL skins); port HealCheck only lets self-heal on skin 0 and only below regenstable(100), so a skin 1/2 mage never self-heals and a skin 0 mage stops self-healing above 100 HP"
-    - "Teleport random-relocation branch (40% chance, MoveToRandomLocationWithinBounds) not ported — only the behind-blink exists"
-    - "Spike impact sound (SND_MageSpike_IMPACT=grenade_impact) missing; port also invents mage_sight/mage_heal sounds not in QC"
-    - "Send_Effect particles for push/teleport/heal not emitted; CSQC spike projectile model (PROJECTILE_MAGE_SPIKE) not wired"
+    - "Shield STILL reduces damage ~80% in port (MarkPain:1389-1393 take*=(1-blockpercent) when STATUSEFFECT_Shield active) vs ~0.8% in Base (healtharmor_applydamage with RES_ARMOR/100); the faithful ~0.8% armor split (MonsterEventDamage) is ALSO applied, so the divergence is DOUBLE-COUNTED. Wave-2 corrected the cfg/field default to 0.8 but did NOT remove the extra MarkPain cut — shielded mage remains ~100x too tanky. MarkPain's own fallback default is still 0.9 (not 0.8)."
+    - "CSQC spike projectile model (PROJECTILE_MAGE_SPIKE) still not wired — spike has no client-visible model/trail."
+    - "Send_Effect particles for push (TE_EXPLOSION), spike (EXPLOSION_SMALL), teleport (SPAWN), and heal (HEALING/AMMO_REGEN/ARMOR_REPAIR) still not emitted (CSQC presentation)."
+    - "mr_death random die1/die2 anim pick and mr_anim concrete frame groups (shoot/melee/duckjump/die) still collapsed into the shared logical-phase enum."
 features:
   - id: monster-mage.spawn.setup
     name: "Spawn + mr_setup (health, speeds, loot, size, attackfunc)"
@@ -36,16 +35,16 @@ features:
       values: faithful
       timing: faithful
       presentation: na
-      audio: na
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "MapObjectsRegistry.cs:198 -> MonsterSpawnFuncs.Mage -> SpawnFromMap (checkAppear=true) -> e.Think set (MonsterAI.cs:403) -> SimulationLoop.RunThink", result: pass }
+      - { kind: code, ref: "MapObjectsRegistry.cs:198 -> MonsterSpawnFuncs.Mage -> Setup -> MonsterSound(spawn) at MonsterAI.cs:312; e.Think wired -> SimulationLoop.RunThink", result: pass }
       - { kind: value-diff, ref: "assets/data/xonotic-data.pk3dir/monsters.cfg g_monster_mage_* == Base monsters.cfg (line-for-line, verified)", result: pass }
     confidence: high
-    notes: "Setup values flow through MonsterAI.Cvar from the shipped monsters.cfg, which matches Base exactly. Skin is randomized 0..4 in Setup (rint(random()*4)) just like QC; heal switch only handles 0/1/2 (skins 3/4 = no per-skin heal, same as Base)."
+    notes: "Setup values flow through MonsterAI.Cvar from the shipped monsters.cfg, which matches Base exactly. Skin randomized 0..4 like QC; heal switch handles 0/1/2 (skins 3/4 = no per-skin heal, same as Base). Wave-2 added MonsterSound(spawn) at Setup (QC Monster_Spawn_Setup:1364 Monster_Sound(monstersound_spawn) on CH_VOICE) — now audio:faithful for the spawn cue."
 
   - id: monster-mage.attack.select
     name: "Attack selection (melee push vs ranged teleport/spike)"
@@ -58,7 +57,7 @@ features:
     constants:
       - { name: "g_monster_mage_attack_push_chance", base: "0.7", port: "0.7 (cfg)", match: true }
       - { name: "g_monster_mage_attack_spike_chance", base: "0.45", port: "0.45 (cfg)", match: true }
-      - { name: "g_monster_mage_attack_teleport_chance", base: "0.1 (cfg; inline 0.2)", port: "0.1 (cfg); 0.2 inline-fallback", match: true }
+      - { name: "g_monster_mage_attack_teleport_chance", base: "0.1 (cfg; inline 0.2)", port: "0.1 (cfg); 0.1 inline-fallback", match: true }
       - { name: "g_monsters_attack_range", base: "120", port: "120 (cfg)", match: true }
     status:
       logic: faithful
@@ -71,9 +70,9 @@ features:
     divergence_rationale: "Port re-derives melee/ranged from enemy distance inside Mage.Attack and calls Push/Teleport/FireSpike directly, rather than routing through WEP_MAGE_SPIKE.wr_think / OFFHAND_MAGE_TELEPORT.offhand_think. The weapon-entity wrapper is not modeled; the branch chances and gating are behaviorally equivalent."
     gaps: []
     verification:
-      - { kind: code, ref: "MonsterAI.AttackCheck:897 (gates on AttackFinished) -> st.Def.Attack -> Mage.Attack:97 distance split (<=AttackRange push 0.7; else teleport 0.1 / spike !ActiveSpike 0.45)", result: pass }
+      - { kind: code, ref: "MonsterAI.AttackCheck:980 (st.Def.Attack) -> Mage.Attack:98 distance split (<=AttackRange push 0.7; else teleport 0.1 / spike !ActiveSpike 0.45)", result: pass }
     confidence: high
-    notes: "Mage.Attack re-checks st.AttackFinished at its top (AttackCheck already gates on it too). Per-attack cooldowns set inside each sub-attack. Spike one-at-a-time via st.ActiveSpike (QC .mage_spike)."
+    notes: "Wave-2 corrected the inline TeleportChance fallback 0.2->0.1 (now matches cfg). Mage.Attack re-checks st.AttackFinished at its top. Per-attack cooldowns set inside each sub-attack. Spike one-at-a-time via st.ActiveSpike (QC .mage_spike)."
 
   - id: monster-mage.attack.spike
     name: "Homing electric spike (one in flight, seeker guidance)"
@@ -91,37 +90,36 @@ features:
       - { name: "g_monster_mage_attack_spike_radius", base: "60", port: "60 (cfg)", match: true }
       - { name: "g_monster_mage_attack_spike_delay", base: "2", port: "2 (cfg)", match: true }
       - { name: "g_monster_mage_attack_spike_speed_max", base: "370", port: "370 (cfg)", match: true }
-      - { name: "g_monster_mage_attack_spike_accel", base: "480", port: "480 (cfg); 800 inline-fallback", match: false }
-      - { name: "g_monster_mage_attack_spike_decel", base: "480", port: "480 (cfg); 1000 inline-fallback", match: false }
-      - { name: "g_monster_mage_attack_spike_turnrate", base: "0.65", port: "0.65 (cfg); 0.6 inline-fallback", match: false }
-      - { name: "g_monster_mage_attack_spike_smart", base: "1", port: "1 (cfg); 0 inline-fallback", match: false }
-      - { name: "g_monster_mage_attack_spike_smart_mindist", base: "600", port: "600 (cfg); 256 inline-fallback", match: false }
-      - { name: "g_monster_mage_attack_spike_smart_trace_min", base: "1000", port: "1000 (cfg); 100 inline-fallback", match: false }
-      - { name: "g_monster_mage_attack_spike_smart_trace_max", base: "2500", port: "2500 (cfg); 500 inline-fallback", match: false }
+      - { name: "g_monster_mage_attack_spike_accel", base: "480", port: "480 (cfg); 480 inline", match: true }
+      - { name: "g_monster_mage_attack_spike_decel", base: "480", port: "480 (cfg); 480 inline", match: true }
+      - { name: "g_monster_mage_attack_spike_turnrate", base: "0.65", port: "0.65 (cfg); 0.65 inline", match: true }
+      - { name: "g_monster_mage_attack_spike_smart", base: "1", port: "1 (cfg); 1 inline", match: true }
+      - { name: "g_monster_mage_attack_spike_smart_mindist", base: "600", port: "600 (cfg); 600 inline", match: true }
+      - { name: "g_monster_mage_attack_spike_smart_trace_min", base: "1000", port: "1000 (cfg); 1000 inline", match: true }
+      - { name: "g_monster_mage_attack_spike_smart_trace_max", base: "2500", port: "2500 (cfg); 2500 inline", match: true }
       - { name: "launch_speed", base: "400", port: "400", match: true }
       - { name: "ltime", base: "time+7", port: "Now+7", match: true }
       - { name: "avelocity", base: "300 300 300", port: "300 300 300", match: true }
       - { name: "edge_damage", base: "spike_damage*0.5", port: "spike_damage*0.5", match: true }
-      - { name: "muzzle_origin", base: "origin + v_forward*14 + '0 0 30' + v_right*-14", port: "Origin + ViewOfs + normalize(dir)*14", match: false }
+      - { name: "muzzle_origin", base: "origin + v_forward*14 + '0 0 30' + v_right*-14", port: "origin + fwd*14 + '0 0 30' + right*-14 (FireSpike override of SpawnProjectile)", match: true }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: faithful
       presentation: missing
-      audio: partial
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Inline C# constant defaults (accel 800/decel 1000/turnrate 0.6/smart 0/smart_mindist 256/trace_min 100/trace_max 500) diverge from Base; dead at runtime (cfg wins) but wrong in headless tests / if monsters.cfg is not exec'd. Note smart inline-default 0 would disable obstacle avoidance entirely (Base default 1)."
-      - "Spike muzzle origin differs: Base spawns at origin + v_forward*14 + '0 0 30' + v_right*-14 (offset up/right of the model); the shared SpawnProjectile uses Origin + ViewOfs + dir*14 — close but missing the +30 up / -14 right components, so the spike appears from a slightly different point."
-      - "CSQC spike projectile model (PROJECTILE_MAGE_SPIKE) not wired — spike has no client-visible model/trail in flight."
-      - "Spike impact sound SND_MageSpike_IMPACT (grenade_impact) not played on detonation (shared SpawnProjectile.Explode is silent)."
+      - "CSQC spike projectile model (PROJECTILE_MAGE_SPIKE) still not wired — spike has no client-visible model/trail in flight."
+      - "Send_Effect(EFFECT_EXPLOSION_SMALL) on detonation (mage.qc:133) not emitted (CSQC particle)."
     verification:
-      - { kind: code, ref: "FireSpike -> SpawnProjectile think (NextThink=Now) -> HomeProjectile per-frame (MonsterFramework.cs:114); Explode (MonsterAI.cs:1233) does RadiusDamage + clears ActiveSpike, NO sound", result: pass }
-      - { kind: value-diff, ref: "Mage.cs inline fields (accel 800/decel 1000/turnrate 0.6 ...) vs monsters.cfg (480/480/0.65 ...)", result: fail }
+      - { kind: code, ref: "FireSpike:142 -> SpawnProjectile (think NextThink=Now) -> HomeProjectile per-frame; Explode (MonsterAI.cs:1311) RadiusDamage + onExplode (grenade_impact) + clears ActiveSpike", result: pass }
+      - { kind: value-diff, ref: "Mage.cs inline fields (accel 480/decel 480/turnrate 0.65/smart 1/mindist 600/trace 1000/2500) == monsters.cfg == Base", result: pass }
+      - { kind: code, ref: "FireSpike:160-161 AngleVectors(e.Angles) muzzle override == M_Mage_Attack_Spike:229 origin+v_forward*14+'0 0 30'+v_right*-14", result: pass }
     confidence: high
-    notes: "FIRE sound (weapons/electro_fire.wav) IS played in FireSpike. Homing math (accel/decel bound + turnrate blend + smart trace mixing plane normal by 1-fraction) is a faithful port of M_Mage_Attack_Spike_Think; one-at-a-time via st.ActiveSpike. Guidance give-up signals detonation by setting Health=0 (Explode adds the blast)."
+    notes: "FIXED in Wave-2: (1) all inline C# constant defaults now match Base (was accel 800/decel 1000/turnrate 0.6/smart 0/mindist 256/trace 100/500); the dangerous smart-default-0 (would have disabled obstacle avoidance) is now 1. (2) Spike muzzle origin now re-derives the +30 up / -14 right offsets via AngleVectors after the shared spawner placed it. (3) Spike impact sound SND_MageSpike_IMPACT (weapons/grenade_impact.wav on CH_SHOTS) now played via the onExplode hook (SpawnProjectile.Explode invokes onExplode at MonsterAI.cs:1320). FIRE sound (electro_fire) still played in FireSpike. Homing math faithful; one-at-a-time via st.ActiveSpike."
 
   - id: monster-mage.attack.push
     name: "Explosive close-range push (AoE shove)"
@@ -146,11 +144,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Send_Effect(EFFECT_TE_EXPLOSION) particle on push not emitted by the port."
+      - "Send_Effect(EFFECT_TE_EXPLOSION) particle on push not emitted by the port (CSQC)."
     verification:
-      - { kind: code, ref: "Push:163 -> WeaponSplash.RadiusDamage(PushDamage, PushDamage, PushRadius, force=PushForce, DeathTypes.MonsterMage), weapons/tagexp1.wav sound", result: pass }
+      - { kind: code, ref: "Push:170 -> WeaponSplash.RadiusDamage(PushDamage, PushDamage, PushRadius, force=PushForce, DeathTypes.MonsterMage), weapons/tagexp1.wav sound", result: pass }
     confidence: high
-    notes: "Both core and edge damage = push_damage (full damage at radius edge, matching QC). Push sound (tagexp1) is played. Freezes movement via state=AttackMelee, sets anim/cooldown."
+    notes: "Unchanged by Wave-2 (already faithful). Both core and edge damage = push_damage (full damage at radius edge, matching QC). Push sound (tagexp1) played. Freezes movement via state=AttackMelee, sets anim/cooldown."
 
   - id: monster-mage.attack.teleport
     name: "Teleport behind / random-relocate near the target"
@@ -159,29 +157,29 @@ features:
       - "common/monsters/monster/mage.qc:M_Mage_Attack_Teleport"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Monsters/Mage.cs:Teleport"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Mage.cs:RandomRelocate"
     constants:
-      - { name: "g_monster_mage_attack_teleport_delay", base: "5 (cfg; inline 2)", port: "5 (cfg); 2 inline-fallback", match: true }
-      - { name: "g_monster_mage_attack_teleport_random", base: "0.4", port: "not ported", match: false }
+      - { name: "g_monster_mage_attack_teleport_delay", base: "5 (cfg; inline 2)", port: "5 (cfg); 5 inline", match: true }
+      - { name: "g_monster_mage_attack_teleport_random", base: "0.4", port: "0.4 (cfg); 0.4 inline", match: true }
       - { name: "g_monster_mage_attack_teleport_random_range", base: "1200", port: "1200 (cfg)", match: true }
       - { name: "behind_trace_dist", base: "v_forward * -200", port: "-200 along target forward", match: true }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: faithful
       presentation: missing
-      audio: partial
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Random-relocation branch (teleport_random 0.4 chance: MoveToRandomLocationWithinBounds within a +/-1200 box) is NOT ported — port only does the deterministic behind-the-target blink, so ~40% of teleport attempts behave differently."
-      - "Send_Effect(EFFECT_SPAWN) at both old and new origin not emitted."
-      - "Port plays monsters/mage_sight.wav (Voice) on teleport; QC plays no sound on teleport."
+      - "Send_Effect(EFFECT_SPAWN) at both old and new origin (mage.qc:333-334,351-352) not emitted (CSQC)."
+      - "RandomRelocate is an approximation of QC's MoveToRandomLocationWithinBounds builtin: 32 biased samples + ground-drop + bbox-fit test, not the engine's content-mask sampler (maxtries 256, jitter/dist params). Behaviorally equivalent (place at a random clear grounded spot within +/-1200) but not bit-exact."
     verification:
-      - { kind: code, ref: "Teleport:179 behind-blink trace vs M_Mage_Attack_Teleport second half (range gate, IS_ONGROUND, tracebox backward MOVE_NOMONSTERS, face target, velocity*=0.5, cooldown)", result: pass }
-      - { kind: code, ref: "random-relocation branch (mage.qc:322-338) absent in Mage.cs", result: fail }
+      - { kind: code, ref: "Teleport:186 random branch (RandomRelocate, chance teleport_random) + behind-blink branch (range gate, OnGround, tracebox backward NoMonsters, face target, velocity*=0.5, cooldown) == M_Mage_Attack_Teleport both halves", result: pass }
+      - { kind: code, ref: "Mage.cs:114 Attack -> Teleport on TeleportChance; live on the real attack path", result: pass }
     confidence: high
-    notes: "Behind-blink branch is faithful. Random branch needs the world-bounds sampler MoveToRandomLocationWithinBounds (a host concern)."
+    notes: "FIXED in Wave-2: (1) the random-relocation branch (teleport_random 0.4: blink to a random clear grounded spot within a +/-1200 box) is now ported as RandomRelocate — was previously absent. (2) inline TeleportDelay 2->5 and TeleportChance now read cfg. (3) the wrongly-invented monsters/mage_sight.wav voice on teleport was removed (QC plays no sound on teleport). Only the CSQC EFFECT_SPAWN particle remains missing."
 
   - id: monster-mage.defend.shield
     name: "Self damage-blocking shield"
@@ -194,30 +192,31 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Monsters/Mage.cs:RaiseShield"
       - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MarkPain"
       - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:RunStatusTimers"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MonsterEventDamage"
       - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterFramework.cs:Shield"
     constants:
       - { name: "g_monster_mage_shield_time", base: "3", port: "3 (cfg)", match: true }
       - { name: "g_monster_mage_shield_delay", base: "7", port: "7 (cfg)", match: true }
-      - { name: "g_monster_mage_shield_blockpercent", base: "0.8", port: "0.8 (cfg); 0.9 inline-fallback (both Mage.cs:45 and MarkPain:1313)", match: false }
-      - { name: "effective_damage_reduction", base: "~0.8% (damage*RES_ARMOR/100, RES_ARMOR=0.8)", port: "~80% (MarkPain take*=(1-0.8)) PLUS the ~0.8% armor split in MonsterEventDamage", match: false }
+      - { name: "g_monster_mage_shield_blockpercent", base: "0.8", port: "0.8 (cfg/Mage.cs); 0.9 MarkPain:1391 fallback", match: false }
+      - { name: "effective_damage_reduction", base: "~0.8% (damage*RES_ARMOR/100, RES_ARMOR=0.8)", port: "~80% (MarkPain:1392 take*=(1-0.8)) PLUS the faithful ~0.8% armor split in MonsterEventDamage:1539 — DOUBLE-COUNTED", match: false }
     status:
       logic: partial
       values: partial
       timing: faithful
       presentation: na
-      audio: partial
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Shield reduces damage ~80% in port (MarkPain:1311-1315 does take*=(1-blockpercent) when STATUSEFFECT_Shield active) vs ~0.8% in Base (Monster_Damage:1091 healtharmor_applydamage(100, RES_ARMOR/100) => save=damage*(0.8/100)). The QC shield is near-cosmetic; the port makes the shielded mage ~100x more durable than Base. NOTE the port also still applies the ~0.8% armor split (MonsterEventDamage:1461 self.ArmorValue/100, where RaiseShield set ArmorValue=0.8), so the ~80% MarkPain cut is ON TOP of the faithful armor block — i.e. double-counted divergence."
-      - "Inline C# shield_blockpercent default 0.9 (Mage.cs:45 + MarkPain:1313 fallback) vs Base 0.8 (dead at runtime; wrong in headless tests / if monsters.cfg not exec'd)."
-      - "Port plays monsters/mage_sight.wav (Voice) on shield raise; QC plays no sound on M_Mage_Defend_Shield."
+      - "STILL OPEN (the #1 worst gap): shield reduces damage ~80% in the port (MarkPain:1389-1393 does take*=(1-blockpercent) when STATUSEFFECT_Shield active) vs ~0.8% in Base (Monster_Damage:1091 healtharmor_applydamage(100, RES_ARMOR/100) => save=damage*(0.8/100)). The QC shield is near-cosmetic; the port makes the shielded mage ~100x more durable. Worse: the port ALSO applies the faithful ~0.8% armor split (MonsterEventDamage:1539 ArmorValue/100, where RaiseShield set ArmorValue=0.8), so the ~80% MarkPain cut is ON TOP of the correct armor block — the divergence is double-counted. Wave-2 corrected the cfg/Mage.cs default 0.9->0.8 but did NOT remove the extra MarkPain reduction."
+      - "Inline C# shield_blockpercent fallback in MarkPain:1391 is STILL 0.9 (not 0.8). Dead at runtime (cfg wins) but wrong in headless tests / if monsters.cfg not exec'd. Mage.cs's own field default WAS fixed to 0.8."
     verification:
-      - { kind: value-diff, ref: "MarkPain:1311-1315 (take*=(1-block)) vs Monster_Damage:1091 + healtharmor_applydamage save=bound(0,damage*0.008,100)", result: fail }
-      - { kind: code, ref: "RaiseShield:294 sets ArmorValue=blockpercent; RunStatusTimers:1031 restores armor + removes Shield at ShieldExpire", result: pass }
+      - { kind: value-diff, ref: "MarkPain:1389-1393 (take*=(1-block)) STILL present vs Monster_Damage:1091 + healtharmor_applydamage save=bound(0,damage*0.008,100)", result: fail }
+      - { kind: code, ref: "MonsterEventDamage:1539-1543 does the faithful armor split (ArmorValue/100) AND THEN MarkPain re-cuts by (1-block) — double application", result: fail }
+      - { kind: code, ref: "RaiseShield:353 sets ArmorValue=blockpercent; RunStatusTimers:1108-1113 restores armor + removes Shield at ShieldExpire", result: pass }
     confidence: high
-    notes: "Baseline monster armor (RES_ARMOR=bound(0.2,0.5*MONSTER_SKILLMOD,0.9)) IS modeled in the port (Setup:240-241 seeds ArmorValue, MonsterEventDamage:1461 divides by 100) — so the always-on ~0.2-0.9% block is faithful; the divergence is purely the EXTRA ~80% MarkPain cut while shielded. Shield duration/cooldown and armor bump-then-restore are timing-faithful. Needs an owner call on whether the buff is intentional."
+    notes: "PARTIALLY ADDRESSED by Wave-2 (cfg/field default 0.9->0.8, wrongly-invented mage_sight voice on shield removed -> audio now faithful), but the CORE divergence (~80% MarkPain cut double-counted on top of the faithful ~0.8% armor block) is UNCHANGED. Baseline monster armor (RES_ARMOR=bound(0.2,0.5*SKILLMOD,0.9)) is modeled (Setup:243-244, MonsterEventDamage:1539). Shield duration/cooldown and armor bump-then-restore are timing-faithful. Needs an owner call on whether the buff is intentional, then removal of the MarkPain block (and fix the 0.9 fallback)."
 
   - id: monster-mage.defend.heal
     name: "Radius heal of self/allies (skin variants: health/ammo/armor)"
@@ -233,26 +232,24 @@ features:
       - { name: "g_monster_mage_heal_range", base: "250", port: "250 (cfg)", match: true }
       - { name: "g_monster_mage_heal_delay", base: "1.5", port: "1.5 (cfg)", match: true }
       - { name: "ammo_topup", base: "cells 1 / rockets 1 / shells 2 / bullets 5", port: "cells 1 / rockets 1 / shells 2 / bullets 5", match: true }
-      - { name: "self_heal_eligibility", base: "monster branch: RES_HEALTH < max_health (ALL skins)", port: "skin==0 && health < regenstable(100) only", match: false }
+      - { name: "self_heal_eligibility", base: "monster branch: RES_HEALTH < max_health (ALL skins)", port: "monster branch: Health < MaxHealth (ALL skins)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: missing
-      audio: partial
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Self-heal eligibility is WRONG. In Base, M_Mage_Defend_Heal_Check(this, this=self) falls through the !IS_PLAYER branch (a mage is a monster) and returns IS_MONSTER && RES_HEALTH < max_health — so the mage self-heals (toward max 400) on EVERY skin. The port's HealCheck:252-256 special-cases targ==self to return only `skin==0 && health < regenstable(100)`, so a skin 1 or skin 2 mage never self-heals at all, and a skin 0 mage stops self-healing above 100 HP (vs Base's 400). The healed AMOUNT (GiveResourceWithLimit Health 20 toward MaxHealth in the non-client branch) is correct; only the trigger gate diverges."
-      - "Send_Effect(EFFECT_HEALING / AMMO_REGEN / ARMOR_REPAIR) particles per skin not emitted."
-      - "Port plays monsters/mage_heal.wav (Voice) on heal; QC plays no dedicated heal sound."
-      - "Waypoint-sprite health update for healed ally monsters (WaypointSprite_UpdateHealth) not invoked in the port."
+      - "Send_Effect(EFFECT_HEALING / AMMO_REGEN / ARMOR_REPAIR) particles per skin not emitted (CSQC)."
+      - "Waypoint-sprite health update for healed ally monsters (WaypointSprite_UpdateHealth, mage.qc:280-281) not invoked in the port."
     verification:
       - { kind: code, ref: "HealPulse skin switch (player branch) + non-client branch GiveResourceWithLimit(Health,20,MaxHealth) vs M_Mage_Defend_Heal", result: pass }
-      - { kind: code, ref: "HealCheck:252-256 self special-case vs M_Mage_Defend_Heal_Check:103-104 monster branch", result: fail }
+      - { kind: code, ref: "HealCheck:308-315 now has NO self special-case: a mage (Flags&Monster, !Client) flows through the monster branch `Health < MaxHealth` == M_Mage_Defend_Heal_Check:103-104, so self-heals on EVERY skin toward 400", result: pass }
     confidence: high
-    notes: "Player skin 0 health / 1 ammo / 2 armor branches and the per-resource caps match Base. Non-player ally heal toward MaxHealth matches. The self-heal divergence is in the eligibility check (HealCheck), not the heal magnitude."
+    notes: "FIXED in Wave-2: the self-heal eligibility bug is gone. The old HealCheck special-cased targ==self to `skin==0 && health < regenstable(100)` (so skin 1/2 never self-healed, skin 0 stopped above 100 HP); that branch was removed, so a mage now flows through the !IS_PLAYER monster branch and self-heals toward max_health on all skins, matching Base. Also: the wrongly-invented monsters/mage_heal.wav voice was removed (QC plays no dedicated heal sound -> audio faithful). Player skin 0/1/2 branches and per-resource caps match Base. Only CSQC particles + ally waypoint-health remain."
 
   - id: monster-mage.think.decide
     name: "Per-think heal/shield decision (mr_think)"
@@ -278,9 +275,9 @@ features:
     gaps:
       - "QC mr_think scans BOTH clients (FOREACH_CLIENT) and monsters (IL_EACH g_monsters) for need_help; port NeedsHelpNearby uses one FindInRadius pass over all entities in heal_range, which conflates the two scans but covers both populations."
     verification:
-      - { kind: code, ref: "Mage.Think:74 heal gate (rand<0.5 && Now>=AttackFinished && (health<minhealth || NeedsHelpNearby)) and shield gate (rand<0.5 && enemy && Now>=ShieldDelay && health<MaxHealth && !Shield) vs mr_think", result: pass }
+      - { kind: code, ref: "Mage.Think:75 heal gate (rand<0.5 && Now>=AttackFinished && (health<minhealth || NeedsHelpNearby)) and shield gate (rand<0.5 && enemy && Now>=ShieldDelay && health<MaxHealth && !Shield) vs mr_think", result: pass }
     confidence: high
-    notes: "Heal trigger and shield trigger conditions match mr_think exactly. Then RunThink runs the shared chase/attack. NeedsHelpNearby reuses HealCheck (so it inherits the self-heal gate quirk, but it explicitly skips self via `if (it == e) continue`)."
+    notes: "Heal trigger and shield trigger conditions match mr_think exactly. RunThink then runs the shared chase/attack. NeedsHelpNearby reuses HealCheck (which is now self-heal-correct; it explicitly skips self via `if (it == e) continue`)."
 
   - id: monster-mage.death.pain
     name: "Pain reaction + death anim (mr_pain / mr_death)"
@@ -294,6 +291,7 @@ features:
     constants:
       - { name: "mr_pain_return", base: "damage_take (unchanged)", port: "shared MarkPain (no mage override)", match: true }
       - { name: "die_anim_pick", base: "random()>0.5 ? die2 : die1", port: "shared MonsterAnim.Death", match: false }
+      - { name: "pain_sound_throttle", base: "Monster_Sound(monstersound_pain, 1.2, true)", port: "MonsterSound(pain, 1.2, true)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -306,9 +304,10 @@ features:
     gaps:
       - "mr_death random die1/die2 anim selection is not modeled per-mage (the port uses the shared death-anim phase MonsterAnim.Death, no mage-specific 50/50 die-anim pick)."
     verification:
-      - { kind: code, ref: "mr_pain returns take unchanged (matches shared MarkPain passthrough); no mage-specific override exists in Mage.cs", result: pass }
-    confidence: medium
-    notes: "mr_pain is a passthrough in Base, so the shared MarkPain is faithful. die1/die2 is a presentation-only anim choice. Death sound played generically via MarkDead (monsters/<netname>_death.wav)."
+      - { kind: code, ref: "mr_pain returns take unchanged (matches shared MarkPain passthrough); no mage-specific override in Mage.cs", result: pass }
+      - { kind: code, ref: "MarkPain:1402 pain sound now routed through MonsterSound(pain, 1.2, true) == Monster_Damage:1101 1.2s delaytoo throttle", result: pass }
+    confidence: high
+    notes: "mr_pain is a passthrough in Base, so the shared MarkPain is faithful. Wave-2 routed the pain/death sounds through the new MonsterSound helper honouring the g_monsters_sounds gate + the 1.2s pain throttle (was an unthrottled direct Play). die1/die2 remains a presentation-only anim choice. Death sound via MarkDead (monsters/<netname>_death.wav)."
 
   - id: monster-mage.anim.frames
     name: "Animation frame groups (mr_anim)"
@@ -336,4 +335,4 @@ features:
     verification:
       - { kind: code, ref: "MonsterAI.MonsterAnim enum (Idle/Walk/Run/Attack/Pain/Death) vs mr_anim animfixfps frame groups — port collapses shoot/melee/duckjump into one Attack phase", result: fail }
     confidence: medium
-    notes: "mr_anim is GAMEQC (shared client+server) for frame-group setup; the port collapses distinct shoot/melee/duckjump frames into one Attack phase. Whether the renderer plays the correct frame ranges is unverified."
+    notes: "Unchanged by Wave-2. mr_anim is GAMEQC (shared client+server) for frame-group setup; the port collapses distinct shoot/melee/duckjump frames into one Attack phase. Whether the renderer plays the correct frame ranges is unverified."

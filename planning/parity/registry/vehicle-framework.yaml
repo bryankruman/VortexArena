@@ -5,15 +5,18 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 21
   worst_gaps:
-    - "vehicles_damage is DEAD on the live path: DamageVehicle has NO caller except a unit test — no vehicle entity installs a damage handler (GtEventDamage is never set), so DamageSystem.EventDamage falls through to PlayerDamage and a shot vehicle takes ARMOR/HEALTH-split PLAYER damage with no per-weapon damagerate, no shield-then-health split, no force-scale, and no death-eject/respawn. The whole vehicles_damage rule set is dead in a real match."
-    - "vehicles_heal framework helper is NOT ported: no shared heal function, no .event_heal, and no owner vehicle_health percentage mirror — only the Bumblebee healray does its OWN inline GiveResourceWithLimit; func_heal / heal nades cannot heal a vehicle."
-    - "In-vehicle HUD + aux lock crosshairs + cockpit/chase camera are all dead: VehicleHud is registered but nothing on the live path feeds it (TE_CSQC_VEHICLESETUP / VEHICLESTAT_* / SVC_SETVIEWPORT networking unwired); the VEHICLESTAT_W2MODE owner-mirror is also never written — a pilot has no vehicle HUD and no cockpit view."
-    - "vehicles_touch crush damage (crush_dmg 70 / minspeed 100) is NOT implemented: vehicles never run players or monsters over."
-    - "vehicles_impact fall/collision self-damage (DEATH_FALL) is NOT implemented: vehicles take no landing or ramming damage."
-    - "vehicles_painframe is NOT implemented: no low-health smoke and no VHF_DMGSHAKE/DMGROLL/DMGHEADROLL jitter — vehicles show no damage state."
-    - "vehicles_setreturn / vehicles_showwp is NOT implemented: no WP_Vehicle return waypoint and an abandoned LIVING vehicle is never returned to its spawn."
-    - "vehicle_use targetname controller + ACTIVE gating + delayspawn jitter + drop-to-floor from vehicle_initialize is NOT implemented: map-scripted vehicle activation is absent."
-    - "VehicleInit and VehicleTouch mutator hooks are defined but never dispatched (.Call) — a mutator cannot abort vehicle init or suppress a vehicle touch."
+    - "vehicles_painframe is STILL DEAD: the body (low-health smoke + VHF_DMGSHAKE/DMGROLL/DMGHEADROLL jitter) was ported to VehicleCommon.PainFrame but has ZERO callers — no descriptor Think invokes it (grep PainFrame( = only the definition). A damaged vehicle still neither smokes nor shudders."
+    - "In-vehicle HUD + aux lock crosshairs + cockpit/chase camera remain dead: VehicleHud has no live feeder (ConfigureForVehicle / SetAuxiliaryXhair have no caller), TE_CSQC_VEHICLESETUP / VEHICLESTAT_* / SVC_SETVIEWPORT networking is still unwired, and the VEHICLESTAT_W2MODE owner-mirror is still never written. A pilot has no vehicle HUD and no cockpit view."
+    - "g_vehicles_steal (Base default ON) is STILL unported: a different-team player cannot board; only the refuse path exists. Untouched by Wave-1/2."
+    - "vehicles_locktarget validity gate is STILL incomplete: the homing lock can still acquire a player/any-live-entity because the IS_VEHICLE||IS_TURRET and alpha<=0.5 rejections present in QC are still missing (VehiclePhysicsHelpers untouched)."
+    - "init.initialize: drop-to-floor tracebox, delayspawn jitter, targetname/ACTIVE controller, and the VehicleInit mutator hook are STILL missing — InitVehicle() was added but has ZERO callers (VehicleSpawnFuncs untouched), so the VehicleInit abort hook is still dead."
+    - "NEW PARTIAL DEFECT — Spiderbot.Spawn sets `vehicle.Touch = null` AFTER SpawnVehicle installs the crush/touch handler, nulling it; Base spiderbot vr_spawn does NOT reset touch (settouch func_null is only in vr_death). So the ground walker most likely to run a player over never crushes."
+    - "NEW PARTIAL DEFECT — vehicles_impact is wired live only for the Racer (it snapshots .oldvelocity in its Think); the Raptor has a vr_impact override (1/4/1000) but its Think never snapshots OldVelocity, so its ram delta is computed against a stale/zero baseline."
+  fixes_landed_wave12:
+    - "combat.damage is now LIVE: SpawnVehicle installs vehic.GtEventDamage = EventDamage and DamageSystem.EventDamage routes a non-player victim with a GtEventDamage to it, so DamageVehicle (per-weapon rate / shield-then-health / force / death-eject + SetReturn) runs on the real damage path."
+    - "combat.regen owner-% mirror now LIVE for the health pool (RegenResource writes owner.VehicleHealth)."
+    - "combat.crush is implemented + installed live (Touch/Crushable via SpawnVehicle, dispatched by MoveTypePhysics.PushEntity) for Racer/Raptor/Bumblebee (NOT Spiderbot — see defect)."
+    - "hooks: VehicleTouch is now dispatched live (FireVehicleTouch from VehicleCommon.Touch). VehicleInit is still dead."
 features:
   - id: vehicle-framework.init.initialize
     name: "vehicle_initialize — master gate, model/tag setup, placement, init hook"
@@ -24,6 +27,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleSpawnFuncs.cs:27 (Spawn)"
       - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleSpawnFuncs.cs:63 (MasterSwitchEnabled)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:396 (InitVehicle — DEAD: no caller)"
     constants:
       - { name: "g_vehicles (master)", base: "1", port: "1 (MasterSwitchEnabled per-vehicle g_vehicle_X !autocvar)", match: true }
       - { name: "g_vehicles_teams", base: "1", port: "not gated (team-clear branch unported)", match: false }
@@ -39,15 +43,15 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No drop-to-floor downward tracebox (QC vehicle_initialize: tracebox origin+'0 0 100' down 10000, MOVE_WORLDONLY): a vehicle keeps its mapper origin instead of settling on the ground."
-      - "delayspawn + random jitter scheduling not ported (vehicles spawn at game_starttime only)."
-      - "targetname controller / ACTIVE_NOT gating / vehicle_use not ported (map-scripted activation absent)."
-      - "MUTATOR_CALLHOOK(VehicleInit) abort-on-true never fires (hook dead)."
+      - "No drop-to-floor downward tracebox (QC vehicle_initialize: tracebox origin+'0 0 100' down 10000, MOVE_WORLDONLY): a vehicle keeps its mapper origin instead of settling on the ground. STILL OPEN (VehicleSpawnFuncs untouched)."
+      - "delayspawn + random jitter scheduling not ported (vehicles spawn at game_starttime only). STILL OPEN."
+      - "targetname controller / ACTIVE_NOT gating / vehicle_use not ported (map-scripted activation absent). STILL OPEN."
+      - "MUTATOR_CALLHOOK(VehicleInit) abort-on-true never fires: VehicleCommon.InitVehicle() was ADDED and wraps the real FireVehicleInit dispatch, but it has ZERO callers — VehicleSpawnFuncs.Spawn never calls it. Hook is still dead."
     verification:
       - { kind: code, ref: "VehicleSpawnFuncs registered into SpawnFuncs (MapObjectsRegistry.cs:219-222); per-vehicle master switch faithful", result: pass }
-      - { kind: code, ref: "no controller/ACTIVE/delayspawn/drop-to-floor code in VehicleSpawnFuncs or descriptors (grep)", result: fail }
+      - { kind: code, ref: "grep InitVehicle( = only the definition (VehicleCommon.cs:396); no controller/ACTIVE/delayspawn/drop-to-floor in VehicleSpawnFuncs (git diff main..HEAD VehicleSpawnFuncs.cs = empty)", result: fail }
     confidence: high
-    notes: "Spawnfuncs gate on g_vehicle_X and run the descriptor Spawn; the model/tag attach + hitbox happen in the descriptor. The init-time controller, delayspawn jitter, ground-drop, and VehicleInit hook are missing."
+    notes: "Wave-1/2 added the InitVehicle wrapper around a real VehicleInit HookChain but never wired the call site, so the only change is dead code. Drop-to-floor, delayspawn jitter, and the controller remain missing."
 
   - id: vehicle-framework.spawn.respawn
     name: "vehicles_spawn — reset to idle/ownerless/shootable at spawn point"
@@ -59,6 +63,9 @@ features:
     constants:
       - { name: "MOVETYPE_STEP / SOLID_SLIDEBOX / DAMAGE_AIM / DEAD_NO / FL_NOTARGET", base: "set", port: "set", match: true }
       - { name: "angles=pos2; setorigin(pos1)", base: "yes", port: "yes (SpawnAngles/SpawnPos)", match: true }
+      - { name: "this.event_damage = vehicles_damage", base: "set", port: "set (vehic.GtEventDamage = EventDamage)", match: true }
+      - { name: "this.touch = vehicles_touch", base: "set", port: "set (vehic.Touch = Touch)", match: true }
+      - { name: "this.event_heal = vehicles_heal", base: "set", port: "NOT installed (no generic event_heal dispatch sink)", match: false }
     status:
       logic: faithful
       values: faithful
@@ -69,12 +76,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "SpawnVehicle does NOT install event_damage/event_heal/touch handlers (QC vehicles_spawn sets touch=vehicles_touch, event_damage=vehicles_damage, event_heal=vehicles_heal) — this is the root cause of the dead damage/heal/touch paths (see combat.damage / combat.heal / combat.crush)."
+      - "event_heal is still NOT installed (the generic heal-sink dispatch does not exist in the port). event_damage and touch ARE now installed — fixing the root cause of the previously-dead damage and crush/touch paths."
       - "EFFECT_TELEPORT spawn flash, CSQCMODEL_AUTOINIT, hook-removal sweep, and vehicles_reset_colors are deferred (client/presentation)."
     verification:
-      - { kind: code, ref: "SpawnVehicle sets owner/movetype/solid/takedamage/deadflag/FL_NOTARGET + places at SpawnPos/Angles; sets NO event_* handlers (grep GtEventDamage in Vehicles/ = empty)", result: pass }
+      - { kind: code, ref: "SpawnVehicle (VehicleCommon.cs:358-385) now sets vehic.GtEventDamage = EventDamage AND vehic.Touch = Touch in addition to owner/movetype/solid/takedamage/deadflag/FL_NOTARGET + placement", result: pass }
+      - { kind: code, ref: "all 4 descriptor Spawn() call VehicleCommon.SpawnVehicle (Racer:175 Raptor:109 Spiderbot:99 Bumblebee:97)", result: pass }
     confidence: high
-    notes: "Server reset state (movetype/solid/damage flags/placement) matches; the teleport FX + colormod reset + hook clear are presentation, but the MISSING event_damage/event_heal/touch installation is a real authority gap that orphans the shared combat helpers."
+    notes: "FIXED vs baseline: SpawnVehicle now installs event_damage + touch, which was the root authority gap orphaning the combat/crush helpers. event_heal install is still absent (no dispatch sink). NOTE: Spiderbot.Spawn later re-nulls Touch (see combat.crush)."
 
   - id: vehicle-framework.think.tick
     name: "vehicles_think — per-tick think cadence + painframe + W2MODE mirror"
@@ -97,13 +105,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "vehicles_painframe is not called from think (the low-health smoke + DMGSHAKE/DMGROLL never run) — see vehicle-framework.combat.painframe."
-      - "VEHICLESTAT_W2MODE is NEVER mirrored to the owner: descriptors only write vehicle.VehW2Mode; there is no `owner.VehW2Mode = vehic.VehW2Mode` step anywhere (QC vehicles_think does it every tick). Harmless only because the vehicle HUD that would read it is also dead."
+      - "vehicles_painframe is STILL not called from any think — VehicleCommon.PainFrame exists but has zero callers (see vehicle-framework.combat.painframe)."
+      - "VEHICLESTAT_W2MODE is STILL never mirrored to the owner: descriptors only write vehicle.VehW2Mode; there is no `owner.VehW2Mode = vehic.VehW2Mode` step (grep). Harmless only because the vehicle HUD that would read it is also dead."
     verification:
       - { kind: code, ref: "descriptors set Think/NextThink and self-reschedule via the entity scheduler (Racer.cs:130-131)", result: pass }
-      - { kind: code, ref: "grep `owner.VehW2Mode =` = no matches; only `vehicle.VehW2Mode =` exists", result: fail }
+      - { kind: code, ref: "grep `owner.VehW2Mode =`/`Owner.VehW2Mode =` = no matches; PainFrame( has no caller", result: fail }
     confidence: high
-    notes: "The think loop is live via the entity scheduler; painframe is absent and the W2MODE owner-mirror does not exist (earlier 'in the descriptors' claim was wrong)."
+    notes: "Unchanged vs baseline: think loop live; painframe absent and W2MODE owner-mirror still missing."
 
   - id: vehicle-framework.enter.handshake
     name: "vehicles_enter — board guards, gunner branch, player freeze + link"
@@ -128,13 +136,13 @@ features:
     divergence_rationale: null
     gaps:
       - "MOVETYPE_NOCLIP + disableclientprediction=1 modeled as MoveType.None (player origin rewritten by the vehicle); behaviorally close but not the QC movetype."
-      - "EnterVehicle does NOT install veh.event_damage/event_heal (QC sets them in vehicles_enter); combined with vehicles_spawn never setting them, the vehicle takes no shield/health-split damage even while piloted (see combat.damage)."
+      - "EnterVehicle still does NOT install veh.event_damage/event_heal (QC sets them in vehicles_enter) — but this is now MOOT for event_damage because vehicles_spawn (SpawnVehicle) installs GtEventDamage at spawn, so a piloted vehicle DOES take the vehicle damage rules. event_heal is still absent."
       - "SVC_SETVIEWPORT/SETVIEWANGLES + CSQCVehicleSetup, the temp_wepent weaponslot swap, CENTER_VEHICLE_ENTER notification, antilag_clear, and RemoveGrapplingHooks are deferred (cross-boundary)."
     verification:
-      - { kind: code, ref: "ServerNet +use rising edge (ServerNet.cs:1257/1363) -> VehicleBoarding.UseKey -> Enter; guards (bot/delay/phase/dead/seated) ported; GameWorld.cs:1054 feeds VehInput", result: pass }
+      - { kind: code, ref: "ServerNet +use rising edge -> VehicleBoarding.UseKey -> Enter; guards (bot/delay/phase/dead/seated) ported; GameWorld feeds VehInput", result: pass }
       - { kind: test, ref: "VehicleRuntimeTests.UseKey_BoardsNearbyRacer_LinksAndFreezesPilot + guard tests", result: pass }
     confidence: high
-    notes: "Boarding is live through the net +use rising edge. The link + freeze + team/ammo reset are faithful; the view/HUD/weaponslot networking AND the event_damage/event_heal installation are missing."
+    notes: "Boarding still live and faithful. The event_damage-not-installed sub-gap is now covered by the spawn-time install; event_heal and the view/HUD/weaponslot networking remain missing."
 
   - id: vehicle-framework.enter.steal
     name: "g_vehicles_steal — enemy-team boarding (shield zero + intruder waypoint)"
@@ -157,12 +165,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Enemy-team board (shield=0, old_vehicle_flags backup, ~VHF_SHIELDREGEN, WP_VehicleIntruder waypoint, CENTER_VEHICLE_STEAL / _SELF notifications) not ported — a different-team player simply cannot board."
-      - "Base default is g_vehicles_steal=1 (stealing allowed); the port treats the missing feature as steal-off, so stock teamplay vehicle-steal is absent (default-config behavior gap, not merely a non-default deferral)."
+      - "Enemy-team board (shield=0, old_vehicle_flags backup, ~VHF_SHIELDREGEN, WP_VehicleIntruder waypoint, CENTER_VEHICLE_STEAL / _SELF notifications) STILL not ported — a different-team player simply cannot board."
+      - "Base default is g_vehicles_steal=1 (stealing allowed); the port treats the missing feature as steal-off, so stock teamplay vehicle-steal is absent (default-config behavior gap)."
     verification:
-      - { kind: code, ref: "VehicleBoarding.Enter DiffTeam branch falls back to g_vehicles_steal=0 and returns false; no steal gameplay code", result: fail }
+      - { kind: code, ref: "VehicleBoarding.cs untouched by Wave-1/2 (git diff main..HEAD = no steal/DiffTeam change); DiffTeam branch falls back to g_vehicles_steal=0 and returns false", result: fail }
     confidence: high
-    notes: "Base ships with stealing ON; the port has only the refuse path, so this is a default-config behavior gap."
+    notes: "Unchanged vs baseline. STILL OPEN."
 
   - id: vehicle-framework.exit.handshake
     name: "vehicles_exit — eject + restore player, return + recolor vehicle"
@@ -187,11 +195,11 @@ features:
     divergence_rationale: null
     gaps:
       - "SVC_SETVIEWPORT/SETVIEWANGLES + CSQCVehicleSetup, temp_wepent switchweapon restore, Kill_Notification(CPID_VEHICLES), and last_vehiclecheck are deferred."
-      - "vehicles_setreturn for the now-abandoned LIVING vehicle is not called (see vehicle-framework.respawn.return_waypoint)."
+      - "vehicles_setreturn for the now-abandoned LIVING vehicle is still not called from Exit (SetReturn is only reached via the death path now) — an abandoned living vehicle is not returned (see vehicle-framework.respawn.return_waypoint)."
     verification:
       - { kind: test, ref: "VehicleRuntimeTests.UseKey_WhileSeated_Exits_RestoresPlayerAndSetsReEntryDelay", result: pass }
     confidence: high
-    notes: "Gunner-slot exit dispatches to the Bumblebee slot exit; pilot exit restores the walking player and sets the re-entry delays faithfully. VehicleExit hook IS dispatched (.Call) — verified live."
+    notes: "Unchanged: pilot exit faithful, VehicleExit hook live. The abandoned-living-vehicle SetReturn call is still not wired from Exit."
 
   - id: vehicle-framework.exit.findgoodexit
     name: "vehicles_findgoodexit — clear drop spot for the ejected pilot"
@@ -217,7 +225,7 @@ features:
     verification:
       - { kind: code, ref: "FindGoodExit traces prefer-spot then 25 deterministic-PRNG ring points, falls back to origin", result: pass }
     confidence: high
-    notes: "Uses the shared deterministic PRNG (Prandom.Vec) so prediction reproduces the draws."
+    notes: "Unchanged. Faithful + live."
 
   - id: vehicle-framework.combat.damage
     name: "vehicles_damage — per-weapon rate, shield-then-health, death eject"
@@ -226,62 +234,64 @@ features:
       - "common/vehicles/sv_vehicles.qc:625 (vehicles_damage)"
       - "common/vehicles/sv_vehicles.qh:24-29 (damagerate cvars)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:399 (DamageVehicle — UNWIRED)"
-      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:471 (VehicleDamageRate)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:461 (EventDamage — the installed .event_damage shim)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:472 (DamageVehicle)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:548 (VehicleDamageRate)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:331 (EventDamage routing of non-players)"
     constants:
-      - { name: "g_vehicles_vortex_damagerate", base: "0.75", port: "0.75 (in DamageVehicle, dead)", match: true }
-      - { name: "g_vehicles_machinegun_damagerate", base: "0.75", port: "0.75 (dead)", match: true }
-      - { name: "g_vehicles_rifle_damagerate", base: "0.75", port: "0.75 (dead)", match: true }
-      - { name: "g_vehicles_vaporizer_damagerate", base: "0.5", port: "0.5 (dead)", match: true }
-      - { name: "g_vehicles_tag_damagerate (seeker)", base: "5", port: "5 (dead)", match: true }
-      - { name: "g_vehicles_weapon_damagerate (other)", base: "2", port: "2 (dead)", match: true }
+      - { name: "g_vehicles_vortex_damagerate", base: "0.75", port: "0.75 (live)", match: true }
+      - { name: "g_vehicles_machinegun_damagerate", base: "0.75", port: "0.75 (live)", match: true }
+      - { name: "g_vehicles_rifle_damagerate", base: "0.75", port: "0.75 (live)", match: true }
+      - { name: "g_vehicles_vaporizer_damagerate", base: "0.5", port: "0.5 (live)", match: true }
+      - { name: "g_vehicles_tag_damagerate (seeker)", base: "5", port: "5 (live)", match: true }
+      - { name: "g_vehicles_weapon_damagerate (other)", base: "2", port: "2 (live)", match: true }
+      - { name: "this.pain_finished = time", base: "set", port: "set (vehic.PainFinished = Time)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
       presentation: partial
       audio: partial
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "DamageVehicle has NO live caller: it is invoked ONLY from VehicleRuntimeTests.cs:470. No vehicle entity installs a damage handler — grep for `GtEventDamage =` under Vehicles/ is empty, and neither vehicles_spawn (SpawnVehicle) nor vehicles_enter (EnterVehicle) wire veh.event_damage. So DamageSystem.EventDamage (DamageSystem.cs:294) sees GtEventDamage==null and falls through to PlayerDamage(targ): the vehicle takes ARMOR/HEALTH-split PLAYER damage, NOT the vehicle rule set."
-      - "Consequences on the live path: no per-weapon damagerate, no VHF_HASSHIELD shield-then-health split, no damageforcescale knockback, and NO death eject -> the descriptor Death()/respawn is never reached via damage (only the direct-test path reaches it)."
       - "vehicle_shieldent hit flash (colormod/alpha angled to hitloc) is a CSQC visual — not drawn."
-      - "Hit sounds (SND_ONS_HIT2 / electricity_explode) only fire inside the dead DamageVehicle; antilag_clear on death deferred."
+      - "antilag_clear on death is deferred (cross-boundary)."
     verification:
-      - { kind: code, ref: "DamageVehicle internals (rate table, shield split, force scale, death->Exit->Death) are faithfully written", result: pass }
-      - { kind: code, ref: "grep DamageVehicle across src/game/tests: sole call is tests/VehicleRuntimeTests.cs:470; no GtEventDamage wiring on any vehicle (grep)", result: fail }
-      - { kind: code, ref: "DamageSystem.EventDamage routes non-player without GtEventDamage to PlayerDamage (DamageSystem.cs:294-303)", result: fail }
+      - { kind: code, ref: "SpawnVehicle installs vehic.GtEventDamage = EventDamage (VehicleCommon.cs:364); EventDamage reorders args and calls DamageVehicle", result: pass }
+      - { kind: code, ref: "DamageSystem.EventDamage (DamageSystem.cs:331) routes a non-player victim with a GtEventDamage to it and returns, so a shot vehicle runs the vehicle rule set, NOT PlayerDamage", result: pass }
+      - { kind: code, ref: "all 4 descriptors call SpawnVehicle, so every live vehicle gets the shim; VehicleDamageRate maps deathtype->weapon-net-name->rate (vortex/mg/rifle/vaporizer/seeker/other) matching sv_vehicles.qh", result: pass }
     confidence: high
-    notes: "The function body matches Base bit-for-bit, but it is orphaned — the single biggest liveness defect in this unit. A vehicle in a real match is damaged as if it were a player and never properly dies/ejects via damage."
+    notes: "FIXED vs baseline (dead -> live). This was the single biggest liveness defect; the GtEventDamage install in SpawnVehicle now routes real damage through DamageVehicle (per-weapon rate, VHF_HASSHIELD shield-then-health, damageforcescale, death-eject -> descriptor Exit/Death -> SetReturn). Verified by code (no new test exercises the live route — Death test still calls DamageVehicle directly)."
 
   - id: vehicle-framework.combat.heal
     name: "vehicles_heal — health restore with limit + owner percentage mirror"
     layer: [authority]
     base_refs:
       - "common/vehicles/sv_vehicles.qc:708 (vehicles_heal)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:655 (HealVehicle — body ported, NO dispatch sink)"
     constants:
-      - { name: "limit fallback", base: "max_health when RES_LIMIT_NONE", port: "none (no shared helper)", match: false }
-      - { name: "owner.vehicle_health = (health/max)*100 mirror", base: "yes", port: "none", match: false }
+      - { name: "limit fallback", base: "max_health when RES_LIMIT_NONE", port: "max_health when ResLimitNone (HealVehicle)", match: true }
+      - { name: "owner.vehicle_health = (health/max)*100 mirror", base: "yes", port: "yes (in HealVehicle on success)", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: faithful
+      values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: dead
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The shared vehicles_heal framework function is NOT ported: there is no Heal helper, no veh.event_heal handler, and no owner vehicle_health percentage mirror. SpawnVehicle/EnterVehicle never set event_heal either."
-      - "The ONLY vehicle healing that exists is the Bumblebee healray, which does its OWN inline GiveResourceWithLimit (Bumblebee.cs:602) — it does not route through the shared helper, does not set the owner % mirror, and is the healing SOURCE not the vehicles_heal SINK."
-      - "func_heal / heal-nade healing onto a vehicle (the generic event_heal sink) is impossible — nothing dispatches it."
+      - "HealVehicle (the framework .event_heal SINK) is now WRITTEN and faithful (limit fallback to max_health, dead/at-limit refusal, GiveResourceWithLimit, owner % mirror) but has NO live caller: SpawnVehicle/EnterVehicle never install a veh.event_heal, and there is no generic Heal/event_heal dispatch in the port. So func_heal / heal-nade onto a vehicle still does nothing."
+      - "The Bumblebee healray remains the only actual vehicle healing and still does its own inline GiveResourceWithLimit (Bumblebee.cs ~602) — the heal SOURCE, not this SINK."
     verification:
-      - { kind: code, ref: "no vehicles_heal / Heal helper / event_heal under src/**/Vehicles (grep); only the bumblebee healray inline-heals via GiveResourceWithLimit", result: fail }
+      - { kind: code, ref: "HealVehicle body present (VehicleCommon.cs:655) and faithful to vehicles_heal", result: pass }
+      - { kind: code, ref: "grep HealVehicle( / event_heal / GtEventHeal callers = none; the comment in SpawnVehicle explicitly says event_heal cannot be auto-dispatched (no sink) and is left a TODO", result: fail }
     confidence: high
-    notes: "Earlier draft mapped this to Bumblebee.cs and called it faithful+partial. That conflated the heal SOURCE (healray) with the framework heal SINK helper, which does not exist. Corrected to missing."
+    notes: "PARTIALLY closed vs baseline: logic/values went missing -> faithful (the helper now exists and is bit-faithful incl. the owner % mirror), but liveness is still dead — there is no event_heal dispatch path, so the sink is unreachable."
 
   - id: vehicle-framework.combat.regen
     name: "vehicles_regen / vehicles_regen_resource — shield/energy/health regen with pause"
@@ -291,10 +301,11 @@ features:
       - "common/vehicles/sv_vehicles.qc:564 (vehicles_regen_resource)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:358 (Regen)"
-      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:374 (RegenResource)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:428 (RegenResource — now mirrors owner.VehicleHealth)"
     constants:
       - { name: "regen-pause gate (timer + rpause < time)", base: "yes", port: "yes", match: true }
       - { name: "healthscale (rate *= health/max_health)", base: "optional", port: "optional", match: true }
+      - { name: "owner.(regen_field) = (pool/field_max)*100 mirror", base: "yes", port: "yes for RES_HEALTH (RegenResource -> owner.VehicleHealth); shield/energy scalar pools mirrored in descriptor Frame/Think", match: true }
     status:
       logic: faithful
       values: faithful
@@ -304,12 +315,12 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Regen does NOT mirror the pool percentage onto the owner (QC: owner.(regen_field) = (pool/field_max)*100). Same dead-HUD class as the W2MODE mirror — harmless only because the vehicle HUD is dead."
+    gaps: []
     verification:
-      - { kind: code, ref: "Regen/RegenResource match the QC clamp + pause + healthscale; called live from every descriptor Think (Racer.cs:216, Raptor.cs:223, Spiderbot.cs:217, Bumblebee.cs:267)", result: pass }
+      - { kind: code, ref: "RegenResource now writes vehic.Owner.VehicleHealth = (health/fieldMax)*100 (VehicleCommon.cs ~439); called live from every descriptor Think (Racer:320 Raptor:245 Spiderbot:233 Bumblebee:290)", result: pass }
+      - { kind: code, ref: "descriptor Frame/Think mirror the scalar shield/energy pools onto the pilot as % (e.g. Racer.cs ~321 player.VehicleShield/VehicleEnergy)", result: pass }
     confidence: high
-    notes: "Pool clamp + pause + healthscale faithful and LIVE (descriptor Think). The owner-% mirror is omitted (HUD-only, dead path)."
+    notes: "FIXED vs baseline: the previously-omitted owner-% mirror is now produced (health via RegenResource; shield/energy via descriptor frame). Faithful + live."
 
   - id: vehicle-framework.combat.crush
     name: "vehicles_touch crush + vehicles_crushable — run over players/monsters"
@@ -318,53 +329,66 @@ features:
       - "common/vehicles/sv_vehicles.qc:874 (vehicles_touch)"
       - "common/vehicles/sv_vehicles.qc:721 (vehicles_crushable)"
       - "common/vehicles/sv_vehicles.qh:13-15 (crush cvars)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:736 (Touch)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:715 (Crushable)"
     constants:
-      - { name: "g_vehicles_crush_dmg", base: "70", port: "none", match: false }
-      - { name: "g_vehicles_crush_force", base: "50", port: "none", match: false }
-      - { name: "g_vehicles_crush_minspeed", base: "100", port: "none", match: false }
+      - { name: "g_vehicles_crush_dmg", base: "70", port: "70 (Cvar fallback)", match: true }
+      - { name: "g_vehicles_crush_force", base: "50", port: "50 (Cvar fallback)", match: true }
+      - { name: "g_vehicles_crush_minspeed", base: "100", port: "100 (Cvar fallback)", match: true }
+      - { name: "g_vehicles_enter (touch-board gate)", base: "0 (default)", port: "1 fallback in Touch (g_vehicles_enter==0 -> touch-board)", match: false }
     status:
-      logic: missing
-      values: missing
+      logic: partial
+      values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "vehicles_touch crush is not implemented: a moving vehicle never damages a player/monster it drives over (DEATH_VH_CRUSH)."
-      - "vehicles_crushable (player past enter-delay / monster) not implemented."
-      - "Touch-board (the !g_vehicles_enter path) is also unreachable — SpawnVehicle never installs a touch handler and PlayerPhysics doesn't dual-dispatch .Touch onto solids."
+      - "NEW DEFECT: Spiderbot.Spawn sets `vehicle.Touch = null` (Spiderbot.cs:119) AFTER SpawnVehicle installs the crush/touch handler — Base spiderbot vr_spawn does NOT reset touch (settouch func_null is only in vr_death). So the spiderbot (a ground walker) never crushes; the crush is live only on Racer/Raptor/Bumblebee."
+      - "weaponLocked(it) is stubbed false (no per-frame weapon-lock plumbed), so the crush fires even mid-switch (matches common in-match case)."
+      - "Touch-board (the !g_vehicles_enter path) depends on the host dual-dispatching .Touch onto solids — MoveTypePhysics.PushEntity does dispatch .Touch, but the port default g_vehicles_enter=1 (Base default 0) means touch-board is off by default in the port (config gap)."
+      - "trace_dphitq3surfaceflags NOIMPACT skip in vehicles_impact is deferred (no per-touch surface flag surfaced to the headless callback)."
     verification:
-      - { kind: code, ref: "no crush / vehicles_touch / crushable symbol anywhere under src/** or game/** (grep)", result: fail }
+      - { kind: code, ref: "VehicleCommon.Touch fires FireVehicleTouch, then crush (Crushable + minspeed gate + DEATH_VH_CRUSH Combat.Damage) or vr_impact; installed via SpawnVehicle and dispatched by MoveTypePhysics.PushEntity (doTouch:true) for Bounce/Step movetypes", result: pass }
+      - { kind: code, ref: "Crushable matches QC (client past enter-delay OR monster); crush constants match sv_vehicles.qh", result: pass }
+      - { kind: code, ref: "Spiderbot.cs:119 nulls vehicle.Touch after SpawnVehicle; Base spiderbot vr_spawn has no settouch (only vr_death does) -> divergence", result: fail }
     confidence: high
-    notes: "Default config is use-key board (g_vehicles_enter=1 default in port; Base default is g_vehicles_enter=0 — note Base touch-board IS the default), so touch-board parity is itself a gap; the crush damage is the headline."
+    notes: "MOSTLY closed vs baseline (missing -> implemented + live on 3/4 vehicles). The crush damage now actually runs over soft targets. Spiderbot self-disables it via a stray Touch=null, so logic is partial and liveness partial."
 
   - id: vehicle-framework.combat.impact
     name: "vehicles_impact — fall/collision self-damage"
     layer: [authority]
     base_refs:
       - "common/vehicles/sv_vehicles.qc:731 (vehicles_impact)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:786 (Impact)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Racer.cs:300 (vr_impact override 200/0.15/150)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Raptor.cs:664 (vr_impact override 1/4/1000)"
     constants:
-      - { name: "DEATH_FALL impact dmg", base: "min(speedfac*Δspeed, maxpain)", port: "none", match: false }
-      - { name: "impact gate", base: "Δspeed > minspeed, once / 0.25s, skip NOIMPACT", port: "none", match: false }
+      - { name: "DEATH_FALL impact dmg", base: "min(speedfac*Δspeed, maxpain)", port: "min(speedfac*VLen(delta), maxpain)", match: true }
+      - { name: "impact gate", base: "Δspeed > minspeed, once / 0.25s, skip NOIMPACT", port: "delta>minspeed + play_time<time gate; 0.25s; NOIMPACT deferred", match: false }
+      - { name: "racer bouncepain", base: "'200 0.15 150'", port: "200/0.15/150", match: true }
+      - { name: "raptor bouncepain", base: "'1 4 1000'", port: "1/4/1000", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
+      logic: partial
+      values: faithful
+      timing: faithful
       presentation: na
       audio: na
-      liveness: na
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Vehicles take no landing or ramming self-damage (vr_impact is called from vehicles_touch, which itself isn't ported)."
+      - "Impact reads vehic.OldVelocity as the last-tick velocity, but only the RACER Think snapshots it (Racer.cs:296 vehicle.OldVelocity = vehicle.Velocity). The RAPTOR has a vr_impact override (1/4/1000) but its Think NEVER snapshots OldVelocity, so its ram delta is computed against a stale/zero baseline — raptor impact damage is effectively broken."
+      - "NOIMPACT surface-flag skip deferred (the headless touch callback has no per-touch surface flag)."
     verification:
-      - { kind: code, ref: "no vehicles_impact / vr_impact dispatch under src/** or game/** (grep)", result: fail }
+      - { kind: code, ref: "VehicleCommon.Impact applies min(speedfac*VLen(delta), maxpain) DEATH_FALL damage, 0.25s play_time debounce; dispatched from VehicleCommon.Touch via vehic.VehicleDef.Impact()", result: pass }
+      - { kind: code, ref: "OldVelocity snapshot found only in Racer.cs:296; Raptor.Think (Raptor.cs:219) has no OldVelocity assignment (grep)", result: fail }
     confidence: high
-    notes: "Per-vehicle vr_impact thresholds exist conceptually in the descriptors but nothing invokes the shared impact path."
+    notes: "PARTIALLY closed vs baseline (missing -> implemented). Live + faithful for the Racer; the Raptor override exists but its Think omits the OldVelocity snapshot the shared Impact depends on. Spiderbot has no impact (ground walker, correct)."
 
   - id: vehicle-framework.combat.painframe
     name: "vehicles_painframe — low-health smoke + DMGSHAKE/DMGROLL jitter"
@@ -372,26 +396,29 @@ features:
     base_refs:
       - "common/vehicles/sv_vehicles.qc:594 (vehicles_painframe)"
       - "common/vehicles/vehicle.qh:103-105 (VHF_DMGSHAKE/DMGROLL/DMGHEADROLL)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:686 (PainFrame — body ported, NO caller)"
     constants:
-      - { name: "trigger threshold", base: "health <= 50%", port: "none", match: false }
-      - { name: "FX cadence", base: "0.1..0.6s EFFECT_SMOKE_SMALL", port: "none", match: false }
-      - { name: "VHF_DMGSHAKE velocity jitter", base: "randomvec()*30", port: "none", match: false }
+      - { name: "trigger threshold", base: "health <= 50%", port: "myHealth <= 50 (PainFrame)", match: true }
+      - { name: "FX cadence", base: "0.1..0.6s EFFECT_SMOKE_SMALL", port: "0.1..0.6s (smoke deferred, jitter applied)", match: false }
+      - { name: "VHF_DMGSHAKE velocity jitter", base: "randomvec()*30", port: "Prandom.Vec()*30 (in PainFrame)", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: stub
+      values: faithful
       timing: missing
       presentation: missing
       audio: na
-      liveness: na
+      liveness: dead
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No low-health smoke effect and no DMGSHAKE/DMGROLL/DMGHEADROLL angle/velocity jitter — a damaged vehicle is visually and physically identical to a healthy one. (The descriptors DO set the VHF_DMGSHAKE/DMGROLL flags, so nothing acts on them.)"
+      - "VehicleCommon.PainFrame was ADDED (threshold 50%, 0.1..0.6s cadence, DMGSHAKE velocity jitter, DMGROLL/DMGHEADROLL angle jitter — all faithful) but has ZERO callers: no descriptor Think invokes it (grep PainFrame( = only the definition). So a damaged vehicle still neither smokes nor shudders. STILL DEAD."
+      - "Smoke particle (EFFECT_SMOKE_SMALL) is deferred (no headless particle emitter) even if it were called."
     verification:
-      - { kind: code, ref: "no painframe symbol under src/** or game/** (grep); not called from any descriptor Think; DmgShake/DmgRoll flags set but never read", result: fail }
+      - { kind: code, ref: "PainFrame body present and faithful (VehicleCommon.cs:686)", result: pass }
+      - { kind: code, ref: "grep PainFrame( across src/game/tests = only the definition; not called from any descriptor Think", result: fail }
     confidence: high
-    notes: "The VehicleFlags enum carries DmgShake/DmgRoll/DmgHeadRoll bits and the descriptors set them, but nothing reads them."
+    notes: "NOT closed vs baseline on liveness: the body was written (so logic upgraded missing->stub, values->faithful) but it is dead code — no Think calls it. The headline gap (no damage-state on a hurt vehicle) stands."
 
   - id: vehicle-framework.aim.locktarget
     name: "vehicles_locktarget — homing lock-on build/decay + lock sounds"
@@ -413,13 +440,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Target validity gate is INCOMPLETE: the port (VehiclePhysicsHelpers.cs:285) checks only SameTeam + IsDead. QC ALSO rejects targets that are not (IS_VEHICLE || IS_TURRET) and that are near-invisible (alpha<=0.5 && alpha!=0). The code comment claims it rejects 'non-vehicle-or-turret / near-invisible' but the code does NOT — so a vehicle can lock onto a player or any live entity, not just vehicles/turrets."
+      - "Target validity gate is STILL INCOMPLETE: the port (VehiclePhysicsHelpers.cs:285) checks only SameTeam + IsDead; QC ALSO rejects non-(IS_VEHICLE||IS_TURRET) and near-invisible (alpha<=0.5 && alpha!=0) targets. Untouched by Wave-1/2 — a vehicle can still lock a player/any live entity."
       - "The aux-crosshair lock-color update is a client TODO (HUD dead)."
     verification:
-      - { kind: code, ref: "LockTarget builds VehLockStrength to 1, holds for lockTime, plays locking/lock/locked.wav; live from Racer.cs:328 + Raptor.cs:325", result: pass }
-      - { kind: code, ref: "validity gate (VehiclePhysicsHelpers.cs:285) omits IS_VEHICLE||IS_TURRET and alpha<=0.5 rejections present in QC :121-124", result: fail }
+      - { kind: code, ref: "VehiclePhysicsHelpers untouched (git diff main..HEAD = no IS_VEHICLE/IS_TURRET/alpha change); validity gate at :285 still omits the QC :121-124 rejections", result: fail }
     confidence: high
-    notes: "Sound cadence and decay are bit-faithful and live; the target-class/visibility filter is materially missing (lets the lock acquire non-vehicle targets)."
+    notes: "Unchanged vs baseline. Sound/decay bit-faithful + live; target-class/visibility filter still missing."
 
   - id: vehicle-framework.aim.aimturret
     name: "vehicle_aimturret — slew turret head toward a world target within limits"
@@ -442,9 +468,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "AimTurret brings the world target into the body frame, slews + clamps the head; live from Raptor.cs:332/335 + Bumblebee.cs:343/527", result: pass }
+      - { kind: code, ref: "AimTurret slews + clamps the head; live from Raptor + Bumblebee", result: pass }
     confidence: high
-    notes: "AnglesTransform left-divide reproduced via ShortAngles delta against body+head angles."
+    notes: "Unchanged. Faithful + live."
 
   - id: vehicle-framework.projectile.shared
     name: "vehicles_projectile — generic vehicle bolt/rocket (splash, lifetime, shootable)"
@@ -469,11 +495,11 @@ features:
     divergence_rationale: null
     gaps:
       - "CSQCProjectile networking + muzzle EFFECT_*, the g_bot_dodge list, and the owner==owner friendly-projectile pass-through filter are deferred."
-      - "vehicles_projectile_damage (the shootable-projectile's OWN event_damage: take health, detonate at <1, ignore same-owner inflictor) is not ported — a shootable vehicle projectile (health>0) sets TakeDamage=Aim but has no damage handler, so shooting it down does nothing."
+      - "vehicles_projectile_damage (the shootable-projectile's OWN event_damage: take health, detonate at <1, ignore same-owner inflictor) is STILL not ported — a shootable vehicle projectile (health>0) sets TakeDamage=Aim but has no damage handler, so shooting it down does nothing. (Note: SpawnProjectile does not install GtEventDamage on the projectile, so the new SpawnVehicle wiring does not cover this.)"
     verification:
-      - { kind: code, ref: "SpawnProjectile makes a FLYMISSILE trigger bbox owned by the vehicle/credited to pilot, RadiusDamage on touch/think, 30s lifetime, optional fire sound; live from all 4 descriptors (Racer/Raptor/Spiderbot/Bumblebee)", result: pass }
+      - { kind: code, ref: "SpawnProjectile makes a FLYMISSILE trigger bbox owned by the vehicle, RadiusDamage on touch/think, 30s lifetime, optional fire sound; racer rocket now tagged DEATH_VH_WAKI_ROCKET on use()-explode", result: pass }
     confidence: high
-    notes: "Carries the per-vehicle special deathtype through the blast so kills route to the vehicle obituary line. The shootable-projectile damage handler is the one missing piece."
+    notes: "Largely unchanged; racer rocket explode now carries the DEATH_VH_WAKI_ROCKET deathtag (obituary parity). The shootable-projectile damage handler is still the one missing piece."
 
   - id: vehicle-framework.physics.force_fromtag
     name: "vehicles_force_fromtag_hover/maglev + vehicle_altitude — hover springs"
@@ -498,11 +524,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Tag-less fallback (headless model service) computes the spring from the entity up-axis instead of a per-engine tag — a faithful approximation when tags are present."
+      - "Tag-less fallback computes the spring from the entity up-axis instead of a per-engine tag — a faithful approximation when tags are present."
     verification:
-      - { kind: code, ref: "ForceFromTag reproduces hover and maglev branches incl. the void-sink; live from the Racer 4-point hover (Racer.cs:364-367)", result: pass }
+      - { kind: code, ref: "ForceFromTag reproduces hover + maglev incl. void-sink; live from the Racer 4-point hover", result: pass }
     confidence: high
-    notes: "Shared client+server physics; the racer/raptor hover lean on it."
+    notes: "Unchanged. Faithful + live."
 
   - id: vehicle-framework.respawn.return_waypoint
     name: "vehicles_setreturn / showwp / return — return waypoint + living-vehicle return"
@@ -511,10 +537,11 @@ features:
       - "common/vehicles/sv_vehicles.qc:501 (vehicles_setreturn)"
       - "common/vehicles/sv_vehicles.qc:463 (vehicles_showwp)"
       - "common/vehicles/sv_vehicles.qc:442 (vehicles_return)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:825 (SetReturn — return SCHEDULE only)"
     constants:
-      - { name: "return delay", base: "respawntime (−5 dead / −1 alive)", port: "descriptor Death reschedules respawntime only", match: false }
-      - { name: "WP_Vehicle return waypoint", base: "spawned", port: "none", match: false }
+      - { name: "return delay", base: "respawntime (−5 dead / −1 alive)", port: "respawntime dead / respawntime-1 alive (SetReturn)", match: false }
+      - { name: "WP_Vehicle return waypoint", base: "spawned", port: "none (deferred, CSQC)", match: false }
     status:
       logic: partial
       values: partial
@@ -525,12 +552,15 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No WP_Vehicle return waypoint / radar icon is shown while a destroyed vehicle is returning."
-      - "An abandoned LIVING vehicle is never returned to its spawn (only the destroyed-vehicle respawn is handled, via each descriptor's Death). And the destroyed respawn itself is only reachable via the test-only DamageVehicle, not live damage (see combat.damage)."
+      - "SetReturn was ADDED and is now called from the DamageVehicle death tail (VehicleCommon.cs:538), so the destroyed-vehicle return SCHEDULE is set on the LIVE damage path (re-arms Think -> descriptor Spawn after respawntime). This is reachable now that combat.damage is live."
+      - "No WP_Vehicle return waypoint / radar icon is shown while a destroyed vehicle returns (still deferred, CSQC)."
+      - "An abandoned LIVING vehicle is STILL never returned: SetReturn is only called from the death path, not from vehicles_exit, so the living-vehicle return is missing."
+      - "Return delay constant: QC dead-path subtracts 5 (respawntime-5 effective via the respawn flow) vs the port's respawntime; alive-path -1 matches. Minor value divergence."
     verification:
-      - { kind: code, ref: "descriptor Death sets NextThink=Time+RespawnTime then Spawn (Racer.cs:483-484); no vehicles_setreturn / WP_Vehicle anywhere", result: fail }
+      - { kind: code, ref: "SetReturn re-arms Think=descriptor.Spawn after IsDead?respawntime:respawntime-1; called from DamageVehicle death tail (VehicleCommon.cs:538)", result: pass }
+      - { kind: code, ref: "SetReturn not called from VehicleBoarding.Exit (grep) -> abandoned-living return absent; no WP_Vehicle waypoint anywhere", result: fail }
     confidence: high
-    notes: "The destroyed-vehicle respawn timer exists in the descriptor Death but is only triggered by the orphaned DamageVehicle; the return helper entity, its waypoint, and the living-vehicle return are all missing."
+    notes: "PARTIALLY closed vs baseline: the destroyed-vehicle return schedule is now ported AND reachable on the live damage path (was previously only via the test-only DamageVehicle). The living-vehicle return and the return waypoint are still missing."
 
   - id: vehicle-framework.impulse.mode_switch
     name: "vehicle_impulse — per-vehicle mode set/cycle before weapon impulses"
@@ -558,7 +588,7 @@ features:
       - { kind: code, ref: "Commands.cs:1324 routes a seated player's impulse to VehicleBoarding.Impulse before weapon impulses; Raptor/Spiderbot mode set + cycle", result: pass }
       - { kind: test, ref: "VehicleRuntimeTests impulse routing (mode set + cycle, non-seated fall-through)", result: pass }
     confidence: high
-    notes: "Mode switching is live; the chase-cam toggle is a no-op because there is no vehicle camera (see presentation feature)."
+    notes: "Unchanged. Mode switching live; chase-cam toggle a no-op (no vehicle camera)."
 
   - id: vehicle-framework.presentation.hud_camera_xhair
     name: "Vehicles_drawHUD / drawCrosshair / AuxiliaryXhair / CSQCVehicleSetup + cockpit camera"
@@ -585,13 +615,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "VehicleHud is registered in HudManager but nothing on the live path calls ConfigureForVehicle, sets the VEHICLESTAT_* mirror, or SetAuxiliaryXhair (grep: only HudManager instantiates it) — the TE_CSQC_VEHICLESETUP / VEHICLESTAT_* networking is unwired, so a pilot has no vehicle HUD and no aux lock crosshairs."
-      - "No in-vehicle cockpit/chase camera: no client reads p.Vehicle to apply SVC_SETVIEWPORT (vehicle_viewport) — the pilot likely keeps the on-foot view."
-      - "Low-health alarm (SND_VEH_ALARM) never plays (the panel is never fed and cl_vehicles_alarm defaults off anyway)."
+      - "VehicleHud is registered but STILL nothing on the live path calls ConfigureForVehicle / SetAuxiliaryXhair / sets the VEHICLESTAT_* mirror (grep: no caller outside the file). TE_CSQC_VEHICLESETUP / VEHICLESTAT_* networking is still unwired — a pilot has no vehicle HUD and no aux lock crosshairs. (Note: descriptor Frame now mirrors VehicleHealth/Shield/Energy ONTO THE PILOT, so the data exists, but no panel reads it.)"
+      - "No in-vehicle cockpit/chase camera: no client reads p.Vehicle to apply SVC_SETVIEWPORT (vehicle_viewport)."
+      - "Low-health alarm (SND_VEH_ALARM) never plays."
     verification:
-      - { kind: code, ref: "VehicleHud.ConfigureForVehicle / SetAuxiliaryXhair / stat setters have no caller outside the file (grep); HudManager only instantiates it", result: fail }
+      - { kind: code, ref: "VehicleHud.ConfigureForVehicle / SetAuxiliaryXhair have no caller outside the file (grep); HudManager only instantiates it", result: fail }
     confidence: high
-    notes: "The presentation code is written and structurally faithful to cl_vehicles.qc, but the server->client vehicle stat/setup networking that would feed it does not exist, so the whole client experience is dead."
+    notes: "Unchanged vs baseline. The server->client vehicle stat/setup networking that would feed the panel still does not exist; whole client experience dead."
 
   - id: vehicle-framework.hooks.init_touch
     name: "MUTATOR_CALLHOOK(VehicleInit / VehicleTouch) dispatch"
@@ -600,22 +630,24 @@ features:
       - "common/vehicles/sv_vehicles.qc:1283 (VehicleInit)"
       - "common/vehicles/sv_vehicles.qc:876 (VehicleTouch)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:420 (VehicleInit hook defined)"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:457 (VehicleTouch hook defined)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:470 (FireVehicleInit)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:518 (FireVehicleTouch)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:744 (VehicleTouch dispatched from Touch)"
     constants: []
     status:
-      logic: stub
+      logic: partial
       values: na
       timing: na
       presentation: na
       audio: na
-      liveness: dead
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "VehicleInit (abort-on-true) is never dispatched: a mutator cannot veto vehicle init."
-      - "VehicleTouch (suppress-on-true) is never dispatched (and vehicles_touch itself is unported): a mutator cannot intercept a vehicle touch."
+      - "VehicleTouch is now DISPATCHED (suppress-on-true): VehicleCommon.Touch calls MutatorHooks.FireVehicleTouch (VehicleCommon.cs:744) and aborts the touch on true — LIVE (gated on the Touch handler being installed + dispatched; spiderbot's Touch=null excludes it, see combat.crush)."
+      - "VehicleInit (abort-on-true) is STILL dead: VehicleCommon.InitVehicle wraps FireVehicleInit but has no caller (VehicleSpawnFuncs.Spawn never invokes it) — a mutator still cannot veto vehicle init."
     verification:
-      - { kind: code, ref: "only VehicleEnter/VehicleExit have .Call sites (VehicleBoarding.cs:192/223/260/276); VehicleInit/VehicleTouch hooks are defined but never .Call'd (grep)", result: fail }
+      - { kind: code, ref: "FireVehicleTouch called from VehicleCommon.Touch:744 (live path via SpawnVehicle-installed touch + MoveTypePhysics dispatch)", result: pass }
+      - { kind: code, ref: "FireVehicleInit reachable only via InitVehicle() which has no caller (grep) -> still dead", result: fail }
     confidence: high
-    notes: "VehicleEnter/VehicleExit hooks ARE live (verified); VehicleInit/VehicleTouch are dead. The HookChains exist so wiring them later is a one-line .Call."
+    notes: "PARTIALLY closed vs baseline: VehicleTouch went dead->live (now dispatched from the wired Touch handler). VehicleInit is still dead (the wrapper exists but is never called)."

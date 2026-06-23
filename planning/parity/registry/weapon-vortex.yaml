@@ -5,11 +5,13 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 14
   worst_gaps:
-    - "Charge ring on the crosshair is DEAD: the HUD render path exists and is correct, but CrosshairPanel.ChargeFraction/ChargePool have ZERO writers in the repo (verified: only match is the unrelated _useChargePool field) and vortex_charge is server-only state, never networked — so the player gets NO on-screen feedback while charging (the core skill mechanic is invisible)."
-    - "Beam is not charge-scaled (sqrt(charge) alpha/spacing) and not team-color-tinted (vortex_glowcolor) — looks identical at every charge level and ignores team colors. (Also blocked by charge not being networked.)"
-    - "No yoda (mid-air rail kill) or impressive (consecutive long-range hit) announcements; the cues are registered in NotificationsList but never fired, and FireRailgunBullet never sets the yoda/impressive_hits flags."
-    - "Player-model charge glow (wr_glow / vortex_glowcolor) not ported — carrier model does not brighten as charge builds. (Added as weapon-vortex.fx.charge_glow.)"
-    - "No nexwhoosh beam fly-by sound to nearby players; overcharge zap sound plays at flat volume (no charge-proportional VOL_BASE ramp)."
+    - "Charge ring on the crosshair is STILL DEAD (Wave-2 did NOT fix it): the HUD render path is correct, but CrosshairPanel.ChargeFraction/ChargePool still have ZERO writers in the repo and vortex_charge remains server-only (EntityWeaponState, never networked) — so the player still gets NO on-screen feedback while charging. This is the shared root-cause blocker for the beam tint and the charge glow."
+    - "Beam is STILL not charge-scaled (sqrt(charge) alpha/spacing) and not team-color-tinted (vortex_glowcolor) — looks identical at every charge level and ignores team colors. Blocked by charge not being networked."
+    - "Player-model charge glow (wr_glow / vortex_glowcolor) STILL not ported — the Wave-2/3 CsqcModelEffects glow changes are generic role/powerup glow, NOT vortex-charge-driven; carrier model does not brighten as charge builds. Blocked by charge not being networked."
+    - "No nexwhoosh beam fly-by sound to nearby players — FireRailgunBullet still defers the whoosh."
+  notable_fixes_this_audit:
+    - "FIXED weapon-vortex.achievements: yoda (mid-air rail kill) + impressive (every-other cross-team hit) are now genuinely implemented and LIVE (Vortex.Announce, called from Attack on the WrThink path). flying captured before the trace; per-actor vortex_lasthit tracked in a ConditionalWeakTable; team/player/airborne gating faithful to QC vortex.qc:141-162 + damage.qc:646-651."
+    - "FIXED weapon-vortex.attack.overcharge_sound audio: the overcharge zap now plays at the charge-proportional VOL_BASE*(charge-0.5*animlimit)/(1-0.5*animlimit) volume (VOL_BASE=0.7), matching QC vortex.qc:139 — was a flat-volume defect."
 features:
   - id: weapon-vortex.charge.regen_passive
     name: "Passive charge regen toward charge_limit"
@@ -174,12 +176,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The nexwhoosh beam fly-by sound (FireRailgunBullet plays SND_NEXWHOOSH to nearby real clients along the beam) is deferred — no whoosh when a rail passes near you."
+      - "The nexwhoosh beam fly-by sound (FireRailgunBullet plays SND_NEXWHOOSH to nearby real clients along the beam) is STILL deferred — no whoosh when a rail passes near you (WeaponFiring.cs:358 comment still lists it as deferred)."
     verification:
-      - { kind: codetrace, ref: "WeaponFiring.cs:335-416 — pierce list, falloff on dmg+force, accuracy credit min(dmg,totaldmg), headshotNotify wired", result: pass }
-      - { kind: codetrace, ref: "WeaponFiring.cs:333 comment lists nexwhoosh + beam particle as deferred", result: fail }
+      - { kind: codetrace, ref: "WeaponFiring.cs:360-441 — pierce list, falloff on dmg+force, accuracy credit min(dmg,totaldmg), headshotNotify wired; NOW returns Entity? first (the first pierced victim) so the caller (Vortex) can drive yoda/impressive", result: pass }
+      - { kind: codetrace, ref: "WeaponFiring.cs:358 comment still lists the nearby-whoosh sound + beam particle as deferred", result: fail }
     confidence: high
-    notes: "Vortex passes headshot_notify=false (no headshot announce), matching QC. Warpzone + antilag handled. Audio gap is the fly-by whoosh only."
+    notes: "This audit: FireRailgunBullet was changed to RETURN the first pierced victim (Entity?), consumed by Vortex.Announce for yoda/impressive — pure additive plumbing, no behavior regression. Vortex passes headshot_notify=false (no headshot announce), matching QC. Warpzone + antilag handled. Audio gap remains the fly-by whoosh only."
 
   - id: weapon-vortex.attack.overcharge_sound
     name: "Overcharge zap sound when charge > charge_animlimit"
@@ -190,22 +192,23 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Vortex.cs:Attack"
     constants:
       - { name: "g_balance_vortex_charge_animlimit", base: "0.5", port: "0.5", match: true }
-      - { name: "overcharge volume ramp", base: "VOL_BASE * (charge - 0.5*animlimit)/(1 - 0.5*animlimit)", port: "default volume (flat)", match: false }
+      - { name: "overcharge volume ramp", base: "VOL_BASE * (charge - 0.5*animlimit)/(1 - 0.5*animlimit)", port: "0.7f * (charge - 0.5*animlimit)/(1 - 0.5*animlimit)", match: true }
+      - { name: "VOL_BASE", base: "0.7", port: "0.7", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
       presentation: na
-      audio: partial
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Overcharge sound is played at default volume; QC scales VOL_BASE by (charge - 0.5*animlimit)/(1 - 0.5*animlimit) so it gets louder the more overcharged — the port plays a flat-volume nexcharge."
+    gaps: []
     verification:
-      - { kind: codetrace, ref: "Vortex.cs:279-280 — Api.Sound.Play(actor, SoundChannel.Body, weapons/nexcharge.wav) gated by `ChargeAnimLimit > 0 && charge > ChargeAnimLimit`; trigger condition matches QC exactly, no volume arg", result: pass }
+      - { kind: codetrace, ref: "Vortex.cs:286-291 — Api.Sound.Play(actor, SoundChannel.Body, weapons/nexcharge.wav, volume: vol) gated by `ChargeAnimLimit > 0 && charge > ChargeAnimLimit`; vol = 0.7f*(charge-0.5*animlimit)/(1-0.5*animlimit). Trigger gate AND volume ramp now bit-faithful to QC vortex.qc:139.", result: pass }
+      - { kind: codetrace, ref: "ISoundService.Play(Entity, SoundChannel, string, float volume=1f, ...) (Services.cs:138) accepts the named volume arg — the ramp is genuinely wired, not a dead literal.", result: pass }
     confidence: high
-    notes: "Corrected from draft logic:partial -> faithful: the trigger gate (animlimit>0 AND charge>animlimit) is bit-faithful to QC; the ONLY divergence is the missing charge-proportional volume ramp, which is purely an audio-dimension defect. CH_WEAPON_B in QC vs the port's Body channel is the intended channel mapping."
+    notes: "FIXED THIS AUDIT (audio partial -> faithful): the charge-proportional VOL_BASE ramp (the only outstanding defect on this row) is now ported with VOL_BASE=0.7 inlined as a named constant, played via the volume: arg. CH_WEAPON_B in QC vs the port's Body channel is the intended channel mapping."
 
   - id: weapon-vortex.fx.beam
     name: "Charged beam particle (EFFECT_VORTEX_BEAM) with charge-scale + team tint"
@@ -234,9 +237,9 @@ features:
       - "In team modes (cl_tracers_teamcolor), the beam is NOT tinted to the shooter's team color via vortex_glowcolor — it always uses the default beam color."
       - "cl_particles_oldvortexbeam does not switch to the legacy EFFECT_VORTEX_BEAM_OLD beam."
     verification:
-      - { kind: codetrace, ref: "Vortex.cs:292 EffectEmitter.Emit('VORTEX_BEAM', org, hit, 0) — no charge/color args; EffectsList.cs:85 registers it as a plain trail", result: fail }
+      - { kind: codetrace, ref: "Vortex.cs:312 EffectEmitter.Emit('VORTEX_BEAM', shot.Origin, impTr.EndPos, 0) — STILL no charge/color args after Wave-2; EffectsList registers it as a plain trail", result: fail }
     confidence: high
-    notes: "Beam IS drawn and broadcast (EffectNetSink), so the wire is live; the charge-driven visual modulation and team tint are missing. Note charge level is server-only (not networked), so any port-side tint/scale would need the charge value sent to clients first."
+    notes: "UNCHANGED THIS AUDIT (Wave-2 did not touch the beam). Beam IS drawn and broadcast (EffectNetSink), so the wire is live; the charge-driven visual modulation and team tint are still missing. Root cause unchanged: charge level is server-only (EntityWeaponState, not networked), so any port-side tint/scale needs the charge value sent to clients first — the same blocker as the dead charge ring and the missing charge glow."
 
   - id: weapon-vortex.fx.charge_glow
     name: "Player-model charge glow (wr_glow / vortex_glowcolor)"
@@ -259,9 +262,9 @@ features:
     gaps:
       - "QC's wr_glow brightens the wielder's player model proportionally to vortex_charge (via vortex_glowcolor, team-tinted, f scaled by charge_animlimit). The port has no wr_glow override and emits no charge-driven player-model glow — the carrier looks identical regardless of charge. Also blocked by charge not being networked to clients."
     verification:
-      - { kind: codetrace, ref: "Grep wr_glow/glowcolor/VortexGlow over src+game -> only OkNex.cs doc comment; no glow override on Vortex; no player-model glow feeder", result: fail }
+      - { kind: codetrace, ref: "Grep wr_glow/glowcolor/VortexGlow over src+game -> only OkNex.cs doc comment; no glow override on Vortex; no player-model glow feeder. The Wave-2/3 CsqcModelEffects.cs glow edits are GENERIC role/powerup/flame glow (forced EF_* bits), NOT vortex-charge driven.", result: fail }
     confidence: high
-    notes: "Re-scan addition (the first-pass summary mentioned wr_glow but had no feature row). Cosmetic; charge being server-only is the shared root cause with the dead charge ring and the un-scaled beam tint."
+    notes: "UNCHANGED THIS AUDIT. Cosmetic; charge being server-only is the shared root cause with the dead charge ring and the un-scaled beam tint. Wave-2 added generic per-player model glow but no vortex-charge feeder, so the carrier still does not brighten as charge builds."
 
   - id: weapon-vortex.fx.impact_muzzle
     name: "Impact burst + muzzle flash"
@@ -317,7 +320,7 @@ features:
       - { kind: codetrace, ref: "Grep `.ChargeFraction =` / `.ChargePool =` over src+game (excl. bin) -> ZERO assignments; the only hit is the unrelated `_useChargePool = true` (CrosshairPanel.cs:874). ChargeRingValue (CrosshairPanel.cs:961) returns 0 when ChargeFraction < 0 (its -1 default).", result: fail }
       - { kind: codetrace, ref: "VortexCharge written only by server gameplay (Vortex.cs/OkNex.cs); no snapshot/stat carries it to the client", result: fail }
     confidence: high
-    notes: "Upgraded draft confidence medium -> high: the dead feeder is grep-conclusive, not a runtime hunch. Full ring rendering logic is present and correct (CrosshairPanel.cs:847-895, DrawStatRing) but ChargeFraction stays at its -1 default forever, so the ring never draws. With stock cvars charge sits at 0.5 -> 1.0, so the ring SHOULD be visible — the player currently sees nothing."
+    notes: "UNCHANGED THIS AUDIT (re-verified: still zero ChargeFraction/ChargePool writers, VortexCharge still server-only in EntityWeaponState). The dead feeder is grep-conclusive. Full ring rendering logic is present and correct (CrosshairPanel.cs DrawStatRing, ChargeFraction default -1) but ChargeFraction stays at its -1 default forever, so the ring never draws. With stock cvars charge sits at 0.5 -> 1.0, so the ring SHOULD be visible — the player currently sees nothing. This is the highest-impact remaining vortex gap."
 
   - id: weapon-vortex.zoom.secondary_scope
     name: "Secondary = zoom scope (reticle_nex) at stock balance"
@@ -386,21 +389,31 @@ features:
     layer: [authority]
     base_refs:
       - "common/weapons/weapon/vortex.qc:W_Vortex_Attack"
-    port_refs: []
-    constants: []
+      - "server/damage.qc:646-651 (yoda/impressive_hits set in the Damage path)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vortex.cs:Attack"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vortex.cs:Announce"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vortex.cs:IsFlying"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:86-87 (ACHIEVEMENT_IMPRESSIVE/YODA)"
+    constants:
+      - { name: "yoda gate (shooter flying)", base: "if (yoda && flying)", port: "impressiveHit && flying && victim player && IsFlying(victim)", match: true }
+      - { name: "impressive every-other gate", base: "if (impressive_hits && actor.vortex_lasthit) announce; then actor.vortex_lasthit = impressive_hits", port: "same via GetLastHit/SetLastHit", match: true }
+      - { name: "IsFlying clearance", base: "24u down trace, not swimming (WATERLEVEL>=2)", port: "24u down trace, WaterLevel>=2", match: true }
     status:
-      logic: missing
+      logic: faithful
       values: na
-      timing: na
+      timing: faithful
       presentation: na
-      audio: missing
-      liveness: na
+      audio: faithful
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No yoda achievement: the port does not capture IsFlying(actor) at fire time nor fire ANNCE_ACHIEVEMENT_YODA on a mid-air rail kill."
-      - "No impressive achievement: the port tracks neither impressive_hits nor actor.vortex_lasthit, so the every-other long-range-hit ANNCE_ACHIEVEMENT_IMPRESSIVE never plays."
+      - "Multi-pierce divergence (minor): QC's ++impressive_hits runs PER pierced cross-team victim inside the Damage loop, so a single rail that pierces two enemies counts as 2; the port re-derives impressive from only the FIRST pierced victim (Vortex.cs Announce uses FireRailgunBullet's returned `first`). For the impressive every-other STREAK this is observationally identical (impressive_hits != 0 is all that matters); the only edge case where it differs is a yoda where the first pierced enemy is grounded but a later-pierced one is airborne — extremely rare. Not a stock-balance concern."
     verification:
-      - { kind: codetrace, ref: "Grep yoda/impressive/vortex_lasthit over src/** -> only registered in NotificationsList, never fired by Vortex", result: fail }
+      - { kind: codetrace, ref: "Vortex.cs:277 captures flying=IsFlying(actor) BEFORE the trace (QC vortex.qc:122); Vortex.cs:296-306 fires the rail (now returns Entity? hit) then calls Announce(actor, hit, flying)", result: pass }
+      - { kind: codetrace, ref: "Vortex.cs:330-358 Announce: impressiveHit = hit live+damageable+cross-team(!Teams.SameTeam)+not-self; yoda gated on impressiveHit && flying && victim is client && IsFlying(victim); impressive every-other via _vortexLastHit ConditionalWeakTable; both fire NotificationSystem.Announce(actor, ACHIEVEMENT_YODA/IMPRESSIVE)", result: pass }
+      - { kind: codetrace, ref: "Team logic check: !Teams.SameTeam(hit,actor) (team!=0 && team==team) + the separate self-exclusion == QC DIFF_TEAM (teamplay ? a.team!=b.team : a!=b) in both FFA and teamplay — verified equivalent", result: pass }
+      - { kind: codetrace, ref: "Live path: WeaponFireDriver.cs:155 calls WrThink(Primary) every tick -> PrepareAttack -> Attack -> Announce. NotificationSystem.Announce (NotificationSystem.cs:191) + cues registered (NotificationsList.cs:86-87). WrSetup resets vortex_lasthit (Vortex.cs:377).", result: pass }
     confidence: high
-    notes: "The announcement cues exist in NotificationsList/SoundsList but the Vortex never triggers them. Depends on yoda/impressive_hits flags that FireRailgunBullet/the trace would need to set (also not modeled)."
+    notes: "FIXED THIS AUDIT (missing/dead -> faithful/live). The QC server globals yoda/impressive_hits are re-derived locally in Vortex.Announce because the port's FireRailgunBullet doesn't surface them; the trade-off is the multi-pierce edge case above. vortex_lasthit is stored in a ConditionalWeakTable<Entity,StrongBox<int>> (no Entity.cs field), reset on WrSetup. The IsFlying helper matches the established Devastator/Mortar port pattern."

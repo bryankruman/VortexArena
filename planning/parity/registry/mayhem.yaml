@@ -5,9 +5,9 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 13
   worst_gaps:
-    - "Players spawn with only the Blaster, not the full arsenal: the SetWeaponArena hook (most_available) is DEAD — no Call site in the port."
-    - "timelimit=15 gametype default is never applied (port reads the global timelimit cvar)."
-    - "DEATH_CAMP environmental-suicide penalty omitted (no campcheck deathtype in the port)."
+    - "timelimit=15 gametype default is STILL never applied: Mayhem.DefaultTimeLimitMinutes (15) was added in Wave-2 but has NO live caller (only a doc comment); Tdm wires its equivalent via SeedTimeLimit, Mayhem does not. Port uses the global timelimit cvar."
+    - "DEATH_CAMP environmental-suicide penalty still omitted (no campcheck deathtype in the port) — latent."
+    - "most_available weapon arena ignores the map-present-weapon intersection (no per-map weapon set in the port) — falls back to weapons_most; intended divergence."
 features:
   - id: mayhem.identity.registration
     name: "Gametype identity + registration (mayhem netname, FFA, USEPOINTS, limit defaults)"
@@ -17,14 +17,15 @@ features:
       - "common/gametypes/gametype/mayhem/sv_mayhem.qc:mayhem_Initialize"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Mayhem.cs:Mayhem (ctor/OnInit)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Mayhem.cs:DefaultTimeLimitMinutes (const, no live consumer)"
       - "src/XonoticGodot.Server/GameWorld.cs:ResolveGameType"
-      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (case Mayhem)"
+      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (case Mayhem m → m.Activate())"
     constants:
       - { name: "netname", base: "mayhem", port: "mayhem", match: true }
       - { name: "teamgame", base: "false (FFA)", port: "false", match: true }
       - { name: "pointlimit_default", base: "1000", port: "1000", match: true }
       - { name: "leadlimit_default", base: "0", port: "0", match: true }
-      - { name: "timelimit_default", base: "15 (min)", port: "global timelimit cvar (not set on select)", match: false }
+      - { name: "timelimit_default", base: "15 (min)", port: "const exists (15) but unused; runtime uses global timelimit cvar", match: false }
     status:
       logic: faithful
       values: partial
@@ -35,11 +36,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "timelimit=15 gametype_init default is not applied when Mayhem is selected; the port uses whatever global timelimit is set."
+      - "timelimit=15 gametype_init default is STILL not applied on select. Wave-2 added the const Mayhem.DefaultTimeLimitMinutes=15f and a comment saying the host applies it, but GameWorld's ActivateGameType case Mayhem only calls m.Activate() and never seeds the timelimit (unlike Tdm.SeedTimeLimit). The const has zero live consumers — dead. The port uses whatever global timelimit is set."
     verification:
-      - { kind: code, ref: "GameWorld.ResolveGameType/ActivateGameType + Mayhem ctor", result: pass }
+      - { kind: code, ref: "GameWorld.ResolveGameType/ActivateGameType (GameWorld.cs:1363) + Mayhem ctor", result: pass }
+      - { kind: code, ref: "grep DefaultTimeLimitMinutes: only Mayhem.cs:316 (def) + Mayhem.cs:352 (comment); no consumer. Tdm.cs:136 wires its own via SeedTimeLimit", result: fail }
     confidence: high
-    notes: "Pointlimit/leadlimit defaults are correctly hardcoded (1000/0). m_legacydefaults says timelimit 20 but gametype_init says 15; neither is applied."
+    notes: "Pointlimit/leadlimit defaults are correctly hardcoded (1000/0). The Wave-2 DefaultTimeLimitMinutes const is a no-op stub — the timelimit gap is unchanged from baseline."
 
   - id: mayhem.score.recompute
     name: "MayhemCalculatePlayerScore — recompute SP_SCORE from damage+frags (methods 1/2/3)"
@@ -67,9 +69,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "line-by-line vs MayhemCalculatePlayerScore methods 1/2/3, suicide_weight, x100/100", result: pass }
+      - { kind: code, ref: "line-by-line vs MayhemCalculatePlayerScore methods 1/2/3, suicide_weight, x100/100 — UNCHANGED by Wave-2", result: pass }
     confidence: high
-    notes: "Recompute is invoked from OnDeath and from the SplitHealthArmor accrual; SP_SCORE is written via GameScores.AddToPlayer. Exact in-match numbers not runtime-verified."
+    notes: "Recompute is invoked from OnDeath and from the SplitHealthArmor accrual; SP_SCORE is written via GameScores.AddToPlayer. Unchanged by the Wave-1/2 edits (no diff to MayhemScoring.Calculate). Exact in-match numbers not runtime-verified."
 
   - id: mayhem.score.damage_accrual
     name: "PlayerDamage_SplitHealthArmor — accrue total_damage_dealt (enemy +, self/world -)"
@@ -95,12 +97,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "DEATH_CAMP (campcheck) is omitted from the environmental-suicide subtraction (the port models no campcheck death), so a campcheck suicide would not be penalized. The port has no campcheck deathtype at all, so no such death is produced — latent, not currently observable."
+      - "DEATH_CAMP (campcheck) is STILL omitted from the environmental-suicide subtraction; the port has no Camp deathtype constant (verified: no Camp in DeathTypes), so no campcheck death is produced — latent, not currently observable. Unchanged by Wave-2."
     verification:
-      - { kind: code, ref: "AccrueSplitHealthArmor vs QC; hook fires unconditionally at DamageSystem.cs:401", result: pass }
-      - { kind: code, ref: "MayhemScoring.HasSpawnShield uses SpawnShieldExpire>now, identical to DamageSystem.HasSpawnShield (DamageSystem.cs:730) — the port's uniform spawn-shield model; QC StatusEffects_active(SpawnShield) equivalence VERIFIED, not approximate", result: pass }
+      - { kind: code, ref: "AccrueSplitHealthArmor vs QC; hook fires unconditionally at DamageSystem.cs:401 — UNCHANGED by Wave-2", result: pass }
+      - { kind: code, ref: "grep Camp/campcheck in DeathTypes — absent; the env-suicide set still lacks CAMP", result: fail }
     confidence: high
-    notes: "Hook is fired with the TRUE FragAttacker/FragDeathType/pre-split FragDamage, so the self/world cases accrue correctly. DEATH_HURTTRIGGER maps to the port's Void tag. Spawn-shield read is the SAME model the whole DamageSystem uses (the StatusEffects catalog deliberately keeps SpawnShield on the entity) — equivalence confirmed, so this is NOT an unverified concern."
+    notes: "Hook fires with the TRUE FragAttacker/FragDeathType/pre-split FragDamage. DEATH_HURTTRIGGER maps to the port's Void tag. Spawn-shield read is the same model the whole DamageSystem uses. No Wave-2 change to this row."
 
   - id: mayhem.score.per_kill
     name: "Per-kill score driver (QC GiveFragsForKill: zero direct frag + recompute attacker)"
@@ -123,7 +125,7 @@ features:
     divergence_rationale: "Port routes the per-kill recompute through the Combat.Death bus (OnDeath) and suppresses the +1 frag by running Scores in non-owning mode (OwnsScore=false) rather than subscribing to a GiveFragsForKill hook. Observable result (no ±1 frag; score == the recompute) matches Base; the kills/teamkills/suicides aux columns are still maintained by the obituary so the recompute reads them."
     gaps: []
     verification:
-      - { kind: code, ref: "Scores.GiveFrags/Add gated by OwnsScore (false under GameWorld); Mayhem.OnDeath calls Calculate", result: pass }
+      - { kind: code, ref: "Scores.GiveFrags/Add gated by OwnsScore (false under GameWorld); Mayhem.OnDeath calls Calculate — UNCHANGED by Wave-2", result: pass }
     confidence: high
     notes: "Verified there is no SP_SCORE double-count: Obituary records only aux columns when OwnsScore is false."
 
@@ -134,7 +136,7 @@ features:
       - "common/gametypes/gametype/mayhem/sv_mayhem.qc:MUTATOR_HOOKFUNCTION(mayhem, SetStartItems)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Mayhem.cs:Mayhem.OnSetStartItems"
-      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:669 (SetStartItems.Call)"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:ComputeStartItems (SetStartItems.Call after SetWeaponArena.Call)"
     constants:
       - { name: "start_health", base: "200", port: "200", match: true }
       - { name: "start_armor", base: "200", port: "200", match: true }
@@ -144,6 +146,7 @@ features:
       - { name: "start_ammo_cells", base: "180", port: "180", match: true }
       - { name: "start_ammo_fuel", base: "0", port: "0", match: true }
       - { name: "unlimited_ammo_when", base: "!g_use_ammunition || g_mayhem_unlimited_ammo", port: "same", match: true }
+      - { name: "clear_then_reset_flags", base: "start_items &= ~(IT_UNLIMITED_AMMO|IT_UNLIMITED_SUPERWEAPONS) after the arena OR'd them in", port: "ItemFlags.Remove(both) then re-add UNLIMITED_AMMO conditionally — same QC ordering (SetWeaponArena fires before SetStartItems)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -153,36 +156,45 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps: []
+    gaps:
+      - "Warmup-only: Mayhem's 200/200 + full ammo is NOT applied during warmup. ApplyWarmupLoadout fires SetWeaponArena (so the arsenal IS correct) but never fires SetStartItems, so warmup HP/armor/ammo come from g_warmup_start_* cvars; Base's mayhem handler also sets warmup_start_*. warmup ships off by default so this is dormant in normal play."
     verification:
-      - { kind: code, ref: "OnSetStartItems vs QC; SetStartItems.Call live at SpawnSystem.cs:669", result: pass }
+      - { kind: code, ref: "OnSetStartItems vs QC; SetStartItems.Call now fires inside ComputeStartItems AFTER SetWeaponArena.Call — QC world.qc ordering (arena ORs flags @2089, SetStartItems strips+resets @2161) reproduced exactly", result: pass }
+      - { kind: code, ref: "ApplyWarmupLoadout (SpawnSystem.cs:872) fires SetWeaponArena but not SetStartItems → warmup HP/armor diverge; dormant (g_warmup off)", result: fail }
     confidence: high
-    notes: "Sets HP/armor/ammo only; weapons come from the (dead) weapon-arena hook — see mayhem.loadout.weapon_arena."
+    notes: "Wave-2 moved the SetStartItems.Call into ComputeStartItems behind the new SetWeaponArena.Call; verified the interaction is faithful — the arena adds IT_UNLIMITED_SUPERWEAPONS, the Mayhem SetStartItems handler then strips it (matching QC), so superweapons do NOT get unlimited duration. The live (non-warmup) path is bit-faithful; only the warmup branch omits the SetStartItems hook."
 
   - id: mayhem.loadout.weapon_arena
     name: "SetWeaponArena — grant the full arsenal (most_available) at spawn"
     layer: [authority]
     base_refs:
       - "common/gametypes/gametype/mayhem/sv_mayhem.qc:MUTATOR_HOOKFUNCTION(mayhem, SetWeaponArena)"
+      - "server/world.qc:2004 (MUTATOR_CALLHOOK(SetWeaponArena)), world.qc:2085-2091 (arena → start_weapons + IT_UNLIMITED_*)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Mayhem.cs:Mayhem.OnSetWeaponArena"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:ComputeStartItems (SetWeaponArena.Call @679)"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:ExpandWeaponArena (most/most_available → Normal-flag arsenal)"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:ApplyStartLoadout (live, via PutPlayerInServer:544 → :806)"
     constants:
-      - { name: "g_mayhem_weaponarena", base: "most_available (all weapons)", port: "most_available (set, but never read)", match: false }
+      - { name: "g_mayhem_weaponarena", base: "most_available (all weapons)", port: "most_available (read live, expanded to weapons_most)", match: true }
+      - { name: "most_available_map_intersection", base: "weapons_start | (weaponsInMapAll & weapons_most) when map has weapons, else weapons_most", port: "weapons_most only (no per-map weapon set)", match: false }
+      - { name: "arena_grants_unlimited", base: "start_items |= IT_UNLIMITED_AMMO | IT_UNLIMITED_SUPERWEAPONS", port: "ItemFlags add UNLIMITED_AMMO + UNLIMITED_SUPERWEAPONS when arenaActive", match: true }
     status:
-      logic: partial
-      values: faithful
+      logic: faithful
+      values: partial
       timing: na
       presentation: na
       audio: na
-      liveness: dead
-    intended_divergence: false
-    divergence_rationale: null
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "The SetWeaponArena seam is now LIVE on the real spawn path (Wave-2). The single residual divergence is the *_available variants: Base intersects the arena set with weapons present on the map (weaponsInMapAll), but the port has no per-map weapon set, so most_available collapses to weapons_most — exactly the fallback QC itself uses when a map has no placed weapons. Only differs on maps that actually place weapon pickups; deliberate (documented) until a per-map weapon set exists."
     gaps:
-      - "Players spawn with only the Blaster (SpawnSystem.DefaultLoadout) instead of the full arsenal: the MutatorHooks.SetWeaponArena chain has NO .Call site anywhere in the port, so OnSetWeaponArena is never invoked. The single biggest gameplay divergence in Mayhem."
+      - "most_available does not intersect with map-present weapons (no weaponsInMapAll equivalent); uses the full weapons_most set. Only observable on maps with weapon pickups placed."
     verification:
-      - { kind: code, ref: "grep: SetWeaponArena has only .Add/.Remove, no .Call; DefaultLoadout = {blaster}", result: fail }
+      - { kind: code, ref: "SetWeaponArena.Call live at SpawnSystem.ComputeStartItems:679 (and warmup :892); Mayhem.OnSetWeaponArena sets most_available; ExpandWeaponArena('most_available') OR's every WEP_FLAG_NORMAL non-hidden non-blocked weapon (verified Blaster/Crylink/Devastator/... carry WeaponFlags.Normal); arenaActive → l.Weapons = full set + UNLIMITED_AMMO/SUPERWEAPONS", result: pass }
+      - { kind: code, ref: "live path traced: PutPlayerInServer:544 → ApplyStartLoadout:806 → ComputeStartItems:662 → SetWeaponArena.Call. No longer dead.", result: pass }
     confidence: high
-    notes: "Whole SetWeaponArena chain is dead (also affects TeamMayhem, Instagib, Melee, Overkill). Engine-seam defect, not Mayhem-specific logic — the handler itself is a faithful port."
+    notes: "BASELINE WORST GAP NOW CLOSED. Was dead (no .Call site; players spawned Blaster-only). Wave-2 wired SetWeaponArena.Call into ComputeStartItems and added ExpandWeaponArena + StartItemFlagBits so the arena string actually expands to a WepSet and the IT_UNLIMITED_* flags reach Entity.Items. Verified end-to-end: dead→live, logic partial→faithful. This also fixes the same gap for CA/LMS/Instagib/Melee/Overkill which share the seam. Residual values:partial is the documented map-intersection divergence only."
 
   - id: mayhem.combat.damage_nullify
     name: "Damage_Calculate — nullify self-damage (when selfdamage off) and always nullify fall damage"
@@ -207,7 +219,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "OnDamageCalculate vs QC; DamageCalculate.Call live at DamageSystem.cs:219", result: pass }
+      - { kind: code, ref: "OnDamageCalculate vs QC; DamageCalculate.Call live at DamageSystem.cs:219 — UNCHANGED by Wave-2", result: pass }
     confidence: high
     notes: "Corpse gibbing preserved (live-target gate). Blaster/rocket self-jumps are free, matching Base."
 
@@ -234,9 +246,9 @@ features:
     gaps:
       - "If g_mayhem_regenerate XOR g_mayhem_rot were set (non-default), the port cannot independently zero one arg — it returns a single disable bool. Non-default config only; faithful in every shipped config."
     verification:
-      - { kind: code, ref: "OnPlayerRegen returns !regen && !rot (Mayhem.cs:516); QC sv_mayhem.qc:77-84 identical for both-off; PlayerRegen.Call live at PlayerFrameLogic.cs:46", result: pass }
+      - { kind: code, ref: "OnPlayerRegen returns !regen && !rot (Mayhem.cs:529); QC sv_mayhem.qc:77-84 identical for both-off; PlayerRegen.Call live at PlayerFrameLogic.cs:46 — UNCHANGED by Wave-2", result: pass }
     confidence: high
-    notes: "Default config (both 0) is bit-identical to QC. The narrower hook surface is the only divergence and only matters in a non-shipped config; flagged intended (logic faithful in every default/shipped config, not 'partial')."
+    notes: "Default config (both 0) is bit-identical to QC. The narrower hook surface is the only divergence and only matters in a non-shipped config; flagged intended."
 
   - id: mayhem.items.filter
     name: "FilterItem — powerup + pickup-item spawning rules"
@@ -245,7 +257,7 @@ features:
       - "common/gametypes/gametype/mayhem/sv_mayhem.qc:MUTATOR_HOOKFUNCTION(mayhem, FilterItem)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Mayhem.cs:Mayhem.OnFilterItemDefinition"
-      - "src/XonoticGodot.Common/Gameplay/Items/StartItem.cs:90 (FilterItemDefinition.Call)"
+      - "src/XonoticGodot.Common/Gameplay/Items/StartItem.cs:FilterItemDefinition.Call"
     constants:
       - { name: "g_mayhem_powerups", base: "1", port: "1", match: true }
       - { name: "g_mayhem_pickup_items", base: "0", port: "0", match: true }
@@ -262,9 +274,9 @@ features:
     gaps:
       - "Item-class detection is by hardcoded classname string lists (item_strength/_shield/_invincible powerups; item_* ammo; weapon_* pickups) instead of the QC itemdef.instanceOfPowerup/Ammo/WeaponPickup flags — a custom/modded item could be misclassified."
     verification:
-      - { kind: code, ref: "OnFilterItemDefinition branch-by-branch vs QC; FilterItemDefinition.Call live at StartItem.cs:90", result: pass }
+      - { kind: code, ref: "OnFilterItemDefinition branch-by-branch vs QC; FilterItemDefinition.Call live — UNCHANGED by Wave-2 (StartItem.cs diff is the unrelated q3compat origin block, not this call)", result: pass }
     confidence: medium
-    notes: "Branch order and cvar reads match QC exactly; only the powerup/ammo/weapon detection mechanism differs (classname vs itemdef flag)."
+    notes: "Branch order and cvar reads match QC exactly; only the powerup/ammo/weapon detection mechanism differs (classname vs itemdef flag). The Wave-2 StartItem.cs edit added a dormant q3compat origin offset, which does not touch this filter."
 
   - id: mayhem.weapons.forbid_throw
     name: "ForbidThrowCurrentWeapon — players cannot drop their weapon"
@@ -286,9 +298,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "OnForbidThrowCurrentWeapon returns true; ForbidThrowCurrentWeapon.Call live at WeaponThrowing.cs:149,185", result: pass }
+      - { kind: code, ref: "OnForbidThrowCurrentWeapon returns true; ForbidThrowCurrentWeapon.Call live at WeaponThrowing.cs:149,185 — UNCHANGED by Wave-2", result: pass }
     confidence: high
-    notes: "Always-true; the chain is live (unlike SetWeaponArena)."
+    notes: "Always-true; the chain is live."
 
   - id: mayhem.match.limits_overtime
     name: "Point/lead limit end-of-match + FFA tie → overtime"
@@ -315,9 +327,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "RecomputeLeader enforces point+lead limit each frame via DriveGametypeFrame; ReportsTie wired in CheckRulesAndIntermission", result: pass }
+      - { kind: code, ref: "RecomputeLeader enforces point+lead limit each frame via DriveGametypeFrame; ReportsTie wired in CheckRulesAndIntermission — UNCHANGED by Wave-2", result: pass }
     confidence: high
-    notes: "Limit cvar -1 fallback to gametype default handled. Timed-tie overtime participates via ReportsTie."
+    notes: "Limit cvar -1 fallback to gametype default handled. Timed-tie overtime participates via ReportsTie. (Note: the POINT limit is enforced; the separate TIME limit default of 15 min is the unrelated gap in mayhem.identity.registration.)"
 
   - id: mayhem.match.reset
     name: "reset_map_players — zero total_damage_dealt on round/map reset"
@@ -326,7 +338,7 @@ features:
       - "common/gametypes/gametype/mayhem/sv_mayhem.qc:MUTATOR_HOOKFUNCTION(mayhem, reset_map_players)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Mayhem.cs:Mayhem.ResetMapPlayers"
-      - "src/XonoticGodot.Server/GameWorld.cs:2408 (ResetMap → ResetMapPlayers)"
+      - "src/XonoticGodot.Server/GameWorld.cs:ResetMap → ResetMapPlayers"
     constants: []
     status:
       logic: faithful
@@ -339,7 +351,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "ResetMapPlayers zeroes GtTotalDamageDealt; called from GameWorld.ResetMap:2408", result: pass }
+      - { kind: code, ref: "ResetMapPlayers zeroes GtTotalDamageDealt; called from GameWorld.ResetMap — UNCHANGED by Wave-2", result: pass }
     confidence: high
     notes: "Freshly-spawned players default GtTotalDamageDealt to 0, so Activate needs no extra zeroing."
 
@@ -360,10 +372,10 @@ features:
       audio: na
       liveness: na
     intended_divergence: true
-    divergence_rationale: "Menu blurb (describe), the point-limit configure slider, and map-pool support gating (m_isAlwaysSupported/m_isForcedSupported) are MENUQC / map-pool concerns explicitly deferred in the port's class header (cross-boundary, not gameplay)."
+    divergence_rationale: "Menu blurb (describe), the point-limit configure slider, and map-pool support gating (m_isAlwaysSupported/m_isForcedSupported) are MENUQC / map-pool concerns explicitly deferred in the port's class header (cross-boundary, not gameplay). Not addressed by Wave-1/2 (gameplay-only waves)."
     gaps:
       - "No menu description, no point-limit slider, no automatic DM/TDM-map support gating for Mayhem in the port's menu/map pool."
     verification:
-      - { kind: code, ref: "no port symbol for describe/m_configuremenu/m_is*Supported", result: fail }
+      - { kind: code, ref: "no port symbol for describe/m_configuremenu/m_is*Supported — UNCHANGED by Wave-2", result: fail }
     confidence: high
     notes: "Out of gameplay scope; tracked for completeness. The frags-remaining-suppression hook is commented out (dead) in Base too, so not a port gap."

@@ -5,11 +5,10 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 17
   worst_gaps:
-    - "MAP-OBJECT ROUND-RESTART RESET IS DEAD: GameWorld.ResetMapObjects only deletes projectiles — it never invokes any mover's .reset, and NO mover assigns .Reset. So door_reset / plat_reset / button_reset / func_breakable_reset / func_rotating_reset / secret_reset are all dead; movers caught mid-cycle at a round/match restart stay where they are instead of snapping home + re-arming."
-    - "func_button DONTACCUMULATEDMG semantics are INVERTED: QC button_damage with DONTACCUMULATEDMG fires ONLY on a single hit whose damage >= health (it does NOT subtract health), so a high-HP button never opens from small hits; the port's Combat.Death hook always accumulates damage until HP<1 then fires. Also NOSPLASH (splash-immune) is not honored on door/button/breakable, and the QC `health -1 = fire on ANY (even damageless) attack` case is unmodeled."
-    - "the `sounds` map key is not promoted by ApplyDictFields/MapObjectFieldsExtra, so QC's sounds>0 (door), sounds==1/2 (plat) and sounds>0 (secret) sound-pack selection plus the plat sound1/sound2 backwards-compat fields are all bypassed; the port unconditionally uses the default pack."
-    - "DOOR_ROTATING_BIDIR / BIDIR_IN_DOWN trigger-side reverse-open logic (door_use's trigger.trigger_reverse path) is not ported; the lip==666 HitBottom undo is present but never set without BIDIR, so bidirectional rotating doors always open the default direction."
-    - "no CSQC ENT_CLIENT_* networking/draw and no client-side centerprint for any func_* (door .message, key-door CENTER_DOOR_* notifications, secret .message); the port plays only the audible play2(noise) halves. (Net_LinkEntity is commented out in Base too — the CSQC handlers are latent there.)"
+    - "MAP-OBJECT ROUND-RESTART RESET IS STILL DEAD (re-verified 2026-06-22): GameWorld.ResetMapObjects (GameWorld.cs:2544-2556) STILL only deletes projectiles/weapon_proj* — it never iterates movers and never invokes any .Reset; the only Entity.Reset?.Invoke dispatch in the whole port is MonsterAI.cs:1613, unreachable from this path. NO func_* mover assigns Entity.Reset (grep `.Reset =` -> DynamicLight/TargetMusic/VoiceScript only). The Buttons.cs:15 comment still claims 'button_reset re-arm is wired centrally in GameWorld.ResetMapObjects' — FALSE. door_reset / plat_reset / button_reset / func_breakable_reset / func_rotating_reset / secret_reset all remain dead; movers caught mid-cycle at a round/match restart stay where they are."
+    - "CENTERPRINT SEAM IS UNWIRED (dead, re-verified 2026-06-22): the Wave-2 MapMover.Centerprint(...) calls for door .message, door_secret .message/touch, and target_items give-message all route through MapObjectsCommon.CenterprintHandler (MapObjectsCommon.cs:782/797), which is NEVER assigned anywhere in src/ or game/ (grep `CenterprintHandler =` = 0 hits) — so every map-object .message centerprint silently no-ops on the live path. The audible play2(noise) halves play; the visible text still does not show. Key-door CENTER_DOOR_* notifications were not even given a Centerprint call."
+    - "DOOR_ROTATING_BIDIR / BIDIR_IN_DOWN trigger-side reverse-open logic (door_use's trigger.trigger_reverse path) is STILL not ported; DoorUse still takes (self, actor) with no trigger arg. The lip==666 HitBottom undo is present but never set without BIDIR, so bidirectional rotating doors always open the default direction. Now explicitly documented out-of-scope (Doors.cs:15)."
+    - "no CSQC ENT_CLIENT_* networking/draw for any func_* (door/plat/train/conveyor/ladder); brushes sync via engine entity state. (Net_LinkEntity is commented out in Base too — the CSQC handlers are latent there.)"
 features:
   - id: mapobject-func.driver.calcmove
     name: "Shared mover driver: SUB_CalcMove / SUB_CalcAngleMove + cubic_speedfunc bezier easing"
@@ -43,9 +42,9 @@ features:
     gaps:
       - "SUB_CalcMovePause (door_blocked pauses an in-flight bezier controller when a non-linear door is blocked without reversing) is NOT ported — DoorBlocked omits the move_controller pause. Only affects eased (non-default) doors that get blocked; default doors are linear so unaffected."
     verification:
-      - { kind: code_read, ref: "subs.qc SUB_CalcMove/Bezier/CalcAngleMove vs MapObjectsCommon.cs:511-715 — linear branch, bezier controller setbezier (destvec=2*c, destvec2=d-2c), cubic ease, shortest-path angle wrap, arrive-next-frame velocity, TRAIN_TURN avelocity all match", result: pass }
+      - { kind: code_read, ref: "subs.qc SUB_CalcMove/Bezier/CalcAngleMove vs MapObjectsCommon.cs — linear branch, bezier controller setbezier (destvec=2*c, destvec2=d-2c), cubic ease, shortest-path angle wrap, arrive-next-frame velocity, TRAIN_TURN avelocity all match", result: pass }
     confidence: high
-    notes: "TSPEED_START/END collapse to LINEAR for non-bezier (only TIME + LINEAR distinct in CalcMove); START/END are honored in CalcMoveBezier (train curves). Movers schedule on Entity.LTime. cubic_speedfunc bit-exact."
+    notes: "Now also exposes SetPlatMoveType (platforms.qc set_platmovetype) + CubicSpeedFuncIsSane (lib/math.qh), used by plat/train/path_corner to parse .platmovetype. TSPEED_START/END collapse to LINEAR for non-bezier; START/END honored in CalcMoveBezier. cubic_speedfunc bit-exact."
 
   - id: mapobject-func.driver.pushmove
     name: "MOVETYPE_PUSH integrator: rider carry, block->revert->.blocked, local-clock think (SV_PushMove)"
@@ -57,8 +56,8 @@ features:
       - "src/XonoticGodot.Engine/Simulation/MoveTypePhysics.cs:RunEntity"
     constants:
       - { name: "rider carry", base: "standing-on OR inside swept box", port: "OnGround+GroundEntity==pusher OR BoxesOverlap final box", match: true }
-      - { name: "blocked -> revert + .blocked()", base: "yes", port: "yes (FlyMove.cs:438-453)", match: true }
-      - { name: "SOLID_NOT/TRIGGER pushers", base: "translate, no riders", port: "same (FlyMove.cs:318-326)", match: true }
+      - { name: "blocked -> revert + .blocked()", base: "yes", port: "yes (FlyMove.cs)", match: true }
+      - { name: "SOLID_NOT/TRIGGER pushers", base: "translate, no riders", port: "same (FlyMove.cs)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -71,7 +70,7 @@ features:
     gaps:
       - "PushEntity has no unstick pass yet (FLY checkstuck=false nuance noted in PhysicsToss); not exercised by these movers in normal play."
     verification:
-      - { kind: code_read, ref: "FlyMove.PushMove (309-458): rider gather/move, rotation pivot carry, startsolid nudge, full revert + pusher.Blocked?.Invoke; dispatched by MoveTypePhysics MoveType.Push", result: pass }
+      - { kind: code_read, ref: "FlyMove.PushMove: rider gather/move, rotation pivot carry, startsolid nudge, full revert + pusher.Blocked?.Invoke; dispatched by MoveTypePhysics MoveType.Push", result: pass }
     confidence: high
     notes: "This is the seam that makes every func_* mover ACTUALLY move + crush + reverse. Verified live; runs each server tick."
 
@@ -98,13 +97,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "GameWorld.ResetMapObjects (GameWorld.cs:2439) ONLY removes projectile entities — it never iterates map entities and never invokes any mover's reset. Its own comment falsely claims 'doors/plats/buttons reset via MapObjectsCommon'; no such call exists."
-      - "No func_* mover assigns Entity.Reset at spawn (Platforms.PlatReset / Buttons.ButtonReset / TargetUtilities.SecretReset are called ONCE inline at spawn-time for initial placement, but are NOT wired as the .reset callback). Doors and func_rotating have NO reset method ported at all."
-      - "Net effect: a door/plat/button/breakable/secret caught mid-open (or a broken breakable) at a round restart stays in that state instead of snapping home + re-arming health/active/think. func_breakable_reset also restores team_saved (unported)."
+      - "STILL DEAD after Wave-1/2. GameWorld.ResetMapObjects (GameWorld.cs:2544) body is UNCHANGED — it only removes 'projectile'/'weapon_proj*' entities; it never iterates map movers and never invokes any .Reset. Its comment still falsely claims 'doors/plats/buttons reset via MapObjectsCommon'; no such call exists."
+      - "MISLEADING NEW COMMENT (Buttons.cs:15): 'button_reset re-arm is wired centrally in GameWorld.ResetMapObjects, not here.' This is FALSE — ResetMapObjects has no button (or any mover) reset wiring. A grep for `.Reset =` across MapObjects/ finds only DynamicLight, TargetMusic, VoiceScript — NONE of the func_* movers (door/plat/button/breakable/rotating/secret) assign Entity.Reset."
+      - "Net effect unchanged: a door/plat/button/breakable/secret caught mid-open (or a broken breakable) at a round restart stays in that state instead of snapping home + re-arming. func_breakable_reset also restores team_saved (unported)."
     verification:
-      - { kind: code_read, ref: "GameWorld.cs:2439 ResetMapObjects body = projectile cull only; grep for .Reset assignment across MapObjects/ finds VoiceScript + MonsterAI only, none of the func_* movers; LogicGates.cs:30 + TargetUtilities.cs:801 comments confirm 'no .reset map-restart pass yet (ResetMapObjects is a stub)'", result: fail }
+      - { kind: code_read, ref: "RE-AUDITED 2026-06-22: GameWorld.cs:2544-2556 ResetMapObjects body = projectile/weapon_proj* cull only (no mover iteration, no e.Reset?.Invoke); grep `.Reset =` across MapObjects/ -> DynamicLight/TargetMusic/VoiceScript only (NO func_* mover); the only Entity.Reset dispatch in src/ is MonsterAI.cs:1613 (monster path), never reached from ResetMapObjects; Buttons.cs:15 comment still falsely claims central wiring", result: fail }
     confidence: high
-    notes: "Spawn-time initial placement IS live (PlatReset/ButtonReset/SecretReset run inline at setup); only the ROUND-RESTART reset path is dead. Cross-cutting: also affects logic-gate / target_* relays (separate units). Core .use behavior is unaffected day-to-day; matters for round-based modes (CA/Freeze/CTS) on maps with mid-cycle movers."
+    notes: "Spawn-time initial placement IS live (PlatReset/ButtonReset/SecretReset run inline at setup); only the ROUND-RESTART reset path is dead. Cross-cutting: also affects logic-gate / target_* relays (separate units). Matters for round-based modes (CA/Freeze/CTS) on maps with mid-cycle movers."
 
   - id: mapobject-func.door.slide
     name: "func_door — sliding door state machine, LinkDoors groups, field, touch/use/blocked"
@@ -132,27 +131,27 @@ features:
       - { name: "door_spawnfield extent", base: "mins-'60 60 8' .. maxs+'60 60 8'", port: "same", match: true }
       - { name: "door_finished throttle (s)", base: "2", port: "2", match: true }
       - { name: "blocked crush dmg", base: "10000 / .dmg bite (DEATH_HURTTRIGGER)", port: "10000 / .Dmg (DeathTypes.Void = DEATH_HURTTRIGGER)", match: true }
-      - { name: "default sounds", base: "noise2 medplat1 / noise1 medplat2 ONLY IF sounds>0|q3", port: "always medplat1/medplat2 (sounds key not read)", match: false }
+      - { name: "NOSPLASH bit", base: "BIT(8)=256 (defs.qh)", port: "Doors.NoSplash 1<<8", match: true }
+      - { name: "EF_LOWPRECISION", base: "set (door.qc:779)", port: "Effects |= AdvancedMovers.EfLowPrecision", match: true }
+      - { name: "soundpack gate", base: "noise2 medplat1 / noise1 medplat2 ONLY IF sounds>0|q3 (else empty)", port: "MapMover.ApplyDoorSounds gates on Entity.Sounds (sounds key now promoted)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: partial
-      audio: partial
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "door_damage NOSPLASH spawnflag not honored: QC door_damage early-returns when NOSPLASH is set and the hit is non-special splash; the port's Combat.Death OnDeath has no splash check, so a NOSPLASH shootable door can still be opened by splash."
-      - "the `sounds` map key is not promoted, so QC's sounds>0 gate on the medplat move/stop sounds is bypassed; the port unconditionally assigns medplat1/medplat2 in InitShared (default pack regardless)."
-      - "door .message centerprint text is not shown (client-side); DoorTouch plays only the audible play2(noise) half."
-      - "door_reset (snap to pos1, STATE_BOTTOM, active, re-init keys) is NOT ported and not wired — see mapobject-func.reset."
+      - "door .message centerprint is STILL not shown: DoorTouch now calls MapMover.Centerprint(other, door.Message) (Doors.cs:404) but CenterprintHandler is never wired in src/, so it no-ops — only the audible play2(noise) half plays."
+      - "door_reset (snap to pos1, STATE_BOTTOM, active, re-init keys) is STILL NOT ported and not wired — see mapobject-func.reset."
       - "no CSQC ENT_CLIENT_DOOR networking/draw (latent in Base too — door_link Net_LinkEntity is commented out); brush syncs via engine entity state."
     verification:
-      - { kind: code_read, ref: "door.qc vs Doors.cs: spawn geometry, door_init_shared defaults, LinkDoors connected-component + field spawn + health/name/message distribution, door_use chain-open, TOGGLE close, door_hit_top auto-close, door_blocked reverse all reproduced; door_damage realized via OnDeath but missing the NOSPLASH branch", result: pass }
-      - { kind: liveness, ref: "SpawnFuncs.Register(func_door) (MapObjectsRegistry.cs:36); RunDeferredLinks via RunPostSpawn (GameWorld.cs:545)", result: pass }
+      - { kind: code_read, ref: "door.qc vs Doors.cs: NOSPLASH early-out now present in OnDeath (restore HP, stay closed) — matches door_damage; ApplyDoorSounds gated on Sounds (sounds key promoted by MapObjectFieldsExtra); EF_LOWPRECISION set; LinkDoors/door_use/TOGGLE/auto-close/blocked-reverse reproduced", result: pass }
+      - { kind: liveness, ref: "SpawnFuncs.Register(func_door) (MapObjectsRegistry.cs); MapObjectFieldsExtra.Apply runs before SpawnFuncs.TrySpawn in GameWorld.cs:2258-2263 so .sounds is set before ApplyDoorSounds reads it", result: pass }
     confidence: high
-    notes: "START_OPEN pos swap, NONSOLID, key gating, and the spawnfield-only-for-untriggered-non-shootable-non-key rule all match. logic downgraded to partial only for the NOSPLASH omission + dead reset; the open/close/link/crush core is faithful. No dedicated unit test (code-read)."
+    notes: "WAVE-1/2 FIXES: NOSPLASH door now honored (logic->faithful); sounds-key soundpack now promoted+gated+live (audio->faithful); EF_LOWPRECISION matched. Remaining presentation gap = the unwired centerprint seam + no CSQC. No dedicated unit test (code-read)."
 
   - id: mapobject-func.door.rotating
     name: "func_door_rotating — swinging door (angle-move between two angle positions)"
@@ -177,17 +176,17 @@ features:
       values: faithful
       timing: faithful
       presentation: partial
-      audio: partial
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "DOOR_ROTATING_BIDIR / BIDIR_IN_DOWN trigger-side reverse-open logic (door_use's trigger.trigger_reverse path: set lip=666 + pos2=-pos2, and the BIDIR_IN_DOWN re-open guard) is NOT ported; the lip==666 HitBottom undo is present but never set. Bidirectional rotating doors always open the default direction. (DoorUse takes no trigger arg.)"
-      - "shares the door .message / sounds / dead-reset / CSQC gaps of mapobject-func.door.slide."
+      - "DOOR_ROTATING_BIDIR / BIDIR_IN_DOWN trigger-side reverse-open logic (door_use's trigger.trigger_reverse path: set lip=666 + pos2=-pos2, and the BIDIR_IN_DOWN re-open guard) is STILL NOT ported; DoorUse still takes (self, actor) with no trigger arg, so lip is never set to 666. Bidirectional rotating doors always open the default direction. Now explicitly documented out-of-scope at Doors.cs:15."
+      - "shares the door .message (unwired centerprint) / dead-reset / CSQC gaps of mapobject-func.door.slide; inherits its NOSPLASH fix + sounds-key fix (door_rotating runs InitShared -> ApplyDoorSounds + OnDeath)."
     verification:
-      - { kind: code_read, ref: "door_rotating.qc vs Doors.cs DoorRotatingSetup/GoUp/GoDown/HitTop/HitBottom: axis selection, angle pos1/pos2, START_OPEN reverse, CalcAngleMove, 666 reverse-undo all present; door_use BIDIR/trigger_reverse path confirmed ABSENT in DoorUse", result: pass }
+      - { kind: code_read, ref: "door_rotating.qc vs Doors.cs: axis selection, angle pos1/pos2, START_OPEN reverse, CalcAngleMove, 666 reverse-undo all present; door_use BIDIR/trigger_reverse path confirmed ABSENT in DoorUse (no trigger param)", result: pass }
     confidence: high
-    notes: "BIDIR is the one logic omission (the trigger_reverse path in door_use). Confirmed absent in DoorUse (no trigger/trigger_reverse param)."
+    notes: "BIDIR is the one remaining logic omission (the trigger_reverse path in door_use). audio upgraded to faithful (shares InitShared/ApplyDoorSounds with door.slide). Confirmed BIDIR still absent (DoorUse unchanged)."
 
   - id: mapobject-func.door.keys
     name: "func_door key locks (gold/silver itemkeys, consume + locked/unlocked sounds)"
@@ -212,12 +211,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "CENTER_DOOR_UNLOCKED / DOOR_LOCKED_NEED / DOOR_LOCKED_ALSONEED center notifications (with the item_keys_keylist string) are not shown — only the audible play2(noise/noise3) half is played. (The port also collapses QC's NEED vs ALSONEED two-branch wording to a single noise3 throttle, which is acceptable since the visible text is client-side anyway.)"
-      - "key doors can't be damage-opened (faithful early-out in OnDeath: itemkeys!=0 keeps it alive) — verified."
+      - "CENTER_DOOR_UNLOCKED / DOOR_LOCKED_NEED / DOOR_LOCKED_ALSONEED center notifications (with the item_keys_keylist string) are STILL not shown — Wave-2 did NOT add a Centerprint call for the key-door path (and even if it had, CenterprintHandler is unwired). Only the audible play2(noise/noise3) half plays. The port also collapses QC's NEED vs ALSONEED two-branch wording to a single noise3 throttle (acceptable since the visible text is client-side anyway)."
+      - "key doors can't be damage-opened (faithful early-out in OnDeath: itemkeys!=0 keeps it alive) — verified at Doors.cs:667 (the NOSPLASH branch precedes it at Doors.cs:659; both are independent early-outs so order is immaterial)."
     verification:
-      - { kind: code_read, ref: "door_check_keys vs DoorCheckKeys: itemkeys & player.itemkeys consume, all-given -> unlock + sound, partial -> noise3 throttled; door_init_keys spawnflag->bits", result: pass }
+      - { kind: code_read, ref: "door_check_keys vs DoorCheckKeys: itemkeys & player.itemkeys consume, all-given -> unlock + sound, partial -> noise3 throttled; door_init_keys spawnflag->bits; no centerprint added for key path", result: pass }
     confidence: high
-    notes: "QC reads keys off PS(player) (the player-state); port reads player.ItemKeys directly — equivalent in this entity model."
+    notes: "QC reads keys off PS(player); port reads player.ItemKeys directly — equivalent. Unchanged by Wave-1/2 (no notification seam wired)."
 
   - id: mapobject-func.button
     name: "func_button — press-to-fire (touch/use/damage), wait+return, setactive timer, alt texture"
@@ -233,35 +232,34 @@ features:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Buttons.cs:ButtonFire"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Buttons.cs:ButtonSetActive"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Buttons.cs:ButtonTouch"
-      - "src/XonoticGodot.Common/Gameplay/MapObjects/Buttons.cs:OnDeath"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Buttons.cs:ButtonDamage"
     constants:
       - { name: "speed default", base: "40", port: "40", match: true }
       - { name: "wait default (s)", base: "1 (-1 never)", port: "1 (-1 never)", match: true }
       - { name: "lip default", base: "4", port: "4", match: true }
       - { name: "touch gate", base: "creature & velocity.movedir >= 0 (reject if < 0)", port: "IsCreature & Dot(vel,movedir) >= 0", match: true }
       - { name: "DONTACCUMULATEDMG bit", base: "BIT(7)=128", port: "1<<7", match: true }
+      - { name: "NOSPLASH bit", base: "BIT(8)=256", port: "MapMover.SpawnNoSplash 1<<8", match: true }
       - { name: "alt texture frame", base: "frame=1 pressed / 0 normal", port: "Frame=1 / 0", match: true }
-      - { name: "DONTACCUMULATEDMG semantics", base: "fire IFF single-hit damage >= health (no accumulation)", port: "accumulate via Death hook until HP<1 then fire (NOT single-hit)", match: false }
+      - { name: "DONTACCUMULATEDMG semantics", base: "fire IFF single-hit damage >= health (no accumulation)", port: "if(Health <= damage) fire; no subtract (ButtonDamage)", match: true }
+      - { name: "health == -1 (fire on ANY attack)", base: "any damage opens it", port: "accumulate path: Health(-1) <= 0 already, any hit fires; single-hit path: -1 <= damage always", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: partial
       audio: faithful
       liveness: live
-    intended_divergence: true
-    divergence_rationale: "Shootable buttons use the Combat.Death pipeline hook (button_damage event_damage has no per-entity equivalent in the port): the hook restores health so the kill path's HP>=1 early-out keeps the brush alive, then ButtonFire. This is equivalent ONLY for the default accumulate path; see the DONTACCUMULATEDMG/NOSPLASH gaps which the hook approach does NOT reproduce."
+    intended_divergence: false
+    divergence_rationale: null
     gaps:
-      - "DONTACCUMULATEDMG (BIT 7) is INVERTED: QC fires only when a SINGLE hit's damage >= current health and never subtracts health; the port's OnDeath fires only after accumulated damage drives HP<1. A high-HP DONTACCUMULATEDMG button (meant to need one big hit) will instead open from many small hits, and a single sub-lethal big hit won't open it."
-      - "NOSPLASH spawnflag (splash-immune button) is not honored — OnDeath has no splash check."
-      - "health == -1 (`fire on ANY attack, even damageless InstaGib laser`) is not modeled: a damageless hit never drives HP<1, so the Death hook never fires."
       - "the pressed-state alternate texture (Frame=1) is set on the entity but whether the brush model renders the alt frame in-engine is unverified (presentation)."
-      - "button_reset round-restart re-arm is dead (see mapobject-func.reset)."
+      - "button_reset round-restart re-arm is STILL dead (see mapobject-func.reset) — despite the new Buttons.cs:15 comment that claims it is 'wired centrally in GameWorld.ResetMapObjects' (it is not)."
     verification:
-      - { kind: code_read, ref: "button.qc vs Buttons.cs: fire on touch/use, button_wait fire-targets+frame, button_return re-arm, setactive wait_remaining/activation_time banking all reproduced. button_damage: OnDeath fires at HP<1 (accumulate path only) — DONTACCUMULATEDMG single-hit branch + NOSPLASH + health=-1 NOT reproduced", result: pass }
-      - { kind: liveness, ref: "SpawnFuncs.Register(func_button) (MapObjectsRegistry.cs:43); fire sound via MapMover.Sound on SoundChannel.Auto", result: pass }
+      - { kind: code_read, ref: "button.qc vs Buttons.cs: button_damage is now a per-hit .event_damage callback installed via MapMover.InstallEventDamage(this_, ButtonDamage); NOSPLASH (!IsSpecial & HasHitType Splash -> return), DONTACCUMULATEDMG (Health<=damage single-hit, no subtract), default accumulate (Health-=damage; <=0 -> fire), health=-1 fire-on-any all reproduced; Active gate matches QC. The old Combat.Death accumulate-hook is REMOVED.", result: pass }
+      - { kind: liveness, ref: "Entity.GtEventDamage dispatched per-hit by DamageSystem.EventDamage (DamageSystem.cs:331-335) on the live Damage() path (line 280); SpawnFuncs.Register(func_button); fire sound via MapMover.Sound", result: pass }
     confidence: high
-    notes: "QC button fire sound uses CH_TRIGGER; port uses SoundChannel.Auto (cue same). logic downgraded to partial for the DONTACCUMULATEDMG inversion + NOSPLASH + health=-1; the core touch/use/wait/return state machine is faithful. No dedicated unit test (code-read)."
+    notes: "WAVE-1/2 MAJOR FIX: shootable buttons rewritten from the accumulate-then-die Combat.Death workaround to a faithful per-hit event_damage shim. DONTACCUMULATEDMG inversion, NOSPLASH, and health==-1 are now all faithful; intended_divergence cleared (logic partial->faithful). DeathTypes.IsSpecial/HasHitType(Splash) verified to exist. No dedicated unit test (code-read)."
 
   - id: mapobject-func.plat
     name: "func_plat — riding platform (center trigger raises, 3s top dwell, crush/reverse)"
@@ -286,25 +284,25 @@ features:
       - { name: "top refresh on re-touch (s)", base: "1", port: "1", match: true }
       - { name: "inside-trigger inset", base: "+25 25 0 / -25 25 -8 / LOW_TRIGGER +8z", port: "same", match: true }
       - { name: "CRUSH dmg", base: "10000", port: "10000", match: true }
+      - { name: "soundpack", base: "sounds==1 plat1/2, sounds==2|q3 medplat, then sound1/sound2 overrides", port: "MapMover.ApplyPlatSounds (sounds/sound1/sound2 keys promoted)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
       presentation: partial
-      audio: partial
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "the `sounds` map key (sounds==1 plat1/plat2, sounds==2 medplat) and the sound1/sound2 backwards-compat fields are not promoted; the port always uses plat1/plat2."
-      - "plat_reset is called inline at spawn (initial placement IS live + faithful: targeted->raised, untargeted->bottom) but is NOT wired as the round-restart .reset — see mapobject-func.reset."
+      - "plat_reset is called inline at spawn (initial placement IS live + faithful: targeted->raised, untargeted->bottom) but is STILL NOT wired as the round-restart .reset — see mapobject-func.reset."
       - "plat_outside_touch (the CSQC-side outside trigger that sends a top plat down when a player leaves) is not ported — it is gated to CSQC in Base; minor."
       - "no CSQC ENT_CLIENT_PLAT draw/networking."
     verification:
-      - { kind: code_read, ref: "plat.qc + platforms.qc vs Platforms.cs: pos1/pos2 (top/bottom), inside-trigger sizing, center-touch raise + top-dwell refresh, hit_top 3s -> go_down, crush reverse, targeted start-raised plat_use all reproduced", result: pass }
-      - { kind: liveness, ref: "SpawnFuncs.Register(func_plat) (MapObjectsRegistry.cs:40)", result: pass }
+      - { kind: code_read, ref: "plat.qc + platforms.qc vs Platforms.cs: ApplyPlatSounds now selects plat1/2 vs medplat vs sound1/sound2 overrides per the promoted sounds key (Platforms.cs:57); SetPlatMoveType parses platmovetype (Platforms.cs:68); pos1/pos2, inside-trigger sizing, center-touch raise + top-dwell, crush reverse, targeted start-raised all reproduced", result: pass }
+      - { kind: liveness, ref: "SpawnFuncs.Register(func_plat); MapObjectFieldsExtra promotes sounds/sound1/sound2/platmovetype before the spawnfunc runs", result: pass }
     confidence: high
-    notes: "Targeted plat starts RAISED (STATE_UP, plat_use one-shot down); untargeted starts at bottom — both match. Spawn reset live; round-restart reset dead. No dedicated unit test (code-read)."
+    notes: "WAVE-1/2 FIX: sounds-key soundpack + sound1/sound2 backwards-compat overrides + platmovetype ease now promoted & live (audio->faithful). Targeted plat starts RAISED; untargeted starts at bottom — both match. Round-restart reset still dead. No dedicated unit test (code-read)."
 
   - id: mapobject-func.train
     name: "func_train — path_corner chain ride (TURN/CURVE/NEEDACTIVATION/random, per-corner speed/wait)"
@@ -325,7 +323,7 @@ features:
       - { name: "view_ofs", base: "mins (non-turn) / 0 (TURN)", port: "DestVec = Mins / Zero", match: true }
       - { name: "TURN/CURVE/NEEDACTIVATION bits", base: "BIT(1)/BIT(0)/BIT(2) = 2/1/4", port: "1<<1 / 1<<0 / 1<<2", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: partial
@@ -334,15 +332,14 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "TRAIN_NEEDACTIVATION re-arm at a later corner is not reproduced: QC train_wait checks `future_target.spawnflags & TRAIN_NEEDACTIVATION` and re-installs train_use + parks the think so the train waits for re-triggering at that corner; the port's TrainWait handles only initial activation (TrainUse one-shot). A multi-segment train that should pause-for-trigger at an intermediate corner won't."
-      - "no func_train reset (QC explicitly has `// TODO make a reset function for this one` — so this one is faithful to Base's own omission, unlike door/plat/button)."
-      - "train moving-sound stop (stopsoundto MSG_BROADCAST on arrival) is not done; the moving noise is played but not explicitly stopped at each dwell (cosmetic). Port uses SoundChannel.Voice vs QC ATTEN_IDLE (cosmetic)."
+      - "no func_train reset (QC explicitly has `// TODO make a reset function for this one` — so this is faithful to Base's own omission, unlike door/plat/button)."
+      - "train moving-sound stop (stopsoundto MSG_BROADCAST on arrival) is not done; the moving noise plays but is not explicitly stopped at each dwell (cosmetic). Port uses SoundChannel.Voice vs QC ATTEN_IDLE (cosmetic)."
       - "no CSQC ENT_CLIENT_TRAIN draw/networking."
     verification:
-      - { kind: code_read, ref: "train.qc vs MovingBrushes.cs TrainSetup/Find/Next/Wait/Use: path-corner lookahead, per-corner speed/wait, TRAIN_CURVE bezier via curvetarget, TRAIN_TURN dwell-rotate (FixedVecToAngles), target_random weighted pick, NEEDACTIVATION initial + target2 retarget reproduced; the per-corner NEEDACTIVATION re-arm branch in train_wait is NOT", result: pass }
-      - { kind: liveness, ref: "SpawnFuncs.Register(func_train + path_corner) (MapObjectsRegistry.cs:160-161)", result: pass }
-    confidence: medium
-    notes: "platmovetype per-corner ease override is plumbed via PlatMoveStart/End; set_platmovetype sanity-check not ported. logic downgraded to partial for the missing intermediate NEEDACTIVATION re-arm. No dedicated unit test."
+      - { kind: code_read, ref: "train.qc vs MovingBrushes.cs: per-corner NEEDACTIVATION re-arm now present in TrainWait (MovingBrushes.cs:424-431: tg=FutureTarget; if(tg.SpawnFlags & TrainNeedActivation){ Use=TrainUse; Think=null; } ) — matches train_wait lines 45-48; path-corner lookahead, per-corner speed/wait, CURVE bezier, TURN dwell-rotate, target_random pick, target2 retarget, platmovetype via SetPlatMoveType all reproduced", result: pass }
+      - { kind: liveness, ref: "SpawnFuncs.Register(func_train + path_corner); TrainUse re-armed, FutureTarget populated by TrainNext", result: pass }
+    confidence: high
+    notes: "WAVE-1/2 FIX: the intermediate TRAIN_NEEDACTIVATION re-arm (train_wait future_target check that pauses + re-installs train_use) is now ported (logic partial->faithful). platmovetype per-corner ease wired via SetPlatMoveType. confidence raised to high. No dedicated unit test."
 
   - id: mapobject-func.rotating
     name: "func_rotating — constant-axis spin, setactive toggle, STARTOFF, ambient noise"
@@ -357,7 +354,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/MovingBrushes.cs:RotatingSetActive"
     constants:
       - { name: "speed default (deg/s)", base: "100", port: "100", match: true }
-      - { name: "axis bits", base: "Z default / X_AXIS BIT(2)=4 / Y_AXIS BIT(3)=8 / STARTOFF BIT(4)=16", port: "1<<2 / 1<<3 / 1<<4 (matches; prior draft note '64/128' was WRONG)", match: true }
+      - { name: "axis bits", base: "Z default / X_AXIS BIT(2)=4 / Y_AXIS BIT(3)=8 / STARTOFF BIT(4)=16", port: "1<<2 / 1<<3 / 1<<4", match: true }
     status:
       logic: faithful
       values: faithful
@@ -368,14 +365,14 @@ features:
     intended_divergence: true
     divergence_rationale: "Looping ambient noise (CH_AMBIENT_SINGLE) uses the sound facade Play, not QC's per-player soundto(MSG_ONE)/init_for_player resend — no client roster at this layer (project-wide reduction). Spin behavior is fully faithful."
     gaps:
-      - "func_rotating_init_for_player (resend the ambient to a player who joins after spawn) is not implemented; a late joiner may not hear an already-spinning rotator's loop."
-      - "func_rotating_reset (re-apply STARTOFF active state on round restart) is not ported/wired — see mapobject-func.reset; STARTOFF spawn state IS applied at spawn-time and is faithful."
-      - "RotatingSetActive does not start/stop the ambient on toggle (QC setactive plays/stops CH_AMBIENT_SINGLE) — only AVelocity is toggled. Cosmetic given the facade-only ambient."
+      - "func_rotating_init_for_player (resend the ambient to a player who joins after spawn) is STILL not implemented; a late joiner may not hear an already-spinning rotator's loop. (Unchanged by Wave-1/2.)"
+      - "func_rotating_reset (re-apply STARTOFF active state on round restart) is STILL not ported/wired — see mapobject-func.reset; STARTOFF spawn state IS applied at spawn-time and is faithful."
+      - "RotatingSetActive does not start/stop the ambient on toggle (QC setactive plays/stops CH_AMBIENT_SINGLE) — only AVelocity is toggled. Cosmetic given the facade-only ambient. (Unchanged by Wave-1/2.)"
     verification:
-      - { kind: code_read, ref: "rotating.qc vs RotatingSetup/SetActive: avelocity per axis (X_AXIS=BIT2->roll, Y_AXIS=BIT3->pitch, default yaw), pos1-stored spin, setactive toggle stop/restore, STARTOFF spawn-stopped, generic_plat_blocked; spin integrated by PushMove (no EF_LOWPRECISION rounding, matching QC's 'no EF_LOWPRECISION here')", result: pass }
-      - { kind: liveness, ref: "SpawnFuncs.Register(func_rotating) (MapObjectsRegistry.cs:157)", result: pass }
+      - { kind: code_read, ref: "rotating.qc vs RotatingSetup/SetActive (no diff this wave): avelocity per axis, pos1-stored spin, setactive toggle, STARTOFF spawn-stopped, generic_plat_blocked; spin integrated by PushMove", result: pass }
+      - { kind: liveness, ref: "SpawnFuncs.Register(func_rotating)", result: pass }
     confidence: high
-    notes: "Port leaves Think null and relies on PushMove integrating the constant avelocity (QC parks a far-future SUB_NullThink for the same reason). Axis-bit constants verified against rotating.qh BIT(2)/BIT(3)/BIT(4)."
+    notes: "Unchanged by Wave-1/2. Port leaves Think null and relies on PushMove integrating the constant avelocity. Axis-bit constants verified against rotating.qh BIT(2)/BIT(3)/BIT(4)."
 
   - id: mapobject-func.bobbing
     name: "func_bobbing — sine translation via 0.1s controller"
@@ -407,9 +404,9 @@ features:
       - "the spawn-time soundto(MSG_INIT) looping ambient is not resent per-player; played through the facade where present."
     verification:
       - { kind: code_read, ref: "bobbing.qc vs BobbingSetup/ControllerThink: makevectors sine, destvec+movedir*v_forward_y target, *10 velocity, controller 0.1s tick, phase plumbed via MapObjectFieldsExtra (phase key)", result: pass }
-      - { kind: liveness, ref: "SpawnFuncs.Register(func_bobbing) (MapObjectsRegistry.cs:158); controller Spawn at setup", result: pass }
+      - { kind: liveness, ref: "SpawnFuncs.Register(func_bobbing); controller Spawn at setup", result: pass }
     confidence: high
-    notes: "QMath.Forward(yaw) reproduces makevectors v_forward.y. No dedicated unit test (code-read)."
+    notes: "Unchanged by Wave-1/2. QMath.Forward(yaw) reproduces makevectors v_forward.y. No dedicated unit test (code-read)."
 
   - id: mapobject-func.pendulum
     name: "func_pendulum — sine roll via 0.1s controller (Q3A freq formula)"
@@ -438,9 +435,9 @@ features:
       - "ambient .noise not resent per-player (same reduction as bobbing)."
     verification:
       - { kind: code_read, ref: "pendulum.qc vs PendulumSetup/ControllerThink: freq formula, cnt rest-roll, makevectors sine to roll avelocity, remainder shortest-arc, 0.0000001 kick", result: pass }
-      - { kind: liveness, ref: "SpawnFuncs.Register(func_pendulum) (MapObjectsRegistry.cs:159)", result: pass }
+      - { kind: liveness, ref: "SpawnFuncs.Register(func_pendulum)", result: pass }
     confidence: high
-    notes: "sv_gravity read from the cvar store (fallback 800 = Xonotic default). No dedicated unit test (code-read)."
+    notes: "Unchanged by Wave-1/2. sv_gravity read from the cvar store (fallback 800 = Xonotic default). No dedicated unit test (code-read)."
 
   - id: mapobject-func.fourier
     name: "func_fourier — sum-of-sines mover (netname quintuple list)"
@@ -469,9 +466,9 @@ features:
       - "looping ambient .noise resent per-player (soundto MSG_INIT) reduced to a single facade Play."
     verification:
       - { kind: code_read, ref: "fourier.qc vs FourierSetup/ControllerThink: netname tokenize/stof, n=len/5, per-term makevectors sine scaled by height*v_forward_y onto destvec, *10 velocity", result: pass }
-      - { kind: unit_test, ref: "MapObjectLongTailTests.cs:306-343 — controller spawn + netname default verified", result: pass }
+      - { kind: unit_test, ref: "MapObjectLongTailTests.cs — controller spawn + netname default verified", result: pass }
     confidence: high
-    notes: "tokenize_console reduced to whitespace split (faithful for a plain number list); stof invariant-culture parse. EF_LOWPRECISION set (bandwidth hint, no gameplay effect)."
+    notes: "Unchanged by Wave-1/2. tokenize_console reduced to whitespace split; stof invariant-culture parse. EF_LOWPRECISION set (bandwidth hint)."
 
   - id: mapobject-func.vectormamamam
     name: "func_vectormamamam — 4-reference projected mover"
@@ -504,9 +501,9 @@ features:
       - "looping ambient .noise per-player resend reduced to facade Play in setactive."
     verification:
       - { kind: code_read, ref: "vectormamamam.qc vs AdvancedMovers.cs: per-reference project-onto/off normal*factor accumulate, destvec=origin-origin(0), controller *10, findtarget at INITPRIO_FINDTARGET (RunDeferredInit)", result: pass }
-      - { kind: unit_test, ref: "MapObjectLongTailTests.cs:345-411 — controller spawn, destvec-at-timestep-0, no-reference abort verified", result: pass }
+      - { kind: unit_test, ref: "MapObjectLongTailTests.cs — controller spawn, destvec-at-timestep-0, no-reference abort verified", result: pass }
     confidence: high
-    notes: "Reference lookups drained by MapObjectsRegistry.RunPostSpawn -> AdvancedMovers.RunDeferredInit (GameWorld.cs:545)."
+    notes: "Unchanged by Wave-1/2. Reference lookups drained by MapObjectsRegistry.RunPostSpawn -> AdvancedMovers.RunDeferredInit."
 
   - id: mapobject-func.breakable
     name: "func_breakable / misc_breakablemodel — destructible BSP (debris, blast, respawn)"
@@ -529,30 +526,29 @@ features:
       - { name: "debris movetype", base: "MOVETYPE_BOUNCE", port: "MoveType.Bounce", match: true }
       - { name: "debris velocity / jitter / avel-jitter", base: "0 0 140 / 70 70 70 / 600 600 600", port: "same", match: true }
       - { name: "debris time", base: "3.5", port: "3.5", match: true }
-      - { name: "debris time-jitter", base: "0 unless set (QC bug: !debristimejitter sets debristime=2.5, NOT jitter)", port: "2.5 (port sets DebrisTimeJitter=2.5 — does NOT reproduce the QC bug)", match: false }
+      - { name: "debristimejitter QC bug", base: "!debristimejitter -> debristime=2.5 (NOT jitter); jitter stays 0", port: "if(DebrisTimeJitter==0) DebrisTime=2.5 — NOW reproduces the QC bug", match: true }
+      - { name: "NOSPLASH bit", base: "BIT(8)=256", port: "MapMover.SpawnNoSplash 1<<8", match: true }
+      - { name: "team friendly-fire guard", base: "attacker.team == this.team -> return", port: "v.Team!=0 & atk.Team==v.Team -> restore HP, no break", match: true }
       - { name: "spawnflags", base: "START_DISABLED(1)/INDICATE_DAMAGE(2)/NODAMAGE(4)", port: "1<<0/1<<1/1<<2", match: true }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: faithful
       presentation: partial
       audio: faithful
       liveness: live
     intended_divergence: true
-    divergence_rationale: "event_damage realized via Combat.Death hook (no per-entity event_damage in the port): restore health so the kill early-out keeps it intact, then break. The killing-hit `force` (QC debrisforce) is not carried by the Death hook, but .debrisdamageforcescale defaults to 0 so QC's force contribution to debris is normally nil anyway."
+    divergence_rationale: "func_breakable_damage realized via the Combat.Death hook (OnDeath) rather than a per-hit .event_damage shim: the pipeline drives HP below 1, then OnDeath restores HP so the kill early-out keeps it intact and either bounces (NOSPLASH/team-guard) or breaks. The killing-hit force (QC debrisforce) is not carried by the Death hook, but .debrisdamageforcescale defaults to 0 so QC's force contribution to debris is normally nil. Functionally equivalent for the modelled cases (NOSPLASH + team-guard now evaluated inside OnDeath before the break)."
     gaps:
-      - "NOSPLASH spawnflag (splash-immune breakable) is not honored — OnDeath has no splash check; QC func_breakable_damage early-returns for non-special splash when NOSPLASH set."
-      - "team friendly-fire guard not ported: QC func_breakable_damage returns when attacker.team == this.team; the port can break a teamed breakable from a teammate."
       - "func_breakable_colormod damage-indication (BREAKABLE_INDICATE_DAMAGE tint), waypoint sprites (WaypointSprite_*), and bot_attack/monster_attack registration are not ported (BehaveRestore/Destroyed don't toggle bot_attack or remove grappling hooks)."
-      - "DebrisTimeJitter default diverges (values): QC has a bug where unset debristimejitter clobbers debristime to 2.5 and leaves jitter 0; the port sets jitter=2.5 (debris fade spread differs from Base)."
-      - "func_breakable_reset (restore team_saved + re-look/behave) is not ported/wired — see mapobject-func.reset; spawn-time START_DISABLED/restore IS applied and faithful."
+      - "func_breakable_reset (restore team_saved + re-look/behave) is STILL not ported/wired — see mapobject-func.reset; spawn-time START_DISABLED/restore IS applied and faithful."
       - "mdl_dead wreck-model swap + debris MODEL rendering are presentation (debris entities spawn + fade but their visual is client-side); pointparticles break effect (.cnt/.count) not emitted."
       - "the killing-hit force isn't applied to debris (Death hook carries no force; near-zero effect at default debrisdamageforcescale 0)."
     verification:
-      - { kind: code_read, ref: "breakable.qc vs Breakable.cs: setup defaults, BehaveRestore/Destroyed solidity, LaunchDebris random-point+jitter+spin+fade, RadiusDamage blast, fire-targets, respawntime floor-clear retry, START_DISABLED/NODAMAGE reproduced; func_breakable_damage NOSPLASH + team-guard NOT reproduced (Death-hook path); DebrisTimeJitter default diverges", result: pass }
-      - { kind: liveness, ref: "SpawnFuncs.Register(func_breakable + misc_breakablemodel) (MapObjectsRegistry.cs:185-186); OnDeath subscribed to Combat.Death", result: pass }
+      - { kind: code_read, ref: "breakable.qc vs Breakable.cs: OnDeath now adds the NOSPLASH early-out (!IsSpecial & HasHitType Splash -> restore HP, no break, Breakable.cs:248-257) and the team friendly-fire guard (Breakable.cs:260-266), both matching func_breakable_damage lines 271-276; debristimejitter QC bug reproduced (DebrisTime=2.5 when jitter unset). LaunchDebris/RadiusDamage/respawn/START_DISABLED/NODAMAGE reproduced", result: pass }
+      - { kind: liveness, ref: "SpawnFuncs.Register(func_breakable + misc_breakablemodel); OnDeath subscribed to Combat.Death; v.Team read from the map team field via ApplyDictFields", result: pass }
     confidence: high
-    notes: "Uses DAMAGE_AIM (matches QC). Bot-targeting of breakables is a separate (unported) bot-combat concern. No dedicated unit test for the break path (code-read)."
+    notes: "WAVE-1/2 FIXES: NOSPLASH guard + team friendly-fire guard now honored (logic partial->faithful); debristimejitter default now matches Base's own bug (values partial->faithful). Verified against breakable.qc:271-276 + 330-331. Uses DAMAGE_AIM (matches QC). No dedicated unit test for the break path (code-read)."
 
   - id: mapobject-func.door_secret
     name: "func_door_secret — Quake-1 secret door (slide back/down, then sideways, return, re-arm)"
@@ -576,26 +572,25 @@ features:
       - { name: "shootable HP", base: "10000 (never dies; opens on ANY hit)", port: "10000 (GtEventDamage opens on any hit)", match: true }
       - { name: "move1/move5 dwell (s)", base: "0.1 then 1.0", port: "0.1 then 1.0", match: true }
       - { name: "spawnflags", base: "OPEN_ONCE(1)/1ST_LEFT(2)/1ST_DOWN(4)/NO_SHOOT(8)/YES_SHOOT(16)", port: "1<<0..1<<4", match: true }
-      - { name: "soundpack", base: "sounds>0 -> medplat1/medplat1/medplat2", port: "same code path BUT sounds key not promoted -> never taken", match: false }
+      - { name: "soundpack", base: "sounds>0 -> medplat1/medplat1/medplat2", port: "MapMover.ApplySecretSounds (sounds key now promoted)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
       presentation: partial
-      audio: partial
+      audio: faithful
       liveness: live
     intended_divergence: true
     divergence_rationale: "QC sets classname='door' and a per-entity .event_damage; the port uses a DISTINCT classname 'door_secret' (so it stays out of the shared door OnDeath/LinkDoors classname dispatch) and a real per-entity event_damage analogue (Entity.GtEventDamage, dispatched by DamageSystem.EventDamage). Slide mechanics, touch, blocked, use are otherwise identical. Forced by the shared-dispatch architecture."
     gaps:
-      - "the `sounds` map key is not promoted, so the medieval/metal soundpack branch is never taken (default misc/talk.wav touch sound only)."
-      - "secret .message centerprint text is client-side and not shown (only the play2(noise) half plays)."
-      - "secret_reset round-restart re-arm is dead (see mapobject-func.reset); spawn-time placement (oldorigin, shootable re-arm) IS applied and faithful."
+      - "secret .message centerprint is STILL not shown: SecretUse/touch now call MapMover.Centerprint(...) (TargetUtilities.cs) but CenterprintHandler is never wired in src/, so it no-ops — only the audible play2(noise) half plays."
+      - "secret_reset round-restart re-arm is STILL dead (see mapobject-func.reset); spawn-time placement (oldorigin, shootable re-arm) IS applied and faithful."
       - "secret_blocked deals no damage (QC leaves the T_Damage commented out too — faithful)."
     verification:
-      - { kind: code_read, ref: "door_secret.qc vs TargetUtilities.cs: fd_secret_use back/down-then-side dest1/dest2 via makevectors(mangle), t_width/t_length, move1-6 chain, OPEN_ONCE/wait<0 no-return, fd_secret_damage open-on-any-hit (via GtEventDamage), shootable-if-untargeted all reproduced", result: pass }
-      - { kind: liveness, ref: "SpawnFuncs.Register(func_door_secret) (MapObjectsRegistry.cs:93); GtEventDamage dispatched by DamageSystem.EventDamage; OnSecretDeath subscribed to Combat.Death", result: pass }
+      - { kind: code_read, ref: "door_secret.qc vs TargetUtilities.cs: ApplySecretSounds now selects the medieval/metal pack per the promoted sounds key (TargetUtilities.cs:592); fd_secret_use back/down-then-side dest, move1-6 chain, OPEN_ONCE/wait<0 no-return, fd_secret_damage open-on-any-hit (via GtEventDamage), shootable-if-untargeted all reproduced", result: pass }
+      - { kind: liveness, ref: "SpawnFuncs.Register(func_door_secret); GtEventDamage dispatched by DamageSystem.EventDamage; OnSecretDeath subscribed to Combat.Death", result: pass }
     confidence: high
-    notes: "ADDED by adversarial verify — the first-pass draft omitted func_door_secret entirely despite it being a fully ported, live func/ map object (in TargetUtilities.cs because of the classname-dispatch issue)."
+    notes: "WAVE-1/2 FIX: sounds-key soundpack now promoted & live (audio partial->faithful). Remaining presentation gap = the unwired centerprint seam. fully ported, live func/ map object (in TargetUtilities.cs due to the classname-dispatch issue)."
 
   - id: mapobject-func.conveyor_ladder
     name: "trigger_conveyor/func_conveyor + func_ladder/func_water — per-frame volume scanners (producer)"
@@ -629,7 +624,7 @@ features:
       - "overlap uses AABB BoxesOverlap not exact-trigger plane test (a non-axis-aligned conveyor/ladder brush could tag slightly outside its true volume)."
       - "no CSQC ENT_CLIENT_CONVEYOR/LADDER draw/think (the client also runs the producer scan in Base for prediction)."
     verification:
-      - { kind: code_read, ref: "conveyor.qc/ladder.qc vs MapVolumes.cs: per-frame release-then-retag, FindInRadius box scan + AABB overlap, isPushable/claimable gate, non-client nudge, targeted-conveyor toggle (generic_netlinked_legacy_use/reset); consumer fields (ConveyorEntity/MoveDir, LadderEntity) read by PlayerPhysics", result: pass }
-      - { kind: liveness, ref: "SpawnFuncs.Register(trigger_conveyor/func_conveyor/func_ladder/func_water) (MapObjectsRegistry.cs:98-101)", result: pass }
+      - { kind: code_read, ref: "conveyor.qc/ladder.qc vs MapVolumes.cs: per-frame release-then-retag, FindInRadius box scan + AABB overlap, isPushable/claimable gate, non-client nudge, targeted-conveyor toggle; consumer fields (ConveyorEntity/MoveDir, LadderEntity) read by PlayerPhysics", result: pass }
+      - { kind: liveness, ref: "SpawnFuncs.Register(trigger_conveyor/func_conveyor/func_ladder/func_water)", result: pass }
     confidence: medium
-    notes: "Producer is code-read live; the FULL chain (volume tag -> PlayerPhysics consumer effect) is not exercised end-to-end by a test here. The PlayerPhysics consumer parity belongs to the physics unit. Conveyor generic_netlinked_reset is applied at spawn (active state); its round-restart wiring shares the dead-reset issue but is cosmetic (active-state only)."
+    notes: "Unchanged by Wave-1/2. Producer is code-read live; the FULL chain (volume tag -> PlayerPhysics consumer) is not exercised end-to-end by a test here. Conveyor generic_netlinked_reset applied at spawn; its round-restart wiring shares the dead-reset issue but is cosmetic (active-state only)."

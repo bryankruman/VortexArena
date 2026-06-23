@@ -2,6 +2,12 @@ unit: sv-intermission
 category: server
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-22"
+# Re-audited 2026-06-22 on branch claude/parity-port-waves after the Wave-1/2 implementation.
+# Net change for this unit: 1 gap genuinely closed (the IntermissionThink +10s auto-advance grace is now
+# live & faithful, correcting the false "input grace = 0" constant). No regressions. The mapvote panel got
+# a fuller MapVote_Draw port (fade timing / suggester line / top2 alpha) but is STILL dead (never fed), and
+# cl_autoscreenshot is now client-replicated but the server has no consumer (still missing). All other rows
+# unchanged from the pre-implementation baseline.
 summary:
   feature_count: 15
   worst_gaps:
@@ -9,7 +15,7 @@ summary:
     - "NextLevel omits VoteReset, the centerprint kill (Kill_Notification NOTIF_ALL), WeaponStats_Shutdown, DumpStats, the MatchEnd_BeforeScores/MatchEnd mutator hooks, and the localcmd(sv_hook_gameend) — only winners/eventlog/playerstats/campaign/demo are ported."
     - "Scoreboard does not auto-show at intermission (Base force-draws at intermission==1, hides at ==2 for the mapvote); the port only shows it while +showscores is held."
     - "No SVC_INTERMISSION view freeze: local view is not locked to an intermission camera, viewmodel is not hidden (EF_NODRAW), health sentinel -2342 not set."
-    - "IntermissionThink +10s input grace + per-player 'press fire to skip' is absent; the port auto-advances exactly at sv_mapchange_delay (RequestExit exists but is dead)."
+    - "The IntermissionThink +10s post-hold auto-advance grace is now LIVE & faithful (Intermission.Think waits ExitTime+10s). The per-player 'press fire/jump to skip during the grace' early-exit is STILL absent (RequestExit exists but has no input caller)."
     - "No autoscreenshot stuffcmd and no sv_intermission_cdtrack switch / target_music_kill at match end."
     - "DoNextMapOverride omits quit_when_empty, quit_and_redirect, and lastlevel overrides."
     - "Set_NextMap / Send_NextMap_To_Player broadcast is missing: clients never receive the queued _nextmap, so the scoreboard 'Next map: …' line (ScoreboardPanel.NextMap, an unfed field) stays blank."
@@ -81,23 +87,23 @@ features:
     constants:
       - { name: "sv_mapchange_delay (s)", base: "5", port: "5", match: true }
       - { name: "no-player exittime sentinel", base: "-1", port: "-1", match: true }
-      - { name: "input grace after exittime (s)", base: "10", port: "0", match: false }
+      - { name: "input grace after exittime (s)", base: "10", port: "10 (InputGracePeriod)", match: true }
     status:
       logic: partial
-      values: partial
-      timing: partial
+      values: faithful
+      timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No +10s input grace: Base IntermissionThink waits up to intermission_exittime+10s for a fire/jump before starting the vote; the port flips ReadyToChangeLevel exactly at ExitTime (Intermission.Think line 108-113)."
-      - "No per-player 'press fire/jump to skip the scoreboard' early-exit on the live path."
+      - "The early-skip-on-input half of the grace is still not wired: Base advances IMMEDIATELY if a player presses fire/jump/atck2/hook/use during the [exittime, exittime+10] window; the port only auto-advances at the end of the window because RequestExit (the seam that would short-circuit it) has no input caller (see sv-intermission.timer.input_early_exit). So the +10s hold is always served in full instead of being skippable."
     verification:
-      - { kind: code-read, ref: "Intermission.Think: ExitTime<0 → request-only; else flips at now>=ExitTime with no grace", result: fail }
+      - { kind: code-read, ref: "Intermission.Think (Intermission.cs:100-123): ExitTime<0 → request-only; else returns until now>=ExitTime, then flips at now>=ExitTime+InputGracePeriod (10s) or on _exitRequested. Live via GameWorld.CheckRulesAndIntermission line 1899 (per-tick line 1266).", result: pass }
+      - { kind: code-read, ref: "Base server/intermission.qc:497-505 IntermissionThink: `if (time < intermission_exittime) return;` then `if (time < intermission_exittime + 10 && !(BUTTON_ATCK|JUMP|ATCK2|HOOK|USE)) return;` — confirms the 10s constant and the button early-skip.", result: pass }
     confidence: high
-    notes: "ExitTime computation (delay with players, -1 without) is faithful; the +10s grace + input check are missing. ExitTime<0 path requires a RequestExit which never fires (see input_early_exit)."
+    notes: "FIXED in Wave-2: the +10s auto-advance grace is now present and live (was absent in the baseline, which incorrectly auto-advanced at exactly ExitTime; the false `input grace = 0` constant is corrected to 10). ExitTime computation (delay with players, -1 without) remains faithful. logic stays `partial` only because the in-grace button early-skip is unwired; the ExitTime<0 (no-player) path still depends on a RequestExit that never fires."
 
   - id: sv-intermission.timer.input_early_exit
     name: "Player input skips the scoreboard (press fire/jump after the hold)"
@@ -117,11 +123,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "RequestExit() exists but has no caller (verified: referenced only by its own definition + docs) — no input path (PHYS_INPUT_BUTTON_ATCK/JUMP/ATCK2/HOOK/USE) drives it, so a player cannot skip the intermission hold. With no players (ExitTime=-1) the map can NEVER advance because only RequestExit advances that branch."
+      - "RequestExit() exists but STILL has no caller (re-verified 2026-06-22: referenced only by its own definition + the class docs) — no input path (PHYS_INPUT_BUTTON_ATCK/JUMP/ATCK2/HOOK/USE) drives it, so a player cannot skip the intermission hold early. With no players (ExitTime=-1) the map can NEVER advance because only RequestExit advances that branch."
     verification:
-      - { kind: grep, ref: "RequestExit referenced only at its definition (Intermission.cs:86) + the class doc (lines 17,82); no live caller in src/ or game/", result: fail }
+      - { kind: grep, ref: "RequestExit referenced only at its definition (Intermission.cs:92) + the class doc (lines 17,88,97,119); no live caller in src/ or game/ (2026-06-22)", result: fail }
     confidence: high
-    notes: "Present-but-dead: the classic port failure mode. Base checks 5 buttons after the hold; the port has the seam but never wires it."
+    notes: "Present-but-dead: the classic port failure mode, UNCHANGED by Wave-2. Base checks 5 buttons during the +10s grace; the port has the seam but never wires it. NOTE: Wave-2 added the +10s auto-advance (see sv-intermission.timer.exittime), so a normal match with players present now DOES advance ~10s after the hold without input — this row's remaining impact is (a) the player can't skip the hold early, and (b) the no-player ExitTime=-1 deadlock."
 
   - id: sv-intermission.overtime.cascade
     name: "Overtime / sudden-death cascade (CheckRules_World)"
@@ -293,11 +299,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "MapVotePanel is registered in HudManager/HudRegistry/layout but never fed: no decode path supplies candidates/counts/availability (SetVote/SetVotes/Active have zero callers outside the panel), so the ballot never appears and the player cannot vote."
+      - "MapVotePanel is registered in HudManager/HudRegistry/layout but STILL never fed: no decode path supplies candidates/counts/availability (SetVote/SetVotes/SetAvailability/SetReduce have zero callers outside the panel — the only `MapVote.*` callers in src/ are the SERVER-side MapVoting instance), so the ballot never appears and the player cannot vote."
     verification:
-      - { kind: grep, ref: "MapVote referenced in game/ only by HudManager/HudRegistry/HudLayoutDefaults (registration); no panel mutator (Set*/Active/Candidate) caller", result: fail }
+      - { kind: grep, ref: "2026-06-22: SetVote/SetVotes/SetAvailability/SetReduce/CastVote/Abstain have no caller in game/net or src/ host; MapVotePanel referenced in game/ only by HudManager/HudRegistry/HudLayoutDefaults (registration). The server `MapVote.*` calls in GameWorld.cs are the MapVoting (server-core) instance, not this panel.", result: fail }
     confidence: high
-    notes: "The drawing code is a faithful port of MapVote_Draw (DrawMapItem/FormatMapItem/Abstain/RGB), but it is dead — the recurring port failure mode. Depends on sv-intermission.mapvote.server_core being networked."
+    notes: "Wave-2 made the DRAWING code a fuller MapVote_Draw port (added the MV_FADETIME selection/settle fade, mv_top2_alpha unavailable-option fade, and the 'Suggested by:' line — presentation moved stub→faithful at the code level), but the panel is STILL dead: nothing feeds it, so the player never sees any of it. liveness unchanged (dead). Depends on sv-intermission.mapvote.server_core being networked."
 
   - id: sv-intermission.matchend.nextmap_broadcast
     name: "Next-map broadcast to clients (Set_NextMap / Send_NextMap_To_Player → scoreboard 'Next map:')"
@@ -392,10 +398,11 @@ features:
     divergence_rationale: null
     gaps:
       - "No autoscreenshot stuffcmd dance at intermission (the autoscreenshot timer + cl_autoscreenshot_screenshot stuffcmd in IntermissionThink): the server cannot force clients to capture the end-of-match scoreboard."
+      - "Wave-2 added cl_autoscreenshot to ClientNet.ReplicatedCvars so the client now SENDS its opt-in, but the server's Commands.SentCvarAllowlist does NOT include it (Commands.cs:179-190), so the server drops it — and there is no sv_autoscreenshot cvar default, no intermission-time autoscreenshot timer, and no client screenshot trigger. The replication is dead plumbing (its own comment says listing a cvar the server doesn't consume is harmless)."
     verification:
-      - { kind: grep, ref: "sv_autoscreenshot appears only in CommandReplies allowlist; cl_autoscreenshot is a menu checkbox (DialogMediaScreenshot); no intermission-time emission", result: fail }
+      - { kind: grep, ref: "2026-06-22: cl_autoscreenshot is in ClientNet.ReplicatedCvars (game/net/ClientNet.cs:681) but NOT in Commands.SentCvarAllowlist; sv_autoscreenshot appears only in CommandReplies allowlist (CommandReplies.cs:237, not a registered default); no IntermissionThink autoscreenshot timer / cl_autoscreenshot_screenshot stuffcmd anywhere in src/ or game/.", result: fail }
     confidence: high
-    notes: "cl_autoscreenshot menu checkbox exists (DialogMediaScreenshot, live flag bit 1) but the actual screenshot trigger is absent."
+    notes: "cl_autoscreenshot menu checkbox exists (DialogMediaScreenshot, live flag bit 1) and is now replicated to the server, but the server has no consumer and the actual screenshot trigger is absent — the feature is still fully missing on the live path."
 
   - id: sv-intermission.audio.cdtrack
     name: "Intermission music switch (sv_intermission_cdtrack) + target_music_kill"

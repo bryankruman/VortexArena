@@ -5,10 +5,10 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 21
   worst_gaps:
-    - "Race timer / split / PB-server-best HUD panel exists but is never fed for CTS — no running clock, no checkpoint split, no medal flash."
-    - "No finish/record notifications: LastRecord is computed but never consumed; player never sees set/improved/broke-record or RACE_FINISHED."
-    - "No CTS combat rules: self/fall damage not suppressed, players not restricted to the Shotgun, weapons throwable/droppable."
-    - "No forced keyboard-movement quantization; run clock is wall-clock, not the QC per-frame .race_movetime accumulator (determinism + fairness)."
+    - "Race timer / split / PB-server-best HUD panel exists but is never fed for CTS — no running clock, no checkpoint split, no medal flash (racetimer still in StartHiddenIds, no feeder)."
+    - "No finish/record notifications: Cts.LastRecord is computed but never consumed. Wave-2 added the full INFO_RACE_* sender to Race.cs but it is private to Race — CTS got no equivalent, so the runner still never sees set/improved/broke-record or RACE_FINISHED."
+    - "Death rules still partial: Cts.OnDeath now sets RESPAWN_FORCE, but RespawnTiming.Calculate (death edge, DeadPlayerThink) unconditionally overwrites RespawnFlags and reads the GENERIC g_respawn_delay_* (~2 s), not the CTS g_cts_respawn_delay -1 instant respawn; g_cts_removeprojectiles still unmodeled."
+    - "No forced keyboard-movement quantization; run clock is still wall-clock (Api.Clock.Time), not the QC per-frame .race_movetime accumulator (determinism + fairness)."
     - "Intermediate/defrag checkpoints unimplemented (target_checkpoint/trigger_race_checkpoint are no-ops for CTS): no ordered progress, no 'went backwards' penalty, no per-cp splits."
 features:
   - id: cts.mode.register_latch
@@ -38,9 +38,9 @@ features:
       - "MUTATOR_ONADD does not force g_race_qualifying=1 / independent_players=1; Qualifying merely reads the cvar (default 1) so the common path matches, but a server setting g_race_qualifying 0 diverges from QC's forced-on behavior."
       - "gametype_init defaults (timelimit=20, cloaked, m_generate_mapinfo target_startTimer) not modeled."
     verification:
-      - { kind: code, ref: "Cts.cs ctor + Qualifying; GameWorld ResolveGameType via GameTypes.ByName(\"cts\")", result: pass }
+      - { kind: code, ref: "Cts.cs ctor + Qualifying; GameWorld.ActivateGameType case Cts → cts.Activate() (live); ResolveGameType via NetName 'cts'", result: pass }
     confidence: high
-    notes: "GameType resolves live by NetName 'cts'. The forced-qualifying latch is approximated by a cvar read."
+    notes: "GameType resolves live by NetName 'cts' and cts.Activate()/Tick() are wired in GameWorld (ActivateGameType:1477, Tick:1753). The forced-qualifying latch is still approximated by a cvar read. Unchanged from baseline."
 
   - id: cts.score.rules
     name: "Score rules: no SP_SCORE; rank by fastest time (qualifying) or laps/time/fastest"
@@ -64,9 +64,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "DeclareScoreRules vs cts_ScoreRules", result: pass }
+      - { kind: code, ref: "DeclareScoreRules vs cts_ScoreRules; called from Activate()", result: pass }
     confidence: high
-    notes: "Declared in Activate()→DeclareScoreRules; matches QC field flags."
+    notes: "Declared in Activate()→DeclareScoreRules; matches QC field flags. Unchanged from baseline (faithful)."
 
   - id: cts.timing.start_finish
     name: "Stage run timer: start-timer stamps, stop-timer folds fastest time"
@@ -92,11 +92,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Run time is wall-clock (Api.Clock.Time) not the QC frame-accumulated .race_movetime; at variable frame rate / with prediction the recorded time can drift from QC's deterministic value."
+      - "Run time is still wall-clock (Api.Clock.Time) not the QC frame-accumulated .race_movetime; at variable frame rate / with prediction the recorded time can drift from QC's deterministic value. No change in Wave-2 (PlayerPhysics diff added no CTS race_movetime path)."
     verification:
       - { kind: test, ref: "CtsSpawnTests.EndToEnd_CrossStartThenStop_RecordsRunTime / _FoldsFasterRun_AndFilesRecord", result: pass }
     confidence: high
-    notes: "Live via the BSP-lump objective sink → SpawnStartTimer/SpawnStopTimer touch handlers."
+    notes: "Live via the BSP-lump objective sink → SpawnStartTimer/SpawnStopTimer touch handlers. Unchanged from baseline (timing partial)."
 
   - id: cts.timer.spawnfuncs
     name: "target_startTimer / target_stopTimer trigger entities"
@@ -108,7 +108,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:SpawnStartTimer"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:SpawnStopTimer"
-      - "src/XonoticGodot.Server/GameWorld.cs:WireObjectiveSpawns (Cts arm)"
+      - "src/XonoticGodot.Server/GameWorld.cs:WireObjectiveSpawns (Cts arm, GameWorld.cs:1649/1652)"
     constants:
       - { name: "SOLID_TRIGGER + touch", base: "EXACTTRIGGER_INIT", port: "Solid.Trigger + touch", match: true }
     status:
@@ -125,7 +125,7 @@ features:
     verification:
       - { kind: test, ref: "CtsSpawnTests.StartStopTimerSpawnfuncs_RegisterTimers", result: pass }
     confidence: high
-    notes: "Spawned from the map entity lump on a CTS boot; touch volumes verified."
+    notes: "Spawned from the map entity lump on a CTS boot; touch volumes verified. Unchanged from baseline (faithful)."
 
   - id: cts.checkpoints.intermediate
     name: "Intermediate / defrag checkpoints (ordered progress + per-cp records)"
@@ -147,12 +147,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "target_checkpoint and trigger_race_checkpoint are consumed as no-ops for CTS; defrag-style maps lose ordered checkpoint enforcement."
+      - "target_checkpoint and trigger_race_checkpoint are consumed as no-ops for CTS (GameWorld.cs:1654 explicitly documents them as Race-only); defrag-style maps lose ordered checkpoint enforcement."
       - "No 'went backwards' detection, no spawnflag-4 backward-damage, no per-checkpoint split times/records, no .defragcp order file."
     verification:
-      - { kind: test, ref: "CtsSpawnTests.TargetCheckpoint_IsConsumedAsNoOp (confirms no-op)", result: pass }
+      - { kind: code, ref: "GameWorld.cs:1654 'target_checkpoint + trigger_race_checkpoint are Race features'; trigger_race_checkpoint spawnfunc registered (MapObjectsRegistry:254) but routes to Race, not CTS", result: fail }
     confidence: high
-    notes: "Cts.cs is a single start→stop course by design; this is a documented simplification but a real gap for community defrag CTS maps."
+    notes: "Cts.cs is a single start→stop course by design; this is a documented simplification but a real gap for community defrag CTS maps. Unchanged from baseline."
 
   - id: cts.records.persistence
     name: "Per-map top-99 CTS record ranking + UID gating"
@@ -183,9 +183,9 @@ features:
       - "uid2name consent gates (cl_allow_uidtracking / cl_allow_uid2name) and the '^1Unregistered Player' guard are not modeled; ranking is gated only on a non-empty PersistentId."
       - "Persistence is in-memory + Export/Import; the host must wire the file save (QC ServerProgsDB is auto-persisted)."
     verification:
-      - { kind: test, ref: "CtsSpawnTests.EndToEnd_*_FilesRecord (ServerRecord reflects best run)", result: pass }
+      - { kind: test, ref: "CtsSpawnTests.EndToEnd_*_FilesRecord (ServerRecord reflects best run); Cts.FinishStage:279 calls RaceRecords.SetTime live", result: pass }
     confidence: high
-    notes: "Classification into RaceRecordKind matches race_setTime branches."
+    notes: "Classification into RaceRecordKind matches race_setTime branches. Unchanged from baseline (faithful)."
 
   - id: cts.records.notifications
     name: "Finish + record-set/improved/broken notifications (INFO_RACE_*) + medal status"
@@ -198,7 +198,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:LastRecord"
       - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:RACE_NEW_SET/IMPROVED/BROKEN, RACE_FINISHED"
     constants:
-      - { name: "INFO_RACE_* set", base: "fired by race_setTime/race_SendTime", port: "strings exist, never fired", match: false }
+      - { name: "INFO_RACE_* set", base: "fired by race_setTime/race_SendTime", port: "strings exist; fired for Race (Race.SendRecordNotification) but NOT for CTS", match: false }
     status:
       logic: stub
       values: na
@@ -209,12 +209,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Cts.LastRecord/LastRecordPlayer are computed but no host code reads them, so no record-set/improved/broken or finished notification is ever sent."
+      - "Cts.FinishStage computes LastRecord/LastRecordPlayer (Cts.cs:279-280) but NO code consumes them for CTS, so no record-set/improved/broken or finished notification is ever sent."
+      - "Wave-2 added a full INFO_RACE_* sender to Race.cs (Race.SendRecordNotification, Race.cs:514-554, including RACE_NEW_SET/IMPROVED/BROKEN/FAIL_RANKED/FAIL_UNRANKED/MISSING_UID and RACE_FINISHED) — but it is a PRIVATE method on Race, not shared, so CTS got no equivalent. Still dead for CTS."
       - "race_SendStatus (0 fail / 1 new time / 2 new rank / 3 server record) is not networked, so the HUD medal flash has no trigger."
     verification:
-      - { kind: code, ref: "grep LastRecord / RACE_NEW_ / RACE_FINISHED — no consumer/sender for CTS", result: fail }
+      - { kind: code, ref: "Cts.FinishStage sets LastRecord but never calls NotificationSystem.Info; grep RACE_NEW_/RACE_FINISHED → only Race.cs fires them", result: fail }
     confidence: high
-    notes: "Notification strings RACE_NEW_SET/IMPROVED/BROKEN and RACE_FINISHED are registered but unwired for CTS."
+    notes: "STILL OPEN. The Race port now fires these notifications, but the CTS port does not — the sender was not factored into a shared path. Closing this for CTS is a small lift (mirror Race.SendRecordNotification in FinishStage)."
 
   - id: cts.finish.kill_delay_retract
     name: "Finish kill-delay re-teleport to start (anti-speed-carry)"
@@ -226,12 +227,12 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:ScheduleRetract"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:RetractRunner"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:Tick"
-      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (cts.OnFinishRetract = p => Clients.Spawn(p))"
+      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (cts.OnFinishRetract = p => Clients.Spawn(p)); GameWorld.cs:1753 (cts.Tick)"
     constants:
-      - { name: "g_cts_finish_kill_delay", base: "2 s (-1 instant, 0 off)", port: "read; default 0 if cvar unset", match: false }
+      - { name: "g_cts_finish_kill_delay", base: "2 s (-1 instant, 0 off)", port: "read; DefaultFinishKillDelay=2 when cvar unset", match: true }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: faithful
       presentation: na
       audio: na
@@ -239,12 +240,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Default delay diverges: QC default is 2 s; the port falls back to 0 when the cvar is unset (TryCvar→0), so without the cfg the runner is retracted instantly rather than after 2 s."
       - "It is a re-spawn (Clients.Spawn), not the QC silent kill — no death sound/notify, acceptable but unverified for spawn-point selection at the start line."
     verification:
-      - { kind: code, ref: "ScheduleRetract reads g_cts_finish_kill_delay; OnFinishRetract wired in ActivateGameType", result: pass }
-    confidence: medium
-    notes: "Live retract; the missing 2 s default depends on the gametypes cfg being loaded into the cvar store."
+      - { kind: code, ref: "Cts.cs:47 DefaultFinishKillDelay=2f; ScheduleRetract:297 falls back to 2f when cvar unset; OnFinishRetract wired in ActivateGameType (GameWorld:1478); cts.Tick fired in the server frame (GameWorld:1753)", result: pass }
+    confidence: high
+    notes: "FIXED vs baseline: the kill-delay default is now 2 s (DefaultFinishKillDelay), matching Base, instead of the old fallback-to-0 instant retract. Retract is live (OnFinishRetract + per-frame Tick)."
 
   - id: cts.physics.force_keyboard
     name: "Forced keyboard movement quantization + race_movetime accumulator (PlayerPhysics)"
@@ -268,60 +268,65 @@ features:
     gaps:
       - "Analog movement is not snapped to keyboard cardinals/45-degree diagonals, so analog-stick players keep an unfair record advantage."
       - "The per-frame .race_movetime accumulator (frame-rate-independent run clock) is not modeled; run timing uses wall-clock."
-      - "cl_movecliptokeyboard 2 is not stuffed to clients."
+      - "cl_movecliptokeyboard 2 is not stuffed to clients (no FixClientCvars hook)."
     verification:
-      - { kind: code, ref: "grep movecliptokeyboard / PlayerPhysics in Cts — not present", result: fail }
+      - { kind: code, ref: "grep movecliptokeyboard / race_movetime in port → none in CTS; PlayerPhysics.cs Wave-2 diff added no CTS path", result: fail }
     confidence: high
-    notes: "Cts.cs registers no PlayerPhysics hook."
+    notes: "Cts.cs registers no PlayerPhysics/FixClientCvars hook. Unchanged from baseline."
 
   - id: cts.combat.selfdamage
     name: "Self-damage + fall-damage suppression (g_cts_selfdamage)"
     layer: [authority]
     base_refs:
       - "common/gametypes/gametype/cts/sv_cts.qc:MUTATOR_HOOKFUNCTION(cts, Damage_Calculate)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:OnDamageCalculate"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:256 (MutatorHooks.DamageCalculate.Call)"
     constants:
-      - { name: "g_cts_selfdamage", base: "1", port: "not read", match: false }
+      - { name: "g_cts_selfdamage default", base: "1 (gametypes-server.cfg:364)", port: "TryCvar → treated as 1 when unset", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: faithful
+      values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "When g_cts_selfdamage 0 (e.g. ruleset-XDF), self-damage and fall damage should be zeroed; the port applies normal damage, so rocket/fall self-harm occurs contrary to CTS rules."
+    gaps: []
     verification:
-      - { kind: code, ref: "grep g_cts_selfdamage / Damage_Calculate in Cts — comment only", result: fail }
+      - { kind: code, ref: "Cts.OnDamageCalculate subscribes MutatorHooks.DamageCalculate (live dispatch in DamageSystem.cs:256). Logic matches Base: if(target==attacker || deathtype==FALL) if(!g_cts_selfdamage) damage=0. Default selfdamage on matches gametypes-server.cfg:364.", result: pass }
     confidence: high
-    notes: "No Damage_Calculate hook registered by Cts."
+    notes: "FIXED vs baseline (was missing/na). The Damage_Calculate hook is now subscribed in Activate() and dispatched on the live damage path; self/fall-damage suppression under g_cts_selfdamage 0 (e.g. ruleset-XDF) works, default-on matches Base."
 
   - id: cts.weapon.shotgun_only
     name: "Shotgun-only loadout (WantWeapon → WEP_SHOTGUN)"
     layer: [authority]
     base_refs:
       - "common/gametypes/gametype/cts/sv_cts.qc:MUTATOR_HOOKFUNCTION(cts, WantWeapon)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:OnPlayerSpawn"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:OnPlayerPreThink"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:ForceShotgunOnly"
     constants:
-      - { name: "want weapon", base: "WEP_SHOTGUN only", port: "default loadout", match: false }
+      - { name: "want weapon", base: "WEP_SHOTGUN only (start loadout)", port: "OwnedWeaponSet forced to {shotgun} on spawn + each prethink", match: true }
       - { name: "g_cts_weapon_stay", base: "2", port: "not modeled", match: false }
     status:
-      logic: missing
-      values: missing
+      logic: partial
+      values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Players are not restricted to the Shotgun; they spawn with the normal starting weapon set, changing both gameplay and which map weapons are usable mid-run."
+      - "DIVERGENCE: Base WantWeapon only governs the START loadout (want_weapon → start_items, world.qc:1862); CTS players CAN still pick up map weapons mid-run. The port re-clears OwnedWeaponSet to shotgun-only EVERY prethink frame (OnPlayerPreThink → ForceShotgunOnly), which strips any weapon a runner picks up mid-stage on a weapon-bearing CTS map. The spawn loadout is now correct, but the per-frame enforcement over-restricts vs Base."
+      - "g_cts_weapon_stay 2 (weapon-stay behavior for CTS map weapons) is not modeled."
     verification:
-      - { kind: code, ref: "grep WantWeapon in Cts — comment only", result: fail }
+      - { kind: code, ref: "OnPlayerSpawn (MutatorHooks.PlayerSpawn, live in ClientManager.cs:570) + OnPlayerPreThink (MutatorHooks.PlayerPreThink, live in GameWorld.cs:1037) both call ForceShotgunOnly; no WantWeapon/start-weapon hook in the port", result: pass }
     confidence: high
-    notes: "No WantWeapon hook registered."
+    notes: "FIXED vs baseline (was missing): runners now spawn shotgun-only and it is live. But it is implemented via a per-frame OwnedWeaponSet wipe rather than the Base WantWeapon start-loadout filter, so mid-run map-weapon pickups are stripped — a new logic divergence (logic: partial)."
 
   - id: cts.weapon.no_drop_throw
     name: "Forbid weapon throw + drop"
@@ -329,23 +334,25 @@ features:
     base_refs:
       - "common/gametypes/gametype/cts/sv_cts.qc:MUTATOR_HOOKFUNCTION(cts, ForbidThrowCurrentWeapon)"
       - "common/gametypes/gametype/cts/sv_cts.qc:MUTATOR_HOOKFUNCTION(cts, ForbidDropCurrentWeapon)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:OnForbidThrowCurrentWeapon"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponThrowing.cs:149/185 (ForbidThrowCurrentWeapon.Call)"
     constants: []
     status:
-      logic: missing
+      logic: faithful
       values: na
       timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Weapons can be thrown/dropped in CTS; Base forbids both (the ForbidThrow/Drop hook chain exists in the port but Cts never subscribes)."
+      - "The port folds both QC hooks (ForbidThrowCurrentWeapon + ForbidDropCurrentWeapon) into the single ForbidThrowCurrentWeapon chain — a documented per-port simplification; the effect (no throw, no drop) is correct because the chain is consulted by both IsWeaponThrowable (drop test) and ThrowWeapon."
     verification:
-      - { kind: code, ref: "grep ForbidThrow/ForbidDrop in Cts — not subscribed", result: fail }
+      - { kind: code, ref: "OnForbidThrowCurrentWeapon returns true; chain dispatched at WeaponThrowing.IsWeaponThrowable (drop path) and ThrowWeapon (throw path) — both vetoed for CTS", result: pass }
     confidence: high
-    notes: "MutatorHooks.ForbidThrowCurrentWeapon exists and is used by other modes; Cts does not register it."
+    notes: "FIXED vs baseline (was missing): Cts now subscribes ForbidThrowCurrentWeapon (Activate()), which is live on both the throw and drop paths in WeaponThrowing."
 
   - id: cts.death.respawn_rules
     name: "Death rules: force respawn, instant CTS respawn, abandon run, remove projectiles"
@@ -357,8 +364,8 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:OnDeath"
     constants:
-      - { name: "g_cts_respawn_delay_small/large", base: "-1 (instant)", port: "generic g_respawn_delay_* ~2 s", match: false }
-      - { name: "respawn_flags RESPAWN_FORCE", base: "set on death", port: "not set", match: false }
+      - { name: "g_cts_respawn_delay_small/large", base: "-1 (instant)", port: "RespawnTiming reads generic g_respawn_delay_* (~2 s)", match: false }
+      - { name: "respawn_flags RESPAWN_FORCE", base: "set on death, honored", port: "set in OnDeath but clobbered by RespawnTiming.Calculate", match: false }
       - { name: "g_cts_removeprojectiles", base: "0 (off)", port: "not modeled", match: false }
     status:
       logic: partial
@@ -370,12 +377,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "OnDeath only clears the in-progress run timer (abandon); it does NOT set RESPAWN_FORCE, so the dead runner waits the generic respawn delay (~2 s) instead of the CTS instant respawn (g_cts_respawn_delay -1)."
+      - "OnDeath now sets victim.RespawnFlags |= Force, but it is ineffective: RespawnTiming.Calculate (run once on the death edge in DeadPlayerThink, GameWorld.cs:1819) does `p.RespawnFlags = flags` (RespawnTiming.cs:75), unconditionally overwriting the CTS Force flag (it only sets Force when g_forced_respawn != 0)."
+      - "The respawn delay still comes from the GENERIC g_respawn_delay_small/large (default ~2 s, RespawnTiming.cs:27-28), NOT the CTS g_cts_respawn_delay_small/large = -1 instant respawn (gametypes-server.cfg:192-194). So the dead runner waits ~2 s instead of respawning instantly."
       - "g_cts_removeprojectiles (delete the dead player's live projectiles) is unmodeled."
     verification:
-      - { kind: code, ref: "Cts.OnDeath clears RunStartTime only; RespawnTiming reads generic g_respawn_delay_*", result: fail }
+      - { kind: code, ref: "Cts.OnDeath sets RespawnFlag.Force + clears RunStartTime (abandon). DeadPlayerThink → RespawnTiming.Calculate overwrites RespawnFlags and reads generic g_respawn_delay_* — the Force flag + CTS -1 delay are not honored end-to-end.", result: fail }
     confidence: high
-    notes: "Abandon-run on death is faithful; the instant-respawn timing and force flag are not."
+    notes: "Abandon-run on death is faithful and live. The RESPAWN_FORCE set is new but DEAD (clobbered downstream); the CTS instant-respawn delay and removeprojectiles remain unimplemented. Still partial vs baseline (marginal improvement, not a closed gap)."
 
   - id: cts.items.loot_filter
     name: "Loot/monster-item filtering (g_cts_drop_monster_items)"
@@ -383,24 +391,27 @@ features:
     base_refs:
       - "common/gametypes/gametype/cts/sv_cts.qc:MUTATOR_HOOKFUNCTION(cts, FilterItem)"
       - "common/gametypes/gametype/cts/sv_cts.qc:MUTATOR_HOOKFUNCTION(cts, MonsterDropItem)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:OnFilterItemDefinition"
+      - "src/XonoticGodot.Common/Gameplay/Items/StartItem.cs:103 (FilterItemDefinition.Call)"
     constants:
-      - { name: "g_cts_drop_monster_items", base: "0", port: "not modeled", match: false }
+      - { name: "g_cts_drop_monster_items default", base: "0 (gametypes-server.cfg:368)", port: "TryCvar → 0 when unset", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: partial
+      values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Dropped loot / monster-dropped items are not filtered out; Base removes them in CTS unless g_cts_drop_monster_items."
+      - "The port has no item-class registry exposing ITEM_IS_LOOT / .monster_item, so OnFilterItemDefinition approximates the Base test by classname tag (id.StartsWith(\"dropped\") / contains \"monster\"). Items whose classname does not carry the 'dropped'/'monster' tag will not be filtered as loot even if they are loot in Base."
+      - "QC MonsterDropItem (blanking the dropped item string when !g_cts_drop_monster_items) is folded into the same FilterItem path rather than a separate hook."
     verification:
-      - { kind: code, ref: "grep g_cts_drop_monster_items / FilterItem in Cts — comment only", result: fail }
+      - { kind: code, ref: "OnFilterItemDefinition subscribes MutatorHooks.FilterItemDefinition (live dispatch in StartItem.cs:103). Returns true (delete) for dropped loot unless monster-drop && g_cts_drop_monster_items. Default drop_monster_items=0 matches Base.", result: pass }
     confidence: medium
-    notes: "Low gameplay impact on weapon-light CTS maps but a real rule omission."
+    notes: "FIXED vs baseline (was missing): loot/monster-item filtering is now wired and live. Logic is a classname-tag approximation of ITEM_IS_LOOT/.monster_item (logic: partial) pending an item-class flag registry."
 
   - id: cts.speedaward
     name: "Speed award (per-round + all-time best speed) + name DB update"
@@ -424,9 +435,9 @@ features:
     gaps:
       - "No per-round best-speed tracking/broadcast and no persisted all-time best speed; the HUD speed-award display has no data."
     verification:
-      - { kind: code, ref: "grep speedaward — no CTS feeder", result: fail }
+      - { kind: code, ref: "grep SpeedAward / GetPressedKeys for CTS — no feeder", result: fail }
     confidence: high
-    notes: "race_SpeedAwardFrame + GetPressedKeys hook unimplemented for CTS."
+    notes: "race_SpeedAwardFrame + GetPressedKeys hook unimplemented for CTS. Unchanged from baseline."
 
   - id: cts.hud.race_timer
     name: "Race timer HUD: running clock, checkpoint splits, anticipation, medal, PB/server-best"
@@ -452,11 +463,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The panel is fully ported but nothing feeds its Race* properties for CTS, so a CTS player sees no lap clock, no checkpoint split, no anticipation delta, no medal flash, and no personal/server best."
+      - "The panel is fully ported but nothing feeds its Race* properties for CTS, so a CTS player sees no lap clock, no checkpoint split, no anticipation delta, no medal flash, and no personal/server best. The panel is in HudManager.StartHiddenIds ('racetimer') and is never un-hidden for CTS (no ShowRaceTimer equivalent)."
     verification:
-      - { kind: code, ref: "grep RaceLapTime/RaceCheckpoint/RaceStatus feeders — only the panel itself", result: fail }
+      - { kind: code, ref: "RaceTimerPanel.Race* setters have no CTS feeder; 'racetimer' is in HudManager StartHiddenIds (HudManager.cs:110) with no un-hide path for CTS", result: fail }
     confidence: high
-    notes: "Drawing logic + MakeRaceString are faithful to racetimer.qc; the dead state is purely the missing net/state feed."
+    notes: "Drawing logic + MakeRaceString are faithful to racetimer.qc; the dead state is purely the missing net/state feed. Unchanged from baseline."
 
   - id: cts.hud.cl_panel_gating
     name: "CTS client panel gating (physics/strafe/race-timer shown, score/accuracy/item-stats hidden)"
@@ -489,13 +500,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Verified: the port DOES wire CTS gating. PhysicsPanel/StrafeHudPanel honor the Race/CTS show-modes (HudPanel.ResolveShowMode cases 3/4 → RaceOrCts), and the scoreboard Rankings + accuracy blocks gate on gametype==cts|rc — matching HUD_Physics/StrafeHUD_showoptional + DrawScoreboardAccuracy/ShowRankings intent."
-      - "But the data behind those gates is dead: the scoreboard Rankings list (_rankings) is never fed (race records not networked) and accuracy is never networked, so both CTS-gated blocks draw nothing; the RaceTimer panel is in StartHiddenIds and is never un-hidden for CTS (no ShowRaceTimer equivalent feeds it)."
-      - "HUD_Score_show (hide the score panel while observing in CTS) and DrawScoreboardItemStats / DrawDeathScoreboard hiding are not specifically modeled per-CTS; the 'Rankings' scoreboard header is a hard-coded literal, not a CTS-conditional relabel of the score column."
+      - "The port DOES wire CTS gating (physics/strafe honor the Race/CTS show-modes 3/4; scoreboard Rankings + accuracy gate on gametype==cts|rc) — matching intent."
+      - "But the data behind those gates is dead: the scoreboard Rankings list (_rankings) is never fed (race records not networked) and accuracy is never networked, so both CTS-gated blocks draw nothing; the RaceTimer panel is force-hidden (StartHiddenIds) with no CTS un-hide feed."
+      - "HUD_Score_show (hide the score panel while observing in CTS) and DrawScoreboardItemStats / DrawDeathScoreboard hiding are not specifically modeled per-CTS; the 'Rankings' scoreboard header is a hard-coded literal, not a CTS-conditional relabel."
     verification:
       - { kind: code, ref: "HudManager HudShowContext RaceOrCts; HudPanel.ResolveShowMode 3/4; ScoreboardPanel.DrawRankings gametype gate; RaceTimer in StartHiddenIds with no feeder", result: pass }
     confidence: medium
-    notes: "Gating wiring exists and is partly CTS-correct (physics/strafe/rankings/accuracy gametype-gated), but every CTS-specific data feed (rankings list, accuracy, race-timer) is unfed/force-hidden, so the player sees the gate but no content."
+    notes: "Gating wiring exists and is partly CTS-correct, but every CTS-specific data feed (rankings list, accuracy, race-timer) is unfed/force-hidden, so the player sees the gate but no content. Unchanged from baseline."
 
   - id: cts.map_reset
     name: "Map reset: clear in-memory records, place event-log, qualifying==2 collapse"
@@ -520,7 +531,7 @@ features:
     verification:
       - { kind: code, ref: "grep cts_EventLog / reset_map_global / ClearRecords for CTS — absent", result: fail }
     confidence: medium
-    notes: "Persistent (top-99) records survive correctly; only the per-round in-memory cp records + logging are missing."
+    notes: "Persistent (top-99) records survive correctly; only the per-round in-memory cp records + logging are missing. Unchanged from baseline."
 
   - id: cts.lifecycle.prepare_player
     name: "Per-player race bookkeeping on connect/spawn/observe (race_PreparePlayer / race_RetractPlayer / race_checkpoint=-1 / out-of-game flag)"
@@ -533,7 +544,8 @@ features:
       - "common/gametypes/gametype/cts/sv_cts.qc:MUTATOR_HOOKFUNCTION(cts, AbortSpeedrun)"
       - "server/race.qc:race_PreparePlayer"
       - "server/race.qc:race_RetractPlayer"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:OnPlayerSpawn (ForceShotgunOnly only — not the race bookkeeping)"
     constants:
       - { name: "race_checkpoint init", base: "-1 on connect/observe", port: "not modeled", match: false }
       - { name: "FRAGS_PLAYER_OUT_OF_GAME", base: "set on a ranked observer", port: "not modeled", match: false }
@@ -548,12 +560,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Cts registers no ClientConnect/PutClientInServer/PlayerSpawn/MakePlayerObserver/AbortSpeedrun hooks. race_PreparePlayer / race_RetractPlayer bookkeeping (checkpoint reset, race_SendAll, respawn-checkpoint/spotref recording, the spawn==qualifying re-prepare-vs-retract branch) does not exist; the port's CtsState.RunStartTime reset on death is the only fragment of this."
+      - "Cts now registers a PlayerSpawn hook, but it ONLY forces the Shotgun loadout — it does NOT do the race_PreparePlayer bookkeeping (checkpoint reset to -1, race_SendAll, respawn-checkpoint/spotref recording, the spawn==qualifying re-prepare-vs-retract branch). No ClientConnect/PutClientInServer/MakePlayerObserver/AbortSpeedrun hooks."
       - "A spectating player who holds a ranked time is not flagged FRAGS_PLAYER_OUT_OF_GAME (vs FRAGS_SPECTATOR), and g_allow_checkpoints practice-mode re-prepare on AbortSpeedrun is absent."
     verification:
-      - { kind: code, ref: "grep race_PreparePlayer / race_RetractPlayer / FRAGS_PLAYER_OUT_OF_GAME / ClientConnect in Cts — none", result: fail }
+      - { kind: code, ref: "Cts.OnPlayerSpawn = ForceShotgunOnly only; no race_PreparePlayer / race_RetractPlayer / FRAGS_PLAYER_OUT_OF_GAME / ClientConnect", result: fail }
     confidence: high
-    notes: "Mostly low-impact for a single start→stop port (no intermediate checkpoints to track), but the qualifying re-prepare-on-spawn and the observer out-of-game flag are real omissions for spectated CTS."
+    notes: "Mostly low-impact for a single start→stop port (no intermediate checkpoints to track), but the qualifying re-prepare-on-spawn and the observer out-of-game flag are real omissions for spectated CTS. Unchanged from baseline."
 
   - id: cts.bot.role
     name: "CTS bot role: route to the next race-checkpoint waypoint (havocbot_role_cts)"
@@ -578,7 +590,7 @@ features:
     verification:
       - { kind: code, ref: "grep havocbot_role_cts / HavocBot_ChooseRole for CTS — absent", result: fail }
     confidence: medium
-    notes: "Tied to the missing race-checkpoint waypoints; bots in CTS have no mode-specific navigation."
+    notes: "Tied to the missing race-checkpoint waypoints; bots in CTS have no mode-specific navigation. Unchanged from baseline."
 
   - id: cts.records.getrecords
     name: "Map-record listing reply (GetRecords): per-map rank-1 CTS time + holder"
@@ -602,6 +614,6 @@ features:
     gaps:
       - "No GetRecords hook: the per-map rank-1 CTS time + holder listing (the 'records' command / server record browser reply) is not produced, even though RaceRecords already holds the data (ServerRecord/ServerRecordHolder)."
     verification:
-      - { kind: code, ref: "grep GetRecords for CTS — absent; RaceRecords has the data but no listing reply", result: fail }
+      - { kind: code, ref: "grep GetRecords for CTS — absent (CommandReplies.cs mentions it generically but no CTS feeder); RaceRecords has the data but no listing reply", result: fail }
     confidence: medium
-    notes: "Pure reporting surface; the underlying ranking DB exists, only the listing reply is unwired."
+    notes: "Pure reporting surface; the underlying ranking DB exists, only the listing reply is unwired. Unchanged from baseline."

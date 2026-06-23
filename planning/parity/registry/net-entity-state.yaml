@@ -10,7 +10,7 @@ summary:
     - "Networked anim action state (anim_state/anim_upper_action/anim_lower_action + times) not ported: remote attack/pain/jump torso overlays are reconstructed client-side (LocomotionBlend) from one networked Frame, not the QC animdecide upper/lower split"
     - "Remote weapon switch animation coarse: only the resolved active weapon is networked, not wepent m_switchweapon/m_switchingweapon"
     - "No out-of-PVS teammate GPS: Base keeps sending a teammate's coarse ent_cs origin out of PVS (radar blip persists); the port's relevance cull drops the entity entirely"
-    - "Several replicate client cvars unported (cl_autoscreenshot, cl_clippedspectating, cl_autoswitch_cts, cl_handicap*, g_xonoticversion)"
+    - "Replicate cvars: Wave-2 expanded the CLIENT send set to the full Base list, but the server still honors only a subset — cl_autoscreenshot/cl_clippedspectating/cl_handicap*/g_xonoticversion are dropped by SentCvarAllowlist, and cl_autoswitch_cts is stored but its consumer (CtsAutoswitchProvider) is unwired/dead"
     - "Animation frame-group cross-fade (cl_lerpanim_maxdelta_framegroups/cl_nolerp) not networked; replaced by client-side LocomotionBlend"
 features:
   - id: net-entity-state.csqcmodel.change_mask
@@ -329,10 +329,12 @@ features:
     divergence_rationale: null
     gaps:
       - "Friend-color collision is checked against the LOCAL team only, not the full team list (port doesn't network the team list here) — a friend force equal to ANOTHER team's color isn't suppressed (self-documented in CsqcModelAppearance.cs)."
+      - "Wave-2 added respawn-ghost color suppression + glowmod helpers (RespawnGhostClearsColors, BaseGlowmod, GuardGlowmodZero, ApplyHdrGlowClamp) but they are DEAD — no caller outside CsqcModelAppearance.cs. The Godot glue (ModelTint) does not invoke them, so respawn-ghost decoloring, the colored-model palette glowmod base, the glowmod-zero guard, and the r_hdr_glowintensity clamp are still not applied on the live render path."
     verification:
       - { kind: code_read, ref: "CsqcModelAppearance.cs vs csqcmodel_hooks.qc:141-363; header notes unit tests", result: pass }
+      - { kind: grep, ref: "Wave-2 helpers RespawnGhostClearsColors/BaseGlowmod/GuardGlowmodZero/ApplyHdrGlowClamp have zero callers outside CsqcModelAppearance.cs (dead). Wave-2 also added a 1024+ colormap-bias comment to the forcePlayerColorsEnabled branch (semantics unchanged; row already values:faithful).", result: fail }
     confidence: high
-    notes: "Pure decision helpers (Godot-free, unit-tested per its header); the Godot glue (ModelTint/ClientWorld) reads cvars + resolves model/colormap."
+    notes: "Pure decision helpers (Godot-free, unit-tested per its header); the Godot glue (ModelTint/ClientWorld) reads cvars + resolves model/colormap. Wave-2 (ec788f7) added 4 new glowmod/ghost helpers + a clarifying comment, but the new helpers are not yet wired into ModelTint, so the row's observable status is unchanged from the baseline (the local-team friend-collision gap persists; the new glowmod-fidelity helpers are dead code)."
 
   - id: net-entity-state.replicate.client_cvars
     name: "Client->server cvar replication (REPLICATE / cmd sentcvar)"
@@ -349,22 +351,26 @@ features:
       - { name: "poll_interval_s", base: "0.8 + random()*0.4", port: "0.8 + rand*0.4 (ClientNet.cs:724)", match: true }
       - { name: "send_all_on_start", base: "ReplicateVars_Start (REPLICATEVARS_SEND_ALL)", port: "_replicateSendAll on accept", match: true }
       - { name: "change_gated", base: "value != last", port: "value != _replicatedLastSent", match: true }
-      - { name: "replicated_set", base: "cl_autoswitch, cl_autoscreenshot, cl_clippedspectating, cl_autoswitch_cts, cl_handicap(+dmg given/taken), cl_noantilag, g_xonoticversion (+ weaponpriority, notification choices alongside features)", port: "cl_weaponpriority, cl_autoswitch, cl_noantilag, cl_physics + notification_CHOICE_*", match: false }
+      - { name: "client_send_set", base: "cl_autoswitch, cl_autoscreenshot, cl_clippedspectating, cl_autoswitch_cts, cl_handicap(+dmg given/taken), cl_noantilag, g_xonoticversion (+ weaponpriority, notification choices)", port: "Wave-2 EXPANDED to full Base list + cl_weaponpriority + cl_physics + notification_CHOICE_*", match: true }
+      - { name: "server_honored_set", base: "all of the above consumed server-side", port: "ONLY cl_autoswitch, cl_weaponpriority(+N), cl_noantilag, cl_physics, notification choices have live consumers; the rest are dropped by SentCvarAllowlist (Commands.cs:179) or stored-but-never-read", match: false }
     status:
       logic: faithful
       values: partial
       timing: faithful
       presentation: na
       audio: na
-      liveness: live
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Several replicate client cvars unported: cl_autoscreenshot, cl_clippedspectating, cl_autoswitch_cts, cl_handicap(+damage_given/taken), g_xonoticversion are not in the client's replicated set, so the server can't honor them per-player (clipped spectating, handicap, CTS autoswitch)."
+      - "Server-side honoring still unported despite the Wave-2 client-send expansion: cl_autoscreenshot, cl_clippedspectating, cl_handicap(+damage_given/taken), g_xonoticversion are NOT in SentCvarAllowlist (Commands.cs:179-190) so the server silently drops them at the gate (Commands.cs:1900). The client sends them but the server can't honor them per-player."
+      - "cl_autoswitch_cts is now BOTH sent (ClientNet) and allowlisted+stored (Commands.cs SetClientCvar), but its only consumer (ItemPickupRules.CtsAutoswitchProvider) is NEVER WIRED — CtsAutoswitchCvar always returns the -1 null default, so CTS autoswitch never fires. End-to-end DEAD."
     verification:
-      - { kind: code_read, ref: "ClientNet.cs:665 ReplicatedCvars = {cl_weaponpriority, cl_autoswitch, cl_noantilag, cl_physics}; :724 _nextReplicateTime = now + 0.8 + rand*0.4; :726 PushReplicatedSet send-all-on-accept — vs replicate.qh full REPLICATE list (autoscreenshot/clippedspectating/autoswitch_cts/handicap*/g_xonoticversion)", result: pass }
+      - { kind: code_read, ref: "ClientNet.cs ReplicatedCvars (Wave-2) now = full Base REPLICATE list + cl_weaponpriority/cl_physics; cadence 0.8+rand*0.4 + send-all-on-accept unchanged and exact vs lib/replicate.qh:48", result: pass }
+      - { kind: code_read, ref: "Commands.cs:179-190 SentCvarAllowlist UNCHANGED by Wave-2 (git diff 95b4efe..ec788f7) — no autoscreenshot/clippedspectating/handicap/g_xonoticversion entry; :1900 drops non-allowlisted names", result: fail }
+      - { kind: grep, ref: "ItemPickupRules.CtsAutoswitchProvider / AutoswitchProvider declared but NEVER assigned anywhere in src or game (no `= ` site) — CTS-autoswitch consumer is dead", result: fail }
     confidence: high
-    notes: "Cadence (0.8 + random()*0.4, ClientNet.cs:724) + send-all + change-gating verified exact against lib/replicate.qh:48. cl_physics is a port-added preset-select cvar (T54), not a Base REPLICATE entry. cl_weaponpriority + notification_CHOICE_* ARE replicated and live."
+    notes: "Wave-2 (ec788f7) widened the CLIENT send set (ClientNet.cs) to mirror Base field-for-field, but did NOT touch the server allowlist or wire any new consumer, so it is a send-side-only, mostly-cosmetic change — the behavioral gap (server honors the per-player cvar) is unchanged. liveness downgraded faithful->partial to reflect that 5 of the now-sent cvars are dropped and cl_autoswitch_cts is stored-but-dead. Genuinely live+honored: cl_autoswitch, cl_weaponpriority(+N), cl_noantilag, cl_physics, notification_CHOICE_*. cl_physics is a port-added preset cvar (T54), not Base."
 
   - id: net-entity-state.csqcmodel.anim_state
     name: "csqcmodel networked anim action state (upper/lower-body action split)"

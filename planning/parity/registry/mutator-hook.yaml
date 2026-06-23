@@ -5,11 +5,11 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 10
   worst_gaps:
-    - "The +hook button never reaches the server: InputButtons (InputCommand.cs:11-19) has no hook bit (only Attack/Jump/Attack2/Zoom/Crouch/Use) and Entity.OffhandFirePressed (EntityMutatorState.cs:62) is never ASSIGNED anywhere in the codebase — it is READ by HookMutator/OffhandBlasterMutator/NadesMutator but written by nothing."
+    - "The +hook button STILL never reaches the server (Wave-2 did NOT fix this): InputButtons (InputCommand.cs:11-20) has no hook bit (only Attack/Jump/Attack2/Zoom/Crouch/Use) and Entity.OffhandFirePressed (EntityMutatorState.cs:62) is never ASSIGNED anywhere in the codebase — it is READ by HookMutator(:103)/OffhandBlasterMutator(:57)/NadesMutator(:129) but written by nothing. No +hook bind exists."
     - "Because OffhandFirePressed is always false, OnPlayerPreThink mirrors false onto the offhand slot's ButtonAttack every tick, so Hook.WrThink only ever runs the 'primary released' branch — FireGrapplingHook is never reached and the grapple can never be cast. The instahook ruleset / campaign offhand hook is inert."
-    - "Enable predicate is truthiness-only: HookMutator.ExprEvaluate handles \"\"/\"0\"/\"false\" but NOT Base expr_evaluate's full grammar (+/- prefix, var>=x / var<=x / var> / var< / var== / var!= / var=== / var!== tokens across tokenize_console). Diverges if g_grappling_hook is set to an expression rather than a literal 0/1."
-    - "No ':grappling_hook' server-info token and no ', Hook' pretty token are appended (BuildMutatorsString / BuildMutatorsPrettyString unported), so server browsers / the votescreen won't show that the grappling-hook mutator is active."
+    - "No ':grappling_hook' server-info token and no ', Hook' pretty token are appended (BuildMutatorsString / BuildMutatorsPrettyString still unported), so server browsers / the votescreen won't show that the grappling-hook mutator is active. (The g_grappling_hook in CommandReplies.cs:252 is the cvar_changes BADCVAR suppression list, not the mutator-string emission.)"
     - "No client gameplay tip is shown when the hook mutator is active (no GameplayTips system in the port at all); Base cl_hook appends 'grappling hook is enabled, press <+hook key> to use it'."
+    - "SetStartItems still omits warmup_start_ammo_fuel = max(.., rotstable) (only the non-warmup start fuel is set); minor, only matters in warmup with useammo on."
 features:
   - id: mutator-hook.enable.predicate
     name: "Enable predicate (string g_grappling_hook via expr_evaluate)"
@@ -20,11 +20,12 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/HookMutator.cs:IsEnabled"
       - "src/XonoticGodot.Common/Gameplay/Mutators/HookMutator.cs:ExprEvaluate"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/HookMutator.cs:ExprToken"
     constants:
       - { name: "g_grappling_hook", base: "\"0\" (string, mutators.cfg:418)", port: "GetString(g_grappling_hook) via ExprEvaluate", match: true }
-      - { name: "expr_evaluate grammar", base: "+/- prefix + var>=x/var<=x/var>/var</var==/var!=/var===/var!== over tokenize_console (lib/cvar.qh:48-100)", port: "truthiness only: false for \"\"/\"0\"/\"false\", true otherwise", match: false }
+      - { name: "expr_evaluate grammar", base: "+/- prefix + var>=x/var<=x/var>/var</var==/var!=/var===/var!== over tokenize_console (lib/cvar.qh:48-100)", port: "full grammar ported (ExprEvaluate +/- prefix; ExprToken all 8 BINOP tokens + bare literal/cvar with '!' invert)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: na
       presentation: na
@@ -33,12 +34,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "ExprEvaluate is a truthiness check, not Base's expr_evaluate expression interpreter. For the literal defaults 0 / 1 (and ruleset-instahook.cfg:9 'g_grappling_hook 1') it is correct, but any expression value (e.g. a '+'/'-' prefix or a 'cvar>=x' comparison token) is mis-evaluated. Same simplification appears across the port's mutator enable predicates."
+      - "Theoretical-only ordering divergence: the port's ExprToken tests >= <= == != === !== then > <, whereas Base's BINOP macro order is >= <= > < == != === !==. strstrofs/IndexOf both find the FIRST occurrence, so for every realistic token (a bare var, a single comparison like 'var>=1', the instahook literal '1') the two orders return identical results. They diverge only for a contrived token containing BOTH a > or < AND an == (e.g. 'a>b==c'), which never occurs in cvar expressions. Not a real gap; flagged for completeness."
     verification:
-      - { kind: code, ref: "HookMutator.IsEnabled + ExprEvaluate (lines 35-36, 126-132) vs lib/cvar.qh:48 expr_evaluate", result: fail }
-      - { kind: code, ref: "MutatorActivation.Apply() (GameWorld.cs:511) walks enabled mutators and subscribes hooks; reads IsEnabled live", result: pass }
+      - { kind: code, ref: "ExprEvaluate (HookMutator.cs:146-160) + ExprToken (163-194) vs lib/cvar.qh:48 expr_evaluate — +/- prefix, AND-chain, all 8 BINOPs, ftos-literal-or-cvar bare token, '!' invert all ported", result: pass }
+      - { kind: code, ref: "MutatorActivation.Apply() walks Mutators.All and subscribes hooks; IsEnabled read live", result: pass }
     confidence: high
-    notes: "g_grappling_hook is a string cvar (Base uses cvar_string + expr_evaluate, not an autocvar, 'because it doesn't work in the campaign'). The predicate is LIVE and correct for the realistic 0/1 case; the gap is the missing expression grammar. Auto-discovered via [Mutator] attribute (NetName='grappling_hook')."
+    notes: "WAVE-2 FIX: the truthiness-only ExprEvaluate was replaced with a faithful port of QC expr_evaluate (lib/cvar.qh:48) — full expression grammar now handled, closing the baseline logic:partial gap. g_grappling_hook is a string cvar (cvar_string + expr_evaluate, not an autocvar 'because it doesn't work in the campaign'). LIVE + correct for literals 0/1 and ruleset-instahook 'g_grappling_hook 1'. Auto-discovered via [Mutator] (NetName='grappling_hook')."
 
   - id: mutator-hook.onadd.free_reel
     name: "MUTATOR_ONADD / ONROLLBACK_OR_REMOVE: free reeling when useammo off (WEP_HOOK.ammo_factor 0<->1)"
@@ -60,13 +61,13 @@ features:
       audio: na
       liveness: dead
     intended_divergence: true
-    divergence_rationale: "The port has no per-weapon ammo_factor; instead OnPlayerPreThink (line 97-98) tops the player's fuel up to Primary.Ammo+1 before each WrThink so the hooked-fuel TakeResource (Hook.cs:137) is a no-op. Functionally equivalent for the offhand path; the ONROLLBACK_OR_REMOVE ammo_factor=1 restore is moot because there is no ammo_factor to restore (Unhook just unsubscribes the handlers). NOTE liveness=dead: the top-up sits inside OnPlayerPreThink, whose grapple-driving body is itself unreachable (see mutator-hook.offhand.think_driver)."
+    divergence_rationale: "The port has no per-weapon ammo_factor; instead OnPlayerPreThink (line 107-108) tops the player's fuel up to Primary.Ammo+1 before each WrThink so the hooked-fuel TakeResource (Hook.cs) is a no-op. Functionally equivalent for the offhand path; the ONROLLBACK_OR_REMOVE ammo_factor=1 restore is moot because there is no ammo_factor to restore (Unhook just unsubscribes the handlers). NOTE liveness=dead: the top-up sits inside OnPlayerPreThink, whose grapple-driving body is itself unreachable (see mutator-hook.offhand.think_driver)."
     gaps:
       - "The free-reel top-up runs inside the dead offhand-think; with useammo on, the start-fuel grant (mutator-hook.startitems.fuel) is the only useammo behavior that is actually live."
     verification:
-      - { kind: code, ref: "HookMutator.UseAmmo read (line 59) + PreThink fuel top-up (line 97-98) vs MUTATOR_ONADD ammo_factor=0; Unhook (line 65-71) is the rollback analogue", result: pass }
+      - { kind: code, ref: "HookMutator.UseAmmo read (line 69) + PreThink fuel top-up (line 107-108) vs MUTATOR_ONADD ammo_factor=0; Unhook (line 75-81) is the rollback analogue", result: pass }
     confidence: high
-    notes: "Equivalence holds only because the offhand path is gated on NOT carrying the real WEP_HOOK; if the same Hook were main-hand the top-up would also free its primary fire (edge case that doesn't arise here). The ONADD and ONROLLBACK_OR_REMOVE Base branches are folded into one port row (Hook()/Unhook())."
+    notes: "Unchanged by Wave-2. Equivalence holds only because the offhand path is gated on NOT carrying the real WEP_HOOK; if the same Hook were main-hand the top-up would also free its primary fire (edge case that doesn't arise here). ONADD and ONROLLBACK_OR_REMOVE folded into one port row (Hook()/Unhook())."
 
   - id: mutator-hook.spawn.assign_offhand
     name: "PlayerSpawn: assign the hook as the player's offhand weapon"
@@ -87,10 +88,10 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "OnPlayerSpawn (line 74-78) sets OffhandWeapon=\"hook\" vs player.offhand=OFFHAND_HOOK", result: pass }
-      - { kind: code, ref: "MutatorHooks.PlayerSpawn.Call (ClientManager.cs:542) is a live per-spawn dispatch", result: pass }
+      - { kind: code, ref: "OnPlayerSpawn (line 84-88) sets OffhandWeapon=\"hook\" vs player.offhand=OFFHAND_HOOK", result: pass }
+      - { kind: code, ref: "MutatorHooks.PlayerSpawn.Call is a live per-spawn dispatch", result: pass }
     confidence: high
-    notes: "The assignment is live and correct; it just has no effect downstream because the consumer (offhand-think) can't read input. The Entity.OffhandWeapon field is the QC .offhand analogue."
+    notes: "Unchanged. The assignment is live and correct; it just has no effect downstream because the consumer (offhand-think) can't read input. Entity.OffhandWeapon is the QC .offhand analogue."
 
   - id: mutator-hook.offhand.think_driver
     name: "Offhand think: drive the Hook grapple each frame while +hook is held"
@@ -112,15 +113,15 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The +hook button never reaches the server: InputButtons (InputCommand.cs:11-19) has no hook bit (only Attack/Jump/Attack2/Zoom/Crouch/Use) and Entity.OffhandFirePressed is never assigned ANYWHERE in the codebase — it is read by HookMutator/OffhandBlasterMutator/NadesMutator but written by nothing."
-      - "Because OffhandFirePressed is always false, OnPlayerPreThink mirrors false onto the offhand slot's ButtonAttack (HookMutator.cs:93) every tick, so Hook.WrThink (Hook.cs:130) only ever runs the 'primary released' branch — FireGrapplingHook is never reached and the grapple can never be cast. The instahook ruleset / campaign offhand hook is inert."
+      - "STILL OPEN after Wave-2: the +hook button never reaches the server. InputButtons (InputCommand.cs:11-20) has no hook bit (only Attack/Jump/Attack2/Zoom/Crouch/Use) and Entity.OffhandFirePressed is never assigned ANYWHERE in the codebase — grep across src/** + game/** for 'OffhandFirePressed =' returns ZERO writes; it is only read (HookMutator:103, NadesMutator:129, OffhandBlasterMutator:57). No +hook bind / impulse exists."
+      - "Because OffhandFirePressed is always false, OnPlayerPreThink mirrors false onto the offhand slot's ButtonAttack (HookMutator.cs:103) every tick, so Hook.WrThink only ever runs the 'primary released' branch — FireGrapplingHook is never reached and the grapple can never be cast. The instahook ruleset / campaign offhand hook is inert."
       - "No vehicle / weaponUseForbidden suppression of the offhand key (Base weaponsystem.qc:609-611 zeroes key_pressed in a vehicle or when weapon use is forbidden). Moot while the path is dead, but absent from the port even on paper."
     verification:
-      - { kind: code, ref: "grep OffhandFirePressed across src/** and game/** -> reads only (HookMutator:93, NadesMutator:124, OffhandBlasterMutator:57), zero assignments", result: fail }
-      - { kind: code, ref: "InputButtons enum (InputCommand.cs:11-19) has no Hook bit; net input sampler never sets OffhandFirePressed", result: fail }
-      - { kind: code, ref: "MutatorHooks.PlayerPreThink.Call (GameWorld.cs:988) IS live per-tick, but the body is starved of input", result: pass }
+      - { kind: code, ref: "grep 'OffhandFirePressed =' across src/** + game/** -> zero assignments (reads only at HookMutator:103, NadesMutator:129, OffhandBlasterMutator:57)", result: fail }
+      - { kind: code, ref: "InputButtons enum (InputCommand.cs:11-20) has no Hook bit; InputCommand carries no offhand button; no +hook bind", result: fail }
+      - { kind: code, ref: "MutatorHooks.PlayerPreThink.Call (GameWorld.cs:1037) IS live per-tick, but the body is starved of input", result: pass }
     confidence: high
-    notes: "Mechanically faithful design (drives Hook.WrThink primary-only on a dedicated high slot, no secondary via offhand — matching OffhandHook.offhand_think passing key_pressed?1:0). The deep grapple state machine/reel is faithful and covered by weapon-hook.yaml. The defects are (a) the missing input wiring (makes the whole offhand path dead) and (b) no vehicle/weaponUseForbidden key gate. Same dead-input issue affects offhand_blaster and the nade offhand throw (TODO.md T11)."
+    notes: "UNCHANGED by Wave-2 — still the worst gap. Mechanically faithful design (drives Hook.WrThink primary-only on a dedicated high slot, matching OffhandHook.offhand_think passing key_pressed?1:0). The deep grapple state machine/reel is faithful (weapon-hook.yaml). The defects are (a) the missing input wiring (makes the whole offhand path dead) and (b) no vehicle/weaponUseForbidden key gate. Same dead-input issue affects offhand_blaster and the nade offhand throw (TODO.md T11)."
 
   - id: mutator-hook.startitems.fuel
     name: "SetStartItems: grant fuel + FuelRegen when useammo is on"
@@ -142,12 +143,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Only the non-warmup start fuel is bumped; Base also sets warmup_start_ammo_fuel = max(.., rotstable). Minor: only matters during warmup with useammo on (a rare combination)."
+      - "STILL OPEN: only the non-warmup start fuel is bumped; Base also sets warmup_start_ammo_fuel = max(.., rotstable). Minor: only matters during warmup with useammo on (a rare combination)."
     verification:
-      - { kind: code, ref: "OnSetStartItems (line 105-114) adds FUEL_REGEN + AmmoFuel=max(.,rotstable) vs QC start_items|=FuelRegen + start_ammo_fuel + warmup_start_ammo_fuel", result: pass }
-      - { kind: code, ref: "MutatorHooks.SetStartItems.Call (SpawnSystem.cs:669) is a live loadout dispatch", result: pass }
+      - { kind: code, ref: "OnSetStartItems (line 115-124) adds FUEL_REGEN + AmmoFuel=max(.,rotstable) vs QC start_items|=FuelRegen + start_ammo_fuel + warmup_start_ammo_fuel", result: pass }
+      - { kind: code, ref: "MutatorHooks.SetStartItems.Call is a live loadout dispatch", result: pass }
     confidence: high
-    notes: "Gated on UseAmmo (default off), so usually a no-op — but live and correct when useammo is enabled. Warmup-fuel omission is the only value gap (values: partial)."
+    notes: "Unchanged by Wave-2. Gated on UseAmmo (default off), so usually a no-op — but live and correct when useammo is enabled. Warmup-fuel omission is the only value gap (values: partial)."
 
   - id: mutator-hook.filteritem.hide_pickup
     name: "FilterItem: suppress the WEP_HOOK world pickup"
@@ -168,10 +169,10 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "OnFilterItemDefinition (line 119-123) returns true for NetName==\"hook\"/ClassName==\"weapon_hook\" vs item.weapon==WEP_HOOK.m_id", result: pass }
-      - { kind: code, ref: "MutatorHooks.FilterItemDefinition.Call (StartItem.cs:90) gates world-item spawn", result: pass }
+      - { kind: code, ref: "OnFilterItemDefinition (line 129-133) returns true for NetName==\"hook\"/ClassName==\"weapon_hook\" vs item.weapon==WEP_HOOK.m_id", result: pass }
+      - { kind: code, ref: "MutatorHooks.FilterItemDefinition.Call gates world-item spawn", result: pass }
     confidence: high
-    notes: "Matches on the pickup's weapon NetName / classname. Live and correct: prevents the offhand-hook from also lying on the map."
+    notes: "Unchanged. Matches on the pickup's weapon NetName / classname. Live and correct: prevents the offhand-hook from also lying on the map."
 
   - id: mutator-hook.info.mutator_string
     name: "BuildMutatorsString / Pretty: list the mutator in server info / votescreen"
@@ -193,11 +194,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No ':grappling_hook' server-info token and no ', Hook' pretty token are appended, so server browsers / the votescreen won't show that the grappling-hook mutator is active."
+      - "STILL MISSING after Wave-2: no ':grappling_hook' server-info token and no ', Hook' pretty token are appended, so server browsers / the votescreen won't show that the grappling-hook mutator is active. NOTE: the g_grappling_hook entry in CommandReplies.cs:252 is the cvar_changes PureBadCvars suppression list (the announce-themselves mutators are excluded from cvar-change reporting), NOT the BuildMutatorsString token emission — those tokens have no port emitter anywhere (grep ':grappling' / ', Hook' / BuildMutatorsString -> no emission)."
     verification:
-      - { kind: code, ref: "grep BuildMutatorsString / ':grappling' in src/** + game/** -> no port emission of these tokens", result: fail }
+      - { kind: code, ref: "grep ':grappling_hook' / '\", Hook\"' / BuildMutatorsString emission in src/** + game/** -> none (only doc-comment mentions in PowerupsMutator/RocketFlyingMutator/SuperSpecMutator)", result: fail }
+      - { kind: code, ref: "CommandReplies.cs:252 g_grappling_hook is the cvar_changes BADCVAR list, not a mutator-string token", result: fail }
     confidence: high
-    notes: "Cosmetic/UI metadata; no gameplay effect. Several other mutators have the same omission."
+    notes: "Unchanged by Wave-2. Cosmetic/UI metadata; no gameplay effect. Several other mutators have the same omission."
 
   - id: mutator-hook.client.gameplay_tip
     name: "Client gameplay tip: 'grappling hook is enabled, press <key>'"
@@ -216,11 +218,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No client gameplay tip is shown when the hook mutator is active; Base cl_hook appends '^3grappling hook^8 is enabled, press ^3<+hook key>^8 to use it'. The port has no BuildGameplayTipsString/gameplay-tips system at all (grep src/ + game/ -> none)."
+      - "STILL MISSING after Wave-2: no client gameplay tip is shown when the hook mutator is active; Base cl_hook appends '^3grappling hook^8 is enabled, press ^3<+hook key>^8 to use it'. The port has no BuildGameplayTipsString/gameplay-tips system at all (grep src/ + game/ for BuildGameplayTip/GameplayTip/'grappling hook is enabled' -> none)."
     verification:
-      - { kind: code, ref: "no BuildGameplayTipsString / GameplayTip hook for cl_hook in the port (grep src/ + game/)", result: fail }
+      - { kind: code, ref: "no BuildGameplayTipsString / GameplayTip system for cl_hook in the port (grep src/ + game/)", result: fail }
     confidence: high
-    notes: "Presentation-only (loading/idle tip text). Low impact, but it is the discoverability hint for the offhand key — doubly moot while the offhand path is dead. The menu checkbox tooltip (DialogMutators.cs:177) carries the analogous 'press the hook key' hint, but only in the menu, not in-match."
+    notes: "Unchanged by Wave-2. Presentation-only (loading/idle tip text). Low impact, but it is the discoverability hint for the offhand key — doubly moot while the offhand path is dead. The menu checkbox tooltip (DialogMutators.cs:177) carries the analogous 'Press the hook key to use it' hint, but only in the menu, not in-match."
 
   - id: mutator-hook.menu.toggle
     name: "Menu: Grappling Hook mutator checkbox + describe page"
@@ -242,12 +244,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The menu exposes the toggle (DialogMutators.cs:176-177) with a short inline tooltip, but the QC MutatorGrapplingHook.describe long-form description page (the 'offhand weapon / unlimited ammo / no secondary / overridden by offhand_blaster' explainer) is not ported — the port has no per-mutator describe-page text."
+      - "The menu exposes the toggle (DialogMutators.cs:176-177) with a short inline tooltip ('Players spawn with the grappling hook. Press the 'hook' key to use it'), but the QC MutatorGrapplingHook.describe long-form description page (the 'offhand weapon / unlimited ammo / no secondary / overridden by offhand_blaster' explainer) is not ported — the port has no per-mutator describe-page text."
     verification:
       - { kind: code, ref: "DialogMutators.cs:176-177 CheckBox(g_grappling_hook) present + tooltip vs QC checkbox", result: pass }
       - { kind: code, ref: "no port equivalent of MutatorGrapplingHook.describe long-form text", result: fail }
     confidence: high
-    notes: "The functional toggle is present and live in the mutator menu; only the verbose describe-page text is missing. This is a draft-OMITTED feature added during adversarial verification."
+    notes: "Unchanged by Wave-2. The functional toggle is present and live in the mutator menu; only the verbose describe-page text is missing."
 
   - id: mutator-hook.precedence.blaster_override
     name: "Precedence: offhand_blaster overrides grappling_hook when both enabled"
@@ -259,19 +261,21 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:Apply"
       - "src/XonoticGodot.Common/Gameplay/Mutators/HookMutator.cs:OnPlayerSpawn"
       - "src/XonoticGodot.Common/Gameplay/Mutators/OffhandBlasterMutator.cs:OnPlayerSpawn"
+      - "src/XonoticGodot.Common/Framework/Registry.cs:Sort"
     constants: []
     status:
-      logic: unknown
+      logic: faithful
       values: na
-      timing: unknown
+      timing: faithful
       presentation: na
       audio: na
-      liveness: unknown
+      liveness: dead
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Both HookMutator and OffhandBlasterMutator write Entity.OffhandWeapon in their PlayerSpawn handler; whichever PlayerSpawn handler runs LAST wins. Base guarantees blaster-wins via the weapon-registry NetName sort; the port's order = Mutators.All iteration order = subscription order in MutatorActivation.Apply, which was NOT traced to confirm blaster subscribes/runs after hook. Doubly moot while both offhand paths are input-dead."
+      - "Ordering is now traced and confirmed correct, but the precedence only resolves a moot tie: both PlayerSpawn handlers are downstream of the dead offhand-input path, so neither offhand weapon actually fires regardless of which OffhandWeapon value wins. The precedence becomes observable only once mutator-hook.offhand.think_driver is wired."
     verification:
-      - { kind: code, ref: "MutatorActivation.Apply iterates Mutators.All in unverified order; both spawn handlers set OffhandWeapon", result: fail }
-    confidence: low
-    notes: "Niche (both mutators rarely co-enabled) and currently moot (offhand input dead). Marked unknown pending a Mutators.All ordering trace. Draft listed this only as an open question; promoted to a tracked row."
+      - { kind: code, ref: "Mutators.All = Registry<MutatorBase>.All, sorted ordinal by RegistryName (Registry.cs:50-53). MutatorBase.RegistryName => NetName (GameplayBases.cs:142). 'grappling_hook' < 'offhand_blaster' ordinally (g<o), so Hook subscribes/runs BEFORE blaster in PlayerSpawn; blaster's OnPlayerSpawn runs LAST and wins the OffhandWeapon assignment — matching Base 'overridden by offhand_blaster'", result: pass }
+      - { kind: code, ref: "GeneratedRegistrations.RegisterAll() (Registries.cs Bootstrap) Sort()s the mutator registry, so the ordinal order is in effect on the live path", result: pass }
+    confidence: high
+    notes: "RESOLVED this audit (baseline was status:unknown / confidence:low pending an ordering trace): the Registry ordinal sort by NetName makes blaster the last PlayerSpawn writer, so the port matches Base's blaster-wins precedence. No code change was needed — the ordering was always correct; the baseline simply hadn't traced it. liveness=dead because the whole offhand mechanism it arbitrates is input-dead (see offhand.think_driver)."

@@ -5,12 +5,10 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 8
   worst_gaps:
-    - "Wall-jump impulse is server-authoritative only: it runs through the static PlayerJump mutator-hook chain, which is populated by MutatorActivation.Apply() — called ONLY in GameWorld (server). On a remote client the client-prediction Movement.Move->PlayerJump chain is empty, so the wall jump is NOT predicted and mispredicts/rubberbands; Base runs the impulse shared (CSQC+SVQC)."
-    - "Jump sound plays a hardcoded \"player/jump.wav\" that resolves to NO shipped asset (real jump samples are per-model sound/player/<model>/player/jump.ogg); the correct per-model API (SoundSystem.PlayPlayerSound(player,\"jump\",modelDir)) exists but is bypassed, so the cue is effectively silent."
-    - "Smoke-ring particle (Send_Effect EFFECT_SMOKE_RING, count 5) never emitted on a wall jump; handler has only `_ = hitPos;` TODO (WalljumpMutator.cs:98) though the effect is registered (EffectsList.cs:219)."
-    - "oldvelocity is mis-stashed: port writes OldOrigin = Origin (wrong field AND wrong value); Base writes oldvelocity = velocity (the post-impulse velocity). The port Entity has no OldVelocity field at all, so the Base value is unrepresentable."
-    - "Jump animation action (animdecide_setaction ANIMACTION_JUMP) not triggered on a wall jump."
-    - "Cvar-override guards use `if (x != 0f)`, so explicitly setting any g_walljump* tunable to 0 (legal in Base) is silently ignored and the C# default is kept."
+    - "Wall-jump impulse is server-authoritative only: it runs through the static PlayerJump mutator-hook chain, which is populated by MutatorActivation.Apply() — called ONLY in GameWorld (server, line 535). On a dedicated-server remote client the client-prediction Movement.Move->PlayerJump chain is empty, so the wall jump is NOT predicted and mispredicts/rubberbands; Base runs the impulse shared (CSQC+SVQC). UNCHANGED by Waves 1-2."
+    - "Jump voice is STILL effectively silent after the Wave-2 rewrite: the call now uses the correct per-model API SoundSystem.PlayPlayerSound(player,\"jump\",null,...), but the null model-dir resolves to sound/player/default.sounds/jump, and `default.sounds` is a TEXT MANIFEST (id->sample map), not a directory. The port's AssetLoader.ResolveSoundVpath probes sound/player/default.sounds/jump.{ogg,wav} verbatim on disk (no .sounds-manifest parsing anywhere in the port), so the file is absent and the cue stays silent. Base resolves jump per-model to e.g. sound/player/espeak/player/jump. (DamageSystem.ModelSoundDir is itself a `return null` stub, so the whole player-sound family shares this unresolved-default gap.)"
+    - "oldvelocity is mis-stashed: port writes OldOrigin = Origin (wrong field AND wrong value); Base writes oldvelocity = velocity (the post-impulse velocity). The shared Entity (Framework/Entity.cs:31) STILL has no OldVelocity field (only Origin, OldOrigin, Velocity, Angles, AVelocity), so the Base value is unrepresentable here. UNCHANGED."
+    - "Jump animation action (animdecide_setaction ANIMACTION_JUMP) still not triggered on a wall jump (no anim-action seam in the port). UNCHANGED."
 features:
   - id: mutator-walljump.activation.enable
     name: "Mutator registration + g_walljump enable gate"
@@ -21,7 +19,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/WalljumpMutator.cs:IsEnabled"
       - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:Apply"
-      - "src/XonoticGodot.Server/GameWorld.cs:511"
+      - "src/XonoticGodot.Server/GameWorld.cs:535"
     constants:
       - { name: "g_walljump", base: "0", port: "0 (mutators.cfg:485)", match: true }
     status:
@@ -34,11 +32,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "MutatorActivation.Apply() is invoked ONLY in GameWorld.cs (server). The mutator (and thus its PlayerJump hook) is therefore subscribed on the SERVER process only. Base registers the mutator on CSQC unconditionally (true) AND on SVQC (autocvar). The port has no client-side activation, so on a remote (dedicated-server) client the walljump never runs in client prediction — see mutator-walljump.predict.shared_impulse."
+      - "MutatorActivation.Apply() is invoked ONLY in GameWorld.cs:535 (server). The mutator (and thus its PlayerJump hook) is therefore subscribed on the SERVER process only. Base registers the mutator on CSQC unconditionally (true) AND on SVQC (autocvar). The port has no client-side activation, so on a remote (dedicated-server) client the walljump never runs in client prediction — see mutator-walljump.predict.shared_impulse. UNCHANGED by Waves 1-2."
     verification:
-      - { kind: code, ref: "MutatorActivation.Apply at GameWorld.cs:511 -> Mutators.All -> IsEnabled (g_walljump!=0) -> Add -> Hook() subscribes the static PlayerJump chain; no client-side Apply caller found (grep: only GameWorld + PlayerPhysics reference MutatorActivation/PlayerJump.Call)", result: pass }
+      - { kind: code, ref: "MutatorActivation.Apply at GameWorld.cs:535 -> Mutators.All -> IsEnabled (g_walljump!=0) -> Add -> Hook() subscribes the static PlayerJump chain; grep MutatorActivation.Apply finds only GameWorld.cs:535 (no client-side caller)", result: pass }
     confidence: high
-    notes: "Server-side enable + hook subscribe is correct and live. The gate value (g_walljump!=0) matches Base. The liveness caveat is the client-prediction reach (downgraded to partial), not the server gate."
+    notes: "Server-side enable + hook subscribe is correct and live. The gate value (g_walljump!=0) matches Base. The liveness caveat is the client-prediction reach (partial), not the server gate. Apply() call moved 511->535 but topology is identical."
 
   - id: mutator-walljump.detect.touchwall
     name: "Nearby-wall detection (4-way tracebox, steep non-NOIMPACT surface)"
@@ -64,9 +62,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "side-by-side read of PlayerTouchWall (Base walljump.qc:16-34 vs WalljumpMutator.cs:108-141): same bbox tracebox start=origin, same four cast directions in order, same fraction<1 + dist + normal.z<max_normal + NOIMPACT guards, returns first qualifying plane normal (+ endpos in hitPos)", result: pass }
+      - { kind: code, ref: "side-by-side read of PlayerTouchWall (Base walljump.qc:16-34 vs WalljumpMutator.cs:123-156): same bbox tracebox start=origin, same four cast directions in order, same fraction<1 + dist + normal.z<max_normal + NOIMPACT guards, returns first qualifying plane normal (+ endpos in hitPos)", result: pass }
     confidence: high
-    notes: "Faithful. Port additionally returns the contact point (hitPos = trace EndPos) for the would-be smoke ring; Base reads trace_endpos from the global trace state. Equivalent."
+    notes: "Faithful, unchanged by Waves 1-2. Port additionally returns the contact point (hitPos = trace EndPos) for the smoke ring; Base reads trace_endpos from the global trace state. Equivalent."
 
   - id: mutator-walljump.gate.guards
     name: "Wall-jump eligibility guards (delay, airborne, movetype, jump-tapped, unfrozen, alive)"
@@ -74,7 +72,7 @@ features:
     base_refs:
       - "common/mutators/mutator/walljump/walljump.qc:40-46"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/WalljumpMutator.cs:68-77"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/WalljumpMutator.cs:74-84"
     constants: []
     status:
       logic: faithful
@@ -87,9 +85,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "guard-by-guard read: now-LastWallJumpTime>Delay, !OnGround, movetype not in {None,Follow,Fly,Noclip}, !(Flags&JumpReleased)==0 i.e. jump not held (matches PlayerPhysics.IsJumpHeld at line 1548), !Frozen (STAT(FROZEN) successor + StatusEffectsCatalog.Frozen), DeadState==No", result: pass }
+      - { kind: code, ref: "guard-by-guard read: now-LastWallJumpTime>Delay, !OnGround, movetype not in {None,Follow,Fly,Noclip}, jump not held (Flags&JumpReleased)==0, !Frozen (StatusEffectsCatalog.Frozen), DeadState==No", result: pass }
     confidence: high
-    notes: "IS_JUMP_HELD modeled identically to PlayerPhysics.IsJumpHeld (EntFlags.JumpReleased==0). Frozen uses both the STAT(FROZEN) successor and the StatusEffects Frozen def, matching Base's two-part frozen test. Delay gate matches Base time - STAT(LASTWJ) > DELAY."
+    notes: "Unchanged by Waves 1-2. IS_JUMP_HELD modeled identically (EntFlags.JumpReleased==0). Frozen uses the StatusEffects Frozen def. Delay gate matches Base time - STAT(LASTWJ) > DELAY. (Note: port checks DeadState before Frozen, vs Base order Frozen-then-Dead — same set of guards, order is immaterial since all must pass.)"
 
   - id: mutator-walljump.impulse.velocity
     name: "Off-wall velocity impulse (horizontal push /xy, z = jumpvel*z, crouch slam) + standard-jump composition"
@@ -99,14 +97,15 @@ features:
       - "common/mutators/mutator/walljump/walljump.qc:70"
       - "common/physics/player.qc:481"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/WalljumpMutator.cs:84-100"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/WalljumpMutator.cs:90-98"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/WalljumpMutator.cs:53-58"
       - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:820-822"
       - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:887"
     constants:
       - { name: "g_walljump_force", base: "300", port: "300 (mutators.cfg:487); C# field default 300", match: true }
-      - { name: "g_walljump_velocity_xy_factor", base: "1.15", port: "1.15 (mutators.cfg:488); C# field default 1.05", match: true }
-      - { name: "g_walljump_velocity_z_factor", base: "0.5", port: "0.5 (mutators.cfg:489); C# field default 1.0", match: true }
-      - { name: "g_walljump_delay", base: "1", port: "1 (mutators.cfg:486); C# field default 0.3", match: true }
+      - { name: "g_walljump_velocity_xy_factor", base: "1.15", port: "1.15 (mutators.cfg:488); C# field default 1.05 but cfg wins", match: true }
+      - { name: "g_walljump_velocity_z_factor", base: "0.5", port: "0.5 (mutators.cfg:489); C# field default 1.0 but cfg wins", match: true }
+      - { name: "g_walljump_delay", base: "1", port: "1 (mutators.cfg:486); C# field default 0.3 but cfg wins", match: true }
       - { name: "sv_jumpvelocity (PHYS_JUMPVELOCITY)", base: "260", port: "260", match: true }
       - { name: "final velocity_z (normal walljump, stock cvars)", base: "260*0.5 + 260 = 390", port: "390", match: true }
       - { name: "final velocity_z (crouch walljump, stock cvars)", base: "-130 + 260 = 130", port: "130", match: true }
@@ -120,13 +119,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Cvar-override guards use `if (x != 0f) Field = x`, so an admin explicitly setting g_walljump_force/_delay/_velocity_xy_factor/_velocity_z_factor to 0 (legal in Base — e.g. g_walljump_velocity_z_factor 0 for a pure-horizontal wall jump) is silently ignored and the C# default is kept (WalljumpMutator.cs:48-51)."
-      - "Server-authoritative only: the impulse runs in the server PlayerJump hook chain; on a remote client it is not predicted (see mutator-walljump.predict.shared_impulse). Base applies it shared. Hence liveness=partial."
+      - "Server-authoritative only: the impulse runs in the server PlayerJump hook chain; on a dedicated-server remote client it is not predicted (see mutator-walljump.predict.shared_impulse). Base applies it shared. Hence liveness=partial."
     verification:
-      - { kind: code, ref: "impulse arithmetic matches Base walljump.qc:55-60 (v.X+=n.X*force; v.X/=xy; v.Y likewise; v.Z=jumpvel*z; crouch inverts). Hook sets args.Multijump=true and returns false (WalljumpMutator.cs:100-101) so PlayerJump.Call returns false; doublejump=true skips the air-bail (PlayerPhysics.cs:841) and vel.Z+=mjumpheight (PlayerPhysics.cs:887) adds the full standard jump on top, reproducing Base player.qc:481. Stock jumpspeedcaps are NaN so the cap branches are skipped.", result: pass }
-      - { kind: code, ref: "mutators.cfg:485-489 ships the exact Base defaults; Hook() reads them via Api.Cvars.GetFloat and overrides the (differing) C# field defaults at activation", result: pass }
+      - { kind: code, ref: "impulse arithmetic matches Base walljump.qc:55-60 (v.X+=n.X*force; v.X/=xy; v.Y likewise; v.Z=jumpvel*z; crouch inverts). Hook sets args.Multijump=true and returns false (WalljumpMutator.cs:115-116) so PlayerJump.Call returns false; doublejump=true skips the air-bail and vel.Z+=mjumpheight adds the standard jump on top, reproducing Base player.qc:481.", result: pass }
+      - { kind: code, ref: "WAVE-2 FIX: cvar-override-zero guard. Hook() now reads each g_walljump* via `if (IsSet(name)) Field = GetFloat(name)` where IsSet = !IsNullOrEmpty(GetString(name)) (WalljumpMutator.cs:53-58). A shipped/registered cvar returns a non-empty string, so an admin explicitly setting any tunable to 0 (e.g. g_walljump_velocity_z_factor 0 for a pure-horizontal jump — legal in Base) is now honored instead of being masked by the C# field default. Previously used `if (x != 0f)` which silently dropped an explicit 0.", result: pass }
+      - { kind: code, ref: "mutators.cfg:485-489 ships the exact Base defaults (delay 1, force 300, xy 1.15, z 0.5); Hook() reads them and overrides the (differing) C# field defaults at activation", result: pass }
     confidence: high
-    notes: "Logic/values/timing faithful at runtime. The C# field defaults (xy 1.05, z 1.0, delay 0.3) differ from Base but are masked by the shipped cfg reads except in a config-less harness. Critical composition (multijump-grant-then-add-standard-jump) verified end-to-end."
+    notes: "Logic/values/timing faithful at runtime. WAVE-2 closed the cvar-override-zero gap from the baseline. The C# field defaults (xy 1.05, z 1.0, delay 0.3) still differ from Base but are masked by the shipped cfg reads (only matter in a config-less harness). Critical composition (multijump-grant-then-add-standard-jump) verified end-to-end."
 
   - id: mutator-walljump.predict.shared_impulse
     name: "Client-side prediction of the wall-jump impulse (Base runs it shared CSQC+SVQC)"
@@ -148,35 +147,38 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The wall-jump velocity impulse is dispatched only via the static MutatorHooks.PlayerJump chain, which is subscribed by MutatorActivation.Apply() — called ONLY in GameWorld.cs:511 (server). Client prediction (EntityMovementStep.Step -> Movement.Move -> PlayerPhysics.PlayerJump -> PlayerJump.Call) shares the same static chain, so in a single-process / listen-server build the chain is populated and the wall jump IS predicted; but on a separate (dedicated-server) client process the chain is empty, so the wall jump is applied by the server only and the client mispredicts (rubberbands) on every wall jump. Base deliberately REGISTER_MUTATORs walljump on CSQC unconditionally precisely so the impulse predicts."
+      - "The wall-jump velocity impulse is dispatched only via the static MutatorHooks.PlayerJump chain, which is subscribed by MutatorActivation.Apply() — called ONLY in GameWorld.cs:535 (server). Client prediction (EntityMovementStep.Step -> Movement.Move -> PlayerPhysics.PlayerJump -> PlayerJump.Call) shares the same static chain, so in a single-process / listen-server build the chain is populated and the wall jump IS predicted; but on a separate (dedicated-server) client process the chain is empty, so the wall jump is applied by the server only and the client mispredicts (rubberbands) on every wall jump. Base deliberately REGISTER_MUTATORs walljump on CSQC unconditionally precisely so the impulse predicts. UNCHANGED by Waves 1-2."
     verification:
-      - { kind: code, ref: "EntityMovementStep.Step calls Movement.Move(_carrier,input) (line 84) which routes to PlayerPhysics.PlayerJump -> MutatorHooks.PlayerJump.Call (static). No client-side MutatorActivation.Apply caller exists (grep: MutatorActivation.Apply only in GameWorld.cs). So predicted-leg reach depends on process topology.", result: fail }
+      - { kind: code, ref: "EntityMovementStep.Step calls Movement.Move(_carrier,input) (line 84) which routes to PlayerPhysics.PlayerJump -> MutatorHooks.PlayerJump.Call (static). No client-side MutatorActivation.Apply caller exists (grep: MutatorActivation.Apply only in GameWorld.cs:535). So predicted-leg reach depends on process topology.", result: fail }
     confidence: medium
-    notes: "In Bryan's usual listen-server/single-process play the same process runs Apply(), so the static chain is shared and prediction works incidentally; this row flags the dedicated-server-client case as the real divergence and explains why the registry liveness on the shared rows is partial, not live. Runtime A/B not performed."
+    notes: "Still open after Waves 1-2. In Bryan's usual listen-server/single-process play the same process runs Apply(), so the static chain is shared and prediction works incidentally; this row flags the dedicated-server-client case as the real divergence. Runtime A/B not performed."
 
   - id: mutator-walljump.fx.smokering
     name: "Smoke-ring particle at the wall contact point"
     layer: [presentation]
     base_refs:
       - "common/mutators/mutator/walljump/walljump.qc:65"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/WalljumpMutator.cs:108"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:219"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectEmitter.cs:214"
     constants:
-      - { name: "EFFECT_SMOKE_RING count", base: "5 (Send_Effect EFFECT_SMOKE_RING, trace_endpos, plane_normal, 5)", port: "none", match: false }
+      - { name: "EFFECT_SMOKE_RING count", base: "5 (Send_Effect EFFECT_SMOKE_RING, trace_endpos, plane_normal, 5)", port: "5 (EffectEmitter.Emit(\"SMOKE_RING\", hitPos, planeNormal, 5))", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: faithful
+      values: faithful
       timing: na
-      presentation: missing
+      presentation: faithful
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Smoke-ring particle (Send_Effect EFFECT_SMOKE_RING at trace_endpos along plane_normal, count 5) is never emitted; the handler has only `_ = hitPos;` TODO (WalljumpMutator.cs:98). The SMOKE_RING effect IS registered (EffectsList.cs:219 Effects.Register(\"SMOKE_RING\",\"smoke_ring\")) but nothing in walljump spawns it."
+    gaps: []
     verification:
-      - { kind: code, ref: "WalljumpMutator.cs:98 is a TODO no-op (`_ = hitPos; // smoke-ring effect spawns here once the effect/particle service lands`); SMOKE_RING registered at EffectsList.cs:219 but no walljump emit site found", result: fail }
+      - { kind: code, ref: "WAVE-2 FIX: WalljumpMutator.cs:108 now calls EffectEmitter.Emit(\"SMOKE_RING\", hitPos, planeNormal, 5) — origin=contact point (trace EndPos), velocity=plane_normal, count=5, matching Base Send_Effect(EFFECT_SMOKE_RING, trace_endpos, plane_normal, 5). SMOKE_RING registered at EffectsList.cs:219 (effectinfo name \"smoke_ring\", present in effectinfo.txt). Emit resolves via Effects.ByName -> Sink.Emit.", result: pass }
+      - { kind: code, ref: "live sink: EffectEmitter.Sink is replaced by EffectNetSink on the server (ServerNet.cs:287), so the emission networks to clients; the client decodes it and renders via Effects.Spawn (ClientWorld RenderSink / OnEffect). Server-side emit matches Base #ifdef SVQC.", result: pass }
     confidence: high
-    notes: "Base emits it server-side (#ifdef SVQC) so the ring networks to all clients. Port has the contact point (hitPos) ready and a registered effect, but the effect/particle emit call is not wired."
+    notes: "CLOSED by Wave-2 (baseline was missing/dead). The contact point (hitPos) and plane normal were already plumbed by PlayerTouchWall; Wave-2 wired the emit call to the now-live EffectEmitter/EffectNetSink. Renders through the same registered-effect path Tuba uses (Tuba.cs:174)."
 
   - id: mutator-walljump.fx.sound
     name: "Wall-jump jump voice (PlayerSound playersound_jump)"
@@ -184,12 +186,15 @@ features:
     base_refs:
       - "common/mutators/mutator/walljump/walljump.qc:66"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/WalljumpMutator.cs:97"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/WalljumpMutator.cs:112"
+      - "src/XonoticGodot.Common/Gameplay/Sounds/SoundSystem.cs:229"
+      - "src/XonoticGodot.Common/Gameplay/Sounds/GameSound.cs:180"
     constants:
-      - { name: "sound cue", base: "playersound_jump (per-model voice, CH_PLAYER, VOL_BASE, VOICETYPE_PLAYERSOUND)", port: "hardcoded \"player/jump.wav\", SoundChannel.Body — does not resolve to any shipped asset", match: false }
+      - { name: "sound cue", base: "playersound_jump (per-model voice, CH_PLAYER, VOL_BASE, VOICETYPE_PLAYERSOUND)", port: "PlayPlayerSound(player,\"jump\",null,VolBase,AttenNorm) — resolves to sound/player/default.sounds/jump (NO on-disk asset; .sounds manifest unparsed)", match: false }
+      - { name: "channel", base: "CH_PLAYER", port: "SoundChannel.VoiceAuto (CH_VOICE/-2)", match: false }
     status:
-      logic: partial
-      values: missing
+      logic: faithful
+      values: partial
       timing: faithful
       presentation: stub
       audio: stub
@@ -197,12 +202,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The jump sound is Api.Sound.Play(player, SoundChannel.Body, \"player/jump.wav\") — a hardcoded raw sample path. No such asset exists: jump samples ship per-model at sound/player/<model>/player/jump.ogg (there is no generic sound/player/jump.* nor a .wav), so the cue almost certainly fails to resolve = silent. The port HAS the correct API — SoundSystem.PlayPlayerSound(player, \"jump\", modelDir) -> Sounds.PlayerSoundSample -> sound/<modeldir>/jump (GameSound.cs:180, \"jump\" is in PlayerSoundIds) — but walljump bypasses it. (DodgingMutator.cs:308 has the identical hardcoded-path bug.)"
-      - "Server-only emit: fires only in the server hook (no client-side activation), so even if it resolved it would not play in remote-client prediction; networked from the server matches Base's #ifdef SVQC emit, so this is acceptable IF the path resolved — but it does not."
+      - "WAVE-2 switched to the correct per-model API (SoundSystem.PlayPlayerSound(player,\"jump\",null,...)) — \"jump\" is a registered PlayerSoundId — but passes null for modelSoundDir, so PlayerSoundSample(null,\"jump\") => sound/player/default.sounds/jump. `default.sounds` is a TEXT MANIFEST (id->sample mapping, e.g. jump -> sound/player/espeak/player/jump), not a directory; the port's AssetLoader.ResolveSoundVpath probes sound/player/default.sounds/jump.{ogg,wav} verbatim, which does not exist, and nothing in the port parses .sounds manifests. So the cue STILL fails to resolve = silent. The proper fix is to pass the player's real model sound dir, but DamageSystem.ModelSoundDir is itself a `return null` stub (DamageSystem.cs:896), so the whole player-sound family currently routes to the unresolved default."
+      - "Channel divergence: Base plays on CH_PLAYER; SoundSystem.PlayPlayerSound plays on SoundChannel.VoiceAuto (CH_VOICE). Minor, and moot while the sample doesn't resolve."
+      - "Server-only emit (no client-side activation), so even if it resolved it would not play in remote-client prediction; networked from the server matches Base's #ifdef SVQC emit."
     verification:
-      - { kind: code, ref: "WalljumpMutator.cs:97 Api.Sound.Play(...,\"player/jump.wav\") vs Base PlayerSound(player, playersound_jump, ...). Asset scan: only per-model sound/player/<model>/player/jump.ogg present, no generic player/jump.* and no .wav. Correct per-model API SoundSystem.PlayPlayerSound exists (id \"jump\" registered) and is unused by walljump.", result: fail }
+      - { kind: code, ref: "WalljumpMutator.cs:112 SoundSystem.PlayPlayerSound(player,\"jump\",null,SoundLevels.VolBase,SoundLevels.AttenNorm). Sounds.PlayerSoundIds contains \"jump\" (GameSound.cs:159). PlayerSoundSample(null,id) = DefaultPlayerSoundDir + \"/\" + id = sound/player/default.sounds/jump (GameSound.cs:154,181). Asset scan: per-model jump.ogg present only under sound/player/<model>/player/jump.ogg; NO sound/player/default.sounds/jump.{ogg,wav} on disk; default.sounds is an ASCII manifest. AssetLoader.LoadSound/ResolveSoundVpath probe the literal path, no manifest parse -> miss -> silent.", result: fail }
     confidence: high
-    notes: "Downgraded from the draft's audio:partial to audio:stub: a sound call IS made on the right trigger, but with a path that resolves to no shipped sample, so no cue is produced. Distinct from the g_jump_grunt-gated standard-jump voice (which PlayerPhysics also does NOT play — see notes there). Runtime audibility not directly observed but the asset gap is conclusive."
+    notes: "PARTIALLY improved by Wave-2 (now the correct API + right volume + a registered \"jump\" id, so logic:faithful), but NOT closed: the null model-dir routes through the unparsed default.sounds manifest so no sample resolves and no cue is produced (presentation/audio stay stub). Distinct from the g_jump_grunt-gated standard-jump voice. Same default-dir resolution gap afflicts DamageSystem's pain/death voices (ModelSoundDir stub)."
 
   - id: mutator-walljump.fx.anim_and_oldvel
     name: "Jump animation action + post-impulse oldvelocity stash"
@@ -211,7 +217,7 @@ features:
       - "common/mutators/mutator/walljump/walljump.qc:64"
       - "common/mutators/mutator/walljump/walljump.qc:67"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/WalljumpMutator.cs:94"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/WalljumpMutator.cs:104"
     constants: []
     status:
       logic: partial
@@ -223,9 +229,9 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "animdecide_setaction(player, ANIMACTION_JUMP, true) not triggered on a wall jump (no jump animation action)."
-      - "oldvelocity is mis-stashed: port writes player.OldOrigin = player.Origin (wrong field AND wrong value); Base writes player.oldvelocity = player.velocity (the POST-impulse velocity). The port Entity has no OldVelocity field at all (Entity.cs:31 declares only Origin, OldOrigin, Velocity, ...), so the Base value is currently unrepresentable. A code comment rationalizes it but it is a defect, not a deliberate divergence."
+      - "animdecide_setaction(player, ANIMACTION_JUMP, true) not triggered on a wall jump (no anim-action seam in the port; WalljumpMutator.cs:113 is a comment only). UNCHANGED by Waves 1-2."
+      - "oldvelocity is mis-stashed: port writes player.OldOrigin = player.Origin (wrong field AND wrong value); Base writes player.oldvelocity = player.velocity (the POST-impulse velocity). The shared Entity (Framework/Entity.cs:31) STILL has no OldVelocity field — only Origin, OldOrigin, Velocity, Angles, AVelocity — so the Base value is unrepresentable here. (OldVelocity exists on ServerPlayerState and VehicleCommon, but not on the shared Entity the hook mutates.) UNCHANGED by Waves 1-2 (only the explanatory comment was reworded)."
     verification:
-      - { kind: code, ref: "WalljumpMutator.cs:94 stashes OldOrigin=Origin; no animdecide call anywhere in the file; Entity has no OldVelocity field (grep). Base stashes oldvelocity=velocity (walljump.qc:64) + animdecide ANIMACTION_JUMP (walljump.qc:67)", result: fail }
+      - { kind: code, ref: "WalljumpMutator.cs:104 stashes OldOrigin=Origin; no animdecide call anywhere in the file (line 113 is a comment); Entity (Framework/Entity.cs:31) has no OldVelocity field. Base stashes oldvelocity=velocity (walljump.qc:64) + animdecide ANIMACTION_JUMP (walljump.qc:67).", result: fail }
     confidence: high
-    notes: "Both Base side-effects are server-only (#ifdef SVQC). Low gameplay impact unless a consumer reads oldvelocity after a wall jump (Racer.cs:179 notes OldVelocity is unmodeled elsewhere too). animdecide is purely cosmetic (jump pose)."
+    notes: "Still open after Waves 1-2 (no functional change; the diff only reworded the comment). Both Base side-effects are server-only (#ifdef SVQC). Low gameplay impact unless a consumer reads oldvelocity after a wall jump; animdecide is purely cosmetic (jump pose)."

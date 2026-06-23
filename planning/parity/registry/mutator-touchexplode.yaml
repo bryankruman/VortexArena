@@ -5,12 +5,8 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 7
   worst_gaps:
-    - "edgedamage stays hardcoded 20 (cfg says 0): the `if(cvar != 0)` override at Hook() skips a legitimate 0 — edge victims take 20 dmg vs Base 0"
-    - "DEATH_TOUCHEXPLODE obituary not wired: blast passes deathType 0 / no deathTag, so a touch-explode kill reads as generic FRAG/GENERIC, not 'died in an accident' — AND even the deathTag 'touchexplode' string is not registered in DeathTypes (SelectSpecial falls through to GENERIC)"
-    - "EFFECT_EXPLOSION_SMALL particle never emitted (port plays only the sound) — no visible blast puff at the contact point"
-    - "default constants (100/50/20/200) match no Base config; only saved by the cvar override at Hook()"
-    - "impact sound uses SoundChannel.Item (3) instead of CH_TRIGGER (-3)"
-    - "active-mutators list entry missing: Base util.qc:315 registers MUT_TOUCHEXPLODE 'Touch explode' for the server-browser/scoreboard mutator string; the port has no equivalent list"
+    - "DEATH_TOUCHEXPLODE obituary still mis-resolves: the blast now PASSES deathTag 'touchexplode' (the kill is tagged + processed), but 'touchexplode' is NOT a registered DeathTypes constant and is absent from both _registry and the SelectSpecial switch (DeathTypes.cs / DeathMessages.cs:209-225) — so SelectSpecial falls through to DEATH_SELF_GENERIC / DEATH_MURDER_FRAG, NOT 'died in an accident'. Needs a DeathTypes TOUCHEXPLODE registry entry + SelectSpecial branch. Same latent defect affects the nade booms that also pass 'touchexplode' (NadeSpawnBoom.cs:62, NadeTranslocateBoom.cs:81)."
+    - "active-mutators list entry missing: Base util.qc:315 registers MUT_TOUCHEXPLODE 'Touch explode' for the server-browser/scoreboard mutator string; the port still has no MUT_-style active-mutators string builder (only the create-game menu checkbox). Systemic gap shared by all mutators."
 features:
   - id: touchexplode.enable.cvar
     name: "Enable predicate (g_touchexplode)"
@@ -18,7 +14,7 @@ features:
     base_refs:
       - "common/mutators/mutator/touchexplode/sv_touchexplode.qc:11"   # REGISTER_MUTATOR(touchexplode, expr_evaluate(autocvar_g_touchexplode))
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/TouchExplodeMutator.cs:35"  # IsEnabled => g_touchexplode != 0
+      - "src/XonoticGodot.Common/Gameplay/Mutators/TouchExplodeMutator.cs:38"  # IsEnabled => g_touchexplode != 0
       - "game/menu/dialogs/DialogMutators.cs:129"                              # checkbox bound to g_touchexplode
     constants:
       - { name: "g_touchexplode", base: "0 (string, off)", port: "0", match: true }
@@ -33,9 +29,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "MutatorActivation.Apply (GameWorld.cs:511) adds when IsEnabled; checkbox bound to g_touchexplode (DialogMutators.cs:129)", result: pass }
+      - { kind: code, ref: "MutatorActivation.Apply (GameWorld.cs:535) adds when IsEnabled; checkbox bound to g_touchexplode (DialogMutators.cs:129); g_touchexplode registered mutators.cfg:162", result: pass }
     confidence: high
-    notes: "expr_evaluate(string) vs float != 0 — equivalent for the 0/1 cvar. No mutator/gametype exclusions in Base; none in port. Base mutator-info describe/message text (touchexplode.qc/.qh MENUQC) has no port menu-info-page analogue, but that is cosmetic menu help text only."
+    notes: "expr_evaluate(string) vs float != 0 — equivalent for the 0/1 cvar. No mutator/gametype exclusions in Base; none in port. Unchanged by Wave-1/2. Base mutator-info describe/message text has no port menu-info-page analogue, but that is cosmetic menu help text only."
 
   - id: touchexplode.scan.prethink
     name: "Per-frame pairwise overlap scan (PlayerPreThink)"
@@ -43,7 +39,7 @@ features:
     base_refs:
       - "common/mutators/mutator/touchexplode/sv_touchexplode.qc:29"   # MUTATOR_HOOKFUNCTION(touchexplode, PlayerPreThink)
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/TouchExplodeMutator.cs:69"   # OnPlayerPreThink
+      - "src/XonoticGodot.Common/Gameplay/Mutators/TouchExplodeMutator.cs:75"   # OnPlayerPreThink
       - "src/XonoticGodot.Server/GameWorld.cs:988"                              # PlayerPreThink.Call per client per tick
     constants:
       - { name: "outer_guard", base: "time>texp_time && !game_stopped && IS_PLAYER && !IS_DEAD && !FROZEN && !IS_INDEPENDENT_PLAYER", port: "same set (now>TouchExplodeTime + GameStopped + IsLivePlayer + IsFrozen + IsIndependentPlayer)", match: true }
@@ -58,11 +54,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "IS_INDEPENDENT_PLAYER guard is a no-op: Entity.IsIndependentPlayer is hardcoded false (DamageEntityState.cs:132); equivalent today since the port has no independent-players mode, but it won't gate if one is added."
+      - "IS_INDEPENDENT_PLAYER guard is a no-op: Entity.IsIndependentPlayer is hardcoded false (DamageEntityState.cs:132); equivalent today since the port has no independent-players mode, but it won't gate if one is added. Unchanged by Wave-1/2."
     verification:
       - { kind: code, ref: "OnClientMove (GameWorld.cs:986-988) builds PlayerPreThinkArgs and fires PlayerPreThink.Call per client each tick; IsFrozen via StatusEffectsCatalog.Frozen; AbsMin/AbsMax kept current in EngineServices.LinkEdict", result: pass }
     confidence: high
-    notes: "QC FOREACH_CLIENT inner loop = port foreach(FindByClass('player')); handler invoked once per client so the all-players scan runs per-client just like QC. O(players^2)/frame in both, bounded by the debounce. IsLivePlayer folds in IS_PLAYER(EntFlags.Client) + !IS_DEAD(DeadState) + !IsFreed."
+    notes: "QC FOREACH_CLIENT inner loop = port foreach(FindByClass('player')); handler invoked once per client so the all-players scan runs per-client just like QC. O(players^2)/frame in both, bounded by the debounce. IsLivePlayer folds in IS_PLAYER(EntFlags.Client) + !IS_DEAD(DeadState) + !IsFreed. Unchanged by Wave-1/2."
 
   - id: touchexplode.scan.debounce
     name: "0.2s per-pair re-trigger debounce"
@@ -70,8 +66,8 @@ features:
     base_refs:
       - "common/mutators/mutator/touchexplode/sv_touchexplode.qc:40"   # player.touchexplode_time = it.touchexplode_time = time + 0.2
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/TouchExplodeMutator.cs:92"   # player.TouchExplodeTime = other.TouchExplodeTime = now + 0.2f
-      - "src/XonoticGodot.Common/Gameplay/Mutators/EntityMutatorState.cs:42"    # .TouchExplodeTime field
+      - "src/XonoticGodot.Common/Gameplay/Mutators/TouchExplodeMutator.cs:98"   # player.TouchExplodeTime = other.TouchExplodeTime = now + 0.2f
+      - "src/XonoticGodot.Common/Gameplay/Mutators/EntityMutatorState.cs:41"    # .TouchExplodeTime field
     constants:
       - { name: "debounce_s", base: "0.2", port: "0.2", match: true }
     status:
@@ -85,9 +81,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "symmetric assignment to both entities (TouchExplodeMutator.cs:92) matches QC line 40; field is a plain per-entity server-side float (EntityMutatorState.cs:42), not networked", result: pass }
+      - { kind: code, ref: "symmetric assignment to both entities (TouchExplodeMutator.cs:98) matches QC line 40; field is a plain per-entity server-side float (EntityMutatorState.cs:41), not networked", result: pass }
     confidence: high
-    notes: ".touchexplode_time is a plain edict field in QC; port promotes it to Entity.TouchExplodeTime (EntityMutatorState)."
+    notes: ".touchexplode_time is a plain edict field in QC; port promotes it to Entity.TouchExplodeTime (EntityMutatorState). Unchanged by Wave-1/2."
 
   - id: touchexplode.blast.radiusdamage
     name: "Midpoint explosion + RadiusDamage"
@@ -95,32 +91,30 @@ features:
     base_refs:
       - "common/mutators/mutator/touchexplode/sv_touchexplode.qc:15"   # PlayerTouchExplode: org midpoint + RadiusDamage
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/TouchExplodeMutator.cs:98"    # PlayerTouchExplode
-      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponSplash.cs:49"           # RadiusDamage
+      - "src/XonoticGodot.Common/Gameplay/Mutators/TouchExplodeMutator.cs:104"   # PlayerTouchExplode
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponSplash.cs:49"            # RadiusDamage
     constants:
-      - { name: "g_touchexplode_radius", base: "50", port: "100 hardcoded; cfg 50 applied via Hook() (r!=0)", match: false }
-      - { name: "g_touchexplode_damage", base: "20", port: "50 hardcoded; cfg 20 applied via Hook() (d!=0)", match: false }
-      - { name: "g_touchexplode_edgedamage", base: "0", port: "20 hardcoded; cfg 0 NOT applied (0!=0f is false) -> stays 20", match: false }
-      - { name: "g_touchexplode_force", base: "300", port: "200 hardcoded; cfg 300 applied via Hook() (f!=0)", match: false }
+      - { name: "g_touchexplode_radius", base: "50", port: "50 (default field + unconditional read of registered cfg)", match: true }
+      - { name: "g_touchexplode_damage", base: "20", port: "20 (default field + unconditional read of registered cfg)", match: true }
+      - { name: "g_touchexplode_edgedamage", base: "0", port: "0 (default field + unconditional read; cfg 0 now applied)", match: true }
+      - { name: "g_touchexplode_force", base: "300", port: "300 (default field + unconditional read of registered cfg)", match: true }
       - { name: "org_z_offset", base: "(p1.mins.z + p2.mins.z)*0.5 (feet)", port: "same (org.Z += (p1.Mins.Z + p2.Mins.Z)*0.5f)", match: true }
       - { name: "attacker", base: "NULL (no credit)", port: "attacker: null", match: true }
       - { name: "inflictor", base: "spawn()/setorigin/RadiusDamage/delete throwaway entity", port: "Spawn()/SetOrigin/RadiusDamage/Remove (className 'touchexplode')", match: true }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: na
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "edgedamage stays hardcoded 20 (cfg says 0): the `if (e != 0f) EdgeDamage = e;` override at Hook() (TouchExplodeMutator.cs:49) cannot set a legitimate 0 — so the hardcoded 20 survives and an edge victim takes 20 dmg vs Base 0."
-      - "default constants (100/50/20/200) match no Base config; if the cvars were never registered these wrong fallbacks would be used. The shipped cfg saves radius/damage/force via the non-zero override but NOT edgedamage."
+    gaps: []
     verification:
-      - { kind: value, ref: "TouchExplodeMutator.cs:21-30 (defaults) + :47-50 (Hook override) vs mutators.cfg:163-166 (50/20/0/300)", result: fail }
+      - { kind: value, ref: "Wave-2 replaced the `if (cvar != 0f)` guard with an unconditional read (TouchExplodeMutator.cs:53-56); class defaults now 50/20/0/300 (TouchExplodeMutator.cs:24-33) matching mutators.cfg:163-166; cfg is exec'd by ConfigLoader.LoadServerConfig (GameWorld.cs:433) BEFORE MutatorActivation.Apply (GameWorld.cs:535) so Hook() reads the registered cfg values on the live path", result: pass }
     confidence: high
-    notes: "Blast geometry (midpoint-at-feet, spawn/setorigin/RadiusDamage/delete inflictor, attacker null, DMG_NOWEP analogue via deathType 0) is faithful; only the numeric defaults and the edgedamage non-zero-override interaction diverge. WeaponSplash.RadiusDamage is the shared headless RadiusDamageForSource port."
+    notes: "FIXED in Wave-2. Removing the non-zero override is what closes the edgedamage=0 gap: the legitimate cfg 0 is now read into EdgeDamage. The class-field defaults (50/20/0/300) now also match cfg, so a unit test that loads no cfg would read 0 from GetFloat and over-write them to 0 (radius 0 -> RadiusDamage early-returns) — but that bare-test path is not the live match path; on the live path the cfg is loaded first. Blast geometry (midpoint-at-feet, spawn/setorigin/RadiusDamage/delete inflictor, attacker null, DMG_NOWEP analogue) was already faithful. WeaponSplash.RadiusDamage is the shared headless RadiusDamageForSource port."
 
   - id: touchexplode.blast.deathtype
     name: "DEATH_TOUCHEXPLODE death type / obituary"
@@ -129,26 +123,28 @@ features:
       - "common/mutators/mutator/touchexplode/sv_touchexplode.qc:25"   # RadiusDamage(... DEATH_TOUCHEXPLODE.m_id ...)
       - "common/deathtypes/all.inc:35"                                 # REGISTER_DEATHTYPE(TOUCHEXPLODE, DEATH_SELF/MURDER_TOUCHEXPLODE)
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/TouchExplodeMutator.cs:113"   # RadiusDamage(... deathType: 0) — no deathTag passed
-      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:163" # DEATH_SELF_TOUCHEXPLODE string (registered, unreachable from this blast)
+      - "src/XonoticGodot.Common/Gameplay/Mutators/TouchExplodeMutator.cs:121"   # RadiusDamage(... deathTag: "touchexplode")
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponSplash.cs:208"           # deathTag path -> Combat.Damage(e, ..., tag, ...)
+      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:187"    # SelectSpecial — no TOUCHEXPLODE case (falls to GENERIC/FRAG)
+      - "src/XonoticGodot.Common/Gameplay/Damage/DeathTypes.cs:330"              # _registry — no 'touchexplode' entry
     constants:
-      - { name: "deathtype", base: "DEATH_TOUCHEXPLODE -> 'died in an accident'", port: "0 (generic) — no deathTag passed AND no 'touchexplode' case in DeathTypes/SelectSpecial", match: false }
+      - { name: "deathtype", base: "DEATH_TOUCHEXPLODE -> 'died in an accident'", port: "tag 'touchexplode' now passed + flows to Combat.Damage; but SelectSpecial has no TOUCHEXPLODE case -> resolves DEATH_SELF_GENERIC / DEATH_MURDER_FRAG", match: false }
     status:
-      logic: missing
+      logic: partial
       values: na
       timing: na
       presentation: missing
       audio: na
-      liveness: dead
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "DEATH_TOUCHEXPLODE obituary not wired: the blast calls WeaponSplash.RadiusDamage with deathType:0 and no deathTag (TouchExplodeMutator.cs:113), so a touch-explode kill produces a generic FRAG/GENERIC obituary, not 'died in an accident'."
-      - "Deeper: even if the mutator passed deathTag 'touchexplode', DeathMessages.SelectSpecial would still mis-resolve it — 'touchexplode' is NOT a registered DeathTypes constant and is absent from both _registry and the SelectSpecial switch (DeathTypes.cs / DeathMessages.cs:209-225), so it falls through `_ => GENERIC`. The same latent defect affects the nade booms that DO pass 'touchexplode' (NadeSpawnBoom.cs:62, NadeTranslocateBoom.cs:81). Fix needs BOTH: pass the tag here AND add a TOUCHEXPLODE constant + registry/SelectSpecial branch."
+      - "Obituary still mis-resolves: Wave-2 added deathTag 'touchexplode' (TouchExplodeMutator.cs:121), and WeaponSplash.RadiusDamage routes a non-null deathTag straight to Combat.Damage(e, ..., tag, ...) (WeaponSplash.cs:208-214), so the kill is now TAGGED + processed through the special-death pipeline. BUT 'touchexplode' is NOT a registered DeathTypes constant and is absent from both DeathTypes._registry (DeathTypes.cs:330) AND the SelectSpecial switch (DeathMessages.cs:209-225), so DeathMessages.SelectSpecial('touchexplode', murder) falls through `_ => GENERIC` -> DEATH_SELF_GENERIC / DEATH_MURDER_FRAG, not 'died in an accident'."
+      - "Full fix still needs a DeathTypes TOUCHEXPLODE constant + _registry/SelectSpecial branch (cross-file, deathtype-registry phase). The DEATH_SELF/MURDER_TOUCHEXPLODE notification rows are registered (NotificationsList.cs:163/240/859/1037/1080) but remain unreachable until SelectSpecial maps the tag. Same latent defect affects the nade booms that pass 'touchexplode' (NadeSpawnBoom.cs:62, NadeTranslocateBoom.cs:81)."
     verification:
-      - { kind: code, ref: "blast call passes deathType:0 (no tag); grep of DeathTypes.cs for 'touchexplode' = 0 hits; SelectSpecial (DeathMessages.cs:207-235) has no TOUCHEXPLODE base-name case", result: fail }
+      - { kind: code, ref: "blast now passes deathTag 'touchexplode' (TouchExplodeMutator.cs:121); WeaponSplash.cs:208-214 forwards it to Combat.Damage; grep of DeathTypes.cs for 'touchexplode' = 0 hits; SelectSpecial (DeathMessages.cs:187-235) has no TOUCHEXPLODE base-name case -> GENERIC/FRAG", result: fail }
     confidence: high
-    notes: "The DEATH_SELF/MURDER_TOUCHEXPLODE notification ROWS are registered (NotificationsList.cs:163/240/859/1037/1080) but are unreachable from this blast. Note WeaponSplash.RadiusDamage DOES accept an optional `deathTag` param (WeaponSplash.cs:51) — the mutator simply omits it. Full fix is a 3-part wiring (tag + DeathTypes registry entry + SelectSpecial branch)."
+    notes: "PARTIALLY improved by Wave-2: the deathTag now flows (logic missing->partial; liveness dead->partial — the kill IS tagged + damages, but the obituary text is wrong). The remaining work is the 2-part deathtype-registry wiring (DeathTypes constant + SelectSpecial branch); the producer side (passing the tag) is now done. WeaponSplash.RadiusDamage's deathTag param carries the special-death string through to the damage pipeline correctly."
 
   - id: touchexplode.blast.presentation
     name: "Impact sound + explosion_small particle"
@@ -157,27 +153,27 @@ features:
       - "common/mutators/mutator/touchexplode/sv_touchexplode.qc:20"   # sound(p1, CH_TRIGGER, SND_TOUCHEXPLODE)
       - "common/mutators/mutator/touchexplode/sv_touchexplode.qc:21"   # Send_Effect(EFFECT_EXPLOSION_SMALL, org)
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/TouchExplodeMutator.cs:105"   # Api.Sound.Play(p1, SoundChannel.Item, weapons/grenade_impact.wav)
+      - "src/XonoticGodot.Common/Gameplay/Mutators/TouchExplodeMutator.cs:111"   # Api.Sound.Play(p1, SoundChannel.TriggerAuto, weapons/grenade_impact.wav)
+      - "src/XonoticGodot.Common/Gameplay/Mutators/TouchExplodeMutator.cs:112"   # EffectEmitter.Emit("EXPLOSION_SMALL", org)
+      - "game/net/ServerNet.cs:287"                                              # EffectEmitter.Sink = new EffectNetSink (live server effect networking)
     constants:
       - { name: "sound_sample", base: "W_Sound('grenade_impact')", port: "weapons/grenade_impact.wav", match: true }
-      - { name: "sound_channel", base: "CH_TRIGGER (-3)", port: "SoundChannel.Item (3)", match: false }
-      - { name: "particle", base: "EFFECT_EXPLOSION_SMALL ('explosion_small')", port: "none (not emitted)", match: false }
+      - { name: "sound_channel", base: "CH_TRIGGER (-3)", port: "SoundChannel.TriggerAuto (-3)", match: true }
+      - { name: "particle", base: "EFFECT_EXPLOSION_SMALL ('explosion_small')", port: "EffectEmitter.Emit(\"EXPLOSION_SMALL\") -> 'explosion_small'", match: true }
     status:
-      logic: partial
-      values: na
+      logic: faithful
+      values: faithful
       timing: na
-      presentation: missing
-      audio: partial
-      liveness: partial
+      presentation: faithful
+      audio: faithful
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "EFFECT_EXPLOSION_SMALL particle never emitted: PlayerTouchExplode plays only the sound and never calls the Send_Effect / EffectEmitter analogue, so there is no visible blast puff at the contact point. explosion_small IS registered (EffectsList.cs:29) — the producer just doesn't fire it."
-      - "impact sound uses SoundChannel.Item (= 3) instead of CH_TRIGGER (port enum TriggerAuto = -3); sample is correct, channel-stacking/replacement semantics differ."
+    gaps: []
     verification:
-      - { kind: code, ref: "PlayerTouchExplode (TouchExplodeMutator.cs:105) plays sound with SoundChannel.Item; no EffectEmitter/Send_Effect call; SoundChannel enum (Services.cs:112/119) TriggerAuto=-3 vs Item=3", result: fail }
+      - { kind: code, ref: "PlayerTouchExplode (TouchExplodeMutator.cs:111-112) plays the grenade_impact sample on SoundChannel.TriggerAuto (= CH_TRIGGER -3, Services.cs:112) AND emits EXPLOSION_SMALL; EXPLOSION_SMALL registered (EffectsList.cs:29 -> 'explosion_small'); EffectEmitter.Sink is replaced by the live EffectNetSink on the server path (ServerNet.cs:287) so the effect is networked to clients", result: pass }
     confidence: high
-    notes: "Sound is audible (correct grenade_impact sample) but on the wrong channel; the explosion_small particle is fully missing. Marked liveness partial because the sound half is live and the particle half is absent."
+    notes: "FIXED in Wave-2 on both halves. (1) Sound channel corrected Item(3) -> TriggerAuto(-3) = CH_TRIGGER, so channel-stacking/replacement semantics now match Base. (2) The EFFECT_EXPLOSION_SMALL particle is now emitted via EffectEmitter.Emit and is LIVE: the host installs a real EffectNetSink (ServerNet.cs:287) that networks Send_Effect-equivalent requests to clients (RecordingSink only stands in for headless tests). The sample, channel, and effect name all match Base."
 
   - id: touchexplode.list.activemutators
     name: "Active-mutators list entry ('Touch explode')"
@@ -197,8 +193,8 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Base appends 'Touch explode' to the active-mutators string (util.qc:315, MUT_TOUCHEXPLODE) used for the server-browser mutator field and the scoreboard/info mutator list. The port has no MUT_-style active-mutators string builder, so an active touchexplode game is not advertised in any mutator list. This is a systemic gap shared by all mutators (the whole MUT_* enumeration is unported), not unique to touchexplode."
+      - "Base appends 'Touch explode' to the active-mutators string (util.qc:315, MUT_TOUCHEXPLODE) used for the server-browser mutator field and the scoreboard/info mutator list. The port still has no MUT_-style active-mutators string builder, so an active touchexplode game is not advertised in any mutator list. Systemic gap shared by all mutators (the whole MUT_* enumeration is unported); only the create-game menu checkbox (DialogMutators.cs:129) exists. Unchanged by Wave-1/2."
     verification:
-      - { kind: code, ref: "grep of src/** and game/** for an active-mutators / MUT_ list builder = none; only the create-game menu checkbox (DialogMutators.cs:129) exists", result: fail }
+      - { kind: code, ref: "grep of src/** and game/** for an active-mutators / MUT_ list builder = none (only DialogMutators.cs); Base util.qc:315 unported", result: fail }
     confidence: high
-    notes: "Cosmetic/info presentation only — no gameplay effect. Flagged so the missing active-mutators list is tracked against this unit; likely owned by a future shared server-info/scoreboard parity unit."
+    notes: "Cosmetic/info presentation only — no gameplay effect. Flagged so the missing active-mutators list is tracked against this unit; likely owned by a future shared server-info/scoreboard parity unit. Unchanged by Wave-1/2."

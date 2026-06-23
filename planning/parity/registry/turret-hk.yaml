@@ -5,17 +5,14 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 11
   worst_gaps:
-    - "Target-selection biases all wrong: rangebias 0.5/samebias 0.01/anglebias 0.1 default to 1.0 in the port — scoring weights and target stickiness are completely off (samebias 100x too sticky)"
-    - "shot_speed_turnrate 0.1 vs Base 0.25 — guided rocket turns ~2.5x slower, banks lazily and clips corners"
-    - "Guidance accel/decel constants hardcoded & wrong (accel 1.05/accel2 1.1/decel 0.85 vs Base 1.025/1.05/0.9) — wrong speed envelope"
-    - "Fuel-out behavior differs: Base goes inert (MOVETYPE_BOUNCE, stops thinking, drops as a dud) at cnt<time; port detonates at TTL"
-    - "No re-seek of nearest valid target when enemy lost (Base scans g_damagedbycontents within 5000u); port holds heading"
-    - "target_range_optimal 3000 vs Base 5000 (target-selection range scoring wrong)"
-    - "respawntime 60 vs Base 90 (port passes generic TurretSpawn.Init default, not the cfg value)"
-    - "aim_maxpitch 30 vs Base 20 (head over-pitches)"
+    - "Guidance accel/decel constants STILL hardcoded & wrong in GuidedProjectile.HkThink (accel 1.05/accel2 1.1/decel 0.85 vs Base 1.025/1.05/0.9) — wrong speed envelope (turnrate WAS fixed to 0.25)"
+    - "Fuel-out behavior differs: Base goes inert (MOVETYPE_BOUNCE, stops thinking, drops as a dud) at cnt<time; port still detonates at TTL and conflates the 30s fuel window with the 30s TTL"
+    - "No re-seek of nearest valid target when enemy lost (Base scans g_damagedbycontents within 5000u via hk_is_valid_target); port still only nulls a dead enemy and holds heading"
     - "No external target reception (turret_hk_addtarget / TUR_FLAG_RECIEVETARGETS): HK cannot be fed a designated target"
     - "No WEP_HK player special-attack weapon (hidden/dev path) — not ported at all"
+    - "Head model (hk.md3) not instantiated as a separate head entity; no tag_head attachment"
     - "No tr_think head-frame animation, no muzzle te_explosion, no PROJECTILE_ROCKET trail (presentation)"
+    - "Select/firecheck flag set still diverges (no SelectVehicles/SelectTriggerTarget consts; AFF not a discrete gate)"
 features:
   - id: turret-hk.identity.def
     name: "Identity, hitbox, models, spawnflags"
@@ -45,9 +42,9 @@ features:
       - "Head model (hk.md3) not instantiated as a separate head entity; no tag_head attachment."
       - "TUR_FLAG_RECIEVETARGETS spawnflag not modeled (see turret-hk.target.recieve)."
     verification:
-      - { kind: code_read, ref: "hk.qh vs HkTurret ctor + Spawn", result: pass }
+      - { kind: code_read, ref: "hk.qh vs HkTurret ctor + Spawn (unchanged by Wave-2)", result: pass }
     confidence: high
-    notes: "Identity/hitbox/base model + health faithful; head bone and receive-targets flag not modeled."
+    notes: "Identity/hitbox/base model + health faithful; head bone and receive-targets flag not modeled. Unchanged from baseline."
   - id: turret-hk.setup.tr_setup
     name: "tr_setup: aim/select/firecheck/shoot flags, ammo flags"
     layer: [authority]
@@ -77,9 +74,9 @@ features:
       - "Select flags differ: Base has VEHICLES + TRIGGERTARGET (no discrete ANGLELIMITS); port has Players + AngleLimits and NO SelectVehicles/SelectTriggerTarget flag (those flags do not exist in TurretAI) — vehicle acquirability unverified, trigger-target acquisition absent."
       - "AFF (avoid-friendly-fire trace) firecheck flag not modeled as a discrete gate."
     verification:
-      - { kind: code_read, ref: "hk.qc tr_setup vs HkTurret.Think TurretParams + TurretAI Select* flag set (no Vehicles/TriggerTarget consts)", result: pass }
+      - { kind: code_read, ref: "hk.qc tr_setup vs HkTurret.Think Select const + TurretParams (unchanged by Wave-2)", result: pass }
     confidence: medium
-    notes: "Core setup faithful (simple-aim, clear-target after fire); the select/firecheck flag SET diverges (vehicles, triggertarget, AFF)."
+    notes: "Core setup faithful (simple-aim, clear-target after fire); the select/firecheck flag SET still diverges (vehicles, triggertarget, AFF). Unchanged from baseline."
   - id: turret-hk.spawn.liveness
     name: "Map spawnfunc wiring + per-frame think (turret_hk placed on map)"
     layer: [authority]
@@ -102,9 +99,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code_read, ref: "SpawnFuncs.Register(turret_hk, TurretSpawnFuncs.Hk) at MapObjectsRegistry.cs:211 -> Hk -> Spawn(e,'hk'); GameInit runs RegisterAll; Think re-armed each frame", result: pass }
+      - { kind: code_read, ref: "SpawnFuncs.Register(turret_hk, TurretSpawnFuncs.Hk) -> Hk -> Spawn(e,'hk'); GameInit runs RegisterAll; Think re-armed each frame", result: pass }
     confidence: high
-    notes: "Confirmed live by code-trace (registered spawnfunc, RegisterAll at boot, Think re-armed). Not yet confirmed that a stock map actually places turret_hk."
+    notes: "Confirmed live by code-trace (registered spawnfunc, RegisterAll at boot, Think re-armed). Not yet confirmed that a stock map actually places turret_hk. Unchanged from baseline."
   - id: turret-hk.combat.brain
     name: "Acquire/aim/track/fire combat brain (shared turret framework)"
     layer: [authority]
@@ -116,7 +113,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:RunCombat"
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:ScoreTarget"
-      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Fire"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:SelectTarget"
       - "src/XonoticGodot.Common/Gameplay/Turrets/HkTurret.cs:Think"
     constants:
       - { name: "shot_refire", base: "5", port: "5", match: true }
@@ -124,33 +121,30 @@ features:
       - { name: "ammo_recharge", base: "16", port: "16", match: true }
       - { name: "target_range", base: "6000", port: "6000", match: true }
       - { name: "target_range_min", base: "220", port: "220", match: true }
-      - { name: "target_range_optimal", base: "5000", port: "3000", match: false }
-      - { name: "target_select_rangebias", base: "0.5", port: "1.0 (TurretParams default; HkTurret.Think omits it)", match: false }
-      - { name: "target_select_samebias", base: "0.01", port: "1.0 (TurretParams default; HkTurret.Think omits it)", match: false }
-      - { name: "target_select_anglebias", base: "0.1", port: "1.0 (TurretParams default; HkTurret.Think omits it)", match: false }
+      - { name: "target_range_optimal", base: "5000", port: "5000 (FIXED: was 3000)", match: true }
+      - { name: "target_select_rangebias", base: "0.5", port: "0.5 (FIXED: now passed via TurretParams, consumed at TurretAI.cs:325)", match: true }
+      - { name: "target_select_samebias", base: "0.01", port: "0.01 (FIXED: now passed; seed score *0.01 at TurretAI.cs:352)", match: true }
+      - { name: "target_select_anglebias", base: "0.1", port: "0.1 (FIXED: now passed; consumed at TurretAI.cs:326)", match: true }
       - { name: "target_select_playerbias", base: "1", port: "1.0", match: true }
-      - { name: "target_select_missilebias", base: "0", port: "1.0 default (moot: SelectMissiles unset, missiles rejected pre-score)", match: false }
+      - { name: "target_select_missilebias", base: "0", port: "0 (FIXED: now passed; moot since SelectMissiles unset)", match: true }
       - { name: "aim_speed", base: "100", port: "100", match: true }
       - { name: "aim_firetolerance_dist", base: "500", port: "500", match: true }
       - { name: "shot_volly", base: "0", port: "0", match: true }
-      - { name: "targetscan_maxdelay", base: "1", port: "0.6 (framework, hardcoded)", match: false }
+      - { name: "targetscan_maxdelay", base: "1", port: "1 (FIXED: now Cvar('g_turrets_targetscan_maxdelay',1f) at TurretAI.cs:552; was hardcoded 0.6)", match: true }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Target-selection biases are ALL wrong: HkTurret.Think builds TurretParams without passing rangeBias/sameBias/angleBias/missileBias, so they default to 1.0 — Base hk is rangebias 0.5, samebias 0.01, anglebias 0.1, missilebias 0. The whole ScoreTarget weighting is off; samebias 1.0 vs 0.01 makes the port's HK ~100x stickier to its current target than Base."
-      - "target_range_optimal 3000 vs Base 5000 (range-bias distance score peaks at the wrong range)."
-      - "Framework targetscan_maxdelay hardcoded 0.6 vs Base default 1 (shared turret-framework drift; affects rescan cadence)."
+    gaps: []
     verification:
-      - { kind: code_read, ref: "RunCombat/ScoreTarget vs turret_think/select/firecheck/fire; turrets.cfg g_turrets_unit_hk_* ranges+biases vs HkTurret consts + TurretParams defaults (TurretAI.cs:280,821)", result: pass }
+      - { kind: code_read, ref: "Wave-2: HkTurret.Think now passes rangeBias 0.5/sameBias 0.01/angleBias 0.1/missileBias 0/playerBias 1 + rangeOptimal 5000; ScoreTarget (TurretAI.cs:325-328) + SelectTarget seed (:352) consume them; targetscan_maxdelay Cvar-backed default 1 (:552). turrets.cfg defaults confirmed.", result: pass }
     confidence: high
-    notes: "Combat flow + ranges/refire/ammo faithful; the target-scoring biases (rangebias/samebias/anglebias) all fall through to the wrong framework defaults, range_optimal and framework maxdelay also diverge."
+    notes: "BASELINE GAP CLOSED. Wave-2 threaded all the target-scoring biases (rangebias/samebias/anglebias/missilebias) through TurretParams and they are genuinely consumed in ScoreTarget/SelectTarget; target_range_optimal corrected to 5000; framework targetscan_maxdelay now reads the cvar default 1. samebias 0.01 makes the seed score 100x smaller (Base semantics: low samebias = easy to switch off current target — the baseline's 'too sticky' read was inverted; now matches Base)."
   - id: turret-hk.weapon.fire
     name: "wr_think (turret branch): launch the guided rocket"
     layer: [authority]
@@ -185,9 +179,9 @@ features:
       - "No muzzle te_explosion flash on launch (hk_weapon.qc:30)."
       - "No PROJECTILE_ROCKET client trail/smoke on the rocket."
     verification:
-      - { kind: code_read, ref: "hk_weapon.qc wr_think (turret branch) vs HkTurret.Attack + GuidedProjectile.Launch", result: pass }
+      - { kind: code_read, ref: "hk_weapon.qc wr_think (turret branch) vs HkTurret.Attack + GuidedProjectile.Launch (unchanged by Wave-2)", result: pass }
     confidence: high
-    notes: "Launch ballistics/damage/flags faithful; fire sound (rocket_fire) plays; muzzle flash + projectile trail missing (presentation)."
+    notes: "Launch ballistics/damage/flags faithful; fire sound (rocket_fire) plays; muzzle flash + projectile trail still missing (presentation). Unchanged from baseline."
   - id: turret-hk.weapon.guidance
     name: "turret_hk_missile_think: obstacle-avoiding guided-rocket flight model"
     layer: [authority]
@@ -199,10 +193,10 @@ features:
     constants:
       - { name: "shot_speed (band floor)", base: "500", port: "500", match: true }
       - { name: "shot_speed_max", base: "1000", port: "1000", match: true }
-      - { name: "shot_speed_turnrate", base: "0.25", port: "0.1", match: false }
-      - { name: "shot_speed_accel", base: "1.025", port: "1.05 (hardcoded in HkThink)", match: false }
-      - { name: "shot_speed_accel2", base: "1.05", port: "1.1 (hardcoded)", match: false }
-      - { name: "shot_speed_decel", base: "0.9", port: "0.85 (hardcoded)", match: false }
+      - { name: "shot_speed_turnrate", base: "0.25", port: "0.25 (FIXED: HkTurret passes ShotTurnRate=0.25, consumed via g.TurnRate at HkThink:272)", match: true }
+      - { name: "shot_speed_accel", base: "1.025", port: "1.05 (STILL hardcoded in HkThink:226)", match: false }
+      - { name: "shot_speed_accel2", base: "1.05", port: "1.1 (STILL hardcoded at HkThink:263,269)", match: false }
+      - { name: "shot_speed_decel", base: "0.9", port: "0.85 (STILL hardcoded at HkThink:224)", match: false }
       - { name: "proximity detonate", base: "shot_radius * 0.25 = 50", port: "Radius * 0.25 = 50", match: true }
       - { name: "lead time clamp", base: "min(dist/speed, 0.5)", port: "min(dist/speed, 0.5)", match: true }
       - { name: "forward trace len", base: "myspeed * 3", port: "myspeed * 3", match: true }
@@ -222,15 +216,14 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "shot_speed_turnrate 0.1 vs Base 0.25 — rocket turns ~2.5x slower; banks lazily, overshoots and clips corners the Base rocket clears."
-      - "accel/decel constants hardcoded & wrong (1.05/1.1/0.85 vs cfg 1.025/1.05/0.9) — accelerates and brakes faster than Base; whole speed envelope off."
-      - "Fuel-out: Base makes the rocket inert (MOVETYPE_BOUNCE, nextthink=0) so it drops as a dud at cnt<time; port collapses the 30s fuel window into the 30s TTL and DETONATES at expiry instead."
+      - "accel/decel constants STILL hardcoded & wrong in GuidedProjectile.HkThink (1.05/1.1/0.85 vs cfg 1.025/1.05/0.9) — accelerates and brakes faster than Base; whole speed envelope off. (GuidedProjectile.cs was NOT touched by Wave-2.)"
+      - "Fuel-out: Base makes the rocket inert (MOVETYPE_BOUNCE, nextthink=0) so it drops as a dud at cnt<time; port still collapses the 30s fuel window into the 30s TTL and DETONATES at expiry instead."
       - "No re-seek of the nearest valid target when the enemy is lost (Base scans g_damagedbycontents within 5000u via hk_is_valid_target; HkThink only nulls a dead enemy and holds heading)."
       - "Minor: angular-offset 'ad' computed as 0 when enemy is null (port guards the null); Base derefs null enemy.origin = '0 0 0' yielding a non-zero ad — edge-case divergence only when re-seek would have run."
     verification:
-      - { kind: code_read, ref: "hk_weapon.qc turret_hk_missile_think vs GuidedProjectile.HkThink line-by-line; turrets.cfg consts vs HkThink literals", result: pass }
+      - { kind: code_read, ref: "hk_weapon.qc turret_hk_missile_think vs GuidedProjectile.HkThink line-by-line; turrets.cfg consts. turnRate fixed at the HkTurret call site (0.25, consumed); accel/decel literals 1.05/1.1/0.85 unchanged in HkThink; fuel-out still detonates; no re-seek scan.", result: pass }
     confidence: high
-    notes: "Funnel-steering structure (forward/L/R/U/D traces, accel/decel/panic/clear-path, lead, proximity detonate, turn blend) faithfully ported; embedded balance constants, fuel-out dud behavior, and target re-seek diverge."
+    notes: "PARTIAL FIX: shot_speed_turnrate corrected 0.1->0.25 (HkTurret now passes ShotTurnRate=0.25, consumed via g.TurnRate). STILL OPEN: accel/decel constants hardcoded wrong in HkThink, fuel-out dud behavior, target re-seek. Funnel-steering structure remains faithfully ported."
   - id: turret-hk.target.recieve
     name: "External target reception (turret_hk_addtarget / TUR_FLAG_RECIEVETARGETS)"
     layer: [authority]
@@ -252,9 +245,9 @@ features:
     gaps:
       - "turret_hk_addtarget not implemented: the HK cannot receive a designated target from relays / other turrets (TUR_FLAG_RECIEVETARGETS); it can only self-acquire."
     verification:
-      - { kind: code_read, ref: "no addtarget / cross-turret target-broadcast counterpart in port (HkTurret.Attack NOTE confirms it's left out)", result: fail }
+      - { kind: code_read, ref: "no addtarget / cross-turret target-broadcast counterpart in port (HkTurret.Attack NOTE confirms it's still left out)", result: fail }
     confidence: high
-    notes: "Port comment in HkTurret.Attack explicitly notes the receive-targets hook needs the cross-turret target-broadcast system, which isn't modeled."
+    notes: "Port comment in HkTurret.Attack still explicitly notes the receive-targets hook needs the cross-turret target-broadcast system, which isn't modeled. Unchanged from baseline."
   - id: turret-hk.weapon.player
     name: "WEP_HK player special-attack weapon (hidden, impulse 9)"
     layer: [authority, presentation]
@@ -278,7 +271,7 @@ features:
     verification:
       - { kind: code_read, ref: "grep WEP_HK|HunterKillerAttack across src/** -> no matches", result: fail }
     confidence: high
-    notes: "Hidden/dev-cheat path; only the turret (non-player) branch of wr_think is ported (HkTurret.Attack). Cosmetic/edge gameplay impact."
+    notes: "Hidden/dev-cheat path; only the turret (non-player) branch of wr_think is ported (HkTurret.Attack). Cosmetic/edge gameplay impact. Unchanged from baseline."
   - id: turret-hk.damage.lifecycle
     name: "Damage gating, retaliation, death + respawn"
     layer: [authority]
@@ -287,30 +280,30 @@ features:
       - "common/turrets/sv_turrets.qc:turret_die"
       - "common/turrets/sv_turrets.qc:turret_respawn"
     port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:EventDamage"
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Damage"
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Die"
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:Init"
     constants:
-      - { name: "respawntime", base: "90", port: "60 (generic TurretSpawn.Init default)", match: false }
+      - { name: "respawntime", base: "90", port: "90 (FIXED: HkTurret.Spawn now passes respawnTime=RespawnTime=90 to TurretSpawn.Init)", match: true }
       - { name: "takedamage", base: "DAMAGE_AIM", port: "DamageMode.Aim", match: true }
       - { name: "inactive/dead take no damage", base: "yes", port: "yes", match: true }
       - { name: "friendlyfire gate", base: "g_friendlyfire", port: "g_friendlyfire", match: true }
     status:
       logic: faithful
-      values: partial
-      timing: partial
+      values: faithful
+      timing: faithful
       presentation: na
       audio: unknown
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "respawntime 60 vs Base 90 (HkTurret.Spawn passes no respawnTime, so TurretSpawn.Init defaults to 60; the cfg value g_turrets_unit_hk_respawntime 90 is not threaded) — a destroyed HK returns 30s early."
+    gaps: []
     verification:
       - { kind: test, ref: "TurretLifecycleTests (shared Damage_Dead/Inactive/SameTeam gates)", result: pass }
-      - { kind: code_read, ref: "turret_damage/die/respawn vs TurretAI.Damage/Die + TurretSpawn.Init respawnTime=60 default", result: pass }
+      - { kind: code_read, ref: "Wave-2: TurretSpawn.Init wires e.GtEventDamage = TurretAI.EventDamage; DamageSystem.EventDamage (:331-333) routes non-player edicts with GtEventDamage to it -> turret pre-damage gate (TurretAI.Damage) + health subtract + Combat.Death on lethal -> OnAnyDeath -> Die (blast + respawn). HkTurret.Spawn now threads respawnTime=90.", result: pass }
     confidence: high
-    notes: "Damage gating + death/respawn lifecycle faithful via the shared framework; respawn delay is wrong (60 vs 90)."
+    notes: "BASELINE GAP CLOSED. respawntime corrected 60->90 (HkTurret.Spawn now passes RespawnTime). Additionally Wave-2 wired the turret's own .event_damage (GtEventDamage) into the live DamageSystem path, so the pre-damage gate in TurretAI.Damage (previously bit-faithful but with no discrete live caller) now runs on the real damage route, mirroring Onslaught objectives."
   - id: turret-hk.anim.head
     name: "tr_think head-frame animation (launcher cycle 0..5)"
     layer: [authority, presentation]
@@ -334,7 +327,7 @@ features:
     verification:
       - { kind: code_read, ref: "no frame handling in HkTurret / TurretSpawn", result: fail }
     confidence: high
-    notes: "Cosmetic head animation; entirely absent in port (consistent with other ported turrets' missing frame handling)."
+    notes: "Cosmetic head animation; entirely absent in port (consistent with other ported turrets' missing frame handling). Unchanged from baseline."
   - id: turret-hk.head.track
     name: "Head rotation: track type + aim clamps"
     layer: [authority]
@@ -346,24 +339,22 @@ features:
     constants:
       - { name: "aim_speed", base: "100", port: "100", match: true }
       - { name: "aim_maxrot", base: "360", port: "360", match: true }
-      - { name: "aim_maxpitch", base: "20", port: "30", match: false }
+      - { name: "aim_maxpitch", base: "20", port: "20 (FIXED: was 30)", match: true }
       - { name: "track_type", base: "3 (fluid inertia)", port: "3 (FluidInertia)", match: true }
-      - { name: "track_accel_pitch", base: "0.25", port: "0.5 (TurretParams default; HkTurret.Think omits it)", match: false }
-      - { name: "track_accel_rot", base: "0.6", port: "0.5 (TurretParams default; HkTurret.Think omits it)", match: false }
-      - { name: "track_blendrate", base: "0.2", port: "0.35 (TurretParams default; HkTurret.Think omits it)", match: false }
+      - { name: "track_accel_pitch", base: "0.25", port: "0.25 (FIXED: now passed; consumed at TurretAI.cs:497)", match: true }
+      - { name: "track_accel_rot", base: "0.6", port: "0.6 (FIXED: now passed; consumed at TurretAI.cs:498)", match: true }
+      - { name: "track_blendrate", base: "0.2", port: "0.2 (FIXED: now passed; consumed at TurretAI.cs:499)", match: true }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "aim_maxpitch 30 vs Base 20 (head over-pitches; can aim farther up/down than Base)."
-      - "track_accel_pitch 0.25 / track_accel_rot 0.6 / track_blendrate 0.2 not threaded (HkTurret.Think omits them, so TurretParams defaults 0.5/0.5/0.35 apply) — head-aim inertia dynamics differ."
+    gaps: []
     verification:
-      - { kind: code_read, ref: "turrets.cfg aim_maxpitch/aim_maxrot/track_* vs HkTurret consts + TurretParams defaults (TurretAI.cs:824,828)", result: pass }
+      - { kind: code_read, ref: "Wave-2: HkTurret.Think now passes aimMaxPitch=20 + trackAccelPitch 0.25/trackAccelRot 0.6/trackBlendRate 0.2; Track (TurretAI.cs:497-499) consumes them. turrets.cfg defaults confirmed.", result: pass }
     confidence: high
-    notes: "track_type (fluid inertia) + aim_speed + aim_maxrot match; aim_maxpitch and the track accel/blend rates diverge (all three track motor rates fall to framework defaults)."
+    notes: "BASELINE GAP CLOSED. aim_maxpitch corrected 30->20; the three head-track motor rates (track_accel_pitch/rot/blendrate) now threaded through TurretParams and genuinely consumed in Track. track_type + aim_speed + aim_maxrot remain matched."

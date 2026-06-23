@@ -5,9 +5,9 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 8
   worst_gaps:
-    - "Remaining-frags announcer (1/2/3 frags left) never fires — assets exist, no live caller"
-    - "leadlimit / leadlimit_and_fraglimit not checked by the DM win condition"
-    - "Respawn 10-9-8 announcer-countdown value is computed but never presented (no reader of Player.RespawnCountdown)"
+    - "Respawn 10-9-8 announcer-countdown value is computed (Player.RespawnCountdown) but still never presented (no reader/announcer)"
+    - "RespawnTiming.Calculate still reads only generic g_respawn_delay_* cvars, not the gametype-prefixed g_dm_respawn_delay_* (GAMETYPE_DEFAULTED_SETTING) — identical at DM defaults"
+    - "Teamkill escalation curve (g_teamkill_punishing) unmodeled — unreachable in FFA DM"
 features:
   - id: deathmatch.gametype.identity
     name: "Deathmatch gametype registration & identity (dm, FFA, USEPOINTS|PREFERRED)"
@@ -25,7 +25,7 @@ features:
       - { name: "flags", base: "USEPOINTS|PREFERRED", port: "implicit (frag-based, default mode)", match: true }
       - { name: "default_pointlimit", base: "30", port: "DefaultFragLimit=30", match: true }
       - { name: "default_timelimit_min", base: "15", port: "timelimit cvar default 15", match: true }
-      - { name: "default_leadlimit", base: "0", port: "leadlimit cvar default 0 (but DM ignores it)", match: false }
+      - { name: "default_leadlimit", base: "0", port: "leadlimit cvar default 0 (now read by DM win condition)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -40,7 +40,7 @@ features:
       - { kind: code, ref: "deathmatch.qh gametype_init args vs Deathmatch ctor/NetName", result: pass }
       - { kind: code, ref: "GameWorld.DefaultGameType == \"dm\" → ResolveGameType activates Deathmatch", result: pass }
     confidence: high
-    notes: "Identity is set in the ctor; OnInit is a documented no-op (no per-match state to seed). m_isAlwaysSupported (always offered on any map) is not ported — a map-pool concern, out of scope here."
+    notes: "Identity is set in the ctor; OnInit is a documented no-op (no per-match state to seed). m_isAlwaysSupported (always offered on any map) is not ported — a map-pool concern, out of scope here. Wave-2 added LeadLimit reading, so the prior default_leadlimit mismatch (DM ignores leadlimit) is now resolved."
 
   - id: deathmatch.scoring.frag_matrix
     name: "FFA frag scoring: enemy +1, suicide -1, world/accident death -1"
@@ -73,7 +73,7 @@ features:
       - { kind: code, ref: "Scores.cs ownsScore=false → SP_SCORE read-through from Player.ScoreFrags (no double-count)", result: pass }
       - { kind: code, ref: "grep readers of GtDeaths/GtSuicides → none outside the write site", result: pass }
     confidence: high
-    notes: "Scoring is split: Deathmatch owns SP_SCORE (the sort/fraglimit key), Scores fills aux KILLS/DEATHS/SUICIDES read-through to avoid double-counting. Teamkill branch is present but unreachable in FFA (SameTeam guarded false when TeamGame=false)."
+    notes: "Unchanged by Waves 1/2 (Scores.cs not touched). Scoring is split: Deathmatch owns SP_SCORE (the sort/fraglimit key), Scores fills aux KILLS/DEATHS/SUICIDES read-through to avoid double-counting. Teamkill branch is present but unreachable in FFA (SameTeam guarded false when TeamGame=false)."
 
   - id: deathmatch.scoring.teamkill_punishing
     name: "Teamkill punishment escalation (g_teamkill_punishing)"
@@ -99,7 +99,7 @@ features:
     verification:
       - { kind: code, ref: "Deathmatch.SameTeam returns false when TeamGame=false → teamkill branch unreachable in DM", result: pass }
     confidence: medium
-    notes: "Listed for completeness: the teamkill branch exists in OnDeath but is dead code in FFA. The escalating g_teamkill_punishing curve belongs to the team gametypes' parity rows, not DM. Default off (0) regardless."
+    notes: "STILL OPEN (unchanged). Listed for completeness: the teamkill branch exists in OnDeath but is dead code in FFA. The escalating g_teamkill_punishing curve belongs to the team gametypes' parity rows, not DM. Default off (0) regardless."
 
   - id: deathmatch.winconditions.fraglimit
     name: "Point/frag limit ends the match (topscore >= pointlimit)"
@@ -111,6 +111,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs:FragLimit"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs:UpdateLeaderAndCheckLimit"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs:RecomputeLeader"
+      - "src/XonoticGodot.Server/GameWorld.cs:DriveGametypeFrame"
       - "src/XonoticGodot.Server/GameWorld.cs:RunCheckRulesWorld"
     constants:
       - { name: "pointlimit_default", base: "30 (fraglimit)", port: "30 (DefaultFragLimit)", match: true }
@@ -127,35 +128,41 @@ features:
     divergence_rationale: "The port reads a non-Base convenience cvar g_dmlimit before falling back to the engine fraglimit. Base has no g_dmlimit (only TDM has g_tdm_point_limit). With g_dmlimit unset the behavior is identical to Base; it only diverges if an operator sets the invented cvar."
     gaps: []
     verification:
-      - { kind: code, ref: "WinningCondition_Scores fraglimit_reached vs Leader.ScoreFrags >= limit", result: pass }
-      - { kind: code, ref: "GameWorld.ActivateGameType → Match.ActivateDeathmatch → dm.Activate (live)", result: pass }
+      - { kind: code, ref: "WinningCondition_Scores fraglimit_reached vs RecomputeLeader best.ScoreFrags >= limit (world.qc:1625)", result: pass }
+      - { kind: code, ref: "GameWorld.OnEndFrame → DriveGametypeFrame → Match.Deathmatch.RecomputeLeader(Clients.Players) every tick (live)", result: pass }
     confidence: high
-    notes: "MatchEnded latch is checked incrementally in OnDeath and authoritatively each tick via RecomputeLeader over the full roster, then consumed by RunCheckRulesWorld."
+    notes: "MatchEnded latch is checked incrementally in OnDeath and authoritatively each tick via RecomputeLeader (now over best/second) on the live DriveGametypeFrame path, then consumed by RunCheckRulesWorld. Wave-2 reworked the incremental latch to skip the fraglimit-alone end when leadlimit_and_fraglimit requires both (correct vs Base)."
 
   - id: deathmatch.winconditions.leadlimit
     name: "Lead limit ends the match (topscore - secondscore >= leadlimit) + leadlimit_and_fraglimit"
     layer: [authority]
     base_refs:
-      - "server/world.qc:WinningCondition_Scores (leadlimit_reached, leadlimit_and_fraglimit)"
-    port_refs: []
+      - "server/world.qc:WinningCondition_Scores (leadlimit_reached, leadlimit_and_fraglimit, world.qc:1626-1633)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs:LeadLimit"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs:LeadAndFrag"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs:RecomputeLeader"
+      - "src/XonoticGodot.Server/GameWorld.cs:DriveGametypeFrame"
     constants:
-      - { name: "leadlimit_default", base: "0 (disabled)", port: "0 (cvar exists) but DM never reads it", match: false }
-      - { name: "leadlimit_and_fraglimit", base: "0", port: "0 (cvar exists) but DM never applies it", match: false }
+      - { name: "leadlimit_default", base: "0 (disabled)", port: "0 (CvarLeadLimit, DefaultLeadLimit=0)", match: true }
+      - { name: "leadlimit_reached formula", base: "topscore - secondscore >= leadlimit", port: "best.ScoreFrags - second.ScoreFrags >= leadlimit", match: true }
+      - { name: "leadlimit_and_fraglimit", base: "0; if both limits set, require BOTH else either", port: "LeadAndFrag gate, same branch (world.qc:1630)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Deathmatch.MatchEnded only checks the frag limit; an operator setting leadlimit in DM would see it ignored (the match would not end on a lead margin, nor honor leadlimit_and_fraglimit)."
+    gaps: []
     verification:
-      - { kind: code, ref: "grep leadlimit in Deathmatch.cs/MatchController.cs → none; only ClanArena/TDM read a lead cvar", result: fail }
+      - { kind: code, ref: "Deathmatch.RecomputeLeader fraglimit/leadlimit/LeadAndFrag branch vs world.qc:1625-1633 — both formula and AND/OR gate match", result: pass }
+      - { kind: code, ref: "DriveGametypeFrame calls RecomputeLeader(Clients.Players) every tick → leadlimit checked authoritatively on the live path (live)", result: pass }
+      - { kind: code, ref: "second-place tracking added to RecomputeLeader (best/second scan) supplies the runner-up score the lead margin needs", result: pass }
     confidence: high
-    notes: "Low impact at defaults (leadlimit=0 disables it), but a genuine logic gap vs WinningCondition_Scores. The framework overtime/tie machinery (RunCheckRulesWorld) is present, but the per-gametype leadlimit input is not fed by Deathmatch."
+    notes: "FIXED by Wave-2 (was logic/values/timing: missing, liveness: na). LeadLimit reads the generic engine `leadlimit` (DM has no gametype-prefixed lead cvar — correct), LeadAndFrag reads `leadlimit_and_fraglimit`. The runner-up score now comes from a best/second pass in RecomputeLeader. At defaults (leadlimit=0) the leadlimit_reached guard is false so behavior is identical to before; with leadlimit set the match now ends on the lead margin, honoring the AND/OR leadlimit_and_fraglimit semantics."
 
   - id: deathmatch.winconditions.timelimit_overtime
     name: "Time limit + overtime/sudden-death (tie at limit keeps playing)"
@@ -187,33 +194,43 @@ features:
       - { kind: code, ref: "RunCheckRulesWorld cascade vs CheckRules_World world.qc:1741-1860", result: pass }
       - { kind: code, ref: "FfaTie.TopTwoTied (top two primary scores equal) vs WinningConditionHelper_equality FFA", result: pass }
     confidence: medium
-    notes: "Win-condition framework (timelimit→overtime→sudden death→intermission) is shared and well-developed; DM feeds it via ReportsTie/FfaTie and the fraglimit latch. Audio for the overtime announcer is framework-owned and not traced here."
+    notes: "Unchanged by Waves 1/2 (OverTimeManager.cs not touched). Win-condition framework (timelimit→overtime→sudden death→intermission) is shared and well-developed; DM feeds it via ReportsTie/FfaTie and the fraglimit/leadlimit latch. Audio for the overtime announcer is framework-owned and not traced here."
 
   - id: deathmatch.announce.frags_remaining
     name: "Remaining-frags announcer (1/2/3 frags left)"
     layer: [authority, presentation]
     base_refs:
       - "common/gametypes/gametype/deathmatch/sv_deathmatch.qc:MUTATOR_HOOKFUNCTION(dm, Scores_CountFragsRemaining)"
-      - "server/world.qc:WinningCondition_Scores (ANNCE_REMAINING_FRAG_1/2/3 send)"
-    port_refs: []
+      - "server/world.qc:WinningCondition_Scores (ANNCE_REMAINING_FRAG_1/2/3 send, world.qc:1590-1622)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:CountFragsRemaining"
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:ResetFragsRemaining"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs:RecomputeLeader"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:REMAINING_FRAG_1/2/3"
+      - "game/hud/HudNotifications.cs:PlayAnnouncer"
     constants:
-      - { name: "announce_thresholds", base: "fragsleft == 1,2,3", port: "none", match: false }
-      - { name: "sounds", base: "misc/1fragleft, 2fragsleft, 3fragsleft", port: "assets defined, never played", match: false }
+      - { name: "announce_thresholds", base: "fragsleft == 1,2,3", port: "fragsleft == 1,2,3", match: true }
+      - { name: "sounds", base: "misc/1fragleft, 2fragsleft, 3fragsleft", port: "REMAINING_FRAG_{1,2,3} → 1fragleft/2fragsleft/3fragsleft (registered + enabled)", match: true }
+      - { name: "fragsleft formula", base: "min/max of (limit-top) and (second+leadlimit-top); fragsleft_last anti-repeat", port: "same min/max + _fragsLeftLast latch", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
-      audio: missing
-      liveness: na
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Approaching the frag limit in DM, the player never hears '1/2/3 frags left'. The notification (REMAINING_FRAG_1/2/3) and sound (1fragleft/2fragsleft/3fragsleft) assets are registered but no code computes fragsleft or fires them; only the remaining-MINUTES announcer (AnnounceRemainingMin) is wired."
+      - "The QC suddenDeathEnding branch (checkrules_suddendeathend forcing fragsleft=1) is passed as false from DM (framework-owned, not surfaced). Minor: only affects the final sudden-death-end 'frag-left' cue, not the normal 1/2/3 approach announce."
     verification:
-      - { kind: code, ref: "grep REMAINING_FRAG / fragsleft / AnnounceRemainingFrag across src+game → only asset defs + minutes announcer", result: fail }
+      - { kind: code, ref: "GameScores.CountFragsRemaining vs world.qc:1592-1622 — fragsleft min/max, leadlimit_and_fraglimit max-branch, fragsleft_last anti-repeat, REMAINING_FRAG_1/2/3 send all match", result: pass }
+      - { kind: code, ref: "Deathmatch.RecomputeLeader computes top/second over non-spectators (PrimaryScore) and calls CountFragsRemaining every tick on the live DriveGametypeFrame path — DM-only hook gating is implicit (only DM's RecomputeLeader calls it)", result: pass }
+      - { kind: code, ref: "NotificationsList A(\"REMAINING_FRAG_1\",\"1fragleft\") registered enabled; SoundsList preloads 1fragleft/2fragsleft/3fragsleft", result: pass }
+      - { kind: code, ref: "HudNotifications case MsgType.Annce → PlayAnnouncer → queue → LoadAnnouncerStream → play (same live path as the minutes announcer)", result: pass }
+      - { kind: code, ref: "Activate() calls GameScores.ResetFragsRemaining() so the cue re-arms each match (QC fragsleft_last reset)", result: pass }
     confidence: high
-    notes: "This is the one behavior the DM unit file uniquely controls (the Scores_CountFragsRemaining hook returning true enables the block). It is entirely absent on the live path."
+    notes: "FIXED by Wave-2 (was all-missing, liveness na). Now wired end-to-end: RecomputeLeader (live every tick via OnEndFrame→DriveGametypeFrame) scans top/second non-spectator primary scores → GameScores.CountFragsRemaining (faithful port of world.qc:1592-1622, with the leadlimit_and_fraglimit max/min branch and the fragsleft_last anti-repeat) → NotificationSystem.Send(Annce, REMAINING_FRAG_n) → networked → HudNotifications.PlayAnnouncer plays the 1/2/3-fragleft voice. Only the sudden-death-end fragsleft=1 forcing is deferred (framework-owned, passed false)."
 
   - id: deathmatch.respawn.timing
     name: "Respawn delay scheduling (calculate_player_respawn_time)"
@@ -248,11 +265,10 @@ features:
     divergence_rationale: null
     gaps:
       - "RespawnTiming.Calculate reads only the generic g_respawn_delay_* cvars, not the GAMETYPE_DEFAULTED_SETTING gametype-prefixed g_dm_respawn_delay_* (nor g_respawn_delay_forced). Identical at DM defaults (g_dm_*=0 → generic), but a server setting g_dm_respawn_delay_small (or the forced-default flag) would be ignored."
-      - "Respawn 10-9-8 countdown announcer is not presented: Player.RespawnCountdown is computed by RespawnTiming.Calculate but has NO reader/announcer (only SpawnSystem resets it). The respawn-time STAT is networked (RespawnTimeStat) but the spoken 10..1 countdown is absent."
+      - "Respawn 10-9-8 countdown announcer is STILL not presented: Player.RespawnCountdown is computed by RespawnTiming.Calculate but still has NO reader/announcer (only SpawnSystem resets it). The respawn-time STAT is networked (RespawnTimeStat) but the spoken 10..1 countdown is absent."
     verification:
-      - { kind: code, ref: "RespawnTiming.Calculate vs calculate_player_respawn_time client.qc:1399-1485 — pcount scaling, waves ceil-quantize, respawn_time_max, countdown arm, RESPAWN_FORCE all present and matching", result: pass }
-      - { kind: code, ref: "GameWorld.DeadPlayerThink (DEAD_* machine) driven per-tick from OnClientMove (line 1031); on death edge calls RespawnTiming.Calculate (line 1714) which 'Overrides any flat delay a gametype obituary set'", result: pass }
-      - { kind: code, ref: "GAMETYPE_DEFAULTED_SETTING (client.qh:347) resolves g_dm_respawn_delay_small=0 → max(0,g_respawn_delay_small=2)=2 — matches port at defaults", result: pass }
-      - { kind: code, ref: "grep readers of Player.RespawnCountdown → only RespawnTiming write + SpawnSystem reset; no announcer", result: fail }
+      - { kind: code, ref: "RespawnTiming.Calculate vs calculate_player_respawn_time client.qc:1399-1485 — pcount scaling, waves ceil-quantize, respawn_time_max, countdown arm, RESPAWN_FORCE all present and matching (file unchanged by Waves 1/2)", result: pass }
+      - { kind: code, ref: "GameWorld.DeadPlayerThink (DEAD_* machine) driven per-tick from OnClientMove; on death edge calls RespawnTiming.Calculate which overrides any flat delay a gametype obituary set", result: pass }
+      - { kind: code, ref: "grep readers of Player.RespawnCountdown across src+game → still only RespawnTiming write + SpawnSystem reset; no announcer", result: fail }
     confidence: high
-    notes: "CORRECTS the first-pass claim of a flat-2s respawn with no scaling/waves/countdown/forced-respawn. The live path is GameWorld.DeadPlayerThink → RespawnTiming.Calculate (a faithful port of calculate_player_respawn_time with player-count interpolation, wave quantization, respawn_time_max, countdown arming, and the RESPAWN_FORCE flag). Deathmatch.ScheduleRespawn/RespawnDelay (the flat 2s) is DEAD CODE — explicitly overridden at GameWorld.cs:1713. Remaining real gaps are narrow: the gametype-prefixed delay cvars are not consulted (defaults match), and the 10-count respawn announcer is unspoken."
+    notes: "STILL OPEN (RespawnTiming.cs not touched by Waves 1/2). The live path is GameWorld.DeadPlayerThink → RespawnTiming.Calculate (a faithful port of calculate_player_respawn_time). Deathmatch.ScheduleRespawn/RespawnDelay (the flat 2s) remains DEAD CODE (overridden in GameWorld). Remaining real gaps unchanged: the gametype-prefixed delay cvars are not consulted (defaults match), and the 10-count respawn announcer is unspoken."
