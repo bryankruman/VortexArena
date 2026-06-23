@@ -154,8 +154,10 @@ public class MonsterTurretVehicleObituaryTests : IDisposable
     // ================================================================================================
 
     [Fact]
-    public void TurretDeathBlast_RealDie_TagsTurret_ObituaryPicksTurretLines()
+    public void TurretDie_DealsNoDeathBlast_MatchingBase()
     {
+        // Base turret_die has its ammo-scaled RadiusDamage COMMENTED OUT (sv_turrets.qc:182): a dying turret
+        // deals NO area damage. The port previously did a port-added blast; TurretAI.Die must not damage anyone.
         Entity turret = Api.Entities.Spawn();
         turret.Origin = new Vector3(0, 0, 8);
         Api.Entities.SetOrigin(turret, turret.Origin);
@@ -164,14 +166,15 @@ public class MonsterTurretVehicleObituaryTests : IDisposable
 
         var cap = MakeVictim(new Vector3(48, 0, 20), new Vector3(-24, -24, -24), new Vector3(24, 24, 24));
 
-        // Real call site: TurretAI.Die death blast -> RadiusDamage(deathTag: DeathTypes.Turret) (QC DEATH_TURRET).
         TurretAI.Die(turret);
 
-        Assert.Equal(DeathTypes.Turret, cap.DeathType);
-        Assert.True(DeathTypes.IsTurret(cap.DeathType));
-        Assert.False(DeathTypes.IsWeapon(cap.DeathType));
-        Assert.Equal("DEATH_MURDER_CHEAT", DeathMessages.SelectSpecial(cap.DeathType, murder: true));
-        Assert.Equal("DEATH_SELF_TURRET", DeathMessages.SelectSpecial(cap.DeathType, murder: false));
+        Assert.Null(cap.DeathType); // no blast tagged the nearby victim
+
+        // The DEATH_TURRET obituary mapping itself stays correct (still used by per-turret weapon deathtypes).
+        Assert.True(DeathTypes.IsTurret(DeathTypes.Turret));
+        Assert.False(DeathTypes.IsWeapon(DeathTypes.Turret));
+        Assert.Equal("DEATH_MURDER_CHEAT", DeathMessages.SelectSpecial(DeathTypes.Turret, murder: true));
+        Assert.Equal("DEATH_SELF_TURRET", DeathMessages.SelectSpecial(DeathTypes.Turret, murder: false));
     }
 
     [Fact]

@@ -266,12 +266,12 @@ public static class CsqcModelAppearance
 
     /// <summary>
     /// Compose a per-player <see cref="ForcedAppearance"/> from the player's presentation role: strength/shield
-    /// powerup glow (EF_RED/EF_BLUE via <see cref="CsqcModelEffectFlags.RoleGlowFlags"/>), a jetpack flag
+    /// powerup glow (EF_BLUE/EF_RED via <see cref="CsqcModelEffectFlags.RoleGlowFlags"/>), a jetpack flag
     /// (MF_ROCKET → trail + loop), and an optional forced glowmod color. Pure so Wave-3 can unit-test the mapping;
     /// the <c>extraEffects</c> result is already masked to <see cref="CsqcModelEffectFlags.ForcedEffectFlags"/>.
     /// </summary>
-    /// <param name="strength">Player has the Strength powerup (→ EF_RED glow, Base powerups.qc).</param>
-    /// <param name="shield">Player has the Shield powerup (→ EF_BLUE glow).</param>
+    /// <param name="strength">Player has the Strength powerup (→ EF_BLUE glow, Base strength.qc:31).</param>
+    /// <param name="shield">Player has the Shield powerup (→ EF_RED glow, Base shield.qc:31).</param>
     /// <param name="jetpackActive">Player's jetpack is firing (→ MF_ROCKET trail + loop).</param>
     /// <param name="forcedGlowmod">Optional forced glow color; pass <c>(-1,-1,-1)</c> for none (the default).</param>
     public static ForcedAppearance ComposeForcedAppearance(

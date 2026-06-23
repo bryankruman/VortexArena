@@ -211,13 +211,16 @@ public static class TriggerTouch
                 continue;
             if (!CollisionWorld.BoxesOverlap(areaMin, areaMax, trig.AbsMin, trig.AbsMax))
                 continue;
-            // QC WarpZone_Teleport gate (matches WarpzoneManager.Teleport): only warp when crossing INTO the
-            // plane (velocity has a component against the IN forward that faces the entity). An entity loitering
-            // at the mouth or moving back out is not warped — predict identically to authority or the reconcile
-            // re-introduces the snap we are trying to remove.
+            // QC WarpZone_PlaneDist gate (server.qc:193) — MUST match WarpzoneManager.Teleport EXACTLY or the
+            // predicted warp fires on a different tick than the server's touch and the reconcile re-introduces the
+            // snap we are trying to remove. PlaneDist = (origin + view_ofs - warpzone_origin)·warpzone_forward;
+            // the entity is only warped once it is on the FAR (negative) side of the IN plane — i.e. it has
+            // actually crossed the surface — regardless of velocity sign. This is the plane-side test, NOT a
+            // velocity-direction gate (the old velocity gate diverged from the authoritative path).
             var t = wz.Transform;
-            if (Vector3.Dot(mover.Velocity, t.InForward) > 0f && mover.Velocity.LengthSquared() > 1f)
-                continue;
+            Vector3 point = mover.Origin + mover.ViewOfs;
+            if (Vector3.Dot(point - t.InOrigin, t.InForward) >= 0f)
+                continue; // not yet across the seam
 
             Vector3 newOrigin = t.TransformOrigin(mover.Origin);
             mover.Velocity = t.TransformVelocity(mover.Velocity);

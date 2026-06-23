@@ -6,7 +6,7 @@ summary:
   feature_count: 12
   worst_gaps:
     - "Rocket up-and-over loop maneuver still unported (Base: 1% chance on LAUNCH and 1% per in-flight think to enter loop->loop2->loop3); port rockets only ever steer straight-pull, plus no te_explosion launch flash and no tag_rocket01/02 alternation."
-    - "SWIM gait is now ported but DEAD: turret entities (MOVETYPE_STEP) never get Entity.WaterLevel computed (only PlayerPhysics sets it), so a walker in deep water never enters the SWIM gait — the swim logic is unreachable on the live path."
+    - "Rocket te_explosion launch flash, tag_rocket01/02 muzzle alternation, and the minigun EFFECT_BLASTER_MUZZLEFLASH / EFFECT_BULLET tracer are all client-render presentation, still unported (server fire is faithful). (Note: the SWIM gait, previously suspected dead, is in fact LIVE — MOVETYPE_STEP turrets get Entity.WaterLevel computed by the engine WalkMove/CheckWater path each tick.)"
     - "No head entity (walker_head_minigun.md3): the minigun head is not a separate tracked/spinning tur_head entity (no tag attachment)."
     - "No CSQC walker_draw + no gait animation frames: no 4-point ground-align, no head avelocity spin, no low-hp te_spark, no walk/run/melee model frames (turrets_setframe + TNSF_MOVE)."
     - "No minigun EFFECT_BLASTER_MUZZLEFLASH / EFFECT_BULLET tracer."
@@ -224,17 +224,16 @@ features:
       timing: faithful
       presentation: missing
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "SWIM gait is ported (waterlevel-driven anim select + swim pitch clamp + sinusoidal bob) but DEAD: Entity.WaterLevel is only computed by PlayerPhysics; MOVETYPE_STEP turrets never get it set, so e.WaterLevel stays 0 and the WETFEET/SWIMMING/SUBMERGED branches of WalkerMoveTo never fire — a walker in deep water never swims."
       - "No standalone STRAFE_L/R or PAIN gaits (Base never drives these from the SVQC brain either — they are leftover model anim states — so this is parity-by-omission, not a behavioral gap)."
       - "JUMP/LAND/TURN gait cases exist in ApplyGait but are never assigned (same as Base — the brain never sets them)."
     verification:
-      - { kind: code_read, ref: "WalkerMoveTo waterlevel switch + ApplyGait Swim/Jump/Land/Turn/Roam cases vs walker.qc:471-537; grep confirms no code sets WaterLevel for STEP/turret entities (only PlayerPhysics + SpawnSystem)", result: fail }
+      - { kind: code_read, ref: "WalkerMoveTo waterlevel switch + ApplyGait Swim/Jump/Land/Turn/Roam cases vs walker.qc:471-537. SWIM gait is LIVE: the walker is MOVETYPE_STEP, and SimulationLoop.Tick -> MoveTypePhysics.RunEntity routes Step through WalkMove (CheckWater -> WaterLevel 0/1/2/3 via the 3-pt hull probe, MoveTypePhysics.cs:470-491) + CheckWaterTransition every tick. So e.WaterLevel IS computed for STEP turrets and the WETFEET/SWIMMING/SUBMERGED branches fire. The Wave-4 'dead' flag was a false negative (its grep missed the engine-side WaterLevel writes in MoveTypePhysics, looking only at PlayerPhysics/SpawnSystem).", result: pass }
     confidence: high
-    notes: "PARTIALLY ADDRESSED in Wave 2: the SWIM gait logic + constants are now ported faithfully, but liveness is DEAD because turret waterlevel is never computed. JUMP/LAND/TURN/STRAFE/PAIN are unreachable in Base too (parity-by-omission)."
+    notes: "FIXED in Wave 2 and LIVE: the SWIM gait logic + constants are ported faithfully AND reachable — MOVETYPE_STEP turrets get WaterLevel computed by the engine WalkMove/CheckWater path each tick (the earlier 'dead on drive' note was a false positive). JUMP/LAND/TURN/STRAFE/PAIN are unreachable in Base too (parity-by-omission)."
   - id: turret-walker.weapon.minigun
     name: "WalkerTurretAttack: near-hitscan minigun (fireBullet + force)"
     layer: [authority]

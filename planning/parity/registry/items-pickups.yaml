@@ -5,7 +5,7 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 12
   worst_gaps:
-    - "cl_autoswitch / CTS autoswitch logic now PORTED in Item_GiveTo (head+tail), but DEAD on the live path: the AutoswitchProvider/CtsAutoswitchProvider/CtsActiveProvider seams are declared and never assigned (Commands.cs wires Inventory.PriorityProvider at boot but NOT these), so AutoswitchEnabled()==false always — picking up a better weapon still never auto-switches in a real match"
+    - "cl_autoswitch / CTS autoswitch: FIXED 2026-06-23 — the AutoswitchProvider/CtsAutoswitchProvider/CtsActiveProvider seams are now wired in the Commands ctor (Commands.cs:331-334) right beside Inventory.PriorityProvider: AutoswitchProvider=GetAutoswitch(p), CtsAutoswitchProvider=GetClientCvarFloat(p,\"cl_autoswitch_cts\",-1), CtsActiveProvider=_world.GameType is Cts. Picking up a better weapon now auto-switches in a real match."
     - "respawn-countdown waypoint sprites + per-second ITEMRESPAWNCOUNTDOWN sound missing: long-respawn megas/powerups show no radar countdown and no ticking sound"
     - "team-item random selection (Item_FindTeam) not wired: maps grouping items by team spawn/respawn each independently instead of one-at-a-time"
     - "simple items (sv_simple_items, Base default 1) not ported: always renders the 3D model, never the flat _simple sprite"
@@ -100,29 +100,26 @@ features:
     constants:
       - { name: "7 resource gives (health/armor/shells/bullets/rockets/cells/fuel)", base: "Item_GiveAmmoTo x7", port: "GiveAmmoTo x7", match: true }
       - { name: "at-cap refusal (live item)", base: "player>=ammomax && pickup_anyway<=0 -> false", port: "same", match: true }
-      - { name: "negative amount = take", base: "TakeResourceWithLimit", port: "TakeResource (TakeResourceWithLimit added to Resources.cs but NOT called here — dead helper)", match: partial }
+      - { name: "negative amount = take", base: "TakeResourceWithLimit(player,res,-amount,ammomax)", port: "TakeResourceWithLimit(res,-amount,cap) (FIXED 2026-06-23 — was TakeResource; now calls the floored helper with the same ammomax/cap arg as QC)", match: true }
       - { name: "IT_PICKUPMASK held-flag transfer", base: "items & ~player.items & IT_PICKUPMASK", port: "same", match: true }
       - { name: "team item always eaten", base: "if(item.team) pickedup=true", port: "if(Team!=0) pickedUp=true", match: true }
-      - { name: "cl_autoswitch / CTS autoswitch on weapon give", base: "Item_GiveTo head+tail (_switchweapon, w_getbestweapon, W_SwitchWeapon_Force)", port: "logic ported (ItemGiveTo head ll.68-83 + tail ll.135-155) but gated on AutoswitchProvider which is NEVER WIRED -> always off; DEAD", match: false }
+      - { name: "cl_autoswitch / CTS autoswitch on weapon give", base: "Item_GiveTo head+tail (_switchweapon, w_getbestweapon, W_SwitchWeapon_Force)", port: "logic ported (ItemGiveTo head ll.68-83 + tail ll.135-155); providers WIRED 2026-06-23 in Commands.cs:331-334 -> AutoswitchEnabled() live", match: true }
       - { name: "FuelRegen/Jetpack pickup center-print", base: "CENTER_ITEM_FUELREGEN_GOT / CENTER_ITEM_JETPACK_GOT", port: "ItemGiveTo ll.106-116: NotificationSystem.Center(ITEM_FUELREGEN_GOT/ITEM_JETPACK_GOT) on the live give path", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "STILL OPEN (reframed dead, was missing): Wave-2 ported the cl_autoswitch / CTS-autoswitch re-selection block faithfully (head ItemPickupRules.cs:68-83 captures wantSwitch; tail :135-155 force-switches to Inventory.GetBestWeapon). BUT it is DEAD: it gates on AutoswitchProvider/CtsAutoswitchProvider/CtsActiveProvider (ItemPickupRules.cs:175-189), and NONE of those Func seams is ever assigned. Commands.cs:324 wires Inventory.PriorityProvider at server boot but NOT these — the replicated cl_autoswitch value sits in Commands._autoswitch (GetAutoswitch) with no bridge to the pickup path. So AutoswitchEnabled() returns false always and picking up a better weapon still never auto-switches in a real match. (Supporting Inventory.GetBestWeapon/SwitchWeapon/ClientHasWeapon all exist and work.)"
-      - "negative-amount take: TakeResourceWithLimit was ADDED to Resources.cs (faithful to sv_resources.qc:205) but GiveAmmoTo still calls TakeResource(res,-amount) (ItemPickupRules.cs:241-242); the new helper has zero callers. Behaviorally equivalent for stock items (no stock item carries a negative amount), so still cosmetic-partial."
+    gaps: []
     verification:
-      - { kind: code_read, ref: "ItemGiveTo (ItemPickupRules.cs:62-160) vs Item_GiveTo (items.qc:522-684): autoswitch logic now PRESENT but gated on unwired providers (grep AutoswitchProvider = decl-only, no assignment); fuelregen/jetpack Center now present+live", result: fail }
-      - { kind: code_read, ref: "Commands.cs:324 wires Inventory.PriorityProvider only; ItemPickupRules.AutoswitchProvider/CtsAutoswitchProvider/CtsActiveProvider have NO assignment site anywhere in the solution", result: fail }
+      - { kind: code_read, ref: "ItemGiveTo (ItemPickupRules.cs:62-160) vs Item_GiveTo (items.qc:522-684): autoswitch logic present AND now wired (Commands.cs:331-334 assigns the three providers beside Inventory.PriorityProvider); fuelregen/jetpack Center present+live; negative-take now TakeResourceWithLimit(res,-amount,cap)", result: pass }
       - { kind: unit_test, ref: "ItemSpawnTouchTests.HealthMega_AtCap_NotTaken + WeaponPickup_GivesWeaponInBothReps + Jetpack_Touch_GivesBitAndFuel (no autoswitch/center-print-specific test added)", result: pass }
     confidence: high
-    notes: "FIXED this wave: FuelRegen/Jetpack center-prints (live+faithful, gated on IsPowerup + newly-granted flag exactly like QC items.qc:581-587, via NotificationSystem.Center on the live ItemGiveTo path). STILL the autoswitch re-selection is dead (logic ported, provider unwired) — the one remaining piece to make logic faithful is one line in Commands' boot wiring (AutoswitchProvider = e => GetAutoswitch(p), plus the cts/g_cts seams). Resource gives, weapon-grant (dual-rep), powerup *_finished timers, and IT_PICKUPMASK transfer remain faithful."
+    notes: "FIXED 2026-06-23: (1) the cl_autoswitch / CTS-autoswitch re-selection providers (AutoswitchProvider/CtsAutoswitchProvider/CtsActiveProvider) are now wired in the Commands ctor (Commands.cs:331-334) — AutoswitchEnabled() reads the replicated cl_autoswitch via GetAutoswitch, cl_autoswitch_cts via GetClientCvarFloat, and g_cts via _world.GameType is Cts; picking up a better weapon now auto-switches in a real match. (2) GiveAmmoTo's negative-amount branch now calls TakeResourceWithLimit(res,-amount,cap) (ItemPickupRules.cs:246) matching items.qc:507 (was the dead TakeResource path). FuelRegen/Jetpack center-prints, resource gives, weapon-grant (dual-rep), powerup timers, and IT_PICKUPMASK transfer all remain faithful. No autoswitch/center-print unit test added — code-read-verified."
 
   - id: items-pickups.give.powerup_stack
     name: "Powerup timer application (stack vs refresh, g_powerups_stack)"

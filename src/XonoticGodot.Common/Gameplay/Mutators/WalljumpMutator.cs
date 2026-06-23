@@ -108,8 +108,11 @@ public sealed class WalljumpMutator : MutatorBase
         EffectEmitter.Emit("SMOKE_RING", hitPos, planeNormal, 5);
 
         // QC: PlayerSound(player, playersound_jump, CH_PLAYER, VOL_BASE, VOICETYPE_PLAYERSOUND, 1) — the
-        // per-model jump voice ("jump" resolves under the model sound dir), NOT a generic raw sample.
-        SoundSystem.PlayPlayerSound(player, "jump", null, SoundLevels.VolBase, SoundLevels.AttenNorm);
+        // per-model jump voice. "jump" resolves through the player's model .sounds manifest
+        // (QC LoadPlayerSounds: jump -> sound/player/<pack>/player/jump), falling back to the default pack.
+        // Passing the model's .sounds datafile (NOT null) is what makes the cue resolve to a shipped asset.
+        SoundSystem.PlayPlayerSound(player, "jump", Sounds.ModelSoundsFile(player.Model, (int)player.Skin),
+            SoundLevels.VolBase, SoundLevels.AttenNorm);
         // QC also: animdecide_setaction(player, ANIMACTION_JUMP, true) — no anim-action seam in the port yet (see todos).
 
         args.Multijump = true; // QC: M_ARGV(2, bool) = true

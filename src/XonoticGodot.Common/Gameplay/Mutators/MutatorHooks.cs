@@ -89,6 +89,32 @@ public static class MutatorHooks
     }
 
     /// <summary>
+    /// EV_PlayerUseKey (server/mutators/events.qh) — the +use key was pressed and was NOT consumed by the
+    /// vehicle enter/exit path (QC <c>PlayerUseKey</c>, client.qc:2666: the trailing
+    /// <c>MUTATOR_CALLHOOK(PlayerUseKey, this)</c> only fires when the player neither exited a seated vehicle
+    /// nor boarded one). A handler returning <c>true</c> consumes the press (QC ORs the returns). The CTF flag
+    /// throw/pass-request, the Keepaway/Team Keepaway/Nexball ball drop, and the KeyHunt voluntary key-drop
+    /// (kh_Key_DropOne) all hang off this hook. Slot0 the player who pressed +use.
+    /// </summary>
+    public struct PlayerUseKeyArgs
+    {
+        public readonly Entity Player;   // MUTATOR_ARGV_0_entity
+        public PlayerUseKeyArgs(Entity player) { Player = player; }
+    }
+    public static readonly HookChain<PlayerUseKeyArgs> PlayerUseKey = new();
+
+    /// <summary>
+    /// Fire <see cref="PlayerUseKey"/> for a player whose +use press fell through the vehicle path (QC
+    /// <c>MUTATOR_CALLHOOK(PlayerUseKey, this)</c> at the tail of <c>PlayerUseKey</c>). Returns true if any
+    /// handler consumed the press. The +use seam (<see cref="VehicleBoarding.UseKey"/>) calls this stable entry.
+    /// </summary>
+    public static bool FirePlayerUseKey(Entity player)
+    {
+        var a = new PlayerUseKeyArgs(player);
+        return PlayerUseKey.Call(ref a);
+    }
+
+    /// <summary>
     /// EV_PlayerPowerups — end of player_powerups(); lets mutators tweak values set by powerup items.
     /// Slot0 player, slot1 old items bitmask.
     /// </summary>

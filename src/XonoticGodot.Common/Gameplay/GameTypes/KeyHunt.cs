@@ -149,6 +149,7 @@ public sealed class KeyHunt : GameType
     private int _allOwnedTeam = Teams.None;
 
     private HookHandler<DeathEvent>? _deathHandler;
+    private HookHandler<MutatorHooks.PlayerUseKeyArgs>? _useKeyHandler;
 
     public KeyHunt()
     {
@@ -220,6 +221,9 @@ public sealed class KeyHunt : GameType
             if (!Keys.ContainsKey(team)) Keys[team] = new KeyState(team);
         _deathHandler = OnDeath;
         Combat.Death.Add(_deathHandler);
+        // QC MUTATOR_HOOKFUNCTION(kh, PlayerUseKey): the +use key in a carrier's hands drops one key (kh_Key_DropOne).
+        _useKeyHandler = OnUseKey;
+        MutatorHooks.PlayerUseKey.Add(_useKeyHandler);
     }
 
     /// <summary>
@@ -268,6 +272,23 @@ public sealed class KeyHunt : GameType
             return;
         Combat.Death.Remove(_deathHandler);
         _deathHandler = null;
+        if (_useKeyHandler is not null)
+        {
+            MutatorHooks.PlayerUseKey.Remove(_useKeyHandler);
+            _useKeyHandler = null;
+        }
+    }
+
+    /// <summary>
+    /// QC MUTATOR_HOOKFUNCTION(kh, PlayerUseKey) (sv_keyhunt.qc:1307): the +use key — if the player is carrying a
+    /// key (<c>player.kh_next</c>), drop one (<see cref="DropOneKey"/> = kh_Key_DropOne) to pass it to a teammate,
+    /// and consume the press (return true). Otherwise let the press fall through to other handlers.
+    /// </summary>
+    private bool OnUseKey(ref MutatorHooks.PlayerUseKeyArgs args)
+    {
+        if (args.Player is not Player player)
+            return false;
+        return DropOneKey(player); // true only if the player carried (and dropped) a key
     }
 
     public int AssignTeam(Player joiner, IReadOnlyList<Player> roster)
@@ -704,6 +725,10 @@ public sealed class KeyHunt : GameType
     public void DropAllKeys(Player player, bool suicide = true)
     {
         float now = Api.Services is not null ? Api.Clock.Time : 0f;
+        // QC kh_Key_DropAll: if the dropping carrier was recently PUSHED (a pusher within their pushltime window —
+        // set by teleporters / jumppads / the +use shove / push damage on Player.Pusher/PushLTime), record that
+        // pusher on each dropped key so a subsequent timeout-return can credit them a "push" (kh_LoserTeam).
+        Player? mypusher = (player.Pusher is Player pu && now < player.PushLTime) ? pu : null;
         bool droppedAny = false;
         foreach (var key in Keys.Values)
         {
@@ -714,6 +739,7 @@ public sealed class KeyHunt : GameType
             // QC: only a suicide marks kh_dropperteam (a kill leaves it 0 so any teammate can re-collect freely).
             key.DropperTeam = suicide ? (int)player.Team : Teams.None;
             key.DropTime = now;
+            key.Pusher = mypusher;               // QC key.pusher = mypusher (credited if the key times out in-window)
             key.ProtectTime = now + ProtectTime; // QC pushltime: pusher-credit window
             AddCol(player, "KH_LOSSES", 1); // QC kh_Key_DropAll: GameRules_scoring_add(player, KH_LOSSES, 1)
             // QC kh_Key_DropAll: "^BG%s^BG lost the X Key" (keyed by the key's HOME team).
@@ -789,17 +815,20 @@ public sealed class KeyHunt : GameType
     }
 
     /// <summary>
-    /// QC kh_LoserTeam: a key was lost (timed out / pushed off-map). If a pusher within the protect window owns
-    /// it, they get score_push + KH_PUSHES (a "push"); otherwise the key is destroyed and score_destroyed is
-    /// split among the OTHER teams, the previous owner takes a KH_DESTRUCTIONS mark, and a tar boom + loss
-    /// notify fire. Then the round ends (QC kh_FinishRound). Simplified: no per-player even-distribution.
+    /// QC kh_LoserTeam: a key was lost (timed out / pushed off-map). If a pusher (recorded on the key at drop
+    /// time, when its carrier was pushed within their pushltime window) on another team owns the loss, they get
+    /// score_push + KH_PUSHES (a "push"); otherwise the key is destroyed and score_destroyed is split among the
+    /// OTHER teams, the previous owner takes a KH_DESTRUCTIONS mark, and a tar boom + loss notify fire. Then the
+    /// round ends (QC kh_FinishRound). Simplified: no per-player even-distribution.
     /// </summary>
     public void LoserTeam(int loserTeam, KeyState lostKey)
     {
-        float now = GametypeEntities.Now;
+        // QC kh_LoserTeam: if(lostkey.pusher) if(lostkey.pusher.team != loser_team) if(IS_PLAYER(lostkey.pusher)).
+        // The push-attribution WINDOW (pushltime / ProtectTime) is enforced at DROP time in DropAllKeys (only a
+        // recent pusher is recorded onto the key); kh_LoserTeam itself does NOT re-gate on the window, so a key
+        // that times out long after the protect window still credits the pusher it carries.
         Player? pusher = null;
-        if (lostKey.Pusher is { } pu && now < lostKey.ProtectTime
-            && (int)pu.Team != loserTeam && !pu.IsDead)
+        if (lostKey.Pusher is { } pu && (int)pu.Team != loserTeam && !pu.IsDead)
             pusher = pu;
 
         Vector3 boomOrigin = lostKey.Entity?.Origin ?? lostKey.Dropper?.Origin ?? Vector3.Zero;

@@ -59,13 +59,16 @@ public sealed class Cheats
     /// QC <c>CheatsAllowed</c>: is <paramref name="p"/> allowed to cheat right now? Requires both the snapshot
     /// and the live <c>sv_cheats</c> (or the player's <c>MayCheat</c> override). Dead players are refused unless
     /// <paramref name="ignoreDead"/>; observers (non-players) only at <c>sv_cheats &gt;= 2</c>.
-    /// When refused and <paramref name="logAttempt"/> is set, broadcasts the QC
-    /// "Player ... tried to use cheat '<paramref name="cheatName"/>'" notice (QC's <c>bprintf</c> branch).
+    /// When refused at the final <c>sv_cheats==0</c> fall-through and <paramref name="logAttempt"/> is set,
+    /// broadcasts the QC "Player ... tried to use cheat '<paramref name="cheatName"/>'" notice (QC's
+    /// <c>bprintf</c> branch). The dead-player and observer guards refuse SILENTLY, as in Base.
     /// </summary>
     public bool Allowed(Player p, bool ignoreDead = false, bool logAttempt = false, string? cheatName = null)
     {
-        if (!ignoreDead && p.IsDead) return Refuse(p, logAttempt, cheatName);
-        if (GameStartCheats < 2 && (p.Flags & EntFlags.Client) == 0) return Refuse(p, logAttempt, cheatName); // observer guard
+        // QC CheatsAllowed returns 0 SILENTLY on the dead-player and observer guards; only the
+        // final sv_cheats==0 fall-through logs the attempt. Match that placement.
+        if (!ignoreDead && p.IsDead) return false;
+        if (GameStartCheats < 2 && (p.Flags & EntFlags.Client) == 0) return false; // observer guard
         if (p.MayCheat) return true;
         if (GameStartCheats != 0 && Cvars.Int("sv_cheats") != 0) return true;
         return Refuse(p, logAttempt, cheatName);

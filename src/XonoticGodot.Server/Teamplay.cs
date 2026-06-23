@@ -458,10 +458,10 @@ public sealed class Teamplay
     {
         if (!IsTeamGame || Api.Services is null)
             return false;
+        // QC: (teamplay && total_players && autocvar_sv_teamnagger) ? ... : false — sv_teamnagger 0 disables the
+        // nag (and the warmup badteams hold). The cvar is registered (default 2), so an explicit 0 is honored.
         float nagger = Api.Cvars.GetFloat("sv_teamnagger");
-        if (nagger == 0f) // Base default is 2; a host can read the registered default via the cvar service.
-            nagger = 2f;
-        if (nagger < 0f)
+        if (nagger <= 0f)
             return false;
         return SizeDifference(roster) >= (int)nagger;
     }

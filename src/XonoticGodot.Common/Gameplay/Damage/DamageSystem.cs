@@ -588,6 +588,12 @@ public sealed class DamageSystem : IDamageSystem
         var pd = new MutatorHooks.PlayerDiesArgs(inflictor, attacker, victim, deathType, damage);
         MutatorHooks.PlayerDies.Call(ref pd);
         damage = pd.Damage;
+
+        // QC status_effects PlayerDies/MonsterDies hook (sv_status_effects.qc:66-78): StatusEffects_removeall
+        // on death so a victim's burning/stunned/superweapon timers don't survive into the corpse/respawn
+        // (NORMAL removal — plays each effect's removal sound). Status effects are always-on (not a gated
+        // mutator in the port), so this is wired on the unconditional death path rather than the hook bus.
+        StatusEffectsCatalog.RemoveAll(victim, StatusEffectRemoval.Normal);
         float excess = MathF.Max(0f, damage - take - save);
 
         // A gametype hook (e.g. Freeze Tag) may have resuscitated the player to HP>=1 — then don't die.
@@ -813,16 +819,28 @@ public sealed class DamageSystem : IDamageSystem
     private static bool IsFrozenStat(Entity e) => e.FrozenStat != 0 || HasStatusFrozen(e);
 
     /// <summary>
-    /// QC <c>Handicap_GetTotalHandicap(player, receiving)</c> (server/handicap.qc): forced × voluntary,
-    /// both pre-combined onto the entity (<see cref="Entity.HandicapTake"/>/<see cref="Entity.HandicapGive"/>),
-    /// which default to 1 (handicap disabled). Non-players have no handicap.
+    /// QC <c>Handicap_GetVoluntaryHandicap(player, receiving)</c> (server/handicap.qc): the per-client,
+    /// self-imposed handicap read from the REPLICATE'd <c>cl_handicap</c>/<c>cl_handicap_damage_given</c>/
+    /// <c>cl_handicap_damage_taken</c> cvars, bound to [1, 10]. Wired by the server (Commands ctor) to read the
+    /// per-client cvar store; null (e.g. unit tests with no server) → 1 (no voluntary handicap). The CTS/RACE
+    /// HANDICAP_DISABLED() gate lives inside the provider (same source as the forced side).
+    /// </summary>
+    public static System.Func<Entity, bool, float>? VoluntaryHandicapProvider;
+
+    /// <summary>
+    /// QC <c>Handicap_GetTotalHandicap(player, receiving)</c> (server/handicap.qc): forced × voluntary. The
+    /// forced part is pre-combined onto the entity (<see cref="Entity.HandicapTake"/>/<see cref="Entity.HandicapGive"/>,
+    /// default 1 = handicap disabled); the voluntary part comes from the per-client cl_handicap* cvars via
+    /// <see cref="VoluntaryHandicapProvider"/>. Non-players have no handicap.
     /// </summary>
     private static float HandicapTotal(Entity e, bool receiving)
     {
         if ((e.Flags & EntFlags.Client) == 0)
             return 1f;
-        float v = receiving ? e.HandicapTake : e.HandicapGive;
-        return v <= 0f ? 1f : v;
+        float forced = receiving ? e.HandicapTake : e.HandicapGive;
+        if (forced <= 0f) forced = 1f;
+        float voluntary = VoluntaryHandicapProvider?.Invoke(e, receiving) ?? 1f;
+        return forced * voluntary;
     }
 
     // ===============================================================================================
@@ -889,11 +907,13 @@ public sealed class DamageSystem : IDamageSystem
     }
 
     /// <summary>
-    /// The per-model player sound directory for a player's voice sounds (QC the model's <c>.sounds</c> pack).
-    /// The Godot-free common layer doesn't carry a per-entity sound-pack path, so this returns null (the
-    /// default pack — <see cref="Sounds.DefaultPlayerSoundDir"/>); the host can override per model on the client.
+    /// The per-model <c>.sounds</c> manifest vpath for a player's voice sounds — QC
+    /// <c>get_model_datafilename(this.model, this.skin, "sounds")</c> (LoadPlayerSounds). Derived from the
+    /// entity's networked model + skin; the host-installed <see cref="Sounds.ModelSoundResolver"/> parses the
+    /// manifest to the real sample path, falling back to <c>default.sounds</c> when the model ships no pack.
+    /// Empty model =&gt; null (the default pack).
     /// </summary>
-    private static string? ModelSoundDir(Entity e) { _ = e; return null; }
+    private static string? ModelSoundDir(Entity e) => Sounds.ModelSoundsFile(e.Model, (int)e.Skin);
 
     /// <summary>
     /// Port of the pain-voice selection inside <c>PlayerDamage</c> (server/player.qc ~356-383): gated on

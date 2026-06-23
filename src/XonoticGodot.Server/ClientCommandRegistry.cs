@@ -91,6 +91,17 @@ public static class ClientCommandRegistry
         // ---- QC CheatCommand verbs (server/cheats.qc) — client-callable, gated internally by sv_cheats ----
         "god", "notarget", "noclip", "fly", "give",
 
+        // ---- sandbox (QC the SV_ParseClientCommand mutator hook in sandbox/sv_sandbox.qc). The client `sandbox`
+        //      alias (commands.cfg:193) emits `cmd g_sandbox <sub> …`, so the wire verb is `g_sandbox`. It is a
+        //      client command (a player drives the build mode), gated server-side by g_sandbox/g_sandbox_readonly
+        //      inside the handler (Commands.CmdSandbox → SandboxMutator.HandleCommand). ----
+        "g_sandbox",
+
+        // ---- superspec (QC the SV_ParseClientCommand mutator hook in superspec/sv_superspec.qc). The spectator
+        //      option/follow verbs are client commands (a spectator drives them), gated server-side by
+        //      g_superspectate (the mutator's added-state) + the IS_PLAYER guard inside HandleCommand. ----
+        "superspec", "autospec", "superspec_itemfilter", "followpowerup", "followstrength", "followshield",
+
         // ---- `help` — QC SV_ParseClientCommand handles `cmd help` inline (cmd.qc:1254-1276), printing the client
         //      + common command lists. Reachable by a client in Base, so allow it. (The port's help lists more
         //      names than Base's client-help, but the verbs themselves stay gated, so it's at most a name hint.)

@@ -391,7 +391,12 @@ public sealed partial class NetGame : Node3D
     {
         // The asset loader (models/sounds/maps) over the shared VFS, when the menu mounted one.
         if (_vfs is not null)
+        {
             _assets = new AssetLoader(_vfs);
+            // Wire the per-model player-sound resolver (QC LoadPlayerSounds): parses .sounds manifests so the
+            // jump grunt + pain/death voices resolve to real samples instead of the bogus default.sounds/<id>.
+            PlayerSoundResolver.Install(_vfs);
+        }
 
         // The load sequence runs as a coroutine: each BeginStage sets the bar's target and per-stage expected
         // time (the LoadingScreen animates asymptotically from where it is now toward that target), then we
@@ -779,6 +784,21 @@ public sealed partial class NetGame : Node3D
             cmd.ChangeLevelHandler = map => s.RunOnSimThread(() => RequestMapChange(map));
         }
 
+        // sandbox build mode (g_sandbox): wire the SandboxMutator's host seams (per-player print, crosshair trace,
+        // owner-UID/name/view-yaw, real-client roster, per-map file storage). The `g_sandbox` command routes to
+        // SandboxMutator.HandleCommand (Commands.CmdSandbox); without these the handler runs but every action is
+        // inert (spawns at origin, nothing selectable, no persistence). Runs on the sim thread (HandleCommand is
+        // dispatched there); the only main/worker-shared touch is the client print, routed through the sim thread
+        // when threaded. Safe even with g_sandbox 0 (the seams only fire while the mutator is added).
+        WireSandbox();
+
+        // superspec spectator commands (g_superspectate): wire the SuperSpecMutator's host seams (per-player sprint
+        // print + the live client roster used by the follow*/followkiller scans). The superspec/autospec/follow*
+        // verbs route to SuperSpecMutator.HandleCommand (Commands.CmdSuperspec); without these the option flags can
+        // be SET but the follow* switches have no roster and messages print nothing. Safe with g_superspectate 0
+        // (the seams only fire while the mutator is added). Same sim-thread ownership as WireSandbox.
+        WireSuperspec();
+
         // S5: spin up the dedicated server-sim worker now that ServerNet + the world + the sinks are all wired.
         // Install the shared gate on ServerNet (its Tick locks it) and hand the SAME object to the main thread
         // (_simGate) so _Process serialises its prediction span against the worker. Start LAST so no tick runs
@@ -803,6 +823,134 @@ public sealed partial class NetGame : Node3D
             _serverThread.Start();
             GD.Print("[NetGame] sv_threaded 1 — server simulation running on a dedicated worker thread (XG-ServerSim).");
         }
+    }
+
+    /// <summary>
+    /// Wire the <see cref="SandboxMutator"/>'s host seams — the C# successor to the cross-file calls the QC
+    /// sandbox mutator makes into the engine/server (crypto_idfp/netname/v_angle, FOREACH_CLIENT, the crosshair
+    /// trace, print_to, and the <c>sandbox/storage_*.txt</c> file IO). Without these the command surface (now
+    /// routed via <c>g_sandbox</c> → Commands.CmdSandbox → HandleCommand) executes but every effect is inert.
+    /// Idempotent and harmless when g_sandbox 0 (the delegates are only invoked while the mutator is added).
+    ///
+    /// <para>Threading: the sandbox command + the autosave/think tick both run on the sim thread (HandleCommand is
+    /// dispatched from there; OnStartFrame fires inside the server tick), which is the thread that owns
+    /// <see cref="_server"/> / <see cref="_serverWorld"/> on the threaded path — so the print/trace touch the
+    /// right owner directly, no <c>RunOnSimThread</c> hop needed.</para>
+    /// </summary>
+    private void WireSandbox()
+    {
+        if (_serverWorld is null) return;
+        if (Mutators.ByName("sandbox") is not SandboxMutator sandbox) return;
+
+        ITraceService trace = _serverWorld.Services.TraceImpl;
+
+        // QC print_to(player, msg) → sprint(player, ..): one console line to the issuing player.
+        sandbox.PrintTo = (e, msg) => { if (e is Player p) _server?.SendChatToPlayer(p, msg); };
+
+        // QC .crypto_idfp / .netname / view yaw. PersistentId is the port's crypto_idfp (RaceRecords/SuperSpec
+        // use the same field); a bot's is "" so it can't own objects, faithful to "bots cannot own objects".
+        sandbox.CryptoIdfpProvider = e => e is Player p ? p.PersistentId : "";
+        sandbox.NetNameProvider = e => e?.NetName ?? "";
+        sandbox.ViewYawProvider = e => e?.Angles.Y ?? 0f; // angles.y is the view yaw (object_spawn angles_y = v_angle.y)
+
+        // QC FOREACH_CLIENT(IS_PLAYER && IS_REAL_CLIENT): the live real (non-bot) roster, pulled each think for the
+        // owner-UID resync (clear when the owner disconnects). Matches the Warmup/Voting/Bans .Roster seams.
+        sandbox.RealClientsProvider = () =>
+        {
+            var list = new List<Entity>();
+            foreach (Player p in _serverWorld.Clients.Players)
+                if (!p.IsBot) list.Add(p);
+            return list;
+        };
+
+        // QC sandbox_ObjectEdit_Get / object_spawn forward trace (crosshair_trace / WarpZone_TraceLine forward
+        // distance). Trace a point line from the player's eye along the view forward; the endpoint is the spawn
+        // origin, and a hit object is resolved by matching the trace entity to a live sandbox object's edict.
+        sandbox.Trace = new SandboxTraceProvider(sandbox, trace);
+
+        // QC sandbox_Database_Save/_Load: the per-map storage file is sandbox/storage_<name>_<map>.txt under the
+        // writable user dir (DP writes to the gamedir; the port's writable root is ~/XonData via UserPaths). This
+        // makes save/autosave/autoload genuinely persist. The object_duplicate copy clipboard (QC stuffcmd `set
+        // cl_sandbox_clipboard …`) stays inert: the port has no svc_stufftext transport to push a cvar down a
+        // remote client's console — that's a separate seam (see SandboxObjectStore.SetClipboard).
+        sandbox.Store = new SandboxObjectStore();
+    }
+
+    /// <summary>
+    /// Wire the <see cref="SuperSpecMutator"/>'s host seams — the C# successor to the engine calls the QC superspec
+    /// mutator makes from its SV_ParseClientCommand / PlayerDies hooks: <c>sprint(to, ..)</c> for the option/state
+    /// messages, and <c>FOREACH_CLIENT</c> for the follow* / followkiller player scans. Without these the option
+    /// flags can be set (the command surface routes via <c>superspec</c>/<c>autospec</c>/… → Commands.CmdSuperspec
+    /// → HandleCommand) but the manual follow* switches have no roster to scan and every message prints nothing.
+    /// Idempotent and harmless when g_superspectate is off (the delegates only fire while the mutator is added).
+    /// Same sim-thread ownership as <see cref="WireSandbox"/> (HandleCommand is dispatched there; PlayerDies fires
+    /// inside the server tick), so the print/roster touch the right owner directly.
+    /// </summary>
+    private void WireSuperspec()
+    {
+        if (_serverWorld is null) return;
+        if (Mutators.ByName("superspec") is not SuperSpecMutator superspec) return;
+
+        // QC sprint(to, strcat(con_title, msg)): one console line to the spectator (the centered centerprint form
+        // has no server seam yet — see SuperSpecMutator.Msg).
+        superspec.PrintTo = (p, msg) => _server?.SendChatToPlayer(p, msg);
+
+        // QC FOREACH_CLIENT: the live client roster the follow*/followkiller scans iterate.
+        superspec.RosterProvider = () =>
+        {
+            var list = new List<Player>();
+            foreach (Player p in _serverWorld.Clients.Players) list.Add(p);
+            return list;
+        };
+    }
+
+    /// <summary>The crosshair/forward trace seam for the sandbox mutator (QC crosshair_trace / WarpZone_TraceLine).
+    /// Resolves a hit sandbox object by matching the traced entity to a live object's edict.</summary>
+    private sealed class SandboxTraceProvider : SandboxMutator.ITraceProvider
+    {
+        private readonly SandboxMutator _sandbox;
+        private readonly ITraceService _trace;
+        public SandboxTraceProvider(SandboxMutator sandbox, ITraceService trace) { _sandbox = sandbox; _trace = trace; }
+
+        public void TraceForward(Entity player, float distance, out NVec3 endpos, out SandboxMutator.SandboxObject? hit)
+        {
+            NVec3 eye = player.Origin + player.ViewOfs;
+            NVec3 fwd = QMath.Forward(player.Angles);
+            NVec3 end = eye + fwd * distance;
+            TraceResult tr = _trace.Trace(eye, NVec3.Zero, NVec3.Zero, end, MoveFilter.Normal, player);
+            endpos = tr.EndPos;
+            hit = null;
+            if (tr.Ent is not null)
+                foreach (var o in _sandbox.Objects)
+                    if (ReferenceEquals(o.Edict, tr.Ent)) { hit = o; break; }
+        }
+    }
+
+    /// <summary>The per-map text persistence seam for the sandbox mutator (QC sandbox_Database_Save/_Load file IO).
+    /// File lives under the writable user dir (<c>~/XonData/sandbox/storage_&lt;name&gt;_&lt;map&gt;.txt</c>, DP's
+    /// writable-gamedir analogue). The object_duplicate copy clipboard is left inert (no svc_stufftext transport
+    /// to set a remote client's cvar — see <see cref="SetClipboard"/>).</summary>
+    private sealed class SandboxObjectStore : SandboxMutator.IObjectStore
+    {
+        private static string PathFor(string storageName, string mapName)
+            => UserPaths.Resolve($"sandbox/storage_{storageName}_{mapName}.txt");
+
+        public string? Read(string storageName, string mapName)
+        {
+            try { string p = PathFor(storageName, mapName); return System.IO.File.Exists(p) ? System.IO.File.ReadAllText(p) : null; }
+            catch { return null; }
+        }
+
+        public void Write(string storageName, string mapName, string contents)
+        {
+            try { System.IO.File.WriteAllText(PathFor(storageName, mapName), contents); } catch { /* read-only host */ }
+        }
+
+        // QC stuffcmd(player, strcat("set ", cvar, " \"", value, "\"")) — pushes the serialized object into the
+        // player's clipboard cvar. The port has no svc_stufftext channel to run a console command on a remote
+        // client, so object_duplicate copy is inert until that transport exists (paste from a manually-set cvar
+        // still works). Inert here, faithful to the registry's known clipboard gap.
+        public void SetClipboard(Entity player, string cvar, string value) { }
     }
 
     /// <summary>

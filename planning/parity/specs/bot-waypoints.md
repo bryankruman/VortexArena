@@ -117,7 +117,7 @@ out of scope for this unit). The waypoint **editor** (`g_waypointeditor`) is a d
 |---|---|---|
 | `spawnfunc(waypoint)` edict + `wpflags` | `Waypoint` class + `WaypointFlags` enum (Waypoint.cs) | Bit values match Base exactly. |
 | `g_waypoints` + link bookkeeping | `WaypointNetwork` (Waypoint.cs) | 32 flat fields → one `List<WaypointLink>` adjacency. |
-| `waypoint_getlinkcost`/`gettravelcost`/`getlinearcost*` | `WaypointNetwork.TravelCost`/`LinearCost` | See gaps: NOT sorted, NOT skill-dependent, simplified water/crouch. |
+| `waypoint_getlinkcost`/`gettravelcost`/`getlinearcost*` | `WaypointNetwork.TravelCost`/`LinearCost` | Skill-dependent bunnyhop 1.25x IS wired (Skill seeded from server skill in ForMap). See gaps: NOT sorted; JumpHeight constant wrong (130 vs ~45.56). |
 | `waypoint_addlink*` (sorted, cap 32, drop-furthest) | `WaypointNetwork.Link`/`AddLinkOnce` | Unsorted, **no 32-link cap** in load path (AutoLink caps via `maxLinksPerNode`). |
 | `waypoint_think` auto-relink (PVS+dist+tracewalk, both dirs) | `WaypointNetwork.AutoLink` | Distance + `BotTracewalk` gate; **no PVS cull**; only when no `.cache` ships. |
 | `waypoint_loadall` (.waypoints) | `WaypointNetwork.LoadFromText` | Faithful triple parse; symmetry header parsed but unused. |

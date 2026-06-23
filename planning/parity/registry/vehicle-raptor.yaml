@@ -5,7 +5,7 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 14
   worst_gaps:
-    - "raptor.impact: the vr_impact override was ADDED in Wave-2 but is DEAD — Spawn() sets vehicle.Touch = null (wiping the VehicleCommon.Touch dispatcher that calls vr_impact), and Think() never snapshots OldVelocity, so the ram/crash self-damage never fires and would use a wrong delta if it did. Compiles, no live caller."
+    - "raptor.impact: FIXED in Wave-2 fixup — Spawn() no longer nulls vehicle.Touch and Think() now snapshots OldVelocity (+ Spawn seeds PlayTime), so the vr_impact ram/crash self-damage fires live with the correct speed-change delta (now matches Racer's live wiring)."
     - "Still no presentation at all: no rotor spinners/anglefix, no takeoff/land model animation frame, no cosmetic bomb/tail models, no muzzle/explosion/CSQC-projectile FX, no flare flame glow."
     - "No CSQC HUD/crosshair: missing the dual reticle + the dropmark bomb-impact marker + the aux lock crosshair color feedback."
     - "Engine fly sound (SND_VEH_RAPTOR_SPEED every ~7.96s) and death tumble SND_ROCKET_IMPACT not played."
@@ -45,11 +45,11 @@ features:
     gaps:
       - "Cosmetic sub-entities not created: no raptor_spinner rotor entities (engine_left/right), no raptor_rotor_anglefix, no bomb1/bomb2/tur_head cosmetic models (gun1/gun2 ARE created for aim)."
       - "mass=1 is set on the entity but has NO behavioral effect — the port's MoveTypePhysics solver never reads .Mass, so the QC bounce-missile mass tuning is inert (value set for fidelity only)."
-      - "Spawn() sets vehicle.Touch = null, which DROPS the VehicleCommon.Touch dispatcher that SpawnVehicle installed — this disables the crush + vr_impact path (see raptor.impact). QC vr_spawn does NOT clear .touch; Racer deliberately keeps it (Racer.cs:189-190)."
+      - "FIXED (Wave-2 fixup): Spawn() no longer nulls vehicle.Touch, so the VehicleCommon.Touch dispatcher SpawnVehicle installed stands (crush + vr_impact path now live, see raptor.impact). Matches QC vr_spawn (does NOT clear .touch) and Racer (Racer.cs:189-190)."
     verification:
       - { kind: code, ref: "Raptor.cs:Spawn vs raptor.qc:vr_spawn/vr_setup value diff; bouncefactor consumed MoveTypePhysics.cs:163-164 (BounceMissile); liquids mask read TraceService.cs:562-563; .Mass not read by Engine sim", result: pass }
     confidence: high
-    notes: "Wave-2 added mass/bouncefactor/bouncestop/liquids-mask/colormod-clear. bouncefactor (BounceMissile clip) + the liquids sink mask are genuinely effective; mass=1 is inert. The remaining defect is that Spawn still nulls vehicle.Touch — that is the root cause of raptor.impact being dead."
+    notes: "Wave-2 added mass/bouncefactor/bouncestop/liquids-mask/colormod-clear. bouncefactor (BounceMissile clip) + the liquids sink mask are genuinely effective; mass=1 is inert. Wave-2 fixup removed the erroneous vehicle.Touch=null and seeded PlayTime, restoring the live impact path (see raptor.impact)."
 
   - id: raptor.liveness.spawnfunc
     name: "Map placement spawnfunc + live think wiring"
@@ -414,16 +414,16 @@ features:
       timing: faithful
       presentation: na
       audio: missing
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "DEAD: Raptor.Impact override + VehicleCommon.Impact body are correct (DEATH_FALL self-damage, speedfac*delta capped at maxpain, 0.25s debounce), but NO LIVE CALLER reaches it. (1) Raptor.Spawn line 141 sets vehicle.Touch = null, wiping the VehicleCommon.Touch dispatcher that SpawnVehicle installed and that calls vehic.VehicleDef.Impact on a hard touch. (2) Raptor.Think never snapshots vehicle.OldVelocity (Racer.Think does, Racer.cs:296), so even if Touch were dispatched, vehicles_impact would compute Velocity - OldVelocity(=0) = full velocity every time (always-trip / wrong magnitude). Both must be fixed for the raptor to take ram/crash damage."
-      - "Engine touch dispatch itself works (TriggerTouch.cs:107-111 calls e.Touch for non-Solid.Not solids); the blocker is raptor-specific (Touch nulled + OldVelocity unsnapshotted), not the seam."
+      - "FIXED (Wave-2 fixup): Raptor.Spawn no longer nulls vehicle.Touch, so the VehicleCommon.Touch dispatcher SpawnVehicle installs stands and calls vehic.VehicleDef.Impact on a hard touch (matches Racer.cs:189-190 / QC vr_spawn which does NOT reset .touch). Raptor.Think now snapshots vehicle.OldVelocity BEFORE the tick's physics (matches Racer.Think:296), and Spawn seeds PlayTime = Time to clear the impact debounce on respawn — so vehicles_impact computes the true Velocity-OldVelocity delta. The raptor now takes DEATH_FALL crash damage on hard impacts."
+      - "Engine touch dispatch works (TriggerTouch.cs:107-111 calls e.Touch for non-Solid.Not solids); with Touch kept + OldVelocity snapshotted the impact path is fully wired."
     verification:
-      - { kind: code, ref: "Raptor.cs:Impact + VehicleCommon.Impact reviewed (body correct); Spawn nulls vehicle.Touch (Raptor.cs:141); Think has no OldVelocity snapshot; Racer keeps Touch + snapshots OldVelocity for comparison", result: fail }
+      - { kind: code, ref: "Raptor.cs:Impact + VehicleCommon.Impact body correct; Spawn keeps SpawnVehicle's Touch (no null) + seeds PlayTime; Think snapshots OldVelocity — identical live wiring to Racer", result: pass }
     confidence: high
-    notes: "Wave-2 added the vr_impact override + VehicleCommon.Impact, so the LOGIC/VALUES are now faithful — but the feature is DEAD (no live caller) because Spawn() clears vehicle.Touch and Think() omits the OldVelocity snapshot. Net effect vs Base is unchanged: the raptor still takes no crash damage and the pilot feels no impact. This is NOT a genuine fix; it is the recurring 'compiles but isn't wired' failure mode. Contrast Racer, whose identical Impact IS live (keeps Touch + snapshots OldVelocity)."
+    notes: "Wave-2 added the vr_impact override + VehicleCommon.Impact (logic/values faithful); the Wave-2 fixup made it LIVE by removing Spawn's vehicle.Touch=null, adding the OldVelocity snapshot in Think, and seeding PlayTime on spawn — matching Racer's live impact wiring exactly. The raptor now takes ram/crash self-damage on hard touches as in Base."
 
   - id: raptor.death
     name: "Death tumble + blowup (vr_death, raptor_diethink, raptor_blowup)"

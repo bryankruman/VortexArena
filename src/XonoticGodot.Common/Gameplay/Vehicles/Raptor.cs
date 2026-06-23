@@ -138,7 +138,9 @@ public sealed class Raptor : Vehicle
         vehicle.VehW2Mode = (int)RaptorMode.Bomb;
         vehicle.VehWeaponDelay = Time;
         vehicle.VehReloadStart = Time;
-        vehicle.Touch = null;
+        vehicle.PlayTime = Time; // QC: clear the impact debounce on (re)spawn (play_time)
+        // QC vr_spawn does NOT reset .touch — vehicles_spawn's this.touch = vehicles_touch stands, so the shared
+        // crush / ram-impact (vr_impact) dispatch runs. (VehicleCommon.SpawnVehicle already wired vehicle.Touch.)
 
         // Hitbox: '-80 -80 0' .. '80 80 70' (raptor.qh).
         if (Api.Services is not null)
@@ -224,6 +226,10 @@ public sealed class Raptor : Vehicle
         if (VehicleCommon.FreezeIfGameStopped(vehicle))
             return;
 
+        // QC engine .oldvelocity = last-tick velocity; vr_impact (vehicles_impact) measures the touch speed-change
+        // against it. Snapshot BEFORE this tick's physics so a touch dispatched this frame sees the real delta.
+        vehicle.OldVelocity = vehicle.Velocity;
+
         Entity? player = vehicle.Owner;
 
         if (player is not null && !VehicleCommon.IsDead(vehicle))
@@ -251,6 +257,9 @@ public sealed class Raptor : Vehicle
             player.OldOrigin = player.Origin;
             player.Velocity = vehicle.Velocity;
         }
+
+        // QC vehicles_think: vehicles_painframe(this) runs after vr_think every tick — low-health smoke + jitter.
+        VehicleCommon.PainFrame(vehicle);
     }
 
     /// <summary>Port of <c>raptor_takeoff</c>: rise vertically while the animation frame ramps 0→25, then hand off to flight.</summary>

@@ -270,8 +270,8 @@ public sealed class ClientManager
 
     /// <summary>
     /// QC <c>joinAllowed</c> (server/client.qc:2258), reduced core: a client may join once it has observed for at
-    /// least <see cref="MinSpecTime"/> and teams aren't admin-locked. The version-mismatch / forced-spectator /
-    /// playban / g_maxping / queue-balance gates are deferred (those subsystems aren't modeled on this path).
+    /// least <see cref="MinSpecTime"/>, teams aren't admin-locked, and it is not play-banned (forced-spectate).
+    /// The version-mismatch / g_maxping / queue-balance gates are deferred (those subsystems aren't modeled here).
     /// </summary>
     public bool JoinAllowed(Player p, float now)
     {
@@ -281,11 +281,20 @@ public sealed class ClientManager
             return false;
         if (_teamplay.IsTeamGame && TeamsLocked) // QC: teamplay && lockteams
             return false;
+        // QC Join_Try: a play-banned (forced-spectate) client may not join (CENTER_JOIN_PLAYBAN). Wired by the
+        // host to Bans.IsPlayBanned; null until wired (e.g. headless test harness) so the gate is a no-op there.
+        if (ForcedSpectate is not null && ForcedSpectate(p))
+            return false;
         return true;
     }
 
     /// <summary>QC <c>lockteams</c>: admin team-lock; mirrored from <see cref="GameWorld.TeamsLocked"/> by the host.</summary>
     public bool TeamsLocked { get; set; }
+
+    /// <summary>QC the play-ban (forced-spectate) join gate: is this client on <c>g_playban_list</c>? Injected by
+    /// the host (Bans.IsPlayBanned, which lives in the Server ban layer); when set, <see cref="JoinAllowed"/>
+    /// refuses the join so a play-banned offender can't press fire / autojoin back into the match.</summary>
+    public Func<Player, bool>? ForcedSpectate { get; set; }
 
     /// <summary>
     /// QC <c>ObserverOrSpectatorThink</c> + the delayed-autojoin slice of <c>PlayerPreThink</c>
@@ -404,6 +413,12 @@ public sealed class ClientManager
         // (VoteCount/ReadyCount recount on demote stays deferred — owned by the vote/ready subsystem.)
         if (!p.IsObserver && p.GetResource(ResourceType.Health) >= 1f)
             EffectEmitter.Emit("SPAWN", p.Origin, Vector3.Zero, 1);
+
+        // QC status_effects MakePlayerObserver hook (sv_status_effects.qc:94-112): drop the demoted player's
+        // own status effects (NORMAL removal for the removal sounds) then CLEAR the leftover state. The port has
+        // no separate statuseffects_store entity for spectators, so the SpectateCopy effect-aliasing is N/A.
+        StatusEffectsCatalog.RemoveAll(p, StatusEffectRemoval.Normal);
+        StatusEffectsCatalog.ClearAll(p);
 
         p.IsObserver = true;
         p.Spectatee = null;
@@ -547,6 +562,11 @@ public sealed class ClientManager
             return false;
         }
 
+        // QC status_effects PutClientInServer hook (sv_status_effects.qc:133-147): a (re)spawning player starts
+        // with a clean status-effect store — StatusEffects_clearall so no burning/stunned/superweapon timer
+        // bleeds across a respawn (and the cleared state networks via the dirty-mark).
+        StatusEffectsCatalog.ClearAll(p);
+
         SpawnSystem.PutPlayerInServer(p, sp.Value, warmup: IsWarmup?.Invoke() ?? false);
 
         // [T35] QC PutClientInServer: this.flags = FL_CLIENT | FL_PICKUPITEMS. A spawned, live player can pick
@@ -587,6 +607,12 @@ public sealed class ClientManager
 
         ClientInfo info = _clients[idx];
         info.IsConnected = false;
+
+        // QC status_effects ClientDisconnect hook (sv_status_effects.qc:80-92): clear the leaving player's
+        // status effects (NORMAL removal — fires the removal sounds, "just to get rid of the pickup sound")
+        // so a stale burning/superweapon timer doesn't survive on a recycled player object.
+        StatusEffectsCatalog.RemoveAll(p, StatusEffectRemoval.Normal);
+        StatusEffectsCatalog.ClearAll(p);
 
         OnClientDisconnect?.Invoke(p); // §5 disconnect hooks (finalize stats, :part:, voter/timeout cleanup)
 

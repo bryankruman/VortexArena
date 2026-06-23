@@ -82,7 +82,7 @@ public static class TurretSpawn
         // Lifecycle hooks (QC turret_use / turret_damage / turret_die). turret_use swaps the team+active state
         // on trigger. The turret carries its OWN .event_damage (QC turret_damage) as a GtEventDamage shim:
         // DamageSystem.EventDamage routes a non-player edict with a GtEventDamage to it and returns, so a turret
-        // victim runs the pre-damage gate (inactive immunity / friendly-fire scaling / MOVE shove / retaliation)
+        // victim runs the pre-damage gate (inactive immunity / friendly-fire scaling / MOVE shove)
         // in TurretAI.Damage and its own health subtract — instead of being treated as a player. Lethal hits fire
         // the shared Combat.Death bus, which the EnsureDeathHook subscription (OnAnyDeath -> Die) turns into the
         // death blast + respawn schedule.

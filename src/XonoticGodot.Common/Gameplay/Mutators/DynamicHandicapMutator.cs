@@ -38,19 +38,25 @@ public sealed class DynamicHandicapMutator : MutatorBase
 
     public DynamicHandicapMutator() => NetName = "dynamic_handicap";
 
+    /// <summary>
+    /// QC <c>HANDICAP_DISABLED()</c> (server/handicap.qh:57) == <c>IS_GAMETYPE(CTS) || IS_GAMETYPE(RACE)</c>.
+    /// The port selects the gametype as a C# object (never stamps a <c>g_cts</c>/<c>g_race</c> cvar), so this
+    /// must be wired from the server side to <c>GameType is Cts or Race</c> — the same provider-seam pattern as
+    /// <see cref="Items.ItemPickupRules.CtsActiveProvider"/>. Null provider = false (the common non-CTS/RACE case).
+    /// </summary>
+    public static System.Func<bool>? HandicapDisabledProvider;
+
     // QC: REGISTER_MUTATOR(dynamic_handicap, autocvar_g_dynamic_handicap && !HANDICAP_DISABLED());
     // HANDICAP_DISABLED() (server/handicap.qh:57) == (IS_GAMETYPE(CTS) || IS_GAMETYPE(RACE)) — in CTS/RACE the
-    // whole handicap subsystem (and so this mutator) is hard-disabled. Detect the active gametype via its select
-    // cvar (g_cts / g_race), the same pattern PowerupsMutator uses for its CTS guard.
+    // whole handicap subsystem (and so this mutator) is hard-disabled.
     public override bool IsEnabled =>
         Api.Services is not null
         && Api.Cvars.GetFloat("g_dynamic_handicap") != 0f
         && !HandicapDisabled;
 
-    // QC HANDICAP_DISABLED(): CTS or RACE gametype.
-    private static bool HandicapDisabled =>
-        Api.Services is not null
-        && (Api.Cvars.GetFloat("g_cts") != 0f || Api.Cvars.GetFloat("g_race") != 0f);
+    // QC HANDICAP_DISABLED(): CTS or RACE gametype. Detected via the server-wired provider (GameType is Cts/Race),
+    // NOT the bare g_cts/g_race cvars — the port never sets those, so reading them would leave this guard dead.
+    private static bool HandicapDisabled => HandicapDisabledProvider?.Invoke() ?? false;
 
     private HookHandler<MutatorHooks.PlayerSpawnArgs>? _onSpawn;
     private HookHandler<MutatorHooks.PlayerDiesArgs>? _onDies;

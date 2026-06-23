@@ -133,8 +133,9 @@ public sealed class BotPopulation
         }
 
         // (d) live `skill` cvar resync (bot.qc:725-736): a console `skill N` retunes every bot. (QC also
-        // re-costs waypoint links across the bunnyhop threshold — the port's link costs aren't skill-scaled,
-        // so that branch has no analogue.) Per-bot BotSkill is the authoritative knob; the cvar change writes
+        // re-costs waypoint links across the bunnyhop threshold; the port bakes the shared graph's costs once
+        // at LoadWaypointNetwork using the server skill — see WaypointNetwork.ForMap's skill seed — rather than
+        // re-costing live on a mid-match skill change.) Per-bot BotSkill is the authoritative knob; the cvar change writes
         // it for all bots, and the per-frame brain sync below picks up any direct BotSkill write too.
         float skillCvar = Cvars.Skill;
         if (skillCvar != _lastSkillCvar)

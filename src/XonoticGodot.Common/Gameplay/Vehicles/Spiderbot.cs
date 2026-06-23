@@ -116,7 +116,9 @@ public sealed class Spiderbot : Vehicle
         vehicle.Gravity = 2f;               // QC: instance.gravity = 2
         vehicle.DeadState = DeadFlag.No;
         vehicle.DamageForceScale = 0.03f;   // QC vr_spawn: instance.damageforcescale = 0.03
-        vehicle.Touch = null;
+        // NOTE: do NOT reset Touch here. Base spiderbot vr_spawn does not settouch func_null
+        // (that appears only in vr_death). SpawnVehicle installs the shared crush/touch handler;
+        // nulling it would disable run-over crush on the ground walker most likely to do it.
         if (vehicle.TurHead is not null) vehicle.TurHead.Angles = Vector3.Zero;
         vehicle.VehRocketBelt = 1; // QC: tur_head.frame = 1
 
@@ -240,6 +242,9 @@ public sealed class Spiderbot : Vehicle
             player.OldOrigin = player.Origin;
             player.Velocity = vehicle.Velocity;
         }
+
+        // QC vehicles_think: vehicles_painframe(this) runs after vr_think every tick — low-health smoke + jitter.
+        VehicleCommon.PainFrame(vehicle);
     }
 
     /// <summary>
@@ -699,11 +704,10 @@ public sealed class Spiderbot : Vehicle
         return v != 0f ? v : 800f;
     }
     // QC: autocvar_sv_gameplayfix_gravityunaffectedbyticrate (default true) -> 0.5, else 1.
-    private static float GravityTicrateFactor()
-    {
-        if (Api.Services is null) return 0.5f;
-        return Api.Cvars.GetFloat("sv_gameplayfix_gravityunaffectedbyticrate") != 0f ? 0.5f : 1f;
-    }
+    // The port treats this gameplayfix as hardcoded-true (PlayerPhysics.GravityUnaffectedByTicrate,
+    // FlyMove.GravityUnaffectedByTicrate), and the cvar is not registered/seeded, so the factor is
+    // a constant 0.5 to stay both Base-default-faithful and consistent with the engine's movetypes.
+    private static float GravityTicrateFactor() => 0.5f;
     private static float StaticGravity()
     {
         if (Api.Services is null) return 800f;

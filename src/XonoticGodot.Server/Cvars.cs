@@ -121,12 +121,17 @@ public static class Cvars
 
         // ---- warmup / ready-restart (xonotic-server.cfg) ----
         new("g_warmup", "0", Save, "enable warmup stage"),
-        new("g_warmup_limit", "-1", Save, "warmup time limit (-1 = until ready, 0 = off)"),
+        new("g_warmup_limit", "180", Save, "warmup time limit in seconds (-1 = until ready, 0 = use timelimit)"),
         new("g_warmup_allow_timeout", "0", Save),
         new("g_warmup_majority_factor", "0.8", Save, "fraction of players that must ready up"),
         new("sv_ready_restart", "0", Save),
-        new("sv_ready_restart_after_countdown", "1", Save),
+        new("sv_ready_restart_after_countdown", "0", Save, "reset players and map items after the countdown ended, instead of at the beginning of the countdown"),
         new("sv_ready_restart_repeatable", "0", Save),
+        // QC map_minplayers (world.qc:697): per-map worldspawn key, the g_warmup<0 minimum-player lower bound (0 = none).
+        new("map_minplayers", "0", Save, "minimum players for the map (g_warmup -1 lower bound)"),
+        // QC g_start_delay (xonotic-common.cfg:185-186): the pre-match join window (0 listen / 15 dedicated). Listen
+        // server default; a dedicated server raises it to 15 in its config.
+        new("g_start_delay", "0", Save, "delay before the game starts, so everyone can join (15 recommended on a public server)"),
 
         // ---- intermission / map change (xonotic-server.cfg) ----
         new("sv_mapchange_delay", "5", Save, "scoreboard hold before map change"),
@@ -140,6 +145,11 @@ public static class Cvars
         new("g_balance_teams_prevent_imbalance", "1", Save),
         new("g_balance_teams_skill", "1", Save, "weigh balance by player skill, not just count"),
         new("g_changeteam_bantime", "30", Save),
+        // QC sv_teamnagger (xonotic-server.cfg:300): team-size gap threshold for the unbalanced-teams nag; g_warmup
+        // won't end while it's tripped. The warmup badteams gate (ReadyCount) reads this via Teamplay.
+        new("sv_teamnagger", "2", Save, "team size difference threshold for the unbalanced-teams nag (0 = off)"),
+        // QC teamplay_lockonrestart (xonotic-server.cfg:29): lock teams once the match restarts (ReadyRestart_force).
+        new("teamplay_lockonrestart", "0", Save, "lock teams once all players readied up and the game restarted"),
 
         // ---- health / armor regen + rot (balance-xonotic.cfg; values match stock so regen works without
         //      a loaded balance cfg — the port's old 0 defaults left health regen OFF out of the box) ----
@@ -394,7 +404,9 @@ public static class Cvars
         new("g_maplist_mostrecent_count", "3", Save, "how many recent maps to remember"),
         new("g_maplist_shuffle", "1", Save, "shuffle the rotation on load"),
         new("g_maplist_selectrandom", "0", Save, "pick the next map at random"),
-        new("g_maplist_votable_keeptwotime", "15", Save, "seconds before the ballot is reduced"),
+        new("g_maplist_votable_reduce_time", "15", Save, "reduce the number of options shown after this amount of time during the vote; 0 = disable"),
+        new("g_maplist_votable_reduce_count", "2", Save, "options kept after reduce; if < 2, keep all maps that got any votes (if at least 2 did)"),
+        new("g_maplist_votable_show_suggester", "1", Save, "show which player suggested a map"),
         new("g_maplist_votable_suggestions", "2", Save, "player-suggested map slots on the ballot"),
         new("g_maplist_votable_suggestions_override_mostrecent", "0", Save),
         new("sv_vote_gametype", "0", Save, "run a gametype vote before the map vote"),

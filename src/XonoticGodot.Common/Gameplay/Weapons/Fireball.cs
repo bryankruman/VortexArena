@@ -278,11 +278,14 @@ public sealed class Fireball : Weapon
     /// to edgedamage at the rim). The burn routes through Fire_AddDamage (frame-rate-independent DOT + the
     /// re-ignition combine LEMMA), and skips frozen / independent / same-team players (QC's full filter).
     /// </summary>
-    private void LaserPlay(Entity self, float dist, float damage, float edgeDamage, float burnTime)
+    private void LaserPlay(Entity self, float dist, float damage, float edgeDamage, float burnTime, Entity? creditOwner = null)
     {
         if (damage <= 0f || Api.Services is null) return;
 
-        Entity owner = self.RealOwner ?? self;
+        // QC W_Fireball_LaserPlay credits this.realowner. For the firemine, the firer is decoupled from .owner
+        // (movement passthrough) once the mine goes "hot", so the credit owner is threaded in explicitly to
+        // survive the Owner=null decouple (the port's RealOwner aliases Owner). Primary fireball passes null.
+        Entity owner = creditOwner ?? self.RealOwner ?? self;
         var burning = StatusEffectsCatalog.Burning;
         if (burning is null) return;
 
@@ -299,7 +302,10 @@ public sealed class Fireball : Weapon
             if (e.FrozenStat != 0 || StatusEffectsCatalog.Frozen is { } fz && StatusEffectsCatalog.Has(e, fz))
                 continue;
             bool isPlayer = (e.Flags & EntFlags.Client) != 0;
-            if (isPlayer && self.RealOwner is not null && Teams.SameTeam(e, self))
+            // QC: (IS_PLAYER(e) && this.realowner && SAME_TEAM(e, this)). The realowner gate uses the threaded
+            // credit owner so it survives the firemine's Owner=null decouple (RealOwner aliases Owner).
+            bool hasRealOwner = (creditOwner ?? self.RealOwner) is not null;
+            if (isPlayer && hasRealOwner && Teams.SameTeam(e, self))
                 continue;
 
             Vector3 p = e.Origin + new Vector3(
@@ -431,8 +437,12 @@ public sealed class Fireball : Weapon
         proj.Angles = QMath.VecToAngles(proj.Velocity);
 
         float deathTime = Api.Clock.Time + Secondary.Lifetime;
-        proj.Touch = (self, other) => FiremineTouch(self, other);
-        proj.Think = self => FiremineThink(self, deathTime);
+        // QC sets proj.owner = proj.realowner = actor. The "make it hot" decouple later nulls only .owner; the
+        // firer (realowner) is captured here so burn/obituary credit survives the Owner=null decouple — the port's
+        // RealOwner is a computed alias of Owner, so it can't be relied on once Owner is cleared.
+        Entity firer = actor;
+        proj.Touch = (self, other) => FiremineTouch(self, other, firer);
+        proj.Think = self => FiremineThink(self, deathTime, firer);
         proj.NextThink = Api.Clock.Time;
 
         // MUTATOR_CALLHOOK(EditProjectile, actor, proj) (fireball.qc W_Fireball_Attack2).
@@ -444,7 +454,7 @@ public sealed class Fireball : Weapon
     }
 
     // W_Fireball_Firemine_Think — scorch a nearby enemy each tick; self-destruct at end of lifetime. fireball.qc
-    private void FiremineThink(Entity self, float deathTime)
+    private void FiremineThink(Entity self, float deathTime, Entity firer)
     {
         if (Api.Clock.Time > deathTime)
         {
@@ -469,13 +479,14 @@ public sealed class Fireball : Weapon
             }
         }
 
-        LaserPlay(self, Secondary.LaserRadius, Secondary.LaserDamage, Secondary.LaserEdgeDamage, Secondary.LaserBurnTime);
+        // Credit the firer (realowner), which persists past the Owner=null decouple above.
+        LaserPlay(self, Secondary.LaserRadius, Secondary.LaserDamage, Secondary.LaserEdgeDamage, Secondary.LaserBurnTime, firer);
         self.NextThink = Api.Clock.Time + 0.1f;
     }
 
     // W_Fireball_Firemine_Touch — set the player it lands on alight (Fire_AddDamage burn over damagetime),
     // else keep bouncing (HITTYPE_BOUNCE). fireball.qc
-    private void FiremineTouch(Entity self, Entity other)
+    private void FiremineTouch(Entity self, Entity other, Entity firer)
     {
         // QC: if (toucher.takedamage == DAMAGE_AIM && Fire_AddDamage(...) >= 0) { delete; return; }
         // Fire_AddDamage returns >= 0 only when it actually added burn (target alive + damage > 0); on an
@@ -484,7 +495,8 @@ public sealed class Fireball : Weapon
         {
             // projectiledeathtype = WEP_FIREBALL.m_id | HITTYPE_SECONDARY (set at spawn).
             string dt = DeathTypes.WithHitType(DeathTypes.FromWeapon(NetName), DeathTypes.Secondary);
-            float added = StatusEffectsCatalog.FireAddDamage(other, self.RealOwner ?? self,
+            // QC credits this.realowner; threaded firer survives the Owner=null decouple (RealOwner aliases Owner).
+            float added = StatusEffectsCatalog.FireAddDamage(other, firer,
                 Secondary.Damage, Secondary.DamageTime, dt);
             if (added >= 0f)
             {

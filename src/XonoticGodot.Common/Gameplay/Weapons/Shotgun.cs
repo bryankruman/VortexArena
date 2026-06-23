@@ -155,7 +155,12 @@ public sealed class Shotgun : Weapon
         if (Secondary.Secondary == 1
             && (fire == FireMode.Secondary || emptyPrimaryAutoMelee)
             && (!Secondary.MeleeBlockedByFiring || Api.Clock.Time >= st.ShotgunPrimaryTime)
-            && PrepareAttack(actor, slot, FireMode.Secondary))
+            // QC weapon_prepareattack(thiswep, actor, weaponentity, true, refire): the `true` selects the
+            // SECONDARY ammo check (wr_checkammo2 -> melee -> always available) + the secondary refire, while
+            // the button was already gated upstream by the `fire` bitmask. So commit the secondary MODE but
+            // gate the held-button on whichever button actually triggered this (an empty PRIMARY press must
+            // satisfy the gate via ATK1, not ATK2).
+            && PrepareAttack(actor, slot, FireMode.Secondary, attackTime: float.NaN, buttonFire: fire))
         {
             Melee(actor, slot);
         }
@@ -201,8 +206,10 @@ public sealed class Shotgun : Weapon
         Api.Sound.Play(actor, SoundChannel.WeaponAuto, "weapons/shotgun_fire.wav");
         EffectEmitter.Emit("SHOTGUN_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
 
-        // Casing eject — QC W_Shotgun_Attack (shotgun.qc:78-83): SpawnCasing when g_casings>=1 (default 2). The
-        // shared seam gates on g_casings>=2 and computes the QC view-frame eject velocity; a Shell casing.
+        // Casing eject — QC W_Shotgun_Attack (shotgun.qc:78-83): SpawnCasing when g_casings>=1 (the shotgun
+        // shell gate; default 2). The shared seam applies the per-casingtype gate (Shell => >=1) and the QC
+        // shotgun view-frame eject velocity (up (30 - rand*5), shotgun.qc:82), then routes the Shell casing to
+        // the client's EffectSystem.SpawnCasing (a real bouncing brass shell).
         WeaponFiring.EjectCasing(actor, shot.Origin, WeaponFiring.CasingType.Shell);
     }
 

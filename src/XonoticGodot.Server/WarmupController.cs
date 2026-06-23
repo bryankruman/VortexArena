@@ -19,8 +19,11 @@ namespace XonoticGodot.Server;
 /// <see cref="ResetMap"/>, which <see cref="GameWorld"/> wires to its own reset (the QC <c>reset_map</c>
 /// FOREACH_CLIENT PutClientInServer + the entity <c>.reset</c> callbacks).
 ///
-/// Deferred: team locking, the spectate==2 demotion, the campaign 3s countdown, the Nagger network entity,
-/// and timeout interaction — a host can layer those on the callbacks.
+/// Host-wired via callbacks (all live in <see cref="GameWorld"/>): team locking (<see cref="OnLockTeams"/>),
+/// the campaign 3s countdown (<see cref="CampaignActive"/>), the minplayers/badteams countdown-abort
+/// (<see cref="MapMinPlayers"/> / <see cref="BadTeams"/> / <see cref="OnCountdownStop"/>), and the timeout
+/// ready-count guard (<see cref="TimeoutActive"/>). Still deferred: the spectate==2 demotion + per-player
+/// requeue/timeout-reset on restart, and the Nagger network entity.
 /// </summary>
 public sealed class WarmupController
 {
@@ -88,6 +91,14 @@ public sealed class WarmupController
     /// when <c>g_warmup &lt;= 1</c>; with <c>g_warmup &gt; 1</c> the cvar value is the minimum directly. Defaults 0.
     /// </summary>
     public Func<int>? MapMinPlayers { get; set; }
+
+    /// <summary>
+    /// QC <c>ReadyCount</c> badteams gate: <c>(teamplay &amp;&amp; total_players &amp;&amp; sv_teamnagger)
+    /// ? TeamBalance_SizeDifference(NULL) &gt;= sv_teamnagger : false</c>. The team-size compute lives in the
+    /// teamplay layer (this controller can't see team sizes), so the host wires this to
+    /// <c>Teamplay.TeamsUnbalancedForNag</c>. Defaults false (no team imbalance held against the restart).
+    /// </summary>
+    public Func<bool>? BadTeams { get; set; }
 
     /// <summary>
     /// QC ReadyRestart_force: <c>if (autocvar_teamplay_lockonrestart &amp;&amp; teamplay) lockteams = !warmup_stage;</c>.
@@ -226,11 +237,11 @@ public sealed class WarmupController
             if (_ready.Contains(p)) humansReady++;
         }
 
-        // QC badteams: teams unbalanced by >= sv_teamnagger (default 2). The actual size-difference compute lives
-        // in the teamplay layer (sv-teamplay.nagger gap); this controller can't see team sizes, so the host wires
-        // TeamBalance via a future seam. Until then badteams stays false (matches the port's current behaviour:
-        // sv_teamnagger has no networked feed). NOTE recorded in todos.
-        bool badteams = false;
+        // QC badteams: (teamplay && total_players && sv_teamnagger) ? TeamBalance_SizeDifference(NULL) >=
+        // sv_teamnagger : false. The size-difference compute lives in the teamplay layer (this controller can't
+        // see team sizes), so the host wires BadTeams to Teamplay.TeamsUnbalancedForNag. The QC total_players
+        // guard is mirrored here (no players => no imbalance hold). Unwired => false (no team imbalance hold).
+        bool badteams = totalPlayers > 0 && (BadTeams?.Invoke() ?? false);
 
         if (totalPlayers < MinPlayers || badteams)
         {

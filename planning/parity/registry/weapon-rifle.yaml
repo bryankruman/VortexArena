@@ -411,22 +411,22 @@ features:
       - { name: "g_casings gate", base: ">= 2", port: ">= 2 (EjectCasing reads g_casings, cs in WeaponFiring)", match: true }
       - { name: "casing type", base: "3 (bullet)", port: "CasingType.Bullet -> 'casing_bullet'", match: true }
       - { name: "eject velocity", base: "(rand*50+50)*right - (rand*25+25)*fwd + (70-rand*5)*up", port: "same formula, deterministic Prandom", match: true }
-      - { name: "networked to client", base: "Send_Effect / temp-entity", port: "null-Effect request DROPPED by net encoder", match: false }
+      - { name: "networked to client", base: "Send_Effect / temp-entity", port: "CASING_BULLET/CASING_SHELL registered Effects -> WriteEffect encodes origin+velocity", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: na
-      presentation: missing
+      presentation: faithful
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "WIRED IN CODE BUT DEAD ON THE LIVE PATH: EjectCasing is called with the correct g_casings>=2 gate and the exact QC eject velocity, but it emits via EmitByEffectInfoName('casing_bullet', ...) which produces an EffectRequest with Effect=null. ServerNet.WriteEffect / EffectNetProtocol.Encode DROP any null-Effect request (return false), so the casing never networks. Even if it reached a client, Spawn('casing_bullet') routes to the generic particle-burst path, NOT EffectSystem.SpawnCasing (which spawns the real brass MD3/IQM shell with bounce physics) — there is no name->SpawnCasing routing. No brass shell is rendered."
+      - "MINOR transport divergence (functionally equivalent, not byte-faithful): Base uses a dedicated REGISTER_NET_TEMP(casings) (casingtype byte + compressed velocity + 2 angle bytes, with per-client cl_casings/PVS/silent gating and the cl_gunoffset first-person bit); the port instead carries the casing on the shared effect channel as a registered Effect (origin + full velocity, no angle/silent/gunoffset bits). The shell ejects, networks, and bounces on the live path; only the angle/silent/first-person-offset nuances and per-client cvar gating are not reproduced."
     verification:
-      - { kind: code, ref: "Rifle.cs:283 EjectCasing -> WeaponFiring.cs EmitByEffectInfoName('casing_bullet') -> EffectEmitter.cs:233 Sink.Emit(EffectRequest{Effect=null}); ServerNet.cs:2227 WriteEffect drops null-Effect; ClientNet decodes only by Effects.ById; EffectSystem.Spawn never routes the name to SpawnCasing", result: fail }
+      - { kind: code, ref: "EffectsList.cs registers CASING_BULLET('casing_bullet')/CASING_SHELL('casing_shell'); Rifle.cs:283 EjectCasing -> WeaponFiring.cs EmitByEffectInfoName resolves the registered (non-null) Effect -> ServerNet.WriteEffect encodes RegistryId+origin+velocity (no longer dropped); ClientNet.DecodeEffect -> NetGame.OnEffectReceived(e.Effect.Name='CASING_BULLET') -> EffectSystem.Spawn routes CASING_BULLET/casing_bullet to SpawnCasing (real bouncing brass)", result: pass }
     confidence: high
-    notes: "STILL OPEN (classic 'compiles but isn't wired'). Closing it needs a dedicated casing net temp-entity (or registering casing_bullet/casing_shell as real Effects) AND a client route from the decoded request to EffectSystem.SpawnCasing. Cross-cutting: same dead path now also affects MachineGun (CasingType.Bullet) and Shotgun (CasingType.Shell), which also call EjectCasing."
+    notes: "WAVE-4 FIX: the casing now networks and renders the real brass shell. Registering casing_bullet/casing_shell as Effects (EffectsList.cs) gives them a stable RegistryId so WriteEffect/EffectNetProtocol.Encode carry the eject origin+velocity instead of dropping the prior null-Effect request; EffectSystem.Spawn already routed the name to SpawnCasing and now also matches the EFFECT_* registry Name arriving on the networked path. Cross-cutting WIN: the same fix lights up MachineGun (CasingType.Bullet) and Shotgun (CasingType.Shell), which share EjectCasing. Residual is only the net-temp transport nuances (angles/silent/gunoffset/per-client gating)."
 
   - id: rifle.zoom_eye
     name: "Zoom-from-eye shot re-aim (BUTTON_ZOOM/ZOOMSCRIPT) + wr_zoom/wr_zoomdir"

@@ -184,8 +184,10 @@ public sealed class Minelayer : Weapon
         mine.ProjectileDamage = (self, attacker) => OnMineDamage(self, attacker);
         // event_damage = W_MineLayer_Damage (minelayer.qc:327): install the shoot-down shim so the damage
         // pipeline subtracts hp + fires ProjectileDamage. exception=1: combo-able (passes the stock
-        // g_projectiles_damage -2 gate like the electro orb / hagar rocket).
-        Projectiles.MakeShootable(mine, exception: 1f);
+        // g_projectiles_damage -2 gate like the electro orb / hagar rocket). The onHit side effect carries the
+        // damageforcescale knock-loose, which QC runs on EVERY surviving hit BEFORE the gate/TakeResource — the
+        // hp<=0 detonation stays in ProjectileDamage (OnMineDamage).
+        Projectiles.MakeShootable(mine, exception: 1f, onHit: OnMineHit);
 
         // MUTATOR_CALLHOOK(EditProjectile, actor, mine) (minelayer.qc).
         var ep = new MutatorHooks.EditProjectileArgs(actor, mine);
@@ -194,22 +196,29 @@ public sealed class Minelayer : Weapon
         Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/mine_fire.wav");
     }
 
-    // W_MineLayer_Damage — a shot mine: if HP remains, the force can knock it loose to re-stick; at 0 HP it
-    // detonates. (The damage pipeline calls this after subtracting the mine's health.) minelayer.qc
+    // W_MineLayer_Damage knock-loose (the hp>0 part) — runs on EVERY surviving hit, BEFORE the g_projectiles_damage
+    // gate and the hp subtraction (Projectiles.ShootDown invokes this via the MakeShootable onHit seam). The force
+    // can detach a stuck mine so it bounces and re-sticks; a mine's own blast (inflictor classname "mine") never
+    // knocks another mine loose. minelayer.qc:272-282
+    private void OnMineHit(Entity self, Entity? inflictor, Entity? attacker, Vector3 force)
+    {
+        if (Cvars.DamageForceScale == 0f) return;
+        if (inflictor is not null && inflictor.ClassName == "mine") return;
+
+        self.MoveType = MoveType.Bounce;        // not TOSS: so a direct perpendicular hit can move the mine
+        self.MaxHealth = 0f;                     // disarm proximity until it re-grounds
+        self.LTime = Api.Clock.Time + 0.0625f;   // .wait: after this it reattaches instead of bouncing
+        self.Touch = (s, o) => OnTouch(s, o);    // settouch(this, W_MineLayer_Touch)
+        self.AVelocity += force * -Cvars.DamageForceScale; // spin from the impulse
+        // QC this.angles = vectoangles(this.velocity) (after the gate/subtract). Re-face the mine along its travel.
+        if (self.Velocity.LengthSquared() > 0f)
+            self.Angles = QMath.VecToAngles(self.Velocity);
+    }
+
+    // W_MineLayer_Damage tail (hp<=0): the depleted mine detonates. Projectiles.ShootDown fires the per-weapon
+    // ProjectileDamage callback only once hp has reached 0 (QC W_PrepareExplosionByDamage). minelayer.qc
     private void OnMineDamage(Entity self, Entity? attacker)
     {
-        if (self.Health > 0f)
-        {
-            // Knocked loose: bounce briefly then re-attach on the next surface touch (QC W_MineLayer_Damage:276).
-            if (Cvars.DamageForceScale > 0f && self.MoveType == MoveType.None)
-            {
-                self.MoveType = MoveType.Bounce; // not TOSS: a perpendicular hit can move the mine
-                self.MaxHealth = 0f;             // disarm proximity until it re-grounds
-                self.LTime = Api.Clock.Time + 0.0625f; // .wait: reattach gate — don't re-stick for one knock window
-                self.Touch = (s, o) => OnTouch(s, o);
-            }
-            return;
-        }
         Explode(self, null);
     }
 

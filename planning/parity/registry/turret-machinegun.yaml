@@ -6,7 +6,7 @@ summary:
   feature_count: 14
   worst_gaps:
     - "Fire gate does no fire-time trace: Base's AIMDIST firecheck rides a tracebox in turret_do_updates (tur_dist_impact_to_aimpos), which makes a wall between muzzle and aimpos block the shot (de-facto LOS); the port's OnTarget (TurretAI.cs:801) is still a pure geometric barrel-line check, so the port fires THROUGH walls."
-    - "REGRESSION (Wave-2): turret retaliation is now LIVE but unfaithful — TurretAI.Damage sets `turret.Enemy = attacker` and runs on every hit via the new GtEventDamage path, yet Base never adopts the attacker as an enemy through the damage path (TFL_DMG_RETALIATE is set on the machinegun but is NEVER READ by any Base code). So the port turret now turns to face whoever shot it; Base does not."
+    - "FIXED: the Wave-2 retaliation regression (TurretAI.Damage set `turret.Enemy = attacker` on every hit) is removed — Base never adopts the attacker as an enemy through the damage path (TFL_DMG_RETALIATE is set on the machinegun but NEVER READ by any Base code), so the port no longer turns to face whoever shot it. Acquisition is scan/score-only, matching Base."
     - "Die() still does a RadiusDamage death blast that Base has COMMENTED OUT (sv_turrets.qc:182) — a stock machinegun turret should do zero death explosion damage. (NOT fixed in Wave-2.)"
     - "validate_target still omits checkpvs (Base validate_target:688 rejects targets outside the turret PVS, independent of the LOS flag); headshake (tur_head jitter on hit) still absent (no tur_head sub-entity)."
     - "All client presentation still missing: head sub-entity/model at tag_head, muzzle flash, EFFECT_BULLET tracer, head-bone animation, low-health sparks/smoke, team glow, waypoint sprite/healthbar, death gibs."
@@ -83,7 +83,7 @@ features:
       - { name: "aim_flags", base: "LEAD|SHOTTIMECOMPENSATE", port: "lead+shotTimeCompensate (zPredict false)", match: true }
       - { name: "ammo_flags", base: "BULLETS|RECHARGE|RECIEVE", port: "ammo regen modelled (no flag bitmask)", match: true }
       - { name: "turret_flags", base: "HITSCAN (|= TUR_FLAG_PLAYER from qh)", port: "hitscan (fireBullet)", match: true }
-      - { name: "damage_flags", base: "HEADSHAKE (+ inherited default RETALIATE|AIMSHAKE|YES, RETALIATE never read)", port: "headshake NOT applied; retaliate IS applied (regression)", match: false }
+      - { name: "damage_flags", base: "HEADSHAKE (+ inherited default RETALIATE|AIMSHAKE|YES, RETALIATE never read)", port: "headshake NOT applied; retaliate NOT applied (matches Base)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -95,11 +95,10 @@ features:
     divergence_rationale: null
     gaps:
       - "TFL_DMG_HEADSHAKE behaviour (tur_head jitter on hit) still not applied — TurretAI.Damage has no headshake code and there is no tur_head entity to jitter. (Cosmetic; still open.)"
-      - "REGRESSION: TFL_DMG_RETALIATE — Base sets this default flag but NEVER reads it (no Base code consults damage_flags & TFL_DMG_RETALIATE), so Base turrets do NOT adopt the attacker as enemy. The port's now-live Damage() does `turret.Enemy = attacker`, an active divergence (see lifecycle.damage)."
     verification:
       - { kind: code, ref: "machinegun.qc:9 flag set vs MachinegunTurret.Select (:45, AngleLimits removed) / TurretParams (:63, zPredict:false). target_select + aim flags now MATCH Base", result: pass }
     confidence: high
-    notes: "FIXED in Wave-2: SelectAngleLimits dropped + zPredict→false, so the target-select and aim flag SETS now match Base exactly. Residual: headshake unimplemented and the retaliate divergence (now live)."
+    notes: "FIXED in Wave-2: SelectAngleLimits dropped + zPredict→false, so the target-select and aim flag SETS now match Base exactly. The retaliate divergence was removed in the second-pass fix-up (Damage no longer sets Enemy=attacker). Residual: headshake unimplemented."
 
   - id: turret-machinegun.tunables.balance
     name: "Per-unit balance tunables (g_turrets_unit_machinegun_*)"
@@ -383,7 +382,7 @@ features:
       - { name: "friendlyfire scale", base: "g_friendlyfire (0 => no team dmg)", port: "g_friendlyfire (now reached)", match: true }
       - { name: "health subtract", base: "TakeResource(RES_HEALTH, damage)", port: "TakeResource(Health, take) (no armor split)", match: true }
       - { name: "headshake", base: "tur_head.angles += rand*damage + TNSF_ANG", port: "NOT APPLIED (no tur_head, no jitter code)", match: false }
-      - { name: "retaliate (Enemy=attacker)", base: "Base NEVER does this (TFL_DMG_RETALIATE is set but read by no code)", port: "Damage:690 sets Enemy=attacker — now LIVE (regression)", match: false }
+      - { name: "retaliate (Enemy=attacker)", base: "Base NEVER does this (TFL_DMG_RETALIATE is set but read by no code)", port: "Damage no longer sets Enemy=attacker (regression fixed)", match: true }
     status:
       logic: partial
       values: faithful
@@ -394,13 +393,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "REGRESSION (Wave-2): retaliation is now active+unfaithful. TurretAI.Damage:690 sets `turret.Enemy = attacker`, and Wave-2 made Damage() live (GtEventDamage). But Base's turret_damage has NO such line, and TFL_DMG_RETALIATE — though set in the machinegun's damage_flags — is never read by any Base code. So the port turret now turns to face whoever shot it from anywhere (even outside its scan/score path), which Base never does. Previously this code was dead, so the divergence was inert; Wave-2 activated it."
       - "Headshake (TFL_DMG_HEADSHAKE: tur_head jitter on hit) still not applied — Damage() has no jitter code and there is no tur_head sub-entity to jitter. Still open (cosmetic)."
     verification:
       - { kind: code, ref: "DamageSystem.EventDamage:331 routes any non-player target with a GtEventDamage to it; TurretSpawn.Init:89 wires GtEventDamage=TurretAI.EventDamage; TakeDamage=Aim set at Init:52. Chain is LIVE: hit -> Apply -> EventDamage -> TurretAI.EventDamage -> Damage gate -> health subtract -> Combat.Death on lethal", result: pass }
-      - { kind: code, ref: "Base turret_damage:207-250 has no Enemy=attacker; grep TFL_DMG_RETALIATE finds only the qh BIT def + the unread default-set at sv_turrets.qc:1274 — confirms Base never retaliates via damage", result: fail }
+      - { kind: code, ref: "Base turret_damage:207-250 has no Enemy=attacker; grep TFL_DMG_RETALIATE finds only the qh BIT def + the unread default-set at sv_turrets.qc:1274 — confirms Base never retaliates via damage. Port Damage() no longer sets Enemy=attacker (block removed), so the divergence is closed", result: pass }
     confidence: high
-    notes: "MOSTLY FIXED (dead->live): inactive-immunity + friendly-fire scaling + own health-subtract now run on the live damage path via the new GtEventDamage shim — the single clearest present-but-dead defect for this unit is resolved. BUT this activation surfaced a regression (live unfaithful retaliation) and headshake is still missing. Net: dimension upgraded from dead to live, logic now partial (was partial)."
+    notes: "MOSTLY FIXED (dead->live): inactive-immunity + friendly-fire scaling + own health-subtract now run on the live damage path via the new GtEventDamage shim. The Wave-2 retaliation regression (live unfaithful Enemy=attacker) is now FIXED — the block was removed to match Base, which never reads TFL_DMG_RETALIATE. Headshake is still missing (cosmetic). Net: live, logic partial only on the still-missing headshake."
 
   - id: turret-machinegun.lifecycle.die_respawn
     name: "turret_die / turret_respawn (+ death FX, gibs)"

@@ -276,15 +276,23 @@ public sealed class Machinegun : Weapon
         Recoil(actor);
 
         // QC W_MachineGun_Attack applies spread_crouchmod to the first/sustained spread when ducked+grounded.
-        FireOne(actor, shot, Cvars.FirstDamage, Cvars.FirstSpread * CrouchSpreadMod(actor), Cvars.FirstForce);
+        // The mode-0 secondary "snipe" ORs HITTYPE_SECONDARY into the bullet deathtype (QC wr_think:
+        // thiswep.m_id | HITTYPE_SECONDARY) so the kill reads MURDER_SNIPE; primary stays the plain tag.
+        FireOne(actor, shot, Cvars.FirstDamage, Cvars.FirstSpread * CrouchSpreadMod(actor), Cvars.FirstForce,
+            secondary: secondary);
         actor.TakeResource(AmmoType, Cvars.FirstAmmo);
     }
 
     // fireBullet_falloff with the machinegun's solid penetration + force.
-    private void FireOne(Entity actor, ShotInfo shot, float damage, float spread, float force)
+    private void FireOne(Entity actor, ShotInfo shot, float damage, float spread, float force, bool secondary = false)
     {
+        // mode-0 secondary snipe carries HITTYPE_SECONDARY (QC m_id | HITTYPE_SECONDARY) so the obituary reads
+        // MURDER_SNIPE; the int deathType path can't pack the bit, so override the deathtag for that one path.
+        string? deathTag = secondary
+            ? Damage.DeathTypes.WithHitType(Damage.DeathTypes.FromWeapon(NetName), Damage.DeathTypes.Secondary)
+            : null;
         WeaponFiring.FireBullet(actor, shot.Origin, shot.Dir, WeaponFiring.MaxShotDistance, damage,
-            RegistryId, spread, Cvars.SolidPenetration, force: force);
+            RegistryId, spread, Cvars.SolidPenetration, force: force, deathTag: deathTag);
         Vector3 impEnd = shot.Origin + shot.Dir * WeaponFiring.MaxShotDistance;
         TraceResult impTr = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, impEnd, MoveFilter.WorldOnly, actor);
         // QC: w_backoff * 1000 = the impact surface normal (trace_plane_normal), falling back to -force_dir when

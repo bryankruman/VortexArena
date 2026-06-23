@@ -627,7 +627,7 @@ public static class TurretAI
     }
 
     // ----------------------------------------------------------------------------------------------------
-    // Lifecycle: activation, damage retaliation, death + respawn (QC turret_use/damage/die/respawn).
+    // Lifecycle: activation, damage gate, death + respawn (QC turret_use/damage/die/respawn).
     // ----------------------------------------------------------------------------------------------------
 
     private static bool _deathHooked;
@@ -636,7 +636,7 @@ public static class TurretAI
     /// Subscribe (once) to the shared <see cref="Combat.Death"/> bus so a turret the generic
     /// <c>DamageSystem</c> kills (health &lt; 1) runs <see cref="Die"/> — the headless pipeline has no
     /// per-entity <c>event_damage</c> hook, so this is how death+respawn fires automatically (the same pattern
-    /// Breakable.cs uses). The pre-damage gating + retaliation live in <see cref="Damage"/>.
+    /// Breakable.cs uses). The pre-damage gating lives in <see cref="Damage"/>.
     /// </summary>
     public static void EnsureDeathHook()
     {
@@ -664,11 +664,11 @@ public static class TurretAI
     }
 
     /// <summary>
-    /// Port of <c>turret_damage</c> (sv_turrets.qc): the pre-damage gate + retaliation a turret applies on a
-    /// hit. Returns the (possibly friendly-fire-scaled) damage the caller should actually inflict, or 0 to
-    /// reject it entirely (dead/inactive/teammate with friendlyfire off). Also shoves a movable turret and
-    /// picks the attacker as a target (TFL_DMG_RETALIATE). The server damage router calls this before applying
-    /// damage; death itself flows through <see cref="OnAnyDeath"/>.
+    /// Port of <c>turret_damage</c> (sv_turrets.qc): the pre-damage gate a turret applies on a hit. Returns the
+    /// (possibly friendly-fire-scaled) damage the caller should actually inflict, or 0 to reject it entirely
+    /// (dead/inactive/teammate with friendlyfire off). Also shoves a movable turret. Note: Base does NOT adopt
+    /// the attacker as an enemy here (TFL_DMG_RETALIATE is set but never read), so no retaliation occurs. The
+    /// server damage router calls this before applying damage; death itself flows through <see cref="OnAnyDeath"/>.
     /// </summary>
     public static float Damage(Entity turret, Entity? attacker, float damage, Vector3 force)
     {
@@ -686,9 +686,11 @@ public static class TurretAI
 
         if (st.Movable) turret.Velocity += force;
 
-        // Retaliate: shooting back makes the attacker a target (QC TFL_DMG_RETALIATE picks the attacker enemy).
-        if (attacker is not null && turret.Enemy is null && DiffTeam(turret, attacker))
-            turret.Enemy = attacker;
+        // NOTE: Base turret_damage (sv_turrets.qc:207-251) does NOT adopt the attacker as an enemy. Although the
+        // machinegun's inherited default damage_flags set TFL_DMG_RETALIATE (sv_turrets.qc:1274), no Base code ever
+        // READS that flag — there is no `this.enemy = attacker` in the damage path — so a Base turret never turns to
+        // face whoever shot it. Target acquisition goes exclusively through the scan/score pipeline. Adopting the
+        // attacker here was an active fidelity divergence, so it is intentionally omitted.
 
         return damage;
     }
@@ -698,7 +700,7 @@ public static class TurretAI
     /// <see cref="Entity.GtEventDamage"/> shim wired in <see cref="TurretSpawn.Init"/>. The headless
     /// <see cref="Damage.DamageSystem.EventDamage"/> routes every non-player edict with a <c>GtEventDamage</c>
     /// here (and returns), exactly as it does for monsters / Onslaught objectives — so a turret victim runs the
-    /// turret pre-damage gate + retaliation (<see cref="Damage"/>) and its OWN health subtract, instead of being
+    /// turret pre-damage gate (<see cref="Damage"/>) and its OWN health subtract, instead of being
     /// treated as a player by <c>PlayerDamage</c>.
     ///
     /// This is the seam Wave-2 turrets depend on: it makes <see cref="Damage"/> (which was bit-faithful but had
@@ -713,7 +715,7 @@ public static class TurretAI
         _ = inflictor; _ = hitLoc; // (parity slots: QC turret_damage uses attacker/force; hitloc is unused)
 
         // Pre-damage gate (QC turret_damage): rejects dead/inactive/friendly hits (returns 0), scales friendly
-        // fire, shoves a movable turret, and picks the attacker for retaliation.
+        // fire, and shoves a movable turret. (No retaliation: Base never adopts the attacker as an enemy here.)
         float take = Damage(turret, attacker, damage, force);
         if (take <= 0f)
             return;
@@ -732,9 +734,10 @@ public static class TurretAI
     }
 
     /// <summary>
-    /// Port of <c>turret_die</c> (sv_turrets.qc): unsolidify, stop taking damage, do the death blast
-    /// (RadiusDamage scaled by leftover ammo), and either remove (no-respawn) or schedule a respawn after
-    /// <see cref="TurretState.RespawnTime"/>. Driven from <see cref="OnAnyDeath"/>.
+    /// Port of <c>turret_die</c> (sv_turrets.qc): unsolidify, stop taking damage, and either remove
+    /// (no-respawn) or schedule a respawn after <see cref="TurretState.RespawnTime"/>. Driven from
+    /// <see cref="OnAnyDeath"/>. NOTE: Base <c>turret_die</c> has its ammo-scaled <c>RadiusDamage</c>
+    /// death blast COMMENTED OUT (sv_turrets.qc:182), so turrets deal no blast on death — we match that.
     /// </summary>
     public static void Die(Entity turret)
     {
@@ -747,12 +750,8 @@ public static class TurretAI
         turret.Enemy = null;
         st.Active = false;          // a dead turret runs no combat/movement think until respawn
 
-        // Go boom: a blast scaled by the remaining ammo (QC turret_die commented variant; applied as death FX).
-        float boom = System.Math.Min(st.Ammo, 50f);
-        if (boom > 0f)
-            // QC turret_die death blast (sv_turrets.qc:182): DEATH_TURRET (the generic turret deathtype).
-            WeaponSplash.RadiusDamage(turret, turret.Origin, boom, boom * 0.25f, 250f, null,
-                0, boom * 5f, deathTag: DeathTypes.Turret);
+        // No death blast: Base turret_die has the ammo-scaled RadiusDamage commented out (sv_turrets.qc:182),
+        // so a dying turret deals no area damage. (Was a port-added blast; removed to match Base.)
 
         st.OnDeathFx?.Invoke(turret);
 

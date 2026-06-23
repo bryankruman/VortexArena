@@ -33,6 +33,14 @@ public sealed class BotBrain
     private const float AimInterval = 0.1f;                  // havocbot_aim cadence
     private const float DefaultShotSpeed = 0f;               // 0 => treat unknown weapons as hitscan (no lead)
 
+    /// <summary>
+    /// QC <c>MUTATOR_CALLHOOK(Bot_ForbidAttack, this, targ)</c> (server/bot/default/aim.qc:127): a gametype/
+    /// mutator veto evaluated at the tail of <see cref="ShouldAttack"/>. Returns true to FORBID the bot from
+    /// attacking the target (e.g. Survival forbids attacking a same-status ally so bots don't out their role —
+    /// and, with teamkill punishment live, don't suicide). Set by the host on gametype activation; null = no veto.
+    /// </summary>
+    public static Func<Entity, Entity, bool>? ForbidAttackHook;
+
     /// <summary>The player entity this brain controls (QC the bot edict).</summary>
     public readonly Player Bot;
 
@@ -762,6 +770,10 @@ public sealed class BotBrain
 
         // frozen targets (QC STAT(FROZEN)) aren't worth shooting.
         if (StatusEffectsCatalog.Frozen is { } fr && StatusEffectsCatalog.Has(targ, fr)) return false;
+
+        // QC bot_shouldattack tail (aim.qc:127): a gametype/mutator may forbid the attack (e.g. Survival's
+        // Bot_ForbidAttack vetoes same-status allies). Evaluated last so it only narrows the base eligibility.
+        if (ForbidAttackHook is not null && ForbidAttackHook(self, targ)) return false;
 
         return true;
     }

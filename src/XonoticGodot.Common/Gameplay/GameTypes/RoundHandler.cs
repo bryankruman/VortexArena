@@ -157,6 +157,17 @@ public sealed class RoundHandler
     /// <summary>True once the round is live (QC round_handler_IsRoundStarted).</summary>
     public bool IsRoundStarted => Phase == RoundPhase.InProgress;
 
+    /// <summary>
+    /// Mirror the round-live phase from a separate live handler onto this (gametype-owned) handler — the phase
+    /// counterpart to the publicly settable <see cref="RoundEndTime"/> / <see cref="RoundsPlayed"/> mirror seam.
+    /// A host that drives the authoritative round handler can push its <c>IsRoundStarted</c> here each frame so
+    /// the gametype's own round-phase gates (QC <c>round_handler_IsRoundStarted</c>, e.g. CA's damage2score and
+    /// "you are now alone" notify) read the live phase. Only toggles between the live (<see cref="RoundPhase.InProgress"/>)
+    /// and not-live (<see cref="RoundPhase.WaitingToStart"/>) states — it does not drive the local countdown.
+    /// </summary>
+    public void MirrorRoundStarted(bool roundStarted) =>
+        Phase = roundStarted ? RoundPhase.InProgress : RoundPhase.WaitingToStart;
+
     /// <summary>True while the countdown is running (QC round_handler_CountdownRunning).</summary>
     public bool CountdownRunning => Phase == RoundPhase.Countdown;
 

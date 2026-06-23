@@ -50,6 +50,10 @@ public sealed class TeamMayhem : GameType
     private const float  DefaultPointLimit = 1500f; // tmayhem.qh gametype_init pointlimit=1500
     private const float  DefaultLeadLimit  = 0f;    // tmayhem.qh gametype_init leadlimit=0
 
+    // ----- timelimit (tmayhem.qh gametype_init "timelimit=20"; the generic Cvars.cs default is also 20) -----
+    private const string CvarTimeLimit          = "timelimit";
+    private const float  DefaultTimeLimitMinutes = 20f; // tmayhem.qh gametype_init timelimit=20
+
     // ----- team count cvars (sv_tmayhem.qc: g_tmayhem_teams_override >= 2 ? override : g_tmayhem_teams), 2..4 -----
     private const string CvarTeamsOverride = "g_tmayhem_teams_override";
     private const string CvarTeams         = "g_tmayhem_teams";
@@ -81,6 +85,30 @@ public sealed class TeamMayhem : GameType
     {
         // QC INIT(tmayhem): identity (TeamGame) is set in the ctor; team count is read on demand (TeamCount).
         // GameRules_teams(true) / GameRules_spawning_teams + tmayhem_team map-entity colors are engine-side.
+        //
+        // QC tmayhem.qh gametype_init applies "timelimit=20 pointlimit=1500 teams=2 leadlimit=0" at gametype
+        // registration. The point/lead limits are read on demand (PointLimit/LeadLimit fall back to 1500/0), but
+        // the timelimit is a generic engine cvar, so we seed the gametype default here the way Tdm does: a prior
+        // mode/admin could have left a non-20 timelimit, and selecting tmayhem must reset to its default of 20.
+        SeedTimeLimit(DefaultTimeLimitMinutes);
+    }
+
+    /// <summary>
+    /// Apply tmayhem's gametype-default timelimit (gametype_init "timelimit=20") if the host has not overridden it.
+    /// QC applies the default-limit string at gametype registration; the port's generic <c>timelimit</c> default is
+    /// also 20, so for stock play this is a no-op — but it corrects a non-default timelimit a prior mode/admin left
+    /// in place. We only seed when the live value still equals the generic default (so an explicit host/server.cfg
+    /// timelimit wins, matching QC where an admin-set cvar overrides the gametype default).
+    /// </summary>
+    private static void SeedTimeLimit(float minutes)
+    {
+        if (Api.Services is null)
+            return;
+        const float genericDefault = 20f; // Cvars.cs generic timelimit default
+        // Only override the GENERIC default (20). An explicit host value — including 0 ("no time limit") — is a
+        // deliberate choice that wins, matching QC where an admin-set cvar overrides the gametype default.
+        if (Api.Cvars.GetFloat(CvarTimeLimit) == genericDefault)
+            Api.Cvars.Set(CvarTimeLimit, minutes.ToString(System.Globalization.CultureInfo.InvariantCulture));
     }
 
     /// <summary>

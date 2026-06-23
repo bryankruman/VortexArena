@@ -239,7 +239,11 @@ public static class ItemPickupRules
         }
 
         if (amount < 0f)
-            player.TakeResource(res, -amount); // (no with-limit take in the port; clamp handled by SetResource)
+            // QC Item_GiveAmmoTo (items.qc:507): TakeResourceWithLimit(player, res, -amount, ammomax) — the drain
+            // is floored at -ammomax, matching the give branch's ceiling. `cap` is the (possibly stay-adjusted)
+            // ammomax computed above, passed verbatim exactly like QC (no stock item carries a negative amount, so
+            // this is a faithful-but-latent path; cap is never LimitNone here — only the give branch reaches that).
+            player.TakeResourceWithLimit(res, -amount, cap);
         else
             player.GiveResourceWithLimit(res, amount, cap);
         return true;

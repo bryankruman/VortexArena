@@ -8,7 +8,7 @@ summary:
     - "Signature networked BRG_* healray/damage beam (the visible green/red ray + bumble_raygun_draw multi-segment cylinder, the ENT_CLIENT_BUMBLE_RAYGUN net entity) NOT IMPLEMENTED — only a placeholder EffectEmitter.TeHealBeam/TeBeam stub. (Logic now live; only the networked beam visual is absent.)"
     - "vr_death gib toss (gun1/gun2/gun3 + body via vehicle_tossgib) and the tumble EFFECT_EXPLOSION_SMALL/MEDIUM/BIG + SND_ROCKET_IMPACT death FX + bumblebee_dead_touch (50% early body blowup) NOT IMPLEMENTED. The death LOGIC/blast/respawn is now LIVE (Wave-2 GtEventDamage seam); only the gib/FX/audio presentation remains."
     - "All vehicle HUD/crosshair presentation NOT IMPLEMENTED: vr_hud, vr_crosshair (vCROSS_HEAL), the three aux crosshairs (lock + two gunner), the 'No right/left gunner!' prompts, the 0..100% ammo/energy/shield HUD mirroring, cosmetic gun models + cockpit offsets + scale 1.5, MENUQC describe text."
-    - "NEW DEFECT (impact.bouncepain): Wave-2 added a Bumblebee bouncepain impl BUT with the wrong signature — Impact(Entity, Vector3) instead of `override Impact(Entity)`. The dispatcher (VehicleCommon.Touch -> VehicleDef.Impact(vehic), single-arg) therefore calls the empty base virtual; the bumblebee bounce-jolt is implemented-but-DEAD (compiles, never invoked). Racer/Raptor override correctly; only the bumblebee mismatched."
+    - "FIXED Wave-4 (impact.bouncepain): now a proper `override Impact(Entity)` -> VehicleCommon.Impact(1,100,200); Think snapshots OldVelocity; Bumblebee's own .Touch now chains VehicleCommon.Touch (QC lines 391/404) so the vr_impact dispatch is reached. Live, faithful to Base's touch-board bounce-pain."
 features:
   - id: vehicle-bumblebee.spawn.spawnfunc
     name: "Map spawnfunc + registration (vehicle_bumblebee)"
@@ -249,9 +249,9 @@ features:
       - "EFFECT_BIGPLASMA_MUZZLEFLASH + the CSQCProjectile (PROJECTILE_BUMBLE_GUN) visual NOT IMPLEMENTED."
     verification:
       - { kind: code, ref: "FireCannon -> SpawnProjectile with DEATH_VH_BUMB_GUN, force -35, speed 20000; obituary string tested in MonsterTurretVehicleObituaryTests", result: pass }
-      - { kind: code, ref: "FireCannon passes fireSound 'vehicles/bumblebee_fire.wav' (the correct cue) and SpawnProjectile plays exactly that literal path", result: pass }
+      - { kind: code, ref: "Wave-4 FIX: FireCannon now passes fireSound 'weapons/flacexp3.wav' — Base SND_VEH_BUMBLEBEE_FIRE = W_Sound('flacexp3'). The prior 'vehicles/bumblebee_fire.wav' literal is a NON-EXISTENT asset (silent cannon in Base and the port); weapons/flacexp3 ships (flacexp3.ogg). The VEH_BUMBLEBEE_FIRE -> flacexp3 SoundsList map (SoundsList.cs:151) is itself correct/faithful to all.inc:160.", result: pass }
     confidence: high
-    notes: "Wave-2 LIVE (was dead) — reached from the now-live GunnerFrame. Projectile + fire-sound parity exact; only muzzle/projectile visuals are gaps. The wrong VEH_BUMBLEBEE_FIRE symbolic SoundsList map remains a latent (unused on this path) bug."
+    notes: "Wave-2 LIVE (was dead) — reached from the now-live GunnerFrame. Wave-4 FIX: cannon fire-sound corrected from the missing vehicles/bumblebee_fire.wav literal to the real Base sample weapons/flacexp3 (was a silent-cannon defect, mis-classified as a latent unused-mapping note). Only muzzle/projectile visuals remain as gaps."
 
   - id: vehicle-bumblebee.regen
     name: "Regen: per-gun cannon ammo + body shield/energy/health"
@@ -428,24 +428,25 @@ features:
     base_refs:
       - "common/vehicles/vehicle/bumblebee.qc:750 (METHOD Bumblebee vr_impact)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Vehicles/Bumblebee.cs:380 (Impact(Entity,Vector3) — WRONG signature, not an override)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Bumblebee.cs (Impact(Entity) override -> VehicleCommon.Impact(vehicle, 1, 100, 200))"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Bumblebee.cs (Touch chains VehicleCommon.Touch -> vr_impact dispatch)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Bumblebee.cs (Think snapshots vehicle.OldVelocity = Velocity)"
     constants:
-      - { name: "bouncepain", base: "'1 100 200'", port: "'1 100 200' (CvarVec default) — but unreachable", match: false }
+      - { name: "bouncepain", base: "'1 100 200'", port: "1/100/200 (VehicleCommon.Impact minspeed/speedfac/maxpain)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "DEAD on the live path: Wave-2 added a Bumblebee.Impact(Entity vehicle, Vector3 oldVelocity) with the bouncepain '1 100 200' jolt + the 0.25s gate (Bumblebee.cs:380), but it is NOT declared `override` of the base virtual Vehicle.Impact(Entity) (VehicleCommon.cs:124). The dispatcher (VehicleCommon.Touch -> vehic.VehicleDef.Impact(vehic), single-arg, line 767) therefore invokes the empty base no-op; the bumblebee bounce-jolt never runs. Racer/Raptor correctly `override void Impact(Entity)` and call the shared VehicleCommon.Impact — only the bumblebee mismatched the signature."
+    gaps: []
     verification:
-      - { kind: code, ref: "grep: the only reference to the 2-arg Bumblebee.Impact is its own definition (Bumblebee.cs:380) — no caller. The single-arg dispatch at VehicleCommon.cs:767 binds to the base virtual, not this method", result: fail }
+      - { kind: code, ref: "Wave-4 FIX: Impact is now `public override void Impact(Entity)` calling VehicleCommon.Impact(vehicle, 1f, 100f, 200f) (the shared vehicles_impact, OldVelocity-delta + PlayTime 0.25s gate). Think snapshots vehicle.OldVelocity = Velocity each tick (matches racer_think). Crucially, Bumblebee installs its own .Touch in Enter (overriding SpawnVehicle's shared dispatcher); that Touch now chains VehicleCommon.Touch in both bumblebee_touch tail positions (QC lines 391/404) so the vr_impact dispatch at VehicleCommon.cs:767 is reached. Faithful to Base: bounce-pain fires in touch-board mode (g_vehicles_enter==0), matching QC's `if (autocvar_g_vehicles_enter) return;` early-out.", result: pass }
     confidence: high
-    notes: "Wave-2 wrote the body with correct constants but the wrong method signature, so it compiles-but-is-dead (the classic port failure mode). To fix: make it `public override void Impact(Entity vehicle)` and snapshot OldVelocity in Think (as Racer/Raptor do via VehicleCommon.Impact). Still-open (was missing; now implemented-but-unwired)."
+    notes: "Wave-4 FIX: was implemented-but-DEAD (wrong 2-arg signature + Bumblebee's own .Touch never chained the shared dispatcher). Now a proper override + the Touch chain + OldVelocity snapshot make it live, exactly as Racer/Raptor. Matches Base's touch-board-only bounce-pain semantics."
 
   - id: vehicle-bumblebee.client.presentation
     name: "Client presentation: BRG beam, HUD, crosshairs, models, describe"

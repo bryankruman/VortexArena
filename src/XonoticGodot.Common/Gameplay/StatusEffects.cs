@@ -128,7 +128,7 @@ public static class StatusEffectsCatalog
         {
             Hidden = true,
             Lifetime = 10f,
-            RemovalSound = "steam_burst",
+            RemovalSound = "BURNING_REMOVE",
             PersistentCheck = BurningPersistent,
             OnTick = BurningTick,
         });
@@ -142,7 +142,7 @@ public static class StatusEffectsCatalog
         {
             Hidden = true,
             Lifetime = 10f,
-            RemovalSound = "ons_spark1",
+            RemovalSound = "STUNNED_REMOVE",
             OnTick = StunnedTick,
         });
         // STATUSEFFECT_Superweapon (superweapons.qh): superweapon ammo window (QC netname "superweapons";

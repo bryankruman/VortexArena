@@ -187,6 +187,14 @@ public sealed class Commands
         "cl_physics",
         "cl_movement_track_canjump",
         "cl_jetpack_jump",
+        // Remaining Base REPLICATE fields (common/replicate.qh): stored per-client so the server can honor them
+        // exactly like QC (every REPLICATE field lands in the per-client store). cl_handicap(+damage_given/taken)
+        // feed Handicap_GetVoluntaryHandicap (wired below via VoluntaryHandicapProvider); cl_clippedspectating,
+        // cl_autoscreenshot and g_xonoticversion are read by their own server-side consumers as those land.
+        "cl_autoscreenshot",
+        "cl_clippedspectating",
+        "cl_handicap", "cl_handicap_damage_given", "cl_handicap_damage_taken",
+        "g_xonoticversion",
     };
 
     /// <summary>QC <c>notification_CHOICE_*</c> REPLICATE prefix (notifications/all.qh:884 ReplicateVars). The full
@@ -288,6 +296,18 @@ public sealed class Commands
                 System.Globalization.CultureInfo.InvariantCulture, out float f) ? f : 0f)
             : fallback;
 
+    /// <summary>Parse the X and Y of a QC vector cvar string (<c>"x y z"</c>, e.g. the legacy <c>cl_handicap</c>
+    /// <c>'2 0 0'</c>); missing/unparsable components → 0 (QC stov semantics). Z is unused.</summary>
+    private static (float x, float y) ParseHandicapVectorXY(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return (0f, 0f);
+        string[] parts = value.Split((char[]?)null, System.StringSplitOptions.RemoveEmptyEntries);
+        float Comp(int i) => i < parts.Length
+            && float.TryParse(parts[i], System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out float f) ? f : 0f;
+        return (Comp(0), Comp(1));
+    }
+
     private void SetClientCvar(Player p, string name, string value)
     {
         if (!_clientCvars.TryGetValue(p, out var t))
@@ -322,6 +342,55 @@ public sealed class Commands
         // global cvar read, so a player that never replicated behaves exactly as before. Static: the latest
         // world's Commands owns it (a torn-down world's players simply read "" → fallback).
         Inventory.PriorityProvider = e => e is Player p ? GetClientCvar(p, "cl_weaponpriority", "") : null;
+
+        // Per-client weapon autoswitch-on-pickup (QC Item_GiveTo head/tail reads CS_CVAR(player).cvar_cl_autoswitch
+        // / cvar_cl_autoswitch_cts + g_cts). Point the pickup path's seams at this world's per-client state exactly
+        // like PriorityProvider above — without this wiring AutoswitchEnabled() is always false and picking up a
+        // better weapon never auto-switches in a real match. Non-Player entities (never reached for a real toucher)
+        // read off. cl_autoswitch_cts unset defaults to -1 (QC client/main.qc registercvar "-1") = "use normal".
+        ItemPickupRules.AutoswitchProvider = e => e is Player p && GetAutoswitch(p);
+        ItemPickupRules.CtsAutoswitchProvider = e =>
+            e is Player p ? (int)GetClientCvarFloat(p, "cl_autoswitch_cts", -1f) : -1;
+        ItemPickupRules.CtsActiveProvider = () => _world.GameType is Cts;
+
+        // QC HANDICAP_DISABLED() (server/handicap.qh:57) == IS_GAMETYPE(CTS) || IS_GAMETYPE(RACE): the whole
+        // handicap subsystem (incl. the dynamic_handicap mutator) is hard-disabled in CTS/RACE. The port never
+        // stamps g_cts/g_race, so point the mutator's gate at the live GameType object (same seam as above).
+        DynamicHandicapMutator.HandicapDisabledProvider = () => _world.GameType is Cts or Race;
+
+        // QC Handicap_GetVoluntaryHandicap(player, receiving) (server/handicap.qc): the per-client self-imposed
+        // handicap from the REPLICATE'd cl_handicap*/damage_{given,taken} cvars (now allowlisted + stored above),
+        // multiplied into the damage handicap by DamageSystem.HandicapTotal. Same forwards-compat vector branch as
+        // QC: prefer the new scalar cvars, fall back to the legacy cl_handicap vector (.y = take, .x = give), bound
+        // to [1, 10]. HANDICAP_DISABLED() (CTS/RACE) → 1.
+        XonoticGodot.Common.Gameplay.Damage.DamageSystem.VoluntaryHandicapProvider = (e, receiving) =>
+        {
+            if (_world.GameType is Cts or Race) return 1f; // HANDICAP_DISABLED()
+            if (e is not Player p) return 1f;
+            // cl_handicap is a vector "x y z" string; parse x (give) / y (take). Missing → 0.
+            (float hx, float hy) = ParseHandicapVectorXY(GetClientCvar(p, "cl_handicap", ""));
+            float value;
+            if (receiving)
+            {
+                float taken = GetClientCvarFloat(p, "cl_handicap_damage_taken", 0f);
+                value = taken > 1f ? taken : (hy > 0f ? hy : hx);
+            }
+            else
+            {
+                float given = GetClientCvarFloat(p, "cl_handicap_damage_given", 0f);
+                value = given > 1f ? given : hx;
+            }
+            return System.Math.Clamp(value, 1f, 10f);
+        };
+
+        // Per-client multijump opt-in/out/cap (QC multijump.qc:29-34 PHYS_MULTIJUMP_CLIENT(player) =
+        // CS_CVAR(player).cvar_cl_multijump, a REPLICATE'd field). Point the mutator's per-client source at this
+        // world's replicated-cvar table, same seam as PriorityProvider/CtsAutoswitchProvider above. Without this
+        // wiring the value is always -1 ("server decides") and a player who sets cl_multijump 0 (opt out) or 2+
+        // (disable) is ignored. Unset defaults to -1 (mutators.cfg:473 seta cl_multijump -1). Non-Player entities
+        // (never reached for a real player) read -1 = "server decides".
+        MultijumpMutator.ClientMultijumpProvider = e =>
+            e is Player p ? (int)GetClientCvarFloat(p, "cl_multijump", -1f) : -1;
     }
 
     /// <summary>
@@ -537,6 +606,22 @@ public sealed class Commands
         Register("noclip", "noclip — toggle noclip (needs sv_cheats)", CmdCheat);
         Register("fly", "fly — toggle flymode (needs sv_cheats)", CmdCheat);
         Register("give", "give <all|weapon|resource amount> — give items (needs sv_cheats)", CmdCheat);
+
+        // ---- sandbox (QC the SV_ParseClientCommand hook in common/mutators/mutator/sandbox/sv_sandbox.qc). The
+        //      client `sandbox` alias emits `cmd g_sandbox <sub> …`; route it to the SandboxMutator's HandleCommand
+        //      (the C# successor to that hook). A no-op unless g_sandbox is enabled (the mutator gates it). ----
+        Register("g_sandbox", "g_sandbox <subcommand> [args] — sandbox build mode (object_spawn/edit/attach/…)", CmdSandbox);
+
+        // ---- superspec (QC the SV_ParseClientCommand hook in common/mutators/mutator/superspec/sv_superspec.qc).
+        //      The spectator-only verbs that toggle the auto-/super-spectate option flags and the manual follow*
+        //      switches. Each routes to SuperSpecMutator.HandleCommand; a no-op unless g_superspectate is enabled
+        //      (the mutator is added) and the caller is a spectator/observer (the mutator's IS_PLAYER guard). ----
+        Register("superspec", "superspec [help|clear|silent|verbose|item_message] [on|off] — spectator message options", CmdSuperspec);
+        Register("autospec", "autospec [help|clear|strength|shield|mega_health|mega_armor|flag_grab|observer_only|show_what|item_msg|followkiller|all] [on|off] — auto-spectate options", CmdSuperspec);
+        Register("superspec_itemfilter", "superspec_itemfilter [help|clear|show|<classnames>] — item-message classname filter", CmdSuperspec);
+        Register("followpowerup", "followpowerup — spectate the first player holding Strength or Shield", CmdSuperspec);
+        Register("followstrength", "followstrength — spectate the first player holding Strength", CmdSuperspec);
+        Register("followshield", "followshield — spectate the first player holding Shield", CmdSuperspec);
 
         // ---- campaign (QC sv_cmd warp) ----
         Register("warp", "warp [level] — campaign level warp", CmdWarp);
@@ -1350,6 +1435,15 @@ public sealed class Commands
     private bool DispatchImpulse(CommandContext ctx, Player caller, int imp)
     {
         if (imp <= 0) return true;
+        // QC MapVote_Tick (server/mapvoting.qc:730-736): during the end-of-match map vote, impulses 1..mapvote_count
+        // are votes for the matching ballot candidate (1-indexed) — NOT weapon impulses — and they must be honored
+        // even though the match is in intermission. CastVote runs the availability + range guards itself (and
+        // re-routes the abstain slot), so just translate the 1-based impulse to the 0-based candidate index.
+        if (_world.MapVote.Running)
+        {
+            _world.MapVote.CastVote(caller, imp - 1);
+            return true;
+        }
         // QC ImpulseCommands: no impulses while the match is stopped (game_stopped) or while the game is FROZEN
         // by an active timeout (server/impulse.qc gates only on timeout_status == TIMEOUT_ACTIVE). The lead-time
         // COUNTDOWN before the pause (timeout_status == TIMEOUT_LEADTIME) must NOT block impulses, so gate on the
@@ -1525,6 +1619,48 @@ public sealed class Commands
         if (ctx.ArgCount >= 2) _world.Campaign.LevelWarp((int)ctx.ArgFloat(1));
         else _world.Campaign.LevelWarp(-1);
         ctx.Print("campaign warp");
+        return true;
+    }
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(sandbox, SV_ParseClientCommand)</c> (common/mutators/mutator/sandbox/sv_sandbox.qc:
+    /// the <c>cmd_name == "g_sandbox"</c> branch). The client `sandbox` alias emits <c>cmd g_sandbox &lt;sub&gt; …</c>,
+    /// so this routes the parsed argv (argv[0]="g_sandbox", argv[1]=subcommand) to the SandboxMutator backend.
+    /// Client-only (a player drives the build mode). The mutator gates on g_sandbox/g_sandbox_readonly internally,
+    /// so an unenabled / read-only server is faithfully inert. Feedback reaches the player via the mutator's
+    /// host-wired <c>PrintTo</c> (GameWorld); nothing is echoed to ctx so the player isn't double-printed.
+    /// </summary>
+    private bool CmdSandbox(CommandContext ctx)
+    {
+        if (ctx.Caller is null) { ctx.Print("sandbox is a client command"); return true; }
+        if (Mutators.ByName("sandbox") is not SandboxMutator sandbox)
+            return true; // not registered (shouldn't happen — it's a [Mutator]); silently ignore like Base when off
+        // QC: the hook only acts when the mutator is added (g_sandbox enabled). When disabled the command is a no-op
+        // (Base's SV_ParseClientCommand never reaches the hook because the mutator isn't subscribed).
+        if (!sandbox.Added)
+            return true;
+        sandbox.HandleCommand(ctx.Caller, ctx.Argv);
+        return true;
+    }
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(superspec, SV_ParseClientCommand)</c> (common/mutators/mutator/superspec/
+    /// sv_superspec.qc:141-358). Routes the spectator verbs (superspec / autospec / superspec_itemfilter /
+    /// followpowerup / followstrength / followshield) to <see cref="SuperSpecMutator.HandleCommand"/>. Client-only
+    /// (Base: the engine entry is a client stringcmd). The mutator gates on its added-state + the IS_PLAYER guard
+    /// internally, so an unenabled server or a live player issuing it is faithfully inert. Output reaches the
+    /// player via the mutator's host-wired <c>PrintTo</c> (NetGame.WireSuperspec); nothing is echoed to ctx.
+    /// </summary>
+    private bool CmdSuperspec(CommandContext ctx)
+    {
+        if (ctx.Caller is null) { ctx.Print("superspec is a client command"); return true; }
+        if (Mutators.ByName("superspec") is not SuperSpecMutator superspec)
+            return true; // not registered (shouldn't happen — it's a [Mutator])
+        // QC: the hook only acts when the mutator is added (g_superspectate enabled). When disabled it's a no-op
+        // (Base's SV_ParseClientCommand never reaches the hook because the mutator isn't subscribed).
+        if (!superspec.Added)
+            return true;
+        superspec.HandleCommand(ctx.Caller, ctx.Argv);
         return true;
     }
 

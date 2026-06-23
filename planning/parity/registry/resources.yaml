@@ -6,7 +6,7 @@ summary:
   feature_count: 8
   worst_gaps:
     - "regen.loop: PlayerRegen hook STILL carries only Player + the disable-bool — all 10 in/out tuning slots (max_mod/regen_mod/rot_mod/limit_mod + 6 health balance values) remain missing. max_mod scaling of the health regen/rot stable point is never applied; regen_mod/rot_mod speed scaling and limit_mod cap scaling are inert (limit_mod is not even a param of the port's RotRegen). Stock play unaffected (all mods=1); breaks any mutator that scales max HP or regen rate (handicap, BuffsMutator medic/buff regen). NOTE: the fuel/ITEM_FuelRegen/UNLIMITED_AMMO gating AND the vehicle-eject-before-DEATH_ROT gaps were CLOSED in Wave-2."
-    - "api.take: TakeResource STILL omits the QC TakeResource mutator hook (sv_resources.qc:191); GiveResourceWithLimit STILL omits the QC GiveResourceWithLimit hook (sv_resources.qc:165). Wave-2 added only explanatory comments, no ResourceHooks chain. TakeResourceWithLimit is now ported and formula-faithful (sv_resources.qc:205) but has ZERO callers in the port → dead. No shipped mutator consumes any of these chains, so latent."
+    - "api.take: TakeResource STILL omits the QC TakeResource mutator hook (sv_resources.qc:191); GiveResourceWithLimit STILL omits the QC GiveResourceWithLimit hook (sv_resources.qc:165). Wave-2 added only explanatory comments, no ResourceHooks chain. TakeResourceWithLimit is ported and formula-faithful (sv_resources.qc:205) and IS live — ItemPickupRules.GiveAmmoTo:246 calls it for the negative-amount drain branch, mirroring Base Item_GiveAmmoTo (items.qc:507). The three mutator-hook seams remain latent (no shipped mutator subscribes)."
     - "regen.pause_timers: warmup-countdown offset (game_starttime - time) STILL not added to the four primed spawn pause timers (SpawnSystem comment defers it: 'once the spawn path runs with a match-time handle'). Only observable if a player can regen/rot during the pre-match countdown."
 features:
   - id: resources.api.registry
@@ -145,16 +145,16 @@ features:
       timing: na
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
       - "Port TakeResource STILL omits the QC TakeResource mutator hook (sv_resources.qc:191 MUTATOR_CALLHOOK(TakeResource)) — Wave-2 added only a comment; ResourceHooks has no TakeResource chain. A mutator can therefore not forbid/rewrite a resource drain. No shipped mutator subscribes, so latent."
-      - "TakeResourceWithLimit IS now ported (Wave-2) and the SVQC clamp formula is bit-faithful (current-amount < -limit -> amount = current-limit, i.e. the total can't go below -limit). But it has ZERO callers in the port -> DEAD. Base SVQC also has no SVQC callers (only the odd CSQC form is used), so this is parity-neutral, but the new code is not on any live path. Its own QC mutator hook (sv_resources.qc:211) is also not fired (comment only)."
+      - "TakeResourceWithLimit IS ported (Wave-2) and the SVQC clamp formula is bit-faithful (current-amount < -limit -> amount = current-limit, i.e. the total can't go below -limit). It IS live: ItemPickupRules.GiveAmmoTo:246 calls it for the negative-amount (drain) item branch, mirroring Base items.qc:507 (Item_GiveAmmoTo). Its own QC mutator hook (sv_resources.qc:211) is not fired (comment only; no shipped mutator subscribes, so latent)."
     verification:
-      - { kind: code, ref: "Resources.TakeResource vs sv_resources.qc:185-203 (still no MUTATOR_CALLHOOK(TakeResource)); Resources.TakeResourceWithLimit vs sv_resources.qc:205-228 (formula match, no hook); rg found ZERO non-definition callers of TakeResourceWithLimit", result: pass }
+      - { kind: code, ref: "Resources.TakeResource vs sv_resources.qc:185-203 (still no MUTATOR_CALLHOOK(TakeResource)); Resources.TakeResourceWithLimit vs sv_resources.qc:205-228 (formula match, no hook); live caller ItemPickupRules.cs:246 (GiveAmmoTo drain branch) mirrors items.qc:507", result: pass }
     confidence: high
-    notes: "TakeResource(<=0 no-op) follows the SVQC semantics. Widely live via item/weapon ammo drains. Wave-2 ported the missing TakeResourceWithLimit (formula-faithful) but it is dead (no caller); the two mutator-hook seams (TakeResource + TakeResourceWithLimit) are still unimplemented. logic stays partial; liveness downgraded to partial (TakeResource live, TakeResourceWithLimit dead)."
+    notes: "TakeResource(<=0 no-op) follows the SVQC semantics. Widely live via item/weapon ammo drains. TakeResourceWithLimit (formula-faithful) is live on the item-pickup drain path (ItemPickupRules.GiveAmmoTo, QC Item_GiveAmmoTo items.qc:507). The two mutator-hook seams (TakeResource + TakeResourceWithLimit) remain unimplemented (latent). logic stays partial for those hooks; liveness is live."
   - id: resources.regen.loop
     name: "player_regen + RotRegen + CalcRegen/CalcRot (health/armor/fuel regen and rot)"
     layer: [authority]

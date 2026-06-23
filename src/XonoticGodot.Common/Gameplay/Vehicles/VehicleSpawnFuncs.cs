@@ -46,6 +46,11 @@ public static class VehicleSpawnFuncs
         // shield/energy + capability flags) and arm its think. The port folds all of that into the descriptor's
         // Spawn (which calls VehicleCommon.SpawnVehicle and sets e.Think/e.NextThink itself).
         def.Spawn(e);
+
+        // QC vehicle_initialize tail (sv_vehicles.qc:1283): if (MUTATOR_CALLHOOK(VehicleInit, this)) return false;
+        // — a mutator may veto this vehicle's one-time init, and the spawnfunc deletes the edict on a false return.
+        if (VehicleCommon.InitVehicle(e) && Api.Services is not null)
+            Api.Entities.Remove(e);
     }
 
     // Per-type spawnfuncs (each per-vehicle .qc: spawnfunc(vehicle_X){ ... vehicle_initialize(this, VEH_X, false); }).

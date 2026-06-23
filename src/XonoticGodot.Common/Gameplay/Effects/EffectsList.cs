@@ -91,6 +91,15 @@ public static class EffectsList
         Effects.Register("VAPORIZER_BEAM", "TE_TEI_G3", isTrail: true);
         Effects.Register("VAPORIZER_BEAM_HIT", "TE_TEI_G3_HIT", isTrail: true);
 
+        // ---- Brass casings (the QC `casings` NET_TEMP, common/effects/qc/casings.qc) ----
+        // Base networks ejected shells via a dedicated REGISTER_NET_TEMP(casings); this port carries them on
+        // the shared effect channel instead. Registering them as real Effects (rather than null-Effect
+        // EmitByEffectInfoName requests, which ServerNet.WriteEffect drops) gives them a stable RegistryId so
+        // the eject origin+velocity actually network; the client routes the name to EffectSystem.SpawnCasing
+        // (the real bouncing brass entity), not the generic particle burst. casingtype 3 -> bullet, 1 -> shell.
+        Effects.Register("CASING_BULLET", "casing_bullet");
+        Effects.Register("CASING_SHELL", "casing_shell");
+
         // ---- Rifle ----
         Effects.Register("RIFLE_IMPACT", "machinegun_impact");
         Effects.Register("RIFLE_MUZZLEFLASH", "rifle_muzzleflash");

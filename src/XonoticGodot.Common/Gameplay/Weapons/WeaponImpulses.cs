@@ -185,10 +185,10 @@ public static class WeaponImpulses
     /// <summary>
     /// QC <c>IMPULSE(use)</c> → <c>PlayerUseKey</c> (server/impulse.qc:409, client.qc:2620). Routes the voluntary
     /// use-key onto the port's <see cref="VehicleBoarding.UseKey"/> (the port's <c>PlayerUseKey</c> entry). That
-    /// method handles the vehicle enter/exit half and fires the trailing <c>PlayerUseKey</c> mutator hook on which
-    /// the CTF flag throw/pass/request-pass, the Keepaway/Team Keepaway/Nexball/KeyHunt voluntary ball/key drop, and
-    /// objective/door use all depend — once those hooks are wired (see todos: MutatorHooks.PlayerUseKey +
-    /// VehicleBoarding.UseKey calling it, both in files this seam does not own).
+    /// method handles the vehicle enter/exit half and fires the trailing <c>PlayerUseKey</c> mutator hook
+    /// (<see cref="MutatorHooks.PlayerUseKey"/>) on which the Keepaway/Team Keepaway/Nexball/KeyHunt voluntary
+    /// ball/key drop and objective/door use depend — KeyHunt's voluntary key-drop (kh_Key_DropOne) subscribes that
+    /// hook live. (The CTF flag throw/pass-request handler is wired through the same hook once CTF subscribes it.)
     /// </summary>
     private static void UseHandle(Entity actor) => VehicleBoarding.UseKey(actor);
 

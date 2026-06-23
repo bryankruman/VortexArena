@@ -1,15 +1,15 @@
 unit: mutator-superspec
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-23"
 summary:
   feature_count: 11
   worst_gaps:
-    - "Auto-spectate is unreachable on the live path: ItemTouch + SV_ParseClientCommand + ClientConnect mutator hook chains do NOT exist in MutatorHooks.cs, so no autospec/superspec flag can ever be SET. Even the now-live PlayerDies followkiller body is dead because ASF_FOLLOWKILLER can never be set."
-    - "No superspec/autospec/superspec_itemfilter/followpowerup/followstrength/followshield spectator console commands (no SV_ParseClientCommand mutator hook chain to register verbs into)."
-    - "No ItemTouch hook: spectators get no pickup-announcement messages and no auto-follow on Strength/Shield/Mega/flag grab."
-    - "No per-client option persistence (superspec-*.options, ClientConnect/ClientDisconnect hooks absent); SUPERSPEC_MISSING_UID notification still has no producer."
-    - "Scoreboard/serverinfo mutator list still never shows :SS / ', Super Spectators' (no BuildMutatorsString/BuildMutatorsPrettyString hook chains)."
+    - "[FIXED Wave-4] The superspec/autospec/superspec_itemfilter/followpowerup/followstrength/followshield spectator commands are now wired (HandleCommand, routed via Commands.CmdSuperspec like the sandbox verb), so the option flags are settable, the manual follow* switches and the followkiller auto-switch run live, and console messages print via PrintTo."
+    - "STILL OPEN: No ItemTouch hook chain in MutatorHooks.cs, so the auto-spectate-on-pickup + pickup-announcement messages (superspec ItemTouch) and the ASF_SSIM/powerup/mega/flag auto-follow remain unported (FilterItem/Msg/SpectateTransfer are ready for it). This is the largest remaining gap."
+    - "STILL OPEN: No per-client option persistence (superspec-*.options, ClientConnect/ClientDisconnect hooks absent), so flags don't survive reconnect; SUPERSPEC_MISSING_UID notification still has no producer (no delayed superspec_hello)."
+    - "STILL OPEN: the centered (centerprint) form of superspec_msg is stubbed (no centerprint-text server seam); the console sprint form is wired."
+    - "STILL OPEN: Scoreboard/serverinfo mutator list never shows :SS / ', Super Spectators' (no BuildMutatorsString/BuildMutatorsPrettyString hook chains)."
 features:
   - id: superspec.enable.predicate
     name: "Enable predicate + registration (expr_evaluate(g_superspectate))"
@@ -50,20 +50,20 @@ features:
       - { name: "ASF_ALL", base: "0xFFFFFF", port: "0xFFFFFF", match: true }
       - { name: "SSF_SILENT/SSF_VERBOSE/SSF_ITEMMSG", base: "BIT(0)/BIT(1)/BIT(2)", port: "1<<0/1<<1/1<<2", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: true
     divergence_rationale: "Option state is held in a static Dictionary<Player,Options> side-table rather than as .fields on Player, because this port file may not edit Player.cs (documented in the class summary; promote to real Player fields for networking/persistence is a todo)."
     gaps:
-      - "Constants are now bit-identical and a per-client option store exists, but NOTHING on the live path WRITES to it: there is no SV_ParseClientCommand command chain and no ClientConnect hook, so AutospecFlags/SuperspecFlags/ItemFilter are never set away from their connect defaults. The store is read-only-reachable in practice (only the followkiller/FilterItem/Msg helpers read it, and they are themselves dead/unreachable)."
+      - "Constants are bit-identical and the per-client option store is now WRITTEN on the live path by the superspec/autospec/superspec_itemfilter commands (HandleCommand). Remaining: no ClientConnect/options-file load, so flags don't persist across reconnect (separate persistence row) — but in-session mutation is fully live."
     verification:
-      - { kind: code, ref: "ASF_*/SSF_*/ASF_ALL match Base 8-25; Options side-table exists; grep finds no writer to AutospecFlags/SuperspecFlags/ItemFilter (no command/connect path)", result: partial }
+      - { kind: code, ref: "ASF_*/SSF_*/ASF_ALL match Base 8-25; Options side-table written by HandleCommand (superspec/autospec/itemfilter verbs), routed live via Commands.CmdSuperspec", result: pass }
     confidence: high
-    notes: "PARTIAL FIX vs baseline (was fully missing): constants faithful + storage exists, but option mutation is unreachable. SuperspecFlags defaults to SSF_VERBOSE (matches Base ClientConnect default sv_superspec.qc:387); itemfilter defaults \"\" (match-all)."
+    notes: "FIXED (Wave-4 fix-up): the option store is now writable on the live path via the wired spectator commands. SuperspecFlags defaults to SSF_VERBOSE (matches Base ClientConnect default sv_superspec.qc:387); itemfilter defaults \"\" (match-all). Cross-reconnect persistence (options file) is still open."
   - id: superspec.spectate.transfer
     name: "Spectate transfer helper (superspec_Spectate wrapping Spectate)"
     layer: [authority]
@@ -78,15 +78,15 @@ features:
       timing: na
       presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: true
     divergence_rationale: "The port has no engine Spectate() target-switch primitive, so SpectateTransfer sets the follow-cam state directly (Player.Spectatee = target, Player.SpectateeStatus = target.PlayerId) — the faithful observable result of Spectate(this, targ)."
     gaps:
-      - "Helper exists and produces the correct follow-cam result, but its ONLY caller is the followkiller PlayerDies body, which is itself unreachable (ASF_FOLLOWKILLER can never be set). The ItemTouch and followpowerup/followstrength/followshield callers that would also use it do not exist. So in a real match SpectateTransfer never runs."
+      - "Helper produces the correct follow-cam result and is now REACHED on the live path by both the followkiller PlayerDies body (ASF_FOLLOWKILLER now settable) and the followpowerup/followstrength/followshield commands (HandleCommand). The remaining un-wired caller is the absent ItemTouch hook (auto-spectate on pickup) — a separate row."
     verification:
-      - { kind: code, ref: "SpectateTransfer sets Spectatee/SpectateeStatus (Player.cs:216/223 exist); only in-file caller is OnPlayerDies; no external callers (grep)", result: partial }
+      - { kind: code, ref: "SpectateTransfer sets Spectatee/SpectateeStatus (Player.cs:216/223); called by OnPlayerDies AND the follow* commands in HandleCommand (live)", result: pass }
     confidence: high
-    notes: "PARTIAL FIX vs baseline (was missing): the transfer primitive is now ported faithfully, but dead because every path that would call it is unreachable/absent."
+    notes: "FIXED (Wave-4 fix-up): the transfer primitive is now reached live via the followkiller hook and the follow* spectator commands. Only the ItemTouch-driven caller remains absent (separate gap)."
   - id: superspec.persistence.options_file
     name: "Per-client options persistence (load on connect / save on disconnect, crypto_idfp-keyed)"
     layer: [authority]
@@ -158,17 +158,17 @@ features:
       logic: faithful
       values: faithful
       timing: na
-      presentation: stub
+      presentation: partial
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Msg ports the silent/verbose/spamlevel gating faithfully, but the actual output is a no-op: there is no spectator sprint (console-print) or centerprint-text server API, so the conTitle/centerTitle/msg are discarded (assigned to _). It also has no live caller (the only in-file caller is the unreachable followkiller body). Spectators never see any superspec message."
+      - "Msg ports the silent/verbose/spamlevel gating faithfully AND the console (sprint) form now emits via the host-wired PrintTo (NetGame.WireSuperspec -> SendChatToPlayer), reached live from the command handlers + the followkiller body. Remaining: the CENTERED (centerprint) form is still gated-but-stubbed (no centerprint-text server seam), so spectators see the console line but not the centered overlay."
     verification:
-      - { kind: code, ref: "Msg gate matches Base sv_superspec.qc:67-73; sprint/centerprint bodies are `_ = ...` discards (no seam); only caller is OnPlayerDies which is unreachable", result: partial }
+      - { kind: code, ref: "Msg gate matches Base sv_superspec.qc:67-73; sprint form -> PrintTo (live); centerprint form still `_ = ...` discard; called live from HandleCommand + OnPlayerDies", result: pass }
     confidence: high
-    notes: "PARTIAL FIX vs baseline: the gating LOGIC is now faithful (values match), but presentation is still a stub (no sprint/centerprint output) and the helper is dead (no reachable caller)."
+    notes: "FIXED (Wave-4 fix-up): the gating logic is faithful and the console sprint output is now wired + reached live. Only the centered centerprint overlay remains stubbed (needs a centerprint-text server seam)."
   - id: superspec.itemfilter.match
     name: "Item-message classname filter (superspec_filteritem; empty = all)"
     layer: [authority]
@@ -189,11 +189,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "FilterItem is a faithful port (empty filter = match all; else tokenized classname allowlist against item.ClassName), but it has NO live caller: it would be invoked from the absent ItemTouch hook, and the ItemFilter string it reads is never set (no command path). So the filter never runs in a match. (Note: the existing FilterItemHookTests.cs covers the UNRELATED StartItem FilterItem chain for nix/melee_only, not this helper.)"
+      - "FilterItem is a faithful port (empty filter = match all; else tokenized classname allowlist against item.ClassName), and the ItemFilter string it reads is now SETTABLE on the live path (the wired superspec_itemfilter command). But FilterItem itself still has NO live CALLER: it would be invoked from the absent ItemTouch hook, so the filter never actually runs in a match yet. (Note: the existing FilterItemHookTests.cs covers the UNRELATED StartItem FilterItem chain for nix/melee_only, not this helper.)"
     verification:
-      - { kind: code, ref: "FilterItem matches Base sv_superspec.qc:76-89; grep finds no external caller; ItemFilter never written; tokenization via whitespace split (faithful to tokenize_console for classnames)", result: partial }
+      - { kind: code, ref: "FilterItem matches Base sv_superspec.qc:76-89; ItemFilter now written by HandleCommand (superspec_itemfilter); but no FilterItem caller (ItemTouch hook absent); tokenization via whitespace split (faithful to tokenize_console for classnames)", result: partial }
     confidence: high
-    notes: "PARTIAL FIX vs baseline: logic+values now faithful, but dead (no ItemTouch caller, filter string never set). Untested for this unit despite the similarly-named FilterItemHookTests."
+    notes: "PARTIAL (Wave-4 fix-up): logic+values faithful and the filter string is now settable live, but FilterItem stays dead because the ItemTouch consumer hook does not exist. Untested for this unit despite the similarly-named FilterItemHookTests."
   - id: superspec.itemtouch.autospec_and_msg
     name: "ItemTouch hook: pickup messages + auto-spectate on powerup/mega/flag/item-msg"
     layer: [authority]
@@ -235,48 +235,52 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:588-589 (MutatorHooks.PlayerDies.Call — live fire)"
     constants:
       - { name: "condition", base: "ASF_FOLLOWKILLER && IS_PLAYER(attacker) && it.enemy == victim", port: "ASF_FOLLOWKILLER && IsLivePlayer(attacker) && it.Spectatee == victim", match: true }
-      - { name: "show_what message", base: "ASF_SHOWWHAT -> superspec_msg(...followkiller, spamlevel 2)", port: "ASF_SHOWWHAT -> Msg(...followkiller, 2) (but Msg output is a no-op stub)", match: false }
+      - { name: "show_what message", base: "ASF_SHOWWHAT -> superspec_msg(...followkiller, spamlevel 2)", port: "ASF_SHOWWHAT -> Msg(...followkiller, 2); console (sprint) form now wired via PrintTo, centerprint form still stubbed", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: na
-      presentation: missing
+      presentation: stub
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The hook is genuinely subscribed to the LIVE PlayerDies chain (Hook -> MutatorHooks.PlayerDies.Add; fired at DamageSystem.cs:589), and the condition/iteration logic mirrors Base. BUT its guarded body is UNREACHABLE in a real match: it only acts on spectators whose AutospecFlags have ASF_FOLLOWKILLER set, and there is no command/connect path that can ever set that flag. So the camera never auto-switches to the killer. The show_what announcement also routes through the no-op Msg stub, so even if reached it would print nothing."
+      - "The hook is subscribed to the LIVE PlayerDies chain (Hook -> MutatorHooks.PlayerDies.Add; fired at DamageSystem.cs:589) AND its guarded body is now REACHABLE: ASF_FOLLOWKILLER is settable via the wired `autospec followkiller on` command, so a spectator following the victim auto-switches to the killer. The scan iterates the live RosterProvider (FOREACH_CLIENT). Only residual: the show_what announcement's centerprint form is still stubbed (the console sprint form prints via PrintTo)."
     verification:
-      - { kind: code, ref: "OnPlayerDies subscribed live (Hook); condition matches Base sv_superspec.qc:427; but ASF_FOLLOWKILLER is never settable (no SV_ParseClientCommand/ClientConnect writer) -> body never runs; Msg output is stubbed", result: partial }
+      - { kind: code, ref: "OnPlayerDies subscribed live (Hook); condition matches Base sv_superspec.qc:427; ASF_FOLLOWKILLER now settable via autospec command; iterates Roster(); SpectateTransfer + Msg(sprint) reachable", result: pass }
     confidence: high
-    notes: "PARTIAL FIX vs baseline: the followkiller hook is now ported AND wired onto the live death path (real fix of the missing wiring), but its effect is unreachable because the enabling autospec flag can never be set, and the show_what message helper is a no-op stub. Liveness=partial (subscribed live, effect dead)."
+    notes: "FIXED (Wave-4 fix-up): the followkiller flag is now settable (autospec command wired) so the auto-switch-to-killer body runs on the live death path; the sprint announcement is wired (centerprint form still stubbed). Liveness=live."
   - id: superspec.commands.parse
     name: "Spectator console commands (superspec / autospec / superspec_itemfilter / followpowerup / followstrength / followshield)"
     layer: [authority]
     base_refs:
       - "common/mutators/mutator/superspec/sv_superspec.qc:141-358 (MUTATOR_HOOKFUNCTION superspec SV_ParseClientCommand)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SuperSpecMutator.cs:HandleCommand (the 6 verbs)"
+      - "src/XonoticGodot.Server/Commands.cs:CmdSuperspec (server command-bus routing) + Register(superspec/autospec/superspec_itemfilter/followpowerup/followstrength/followshield)"
+      - "src/XonoticGodot.Server/ClientCommandRegistry.cs (the 6 verbs added to ClientCommands)"
+      - "game/net/NetGame.cs:WireSuperspec (PrintTo sprint seam + RosterProvider FOREACH_CLIENT seam)"
     constants:
-      - { name: "player guard", base: "IS_PLAYER(player) -> return (spectator-only cmds)", port: "none", match: false }
-      - { name: "superspec flags", base: "silent/si, verbose/ve, item_message/im (+ clear)", port: "none", match: false }
-      - { name: "autospec flags", base: "strength/st, shield/sh, mega_health/mh, mega_armor/ma, flag_grab/fg, observer_only/oo, show_what/sw, item_msg/im, followkiller/fk, all/aa (+ clear)", port: "none", match: false }
-      - { name: "follow* cmds", base: "followpowerup (Strength|Shield), followstrength, followshield", port: "none", match: false }
+      - { name: "player guard", base: "IS_PLAYER(player) -> return (spectator-only cmds)", port: "IsLivePlayer(player) -> return false (spectator/observer-only)", match: true }
+      - { name: "superspec flags", base: "silent/si, verbose/ve, item_message/im (+ clear)", port: "same tokens + clear + on/off bits accumulation", match: true }
+      - { name: "autospec flags", base: "strength/st, shield/sh, mega_health/mh, mega_armor/ma, flag_grab/fg, observer_only/oo, show_what/sw, item_msg/im, followkiller/fk, all/aa (+ clear)", port: "same tokens + clear + on/off accumulation + OPTIONINFO state print", match: true }
+      - { name: "follow* cmds", base: "followpowerup (Strength|Shield), followstrength, followshield", port: "same; FOREACH_CLIENT(IsLivePlayer && StatusEffectsCatalog.Has(Strength/Shield)) -> SpectateTransfer", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: faithful
+      values: faithful
       timing: na
-      presentation: missing
+      presentation: stub
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "None of the superspec spectator commands exist, and crucially there is still NO MUTATOR_CALLHOOK(SV_ParseClientCommand) hook chain in MutatorHooks.cs for a mutator to register these verbs into. This is the keystone gap: without it, the autospec/superspec/itemfilter flags can never be set, which is why followkiller (ported) and the option store are dead. The follow* commands also need StatusEffects_active(Strength/Shield) scans that have no command entry point."
+      - "The console (sprint) form of every command-state/help message is now wired through PrintTo (host SendChatToPlayer); the CENTERED (centerprint) form of superspec_msg is still gated-but-stubbed (no centerprint-text server seam). The follow* scans use StatusEffectsCatalog.Has(Strength/Shield) which is faithful for the active-powerup test. followfc [red|blue] lives in the CTF gametype (sv_ctf.qc:2658), out of scope."
     verification:
-      - { kind: code, ref: "MutatorHooks.cs has no SV_ParseClientCommand chain; ClientCommandRegistry/Commands have no autospec/superspec/followpowerup/followstrength/followshield verbs", result: fail }
+      - { kind: code, ref: "HandleCommand ports all 6 verbs incl. the bit accumulation, clear, on/off, help, and OPTIONINFO state lines; routed live via Commands.CmdSuperspec (gated on Added + IsLivePlayer) and marked client-callable; PrintTo/RosterProvider wired in NetGame.WireSuperspec", result: pass }
     confidence: high
-    notes: "STILL OPEN — the highest-leverage remaining gap. followfc [red|blue] lives in the CTF gametype (sv_ctf.qc:2658), out of scope. autospec 'item_msg'/'im' -> ASF_SSIM (BIT 7), distinct from superspec 'item_message'/'im' -> SSF_ITEMMSG (BIT 2): same short form, different flag word (Base 243/311); the ported consts preserve this distinction."
+    notes: "FIXED (Wave-4 fix-up) — this was the keystone gap. Routed via the server command bus exactly like the sandbox g_sandbox verb (no generic SV_ParseClientCommand hook chain was needed). autospec 'item_msg'/'im' -> ASF_SSIM (BIT 7) vs superspec 'item_message'/'im' -> SSF_ITEMMSG (BIT 2): same short form, different flag word — the port preserves this distinction. Wiring these makes the option store WRITABLE on the live path, which in turn un-deads followkiller, FilterItem, and Msg."
   - id: superspec.ui.mutator_strings
     name: "Mutator string tags (:SS machine tag + ', Super Spectators' pretty label)"
     layer: [authority, presentation]

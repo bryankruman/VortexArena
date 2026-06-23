@@ -662,7 +662,13 @@ public static class MonsterAI
         // QC: if (!autocvar_g_monsters_sounds || (delaytoo && time < this.msound_delay)) return;
         if (Cvar("g_monsters_sounds", 1f) == 0f) return;
         if (delayToo && Now < st.MSoundDelay) return;
-        if (st.Def.Model is not null)
+        // QC: string sample = this.(samplefield); if (sample != "") sample = GlobalSound_sample(...);
+        // sound7(this, chan, sample, ...). A cue that is COMMENTED OUT in the model's .sounds file (or whose
+        // model ships no .sounds at all) yields an EMPTY sample, so the engine plays nothing — but the throttle
+        // window is still advanced. We mirror that: only emit a sample for a cue this monster actually defines.
+        // (SoundCues==null = legacy "not audited, play all"; an empty set = fully silent monster.)
+        bool cueDefined = st.Def.SoundCues is null || st.Def.SoundCues.Contains(cue);
+        if (st.Def.Model is not null && cueDefined)
             Api.Sound.Play(self, chan, "monsters/" + st.Def.NetName + "_" + cue + ".wav");
         st.MSoundDelay = Now + soundDelay; // QC: this.msound_delay = time + sound_delay
     }
@@ -1732,13 +1738,16 @@ public static class MonsterAI
 
     /// <summary>
     /// QC <c>game_stopped || time &lt; game_starttime</c> (Monster_ValidTarget:108): monsters do nothing before
-    /// the match clock starts or once it has been stopped (warmup/intermission). Read from the same host seams the
-    /// damage pipeline and Domination use (<see cref="Scoring.GameScores.GameStopped"/> +
-    /// <see cref="StartItem.GameStartTimeProvider"/>); headless tests with no host wire-up read as "match live".
+    /// the match clock starts or once it has been stopped (warmup/intermission/timeout). Reads the same live host
+    /// seams the vehicle/mutator ports use — <see cref="VehicleCommon.GameStopped"/> (driven by the server each
+    /// frame from <c>Intermission.Running || MatchEnded || Timeout.IsPaused</c>, GameWorld.cs SEAM E), falling back
+    /// to the <c>g_game_stopped</c> cvar mirror — plus <see cref="StartItem.GameStartTimeProvider"/> for the prematch
+    /// clock; headless tests with no host wire-up read as "match live".
     /// </summary>
     public static bool MatchHalted()
     {
-        if (Scoring.GameScores.GameStopped) return true;
+        if (VehicleCommon.GameStopped) return true;
+        if (Api.Services is not null && Api.Cvars.GetFloat("g_game_stopped") != 0f) return true;
         float gameStart = StartItem.GameStartTimeProvider?.Invoke() ?? 0f;
         return Now < gameStart;
     }

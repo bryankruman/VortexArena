@@ -200,17 +200,19 @@ public sealed class Porto : Weapon
         // QC: if (toucher.classname == "portal") return; — a portal collision is handled by the portal itself.
         if (other.ClassName == "portal") return;
 
-        // (Render/trace-flag note: the exact surface flags + impact plane normal come from the trace that
-        // produced this touch; the headless touch can't read them per-contact, so we approximate — a damageable
-        // edict counts as a creature and a world-brush hit as a valid flat surface, and the reflection/normal is
-        // derived from the negated velocity. The slick/clip + noimpact branches are best-effort until per-contact
-        // surface flags are available; see the touch-tree spec gap.)
+        // QC reads trace_dphitq3surfaceflags / trace_dphitcontents / trace_plane_normal from the collision trace
+        // that produced this touch. The engine bouncemissile touch doesn't carry those here, so — exactly like
+        // Base's creature-hit branch does (porto.qc:178) — we re-probe the impact face with a short worldonly
+        // traceline and read the surface flags, contents, and TRUE plane normal off the result. This makes the
+        // slick/clip + noimpact branches genuinely reachable and gives the portal its real impact-plane normal
+        // (instead of the negated velocity). On a miss (no nearby solid) ProbeImpact falls back to -velocity.
+        ImpactSurface surf = ProbeImpact(self, other);
+
         bool isCreature = other.TakeDamage != DamageMode.No || (other.Flags & EntFlags.Client) != 0;
         if (isCreature)
         {
-            // QC creature-hit: trace straight down to the floor; if there's no nearby solid (or it's
-            // slick/clip/noimpact) ignore the contact and keep flying. We have no per-contact floor trace
-            // headless, so we conservatively ignore the creature contact (no portal on a player) and bounce on.
+            // QC creature-hit: trace straight down to the floor; if there's no nearby solid, or it's
+            // slick/clip/noimpact, ignore the contact and keep flying (don't place a portal on a player).
             self.Angles = QMath.VecToAngles(self.Velocity);
             return;
         }
@@ -225,21 +227,19 @@ public sealed class Porto : Weapon
         }
 
         // QC SLICK / PLAYERCLIP reflect-and-continue: bounce off (don't place), reflecting BOTH the velocity and
-        // the carried right_vector about the impact plane, and play the bounce cue. Headless we lack the impact
-        // plane normal; approximate the normal as the negated travel direction (engine bounce already flipped
-        // velocity), reflect right_vector about it, and keep flying. (Best-effort — see touch-tree gap.)
-        if (IsSlickOrClip(other))
+        // the carried right_vector about the impact plane, and play the bounce cue (porto.qc:192-198).
+        if (surf.IsSlickOrClip)
         {
             Api.Sound.Play(self, SoundChannel.ShotsAuto, "porto/bounce.wav");
-            Vector3 n = SurfaceNormal(self.Velocity);
-            self.AVelocity = ReflectAbout(self.AVelocity, n); // right_vector reflect
+            self.AVelocity = ReflectAbout(self.AVelocity, surf.Normal); // right_vector reflect
+            self.Velocity = ReflectAbout(self.Velocity, surf.Normal);   // QC vectoangles(velocity reflected)
             self.Angles = QMath.VecToAngles(self.Velocity);
             return;
         }
 
-        // QC NOIMPACT (sky / noimpact face): hard fail, no portal. On a combined (cnt<0) shot also clear any
-        // already-placed in-portal of this shot.
-        if (IsNoImpact(other))
+        // QC NOIMPACT (sky / noimpact face): hard fail, no portal (porto.qc:199-205). On a combined (cnt<0) shot
+        // also clear any already-placed in-portal of this shot.
+        if (surf.IsNoImpact)
         {
             Api.Sound.Play(self, SoundChannel.ShotsAuto, "porto/unsupported.wav");
             if (self.Count < 0) PortalClearWithId?.Invoke(self.Owner, (int)self.LTime);
@@ -255,7 +255,7 @@ public sealed class Porto : Weapon
             // In/out-only: place; create on success. (PortalSpawner is fire-and-forget — there is no headless
             // success/fail handshake yet, so we treat placement as succeeding; see portal_spawn gap.)
             bool isIn = self.Count == 0;
-            PlacePortal(self, isInPortal: isIn);
+            PlacePortal(self, surf.Normal, isInPortal: isIn);
             Api.Sound.Play(self, SoundChannel.ShotsAuto, "porto/create.wav");
             PortoSuccess(self, slot);
         }
@@ -264,36 +264,63 @@ public sealed class Porto : Weapon
             // combined red shot: place the in-portal, flip to blue, reflect, keep flying to place the out-portal.
             self.Effects &= ~EffectRed;
             self.Effects |= EffectBlue;
-            PlacePortal(self, isInPortal: true);
+            PlacePortal(self, surf.Normal, isInPortal: true);
             Api.Sound.Play(self, SoundChannel.ShotsAuto, "porto/create.wav");
-            Vector3 n = SurfaceNormal(self.Velocity);
-            self.AVelocity = ReflectAbout(self.AVelocity, n); // QC: right_vector reflected off the in-portal plane
+            self.AVelocity = ReflectAbout(self.AVelocity, surf.Normal); // QC: right_vector reflected off in-portal plane
+            self.Velocity = ReflectAbout(self.Velocity, surf.Normal);
             self.Angles = QMath.VecToAngles(self.Velocity); // bounce onward as blue
         }
         else
         {
             // blue shot landed: place the out-portal and finish.
-            PlacePortal(self, isInPortal: false);
+            PlacePortal(self, surf.Normal, isInPortal: false);
             Api.Sound.Play(self, SoundChannel.ShotsAuto, "porto/create.wav");
             PortoSuccess(self, slot);
         }
     }
 
-    /// <summary>QC trace_dphitq3surfaceflags &amp; SLICK || trace_dphitcontents &amp; PLAYERCLIP — surfaces a porto
-    /// reflects off instead of placing on. The port's headless touch carries no per-contact surface flags / hit
-    /// contents on the toucher entity, so this currently returns false (placement proceeds), matching the
-    /// common-case world-brush hit. When Entity gains per-contact SurfaceFlags/Contents (or the touch carries the
-    /// trace), wire them here against <see cref="Q3SurfaceFlagSlick"/> / DPCONTENTS_PLAYERCLIP. See spec gap
-    /// weapon-porto.touch.placement_tree.</summary>
-    private static bool IsSlickOrClip(Entity other) => false;
+    /// <summary>QC DPCONTENTS_PLAYERCLIP — clip brushes a porto reflects off instead of placing on.</summary>
+    private const int DpContentsPlayerClip = 256;
 
-    /// <summary>QC trace_dphitq3surfaceflags &amp; NOIMPACT — sky/noimpact faces that fail the shot. Same
-    /// per-contact-flag limitation as <see cref="IsSlickOrClip"/>; returns false until the trace flags are
-    /// available on the touch.</summary>
-    private static bool IsNoImpact(Entity other) => false;
+    /// <summary>Impact-face data recovered from the re-probe trace: the Q3 surface category + the true plane normal.</summary>
+    private readonly struct ImpactSurface
+    {
+        public readonly bool IsSlickOrClip; // Q3SURFACEFLAG_SLICK || DPCONTENTS_PLAYERCLIP
+        public readonly bool IsNoImpact;    // Q3SURFACEFLAG_NOIMPACT (sky etc.)
+        public readonly Vector3 Normal;     // impact plane normal (the wall, facing into the room)
+        public ImpactSurface(bool slick, bool noimpact, Vector3 normal) { IsSlickOrClip = slick; IsNoImpact = noimpact; Normal = normal; }
+    }
+
+    /// <summary>
+    /// Re-probe the surface this projectile just struck so OnTouch can read the QC <c>trace_dphit*</c> flags and the
+    /// real impact plane (the engine bouncemissile touch doesn't carry them). Mirrors Base's own re-trace
+    /// (porto.qc:178): a short worldonly traceline along the projectile's pre-bounce travel direction. The
+    /// post-bounce velocity is the incoming velocity reflected about the wall, so the wall lies opposite the new
+    /// velocity — we trace from just behind the origin to just ahead of it along that direction. Falls back to the
+    /// negated-velocity normal (and no special surface) when nothing solid is within reach.
+    /// </summary>
+    private ImpactSurface ProbeImpact(Entity self, Entity other)
+    {
+        Vector3 fallback = SurfaceNormal(self.Velocity);
+        if (self.Velocity.LengthSquared() <= 0.0001f)
+            return new ImpactSurface(false, false, fallback);
+
+        Vector3 into = -Vector3.Normalize(self.Velocity); // points into the wall the projectile bounced off
+        Vector3 start = self.Origin - into * 4f;
+        Vector3 end = self.Origin + into * 16f;
+        TraceResult tr = Api.Trace.Trace(start, Vector3.Zero, Vector3.Zero, end, MoveFilter.WorldOnly, self);
+        if (tr.Fraction >= 1f)
+            return new ImpactSurface(false, false, fallback);
+
+        bool slick = (tr.DpHitQ3SurfaceFlags & Q3SurfaceFlagSlick) != 0
+                  || (tr.DpHitContents & DpContentsPlayerClip) != 0;
+        bool noimpact = (tr.DpHitQ3SurfaceFlags & Q3SurfaceFlagNoImpact) != 0;
+        Vector3 normal = tr.PlaneNormal.LengthSquared() > 0.0001f ? Vector3.Normalize(tr.PlaneNormal) : fallback;
+        return new ImpactSurface(slick, noimpact, normal);
+    }
 
     /// <summary>The placement plane normal, approximated from the negated travel direction (the wall faces back
-    /// the way the projectile came). Headless we have no per-contact plane normal.</summary>
+    /// the way the projectile came). Used as the fallback when the impact re-probe finds no nearby solid.</summary>
     private static Vector3 SurfaceNormal(Vector3 velocity)
         => velocity.LengthSquared() > 0.0001f ? -Vector3.Normalize(velocity) : new Vector3(0, 0, 1);
 
@@ -333,14 +360,12 @@ public sealed class Porto : Weapon
     /// <summary>
     /// Place an in/out portal at the projectile's current position/orientation, realised as a warpzone via
     /// <see cref="PortalSpawner"/> (the warpzone teleporter the player walks through). The plane forward is the
-    /// surface normal — the wall the projectile flew into, i.e. the opposite of its travel direction. The create
-    /// sound is played by the caller (OnTouch) on the success branch, matching QC SND_PORTO_CREATE timing.
+    /// impact-surface normal recovered by <see cref="ProbeImpact"/> (the true wall plane, falling back to the
+    /// negated travel direction). The create sound is played by the caller (OnTouch) on the success branch,
+    /// matching QC SND_PORTO_CREATE timing.
     /// </summary>
-    private void PlacePortal(Entity self, bool isInPortal)
-    {
-        Vector3 normal = SurfaceNormal(self.Velocity); // the wall faces back the way the projectile came
-        PortalSpawner?.Invoke(new PortalRequest(self.Origin, normal, isInPortal, (int)self.LTime, self.Owner));
-    }
+    private void PlacePortal(Entity self, Vector3 normal, bool isInPortal)
+        => PortalSpawner?.Invoke(new PortalRequest(self.Origin, normal, isInPortal, (int)self.LTime, self.Owner));
 
     // W_Porto_Success — portal placed: clear the single-portal latch and remove the projectile.
     private void PortoSuccess(Entity self, WeaponSlot slot) => CleanupProjectile(self, slot);

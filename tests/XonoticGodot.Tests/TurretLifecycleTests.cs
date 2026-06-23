@@ -164,7 +164,7 @@ public class TurretLifecycleTests
     }
 
     [Fact]
-    public void Damage_EnemyHit_FullDamage_ShovesMovable_AndRetaliates()
+    public void Damage_EnemyHit_FullDamage_ShovesMovable_DoesNotRetaliate()
     {
         Boot();
         Entity e = SpawnEwheel(new Vector3(0, 0, 8));
@@ -177,7 +177,9 @@ public class TurretLifecycleTests
 
         Assert.Equal(50f, taken);
         Assert.Equal(force, e.Velocity);   // TUR_FLAG_MOVE: vforce shoves the mobile chassis
-        Assert.Same(foe, e.Enemy);         // TFL_DMG_RETALIATE: the attacker becomes the target
+        // Base turret_damage (sv_turrets.qc:207-251) never adopts the attacker as an enemy: TFL_DMG_RETALIATE is
+        // set but read by no Base code, so the turret does NOT turn to face whoever shot it.
+        Assert.Null(e.Enemy);
     }
 
     // ---------------------------------------------------------------- turret_die / turret_respawn

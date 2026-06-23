@@ -445,6 +445,17 @@ public partial class EffectSystem : Node3D
         if (string.IsNullOrEmpty(effectName))
             return null;
 
+        // Casing eject (W_*_Attack SpawnCasing): the bullet/shell casing temp-entities aren't pointparticles —
+        // they spawn a tumbling, bouncing brass entity. WeaponFiring.EjectCasing emits them as the CASING_BULLET/
+        // CASING_SHELL effects (carrying the QC eject velocity in Velocity); route those to the dedicated casing
+        // sim instead of the generic particle-burst heuristic so a real shell actually ejects. We match BOTH the
+        // EFFECT_* registry name ("CASING_BULLET", the networked path via Effect.Name) and the effectinfo name
+        // ("casing_bullet", the in-process listen-server path via EffectRequest.EffectName).
+        if (effectName == "CASING_BULLET" || effectName == "casing_bullet")
+            return SpawnCasing(origin, velocity, shell: false);
+        if (effectName == "CASING_SHELL" || effectName == "casing_shell")
+            return SpawnCasing(origin, velocity, shell: true);
+
         Effect? effect = ResolveEffect(effectName);
         // EFFECT_Null and the empty effectinfo string are intentional no-renders.
         if (effect is not null && string.IsNullOrEmpty(effect.NetName))

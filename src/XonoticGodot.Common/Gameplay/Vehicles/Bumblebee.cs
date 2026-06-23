@@ -174,7 +174,13 @@ public sealed class Bumblebee : Vehicle
         // would yank them into a gunner seat. Use-key gunner boarding works via VehicleBoarding.Enter's MULTISLOT branch.
         if (Cvar("g_vehicles_enter", 1f) != 0f) return;
         // Both gunner seats taken -> behave like a normal vehicle touch (no more seats).
-        if (vehicle.VehGunner1 is not null && vehicle.VehGunner2 is not null) return;
+        if (vehicle.VehGunner1 is not null && vehicle.VehGunner2 is not null)
+        {
+            // QC: vehicles_touch(this, toucher); return; — fall through to the shared dispatcher
+            // (crush / vr_impact bounce-pain / pilot touch-board).
+            VehicleCommon.Touch(vehicle, toucher);
+            return;
+        }
 
         if (ValidPilot(vehicle, toucher) && Time >= toucher.VehicleEnterDelay
             && (Time >= (vehicle.VehGun1?.VehPhase ?? 0f) || Time >= (vehicle.VehGun2?.VehPhase ?? 0f)))
@@ -182,7 +188,10 @@ public sealed class Bumblebee : Vehicle
             if (GunnerEnter(vehicle, toucher))
                 return;
         }
-        // else: the body is free (no pilot) -> the engine's normal vehicles_touch enters as pilot.
+
+        // QC bumblebee_touch tail: vehicles_touch(this, toucher) — the body is free (no pilot) enters as pilot,
+        // or (while piloted) the shared dispatcher runs the vr_impact bounce-pain.
+        VehicleCommon.Touch(vehicle, toucher);
     }
 
     // void bumblebee_exit(entity this, int eject) — bumblebee.qc (PILOT exit; gunners exit separately).
@@ -227,6 +236,11 @@ public sealed class Bumblebee : Vehicle
         if (VehicleCommon.FreezeIfGameStopped(vehicle))
             return;
 
+        // QC engine .oldvelocity = last-tick velocity; vr_impact (vehicles_impact) measures the touch
+        // speed-change against it. Snapshot BEFORE this tick's physics so a touch dispatched this frame
+        // sees the real delta (matches racer_think).
+        vehicle.OldVelocity = vehicle.Velocity;
+
         Entity? player = vehicle.Owner;
 
         // vr_think: ease body roll/pitch; if there's no pilot but a gunner is still aboard, promote a gunner
@@ -270,6 +284,9 @@ public sealed class Bumblebee : Vehicle
             player.OldOrigin = player.Origin;
             player.Velocity = vehicle.Velocity;
         }
+
+        // QC vehicles_think: vehicles_painframe(this) runs after vr_think every tick — low-health smoke + jitter.
+        VehicleCommon.PainFrame(vehicle);
     }
 
     /// <summary>Port of <c>bumblebee_regen</c>: per-gun cannon ammo + the body shield/energy/health.</summary>
@@ -372,26 +389,16 @@ public sealed class Bumblebee : Vehicle
 
     // METHOD(Bumblebee, vr_impact) — bumblebee.qc: a hard bounce jolts the pilot (vehicles_impact).
     /// <summary>
-    /// Port of <c>vehicles_impact</c> driven by <c>vr_impact</c>: on a hard collision (the velocity change
-    /// exceeds <c>bouncepain.x</c>) deal <c>min(bouncepain.y * speedDelta, bouncepain.z)</c> DEATH_FALL pain
-    /// to the airframe, debounced to once per 0.25s. <paramref name="oldVelocity"/> is the pre-bounce velocity
-    /// (the engine's <c>.oldvelocity</c>); the seam that integrates BOUNCEMISSILE motion supplies it on impact.
+    /// Port of <c>vr_impact</c>: on a hard collision (the velocity change exceeds the bouncepain minspeed)
+    /// deal <c>min(speedfac * speedDelta, maxpain)</c> DEATH_FALL pain to the airframe, debounced 0.25s.
+    /// Bouncepain <c>'1 100 200'</c> = minspeed 1, factor 100, max 200. Dispatched from the shared
+    /// <c>vehicles_touch</c> path (<see cref="VehicleCommon.Touch"/> -> <see cref="VehicleCommon.Impact"/>);
+    /// <see cref="Entity.OldVelocity"/> is the last-tick velocity snapshotted by <see cref="Think"/>.
     /// </summary>
-    public void Impact(Entity vehicle, Vector3 oldVelocity)
+    public override void Impact(Entity vehicle)
     {
         // QC: vector autocvar_g_vehicle_bumblebee_bouncepain = '1 100 200' (minspeed, speedfac, maxpain).
-        Vector3 bp = CvarVec("g_vehicle_bumblebee_bouncepain", new Vector3(1f, 100f, 200f));
-        if (bp == Vector3.Zero) return; // QC: if (autocvar_..._bouncepain) — a zero vector disables the jolt.
-
-        Vector3 delta = vehicle.Velocity - oldVelocity;
-        // QC vehicles_impact: gate on play_time (debounce) AND vdist(delta, >, minspeed). Reuse the otherwise
-        // unused-for-bumblebee VehReloadStart float as the per-vehicle play_time debounce.
-        if (vehicle.VehReloadStart < Time && QMath.VLen(delta) > bp.X)
-        {
-            float pain = MathF.Min(bp.Y * QMath.VLen(delta), bp.Z);
-            Combat.Damage(vehicle, null, null, pain, DeathTypes.Fall, vehicle.Origin, Vector3.Zero);
-            vehicle.VehReloadStart = Time + 0.25f;
-        }
+        VehicleCommon.Impact(vehicle, 1f, 100f, 200f);
     }
 
     // void bumblebee_land(entity this) — bumblebee.qc.
@@ -597,7 +604,10 @@ public sealed class Bumblebee : Vehicle
         VehicleCommon.SpawnProjectile(vehicle, gunner, org, vel,
             CannonDamage, CannonRadius, CannonForce, size: 0f,
             DeathTypes.VhBumbGun, health: 0f, lifetime: 0f, // bumblebee_weapons.qc: DEATH_VH_BUMB_GUN
-            fireSound: "vehicles/bumblebee_fire.wav");
+            // QC bumblebee_weapons.qc passes SND_VEH_BUMBLEBEE_FIRE = W_Sound("flacexp3") = weapons/flacexp3.
+            // The prior literal "vehicles/bumblebee_fire.wav" is a non-existent asset (silent cannon); the
+            // real Base sample is weapons/flacexp3 (ships as weapons/flacexp3.ogg).
+            fireSound: "weapons/flacexp3.wav");
         // TODO(port,client): EFFECT_BIGPLASMA_MUZZLEFLASH + CSQCProjectile visual.
     }
 
@@ -710,21 +720,6 @@ public sealed class Bumblebee : Vehicle
         if (Api.Services is null) return fallback;
         float v = Api.Cvars.GetFloat(name);
         return v != 0f ? v : fallback;
-    }
-
-    /// <summary>Read a <c>'x y z'</c> vector cvar through the facade, falling back to <paramref name="fallback"/>.</summary>
-    private static Vector3 CvarVec(string name, Vector3 fallback)
-    {
-        if (Api.Services is null) return fallback;
-        string s = Api.Cvars.GetString(name);
-        if (string.IsNullOrWhiteSpace(s)) return fallback;
-        string[] parts = s.Trim().Trim('\'', '"').Split(new[] { ' ', '\t' }, System.StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length != 3
-            || !float.TryParse(parts[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float x)
-            || !float.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float y)
-            || !float.TryParse(parts[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float z))
-            return fallback;
-        return new Vector3(x, y, z);
     }
 
     private static float Time => Api.Services is not null ? Api.Clock.Time : 0f;

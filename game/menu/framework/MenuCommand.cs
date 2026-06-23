@@ -225,6 +225,14 @@ public static class MenuCommand
                 if (t.Count > 1) SendGame(string.Join(' ', t.GetRange(1, t.Count - 1)));
                 break;
 
+            // "sandbox <rest>" — DP cfg alias `sandbox "cmd g_sandbox ${* ?}"` (commands.cfg). The Sandbox Tools
+            // dialog buttons issue these. Expand the alias here (prepend the g_sandbox server verb, route through
+            // the live-match channel) so the buttons drive the SandboxMutator backend (Commands.CmdSandbox →
+            // HandleCommand) instead of falling through to the inert default.
+            case "sandbox":
+                SendGame(t.Count > 1 ? "g_sandbox " + string.Join(' ', t.GetRange(1, t.Count - 1)) : "g_sandbox");
+                break;
+
             // Direct gameplay verbs the pause-menu / team-select buttons issue. These are real server commands
             // (Commands.cs: ready/join/spectate; selectteam handles spec/spectator/spectate). resetmatch is the
             // campaign "Restart level" command.

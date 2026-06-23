@@ -97,6 +97,15 @@ public sealed class EntityMovementStep : IMovementStep
         // to the exit facing this tick. Predicted mode = no sound/telefrag/targets (server-authoritative).
         XonoticGodot.Engine.Simulation.TriggerTouch.PredictTeleportsAmbient(_carrier);
 
+        // Client-side warpzone prediction (CSQC WarpZone_FixPMove): warp the carrier through any linked
+        // trigger_warpzone it now overlaps — origin/velocity/angles rotated by the seam transform — IN LOCKSTEP
+        // with the server's post-move WarpZone_Touch, so a seamless-portal crossing doesn't rubber-band the camera
+        // (the reconcile would otherwise measure a warp-sized origin error and hard-snap). Like the teleporter
+        // predictor it stamps the carrier's .fixangle so the host snaps the local view to the rotated exit facing
+        // this tick. Gate matches the authoritative WarpzoneManager.Teleport plane-side test exactly; predicted
+        // mode = no SUB_UseTargets/projectile/stuck-recovery side effects (server-authoritative).
+        XonoticGodot.Engine.Simulation.TriggerTouch.PredictWarpzonesAmbient(_carrier);
+
         // read the result back into the predicted state.
         state.Origin = _carrier.Origin;
         state.Velocity = _carrier.Velocity;

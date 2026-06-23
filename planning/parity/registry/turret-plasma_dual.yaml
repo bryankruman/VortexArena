@@ -1,13 +1,13 @@
 unit: turret-plasma_dual
 category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-23"
 summary:
   feature_count: 11
   worst_gaps:
     - "TFL_DMG_HEADSHAKE jitter (tur_head.angles += (random-0.5)*damage on every hit) is STILL NOT implemented — TurretAI.Damage does friendly-fire/retaliate/shove only, no head jolt. Head does not flinch when shot. (Wave-2 did not touch this.)"
-    - "Port Die() STILL ACTIVELY does an ammo-scaled RadiusDamage death blast (boom up to 50 dmg, 0.25 edge, 250 radius, force*5); Base turret_die has this RadiusDamage COMMENTED OUT — a port-added blast Base does not deal. Unchanged by Wave-2."
-    - "Dual aim sets zPredict:true (PlasmaDualTurret.Think) but Base plasma tr_setup aim_flags = LEAD|SHOTTIMECOMPENSATE|SPLASH and NEVER sets TFL_AIM_ZPREDICT; the inherited dual should be false. Wave-2 fixed single plasma to zPredict:false but left the dual true — airborne targets get mis-led down a gravity arc the Base plasma never predicts."
+    - "TFL_DMG_DEATH_NORESPAWN-only death FX/sound branch aside, the death blast is now Base-faithful: Wave-4 removed the port-added ammo-scaled RadiusDamage from TurretAI.Die (Base turret_die has it commented out for all turrets)."
+    - "Dual aim zPredict was true (PlasmaDualTurret.Think) diverging from Base plasma tr_setup (LEAD|SHOTTIMECOMPENSATE|SPLASH, no TFL_AIM_ZPREDICT); Wave-4 set it to false, resolving the single-vs-dual asymmetry."
     - "Head-frame wheel animation (tr_attack ++tur_head.frame; tr_think 0..6 idling at 0 and 3) STILL never implemented; muzzle/projectile/beam CSQC effects all NOTE-only (server head bone not modeled)."
     - "Respawn -0.2 hide/respawn split + EF_NODRAW hide-frame still not modeled (turret schedules Respawn directly at now+RespawnTime)."
 features:
@@ -229,22 +229,21 @@ features:
       - { name: "aim_lead", base: "TFL_AIM_LEAD set", port: "lead:true", match: true }
       - { name: "aim_shottimecompensate", base: "TFL_AIM_SHOTTIMECOMPENSATE set", port: "shotTimeCompensate:true", match: true }
       - { name: "aim_splash", base: "TFL_AIM_SPLASH set", port: "aimSplash:true", match: true }
-      - { name: "aim_zpredict", base: "TFL_AIM_ZPREDICT NOT set (plasma tr_setup omits it)", port: "zPredict:true (dual Think) — DIVERGENT", match: false }
+      - { name: "aim_zpredict", base: "TFL_AIM_ZPREDICT NOT set (plasma tr_setup omits it)", port: "zPredict:false (dual Think) — now matches", match: true }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "PlasmaDualTurret.Think passes zPredict:true, but Base plasma tr_setup aim_flags = LEAD|SHOTTIMECOMPENSATE|SPLASH with NO TFL_AIM_ZPREDICT (and the dual has no tr_setup override, so it inherits plasma's flags). turret_aim_generic only runs the gravity-arc z prediction when TFL_AIM_ZPREDICT is set — so the dual mis-leads airborne targets down a gravity arc the Base plasma never predicts. Wave-2 corrected the SINGLE plasma (MakeParams now zPredict:false) but left the dual at true."
+    gaps: []
     verification:
-      - { kind: code-read, ref: "plasma.qc tr_setup aim_flags omits TFL_AIM_ZPREDICT; sv_turrets.qc:35 gates the z-arc on (aim_flags & TFL_AIM_ZPREDICT). PlasmaTurret.MakeParams=zPredict:false (correct) but PlasmaDualTurret.Think=zPredict:true (wrong).", result: fail }
+      - { kind: code-read, ref: "plasma.qc tr_setup aim_flags omits TFL_AIM_ZPREDICT; sv_turrets.qc gates the z-arc on (aim_flags & TFL_AIM_ZPREDICT). Both PlasmaTurret.MakeParams and PlasmaDualTurret.Think now pass zPredict:false.", result: pass }
     confidence: high
-    notes: "CORRECTION + residual divergence: the baseline mis-graded this faithful, claiming Base sets zPredict on the gravity branch — it does NOT (purely flag-gated, and plasma never sets the flag). Single plasma was fixed to false in Wave-2; the dual's hand-rolled ctor still sets zPredict:true. lead/shottime/splash remain faithful."
+    notes: "FIX (Wave-4): dual Think zPredict:true -> false, matching the single plasma's MakeParams and Base plasma tr_setup (which never sets TFL_AIM_ZPREDICT). The single-vs-dual asymmetry from Wave-2 is resolved. lead/shottime/splash remain faithful."
 
   - id: turret-plasma_dual.track.head_motor
     name: "Head tracking: FLUIDINERTIA motor, pitch/rot clamps"
@@ -294,11 +293,11 @@ features:
     constants:
       - { name: "respawntime", base: "60", port: "60", match: true }
       - { name: "friendlyfire_scale", base: "g_friendlyfire (default 0 => no team dmg)", port: "g_friendlyfire honored", match: true }
-      - { name: "death_blast", base: "RadiusDamage COMMENTED OUT in turret_die (no blast)", port: "ACTIVE: min(ammo,50) dmg, 0.25 edge, 250 radius, force*5", match: false }
+      - { name: "death_blast", base: "RadiusDamage COMMENTED OUT in turret_die (no blast)", port: "none (RadiusDamage removed to match Base)", match: true }
       - { name: "inactive_takes_damage", base: "no (return)", port: "no (Damage returns 0 if !Active)", match: true }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: unknown
       presentation: missing
       audio: missing
@@ -306,14 +305,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Port Die() STILL ACTIVELY deals an ammo-scaled RadiusDamage death blast (min(ammo,50) dmg, 250 radius, force*5); Base turret_die has this exact RadiusDamage COMMENTED OUT, so Base turrets deal NO death blast. Port-added damage not present in Base. UNCHANGED by Wave-2."
       - "Respawn timing: Base hides (EF_NODRAW) at time+0.2 then turret_respawn at respawntime-0.2; port schedules Respawn directly at now+RespawnTime (60). The -0.2 hide/respawn split + EF_NODRAW hide-frame not modeled (timing unknown). UNCHANGED."
       - "Death FX/sound (SND_ROCKET_IMPACT + EFFECT_ROCKET_EXPLODE) only fire in Base on TFL_DMG_DEATH_NORESPAWN; plasma_dual always respawns so this branch never applies. tr_death is a no-op for plasma_dual."
     verification:
       - { kind: code-trace, ref: "Wave-2 wired the damage gate LIVE: TurretSpawn.Init sets e.GtEventDamage=TurretAI.EventDamage; DamageSystem.Apply -> EventDamage (line 280) -> GtEventDamage (line 331-333) for non-player edicts -> TurretAI.EventDamage -> Damage() gate + TakeResource + Combat.Death -> OnAnyDeath -> Die", result: pass }
-      - { kind: code-read, ref: "TurretAI.Die still does WeaponSplash.RadiusDamage (boom up to 50, force*5) vs sv_turrets.qc:182 //RadiusDamage commented out", result: fail }
+      - { kind: code-read, ref: "TurretAI.Die no longer does WeaponSplash.RadiusDamage; matches sv_turrets.qc:182 //RadiusDamage commented out (no death blast)", result: pass }
     confidence: high
-    notes: "FIX (Wave-2 liveness): the pre-damage gate (TurretAI.Damage) was actually DEAD pre-wave — TurretSpawn.cs only had a comment claiming the damage router called it; grep confirms ZERO callers on main. Wave-2 added the GtEventDamage shim + DamageSystem routing, so the friendly-fire/inactive-immunity/retaliate gate + turret-specific health subtract now run on the real Apply path. STILL OPEN: the port-added death blast (Base commented out) and the unmodeled -0.2 respawn split."
+    notes: "FIX (Wave-4): the port-added ammo-scaled RadiusDamage death blast in TurretAI.Die was removed, matching Base turret_die (RadiusDamage commented out for all turrets). FIX (Wave-2 liveness): the pre-damage gate (TurretAI.Damage) is wired live via GtEventDamage + DamageSystem routing. STILL OPEN: the unmodeled -0.2 hide/respawn split + EF_NODRAW hide-frame."
 
   - id: turret-plasma_dual.damage.headshake
     name: "TFL_DMG_HEADSHAKE: jolt head angles by random*damage on hit"

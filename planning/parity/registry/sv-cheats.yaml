@@ -28,20 +28,18 @@ features:
       logic: partial
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
       - "Missing the sv_clones clone-allowance branch (CHIMPULSE CLONE_* permitted while this.lip < sv_clones regardless of sv_cheats) — moot until the CLONE impulses exist, but the branch is absent."
-      - "Refusal-logging placement diverges from Base: Wave-2 added the QC 'Player ... tried to use cheat ...' broadcast (Cheats.cs:Refuse, wired via Cheats.Log -> ChatBroadcast), BUT the port now logs on the dead-player guard AND the observer guard too. In Base those two guards `return 0;` SILENTLY and only the FINAL fall-through (sv_cheats==0) logs. The port over-logs a dead/observer cheat attempt."
-      - "Refusal/echo text uses p.NetName, not Base's playername(netname, team, false) team-colored name — minor presentation divergence."
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/ServerInfraTests.cs:Cheats_GatedBySvCheats", result: pass }
-      - { kind: code, ref: "Cheats.cs:65-88 (Allowed+Refuse) vs server/cheats.qc:59-90 — gate order matches but logattempt fires on the dead/observer guards which Base returns silently", result: partial }
+      - { kind: code, ref: "Cheats.cs:65-90 (Allowed+Refuse) vs server/cheats.qc:59-90 — gate order matches; dead/observer guards now refuse SILENTLY (return false) and only the final sv_cheats==0 fall-through logs, matching Base", result: pass }
     confidence: high
-    notes: "Core gate (snapshot AND live cvar, dead block, observer<2 block, maycheat override) is faithful and live. Wave-2 ADDED the refusal-attempt logging that the baseline flagged as missing — but placed it on every refusal path rather than only the final sv_cheats==0 fall-through, so the logging gap is mostly closed at the cost of a small over-log divergence. The clone branch is still absent."
+    notes: "Core gate (snapshot AND live cvar, dead block, observer<2 block, maycheat override) is faithful and live. Wave-2 ADDED the refusal-attempt logging; this second pass moved it to fire ONLY on the final sv_cheats==0 fall-through (dead/observer guards refuse silently as in Base), so the over-log divergence is closed. The earlier 'team-colored name' note was incorrect: Base passes playername(netname, team, false) with team_colorize=false, which returns the bare netname, so the port's p.NetName is faithful. The clone branch is still absent."
 
   - id: sv-cheats.accounting.cheatcount
     name: "Cheat counting (per-player + global) gating campaign progress"

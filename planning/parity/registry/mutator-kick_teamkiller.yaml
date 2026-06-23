@@ -5,10 +5,7 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 7
   worst_gaps:
-    - "Play-ban force-spectate is INCOMPLETE: the default branch sets `attacker.IsObserver = true` directly instead of going through ClientManager.PutObserverInServer (ClientManager.cs:400). PutObserverInServer is what resets MoveType.None/Solid.Not/TakeDamage.No/FragsSpectator; a bare IsObserver=true on a live, spawned player leaves it MoveType.Walk + Solid.SlideBox + DamageMode.Aim + FragsPlayer — so the teamkiller's body stays solid, damageable, and effectively still in the match. The QC PutObserverInServer(attacker,true,true) genuinely benches the player."
-    - "g_playban_list is written by the mutator but NEVER enforced at join. ClientManager.cs:274 explicitly defers the playban gate ('playban / g_maxping / queue-balance gates are deferred — those subsystems aren't modeled on this path'), and Bans.IsPlayBanned has only one caller (MinigameSessionManager). So a play-banned offender can press fire / autojoin (ObserverOrSpectatorThink) and rejoin freely; the list entry is inert for the rejoin block."
-    - "Severity 1 (kick) and 2 (IP-ban) are still NOT enforced. Both branches set RESPAWN_SILENT + LastAction + broadcast, but LastAction has ZERO source-code observers (grep src/**/*.cs: no non-self reader; Bans.DropClient/KickBanClient are never reached from the mutator or from any LastAction subscriber). The host-side 'observe LastAction and drop/ban' wiring promised in the doc-comment does not exist, so sev1/sev2 offenders keep playing."
-    - "Port still has no per-client startplaytime; playtime denominator is the absolute sim clock (Api.Clock.Time) since level start, so mid-match joiners cross the rate condition later than Base (or escape it). Coincides with Base only for players present since level start. Unchanged from baseline."
+    - "Port still has no per-client startplaytime; playtime denominator is the absolute sim clock (Api.Clock.Time) since level start, so mid-match joiners cross the rate condition later than Base (or escape it). Coincides with Base only for players present since level start. Unchanged from baseline. (This is now the ONLY remaining gap — the action.punish enforcement gaps were closed in Wave-4.)"
 features:
   - id: mutator-kick_teamkiller.register.enable_gate
     name: "Mutator registered/active only when g_kick_teamkiller_rate > 0"
@@ -161,24 +158,21 @@ features:
       - { name: "g_ban_default_masksize", base: "3 (xonotic-server.cfg:425)", port: "3 (Cvars.cs:337) but not consumed (no IP-ban path)", match: false }
       - { name: "RESPAWN_SILENT on attacker (all branches)", base: "set", port: "set (SetRespawnSilent -> RespawnFlag.Silent=2, EntityEnums.cs:49)", match: true }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "PARTIAL FIX, STILL OPEN: severity switch now exists (Wave-2) and RESPAWN_SILENT is set on every branch (real now). But enforcement is incomplete on all three branches."
-      - "Default (play-ban) force-spectate is INCOMPLETE: sets `attacker.IsObserver = true; WantsJoin = 0` directly instead of ClientManager.PutObserverInServer(p) (ClientManager.cs:400). PutObserverInServer is what actually resets MoveType.None / Solid.Not / TakeDamage.No / FragsSpectator; a bare IsObserver=true on a live spawned player leaves MoveType.Walk + Solid.SlideBox + DamageMode.Aim + FragsPlayer, so the body stays solid/damageable/in-match. QC PutObserverInServer(attacker,true,true) genuinely benches the player."
-      - "g_playban_list is written (cons of netaddress + crypto_idfp, dedup-guarded — faithful) but NEVER enforced at join: ClientManager.cs:274 defers the playban gate; Bans.IsPlayBanned has only the MinigameSessionManager caller. The play-banned offender can press fire / autojoin and rejoin. The TRANSMUTE(Observer) is approximated by IsObserver only (incomplete, see above)."
-      - "Severity 1 (dropclient_schedule kick) and 2 (Ban_KickBanClient IP-ban) remain unenforced: both set LastAction + broadcast, but LastAction has ZERO source observers (grep src/**/*.cs). Bans.DropClient (:78) / KickBanClient (:273) exist but are never reached from the mutator nor from any LastAction subscriber. The doc-comment's 'host observes LastAction to perform the kick/ban' wiring does not exist."
+    gaps: []
     verification:
-      - { kind: code, ref: "switch(Severity) present with all 3 branches; SetRespawnSilent sets RespawnFlag.Silent on each (EntityEnums.cs:49 Silent=2). Default branch writes g_playban_list + IsObserver. Sev1/2 only LastAction+broadcast", result: pass }
-      - { kind: code, ref: "grep LastAction across src/**/*.cs: no non-self reader -> sev1/2 actions dead. PutObserverInServer not called by the mutator -> incomplete force-spectate. IsPlayBanned not consulted at join (ClientManager.cs:274 'deferred')", result: fail }
+      - { kind: code, ref: "switch(Severity) present with all 3 branches; SetRespawnSilent sets RespawnFlag.Silent (EntityEnums.cs:49 Silent=2). Default branch writes g_playban_list + force-spectate via ForceObserver; sev1 KickClient, sev2 BanClient", result: pass }
+      - { kind: code, ref: "Wave-4 fix: the LastAction observer placeholder was replaced with three injected Server-action delegates (ForceObserver/KickClient/BanClient), wired in GameWorld.WireServerInfrastructure (GameWorld.cs:723-736) like Minigames.ObserverForcer. Default branch now calls ClientManager.PutObserverInServer (real MoveType.None/Solid.Not/TakeDamage.No/FragsSpectator); sev1 -> Bans.DropClient; sev2 -> Bans.KickBanClient(bantime, g_ban_default_masksize)", result: pass }
+      - { kind: code, ref: "Play-ban join gate now enforced: ClientManager.JoinAllowed consults the new ForcedSpectate predicate (wired to Bans.IsPlayBanned, GameWorld.cs:717), refusing +jump/autojoin for a g_playban_list client (QC Join_Try). g_ban_default_masksize consumed by sev2", result: pass }
     confidence: high
-    notes: "Wave-2 moved this from stub/dead to partial/partial-live: the severity switch, RESPAWN_SILENT, and the g_playban_list write are now real and run on the live PlayerDies path. But the default branch's force-spectate is incomplete (bare IsObserver vs PutObserverInServer) and the playban list is inert at join, while sev1/sev2 stay unenforced (LastAction has no observer). Partial, not faithful."
+    notes: "Wave-4 FIX: all three severity branches now run real punitive actions on the live PlayerDies path. The default (play-ban) branch force-spectates through ClientManager.PutObserverInServer (not a bare IsObserver flip) so the offender's body becomes non-solid/non-damageable/spectator, AND the g_playban_list write is now enforced at join via ClientManager.ForcedSpectate = Bans.IsPlayBanned (so the offender can't fire/autojoin back). Severity 1 reaches Bans.DropClient and severity 2 reaches Bans.KickBanClient with g_kick_teamkiller_bantime + g_ban_default_masksize. Dead LastAction observer removed. Upgraded logic/values partial->faithful, liveness partial->live."
 
   - id: mutator-kick_teamkiller.notify.broadcast
     name: "Broadcast + center-print notifications on punishment (severity-dependent)"
@@ -205,8 +199,7 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Minor (carried from baseline, low impact): the broadcast fires whenever the threshold trips; Base's severity-1 path only broadcasts if dropclient_schedule succeeded. Since the sev-1 kick is itself unenforced in the port, the broadcast is effectively unconditional there. The default-path notifications (the stock severity-0 case) are correct and unconditional in both Base and port."
+    gaps: []
     verification:
       - { kind: code, ref: "sev1/2 branches send Info QUIT_KICK_TEAMKILL; default branch sends Info QUIT_PLAYBAN_TEAMKILL (broadcast, NotificationsList.cs:740 'forced to spectate') + Center QUIT_PLAYBAN_TEAMKILL to offender (NotifBroadcast.One, NotificationsList.cs:977). Severity-correct, matching QC", result: pass }
       - { kind: code, ref: "definitions: Info QUIT_KICK_TEAMKILL (:739), Info QUIT_PLAYBAN_TEAMKILL (:740), Center QUIT_PLAYBAN_TEAMKILL (:977) all exist and now have live Send callers in the mutator", result: pass }

@@ -637,13 +637,23 @@ public sealed class WaypointNetwork
     /// <see cref="AutoLink"/> tracewalk pass. Otherwise auto-generate a navigable graph from the live map
     /// entities (<see cref="GenerateFromEntities"/>) so bots can still play. Pass the loaded file texts
     /// (<paramref name="waypointFileText"/> null/empty → auto-generate) and the spawned entity list.
+    ///
+    /// <paramref name="skill"/> is the server's current bot <c>skill</c> (QC global): it is applied to
+    /// <see cref="Skill"/> BEFORE any link cost is baked, so <see cref="LinearCost"/>'s 1.25x bunnyhop
+    /// speedup (QC waypoint_getlinearcost: <c>skill &gt;= bot_ai_bunnyhop_skilloffset</c>) takes effect on
+    /// the built costs — matching Base, where the global skill is set before the waypoint costs are computed.
+    /// Defaults to 0 (no speedup) so non-host callers keep the prior behaviour.
     /// </summary>
     public static WaypointNetwork ForMap(string? waypointFileText, IReadOnlyList<XonoticGodot.Common.Framework.Entity> entities,
-        string? linkCacheText = null, string? hardwiredText = null)
+        string? linkCacheText = null, string? hardwiredText = null, int skill = 0, int bunnyhopSkillOffset = 7)
     {
         if (!string.IsNullOrWhiteSpace(waypointFileText))
         {
             var net = LoadFromText(waypointFileText);
+            // Skill must be set before linking: link costs are baked once here (LoadLinks/AutoLink → TravelCost
+            // → LinearCost reads Skill); QC reads the global skill live at each waypoint_getlinearcost call.
+            net.Skill = skill;
+            net.BunnyhopSkillOffset = bunnyhopSkillOffset;
             bool haveCache = !string.IsNullOrWhiteSpace(linkCacheText);
             if (haveCache)
                 net.LoadLinks(linkCacheText!);
@@ -656,6 +666,8 @@ public sealed class WaypointNetwork
             return net;
         }
         var auto = new WaypointNetwork();
+        auto.Skill = skill;
+        auto.BunnyhopSkillOffset = bunnyhopSkillOffset;
         auto.GenerateFromEntities(entities);
         return auto;
     }

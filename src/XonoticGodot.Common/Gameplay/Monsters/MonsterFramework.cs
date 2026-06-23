@@ -81,22 +81,16 @@ public static class MonsterFramework
     /// <summary>
     /// Port of <c>Fire_AddDamage</c> (server, common burning) reduced to the headless essentials: ignite a
     /// target so it takes <paramref name="totalDamage"/> spread over <paramref name="burnTime"/> seconds.
-    /// QC accumulates damage on the victim's .fire_* fields and ticks it in Fire_ApplyDamage; here we apply
-    /// it as a <see cref="Burning"/> status effect whose <see cref="ActiveStatusEffect.Strength"/> carries
-    /// the per-second damage, which the catalog's Tick converts into periodic damage.
+    /// Routes through <see cref="StatusEffectsCatalog.FireAddDamage"/> — the single faithful ignition entry
+    /// point — so the burn tick (which deals <c>fire_damagepersec * frametime</c>) uses the correct raw-DPS
+    /// convention and the QC overlap LEMMA / deathtype-owner attribution apply uniformly with the other
+    /// ignition sites (fireball/napalm).
     /// </summary>
     public static void AddFireDamage(Entity targ, Entity? owner, float totalDamage, float burnTime, string deathType)
     {
         if (targ.TakeDamage == DamageMode.No || targ.DeadState != DeadFlag.No || targ.Health <= 0f)
             return;
-        if (burnTime <= 0f) burnTime = 1f;
-        float dps = totalDamage / burnTime;
-        // The catalog tick deals strength*0.05 per call (~one call/frame); express dps in those units so the
-        // total over the burn window matches QC's accumulated fire damage closely.
-        float strength = dps / 0.05f * MonsterAI.FrameTime;
-        // Guard against a zero frametime in headless single-step tests: fall back to the raw dps.
-        if (strength <= 0f) strength = dps;
-        StatusEffectsCatalog.Apply(targ, Burning, burnTime, strength, owner);
+        StatusEffectsCatalog.FireAddDamage(targ, owner, totalDamage, burnTime, deathType);
     }
 
     // ====================================================================================

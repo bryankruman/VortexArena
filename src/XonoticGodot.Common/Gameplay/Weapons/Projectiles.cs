@@ -1,3 +1,5 @@
+using System;
+using System.Numerics;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Gameplay.Damage;
 using XonoticGodot.Common.Services;
@@ -67,11 +69,19 @@ public static class Projectiles
     /// <paramref name="exception"/> is the QC <c>W_CheckProjectileDamage</c> exception value (default −1 = "no
     /// exceptions"; a weapon that is meant to be combo-able regardless of <c>g_projectiles_damage</c> — electro
     /// orb, hagar, ML mine — passes <c>1</c>).
+    ///
+    /// <para><paramref name="onHit"/> is an OPTIONAL per-hit side effect that runs on EVERY damaging hit while the
+    /// projectile is still alive (hp &gt; 0), BEFORE the <c>g_projectiles_damage</c> gate and the hp subtraction —
+    /// matching the QC ordering where some <c>W_*_Damage</c> handlers act before the gate/TakeResource (e.g. the
+    /// Mine Layer's <c>damageforcescale</c> knock-loose: bounce + .wait re-stick + avelocity spin). It receives
+    /// <c>(self, inflictor, attacker, force)</c>. Most projectiles leave this null (they only react at hp&lt;=0 via
+    /// <see cref="Entity.ProjectileDamage"/>).</para>
     /// </summary>
-    public static void MakeShootable(Entity e, float exception = -1f)
+    public static void MakeShootable(Entity e, float exception = -1f,
+        Action<Entity, Entity?, Entity?, Vector3>? onHit = null)
     {
-        e.GtEventDamage = (self, inflictor, attacker, deathType, damage, _, _) =>
-            ShootDown(self, inflictor, attacker, deathType, damage, exception);
+        e.GtEventDamage = (self, inflictor, attacker, deathType, damage, _, force) =>
+            ShootDown(self, inflictor, attacker, deathType, damage, force, exception, onHit);
     }
 
     /// <summary>
@@ -80,10 +90,17 @@ public static class Projectiles
     /// armor/teamplay-resolved) damage the pipeline computed for this non-player victim.
     /// </summary>
     private static void ShootDown(Entity self, Entity? inflictor, Entity? attacker, string deathType,
-        float damage, float exception)
+        float damage, Vector3 force, float exception,
+        Action<Entity, Entity?, Entity?, Vector3>? onHit)
     {
         if (self.Health <= 0f)
             return; // already exploding (recursion guard — QC GetResource(this, RES_HEALTH) <= 0)
+
+        // QC W_*_Damage handlers that act BEFORE the gate/TakeResource (the Mine Layer knock-loose runs on every
+        // surviving hit, ahead of W_CheckProjectileDamage). Fire the per-hit side effect here so it reproduces
+        // faithfully — the projectile is still alive at this point.
+        onHit?.Invoke(self, inflictor, attacker, force);
+
         if (!CheckProjectileDamage(inflictor?.RealOwner, self.RealOwner, deathType, exception))
             return; // g_projectiles_damage says to halt
 

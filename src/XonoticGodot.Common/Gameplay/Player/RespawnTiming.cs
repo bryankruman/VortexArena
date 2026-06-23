@@ -18,17 +18,23 @@ public static class RespawnTiming
     /// <see cref="Player.RespawnCountdown"/>/<see cref="Player.RespawnFlags"/>) for a player who just died.
     /// <paramref name="roster"/> is the connected-player list (for the player-count scaling);
     /// <paramref name="teamplay"/> selects same-team vs all-others counting.
+    /// <paramref name="gametype"/> is the active gametype NetName (QC <c>GetGametype()</c>): the respawn delays are
+    /// read via <c>GAMETYPE_DEFAULTED_SETTING</c>, so a gametype-specific override (e.g. CTS's <c>g_cts_respawn_delay_*
+    /// = -1</c> instant respawn) wins over the generic <c>g_respawn_delay_*</c>.
     /// </summary>
-    public static void Calculate(Player p, IReadOnlyList<Player> roster, bool teamplay)
+    public static void Calculate(Player p, IReadOnlyList<Player> roster, bool teamplay, string? gametype = null)
     {
         float now = Api.Services is not null ? Api.Clock.Time : 0f;
 
-        float sdelayMax    = Cvar("g_respawn_delay_max", 5f);
-        float sdelaySmall  = Cvar("g_respawn_delay_small", 2f);
-        float sdelayLarge  = Cvar("g_respawn_delay_large", 2f);
-        float smallCount   = Cvar("g_respawn_delay_small_count", 0f);
-        float largeCount   = Cvar("g_respawn_delay_large_count", 8f);
-        float waves        = Cvar("g_respawn_waves", 0f);
+        // QC GAMETYPE_DEFAULTED_SETTING (server/client.qh:347): prefer g_<gametype>_respawn_delay_* over the generic
+        // g_respawn_delay_* — a <0 override means 0 (instant; e.g. CTS's -1), a 0 override (or g_respawn_delay_forced)
+        // falls back to the generic value.
+        float sdelayMax    = GametypeDefaulted(gametype, "respawn_delay_max", 5f);
+        float sdelaySmall  = GametypeDefaulted(gametype, "respawn_delay_small", 2f);
+        float sdelayLarge  = GametypeDefaulted(gametype, "respawn_delay_large", 2f);
+        float smallCount   = GametypeDefaulted(gametype, "respawn_delay_small_count", 0f);
+        float largeCount   = GametypeDefaulted(gametype, "respawn_delay_large_count", 8f);
+        float waves        = GametypeDefaulted(gametype, "respawn_waves", 0f);
 
         // QC: pcount = 1 (include myself). Then count the OTHER in-game players (same team in teamplay).
         int pcount = 1;
@@ -69,10 +75,11 @@ public static class RespawnTiming
         // while DEAD_DEAD (QC bot.qc:147) to advance the same button-gated DEAD_* machine a human uses, so giving
         // a bot RESPAWN_FORCE here would short-circuit DYING→RESPAWNING and skip DEAD_DEAD entirely (the bot
         // would never get to press jump). Match QC: force only on g_forced_respawn.
-        RespawnFlag flags = RespawnFlag.None;
+        // QC client.qc:1483-1484 only OR's in RESPAWN_FORCE here — it never resets respawn_flags (that happens on
+        // spawn, SpawnSystem). So flags a gametype set on the death edge (CTS PlayerDies → RESPAWN_FORCE for instant
+        // respawn; KickTeamkiller → RESPAWN_SILENT) must be PRESERVED, not clobbered.
         if (Cvar("g_forced_respawn", 0f) != 0f)
-            flags |= RespawnFlag.Force;
-        p.RespawnFlags = flags;
+            p.RespawnFlags |= RespawnFlag.Force;
     }
 
     private static float Cvar(string name, float fallback)
@@ -80,5 +87,29 @@ public static class RespawnTiming
         if (Api.Services is null) return fallback;
         string s = Api.Cvars.GetString(name);
         return string.IsNullOrEmpty(s) ? fallback : Api.Cvars.GetFloat(name);
+    }
+
+    /// <summary>
+    /// QC <c>GAMETYPE_DEFAULTED_SETTING</c> (server/client.qh:347): read <c>g_&lt;gametype&gt;_&lt;str&gt;</c>; if it is
+    /// &lt;0 use 0, if it is 0 (or <c>g_respawn_delay_forced</c> is set) fall back to <c>max(0, g_&lt;str&gt;)</c>,
+    /// otherwise use the override. With no active gametype this is just the generic <c>g_&lt;str&gt;</c>.
+    /// </summary>
+    private static float GametypeDefaulted(string? gametype, string str, float fallback)
+    {
+        float generic = MathF.Max(0f, Cvar("g_" + str, fallback));
+        if (Api.Services is null || string.IsNullOrEmpty(gametype))
+            return generic;
+
+        string key = "g_" + gametype + "_" + str;
+        string raw = Api.Cvars.GetString(key);
+        if (string.IsNullOrEmpty(raw))
+            return generic; // override cvar not registered → generic (matches a 0/unset override)
+
+        float v = Api.Cvars.GetFloat(key);
+        if (v < 0f)
+            return 0f; // QC: a negative override means 0 (e.g. CTS instant respawn)
+        if (v == 0f || Cvar("g_respawn_delay_forced", 0f) != 0f)
+            return generic;
+        return v;
     }
 }

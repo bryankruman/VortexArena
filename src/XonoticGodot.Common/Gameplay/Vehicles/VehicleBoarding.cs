@@ -88,16 +88,22 @@ public static class VehicleBoarding
         }
 
         // QC: else if (autocvar_g_vehicles_enter) { ... radius search ... }
-        if (Cvar("g_vehicles_enter", DefaultEnter) == 0f)
-            return; // touch-mode board (handled by vehicles_touch) — not reachable in this port; see file note.
+        // QC PlayerUseKey guards: not frozen, not dead, not an independent player. (When boarding is off, or the
+        // player is dead, QC skips the radius search but STILL falls through to the trailing PlayerUseKey hook.)
+        if (Cvar("g_vehicles_enter", DefaultEnter) != 0f && !pl.IsDead)
+        {
+            Entity? closest = FindBoardableInRadius(pl);
+            if (closest is not null)
+            {
+                Enter(pl, closest);
+                return; // boarded a vehicle (QC vehicles_enter; return) — the use-key hook does NOT fire.
+            }
+        }
 
-        // QC PlayerUseKey guards: not frozen, not dead, not an independent player.
-        if (pl.IsDead)
-            return;
-
-        Entity? closest = FindBoardableInRadius(pl);
-        if (closest is not null)
-            Enter(pl, closest);
+        // QC PlayerUseKey tail (client.qc:2666): "a use key was pressed; call handlers" — fired only when the
+        // press neither exited a seated vehicle nor boarded one. This is the live entry for the CTF flag
+        // throw/pass-request, the Keepaway/Nexball ball drop, and the KeyHunt voluntary key-drop (kh_Key_DropOne).
+        MutatorHooks.FirePlayerUseKey(pl);
     }
 
     /// <summary>

@@ -392,6 +392,40 @@ public sealed class WarpzoneManager
         }
     }
 
+    /// <summary>
+    /// QC <c>Portal_ClearWithID(own, id)</c>: tear down just the in/out portals of one Porto shot (used when a
+    /// combined cnt&lt;0 shot soft-fails after already placing its in-portal, so the orphaned in-portal isn't left
+    /// behind). Removes the still-pending in-portal for <paramref name="owner"/>+<paramref name="portalId"/>, plus
+    /// any already-linked partner, unregistering each warpzone and deleting its trigger volume. Wire
+    /// <c>Porto.PortalClearWithId</c> to this on the host.
+    /// </summary>
+    public void ClearPortoPortal(Entity? owner, int portalId)
+    {
+        var key = (owner, portalId);
+        if (_pendingPorto.TryGetValue(key, out Warpzone? pending))
+        {
+            RemoveZone(pending);
+            _pendingPorto.Remove(key);
+        }
+        // Also remove any zone (and its partner) already tagged for this shot's id (a fully-placed pair).
+        for (int i = _zones.Count - 1; i >= 0; i--)
+        {
+            Warpzone wz = _zones[i];
+            if (wz.TargetName == $"porto_{portalId}_in" || wz.TargetName == $"porto_{portalId}_out")
+                RemoveZone(wz);
+        }
+    }
+
+    /// <summary>Unregister a warpzone and free its trigger-volume edict (if the host owns one).</summary>
+    private void RemoveZone(Warpzone wz)
+    {
+        _zones.Remove(wz);
+        if (wz.Partner is { } partner) partner.Partner = null;
+        if (wz.Trigger is { } trig && Api.Services is not null && !trig.IsFreed)
+            Api.Entities.Remove(trig);
+        wz.Trigger = null;
+    }
+
     /// <summary>Link two warpzones into a two-way portal (each transforms toward the other's IN plane).</summary>
     public void LinkPair(Warpzone a, Warpzone b)
     {

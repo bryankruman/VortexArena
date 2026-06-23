@@ -820,6 +820,12 @@ public sealed class PlayerPhysics : IPlayerPhysics
         // byte-identical to mp.DoubleJump==false (the golden movement-parity traces are unaffected). (T51)
         bool doublejump = false;
         float mjumpheight = (mp.JumpVelocityCrouch != 0f && player.IsDucked) ? mp.JumpVelocityCrouch : mp.JumpVelocity;
+        // QC buff/jump.qc PlayerPhysics hook overwrites STAT(MOVEVARS_JUMPVELOCITY) with g_buffs_jump_velocity
+        // while the Jump buff is held. BuffsMutator.OnPlayerPhysics (a PlayerPhysics handler that runs at line 196,
+        // before this jump) writes that value into player.JumpVelocityOverride (0 = no override). Honor it here —
+        // it REPLACES the cvar-built jump velocity (crouch included), exactly like the QC stat overwrite.
+        if (player.JumpVelocityOverride != 0f)
+            mjumpheight = player.JumpVelocityOverride;
         bool trackJump = mp.TrackCanJump;       // cl_movement_track_canjump (folded into sv track for the headless sim)
 
         // EV_PlayerJump mutator hook (multijump/walljump grant an extra jump; bloodloss forbids it).

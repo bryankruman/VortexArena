@@ -6,7 +6,7 @@ summary:
   feature_count: 13
   worst_gaps:
     - "Laser scorch target pick is a deterministic argmax (weight 1/(1+d), prefer not-burning) rather than QC's stochastic RandomSelection tie-break, and the find is a plain radius not warpzone-aware."
-    - "Firemine 'make it hot' owner-decouple sets Entity.Owner=null, but RealOwner is a computed alias of Owner — so after decouple the burn/obituary is attributed to the mine itself, not the original firer (Base keeps .realowner)."
+    - "Firemine 'make it hot' owner-decouple: FIXED (Wave-4 fix-up) — the firer is captured separately and threaded for burn/obituary credit so post-decouple burns are credited to the firer (Base keeps .realowner; the port's RealOwner aliases Owner)."
     - "Bot wr_aim is still unported (no Fireball-specific lead/mode-switch); obituary kill/suicide lines ARE now live."
     - "Render-side trails/visuals still deferred: plasma_prim FIREBALL flight trail, firemine trail, and the sphere.md3 BFG ball (effect EMITS are wired; the CSQC render fidelity is a separate layer, like every other weapon)."
 features:
@@ -314,7 +314,7 @@ features:
       - { name: "lifetime", base: "7s", port: "7s", match: true }
       - { name: "secondary laserradius/damage/edgedamage/burntime", base: "110/50/20/0.5", port: "110/50/20/0.5", match: true }
       - { name: "touch ignite", base: "Fire_AddDamage(damage 40, damagetime 5) >= 0 -> delete else bounce", port: "FireAddDamage(40, 5); if added>=0 Remove else keep bouncing", match: true }
-      - { name: "make-it-hot owner decouple", base: "3 ticks beyond laserradius (vdist from owner eye) -> owner=NULL", port: "cnt++ when dist>laserradius from owner eye; cnt==3 -> Owner=null", match: false }
+      - { name: "make-it-hot owner decouple", base: "3 ticks beyond laserradius (vdist from owner eye) -> owner=NULL (realowner kept for credit)", port: "cnt++ when dist>laserradius from owner eye; cnt==3 -> Owner=null; firer captured separately for burn credit", match: true }
     status:
       logic: faithful
       values: faithful
@@ -325,12 +325,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Owner-decouple attribution bug: Base nulls only .owner (movement passthrough) and keeps .realowner = firer, so a post-decouple burn is still credited to the firer. The port's RealOwner is a COMPUTED ALIAS of Owner (DamageEntityState.RealOwner => Owner), so setting Owner=null ALSO nulls RealOwner — after decouple the firemine's burn/obituary is attributed to the mine itself (FireAddDamage owner = self.RealOwner ?? self = self), not the original firer. The scorch-own-firer behavior works; the damage *credit* is wrong."
+      - "FIXED (Wave-4 fix-up): the owner-decouple attribution bug is resolved. The firer is now captured into a closure-local `firer` at Attack2 spawn and threaded through FiremineThink/FiremineTouch (and as the `creditOwner` arg of LaserPlay), so burn/obituary credit survives the Owner=null decouple even though the port's RealOwner aliases Owner. The same-team / firer-skip gates in LaserPlay also use the threaded firer so they stay correct post-decouple."
       - "Touch silent + bounce-on-fail now match Base (no impact sound; Fire_AddDamage<0 keeps bouncing)."
     verification:
       - { kind: codetrace, ref: "FiremineThink (Fireball.cs:447): timeout Remove; owner-eye distance counter cnt->3 then Owner=null; LaserPlay sec. FiremineTouch (478): if Aim && FireAddDamage>=0 Remove (silent) else re-aim/bounce.", result: pass }
     confidence: high
-    notes: "FIX vs baseline (was partial): the make-it-hot owner decouple, the silent firemine impact, and the bounce-on-fail (Fire_AddDamage>=0 gate) are all now ported and faithful. NEW gap introduced by the decouple: the RealOwner=>Owner alias means decoupling also drops damage attribution to the firer."
+    notes: "FIX vs baseline (was partial): the make-it-hot owner decouple, the silent firemine impact, and the bounce-on-fail (Fire_AddDamage>=0 gate) are all now ported and faithful. The Wave-2 attribution regression (RealOwner=>Owner alias dropping firer credit on decouple) is FIXED in the Wave-4 fix-up by capturing the firer separately and threading it for all burn/obituary credit."
 
   - id: weapon-fireball.burn.model
     name: "Fire damage-over-time (Fire_AddDamage / Fire_ApplyDamage) backing both projectiles' burns"

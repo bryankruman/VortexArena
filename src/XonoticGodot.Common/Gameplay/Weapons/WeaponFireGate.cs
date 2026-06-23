@@ -37,6 +37,20 @@ public abstract partial class Weapon
         => PrepareAttack(actor, slot, fire, attackTime: float.NaN);
 
     /// <summary>
+    /// Variant of <see cref="PrepareAttack(Entity,WeaponSlot,FireMode,float)"/> that decouples the
+    /// <paramref name="buttonFire"/> (which physical fire button must be held) from <paramref name="fire"/>
+    /// (which fire MODE — i.e. which <c>wr_checkammo</c> + refire/animtime — to commit). In QC,
+    /// <c>weapon_prepareattack</c>'s <c>secondary</c> arg only selects the ammo check; the button is gated
+    /// earlier by <c>W_WeaponFrame</c> via the <c>fire</c> bitmask handed to <c>wr_think</c>. The headless
+    /// port re-derives the button check here, so weapons whose gate fires one MODE off the OTHER button
+    /// (Shotgun's out-of-ammo auto-melee: a secondary-mode slap triggered by an empty PRIMARY press) pass the
+    /// originating button as <paramref name="buttonFire"/> so the held-button gate matches what the player
+    /// actually pressed.
+    /// </summary>
+    public bool PrepareAttack(Entity actor, WeaponSlot slot, FireMode fire, float attackTime, FireMode buttonFire)
+        => PrepareAttackImpl(actor, slot, fire, attackTime, buttonFire);
+
+    /// <summary>
     /// Port of <c>weapon_prepareattack</c> with the explicit <c>attacktime</c> parameter (QC's last arg). The
     /// default <see cref="PrepareAttack(Entity,WeaponSlot,FireMode)"/> overload passes <c>NaN</c> meaning "use
     /// this weapon's standard <see cref="RefireFor"/>"; weapons that run on a private interlock timer
@@ -50,14 +64,19 @@ public abstract partial class Weapon
     /// animtime — see <see cref="AnimtimeFor"/>).
     /// </summary>
     public bool PrepareAttack(Entity actor, WeaponSlot slot, FireMode fire, float attackTime)
+        => PrepareAttackImpl(actor, slot, fire, attackTime, buttonFire: fire);
+
+    private bool PrepareAttackImpl(Entity actor, WeaponSlot slot, FireMode fire, float attackTime, FireMode buttonFire)
     {
         WeaponSlotState st = actor.WeaponState(slot);
         bool secondary = fire == FireMode.Secondary;
 
         // QC W_WeaponFrame only invokes wr_think's fire branch for a HELD button; the headless driver always
         // calls WrThink(Primary) for upkeep, so the button check is the authority that no shot leaks out when
-        // the player isn't pressing fire.
-        bool held = secondary ? st.ButtonAttack2 : st.ButtonAttack;
+        // the player isn't pressing fire. The button gated here is the one the player PRESSED (buttonFire),
+        // which can differ from the fire MODE being committed (Shotgun auto-melees a SECONDARY slap off an
+        // empty PRIMARY press).
+        bool held = buttonFire == FireMode.Secondary ? st.ButtonAttack2 : st.ButtonAttack;
         if (!held)
             return false;
 
@@ -138,6 +157,13 @@ public abstract partial class Weapon
 
         if (WrCheckAmmo(actor, slot, secondary))
             return true;
+
+        // QC weapon_prepareattack_checkammo (weaponsystem.qc:254-256): a Shotgun whose secondary is melee does
+        // NOT dry-fire-click on an empty PRIMARY press — it stays quiet ("no clicking, just allow") so the
+        // out-of-ammo auto-melee can slap instead of clicking. Mirror that weapon-specific early-out here so
+        // the empty-primary auto-melee path is silent (and never auto-switches away) exactly like Base.
+        if (this is Shotgun shotgunWep && !secondary && shotgunWep.Secondary.Secondary == 1)
+            return false;
 
         WeaponSlotState st = actor.WeaponState(slot);
 

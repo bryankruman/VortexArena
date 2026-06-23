@@ -350,9 +350,9 @@ public sealed class Cts : GameType
             return false;
 
         // QC: frag_target.respawn_flags |= RESPAWN_FORCE — CTS forces an immediate respawn so the runner can
-        // re-attempt the stage at once (g_cts_respawn_delay_small/large are -1). NOTE (cross-file): the generic
-        // DeadPlayerThink → RespawnTiming.Calculate path overwrites RespawnFlags/RespawnTime on the death edge,
-        // so this flag alone isn't yet honored end-to-end (see todos).
+        // re-attempt the stage at once. This is now honored end-to-end: RespawnTiming.Calculate OR's in (no longer
+        // clobbers) the flag, and it reads the respawn delay via GAMETYPE_DEFAULTED_SETTING so CTS's
+        // g_cts_respawn_delay_small/large = -1 collapse to an instant respawn.
         victim.RespawnFlags |= RespawnFlag.Force;
 
         // Abandon the in-progress run (QC race_AbandonRaceCheck) so the next start re-stamps the timer.

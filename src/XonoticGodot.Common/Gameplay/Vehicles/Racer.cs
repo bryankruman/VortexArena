@@ -334,6 +334,9 @@ public sealed class Racer : Vehicle
             player.OldOrigin = player.Origin; // negate fall damage
             player.Velocity = vehicle.Velocity;
         }
+
+        // QC vehicles_think: vehicles_painframe(this) runs after vr_think every tick — low-health smoke + jitter.
+        VehicleCommon.PainFrame(vehicle);
     }
 
     /// <summary>

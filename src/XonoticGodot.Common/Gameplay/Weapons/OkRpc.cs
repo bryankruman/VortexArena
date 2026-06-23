@@ -159,6 +159,12 @@ public sealed class OkRpc : Weapon
         var ep = new MutatorHooks.EditProjectileArgs(actor, missile);
         MutatorHooks.EditProjectile.Call(ref ep);
 
+        // QC missile.event_damage = W_OverkillRocketPropelledChainsaw_Damage (+ DAMAGE_YES + RES_HEALTH already set
+        // above). Install the GtEventDamage shoot-down shim the damage pipeline actually dispatches; without this the
+        // missile's ProjectileDamage callback is dead (DamageSystem.EventDamage only routes a non-player victim via
+        // GtEventDamage), so the chainsaw cannot be shot out of the air. No exception (-1), matching okrpc.qc:50.
+        Projectiles.MakeShootable(missile, exception: -1f);
+
         Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/rocket_fire.wav");
 
         if (Api.Clock.Time >= missile.NextThink)
@@ -212,6 +218,7 @@ public sealed class OkRpc : Weapon
         self.Think = null;
         self.TakeDamage = DamageMode.No;
         self.ProjectileDamage = null;
+        self.GtEventDamage = null; // QC W_..._Explode: this.event_damage = func_null
 
         WeaponSplash.RadiusDamage(self, self.Origin, Cvars.Damage, Cvars.EdgeDamage, Cvars.Radius,
             self.Owner, RegistryId, Cvars.Force, directHit: directHit);

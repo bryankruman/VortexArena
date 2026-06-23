@@ -1,12 +1,12 @@
 unit: weapon-minelayer
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-23"
 summary:
   feature_count: 13
   worst_gaps:
     - "Whole weapon is WEP_FLAG_MUTATORBLOCKED: never in a normal-match loadout (GiveItems.cs:340), only reachable via weaponarena/NewToys/impulse-give → fire-path liveness stays partial, not live (unchanged this wave)."
-    - "Mine shoot-down is now LIVE (MakeShootable installs GtEventDamage, which DamageSystem.EventDamage:331 dispatches) and a depleted mine detonates — BUT the W_MineLayer_Damage knock-loose branch (damageforcescale bounce/re-stick while hp>0) is unreachable: the shim only invokes the ProjectileDamage callback at hp<=0, so OnMineDamage's hp>0 knock-loose path never runs."
+    - "Mine shoot-down is fully LIVE and faithful: MakeShootable installs GtEventDamage (DamageSystem.EventDamage:331 dispatches), a depleted mine detonates, AND the W_MineLayer_Damage knock-loose branch (damageforcescale bounce/re-stick/avelocity while hp>0) now runs via the new MakeShootable onHit per-hit seam (cross-weapon shim extension, fires before the gate/hp-subtract per QC ordering)."
     - "Remote-detonate sound semantics still diverge: Base plays SND_MINE_DET as soon as PlacedMines flags ANY mine; port plays mine_det only if at least one mine actually passes the spawnshield+team-safety gate and detonates."
     - "Surface-normal facing (angles = vectoangles(-trace_plane_normal)) is approximated from -velocity, not the real trace plane; SetMovetypeFollow (stick to a moving platform) still not modeled."
     - "Airshot achievement + out-of-ammo forced weapon switch (W_MineLayer_Explode tail) still not implemented."
@@ -201,7 +201,7 @@ features:
       - { name: "health", base: "15", port: "15", match: true }
       - { name: "damageforcescale", base: "1.25", port: "1.25", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: na
       presentation: na
@@ -210,13 +210,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Knock-loose is unreachable: the shared ShootDown shim (Projectiles.cs:82-99) only invokes the ProjectileDamage callback when hp has reached <=0. Base W_MineLayer_Damage performs the damageforcescale knock-loose (movetype=BOUNCE, .wait reattach gate, avelocity spin, re-settouch) on EVERY hit while hp>0 — before subtracting health. So OnMineDamage's hp>0 knock-loose branch (Minelayer.cs:201-211) never runs: a mine that survives a shot is not detached/bounced, it only ever explodes once its 15 hp is depleted."
-      - "Consequently the avelocity spin and the vectoangles(this.velocity) re-facing on a non-fatal hit are also not produced."
+      - "Re-grounding a bouncing knocked-loose mine relies on the next BSP touch (OnTouch re-stick) rather than the QC IS_ONGROUND/UNSET_ONGROUND ground-flag toggle in W_MineLayer_Think — the port's movement model has no per-tick onground flag to clear, so this is a model difference, not a behavioral gap (the mine still re-sticks when it next contacts BSP)."
     verification:
-      - { kind: code, ref: "MakeShootable installs GtEventDamage; DamageSystem.EventDamage (DamageSystem.cs:331-335) routes non-player targ with GtEventDamage into it -> ShootDown (gate + hp subtract + callback at hp<=0)", result: pass }
-      - { kind: code, ref: "ShootDown invokes ProjectileDamage only when self.Health<=0 (Projectiles.cs:90-98); OnMineDamage hp>0 knock-loose branch has no live caller at hp>0", result: fail }
+      - { kind: code, ref: "MakeShootable installs GtEventDamage; DamageSystem.EventDamage (DamageSystem.cs:331-335) routes non-player targ with GtEventDamage into it -> ShootDown (onHit + gate + hp subtract + callback at hp<=0)", result: pass }
+      - { kind: code, ref: "ShootDown now invokes the optional onHit side effect on EVERY surviving hit BEFORE the gate (Projectiles.cs); Minelayer wires onHit:OnMineHit (MakeShootable exception:1) which performs the damageforcescale knock-loose (BOUNCE + .wait + avelocity + re-settouch + vectoangles re-face); ProjectileDamage(OnMineDamage) still fires only at hp<=0 to detonate", result: pass }
     confidence: high
-    notes: "MAJOR FIX since baseline (dead->live): MakeShootable now installs GtEventDamage, and DamageSystem.EventDamage dispatches a non-player TakeDamage=Yes target through GtEventDamage (closing the old mis-route into PlayerDamage/PlayerCorpseDamage). A mine can now be shot and, at 0 hp, detonates (W_PrepareExplosionByDamage path). The g_projectiles_damage gate is honored via MakeShootable(exception:1) (combo-able like the electro orb). RESIDUAL logic gap: the knock-loose-while-alive behavior is structurally unreachable because the shared shim defers the callback to hp<=0. This is a shared-shim limitation affecting any weapon whose Damage handler needs a per-hit (hp>0) side effect; flag for a cross-weapon fix. Not a regression vs baseline (baseline shoot-down was fully dead)."
+    notes: "MAJOR FIX since baseline (dead->live), now COMPLETED this pass: the residual knock-loose-while-alive gap is closed via a cross-weapon shim extension. MakeShootable gained an optional onHit(self,inflictor,attacker,force) callback that ShootDown invokes on every surviving hit BEFORE the g_projectiles_damage gate/hp-subtraction (matching QC W_MineLayer_Damage ordering); the hp<=0 detonation stays in ProjectileDamage. Minelayer.OnMineHit faithfully reproduces W_MineLayer_Damage:272-282 (damageforcescale gate, inflictor.classname!='mine' guard, set_movetype BOUNCE, .wait reattach gate, settouch, avelocity += force*-damageforcescale, angles=vectoangles(velocity)). All other MakeShootable callers omit onHit (default null) so they are unchanged. logic partial->faithful."
 
   - id: minelayer.fire.remote_detonate
     name: "Secondary fire: remote-detonate all placed mines"

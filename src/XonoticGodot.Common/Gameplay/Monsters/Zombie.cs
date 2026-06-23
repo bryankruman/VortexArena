@@ -36,6 +36,9 @@ public sealed class Zombie : Monster
         NetName = "zombie";
         DisplayName = "Zombie";
         Model = "models/monsters/zombie.dpm";
+        // Voice cues DEFINED in models/monsters/zombie.dpm_0.sounds (Base). ranged/melee/pain/spawn are
+        // commented out there -> empty sample -> Base zombie is SILENT for those cues. Only these three play.
+        SoundCues = new System.Collections.Generic.HashSet<string> { "death", "sight", "idle" };
         StartHealth = 200f;             // g_monster_zombie_health
         Damage = 55f;                   // representative (melee) damage
         Speed = 600f;                   // run speed (speed2)

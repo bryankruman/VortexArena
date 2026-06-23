@@ -1,13 +1,12 @@
 unit: mutator-sandbox
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-23"
 summary:
   feature_count: 14
   worst_gaps:
-    - "Wave-2 added a faithful, self-contained SandboxMutator.cs (all object/edit/attach/storage/think/touch logic + every cvar default), and the mutator IS activated on the live path (MutatorActivation.Apply at GameWorld.cs:535) with its SvStartFrame think-tick pumped (MutatorHooks.FireStartFrame in the GameWorld loop) — BUT the entire command-dispatch surface is dead: HandleCommand has zero callers, `g_sandbox`/`sandbox` is not in ClientCommandRegistry, and there is no SV_ParseClientCommand mutator-hook seam."
-    - "Every host seam is unwired (all null): Trace (no crosshair selection; spawns land at player origin), Store (no save/load/autoload, clipboard inert), CryptoIdfpProvider/NetNameProvider/ViewYawProvider (no UID/owner/view-yaw), SetRealClients (never called → owner-UID resync no-ops on an empty roster), OnMaterialEffect/PrintTo."
-    - "Net result in a real match: with g_sandbox 1 NO object can be spawned, edited, dragged, claimed, or persisted — the logic exists but is unreachable from the player. Code went missing→faithful, but liveness stays dead for everything that needs the command surface or a host seam."
+    - "Wave-4 fix-up WIRED the command surface + host seams: `g_sandbox` is now a client-callable command (ClientCommandRegistry) routed by Commands.CmdSandbox → SandboxMutator.HandleCommand (the client `sandbox` alias emits `cmd g_sandbox …`). NetGame.WireSandbox injects PrintTo (sprint), Trace (crosshair forward trace resolving hit objects by edict), CryptoIdfp/NetName/ViewYaw providers, RealClientsProvider (FOREACH_CLIENT roster), and a file-IO Store (sandbox/storage_<name>_<map>.txt under ~/XonData). So with g_sandbox 1 a player CAN now spawn/edit/attach/remove/claim/info objects, and per-map storage save/autosave/autoload genuinely persist."
+    - "Remaining dead: object_duplicate COPY clipboard (Store.SetClipboard is inert — the port has no svc_stufftext channel to set a remote client's cvar; paste from a manually-set cvar still works). +button8 drag/grab is still entirely absent. CSQC object→client networking (CSQCMODEL_AUTOINIT/AUTOUPDATE) + the impact_<material> particle effect have no port seam, so spawned objects don't yet render on clients and touch FX play sound but no particles. The three Sandbox_* veto hooks (DragAllowed/SaveAllowed/EditAllowed) still have no port hook-chain (gated on readonly only)."
     - "Drag/grab (+button8) integration is still entirely absent (no Drag/Drag_Begin/Drag_Finish; .grab is computed by the think tick but nothing consumes it)."
     - "The three Sandbox_* mutator hooks (DragAllowed/SaveAllowed/EditAllowed) have no port hook-chain; gating is approximated on g_sandbox_readonly only (TODOs in source)."
 features:
@@ -35,7 +34,7 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "MUTATOR_ONADD autoload calls DatabaseLoad(), but Store is null on the live path, so the autoload is inert (returns immediately) — no storage file is ever read in a real match."
+      - "WIRED (Wave-4): NetGame.WireSandbox assigns Store (file IO under ~/XonData/sandbox/storage_*.txt), so MUTATOR_ONADD autoload now genuinely reads the storage file at map start."
     verification:
       - { kind: code, ref: "SandboxMutator is [Mutator]-attributed; MutatorActivation.Apply() (live at GameWorld.cs:535) reconciles IsEnabled→Hook(). IsEnabled = g_sandbox != 0. Hook() seeds autosave_time, clears object list, subscribes SvStartFrame.", result: pass }
       - { kind: code, ref: "all 15 g_sandbox* + cl_sandbox_clipboard defaults in port assets/.../mutators.cfg byte-identical to Base mutators.cfg:95-110", result: pass }
@@ -66,12 +65,11 @@ features:
       timing: faithful
       presentation: missing
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "DEAD: HandleCommand has zero callers — `g_sandbox`/`sandbox` is not in ClientCommandRegistry and no SV_ParseClientCommand hook routes the client command, so object_spawn can never run in a match."
-      - "Trace seam (crosshair WarpZone_TraceLine forward 200) is null on the live path, so even if reached, spawns land at the player origin, not the forward trace endpoint."
+      - "WIRED (Wave-4): `g_sandbox` is client-callable + Commands.CmdSandbox routes to HandleCommand, and NetGame.WireSandbox assigns Trace, so object_spawn runs on the live match path and lands at the crosshair forward-trace endpoint."
       - "ModelExists() is permissive (TODO: no IModelService.fexists), so the Base non-existent-model rejection is not enforced."
       - "presentation: CSQCMODEL_AUTOINIT (object→client networking) has no port seam — a spawned object would not render on clients."
     verification:
@@ -97,12 +95,11 @@ features:
       timing: faithful
       presentation: missing
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Think tick IS pumped live (OnStartFrame iterates _objects each frame), but _objects is always empty because nothing can spawn — so it never does meaningful work."
-      - "Owner-UID resync depends on SetRealClients() + CryptoIdfpProvider, both unwired (roster is always empty, provider null) → realowner never resolves."
+      - "WIRED (Wave-4): objects can now spawn, and CryptoIdfpProvider + RealClientsProvider are assigned (NetGame.WireSandbox), so the per-frame think resolves realowner from UID and clears it on disconnect."
       - "Sandbox_DragAllowed mutator-hook veto has no port chain; grab is gated on g_sandbox_readonly only (TODO in source)."
       - "presentation: CSQCMODEL_AUTOUPDATE has no port seam."
     verification:
@@ -159,11 +156,11 @@ features:
       timing: na
       presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "DEAD: depends on the Trace seam (null on live path) and is only reachable from HandleCommand (no callers); ObjectEditGet returns null when Trace is null, so nothing is ever selectable."
+      - "WIRED (Wave-4): Trace seam assigned (NetGame.WireSandbox crosshair forward trace) + reachable via Commands.CmdSandbox → HandleCommand, so edit-target selection works on the live path."
     verification:
       - { kind: code, ref: "ObjectEditGet: range + classname-via-hit + per-owner gate (unowned OR free>=2 OR mine) — faithful to Base permission ladder", result: pass }
       - { kind: grep, ref: "Trace property has no `.Trace =` assignment; ObjectEditGet returns null when Trace==null", result: fail }
@@ -187,11 +184,11 @@ features:
       timing: na
       presentation: missing
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "DEAD: object_edit lives in HandleCommand (no callers)."
+      - "WIRED (Wave-4): object_edit reachable via Commands.CmdSandbox → HandleCommand on the live path."
       - "values: physics 2 maps to MoveType.Push (engine value 7), but Base MOVETYPE_PHYSICS is a distinct higher value — the numeric movetype differs (no real physics-engine behavior backs it either way, so behaviorally moot, but the stored/serialized movetype byte diverges)."
       - "The faithful Base solidity→physics fall-through (missing break;) IS preserved (goto case \"physics\")."
     verification:
@@ -216,11 +213,11 @@ features:
       timing: na
       presentation: missing
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "DEAD: only reached from object_edit/ObjectPortLoad, both unreachable on the live path."
+      - "WIRED (Wave-4): reached from object_edit (live via CmdSandbox) and ObjectPortLoad (live via Store load/paste)."
       - "Model re-set + mins/maxs resize depend on the entity service (Edict); headless/unwired path skips them."
     verification:
       - { kind: code, ref: "ObjectEditScale: clamp(0.1,f,2), SetModel reset, RoundPerfectVector(mins*scale)/(maxs*scale) (#2742) via Round-to-1/8 — faithful", result: pass }
@@ -249,11 +246,11 @@ features:
       timing: na
       presentation: missing
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "DEAD: object_attach get/set/remove live in HandleCommand (no callers)."
+      - "WIRED (Wave-4): object_attach get/set/remove reachable via Commands.CmdSandbox → HandleCommand."
       - "presentation: setattachment (engine tag-follow) has no port seam — attached children store the tag and old_solid/old_movetype faithfully but are not actually tag-followed (TODO in source)."
     verification:
       - { kind: code, ref: "Set persists OldSolid/OldMoveType, sets Follow/Not/takedamage=false; Remove restores per-child state, freezes angles, clears spin — faithful; 16-slot cap honored in save", result: pass }
@@ -277,11 +274,11 @@ features:
       timing: na
       presentation: missing
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "DEAD: object_remove lives in HandleCommand (no callers)."
+      - "WIRED (Wave-4): object_remove reachable via Commands.CmdSandbox → HandleCommand."
     verification:
       - { kind: code, ref: "ObjectRemove: detach children (ObjectAttachRemove), clear stale _attachSelection entries pointing at e, delete edict, --object_count — faithful to Base", result: pass }
       - { kind: grep, ref: "HandleCommand(object_remove) has no caller", result: fail }
@@ -307,12 +304,12 @@ features:
       timing: faithful
       presentation: na
       audio: na
-      liveness: dead
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "DEAD: copy/paste live in HandleCommand (no callers)."
-      - "Copy pushes the serialized object to the client cvar via Store.SetClipboard (stuffcmd equivalent), but Store is null on the live path → clipboard write is inert."
+      - "WIRED (Wave-4): copy/paste reachable via Commands.CmdSandbox → HandleCommand; PASTE is fully live (flood/cap/ObjectPortLoad)."
+      - "COPY clipboard still inert: Store.SetClipboard is a no-op (the port has no svc_stufftext channel to set a remote client's cvar). Paste from a manually-set cl_sandbox_clipboard works."
       - "Paste shares the flood + maxobjects gates with object_spawn (faithful)."
     verification:
       - { kind: code, ref: "copy: ObjectPortSave(e,false) + escape quotes + SetClipboard; paste: flood/empty/cap checks then ObjectPortLoad — faithful; ObjectPortSave/Load serializer reproduces the slot layout, %.9v vectors, ftos, db columns", result: pass }
@@ -336,11 +333,11 @@ features:
       timing: na
       presentation: missing
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "DEAD: claim/info live in HandleCommand (no callers); also need CryptoIdfpProvider/NetNameProvider/PrintTo (all null)."
+      - "WIRED (Wave-4): claim/info reachable via Commands.CmdSandbox → HandleCommand; CryptoIdfpProvider/NetNameProvider/PrintTo assigned (NetGame.WireSandbox), so claim/owner-name/info-print all work."
       - "object_info mesh: tag enumeration (FOR_EACH_TAG) needs the model-skeleton service — not implemented (TODO); mesh subcommand prints the header but no tag list."
     verification:
       - { kind: code, ref: "claim: UID check, owner-name update, already-mine short-circuit, crypto_idfp set — faithful; info object/attachments faithful; info mesh stubs the tag loop", result: pass }
@@ -370,12 +367,11 @@ features:
       timing: faithful
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The 5s auto-save TICK is genuinely live (OnStartFrame is on the fired MutatorHooks.SvStartFrame chain, autosave_time seeded correctly), but DatabaseSave bails when Store is null → no file is ever written; likewise DatabaseLoad bails → no autoload."
-      - "No host wires IObjectStore (file IO + path = sandbox/storage_<name>_<map>.txt), so per-map persistence is inert in a real match."
+      - "WIRED (Wave-4): NetGame.WireSandbox assigns IObjectStore (real file IO at ~/XonData/sandbox/storage_<name>_<map>.txt). DatabaseSave writes, DatabaseLoad reads — so the 5s autosave tick + autoload at map start genuinely persist objects per map."
       - "Sandbox_SaveAllowed mutator-hook veto has no port chain (TODO)."
     verification:
       - { kind: code, ref: "OnStartFrame: gate on autosave==0, time<autosave_time, reschedule, DatabaseSave; header line + per-parent ObjectPortSave(true) — faithful. DatabaseLoad parses lines, skips //#, ObjectPortLoad(true). Subscribed to live SvStartFrame.", result: pass }
@@ -429,11 +425,11 @@ features:
       timing: na
       presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "g_sandbox_readonly IS read and gates HandleCommand + grab class, but HandleCommand is dead (no caller), so the readonly gate is unreachable."
+      - "WIRED (Wave-4): HandleCommand is now reachable (Commands.CmdSandbox), so the g_sandbox_readonly gate (commands rejected with the read-only notice) fires on the live path."
       - "The three Sandbox_* veto hooks (DragAllowed/SaveAllowed/EditAllowed) have NO port hook-chain — no other mutator can gate sandbox. Source has explicit TODOs noting the chain is missing; each call site is approximated as 'readonly only'."
       - "g_sandbox_info IS read and gates the (currently no-op) server LOG verbosity faithfully."
     verification:
@@ -462,11 +458,11 @@ features:
       timing: na
       presentation: faithful
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Dialog opens and controls move, but every action button is a no-op: the `sandbox …` command strings still route to MenuCommand and are logged inert. Wave-2 added a server-side SandboxMutator backend, but the menu/console commands are NOT routed to its HandleCommand (no SV_ParseClientCommand seam, `g_sandbox` not in ClientCommandRegistry), so the buttons remain dead end-to-end."
+      - "WIRED (Wave-4): MenuCommand now has a `sandbox` case that expands the cfg alias (`sandbox … → cmd g_sandbox …`) and routes through SendGame → the live-match channel (LocalRouteCommand on a listen host, SendStringCommand on a remote client). So the dialog's action buttons now genuinely drive the SandboxMutator backend (Commands.CmdSandbox → HandleCommand) when g_sandbox is enabled. Object_duplicate COPY still inert (clipboard stuffcmd gap)."
       - "No in-game entry point: the Shell `\"sandbox\"` factory key is reached ONLY via the dev/CI `--menu-screen sandbox` flag. No menu button or keybind opens it in a normal match (Base uses the `menu_showsandboxtools` keybind, no port equivalent)."
     verification:
       - { kind: code, ref: "DialogSandboxTools.cs: all cvar names, slider ranges (skin/frame 0..99/1, alpha 0.1..1/0.05, scale 0.25..2/0.05, force 0..10/0.5), command strings match Base exactly", result: pass }

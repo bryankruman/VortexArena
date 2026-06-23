@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using Godot;
 using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Gameplay;
 using XonoticGodot.Common.Services;
 using NVec3 = System.Numerics.Vector3;
 
@@ -45,13 +46,14 @@ public sealed partial class SpawnPointParticles : Node3D
     private float _rescanTimer;
 
     /// <summary>Port of CSQC <c>Team_ColorRGB(team - 1)</c> (= <c>colormapPaletteColor(team-1)</c>): the per-team
-    /// glow tint. Neutral / unteamed spots (and the team-1 == -1 neutral index) read white, matching upstream.</summary>
+    /// glow tint. The spot's team carries the port's CSQC encoding (Teams.Red/Blue/Yellow/Pink = 4/13/12/9), so
+    /// switch on those — not 1/2/3/4 — exactly like <c>Ctf.TeamRadarColor</c>. Neutral / unteamed spots read white.</summary>
     private static Color TeamColorRgb(int team) => team switch
     {
-        1 => new Color(1f, 0.0625f, 0.0625f),   // red
-        2 => new Color(0.0625f, 0.0625f, 1f),   // blue
-        3 => new Color(1f, 1f, 0.0625f),        // yellow
-        4 => new Color(1f, 0.0625f, 1f),        // pink
+        Teams.Red => new Color(1f, 0.0625f, 0.0625f),    // red
+        Teams.Blue => new Color(0.0625f, 0.0625f, 1f),   // blue
+        Teams.Yellow => new Color(1f, 1f, 0.0625f),      // yellow
+        Teams.Pink => new Color(1f, 0.0625f, 1f),        // pink
         _ => new Color(1f, 1f, 1f),
     };
 

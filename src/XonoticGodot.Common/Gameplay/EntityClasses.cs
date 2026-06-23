@@ -14,6 +14,16 @@ public abstract partial class Monster : IRegistered
     public float Speed;
     public string RegistryName => NetName;
 
+    /// <summary>
+    /// The voice cues actually DEFINED (uncommented) in this monster's model <c>.sounds</c> file — the
+    /// faithful gate for QC <c>Monster_Sound</c>: a cue whose sample line is commented out (or whose model
+    /// ships no <c>.sounds</c> file at all) yields an empty sample, so <c>sound7</c> plays nothing. The port
+    /// mirrors that here by only emitting <c>monsters/&lt;name&gt;_&lt;cue&gt;.wav</c> for a cue in this set.
+    /// <c>null</c> means "not audited — play every cue" (legacy behaviour, preserved for descriptors that
+    /// haven't declared their table yet); an empty set means the monster is fully silent.
+    /// </summary>
+    public System.Collections.Generic.HashSet<string>? SoundCues;
+
     /// <summary>Initialize a spawned monster entity.</summary>
     public virtual void Spawn(Entity e) { }
     /// <summary>Per-think AI step.</summary>

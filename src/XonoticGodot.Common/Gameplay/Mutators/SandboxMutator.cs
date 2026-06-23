@@ -946,12 +946,17 @@ public sealed class SandboxMutator : MutatorBase
 
     private IReadOnlyList<Entity> RealClients()
     {
-        // TODO[cross-file]: FOREACH_CLIENT(IS_PLAYER && IS_REAL_CLIENT) — no player-roster seam in Common; the host
-        // supplies the live real-client list via SetRealClients so think can resync owners + clear on disconnect.
-        return _realClients;
+        // QC FOREACH_CLIENT(IS_PLAYER && IS_REAL_CLIENT) — no player-roster type in Common; the host supplies the
+        // live real-client list. Prefer the pull-based provider (wired in GameWorld, matching Warmup/Voting/Bans
+        // .Roster) so think resyncs owners + clears on disconnect each frame without a per-frame push; fall back to
+        // the SetRealClients snapshot (tests) when no provider is wired.
+        return RealClientsProvider?.Invoke() ?? _realClients;
     }
     private IReadOnlyList<Entity> _realClients = Array.Empty<Entity>();
-    /// <summary>Host injects the live real (non-bot) client list each frame for owner-UID resync.</summary>
+    /// <summary>Host wires the live real (non-bot) client roster source for owner-UID resync (QC FOREACH_CLIENT).
+    /// Pull-based to match the codebase's <c>.Roster = () =&gt; Clients.Players</c> seams.</summary>
+    public Func<IReadOnlyList<Entity>>? RealClientsProvider { get; set; }
+    /// <summary>Host injects the live real (non-bot) client list for owner-UID resync (test/snapshot form).</summary>
     public void SetRealClients(IReadOnlyList<Entity> clients) => _realClients = clients;
 
     // crypto_idfp / netname / v_angle accessors — no port field yet; host overrides via these delegates.

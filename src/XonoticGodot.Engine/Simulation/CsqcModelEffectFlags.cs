@@ -84,16 +84,16 @@ public static class CsqcModelEffectFlags
     /// <summary>
     /// The role-glow EF_* bits a Wave-2/3 presentation driver sets on a player to tint its dynamic light by
     /// team/powerup role (csqcmodel_hooks.qc Effects_Apply consumes EF_BLUE → blue light, EF_RED → red light;
-    /// the Powerups mutator sets EF_BLUE for Shield and EF_RED for Strength, common/items + powerups.qc). This
+    /// the Powerups mutator sets EF_BLUE for Strength and EF_RED for Shield, strength.qc:31 / shield.qc:31). This
     /// returns the EF_* bit-set for a role so a caller can OR it into the per-player forced-effects channel
-    /// (<see cref="ForcedEffectFlags"/>) without re-deriving the constant. <paramref name="strength"/> → EF_RED,
-    /// <paramref name="shield"/> → EF_BLUE (both → both bits, matching a double powerup).
+    /// (<see cref="ForcedEffectFlags"/>) without re-deriving the constant. <paramref name="strength"/> → EF_BLUE,
+    /// <paramref name="shield"/> → EF_RED (both → both bits, matching a double powerup).
     /// </summary>
     public static int RoleGlowFlags(bool strength, bool shield)
     {
         int e = 0;
-        if (strength) e |= EF_RED;
-        if (shield) e |= EF_BLUE;
+        if (strength) e |= EF_BLUE;
+        if (shield) e |= EF_RED;
         return e;
     }
 

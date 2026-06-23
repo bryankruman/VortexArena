@@ -326,9 +326,10 @@ public static class MoveTypePhysics
     {
         if (ctx.FrameTime <= 0f) return;
 
-        // applygravity unless in water / waterjump.
+        // applygravity unless in water / waterjump. Base walk.qc:12 gates on WALK || STEP
+        // (MOVETYPE_STEP aliases to _Movetype_Physics_Walk, so STEP bodies must get gravity too).
         bool inWater = CheckWater(ctx, ent);
-        bool applyGravity = !inWater && ent.MoveType == MoveType.Walk && (ent.Flags & EntFlags.WaterJump) == 0;
+        bool applyGravity = !inWater && (ent.MoveType == MoveType.Walk || ent.MoveType == MoveType.Step) && (ent.Flags & EntFlags.WaterJump) == 0;
 
         CheckVelocity(ent);
 

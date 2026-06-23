@@ -399,10 +399,10 @@ public sealed class Survival : GameType
         int prey = AlivePrey();
         int hunters = AliveHunters();
 
-        // QC Surv_CheckWinner (sv_survival.qc:76-95): the headline rule — if the round timer is up while both
-        // sides still have a living member, the round ends and the SURVIVORS win ("survive until time runs out").
-        // The Handler arms RoundEndTime from g_survival_round_timelimit; we test it here so the timeout fires on
-        // the live path (Handler.Tick → CanRoundEnd → CheckWinningCondition during the InProgress phase).
+        // QC Surv_CheckWinner (sv_survival.qc:76-95): the match-timeout → survivors-win branch ONLY runs when
+        // g_survival_round_enddelay == -1 (sv_survival.qc:78-79). The shipped default is 0 (gametypes-server.cfg:704),
+        // so in stock config Surv_CheckWinner returns 0 with both sides alive at the timer and the round does NOT
+        // auto-resolve. We gate the timeout the same way so the port doesn't end a round stock Base leaves running.
         if (prey > 0 && hunters > 0)
         {
             if (RoundTimedOut())
@@ -421,12 +421,18 @@ public sealed class Survival : GameType
     }
 
     /// <summary>
-    /// QC Surv_CheckWinner's timer test (sv_survival.qc:78): true once the round handler's
-    /// <see cref="RoundHandler.RoundEndTime"/> (armed from <c>g_survival_round_timelimit</c>) has elapsed.
+    /// QC Surv_CheckWinner's timeout branch test (sv_survival.qc:77-79): true once the round handler's
+    /// <see cref="RoundHandler.RoundEndTime"/> (armed from <c>g_survival_round_timelimit</c>) has elapsed —
+    /// BUT only when <c>g_survival_round_enddelay == -1</c>. The shipped default is 0
+    /// (gametypes-server.cfg:704), so in stock config this branch is OFF and a hiding-prey round is NOT
+    /// auto-resolved on the timer (Surv_CheckWinner returns 0 with both sides alive).
     /// </summary>
     private bool RoundTimedOut()
     {
         if (Handler is null || !Handler.IsRoundStarted)
+            return false;
+        // QC sv_survival.qc:79: the timeout→survivors-win branch is gated on autocvar_g_survival_round_enddelay == -1.
+        if (!(TryCvar("g_survival_round_enddelay", out float enddelay) && enddelay == -1f))
             return false;
         float end = Handler.RoundEndTime;
         return end > 0f && (Api.Services is not null ? Api.Clock.Time : 0f) >= end;

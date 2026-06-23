@@ -19,12 +19,13 @@ namespace XonoticGodot.Common.Gameplay;
 /// (RESPAWN_SILENT), force-spectated (PutObserverInServer ≈ IsObserver), and added to the
 /// <c>g_playban_list</c> cvar (cons of netaddress + crypto_idfp), exactly as the QC default case.
 ///
-/// SUBSTRATE: severity 1 (<c>dropclient_schedule</c> kick) and severity 2 (<c>Ban_KickBanClient</c> IP-ban)
-/// depend on the Server-layer ban pipeline (XonoticGodot.Server/Bans.cs: DropClient / KickBanClient), which
-/// Common cannot reach (Server references Common, not vice-versa). Those two branches set RESPAWN_SILENT,
-/// record the decision via <see cref="LastAction"/>, and send the broadcast notification; the host observes
-/// <see cref="LastAction"/> and performs the actual kick/IP-ban. (cross-file: GameWorld/Bans should subscribe
-/// to act on LastAction for severity 1/2.) The default play-ban path needs no Server plumbing and is live.
+/// SUBSTRATE: the force-spectate (severity 0), the severity-1 <c>dropclient_schedule</c> kick, and the
+/// severity-2 <c>Ban_KickBanClient</c> IP-ban all reach into the Server layer (XonoticGodot.Server:
+/// ClientManager.PutObserverInServer / Bans.DropClient / Bans.KickBanClient), which Common cannot reference
+/// (Server references Common, not vice-versa). The host injects those actions via <see cref="ForceObserver"/>,
+/// <see cref="KickClient"/> and <see cref="BanClient"/> (wired in GameWorld.WireServerInfrastructure), exactly
+/// the same delegate-seam pattern as MinigameSessionManager.ObserverForcer. With those wired every branch runs
+/// the real punitive action on the live PlayerDies path.
 /// </summary>
 [Mutator]
 public sealed class KickTeamkillerMutator : MutatorBase
@@ -40,11 +41,20 @@ public sealed class KickTeamkillerMutator : MutatorBase
     public override bool IsEnabled =>
         Api.Services is not null && Api.Cvars.GetFloat("g_kick_teamkiller_rate") > 0f;
 
-    /// <summary>The last (attacker, severity) the threshold tripped for. For severity 1 (kick) and 2 (IP-ban)
-    /// the punitive action needs the Server-layer ban pipeline (Bans.cs DropClient / KickBanClient) that Common
-    /// can't reach — the host observes this to perform the kick/ban. The default play-ban path is enforced
-    /// here (observe + g_playban_list) so it stands alone, but LastAction is still recorded for it.</summary>
-    public (Entity attacker, int severity)? LastAction { get; private set; }
+    /// <summary>QC <c>PutObserverInServer(attacker, true, true)</c>: the host's real force-spectate (Server
+    /// ClientManager.PutObserverInServer — resets MoveType.None/Solid.Not/TakeDamage.No/FragsSpectator). Injected
+    /// by GameWorld; without it the default branch falls back to a bare IsObserver flip.</summary>
+    public System.Action<Entity>? ForceObserver { get; set; }
+
+    /// <summary>QC <c>dropclient_schedule(attacker)</c> (severity 1): the host's kick pipeline (Server
+    /// Bans.DropClient). Returns whether the drop was scheduled (QC gates the kick broadcast on a true return).
+    /// Injected by GameWorld; null until wired.</summary>
+    public System.Func<Entity, bool>? KickClient { get; set; }
+
+    /// <summary>QC <c>Ban_KickBanClient(attacker, bantime, masksize, "Team Killing")</c> (severity 2): the host's
+    /// IP-ban pipeline (Server Bans.KickBanClient). Args: offender, bantime seconds, masksize. Injected by
+    /// GameWorld; null until wired.</summary>
+    public System.Action<Entity, float, int>? BanClient { get; set; }
 
     private HookHandler<MutatorHooks.PlayerDiesArgs>? _onPlayerDies;
 
@@ -92,25 +102,26 @@ public sealed class KickTeamkillerMutator : MutatorBase
             return false;
 
         // QC switch(autocvar_g_kick_teamkiller_severity): 1 = kick, 2 = IP-ban, default = play-ban/observe.
-        LastAction = (attacker, Severity);
         switch (Severity)
         {
             case 1:
             {
                 // QC: if (dropclient_schedule(attacker)) Send_Notification(... INFO_QUIT_KICK_TEAMKILL ...).
-                // The drop needs the Server ban pipeline (Bans.DropClient); the host acts on LastAction. Mark
-                // RESPAWN_SILENT so the impending drop carries no respawn timer, then broadcast the kick line.
-                SetRespawnSilent(attacker);
-                NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, "QUIT_KICK_TEAMKILL",
-                    attacker.NetName);
+                // The drop runs through the Server ban pipeline (Bans.DropClient), injected as KickClient. QC
+                // gates the broadcast on the schedule succeeding — mirror that with the delegate's return.
+                if (KickClient?.Invoke(attacker) ?? false)
+                    NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, "QUIT_KICK_TEAMKILL",
+                        attacker.NetName);
                 return false;
             }
             case 2:
             {
                 // QC: attacker.respawn_flags = RESPAWN_SILENT; Ban_KickBanClient(attacker, bantime, masksize,
                 //     "Team Killing"); Send_Notification(... INFO_QUIT_KICK_TEAMKILL ...).
-                // Ban_KickBanClient (IP-ban) needs the Server ban pipeline; the host acts on LastAction.
                 SetRespawnSilent(attacker);
+                // QC masksize = autocvar_g_ban_default_masksize; bantime = autocvar_g_kick_teamkiller_bantime.
+                int masksize = (int)Api.Cvars.GetFloat("g_ban_default_masksize");
+                BanClient?.Invoke(attacker, BanTime, masksize);
                 NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, "QUIT_KICK_TEAMKILL",
                     attacker.NetName);
                 return false;
@@ -130,8 +141,12 @@ public sealed class KickTeamkillerMutator : MutatorBase
                 if (addr.Length > 0 && !ListContains(list, addr)) theid = Cons(theid, addr);
                 if (idfp.Length > 0 && !ListContains(list, idfp)) theid = Cons(theid, idfp);
 
-                // QC: PutObserverInServer(attacker, true, true) — force the teamkiller to spectate.
-                if (attacker is Player p) { p.IsObserver = true; p.WantsJoin = 0; }
+                // QC: PutObserverInServer(attacker, true, true) — force the teamkiller to spectate. The real
+                // transition (MoveType.None/Solid.Not/TakeDamage.No/FragsSpectator) lives in the Server layer
+                // (ClientManager.PutObserverInServer), injected as ForceObserver; fall back to a bare flag flip
+                // only if the host never wired it (keeps the offender at least scoreboard-spectating).
+                if (ForceObserver is not null) ForceObserver(attacker);
+                else if (attacker is Player p) { p.IsObserver = true; p.WantsJoin = 0; }
 
                 // QC: cvar_set("g_playban_list", cons(autocvar_g_playban_list, theid));
                 if (theid.Length > 0)

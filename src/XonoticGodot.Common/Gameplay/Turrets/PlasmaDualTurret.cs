@@ -63,7 +63,10 @@ public sealed class PlasmaDualTurret : PlasmaTurret
             DualAimSpeed, DualFireTolerance, lead: true,
             rangeOptimal: DualTargetRangeOptimal, shotSpeed: ShotSpeed,
             aimMaxPitch: AimMaxPitch, aimMaxRot: AimMaxRot,
-            shotTimeCompensate: true, zPredict: true, aimSplash: true,
+            // QC plasma tr_setup aim_flags = LEAD | SHOTTIMECOMPENSATE | SPLASH; it does NOT set TFL_AIM_ZPREDICT,
+            // and DualPlasmaTurret has no tr_setup override so it inherits those flags (zPredict stays false —
+            // matches the single plasma's MakeParams; airborne targets aren't mis-led down a gravity arc).
+            shotTimeCompensate: true, zPredict: false, aimSplash: true,
             rangeBias: DualRangeBias, sameBias: DualSameBias, angleBias: DualAngleBias,
             missileBias: DualMissileBias, playerBias: DualPlayerBias,
             trackType: TurretAI.TrackFluidInertia,

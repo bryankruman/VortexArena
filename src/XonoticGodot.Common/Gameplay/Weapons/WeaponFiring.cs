@@ -211,7 +211,7 @@ public static class WeaponFiring
         int deathType, float spread, float solidPenetration,
         float falloffHalflife = 0f, float falloffMinDist = 0f, float falloffMaxDist = 0f,
         float force = 0f, float falloffForceHalflife = 0f, float headshotMultiplier = 0f,
-        string? tracerEffect = null)
+        string? tracerEffect = null, string? deathTag = null)
     {
         LagComp.Begin(actor); // rewind other players to the shooter's view-time for fair hit-reg (antilag.qc)
         try
@@ -291,7 +291,7 @@ public static class WeaponFiring
                     if (falloffForceHalflife != 0f)
                         dealtForce *= ExponentialFalloff(falloffMinDist, falloffMaxDist, falloffForceHalflife, dist);
                 }
-                ApplyDamage(hit, actor, dealt, deathType, inflictor: actor, force: dealtForce, hitLoc: cur);
+                ApplyDamage(hit, actor, dealt, deathType, inflictor: actor, force: dealtForce, hitLoc: cur, deathTag: deathTag);
 
                 // [T57] ballistic hit credit (QC tracing.qc:470-477): per-hit credit is the PENETRATION-scaled
                 // damage WITHOUT the distance falloff, capped so a multi-target bullet never exceeds 100%.
@@ -484,12 +484,17 @@ public static class WeaponFiring
     /// <summary>
     /// Eject a spent brass casing (W1-weaponfire-fx) — the C# successor to QC <c>SpawnCasing</c>
     /// (common/effects/qc/casings.qc), called by the bullet weapons (machinegun.qc:111, rifle.qc:41,
-    /// shotgun.qc:82, okmachinegun/okhmg) when <c>g_casings &gt;= 2</c>. Computes the QC eject velocity in the
-    /// shooter's view frame — <c>(rand*50+50)·right − (rand*25+25)·forward + (70−rand*5)·up</c> — and queues a
-    /// casing emission through the effect sink so the client spawns the shell (the existing
-    /// <c>EffectSystem.SpawnCasing</c> consumer). Uses the deterministic <see cref="Prandom"/> so server and
-    /// predicting client agree (ADR-0010). No-op unless <c>g_casings &gt;= 2</c> (QC's gate) and the actor is a
-    /// player (only players have a view weapon to eject from).
+    /// shotgun.qc:82, okmachinegun/okhmg). Computes the QC eject velocity in the shooter's view frame —
+    /// <c>(rand*50+50)·right − (rand*25+25)·forward + (UP−rand*5)·up</c> — and queues a casing emission through
+    /// the effect sink so the client spawns the shell (the existing <c>EffectSystem.SpawnCasing</c> consumer).
+    /// Uses the deterministic <see cref="Prandom"/> so server and predicting client agree (ADR-0010). No-op
+    /// unless the per-weapon <c>g_casings</c> gate passes and the actor is a player (only players have a view
+    /// weapon to eject from).
+    ///
+    /// <para>The gate + up-velocity are PER casingtype, matching Base: the shotgun shell (casingtype 1) ejects
+    /// at <c>g_casings &gt;= 1</c> with up <c>(30 − rand*5)</c> (shotgun.qc:78,82), while the bullet casing
+    /// (casingtype 3) ejects at <c>g_casings &gt;= 2</c> with up <c>(70 − rand*5)</c>
+    /// (machinegun.qc:108,111). g_casings doc (xonotic-server.cfg:231): 0=none, 1=shotgun only, 2=both.</para>
     /// </summary>
     /// <param name="actor">The shooting player (supplies the muzzle origin + view basis).</param>
     /// <param name="muzzle">The casing spawn origin — typically the shot origin (QC weapon <c>spawnorigin</c>).</param>
@@ -497,19 +502,25 @@ public static class WeaponFiring
     public static void EjectCasing(Entity actor, Vector3 muzzle, CasingType type = CasingType.Bullet)
     {
         if (actor is null || (actor.Flags & EntFlags.Client) == 0) return;
-        // QC gate: casings only spawn at g_casings >= 2 (1 = gibs only). Default is 2, so they normally eject.
-        if (Api.Services is not null && Api.Cvars.GetFloat("g_casings") < 2f) return;
+        // QC gate (xonotic-server.cfg:231): 1 = shotgun shell only, 2 = shotgun + bullet casings. So the shell
+        // ejects at >= 1 (shotgun.qc:78) and the bullet casing at >= 2 (machinegun.qc:108). Default is 2.
+        float casingGate = type == CasingType.Shell ? 1f : 2f;
+        if (Api.Services is not null && Api.Cvars.GetFloat("g_casings") < casingGate) return;
 
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out Vector3 right, out Vector3 up);
-        // QC SpawnCasing eject velocity (machinegun.qc:111 et al), deterministic PRNG.
+        // QC SpawnCasing eject velocity (deterministic PRNG). The up-velocity is per casingtype: shotgun shell
+        // uses (30 - rand*5) (shotgun.qc:82: -(rand*5 - 30)*v_up), the bullet casing (70 - rand*5)
+        // (machinegun.qc:111: -(rand*5 - 70)*v_up).
+        float upBase = type == CasingType.Shell ? 30f : 70f;
         Vector3 vel = (Prandom.Float() * 50f + 50f) * right
                     - (Prandom.Float() * 25f + 25f) * forward
-                    + (70f - Prandom.Float() * 5f) * up;
+                    + (upBase - Prandom.Float() * 5f) * up;
 
-        // Route the casing through the effect sink as a velocity-carrying emission (the casing temp-entity isn't
-        // a registered Effect, so use the effectinfo-name fallback path; the client's casing consumer reads the
-        // velocity off the request). The casing kind is encoded in the effectinfo name so the client picks the
-        // shell vs bullet model. (A dedicated casing net-temp belongs in EffectEmitter — see seam todos.)
+        // Route the casing through the effect sink as a velocity-carrying emission. CASING_BULLET/CASING_SHELL
+        // are registered Effects (EffectsList.cs) so this resolves to a non-null Effect with a stable RegistryId
+        // — it networks live (ServerNet.WriteEffect encodes the origin+velocity instead of dropping a null-Effect
+        // request) and the client routes the name to EffectSystem.SpawnCasing (the real bouncing brass shell, not
+        // a generic particle burst). The casing kind picks the shell vs bullet model client-side.
         string casingName = type == CasingType.Shell ? "casing_shell" : "casing_bullet";
         EffectEmitter.EmitByEffectInfoName(casingName, muzzle, vel, 1, except: null);
     }
@@ -628,7 +639,7 @@ public static class WeaponFiring
     /// the pipeline's string deathtype tag here.
     /// </summary>
     public static void ApplyDamage(Entity target, Entity attacker, float damage, int deathType = 0,
-        Entity? inflictor = null, Vector3 force = default, Vector3 hitLoc = default)
+        Entity? inflictor = null, Vector3 force = default, Vector3 hitLoc = default, string? deathTag = null)
     {
         if (damage <= 0f && force == Vector3.Zero) return;
 
@@ -638,12 +649,14 @@ public static class WeaponFiring
         // [T57] FIX: this previously tagged FromWeapon(attacker.NetName) — the PLAYER's name — so every
         // weapon kill carried an unresolvable "weapon/<playername>" tag (generic kill feed, no per-weapon
         // attribution). Resolve the registry id to the weapon's NetName instead.
-        string deathTag = deathType > 0 && deathType < Registry<Weapon>.Count
+        // An explicit deathTag overrides the int-derived tag so a hitscan caller can carry HITTYPE_* bits
+        // the int can't pack (QC deathtype | HITTYPE_SECONDARY) — e.g. the MachineGun mode-0 snipe secondary.
+        string tag = deathTag ?? (deathType > 0 && deathType < Registry<Weapon>.Count
             ? Damage.DeathTypes.FromWeapon(Registry<Weapon>.ById(deathType).NetName)
-            : Damage.DeathTypes.Generic;
+            : Damage.DeathTypes.Generic);
 
         // inflictor defaults to the attacker for direct hitscan (QC passes the bullet's owner == attacker).
-        Damage.Combat.Damage(target, inflictor ?? attacker, attacker, damage, deathTag, hitLoc, force);
+        Damage.Combat.Damage(target, inflictor ?? attacker, attacker, damage, tag, hitLoc, force);
     }
 
     // =========================================================================
