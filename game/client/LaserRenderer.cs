@@ -13,9 +13,11 @@
 // Api.Services is the live server world. A pure --connect client has no facade (and no BSP) yet, so it
 // stays idle there: the established seam, not a silent gap.
 //
-// Known approximations vs Draw_Laser: the beam texture's sliding texcoord (time*3) is not animated, and
-// the client-side trace runs at the SERVER tick origin (no InterpolateOrigin — lasers are static on all
-// shipped maps).
+// The beam texture's sliding texcoord (Draw_Laser's time*3) IS animated via the material's per-frame
+// Uv1Offset (tiled along the beam so it flows). End effects (particles + dlight) are gated on a real
+// surface hit, suppressed on SKY *or* NOIMPACT faces exactly as Draw_Laser:333 does.
+// Known approximation vs Draw_Laser: the client-side trace runs at the SERVER tick origin (no
+// InterpolateOrigin — lasers are static on all shipped maps).
 
 using System;
 using System.Collections.Generic;
@@ -40,6 +42,8 @@ public partial class LaserRenderer : Node3D
     private const float RescanInterval = 2f;     // facade re-scan cadence (lasers can spawn via target_spawn)
     private const float EndFxInterval = 0.1f;    // ~10 Hz end-effect bursts per laser
     private const int Q3SurfaceFlagSky = 0x4;    // Q3SURFACEFLAG_SKY
+    private const int Q3SurfaceFlagNoImpact = 0x1; // Q3SURFACEFLAG_NOIMPACT (laser.qc:333 gate)
+    private const float TexScrollRate = 3f;      // Draw_Laser texcoord = time*3 (the scrolling beam)
 
     private sealed class BeamNode
     {
@@ -155,6 +159,10 @@ public partial class LaserRenderer : Node3D
         {
             mat.AlbedoTexture = _beamTex;
             mat.TextureFilter = BaseMaterial3D.TextureFilterEnum.Linear;
+            // Draw_Laser scrolls the beam texcoord (time*3); tile + repeat so the per-frame Uv1Offset
+            // animation reads as a flowing beam rather than a single stretched copy.
+            mat.TextureRepeat = true;
+            mat.Uv1Scale = new Vector3(1f, 1f, 1f);
         }
     }
 
@@ -208,7 +216,9 @@ public partial class LaserRenderer : Node3D
             bool sky = (tr.DpHitQ3SurfaceFlags & Q3SurfaceFlagSky) != 0;
             if (!finite && sky)
                 end = start + QMath.Normalize(target - start) * Laser.BeamMaxWorldSize; // beyond the sky
-            hitSurface = tr.Fraction < 1f && !sky;
+            // Draw_Laser:333 suppresses BOTH the end particles and the dlight on SKY *or* NOIMPACT faces.
+            bool noImpact = (tr.DpHitQ3SurfaceFlags & Q3SurfaceFlagNoImpact) != 0;
+            hitSurface = tr.Fraction < 1f && !sky && !noImpact;
         }
 
         // --- ribbon transform ---
@@ -240,6 +250,15 @@ public partial class LaserRenderer : Node3D
         b.Root.Basis = new Basis(x, y, z);
         b.RibbonA.Scale = new Vector3(len, width, 1f);
         b.RibbonB.Scale = new Vector3(len, width, 1f);
+
+        // Sliding texcoord (Draw_Laser: time*3). Tile the texture along the beam (U) proportional to
+        // length/width so texels stay ~square, then scroll the offset so the beam visibly flows.
+        if (_beamTex is not null)
+        {
+            float tile = width > 0f ? MathF.Max(1f, len / width) : 1f;
+            b.Material.Uv1Scale = new Vector3(tile, 1f, 1f);
+            b.Material.Uv1Offset = new Vector3(-now * TexScrollRate, 0f, 0f);
+        }
 
         // --- color/blend (laser.qc:324-331): alpha key set => normal blend at .alpha, else additive 0.5 ---
         var color = new Color(e.BeamColor.X, e.BeamColor.Y, e.BeamColor.Z);

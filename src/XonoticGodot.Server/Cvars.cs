@@ -191,6 +191,12 @@ public static class Cvars
         new("g_teamdamage_threshold", "40", Notify, "team damage before mirror punishment kicks in"),
         new("g_teamdamage_resetspeed", "20", Notify),
         new("g_maxpushtime", "8", Notify, "credited-attacker window for environmental deaths"),
+        // teleporter telefrag rules (xonotic-server.cfg:59-61; common/mapobjects/teleporters.qh autocvar_g_telefrags*).
+        // Registered so a server override (set g_telefrags 0, etc.) actually applies — the port's Teleporters.cs
+        // previously used hardcoded fallbacks that matched these defaults but were inert. Stock defaults: all 1.
+        new("g_telefrags", "1", Notify, "enable telefragging (kill anyone standing on a teleport/portal exit)"),
+        new("g_telefrags_teamplay", "1", Notify, "1 = never telefrag teammates"),
+        new("g_telefrags_avoid", "1", Notify, "random-destination teleporters avoid exits where a telefrag would occur"),
         new("g_weapondamagefactor", "1", Notify, "global weapon damage multiplier"),
         new("g_weaponforcefactor", "1", Notify, "global weapon force multiplier"),
         new("g_balance_selfdamagepercent", "0.65", Notify, "self-damage (rocket/blaster-jump) scale"),

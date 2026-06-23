@@ -126,6 +126,12 @@ public static class CsqcModelAppearance
             if (forceUnique && !isLocalPlayer && !is1v1)
                 return UniqueColormap(entityNum - 1);
             if (forcePlayerColorsEnabled)
+                // NOTE: Base (csqcmodel_hooks.qc:322) assigns the bare `player_localnum + 1` here — a player
+                // SLOT index, NOT the 1024+ explicit-RGB colormap form the other branches use; downstream it
+                // is resolved through entcs_GetClientColors. The port resolves the colormap directly and its
+                // consumer (ModelTint) expects the >=1024 explicit form, so we bias it into that form for
+                // contract-safety. Bit-exact slot semantics would need ModelTint to accept a <1024 index too
+                // (cross-file — see todos); kept as 1024+ to match the row's `values: faithful` status.
                 return 1024 + playerLocalNum + 1;
             return 0;
         }
@@ -274,6 +280,43 @@ public static class CsqcModelAppearance
         int eff = CsqcModelEffectFlags.RoleGlowFlags(strength, shield) & CsqcModelEffectFlags.ForcedEffectFlags;
         int mf = jetpackActive ? CsqcModelEffectFlags.MF_ROCKET : 0;
         return new ForcedAppearance { ExtraEffects = eff, ModelFlags = mf, ForcedGlowmod = forcedGlowmod };
+    }
+
+    /// <summary>
+    /// QC respawn-ghost color suppression (csqcmodel_hooks.qc:331-336): when the model carries
+    /// <c>CSQCMODEL_EF_RESPAWNGHOST</c> and <c>cl_respawn_ghosts_keepcolors</c> is off, the appearance pass
+    /// returns early with glowmod <c>'0 0 0'</c> and colormap 0 (the ghost renders uncolored). Returns true
+    /// when that early-out applies, so the Godot glue can skip the glowmod/death-fade tail entirely.
+    /// </summary>
+    public static bool RespawnGhostClearsColors(bool isRespawnGhost, bool keepColors)
+        => isRespawnGhost && !keepColors;
+
+    /// <summary>
+    /// QC glowmod base (csqcmodel_hooks.qc:340-342): a colored model (<c>colormap &gt; 0</c>) glows in its low
+    /// colormap nibble's palette color (<c>colormapPaletteColor(..&amp;0x0F, isPants:true)</c>); an uncolored model
+    /// glows white (<c>'1 1 1'</c>). <paramref name="lowNibble"/> is the resolved <c>colormap &amp; 0x0F</c>.
+    /// </summary>
+    public static (float r, float g, float b) BaseGlowmod(bool hasColor, int lowNibble, float time)
+        => hasColor ? ColormapPaletteColor(lowNibble & 0x0F, isPants: true, time) : (1f, 1f, 1f);
+
+    /// <summary>
+    /// QC glowmod-zero guard (csqcmodel_hooks.qc:353-354): after the death-fade multiply, a fully-black glowmod
+    /// is nudged to <c>x = 0.000001</c> so the engine doesn't treat it as "unset" (which would let it re-inflate
+    /// the glow). Only applied inside the dead branch in QC; pass the post-fade glowmod.
+    /// </summary>
+    public static (float r, float g, float b) GuardGlowmodZero((float r, float g, float b) glowmod)
+        => (glowmod.r == 0f && glowmod.g == 0f && glowmod.b == 0f) ? (0.000001f, 0f, 0f) : glowmod;
+
+    /// <summary>
+    /// QC engine-glow clamp (csqcmodel_hooks.qc:359-360): "don't let the engine increase player's glowmod" —
+    /// when <c>r_hdr_glowintensity &gt; 1</c> the glowmod is divided by it. Returns the glowmod unchanged when
+    /// intensity &lt;= 1.
+    /// </summary>
+    public static (float r, float g, float b) ApplyHdrGlowClamp((float r, float g, float b) glowmod, float hdrGlowIntensity)
+    {
+        if (hdrGlowIntensity <= 1f)
+            return glowmod;
+        return (glowmod.r / hdrGlowIntensity, glowmod.g / hdrGlowIntensity, glowmod.b / hdrGlowIntensity);
     }
 
     private static float Bound(float lo, float v, float hi) => Math.Min(Math.Max(v, lo), hi);

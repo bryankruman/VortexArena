@@ -1,5 +1,6 @@
 using System.Numerics;
 using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Gameplay.Damage;
 using XonoticGodot.Common.Math;
 using XonoticGodot.Common.Services;
 
@@ -114,14 +115,17 @@ public sealed class Hlac : Weapon
         var st = actor.WeaponState(slot);
         if (fire == FireMode.Primary)
         {
-            // QC resets misc_bulletcounter on the first press, then W_HLAC_Attack_Frame increments it each
-            // held tick so spread grows; the held-fire loop is driven by per-tick button input, so we
-            // accumulate the counter across actual shots instead (releasing primary lets it cool via reset
-            // on the next first press). Gated by the primary refire (QC weapon_prepareattack).
+            // QC wr_think (hlac.qc:169-176): on a FRESH primary press (weapon_prepareattack succeeds only
+            // from the READY state), reset misc_bulletcounter = 0 so the first bolt of the trigger pull is
+            // dead-accurate, fire once, then hand off to the self-rescheduling W_HLAC_Attack_Frame loop which
+            // (while ATCK stays held) re-fires and ++misc_bulletcounter each refire so spread grows. Releasing
+            // primary ends the loop; the next fresh press resets again — the weapon's feather-the-trigger
+            // mechanic. (Mirrors OkMachinegun's auto-fire: reset in wr_think, accumulate in the think loop.)
             if (PrepareAttack(actor, slot, fire))
             {
+                st.MiscBulletCounter = 0;
                 Attack(actor, slot, st);
-                ++st.MiscBulletCounter;
+                ScheduleAttackFrame(actor, slot);
             }
         }
         else if (fire == FireMode.Secondary && SecondaryEnabled)
@@ -132,6 +136,35 @@ public sealed class Hlac : Weapon
                 Attack2(actor, slot);
             }
         }
+    }
+
+    // W_HLAC_Attack_Frame (hlac.qc:129-154) — the held-fire self-reschedule loop. While the primary button
+    // stays held (and ammo allows), it re-fires every refire and increments misc_bulletcounter so spread
+    // climbs toward spread_max; the moment the button releases it settles back to READY (no counter reset
+    // here — that only happens on the NEXT fresh wr_think press), so re-tapping restores accuracy.
+    private void ScheduleAttackFrame(Entity actor, WeaponSlot slot)
+    {
+        var st = actor.WeaponState(slot);
+        float rate = WeaponRateFactor(actor);
+        st.AttackFinished = Api.Clock.Time + Primary.Refire * rate;
+        WeaponFireDriver.ScheduleThink(st, Primary.Refire * rate, (pl, sl) =>
+        {
+            WeaponSlotState s2 = pl.WeaponState(sl);
+            if (s2.State != WeaponFireState.InUse) return;
+            // QC re-enters W_HLAC_Attack only while ATCK is held and ammo (or unlimited) is available
+            // (W_HLAC_Attack_Frame's wr_checkammo1 / IT_UNLIMITED_AMMO guard, hlac.qc:139-145).
+            bool unlimited = pl.UnlimitedAmmo || (pl.Items & (1 << 0)) != 0; // IT_UNLIMITED_AMMO
+            if (s2.ButtonAttack && (pl.GetResource(AmmoType) >= Primary.Ammo || unlimited))
+            {
+                ++s2.MiscBulletCounter;
+                Attack(pl, sl, s2);
+                ScheduleAttackFrame(pl, sl);
+            }
+            else
+            {
+                s2.State = WeaponFireState.Ready;
+            }
+        });
     }
 
     // Refire/animtime from the (cvar-seeded) per-mode balance blocks.
@@ -162,7 +195,7 @@ public sealed class Hlac : Weapon
         Recoil(actor);
 
         SpawnBolt(actor, shot.Origin, shot.Dir, Primary.Speed, Primary.Lifetime,
-            Primary.Damage, Primary.EdgeDamage, Primary.Radius, Primary.Force, spread);
+            Primary.Damage, Primary.EdgeDamage, Primary.Radius, Primary.Force, spread, isSecondary: false);
 
         Api.Sound.Play(actor, SoundChannel.WeaponAuto, "weapons/lasergun_fire.wav");
         EffectEmitter.Emit("GREEN_HLAC_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
@@ -188,7 +221,7 @@ public sealed class Hlac : Weapon
         {
             // Each bolt is an independent W_SetupProjVelocity_Basic with the (crouch-adjusted) secondary spread.
             SpawnBolt(actor, shot.Origin, shot.Dir, Secondary.Speed, Secondary.Lifetime,
-                Secondary.Damage, Secondary.EdgeDamage, Secondary.Radius, Secondary.Force, spread);
+                Secondary.Damage, Secondary.EdgeDamage, Secondary.Radius, Secondary.Force, spread, isSecondary: true);
         }
 
         Api.Sound.Play(actor, SoundChannel.WeaponAuto, "weapons/lasergun_fire.wav");
@@ -197,7 +230,7 @@ public sealed class Hlac : Weapon
 
     /// <summary>Spawn an HLAC laser bolt that bursts (radius damage) on touch or lifetime. hlac.qc.</summary>
     private void SpawnBolt(Entity actor, Vector3 origin, Vector3 dir, float speed, float lifetime,
-        float damage, float edge, float radius, float force, float spread)
+        float damage, float edge, float radius, float force, float spread, bool isSecondary)
     {
         Entity missile = Api.Entities.Spawn();
         missile.ClassName = "hlacbolt";
@@ -214,7 +247,13 @@ public sealed class Hlac : Weapon
         missile.Angles = QMath.VecToAngles(missile.Velocity);
 
         int deathType = RegistryId;
-        missile.Touch = (self, other) => Explode(self, damage, edge, radius, force, deathType);
+        // QC hlac.qc:113 — the secondary burst ORs HITTYPE_SECONDARY into projectiledeathtype (W_HLAC_Attack
+        // leaves the plain weapon id). The int path can't pack the bit, so carry it as a string deathTag for
+        // secondary bolts; primary keeps the legacy int RegistryId path (resolved damage is identical either way).
+        string? deathTag = isSecondary
+            ? DeathTypes.WithHitType(DeathTypes.FromWeapon(NetName), DeathTypes.Secondary)
+            : null;
+        missile.Touch = (self, other) => Explode(self, damage, edge, radius, force, deathType, deathTag);
         missile.Think = self => Api.Entities.Remove(self); // SUB_Remove at lifetime
         missile.NextThink = Api.Clock.Time + lifetime;
 
@@ -223,9 +262,12 @@ public sealed class Hlac : Weapon
         MutatorHooks.EditProjectile.Call(ref ep);
     }
 
-    // QC recoil: punchangle gets a small random kick on each shot (g_norecoil default off).
+    // QC recoil: punchangle gets a small random kick on each shot, gated by !autocvar_g_norecoil
+    // (hlac.qc:38-42 primary, 121-125 secondary). With g_norecoil 1 the kick is suppressed entirely.
     private static void Recoil(Entity actor)
     {
+        if (Api.Services is not null && Api.Cvars.GetFloat("g_norecoil") != 0f)
+            return;
         Vector3 p = actor.PunchAngle;
         p.X = Prandom.Float() - 0.5f;
         p.Y = Prandom.Float() - 0.5f;
@@ -233,13 +275,15 @@ public sealed class Hlac : Weapon
     }
 
     // W_HLAC_Touch — radius damage + knockback at the impact point, then remove. hlac.qc
-    private void Explode(Entity self, float damage, float edge, float radius, float force, int deathType)
+    private void Explode(Entity self, float damage, float edge, float radius, float force, int deathType,
+        string? deathTag)
     {
         self.Touch = null;
         self.Think = null;
         self.TakeDamage = DamageMode.No;
 
-        WeaponSplash.RadiusDamage(self, self.Origin, damage, edge, radius, self.Owner, deathType, force);
+        WeaponSplash.RadiusDamage(self, self.Origin, damage, edge, radius, self.Owner, deathType, force,
+            deathTag: deathTag);
 
         WeaponSplash.ImpactSound(self, "weapons/laserimpact.wav"); // QC SND_LASERIMPACT (wr_impacteffect)
         EffectEmitter.Emit("GREEN_HLAC_IMPACT", self.Origin);

@@ -15,8 +15,10 @@ namespace XonoticGodot.Common.Gameplay;
 /// This port covers the mine projectile, surface-sticking (W_MineLayer_Stick lock-in-place), the lifetime
 /// countdown, proximity-trigger detonation with the team-safety protection delay, owner-death auto-detonate,
 /// mine shoot-down (damageforcescale knock-loose + destroy), the spawnshield/team-safety gated remote
-/// detonate, and the splash damage. Only the airshot achievement, the exact surface-normal facing and CSQC
-/// mine networking are left out (render/online).
+/// detonate, and the splash damage. The mine is modelled (models/mine.md3), shoot-down is live via
+/// Projectiles.MakeShootable, the proximity team-filter keys off the owner's team, and the over-limit press
+/// gives the WEAPON_MINELAYER_LIMIT feedback. Only the airshot achievement, the exact surface-normal facing,
+/// the out-of-ammo forced weapon switch, and CSQC in-flight mine networking are left out (render/online/HUD).
 /// </summary>
 [Weapon]
 public sealed class Minelayer : Weapon
@@ -35,6 +37,7 @@ public sealed class Minelayer : Weapon
         public float Lifetime;           // g_balance_minelayer_lifetime
         public float LifetimeCountdown;  // g_balance_minelayer_lifetime_countdown
         public int   Limit;              // g_balance_minelayer_limit (max simultaneous mines)
+        public float Protection;         // g_balance_minelayer_protection (default 0 = no team-safety hold)
         public float ProximityRadius;    // g_balance_minelayer_proximity_radius
         public float ProximityTimeCore;  // g_balance_minelayer_proximity_time_core
         public float ProximityTimeEdge;  // g_balance_minelayer_proximity_time_edge
@@ -77,6 +80,7 @@ public sealed class Minelayer : Weapon
         Cvars.Lifetime = Bal("g_balance_minelayer_lifetime", 30f);
         Cvars.LifetimeCountdown = Bal("g_balance_minelayer_lifetime_countdown", 0.5f);
         Cvars.Limit = BalInt("g_balance_minelayer_limit", 4);
+        Cvars.Protection = Bal("g_balance_minelayer_protection", 0f);
         Cvars.ProximityRadius = Bal("g_balance_minelayer_proximity_radius", 125f);
         Cvars.ProximityTimeCore = Bal("g_balance_minelayer_proximity_time_core", 0.1f);
         Cvars.ProximityTimeEdge = Bal("g_balance_minelayer_proximity_time_edge", 0.3f);
@@ -95,9 +99,14 @@ public sealed class Minelayer : Weapon
         if (fire == FireMode.Primary)
         {
             // QC checks the per-player mine limit before prepareattack, so an over-limit press doesn't burn
-            // the refire timer; then gates the lay on the refire (weapon_prepareattack).
+            // the refire timer; then gates the lay on the refire (weapon_prepareattack). The over-limit press
+            // gives feedback (W_MineLayer_Attack, minelayer.qc:299-305): a center-print + the UNAVAILABLE cue.
+            // The refire delay throttles the spam, matching the comment in Base.
             if (Cvars.Limit > 0 && CountMines(actor) >= Cvars.Limit)
+            {
+                NotifyOverLimit(actor);
                 return;
+            }
             if (PrepareAttack(actor, slot, fire))
                 Attack(actor, slot);
         }
@@ -124,15 +133,27 @@ public sealed class Minelayer : Weapon
 
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out _);
         ShotInfo shot = WeaponFiring.SetupShot(actor, forward, new Vector3(-4, -4, -4), new Vector3(4, 4, 4), recoil: 5f);
+        // W_MuzzleFlash(thiswep, ...) — Base emits EFFECT_ROCKET_MUZZLEFLASH (minelayer.qc:310).
+        EffectEmitter.Emit("ROCKET_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
 
         Entity mine = Api.Entities.Spawn();
         mine.ClassName = "mine";
         mine.Owner = actor;
         mine.NetName = NetName;
+        // mine.realowner = actor (minelayer.qc:315). The proximity/team-safety checks key off the OWNER's team,
+        // so seed the mine's Team from the firer — without this a placed mine arms on a TEAMMATE in team modes.
+        mine.Team = actor.Team;
         mine.MoveType = MoveType.Toss;
         Projectiles.MakeTrigger(mine); // QC PROJECTILE_MAKETRIGGER (SOLID_CORPSE): transparent to the firer's movement
         mine.Flags = EntFlags.Item; // QC FL_PROJECTILE
         Api.Entities.SetSize(mine, new Vector3(-4, -4, -4), new Vector3(4, 4, 4));
+        // setmodel(mine, MDL_MINELAYER_MINE) — make the in-flight/placed mine visible (minelayer.qc:25 sticks the
+        // same model; the in-flight mine is a CSQCProjectile in Base, here a plain server model). Headless-safe.
+        if (Api.Services is not null)
+        {
+            mine.Model = "models/mine.md3";
+            Api.Entities.SetModel(mine, mine.Model);
+        }
         // setorigin(mine, w_shotorg - v_forward * 4) so it hits the wall at the right point.
         Api.Entities.SetOrigin(mine, shot.Origin - shot.Dir * 4f);
 
@@ -161,6 +182,10 @@ public sealed class Minelayer : Weapon
         mine.Touch = (self, other) => OnTouch(self, other);
         // W_MineLayer_Damage: knock the mine loose (damageforcescale) and/or destroy it when its HP is gone.
         mine.ProjectileDamage = (self, attacker) => OnMineDamage(self, attacker);
+        // event_damage = W_MineLayer_Damage (minelayer.qc:327): install the shoot-down shim so the damage
+        // pipeline subtracts hp + fires ProjectileDamage. exception=1: combo-able (passes the stock
+        // g_projectiles_damage -2 gate like the electro orb / hagar rocket).
+        Projectiles.MakeShootable(mine, exception: 1f);
 
         // MUTATOR_CALLHOOK(EditProjectile, actor, mine) (minelayer.qc).
         var ep = new MutatorHooks.EditProjectileArgs(actor, mine);
@@ -175,11 +200,12 @@ public sealed class Minelayer : Weapon
     {
         if (self.Health > 0f)
         {
-            // Knocked loose: bounce briefly then re-attach on the next surface touch.
+            // Knocked loose: bounce briefly then re-attach on the next surface touch (QC W_MineLayer_Damage:276).
             if (Cvars.DamageForceScale > 0f && self.MoveType == MoveType.None)
             {
-                self.MoveType = MoveType.Bounce;
-                self.MaxHealth = 0f;                 // disarm proximity until it re-grounds
+                self.MoveType = MoveType.Bounce; // not TOSS: a perpendicular hit can move the mine
+                self.MaxHealth = 0f;             // disarm proximity until it re-grounds
+                self.LTime = Api.Clock.Time + 0.0625f; // .wait: reattach gate — don't re-stick for one knock window
                 self.Touch = (s, o) => OnTouch(s, o);
             }
             return;
@@ -201,12 +227,13 @@ public sealed class Minelayer : Weapon
             self.Frame = 1f; // mine_explodeanyway: ignore team-safety once the countdown is running
         }
 
-        // A player's mines detonate if the owner disconnects or dies.
+        // A player's mines detonate if the owner disconnects, dies, or is frozen (QC W_MineLayer_Think:206).
         Entity? owner = self.Owner;
         if (owner is null || owner.IsFreed || owner.DeadState != DeadFlag.No
-            || (owner.Flags & EntFlags.Client) == 0)
+            || (owner.Flags & EntFlags.Client) == 0 || IsFrozen(owner))
         {
-            Explode(self, null);
+            // projectiledeathtype |= HITTYPE_BOUNCE (minelayer.qc:208): tag the auto-detonate as a bounce kill.
+            Explode(self, null, bounce: true);
             return;
         }
 
@@ -220,8 +247,11 @@ public sealed class Minelayer : Weapon
                 if (head.TakeDamage == DamageMode.No) continue;
                 if ((head.Flags & EntFlags.Client) == 0) continue;   // players only
                 if (head.DeadState != DeadFlag.No) continue;
+                if (IsFrozen(head)) continue;                        // QC !STAT(FROZEN, head)
                 if (ReferenceEquals(head, self.Owner)) continue;     // not the owner
-                if (self.Team != 0f && head.Team == self.Team) continue; // don't trigger for team mates
+                // DIFF_TEAM(head, realowner): self.Team now carries the owner's team (set in Attack), so a
+                // teammate (same non-zero team) never arms the mine. In FFA self.Team==0 -> everyone is a foe.
+                if (self.Team != 0f && head.Team == self.Team) continue;
 
                 if (self.MaxHealth == 0f)
                     Api.Sound.Play(self, SoundChannel.Body, "weapons/mine_trigger.wav");
@@ -244,7 +274,10 @@ public sealed class Minelayer : Weapon
     // (unless the lifetime countdown made the mine super-aggressive). minelayer.qc
     private void ProximityExplode(Entity self)
     {
-        if (self.Frame == 0f && self.Team != 0f && Api.Services is not null) // mine_explodeanyway == 0
+        // QC W_MineLayer_ProximityExplode:166 — the team-safety hold is gated on WEP_CVAR(protection) (default
+        // 0 = disabled) AND mine_explodeanyway == 0. With protection off (stock) the mine never holds for a
+        // friend; with it on, a friend inside the blast radius delays detonation.
+        if (Cvars.Protection != 0f && self.Frame == 0f && self.Team != 0f && Api.Services is not null)
         {
             foreach (Entity head in Api.Entities.FindInRadius(self.Origin, Cvars.Radius))
                 if (head.Team == self.Team && (head.Flags & EntFlags.Client) != 0 && !ReferenceEquals(head, self.Owner))
@@ -258,22 +291,30 @@ public sealed class Minelayer : Weapon
     // surface normal, and lock in place. minelayer.qc
     private void OnTouch(Entity self, Entity other)
     {
-        if (self.MoveType == MoveType.None) return; // already stuck
+        if (self.MoveType == MoveType.None) return; // already stuck (QC: MOVETYPE_NONE/FOLLOW early-out)
+        if (Api.Clock.Time <= self.LTime) return;   // .wait: a knock-loose mine won't reattach for one tick window
 
-        // Stick: freeze the mine in place on the surface (QC W_MineLayer_Stick orients to -trace_plane_normal
-        // and uses MOVETYPE_NONE; the surface-normal facing is a render detail we approximate by zeroing the
-        // velocity here — the headless toss landed it on the ground already).
-        if (other.Solid == Solid.Bsp || (other.Flags & EntFlags.Client) == 0)
-        {
-            Api.Sound.Play(self, SoundChannel.Body, "weapons/mine_stick.wav");
-            self.Velocity = Vector3.Zero;
-            self.MoveType = MoveType.None; // lock in place (disables gravity)
-            self.Gravity = 0f;
-        }
+        // Stick ONLY to BSP (QC W_MineLayer_Touch:265 — toucher.solid == SOLID_BSP). The earlier non-client
+        // broadening could stick a mine to other solids; dropped for faithfulness.
+        if (other.Solid != Solid.Bsp) return;
+
+        // W_MineLayer_Stick: freeze the mine in place on the surface (QC orients angles to -trace_plane_normal
+        // and uses MOVETYPE_NONE). We approximate the surface normal by the reverse of the incoming velocity and
+        // store it in movedir (PunchVector) so the remote-explode can set a non-zero .velocity for its fx/decal.
+        Vector3 vel = self.Velocity;
+        if (vel.LengthSquared() > 0f)
+            self.PunchVector = -Vector3.Normalize(vel); // movedir = -trace_plane_normal (approx)
+        Api.Sound.Play(self, SoundChannel.Body, "weapons/mine_stick.wav");
+        self.Velocity = Vector3.Zero;
+        self.MoveType = MoveType.None; // lock in place (disables gravity)
+        self.Gravity = 0f;
     }
 
     // W_MineLayer_Explode — radius damage + knockback, then remove. minelayer.qc
-    private void Explode(Entity self, Entity? directHit)
+    // (bounce = QC projectiledeathtype |= HITTYPE_BOUNCE for the owner-death/remote auto-detonate; the port's
+    // int weapon-id deathtype has no bounce flag and the obituary picks the same splash-murder string either
+    // way, so the tag is carried only as documentation — kept as a param to mark the faithful call sites.)
+    private void Explode(Entity self, Entity? directHit, bool bounce = false)
     {
         self.Touch = null;
         self.Think = null;
@@ -326,6 +367,11 @@ public sealed class Minelayer : Weapon
             e.Think = null;
             e.TakeDamage = DamageMode.No;
             e.ProjectileDamage = null;
+            // QC W_MineLayer_DoRemoteExplode:106-108 — a stuck mine has zero velocity, so .velocity = movedir
+            // (stored on stick) to give the blast fx/decal a direction.
+            if (e.MoveType == MoveType.None && e.PunchVector.LengthSquared() > 0f)
+                e.Velocity = e.PunchVector;
+            // remote_damage | HITTYPE_BOUNCE (inert tag in the port — see Explode).
             WeaponSplash.RadiusDamage(e, e.Origin, Cvars.RemoteDamage, Cvars.RemoteEdgeDamage,
                 Cvars.RemoteRadius, actor, RegistryId, Cvars.RemoteForce);
             Api.Entities.Remove(e);
@@ -350,4 +396,22 @@ public sealed class Minelayer : Weapon
 
     // METHOD(MineLayer, wr_checkammo2) — minelayer.qc (secondary available when mines are placed).
     public bool CheckAmmoSecondary(Entity actor) => CountMines(actor) > 0;
+
+    /// <summary>
+    /// Over-limit press feedback (QC W_MineLayer_Attack:301-304): a center-print telling the player the cap, plus
+    /// the UNAVAILABLE cue. The refire delay throttles the spam (the press is rejected before prepareattack).
+    /// </summary>
+    private void NotifyOverLimit(Entity actor)
+    {
+        if (Api.Services is null) return;
+        // Send_Notification(NOTIF_ONE, actor, MSG_MULTI, WEAPON_MINELAYER_LIMIT, limit) — f1 = the mine cap.
+        NotificationSystem.Send(NotifBroadcast.One, actor, MsgType.Multi, "WEAPON_MINELAYER_LIMIT", (float)Cvars.Limit);
+        // play2(actor, SND(UNAVAILABLE)) — W_Sound("unavailable"). play2 is a client-local 2D cue; the closest
+        // faithful seam here is a weapon-channel one-shot on the actor.
+        Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/unavailable.wav");
+    }
+
+    /// <summary>QC STAT(FROZEN, e): the gametype freeze stat OR the Frozen status effect (cf. WeaponFireDriver).</summary>
+    private static bool IsFrozen(Entity e)
+        => e.FrozenStat != 0 || (StatusEffectsCatalog.Frozen is { } fz && StatusEffectsCatalog.Has(e, fz));
 }

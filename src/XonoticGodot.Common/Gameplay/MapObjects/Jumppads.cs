@@ -8,9 +8,11 @@
 // Core behavior ported FAITHFULLY: trigger_push_calculatevelocity (the projectile-motion solver, including
 // solve_quadratic and the up/down-jump flighttime branch), the touch launch, weighted-random target
 // resolution, the no-target movedir push, PUSH_ONCE self-removal, the jumppad sound/effect debounce,
-// trigger_push_velocity (the player-directional XY/Z velocity pads with add/bidir/clamp modes), and the
-// teamplay pad ownership. Genuinely out of scope: warpzones, the bot waypoint trajectory probing
-// (trigger_push_test / tracetoss), and CSQC networking.
+// trigger_push_velocity (the player-directional XY/Z velocity pads with add/bidir/clamp modes), the
+// teamplay pad ownership, the message-jumppad centerprint, and the kill-credit (pushltime/istypefrag) reset.
+// Genuinely out of scope: warpzones, the bot waypoint trajectory probing (trigger_push_test / tracetoss),
+// CSQC networking, and (pending cross-file infra) the ANIMACTION_JUMP pose + jumppadcount/jumppadsused
+// multi-pad bookkeeping.
 
 using System.Numerics;
 using XonoticGodot.Common.Framework;
@@ -229,8 +231,17 @@ public static class Jumppads
                 self.PushLTime = MapMover.Now() + 0.2f;
                 MapMover.Sound(targ, SoundChannel.Auto, self.Noise);
             }
+            // QC: a message-jumppad center-prints this.message to the launched real client (jumppads.qc:392-393).
+            // Real-client/non-empty/handler gating is done inside the seam; bots fall through (lastteleport stamp).
+            MapMover.Centerprint(targ, self.Message);
             targ.LastTeleportTime = MapMover.Now();
             targ.LastTeleportOrigin = targ.Origin;
+
+            // QC: reset who pushed you into a hazard so the jumppad doesn't keep crediting an old attacker for a
+            // later kill (jumppads.qc:404-405). animdecide_setaction(ANIMACTION_JUMP) and the jumppadcount /
+            // jumppadsused multi-pad kill-credit bookkeeping need cross-file fields/seams (see todos).
+            targ.PushLTime = 0f;
+            targ.IsTypeFrag = false;
         }
 
         // If the jumppad's destination itself has targets, fire them (QC: SUB_UseTargets(this.enemy,...)).

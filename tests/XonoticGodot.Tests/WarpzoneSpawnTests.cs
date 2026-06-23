@@ -91,11 +91,12 @@ public class WarpzoneSpawnTests
         Assert.Equal("trigger_warpzone", a.Trigger!.ClassName);
         Assert.Equal(Solid.Trigger, a.Trigger!.Solid);
 
-        // an entity crossing INTO portal A emerges at portal B's plane (momentum preserved).
-        var e = new Entity { Origin = a.InOrigin, Velocity = new Vector3(-200, 0, 0) };
+        // an entity that has CROSSED INTO portal A (now just past the IN plane on its far/negative side, as the QC
+        // WarpZone_PlaneDist < 0 gate requires — server.qc:193) emerges at portal B's plane (momentum preserved).
+        var e = new Entity { Origin = a.InOrigin - new Vector3(1, 0, 0), Velocity = new Vector3(-200, 0, 0) };
         float speed = e.Velocity.Length();
         Assert.True(mgr.Teleport(e, a));
-        AssertVec(b.InOrigin, e.Origin, 0.5f);
+        AssertVec(b.InOrigin, e.Origin, 1.5f);
         Assert.True(MathF.Abs(e.Velocity.Length() - speed) < 0.01f);
     }
 

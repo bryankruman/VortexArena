@@ -49,7 +49,9 @@ public static class Breakable
         if (this_.DebrisVelocityJitter == Vector3.Zero) this_.DebrisVelocityJitter = new Vector3(70f, 70f, 70f);
         if (this_.DebrisAVelocityJitter == Vector3.Zero) this_.DebrisAVelocityJitter = new Vector3(600f, 600f, 600f);
         if (this_.DebrisTime == 0f) this_.DebrisTime = 3.5f;
-        if (this_.DebrisTimeJitter == 0f) this_.DebrisTimeJitter = 2.5f;
+        // QC bug (breakable.qc:331): `if(!this.debristimejitter) this.debristime = 2.5;` — an unset
+        // debristimejitter CLOBBERS debristime to 2.5 and leaves the jitter at 0. Reproduced faithfully.
+        if (this_.DebrisTimeJitter == 0f) this_.DebrisTime = 2.5f;
 
         if (string.IsNullOrEmpty(this_.Message))
             this_.Message = "got too close to an explosion";
@@ -242,6 +244,25 @@ public static class Breakable
         Entity v = ev.Victim;
         if (v.ClassName is "func_breakable" or "misc_breakablemodel")
         {
+            // QC func_breakable_damage NOSPLASH guard: a NOSPLASH breakable ignores indirect (splash) blast
+            // unless the deathtype is special (non-weapon). DEATH_ISSPECIAL(dt) && HITTYPE_SPLASH -> return.
+            if ((v.SpawnFlags & MapMover.SpawnNoSplash) != 0
+                && DeathTypes.HasHitType(ev.DeathType, DeathTypes.Splash)
+                && !DeathTypes.IsSpecial(ev.DeathType))
+            {
+                // restore HP so the resuscitate-to-HP>=1 early-out keeps the brush alive (splash bounced off).
+                v.Health = v.MaxHealthMover;
+                return false;
+            }
+
+            // QC func_breakable_damage team friendly-fire guard: a teamed breakable can't be broken by an
+            // attacker on the same team (this.team && attacker.team == this.team -> return).
+            if (v.Team != 0f && ev.Attacker is { } atk && atk.Team == v.Team)
+            {
+                v.Health = v.MaxHealthMover;
+                return false;
+            }
+
             // QC keeps the entity alive (it respawns / can be restored) — restore HP so the kill path's
             // "resuscitated to HP>=1, don't die" early-out leaves the brush intact, then break it.
             v.Health = v.MaxHealthMover;

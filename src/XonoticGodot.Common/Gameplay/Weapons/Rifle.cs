@@ -1,3 +1,4 @@
+using System;
 using System.Numerics;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Math;
@@ -16,8 +17,10 @@ namespace XonoticGodot.Common.Gameplay;
 /// knockback force, the per-target headshot bbox via <see cref="WeaponFiring.Headshot"/>), the
 /// rifle_accumulator/burstcost budget that gates rapid fire, AND the held-fire bullethail continuation
 /// (W_Rifle_BulletHail/_Continue — keeps auto-firing while held until the burst budget runs out; OFF by
-/// default in stock balance). Left to client input/render: the zoom-from-the-eye reaim (needs the zoom
-/// button), casings and tracer effects.
+/// default in stock balance), the clip-aware magazine reload (forced + secondary-flag reload through the
+/// 80-round clip via DecreaseAmmo/WrReload), and the signature FX (tr_rifle tracer, impact ricochet, brass
+/// casing). Left to client input: the zoom-from-the-eye reaim (needs the zoom button, not part of the
+/// headless server input).
 /// </summary>
 [Weapon]
 public sealed class Rifle : Weapon
@@ -47,6 +50,10 @@ public sealed class Rifle : Weapon
 
     /// <summary>g_balance_rifle_secondary — whether secondary fire is enabled.</summary>
     public bool SecondaryEnabled = true;
+
+    /// <summary>g_balance_rifle_secondary_reload — when set, ATCK2 triggers a reload instead of firing
+    /// (QC WEP_CVAR_SEC(WEP_RIFLE, reload), rifle.qc:142-143). 0 in stock balance.</summary>
+    public bool SecondaryReload;
 
 
     public Rifle()
@@ -95,12 +102,27 @@ public sealed class Rifle : Weapon
         Secondary.Tracer = Bal("g_balance_rifle_secondary_tracer", 0f);
 
         SecondaryEnabled = BalBool("g_balance_rifle_secondary", true);
+        SecondaryReload = BalBool("g_balance_rifle_secondary_reload", false);
     }
+
+    // QC wr_reload passes min(WEP_CVAR_PRI ammo, WEP_CVAR_SEC ammo) as W_Reload's sent_ammo_min (rifle.qc:179):
+    // the cheapest per-shot cost is the floor below which a reload is pointless. Both modes cost 10 here.
+    protected override float ReloadingAmmoMin() => MathF.Min(Primary.Ammo, Secondary.Ammo);
 
     // METHOD(Rifle, wr_think) — common/weapons/weapon/rifle.qc
     public override void WrThink(Entity actor, WeaponSlot slot, FireMode fire)
     {
         var st = actor.WeaponState(slot);
+
+        // Forced reload (rifle.qc:125-129): if reloading is enabled (reload_ammo != 0) and the clip has dropped
+        // below the cheapest per-shot cost, reload before doing anything else. ReloadingAmmo() resolves
+        // g_balance_rifle_reload_ammo (80); the clip is seeded full by WeaponFireDriver on raise and drained by
+        // FireBullets->DecreaseAmmo, so this branch is what finally fires the rifle's 2s magazine reload.
+        if (ReloadingAmmo() != 0f && st.ClipLoad < MathF.Min(Primary.Ammo, Secondary.Ammo))
+        {
+            WrReload(actor, slot);
+            return;
+        }
 
         // rifle_accumulator: a burst budget that fills over `bursttime`. Each shot costs `burstcost`; you
         // can't fire faster than the budget allows (this is what lets a few rapid shots then forces a pause).
@@ -123,7 +145,13 @@ public sealed class Rifle : Weapon
         }
         else if (fire == FireMode.Secondary && SecondaryEnabled)
         {
-            if (Api.Clock.Time >= st.RifleAccumulator + Secondary.Burstcost && PrepareAttack(actor, slot, fire))
+            // QC rifle.qc:142-143: when secondary `reload` is set, ATCK2 triggers a manual reload instead of
+            // firing. 0 in stock balance (secondary fires), so this is normally skipped.
+            if (SecondaryReload)
+            {
+                WrReload(actor, slot);
+            }
+            else if (Api.Clock.Time >= st.RifleAccumulator + Secondary.Burstcost && PrepareAttack(actor, slot, fire))
             {
                 FireBullets(actor, slot, Secondary, secondary: true);
                 st.RifleAccumulator += Secondary.Burstcost;
@@ -217,38 +245,58 @@ public sealed class Rifle : Weapon
     // W_Rifle_FireBullet (shared by W_Rifle_Attack / _Attack2) — fire `shots` piercing hitscan bullets.
     private void FireBullets(Entity actor, WeaponSlot slot, ModeBalance bal, bool secondary)
     {
-        // W_DecreaseAmmo(thiswep, actor, ammo)
-        actor.TakeResource(AmmoType, bal.Ammo);
+        int shots = bal.Shots;
+        if (shots < 1) shots = 1;
+
+        // W_DecreaseAmmo(thiswep, actor, ammo): clip-aware (rifle is WEP_FLAG_RELOADABLE with reload_ammo 80),
+        // so this drains the magazine (clip_load) — which is what makes the wr_think forced-reload branch fire.
+        // (Previously this called actor.TakeResource, draining the shared pool and pinning the clip at 80.)
+        DecreaseAmmo(actor, slot, bal.Ammo);
 
         // Penetrate-walls trueaim: aim at the body behind glass/walls (rifle has WEP_FLAG_PENETRATEWALLS).
+        // Pass wep/maxDamage so the accuracy FIRED denominator grows (QC W_SetupShot maxdamage = dmg*shots,
+        // rifle.qc:12); without it the rifle never registered an accuracy% shot.
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out _);
-        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, WeaponFiring.MaxShotDistance, penetrateWalls: true, recoil: 2f);
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, WeaponFiring.MaxShotDistance, penetrateWalls: true,
+            wep: this, maxDamage: bal.Damage * shots, recoil: 2f);
         // When zoomed QC re-aims straight from the eye (w_shotdir = v_forward) so the long-range shot is
         // pixel-accurate; the zoom button isn't part of the headless input, so we keep the trueaim origin.
 
         int deathType = RegistryId; // QC also OR's HITTYPE_SECONDARY for kill-message wording (cosmetic).
-        int shots = bal.Shots;
-        if (shots < 1) shots = 1;
+        // QC: tracer ? EFFECT_RIFLE : EFFECT_RIFLE_WEAK (rifle.qc:34). The primary's signature visible tracer.
+        string tracerEffect = bal.Tracer != 0f ? "RIFLE" : "RIFLE_WEAK";
         for (int i = 0; i < shots; ++i)
         {
-            // fireBullet_falloff: per-bullet spread, solid penetration multi-hit, distance falloff, force.
+            // fireBullet_falloff: per-bullet spread, solid penetration multi-hit, distance falloff, force, tracer.
             WeaponFiring.FireBullet(actor, shot.Origin, shot.Dir, WeaponFiring.MaxShotDistance, bal.Damage,
                 deathType, bal.Spread, bal.SolidPenetration, force: bal.Force,
-                headshotMultiplier: bal.HeadshotMultiplier);
+                headshotMultiplier: bal.HeadshotMultiplier, tracerEffect: tracerEffect);
             Vector3 impEnd = shot.Origin + shot.Dir * WeaponFiring.MaxShotDistance;
             TraceResult impTr = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, impEnd, MoveFilter.WorldOnly, actor);
             // w_backoff = the impact surface normal (trace_plane_normal), -force_dir fallback when no hit.
             Vector3 backoff = impTr.PlaneNormal.LengthSquared() > 1e-6f ? impTr.PlaneNormal : -shot.Dir;
-            EffectEmitter.Emit("RIFLE_IMPACT", impTr.EndPos, backoff * 1000f);
+            // wr_impacteffect (rifle.qc:213-218): EFFECT_RIFLE_IMPACT puff + a random ricochet ping (CH_SHOTS).
+            WeaponFiring.BulletImpactFx(actor, impTr.EndPos, backoff, "RIFLE_IMPACT");
         }
 
-        Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/campingrifle_fire.wav");
+        // QC: SpawnCasing (casing type 3) when g_casings >= 2 (rifle.qc:38-42); EjectCasing applies the gate.
+        WeaponFiring.EjectCasing(actor, shot.Origin, WeaponFiring.CasingType.Bullet);
+
+        // SND_RIFLE_FIRE (primary) / SND_RIFLE_FIRE2 (secondary) — rifle.qc:47/52, on CH_WEAPON_A.
+        Api.Sound.Play(actor, SoundChannel.Weapon,
+            secondary ? "weapons/campingrifle_fire2.wav" : "weapons/campingrifle_fire.wav");
         EffectEmitter.Emit("RIFLE_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
     }
 
-    // METHOD(Rifle, wr_checkammo1) — rifle.qc
-    public bool CheckAmmoPrimary(Entity actor) => actor.GetResource(AmmoType) >= Primary.Ammo;
+    // METHOD(Rifle, wr_checkammo1) — rifle.qc:154-159: have ammo if the shared pool OR the persistent magazine
+    // (weapon_load[id], reloadable) can cover one primary shot. The clip term was missing, so a player with a
+    // loaded magazine but a drained pool wrongly read as out-of-ammo.
+    public bool CheckAmmoPrimary(Entity actor)
+        => actor.GetResource(AmmoType) >= Primary.Ammo
+        || GetWeaponLoad(actor.WeaponState(new WeaponSlot(0)), RegistryId) >= Primary.Ammo;
 
-    // METHOD(Rifle, wr_checkammo2) — rifle.qc
-    public bool CheckAmmoSecondary(Entity actor) => actor.GetResource(AmmoType) >= Secondary.Ammo;
+    // METHOD(Rifle, wr_checkammo2) — rifle.qc:161-166: pool OR magazine, for the secondary shot cost.
+    public bool CheckAmmoSecondary(Entity actor)
+        => actor.GetResource(AmmoType) >= Secondary.Ammo
+        || GetWeaponLoad(actor.WeaponState(new WeaponSlot(0)), RegistryId) >= Secondary.Ammo;
 }

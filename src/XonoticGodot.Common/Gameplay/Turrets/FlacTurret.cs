@@ -24,17 +24,31 @@ public sealed class FlacTurret : Turret
     private const float ShotRadius = 100f;
     private const float ShotSpeed = 9000f;
     private const float ShotForce = 25f;
-    private const float ShotSpread = 0.0125f;
+    private const float ShotSpread = 0.02f;
     private const float ShotRefire = 0.1f;
     private const float TargetRange = 4000f;
     private const float TargetRangeMin = 500f;
-    private const float TargetRangeOptimal = 2000f;
+    private const float TargetRangeOptimal = 1250f;
     private const float AmmoMax = 1000f;
     private const float AmmoRecharge = 100f;
     private const float AimSpeed = 200f;
-    private const float AimMaxPitch = 90f;
+    private const float AimMaxPitch = 35f;
     private const float AimMaxRot = 360f;
     private const float FireTolerance = 150f;
+    private const float RespawnTime = 90f;
+
+    // QC target_select_*bias (turrets.cfg:73-77): rangebias 0.25, samebias 1, anglebias 0.5,
+    // playerbias 0 (moot — MISSILESONLY rejects players), missilebias 1.
+    private const float RangeBias = 0.25f;
+    private const float SameBias = 1f;
+    private const float AngleBias = 0.5f;
+    private const float PlayerBias = 0f;
+    private const float MissileBias = 1f;
+
+    // QC track_* (turrets.cfg:87-90): track_type 3 (fluid-inertia), accel_pitch 0.5, accel_rot 0.7, blendrate 0.2.
+    private const float TrackAccelPitch = 0.5f;
+    private const float TrackAccelRot = 0.7f;
+    private const float TrackBlendRate = 0.2f;
     // QC flac sets tur_impacttime = 10 default; the fuse is the predicted traveltime + a small jitter.
 
     // QC flac.qc tr_setup adds NOTURRETS | MISSILESONLY on top of the sv_turrets default (range/team/missiles).
@@ -53,17 +67,20 @@ public sealed class FlacTurret : Turret
 
     public override void Spawn(Entity e)
         => TurretSpawn.Init(this, e, new Vector3(-32f, -32f, 0f), new Vector3(32f, 32f, 64f),
-            AmmoMax, AmmoRecharge, shotVolly: 0);
+            AmmoMax, AmmoRecharge, shotVolly: 0, respawnTime: RespawnTime);
 
     public override void Think(Entity e)
     {
         // No splash AIM (the shell air-bursts itself at the intercept); just lead + shot-time compensate so the
-        // fuse meets a fast projectile target. Missile/player biases stay default.
+        // fuse meets a fast projectile target (QC flac.qc tr_setup aim_flags = TFL_AIM_LEAD | TFL_AIM_SHOTTIMECOMPENSATE
+        // — NO zPredict). Per-unit scoring biases + track-motor accel/blend from turrets.cfg.
         var p = new TurretParams(Select, TargetRangeMin, TargetRange, ShotDamage, ShotRefire,
             AimSpeed, FireTolerance, lead: true,
             rangeOptimal: TargetRangeOptimal, shotSpeed: ShotSpeed, aimMaxPitch: AimMaxPitch, aimMaxRot: AimMaxRot,
-            shotTimeCompensate: true, zPredict: true,
-            trackType: TurretAI.TrackFluidInertia);
+            shotTimeCompensate: true,
+            rangeBias: RangeBias, sameBias: SameBias, angleBias: AngleBias, missileBias: MissileBias, playerBias: PlayerBias,
+            trackType: TurretAI.TrackFluidInertia, trackAccelPitch: TrackAccelPitch,
+            trackAccelRot: TrackAccelRot, trackBlendRate: TrackBlendRate);
         TurretAI.RunCombat(e, in p, Attack);
     }
 

@@ -5,7 +5,9 @@
 // the lump can spawn doors / triggers / plats / jumppads / etc. Each registered delegate is the family's
 // static setup method (Action<Entity>), matching one QC spawnfunc.
 
+using System.Numerics;
 using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Services;
 
 namespace XonoticGodot.Common.Gameplay;
 
@@ -143,6 +145,18 @@ public static class MapObjectsRegistry
         SpawnFuncs.Register("func_wall", MapModels.WallSetup);
         SpawnFuncs.Register("func_clientwall", MapModels.ClientWallSetup);
         SpawnFuncs.Register("func_static", MapModels.StaticSetup);
+
+        // ---- pickup keys (misc/keys.qc) — the key SOURCE for trigger_keylock / key-gated func_door. The
+        //      keylock CONSUMER (item_keys_usekey) already lives in Triggers.cs/Doors.cs reading Entity.ItemKeys,
+        //      but with no key spawnfunc a map's key entity spawned NOTHING — so a key-gated area was permanently
+        //      locked. spawn_item_key + item_key_touch are ported inline below (KeySetup/KeyTouch); item_key1/2
+        //      and the QL item_key_gold/silver/master aliases pre-stamp .itemkeys then chain to item_key. ----
+        SpawnFuncs.Register("item_key", KeySetup);
+        SpawnFuncs.Register("item_key1", e => { e.ItemKeys = 1 << 1; KeySetup(e); }); // BIT(1) SILVER (legacy swap)
+        SpawnFuncs.Register("item_key2", e => { e.ItemKeys = 1 << 0; KeySetup(e); }); // BIT(0) GOLD (legacy swap)
+        SpawnFuncs.Register("item_key_gold", e => { e.ItemKeys = 1 << 0; KeySetup(e); });   // QL gold
+        SpawnFuncs.Register("item_key_silver", e => { e.ItemKeys = 1 << 1; KeySetup(e); }); // QL silver
+        SpawnFuncs.Register("item_key_master", e => { e.ItemKeys = 0xffffff; KeySetup(e); }); // QL master (all 24 bits)
 
         // ---- continuous map particle emitters (T48: func/pointparticles.qc) — server state/toggling;
         //      emission is client-side (game/client/MapParticleEmitters.cs). ----
@@ -308,6 +322,129 @@ public static class MapObjectsRegistry
         ViewLocation.RunDeferredInit();
         Follow.RunDeferredInit();
         AdvancedMovers.RunDeferredInit();
+    }
+
+    // ====================================================================
+    //  Pickup keys (common/mapobjects/misc/keys.qc) — ported inline so the
+    //  registry stays the single owner of this family (no separate Keys.cs).
+    // ====================================================================
+    //
+    //  spawnfunc(item_key)        -> KeySetup  (default netname/colormod/model per .itemkeys, then spawn_item_key)
+    //  item_key_touch             -> KeyTouch  (grant itemkeys bits, pickup sound+centerprint, fire .target once)
+    //
+    //  Faithful to keys.qc:77-264. Divergences (mirrors the rest of this module's contracts):
+    //   * MF_ROTATE spin + EF_LOWPRECISION are render/networking hints the port's Entity carries no field for
+    //     (no Entity.ModelFlags); the bit is dropped — the key still sits and is pickable, it just doesn't spin.
+    //     (Recorded as a cross-file todo.)
+    //   * QC's objerror on a multi-bit / nameless / modelless key is a headless no-op here: the edict is left
+    //     inert (removed) rather than crashing the map, matching how the port treats other objerror sites.
+    //   * play2(toucher, noise) (CH_TRIGGER, toucher-only) -> MapMover.Sound on the toucher.
+    //   * The Q3COMPAT_COMMON QL +8z origin nudge is omitted (no Q3 compat global in the port; keys.qc:125-127).
+
+    private const string KeyDefaultModel = "models/keys/key.md3";
+    private const string KeyDefaultSound = "ITEMPICKUP"; // QC SND(ITEMPICKUP)
+
+    /// <summary>Port of <c>spawnfunc(item_key)</c> + <c>spawn_item_key</c> (keys.qc:100-264): resolve the default
+    /// netname/colormod/model from <c>.itemkeys</c>, then place the key as a SOLID_TRIGGER pickup.</summary>
+    private static void KeySetup(Entity this_)
+    {
+        this_.ClassName = "item_key";
+
+        // Reject a key with more than one bit set (keys.qc:173-179) unless it's the master key. Headless: drop it.
+        if (this_.ItemKeys > 0 && (this_.ItemKeys & (this_.ItemKeys - 1)) != 0 && this_.ItemKeys != 0xffffff)
+        {
+            MapMover.RemoveEntity(this_);
+            return;
+        }
+
+        // Default netname + colormod by key id (keys.qc:182-238).
+        string netName;
+        Vector3 colorMod;
+        string model = KeyDefaultModel;
+        switch (this_.ItemKeys)
+        {
+            case 1 << 0: netName = "GOLD key";     colorMod = new Vector3(1f, .9f, 0f);    break;
+            case 1 << 1: netName = "SILVER key";   colorMod = new Vector3(.9f, .9f, .9f);  break;
+            case 1 << 2: netName = "BRONZE key";   colorMod = new Vector3(.6f, .25f, 0f);  break;
+            case 1 << 3: netName = "RED keycard";  colorMod = new Vector3(.9f, 0f, 0f);    break; // FIXME(Base): keycard model
+            case 1 << 4: netName = "BLUE keycard"; colorMod = new Vector3(0f, 0f, .9f);    break;
+            case 1 << 5: netName = "GREEN keycard";colorMod = new Vector3(0f, .9f, 0f);    break;
+            case 0xffffff: netName = "MASTER key"; colorMod = new Vector3(1f, .25f, .25f); break;
+            default:
+                // An unlisted/custom key: requires a custom netname AND model, else QC objerrors (keys.qc:221-237).
+                netName = "FLUFFY PINK keycard";
+                colorMod = new Vector3(1f, 1f, 1f);
+                if (string.IsNullOrEmpty(this_.NetName) || string.IsNullOrEmpty(this_.Model))
+                {
+                    MapMover.RemoveEntity(this_);
+                    return;
+                }
+                break;
+        }
+
+        if (string.IsNullOrEmpty(this_.NetName))
+            this_.NetName = netName;
+        if (this_.ColorModKey == Vector3.Zero)   // QC: if(!this.colormod) — null vector means "unset"
+            this_.ColorModKey = colorMod;
+        if (string.IsNullOrEmpty(this_.Model))
+            this_.Model = model;
+        if (string.IsNullOrEmpty(this_.Message))
+            this_.Message = "You've picked up the " + this_.NetName + "!";
+        if (string.IsNullOrEmpty(this_.Noise))
+            this_.Noise = KeyDefaultSound;
+
+        SpawnItemKey(this_);
+    }
+
+    /// <summary>Port of <c>spawn_item_key</c> (keys.qc:100-134): movetype/model/solid + bbox placement + touch.</summary>
+    private static void SpawnItemKey(Entity this_)
+    {
+        // spawnflags&1 (FLOATING) => noalign (keys.qc:104-105).
+        if ((this_.SpawnFlags & 1) != 0)
+            this_.NoAlign = true;
+
+        // noalign => MOVETYPE_NONE (suspended), else MOVETYPE_TOSS (drop to floor) (keys.qc:107-110).
+        this_.MoveType = this_.NoAlign ? MoveType.None : MoveType.Toss;
+
+        if (Api.Services is not null && !string.IsNullOrEmpty(this_.Model))
+            Api.Entities.SetModel(this_, this_.Model);
+
+        this_.Effects = AdvancedMovers.EfLowPrecision; // QC: this.effects = EF_LOWPRECISION
+        // QC: this.modelflags |= MF_ROTATE — no Entity.ModelFlags field in the port; spin dropped (see header todo).
+        this_.Solid = Solid.Trigger;
+
+        // bbox placement (keys.qc:122-123): origin raised +32z within the bbox, size '-16 -16 -56'..'16 16 0'.
+        MapMover.SetOrigin(this_, this_.Origin + new Vector3(0f, 0f, 32f));
+        MapMover.SetSize(this_, new Vector3(-16f, -16f, -56f), new Vector3(16f, 16f, 0f));
+
+        // NOTE: not FL_ITEM, so no DropToFloor_QC special-casing; the TOSS integrator settles it next frame
+        // (keys.qc:129-131 DropToFloor_QC_DelayedInit). Matches StartItem.cs's TOSS drop contract.
+
+        this_.Touch = KeyTouch;
+        MapMover.IndexRegister(this_);
+    }
+
+    /// <summary>Port of <c>item_key_touch</c> (keys.qc:77-95): grant the key bits to a player, play the pickup
+    /// sound + centerprint, then fire <c>.target</c> ONCE (the message is blanked across SUB_UseTargets so the
+    /// fired targets don't re-print it, exactly as QC does).</summary>
+    private static void KeyTouch(Entity this_, Entity toucher)
+    {
+        if ((toucher.Flags & EntFlags.Client) == 0) // IS_PLAYER
+            return;
+
+        // Already holds every bit this key grants -> ignore (keys.qc:83-84).
+        if ((toucher.ItemKeys & this_.ItemKeys) != 0)
+            return;
+
+        toucher.ItemKeys |= this_.ItemKeys;
+        MapMover.Sound(toucher, SoundChannel.TriggerAuto, this_.Noise); // QC play2(toucher, noise)
+        MapMover.Centerprint(toucher, this_.Message);
+
+        // Fire .target with the message blanked so SUB_UseTargets doesn't re-centerprint it (keys.qc:91-94).
+        string oldMessage = this_.Message;
+        this_.Message = "";
+        MapMover.UseTargets(this_, toucher, toucher);
+        this_.Message = oldMessage;
     }
 }
 

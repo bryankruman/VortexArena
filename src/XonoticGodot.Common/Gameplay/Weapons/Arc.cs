@@ -186,7 +186,7 @@ public sealed class Arc : Weapon
                     Api.Sound.Stop(actor, SoundChannel.Weapon);
                     Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/arc_stop.wav");
                 }
-                BeamCooldown(actor, st);
+                BeamCooldown(st, burst: false);
                 st.ArcBeam = null;
             }
         }
@@ -198,12 +198,31 @@ public sealed class Arc : Weapon
         }
     }
 
-    // Cool the barrel when the beam isn't active (W_Arc_Beam_Think's release branch).
-    private void BeamCooldown(Entity actor, WeaponSlotState st)
+    // Cool the barrel when the beam isn't active (W_Arc_Beam_Think's release branch, arc.qc:223-258). QC picks a
+    // per-state cooldown_speed: full `cooldown` while still hot (heat > overheat_min), a heat-proportional
+    // `heat/beam_refire` once below overheat_min (so the last sliver bleeds off in ~beam_refire), or 0 while the
+    // burst beam is held; that speed is then drained from the heat each frame.
+    private void BeamCooldown(WeaponSlotState st, bool burst)
     {
-        if (Beam.Cooldown > 0f && st.BeamHeat > 0f)
-            st.BeamHeat = MathF.Max(0f, st.BeamHeat - Beam.Cooldown * Api.Clock.FrameTime);
+        if (Beam.Cooldown <= 0f)
+        {
+            st.BeamInitialized = false;
+            return;
+        }
+        float cooldownSpeed = CooldownSpeed(st, burst);
+        if (cooldownSpeed > 0f && st.BeamHeat > 0f)
+            st.BeamHeat = MathF.Max(0f, st.BeamHeat - cooldownSpeed * Api.Clock.FrameTime);
         st.BeamInitialized = false;
+    }
+
+    // QC arc.qc:225-231 cooldown_speed selection.
+    private float CooldownSpeed(WeaponSlotState st, bool burst)
+    {
+        if (st.BeamHeat > Beam.OverheatMin && Beam.Cooldown > 0f)
+            return Beam.Cooldown;
+        if (!burst)
+            return Beam.Refire > 0f ? st.BeamHeat / Beam.Refire : 0f;
+        return 0f;
     }
 
     // W_Arc_Beam_Think (full DPS core) — one frame of the beam: accumulate heat (jamming on overheat), curve
@@ -216,11 +235,16 @@ public sealed class Arc : Weapon
         {
             if (st.ArcOverheat == 0f)
             {
-                st.ArcOverheat = Api.Clock.Time + Beam.OverheatMax; // jam duration ~ heat
+                // QC arc.qc:240-244: while overheated, cooldown_speed == `cooldown` (heat is at max, above
+                // overheat_min) and the jam lasts `time + heat / cooldown_speed` — i.e. as long as it takes to bleed
+                // the accumulated heat back off at the cooldown rate (~overheat_max/cooldown), NOT a fixed
+                // overheat_max seconds. Falls back to overheat_max only if cooldown is disabled (no bleed rate).
+                float cooldownSpeed = CooldownSpeed(st, burst);
+                st.ArcOverheat = Api.Clock.Time + (cooldownSpeed > 0f ? st.BeamHeat / cooldownSpeed : Beam.OverheatMax);
                 Api.Sound.Stop(actor, SoundChannel.Weapon);          // end the beam loop before the stop cue
                 Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/arc_stop.wav"); // QC arc.qc:237 SND_ARC_STOP
             }
-            BeamCooldown(actor, st);
+            BeamCooldown(st, burst);
             st.ArcBeam = null;
             return;
         }
@@ -271,7 +295,16 @@ public sealed class Arc : Weapon
         // Single straight segment along the (curved) beam_dir — the QC bezier segmentation is a render-side
         // smoothing of this same trace.
         Vector3 end = shot.Origin + st.BeamDir * Beam.Range;
-        TraceResult tr = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, end, MoveFilter.Normal, actor);
+        // QC arc.qc:375 traces through WarpZone_traceline_antilag at ANTILAG_LATENCY: rewind other players to the
+        // shooter's view-time so a high-ping player's beam connects on a strafing target. Bracket the damage trace
+        // (no-op on a client / bot-only server / test where no lag-comp provider is installed).
+        LagComp.Begin(actor);
+        TraceResult tr;
+        try
+        {
+            tr = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, end, MoveFilter.Normal, actor);
+        }
+        finally { LagComp.End(); }
         EffectEmitter.Emit("ARC_BEAM", shot.Origin, tr.EndPos, 0);
 
         Entity? hit = tr.Ent;
@@ -287,13 +320,21 @@ public sealed class Arc : Weapon
                 float aps = burst ? Beam.BurstHealingAps : Beam.HealingAps;
                 if (hps > 0f)
                 {
-                    float hpLimit = isPlayer ? Beam.HealingHmax : 0f; // 0 == no limit for non-players
-                    float newHp = hit.GetResource(ResourceType.Health) + hps * coefficient;
-                    if (hpLimit <= 0f || newHp <= hpLimit)
-                        hit.SetResource(ResourceType.Health, newHp);
+                    // QC Heal(trace_ent, own, hps*coef, hplimit) — GiveResourceWithLimit(Health) which CLAMPS the
+                    // post-give total to the limit (players: healing_hmax; non-players: RES_LIMIT_NONE = uncapped).
+                    // Previously this DROPPED the heal entirely once it would push past hmax instead of topping up
+                    // to it — a real divergence right at the cap.
+                    float hpLimit = isPlayer ? Beam.HealingHmax : Resources.LimitNone;
+                    hit.GiveResourceWithLimit(ResourceType.Health, hps * coefficient, hpLimit);
                 }
                 if (isPlayer && aps > 0f && hit.GetResource(ResourceType.Armor) <= Beam.HealingAmax)
+                {
                     hit.GiveResourceWithLimit(ResourceType.Armor, aps * coefficient, Beam.HealingAmax);
+                    // QC arc.qc:417 — refresh the armor-rot pause so the just-given armor doesn't immediately
+                    // start rotting back off.
+                    hit.PauseRotArmorFinished = MathF.Max(hit.PauseRotArmorFinished,
+                        Api.Clock.Time + Bal("g_balance_pause_armor_rot", 1f));
+                }
             }
             else
             {
@@ -351,12 +392,18 @@ public sealed class Arc : Weapon
             missile.Count = 0; // QC .cnt = bounce counter
             missile.Touch = (self, other) => BoltTouch(self, other);
             missile.Think = self => ExplodeBolt(self); // adaptor_think2use_hittype_splash at lifetime
-            missile.ProjectileDamage = (self, attacker) => ExplodeBolt(self); // W_Arc_Bolt_Damage shoot-down
+            missile.ProjectileDamage = (self, _) => ExplodeBolt(self); // W_Arc_Bolt_Damage -> W_PrepareExplosionByDamage
             missile.NextThink = Api.Clock.Time + Bolt.Lifetime;
 
             // MUTATOR_CALLHOOK(EditProjectile, actor, missile) — fired per bolt (arc.qc W_Arc_Attack_Bolt).
             var ep = new MutatorHooks.EditProjectileArgs(actor, missile);
             MutatorHooks.EditProjectile.Call(ref ep);
+
+            // [W1-projectile-net] Route incoming damage through the shoot-down shim (QC W_Arc_Bolt_Damage):
+            // it runs the g_projectiles_damage gate, subtracts the damage from the bolt's RES_HEALTH, and only
+            // fires ProjectileDamage (ExplodeBolt) once HP <= 0 — so a partial-damage graze leaves the bolt
+            // alive instead of detonating it on any hit. The Arc bolt is not combo-able (exception -1, default).
+            Projectiles.MakeShootable(missile);
         }
 
         ++st.MiscBulletCounter; // refire2 cadence (every bolt_count-th shot waits refire2 in the weapon loop)
@@ -366,8 +413,10 @@ public sealed class Arc : Weapon
     // W_Arc_Bolt_Touch — explode on a damageable target or when bounces run out; otherwise bounce. arc.qc
     private void BoltTouch(Entity self, Entity other)
     {
-        bool hitPlayer = other.TakeDamage == DamageMode.Aim || (other.Flags & EntFlags.Client) != 0;
-        if (self.Count >= Bolt.BounceCount || Bolt.BounceCount == 0 || hitPlayer)
+        // QC arc.qc:116 keys solely on toucher.takedamage == DAMAGE_AIM (anything that aim-takes damage —
+        // players, bodies, monsters, shootable projectiles), not on the Client flag specifically.
+        bool hitAimTarget = other.TakeDamage == DamageMode.Aim;
+        if (self.Count >= Bolt.BounceCount || Bolt.BounceCount == 0 || hitAimTarget)
         {
             ExplodeBolt(self);
             return;
@@ -408,10 +457,21 @@ public sealed class Arc : Weapon
     public override float AnimtimeFor(FireMode fire)
         => fire == FireMode.Secondary ? Bolt.Refire : Beam.Animtime;
 
-    // METHOD(Arc, wr_checkammo1) — arc.qc (beam needs cells to start).
-    public bool CheckAmmoPrimary(Entity actor) => actor.GetResource(AmmoType) >= Beam.Ammo;
+    // METHOD(Arc, wr_checkammo1) — arc.qc:664-667. The continuous beam only needs ANY cells to start
+    // (`!beam_ammo || cells > 0`), NOT a full per-second `beam_ammo` worth — the per-tick drain in BeamTick
+    // already scales by whatever fraction of a tick's ammo remains. Gating on `cells >= beam_ammo (6)` was a
+    // real bug: a player with 1-5 cells should fire the beam (draining what's left) but was auto-switched away.
+    public bool CheckAmmoPrimary(Entity actor)
+        => Beam.Ammo == 0f || actor.GetResource(AmmoType) > 0f;
 
-    // METHOD(Arc, wr_checkammo2) — arc.qc (bolt burst vs burst-beam).
+    // METHOD(Arc, wr_checkammo2) — arc.qc:668-679. Bolt secondary needs `cells >= bolt_ammo (1)`; the burst-beam
+    // secondary (bolt disabled) needs only `overheat_max > 0 && (!burst_ammo || cells > 0)` — same "any cells"
+    // rule as the primary beam, not a full `burst_ammo (15)` worth.
     public bool CheckAmmoSecondary(Entity actor)
-        => actor.GetResource(AmmoType) >= (BoltEnabled ? Bolt.Ammo : Beam.BurstAmmo);
+    {
+        float cells = actor.GetResource(AmmoType);
+        if (BoltEnabled)
+            return cells >= Bolt.Ammo;
+        return Beam.OverheatMax > 0f && (Beam.BurstAmmo == 0f || cells > 0f);
+    }
 }

@@ -1,5 +1,6 @@
 using System.Numerics;
 using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Gameplay.Damage;
 using XonoticGodot.Common.Math;
 using XonoticGodot.Common.Services;
 
@@ -31,12 +32,19 @@ public sealed class Crylink : Weapon
         public float EdgeDamage;          // *_edgedamage
         public float Force;               // *_force (negative = pull)
         public float MiddleLifetime;      // *_middle_lifetime
+        public float MiddleFadeTime;      // *_middle_fadetime
         public float OtherLifetime;       // *_other_lifetime
+        public float OtherFadeTime;       // *_other_fadetime
         public float Radius;              // *_radius
         public float Refire;              // *_refire
         public int   Shots;               // *_shots (spike count)
         public float Speed;               // *_speed
         public float Spread;              // *_spread
+        public int   JoinExplode;         // *_joinexplode (convergence bonus blast on/off)
+        public float JoinExplodeDamage;   // *_joinexplode_damage
+        public float JoinExplodeEdge;     // *_joinexplode_edgedamage
+        public float JoinExplodeRadius;   // *_joinexplode_radius
+        public float JoinExplodeForce;    // *_joinexplode_force
     }
 
     public ModeBalance Primary;
@@ -70,12 +78,19 @@ public sealed class Crylink : Weapon
         Primary.EdgeDamage = Bal("g_balance_crylink_primary_edgedamage", 5f);
         Primary.Force = Bal("g_balance_crylink_primary_force", -50f);
         Primary.MiddleLifetime = Bal("g_balance_crylink_primary_middle_lifetime", 5f);
+        Primary.MiddleFadeTime = Bal("g_balance_crylink_primary_middle_fadetime", 5f);
         Primary.OtherLifetime = Bal("g_balance_crylink_primary_other_lifetime", 5f);
+        Primary.OtherFadeTime = Bal("g_balance_crylink_primary_other_fadetime", 5f);
         Primary.Radius = Bal("g_balance_crylink_primary_radius", 80f);
         Primary.Refire = Bal("g_balance_crylink_primary_refire", 0.7f);
         Primary.Shots = BalInt("g_balance_crylink_primary_shots", 6);
         Primary.Speed = Bal("g_balance_crylink_primary_speed", 2000f);
         Primary.Spread = Bal("g_balance_crylink_primary_spread", 0.08f);
+        Primary.JoinExplode = BalInt("g_balance_crylink_primary_joinexplode", 1);
+        Primary.JoinExplodeDamage = Bal("g_balance_crylink_primary_joinexplode_damage", 0f);
+        Primary.JoinExplodeEdge = Bal("g_balance_crylink_primary_joinexplode_edgedamage", 0f);
+        Primary.JoinExplodeRadius = Bal("g_balance_crylink_primary_joinexplode_radius", 0f);
+        Primary.JoinExplodeForce = Bal("g_balance_crylink_primary_joinexplode_force", 0f);
 
         Secondary.Ammo = Bal("g_balance_crylink_secondary_ammo", 3f);
         Secondary.Animtime = Bal("g_balance_crylink_secondary_animtime", 0.2f);
@@ -85,24 +100,30 @@ public sealed class Crylink : Weapon
         Secondary.EdgeDamage = Bal("g_balance_crylink_secondary_edgedamage", 4f);
         Secondary.Force = Bal("g_balance_crylink_secondary_force", -200f);
         Secondary.MiddleLifetime = Bal("g_balance_crylink_secondary_middle_lifetime", 5f);
+        Secondary.MiddleFadeTime = Bal("g_balance_crylink_secondary_middle_fadetime", 5f);
         Secondary.OtherLifetime = Bal("g_balance_crylink_secondary_other_lifetime", 5f);
+        Secondary.OtherFadeTime = Bal("g_balance_crylink_secondary_other_fadetime", 5f);
         Secondary.Radius = Bal("g_balance_crylink_secondary_radius", 100f);
         Secondary.Refire = Bal("g_balance_crylink_secondary_refire", 0.7f);
         Secondary.Shots = BalInt("g_balance_crylink_secondary_shots", 5);
         Secondary.Speed = Bal("g_balance_crylink_secondary_speed", 3000f);
         Secondary.Spread = Bal("g_balance_crylink_secondary_spread", 0.01f);
+        Secondary.JoinExplode = BalInt("g_balance_crylink_secondary_joinexplode", 0);
+        Secondary.JoinExplodeDamage = Bal("g_balance_crylink_secondary_joinexplode_damage", 0f);
+        Secondary.JoinExplodeEdge = Bal("g_balance_crylink_secondary_joinexplode_edgedamage", 0f);
+        Secondary.JoinExplodeRadius = Bal("g_balance_crylink_secondary_joinexplode_radius", 0f);
+        Secondary.JoinExplodeForce = Bal("g_balance_crylink_secondary_joinexplode_force", 0f);
 
         SecondaryEnabled = BalBool("g_balance_crylink_secondary", true);
 
-        // join/link/fade balance (bal-wep-xonotic.cfg g_balance_crylink_*).
+        // join/link balance (bal-wep-xonotic.cfg g_balance_crylink_*). Per-spike fade rate is now read from
+        // *_middle_fadetime / *_other_fadetime above (Configure), not a single hardcoded 5s.
         PrimaryJoinSpread = Bal("g_balance_crylink_primary_joinspread", 0.2f);
         PrimaryJoinDelay = Bal("g_balance_crylink_primary_joindelay", 0.1f);
         PrimaryLinkExplode = BalInt("g_balance_crylink_primary_linkexplode", 0);
-        PrimaryFadeTime = 5f;
         SecondaryJoinSpread = Bal("g_balance_crylink_secondary_joinspread", 0f);
         SecondaryJoinDelay = Bal("g_balance_crylink_secondary_joindelay", 0f);
         SecondaryLinkExplode = BalInt("g_balance_crylink_secondary_linkexplode", 1);
-        SecondaryFadeTime = 5f;
         SecondarySpreadType = BalInt("g_balance_crylink_secondary_spreadtype", 1);
     }
 
@@ -117,9 +138,6 @@ public sealed class Crylink : Weapon
     /// <summary>g_balance_crylink_*_joindelay — min time the group must persist before it can link-join.</summary>
     public float PrimaryJoinDelay = 0.1f;
     public float SecondaryJoinDelay = 0.1f;
-    /// <summary>g_balance_crylink_*_fadetime — fade duration over which a spike's damage decays to 0.</summary>
-    public float PrimaryFadeTime = 0.1f;
-    public float SecondaryFadeTime = 0.1f;
 
     // METHOD(Crylink, wr_think) — common/weapons/weapon/crylink.qc
     public override void WrThink(Entity actor, WeaponSlot slot, FireMode fire)
@@ -188,9 +206,19 @@ public sealed class Crylink : Weapon
         float damage = bal.Damage, edge = bal.EdgeDamage, radius = bal.Radius, force = bal.Force;
         float bounceFactor = bal.BounceDamageFactor;
         int maxBounces = (int)bal.Bounces;
-        float fadeTime = secondary ? SecondaryFadeTime : PrimaryFadeTime;
         int linkExplode = secondary ? SecondaryLinkExplode : PrimaryLinkExplode;
-        int deathType = RegistryId;
+
+        // QC projectiledeathtype = thiswep.m_id (| HITTYPE_SECONDARY for the secondary). The pipeline int
+        // deathtype is RegistryId for both modes (impact/kill messages don't differ for crylink); the string
+        // deathTag carries the HITTYPE bits so HITTYPE_SECONDARY (and HITTYPE_BOUNCE, added on a bounce) survive
+        // to the obituary and to the splash-bit logic, exactly as Mortar threads its bounce/secondary tag.
+        string baseDeathType = secondary
+            ? DeathTypes.WithHitType(DeathTypes.FromWeapon(NetName), DeathTypes.Secondary)
+            : DeathTypes.FromWeapon(NetName);
+
+        // The QC center spike (counter == (shots-1)*0.5) carries *_middle_lifetime/*_middle_fadetime; the rest
+        // use *_other_*. For the primary W_Crylink_Attack QC uses counter==0 as the middle spike instead.
+        int middleIndex = secondary ? (int)((shots - 1) * 0.5f) : 0;
 
         var group = new List<Entity>(shots);
         for (int i = 0; i < shots; ++i)
@@ -221,9 +249,12 @@ public sealed class Crylink : Weapon
             proj.Velocity = WeaponFiring.ProjectileVelocity(dir, up, bal.Speed);
             proj.Angles = QMath.VecToAngles(proj.Velocity);
 
-            // First spike uses middle_lifetime, the rest other_lifetime. fade_time/fade_rate scale the
-            // spike's damage down to 0 over fadetime once its lifetime starts running out.
-            float lifetime = (i == 0) ? bal.MiddleLifetime : bal.OtherLifetime;
+            // The center spike uses middle_lifetime/middle_fadetime, the rest other_*. fade_time/fade_rate
+            // scale the spike's damage down to 0 over fadetime once its lifetime starts running out. Each spike
+            // reads its OWN fadetime cvar (the rate), not one collapsed value.
+            bool isMiddle = i == middleIndex;
+            float lifetime = isMiddle ? bal.MiddleLifetime : bal.OtherLifetime;
+            float fadeTime = isMiddle ? bal.MiddleFadeTime : bal.OtherFadeTime;
             proj.MaxHealth = Api.Clock.Time + lifetime;         // QC .fade_time
             proj.Health = (fadeTime > 0f) ? 1f / fadeTime : 0f; // QC .fade_rate (reused .health field)
             proj.Count = maxBounces;                            // QC .cnt = remaining bounces
@@ -231,8 +262,11 @@ public sealed class Crylink : Weapon
 
             proj.Think = self => Api.Entities.Remove(self);     // W_Crylink_Fadethink
             proj.NextThink = proj.MaxHealth + fadeTime;
-            proj.Touch = (self, other) => OnTouch(self, other, damage, edge, radius, force, bounceFactor,
-                linkExplode, deathType, group, secondary);
+            // QC realowner (the damage attacker) stays the firer even after the bounce clears proj.owner; the port
+            // has a single Owner field, so capture `actor` here as the immutable attacker passed to RadiusDamage.
+            Entity realOwner = actor;
+            proj.Touch = (self, other) => OnTouch(self, other, realOwner, damage, edge, radius, force,
+                bounceFactor, linkExplode, baseDeathType, group, secondary);
 
             // MUTATOR_CALLHOOK(EditProjectile, actor, proj) — fired per spike (crylink.qc).
             var ep = new MutatorHooks.EditProjectileArgs(actor, proj);
@@ -250,41 +284,53 @@ public sealed class Crylink : Weapon
         {
             st.CrylinkLastGroup = group[0];
             st.CrylinkWaitRelease = secondary ? 2 : 1;
-            _groups[group[0]] = group;
+            _groups[group[0]] = new GroupInfo(group, actor, bal, secondary, baseDeathType);
         }
     }
 
+    /// <summary>The per-group bookkeeping a registered link-group needs after Attack returns: the spike list,
+    /// the firer (for the joinexplode RadiusDamage attacker), the per-mode balance (joinexplode bonus + radius),
+    /// the secondary flag (impact-fx selection) and the string deathtype (HITTYPE bits).</summary>
+    private sealed record GroupInfo(List<Entity> Spikes, Entity Owner, ModeBalance Bal, bool Secondary, string DeathType);
+
     // Active link groups keyed by their head spike (the C# successor to the QC queuenext/queueprev ring).
-    private readonly Dictionary<Entity, List<Entity>> _groups = new();
+    private readonly Dictionary<Entity, GroupInfo> _groups = new();
 
     /// <summary>
     /// Port of W_Crylink_LinkJoin (crylink.qc): retarget every live spike in the group so they converge on
     /// the group's average position/velocity, producing the signature "snap together then spread" pattern.
-    /// jspeed = joinspread * initial speed controls how fast they converge.
+    /// jspeed = joinspread * initial speed controls how fast they converge. Returns the meeting origin and the
+    /// time-to-meet (QC w_crylink_linkjoin_time), so WrThink can schedule the W_Crylink_LinkJoinEffect_Think
+    /// convergence sparkle + joinexplode bonus at the right place/time.
     /// </summary>
-    private void LinkJoin(Entity head, float jspeed)
+    private (Vector3 origin, float time) LinkJoin(Entity head, float jspeed)
     {
-        if (!_groups.TryGetValue(head, out var group)) return;
+        if (!_groups.TryGetValue(head, out var info)) return (head.Origin, 0f);
         _groups.Remove(head);
+        var group = info.Spikes;
         group.RemoveAll(e => e.IsFreed);
-        if (group.Count < 2) return;
 
         Vector3 avgOrg = Vector3.Zero, avgVel = Vector3.Zero;
+        if (group.Count == 0) return (head.Origin, 0f);
         foreach (var p in group) { avgOrg += p.Origin; avgVel += p.Velocity; }
         avgOrg /= group.Count;
         avgVel /= group.Count;
 
+        if (group.Count < 2)
+            return (avgOrg, 0f); // nothing to do (QC returns avg_org)
+
         if (jspeed == 0f)
         {
             foreach (var p in group) p.Velocity = avgVel;
-            return;
+            // QC targ_origin = avg_org + HUGE * normalize(avg_vel); time stays 0.
+            return (avgOrg, 0f);
         }
 
         // avg distance from center -> time to meet; aim each spike at the meeting point.
         float avgDist = 0f;
         foreach (var p in group) avgDist += (p.Origin - avgOrg).LengthSquared();
         avgDist = MathF.Sqrt(avgDist / group.Count);
-        if (avgDist == 0f) return;
+        if (avgDist == 0f) return (avgOrg, 0f);
 
         float meetTime = avgDist / jspeed;
         Vector3 targ = avgOrg + meetTime * avgVel;
@@ -293,31 +339,94 @@ public sealed class Crylink : Weapon
             p.Velocity = (targ - p.Origin) * (1f / meetTime);
             p.Angles = QMath.VecToAngles(p.Velocity);
         }
+
+        // Schedule the convergence think at the meeting point (W_Crylink_LinkJoinEffect_Think): a head-tracked
+        // entity that fires once the spikes are due to meet, evaluating the >=2-converged joinexplode bonus +
+        // the EFFECT_CRYLINK_JOINEXPLODE sparkle. The group list lives on long enough via the head reference.
+        ScheduleLinkJoinEffect(targ, meetTime, info);
+        return (targ, meetTime);
+    }
+
+    /// <summary>
+    /// Port of W_Crylink_LinkJoinEffect_Think (crylink.qc): at the convergence meeting time, count how many
+    /// spikes are now very close to the meeting point; if at least 2 and the mode's joinexplode is enabled,
+    /// deal the (n/shots)-scaled joinexplode bonus RadiusDamage and emit EFFECT_CRYLINK_JOINEXPLODE there.
+    /// Scheduled as a self-deleting think entity, exactly as the QC linkjoineffect entity.
+    /// </summary>
+    private void ScheduleLinkJoinEffect(Vector3 pos, float meetTime, GroupInfo info)
+    {
+        Entity fx = Api.Entities.Spawn();
+        fx.ClassName = "linkjoineffect";
+        fx.Owner = info.Owner;
+        Api.Entities.SetOrigin(fx, pos);
+        fx.NextThink = Api.Clock.Time + meetTime;
+        fx.Think = self =>
+        {
+            // QC: is there at least 2 projectiles very close to this.origin? (vlen2(p.org-this.org) < vlen2(p.vel)*frametime)
+            float frameTime = Api.Clock.FrameTime;
+            int n = 0;
+            foreach (var p in info.Spikes)
+            {
+                if (p.IsFreed) continue;
+                float distSq = (p.Origin - self.Origin).LengthSquared();
+                float velSq = p.Velocity.LengthSquared();
+                if (distSq < velSq * frameTime) ++n;
+            }
+            if (n >= 2 && info.Bal.JoinExplode != 0)
+            {
+                float scale = n / (float)info.Bal.Shots;
+                WeaponSplash.RadiusDamage(self, self.Origin,
+                    scale * info.Bal.JoinExplodeDamage, scale * info.Bal.JoinExplodeEdge,
+                    scale * info.Bal.JoinExplodeRadius, info.Owner, RegistryId,
+                    scale * info.Bal.JoinExplodeForce, accuracyWeapon: this, deathTag: info.DeathType);
+                EffectEmitter.Emit("CRYLINK_JOINEXPLODE", self.Origin, Vector3.Zero, n);
+            }
+            Api.Entities.Remove(self);
+        };
     }
 
     // W_Crylink_Touch — radius damage on contact (faded over lifetime); reduced damage on a bounce, until
     // bounces run out; chain-detonate the whole group when linkexplode says so. crylink.qc
-    private void OnTouch(Entity self, Entity other, float damage, float edge, float radius, float force,
-        float bounceFactor, int linkExplode, int deathType, List<Entity> group, bool secondary)
+    // `realOwner` is the captured firer (QC realowner — the damage attacker that survives owner=NULL on bounce);
+    // `deathType` is the string deathtype carrying HITTYPE_SECONDARY (and HITTYPE_BOUNCE on a bounced spike).
+    private void OnTouch(Entity self, Entity other, Entity realOwner, float damage, float edge, float radius,
+        float force, float bounceFactor, int linkExplode, string deathType, List<Entity> group, bool secondary)
     {
-        // QC wr_impacteffect keys the impact sprite off HITTYPE_SECONDARY: secondary spikes use the smaller
-        // CRYLINK_IMPACT2, primary the bigger CRYLINK_IMPACT (both with '0 0 0' velocity).
-        string impact = secondary ? "CRYLINK_IMPACT2" : "CRYLINK_IMPACT";
+        // QC wr_impacteffect keys the impact sprite/sound off HITTYPE_SECONDARY: secondary spikes use the smaller
+        // CRYLINK_IMPACT2 (SND_CRYLINK_IMPACT2), primary the bigger CRYLINK_IMPACT (SND_CRYLINK_IMPACT).
+        string impactFx = secondary ? "CRYLINK_IMPACT2" : "CRYLINK_IMPACT";
+        string impactSnd = secondary ? "weapons/crylink_impact2.wav" : "weapons/crylink_impact.wav";
+
         // a = fade scalar in [0,1]: 1 - (time - fade_time) * fade_rate.
         float a = QMath.Clamp(1f - (Api.Clock.Time - self.MaxHealth) * self.Health, 0f, 1f);
         bool finalHit = self.Count <= 0 || other.TakeDamage != DamageMode.No;
         float f = (finalHit ? 1f : bounceFactor) * a;
 
-        WeaponSplash.RadiusDamage(self, self.Origin, f * damage, f * edge, radius, self.Owner, deathType,
-            f * force, directHit: other);
+        // QC RadiusDamage returns totaldamage (the chain-detonate gate). The port's RadiusDamage is void, so we
+        // approximate `totaldamage > 0` with "this hit could deal damage" (faded core damage non-zero); a real
+        // damage-dealt readback is a cross-file RadiusDamage signature change (noted in todos).
+        bool couldDamage = f * damage > 0f || f * edge > 0f;
+        WeaponSplash.RadiusDamage(self, self.Origin, f * damage, f * edge, radius, realOwner, RegistryId,
+            f * force, directHit: other, accuracyWeapon: this, deathTag: deathType);
 
+        // QC ordering: chain-detonate FIRST on ANY damaging touch (incl. a non-final bounce) when linkexplode
+        // says so — linkexplode==1 is friendly-gated (refrains near teammates), linkexplode==2 is unconditional.
+        bool chainDetonate = couldDamage &&
+            ((linkExplode == 1 && !WouldHitFriendly(self, realOwner, radius)) || linkExplode == 2);
+        if (chainDetonate)
+        {
+            LinkExplode(self, other, realOwner, group, damage, edge, radius, force, deathType, secondary);
+            WeaponSplash.ImpactSound(self, impactSnd);
+            EffectEmitter.Emit(impactFx, self.Origin);
+            RemoveFromGroup(self, group);
+            Api.Entities.Remove(self);
+            return;
+        }
         if (finalHit)
         {
-            // Chain-detonate the rest of the linked group (W_Crylink_LinkExplode) if enabled.
-            if (linkExplode != 0)
-                LinkExplode(self, group, damage, edge, radius, force, deathType, secondary);
-            WeaponSplash.ImpactSound(self, "weapons/crylink_impact2.wav"); // QC SND_CRYLINK_IMPACT2 (wr_impacteffect)
-            EffectEmitter.Emit(impact, self.Origin);
+            // QC just unlinks/deletes (no extra explode); the impact fx/sound play in wr_impacteffect on the client.
+            WeaponSplash.ImpactSound(self, impactSnd);
+            EffectEmitter.Emit(impactFx, self.Origin);
             RemoveFromGroup(self, group);
             Api.Entities.Remove(self);
             return;
@@ -326,27 +435,62 @@ public sealed class Crylink : Weapon
         // Survived a bounce: spend one bounce. MOVETYPE_BOUNCEMISSILE reflects the velocity in the engine.
         --self.Count;
         self.Angles = QMath.VecToAngles(self.Velocity);
+        // QC clears owner so a bounced spike can hurt its own firer (the realOwner capture keeps the damage
+        // attributed to the firer), and tags the deathtype with HITTYPE_BOUNCE for the obituary.
+        self.Owner = null;
+        if (!DeathTypes.HasHitType(deathType, DeathTypes.Bounce))
+        {
+            string bounced = DeathTypes.WithHitType(deathType, DeathTypes.Bounce);
+            // Re-bind the touch closure so subsequent hits carry the bounce bit (and the now-cleared owner is
+            // moot — realOwner stays the firer). The fade/bounce-factor state lives on the entity fields.
+            self.Touch = (s, o) => OnTouch(s, o, realOwner, damage, edge, radius, force, bounceFactor,
+                linkExplode, bounced, group, secondary);
+        }
     }
 
-    // W_Crylink_LinkExplode — detonate every other spike in the group at its current position.
-    private void LinkExplode(Entity except, List<Entity> group, float damage, float edge, float radius,
-        float force, int deathType, bool secondary)
+    /// <summary>
+    /// Port of W_Crylink_Touch_WouldHitFriendly (crylink.qc): scan the blast radius — if any damageable, live
+    /// entity is an ENEMY, the explode is allowed (returns false); if the only damageable targets are teammates,
+    /// the linkexplode==1 chain refrains (returns true). With no damageable target nearby returns false.
+    /// </summary>
+    private static bool WouldHitFriendly(Entity projectile, Entity realOwner, float rad)
     {
-        string impact = secondary ? "CRYLINK_IMPACT2" : "CRYLINK_IMPACT";
-        Vector3 avgOrg = Vector3.Zero;
-        int linkCount = 0;
+        Vector3 center = projectile.Origin + (projectile.Mins + projectile.Maxs) * 0.5f;
+        bool hitFriendly = false;
+        foreach (Entity head in Api.Entities.FindInRadius(center, rad + 16f)) // QC rad + MAX_DAMAGEEXTRARADIUS
+        {
+            if (head.TakeDamage == DamageMode.No || head.DeadState != DeadFlag.No) continue;
+            if (Teams.SameTeam(head, realOwner))
+                hitFriendly = true;
+            else
+                return false; // an enemy is in range — go ahead and explode
+        }
+        return hitFriendly;
+    }
+
+    // W_Crylink_LinkExplode — detonate every other spike in the group at its current position. `directHit` is
+    // the original toucher (QC directhitentity), threaded into each link's RadiusDamage so the struck target
+    // skips the LOS reduction and the force aims at it, exactly as the QC recursion passes it down the queue.
+    private void LinkExplode(Entity except, Entity directHit, Entity realOwner, List<Entity> group, float damage,
+        float edge, float radius, float force, string deathType, bool secondary)
+    {
+        string impactFx = secondary ? "CRYLINK_IMPACT2" : "CRYLINK_IMPACT";
+        string impactSnd = secondary ? "weapons/crylink_impact2.wav" : "weapons/crylink_impact.wav";
         foreach (var e in group.ToArray())
         {
             if (ReferenceEquals(e, except) || e.IsFreed) continue;
             float a = QMath.Clamp(1f - (Api.Clock.Time - e.MaxHealth) * e.Health, 0f, 1f);
-            WeaponSplash.RadiusDamage(e, e.Origin, a * damage, a * edge, radius, e.Owner, deathType, a * force);
-            WeaponSplash.ImpactSound(e, "weapons/crylink_impact2.wav"); // QC SND_CRYLINK_IMPACT2 (wr_impacteffect)
-            EffectEmitter.Emit(impact, e.Origin);
-            avgOrg += e.Origin; ++linkCount;
+            // QC passes realowner (e.crylink_owner — always the firer, even after a bounce cleared e.owner) as
+            // attacker and the original toucher as directhitentity.
+            WeaponSplash.RadiusDamage(e, e.Origin, a * damage, a * edge, radius, realOwner, RegistryId, a * force,
+                directHit: directHit, accuracyWeapon: this, deathTag: deathType);
+            WeaponSplash.ImpactSound(e, impactSnd);
+            EffectEmitter.Emit(impactFx, e.Origin);
             e.Touch = null; e.Think = null;
             Api.Entities.Remove(e);
         }
-        if (linkCount > 0) EffectEmitter.Emit("CRYLINK_JOINEXPLODE", avgOrg / linkCount);
+        // QC never emits EFFECT_CRYLINK_JOINEXPLODE from a chain detonation — that particle is the convergence
+        // sparkle (W_Crylink_LinkJoinEffect_Think) only. So no JOINEXPLODE here (corrects the wrong-trigger port).
         group.Clear();
     }
 
@@ -357,9 +501,22 @@ public sealed class Crylink : Weapon
         if (_groups.ContainsKey(e)) _groups.Remove(e);
     }
 
-    // METHOD(Crylink, wr_checkammo1) — crylink.qc
-    public bool CheckAmmoPrimary(Entity actor) => actor.GetResource(AmmoType) >= Primary.Ammo;
+    // METHOD(Crylink, wr_checkammo1) — crylink.qc. The wait-release guard ("don't run out of ammo and switch
+    // weapons while a join-group waits for release") needs the per-slot CrylinkWaitRelease/LastGroup state; the
+    // dispatch (WeaponFireGate) hands us only `actor`, so we read the primary slot (slot 0) state, matching the
+    // single-slot fire model this port uses for crylink.
+    public bool CheckAmmoPrimary(Entity actor)
+    {
+        var st = actor.WeaponState(new WeaponSlot(0));
+        if (st.CrylinkWaitRelease != 0 && st.CrylinkLastGroup is not null) return true;
+        return actor.GetResource(AmmoType) >= Primary.Ammo;
+    }
 
     // METHOD(Crylink, wr_checkammo2) — crylink.qc
-    public bool CheckAmmoSecondary(Entity actor) => actor.GetResource(AmmoType) >= Secondary.Ammo;
+    public bool CheckAmmoSecondary(Entity actor)
+    {
+        var st = actor.WeaponState(new WeaponSlot(0));
+        if (st.CrylinkWaitRelease != 0 && st.CrylinkLastGroup is not null) return true;
+        return actor.GetResource(AmmoType) >= Secondary.Ammo;
+    }
 }

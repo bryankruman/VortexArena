@@ -3,6 +3,7 @@
 using System.Numerics;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Gameplay.Damage;
+using XonoticGodot.Common.Gameplay.Scoring;
 using XonoticGodot.Common.Services;
 
 namespace XonoticGodot.Common.Gameplay;
@@ -24,10 +25,12 @@ namespace XonoticGodot.Common.Gameplay;
 [Mutator]
 public sealed class BreakablehookMutator : MutatorBase
 {
-    /// <summary>QC autocvar_g_breakablehook.</summary>
-    public bool Breakable;
-    /// <summary>QC autocvar_g_breakablehook_owner — allow breaking your OWN hook.</summary>
-    public bool BreakableOwner;
+    /// <summary>QC autocvar_g_breakablehook — read live each Damage_Calculate (the .qc comment "allow toggling
+    /// mid match?" makes the live cadence explicit).</summary>
+    public bool Breakable => Api.Services is not null && Api.Cvars.GetFloat("g_breakablehook") != 0f;
+    /// <summary>QC autocvar_g_breakablehook_owner — allow breaking your OWN hook; read live each
+    /// Damage_Calculate so mid-match toggling takes effect immediately, as in Base.</summary>
+    public bool BreakableOwner => Api.Services is not null && Api.Cvars.GetFloat("g_breakablehook_owner") != 0f;
 
     public BreakablehookMutator() => NetName = "breakablehook";
 
@@ -41,12 +44,6 @@ public sealed class BreakablehookMutator : MutatorBase
     {
         _onDamageCalc ??= OnDamageCalculate;
         MutatorHooks.DamageCalculate.Add(_onDamageCalc);
-
-        if (Api.Services is not null)
-        {
-            Breakable = Api.Cvars.GetFloat("g_breakablehook") != 0f;
-            BreakableOwner = Api.Cvars.GetFloat("g_breakablehook_owner") != 0f;
-        }
     }
 
     public override void Unhook()
@@ -67,8 +64,10 @@ public sealed class BreakablehookMutator : MutatorBase
         if (!Breakable || (!BreakableOwner && attacker is not null && ReferenceEquals(attacker, owner)))
             args.Damage = 0f;
 
-        // Hurt the owner of the hook (and remove it) when the attacker is on a different team.
-        if (attacker is not null && owner is not null && !Teams.SameTeam(attacker, owner))
+        // Hurt the owner of the hook (and remove it) when the attacker is on a DIFFERENT team.
+        // QC DIFF_TEAM(a,b) = teamplay ? (a.team != b.team) : (a != b); the FFA branch (a != b)
+        // skips a self-hit (owner shooting own hook), so this punish never fires on yourself in FFA.
+        if (attacker is not null && owner is not null && DiffTeam(attacker, owner))
         {
             // Damage(hook.realowner, attacker, attacker, 5, WEP_HOOK | HITTYPE_SPLASH, ..., owner.origin, '0 0 0')
             string dt = DeathTypes.WithHitType(DeathTypes.FromWeapon("hook"), DeathTypes.Splash);
@@ -80,4 +79,8 @@ public sealed class BreakablehookMutator : MutatorBase
         }
         return false;
     }
+
+    // QC common/teams.qh DIFF_TEAM(a,b): teamplay ? (a.team != b.team) : (a != b).
+    private static bool DiffTeam(Entity a, Entity b) =>
+        GameScores.Teamplay ? a.Team != b.Team : !ReferenceEquals(a, b);
 }

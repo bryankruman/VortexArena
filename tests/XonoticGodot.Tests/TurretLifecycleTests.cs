@@ -84,10 +84,8 @@ public class TurretLifecycleTests
         Assert.Equal(4000f, st.AmmoMax);
         Assert.Equal(50f, st.AmmoRecharge);                   // turrets.cfg:43 ammo_recharge 50
         Assert.True(st.Movable);                              // TUR_FLAG_MOVE
-        // FLAGGED (port-vs-cfg drift, reported upward, NOT fixed here per the T31 charter):
-        // turrets.cfg:13 sets g_turrets_unit_ewheel_respawntime 30, but EWheelTurret.Spawn passes
-        // respawnTime: 60 (the generic turret_initparams default). This pins the CURRENT port behavior.
-        Assert.Equal(60f, st.RespawnTime);
+        // turrets.cfg:13 g_turrets_unit_ewheel_respawntime 30 (Wave-2 fixed the prior 60f drift to match the cfg).
+        Assert.Equal(30f, st.RespawnTime);
     }
 
     [Fact]

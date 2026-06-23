@@ -189,15 +189,45 @@ public static class WeaponSplash
             // NOT). Scaling it here too double-applied it (0.65^2 ≈ 0.42×), making rocket/blaster/electro-jumps
             // ~35% too cheap. The pipeline is now the single source of truth (DMG1).
             // QC passes `nearest` (the nearest/mean-visible box point) as hitloc, not the box center.
+            //
+            // [DMG-SPLASH] HITTYPE_SPLASH (QC damage.qc:917-920): every victim that is NOT the directHit
+            // entity takes the blast tagged with HITTYPE_SPLASH so the kill-message/effect layer can tell a
+            // splash kill from a direct hit; the direct-hit entity (and special / non-weapon deaths) keep the
+            // plain tag. DamageSystem.SplashDeathType is the single Wave-1 seam that ORs the bit (it no-ops for
+            // DEATH_ISSPECIAL deathtypes, matching QC's `|| DEATH_ISSPECIAL(deathtype)` exemption) and is
+            // idempotent. We resolve the int weapon-id path to its string deathtype tag HERE (the same
+            // id->NetName mapping WeaponFiring.ApplyDamage does) so the splash bit can be set on it too —
+            // ApplyDamage(int) can only emit the plain weapon tag, so an indirect int-path hit must go through
+            // the string pipeline to carry the bit. Direct hits keep the existing fast paths unchanged.
+            bool isIndirect = !ReferenceEquals(e, directHit);
+
             // A non-null deathTag is a SPECIAL deathtype string (monster/turret/vehicle blast) the int
             // weapon-id path cannot encode (it maps to a weapon NetName or Generic); route it straight to
             // the pipeline so the obituary picks the monster/turret/vehicle line. Otherwise keep the legacy
             // int weapon-id path (ApplyDamage maps the id to the weapon's deathtype tag).
             if (deathTag is not null)
-                Damage.Combat.Damage(e, inflictor ?? src, src, finalDmg, deathTag, hitLoc, forceVec);
+            {
+                // SplashDeathType is a no-op for specials, so the monster/turret/vehicle tag is preserved
+                // exactly as QC's DEATH_ISSPECIAL branch keeps the plain deathtype.
+                string tag = isIndirect ? Damage.DamageSystem.SplashDeathType(deathTag) : deathTag;
+                Damage.Combat.Damage(e, inflictor ?? src, src, finalDmg, tag, hitLoc, forceVec);
+            }
+            else if (isIndirect)
+            {
+                // Indirect weapon-blast victim: resolve the int weapon id to its NetName tag (mirroring
+                // WeaponFiring.ApplyDamage) and OR HITTYPE_SPLASH on, then route through the string pipeline.
+                string weaponTag = deathType > 0 && deathType < Registry<Weapon>.Count
+                    ? Damage.DeathTypes.FromWeapon(Registry<Weapon>.ById(deathType).NetName)
+                    : Damage.DeathTypes.Generic;
+                weaponTag = Damage.DamageSystem.SplashDeathType(weaponTag);
+                Damage.Combat.Damage(e, inflictor ?? src, src, finalDmg, weaponTag, hitLoc, forceVec);
+            }
             else
+            {
+                // Direct-hit victim: keep the plain weapon deathtype via the int fast path (no splash bit).
                 WeaponFiring.ApplyDamage(e, src, finalDmg, deathType, inflictor: inflictor, force: forceVec,
                     hitLoc: hitLoc);
+            }
         }
 
         // [T57] ONE hit credit per blast, capped at one blast's max damage (QC damage.qc:928-929:

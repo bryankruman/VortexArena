@@ -17,8 +17,12 @@ namespace XonoticGodot.Common.Gameplay;
 [Mutator]
 public sealed class BloodlossMutator : MutatorBase
 {
-    /// <summary>QC autocvar_g_bloodloss — the health threshold (and the enable cvar) for bleeding.</summary>
-    public float Threshold = 25f;
+    /// <summary>
+    /// QC autocvar_g_bloodloss — the health threshold (and the enable cvar) for bleeding.
+    /// Read live on every hook call (Base reads autocvar_g_bloodloss directly in each
+    /// HOOKFUNCTION), so a mid-match g_bloodloss change takes effect immediately.
+    /// </summary>
+    private float Threshold => Api.Services is not null ? Api.Cvars.GetFloat("g_bloodloss") : 0f;
 
     public BloodlossMutator() => NetName = "bloodloss";
 
@@ -39,12 +43,6 @@ public sealed class BloodlossMutator : MutatorBase
         MutatorHooks.PlayerPreThink.Add(_onPreThink);
         MutatorHooks.PlayerCanCrouch.Add(_onCanCrouch);
         MutatorHooks.PlayerJump.Add(_onJump);
-
-        if (Api.Services is not null)
-        {
-            float t = Api.Cvars.GetFloat("g_bloodloss");
-            if (t != 0f) Threshold = t;
-        }
     }
 
     public override void Unhook()

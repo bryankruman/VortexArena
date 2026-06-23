@@ -65,6 +65,24 @@ public static class ItemPickupRules
         int pickupAnyway = System.Math.Max(worldItem.PickupAnyway, worldItem.Pickup?.ItemDef.PickupAnyway ?? 0);
         bool pickedUp = false;
 
+        // QC Item_GiveTo head (items.qc:525-545): if the player has cl_autoswitch on (and CTS-autoswitch is not
+        // overriding it), remember whether they're currently on their best weapon so we can re-pick a better one
+        // AFTER the give. Captured before any weapon is granted. CTS uses a separate forced-switch policy handled
+        // in the tail. The port is single-slot (no MAX_WEAPONSLOTS loop) — slot 0 is the whole decision.
+        bool useCtsAutoswitch = IsCtsActive() && worldItem.Pickup?.IsWeaponPickup == true && CtsAutoswitchCvar(player) != -1;
+        bool wantSwitch = false;
+        if (AutoswitchEnabled(player) && !useCtsAutoswitch)
+        {
+            int switchId = player.SwitchWeaponId >= 0 ? player.SwitchWeaponId : player.ActiveWeaponId;
+            Weapon? best = Inventory.GetBestWeapon(player);
+            // QC: switch if their switchweapon already IS the best (a better one may now exist), OR they somehow
+            // don't even own their switchweapon.
+            if (best is not null && switchId == best.RegistryId)
+                wantSwitch = true;
+            if (switchId < 0 || !player.OwnedWeaponSet.Has(switchId))
+                wantSwitch = true;
+        }
+
         // QC: the seven Item_GiveAmmoTo calls (resource limits from the per-item caps + the pickup-max cvars).
         pickedUp |= GiveAmmoTo(worldItem, player, ResourceType.Health, worldItem.GetResource(ResourceType.Health),
             worldItem.MaxHealth, pickupAnyway);
@@ -85,6 +103,19 @@ public static class ItemPickupRules
         if (worldItem.Pickup?.IsWeaponPickup == true)
             pickedUp |= InventoryPickupItem(player, worldItem, worldItem.OwnedWeaponSet, pickupAnyway);
 
+        // QC powerup-item center-prints (items.qc:581-587): a FuelRegen / Jetpack powerup the player doesn't yet
+        // hold announces itself. QC keys these off the itemdef AND !(player.items & flag); the held-flag check is
+        // exactly "this flag is newly granted", so we fold it into the IT_PICKUPMASK transfer below (its carries
+        // only the not-yet-held flags). Done before the transfer so player.Items still lacks the flag here.
+        if (worldItem.Pickup?.IsPowerup == true)
+        {
+            int newFlags = worldItem.Items & ~player.Items;
+            if ((newFlags & (int)ItemFlag.FuelRegen) != 0)
+                NotificationSystem.Center(player, "ITEM_FUELREGEN_GOT");
+            else if ((newFlags & (int)ItemFlag.Jetpack) != 0)
+                NotificationSystem.Center(player, "ITEM_JETPACK_GOT");
+        }
+
         // QC IT_PICKUPMASK transfer: the held-item flags this item grants that the player lacks (jetpack /
         // fuelregen / unlimited*). strength/invincible are NOT in the mask — they go through the timers below.
         int its = worldItem.Items & ~player.Items & (int)ItemFlag.PickupMask;
@@ -100,8 +131,62 @@ public static class ItemPickupRules
         // QC: always eat teamed entities (if(item.team) pickedup = true).
         if (worldItem.Team != 0f) pickedUp = true;
 
-        return pickedUp;
+        if (!pickedUp)
+            return false;
+
+        // QC Item_GiveTo tail (items.qc:652-681): now that the give happened, perform the autoswitch.
+        if (useCtsAutoswitch)
+        {
+            // CTS handling: cl_autoswitch_cts 1 = always switch to the picked-up weapon (if usable), -1/0 handled
+            // above (use_cts_autoswitch false / never switch). Crude force-switch like QC.
+            if (CtsAutoswitchCvar(player) == 1)
+            {
+                foreach (var w in worldItem.OwnedWeaponSet.Weapons())
+                {
+                    if (Inventory.ClientHasWeapon(player, w, andAmmo: true, complain: false))
+                        Inventory.SwitchWeapon(player, w); // W_SwitchWeapon_Force
+                }
+            }
+        }
+        else if (wantSwitch)
+        {
+            // non-CTS: weaponpriority-based autoswitch to the (possibly new) best weapon.
+            Weapon? best = Inventory.GetBestWeapon(player);
+            int curSwitch = player.SwitchWeaponId >= 0 ? player.SwitchWeaponId : player.ActiveWeaponId;
+            if (best is not null && curSwitch != best.RegistryId)
+                Inventory.SwitchWeapon(player, best); // W_SwitchWeapon_Force
+        }
+
+        return true;
     }
+
+    // =====================================================================================
+    //  Autoswitch seams (QC CS_CVAR(player).cvar_cl_autoswitch / cvar_cl_autoswitch_cts + g_cts). These are
+    //  per-client replicated cvars + a gametype query the host owns; mirror the Inventory.PriorityProvider
+    //  pattern so the listen/local path works headless (no autoswitch) and the server wires the real source.
+    // =====================================================================================
+
+    /// <summary>
+    /// QC <c>CS_CVAR(player).cvar_cl_autoswitch</c> — the per-client auto-weapon-switch flag. Set by the server's
+    /// Commands (it owns the replicated per-client cvar table); null = no provider wired (headless/local), in
+    /// which case autoswitch is off (matching a player who never replicated the cvar). Takes the entity so a
+    /// future multi-actor host can disambiguate.
+    /// </summary>
+    public static Func<Entity, bool>? AutoswitchProvider;
+
+    /// <summary>
+    /// QC <c>CS_CVAR(player).cvar_cl_autoswitch_cts</c> — the per-client CTS autoswitch override (-1 = unset/use
+    /// the normal autoswitch, 0 = never switch, 1 = always switch to the picked-up weapon). Null provider yields
+    /// -1 (no override). Wired by the server alongside <see cref="AutoswitchProvider"/>.
+    /// </summary>
+    public static Func<Entity, int>? CtsAutoswitchProvider;
+
+    /// <summary>QC <c>g_cts</c> — is the CTS gametype active? Null provider = false (the common DM/other case).</summary>
+    public static Func<bool>? CtsActiveProvider;
+
+    private static bool AutoswitchEnabled(Entity player) => AutoswitchProvider?.Invoke(player) ?? false;
+    private static int CtsAutoswitchCvar(Entity player) => CtsAutoswitchProvider?.Invoke(player) ?? -1;
+    private static bool IsCtsActive() => CtsActiveProvider?.Invoke() ?? false;
 
     /// <summary>
     /// Legacy entry retained for callers that pass an explicit pickup def (target_give host seam): give the

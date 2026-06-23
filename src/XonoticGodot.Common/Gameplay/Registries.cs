@@ -146,6 +146,12 @@ public static class GameRegistries
         // Unsubscribe any active mutator hooks before dropping the instances, so the global hook chains don't
         // retain handlers bound to about-to-be-discarded mutators (QC: a progs reload tears down the chains too).
         MutatorActivation.DeactivateAll();
+        // Same for the active gametype: a booted gametype subscribes its own handlers to the global hook chains
+        // (e.g. CTS's Shotgun-only PlayerSpawn/PlayerPreThink), and those are NOT mutator hooks so the loop above
+        // misses them. Without this, a discarded gametype's handlers leaked into the next world (a CTS test world
+        // forced Shotgun-only spawns onto a later DM/arena world). Deactivate is idempotent per gametype.
+        foreach (GameType gt in Registry<GameType>.All)
+            gt.Deactivate();
         Registry<Weapon>.Clear();
         Registry<Pickup>.Clear();
         Registry<MutatorBase>.Clear();

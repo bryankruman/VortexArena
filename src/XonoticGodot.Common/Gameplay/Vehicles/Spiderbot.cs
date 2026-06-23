@@ -142,6 +142,15 @@ public sealed class Spiderbot : Vehicle
         vehicle.MoveType = MoveType.Step; // QC: MOVETYPE_STEP
         vehicle.VehW2Mode = (int)SpiderbotRocketMode.Guided; // QC default SBRM_GUIDE
 
+        // QC vr_enter (spiderbot.qc:552-556): a pilot carrying a CTF flag has it ride the head turret.
+        // (player.GtCarried is the QC .flagcarried back-link — promoted on Entity in EntityGametypeState.cs.)
+        Entity? flag = player.GtCarried;
+        if (flag is not null && vehicle.TurHead is not null && Api.Services is not null)
+        {
+            Api.Models.SetAttachment(flag, vehicle.TurHead, "");
+            Api.Entities.SetOrigin(flag, new Vector3(-20f, 0f, 120f));
+        }
+
         vehicle.Think = self => Think(self);
         vehicle.NextThink = Time;
     }
@@ -246,13 +255,18 @@ public sealed class Spiderbot : Vehicle
 
         // --- head turret aim toward the crosshair (turn + pitch within limits) -------------------------
         TraceResult tr = VehiclePhysics.CrosshairTrace(vehicle, input.ViewAngles, vehicle);
-        Vector3 muzzle = VehiclePhysics.TagOrigin(head, "tag_hardpoint01", new Vector3(60f, 0f, 20f));
+        // QC averages the two gun hardpoints (tag_hardpoint01 + tag_hardpoint02) for the aim muzzle point.
+        Vector3 muzzle = 0.5f * (VehiclePhysics.TagOrigin(head, "tag_hardpoint01", new Vector3(60f, 0f, 20f))
+            + VehiclePhysics.TagOrigin(head, "tag_hardpoint02", new Vector3(60f, 0f, 20f)));
         Vector3 wantAng = QMath.VecToAngles(QMath.Normalize(tr.EndPos - muzzle));
         Vector3 delta = VehiclePhysics.ShortAngles(new Vector3(
             wantAng.X - vehicle.Angles.X - head.Angles.X,
             wantAng.Y - vehicle.Angles.Y - head.Angles.Y, 0f));
 
-        float ftmp = HeadTurnSpeed * FrameTime;
+        // QC steps slew by head_turnspeed * PHYS_INPUT_FRAMETIME EVERY movement frame; the port's Think runs
+        // at the 0.1s cadence, so the elapsed time since the last call is `dt` — step by that, NOT FrameTime,
+        // or the head tracks ~6x too slow (TicRate/0.1).
+        float ftmp = HeadTurnSpeed * dt;
         float dy = QMath.Bound(-ftmp, delta.Y, ftmp);
         Vector3 ha = head.Angles;
         ha.Y = QMath.Bound(-HeadTurnLimit, ha.Y + dy, HeadTurnLimit);
@@ -265,6 +279,16 @@ public sealed class Spiderbot : Vehicle
         VehiclePhysics.GroundAlign4Point(vehicle, forward, right, up, SpringLength, SpringUp, SpringBlend, TiltLimit);
 
         if (vehicle.OnGround) vehicle.VehJumpDelay = Time; // reset so movement can begin
+
+        // --- landing (frame 4 airborne -> 5 idle on touchdown) -----------------------------------------
+        // QC: IS_ONGROUND && frame == 4 && tur_head.wait != 0 -> play SND_VEH_SPIDERBOT_LAND, frame = 5.
+        // VehLandTime mirrors tur_head.wait (set to time+2 on jump); != 0 guards the fresh-spawn case.
+        if (vehicle.OnGround && vehicle.Frame == 4f && vehicle.VehLandTime != 0f)
+        {
+            // QC CH_TRIGGER_SINGLE — matches the jump sound's channel mapping on this vehicle.
+            if (Api.Services is not null) Api.Sound.Play(vehicle, SoundChannel.Auto, "vehicles/spiderbot_land.wav");
+            vehicle.Frame = 5f;
+        }
 
         // --- jump (directional launch from the wishmove) -----------------------------------------------
         if (!input.ButtonJump) vehicle.VehJumpLatched = false;
@@ -282,6 +306,7 @@ public sealed class Spiderbot : Vehicle
 
             vehicle.Flags &= ~EntFlags.OnGround;
             vehicle.Velocity = sd * 700f + rt * 600f + up * 600f;
+            vehicle.Frame = 4f; // QC: vehic.frame = 4 (airborne) — the land branch resets it to 5 on touchdown.
             if (Api.Services is not null) Api.Sound.Play(vehicle, SoundChannel.Auto, "vehicles/spiderbot_jump.wav");
         }
         else if (Time >= vehicle.VehJumpDelay)
@@ -293,8 +318,9 @@ public sealed class Spiderbot : Vehicle
             }
             else
             {
-                // Turn the body toward the head's yaw (faster when strafing).
-                float turn = (move.X == 0f && move.Y != 0f ? TurnSpeedStrafe : TurnSpeed) * FrameTime;
+                // Turn the body toward the head's yaw (faster when strafing). Step by the elapsed `dt`
+                // (the 0.1s think cadence), NOT FrameTime — QC steps by PHYS_INPUT_FRAMETIME every frame.
+                float turn = (move.X == 0f && move.Y != 0f ? TurnSpeedStrafe : TurnSpeed) * dt;
                 turn = QMath.Bound(-turn, head.Angles.Y, turn);
                 Vector3 ba = vehicle.Angles; ba.Y = VehiclePhysics.AngleMods(ba.Y + turn); vehicle.Angles = ba;
                 ha = head.Angles; ha.Y -= turn; head.Angles = ha;
@@ -311,7 +337,9 @@ public sealed class Spiderbot : Vehicle
                 Vector3 v = vehicle.Velocity; v.Z = oldZ; vehicle.Velocity = v;
                 if (vehicle.Velocity.Z <= 20f) // gravity while not jumping
                 {
-                    v = vehicle.Velocity; v.Z -= 0.5f * FrameTime * Gravity(); vehicle.Velocity = v;
+                    // QC: g = (sv_gameplayfix_gravityunaffectedbyticrate ? 0.5 : 1); step by `dt` (see above).
+                    float g = GravityTicrateFactor();
+                    v = vehicle.Velocity; v.Z -= g * dt * Gravity(); vehicle.Velocity = v;
                 }
             }
         }
@@ -340,9 +368,9 @@ public sealed class Spiderbot : Vehicle
         // --- rocket launcher (3 modes + guide-release) -------------------------------------------------
         RocketDo(vehicle, player, input);
 
-        // TODO(port,client): qcsrc/common/vehicles/vehicle/spiderbot.qc spiderbot_frame — walk/strafe/idle/jump/
-        //                    land engine sounds, gun barrel spin, EFFECT_SPIDERBOT_MINIGUN_MUZZLEFLASH, aux
-        //                    crosshairs, vehicle_ammo2/reload2 HUD %.
+        // TODO(port,client): qcsrc/common/vehicles/vehicle/spiderbot.qc spiderbot_frame — walk/strafe/idle
+        //                    engine sounds, gun barrel spin, EFFECT_SPIDERBOT_MINIGUN_MUZZLEFLASH, aux
+        //                    crosshairs, vehicle_ammo2/reload2 HUD %. (jump/land sounds now played server-side.)
     }
 
     // METHOD(Spiderbot, vr_death) — spiderbot.qc
@@ -373,7 +401,10 @@ public sealed class Spiderbot : Vehicle
             else
             {
                 self.NextThink = Time + 0.1f;
-                // TODO(port,client): random EFFECT_EXPLOSION_SMALL + SND_ROCKET_IMPACT during the burn.
+                // QC spiderbot_blowup: ~10% per 0.1s tick, a small explosion + impact sound during the burn.
+                // The sound is server-faithful; the EFFECT_EXPLOSION_SMALL visual stays a client TODO.
+                if (Prandom.Float() < 0.1f && Api.Services is not null)
+                    Api.Sound.Play(self, SoundChannel.ShotsAuto, "weapons/rocket_impact.wav");
             }
         };
         vehicle.NextThink = Time;
@@ -661,12 +692,17 @@ public sealed class Spiderbot : Vehicle
     }
 
     private static float Time => Api.Services is not null ? Api.Clock.Time : 0f;
-    private static float FrameTime => Api.Services is not null ? Api.Clock.FrameTime : 0.05f;
     private static float Gravity()
     {
         if (Api.Services is null) return 800f;
         float v = Api.Cvars.GetFloat("sv_gravity");
         return v != 0f ? v : 800f;
+    }
+    // QC: autocvar_sv_gameplayfix_gravityunaffectedbyticrate (default true) -> 0.5, else 1.
+    private static float GravityTicrateFactor()
+    {
+        if (Api.Services is null) return 0.5f;
+        return Api.Cvars.GetFloat("sv_gameplayfix_gravityunaffectedbyticrate") != 0f ? 0.5f : 1f;
     }
     private static float StaticGravity()
     {

@@ -9,7 +9,9 @@ namespace XonoticGodot.Common.Gameplay;
 /// Enabled by the <c>g_running_guns</c> cvar.
 ///
 /// Core behavior ported: the SetDefaultAlpha override (player alpha -1 → invisible, weapon alpha +1 →
-/// fully visible).
+/// fully visible). The hook is fired live at worldspawn via <see cref="MutatorHooks.FireSetDefaultAlpha"/>
+/// (GameWorld seeds <c>DefaultPlayerAlpha</c>/<c>DefaultWeaponAlpha</c> from the returned values), so the
+/// player-invisible / gun-visible look is applied to spawned entities.
 /// </summary>
 [Mutator]
 public sealed class RunningGunsMutator : MutatorBase
@@ -34,6 +36,8 @@ public sealed class RunningGunsMutator : MutatorBase
     }
 
     // MUTATOR_HOOKFUNCTION(running_guns, SetDefaultAlpha)
+    // Fired live at worldspawn through MutatorHooks.FireSetDefaultAlpha; GameWorld reads the resolved
+    // PlayerAlpha/WeaponAlpha into DefaultPlayerAlpha/DefaultWeaponAlpha for player/weapon spawn.
     private bool OnSetDefaultAlpha(ref MutatorHooks.SetDefaultAlphaArgs args)
     {
         // QC: default_player_alpha = -1; default_weapon_alpha = +1; return true;

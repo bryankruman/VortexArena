@@ -13,7 +13,13 @@ namespace XonoticGodot.Common.Gameplay;
 /// Ported: the ground reset of the jump counter (PlayerPhysics), the midair re-jump grant with the
 /// press/release "ready" gate and the count/speed limits (PlayerJump), and the dodging-style horizontal
 /// redirect (<c>g_multijump_dodging</c>) that aims the kept speed at the movement input on a re-jump.
-/// (Per-client cl_multijump overrides are a client-stat concern; the server default applies here.)
+///
+/// Per-client opt-in/out/cap (QC <c>cl_multijump</c>, a REPLICATE'd per-client field): a player can set
+/// <c>cl_multijump 0</c> to opt out or <c>2+</c> to disable it for themselves; <c>-1</c> (the default) defers to
+/// the server's <c>g_multijump_client</c> default. The per-client value is sourced from
+/// <see cref="ClientMultijumpProvider"/> (the host wires the replicated <c>cvar_cl_multijump</c> field, like
+/// <c>Inventory.PriorityProvider</c>); when unwired it returns <c>-1</c> so the server default applies and the
+/// default-server behavior is identical to Base.
 /// </summary>
 [Mutator]
 public sealed class MultijumpMutator : MutatorBase
@@ -32,6 +38,20 @@ public sealed class MultijumpMutator : MutatorBase
 
     /// <summary>QC STAT(MULTIJUMP_DODGING) — redirect horizontal velocity toward the movement input on a re-jump.</summary>
     public bool Dodging;
+
+    /// <summary>
+    /// QC STAT(MULTIJUMP_CLIENT) / <c>autocvar_g_multijump_client</c> (BOOL, default 1) — the server-side per-client
+    /// default substituted when a client's <c>cl_multijump</c> is <c>-1</c> ("server decides").
+    /// </summary>
+    public int ClientDefault = 1;
+
+    /// <summary>
+    /// PER-CLIENT opt source (QC <c>CS_CVAR(player).cvar_cl_multijump</c>, a REPLICATE'd field): the host wires the
+    /// player's replicated <c>cl_multijump</c> value here (same pattern as <c>Inventory.PriorityProvider</c>). Null /
+    /// unwired returns <c>-1</c> ("server decides") so the server <see cref="ClientDefault"/> applies and the
+    /// default-server result matches Base exactly.
+    /// </summary>
+    public static System.Func<Entity, int>? ClientMultijumpProvider;
 
     public MultijumpMutator() => NetName = "multijump";
 
@@ -58,6 +78,8 @@ public sealed class MultijumpMutator : MutatorBase
             Add = Api.Cvars.GetFloat("g_multijump_add") != 0f;
             MaxSpeed = Api.Cvars.GetFloat("g_multijump_maxspeed");
             Dodging = Api.Cvars.GetFloat("g_multijump_dodging") != 0f;
+            // QC STAT(MULTIJUMP_CLIENT) = autocvar_g_multijump_client (bool, default 1).
+            ClientDefault = (int)Api.Cvars.GetFloat("g_multijump_client");
         }
     }
 
@@ -83,16 +105,25 @@ public sealed class MultijumpMutator : MutatorBase
         Entity player = args.Player;
         if (MaxJumps == 0) return false;
 
+        // QC: int client_multijump = PHYS_MULTIJUMP_CLIENT(player); if(-1) client_multijump = clientdefault;
+        // -1 means "server decides" (use the g_multijump_client server default).
+        int clientMultijump = ClientMultijumpProvider?.Invoke(player) ?? -1;
+        if (clientMultijump == -1)
+            clientMultijump = ClientDefault;
+        if (clientMultijump > 1)
+            return false; // QC: nope — this client has opted out / capped it off
+
         bool jumpHeld = (player.Flags & EntFlags.JumpReleased) == 0; // QC IS_JUMP_HELD == !JUMP_RELEASED bit
-        // QC: if jump button is *not* held this frame and we're airborne, we're "ready" to re-jump.
-        if (!jumpHeld && !player.OnGround)
+        // QC: if jump button is *not* held this frame, we're airborne, AND the client value is truthy → "ready".
+        if (!jumpHeld && !player.OnGround && clientMultijump != 0)
             player.MultijumpReady = true;
         else
             player.MultijumpReady = false;
 
         bool underCount = MaxJumps == -1 || player.MultijumpCount < MaxJumps;
         bool fastEnough = player.Velocity.Z > MinSpeed;
-        bool horizOk = MaxSpeed == 0f || Horiz2D(player) <= MaxSpeed;
+        // QC: !PHYS_MULTIJUMP_MAXSPEED || vdist(player.velocity, <=, maxspeed) — vdist is the FULL 3D speed.
+        bool horizOk = MaxSpeed == 0f || player.Velocity.Length() <= MaxSpeed;
 
         if (!args.Multijump && player.MultijumpReady && underCount && fastEnough && horizOk)
         {

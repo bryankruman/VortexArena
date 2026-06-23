@@ -239,11 +239,31 @@ public sealed class ClientManager
 
         bool spawned = Spawn(p); // QC PutClientInServer
         if (!spawned)
+        {
             // no spawnpoint yet (Spawn armed a retry); fall back to the observer phase so the player isn't a
             // half-live actor with no placement. The retry path will re-Join via the respawn driver.
             p.IsObserver = true;
-        return spawned;
+            return false;
+        }
+
+        // QC Join tail (server/client.qc:2135-2149): once the client is a live player, announce the join. FFA
+        // broadcasts INFO_JOIN_PLAY ("<name> is now playing"); a team game centerprints CENTER_JOIN_PLAY_TEAM_<col>
+        // to the joiner. The queue-conflict (CENTER_JOIN_PLAY_TEAM_QUEUECONFLICT) + queued-player ANNCE_BEGIN paths
+        // depend on the unmodeled join-queue (wants_join / player_with_dibs) and stay deferred.
+        if (!_teamplay.IsTeamGame)
+            NotificationSystem.Info("JOIN_PLAY", p.NetName);
+        else
+            NotificationSystem.Center(p, $"JOIN_PLAY_TEAM_{TeamSuffix((int)p.Team)}");
+
+        return true;
     }
+
+    /// <summary>QC <c>APP_TEAM_NUM</c> team-name suffix (common/teams.qh) used by the join/scoring notifications
+    /// (JOIN_PLAY_TEAM_RED, …). Falls back to RED for an unteamed/neutral value so the lookup always resolves.</summary>
+    private static string TeamSuffix(int team) => team switch
+    {
+        Teams.Red => "RED", Teams.Blue => "BLUE", Teams.Yellow => "YELLOW", Teams.Pink => "PINK", _ => "RED",
+    };
 
     /// <summary>QC <c>MIN_SPEC_TIME</c> (server/client.qh:403): the minimum observer dwell before a join is allowed.</summary>
     public const float MinSpecTime = 1f;
@@ -379,6 +399,12 @@ public sealed class ClientManager
     /// </summary>
     public void PutObserverInServer(Player p)
     {
+        // QC PutObserverInServer (server/client.qc:268-273): if it WAS a live player with health, puff a despawn
+        // EFFECT_SPAWN at its body before stripping it. Snapshot the prior state before we flip IsObserver below.
+        // (VoteCount/ReadyCount recount on demote stays deferred — owned by the vote/ready subsystem.)
+        if (!p.IsObserver && p.GetResource(ResourceType.Health) >= 1f)
+            EffectEmitter.Emit("SPAWN", p.Origin, Vector3.Zero, 1);
+
         p.IsObserver = true;
         p.Spectatee = null;
         p.SpectateeStatus = 0;
@@ -395,9 +421,11 @@ public sealed class ClientManager
         p.AVelocity = Vector3.Zero;
         p.PunchAngle = Vector3.Zero;
 
-        // QC: an observer has no health/armor (FRAGS_SPECTATOR sentinel) and no weapons.
+        // QC: an observer has no health (FRAGS_SPECTATOR sentinel) and no weapons. QC PutObserverInServer sets
+        // RES_ARMOR to g_balance_armor_start (server/client.qc:366 "was 666?!"), not 0 — cosmetic for the
+        // spectator scoreboard/HUD but kept faithful (stock g_balance_armor_start is 0, so usually a no-op).
         p.SetResourceExplicit(ResourceType.Health, 0f);
-        p.SetResourceExplicit(ResourceType.Armor, 0f);
+        p.SetResourceExplicit(ResourceType.Armor, Cvars.FloatOr("g_balance_armor_start", 0f));
         p.OwnedWeapons.Clear();
         p.OwnedWeaponSet.Clear();
         p.ActiveWeaponId = -1;

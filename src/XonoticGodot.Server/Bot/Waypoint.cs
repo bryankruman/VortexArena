@@ -51,6 +51,13 @@ public sealed class Waypoint
 
     public WaypointFlags Flags;
 
+    /// <summary>
+    /// Static danger bias (QC <c>.dmg</c>, set by botframe_updatedangerousobjects). Added to a route's running
+    /// cost when this waypoint is reached (navigation_markroutes: <c>cost2 = cost + wp.dmg</c>), so routes
+    /// statically detour around lava/rocket zones instead of only braking at the last moment. 0 = no danger.
+    /// </summary>
+    public float Danger;
+
     /// <summary>Dense index into <see cref="WaypointNetwork.Nodes"/> (assigned on add). -1 until added.</summary>
     public int Index = -1;
 
@@ -139,11 +146,35 @@ public sealed class WaypointNetwork
     /// <summary>Apparent jump height (QC jumpheight_vec.z, derived from sv_jumpvelocity); falls beyond this add a time penalty.</summary>
     public float JumpHeight = 130f;
 
+    /// <summary>QC autocvar_sv_jumpvelocity default. Used to derive <see cref="JumpHeightTime"/>.</summary>
+    public float JumpVelocity = 270f;
+
+    /// <summary>QC bot_ai_bunnyhop_skilloffset (default 7): at this bot skill or above, routing assumes the 1.25x bunnyhop speedup.</summary>
+    public int BunnyhopSkillOffset = 7;
+
     /// <summary>
-    /// Linear (distance/speed) cost (QC waypoint_getlinearcost). The bunnyhop 1.25 speedup is skill
-    /// dependent in QC; we use the base speed here so costs are skill-stable across bots.
+    /// Bot skill this network's costs are computed for (QC global <c>skill</c>). At/above
+    /// <see cref="BunnyhopSkillOffset"/> the linear cost uses the 1.25x bunnyhop speedup, matching
+    /// waypoint_getlinearcost. The shared graph is built once per map at the server's current skill.
     /// </summary>
-    public float LinearCost(float dist) => dist / MaxSpeed;
+    public int Skill;
+
+    /// <summary>QC jumpheight_time = sv_jumpvelocity / sv_gravity (bot.qc:620); the rise-time of a jump, added to the JUMP-source fall cost.</summary>
+    public float JumpHeightTime => Gravity > 0f ? JumpVelocity / Gravity : 0f;
+
+    /// <summary>
+    /// Linear (distance/speed) cost (QC waypoint_getlinearcost). The bunnyhop 1.25x speedup applies at
+    /// <see cref="Skill"/> &gt;= <see cref="BunnyhopSkillOffset"/>, matching Base so high-skill route costs
+    /// (and their tie-breaks) line up.
+    /// </summary>
+    public float LinearCost(float dist)
+        => dist / (Skill >= BunnyhopSkillOffset ? MaxSpeed * 1.25f : MaxSpeed);
+
+    /// <summary>Linear cost while submerged (QC waypoint_getlinearcost_underwater): ~0.7x walk speed.</summary>
+    public float LinearCostUnderwater(float dist) => dist / (MaxSpeed * 0.7f);
+
+    /// <summary>Linear cost while crouched (QC waypoint_getlinearcost_crouched): ~0.5x walk speed.</summary>
+    public float LinearCostCrouched(float dist) => dist / (MaxSpeed * 0.5f);
 
     /// <summary>
     /// Travel cost between two world points (QC waypoint_gettravelcost / waypoint_gettravelcost_inwater) —
@@ -153,32 +184,45 @@ public sealed class WaypointNetwork
     /// </summary>
     public float TravelCost(Vector3 from, Vector3 to, bool fromIsJump = false,
         bool fromInWater = false, bool toInWater = false, bool crouch = false)
+        => TravelCost(from, to, fromIsJump, fromInWater, toInWater, crouch, crouch);
+
+    /// <summary>
+    /// Travel cost with per-endpoint crouch flags, a faithful port of waypoint_gettravelcost (waypoints.qc):
+    /// both-submerged and both-crouched early-return the pure underwater/crouched linear cost; the fall term
+    /// uses the JUMP-source variant (jumpheight_time + sqrt((height+jumpheight)/(g/2))) when
+    /// <paramref name="fromIsJump"/>, else sqrt(height/(g/2)); and a single submerged/crouched endpoint
+    /// averages the normal cost with the slower variant ((c + slow)/2).
+    /// </summary>
+    public float TravelCost(Vector3 from, Vector3 to, bool fromIsJump,
+        bool fromInWater, bool toInWater, bool fromCrouch, bool toCrouch)
     {
-        float c = LinearCost((to - from).Length());
+        float dist = (to - from).Length();
+
+        // QC early returns: both endpoints submerged → pure underwater cost; both crouched → pure crouched cost.
+        if (fromInWater && toInWater)
+            return LinearCostUnderwater(dist);
+        if (fromCrouch && toCrouch)
+            return LinearCostCrouched(dist);
+
+        float c = LinearCost(dist);
+
         float height = from.Z - to.Z;
         if (height > JumpHeight && Gravity > 0f)
         {
-            var flat = new Vector3(to.X - from.X, to.Y - from.Y, 0f);
-            float fallTime = MathF.Sqrt(height / (Gravity / 2f));
-            float flatCost = LinearCost(flat.Length());
-            c = MathF.Max(flatCost, fallTime);
+            float heightCost = fromIsJump
+                ? JumpHeightTime + MathF.Sqrt((height + JumpHeight) / (Gravity / 2f)) // JUMP-source: add the rise-time
+                : MathF.Sqrt(height / (Gravity / 2f));
+            c = LinearCost(new Vector3(to.X - from.X, to.Y - from.Y, 0f).Length()); // xy distance cost
+            if (heightCost > c)
+                c = heightCost;
         }
 
-        // QC waypoint_gettravelcost underwater/crouch adjustments: movement is slower in water and while
-        // crouched, so those segments cost more time. QC scales the half of the path in each condition; we
-        // apply the speed factor to the whole-segment cost when an endpoint is in that state (a faithful
-        // approximation that keeps the relative ordering of links the bot's A* needs).
+        // QC half-path adjustments: a single submerged or crouched endpoint averages the normal cost with the slow one.
         if (fromInWater || toInWater)
-        {
-            // swimming is ~0.7x walk speed → ~1.43x the time (the "underwater" half-path penalty).
-            float waterFrac = (fromInWater && toInWater) ? 1f : 0.5f;
-            c *= 1f + waterFrac * (1f / 0.7f - 1f);
-        }
-        if (crouch)
-        {
-            // crouched movement is ~0.5x speed → 2x time for the crouched portion.
-            c *= 1f + 0.5f * (1f / 0.5f - 1f);
-        }
+            return (c + LinearCostUnderwater(dist)) / 2f;
+        if (fromCrouch || toCrouch)
+            return (c + LinearCostCrouched(dist)) / 2f;
+
         return c;
     }
 
@@ -271,8 +315,9 @@ public sealed class WaypointNetwork
                     reachable = true;
                 if (!reachable)
                     continue;
-                bool crouch = a.HasFlag(WaypointFlags.Crouch) || b.HasFlag(WaypointFlags.Crouch);
-                Link(a, b, cost: TravelCost(from, to, a.HasFlag(WaypointFlags.Jump), crouch: crouch));
+                Link(a, b, cost: TravelCost(from, to, a.HasFlag(WaypointFlags.Jump),
+                    fromInWater: false, toInWater: false,
+                    fromCrouch: a.HasFlag(WaypointFlags.Crouch), toCrouch: b.HasFlag(WaypointFlags.Crouch)));
             }
         }
     }
@@ -405,7 +450,9 @@ public sealed class WaypointNetwork
     /// A* shortest path between two graph nodes over the link costs (QC builds this implicitly via
     /// navigation_markroutes + back-pointer walk). Returns the node sequence from <paramref name="from"/> to
     /// <paramref name="to"/> inclusive, or null if unreachable. The heuristic is straight-line/MaxSpeed, an
-    /// admissible lower bound on remaining travel cost so the result is optimal.
+    /// admissible lower bound on remaining travel cost so the result is optimal. Each node's static danger
+    /// bias (<see cref="Waypoint.Danger"/>, QC <c>.dmg</c>) is added to the path cost on entry, matching
+    /// navigation_markroutes so routes detour around marked hazards.
     /// </summary>
     // Reusable A* working set (resized when the graph grows). Reused across searches to avoid allocating four
     // arrays + a heap on every FindPath; the sim drives bots sequentially so a shared scratch is safe.
@@ -455,7 +502,10 @@ public sealed class WaypointNetwork
                 if (nb.Index < 0 || closed[nb.Index]) continue;
                 if (link.Cost >= 999f) continue; // known-unwalkable link
 
-                float tentative = gScore[currentIdx] + link.Cost;
+                // QC navigation_markroutes: cost2 = cost + wp.dmg — add the destination's static danger bias so
+                // routes pre-emptively detour around lava/rocket zones (set by botframe_updatedangerousobjects),
+                // not just brake at the last moment. Admissible-heuristic optimality is preserved: Danger >= 0.
+                float tentative = gScore[currentIdx] + link.Cost + nb.Danger;
                 if (tentative < gScore[nb.Index])
                 {
                     cameFrom[nb.Index] = current;

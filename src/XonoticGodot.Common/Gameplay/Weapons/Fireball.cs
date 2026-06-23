@@ -1,5 +1,6 @@
 using System.Numerics;
 using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Gameplay.Damage;
 using XonoticGodot.Common.Math;
 using XonoticGodot.Common.Services;
 
@@ -120,19 +121,81 @@ public sealed class Fireball : Weapon
     // METHOD(Fireball, wr_think) — common/weapons/weapon/fireball.qc
     public override void WrThink(Entity actor, WeaponSlot slot, FireMode fire)
     {
-        // The primary charge-up prefire (W_Fireball_Attack1_Frame0..4) is a weapon-frame animation sequence
-        // played over fireball_primarytime before the launch — a client/render cadence; the launch itself
-        // (gameplay) happens here on the primary edge.
         if (fire == FireMode.Primary)
         {
+            // QC: weapon_prepareattack(..., primary refire) gates one fire, then the 5-frame charge-up chain
+            // (W_Fireball_Attack1_Frame0..4) plays the prefire windup over ~4×animtime BEFORE the launch; the
+            // launch (W_Fireball_Attack1) only happens at Frame4. PrepareAttack already commits WS_INUSE +
+            // advances the refire timer + schedules a become-READY think — we override that pending think with
+            // the prefire chain so the slot stays busy through the windup and only returns to READY after launch.
+            // (QC's fireball_primarytime / refire2 secondary gate defaults to 0 — a no-op — so it is omitted.)
             if (PrepareAttack(actor, slot, fire))
-                Attack1(actor, slot);
+                FireballPrefireFrame(actor, slot, 0);
         }
         else if (fire == FireMode.Secondary)
         {
             if (PrepareAttack(actor, slot, fire))
                 Attack2(actor, slot);
         }
+    }
+
+    /// <summary>
+    /// Port of the W_Fireball_Attack1_Frame0..4 charge-up chain (fireball.qc): each frame plays the swirling
+    /// EFFECT_FIREBALL_PRE_MUZZLEFLASH at one of the four muzzle corners (Frame0..3), Frame0 also fires the
+    /// SND_FIREBALL_PREFIRE2 "supercharge" cue, and Frame4 finally launches the fireball (W_Fireball_Attack1).
+    /// Frames are spaced one animtime apart (weapon_thinkf), scaled by the weapon rate factor.
+    /// </summary>
+    private void FireballPrefireFrame(Entity actor, WeaponSlot slot, int frame)
+    {
+        WeaponSlotState st = actor.WeaponState(slot);
+        // A weapon switch (or death) may have moved us off this action mid-windup; abort the chain if so.
+        if (st.State != WeaponFireState.InUse || st.CurrentWeaponId != RegistryId)
+            return;
+
+        if (frame >= 4)
+        {
+            // W_Fireball_Attack1_Frame4: launch, then weapon_thinkf(..., animtime, w_ready).
+            Attack1(actor, slot);
+            WeaponFireDriver.ScheduleThink(st, MathF.Max(0f, Primary.Animtime) * WeaponRateFactor(actor),
+                static (pl, sl) =>
+                {
+                    WeaponSlotState s2 = pl.WeaponState(sl);
+                    if (s2.State == WeaponFireState.InUse) s2.State = WeaponFireState.Ready;
+                });
+            return;
+        }
+
+        // W_Fireball_AttackEffect: the prefire muzzleflash, nudged to the frame's muzzle corner.
+        AttackEffect(actor, frame);
+        if (frame == 0)
+            // Frame0: sound(actor, CH_WEAPON_SINGLE, SND_FIREBALL_PREFIRE2, VOL_BASE, ATTEN_NORM).
+            Api.Sound.Play(actor, SoundChannel.WeaponSingle, "weapons/fireball_prefire2.wav");
+
+        // weapon_thinkf(..., animtime, <next frame>): chain the next charge frame after one animtime.
+        int next = frame + 1;
+        WeaponFireDriver.ScheduleThink(st, MathF.Max(0f, Primary.Animtime) * WeaponRateFactor(actor),
+            (pl, sl) => FireballPrefireFrame(pl, sl, next));
+    }
+
+    /// <summary>
+    /// Port of W_Fireball_AttackEffect (fireball.qc): emit EFFECT_FIREBALL_PRE_MUZZLEFLASH from the shot origin
+    /// offset to the frame's muzzle corner (f_diff = ±1.25 right ±3.75 up). Frames 0..3 cycle the four corners.
+    /// </summary>
+    private void AttackEffect(Entity actor, int frame)
+    {
+        // f_diff per frame, matching W_Fireball_Attack1_Frame0..3 (x = up, y = right in QC's vector literal).
+        (float up, float right) = frame switch
+        {
+            0 => (-1.25f, -3.75f),
+            1 => (1.25f, -3.75f),
+            2 => (-1.25f, 3.75f),
+            _ => (1.25f, 3.75f),
+        };
+        QMath.AngleVectors(actor.Angles, out Vector3 forward, out Vector3 vright, out Vector3 vup);
+        // W_SetupShot_ProjectileSize with recoil 0 / SND_Null: just resolve the shot origin+dir (no sound/recoil).
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, new Vector3(-16, -16, -16), new Vector3(16, 16, 16), recoil: 0f);
+        Vector3 org = shot.Origin + up * vup + right * vright; // w_shotorg += f_diff.x*v_up + f_diff.y*v_right
+        EffectEmitter.Emit("FIREBALL_PRE_MUZZLEFLASH", org, shot.Dir * 1000f, 1, except: actor);
     }
 
     // Refire/animtime from the (cvar-seeded) per-mode balance blocks.
@@ -168,14 +231,19 @@ public sealed class Fireball : Weapon
         proj.Velocity = WeaponFiring.ProjectileVelocity(shot.Dir, Vector3.UnitZ, Primary.Speed, 0f, 0f, Primary.Spread);
         proj.Angles = QMath.VecToAngles(proj.Velocity);
 
-        // pushltime = time + lifetime is the explode-at-end-of-life deadline (W_Fireball_Think).
+        // pushltime = time + lifetime is the explode-at-end-of-life deadline (W_Fireball_Think). cnt 0 = a
+        // fresh fireball (not timed-out / shot-down): only then does the BFG sweep fire (W_Fireball_Explode).
         float deathTime = Api.Clock.Time + Primary.Lifetime;
+        proj.Cnt = 0;
         proj.Touch = (self, other) => Explode(self, other);
         proj.Think = self => OnFireballThink(self, deathTime);
         proj.NextThink = Api.Clock.Time;
-        // W_Fireball_Damage: a shootable fireball (when health > 0) explodes when its HP is depleted.
+        // proj.use = W_Fireball_Explode_use: a map trigger/use detonates the fireball (directhit = the trigger).
+        proj.Use = (self, activator) => Explode(self, activator);
+        // W_Fireball_Damage: a shootable fireball (when health > 0) explodes when its HP is depleted (cnt=1 so
+        // the resulting blast skips the BFG sweep, like a timed-out fireball).
         if (Primary.Health > 0f)
-            proj.ProjectileDamage = (self, attacker) => Explode(self, null);
+            proj.ProjectileDamage = (self, attacker) => { self.Cnt = 1; Explode(self, null); };
 
         // MUTATOR_CALLHOOK(EditProjectile, actor, proj) (fireball.qc W_Fireball_Attack1).
         var ep = new MutatorHooks.EditProjectileArgs(actor, proj);
@@ -183,6 +251,8 @@ public sealed class Fireball : Weapon
 
         Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/fireball_fire2.wav");
         EffectEmitter.Emit("FIREBALL_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
+        // NOTE: QC CSQCProjectile(proj, PROJECTILE_FIREBALL) attaches the plasma flight trail (EFFECT "FIREBALL")
+        // — a CSQC render concern networked off the projectile, deferred here like the other weapons' trails.
     }
 
     // W_Fireball_Think — tick the fireball; scorch a nearby enemy each tick; explode at end of lifetime. fireball.qc
@@ -190,6 +260,9 @@ public sealed class Fireball : Weapon
     {
         if (Api.Clock.Time > deathTime)
         {
+            // QC: this.cnt = 1; this.projectiledeathtype |= HITTYPE_SPLASH; W_Fireball_Explode(this, NULL).
+            // cnt = 1 suppresses the BFG sweep on a timed-out fireball (Explode's !cnt gate).
+            self.Cnt = 1;
             Explode(self, null);
             return;
         }
@@ -202,20 +275,33 @@ public sealed class Fireball : Weapon
     /// Port of W_Fireball_LaserPlay (fireball.qc): pick one nearby damageable enemy (weighted toward closer
     /// targets, preferring ones not already burning) within <paramref name="dist"/> and set it alight for
     /// <paramref name="burnTime"/> seconds, with the burn rate scaled by distance (damage at the core down
-    /// to edgedamage at the rim).
+    /// to edgedamage at the rim). The burn routes through Fire_AddDamage (frame-rate-independent DOT + the
+    /// re-ignition combine LEMMA), and skips frozen / independent / same-team players (QC's full filter).
     /// </summary>
     private void LaserPlay(Entity self, float dist, float damage, float edgeDamage, float burnTime)
     {
         if (damage <= 0f || Api.Services is null) return;
 
+        Entity owner = self.RealOwner ?? self;
+        var burning = StatusEffectsCatalog.Burning;
+        if (burning is null) return;
+
         Entity? chosen = null;
-        float chosenDist = 0f;
+        Vector3 chosenPoint = default;
         float bestWeight = -1f;
         bool chosenBurning = true;
-        var burning = StatusEffectsCatalog.Burning;
         foreach (Entity e in Api.Entities.FindInRadius(self.Origin, dist).ToList())
         {
-            if (e.TakeDamage != DamageMode.Aim || ReferenceEquals(e, self.Owner)) continue;
+            // QC skip: frozen (stat or status), the owner, independent players, non-AIM targets, and a same-team
+            // player when the fireball has a (real)owner.
+            if (e.TakeDamage != DamageMode.Aim || ReferenceEquals(e, owner) || e.IsIndependentPlayer)
+                continue;
+            if (e.FrozenStat != 0 || StatusEffectsCatalog.Frozen is { } fz && StatusEffectsCatalog.Has(e, fz))
+                continue;
+            bool isPlayer = (e.Flags & EntFlags.Client) != 0;
+            if (isPlayer && self.RealOwner is not null && Teams.SameTeam(e, self))
+                continue;
+
             Vector3 p = e.Origin + new Vector3(
                 e.Mins.X + Prandom.Float() * (e.Maxs.X - e.Mins.X),
                 e.Mins.Y + Prandom.Float() * (e.Maxs.Y - e.Mins.Y),
@@ -224,20 +310,27 @@ public sealed class Fireball : Weapon
             if (d >= dist) continue;
 
             // RandomSelection: weight 1/(1+d), and strongly prefer targets that aren't already burning.
-            bool isBurning = burning is not null && StatusEffectsCatalog.Has(e, burning);
+            bool isBurning = StatusEffectsCatalog.Has(e, burning);
             float weight = 1f / (1f + d);
             // not-yet-burning targets win over burning ones regardless of weight.
             bool better = (!isBurning && chosenBurning) || (isBurning == chosenBurning && weight > bestWeight);
             if (chosen is null || better)
             {
-                chosen = e; chosenDist = d; bestWeight = weight; chosenBurning = isBurning;
+                chosen = e; chosenPoint = p; bestWeight = weight; chosenBurning = isBurning;
             }
         }
 
-        if (chosen is not null && burning is not null)
+        if (chosen is not null)
         {
-            float rate = damage + (edgeDamage - damage) * (chosenDist / dist);
-            StatusEffectsCatalog.Apply(chosen, burning, burnTime, strength: rate, source: self.Owner ?? self);
+            float d = (self.Origin - chosenPoint).Length();
+            // QC: d = damage + (edgedamage-damage)*(d/dist) — the per-second burn rate scaled by distance.
+            float rate = damage + (edgeDamage - damage) * (d / dist);
+            // Fire_AddDamage(targ, owner, rate*burntime, burntime, projectiledeathtype | HITTYPE_BOUNCE):
+            // total = rate*burntime over burntime seconds (combine-aware DOT).
+            string dt = DeathTypes.WithHitType(DeathTypes.FromWeapon(NetName), DeathTypes.Bounce);
+            StatusEffectsCatalog.FireAddDamage(chosen, owner, rate * burnTime, burnTime, dt);
+            // Send_Effect(EFFECT_FIREBALL_LASER, this.origin, chosen.fireball_impactvec - this.origin, 1).
+            EffectEmitter.Emit("FIREBALL_LASER", self.Origin, chosenPoint - self.Origin, 1);
         }
     }
 
@@ -246,34 +339,67 @@ public sealed class Fireball : Weapon
     private void Explode(Entity self, Entity? directHit)
     {
         self.Touch = null;
+        self.Use = null;
         self.Think = null;
         self.TakeDamage = DamageMode.No;
 
-        Entity owner = self.Owner ?? self;
-        bool ownerSurvived = owner.DeadState == DeadFlag.No;
+        Entity owner = self.RealOwner ?? self;
 
+        // QC: float d = health + armor of the realowner BEFORE the blast — the "did the owner survive?" baseline.
+        float ownerHealthBefore = owner.GetResource(ResourceType.Health) + owner.GetResource(ResourceType.Armor);
+
+        // 1. dist damage (the direct radius blast). RadiusDamage may kill the owner (self-blast), which is
+        // exactly what the post-blast health+armor compare below detects.
         WeaponSplash.RadiusDamage(self, self.Origin, Primary.Damage, Primary.EdgeDamage, Primary.Radius,
             self.Owner, RegistryId, Primary.Force, directHit: directHit);
 
-        // BFG secondary blast: every visible damageable target within bfgradius takes
-        // bfgdamage * (1 - sqrt(dist/bfgradius)) + bfgforce, but only if the owner survived the direct blast.
-        if (Primary.BfgRadius > 0f && ownerSurvived && Api.Services is not null)
+        // 2. BFG sweep — only if the owner SURVIVED the direct blast (health+armor AFTER >= before) AND this
+        // fireball wasn't timed-out / shot-down (!cnt). Each visible enemy in bfgradius takes
+        // bfgdamage*(1-sqrt(dist/bfgradius)). Re-read the owner's resources AFTER the blast (QC's compare).
+        float ownerHealthAfter = owner.GetResource(ResourceType.Health) + owner.GetResource(ResourceType.Armor);
+        if (ownerHealthAfter >= ownerHealthBefore && self.Cnt == 0
+            && Primary.BfgRadius > 0f && Api.Services is not null)
         {
+            // modeleffect_spawn(models/sphere/sphere.md3, ...) BFG visual — left to the CSQC effect layer.
             Vector3 center = self.Origin;
             foreach (Entity e in Api.Entities.FindInRadius(center, Primary.BfgRadius).ToList())
             {
-                if (e.TakeDamage == DamageMode.No || ReferenceEquals(e, owner)) continue;
-                Vector3 targ = e.Origin + (e.Mins + e.Maxs) * 0.5f;
-                float dist = (targ - center).Length();
-                if (dist > Primary.BfgRadius) continue;
-                // LOS gate: skip targets the fireball can't see.
-                TraceResult los = Api.Trace.Trace(center, Vector3.Zero, Vector3.Zero, targ, MoveFilter.NoMonsters, self);
-                if (los.Fraction < 1f && !ReferenceEquals(los.Ent, e)) continue;
+                // QC filter: not the owner, must be DAMAGE_AIM, not independent, and — for a player with an owner —
+                // a DIFFERENT team (no same-team BFG damage).
+                if (ReferenceEquals(e, owner) || e.TakeDamage != DamageMode.Aim || e.IsIndependentPlayer)
+                    continue;
+                bool isPlayer = (e.Flags & EntFlags.Client) != 0;
+                if (isPlayer && self.RealOwner is not null && Teams.SameTeam(e, self))
+                    continue;
 
+                Vector3 aim = e.Origin + e.ViewOfs; // QC e.origin + e.view_ofs
+                // can we see the fireball from the target?
+                TraceResult los1 = Api.Trace.Trace(aim, Vector3.Zero, Vector3.Zero, center, MoveFilter.Normal, e);
+                if (los1.Fraction != 1f) continue;
+                // can we see the player who shot the fireball? (second LOS — the shooter must be visible too.)
+                Vector3 shooterEye = owner.Origin + owner.ViewOfs;
+                TraceResult los2 = Api.Trace.Trace(aim, Vector3.Zero, Vector3.Zero, shooterEye, MoveFilter.Normal, e);
+                if (!ReferenceEquals(los2.Ent, owner) && los2.Fraction != 1f) continue;
+
+                float dist = (center - aim).Length();
                 float points = 1f - MathF.Sqrt(dist / Primary.BfgRadius);
-                Vector3 force = QMath.Normalize(targ - center) * (Primary.BfgForce * points);
-                WeaponFiring.ApplyDamage(e, owner, Primary.BfgDamage * points, RegistryId, inflictor: self,
-                    force: force, hitLoc: targ);
+                if (points <= 0f) continue;
+
+                float dmg = Primary.BfgDamage * points;
+                Vector3 dir = QMath.Normalize(aim - center);
+                Vector3 force = dir * (Primary.BfgForce * points);
+
+                // accuracy_add(realowner, WEP_FIREBALL, 0, bfgdamage*points, 0) when it's good damage.
+                if (WeaponAccuracyEvents.IsGoodDamage(owner, e))
+                    WeaponAccuracyEvents.Hit(owner, this, dmg);
+
+                // Damage(e, this, realowner, dmg, projectiledeathtype | HITTYPE_BOUNCE | HITTYPE_SPLASH, ..., aim, force).
+                string dt = DeathTypes.WithHitType(
+                    DeathTypes.WithHitType(DeathTypes.FromWeapon(NetName), DeathTypes.Bounce), DeathTypes.Splash);
+                Combat.Damage(e, self, owner, dmg, dt, aim, force);
+
+                // Send_Effect(EFFECT_FIREBALL_BFGDAMAGE, e.origin, -dir, 1).
+                EffectEmitter.Emit("FIREBALL_BFGDAMAGE", e.Origin, -dir, 1);
             }
         }
 
@@ -325,31 +451,50 @@ public sealed class Fireball : Weapon
             Api.Entities.Remove(self);
             return;
         }
+
+        // "make it hot once it leaves its owner": after the mine has spent 3 ticks beyond laserradius of its
+        // firer, drop the owner link so the mine can then scorch its own firer too (cnt counts ticks-away; it
+        // resets while the mine is still near the owner). QC uses .owner (the movement-passthrough owner).
+        if (self.Owner is { } mineOwner)
+        {
+            Vector3 ownerEye = mineOwner.Origin + mineOwner.ViewOfs;
+            if ((self.Origin - ownerEye).Length() > Secondary.LaserRadius)
+            {
+                if (++self.Cnt == 3)
+                    self.Owner = null;
+            }
+            else
+            {
+                self.Cnt = 0;
+            }
+        }
+
         LaserPlay(self, Secondary.LaserRadius, Secondary.LaserDamage, Secondary.LaserEdgeDamage, Secondary.LaserBurnTime);
         self.NextThink = Api.Clock.Time + 0.1f;
     }
 
     // W_Fireball_Firemine_Touch — set the player it lands on alight (Fire_AddDamage burn over damagetime),
-    // else bounce. fireball.qc
+    // else keep bouncing (HITTYPE_BOUNCE). fireball.qc
     private void FiremineTouch(Entity self, Entity other)
     {
-        bool hitPlayer = other.TakeDamage == DamageMode.Aim || (other.Flags & EntFlags.Client) != 0;
-        if (hitPlayer)
+        // QC: if (toucher.takedamage == DAMAGE_AIM && Fire_AddDamage(...) >= 0) { delete; return; }
+        // Fire_AddDamage returns >= 0 only when it actually added burn (target alive + damage > 0); on an
+        // already-dead target (or a re-ignite that adds nothing) it returns -1 and the mine keeps bouncing.
+        if (other.TakeDamage == DamageMode.Aim)
         {
-            // Fire_AddDamage: apply `damage` over `damagetime` seconds as a burning status effect (the
-            // status-effects tick deals the periodic burn). Credit the firemine's owner for the kill.
-            var burning = StatusEffectsCatalog.Burning;
-            if (burning is not null)
-                StatusEffectsCatalog.Apply(other, burning, Secondary.DamageTime,
-                    strength: Secondary.Damage, source: self.Owner ?? self);
-            else // fall back to a direct hit if the burning effect isn't registered
-                WeaponFiring.ApplyDamage(other, self.Owner ?? self, Secondary.Damage, RegistryId, inflictor: self);
-            WeaponSplash.ImpactSound(self, "weapons/fireball_impact2.wav"); // firemine ignite burst
-            EffectEmitter.Emit("GRENADE_EXPLODE", self.Origin);
-            Api.Entities.Remove(self);
-            return;
+            // projectiledeathtype = WEP_FIREBALL.m_id | HITTYPE_SECONDARY (set at spawn).
+            string dt = DeathTypes.WithHitType(DeathTypes.FromWeapon(NetName), DeathTypes.Secondary);
+            float added = StatusEffectsCatalog.FireAddDamage(other, self.RealOwner ?? self,
+                Secondary.Damage, Secondary.DamageTime, dt);
+            if (added >= 0f)
+            {
+                // QC wr_impacteffect secondary branch: "firemine goes out silently" — no impact sound/effect.
+                Api.Entities.Remove(self);
+                return;
+            }
         }
-        // bounce off the world (engine MOVETYPE_BOUNCE reflects the velocity).
+        // didn't ignite: keep bouncing (engine MOVETYPE_BOUNCE reflects the velocity; the deathtype now carries
+        // HITTYPE_BOUNCE in QC — a render/obituary nicety not modeled on the headless bounce).
         self.Angles = QMath.VecToAngles(self.Velocity);
     }
 

@@ -673,7 +673,7 @@ public class MutatorBatchT19StageTwoTests : IDisposable
             ("g_random_loot_time", "20"),
             ("g_random_loot_spread", "100"),
             ("g_random_loot_weapon_probability", "1"),     // type pick → weapon
-            ("g_random_loot_shotgun_probability", "1"));   // a concrete weapon to resolve
+            ("g_random_loot_weapon_shotgun_probability", "1"));   // a concrete weapon to resolve (QC m_canonical_spawnfunc = "weapon_shotgun")
 
         var victim = SpawnPlayer(f, new Vector3(0, 0, 0));
         int before = CountItems(f);

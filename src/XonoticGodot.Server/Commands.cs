@@ -448,8 +448,11 @@ public sealed class Commands
         // ---- match flow (QC GameCommand restart/endmatch/reducematchtime/extendmatchtime) ----
         Register("restart", "restart — restart the match (warmup → countdown → live)", CmdRestart);
         Register("endmatch", "endmatch — end the current match immediately (go to intermission)", CmdEndMatch);
-        Register("reducematchtime", "reducematchtime — reduce the match time limit", ctx => ChangeMatchTime(ctx, -60f));
-        Register("extendmatchtime", "extendmatchtime — extend the match time limit", ctx => ChangeMatchTime(ctx, +60f));
+        // QC GameCommand_reduce/extendmatchtime: delta = ±timelimit_increment/decrement*60s (sv_cmd.qc:752/1297).
+        Register("reducematchtime", "reducematchtime — reduce the match time limit",
+            ctx => ChangeMatchTime(ctx, -Cvars.FloatOr("timelimit_decrement", 5f) * 60f));
+        Register("extendmatchtime", "extendmatchtime — extend the match time limit",
+            ctx => ChangeMatchTime(ctx, +Cvars.FloatOr("timelimit_increment", 5f) * 60f));
 
         // ---- players / chat (QC GameCommand kick + the say bus) ----
         Register("kick", "kick <player> [reason] — remove a player from the server", CmdKick);
@@ -658,14 +661,36 @@ public sealed class Commands
 
     private bool ChangeMatchTime(CommandContext ctx, float deltaSeconds)
     {
-        // QC changematchtime: adjust the timelimit cvar (minutes). 0 means unlimited; don't extend that.
+        // QC changematchtime (sv_cmd.qc:48): delta in SECONDS, clamped to [timelimit_min, timelimit_max]*60,
+        // offset by the elapsed time since game_starttime, and bailing out at the unlimited / already-min/max edges.
+        float mi = Cvars.FloatOr("timelimit_min", 5f) * 60f;
+        float ma = Cvars.FloatOr("timelimit_max", 60f) * 60f;
+        float delta = deltaSeconds;
+        if (delta == 0f) return true;
+        // QC: if(autocvar_timelimit < 0) return; (a negative timelimit is "no limit, cannot change").
         float limMinutes = Cvars.Float("timelimit");
-        if (limMinutes <= 0f && deltaSeconds > 0f)
+        if (limMinutes < 0f) { ctx.Print("timelimit is unlimited; cannot change"); return true; }
+
+        if (mi <= 10f) mi = 10f;                         // QC: at least ten sec in the future
+        float cur = _world.Time - _world.GameStartTime;
+        if (cur > 0f) mi += cur;                          // QC: from current time!
+
+        float lim = limMinutes * 60f;
+        float update;
+        if (delta > 0f)
         {
-            ctx.Print("timelimit is unlimited; cannot extend");
-            return true;
+            if (lim == 0f) { ctx.Print("timelimit is unlimited; cannot extend"); return true; } // QC: can't increase
+            if (lim < ma) update = System.Math.Min(ma, lim + delta);
+            else { ctx.Print("timelimit is already at maximum"); return true; }                  // QC: above max → FAIL
         }
-        float newMinutes = System.Math.Max(0f, limMinutes + deltaSeconds / 60f);
+        else
+        {
+            if (lim == 0f) update = System.Math.Max(mi, ma);   // QC: infinite → reduce to max if allowed
+            else if (lim > mi) update = System.Math.Max(mi, lim + delta);
+            else { ctx.Print("timelimit is already at minimum"); return true; }                  // QC: below min → FAIL
+        }
+
+        float newMinutes = update / 60f;
         Cvars.Set("timelimit", newMinutes);
         ctx.Print($"timelimit is now {newMinutes} minutes");
         return true;
@@ -965,12 +990,15 @@ public sealed class Commands
 
     private bool CmdCoinToss(CommandContext ctx)
     {
-        string a = ctx.ArgCount >= 2 ? ctx.Arg(1) : "HEADS";
-        string b = ctx.ArgCount >= 3 ? ctx.Arg(2) : "TAILS";
-        // deterministic-ish flip off the sim clock (no Math.random in the headless core).
-        bool first = ((int)(Api.Services is not null ? Api.Clock.Time * 1000f : 0f) & 1) == 0;
-        string result = first ? a : b;
-        ChatBroadcast?.Invoke($"^2* Coin toss: ^3{result}");
+        // QC GameCommand_cointoss (sv_cmd.qc:480): with two user options argv(1)/argv(2) they get a "^7" prefix;
+        // the defaults are "^1HEADS"/"^4TAILS". The flip is random() > 0.5 → result1 (use the shared deterministic
+        // Prandom so a headless server is reproducible while still being an unbiased 50/50 — not the old clock LSB).
+        bool custom = ctx.ArgCount >= 3;
+        string result1 = custom ? $"^7{ctx.Arg(1)}" : "^1HEADS";
+        string result2 = custom ? $"^7{ctx.Arg(2)}" : "^4TAILS";
+        string result = XonoticGodot.Common.Math.Prandom.Float() > 0.5f ? result1 : result2;
+        // QC: Send_Notification(NOTIF_ALL, NULL, MSG_MULTI, MULTI_COINTOSS, choice) → broadcast to everyone.
+        ChatBroadcast?.Invoke($"^2* Coin toss: {result}");
         ctx.Print($"coin toss: {result}");
         return true;
     }
@@ -1073,6 +1101,16 @@ public sealed class Commands
     {
         if (ctx.Caller is null) { ctx.Print("join is a client command"); return true; }
         Player p = ctx.Caller;
+        // QC Join_Try (client.qc:2274): a non-INGAME client in g_playban_list cannot (re)join — the play-ban's
+        // load-bearing enforcement. A player who isn't currently in play is one sitting as observer/spectator;
+        // a live (dead) player is already INGAME and falls through to respawn. The CENTER_JOIN_PLAYBAN center-print
+        // is the HUD layer's job; the command-output channel surfaces the sprint text.
+        if ((p.IsObserver || p.FragsStatus == Player.FragsSpectator)
+            && Bans.PlayerInList(p, "g_playban_list"))
+        {
+            ctx.Print("You are banned from joining the game on this server.");
+            return true;
+        }
         if (p.FragsStatus == Player.FragsSpectator)
             p.FragsStatus = Player.FragsPlayer;
         if (_world.Teamplay.IsTeamGame && (int)p.Team == Teams.None && !_world.TeamsLocked)
@@ -1290,10 +1328,10 @@ public sealed class Commands
 
     /// <summary>
     /// QC <c>ImpulseCommands</c> (server/impulse.qc): a client sent <c>impulse N</c>. Route the weapon-related
-    /// impulse numbers onto the selection/reload API (<see cref="WeaponImpulses.Handle"/>). Non-weapon impulses
-    /// (waypoints/cheats/etc.) aren't handled here — they're owned by other tasks — so they no-op with a note.
-    /// QC also gates impulses on game_stopped / timeout / round-not-started; the game-stopped + timeout gates are
-    /// honored, the round-start gate is left to the round handler.
+    /// impulse numbers onto the selection/reload API (<see cref="WeaponImpulses.Handle"/>) plus the GIVE_ALL cheat
+    /// impulse (99). The remaining non-weapon impulses (waypoints / clone / teleport / drag cheats) aren't handled
+    /// here — they're owned by other tasks — so they no-op with a note. QC gates impulses on game_stopped / timeout /
+    /// round-not-started; the game-stopped + timeout + round-not-started (drop/reload/use) gates are all honored.
     /// </summary>
     private bool CmdImpulse(CommandContext ctx)
     {
@@ -1318,11 +1356,28 @@ public sealed class Commands
         // active-pause predicate (IsPaused == Status==ActivePause), not the broader .Active (Status != Inactive).
         if (_world.Intermission.Running) return true;
         if (_world.Timeout.IsPaused) return true;
+        // QC impulse.qc:383-395 — round-not-started gate: while a round handler is ACTIVE but the round hasn't
+        // started (the CA/Freezetag pre-round warmup countdown), forbid the three "act on the world" impulses
+        // weapon_drop(17)/weapon_reload(20)/use(21). Other impulses (weapon switching, etc.) stay allowed.
+        // QC round_handler_IsActive() == "a round handler exists and is running": in the port that is exactly a
+        // non-null GameWorld.Rounds (set only by EnableRounds for the round-based gametypes), and the round is not
+        // yet live when IsRoundStarted is false (WaitingToStart / Countdown phases).
+        if (_world.Rounds is { IsRoundStarted: false }
+            && (imp == 17 || imp == 20 || imp == 21))
+            return true;
         // [T37] SEAM C: a seated pilot's impulse routes to the per-vehicle mode switch/cycle BEFORE weapon
         // impulses (QC vehicle_impulse runs first). The existing C2S impulse path then makes the weapon-group
         // keys (1/2/3, weapnext/prev) switch vehicle modes when seated with zero extra net work.
         if (caller.Vehicle is not null && !VehicleCommon.IsDead(caller.Vehicle) && VehicleBoarding.Impulse(caller, imp))
             return true;
+        // QC CheatImpulse (impulse.qc:398, cheats.qc:184): impulse 99 (CHIMPULSE_GIVE_ALL) is the only pure-logic
+        // cheat impulse the port models — route it to Cheats.GiveAll, which runs the sv_cheats gate (and counts the
+        // cheat) itself. The clone/speedrun/teleport/r00t/drag impulses need engine services and remain unported.
+        if (imp == 99)
+        {
+            _world.Cheats.GiveAll(caller); // silently no-ops (returns false) when sv_cheats disallows it, like QC
+            return true;
+        }
         if (!WeaponImpulses.Handle(caller, imp))
             ctx.Print($"impulse {imp} not handled");
         return true;
@@ -1400,7 +1455,13 @@ public sealed class Commands
         Player? target = FindPlayerByName(ctx.Arg(1));
         if (target is null) { ctx.Print($"no player matching \"{ctx.Arg(1)}\""); return true; }
         Bans.AddToList(target, "g_playban_list");
-        target.FragsStatus = Player.FragsSpectator; // force spectate now (QC PutObserverInServer)
+        // QC BanCommand_playban (banning.qc:186): run the REAL observer transition (PutObserverInServer), not just
+        // flip the FRAGS_SPECTATOR scoreboard sentinel — otherwise the play-banned player stays a solid, shootable,
+        // still-scoring actor (the same SPEC4/LOOP2 trap CmdSpectate already fixed).
+        _world.Clients.PutObserverInServer(target);
+        // QC banning.qc:187-188: if g_playban_minigames, also kick the player out of any in-progress minigame now.
+        if (Cvars.Bool("g_playban_minigames"))
+            _world.Minigames.Part(target);
         ctx.Print($"play-banned {target.NetName}");
         return true;
     }
@@ -1506,7 +1567,18 @@ public sealed class Commands
 
     private bool CmdTime(CommandContext ctx)
     {
-        ctx.Print($"time: {_world.Time:0.000}");
+        // QC CommonCommand_time (common.qc): print the several engine clock readouts. The port maps the sim clock
+        // (time/frame-start) to _world.Time and the wall-clock readouts (realtime/uptime/local/gmtime) to the host
+        // process clock — GETTIME_REALTIME is the OS clock, uptime the seconds since process start.
+        var fmt = System.Globalization.CultureInfo.InvariantCulture;
+        ctx.Print($"time = {_world.Time.ToString("0.######", fmt)}");
+        ctx.Print($"frame start = {_world.Time.ToString("0.######", fmt)}");
+        double realtime = (DateTime.UtcNow - DateTime.UnixEpoch).TotalSeconds;
+        ctx.Print($"realtime = {realtime.ToString("0.######", fmt)}");
+        double uptime = (DateTime.UtcNow - System.Diagnostics.Process.GetCurrentProcess().StartTime.ToUniversalTime()).TotalSeconds;
+        ctx.Print($"uptime = {uptime.ToString("0.######", fmt)}");
+        ctx.Print($"localtime = {DateTime.Now.ToString("ddd MMM dd HH:mm:ss yyyy", fmt)}");
+        ctx.Print($"gmtime = {DateTime.UtcNow.ToString("ddd MMM dd HH:mm:ss yyyy", fmt)}");
         return true;
     }
 

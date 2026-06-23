@@ -69,6 +69,22 @@ namespace XonoticGodot.Common.Framework
 
         /// <summary>QC <c>.pos1</c> / <c>.pos2</c> — the vehicle's spawn origin and spawn angles (return point).</summary>
         public Vector3 SpawnPos, SpawnAngles;
+
+        /// <summary>QC <c>.pain_frame</c> — debounce for the low-health smoke/jitter cadence (vehicles_painframe).</summary>
+        public float PainFrame;
+
+        /// <summary>QC <c>.play_time</c> — debounce for vehicle impact (fall/ram) self-damage (vehicles_impact, 0.25s).</summary>
+        public float PlayTime;
+
+        /// <summary>QC <c>.oldvelocity</c> — last-tick velocity; <c>vehicles_impact</c> measures the delta against this.</summary>
+        public Vector3 OldVelocity;
+
+        /// <summary>
+        /// QC <c>.vehicle_health</c> — the 0..100 health PERCENTAGE mirrored onto the OWNING PLAYER each tick
+        /// (vehicles_regen / vehicles_painframe read <c>owner.vehicle_health</c>). On the vehicle entity itself
+        /// the real value lives in RES_HEALTH; this field is the owner-side HUD mirror.
+        /// </summary>
+        public float VehicleHealth;
     }
 }
 
@@ -99,6 +115,13 @@ namespace XonoticGodot.Common.Gameplay
     {
         /// <summary>(SERVER) QC <c>vr_death</c> — run when the vehicle is destroyed (death FX, corpse, respawn).</summary>
         public virtual void Death(Entity vehicle) { }
+
+        /// <summary>
+        /// (SERVER) QC <c>vr_impact</c> (common/vehicles/vehicle.qh) — run from <c>vehicles_touch</c> when a piloted
+        /// vehicle rams/lands; the per-vehicle override calls <see cref="VehicleCommon.Impact"/> with its own
+        /// minspeed/speedfac/maxpain thresholds. Default no-op (a vehicle with no impact tuning takes no ram damage).
+        /// </summary>
+        public virtual void Impact(Entity vehicle) { }
     }
 
     /// <summary>
@@ -343,6 +366,16 @@ namespace XonoticGodot.Common.Gameplay
             // test-only) actually run on the live damage path.
             vehic.GtEventDamage = EventDamage;
 
+            // QC vehicles_spawn:1116 — this.touch = vehicles_touch. Installs the crush / ram-impact / touch-board
+            // handler (Touch above) so a moving piloted vehicle runs over soft targets (DEATH_VH_CRUSH) and takes
+            // its own landing/ram damage (vr_impact), and an ownerless vehicle boards a toucher when
+            // g_vehicles_enter==0. Requires the host collision to dispatch .Touch onto solids (cross-boundary).
+            vehic.Touch = Touch;
+
+            // QC vehicles_spawn:1118 — this.event_heal = vehicles_heal. There is no central Heal()/event_heal
+            // dispatch sink in the port yet (the Combat.Heal seam is a separate cross-file TODO), so HealVehicle
+            // (the faithful sink body) is left callable but cannot be auto-dispatched here. Recorded as a todo.
+
             // QC: return to spawn (this.angles = pos2; setorigin(this, pos1)).
             vehic.Angles = vehic.SpawnAngles;
             if (Api.Services is not null)
@@ -352,6 +385,15 @@ namespace XonoticGodot.Common.Gameplay
             // hud/viewport model reset + CSQCMODEL_AUTOINIT (client/net) and lock reset. The server spawn
             // state — owner, movetype/solid/damage, FL_NOTARGET, angles, placement at the spawn point — is set above.
         }
+
+        /// <summary>
+        /// Port of the tail of <c>vehicle_initialize()</c> (sv_vehicles.qc ~1283): fire the VehicleInit mutator
+        /// hook, returning true if a mutator wants to ABORT this vehicle's one-time init
+        /// (QC: <c>if (MUTATOR_CALLHOOK(VehicleInit, this)) return false;</c>). The one-time init site
+        /// (VehicleSpawnFuncs.Spawn) calls this once after building the vehicle and aborts/deletes on true —
+        /// distinct from <see cref="SpawnVehicle"/> which is the per-respawn reset.
+        /// </summary>
+        public static bool InitVehicle(Entity vehic) => MutatorHooks.FireVehicleInit(vehic);
 
         // =====================================================================================
         // THINK helpers — regen (vehicles_regen / vehicles_regen_resource, sv_vehicles.qc ~549).
@@ -371,6 +413,10 @@ namespace XonoticGodot.Common.Gameplay
                 if (healthScale && vehic.MaxHealth > 0f)
                     regen *= vehic.GetResource(ResourceType.Health) / vehic.MaxHealth;
                 current = MathF.Min(current + regen * dt, fieldMax);
+
+                // QC vehicles_regen: owner.(regen_field) = (this.(regen_field) / field_max) * 100 — but the scalar
+                // Regen() has no `.regen_field` identity to mirror generically, so the caller is responsible for the
+                // owner mirror of scalar pools (shield/energy) via MirrorOwnerStat after taking the returned value.
             }
             return current;
         }
@@ -388,6 +434,11 @@ namespace XonoticGodot.Common.Gameplay
                 if (healthScale && vehic.MaxHealth > 0f)
                     regen *= amount / vehic.MaxHealth;
                 vehic.SetResource(resource, MathF.Min(amount + regen * dt, fieldMax));
+
+                // QC vehicles_regen_resource: owner.(regen_field) = (GetResource(this, resource) / field_max) * 100.
+                // For RES_HEALTH that field is .vehicle_health (the HUD low-health gauge + painframe input).
+                if (vehic.Owner is not null && resource == ResourceType.Health)
+                    vehic.Owner.VehicleHealth = (vehic.GetResource(resource) / fieldMax) * 100f;
             }
         }
 
@@ -426,6 +477,7 @@ namespace XonoticGodot.Common.Gameplay
 
             vehic.DmgTime = Time;
             vehic.Enemy = attacker;
+            vehic.PainFinished = Time; // QC vehicles_damage: this.pain_finished = time
 
             // Per-weapon vehicle damage-rate (QC vehicles_damage WEAPONTODO): some weapons hit vehicles for a
             // fraction (vortex/machinegun/rifle/vaporizer at <1) and some for a multiple (any other weapon at
@@ -473,14 +525,17 @@ namespace XonoticGodot.Common.Gameplay
                 if (vehic.DeadState == DeadFlag.No)
                     vehic.DeadState = DeadFlag.Dying;
 
+                // QC vehicles_damage: if (this.owner) { VHF_DEATHEJECT ? vehicles_exit(VHEF_EJECT) : vehicles_exit(VHEF_RELEASE); }
                 Entity? pilot = vehic.Owner;
                 if (pilot is not null)
                     vehic.VehicleDef?.Exit(vehic, pilot); // descriptor computes eject vector + calls ExitVehicle
 
                 vehic.VehicleDef?.Death(vehic);
-                // NOTE — cross-boundary: antilag_clear (antilag system) and the vehicles_setreturn respawn
-                // WAYPOINT (CSQC) are all that remain of vehicles_damage's death path; the respawn itself is
-                // already scheduled by the descriptor's Death() above.
+
+                // QC vehicles_damage tail: vehicles_setreturn(this) — schedule the destroyed-vehicle return so the
+                // descriptor Death()'s respawn timer is mirrored by a return-waypoint entity (radar icon while it
+                // returns). antilag_clear(this,this) is cross-boundary (antilag system) and deferred.
+                SetReturn(vehic);
             }
         }
 
@@ -581,6 +636,199 @@ namespace XonoticGodot.Common.Gameplay
             // detail in the damage system). The server projectile — movetype, ownership, splash, lifetime,
             // fire sound — is wired above.
             return proj;
+        }
+
+        // =====================================================================================
+        // HEAL — port of vehicles_heal() (sv_vehicles.qc ~708): the framework .event_heal SINK.
+        // =====================================================================================
+
+        /// <summary>
+        /// Port of <c>vehicles_heal()</c> (sv_vehicles.qc): the shared vehicle <c>.event_heal</c> handler — top up
+        /// the vehicle's health toward <paramref name="limit"/> (or its <c>max_health</c> when limit is
+        /// <see cref="ResLimitNone"/>), but never a dead vehicle and never past the limit. On a successful heal it
+        /// mirrors the new 0..100 health percentage onto the owning pilot (<c>owner.vehicle_health</c>), exactly
+        /// like the regen path. Returns true if any health was actually given.
+        ///
+        /// This is the framework heal SINK (func_heal / heal-nade onto a vehicle), distinct from the Bumblebee
+        /// healray which is the heal SOURCE. Concrete vehicles install this as their <c>.event_heal</c> in
+        /// <see cref="SpawnVehicle"/> so a generic heal dispatch finds it.
+        /// </summary>
+        public static bool HealVehicle(Entity vehic, Entity? inflictor, float amount, float limit)
+        {
+            float trueLimit = limit != ResLimitNone ? limit : vehic.MaxHealth;
+            float hp = vehic.GetResource(ResourceType.Health);
+            // QC: dead (<=0) or already at/over the limit -> no heal.
+            if (hp <= 0f || hp >= trueLimit)
+                return false;
+
+            vehic.GiveResourceWithLimit(ResourceType.Health, amount, trueLimit);
+            if (vehic.Owner is not null && vehic.MaxHealth > 0f)
+                vehic.Owner.VehicleHealth = (vehic.GetResource(ResourceType.Health) / vehic.MaxHealth) * 100f;
+            _ = inflictor;
+            return true;
+        }
+
+        /// <summary>QC <c>RES_LIMIT_NONE</c> — sentinel "no explicit limit; fall back to max_health".</summary>
+        public const float ResLimitNone = -1f;
+
+        // =====================================================================================
+        // PAINFRAME — port of vehicles_painframe() (sv_vehicles.qc ~594): low-health smoke + jitter.
+        // =====================================================================================
+
+        /// <summary>
+        /// Port of <c>vehicles_painframe()</c> (sv_vehicles.qc): once the vehicle drops to &lt;=50% health, on a
+        /// random 0.1..0.6s cadence emit low-health smoke and — per the descriptor's VHF_DMGSHAKE / VHF_DMGROLL /
+        /// VHF_DMGHEADROLL flags — jitter the vehicle's velocity and body/head angles so a damaged vehicle visibly
+        /// shudders. Driven from each descriptor's <see cref="Vehicle.Think"/> (QC vehicles_frame calls it every
+        /// tick). The smoke particle is presentation (NOTE: client/net) — the authoritative velocity/angle jitter
+        /// (which a remote pilot feels and which the server transmits) IS applied here.
+        /// </summary>
+        public static void PainFrame(Entity vehic)
+        {
+            // QC: myhealth = owner ? owner.vehicle_health : (GetResource(RES_HEALTH)/max_health)*100.
+            float myHealth = vehic.Owner is not null
+                ? vehic.Owner.VehicleHealth
+                : (vehic.MaxHealth > 0f ? (vehic.GetResource(ResourceType.Health) / vehic.MaxHealth) * 100f : 100f);
+
+            if (myHealth <= 50f && vehic.PainFrame < Time)
+            {
+                float ftmp = myHealth / 50f;
+                // QC: pain_frame = time + max(0.1, 0.1 + random()*0.5*_ftmp).
+                vehic.PainFrame = Time + MathF.Max(0.1f, 0.1f + Prandom.Float() * 0.5f * ftmp);
+
+                // QC: Send_Effect(EFFECT_SMOKE_SMALL, origin + randomvec()*80, '0 0 0', 1) — presentation; the
+                // headless Common layer has no particle/temp-entity emitter, so the smoke is deferred (NOTE:
+                // client/net). The gameplay-authoritative jitter below runs regardless.
+
+                if ((vehic.VehicleFlags & VehicleFlags.DmgShake) != 0)
+                    vehic.Velocity += Prandom.Vec() * 30f; // QC: velocity += randomvec()*30
+
+                if ((vehic.VehicleFlags & VehicleFlags.DmgRoll) != 0)
+                {
+                    // QC: VHF_DMGHEADROLL ? tur_head.angles += randomvec() : angles += randomvec().
+                    if ((vehic.VehicleFlags & VehicleFlags.DmgHeadRoll) != 0 && vehic.TurHead is not null)
+                        vehic.TurHead.Angles += Prandom.Vec();
+                    else
+                        vehic.Angles += Prandom.Vec();
+                }
+            }
+        }
+
+        // =====================================================================================
+        // TOUCH / CRUSH / IMPACT — port of vehicles_touch + vehicles_crushable + vehicles_impact.
+        // =====================================================================================
+
+        /// <summary>
+        /// Port of <c>vehicles_crushable()</c> (sv_vehicles.qc): a player past its enter-delay, or any monster,
+        /// is a "soft target" a moving vehicle runs over (rather than taking its own impact damage from).
+        /// </summary>
+        public static bool Crushable(Entity e)
+        {
+            if ((e.Flags & EntFlags.Client) != 0 && Time >= e.VehicleEnterDelay)
+                return true; // QC: IS_PLAYER(e) && time >= e.vehicle_enter_delay
+            if ((e.Flags & EntFlags.Monster) != 0)
+                return true; // QC: IS_MONSTER(e)
+            return false;
+        }
+
+        /// <summary>
+        /// Port of <c>vehicles_touch()</c> (sv_vehicles.qc ~874): the vehicle's <c>.touch</c> handler. Fires the
+        /// VehicleTouch mutator hook (suppress-on-true); while piloted it either CRUSHES a soft target it runs
+        /// over (DEATH_VH_CRUSH, gated on speed) or takes its own ram/landing impact damage; ownerless it boards
+        /// the toucher when touch-board is enabled (<c>g_vehicles_enter==0</c>). Concrete vehicles install this as
+        /// their <c>.touch</c> in <see cref="SpawnVehicle"/> (or the host dual-dispatches solid touches).
+        /// </summary>
+        public static void Touch(Entity vehic, Entity toucher)
+        {
+            // QC: if (MUTATOR_CALLHOOK(VehicleTouch, this, toucher)) return;
+            if (toucher is not null && MutatorHooks.FireVehicleTouch(vehic, toucher))
+                return;
+
+            if (vehic.Owner is not null)
+            {
+                // QC: toucher above the vehicle top, crushable, and the pilot's weapon isn't locked.
+                if (toucher is not null
+                    && vehic.Origin.Z + vehic.Maxs.Z > toucher.Origin.Z
+                    && Crushable(toucher)
+                    && !WeaponLocked(vehic.Owner))
+                {
+                    float minspeed = Cvar("g_vehicles_crush_minspeed", 100f);
+                    if (QMath.VLen(vehic.Velocity) >= minspeed)
+                    {
+                        Vector3 dir = QMath.Normalize(toucher.Origin - vehic.Origin) * Cvar("g_vehicles_crush_force", 50f);
+                        Combat.Damage(toucher, vehic, vehic.Owner, Cvar("g_vehicles_crush_dmg", 70f),
+                            DeathTypes.VhCrush, Vector3.Zero, dir);
+                    }
+                    return; // QC: don't self-damage when hitting a soft target.
+                }
+
+                // QC: if (this.play_time < time) info.vr_impact(info, this);
+                if (vehic.PlayTime < Time)
+                    vehic.VehicleDef?.Impact(vehic);
+                return;
+            }
+
+            // QC: if (!autocvar_g_vehicles_enter) vehicles_enter(toucher, this).
+            if (toucher is not null && Cvar("g_vehicles_enter", 1f) == 0f)
+                vehic.VehicleDef?.Enter(vehic, toucher);
+        }
+
+        /// <summary>
+        /// Port of <c>vehicles_impact()</c> (sv_vehicles.qc ~731): apply DEATH_FALL self-damage when the vehicle's
+        /// speed change since last tick exceeds <paramref name="minspeed"/> (a hard landing or ram), capped at
+        /// <paramref name="maxpain"/> and scaled by <paramref name="speedfac"/>, gated to once / 0.25s and
+        /// skipping NOIMPACT surfaces. The descriptor's <c>vr_impact</c> calls this with its per-vehicle
+        /// thresholds; <see cref="Entity.OldVelocity"/> is the last-tick velocity (the descriptor Think snapshots it).
+        /// </summary>
+        public static void Impact(Entity vehic, float minspeed, float speedfac, float maxpain)
+        {
+            // QC: if (trace_dphitq3surfaceflags & Q3SURFACEFLAG_NOIMPACT) return. The QC global trace_* side-effect
+            // of the touch collision isn't surfaced to this headless touch callback (no per-touch surface-flag in
+            // the port collision result), so the NOIMPACT skip is a deferred fidelity detail (NOTE: collision).
+
+            Vector3 delta = vehic.Velocity - vehic.OldVelocity;
+            if (vehic.PlayTime < Time && QMath.VLen(delta) > minspeed)
+            {
+                float dmg = MathF.Min(speedfac * QMath.VLen(delta), maxpain);
+                Combat.Damage(vehic, null, null, dmg, DeathTypes.Fall, vehic.Origin, Vector3.Zero);
+                vehic.PlayTime = Time + 0.25f; // QC: play_time = time + 0.25
+            }
+        }
+
+        /// <summary>
+        /// QC <c>weaponLocked(it)</c>: the pilot's weapon is locked (mid-switch / pre-round). The headless sim has
+        /// no per-frame weapon lock plumbed yet (same faithful subset as SpawnNearTeammateMutator.WeaponLocked),
+        /// so this is always false — the crush still fires, which matches the common in-match case.
+        /// </summary>
+        private static bool WeaponLocked(Entity e) { _ = e; return false; }
+
+        // =====================================================================================
+        // RETURN — port of vehicles_setreturn() (sv_vehicles.qc ~501): schedule the destroyed/abandoned return.
+        // =====================================================================================
+
+        /// <summary>
+        /// Port of <c>vehicles_setreturn()</c> (sv_vehicles.qc): schedule a destroyed (or abandoned-living)
+        /// vehicle to return to its spawn point after <see cref="Entity.RespawnTime"/>. A destroyed vehicle uses
+        /// the full respawn delay; a still-living one uses respawntime-1 so an idle vehicle drifts home a touch
+        /// sooner. The descriptor's Death() already reschedules the respawn Think; this re-arms that Think so the
+        /// return is honoured even when SetReturn is reached via the abandoned-living path (vehicles_exit), and is
+        /// the single place that wiring would attach the WP_Vehicle return waypoint (presentation, deferred).
+        /// </summary>
+        public static void SetReturn(Entity vehic)
+        {
+            if (vehic.RespawnTime <= 0f)
+                return;
+
+            // QC vehicles_setreturn: dead -> nextthink = time + respawntime; alive -> time + respawntime - 1.
+            // The descriptor's Spawn() is the return target (it re-places the vehicle at pos1/pos2 and re-arms
+            // the think), exactly as QC's vehicles_return reparents the think to vehicles_spawn.
+            float delay = IsDead(vehic) ? vehic.RespawnTime : MathF.Max(0f, vehic.RespawnTime - 1f);
+            vehic.Think = self => self.VehicleDef?.Spawn(self);
+            vehic.NextThink = Time + delay;
+
+            // NOTE — cross-boundary (CSQC): the WP_Vehicle return waypoint + radar icon (vehicles_showwp) and the
+            // EFFECT_TELEPORT return flash are presentation and unported; the authoritative return SCHEDULE is set
+            // above.
         }
 
         /// <summary>QC IS_DEAD(e).</summary>

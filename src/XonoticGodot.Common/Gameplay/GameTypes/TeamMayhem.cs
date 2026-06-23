@@ -166,7 +166,7 @@ public sealed class TeamMayhem : GameType
         MutatorHooks.ForbidThrowCurrentWeapon.Add(_forbidThrowHandler);
     }
 
-    public void Deactivate()
+    public override void Deactivate()
     {
         if (_deathHandler is null)
             return;

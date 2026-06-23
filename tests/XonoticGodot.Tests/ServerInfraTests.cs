@@ -699,8 +699,10 @@ public class ServerInfraTests
         world.Clients.ClientConnect(isBot: true, netName: "bot2");
         world.EndMatch();
 
-        // advance enough frames for intermission to elapse + the map flow to apply.
-        for (int i = 0; i < 80 && changedTo is null; i++)
+        // Advance enough frames for intermission to elapse + the map flow to apply. With no real client pressing
+        // fire, QC IntermissionThink waits the full input-grace window (intermission_exittime + 10, intermission.qc:501)
+        // before MapVote_Start; sv_mapchange_delay 0 makes exittime = now, so we need to clear ~10s of sim here.
+        for (int i = 0; i < 150 && changedTo is null; i++)
             world.Frame(0.1f);
 
         Assert.Equal("dance", changedTo); // rotated from boil → dance
@@ -810,7 +812,9 @@ public class ServerInfraTests
         world.Clients.ClientConnect(isBot: true, netName: "bot1"); // a roster so the match flow runs
 
         world.Commands.Execute("gotomap dance", isServerConsole: true);
-        for (int i = 0; i < 80 && changedTo is null; i++)
+        // QC IntermissionThink holds for the input-grace window (intermission_exittime + 10, intermission.qc:501)
+        // when no real client presses fire; sv_mapchange_delay 0 → exittime = now, so clear ~10s of sim here.
+        for (int i = 0; i < 150 && changedTo is null; i++)
             world.Frame(0.1f);
 
         Assert.Equal("dance", changedTo);            // gotomap's queued map won and reached the changelevel pipeline

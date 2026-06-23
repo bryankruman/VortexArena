@@ -125,17 +125,34 @@ public sealed class Bumblebee : Vehicle
         if (Api.Services is not null)
             Api.Entities.SetSize(vehicle, new Vector3(-245f, -130f, -130f), new Vector3(230f, 130f, 130f));
 
-        vehicle.VehicleFlags |= VehicleFlags.HasShield | VehicleFlags.MoveFly | VehicleFlags.MultiSlot | VehicleFlags.DmgShake;
-        if (EnergyRegen > 0f) vehicle.VehicleFlags |= VehicleFlags.EnergyRegen;
-        if (ShieldRegen > 0f) vehicle.VehicleFlags |= VehicleFlags.ShieldRegen;
-        if (HealthRegen > 0f) vehicle.VehicleFlags |= VehicleFlags.HealthRegen;
+        // vr_setup flag derivation — QC gates each flag on its OWN cvar(s), not a generic ">0" of the
+        // descriptor field: VHF_ENERGYREGEN needs the PAIR (energy && energy_regen); VHF_HASSHIELD on shield;
+        // VHF_SHIELDREGEN on shield_regen; VHF_HEALTHREGEN on health_regen. MoveFly|DmgShake stay hardcoded.
+        vehicle.VehicleFlags |= VehicleFlags.MoveFly | VehicleFlags.MultiSlot | VehicleFlags.DmgShake;
+        if (MaxEnergy != 0f && EnergyRegen != 0f) vehicle.VehicleFlags |= VehicleFlags.EnergyRegen;
+        if (MaxShield != 0f) vehicle.VehicleFlags |= VehicleFlags.HasShield;
+        if (ShieldRegen != 0f) vehicle.VehicleFlags |= VehicleFlags.ShieldRegen;
+        if (HealthRegen != 0f) vehicle.VehicleFlags |= VehicleFlags.HealthRegen;
+
+        // QC vr_spawn: when g_vehicle_bumblebee_swim is FALSE the airframe collides with liquids
+        // (dphitcontentsmask |= DPCONTENTS_LIQUIDSMASK). At the swim=true default the mask is left alone.
+        if (Cvar("g_vehicle_bumblebee_swim", 1f) == 0f)
+            vehicle.DpHitContentsMask |= SuperContentsLiquidsMask;
 
         vehicle.Think = self => Think(self);
         vehicle.NextThink = Time;
 
+        // QC vr_spawn tail: setorigin(instance, instance.origin + '0 0 25') — lift the airframe 25u off its
+        // spawn point so it doesn't clip the floor it was placed on.
+        if (Api.Services is not null)
+            Api.Entities.SetOrigin(vehicle, vehicle.Origin + new Vector3(0f, 0f, 25f));
+
         // TODO(port,client): qcsrc/common/vehicles/vehicle/bumblebee.qc vr_spawn — networked BRG_* heal-beam
         //                    entity, shield entity, cockpit/viewport offsets, gun cosmetic models, scale 1.5.
     }
+
+    // QC DPCONTENTS_LIQUIDSMASK — the SUPERCONTENTS bits for water/slime/lava (CONTENTS_WATER|SLIME|LAVA).
+    private const int SuperContentsLiquidsMask = 0x00000010 | 0x00000020 | 0x00000040;
 
     // METHOD(Bumblebee, vr_enter) — bumblebee.qc (the PILOT enters here).
     public override void Enter(Entity vehicle, Entity player)
@@ -353,6 +370,30 @@ public sealed class Bumblebee : Vehicle
         //                    networked BRG_* heal-beam visual, aux crosshair lock color, vehicle_ammo/HUD %.
     }
 
+    // METHOD(Bumblebee, vr_impact) — bumblebee.qc: a hard bounce jolts the pilot (vehicles_impact).
+    /// <summary>
+    /// Port of <c>vehicles_impact</c> driven by <c>vr_impact</c>: on a hard collision (the velocity change
+    /// exceeds <c>bouncepain.x</c>) deal <c>min(bouncepain.y * speedDelta, bouncepain.z)</c> DEATH_FALL pain
+    /// to the airframe, debounced to once per 0.25s. <paramref name="oldVelocity"/> is the pre-bounce velocity
+    /// (the engine's <c>.oldvelocity</c>); the seam that integrates BOUNCEMISSILE motion supplies it on impact.
+    /// </summary>
+    public void Impact(Entity vehicle, Vector3 oldVelocity)
+    {
+        // QC: vector autocvar_g_vehicle_bumblebee_bouncepain = '1 100 200' (minspeed, speedfac, maxpain).
+        Vector3 bp = CvarVec("g_vehicle_bumblebee_bouncepain", new Vector3(1f, 100f, 200f));
+        if (bp == Vector3.Zero) return; // QC: if (autocvar_..._bouncepain) — a zero vector disables the jolt.
+
+        Vector3 delta = vehicle.Velocity - oldVelocity;
+        // QC vehicles_impact: gate on play_time (debounce) AND vdist(delta, >, minspeed). Reuse the otherwise
+        // unused-for-bumblebee VehReloadStart float as the per-vehicle play_time debounce.
+        if (vehicle.VehReloadStart < Time && QMath.VLen(delta) > bp.X)
+        {
+            float pain = MathF.Min(bp.Y * QMath.VLen(delta), bp.Z);
+            Combat.Damage(vehicle, null, null, pain, DeathTypes.Fall, vehicle.Origin, Vector3.Zero);
+            vehicle.VehReloadStart = Time + 0.25f;
+        }
+    }
+
     // void bumblebee_land(entity this) — bumblebee.qc.
     private void Land(Entity vehicle)
     {
@@ -520,7 +561,11 @@ public sealed class Bumblebee : Vehicle
             {
                 float distance = QMath.VLen(gun.Enemy.Origin - gun.Origin);
                 float impact = distance / CannonSpeed;
-                aimAt = gun.Enemy.Origin + gun.Enemy.Velocity * impact; // lead
+                // QC bumblebee_gunner_frame: a ground (MOVETYPE_WALK) target's vertical velocity is damped *0.1
+                // before leading (footstep bob shouldn't throw the aim up/down).
+                Vector3 lead = gun.Enemy.Velocity;
+                if (gun.Enemy.MoveType == MoveType.Walk) lead.Z *= 0.1f;
+                aimAt = gun.Enemy.Origin + lead * impact; // lead
             }
         }
 
@@ -596,10 +641,11 @@ public sealed class Bumblebee : Vehicle
 
             if (HealgunHps > 0f)
             {
+                // QC: hplimit = IS_PLAYER ? healgun_hmax : RES_LIMIT_NONE; Heal() = GiveResourceWithLimit(Health),
+                // which leaves RES_LIMIT_NONE uncapped — so a non-player (e.g. a friendly vehicle's health pool)
+                // tops up unbounded rather than being clamped to its MaxHealth.
                 float hpLimit = (target.Flags & EntFlags.Client) != 0 ? HealgunHmax : Resources.LimitNone;
-                float effLimit = hpLimit == Resources.LimitNone ? target.MaxHealth : hpLimit;
-                if (target.GetResource(ResourceType.Health) < effLimit)
-                    target.GiveResourceWithLimit(ResourceType.Health, HealgunHps * dt, effLimit);
+                target.GiveResourceWithLimit(ResourceType.Health, HealgunHps * dt, hpLimit);
             }
 
             // Friendly vehicle: top up its shield instead of armor.
@@ -664,6 +710,21 @@ public sealed class Bumblebee : Vehicle
         if (Api.Services is null) return fallback;
         float v = Api.Cvars.GetFloat(name);
         return v != 0f ? v : fallback;
+    }
+
+    /// <summary>Read a <c>'x y z'</c> vector cvar through the facade, falling back to <paramref name="fallback"/>.</summary>
+    private static Vector3 CvarVec(string name, Vector3 fallback)
+    {
+        if (Api.Services is null) return fallback;
+        string s = Api.Cvars.GetString(name);
+        if (string.IsNullOrWhiteSpace(s)) return fallback;
+        string[] parts = s.Trim().Trim('\'', '"').Split(new[] { ' ', '\t' }, System.StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length != 3
+            || !float.TryParse(parts[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float x)
+            || !float.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float y)
+            || !float.TryParse(parts[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float z))
+            return fallback;
+        return new Vector3(x, y, z);
     }
 
     private static float Time => Api.Services is not null ? Api.Clock.Time : 0f;

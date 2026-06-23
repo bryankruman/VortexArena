@@ -14,10 +14,15 @@ namespace XonoticGodot.Common.Gameplay;
 /// Ported: the blaster damage/force nullification (Damage_Calculate, CBC_ORDER_LAST, with the frozen guard),
 /// the throw/arena/random-weapon forbids, the start loadout (RPC/HMG conditional on their weaponstart cvars),
 /// the per-spawn Overkill loadout applied through <see cref="Inventory"/>, the loot drop on death
-/// (<c>ok_DropItem</c>), and the held-weapon capture + restore (<c>ok_lastwep[]</c> → PlayerWeaponSelect,
-/// folded into PlayerSpawn, mapping HMG→Machinegun and RPC→Nex). The concrete okweapon classes and the
-/// powerup→superweapon item replacement are item/weapon-registry concerns owned elsewhere; the loadout
-/// gives whatever of those weapons the registry resolves.
+/// (<c>ok_DropItem</c>, routed through the real <see cref="StartItem"/> loot pipeline so it is actually
+/// collectible), the held-weapon capture + restore (<c>ok_lastwep[]</c> → PlayerWeaponSelect, folded into
+/// PlayerSpawn, mapping HMG→Machinegun and RPC→Nex), and the FilterItem economy: normal big health/armor are
+/// blocked per the <c>g_overkill_filter_*</c> cvars and Strength/Shield powerups are replaced by the HMG/RPC
+/// superweapon pickups.
+///
+/// NOT yet ported (need seams this file can't reach): the PlayerPreThink countdown-blaster (no per-player
+/// button/round-handler/secondary-fire reach from a mutator), MonsterDropItem loot, the RandomItems OK-item
+/// injection, the item-respawn waypoints, and the mod-name strings — see the TODOs / registry shard.
 /// </summary>
 [Mutator]
 public sealed class OverkillMutator : MutatorBase
@@ -40,6 +45,22 @@ public sealed class OverkillMutator : MutatorBase
     /// <summary>QC WEP_OVERKILL_HMG.weaponstart — start with the HMG in the loadout.</summary>
     public bool StartHmg;
 
+    /// <summary>QC autocvar_g_overkill_powerups_replace — replace strength/shield pickups with HMG/RPC.</summary>
+    public bool PowerupsReplace;
+
+    // QC autocvar_g_overkill_filter_* — defaults from sv_overkill.qh (only medium/big armor filtered by default).
+    /// <summary>QC autocvar_g_overkill_filter_healthmega (default 0).</summary>
+    public bool FilterHealthMega;
+
+    /// <summary>QC autocvar_g_overkill_filter_armormedium (default 1).</summary>
+    public bool FilterArmorMedium = true;
+
+    /// <summary>QC autocvar_g_overkill_filter_armorbig (default 1).</summary>
+    public bool FilterArmorBig = true;
+
+    /// <summary>QC autocvar_g_overkill_filter_armormega (default 0).</summary>
+    public bool FilterArmorMega;
+
     public OverkillMutator() => NetName = "overkill";
 
     /// <summary>The base Overkill loadout (QC WEPSET(OVERKILL_MACHINEGUN|NEX|SHOTGUN)).</summary>
@@ -56,6 +77,7 @@ public sealed class OverkillMutator : MutatorBase
     private HookHandler<MutatorHooks.ForbidRandomStartWeaponsArgs>? _onForbidRandom;
     private HookHandler<MutatorHooks.SetWeaponArenaArgs>? _onSetWeaponArena;
     private HookHandler<MutatorHooks.SetStartItemsArgs>? _onSetStartItems;
+    private HookHandler<MutatorHooks.FilterItemDefinitionArgs>? _onFilterItemDef;
 
     public override void Hook()
     {
@@ -66,6 +88,7 @@ public sealed class OverkillMutator : MutatorBase
         _onForbidRandom ??= OnForbidRandomStartWeapons;
         _onSetWeaponArena ??= OnSetWeaponArena;
         _onSetStartItems ??= OnSetStartItems;
+        _onFilterItemDef ??= OnFilterItemDefinition;
 
         MutatorHooks.DamageCalculate.Add(_onDamageCalc, HookOrder.Last); // QC CBC_ORDER_LAST
         MutatorHooks.PlayerDies.Add(_onPlayerDies);
@@ -74,6 +97,7 @@ public sealed class OverkillMutator : MutatorBase
         MutatorHooks.ForbidRandomStartWeapons.Add(_onForbidRandom);
         MutatorHooks.SetWeaponArena.Add(_onSetWeaponArena);
         MutatorHooks.SetStartItems.Add(_onSetStartItems, HookOrder.Last);
+        MutatorHooks.FilterItemDefinition.Add(_onFilterItemDef);
 
         if (Api.Services is not null)
         {
@@ -87,7 +111,23 @@ public sealed class OverkillMutator : MutatorBase
                        || Api.Cvars.GetFloat("g_start_weapon_okrpc") > 0f;
             StartHmg = Api.Cvars.GetFloat("g_weapon_overkill_hmg_weaponstart") > 0f
                        || Api.Cvars.GetFloat("g_start_weapon_okhmg") > 0f;
+
+            // QC MUTATOR_ONADD item-block cvars + powerup-replace (sv_overkill.qh defaults: only medium/big armor
+            // are filtered by default). Read here so the FilterItem hook mirrors the Base item economy.
+            PowerupsReplace = Api.Cvars.GetFloat("g_overkill_powerups_replace") != 0f;
+            FilterHealthMega = Api.Cvars.GetFloat("g_overkill_filter_healthmega") != 0f;
+            FilterArmorMedium = ReadFilterCvar("g_overkill_filter_armormedium", true);
+            FilterArmorBig = ReadFilterCvar("g_overkill_filter_armorbig", true);
+            FilterArmorMega = Api.Cvars.GetFloat("g_overkill_filter_armormega") != 0f;
         }
+    }
+
+    // QC defaults differ per cvar (medium/big armor default 1, the rest 0): an UNSET cvar must keep its Base
+    // default rather than reading as 0, so resolve the empty string to the supplied default.
+    private static bool ReadFilterCvar(string name, bool dflt)
+    {
+        string s = Api.Cvars.GetString(name);
+        return string.IsNullOrEmpty(s) ? dflt : Api.Cvars.GetFloat(name) != 0f;
     }
 
     public override void Unhook()
@@ -99,6 +139,7 @@ public sealed class OverkillMutator : MutatorBase
         if (_onForbidRandom is not null) MutatorHooks.ForbidRandomStartWeapons.Remove(_onForbidRandom);
         if (_onSetWeaponArena is not null) MutatorHooks.SetWeaponArena.Remove(_onSetWeaponArena);
         if (_onSetStartItems is not null) MutatorHooks.SetStartItems.Remove(_onSetStartItems);
+        if (_onFilterItemDef is not null) MutatorHooks.FilterItemDefinition.Remove(_onFilterItemDef);
     }
 
     private static bool IsPlayer(Entity? e) => e is not null && (e.Flags & EntFlags.Client) != 0;
@@ -189,29 +230,95 @@ public sealed class OverkillMutator : MutatorBase
     }
 
     // void ok_DropItem(entity this, entity attacker, string itemlist, float itemlifetime) — sv_overkill.qc
-    private static void DropItem(Entity victim, Entity launcher, string itemList, float itemLifetime)
+    private void DropItem(Entity victim, Entity launcher, string itemList, float itemLifetime)
     {
         if (itemLifetime <= 0f || Api.Services is null) return;
 
-        // QC: Item_RandomFromList(itemlist) — itemlist is a space-separated list of item names; pick one.
-        string[] choices = itemList.Split(' ', System.StringSplitOptions.RemoveEmptyEntries);
-        if (choices.Length == 0) return;
-        string chosen = choices[Prandom.RangeInt(0, choices.Length)];
+        // QC: entity loot_itemdef = Item_RandomFromList(itemlist); if (!loot_itemdef) return; — itemlist is a
+        // space-separated list of item names; an empty/"" list disables the drop, "random" picks any allowed
+        // normal item. RandomFromList tokenises and rolls one entry.
+        Pickup? def = RandomFromList(itemList);
+        if (def is null) return;
 
-        // QC spawns an item entity 32u above the corpse, launched up and away from the killer.
+        // QC spawns an item entity 32u above the corpse, launched up and away from the killer, then runs the
+        // FULL item pipeline (Item_Initialise) so the loot has a model and a working Touch handler — i.e. it is
+        // actually collectible. The port routes through StartItem.SpawnLoot, the same loot path thrown weapons use.
         Entity e = Api.Entities.Spawn();
-        e.ClassName = "item_" + chosen;
-        e.NetName = chosen;
         Vector3 org = victim.Origin + new Vector3(0f, 0f, 32f);
         Api.Entities.SetOrigin(e, org);
+        e.Origin = org;
         Vector3 away = QMath.Normalize(launcher.Origin - victim.Origin);
         e.Velocity = new Vector3(0f, 0f, 200f) + away * 500f;
-        e.MoveType = MoveType.Toss;
-        e.Solid = Solid.Trigger;
-        e.Flags |= EntFlags.Item;
-        // QC e.lifetime = itemlifetime — schedule the loot to expire (the item pipeline owns the timer).
-        e.NextThink = Api.Clock.Time + itemLifetime;
-        e.Think = self => Api.Entities.Remove(self);
+
+        // QC e.lifetime = itemlifetime; Item_Initialise(e) — SpawnLoot owns MOVETYPE_TOSS, the despawn timer, the
+        // anti-instant-pick shield, the model/bbox, and wires Item_Touch. A NODROP-brush spawn is killed inside.
+        StartItem.SpawnLoot(e, def, itemLifetime);
+    }
+
+    // QC Item_RandomFromList: pick a random item def from a space-separated classname list. "" (empty) disables
+    // the drop (returns null); "random" yields a random allowed normal item. Each token is an item NetName
+    // (the QC list stores "armor_small" etc.); resolve it through the Item registry.
+    private static Pickup? RandomFromList(string itemList)
+    {
+        if (string.IsNullOrEmpty(itemList)) return null;
+        string[] choices = itemList.Split(' ', System.StringSplitOptions.RemoveEmptyEntries);
+        if (choices.Length == 0) return null;
+        string chosen = choices[Prandom.RangeInt(0, choices.Length)];
+        // QC's "random" keyword (drop any allowed normal item) needs the full normal-item pool, which the port's
+        // item registry doesn't expose as a filtered group; fall back to the default armor_small loot for now.
+        if (chosen == "random") chosen = "armor_small";
+        return Items.ByName(chosen);
+    }
+
+    // MUTATOR_HOOKFUNCTION(ok, FilterItem) — block normal health/armor pickups (per the filter cvars) and
+    // replace the Strength/Shield powerups with the HMG/RPC superweapon pickups. Returns true to FORBID the
+    // original item's spawn. The item-class registry isn't fully ported, so the item kind is matched on the
+    // edict's ClassName (the same stand-in Nix/Mayhem use); the live item entity carries the placed Origin.
+    private bool OnFilterItemDefinition(ref MutatorHooks.FilterItemDefinitionArgs args)
+    {
+        Entity item = args.Definition;
+
+        // QC: if (item.ok_item) return false; — Overkill's own loot (dropped via ok_DropItem, which routes
+        // through the loot path) is always allowed through. The port has no ok_item field; ItemIsLoot is set on
+        // the loot edict before this hook fires, so it is the faithful stand-in (the powerup-replace weapons
+        // below are permanent pickups, not loot, so they are never gated here).
+        if (item.ItemIsLoot)
+            return false;
+
+        // QC: per-itemdef filter for the four normal big-health/armor pickups (defaults: only medium/big armor on).
+        switch (item.ClassName)
+        {
+            case "item_health_mega": return FilterHealthMega;
+            case "item_armor_medium": return FilterArmorMedium;
+            case "item_armor_big": return FilterArmorBig;
+            case "item_armor_mega": return FilterArmorMega;
+        }
+
+        // QC: replace item_strength -> WEP_OVERKILL_HMG, item_shield -> WEP_OVERKILL_RPC (when powerups + replace
+        // are both enabled); otherwise the powerup is simply removed. Anything else is left to other handlers.
+        bool isStrength = item.ClassName == "item_strength";
+        bool isShield = item.ClassName == "item_shield";
+        if (!isStrength && !isShield)
+            return false;
+
+        bool powerups = Api.Services is null || Api.Cvars.GetFloat("g_powerups") != 0f;
+        if (!powerups || !PowerupsReplace)
+            return true; // QC: powerups off / replace off — just drop the powerup.
+
+        // QC: spawn(); Item_CopyFields(item, wep); wep.ok_item = true; wep.respawntime = superweapon respawn;
+        // wep.pickup_anyway = true; wep.itemdef = WEP; wep.lifetime = -1; Item_Initialise(wep). The port spawns
+        // the weapon pickup at the SAME origin via the normal StartItem path, then blocks the original below.
+        Weapon? wpn = Weapons.ByName(isStrength ? "okhmg" : "okrpc");
+        if (wpn is not null && Api.Services is not null)
+        {
+            Entity wep = Api.Entities.Spawn();
+            Api.Entities.SetOrigin(wep, item.Origin);
+            wep.Origin = item.Origin;
+            wep.PickupAnyway = 1;                    // QC wep.pickup_anyway = true
+            wep.ItemRespawnTime = Api.Cvars.GetFloat("g_pickup_respawntime_superweapon");
+            StartItem.Spawn(wep, ItemSpawnFuncs.PickupFor(wpn));
+        }
+        return true; // forbid the original powerup item.
     }
 
     private bool OnForbidThrow(ref MutatorHooks.ForbidThrowCurrentWeaponArgs args) => true;

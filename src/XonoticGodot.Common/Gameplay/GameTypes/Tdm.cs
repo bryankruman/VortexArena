@@ -88,6 +88,10 @@ public sealed class Tdm : GameType
     private const float  DefaultPointLimit = 50f;
     private const float  DefaultLeadLimit  = 0f;
 
+    // ----- timelimit (gametype_init "timelimit=15"; generic Cvars.cs default is 20) -----
+    private const string CvarTimeLimit          = "timelimit";
+    private const float  DefaultTimeLimitMinutes = 15f;
+
     // ----- team count cvars (sv_tdm.qc: g_tdm_teams_override >= 2 ? override : g_tdm_teams), clamped 2..4 -----
     private const string CvarTeamsOverride = "g_tdm_teams_override";
     private const string CvarTeams         = "g_tdm_teams";
@@ -117,7 +121,54 @@ public sealed class Tdm : GameType
         // QC INIT(TeamDeathmatch): the gametype-relevant flags (TeamGame) are set in the ctor; team-count is
         // read on demand from g_tdm_teams (TeamCount). GameRules_teams(true) / GameRules_spawning_teams and
         // the tdm_team map-entity team colors are engine-side registration the host performs from TeamGame +
-        // TeamCount — there is no gametype-specific objective state to initialize here.
+        // TeamCount.
+        //
+        // QC sv_tdm.qc tdm_Initialize seeds the engine limit cvars from the gametype defaults:
+        //   GameRules_limit_score(g_tdm_point_limit)  -> cvar_set("fraglimit", limit) UNLESS limit < 0
+        //   GameRules_limit_lead (g_tdm_point_leadlimit) -> cvar_set("leadlimit", limit) UNLESS limit < 0
+        // (sv_rules.qc: `if (limit < 0) return;` — a negative shipped cvar means "keep the mapinfo/gametype
+        // default limit", which for TDM is gametype_init "pointlimit=50 leadlimit=0 timelimit=15"). We mirror
+        // that seeding here so a stock TDM ends on the 50-frag mapinfo limit (not only on the timelimit) and on
+        // TDM's 15-min timelimit rather than the generic Cvars.cs default of 20. The fraglimit/leadlimit cvars
+        // are then the single source the per-frame win check reads through (PointLimit / LeadLimit below).
+        SeedLimit(CvarPointLimitTdm, CvarPointLimit, DefaultPointLimit);
+        SeedLimit(CvarLeadLimitTdm, CvarLeadLimit, DefaultLeadLimit);
+        SeedTimeLimit(DefaultTimeLimitMinutes);
+    }
+
+    /// <summary>
+    /// QC <c>GameRules_limit_score</c> / <c>GameRules_limit_lead</c> (sv_rules.qc): write the gametype's limit
+    /// into the engine cvar (<paramref name="engineCvar"/>) from the TDM-specific cvar
+    /// (<paramref name="tdmCvar"/>) — but treat a NEGATIVE shipped value as "use the mapinfo/gametype default"
+    /// (<paramref name="mapinfoDefault"/>) by seeding that default instead of the literal −1. A non-negative
+    /// TDM cvar (incl. an explicit 0 == unlimited) is written through verbatim.
+    /// </summary>
+    private static void SeedLimit(string tdmCvar, string engineCvar, float mapinfoDefault)
+    {
+        if (Api.Services is null)
+            return;
+        float limit = TryCvar(tdmCvar, out float v) ? v : -1f; // unset TDM cvar behaves like −1 (use mapinfo)
+        // QC GameRules_limit_*: skip the cvar_set when limit < 0 (keep the mapinfo/gametype default) — we make
+        // the mapinfo default explicit so the port (which has no mapinfo limit row) still ends correctly.
+        Api.Cvars.Set(engineCvar, (limit < 0f ? mapinfoDefault : limit).ToString(System.Globalization.CultureInfo.InvariantCulture));
+    }
+
+    /// <summary>
+    /// Apply TDM's gametype-default timelimit (gametype_init "timelimit=15") if the host has not overridden it.
+    /// QC applies the default-limit string at gametype registration; the port's generic <c>timelimit</c> default
+    /// is 20, so without this a stock TDM would run 20 minutes instead of 15. We only seed when the live value
+    /// still equals the generic default (so an explicit host/server.cfg timelimit wins, matching QC where an
+    /// admin-set cvar overrides the gametype default).
+    /// </summary>
+    private static void SeedTimeLimit(float minutes)
+    {
+        if (Api.Services is null)
+            return;
+        const float genericDefault = 20f; // Cvars.cs generic timelimit default
+        // Only override the GENERIC default (20). An explicit host value — including 0 ("no time limit") — is a
+        // deliberate choice that wins, matching QC where an admin-set cvar overrides the gametype default.
+        if (Api.Cvars.GetFloat(CvarTimeLimit) == genericDefault)
+            Api.Cvars.Set(CvarTimeLimit, minutes.ToString(System.Globalization.CultureInfo.InvariantCulture));
     }
 
     /// <summary>
@@ -139,24 +190,29 @@ public sealed class Tdm : GameType
         }
     }
 
-    /// <summary>The point limit in force (g_tdm_point_limit, else fraglimit, else 50). 0 == unlimited.</summary>
+    /// <summary>The point limit in force (g_tdm_point_limit, else fraglimit, else 50). 0 == unlimited.
+    /// A NEGATIVE value (the shipped g_tdm_point_limit −1 sentinel) resolves to the mapinfo/gametype default
+    /// (50) per QC GameRules_limit_score, so the frag limit actually fires for a stock TDM. OnInit already
+    /// seeds fraglimit=50 at boot; this read mirrors the −1 resolution for any runtime re-read.</summary>
     public float PointLimit
     {
         get
         {
-            if (TryCvar(CvarPointLimitTdm, out float pl)) return pl;
-            if (TryCvar(CvarPointLimit, out float fl)) return fl;
+            if (TryCvar(CvarPointLimitTdm, out float pl)) return pl < 0f ? DefaultPointLimit : pl;
+            if (TryCvar(CvarPointLimit, out float fl)) return fl < 0f ? DefaultPointLimit : fl;
             return DefaultPointLimit;
         }
     }
 
-    /// <summary>The lead limit in force (g_tdm_point_leadlimit, else leadlimit, else 0). 0 == no lead limit.</summary>
+    /// <summary>The lead limit in force (g_tdm_point_leadlimit, else leadlimit, else 0). 0 == no lead limit.
+    /// A NEGATIVE value (the shipped g_tdm_point_leadlimit −1 sentinel) resolves to the mapinfo/gametype
+    /// default (0 == off) per QC GameRules_limit_lead, rather than being read literally.</summary>
     public float LeadLimit
     {
         get
         {
-            if (TryCvar(CvarLeadLimitTdm, out float ll)) return ll;
-            if (TryCvar(CvarLeadLimit, out float l)) return l;
+            if (TryCvar(CvarLeadLimitTdm, out float ll)) return ll < 0f ? DefaultLeadLimit : ll;
+            if (TryCvar(CvarLeadLimit, out float l)) return l < 0f ? DefaultLeadLimit : l;
             return DefaultLeadLimit;
         }
     }
@@ -173,12 +229,16 @@ public sealed class Tdm : GameType
         Scoring.GameScores.ScoreRulesBasics(teams: true);
         Scoring.GameScores.TeamRulesBasics(scorePrio: Scoring.ScoreFlags.SortPrioPrimary); // ST_SCORE is team primary
         Scoring.GameScores.SetSortKeys(Scoring.GameScores.Score);
+        // QC fragsleft_last reset: re-arm the remaining-frags team announcer so "1/2/3 frags left"
+        // (ANNCE_REMAINING_FRAG_{1,2,3}) can fire again this match (TDM's Scores_CountFragsRemaining hook
+        // returns true, enabling the cue).
+        Scoring.GameScores.ResetFragsRemaining();
         SeedTeamScores();
         _deathHandler = OnDeath;
         Combat.Death.Add(_deathHandler);
     }
 
-    public void Deactivate()
+    public override void Deactivate()
     {
         if (_deathHandler is null)
             return;
@@ -207,21 +267,38 @@ public sealed class Tdm : GameType
 
         Player? attacker = ev.Attacker as Player;
 
+        // QC GiveFrags routes every frag through GameRules_scoring_add_team -> PlayerTeamScore_Add, which writes
+        // BOTH the team's ST_SCORE (AddTeamScore below) AND the attacker's individual SP_SCORE (Player.ScoreFrags).
+        // The team total is read-through to GameScores via TeamScoreSource; the per-player SP_SCORE is written HERE
+        // (Scores.Obituary runs ownsScore:false for TDM and skips SP_SCORE, only filling the aux KILLS/DEATHS/...
+        // columns + its own KillStreak, so without this credit every TDM player's scoreboard Score reads 0).
         if (attacker is null || ReferenceEquals(attacker, victim))
         {
-            // SUICIDE / world death: the victim's team loses a frag (QC GiveFrags(targ, targ, -1) team-routed).
+            // SUICIDE / world death: the victim's team loses a frag (QC GiveFrags(targ, targ, -1) team-routed),
+            // and the victim's individual SP_SCORE drops by 1 (PlayerTeamScore_Add player side).
             AddTeamScore(victim.Team, -1);
+            victim.ScoreFrags -= 1;
         }
         else if (Teams.SameTeam(attacker, victim))
         {
-            // TEAMKILL: attacker's team loses a frag (QC GiveFrags(attacker, targ, -1)).
+            // TEAMKILL: attacker's team loses a frag (QC GiveFrags(attacker, targ, -1)), and the attacker's own
+            // SP_SCORE drops by 1; a teamkill also breaks the attacker's frag spree (.killcount).
             AddTeamScore(attacker.Team, -1);
+            attacker.ScoreFrags -= 1;
+            attacker.GtKillCount = 0;
         }
         else
         {
-            // ENEMY FRAG: attacker's team gains a frag (QC GiveFrags(attacker, targ, +1) → scoring_add_team).
+            // ENEMY FRAG: attacker's team gains a frag (QC GiveFrags(attacker, targ, +1) → scoring_add_team),
+            // the attacker's own SP_SCORE gains 1, and their .killcount spree advances (read by NadeBonus).
             AddTeamScore(attacker.Team, +1);
+            attacker.ScoreFrags += 1;
+            attacker.GtKillCount += 1;
         }
+
+        // QC obituary: dying ends the victim's frag spree (.killcount = 0). (Their SP_DEATHS/aux columns are
+        // owned by Scores.Obituary's read-through pass, so we do not double-count them here.)
+        victim.GtKillCount = 0;
 
         // QC calculate_respawntime: arm the victim's respawn (the controller drives the actual respawn).
         ScheduleRespawn(victim);
@@ -279,8 +356,15 @@ public sealed class Tdm : GameType
 
         int secondTeam = Scoring.GameScores.SecondTeam();
         float leadLimit = LeadLimit;
-        if (leadLimit > 0f && secondTeam != Teams.None && (bestScore - GetTeamScore(secondTeam)) >= leadLimit)
+        int secondScore = secondTeam != Teams.None ? GetTeamScore(secondTeam) : 0;
+        if (leadLimit > 0f && secondTeam != Teams.None && (bestScore - secondScore) >= leadLimit)
             MatchEnded = true;
+
+        // QC WinningCondition_Scores remaining-frags announcer, gated by the TDM Scores_CountFragsRemaining hook
+        // (sv_tdm.qc returns true): announce "N frags left" once as the leading TEAM approaches the point limit.
+        // For team modes the top/second "scores" are the team ST_SCORE totals (WinningConditionHelper ranks teams
+        // by their primary slot); suddenDeathEnding is framework-owned and surfaced elsewhere, so pass false.
+        Scoring.GameScores.CountFragsRemaining(pointLimit, leadLimit, bestScore, secondScore, suddenDeathEnding: false);
     }
 
     private static bool TryCvar(string name, out float value)

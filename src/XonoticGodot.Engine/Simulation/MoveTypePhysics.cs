@@ -17,7 +17,7 @@ namespace XonoticGodot.Engine.Simulation;
 /// </summary>
 public static class MoveTypePhysics
 {
-    public const float StepHeight = 18f;          // sv_stepheight default
+    public const float StepHeight = 31f;          // sv_stepheight (Xonotic physicsX.cfg default)
     public const float FloorNormalZ = FlyMove.FloorNormalZ;
 
     /// <summary>
@@ -57,10 +57,17 @@ public static class MoveTypePhysics
                 break;
 
             case MoveType.Step:
-                PhysicsStep(ctx, ent);
-                runThink(ent);
-                // SV_CheckWaterTransition after the step (watertype/waterlevel + splash event).
-                CheckWaterTransition(ctx, ent);
+                // Base step.qc: _Movetype_Physics_Step IS a 1-line alias to _Movetype_Physics_Walk, so a
+                // MOVETYPE_STEP body gets the full Walk slide + explicit stair stepping (not a freefall-only
+                // path). Mirror the Walk dispatch: due think first (gated), then the Walk integrator, which
+                // does its own CheckWater/CheckWaterTransition-equivalent gravity gating.
+                if (runThink(ent))
+                {
+                    WalkMove(ctx, ent);
+                    // SV_CheckWaterTransition after the step (watertype/waterlevel + splash event); DP's
+                    // SV_Physics_Step ran this and the QC Walk path does the transition via CheckWater.
+                    CheckWaterTransition(ctx, ent);
+                }
                 break;
 
             case MoveType.Walk:
@@ -152,7 +159,8 @@ public static class MoveTypePhysics
             {
                 case MoveType.BounceMissile:
                 {
-                    float bf = 1f; // bouncefactor default for missiles
+                    // per-entity .bouncefactor (0 = engine default 1.0 for missiles); QC (!bouncefactor)?1.0:..
+                    float bf = ent.BounceFactor == 0f ? 1f : ent.BounceFactor;
                     ent.Velocity = Clip.ClipVelocity(ent.Velocity, trace.PlaneNormal, 1f + bf);
                     ent.Flags &= ~EntFlags.OnGround;
                     moveTime = 0f; // no slide unless sv_gameplayfix_slidemoveprojectiles
@@ -160,12 +168,13 @@ public static class MoveTypePhysics
                 }
                 case MoveType.Bounce:
                 {
-                    float bf = 0.5f;                  // bouncefactor default
-                    float bouncestop = 60f / 800f;   // bouncestop default
+                    // per-entity .bouncefactor/.bouncestop (0 = engine defaults 0.5 / 60/800).
+                    float bf = ent.BounceFactor == 0f ? 0.5f : ent.BounceFactor;
+                    float bouncestop = ent.BounceStop == 0f ? 60f / 800f : ent.BounceStop;
                     ent.Velocity = Clip.ClipVelocity(ent.Velocity, trace.PlaneNormal, 1f + bf);
                     float entGravity = ent.Gravity == 0f ? 1f : ent.Gravity;
-                    // DP (with grenadebouncedownslopes) uses |Dot(normal, vel)|
-                    float d = MathF.Abs(Vector3.Dot(trace.PlaneNormal, ent.Velocity));
+                    // DP with grenadebouncedownslopes (Xonotic default 1) uses the SIGNED d = normal·velocity.
+                    float d = Vector3.Dot(trace.PlaneNormal, ent.Velocity);
                     if (trace.PlaneNormal.Z > FloorNormalZ && d < ctx.Gravity * bouncestop * entGravity)
                     {
                         ent.Flags |= EntFlags.OnGround;
@@ -259,7 +268,12 @@ public static class MoveTypePhysics
         => CollisionWorld.BoxesOverlap(amin, amax, bmin, bmax);
 
     // =============================================================================================
-    // SV_Physics_Step (sv_phys.c:2615) — monsters/objects: freefall via FlyMove when not onground.
+    // SV_Physics_Step (sv_phys.c:2615) — DP-engine freefall-only step integrator.
+    //
+    // NO LONGER on the live dispatch path: Base's QC step.qc makes _Movetype_Physics_Step a 1-line alias
+    // to _Movetype_Physics_Walk, so MOVETYPE_STEP now routes through WalkMove (full slide + stair stepping)
+    // in RunEntity for parity. This method is retained as the DP-engine freefall reference (fly/swim guard,
+    // upward-velocity unstick, land cue) and may still be called directly by a freefall-only body path.
     // =============================================================================================
 
     public static void PhysicsStep(PhysicsContext ctx, Entity ent)
@@ -302,7 +316,8 @@ public static class MoveTypePhysics
     // SV_WalkMove gameplay-fix defaults (DP cvar defaults): jumpstep on, stepdown on, wallfriction a no-op,
     // nostep off. Match DP so monster stepping feels identical.
     private const bool JumpStep = true;       // sv_jumpstep
-    private const int StepDown = 1;           // sv_gameplayfix_stepdown (monster path leaves onground unset)
+    private const int StepDown = 2;           // sv_gameplayfix_stepdown (Xonotic physicsX.cfg; ==2 glues to descending stairs)
+    private const float StepDownMaxSpeed = 400f; // sv_gameplayfix_stepdown_maxspeed (skip down-step above this speed)
     private const bool WallFriction = false;  // sv_wallfriction (DP engine default 1, but the SV_WallFriction body is #if 0 — a no-op regardless)
     private const bool NoStep = false;        // sv_nostep
     private const bool DownTraceOnGround = true; // sv_gameplayfix_downtracesupportsongroundflag
@@ -404,9 +419,12 @@ public static class MoveTypePhysics
                 // SV_WallFriction body is #if 0 in DP — intentionally a no-op here.
             }
         }
-        // skip the down-move when stepdown is off / moving up / deep water / started offground / ended onground
+        // skip the down-move when stepdown is off / moving up / deep water / started offground / ended onground /
+        // moving too fast (sv_gameplayfix_stepdown_maxspeed; no IS_ONSLICK modeling in the port so the !onslick
+        // exception is always taken — a faithful skip above 400 u/s horizontal+vertical speed).
         else if (StepDown == 0 || ent.WaterLevel >= 3 || startVelocity.Z >= (1f / 32f)
-                 || !oldOnGround || (ent.Flags & EntFlags.OnGround) != 0)
+                 || !oldOnGround || (ent.Flags & EntFlags.OnGround) != 0
+                 || (StepDownMaxSpeed > 0f && startVelocity.Length() >= StepDownMaxSpeed))
         {
             return;
         }
@@ -418,8 +436,13 @@ public static class MoveTypePhysics
 
         if (downTrace.Fraction < 1f && downTrace.PlaneNormal.Z > FloorNormalZ)
         {
-            // DP leaves the SET_ONGROUND here disabled (#if 0) for the monster path so you can't
-            // double-jump off a step; we match that — onground stays as the slide left it.
+            // good landing on a descending step. With sv_gameplayfix_stepdown == 2 (Xonotic default) Base
+            // glues the entity to the stair: SET_ONGROUND + groundentity (walk.qc:171-175).
+            if (StepDown == 2)
+            {
+                ent.Flags |= EntFlags.OnGround;
+                ent.GroundEntity = downTrace.Ent;
+            }
         }
         else
         {
@@ -438,8 +461,10 @@ public static class MoveTypePhysics
 
     /// <summary>
     /// SV_CheckWater (movetypes): set <see cref="Entity.WaterLevel"/>/<see cref="Entity.WaterType"/> from
-    /// the entity's hull (feet/waist) and return true if at least wet-feet. Used by WalkMove to skip
-    /// gravity while in liquid. Distilled from DP SV_CheckWater (a 3-point hull probe).
+    /// the entity's hull (feet/waist) and return true if SWIMMING (waterlevel > WETFEET). Used by WalkMove
+    /// to skip gravity while submerged. Distilled from DP SV_CheckWater (a 3-point hull probe).
+    /// Note: Base returns <c>waterlevel > 1</c> (>= SWIMMING), NOT just wet-feet, so a Walk/Step entity
+    /// wading with only its feet wet still gets gravity.
     /// </summary>
     public static bool CheckWater(PhysicsContext ctx, Entity ent)
     {
@@ -462,7 +487,8 @@ public static class MoveTypePhysics
                     ent.WaterLevel = 3;
             }
         }
-        return ent.WaterLevel >= 1;
+        // Base SV_CheckWater returns `waterlevel > WATERLEVEL_WETFEET` (>= SWIMMING), not wet-feet.
+        return ent.WaterLevel > 1;
     }
 
     // =============================================================================================

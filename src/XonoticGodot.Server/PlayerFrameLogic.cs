@@ -76,19 +76,30 @@ public static class PlayerFrameLogic
         // QC: "if player rotted to death... die!" — checked even when regen was disabled.
         // (DEATH_ROT is a special deathtype; the pipeline carries it as a free-form tag.)
         if (p.GetResource(ResourceType.Health) < 1f && !p.IsDead)
+        {
+            // QC client.qc:1738 ejects an occupied vehicle (vehicles_exit, VHEF_RELEASE) BEFORE the DEATH_ROT
+            // damage so the rotting player dies as a free pawn, not inside the vehicle.
+            if (p.Vehicle is not null)
+                VehicleBoarding.Exit(p);
             Combat.Damage(p, null, null, 1f, "rot", p.Origin, Vector3.Zero);
+        }
 
-        // ----- fuel (QC RES_FUEL; only when not IT_UNLIMITED_AMMO — we always regen since items aren't modeled) -----
-        // QC fuel regen shares the health/armor pauseregen_finished (client.qc:1748; cfg: "fuel uses the health
-        // regen counter"). The jetpack/hook write that shared field — so gate fuel REGEN on it, not a separate
-        // field (which they never write, leaking the jetpack fuel-use regen pause). Fuel ROT keeps its own timer.
-        float fuelRegenStable = Cvars.Float("g_balance_fuel_regenstable");
-        float fuelRotStable = Cvars.Float("g_balance_fuel_rotstable");
-        float fuelRegenFt = now > p.PauseRegenFinished ? frameTime : 0f;
-        float fuelRotFt = now > p.PauseRotFuelFinished ? frameTime : 0f;
-        RotRegen(p, ResourceType.Fuel,
-            fuelRegenStable, Cvars.Float("g_balance_fuel_regen"), Cvars.Float("g_balance_fuel_regenlinear"), fuelRegenFt,
-            fuelRotStable, Cvars.Float("g_balance_fuel_rot"), Cvars.Float("g_balance_fuel_rotlinear"), fuelRotFt);
+        // ----- fuel (QC RES_FUEL) -----
+        // QC client.qc:1744-1753: the ENTIRE fuel block (regen AND rot) is skipped under IT_UNLIMITED_AMMO. Fuel
+        // REGEN frametime is gated on BOTH (time > pauseregen_finished) — fuel shares the health/armor regen
+        // counter, which the jetpack/hook write — AND ownership of ITEM_FuelRegen (the jetpack/fuel-regen pickup):
+        // a player who never picked up fuel regen does not regenerate fuel. Fuel ROT keeps its own pause timer.
+        if ((p.Items & (int)ItemFlag.UnlimitedAmmo) == 0)
+        {
+            bool ownsFuelRegen = (p.Items & (int)ItemFlag.FuelRegen) != 0;
+            float fuelRegenStable = Cvars.Float("g_balance_fuel_regenstable");
+            float fuelRotStable = Cvars.Float("g_balance_fuel_rotstable");
+            float fuelRegenFt = (now > p.PauseRegenFinished && ownsFuelRegen) ? frameTime : 0f;
+            float fuelRotFt = now > p.PauseRotFuelFinished ? frameTime : 0f;
+            RotRegen(p, ResourceType.Fuel,
+                fuelRegenStable, Cvars.Float("g_balance_fuel_regen"), Cvars.Float("g_balance_fuel_regenlinear"), fuelRegenFt,
+                fuelRotStable, Cvars.Float("g_balance_fuel_rot"), Cvars.Float("g_balance_fuel_rotlinear"), fuelRotFt);
+        }
     }
 
     /// <summary>

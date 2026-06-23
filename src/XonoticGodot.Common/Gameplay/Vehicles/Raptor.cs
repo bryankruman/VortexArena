@@ -81,7 +81,13 @@ public sealed class Raptor : Vehicle
     public float BombletSpread = 0.4f;    // g_vehicle_raptor_bomblet_spread
     public float BombletExplodeDelay = 0.4f; // g_vehicle_raptor_bomblet_explode_delay
     public float BombletTime = 0.5f;      // g_vehicle_raptor_bomblet_time (fall time before burst)
+    public float BombletAlt = 750f;       // g_vehicle_raptor_bomblet_alt (clear-fall early-burst distance)
     public float BombsRefire = 5f;        // g_vehicle_raptor_bombs_refire
+
+    // ---- bounce-missile chassis tuning (raptor.qc autocvars) ----
+    public float BounceFactor = 0.2f;     // g_vehicle_raptor_bouncefactor
+    public float BounceStop = 0f;         // g_vehicle_raptor_bouncestop
+    // g_vehicle_raptor_bouncepain = '1 4 1000' (minspeed, damagemultiplier, maxpain) — applied in Impact.
 
     // ---- flares (raptor_weapons.qh) ----
     public float FlareRefire = 5f;        // g_vehicle_raptor_flare_refire
@@ -118,6 +124,16 @@ public sealed class Raptor : Vehicle
         vehicle.Solid = Solid.SlideBox;
         vehicle.DeadState = DeadFlag.No;
         vehicle.DamageForceScale = 0.25f;   // QC vr_spawn: instance.damageforcescale = 0.25
+        // QC vr_spawn bounce-missile physics tuning (mass 1 / bouncefactor 0.2 / bouncestop 0): the chassis
+        // rebounds softly off geometry under MOVETYPE_BOUNCEMISSILE while in flight.
+        vehicle.Mass = 1f;
+        vehicle.BounceFactor = BounceFactor;
+        vehicle.BounceStop = BounceStop;
+        vehicle.ColorModKey = Vector3.Zero; // QC raptor_blowup leaves colormod tinted; a fresh spawn clears it
+        // QC: if (!autocvar_g_vehicle_raptor_swim) dphitcontentsmask |= DPCONTENTS_LIQUIDSMASK — so the raptor
+        // sinks in water (swim default off) instead of treating liquid as empty space.
+        if (Api.Cvars is null || Api.Cvars.GetFloat("g_vehicle_raptor_swim") == 0f)
+            vehicle.DpHitContentsMask |= SuperContentsLiquidsMask;
         vehicle.VehAnimFrame = 0f;
         vehicle.VehW2Mode = (int)RaptorMode.Bomb;
         vehicle.VehWeaponDelay = Time;
@@ -251,6 +267,12 @@ public sealed class Raptor : Vehicle
         {
             vehicle.VehSoundState = 1; // QC: this.PlayerPhysplug = raptor_frame
         }
+
+        // QC raptor_takeoff zeroes ATCK/ATCK2/CROUCH every takeoff tick so pilot input can't fire/dive while
+        // the airframe is still rising — clear them on the cached VehInput the flight handoff tick will read.
+        MovementInput vi = vehicle.VehInput;
+        vi.ButtonAttack1 = false; vi.ButtonAttack2 = false; vi.ButtonCrouch = false;
+        vehicle.VehInput = vi;
     }
 
     /// <summary>
@@ -422,6 +444,7 @@ public sealed class Raptor : Vehicle
         Vector3 v = vehicle.Velocity; v.Z += 600f; vehicle.Velocity = v;
         // QC: a wild tumble.
         vehicle.AVelocity = new Vector3(0f, 0.5f, 1f) * 400f * (Prandom.Float() - Prandom.Float());
+        vehicle.ColorModKey = new Vector3(-0.5f, -0.5f, -0.5f); // QC vr_death: darken the dying wreck
 
         // raptor_diethink: small explosions for ~5-10s, then raptor_blowup. raptor_blowup also runs on touch.
         float when = Time + 5f + Prandom.Range(0f, 5f);
@@ -508,14 +531,32 @@ public sealed class Raptor : Vehicle
         bomb.Velocity = vehicle.Velocity; // inherit the raptor's velocity, then fall
         Api.Entities.SetSize(bomb, Vector3.Zero, Vector3.Zero);
         Api.Entities.SetOrigin(bomb, org);
+        // QC raptor_bombdrop: cnt = time + 10 is the clear-fall window in which the bomblet_alt altitude test
+        // is allowed to keep deferring the burst while there is open air below.
+        float clearFallUntil = Time + 10f;
 
         void Burst(Entity self)
         {
+            // QC raptor_bomb_burst: while still inside the clear-fall window and bomblet_alt is enabled, trace
+            // ahead along the fall vector — if there's clear air for bomblet_alt units (or we're already within
+            // bomblet_radius of the owner raptor) keep falling instead of bursting now.
+            Vector3 normVel = QMath.Normalize(self.Velocity);
+            if (clearFallUntil > Time && BombletAlt > 0f)
+            {
+                TraceResult fall = Api.Trace.Trace(self.Origin, Vector3.Zero, Vector3.Zero,
+                    self.Origin + normVel * BombletAlt, MoveFilter.Normal, self);
+                if (fall.Fraction == 1f
+                    || QMath.VLen(self.Origin - vehicle.Origin) < BombletRadius)
+                {
+                    self.NextThink = Time;
+                    return;
+                }
+            }
+
             self.Touch = null;
             self.Think = null;
             // raptor_bomb_burst: scatter `Bomblets` independent bomblets with spread, each exploding on
             // touch or after a short fuse.
-            Vector3 normVel = QMath.Normalize(self.Velocity);
             float speed = QMath.VLen(self.Velocity);
             for (int i = 0; i < Bomblets; ++i)
             {
@@ -540,7 +581,15 @@ public sealed class Raptor : Vehicle
                         b.DmgInflictor, 0, BombletForce, deathTag: DeathTypes.VhRaptBomb);
                     Api.Entities.Remove(b);
                 }
-                bomblet.Touch = (b, other) => { if (other != b.Owner) Boom(b); };
+                // QC raptor_bomblet_touch: a ground/target hit doesn't detonate instantly — it reschedules the
+                // boom for time + random()*bomblet_explode_delay, so the cluster staggers its blasts on impact.
+                bomblet.Touch = (b, other) =>
+                {
+                    if (other == b.Owner) return;
+                    b.Touch = null;
+                    b.Think = Boom;
+                    b.NextThink = Time + Prandom.Float() * BombletExplodeDelay;
+                };
                 bomblet.Think = Boom;
                 bomblet.NextThink = Time + 5f; // QC: 5s safety fuse; touch detonates sooner (+random delay)
             }
@@ -549,7 +598,9 @@ public sealed class Raptor : Vehicle
 
         bomb.Touch = (self, _) => Burst(self);
         bomb.Think = Burst;
-        bomb.NextThink = Time + BombletTime;
+        // QC raptor_bombdrop: with bomblet_alt enabled (default 750) the bomb thinks immediately so the
+        // clear-fall altitude test runs every tick; only with bomblet_alt 0 does it wait bomblet_time first.
+        bomb.NextThink = BombletAlt > 0f ? Time : Time + BombletTime;
     }
 
     // METHOD(RaptorFlare, wr_think) — raptor_weapons.qc: drop three decoy flares that seduce guided missiles.
@@ -603,6 +654,19 @@ public sealed class Raptor : Vehicle
         vehicle.VehW2Mode = m;
     }
 
+    // METHOD(Raptor, vr_impact) — raptor.qc: the bounce-missile chassis takes crash damage + jolts the pilot.
+    /// <summary>
+    /// Port of <c>vr_impact</c>: when the raptor (MOVETYPE_BOUNCEMISSILE) slams into geometry, apply
+    /// <c>vehicles_impact(1, 4, 1000)</c> — DEATH_FALL self-damage scaled by the impact speed past minspeed
+    /// 1000, multiplied by 4 and capped, debounced to once / 0.25s. Dispatched live from the vehicle touch
+    /// path (<see cref="VehicleCommon"/>) which already gates on <c>play_time</c>.
+    /// </summary>
+    public override void Impact(Entity vehicle)
+    {
+        // QC: vector autocvar_g_vehicle_raptor_bouncepain = '1 4 1000' (minspeed, damagemultiplier, maxpain).
+        VehicleCommon.Impact(vehicle, 1f, 4f, 1000f);
+    }
+
     private Entity NewGun(Entity vehicle)
     {
         Entity g = Api.Services is not null ? Api.Entities.Spawn() : new Entity();
@@ -612,6 +676,9 @@ public sealed class Raptor : Vehicle
         if (Api.Services is not null) Api.Models.SetAttachment(g, vehicle, "");
         return g;
     }
+
+    // QC DPCONTENTS_LIQUIDSMASK = WATER|SLIME|LAVA (so the raptor sinks instead of treating liquid as empty).
+    private const int SuperContentsLiquidsMask = 0x00000010 | 0x00000020 | 0x00000040;
 
     private static float Time => Api.Services is not null ? Api.Clock.Time : 0f;
     private static float FrameTime => Api.Services is not null ? Api.Clock.FrameTime : 0.05f;

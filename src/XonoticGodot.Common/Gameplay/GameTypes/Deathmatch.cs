@@ -21,8 +21,14 @@ namespace XonoticGodot.Common.Gameplay;
 ///  - frag-limit end-of-match check (QC GameRules pointlimit / checkrules) and the respawn-time schedule
 ///    (server/client.qc <c>calculate_respawntime</c>: respawn_time = time + delay).
 ///
-/// Deferred (NOTE — cross-boundary): score networking/HUD, notifications/announcers, spree tracking, leadlimit/
-/// timelimit, warmup, team scoring, GiveFragsForKill mutator hook, and the dying-animation interim.
+/// Win conditions (server/world.qc <c>WinningCondition_Scores</c>): the frag limit, the lead limit, and
+/// <c>leadlimit_and_fraglimit</c> are all checked in <see cref="RecomputeLeader"/>; the DM-only
+/// <c>Scores_CountFragsRemaining</c> hook is wired there too, firing the "1/2/3 frags left" announcer
+/// (REMAINING_FRAG_{1,2,3}) once as the leader approaches the limit.
+///
+/// Deferred (NOTE — cross-boundary): score networking/HUD, the suddenDeath-end frags-left=1 forcing
+/// (checkrules_suddendeathend is framework-owned), timelimit/overtime, warmup, team scoring, the
+/// GiveFragsForKill mutator hook, and the dying-animation interim.
 /// </summary>
 [GameType]
 public sealed class Deathmatch : GameType
@@ -31,6 +37,11 @@ public sealed class Deathmatch : GameType
     private const string CvarFragLimitDm  = "g_dmlimit";   // DM-specific override
     private const string CvarFragLimit    = "fraglimit";   // generic engine frag limit
     private const float  DefaultFragLimit = 30f;
+
+    // ----- lead-limit cvars + default (engine generic; DM has no gametype-prefixed lead cvar) -----
+    private const string CvarLeadLimit    = "leadlimit";              // generic engine lead margin
+    private const string CvarLeadAndFrag  = "leadlimit_and_fraglimit"; // both limits required to win
+    private const float  DefaultLeadLimit = 0f;                       // 0 = disabled
 
     // ----- respawn delay cvars + default (xonotic-server.cfg: g_respawn_delay_small/large = 2) -----
     private const string CvarRespawnDelaySmall = "g_respawn_delay_small";
@@ -90,6 +101,24 @@ public sealed class Deathmatch : GameType
         }
     }
 
+    /// <summary>
+    /// The lead limit currently in force (QC <c>autocvar_leadlimit</c>, server/world.qc): the match ends when the
+    /// leader is ahead of the runner-up by at least this margin. 0 (the default) disables it. DM has no
+    /// gametype-prefixed lead cvar, so this reads the generic engine <c>leadlimit</c> directly.
+    /// </summary>
+    public float LeadLimit
+    {
+        get
+        {
+            if (TryCvar(CvarLeadLimit, out float ll) && ll >= 0f) return ll;
+            return DefaultLeadLimit;
+        }
+    }
+
+    /// <summary>QC <c>autocvar_leadlimit_and_fraglimit</c>: when set, a finish needs BOTH the frag and lead limits
+    /// reached (else either suffices). Only honored when both limits are actually set, matching world.qc:1630.</summary>
+    private static bool LeadAndFrag => Api.Services is not null && Api.Cvars.GetFloat(CvarLeadAndFrag) != 0f;
+
     /// <summary>Subscribe the kill handler to the obituary bus (QC: gametype hooks installed on activation).</summary>
     public void Activate()
     {
@@ -102,12 +131,14 @@ public sealed class Deathmatch : GameType
         // CTF_CAPS/RACE_LAPS/… as primary reverts the scoreboard to sorting by score.
         Scoring.GameScores.ScoreRulesBasics(teams: false);
         Scoring.GameScores.SetSortKeys(Scoring.GameScores.Score);
+        // QC fragsleft_last reset: re-arm the remaining-frags announcer so 1/2/3-frags-left can fire this match.
+        Scoring.GameScores.ResetFragsRemaining();
         _deathHandler = OnDeath;
         Combat.Death.Add(_deathHandler);
     }
 
     /// <summary>Unsubscribe the kill handler (QC: gametype teardown on map end / gametype switch).</summary>
-    public void Deactivate()
+    public override void Deactivate()
     {
         if (_deathHandler is null)
             return;
@@ -204,8 +235,13 @@ public sealed class Deathmatch : GameType
         if (Leader is null || candidate.ScoreFrags > Leader.ScoreFrags)
             Leader = candidate;
 
+        // Cheap incremental fraglimit latch. The lead-limit + leadlimit_and_fraglimit decision needs the true
+        // runner-up score (not known from just the two changed players), so it is resolved authoritatively in
+        // RecomputeLeader (called every tick on the live path); skip the incremental end when both limits are
+        // required, to avoid latching on the frag limit alone before the lead margin is checked.
         float limit = FragLimit;
-        if (limit > 0f && Leader is not null && Leader.ScoreFrags >= limit)
+        bool both = limit > 0f && LeadLimit > 0f && LeadAndFrag;
+        if (!both && limit > 0f && Leader is not null && Leader.ScoreFrags >= limit)
             MatchEnded = true;
     }
 
@@ -215,17 +251,65 @@ public sealed class Deathmatch : GameType
     /// </summary>
     public void RecomputeLeader(IReadOnlyList<Player> players)
     {
-        Player? best = null;
+        Player? best = null, second = null;
         for (int i = 0; i < players.Count; i++)
         {
             Player p = players[i];
             if (best is null || p.ScoreFrags > best.ScoreFrags)
+            {
+                second = best;
                 best = p;
+            }
+            else if (second is null || p.ScoreFrags > second.ScoreFrags)
+            {
+                second = p;
+            }
         }
         Leader = best;
 
         float limit = FragLimit;
-        if (limit > 0f && best is not null && best.ScoreFrags >= limit)
+        float leadlimit = LeadLimit;
+
+        // QC WinningCondition_Scores remaining-frags announcer (server/world.qc:1590-1622, gated by the DM-only
+        // Scores_CountFragsRemaining hook): fire "1/2/3 frags left" once as the leader approaches the limit. Uses
+        // the primary score (SP_SCORE) over non-spectators, matching WinningConditionHelper_topscore/_secondscore.
+        if (Api.Services is not null)
+        {
+            int topScore = 0, secondScore = 0;
+            bool haveTop = false, haveSecond = false;
+            for (int i = 0; i < players.Count; i++)
+            {
+                Player p = players[i];
+                if (Scoring.GameScores.IsSpectator(p))
+                    continue;
+                int s = Scoring.GameScores.PrimaryScore(p);
+                if (!haveTop || s > topScore)
+                {
+                    secondScore = topScore; haveSecond = haveTop;
+                    topScore = s; haveTop = true;
+                }
+                else if (!haveSecond || s > secondScore)
+                {
+                    secondScore = s; haveSecond = true;
+                }
+            }
+            // suddenDeathEnding (checkrules_suddendeathend) is framework-owned and not surfaced here; pass false.
+            Scoring.GameScores.CountFragsRemaining(limit, leadlimit, topScore, secondScore, suddenDeathEnding: false);
+        }
+
+        // QC limit_reached (server/world.qc:1625-1633): fraglimit OR leadlimit ends the match — unless both are
+        // set and leadlimit_and_fraglimit requires BOTH. (topscore-secondscore >= leadlimit.)
+        bool fraglimitReached = limit > 0f && best is not null && best.ScoreFrags >= limit;
+        bool leadlimitReached = leadlimit > 0f && best is not null && second is not null
+            && (best.ScoreFrags - second.ScoreFrags) >= leadlimit;
+
+        bool limitReached;
+        if (limit > 0f && leadlimit > 0f && LeadAndFrag)
+            limitReached = fraglimitReached && leadlimitReached;
+        else
+            limitReached = fraglimitReached || leadlimitReached;
+
+        if (limitReached)
             MatchEnded = true;
     }
 

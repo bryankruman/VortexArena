@@ -1,6 +1,7 @@
 using System.Numerics;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Gameplay.Damage;
+using XonoticGodot.Common.Math;
 using XonoticGodot.Common.Services;
 using GS = XonoticGodot.Common.Gameplay.Scoring.GameScores; // T7: alias the static score table for the per-mode ScoreRules
 
@@ -37,6 +38,18 @@ public sealed class Nexball : GameType
     private const string CvarGoalLimit    = "g_nexball_goallimit";
     private const string CvarFragLimit    = "fraglimit"; // GameRules_limit_score writes the goal limit here
     private const int    DefaultGoalLimit = 5;           // gametype_init "pointlimit=5"
+
+    // ----- ball-lifecycle / physics cvars + their gametypes-server.cfg defaults (QC autocvar_g_nexball_*) -----
+    private const float DelayStart   = 3f;    // g_nexball_delay_start    — ball stands on spawn before release
+    private const float DelayIdle    = 10f;   // g_nexball_delay_idle     — max idle time before a reset
+    private const float DelayGoal    = 3f;    // g_nexball_delay_goal     — delay between a goal and the ball reset
+    private const float DelayCollect = 0.5f;  // g_nexball_delay_collect  — relaunch self-recapture cooldown
+    private const float DelayHold        = 20f; // g_nexball_basketball_delay_hold         — anti-ballcamp DropOwner
+    private const float DelayHoldForTeam = 60f; // g_nexball_basketball_delay_hold_forteam — team-hold auto-return
+    private const float FootballBoostForward = 100f; // g_nexball_football_boost_forward
+    private const float FootballBoostUp      = 200f; // g_nexball_football_boost_up
+    private const float FootballPhysics      = 2f;   // g_nexball_football_physics (2 = view-independent, the default)
+    private const int   EffectsDefault       = 8;    // g_nexball_basketball_effects_default (EF_DIMLIGHT)
 
     /// <summary>How a goal was scored, mirroring QC's GoalTouch pscore branches.</summary>
     public enum GoalKind
@@ -87,6 +100,22 @@ public sealed class Nexball : GameType
     /// <summary>The goal trigger entities on the map (QC nexball_*goal / fault / out).</summary>
     public readonly List<Entity> Goals = new();
 
+    // ----- per-ball QC state (kept on the gametype since there is one ball; QC stored these on the ball edict) -----
+    /// <summary>QC ball.cnt: the ResetBall glide step (0/1 = active, 1 = goal-reset pending, 2..4 = glide-home steps).</summary>
+    private int _ballCnt;
+    /// <summary>QC ball.lifetime: absolute time a team-held ball auto-returns (delay_hold_forteam); 0 = none.</summary>
+    private float _ballLifetime;
+    /// <summary>QC ball.lastground: last world-bounce time, throttling the bounce sound (football_touch 0.1 s).</summary>
+    private float _ballLastGround;
+    /// <summary>QC ball.nb_dropper / ball.nb_droptime: the player who last launched the ball + when (delay_collect).</summary>
+    private Player? _ballDropper;
+    private float _ballDropTime;
+    /// <summary>True iff the live ball is a basketball (NBM_BASKETBALL — carryable). False = football (kickable only).</summary>
+    private bool _isBasketball = true;
+    /// <summary>QC: the ball's think is InitBall (release) rather than ResetBall (glide) — set by SpawnBall and by
+    /// ResetBall step 4, cleared once InitBall runs. Keeps ball.cnt faithful to QC (0 during the pre-release hold).</summary>
+    private bool _releasePending;
+
     public override void OnInit()
     {
         // QC: the ball + goals are spawned from the map's nexball_* entities (see SpawnBall / SpawnGoal).
@@ -95,6 +124,13 @@ public sealed class Nexball : GameType
         BallTeam = Teams.None;
         BallPusher = null;
         Goals.Clear();
+        _ballCnt = 0;
+        _ballLifetime = 0f;
+        _ballLastGround = 0f;
+        _ballDropper = null;
+        _ballDropTime = 0f;
+        _isBasketball = true;
+        _releasePending = false;
     }
 
     // ============================================================================================
@@ -102,76 +138,311 @@ public sealed class Nexball : GameType
     // ============================================================================================
 
     /// <summary>
-    /// QC SpawnBall: create the world ball entity at <paramref name="origin"/> (touch = pickup). Returns the
-    /// entity (null when no facade is wired).
+    /// QC SpawnBall (+ spawnfunc nexball_basketball/football): create the world ball entity at
+    /// <paramref name="origin"/> through the shared <see cref="global::XonoticGodot.Common.Gameplay.BallEntity"/>
+    /// framework so it gets the bbox / movetype / glow defaults, then install Nexball's own touch + the
+    /// <see cref="BallThink"/> state machine (delay_start release → idle reset → 4-step glide-home). The ball
+    /// stands on its spawn origin for <see cref="DelayStart"/> before InitBall releases it (QC nextthink =
+    /// game_starttime + delay_start). <paramref name="basketball"/> selects the carryable basketball vs the
+    /// kick-only football. Returns the entity (null when no facade is wired).
     /// </summary>
-    public Entity? SpawnBall(Vector3 origin)
+    public Entity? SpawnBall(Vector3 origin, bool basketball = true)
     {
-        Entity? e = GametypeEntities.SpawnObjective("nexball_basketball", origin, Teams.None,
-            new Vector3(-16f, -16f, -16f), new Vector3(16f, 16f, 16f),
-            touch: BallTouchEntity);
-        if (e is not null)
-            e.MoveType = MoveType.Bounce;
+        _isBasketball = basketball;
+        var cfg = new BallConfig
+        {
+            Touch = basketball ? BasketballTouch : FootballTouch, // QC settouch(basketball_touch/football_touch)
+            Think = BallThink,                                    // QC InitBall/ResetBall state machine (not the loose default)
+            RespawnTime = DelayIdle,                              // QC g_nexball_delay_idle
+            Effects = basketball ? EffectsDefault : 0,            // QC basketball_effects_default (EF_DIMLIGHT); football none
+        };
+        Entity? e = global::XonoticGodot.Common.Gameplay.BallEntity.SpawnForGametype(
+            basketball ? BallKind.NexballBasketball : BallKind.NexballFootball, origin, cfg);
+
         BallEntity = e;
         BallTeam = Teams.None;
         BallPusher = null;
+        _ballCnt = 0;            // QC ball.cnt default 0 (a ball can be caught during the pre-release hold)
+        _releasePending = true;  // the FIRST BallThink runs InitBall (QC setthink(this, InitBall) in SpawnBall)
+        _ballLifetime = 0f;
         BallHome = origin; // QC SpawnBall: this.spawnorigin = this.origin — ResetBall returns the ball here
+        if (e is not null)
+        {
+            e.MoveType = MoveType.Fly; // QC SpawnBall: set_movetype(this, MOVETYPE_FLY) until release
+            // QC SpawnBall: setthink(this, InitBall); nextthink = game_starttime + delay_start.
+            e.Think = BallThink;
+            e.NextThink = global::System.Math.Max(GametypeEntities.Now, GameStartTime) + DelayStart;
+        }
         return e;
     }
 
-    /// <summary>The ball's home/reset position (QC the relocated ball origin), defaults to the spawn origin.</summary>
+    /// <summary>The ball's home/reset position (QC spawnorigin), defaults to the spawn origin.</summary>
     public Vector3 BallHome { get; set; }
 
-    /// <summary>QC GiveBall: <paramref name="player"/> picks up the ball, becoming its carrier + team owner.</summary>
+    /// <summary>QC game_starttime: the absolute time the match goes live (the ball releases delay_start after it).
+    /// The host sets this before SpawnBall; 0 = release immediately (the headless/test default).</summary>
+    public float GameStartTime { get; set; }
+
+    /// <summary>
+    /// QC GiveBall: <paramref name="player"/> picks up the ball, becoming its carrier + team owner. Sets the
+    /// team-hold auto-return lifetime when the catcher is on a DIFFERENT team than the last owner
+    /// (delay_hold_forteam), arms the anti-ballcamp DropOwner timer (delay_hold), and stops/attaches the ball.
+    /// The weapon-arena swap to WEP_NEXBALL + carrier light/waypoint are deferred (separate weapon/CSQC seams).
+    /// </summary>
     public void GiveBall(Player player)
     {
         if (MatchEnded || player.IsDead)
             return;
+
+        // QC GiveBall: if(ball.team != plyr.team) ball.lifetime = time + delay_hold_forteam.
+        if (BallTeam != (int)player.Team)
+            _ballLifetime = GametypeEntities.Now + DelayHoldForTeam;
+
         BallTeam = (int)player.Team; // QC ball.team = plyr.team
-        BallPusher = player;          // QC ball.pusher = plyr
+        BallPusher = player;          // QC ball.owner = ball.pusher = plyr (owner = carrier, pusher = last toucher)
+        _ballCnt = 0;                 // QC ball gets caught — cnt stays clear (no reset pending)
+        _ballDropper = player;        // QC ball.nb_dropper = plyr (delay_collect cooldown is keyed off the catcher)
+        _ballDropTime = GametypeEntities.Now;
+
         if (BallEntity is Entity e)
         {
-            GametypeEntities.AttachToCarrier(e, player, new Vector3(0f, 0f, 0f));
+            // QC GiveBall: setorigin to plyr.origin + view_ofs, MOVETYPE_NONE, settouch func_null, scale down.
+            global::XonoticGodot.Common.Gameplay.BallEntity.AttachToCarrier(e, player, player.ViewOfs);
             e.Team = BallTeam;
+            e.Touch = null;          // QC settouch(ball, func_null) — held ball isn't picked up by touch
+            e.Velocity = Vector3.Zero;
+            e.Effects &= ~EffectsDefault; // QC ball.effects &= ~effects_default (the glow moves to the carrier, client)
+
+            // QC GiveBall: if(delay_hold) setthink(ball, DropOwner); nextthink = time + delay_hold.
+            if (DelayHold > 0f)
+            {
+                e.Think = DropOwnerThink;
+                e.NextThink = GametypeEntities.Now + DelayHold;
+            }
         }
+        // QC GiveBall weapon-arena swap (STAT(WEAPONS)=WEPSET(NEXBALL), W_SwitchWeapon(WEP_NEXBALL)) — deferred:
+        // the BallStealer weapon does not exist in the port yet (see nexball.weapon.ballstealer todo).
     }
 
-    /// <summary>QC DropBall: the carrier loses the ball; it drops where they stood, keeping the last-toucher team.</summary>
-    public void DropBall()
+    /// <summary>
+    /// QC DropBall: the carrier loses the ball; it drops where they stood inheriting <paramref name="vel"/>,
+    /// keeping the last-toucher team. Restores bounce + the pickup touch, arms the idle-reset think
+    /// (delay_idle, capped by the team-hold lifetime), and records the dropper for the delay_collect cooldown.
+    /// </summary>
+    public void DropBall(Vector3 org, Vector3 vel)
     {
         Player? carrier = BallEntity?.GtCarrier as Player ?? BallPusher;
         if (BallEntity is Entity e)
         {
             GametypeEntities.DetachFromCarrier(e);
             e.Solid = Solid.Trigger;
-            e.MoveType = MoveType.Bounce;
-            if (carrier is not null)
-                GametypeEntities.SetOrigin(e, carrier.Origin);
-            e.Touch = BallTouchEntity;
+            e.MoveType = MoveType.Bounce;     // QC set_movetype(ball, MOVETYPE_BOUNCE)
+            e.Flags &= ~EntFlags.OnGround;     // QC UNSET_ONGROUND(ball)
+            GametypeEntities.SetOrigin(e, org);
+            e.Velocity = vel;                  // QC ball.velocity = vel (carrier velocity inherited)
+            e.Effects |= EffectsDefault;       // QC ball.effects |= effects_default
+            e.Touch = _isBasketball ? BasketballTouch : FootballTouch; // QC settouch(ball, basketball_touch)
+            e.Think = BallThink;               // QC setthink(ball, ResetBall)
+            // QC nextthink = min(time + delay_idle, ball.lifetime).
+            e.NextThink = MinIdle(GametypeEntities.Now + DelayIdle);
         }
+        _ballDropTime = GametypeEntities.Now;  // QC ball.nb_droptime = time
+        if (carrier is not null)
+            _ballDropper = carrier;            // QC ball.nb_dropper stays the launching player (delay_collect)
         // QC keeps ball.team + ball.pusher after a drop (the last toucher still "owns" it for goal scoring).
     }
 
-    /// <summary>QC ResetBall: return the ball to its home position and clear team ownership (after a goal/out).</summary>
-    public void ResetBall()
+    /// <summary>QC nb_DropBall(player) / the PlayerDies+ClientDisconnect+MakePlayerObserver hooks: the carrier's
+    /// ball drops where they stand with their velocity. No-op if the player isn't carrying this ball.</summary>
+    public void DropBall(Player carrier)
     {
-        if (BallEntity is Entity e)
-        {
-            GametypeEntities.DetachFromCarrier(e);
-            e.Solid = Solid.Trigger;
-            e.MoveType = MoveType.Bounce;
-            e.Velocity = Vector3.Zero;
-            e.Touch = BallTouchEntity;
-            GametypeEntities.SetOrigin(e, BallHome);
-        }
-        BallTeam = Teams.None;
-        BallPusher = null;
+        if (BallEntity is null || !ReferenceEquals(carrier.GtCarried, BallEntity))
+            return;
+        DropBall(carrier.Origin, carrier.Velocity);
     }
 
-    private void BallTouchEntity(Entity self, Entity other)
+    /// <summary>QC DropOwner (the anti-ballcamp think): force the held ball loose and shove the camping carrier
+    /// up-and-back so a basketball can't be hoarded past delay_hold.</summary>
+    public void DropOwner()
     {
-        if (other is Player p && !p.IsDead)
-            GiveBall(p);
+        Player? ownr = BallEntity?.GtCarrier as Player;
+        if (ownr is null)
+            return;
+        DropBall(ownr.Origin, ownr.Velocity); // QC DropBall(this, ownr.origin, ownr.velocity)
+        // QC: makevectors(ownr.v_angle.y * '0 1 0'); ownr.velocity += ('0 0 0.75' - v_forward) * 1000.
+        Vector3 fwd = QMath.Forward(new Vector3(0f, ownr.VAngle.Y, 0f));
+        ownr.Velocity += (new Vector3(0f, 0f, 0.75f) - fwd) * 1000f;
+        ownr.Flags &= ~EntFlags.OnGround;     // QC UNSET_ONGROUND(ownr)
+    }
+
+    private void DropOwnerThink(Entity self) => DropOwner();
+
+    /// <summary>
+    /// QC ResetBall (the 4-step think state machine): return the ball home and clear team ownership. cnt&lt;2 stops
+    /// it and noclips (step 1); cnt 2/3 glides it toward the spawn origin (step 2/3, 0.5 s each); cnt 4 snaps it
+    /// home, re-arms InitBall after delay_start, and clears ownership (step 4). The instantaneous form is the
+    /// cnt&gt;=4 leg; the host's BallThink drives the intermediate steps each think tick.
+    /// </summary>
+    public void ResetBall()
+    {
+        if (BallEntity is not Entity e)
+        {
+            BallTeam = Teams.None;
+            BallPusher = null;
+            return;
+        }
+
+        if (_ballCnt < 2) // QC step 1: stop, go noclip, schedule the glide
+        {
+            e.Touch = null;                    // QC settouch(this, func_null)
+            e.MoveType = MoveType.Noclip;      // QC set_movetype(this, MOVETYPE_NOCLIP)
+            e.Velocity = Vector3.Zero;
+            _ballCnt = 2;
+            e.NextThink = GametypeEntities.Now; // QC nextthink = time (run step 2 next tick)
+        }
+        else if (_ballCnt < 4) // QC steps 2 & 3: velocity-glide back toward spawnorigin over 0.5 s
+        {
+            // QC velocity = (spawnorigin - origin) * (cnt - 1) — 1.0 then 0.5 second movement.
+            e.Velocity = (BallHome - e.Origin) * (_ballCnt - 1);
+            e.NextThink = GametypeEntities.Now + 0.5f;
+            _ballCnt += 1;
+        }
+        else // QC step 4: snap home, re-arm InitBall after delay_start, clear ownership
+        {
+            e.Velocity = Vector3.Zero;
+            GametypeEntities.SetOrigin(e, BallHome); // QC setorigin(this, spawnorigin)
+            e.MoveType = MoveType.None;              // QC set_movetype(this, MOVETYPE_NONE)
+            e.Think = BallThink;                     // QC setthink(this, InitBall)
+            e.NextThink = global::System.Math.Max(GametypeEntities.Now, GameStartTime) + DelayStart;
+            _ballCnt = 0;                            // glide complete; the next BallThink runs InitBall (release)
+            _releasePending = true;
+            BallTeam = Teams.None;
+            BallPusher = null;
+            _ballLifetime = 0f;
+        }
+    }
+
+    /// <summary>
+    /// QC InitBall: release the ball into play after the delay_start hold — restore bounce + the mode touch, clear
+    /// the reset step, arm the idle-reset think (delay_idle), play the drop sound (noise1), and clear ownership.
+    /// </summary>
+    public void InitBall()
+    {
+        if (BallEntity is not Entity e)
+            return;
+        _releasePending = false;                // released — subsequent thinks run ResetBall (the glide)
+        e.Flags &= ~EntFlags.OnGround;          // QC UNSET_ONGROUND(this)
+        e.MoveType = MoveType.Bounce;           // QC set_movetype(this, MOVETYPE_BOUNCE)
+        e.Touch = _isBasketball ? BasketballTouch : FootballTouch;
+        _ballCnt = 0;                           // QC this.cnt = 0
+        e.Think = BallThink;                    // QC setthink(this, ResetBall)
+        e.NextThink = GametypeEntities.Now + DelayIdle + 3f; // QC nextthink = time + delay_idle + 3
+        _ballLifetime = 0f;                     // QC this.lifetime = 0
+        BallPusher = null;                      // QC this.pusher = NULL
+        BallTeam = Teams.None;                  // QC this.team = false
+        SoundSystem.PlayOn(e, Sounds.ByName("NB_DROP"), SoundChannel.TriggerAuto, SoundLevels.VolBase, SoundLevels.AttenNorm); // QC _sound(this, CH_TRIGGER, this.noise1, ...)
+    }
+
+    /// <summary>
+    /// The ball's single Think trampoline (QC the InitBall/ResetBall function pointers). A carried ball with the
+    /// DropOwner timer armed is handled separately (DropOwnerThink). Dispatches InitBall when the reset state
+    /// machine has completed (cnt == -1, i.e. "release pending"), else advances ResetBall.
+    /// </summary>
+    private void BallThink(Entity self)
+    {
+        if (!ReferenceEquals(self, BallEntity))
+            return;
+        if (_releasePending) // QC setthink(InitBall) — release the ball into play after the delay_start hold
+            InitBall();
+        else
+            ResetBall();
+    }
+
+    /// <summary>QC min(time + delay_idle, ball.lifetime): the idle-reset deadline, capped by the team-hold lifetime
+    /// when one is armed (lifetime 0 = uncapped).</summary>
+    private float MinIdle(float idleDeadline)
+        => _ballLifetime > 0f ? global::System.Math.Min(idleDeadline, _ballLifetime) : idleDeadline;
+
+    /// <summary>
+    /// QC basketball_touch: a carryable ball. A toucher who already carries a ball falls through to
+    /// <see cref="FootballTouch"/> (bump-as-soccer); otherwise a live player who isn't on the delay_collect
+    /// cooldown and the reset isn't pending (cnt==0) catches it; a world touch plays the bounce sfx + re-arms idle.
+    /// </summary>
+    private void BasketballTouch(Entity self, Entity other)
+    {
+        // QC: if(toucher.ballcarried) { football_touch(this, toucher); return; } — a toucher who already carries a
+        // ball doesn't catch this one, it bumps it like a football (bump-as-soccer).
+        if (other.GtCarried is not null)
+        {
+            FootballTouch(self, other);
+            return;
+        }
+
+        // QC: if(!this.cnt && IS_PLAYER && !IS_DEAD && (toucher != nb_dropper || time > nb_droptime + delay_collect))
+        if (_ballCnt == 0 && other is Player p && !p.IsDead
+            && (!ReferenceEquals(p, _ballDropper) || GametypeEntities.Now > _ballDropTime + DelayCollect))
+        {
+            GiveBall(p); // QC GiveBall(toucher, this)
+            return;
+        }
+
+        // QC: else if(toucher.solid == SOLID_BSP) — a world bounce: sfx + re-arm idle.
+        if (other.Solid == Solid.Bsp)
+        {
+            SoundSystem.PlayOn(self, Sounds.ByName("NB_BOUNCE"), SoundChannel.TriggerAuto, SoundLevels.VolBase, SoundLevels.AttenNorm);
+            if (self.Velocity != Vector3.Zero && _ballCnt == 0)
+                self.NextThink = MinIdle(GametypeEntities.Now + DelayIdle);
+        }
+    }
+
+    /// <summary>
+    /// QC football_touch: a kickable (soccer) ball. A world bounce plays the bounce sfx (throttled 0.1 s) + re-arms
+    /// idle; a live player/vehicle touch becomes the new pusher and is given a velocity boost (boost_forward/up via
+    /// the view-independent physics mode 2) plus a backspin avelocity, so the ball can be driven toward a goal.
+    /// </summary>
+    private void FootballTouch(Entity self, Entity other)
+    {
+        if (other.Solid == Solid.Bsp)
+        {
+            // QC: world bounce — throttle the bounce sound to once per 0.1 s, re-arm idle.
+            if (GametypeEntities.Now > _ballLastGround + 0.1f)
+            {
+                SoundSystem.PlayOn(self, Sounds.ByName("NB_BOUNCE"), SoundChannel.TriggerAuto, SoundLevels.VolBase, SoundLevels.AttenNorm);
+                _ballLastGround = GametypeEntities.Now;
+            }
+            if (self.Velocity != Vector3.Zero && _ballCnt == 0)
+                self.NextThink = GametypeEntities.Now + DelayIdle;
+            return;
+        }
+
+        if (other is not Player kicker || kicker.IsDead)
+            return; // QC: !IS_PLAYER && !IS_VEHICLE, or RES_HEALTH < 1
+
+        if (_ballCnt == 0)
+            self.NextThink = GametypeEntities.Now + DelayIdle;
+
+        BallPusher = kicker;            // QC this.pusher = toucher
+        BallTeam = (int)kicker.Team;    // QC this.team = toucher.team
+
+        // QC physics mode 2 (the default, fully view-independent): use only the kicker's YAW.
+        // makevectors(toucher.v_angle.y * '0 1 0'); velocity = toucher.velocity + v_forward*boost_forward + v_up*boost_up.
+        Vector3 angles = FootballPhysics == 2f ? new Vector3(0f, kicker.VAngle.Y, 0f) : kicker.VAngle;
+        QMath.AngleVectors(angles, out Vector3 fwd, out _, out Vector3 up);
+        if (FootballPhysics == -1f)
+        {
+            // QC mode -1: velocity = toucher.velocity * 1.5 + '0 0 1'*boost_up (only when the kicker is moving).
+            if (kicker.Velocity != Vector3.Zero)
+                self.Velocity = kicker.Velocity * 1.5f + new Vector3(0f, 0f, 1f) * FootballBoostUp;
+        }
+        else if (FootballPhysics == 2f)
+        {
+            self.Velocity = kicker.Velocity + fwd * FootballBoostForward + up * FootballBoostUp;
+        }
+        else // QC modes 0 (Revenant) and 1: full view angles, v_forward + '0 0 1'/v_up boost.
+        {
+            self.Velocity = kicker.Velocity + fwd * FootballBoostForward + up * FootballBoostUp;
+        }
+        self.AVelocity = fwd * -250f; // QC this.avelocity = -250 * v_forward (backspin)
     }
 
     // ============================================================================================
@@ -200,23 +471,28 @@ public sealed class Nexball : GameType
     /// <summary>
     /// QC GoalTouch: the ball entered goal <paramref name="goalEnt"/>. Derive the goal kind from the goal's
     /// team vs the ball's team — own-goal/fault → −1 (credited to the other team in 2-team play), enemy goal
-    /// → +1, out → no score (just reset) — and apply it via <see cref="ScoreGoal"/>. Then reset the ball.
+    /// → +1, out → no score — apply it via <see cref="ScoreGoal"/>, play the goal sound, then arm the delayed
+    /// ball reset (delay_goal; 0 for OUT). A scored basketball drops its carrier and is converted to football
+    /// control (cnt=1 + football_touch) for the duration of the reset delay so the ball physically falls through.
     /// </summary>
     public void GoalTouch(Entity goalEnt)
     {
-        if (MatchEnded || BallTeam == Teams.None)
-            return; // QC: no pusher / no ball team → no goal
+        if (MatchEnded)
+            return; // QC: game_stopped guard
         int goalTeam = goalEnt.GtHomeTeam;
+
+        // QC: if((!ball.pusher && this.team != GOAL_OUT) || ball.cnt) return; — no scorer (except OUT) or a ball
+        // already mid-reset can't score.
+        if ((BallTeam == Teams.None && goalTeam != GoalOut) || _ballCnt != 0)
+            return;
+
+        int otherTeam = TeamCountIsTwo() && BallTeam != Teams.None ? OtherTeam(BallTeam) : Teams.None;
 
         if (goalTeam == GoalOut)
         {
-            ResetBall(); // QC GOAL_OUT: ball returned, no score
-            return;
+            // QC GOAL_OUT: pscore = 0 — no score, the ball is just returned (delay 0).
         }
-
-        int otherTeam = TeamCountIsTwo() ? OtherTeam(BallTeam) : Teams.None;
-
-        if (goalTeam == GoalFault || goalTeam == BallTeam)
+        else if (goalTeam == GoalFault || goalTeam == BallTeam)
         {
             // QC fault or own-goal: pscore = -1.
             ScoreGoal(BallTeam, GoalKind.OwnGoal, otherTeam);
@@ -226,7 +502,34 @@ public sealed class Nexball : GameType
             // QC enemy goal: pscore = +1 for the ball's team.
             ScoreGoal(BallTeam, GoalKind.Score, otherTeam);
         }
-        ResetBall();
+
+        if (BallEntity is Entity ball)
+        {
+            // QC: _sound(ball, CH_TRIGGER, this.noise, VOL_BASE, ATTEN_NONE) — the goal's noise (ctf/respawn for a
+            // score, TYPEHIT for fault/out). The goal entity carries no per-goal noise field in the port, so pick
+            // the faithful default by goal kind.
+            string goalSound = goalTeam is GoalFault or GoalOut ? "TYPEHIT" : "KH_CAPTURE"; // ctf/respawn ≈ capture cue
+            SoundSystem.PlayOn(ball, Sounds.ByName(goalSound), SoundChannel.TriggerAuto, SoundLevels.VolBase, SoundLevels.AttenNone);
+
+            // QC GOAL_TOUCHPLAYER (ball.owner): a carrier scored directly — drop the ball where they stand.
+            if (ball.GtCarrier is Player owner)
+                DropBall(owner.Origin, owner.Velocity);
+
+            // QC: ball.cnt = 1; setthink(ResetBall); for a basketball settouch(football_touch) (football control
+            // until reset); nextthink = time + delay_goal * (this.team != GOAL_OUT) — OUT resets next tick.
+            _ballCnt = 1;
+            ball.Think = BallThink;
+            if (_isBasketball)
+                ball.Touch = FootballTouch;
+            ball.NextThink = GametypeEntities.Now + DelayGoal * (goalTeam != GoalOut ? 1f : 0f);
+        }
+
+        // The goal is scored and the reset is armed; ownership is logically cleared now (the ball.cnt guard above
+        // prevents a second score before the glide-home think actually returns the ball). This keeps BallTeam/
+        // BallPusher consistent with "no live ball in play" immediately, matching the headless reset contract.
+        BallTeam = Teams.None;
+        BallPusher = null;
+        _ballLifetime = 0f;
     }
 
     private void GoalTouchEntity(Entity self, Entity other)
@@ -273,11 +576,22 @@ public sealed class Nexball : GameType
         GS.SetSortKeys(GS.Field("NEXBALL_GOALS")!, GS.Field("NEXBALL_FAULTS"));
         GS.SeedTeams(2); // Nexball is two-team (red vs blue; AVAILABLE_TEAMS == 2)
 
+        // QC nb_Initialize: round the basketball meter period to 1/32 s (sent as a byte ×32), min 2 if <= 0. The
+        // power-meter weapon doesn't exist in the port yet, but we compute the value so the future weapon/HUD seam
+        // reads the bit-faithful period (see nexball.weapon.power_meter / nexball.hud.modicon todos).
+        float meter = GametypeEntities.Cvar("g_nexball_meter_period", 1f);
+        if (meter <= 0f) meter = 2f;
+        MeterPeriod = global::System.MathF.Round(meter * 32f) / 32f;
+
         _deathHandler = OnDeath;
         Combat.Death.Add(_deathHandler);
     }
 
-    public void Deactivate()
+    /// <summary>QC g_nexball_meter_period (nb_Initialize): the rounded basketball power-meter cycle in seconds
+    /// (rounded to 1/32 s, min 2 when the cvar is &lt;= 0). Read by the (deferred) power-meter weapon + HUD bar.</summary>
+    public float MeterPeriod { get; private set; } = 1f;
+
+    public override void Deactivate()
     {
         if (_deathHandler is null)
             return;
@@ -337,19 +651,41 @@ public sealed class Nexball : GameType
         if (f is not null) Scoring.GameScores.AddToPlayer(p, f, n);
     }
 
-    /// <summary>QC GameRules_limit_score: latch the match once a team reaches the goal limit.</summary>
+    /// <summary>QC GameRules_limit_lead(g_nexball_goalleadlimit): the goal lead at which the match ends early.
+    /// The cvar default is -1 = "use the mapinfo leadlimit" (0 = disabled); &lt;= 0 disables it.</summary>
+    public int GoalLeadLimit => TryCvar("g_nexball_goalleadlimit", out float ll) && ll > 0f ? (int)ll : 0;
+
+    /// <summary>QC GameRules_limit_score + GameRules_limit_lead: latch the match once a team reaches the goal limit,
+    /// or once the leader is ahead of the runner-up by at least the lead limit.</summary>
     public void CheckGoalLimit()
     {
-        int limit = GoalLimit;
-        if (limit <= 0)
+        if (MatchEnded)
             return;
 
         // QC GameRules_limit_score: the leading team (the flag-aware ST_NEXBALL_GOALS leader) reaching the limit wins.
         int leader = GS.LeaderTeam();
-        if (leader != Teams.None && GoalsFor(leader) >= limit)
+        if (leader == Teams.None)
+            return;
+
+        int limit = GoalLimit;
+        if (limit > 0 && GoalsFor(leader) >= limit)
         {
             MatchEnded = true;
             WinningTeam = leader;
+            return;
+        }
+
+        // QC GameRules_limit_lead: end when the leader's margin over the runner-up reaches the lead limit.
+        int lead = GoalLeadLimit;
+        if (lead > 0)
+        {
+            int second = GS.SecondTeam();
+            int margin = GoalsFor(leader) - (second != Teams.None ? GoalsFor(second) : 0);
+            if (margin >= lead)
+            {
+                MatchEnded = true;
+                WinningTeam = leader;
+            }
         }
     }
 
@@ -358,9 +694,9 @@ public sealed class Nexball : GameType
     {
         if (ev.Victim is not Player victim)
             return false;
-        // QC nb: a carrier who dies drops the ball where they fell (DropBall).
-        if (BallEntity is not null && ReferenceEquals(victim.GtCarried, BallEntity))
-            DropBall();
+        // QC nb (PlayerDies / DropSpecialItems hooks → nb_DropBall): a carrier who dies drops the ball where they
+        // fell, inheriting their velocity.
+        DropBall(victim);
         Events?.OnFrag(ev.Attacker as Player, victim, ev.DeathType);
         return false;
     }

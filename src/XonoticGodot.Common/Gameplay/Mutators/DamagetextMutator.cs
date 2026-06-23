@@ -70,6 +70,16 @@ public readonly struct DamageTextEvent
 /// Visibility tiers (parity §11): QC's <c>write_damagetext</c> filters by sv_damagetext 1/2/3
 /// (spectators / +attacker / all); in this host port that reduces to "show to the local attacker"
 /// (the default tier 2). The queued events are the attacker-credited ones; the client gate applies.
+///
+/// KNOWN GAP — ClientDisconnect dent_attackers clear (sv_damagetext.qc:138-148): QC's
+/// MUTATOR_HOOKFUNCTION(damagetext, ClientDisconnect) walks every player and clears the leaving
+/// client's bit from their <c>dent_attackers</c> set, so a freed/reused edict slot can't mis-fire the
+/// STOP_ACCUMULATION first-hit gate. This port keys <c>DentAttackers</c> on the live <see cref="Entity"/>
+/// reference (not an etof slot index), so a reused slot is a different object and the stale entry is
+/// inert in practice; the explicit clear is still omitted. Closing it cleanly needs a new
+/// <c>MutatorHooks.ClientDisconnect</c> hook chain plus a dispatch site on the server disconnect path
+/// (game/net/ServerNet.cs:638 / ClientManager.OnClientDisconnect) — both outside this file. The handler
+/// would iterate live players and call <c>player.DentAttackers.Remove(leaver)</c>.
 /// </summary>
 [Mutator]
 public sealed class DamagetextMutator : MutatorBase

@@ -17,8 +17,11 @@ namespace XonoticGodot.Common.Gameplay;
 /// steerlib_attract2, yawing the body toward the heading at the per-gait turnrate, braking when idle), the
 /// guided ROCKET VOLLY at rocket range (4 homing rockets 0.2s apart then a 10s reload, each steered by
 /// <see cref="GuidedProjectile.WalkerRocketThink"/>), and the MELEE swipe (a 100-dmg radius hit in front when
-/// the enemy is within melee range). The 12-state animation machine, swim/jump gaits and map-waypoint roaming
-/// are client/render + map-graph concerns left out.
+/// the enemy is within melee range). Also ported: the no-enemy IDLE ROAM/WANDER (LOS-probe a new heading + the
+/// stop/roam idle cycle), LAST-SEEN PURSUIT (chase the enemy's last position for up to 10s), and the waterlevel
+/// SWIM gait (pitch-toward + sinusoidal bob). The animation frames + TNSF_MOVE networking + CSQC walker_draw
+/// (ground-align/head-spin/spark) are client/render; map-waypoint path-following (turret_checkpoint) is a
+/// map-graph concern; the rocket up-and-over loop maneuver lives in GuidedProjectile — all left out of this file.
 /// </summary>
 [Turret]
 public sealed class WalkerTurret : Turret
@@ -27,7 +30,7 @@ public sealed class WalkerTurret : Turret
     private const float ShotDamage = 5f;
     private const float ShotForce = 10f;
     private const float ShotSpread = 0.025f;
-    private const float ShotSpeed = 34920f;       // near-hitscan minigun
+    private const float ShotSpeed = 18000f;       // near-hitscan minigun (turrets.cfg shot_speed)
     private const float ShotRefire = 0.05f;
     private const int ShotVolly = 10;
     private const float ShotVollyRefire = 1f;
@@ -43,7 +46,8 @@ public sealed class WalkerTurret : Turret
 
     // --- locomotion (turrets.cfg) ---
     private const float SpeedRun = 300f, SpeedWalk = 200f, SpeedStop = 90f;
-    private const float TurnWalk = 15f, TurnRun = 7f;
+    private const float SpeedRoam = 100f, SpeedSwim = 200f, SpeedJump = 800f;
+    private const float TurnWalk = 15f, TurnRun = 7f, TurnSwim = 10f;
 
     // --- rocket volley (turrets.cfg g_turrets_unit_walker_rocket_*) ---
     private const float RocketDamage = 45f;
@@ -60,19 +64,31 @@ public sealed class WalkerTurret : Turret
     private const float MeleeForce = 600f;
     private const float MeleeRange = 100f;
 
-    /// <summary>Walker-specific scratch (QC tur_head.shot_volly rocket counter + the separate rocket refire clock + melee lock).</summary>
+    /// <summary>QC walker animflag (walker.qc:28). Drives the per-gait turn rate + movement in tr_think.</summary>
+    private enum Gait { No = 0, Turn = 1, Walk = 2, Run = 3, Jump = 6, Land = 7, Melee = 9, Swim = 10, Roam = 11 }
+
+    /// <summary>Walker-specific scratch (QC tur_head.shot_volly rocket counter + the separate rocket refire clock + melee lock + idle-roam state).</summary>
     private sealed class WalkerState
     {
         public int RocketVolly;       // QC tur_head.shot_volly: rockets left in the current burst
         public float RocketFinished;  // QC tur_head.attack_finished_single[0]: next rocket/burst time
         public float MeleeUntil;      // sim time the melee swing is locked (no movement/fire mid-swipe)
+
+        public Gait AnimFlag;         // QC .animflag: the active gait (selects turn rate + movement below)
+        public Vector3 Moveto;        // QC .moveto: the steering goal point
+        public Vector3 Steerto;       // QC .steerto: this think's steering vector (vectoangles -> heading)
+        public float IdleTime;        // QC .idletime: next time to re-roll the idle stop/roam decision
+        public float HeadIdleTime;    // QC .tur_head.idletime: the -1337 LOS-probe "pick a new wander dir" flag
+        public Vector3 EnemyLastLoc;  // QC .enemy_last_loc: last place the enemy was seen
+        public float EnemyLastTime;   // QC .enemy_last_time: when (0 = none)
     }
     private static readonly Dictionary<Entity, WalkerState> _w = new();
     private static WalkerState W(Entity e) { if (!_w.TryGetValue(e, out var s)) { s = new(); _w[e] = s; } return s; }
 
-    // QC walker.qc tr_setup: players, range-limited, team-checked, LOS, angle-limited. Hitscan minigun, lead aim.
+    // QC walker.qc tr_setup: players, range-limited, team-checked, LOS. The walker turns its BODY to face
+    // (not angle-gated acquisition), so — unlike fixed turrets — it does NOT set ANGLELIMITS.
     private const int Select = TurretAI.SelectPlayers | TurretAI.SelectRangeLimits
-                             | TurretAI.SelectTeamCheck | TurretAI.SelectLos | TurretAI.SelectAngleLimits;
+                             | TurretAI.SelectTeamCheck | TurretAI.SelectLos;
 
     public WalkerTurret()
     {
@@ -103,7 +119,13 @@ public sealed class WalkerTurret : Turret
             if (Api.Services is not null) Api.Entities.SetOrigin(self, home);
             self.Solid = Solid.SlideBox;
             self.MoveType = MoveType.Step;
-            W(self).RocketVolly = 0;
+            WalkerState s = W(self);
+            s.RocketVolly = 0;
+            s.AnimFlag = Gait.No;
+            s.IdleTime = 0f;
+            s.HeadIdleTime = 0f;
+            s.EnemyLastTime = 0f;
+            s.MeleeUntil = 0f;
         };
     }
 
@@ -112,7 +134,7 @@ public sealed class WalkerTurret : Turret
         var p = new TurretParams(Select, TargetRangeMin, TargetRange, ShotDamage, ShotRefire,
             AimSpeed, FireTolerance, lead: true, ShotVolly, ShotVollyRefire,
             rangeOptimal: TargetRangeOptimal, shotSpeed: ShotSpeed, aimMaxPitch: AimMaxPitch, aimMaxRot: AimMaxRot,
-            shotTimeCompensate: true, zPredict: true, trackType: TurretAI.TrackFluidInertia);
+            shotTimeCompensate: true, zPredict: true, trackType: TurretAI.TrackStepMotor);
 
         // Hold fire while mid-melee (QC walker_firecheck: ANIM_MELEE blocks firing).
         WalkerState ws = W(e);
@@ -129,74 +151,197 @@ public sealed class WalkerTurret : Turret
     public override bool ValidTarget(Entity self, Entity target)
         => TurretAI.ValidTarget(self, target, Select, TargetRangeMin, TargetRange);
 
-    // WalkerTurret.tr_think: legged movement toward the enemy + the rocket volley + the melee swipe.
+    // WalkerTurret.tr_think (walker.qc:356): pick the gait (no-enemy idle roam / last-seen pursuit, or
+    // enemy melee / rocket volley / chase), then apply the per-gait move + raw per-think body yaw.
     private void DoMovement(Entity e, bool melee)
     {
         if (TurretAI.State(e).Active == false) return;
         float now = Api.Services is not null ? Api.Clock.Time : 0f;
         WalkerState ws = W(e);
-        float vz = e.Velocity.Z;
         QMath.AngleVectors(new Vector3(0f, e.Angles.Y, 0f), out Vector3 fwd, out _, out _);
 
+        // --- gait selection (the QC if/else-if/else over it.enemy) ---
         if (melee)
         {
-            TurretMath.BrakeSimple(e, SpeedStop);
-            e.Velocity = new Vector3(e.Velocity.X, e.Velocity.Y, vz);
-            return;
+            // Mid-swing: the swing/damage were already scheduled; just stay in the MELEE gait.
+            ws.AnimFlag = Gait.Melee;
         }
-
-        Vector3 steerTo = Vector3.Zero;
-        Entity? enemy = e.Enemy;
-        if (enemy is null)
+        else if (e.Enemy is null)
         {
-            if (e.Velocity != Vector3.Zero) TurretMath.BrakeSimple(e, SpeedStop);
+            IdleSelect(e, ws, now, fwd);
         }
         else
         {
-            TurretState st = TurretAI.State(e);
-            float dist = st.DistEnemy;
+            Entity enemy = e.Enemy;
+            float dist = TurretAI.State(e).DistEnemy;
 
-            // Melee range + roughly facing it -> swing (QC: wish_angle.y < 15 deg).
+            // Melee range + roughly facing it -> swing (QC: wish_angle.y < 15 deg, and not while swimming).
             Vector3 wishAngle = TurretMath.AngleOfs(e.Origin, e.Angles, enemy.Origin);
-            if (dist < MeleeRange && System.Math.Abs(wishAngle.Y) < 15f)
+            if (dist < MeleeRange && ws.AnimFlag != Gait.Melee && ws.AnimFlag != Gait.Swim
+                && System.Math.Abs(wishAngle.Y) < 15f)
             {
+                ws.Moveto = enemy.Origin;
+                ws.Steerto = TurretMath.SteerAttract2(e, ws.Moveto, 0.5f, 500f, 0.95f);
+                ws.AnimFlag = Gait.Melee;
                 ws.MeleeUntil = now + 0.41f;          // QC defers walker_setnoanim by 0.41
                 ScheduleMelee(e, now + 0.21f);        // QC defers walker_melee_do_dmg by 0.21
-                TurretMath.BrakeSimple(e, SpeedStop);
-                e.Velocity = new Vector3(e.Velocity.X, e.Velocity.Y, vz);
-                return;
             }
-
-            // Rocket volley logic (QC: separate tur_head.shot_volly clock).
-            if (ws.RocketFinished < now)
+            // Rocket volley clock (QC: separate tur_head.shot_volly / attack_finished_single[0]).
+            else if (ws.RocketFinished < now)
             {
                 if (ws.RocketVolly > 0)
                 {
-                    FireRocket(e, enemy);
+                    ws.AnimFlag = Gait.No;
                     ws.RocketVolly--;
                     ws.RocketFinished = ws.RocketVolly == 0 ? now + RocketRefire : now + 0.2f;
+                    FireRocket(e, enemy);
                 }
                 else if (dist > RocketRangeMin && dist < RocketRange)
                 {
                     ws.RocketVolly = 4;               // QC arms a 4-rocket burst
                 }
             }
-
-            // Move toward the enemy (run when far, walk when near), easing in via attract2.
-            steerTo = TurretMath.SteerAttract2(e, enemy.Origin, 0.5f, 500f, 0.95f);
-            if (dist > 500f) TurretMath.MoveSimple(e, fwd, SpeedRun, 0.6f);
-            else TurretMath.MoveSimple(e, fwd, SpeedWalk, 0.6f);
+            else if (ws.AnimFlag != Gait.Melee)
+            {
+                WalkerMoveTo(e, ws, enemy.Origin, dist);  // chase (run/walk/swim by distance+waterlevel)
+            }
         }
 
-        // Yaw the body toward the heading at the per-gait turnrate (QC: bound(-turny, real_angle.y, turny)).
-        if (steerTo != Vector3.Zero)
+        // --- per-gait turn + movement (the QC switch(it.animflag) block) ---
+        ApplyGait(e, ws, fwd, now);
+
+        // NOTE (client-render): QC sets SendFlags |= TNSF_MOVE here + turrets_setframe(animflag) to net the
+        // gait frame to CSQC. The animation/networking layer is presentation and lives outside this server port.
+        e.OldOrigin = e.Origin;
+    }
+
+    // walker_move_to (walker.qc:249): set the gait from the distance + waterlevel and the steer goal.
+    private void WalkerMoveTo(Entity e, WalkerState ws, Vector3 target, float dist)
+    {
+        switch (e.WaterLevel)
         {
-            float frameTime = Api.Services is not null ? Api.Clock.FrameTime : 0f;
-            float turny = (e.Enemy is not null && TurretAI.State(e).DistEnemy > 500f ? TurnRun : TurnWalk);
-            Vector3 wish = QMath.VecToAngles(QMath.Normalize(steerTo));
-            float diff = TurretMath.ShortAngle(wish.Y - e.Angles.Y, e.Angles.Y);
-            float step = turny * frameTime;
-            e.Angles = new Vector3(e.Angles.X, e.Angles.Y + QMath.Bound(-step, diff, step), e.Angles.Z);
+            case 0: // WATERLEVEL_NONE
+                ws.AnimFlag = dist > 500f ? Gait.Run : Gait.Walk;
+                goto case 1;
+            case 1: // WATERLEVEL_WETFEET
+            case 2: // WATERLEVEL_SWIMMING
+                ws.AnimFlag = ws.AnimFlag == Gait.Swim ? Gait.Swim : Gait.Walk;
+                break;
+            case 3: // WATERLEVEL_SUBMERGED
+                ws.AnimFlag = Gait.Swim;
+                break;
+        }
+        ws.Moveto = target;
+        ws.Steerto = TurretMath.SteerAttract2(e, ws.Moveto, 0.5f, 500f, 0.95f);
+        if (e.Enemy is not null) { ws.EnemyLastLoc = target; ws.EnemyLastTime = Api.Services is not null ? Api.Clock.Time : 0f; }
+    }
+
+    // The no-enemy branch of tr_think (walker.qc:362): chase the last-seen spot for up to 10s, else LOS-probe
+    // a random wander direction while ANIM_WALK, periodically re-rolling between an idle stop and a roam walk.
+    private void IdleSelect(Entity e, WalkerState ws, float now, Vector3 fwd)
+    {
+        if (ws.EnemyLastTime != 0f)
+        {
+            if ((e.Origin - ws.EnemyLastLoc).Length() < 128f || now - ws.EnemyLastTime > 10f)
+                ws.EnemyLastTime = 0f;
+            else
+                WalkerMoveTo(e, ws, ws.EnemyLastLoc, 0f);
+            return;
+        }
+
+        if (ws.AnimFlag != Gait.No && Api.Services is not null)
+        {
+            // Probe ahead + down: if there's a wall ahead or a ledge below, pick a new wander heading.
+            Vector3 from = e.Origin + new Vector3(0f, 0f, 64f);
+            TraceResult fwdTr = Api.Trace.Trace(from, Vector3.Zero, Vector3.Zero, from + fwd * 128f, MoveFilter.Normal, e);
+            if (fwdTr.Fraction != 1f)
+                ws.HeadIdleTime = -1337f;
+            else
+            {
+                TraceResult downTr = Api.Trace.Trace(fwdTr.EndPos, Vector3.Zero, Vector3.Zero,
+                    fwdTr.EndPos - new Vector3(0f, 0f, 256f), MoveFilter.Normal, e);
+                if (downTr.Fraction == 1f) ws.HeadIdleTime = -1337f;
+            }
+
+            if (ws.HeadIdleTime == -1337f)
+            {
+                ws.Moveto = e.Origin + Prandom.Vec() * 256f;
+                ws.HeadIdleTime = 0f;
+            }
+
+            ws.Moveto = ws.Moveto * 0.9f + ((e.Origin + fwd * 500f) + Prandom.Vec() * 400f) * 0.1f;
+            ws.Moveto = new Vector3(ws.Moveto.X, ws.Moveto.Y, e.Origin.Z + 64f);
+            WalkerMoveTo(e, ws, ws.Moveto, 0f);
+        }
+
+        if (ws.IdleTime < now)
+        {
+            // 50% (or no TSL_ROAM) -> stop and idle 1..6s; else roam-walk for 4..6s. (TSL_ROAM == TSF_NO_PATHBREAK
+            // spawnflag; the port has no roam spawnflag plumbed, so default to the stop branch like a plain walker.)
+            ws.IdleTime = now + 1f + Prandom.Float() * 5f;
+            ws.Moveto = e.Origin;
+            ws.AnimFlag = Gait.No;
+        }
+    }
+
+    // The QC switch(it.animflag) tail of tr_think (walker.qc:463): per-gait move + the raw per-think body yaw.
+    private void ApplyGait(Entity e, WalkerState ws, Vector3 fwd, float now)
+    {
+        // real_angle = vectoangles(steerto) - angles; turny/turnx are raw degrees applied ONCE per think
+        // (turret_think runs every frame with nextthink=time, so this is NOT frametime-scaled — matching Base).
+        Vector3 realAngle = (ws.Steerto != Vector3.Zero ? QMath.VecToAngles(ws.Steerto) : e.Angles) - e.Angles;
+        float vz = e.Velocity.Z;
+        float turny = 0f, turnx = 0f;
+
+        switch (ws.AnimFlag)
+        {
+            case Gait.No:
+                TurretMath.BrakeSimple(e, SpeedStop);
+                break;
+            case Gait.Turn:
+                turny = 20f;  // g_turrets_unit_walker_turn
+                TurretMath.BrakeSimple(e, SpeedStop);
+                break;
+            case Gait.Walk:
+                turny = TurnWalk;
+                TurretMath.MoveSimple(e, fwd, SpeedWalk, 0.6f);
+                break;
+            case Gait.Run:
+                turny = TurnRun;
+                TurretMath.MoveSimple(e, fwd, SpeedRun, 0.6f);
+                break;
+            case Gait.Jump:
+                vz += SpeedJump;
+                break;
+            case Gait.Land:
+                break;
+            case Gait.Melee:
+                TurretMath.BrakeSimple(e, SpeedStop);
+                break;
+            case Gait.Swim:
+                turny = TurnSwim;
+                turnx = TurnSwim;
+                e.Angles = new Vector3(
+                    e.Angles.X + QMath.Bound(-10f, TurretMath.ShortAngle(realAngle.X, e.Angles.X), 10f),
+                    e.Angles.Y, e.Angles.Z);
+                TurretMath.MoveSimple(e, fwd, SpeedSwim, 0.3f);
+                vz = e.Velocity.Z + MathF.Sin(now * 4f) * 8f;
+                break;
+            case Gait.Roam:
+                turny = TurnWalk;
+                TurretMath.MoveSimple(e, fwd, SpeedRoam, 0.5f);
+                break;
+        }
+
+        if (turny != 0f)
+        {
+            turny = QMath.Bound(-turny, TurretMath.ShortAngle(realAngle.Y, e.Angles.Y), turny);
+            e.Angles = new Vector3(e.Angles.X, e.Angles.Y + turny, e.Angles.Z);
+        }
+        if (turnx != 0f)
+        {
+            turnx = QMath.Bound(-turnx, TurretMath.ShortAngle(realAngle.X, e.Angles.X), turnx);
+            e.Angles = new Vector3(e.Angles.X + turnx, e.Angles.Y, e.Angles.Z);
         }
 
         e.Velocity = new Vector3(e.Velocity.X, e.Velocity.Y, vz);
@@ -242,8 +387,14 @@ public sealed class WalkerTurret : Turret
             launchSpeed: RocketSpeed, speedMax: RocketSpeed, speedGain: 1f, turnRate: RocketTurnRate,
             size: 6f, health: 25f, RocketDamage, RocketRadius, RocketForce, DeathTypes.TurretWalkRocket, ttl: 9f);
 
+        // QC: SND_TUR_WALKER_FIRE = W_Sound("hagar_fire") (all.inc:154), NOT the rocket-launch sound.
         if (Api.Services is not null)
-            Api.Sound.Play(turret, SoundChannel.Weapon, "weapons/rocket_fire.wav");
+            Api.Sound.Play(turret, SoundChannel.Weapon, "weapons/hagar_fire.wav");
+
+        // NOTE (cross-file): QC walker_fire_rocket emits te_explosion(org) as a launch flash (client-render),
+        // and rolls random()<0.01 to launch into the up-and-over walker_rocket_loop maneuver (also re-rolled
+        // 1%/think in walker_rocket_think). GuidedProjectile.WalkerRocketThink only models the straight steer-pull,
+        // so the loop->loop2->loop3 state machine + its 1% entry rolls belong in GuidedProjectile.cs (not this file).
     }
 
     // METHOD(WalkerTurretAttack, wr_think) — walker_weapon.qc: minigun bullet along the muzzle dir with spread

@@ -141,6 +141,15 @@ namespace XonoticGodot.Common.Gameplay
             if (TryF(fields, "atten", out float att)) e.Atten = att;
             if (fields.TryGetValue("noise", out string? ns)) e.Noise = ns;
 
+            // --- Wave-1 mover soundpack + ease keys (MapObjectsCommon: ApplyDoorSounds/ApplyPlatSounds read
+            //     .sounds; .sound1/.sound2 are the legacy per-mover move/stop sound overrides; .platmovetype is
+            //     parsed by MapMover.SetPlatMoveType at the path_corner/train/plat spawnfuncs). Promoted here so
+            //     the soundpack helpers + set_platmovetype have their raw map input. ---
+            if (TryF(fields, "sounds", out float snds)) e.Sounds = (int)snds;
+            if (fields.TryGetValue("sound1", out string? s1)) e.Sound1 = s1;
+            if (fields.TryGetValue("sound2", out string? s2)) e.Sound2 = s2;
+            if (fields.TryGetValue("platmovetype", out string? pmt)) e.Platmovetype = pmt;
+
             // --- T59 long-tail map-object keys (the 7 rare entities; not promoted by GameWorld's fixed key set) ---
             // dynlight (light_lev/color/dtagname/style), the generic .target2-4/.delay/.message2/.phase movers read,
             // misc_follow (.jointtype), func_fourier/voicescript (.netname), func_fourier crush interval (.dmgtime),

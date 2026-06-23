@@ -9,7 +9,7 @@
 //   LOOPED_ON  (1) — starts playing on spawn, loops continuously
 //   LOOPED_OFF (2) — starts silent, first trigger starts the loop (toggleable)
 //   GLOBAL     (4) — sets attenuation to ATTEN_NONE (heard everywhere, no distance falloff)
-//   ACTIVATOR  (8) — play only to the triggering player (deferred: plays to all for now)
+//   ACTIVATOR  (8) — play only to the triggering REAL client (gated; plays to all for now — no MSG_ONE)
 //
 // Behavior modes:
 //   1. LOOPED_ON without targetname: ambient sound — plays immediately and forever (ambientsound equivalent)
@@ -36,12 +36,14 @@ public static class TargetSpeaker
     private const int SpeakerGlobal = 1 << 2;     // BIT(2) — no distance falloff (ATTEN_NONE)
     private const int SpeakerActivator = 1 << 3;  // BIT(3) — per-client sound (MSG_ONE; deferred)
 
-    // The channel target_speaker uses for its sounds. QC uses CH_TRIGGER_SINGLE which is a single-channel
-    // replacement key — the same entity+channel pair replaces any previous sound on that key. TriggerAuto
-    // (-3) is the auto-channel variant; but for looping toggle behavior we need a SINGLE channel so Stop()
-    // can target the exact (entity, channel) pair. We use Body (4) as it is unlikely to collide with other
-    // map object sounds on the same entity, and it gives us single-channel replacement semantics.
-    private const SoundChannel SpeakerChannel = SoundChannel.Body;
+    // QC channel mapping (common/sounds/sound.qh):
+    //   CH_TRIGGER_SINGLE = 3  -> SoundChannel.Item  — single-channel replacement key; the looped/toggle and
+    //                                                  the non-activator one-shot use this so Stop() can target
+    //                                                  the exact (entity, channel) pair and a re-play replaces.
+    //   CH_TRIGGER        = -3 -> SoundChannel.TriggerAuto — the STACKING auto channel; QC's
+    //                                                  target_speaker_use_activator (soundto MSG_ONE) emits on it.
+    private const SoundChannel SpeakerChannel = SoundChannel.Item;        // CH_TRIGGER_SINGLE
+    private const SoundChannel SpeakerActivatorChannel = SoundChannel.TriggerAuto; // CH_TRIGGER
 
     /// <summary><c>spawnfunc(target_speaker)</c> — ambient and triggered sound emitter.</summary>
     public static void SpeakerSetup(Entity this_)
@@ -79,10 +81,19 @@ public static class TargetSpeaker
             return;
         }
 
+        bool isActivator = (this_.SpawnFlags & SpeakerActivator) != 0;
+
         // --- targetname present: triggerable speaker ---
         if (!string.IsNullOrEmpty(this_.TargetName))
         {
-            if (loopedOn)
+            if (isActivator)
+            {
+                // ACTIVATOR (BIT3): each trigger plays the sound ONLY to the triggering real client.
+                // QC checks this flag FIRST (before the looped flags), so an ACTIVATOR speaker is always
+                // a per-activator one-shot regardless of any looped flag also being set.
+                this_.Use = SpeakerUseActivator;
+            }
+            else if (loopedOn)
             {
                 // Starts playing immediately; can be toggled OFF when triggered.
                 StartLoop(this_);
@@ -150,10 +161,74 @@ public static class TargetSpeaker
         if (self.Active != MapMover.ActiveActive)
             return;
 
-        if (Api.Services is null || string.IsNullOrEmpty(self.Noise))
+        if (Api.Services is null)
             return;
 
-        Api.Sound.Play(self, SpeakerChannel, self.Noise, self.Volume, self.Atten, loop: false);
+        string snd = ResolveNoise(self.Noise);
+        if (string.IsNullOrEmpty(snd))
+            return;
+
+        Api.Sound.Play(self, SpeakerChannel, snd, self.Volume, self.Atten, loop: false);
+    }
+
+    /// <summary>
+    /// ACTIVATOR (BIT3): play the sound on the stacking CH_TRIGGER channel for the triggering player.
+    /// QC <c>target_speaker_use_activator</c> gates on <c>IS_REAL_CLIENT(actor)</c> and emits via
+    /// <c>soundto(MSG_ONE, ...)</c> so only that one human hears it. The port has no MSG_ONE per-client
+    /// sound facade, so we emit to all (documented divergence) but still honour the real-client gate so a
+    /// bot/world activator produces nothing — matching Base's early-out.
+    /// </summary>
+    private static void SpeakerUseActivator(Entity self, Entity activator)
+    {
+        if (self.Active != MapMover.ActiveActive)
+            return;
+
+        // QC: if (!IS_REAL_CLIENT(actor)) return;
+        if (!IsRealClient(activator))
+            return;
+
+        if (Api.Services is null)
+            return;
+
+        string snd = ResolveNoise(self.Noise);
+        if (string.IsNullOrEmpty(snd))
+            return;
+
+        // TODO(cross-file): no MSG_ONE / per-client sound facade — this plays to ALL clients, not just the
+        // triggering activator. Needs an ISoundService.PlayTo(client, ...) seam to be byte-faithful.
+        Api.Sound.Play(self, SpeakerActivatorChannel, snd, self.Volume, self.Atten, loop: false);
+    }
+
+    // ====================================================================
+    //  Helpers
+    // ====================================================================
+
+    /// <summary>
+    /// QC <c>IS_REAL_CLIENT(actor)</c>: a connected, non-bot (human) client. World/projectile/bot activators
+    /// fail this and produce no per-activator sound.
+    /// </summary>
+    private static bool IsRealClient(Entity actor)
+        => actor is not null
+           && (actor.Flags & EntFlags.Client) != 0
+           && !(actor is Player p && p.IsBot);
+
+    /// <summary>
+    /// Resolve the <c>.noise</c> sample. A leading <c>*</c> selects a per-player voice-message sample
+    /// (QC <c>GetVoiceMessageSampleField</c> + <c>argv(1)</c> random count). The port has no player
+    /// voice-sample DB, so a <c>*</c>-name resolves to silence (matching QC's <c>SND(Null)</c> not-found
+    /// fallback) rather than trying to play a literal "*name".
+    /// </summary>
+    private static string ResolveNoise(string noise)
+    {
+        if (string.IsNullOrEmpty(noise))
+            return string.Empty;
+
+        // TODO(cross-file): *-prefixed per-player voice samples (GetVoiceMessageSampleField + argv(1) random
+        // count) require a player sound-sample DB that the port doesn't expose; resolve to silence for now.
+        if (noise[0] == '*')
+            return string.Empty;
+
+        return noise;
     }
 
     // ====================================================================
@@ -163,10 +238,14 @@ public static class TargetSpeaker
     /// <summary>Start (or confirm) the looping sound on this speaker entity.</summary>
     private static void StartLoop(Entity self)
     {
-        if (Api.Services is null || string.IsNullOrEmpty(self.Noise))
+        if (Api.Services is null)
             return;
 
-        Api.Sound.Play(self, SpeakerChannel, self.Noise, self.Volume, self.Atten, loop: true);
+        string snd = ResolveNoise(self.Noise);
+        if (string.IsNullOrEmpty(snd))
+            return;
+
+        Api.Sound.Play(self, SpeakerChannel, snd, self.Volume, self.Atten, loop: true);
     }
 
     /// <summary>Stop the looping sound on this speaker entity.</summary>

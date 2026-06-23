@@ -22,10 +22,11 @@ namespace XonoticGodot.Common.Gameplay;
 /// and takes more. Scores are read via <see cref="GameScores"/> (SP_SCORE).
 ///
 /// Recompute triggers: QC fires on ClientDisconnect / PutClientInServer / MakePlayerObserver /
-/// AddedPlayerScore(SP_SCORE). The port re-runs on PlayerSpawn (≈ PutClientInServer) and PlayerDies (the
-/// score-change events that exist as hooks here) — the same set of moments the handicap can meaningfully
-/// change. (The exact AddedPlayerScore-per-point cadence is a finer-grained scoring hook the port doesn't
-/// expose yet; the PlayerSpawn/PlayerDies recompute is the faithful coarse-grained equivalent.)
+/// AddedPlayerScore(SP_SCORE). The port re-runs on PlayerSpawn (≈ PutClientInServer) and PlayerDies (a kill
+/// is a death, so frag scoring is covered). The other three Base triggers have no hook chain in the port yet:
+/// ClientDisconnect / MakePlayerObserver (roster shrink) and AddedPlayerScore (every non-kill SP_SCORE delta —
+/// caps, objective points, KH/Dom/CTF scoring). Until MutatorHooks gains those chains + live call sites, the
+/// mean can stay stale after a leave/observe or a non-death score change until the next spawn/death.
 /// </summary>
 [Mutator]
 public sealed class DynamicHandicapMutator : MutatorBase
@@ -38,9 +39,18 @@ public sealed class DynamicHandicapMutator : MutatorBase
     public DynamicHandicapMutator() => NetName = "dynamic_handicap";
 
     // QC: REGISTER_MUTATOR(dynamic_handicap, autocvar_g_dynamic_handicap && !HANDICAP_DISABLED());
-    // HANDICAP_DISABLED() (a sv_cheats/forced-handicap-lock gate) has no headless equivalent → treat as enabled.
+    // HANDICAP_DISABLED() (server/handicap.qh:57) == (IS_GAMETYPE(CTS) || IS_GAMETYPE(RACE)) — in CTS/RACE the
+    // whole handicap subsystem (and so this mutator) is hard-disabled. Detect the active gametype via its select
+    // cvar (g_cts / g_race), the same pattern PowerupsMutator uses for its CTS guard.
     public override bool IsEnabled =>
-        Api.Services is not null && Api.Cvars.GetFloat("g_dynamic_handicap") != 0f;
+        Api.Services is not null
+        && Api.Cvars.GetFloat("g_dynamic_handicap") != 0f
+        && !HandicapDisabled;
+
+    // QC HANDICAP_DISABLED(): CTS or RACE gametype.
+    private static bool HandicapDisabled =>
+        Api.Services is not null
+        && (Api.Cvars.GetFloat("g_cts") != 0f || Api.Cvars.GetFloat("g_race") != 0f);
 
     private HookHandler<MutatorHooks.PlayerSpawnArgs>? _onSpawn;
     private HookHandler<MutatorHooks.PlayerDiesArgs>? _onDies;

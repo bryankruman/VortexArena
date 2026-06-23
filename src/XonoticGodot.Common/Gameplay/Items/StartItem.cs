@@ -38,6 +38,19 @@ public static class StartItem
 
     private static float GameStartTime => GameStartTimeProvider?.Invoke() ?? 0f;
 
+    /// <summary>
+    /// Host seam: true when the loaded map is a Quake3/Quake-Live-compat map (QC <c>q3compat</c>, set from the
+    /// presence of a <c>.arena</c>/<c>.defi</c> file at world.qc:964-965). On such maps the mapper-placed item
+    /// origin sits in the MIDDLE of the bbox (Q3 "radius" 15) rather than at the bottom as in Xonotic, so the
+    /// permanent-item spawn lowers the origin by <c>-15 - mins.z</c> (items.qc:1133). The port has no live
+    /// per-map q3compat flag (CompatRemaps.cs:17 documents this port-wide gap), so this defaults to <c>false</c>
+    /// (no offset) — matching the rest of the port's Q3 handling, which never applies ARENA/DEFI-only behavior.
+    /// A host that gains real q3compat detection can wire this to activate the faithful offset below.
+    /// </summary>
+    public static System.Func<bool>? Q3CompatProvider;
+
+    private static bool Q3Compat => Q3CompatProvider?.Invoke() ?? false;
+
     // =====================================================================================
     //  StartItem(this, def) — the spawn driver (items.qc:1007)
     // =====================================================================================
@@ -214,6 +227,20 @@ public static class StartItem
             item.ItemRespawnTime = def.RespawnTime;
         if (item.ItemRespawnTimeJitter == 0f)
             item.ItemRespawnTimeJitter = def.RespawnTimeJitter;
+
+        // QC (items.qc:1122-1135): on a Quake3-compat map the mapper-placed origin is the MIDDLE of the bbox
+        // (Q3 "radius" 15), but Xonotic anchors at the bottom — so lower the origin by (-15 - mins.z) and re-link.
+        // Only the mapper-placed permanent item is shifted (loot keeps its tossed origin). Dormant by default:
+        // the port has no live per-map q3compat flag (see Q3CompatProvider), so this no-ops on native maps. (The
+        // QC `team` crc16 fallback in the same block is the team-item path, which the port wires separately.)
+        if (Q3Compat)
+        {
+            var o = item.Origin;
+            o.Z += -15f - def.Mins.Z;
+            item.Origin = o;
+            if (Api.Services is not null)
+                Api.Entities.SetOrigin(item, item.Origin);
+        }
 
         // QC: spawnflags&1 => noalign (suspended). The port's Entity.NoAlign is a bool (set by the map "noalign"
         // key); QC's float noalign>0 (suspended) maps to true here, <=0 (drop to floor) maps to false. (The QC

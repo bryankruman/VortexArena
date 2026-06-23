@@ -72,10 +72,30 @@ public sealed class OffhandBlasterMutator : MutatorBase
         if (Weapons.ByName("blaster") is not Blaster blaster) return;
 
         // Fire a Blaster primary shot from the player; the offhand uses a dedicated slot so it never
-        // disturbs the held weapon's state. (QC W_Blaster_Attack with the offhand laser parameters.)
+        // disturbs the held weapon's state. QC OffhandBlaster.offhand_think calls makevectors(actor.v_angle)
+        // then W_Blaster_Attack(actor, weaponentities[1]); WrThink aims from the view angles and fires on the
+        // dedicated high slot, matching that.
         blaster.WrThink(player, new WeaponSlot(MutatorConstants.MaxWeaponSlots), FireMode.Primary);
 
+        // QC: actor.jump_interval = time + WEP_CVAR_PRI(WEP_BLASTER, refire) * W_WeaponRateFactor(actor);
         float refire = blaster.Primary.Refire > 0f ? blaster.Primary.Refire : 0.7f;
-        player.OffhandNextThink = now + refire;
+        player.OffhandNextThink = now + refire * WeaponRateFactor(player);
+    }
+
+    /// <summary>
+    /// Port of <c>W_WeaponRateFactor(entity actor)</c> (common/weapons/weapon.qh): the base
+    /// <c>1/g_weaponratefactor</c> with the <c>WeaponRateFactor</c> mutator hook applied for the actor (so a
+    /// Speed powerup/buff scales the offhand refire just like an in-hand shot). Mirrors
+    /// WeaponFireGate.WeaponRateFactor, which this mutator can't reach (protected on the weapon hierarchy).
+    /// </summary>
+    private static float WeaponRateFactor(Entity actor)
+    {
+        if (Api.Services is null) return 1f;
+        float f = Api.Cvars.GetFloat("g_weaponratefactor");
+        f = f > 0f ? 1f / f : 1f;
+        // QC: MUTATOR_CALLHOOK(WeaponRateFactor, f, actor); f = M_ARGV(0, float);
+        var rateArgs = new MutatorHooks.WeaponRateFactorArgs(f, actor);
+        MutatorHooks.WeaponRateFactor.Call(ref rateArgs);
+        return rateArgs.Factor;
     }
 }

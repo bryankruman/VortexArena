@@ -24,8 +24,30 @@ public sealed class BotNavigation
     private const int MaxGoals = 32;        // QC goalstack depth (goalcurrent + goalstack01..31)
     private const float GoalReachedXY = 24f; // horizontal "touched the waypoint" radius
     private const float GoalReachedZ = 48f;  // vertical tolerance
-    public const float StepHeight = 34f;    // QC stepheightvec.z — walkable step
-    public const float JumpStepHeight = 48f; // QC jumpstepheightvec.z — reachable with a jump (brain danger check reads it)
+    public const float StepHeight = 34f;    // QC stepheightvec.z default (sv_stepheight) — walkable step
+    public const float JumpStepHeight = 48f; // QC jumpstepheightvec.z default — reachable with a jump (brain danger check reads it)
+
+    // ---- live step/jump-reach heights (QC bot_calculate_stepheightvec, bot.qc:615-621) ----
+    // QC derives these from sv_stepheight/sv_jumpvelocity/sv_gravity at init and on cvar change, so a map or
+    // server that retunes the physics cvars gets matching bot jump reach. The const fields above stay as the
+    // stock defaults (they're the public symbols other files reference); Steer reads these live properties.
+    //   stepheightvec.z   = sv_stepheight
+    //   jumpheight_vec.z  = sv_jumpvelocity^2 / (2 * sv_gravity)        (apparent jump apex)
+    //   jumpstepheightvec.z = stepheight + jumpheight_vec.z * 0.85       (reduced "easy jump" reach)
+
+    /// <summary>QC stepheightvec.z — sv_stepheight (walkable step), read live so non-default physics adjusts it.</summary>
+    private static float StepHeightLive => Cvars.FloatOr("sv_stepheight", StepHeight);
+
+    /// <summary>QC jumpheight_vec.z — the apparent jump apex sv_jumpvelocity^2/(2*sv_gravity).</summary>
+    private static float JumpHeightApex
+    {
+        get
+        {
+            float jv = Cvars.JumpVelocity;
+            float g = Cvars.Gravity;
+            return g > 0f ? (jv * jv) / (2f * g) : 0f;
+        }
+    }
 
     /// <summary>One entry on the goal stack: a world point plus the waypoint flags that govern how to
     /// traverse it (jump/crouch/teleport/ladder) and the source waypoint (for box-volume reach tests).</summary>
@@ -248,12 +270,12 @@ public sealed class BotNavigation
         if (trFlat.Fraction < 1f && trFlat.PlaneNormal.Z < 0.7f)
         {
             // Wall ahead. Can we walk up it as a step?
-            var step = new Vector3(0f, 0f, StepHeight);
+            var step = new Vector3(0f, 0f, StepHeightLive);
             var trStep = Trace(bot, bot.Origin + step, ahead + step);
             if (trStep.Fraction < trFlat.Fraction + 0.01f && trStep.PlaneNormal.Z < 0.7f)
             {
-                // Still blocked at step height: try a full jump's height.
-                var jh = new Vector3(0f, 0f, JumpStepHeight);
+                // Still blocked at step height: try a full jump's height (QC stepheight + jumpheight_vec on ground).
+                var jh = new Vector3(0f, 0f, StepHeightLive + JumpHeightApex);
                 var trJump = Trace(bot, bot.Origin + jh, ahead + jh);
                 if (trJump.Fraction > trStep.Fraction && onGround)
                     WantJump = true;
@@ -261,7 +283,7 @@ public sealed class BotNavigation
         }
 
         // ---- goal above us -> jump up onto it (unless on a ladder, where we just climb) ----
-        if (!onLadder && onGround && diff.Z > StepHeight && flat.Length() < Maxs.X * 2f)
+        if (!onLadder && onGround && diff.Z > StepHeightLive && flat.Length() < Maxs.X * 2f)
             WantJump = true;
 
         // ---- dangerous edge / fall ahead -> brake (QC do_break, simplified) ----

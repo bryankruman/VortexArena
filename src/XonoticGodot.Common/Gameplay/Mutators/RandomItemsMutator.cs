@@ -15,23 +15,23 @@ namespace XonoticGodot.Common.Gameplay;
 ///
 /// Ported here:
 ///  - the enable gate + the loot cvars (<c>g_random_loot_min/max/time/spread</c>);
-///  - the item-type probability machinery scaffolding (<see cref="RandomItemType"/> +
+///  - the full item-type probability machinery (<see cref="RandomItemType"/> +
 ///    <see cref="GetRandomItemClassName"/> / <see cref="GetRandomVanillaItemClassName"/>): a weighted pick over
 ///    the configured per-type probability cvars, then a per-item pick within the chosen type — faithfully mirroring
-///    RandomItems_GetRandomVanillaItemClassName, restricted to the WEAPON type (the only item class the port's
-///    registry currently enumerates; health/armor/resource/powerup item registries aren't enumerable here yet);
+///    RandomItems_GetRandomVanillaItemClassName over ALL five types (health/armor/resource/weapon/powerup), each
+///    resolved against the live <see cref="Items"/> / <see cref="Weapons"/> registries using the canonical
+///    spawnfunc classnames (<see cref="ItemSpawnFuncs.CanonicalSpawnFunc"/>);
 ///  - the PlayerDies loot drop (<c>g_random_loot</c>): spawn floor(min + random()*max) loot items at the corpse,
-///    each a random classname launched on a random spread — using the same generic item-entity drop idiom as the
-///    Overkill loot drop.
+///    each a random classname launched on a random spread, as a real touch-pickupable loot pickup via
+///    <see cref="StartItem.SpawnLoot"/> (the same path the thrown-weapon / Overkill drops use).
 ///
-/// BLOCKER (documented partial — map item-entity pipeline): the FilterItem / ItemTouched hooks
-/// (RandomItems_ReplaceMapItem) and the per-respawn re-randomization need a map item-entity spawn pipeline
-/// (Item_CopyFields / Item_Initialise / Item_ScheduleRespawn), which does not exist in the port — MapObjectsRegistry
-/// registers no <c>item_*</c>/<c>weapon_*</c> spawnfuncs and nothing spawns world item entities from the map. So
-/// the MAP-replacement half is inert (no items spawn to replace); it is flagged here and in crossTaskNeeds and
-/// reactivates once an item pipeline lands. The LOOT half works against the generic item-entity drop, so it is
-/// the live, faithful part. The class-name selection scaffolding is fully ported so both halves get correct
-/// classnames the day the pipeline exists.
+/// BLOCKER (documented partial — map item-entity replacement): the FilterItem / ItemTouched hooks
+/// (RandomItems_ReplaceMapItem) and the per-respawn re-randomization need an entity-level FilterItem mutator-hook
+/// chain + an ItemTouch hook chain, neither of which exists in the port yet (the only item filter is the
+/// definition-level FilterItemDefinition, which cannot swap one classname for another, and ItemPickupRules.ItemTouch
+/// has no mutator dispatch). So the MAP-replacement half (<c>g_random_items</c>) is still inert; it is flagged in
+/// the cross-task TODOs. The LOOT half (<c>g_random_loot</c>) is fully live + faithful. The class-name selection
+/// engine is fully ported, so the map half gets correct classnames the day those hook seams land.
 /// </summary>
 [Mutator]
 public sealed class RandomItemsMutator : MutatorBase
@@ -119,8 +119,10 @@ public sealed class RandomItemsMutator : MutatorBase
 
     /// <summary>
     /// Port of <c>RandomItems_SpawnLootItem(position)</c>: pick a random loot classname and spawn it at the
-    /// position with a random spread velocity, scheduled to expire after <see cref="LootTime"/>. Uses the generic
-    /// item-entity drop (the same idiom as the Overkill loot drop) since the full Item_Initialise pipeline is absent.
+    /// position with a random spread velocity, as a real touch-pickupable loot item that despawns after
+    /// <see cref="LootTime"/> seconds. Resolves the chosen classname to its <see cref="Pickup"/> def and spawns it
+    /// through <see cref="StartItem.SpawnLoot"/> (QC <c>Item_Initialise</c> with lifetime &gt;= 0) — the same loot
+    /// path the thrown-weapon / Overkill drops use, so the dropped item is MOVETYPE_TOSS and collectable on touch.
     /// </summary>
     private void SpawnLootItem(Vector3 position)
     {
@@ -128,22 +130,42 @@ public sealed class RandomItemsMutator : MutatorBase
         string className = GetRandomItemClassName("random_loot");
         if (string.IsNullOrEmpty(className)) return;
 
+        Pickup? def = ResolvePickup(className);
+        if (def is null) return; // QC SPAWNFUNC_BODY else-branch: nothing to spawn.
+
         // QC: spread.z = spread/2; spread += randomvec() * spread.
         Vector3 spread = new(0f, 0f, LootSpread / 2f);
         spread += Prandom.Vec() * LootSpread;
 
         Entity item = Api.Entities.Spawn();
-        item.ClassName = className;
-        item.NetName = ClassNameToItemName(className);
-        if (Api.Services is not null) Api.Entities.SetOrigin(item, position);
-        else item.Origin = position;
+        Api.Entities.SetOrigin(item, position);
         item.Velocity = spread;
-        item.MoveType = MoveType.Toss;
-        item.Solid = Solid.Trigger;
-        item.Flags |= EntFlags.Item;
-        // QC item.lifetime = autocvar_g_random_loot_time — schedule expiry (the item pipeline owns the real timer).
-        item.NextThink = Api.Clock.Time + LootTime;
-        item.Think = self => Api.Entities.Remove(self);
+
+        // QC item.lifetime = autocvar_g_random_loot_time; Item_Initialise (loot path: MOVETYPE_TOSS, touch-pickup,
+        // despawn after lifetime). SpawnLoot owns the toss/despawn/touch; on a failed spawn it removes the edict.
+        StartItem.SpawnLoot(item, def, LootTime);
+    }
+
+    /// <summary>
+    /// Resolve a random-items classname (QC <c>m_canonical_spawnfunc</c>: <c>weapon_*</c> or <c>item_*</c>) back to
+    /// its <see cref="Pickup"/> def for <see cref="StartItem.SpawnLoot"/>. Weapon classnames map through the synthetic
+    /// per-weapon <see cref="WeaponPickup"/> (<see cref="ItemSpawnFuncs.PickupFor"/>); item classnames are matched by
+    /// scanning the live <see cref="Items"/> registry for the def whose canonical spawnfunc equals the classname.
+    /// </summary>
+    private static Pickup? ResolvePickup(string className)
+    {
+        if (className.StartsWith("weapon_", StringComparison.Ordinal))
+        {
+            Weapon? w = Weapons.ByName(className["weapon_".Length..]);
+            return w is null ? null : ItemSpawnFuncs.PickupFor(w);
+        }
+        foreach (Pickup def in Items.All)
+        {
+            if (def.IsWeaponPickup) continue;
+            if (ItemSpawnFuncs.CanonicalSpawnFunc(def) == className)
+                return def;
+        }
+        return null;
     }
 
     /// <summary>
@@ -158,11 +180,9 @@ public sealed class RandomItemsMutator : MutatorBase
     /// <summary>
     /// Port of <c>RandomItems_GetRandomVanillaItemClassName(prefix, types)</c>: weighted-pick an item TYPE from the
     /// configured per-type probability cvars (<c>g_{prefix}_{type}_probability</c>), then pick a concrete classname
-    /// within that type; on an empty type, drop it from the mask and retry — matching the QC loop.
-    ///
-    /// NOTE: only the WEAPON type resolves to concrete classnames here (the port's weapon registry is enumerable;
-    /// the health/armor/resource/powerup item registries are not exposed to a mutator yet). The probability machinery
-    /// for all five types is ported, so the day those registries are enumerable this fills in for free.
+    /// within that type; on an empty type, drop it from the mask and retry — matching the QC loop. All five types
+    /// (health/armor/resource/weapon/powerup) resolve against the live <see cref="Items"/> / <see cref="Weapons"/>
+    /// registries, keyed by the canonical spawnfunc classname.
     /// </summary>
     public string GetRandomVanillaItemClassName(string prefix, RandomItemType types)
     {
@@ -181,24 +201,9 @@ public sealed class RandomItemsMutator : MutatorBase
                 if (Prandom.Float() * total <= prob) chosenType = t;
             }
 
-            string className = "";
-            if (chosenType == RandomItemType.Weapon)
-            {
-                // QC: weighted pick over the non-mutatorblocked weapons by g_{prefix}_{spawnfunc}_probability.
-                Weapon? chosenWep = null;
-                float wtotal = 0f;
-                foreach (Weapon w in Weapons.All)
-                {
-                    if ((w.SpawnFlags & WeaponFlags.MutatorBlocked) != 0) continue;
-                    float prob = Api.Services is null ? 0f : Api.Cvars.GetFloat($"g_{prefix}_{w.NetName}_probability");
-                    if (prob <= 0f) continue;
-                    wtotal += prob;
-                    if (Prandom.Float() * wtotal <= prob) chosenWep = w;
-                }
-                if (chosenWep is not null) className = "weapon_" + chosenWep.NetName;
-            }
-            // else: health/armor/resource/powerup — the item registry isn't enumerable from a mutator yet (NOTE);
-            // those types resolve to "" and are dropped from the mask below, exactly as an empty type would in QC.
+            string className = chosenType == RandomItemType.Weapon
+                ? GetRandomWeaponClassName(prefix)
+                : GetRandomItemClassNameWithProperty(prefix, chosenType);
 
             if (className != "") return className;
             types &= ~chosenType;            // QC: types &= ~item_type;
@@ -206,6 +211,64 @@ public sealed class RandomItemsMutator : MutatorBase
         }
         return "";
     }
+
+    /// <summary>
+    /// Port of the WEAPON case of RandomItems_GetRandomVanillaItemClassName: weighted pick over the non-mutatorblocked
+    /// weapons by <c>g_{prefix}_{m_canonical_spawnfunc}_probability</c> (the canonical spawnfunc is <c>weapon_{netname}</c>),
+    /// returning that canonical classname.
+    /// </summary>
+    private string GetRandomWeaponClassName(string prefix)
+    {
+        if (Api.Services is null) return "";
+        string chosen = "";
+        float total = 0f;
+        foreach (Weapon w in Weapons.All)
+        {
+            if ((w.SpawnFlags & WeaponFlags.MutatorBlocked) != 0) continue;
+            string spawnFunc = "weapon_" + w.NetName; // QC it.m_canonical_spawnfunc
+            float prob = Api.Cvars.GetFloat($"g_{prefix}_{spawnFunc}_probability");
+            if (prob <= 0f) continue;
+            total += prob;
+            if (Prandom.Float() * total <= prob) chosen = spawnFunc;
+        }
+        return chosen;
+    }
+
+    /// <summary>
+    /// Port of <c>RandomItems_GetRandomItemClassNameWithProperty(prefix, item_property)</c>: weighted pick over the
+    /// <see cref="Items"/> registry restricted to the def matching <paramref name="type"/> (health/armor/resource/
+    /// powerup), normal-spawnflag and allowed (QC <c>Item_IsDefinitionAllowed</c>), keyed by
+    /// <c>g_{prefix}_{m_canonical_spawnfunc}_probability</c>, returning that canonical classname.
+    /// </summary>
+    private string GetRandomItemClassNameWithProperty(string prefix, RandomItemType type)
+    {
+        if (Api.Services is null) return "";
+        string chosen = "";
+        float total = 0f;
+        foreach (Pickup def in Items.All)
+        {
+            if (!MatchesType(def, type)) continue;
+            // QC: (it.spawnflags & ITEM_FLAG_NORMAL) && Item_IsDefinitionAllowed(it).
+            if ((def.ItemDef.SpawnFlags & GameItemSpawnFlag.Normal) == 0) continue;
+            if (!def.ItemDef.IsAllowed) continue;
+            string spawnFunc = ItemSpawnFuncs.CanonicalSpawnFunc(def); // QC it.m_canonical_spawnfunc
+            float prob = Api.Cvars.GetFloat($"g_{prefix}_{spawnFunc}_probability");
+            if (prob <= 0f) continue;
+            total += prob;
+            if (Prandom.Float() * total <= prob) chosen = spawnFunc;
+        }
+        return chosen;
+    }
+
+    // QC the instanceOf* predicate selected per type in the WithProperty switch (Health/Armor/Ammo/Powerup).
+    private static bool MatchesType(Pickup def, RandomItemType type) => type switch
+    {
+        RandomItemType.Health => def.IsHealth,
+        RandomItemType.Armor => def.IsArmor,
+        RandomItemType.Resource => def.IsAmmo,
+        RandomItemType.Powerup => def.IsPowerup && !def.IsWeaponPickup,
+        _ => false,
+    };
 
     /// <summary>QC <c>sprintf("g_%s_%s_probability", prefix, type)</c> — the per-type probability cvar name.</summary>
     private static string ProbCvar(string prefix, RandomItemType t) => t switch
@@ -225,13 +288,5 @@ public sealed class RandomItemsMutator : MutatorBase
         if ((mask & RandomItemType.Resource) != 0) yield return RandomItemType.Resource;
         if ((mask & RandomItemType.Weapon) != 0) yield return RandomItemType.Weapon;
         if ((mask & RandomItemType.Powerup) != 0) yield return RandomItemType.Powerup;
-    }
-
-    /// <summary>Strip the "weapon_"/"item_" classname prefix to the bare item NetName (best-effort, for networking).</summary>
-    private static string ClassNameToItemName(string className)
-    {
-        if (className.StartsWith("weapon_", StringComparison.Ordinal)) return className["weapon_".Length..];
-        if (className.StartsWith("item_", StringComparison.Ordinal)) return className["item_".Length..];
-        return className;
     }
 }

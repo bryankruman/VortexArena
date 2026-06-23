@@ -18,6 +18,7 @@
 
 using System.Numerics;
 using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Math;
 using XonoticGodot.Common.Services;
 
 namespace XonoticGodot.Common.Framework
@@ -142,12 +143,57 @@ namespace XonoticGodot.Common.Gameplay
         }
 
         /// <summary>
-        /// Server-side reduction of <c>attach_sameorigin</c> (util.qc:2057): issue the parent link. The QC tag-
-        /// relative origin/angle BAKE (gettaginfo/gettagindex + AnglesTransform basis change) is a render-side
-        /// attachment detail; the server contract is the attachment itself, so the bake is a follow-up.
+        /// Port of <c>attach_sameorigin</c> (util.qc:2057-2095): bake the entity's origin/angles into the parent
+        /// tag's local space so that, once attached, it keeps its authored world pose. Needs the tag world-pose
+        /// from the model service (QC's gettaginfo/gettagindex); when no model service is present (headless tests)
+        /// or the tag can't be resolved, fall back to the bare parent link — the server-meaningful contract.
         /// </summary>
         private static void AttachSameOrigin(Entity e, Entity to, string tag)
-            => SetAttachment(e, to, tag);
+        {
+            tag ??= "";
+
+            // QC: org = e.origin - gettaginfo(to, gettagindex(to, tag));  — v_forward/right/up = the tag basis.
+            if (Api.Services is null ||
+                !Api.Models.TryGetTag(to, tag, out Vector3 tagOrigin, out Vector3 vForward, out Vector3 vRight, out Vector3 vUp))
+            {
+                SetAttachment(e, to, tag);
+                return;
+            }
+
+            Vector3 org = e.Origin - tagOrigin;
+
+            // QC: tagscale = vlen(v_forward) ** -2;  t_forward = v_forward*tagscale; t_left = v_right*-tagscale; t_up = v_up*tagscale;
+            float flen = vForward.Length();
+            float tagscale = flen != 0f ? 1f / (flen * flen) : 0f; // undo a scale on the tag
+            Vector3 tForward = vForward * tagscale;
+            Vector3 tLeft = vRight * -tagscale;
+            Vector3 tUp = vUp * tagscale;
+
+            // QC: e.origin = (org·t_forward, org·t_left, org·t_up)  — tag-local origin.
+            e.Origin = new Vector3(
+                QMath.Dot(org, tForward),
+                QMath.Dot(org, tLeft),
+                QMath.Dot(org, tUp));
+
+            // QC: e.angles = AnglesTransform_FromAngles(e.angles); fixedmakevectors(e.angles);
+            // fixedmakevectors == makevectors with pitch negated (POSITIVE_PITCH_IS_DOWN); the matching pitch flip
+            // is undone by FixedVecToAngles2 below, so the From/To*Angles round trip stays the identity convention.
+            Vector3 fixedAngles = new Vector3(-e.Angles.X, e.Angles.Y, e.Angles.Z);
+            QMath.AngleVectors(fixedAngles, out Vector3 eFwd, out _, out Vector3 eUp);
+
+            Vector3 eForward = new Vector3(
+                QMath.Dot(eFwd, tForward),
+                QMath.Dot(eFwd, tLeft),
+                QMath.Dot(eFwd, tUp));
+            Vector3 eUpOut = new Vector3(
+                QMath.Dot(eUp, tForward),
+                QMath.Dot(eUp, tLeft),
+                QMath.Dot(eUp, tUp));
+
+            e.Angles = QMath.FixedVecToAngles2(eForward, eUpOut); // QC: e.angles = fixedvectoangles2(e_forward, e_up);
+
+            SetAttachment(e, to, tag);  // QC: setattachment(e, to, tag); setorigin(e, e.origin);
+        }
 
         /// <summary>setattachment through the model facade when present (headless tests have no model service).</summary>
         private static void SetAttachment(Entity e, Entity to, string tag)

@@ -39,9 +39,11 @@ public sealed class MachinegunTurret : Turret
     // QC machinegun scoring biases (turrets.cfg): range 0.25, same 0.25, angle 0.5, player 1, missile 0.
     private const float RangeBias = 0.25f, SameBias = 0.25f, AngleBias = 0.5f, PlayerBias = 1f, MissileBias = 0f;
 
-    // QC machinegun.qc tr_setup: players, range-limited, team-checked, angle-limited. Hitscan, lead aim.
+    // QC machinegun.qc tr_setup: target_select_flags = PLAYERS | RANGELIMITS | TEAMCHECK. Note Base does NOT
+    // set TFL_TARGETSELECT_ANGLELIMITS — the machinegun acquires out-of-cone targets at selection time and
+    // then slews to them; the angle gate at validate_target:780 only fires when that flag is present.
     private const int Select = TurretAI.SelectPlayers | TurretAI.SelectRangeLimits
-                             | TurretAI.SelectTeamCheck | TurretAI.SelectAngleLimits;
+                             | TurretAI.SelectTeamCheck;
 
     public MachinegunTurret()
     {
@@ -61,7 +63,9 @@ public sealed class MachinegunTurret : Turret
         var p = new TurretParams(Select, TargetRangeMin, TargetRange, ShotDamage, ShotRefire,
             AimSpeed, FireTolerance, lead: true, ShotVolly, ShotVollyRefire,
             rangeOptimal: TargetRangeOptimal, shotSpeed: ShotSpeed, aimMaxPitch: AimMaxPitch, aimMaxRot: AimMaxRot,
-            shotTimeCompensate: true, zPredict: true,
+            // machinegun.qc tr_setup aim_flags = TFL_AIM_LEAD | TFL_AIM_SHOTTIMECOMPENSATE. No TFL_AIM_ZPREDICT,
+            // so the machinegun does NOT lead the gravity arc of airborne targets (zPredict stays false).
+            shotTimeCompensate: true, zPredict: false,
             rangeBias: RangeBias, sameBias: SameBias, angleBias: AngleBias,
             missileBias: MissileBias, playerBias: PlayerBias,
             trackType: TurretAI.TrackFluidInertia, trackAccelPitch: 0.4f, trackAccelRot: 0.9f, trackBlendRate: 0.2f);
@@ -82,8 +86,9 @@ public sealed class MachinegunTurret : Turret
         // machinegun_weapon.qc: fireBullet with DEATH_TURRET_MACHINEGUN.
         TurretCombat.FireBullet(turret, st.ShotOrg, dir, ShotSpread, ShotDamage, ShotForce, DeathTypes.TurretMachinegun);
 
-        if (Api.Services is not null)
-            Api.Sound.Play(turret, SoundChannel.Weapon, "weapons/uzi_fire.wav");
+        // NO fire sound on the turret path: in machinegun_weapon.qc wr_think the only sound emitter
+        // (W_SetupShot_Dir → SND_MachineGunTurretAttack_FIRE) is inside the `if (isPlayer)` block, and a
+        // turret actor is not a player, so Base fires SILENTLY. fireBullet/W_MuzzleFlash_Model emit none.
 
         // NOTE (client-render): EFFECT_BULLET tracer, MDL_MACHINEGUN_MUZZLEFLASH at tag_fire, head frame anim.
         // The server-side fire (machinegun_weapon.qc) is done above.

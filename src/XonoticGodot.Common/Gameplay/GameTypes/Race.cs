@@ -125,6 +125,14 @@ public sealed class Race : GameType
     /// </summary>
     public bool SuddenDeath { get; private set; }
 
+    /// <summary>
+    /// QC <c>race_completing</c> (server/race.qc): latched the moment the FIRST racer reaches the lap limit
+    /// (<see cref="StartCompleting"/>). Once set, every dead/respawning racer is auto-marked completed+abandoned
+    /// (<see cref="AbandonRaceCheck"/>) — that is how a real multi-racer match drains to n == c after the leader
+    /// finishes, rather than waiting for every straggler to independently cross the line. Cleared at Activate.
+    /// </summary>
+    public bool RaceCompleting { get; private set; }
+
     /// <summary>QC <c>g_race_qualifying</c>: solo time-trial mode (rank by fastest lap, re-teleport after each lap).
     /// Note this can be the value <c>2</c> ("qualifying THEN race"), which <see cref="TransitionQualifyingToRace"/>
     /// collapses to 0 (plain race) once the qualifying session ends.</summary>
@@ -170,6 +178,7 @@ public sealed class Race : GameType
         // gametype_init flags (USEPOINTS) and the qualifying/race mode are engine/server-config concerns.
         Checkpoints.Clear();
         PenaltyZones.Clear();
+        _punishWrongWay.Clear();
         HighestCheckpoint = 0;
     }
 
@@ -178,7 +187,8 @@ public sealed class Race : GameType
     /// with ordinal <paramref name="checkpointIndex"/> (0 = start/finish line). Touch dispatches the ordered
     /// crossing to <see cref="CrossCheckpoint"/>.
     /// </summary>
-    public Entity? SpawnCheckpoint(Vector3 origin, int checkpointIndex, Vector3 mins = default, Vector3 maxs = default)
+    public Entity? SpawnCheckpoint(Vector3 origin, int checkpointIndex, Vector3 mins = default, Vector3 maxs = default,
+        bool punishWrongWay = false)
     {
         if (maxs == default) { mins = new Vector3(-48f, -48f, -48f); maxs = new Vector3(48f, 48f, 48f); }
         Entity? e = GametypeEntities.SpawnObjective("trigger_race_checkpoint", origin, Teams.None, mins, maxs,
@@ -188,12 +198,18 @@ public sealed class Race : GameType
             e.Flags = EntFlags.None; // a checkpoint is a pure trigger volume, not an item
             e.GtCheckpointIndex = checkpointIndex;
             e.GtIsFinishLine = checkpointIndex == 0;
+            // QC trigger_race_checkpoint spawnflag 4: a racer who crosses this checkpoint out of order is killed
+            // (DEATH_HURTTRIGGER 10000), to forbid backwards/shortcut traversal.
+            if (punishWrongWay) _punishWrongWay.Add(e);
             Checkpoints.Add(e);
             if (checkpointIndex > HighestCheckpoint)
                 HighestCheckpoint = checkpointIndex;
         }
         return e;
     }
+
+    /// <summary>Checkpoints with QC spawnflag 4 (kill on a wrong-order crossing). See <see cref="CheckpointTouch"/>.</summary>
+    private readonly HashSet<Entity> _punishWrongWay = new();
 
     /// <summary>The penalty-zone trigger entities on the map (QC trigger_race_penalty).</summary>
     public readonly List<Entity> PenaltyZones = new();
@@ -239,7 +255,13 @@ public sealed class Race : GameType
         // Expected next checkpoint: -1 means "haven't started, expect the start line (0)".
         int expected = st.NextCheckpoint < 0 ? 0 : st.NextCheckpoint;
         if (cpIndex != expected)
-            return; // out of order — ignore (QC also damages on spawnflag 4, deferred)
+        {
+            // QC checkpoint_passed: a wrong-order crossing of a spawnflag-4 checkpoint kills the racer
+            // (Damage 10000, DEATH_HURTTRIGGER); otherwise it is simply ignored.
+            if (_punishWrongWay.Contains(self) && Api.Services is not null)
+                Combat.Damage(p, self, self, 10000f, DeathTypes.Void, p.Origin, Vector3.Zero);
+            return;
+        }
 
         bool isFinish = self.GtIsFinishLine || cpIndex == 0;
         CrossCheckpoint(p, cpIndex, isFinish);
@@ -263,6 +285,7 @@ public sealed class Race : GameType
         MatchEnded = false;
         Winner = null;
         SuddenDeath = false;
+        RaceCompleting = false;
         // QC rc_SetLimits: g_race_teams 2..4 makes race a team game (members add up laps to ST_RACE_LAPS).
         TeamGame = RaceTeams >= 2;
         if (TeamGame)
@@ -313,7 +336,7 @@ public sealed class Race : GameType
         if (f is not null) Scoring.GameScores.AddToPlayer(p, f, n);
     }
 
-    public void Deactivate()
+    public override void Deactivate()
     {
         if (_deathHandler is null)
             return;
@@ -408,24 +431,125 @@ public sealed class Race : GameType
         }
     }
 
-    /// <summary>Mark a racer as having completed the race and re-check the win condition.</summary>
+    /// <summary>
+    /// QC race_SendTime's lap-limit branch (server/race.qc:506-519): the racer just reached the lap limit. The
+    /// FIRST racer to do so latches the global completing state (<see cref="StartCompleting"/>, which abandons
+    /// every already-dead racer); thereafter every racer who crosses (or is abandoned) is marked completed and
+    /// announced with INFO_RACE_FINISHED. We then re-check the win condition.
+    /// </summary>
     private void FinishRacer(Player p, RaceState st)
     {
-        st.Completed = true; // QC race_completed
+        if (st.Completed)
+            return;
         Winner ??= p;        // first to finish is the race winner (qualifying ranks by FastestLap instead)
+
+        // QC: if(l >= autocvar_fraglimit) race_StartCompleting();  — only the first finisher trips the latch.
+        if (!RaceCompleting)
+            StartCompleting();
+
+        // QC: if(race_completing) { race_completed = 1; ...; INFO_RACE_FINISHED }.
+        if (RaceCompleting)
+        {
+            st.Completed = true; // QC race_completed
+            if (Api.Services is not null)
+                NotificationSystem.Info("RACE_FINISHED", p.NetName); // QC INFO_RACE_FINISHED
+        }
+
         float now = Api.Services is not null ? Api.Clock.Time : 0f;
         ScheduleRetract(p, now); // QC: a finished racer is retracted to start (kept out of the running pack)
         CheckWinningCondition();
     }
 
     /// <summary>
-    /// QC <c>race_setTime</c>: file a finished lap/run time into the persistent per-map ranking and stash the
-    /// classified result (<see cref="LastRecord"/>) so the host can fire the right INFO_RACE_* notification.
+    /// QC <c>race_StartCompleting</c> (server/race.qc:1214): the first racer reached the lap limit — latch the
+    /// global completing state and immediately abandon every racer who is currently dead (<see cref="AbandonRaceCheck"/>),
+    /// so a multi-racer match converges to n == c instead of waiting on stragglers.
+    /// </summary>
+    public void StartCompleting()
+    {
+        RaceCompleting = true; // QC race_completing = 1
+        // QC FOREACH_CLIENT(IS_PLAYER(it) && IS_DEAD(it), { race_AbandonRaceCheck(it); });
+        foreach (Player p in new List<Player>(_states.Keys))
+            if (p.IsDead)
+                AbandonRaceCheck(p);
+    }
+
+    /// <summary>
+    /// QC <c>race_AbandonRaceCheck</c> (server/race.qc:1203): once the race is completing, a racer who is dead /
+    /// has just respawned (and hasn't finished) is auto-marked completed+abandoned and announced with
+    /// INFO_RACE_ABANDONED. Called from <see cref="StartCompleting"/> and on death (<see cref="OnDeath"/>).
+    /// </summary>
+    public void AbandonRaceCheck(Player p)
+    {
+        if (!RaceCompleting)
+            return;
+        RaceState st = GetState(p);
+        if (st.Completed)
+            return;
+        st.Completed = true; // QC race_completed = 1 (MAKE_INDEPENDENT_PLAYER side-effect not modelled)
+        if (Api.Services is not null)
+            NotificationSystem.Info("RACE_ABANDONED", p.NetName); // QC INFO_RACE_ABANDONED
+        CheckWinningCondition();
+    }
+
+    /// <summary>
+    /// QC <c>race_setTime</c>: file a finished lap/run time into the persistent per-map ranking, stash the
+    /// classified result (<see cref="LastRecord"/>), and broadcast the matching INFO_RACE_* notification
+    /// (server/race.qc race_setTime: NEW_IMPROVED / NEW_SET / NEW_BROKEN / FAIL_RANKED / FAIL_UNRANKED /
+    /// NEW_MISSING_UID). The notification time tokens are TIME_ENCODE'd (the race_time HUD token decodes them).
     /// </summary>
     private void RecordFinishTime(Player p, float time)
     {
-        LastRecord = RaceRecords.SetTime(MapName, RecordType, time, p.PersistentId, p.NetName);
+        string uid = p.PersistentId;
+        RaceRecordResult r = RaceRecords.SetTime(MapName, RecordType, time, uid, p.NetName);
+        LastRecord = r;
         LastRecordPlayer = p;
+        SendRecordNotification(p, time, uid, r);
+    }
+
+    /// <summary>
+    /// QC race_setTime's <c>showmessage</c> branch: fire the right INFO_RACE_* line for the classified result.
+    /// Encoded-time tokens (<c>t</c>, <c>oldrec</c>) mirror QC's TIME_ENCODE'd notification floats.
+    /// </summary>
+    private static void SendRecordNotification(Player p, float time, string uid, RaceRecordResult r)
+    {
+        if (Api.Services is null)
+            return;
+        string name = p.NetName;
+        int t = Scoring.GameScores.TimeEncode(time);
+
+        if (r.Kind == RaceRecordKind.Fail)
+        {
+            // QC: anonymous run (uid == "") can't be ranked → NEW_MISSING_UID.
+            if (string.IsNullOrEmpty(uid))
+            {
+                NotificationSystem.Info("RACE_NEW_MISSING_UID", name, t);
+                return;
+            }
+            int oldrec = Scoring.GameScores.TimeEncode(r.OldRecordTime);
+            // QC: a previously-ranked player who didn't improve → FAIL_RANKED (their own old rank/time);
+            // an unranked time (worse than the worst ranked) → FAIL_UNRANKED (vs the last rank).
+            if (r.OldPos != 0 && (r.NewPos == 0 || r.OldPos < r.NewPos))
+                NotificationSystem.Info("RACE_FAIL_RANKED", name, r.OldPos, t, oldrec);
+            else
+                NotificationSystem.Info("RACE_FAIL_UNRANKED", name, RaceRecords.RankingsCnt, t, oldrec);
+            return;
+        }
+
+        // A genuine new record.
+        int prevRec = Scoring.GameScores.TimeEncode(r.OldRecordTime);
+        switch (r.Kind)
+        {
+            case RaceRecordKind.NewImproved: // improved your own ranked time
+                NotificationSystem.Info("RACE_NEW_IMPROVED", name, r.NewPos, t, prevRec);
+                break;
+            case RaceRecordKind.NewSet:      // a position that was previously empty
+                NotificationSystem.Info("RACE_NEW_SET", name, r.NewPos, t);
+                break;
+            case RaceRecordKind.NewBroken:   // broke someone else's record at this rank
+                NotificationSystem.Info("RACE_NEW_BROKEN", name, r.OldRecordHolder, r.NewPos, t, prevRec);
+                break;
+        }
     }
 
     /// <summary>The current persistent server record (rank 1) lap time for this map (0 if none).</summary>
@@ -572,9 +696,9 @@ public sealed class Race : GameType
         }
 
         // QC: wc = WinningCondition_Scores(fraglimit). If the lap limit was reached but not everyone finished,
-        // START SUDDEN DEATH (run on) instead of ending. We model the score-limit reach as "any racer has
-        // completed" (a finished racer reached the lap limit, FinishRacer).
-        if (!SuddenDeath && Qualifying == false && LapLimit > 0 && completed > 0 && completed < total)
+        // START SUDDEN DEATH (run on) instead of ending. The lap-limit reach is the race_completing latch
+        // (set by FinishRacer/StartCompleting the moment the first racer hits the limit).
+        if (!SuddenDeath && Qualifying == false && RaceCompleting && completed < total)
             SuddenDeath = true;
     }
 
@@ -639,6 +763,9 @@ public sealed class Race : GameType
         RaceState st = GetState(victim);
         st.LapStartTime = 0f;
         st.NextCheckpoint = -1;
+        // QC race_AbandonRaceCheck (driven from PutClientInServer/respawn): once the race is completing, a racer
+        // who dies and would respawn into a finished race is auto-abandoned rather than left running forever.
+        AbandonRaceCheck(victim);
         Events?.OnFrag(ev.Attacker as Player, victim, ev.DeathType);
         return false;
     }

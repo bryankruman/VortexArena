@@ -22,10 +22,29 @@ namespace XonoticGodot.Server;
 /// (QC the forced death + score clear on a mid-match team move). A <see cref="SkillProvider"/> supplies each
 /// player's skill (bots feed their <c>skill</c> level) since TrueSkill mu/variance ratings aren't modeled.
 ///
-/// Deferred: g_forced_team_*, the warmup join queue, and the network team-nagger.
+/// Also ported now: forced teams (<see cref="DetermineForcedTeam"/> / <see cref="GetForcedTeam"/>, QC
+/// <c>Player_DetermineForcedTeam</c> / <c>Player_HasRealForcedTeam</c> — <c>g_forced_team_*</c> id/IP-list
+/// parsing, <c>g_campaign_forceteam</c>, and the <c>bot_forced_team</c> pin, all honored on the live
+/// <see cref="AssignBestTeam"/> join), the <c>bot_vs_human</c> team partition (QC
+/// <c>TeamBalance_CheckAllowedTeams</c>, bots banned to one side / humans to the other), the unbalanced-teams
+/// size gap (<see cref="SizeDifference"/> / <see cref="TeamsUnbalancedForNag"/>, QC
+/// <c>TeamBalance_SizeDifference</c> + <c>sv_teamnagger</c>, for the nag + warmup-hold), and the mid-match
+/// switch gate (<see cref="IsTeamAllowedForSwitch"/>, QC <c>g_balance_teams_prevent_imbalance</c> /
+/// cmd.qc:746 — a human can't switch to a team that isn't a best team).
+///
+/// Deferred (need cross-file plumbing): the warmup join queue (<c>g_balance_teams_queue</c>), excess-player
+/// removal (<c>g_balance_teams_remove</c>), the network side of the team-nagger center-print, the
+/// Player_ChangeTeam/Player_ChangedTeam mutator hooks (no hook chain exists yet), and the
+/// <c>teamplay_lockonrestart</c> auto-lock (the restart hook lives in the vote/warmup controller).
 /// </summary>
 public sealed class Teamplay
 {
+    /// <summary>QC <c>TEAM_FORCE_SPECTATOR</c>: the forced-team sentinel meaning "force this player to spectate".</summary>
+    public const int TeamForceSpectator = -1;
+
+    /// <summary>QC <c>TEAM_FORCE_DEFAULT</c>: no real forced team — fall through to normal balance.</summary>
+    public const int TeamForceDefault = 0;
+
     /// <summary>Whether the active gametype is a team game (QC <c>teamplay</c>). FFA leaves teams at <see cref="Teams.None"/>.</summary>
     public bool IsTeamGame { get; }
 
@@ -45,6 +64,22 @@ public sealed class Teamplay
 
     /// <summary>QC the fixed skill variance stand-in (no TrueSkill ratings here): the inverse weight per player.</summary>
     private const float SkillVariance = 1f;
+
+    /// <summary>
+    /// QC <c>.team_forced</c>: the per-player forced-team index (1..4 a real team, <see cref="TeamForceDefault"/>,
+    /// or <see cref="TeamForceSpectator"/>). Player.cs has no such field, so it is kept here keyed by the player
+    /// reference; <see cref="DetermineForcedTeam"/> populates it on connect and <see cref="AssignBestTeam"/>
+    /// honors it. Defaults to <see cref="TeamForceDefault"/> for any player not in the table.
+    /// </summary>
+    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<Player, object> _forcedTeam = new();
+
+    /// <summary>
+    /// QC <c>.bot_forced_team</c>: a bot pinned to a specific team by its roster config (5th arg of the addbot
+    /// command). When set (1..4), <see cref="AssignBestTeam"/> early-outs and the bot keeps that team without
+    /// auto-balance, exactly like QC's <c>TeamBalance_JoinBestTeam</c> early-out (teamplay.qc:461). Keyed by the
+    /// bot's <see cref="Player"/> reference since Player.cs has no field for it.
+    /// </summary>
+    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<Player, object> _botForcedTeam = new();
 
     /// <summary>
     /// Construct the team manager. <paramref name="teamCount"/> is clamped to 2..4 for a team game (QC
@@ -69,6 +104,116 @@ public sealed class Teamplay
         _scores?.SeedTeams(TeamCount);
     }
 
+    // ----- forced teams (QC Player_DetermineForcedTeam / Player_HasRealForcedTeam / bot_forced_team) -----
+
+    /// <summary>
+    /// QC <c>Team_IndexToTeam</c>: map a 1..4 forced-team index to its color code (other → <see cref="Teams.None"/>).
+    /// </summary>
+    public static int IndexToTeam(int index) =>
+        index >= 1 && index <= Teams.All.Length ? Teams.All[index - 1] : Teams.None;
+
+    /// <summary>
+    /// QC <c>Player_DetermineForcedTeam</c>: compute and store <paramref name="player"/>'s forced team from the
+    /// server config. In campaign, real clients are pinned to <c>g_campaign_forceteam</c> (1..4); otherwise the
+    /// player's crypto id / IP is matched against <c>g_forced_team_{red,blue,yellow,pink}</c> (→ 1..4), falling
+    /// back to <c>g_forced_team_otherwise</c> (red|blue|yellow|pink|spectate|default). A non-team game clears any
+    /// real forced team. Called once on connect; <see cref="AssignBestTeam"/> later honors the result.
+    /// </summary>
+    public void DetermineForcedTeam(Player player, bool isCampaign = false)
+    {
+        int forced = TeamForceDefault;
+
+        if (isCampaign)
+        {
+            // QC: only real clients (not bots) are campaign-forced.
+            if (!player.IsBot)
+            {
+                int ct = Api.Services is not null ? (int)Api.Cvars.GetFloat("g_campaign_forceteam") : 0;
+                forced = (ct >= 1 && ct <= Teams.All.Length) ? ct : TeamForceDefault;
+            }
+        }
+        else if (PlayerInList(player, "g_forced_team_red"))
+            forced = 1;
+        else if (PlayerInList(player, "g_forced_team_blue"))
+            forced = 2;
+        else if (PlayerInList(player, "g_forced_team_yellow"))
+            forced = 3;
+        else if (PlayerInList(player, "g_forced_team_pink"))
+            forced = 4;
+        else
+        {
+            string otherwise = Api.Services is not null ? Api.Cvars.GetString("g_forced_team_otherwise") : "default";
+            forced = otherwise switch
+            {
+                "red" => 1,
+                "blue" => 2,
+                "yellow" => 3,
+                "pink" => 4,
+                "spectate" or "spectator" => TeamForceSpectator,
+                _ => TeamForceDefault,
+            };
+        }
+
+        // QC: a non-team game clears any real forced team (spectator sentinel survives).
+        if (!IsTeamGame && forced > TeamForceDefault)
+            forced = TeamForceDefault;
+
+        SetForcedTeam(player, forced);
+    }
+
+    /// <summary>QC <c>Player_SetForcedTeamIndex</c>: store a player's forced-team index directly (admin/script override).</summary>
+    public void SetForcedTeam(Player player, int index)
+    {
+        _forcedTeam.Remove(player);
+        if (index != TeamForceDefault)
+            _forcedTeam.Add(player, index);
+    }
+
+    /// <summary>QC <c>Player_GetForcedTeamIndex</c>: the stored forced-team index (default if unset).</summary>
+    public int GetForcedTeam(Player player) =>
+        _forcedTeam.TryGetValue(player, out object? v) ? (int)v! : TeamForceDefault;
+
+    /// <summary>QC <c>Player_HasRealForcedTeam</c>: true when the player is pinned to an actual team (1..4).</summary>
+    public bool HasRealForcedTeam(Player player) => GetForcedTeam(player) > TeamForceDefault;
+
+    /// <summary>
+    /// QC <c>.bot_forced_team</c>: pin a bot to a team index (1..4) from its roster config, or clear with 0.
+    /// A pinned bot skips auto-balance in <see cref="AssignBestTeam"/>.
+    /// </summary>
+    public void SetBotForcedTeam(Player bot, int index)
+    {
+        _botForcedTeam.Remove(bot);
+        if (index >= 1 && index <= Teams.All.Length)
+            _botForcedTeam.Add(bot, index);
+    }
+
+    /// <summary>The bot's forced-team index (1..4), or 0 if unpinned.</summary>
+    public int GetBotForcedTeam(Player bot) =>
+        _botForcedTeam.TryGetValue(bot, out object? v) ? (int)v! : 0;
+
+    /// <summary>
+    /// QC <c>PlayerInList</c> (client.qc:1047): is the player's crypto id (<see cref="Player.PersistentId"/>) or
+    /// IP (<see cref="Player.NetAddress"/>) present in the space-separated cvar list <paramref name="cvar"/>?
+    /// Empty list → false.
+    /// </summary>
+    private static bool PlayerInList(Player player, string cvar)
+    {
+        if (Api.Services is null)
+            return false;
+        string list = Api.Cvars.GetString(cvar);
+        if (string.IsNullOrEmpty(list))
+            return false;
+        string[] entries = list.Split((char[]?)null, System.StringSplitOptions.RemoveEmptyEntries);
+        foreach (string e in entries)
+        {
+            if (!string.IsNullOrEmpty(player.PersistentId) && e == player.PersistentId)
+                return true;
+            if (!string.IsNullOrEmpty(player.NetAddress) && e == player.NetAddress)
+                return true;
+        }
+        return false;
+    }
+
     /// <summary>
     /// Port of <c>TeamBalance_JoinBestTeam</c> → <c>TeamBalance_FindBestTeam</c>: assign <paramref name="joiner"/>
     /// to the smallest active team over <paramref name="roster"/> (ignoring the joiner), breaking ties by the
@@ -83,14 +228,42 @@ public sealed class Teamplay
             return Teams.None;
         }
 
+        // QC TeamBalance_JoinBestTeam: a bot pinned by its roster config keeps its team, no auto-balance.
+        int botForced = GetBotForcedTeam(joiner);
+        if (botForced != 0)
+        {
+            int forcedColor = IndexToTeam(botForced);
+            joiner.Team = forcedColor;
+            return forcedColor;
+        }
+
+        // QC TeamBalance_CheckAllowedTeams: bot_vs_human bans all-but-one side for bots / the other for humans.
+        bool[] allowed = AllowedTeams(joiner);
+
+        // QC: a player with a real forced team joins it iff that team is allowed; otherwise normal balance.
+        if (HasRealForcedTeam(joiner))
+        {
+            int idx = GetForcedTeam(joiner);
+            if (idx >= 1 && idx <= TeamCount && allowed[idx - 1])
+            {
+                int forcedColor = IndexToTeam(idx);
+                joiner.Team = forcedColor;
+                return forcedColor;
+            }
+        }
+
         bool useSkill = SkillWeightingEnabled;
 
         int bestTeam = Teams.None;
         float bestCount = float.MaxValue;
         int bestScore = int.MaxValue;
 
+        int ti = 0;
         foreach (int team in Teams.Active(TeamCount))
         {
+            if (!allowed[ti++])
+                continue; // QC: a banned team is never a candidate (bot_vs_human partition).
+
             // QC TeamBalance_FindBestTeams: weigh by the (optionally skill-weighted) player count, then
             // break ties by the lower team score (a small AND losing team is preferred), then lowest index.
             float count = useSkill
@@ -224,6 +397,122 @@ public sealed class Teamplay
         // bus + respawn timer fire exactly like any other death.
         Combat.Damage(p, null, null, 100000f, DeathTypes.AutoTeamChange, p.Origin, System.Numerics.Vector3.Zero);
         return true;
+    }
+
+    /// <summary>
+    /// QC <c>TeamBalance_CheckAllowedTeams</c> (the bot_vs_human branch): which of the active teams (in
+    /// <see cref="Teams.Active"/> order, indexed 0..TeamCount-1) <paramref name="forWhom"/> may join. Normally all
+    /// teams are allowed; with <c>bot_vs_human</c> set on a 2-team match, bots are banned to one side and humans
+    /// to the other (positive ratio → bots take the LAST team / humans the first; negative → bots the FIRST team
+    /// / humans the last), so the join only ever offers the "correct" side. <paramref name="forWhom"/> null (a
+    /// global query) leaves all teams allowed.
+    /// </summary>
+    private bool[] AllowedTeams(Player? forWhom)
+    {
+        var allowed = new bool[TeamCount];
+        for (int i = 0; i < TeamCount; i++) allowed[i] = true;
+
+        if (forWhom is null || TeamCount != 2 || Api.Services is null)
+            return allowed;
+
+        float ratio = Api.Cvars.GetFloat("bot_vs_human");
+        if (ratio == 0f)
+            return allowed;
+
+        // QC: positive → bots take the LAST available team (index 1), humans the first (index 0).
+        //      negative → bots take the FIRST available team (index 0), humans the last (index 1).
+        bool botsLast = ratio > 0f;
+        int botTeamIdx = botsLast ? 1 : 0;
+        int humanTeamIdx = botsLast ? 0 : 1;
+        int keep = forWhom.IsBot ? botTeamIdx : humanTeamIdx;
+        for (int i = 0; i < TeamCount; i++)
+            allowed[i] = (i == keep);
+        return allowed;
+    }
+
+    /// <summary>
+    /// QC <c>TeamBalance_SizeDifference</c>: the gap between the largest and smallest active team's player count
+    /// over <paramref name="roster"/> (0 for a non-team game). Used by the unbalanced-teams nag and the warmup
+    /// hold (warmup won't end while teams are this uneven).
+    /// </summary>
+    public int SizeDifference(IReadOnlyList<Player> roster)
+    {
+        if (!IsTeamGame)
+            return 0;
+        int min = int.MaxValue, max = int.MinValue;
+        foreach (int team in Teams.Active(TeamCount))
+        {
+            int c = TeamBalance.CountTeam(team, roster);
+            if (c < min) min = c;
+            if (c > max) max = c;
+        }
+        return max == int.MinValue ? 0 : max - min;
+    }
+
+    /// <summary>
+    /// QC <c>sv_teamnagger</c> trigger: true when the team-size gap (<see cref="SizeDifference"/>) is at least
+    /// <c>sv_teamnagger</c> players (Base default 2), i.e. the unbalanced-teams nag should show and warmup should
+    /// be held open. Returns false when <c>sv_teamnagger</c> is 0 (nagger disabled) or for a non-team game.
+    /// </summary>
+    public bool TeamsUnbalancedForNag(IReadOnlyList<Player> roster)
+    {
+        if (!IsTeamGame || Api.Services is null)
+            return false;
+        float nagger = Api.Cvars.GetFloat("sv_teamnagger");
+        if (nagger == 0f) // Base default is 2; a host can read the registered default via the cvar service.
+            nagger = 2f;
+        if (nagger < 0f)
+            return false;
+        return SizeDifference(roster) >= (int)nagger;
+    }
+
+    /// <summary>
+    /// QC <c>g_balance_teams_prevent_imbalance</c> mid-match switch gate (cmd.qc:746): may
+    /// <paramref name="switcher"/> manually switch to <paramref name="targetTeam"/> (a color code) right now? When
+    /// the cvar is set and not in warmup, a human may only switch to a team that is a <em>best</em> team (smallest
+    /// active team after the move, by the same count/score rule as <see cref="AssignBestTeam"/>), so they can't
+    /// jump to the larger/stronger side. Bots, warmup, and a disabled cvar always allow the switch. The caller
+    /// (the team/join command handler) should reject the switch when this returns false.
+    /// </summary>
+    public bool IsTeamAllowedForSwitch(Player switcher, int targetTeam, IReadOnlyList<Player> roster, bool isWarmup)
+    {
+        if (!IsTeamGame || switcher.IsBot || isWarmup)
+            return true;
+        if (Api.Services is null || Api.Cvars.GetFloat("g_balance_teams_prevent_imbalance") == 0f)
+            return true;
+
+        bool[] allowed = AllowedTeams(switcher);
+        bool useSkill = SkillWeightingEnabled;
+
+        // QC TeamBalance_FindBestTeams: compute the best (smallest, then lowest-score) count, then accept the
+        // target only if its own count ties that best — i.e. switching there doesn't make teams more unbalanced.
+        float bestCount = float.MaxValue;
+        int bestScore = int.MaxValue;
+        float targetCount = float.MaxValue;
+
+        int ti = 0;
+        foreach (int team in Teams.Active(TeamCount))
+        {
+            bool isAllowed = allowed[ti++];
+            if (!isAllowed)
+            {
+                if (team == targetTeam) return false; // banned team (bot_vs_human) is never switchable.
+                continue;
+            }
+            float count = useSkill
+                ? TeamBalance_GetWeightedTeamCount(team, roster, switcher)
+                : TeamBalance.CountTeam(team, roster, switcher);
+            int score = _scores?.TeamScore(team) ?? 0;
+            if (count < bestCount || (count == bestCount && score < bestScore))
+            {
+                bestCount = count;
+                bestScore = score;
+            }
+            if (team == targetTeam)
+                targetCount = count;
+        }
+
+        return targetCount <= bestCount;
     }
 
     // ----- balance scan helpers (QC TeamBalance_GetLargestTeamIndex / GetPlayerForTeamSwitch) -----

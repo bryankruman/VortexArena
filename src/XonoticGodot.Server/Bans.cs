@@ -68,6 +68,15 @@ public sealed class Bans
     /// <summary>QC <c>BAN_MAX</c>: max simultaneous ban slots.</summary>
     public const int BanMax = 256;
 
+    /// <summary>QC <c>g_chatban_list</c> cvar name — the mute prefix-list.</summary>
+    public const string ChatBanList = "g_chatban_list";
+
+    /// <summary>QC <c>g_playban_list</c> cvar name — the forced-spectate prefix-list.</summary>
+    public const string PlayBanList = "g_playban_list";
+
+    /// <summary>QC <c>g_voteban_list</c> cvar name — the no-voting prefix-list.</summary>
+    public const string VoteBanList = "g_voteban_list";
+
     private readonly List<BanEntry> _bans = new();
     private bool _loaded;
 
@@ -442,4 +451,24 @@ public sealed class Bans
         }
         Cvars.Set(listCvar, string.Join(' ', kept));
     }
+
+    /// <summary>
+    /// QC <c>PlayerInList(client, autocvar_g_chatban_list)</c> (server/client.qc:1246): is the player muted by
+    /// the chat-ban prefix list? The seam callers use to re-apply mute on connect (and the mute command's check).
+    /// </summary>
+    public static bool IsChatBanned(Player p) => PlayerInList(p, ChatBanList);
+
+    /// <summary>
+    /// QC <c>PlayerInList(client, autocvar_g_playban_list)</c> (server/client.qc:1243 / 2274): is the player on
+    /// the play-ban (forced-spectate) prefix list? The single seam for both the connect-time re-spectate and the
+    /// load-bearing join-attempt gate (<c>Join_Try</c> refuses the join with <c>CENTER_JOIN_PLAYBAN</c> when this
+    /// is true for a non-INGAME client).
+    /// </summary>
+    public static bool IsPlayBanned(Player p) => PlayerInList(p, PlayBanList);
+
+    /// <summary>
+    /// QC <c>PlayerInList(client, autocvar_g_voteban_list)</c>: is the player on the vote-ban prefix list (may not
+    /// call or cast votes)? The seam the vote controller consults.
+    /// </summary>
+    public static bool IsVoteBanned(Player p) => PlayerInList(p, VoteBanList);
 }

@@ -97,9 +97,81 @@ public sealed class Racer : Vehicle
         StartHealth = 200f;               // g_vehicle_racer_health
     }
 
+    /// <summary>
+    /// Honour server retune of the <c>g_vehicle_racer_*</c> autocvars (defined in vehicles.cfg). Each tunable is
+    /// only overridden when the cvar reads back a sensible (non-zero) value, so an unloaded cvar store (e.g. unit
+    /// tests, or a cfg that never ran) keeps the Base-default field values inlined above rather than zeroing them.
+    /// Mirrors QC reading <c>autocvar_g_vehicle_racer_*</c> at vr_spawn/racer_frame time.
+    /// </summary>
+    private void LoadCvars()
+    {
+        if (Api.Services is null) return;
+        float Get(string n, float def) { float v = Api.Cvars.GetFloat(n); return v != 0f ? v : def; }
+
+        SpeedForward = Get("g_vehicle_racer_speed_forward", SpeedForward);
+        SpeedStrafe = Get("g_vehicle_racer_speed_strafe", SpeedStrafe);
+        SpeedAfterburn = Get("g_vehicle_racer_speed_afterburn", SpeedAfterburn);
+        AfterburnCost = Get("g_vehicle_racer_afterburn_cost", AfterburnCost);
+        WaterburnCost = Get("g_vehicle_racer_waterburn_cost", WaterburnCost);
+        WaterburnSpeed = Get("g_vehicle_racer_waterburn_speed", WaterburnSpeed);
+        WaterSpeedForward = Get("g_vehicle_racer_water_speed_forward", WaterSpeedForward);
+        WaterSpeedStrafe = Get("g_vehicle_racer_water_speed_strafe", WaterSpeedStrafe);
+        Friction = Get("g_vehicle_racer_friction", Friction);
+        TurnSpeed = Get("g_vehicle_racer_turnspeed", TurnSpeed);
+        TurnRoll = Get("g_vehicle_racer_turnroll", TurnRoll);
+        PitchSpeed = Get("g_vehicle_racer_pitchspeed", PitchSpeed);
+        PitchLimit = Get("g_vehicle_racer_pitchlimit", PitchLimit);
+        HoverPower = Get("g_vehicle_racer_hoverpower", HoverPower);
+        SpringLength = Get("g_vehicle_racer_springlength", SpringLength);
+        UpForceDamper = Get("g_vehicle_racer_upforcedamper", UpForceDamper);
+        WaterUpForceDamper = Get("g_vehicle_racer_water_upforcedamper", WaterUpForceDamper);
+        AngleStabilizer = Get("g_vehicle_racer_anglestabilizer", AngleStabilizer);
+        DownForce = Get("g_vehicle_racer_downforce", DownForce);
+        WaterDownForce = Get("g_vehicle_racer_water_downforce", WaterDownForce);
+        HoverType = (int)Get("g_vehicle_racer_hovertype", HoverType);
+        ThinkRate = Get("g_vehicle_racer_thinkrate", ThinkRate);
+
+        MaxEnergy = Get("g_vehicle_racer_energy", MaxEnergy);
+        EnergyRegen = Get("g_vehicle_racer_energy_regen", EnergyRegen);
+        EnergyRegenPause = Get("g_vehicle_racer_energy_regen_pause", EnergyRegenPause);
+        MaxShield = Get("g_vehicle_racer_shield", MaxShield);
+        ShieldRegen = Get("g_vehicle_racer_shield_regen", ShieldRegen);
+        ShieldRegenPause = Get("g_vehicle_racer_shield_regen_pause", ShieldRegenPause);
+        StartHealth = Get("g_vehicle_racer_health", StartHealth);
+        RespawnTime = Get("g_vehicle_racer_respawntime", RespawnTime);
+
+        CannonCost = Get("g_vehicle_racer_cannon_cost", CannonCost);
+        CannonDamage = Get("g_vehicle_racer_cannon_damage", CannonDamage);
+        CannonRadius = Get("g_vehicle_racer_cannon_radius", CannonRadius);
+        CannonForce = Get("g_vehicle_racer_cannon_force", CannonForce);
+        CannonSpeed = Get("g_vehicle_racer_cannon_speed", CannonSpeed);
+        CannonSpread = Get("g_vehicle_racer_cannon_spread", CannonSpread);
+        CannonRefire = Get("g_vehicle_racer_cannon_refire", CannonRefire);
+
+        RocketDamage = Get("g_vehicle_racer_rocket_damage", RocketDamage);
+        RocketRadius = Get("g_vehicle_racer_rocket_radius", RocketRadius);
+        RocketForce = Get("g_vehicle_racer_rocket_force", RocketForce);
+        RocketSpeed = Get("g_vehicle_racer_rocket_speed", RocketSpeed);
+        RocketAccel = Get("g_vehicle_racer_rocket_accel", RocketAccel);
+        RocketTurnRate = Get("g_vehicle_racer_rocket_turnrate", RocketTurnRate);
+        RocketRefire = Get("g_vehicle_racer_rocket_refire", RocketRefire);
+        // RocketLockTarget defaults true (Base) and cannot be distinguished from "unset" via GetFloat (both read
+        // 0/false), so it is left at the default rather than forced off by an unloaded cvar store. (todo: needs a
+        // cvar-presence query to honour an explicit `g_vehicle_racer_rocket_locktarget 0` server override.)
+        RocketLockingTime = Get("g_vehicle_racer_rocket_locking_time", RocketLockingTime);
+        RocketLockingReleaseTime = Get("g_vehicle_racer_rocket_locking_releasetime", RocketLockingReleaseTime);
+        RocketLockedTime = Get("g_vehicle_racer_rocket_locked_time", RocketLockedTime);
+
+        BlowupRadius = Get("g_vehicle_racer_blowup_radius", BlowupRadius);
+        BlowupCoreDamage = Get("g_vehicle_racer_blowup_coredamage", BlowupCoreDamage);
+        BlowupEdgeDamage = Get("g_vehicle_racer_blowup_edgedamage", BlowupEdgeDamage);
+        BlowupForce = Get("g_vehicle_racer_blowup_forceintensity", BlowupForce);
+    }
+
     // METHOD(Racer, vr_spawn) — racer.qc
     public override void Spawn(Entity vehicle)
     {
+        LoadCvars(); // honour server retune of the g_vehicle_racer_* tunables (else keep Base defaults)
         VehicleCommon.SpawnVehicle(vehicle, this);
 
         if (Model is not null && Api.Services is not null)
@@ -114,8 +186,10 @@ public sealed class Racer : Vehicle
         vehicle.Solid = Solid.SlideBox;
         vehicle.DeadState = DeadFlag.No;
         vehicle.DamageForceScale = 0.5f;      // QC vr_spawn: instance.damageforcescale = 0.5
-        vehicle.Touch = null;
+        // QC vr_spawn does NOT reset .touch — vehicles_spawn's this.touch = vehicles_touch stands, so the shared
+        // crush / ram-impact (vr_impact) dispatch runs. (VehicleCommon.SpawnVehicle already wired vehicle.Touch.)
         vehicle.VehWeaponDelay = Time;
+        vehicle.PlayTime = Time;              // QC: clear the impact debounce on (re)spawn
 
         // Hitbox: '-120 -120 -40' * 0.5 .. '120 120 40' * 0.5 (racer.qh).
         if (Api.Services is not null)
@@ -134,11 +208,31 @@ public sealed class Racer : Vehicle
         //                    hud/viewport tag attachment (cosmetic only; physics uses the real hitbox above).
     }
 
+    // METHOD(Racer, vr_impact) — racer.qc: ram/landing self-damage.
+    /// <summary>
+    /// Port of <c>vr_impact</c>: on a hard touch the racer takes DEATH_FALL self-damage proportional to its
+    /// speed change (bouncepain <c>'200 0.15 150'</c> = minspeed 200, factor 0.15, max 150), debounced 0.25s.
+    /// Dispatched from the shared <c>vehicles_touch</c> path (<see cref="VehicleCommon.Touch"/>).
+    /// </summary>
+    public override void Impact(Entity vehicle)
+    {
+        VehicleCommon.Impact(vehicle, 200f, 0.15f, 150f);
+    }
+
     // METHOD(Racer, vr_enter) — racer.qc
     public override void Enter(Entity vehicle, Entity player)
     {
         VehicleCommon.EnterVehicle(vehicle, player);
         vehicle.MoveType = MoveType.Bounce; // QC: set_movetype(instance, MOVETYPE_BOUNCE)
+
+        // QC vr_enter: seed the on-foot HUD %-gauges from the vehicle's current resources.
+        player.VehicleHealth = vehicle.GetResource(ResourceType.Health) / StartHealth * 100f;
+        player.VehicleShield = vehicle.VehicleShield / MaxShield * 100f;
+        player.VehicleEnergy = vehicle.VehicleEnergy / MaxEnergy * 100f;
+
+        // QC vr_enter: a boarding CTF flag-carrier's flag is parked at '-190 0 96'.
+        // TODO(port,cross-file): no player.FlagCarried link / CTF carried-flag entity exposed to vehicles yet;
+        //                        needs a shared seam (Entity.FlagCarried + setorigin) — recorded for Wave-3.
 
         // The Racer is driven by the player's per-frame physics plug (Frame), not its own think, while
         // occupied. Think still runs for regen/glue via the owner branch.
@@ -197,6 +291,10 @@ public sealed class Racer : Vehicle
         if (VehicleCommon.FreezeIfGameStopped(vehicle))
             return;
 
+        // QC engine .oldvelocity = last-tick velocity; vr_impact (vehicles_impact) measures the touch speed-change
+        // against it. Snapshot BEFORE this tick's physics so a touch dispatched this frame sees the real delta.
+        vehicle.OldVelocity = vehicle.Velocity;
+
         Entity? player = vehicle.Owner;
 
         if (player is null)
@@ -223,6 +321,13 @@ public sealed class Racer : Vehicle
 
         if (player is not null)
         {
+            // QC racer_frame VEHICLE_UPDATE_PLAYER: mirror the vehicle's resources onto the pilot as 0..100%
+            // stats each tick for the on-foot HUD gauge (the authoritative values stay on the vehicle).
+            player.VehicleHealth = vehicle.GetResource(ResourceType.Health) / StartHealth * 100f;
+            player.VehicleEnergy = vehicle.VehicleEnergy / MaxEnergy * 100f;
+            if ((vehicle.VehicleFlags & VehicleFlags.HasShield) != 0)
+                player.VehicleShield = vehicle.VehicleShield / MaxShield * 100f;
+
             // QC: keep the seated player glued to the vehicle (origin + '0 0 32') and matching its velocity.
             if (Api.Services is not null)
                 Api.Entities.SetOrigin(player, vehicle.Origin + new Vector3(0, 0, 32f));
@@ -354,7 +459,13 @@ public sealed class Racer : Vehicle
         }
 
         // TODO(port,client): qcsrc/common/vehicles/vehicle/racer.qc racer_frame — engine move/idle/boost sound
-        //                    selection, EFFECT_RACER_BOOSTER / smoke trails, vehicle_ammo2/reload2 HUD %.
+        //                    selection, EFFECT_RACER_BOOSTER / smoke trails.
+        // TODO(port,cross-file): vehicle_ammo2 (100/50/0) + vehicle_reload2 progress-bar HUD mirror need new
+        //                    player fields (VehAmmo2 / VehReload2 on EntityVehicleStateExtra.cs). VehReloadStart
+        //                    (.lip) is already stamped on the pair-complete shot, ready to drive vehicle_reload2.
+        // TODO(port,cross-file): racer_watertime (3s post-water heavy-downforce ramp) + racer_air_finished (5s
+        //                    submerged air meter gating the crouch up-push 200->30) need dedicated per-entity
+        //                    timer fields; the current downforce/up-push key off the instantaneous liquid test.
     }
 
     /// <summary>Port of <c>racer_align4point</c>: four engine springs + the resulting upward push and pitch/roll torque.</summary>
@@ -539,9 +650,11 @@ public sealed class Racer : Vehicle
             var mode = (VehiclePhysics.GuideMode)self.VehGuideMode;
             if (!VehiclePhysics.GuideRocket(self, mode, FrameTime, crosshair: null))
             {
-                // QC use() -> explode: detonate via the shared projectile blast.
+                // QC racer_rocket_tracker/groundhugger use() -> explode: detonate via the shared projectile
+                // blast, tagged DEATH_VH_WAKI_ROCKET so an owner-death / 15s-timeout kill is attributed to the
+                // rocket (matches the touch-detonation path's Explode deathtype), not a generic weapon id.
                 WeaponSplash.RadiusDamage(self, self.Origin, RocketDamage, 0f, RocketRadius,
-                    self.DmgInflictor, RegistryId, RocketForce);
+                    self.DmgInflictor, RegistryId, RocketForce, deathTag: DeathTypes.VhWakiRocket);
                 Api.Entities.Remove(self);
             }
         };

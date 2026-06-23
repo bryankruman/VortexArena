@@ -151,7 +151,8 @@ public static class WeaponImpulses
         Weapon? w = WeaponOrder.WeaponByIdIndex(idx);
         if (w is null) return; // out of range / impulse-unreachable (QC Weapon_from_impulse → WEP_Null → no-op)
         // QC W_SwitchWeapon_TryOthers: switch; if not owned and cl_weapon_switch_fallback_to_impulse, fall back to
-        // cycling that weapon's impulse group. The fallback cvar defaults off, so a plain switch matches stock.
+        // cycling that weapon's impulse group. Base registers cl_weapon_switch_fallback_to_impulse as 1 (main.qc:101),
+        // so the fallback fires by default; this reads the live cvar (!=0f) so it tracks whatever the client set.
         if (!Inventory.SwitchWeaponWithComplain(actor, w)
             && Api.Services is not null && Api.Cvars.GetFloat("cl_weapon_switch_fallback_to_impulse") != 0f)
         {
@@ -202,6 +203,12 @@ public static class WeaponImpulses
     /// </summary>
     private static void ReloadHandle(Entity actor)
     {
+        // QC IMPULSE(weapon_reload) (server/impulse.qc:357): `if (weaponLocked(this)) return;` — a locked weapon
+        // refuses to reload. The reachable, gameplay-critical half of QC weaponLocked is the freeze (PHYS_FROZEN):
+        // the gametype freeze stat (Entity.FrozenStat, e.g. Freeze Tag) OR the STATUSEFFECT_Frozen status effect.
+        // A frozen player must not be able to reload (mirrors WeaponFireDriver.WeaponLocked).
+        if (WeaponLocked(actor)) return;
+
         Weapon? w = Inventory.CurrentWeapon(actor);
         if (w is null) return;
         var slot = new WeaponSlot(0);
@@ -216,4 +223,19 @@ public static class WeaponImpulses
     }
 
     private static bool IsDead(Entity e) => e.DeadState != DeadFlag.No;
+
+    /// <summary>
+    /// QC <c>weaponLocked</c> (weaponsystem.qc), the reachable freeze half: the gametype freeze stat
+    /// (<see cref="Entity.FrozenStat"/>, e.g. Freeze Tag) OR the <c>STATUSEFFECT_Frozen</c> status effect
+    /// (QC <c>PHYS_FROZEN</c>). Mirrors <c>WeaponFireDriver.WeaponLocked</c> (which is file-private there). The
+    /// game-start/game-stopped/timeout halves of QC weaponLocked are already gated by the dispatcher upstream;
+    /// <c>player_blocked</c> and the <c>LockWeapon</c> mutator hook aren't modeled in the port yet.
+    /// </summary>
+    private static bool WeaponLocked(Entity player)
+    {
+        if (player.FrozenStat != 0)
+            return true;
+        StatusEffectDef? frozen = StatusEffectsCatalog.Frozen;
+        return frozen is not null && StatusEffectsCatalog.Has(player, frozen);
+    }
 }

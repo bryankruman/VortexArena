@@ -658,12 +658,38 @@ public sealed class ClientNet : IDisposable
     // =====================================================================================
 
     /// <summary>
-    /// The client cvars automatically replicated to the server via <c>cmd sentcvar</c> — the ported slice of
-    /// the QC REPLICATE set with live server-side consumers (Commands.SentCvarAllowlist is the receiving gate):
-    /// weapon priority (selection), autoswitch (pickup), noantilag (lag-comp opt-out), physics (preset select).
+    /// The client cvars automatically replicated to the server via <c>cmd sentcvar</c> — the full QC REPLICATE
+    /// set (common/replicate.qh) plus two port-specific entries. The server-side gate (Commands.SentCvarAllowlist)
+    /// decides which it actually honours; a cvar unset locally reads "" and is skipped (see PushReplicatedSet), so
+    /// listing one the server doesn't yet consume is harmless. The set mirrors Base in field-for-field order:
+    /// <list type="bullet">
+    ///   <item><c>cl_autoswitch</c> — auto-switch to a better weapon on pickup;</item>
+    ///   <item><c>cl_autoscreenshot</c> — server-forced end-of-match screenshot opt-in (sv-intermission);</item>
+    ///   <item><c>cl_clippedspectating</c> — keep the spectator camera inside walls;</item>
+    ///   <item><c>cl_autoswitch_cts</c> — CTS weapon auto-switch;</item>
+    ///   <item><c>cl_handicap</c> + <c>cl_handicap_damage_given</c>/<c>_taken</c> — self-imposed damage handicap;</item>
+    ///   <item><c>cl_noantilag</c> — lag-compensation opt-out;</item>
+    ///   <item><c>g_xonoticversion</c> — the client's build version (server compat check).</item>
+    /// </list>
+    /// Two port additions follow Base's list: <c>cl_weaponpriority</c> (weapon selection order, replicated + live
+    /// in the port) and <c>cl_physics</c> (the T54 per-player physics-preset select cvar — not a Base REPLICATE
+    /// entry). The per-choice <c>notification_CHOICE_*</c> cvars are pushed separately (see ReplicatedChoiceCvars).
     /// </summary>
     private static readonly string[] ReplicatedCvars =
-        { "cl_weaponpriority", "cl_autoswitch", "cl_noantilag", "cl_physics" };
+    {
+        "cl_autoswitch",
+        "cl_autoscreenshot",
+        "cl_clippedspectating",
+        "cl_autoswitch_cts",
+        "cl_handicap",
+        "cl_handicap_damage_given",
+        "cl_handicap_damage_taken",
+        "cl_noantilag",
+        "g_xonoticversion",
+        // --- port-specific (not in Base REPLICATE) ---
+        "cl_weaponpriority",
+        "cl_physics",
+    };
 
     /// <summary>QC <c>notification_CHOICE_*</c> replicated cvars (notifications/all.qh:884 ReplicateVars): one per
     /// registered MSG_CHOICE notification (team variants collapse to a single shared cvar). Built LAZILY from the

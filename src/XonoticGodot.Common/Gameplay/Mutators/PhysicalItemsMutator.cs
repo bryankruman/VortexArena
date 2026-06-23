@@ -18,13 +18,20 @@ namespace XonoticGodot.Common.Gameplay;
 /// engine is present.
 ///
 /// BLOCKER (documented partial — DOUBLE-BLOCKED): QC requires <c>DP_PHYSICS_ODE</c> (the Open Dynamics Engine
-/// rigid-body extension) AND hooks <c>Item_Spawn</c> on a map item-entity. Neither exists in the port: there is
-/// no <c>autocvar_physics_ode</c> / ODE rigid-body integrator wired to gameplay entities, and no map item-entity
-/// spawn pipeline (MapObjectsRegistry registers no <c>item_*</c> spawnfuncs). So this mutator follows QC's own
-/// "no physics engine ⇒ revert" path: it self-disables on add and does nothing, exactly as the reference game
-/// does when DP_PHYSICS_ODE is unavailable. The <c>physical_item_*</c> think/touch/damage bodies and the
-/// Item_Spawn ghost-entity attach are flagged for the day both an ODE-equivalent and an item pipeline land
-/// (crossTaskNeeds); modelling MOVETYPE_PHYSICS items is out of scope for this task.
+/// rigid-body extension) AND hooks <c>Item_Spawn</c> on a map item-entity. Neither exists in the port:
+///   1. No ODE rigid-body integrator: <see cref="XonoticGodot.Engine.Simulation.MoveTypePhysics"/> ports the DP
+///      MOVETYPE_TOSS/BOUNCE/FLY/etc. integrators faithfully, but there is no MOVETYPE_PHYSICS (the QC ghost's
+///      movetype) — its <c>default:</c> case merely runs the entity's think. Wiring an ODE-equivalent rigid body
+///      to gameplay edicts is a large engine task, out of scope here.
+///   2. No <c>Item_Spawn</c> mutator-hook chain: the world-item driver explicitly skips it
+///      (StartItem.cs: "MUTATOR_CALLHOOK(Item_Spawn, this) — no hook chain; skip."), so there is nothing for this
+///      mutator to subscribe in <see cref="Hook"/>. Reviving it needs a new <c>Item_Spawn</c> HookChain in
+///      MutatorHooks.cs plus a <c>.Call</c> site in StartItem.cs — both outside this file.
+/// So this mutator faithfully follows QC's own "no physics engine ⇒ revert" path: it self-disables on add (logging
+/// the byte-identical revert trace) and does nothing, exactly as the reference game does when DP_PHYSICS_ODE is
+/// unavailable. The <c>physical_item_*</c> think/touch/damage bodies and the Item_Spawn ghost-entity attach are
+/// flagged for the day both an ODE-equivalent and an Item_Spawn hook land (see todos / registry shard
+/// mutator-physical_items.item_spawn.ghost_entity + .item_callbacks.think_touch_damage).
 /// </summary>
 [Mutator]
 public sealed class PhysicalItemsMutator : MutatorBase
@@ -69,13 +76,25 @@ public sealed class PhysicalItemsMutator : MutatorBase
     /// <summary>
     /// QC MUTATOR_ONADD: <c>autocvar_physics_ode &amp;&amp; checkextension("DP_PHYSICS_ODE")</c>. The port has no ODE
     /// rigid-body engine wired to gameplay entities, so this is always false and the mutator logs the same revert
-    /// trace QC does and stays inert. (Logged once per check; the activation loop calls IsEnabled a bounded number
-    /// of times.)
+    /// trace QC does and stays inert.
     /// </summary>
+    /// <remarks>
+    /// QC's MUTATOR_ONADD runs the engine check exactly once (on add). The port's activation gate evaluates
+    /// <see cref="IsEnabled"/> more than once (the registry verifies the predicate IS reached on the live boot
+    /// path, and later code can re-query it), so we latch the revert trace behind <see cref="_revertLogged"/> to
+    /// keep QC's once-per-add log semantics — otherwise `developer 1` would show the warning repeatedly.
+    /// </remarks>
+    private static bool _revertLogged;
+
     private static bool HasPhysicsEngine()
     {
-        // QC LOG_TRACE on the unavailable path. Mirror the message so the revert is auditable in `developer 1`.
-        Log.Trace("Warning: Physical items are enabled but no physics engine can be used. Reverting to old items.");
+        // QC LOG_TRACE on the unavailable path. Mirror the message so the revert is auditable in `developer 1`,
+        // but only once (matching QC's single MUTATOR_ONADD evaluation), not once per IsEnabled query.
+        if (!_revertLogged)
+        {
+            _revertLogged = true;
+            Log.Trace("Warning: Physical items are enabled but no physics engine can be used. Reverting to old items.");
+        }
         return false;
     }
 }

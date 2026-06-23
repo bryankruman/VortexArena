@@ -21,10 +21,13 @@ namespace XonoticGodot.Common.Gameplay;
 /// CENTER_CAMPCHECK / CPID_CAMPCHECK notifications already exist in NotificationsList.
 ///
 /// REAL-CLIENTS ONLY (parity §11): QC restricts the check to <c>IS_REAL_CLIENT</c> (bots may "camp" only
-/// because the map lacks waypoints), so a headless <c>--bots</c> run won't trigger it; the port mirrors this
-/// (it acts on player entities, which in the headless sim are the real clients). The warmup_stage /
-/// game_starttime / weaponLocked gates collapse to the live-match check (<see cref="VehicleCommon.GameStopped"/>)
-/// in the headless sim, which has no warmup/lock state — documented as a deliberate simplification.
+/// because the map lacks waypoints, and clones can't move), so bots are explicitly exempt here via
+/// <see cref="Player.IsBot"/>. The warmup_stage / game_starttime / weaponLocked gates collapse to the
+/// live-match check (<see cref="VehicleCommon.GameStopped"/>) in the headless sim, which has no warmup/lock
+/// state — documented as a deliberate simplification. The separate pre-match re-grace block is ported for the
+/// <c>time &lt; game_starttime</c> portion (via <see cref="StartItem.GameStartTimeProvider"/>); the campaign-
+/// bot-wait and round-active-but-not-started portions, plus the chat-button (<c>g_campcheck_typecheck</c>) and
+/// weaponLocked gates and the PlayerDies centerprint-clear, need cross-file seams that don't exist yet.
 /// </summary>
 [Mutator]
 public sealed class CampcheckMutator : MutatorBase
@@ -35,6 +38,8 @@ public sealed class CampcheckMutator : MutatorBase
     public float Distance = 1800f;
     /// <summary>QC autocvar_g_campcheck_interval.</summary>
     public float Interval = 10f;
+    /// <summary>QC autocvar_g_campcheck_typecheck — when true, camp-check players even while they are typing in chat.</summary>
+    public bool TypeCheck;
 
     public CampcheckMutator() => NetName = "campcheck";
 
@@ -64,6 +69,7 @@ public sealed class CampcheckMutator : MutatorBase
             Damage = Api.Cvars.GetFloat("g_campcheck_damage");
             Distance = Api.Cvars.GetFloat("g_campcheck_distance");
             Interval = Api.Cvars.GetFloat("g_campcheck_interval");
+            TypeCheck = Api.Cvars.GetFloat("g_campcheck_typecheck") != 0f;
         }
     }
 
@@ -89,14 +95,29 @@ public sealed class CampcheckMutator : MutatorBase
 
         // QC guards: interval set; match live; alive unfrozen player; (typecheck || !chat); real client; !weaponLocked.
         // The headless sim has no warmup/game_starttime/weaponLocked, so those collapse to the live-match check.
+        // IS_REAL_CLIENT: bots are exempt — they may "camp" only because the map lacks waypoints, and clones can't
+        // move; killing them for it is wrong (QC sv_campcheck.qc:44, matches the mutator's own docstring).
         if (Interval != 0f
             && !VehicleCommon.GameStopped
-            && IsPlayer(player) && player.DeadState == DeadFlag.No && !IsFrozen(player))
+            && IsPlayer(player) && player is not Player { IsBot: true }
+            && player.DeadState == DeadFlag.No && !IsFrozen(player))
         {
             // 2D distance traveled since last frame (jumping in place doesn't count).
             Vector3 delta = player.CampcheckPrevOrigin - player.Origin;
             delta.Z = 0f;
             player.CampcheckTraveledDistance += MathF.Abs(delta.Length());
+
+            // QC: pre-match / round-not-started re-grace — zero the accumulator and push the next check out by
+            // interval*2 so a player who held still across the round-start transition isn't camp-checked on the
+            // first post-start interval (sv_campcheck.qc:51-55). The campaign-bot-wait and round_active-but-not-
+            // started portions of the QC condition have no Common-reachable seam yet (see todos); the
+            // time < game_starttime portion is wired via StartItem.GameStartTimeProvider.
+            float gameStartTime = StartItem.GameStartTimeProvider?.Invoke() ?? 0f;
+            if (time < gameStartTime)
+            {
+                player.CampcheckNextCheck = time + Interval * 2f;
+                player.CampcheckTraveledDistance = 0f;
+            }
 
             if (time > player.CampcheckNextCheck)
             {

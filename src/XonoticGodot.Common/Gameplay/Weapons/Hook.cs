@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Math;
 using XonoticGodot.Common.Services;
@@ -14,9 +15,11 @@ namespace XonoticGodot.Common.Gameplay;
 /// Identity/attributes from hook.qh; balance from bal-wep-xonotic.cfg (g_balance_hook_*).
 /// This port covers the secondary gravity bomb (toss launch, contact/lifetime detonation, duration-spread
 /// power-curve pull blast, shoot-down) AND the primary grapple: FireGrapplingHook launches the chain, it
-/// latches on contact (GrapplingHook_Stop), and reels the owner in (the simple non-tarzan pull) with
-/// hook_state (FIRING/REMOVING/PULLING/WAITING_FOR_RELEASE) and hooked-fuel drain. Only the CSQC rope
-/// rendering and the elastic "tarzan" rubber-band pull variant are left out.
+/// latches on contact (GrapplingHook_Stop, recording the followed entity as .aiment) and reels the owner in
+/// with both the elastic "tarzan" rubber-band variant (Base default g_grappling_hook_tarzan=2 — can also pull
+/// a hooked player/nade, which is what feeds the vampirehook mutator) and the simple tarzan-0 straight reel,
+/// driven by hook_state (FIRING/REMOVING/PULLING/RELEASING/WAITING_FOR_RELEASE) and the hooked-fuel drain.
+/// Only the CSQC rope-LINE rendering (the dedicated ENT_CLIENT_HOOK stream) is left out.
 /// </summary>
 [Weapon]
 public sealed class Hook : Weapon
@@ -90,16 +93,48 @@ public sealed class Hook : Weapon
         Secondary.Radius = Bal("g_balance_hook_secondary_radius", 500f);
         Secondary.Refire = Bal("g_balance_hook_secondary_refire", 3f);
         Secondary.Speed = Bal("g_balance_hook_secondary_speed", 0f);
+
+        // server/hook.qc autocvar_g_balance_grapplehook_* + autocvar_g_grappling_hook_tarzan. These were
+        // previously hardcoded; read them from the balance cfg so the grapple matches Base values/feel.
+        GrappleSpeedFly = Bal("g_balance_grapplehook_speed_fly", 1800f);
+        GrappleSpeedPull = Bal("g_balance_grapplehook_speed_pull", 2000f);
+        GrappleForceRubber = Bal("g_balance_grapplehook_force_rubber", 2000f);
+        GrappleForceRubberOverstretch = Bal("g_balance_grapplehook_force_rubber_overstretch", 1000f);
+        GrappleLengthMin = Bal("g_balance_grapplehook_length_min", 50f);
+        GrappleStretch = Bal("g_balance_grapplehook_stretch", 50f);
+        GrappleAirFriction = Bal("g_balance_grapplehook_airfriction", 0.2f);
+        GrappleHealth = Bal("g_balance_grapplehook_health", 50f);
+        GrappleNadeTime = Bal("g_balance_grapplehook_nade_time", 0.7f);
+        // autocvar_g_grappling_hook_tarzan: 0 = straight constant-speed reel, 2 = elastic rope that can
+        // also pull players/nades. Base default is 2 (balance-xonotic.cfg:253).
+        GrappleTarzan = (int)Bal("g_grappling_hook_tarzan", 2f);
     }
 
     /// <summary>g_balance_grapplehook_speed_fly — the launched chain's flight speed.</summary>
     public float GrappleSpeedFly = 1800f;
     /// <summary>g_balance_grapplehook_speed_pull — the reel-in pull speed.</summary>
     public float GrappleSpeedPull = 2000f;
+    /// <summary>g_balance_grapplehook_force_rubber — spring force the elastic (tarzan) rope pulls with.</summary>
+    public float GrappleForceRubber = 2000f;
+    /// <summary>g_balance_grapplehook_force_rubber_overstretch — extra force applied when overstretched.</summary>
+    public float GrappleForceRubberOverstretch = 1000f;
     /// <summary>g_balance_grapplehook_length_min — minimal rope length (stops pulling below this).</summary>
     public float GrappleLengthMin = 50f;
+    /// <summary>g_balance_grapplehook_stretch — slack window before the rope yields more length / overstretches.</summary>
+    public float GrappleStretch = 50f;
+    /// <summary>g_balance_grapplehook_airfriction — air-friction while hanging on the elastic rope.</summary>
+    public float GrappleAirFriction = 0.2f;
     /// <summary>g_balance_grapplehook_health — the chain's HP (shootable).</summary>
     public float GrappleHealth = 50f;
+    /// <summary>g_balance_grapplehook_nade_time — re-think delay given to a hooked nade when released.</summary>
+    public float GrappleNadeTime = 0.7f;
+    /// <summary>g_grappling_hook_tarzan — 0 = straight reel, &gt;=2 = elastic rope that can pull players/nades.</summary>
+    public int GrappleTarzan = 2;
+
+    // QC .hook_length on the chain edict: the current rubber-band rope length (the elastic/tarzan reel
+    // shortens this toward minlength each tick). -1 = uninitialised (seeded to the current rope distance).
+    // Kept off the chain entity via a per-hook weak table since WeaponSlotState (other file) carries no field.
+    private static readonly ConditionalWeakTable<Entity, float[]> _hookLength = new();
 
     // The Hook's primary is continuous (reels every tick, rolls its own HookRefire), so only the secondary
     // gravity bomb uses the refire gate. Provide the gate's refire/animtime explicitly from the balance struct
@@ -235,44 +270,148 @@ public sealed class Hook : Weapon
     {
         if (other.MoveType == MoveType.Follow) return;
         Api.Sound.Play(self, SoundChannel.Body, "weapons/hook_impact.wav");
+        // GrapplingHook_Stop: Send_Effect(EFFECT_HOOK_IMPACT) + state=1 + MOVETYPE_NONE + stop.
+        EffectEmitter.Emit("HOOK_IMPACT", self.Origin);
         self.Health = 1f;                  // latched flag (.state = 1)
         self.Velocity = Vector3.Zero;
         self.MoveType = MoveType.None;
         self.Touch = null;
+
+        // server/hook.qc GrapplingHookTouch: SetMovetypeFollow(this, toucher) — UNCONDITIONALLY make the
+        // latched chain FOLLOW whatever it hit (geometry OR a player/nade/vehicle), recording it as .aiment.
+        // This is the precondition the vampirehook mutator drains off (thehook.aiment must be the hooked
+        // player), and lets the elastic (tarzan>=2) reel pull a hooked player/nade in below.
+        self.Aiment = other;
+        self.PunchAngle = other.Angles;            // SetMovetypeFollow: original angles of the followed ent
+        self.ViewOfs = self.Origin - other.Origin; // relative origin offset
+        if ((other.Flags & EntFlags.Client) != 0)
+        {
+            // IS_PLAYER(aiment): clamp the follow offset into the player's bbox (util.qc SetMovetypeFollow).
+            self.ViewOfs = new Vector3(
+                QMath.Bound(other.Mins.X + 4f, self.ViewOfs.X, other.Maxs.X - 4f),
+                QMath.Bound(other.Mins.Y + 4f, self.ViewOfs.Y, other.Maxs.Y - 4f),
+                QMath.Bound(other.Mins.Z + 4f, self.ViewOfs.Z, other.Maxs.Z - 4f));
+        }
+
         // keep thinking so the owner gets reeled in.
         self.Think = s => GrapplingHookThink(s, actor, slot);
         self.NextThink = Api.Clock.Time;
     }
 
-    // GrapplingHookThink — reel the owner toward the latched chain end (the simple, non-"tarzan" pull). server/hook.qc
+    // GrapplingHookThink — reel the owner toward the latched chain end (tarzan rubber-band + simple reel). server/hook.qc
     private void GrapplingHookThink(Entity hook, Entity actor, WeaponSlot slot)
     {
         var st = actor.WeaponState(slot);
         if (!ReferenceEquals(st.Hook, hook)) { Api.Entities.Remove(hook); return; }
+
+        // server/hook.qc GrapplingHookThink top guard: drop the hook if its followed entity vanished, the game
+        // stopped, or the aiment is a non-nade projectile (can't sensibly reel off a rocket). (game_stopped /
+        // round-not-started already force a remove via the weapon state machine + GameStopped checks.)
+        if (hook.Health > 0f && hook.Aiment is { } aim0
+            && (aim0.IsFreed || ((aim0.Flags & EntFlags.Item) != 0 && aim0.ClassName != "nade")))
+        {
+            RemoveHook(st);
+            return;
+        }
+
         hook.NextThink = Api.Clock.Time;
 
         // MUTATOR_CALLHOOK(GrappleHookThink, this) — server/hook.qc GrapplingHookThink. vampirehook drains
-        // health from the hooked player here. The hook's .realowner is the firing actor; QC's tarzan variant
-        // also tracks a hooked-player .aiment, which the port's geometry-latching grapple doesn't set.
+        // health from the hooked player here: it reads thehook.aiment (the hooked player), which the latch above
+        // now records via the SetMovetypeFollow port, so a direct hook hit on an enemy drains as in Base.
         var gh = new MutatorHooks.GrappleHookThinkArgs(hook);
         MutatorHooks.GrappleHookThink.Call(ref gh);
 
         if (hook.Health <= 0f) return; // still in flight, not latched yet
 
-        // Pull: move the player toward a point just short of the hook; speed ramps down near the end.
+        // MOVETYPE_FOLLOW: a latched hook stays glued to whatever it hit. The port stores the followed entity
+        // as hook.Aiment (set in GrapplingHookTouch); keep the chain's origin tracking a moving aiment so a hook
+        // latched onto a moving player/platform doesn't stay fixed in world space (server/hook.qc set_movetype FOLLOW).
+        if (hook.Aiment is { IsFreed: false } follow)
+            Api.Entities.SetOrigin(hook, follow.Origin + hook.ViewOfs);
+
         Vector3 myorg = actor.Origin + actor.ViewOfs;
-        Vector3 dir = QMath.Normalize(hook.Origin - myorg);
-        Vector3 end = hook.Origin - dir * GrappleLengthMin;
-        float dist = (end - myorg).Length();
+        Vector3 toHook = hook.Origin - myorg;
+        float dist = toHook.Length();
+        Vector3 dir = dist != 0f ? toHook * (1f / dist) : Vector3.Zero;
 
-        float spd;
-        if (dist < 200f) spd = dist * (GrappleSpeedPull / 200f);
-        else spd = GrappleSpeedPull;
-        if (spd < 50f) spd = 0f;
+        // server/hook.qc GrapplingHookThink: tarzan (default 2) = elastic rubber-band rope (can also pull a
+        // hooked player/nade); tarzan 0 = the simple straight constant-speed reel. The mutator hook may rewrite
+        // tarzan/pull_entity, but the port's GrappleHookThinkArgs carries no such args yet, so use the cvar.
+        int tarzan = GrappleTarzan;
+        float frametime = Api.Clock.FrameTime;
 
-        actor.Velocity = dir * spd;
-        actor.MoveType = MoveType.Fly;          // QC sets the owner to MOVETYPE_FLY while reeling
-        actor.Flags &= ~EntFlags.OnGround;
+        float[] hl = _hookLength.GetValue(hook, static _ => new float[1] { -1f });
+        if (hl[0] < 0f) hl[0] = (myorg - hook.Origin).Length();
+
+        if (tarzan != 0)
+        {
+            // Elastic rope: shorten the rope toward minlength, spring the player along it (with air friction),
+            // and — for tarzan>=2 — push a hooked player/nade with half the impulse so they get reeled too.
+            Vector3 v = actor.Velocity;
+            Vector3 v0 = v;
+
+            HookState hookState = actor.WeaponState(slot).HookState;
+
+            if ((hookState & HookState.Pulling) != 0)
+            {
+                float newlength = MathF.Max(hl[0] - GrappleSpeedPull * frametime, GrappleLengthMin);
+                if (newlength < dist - GrappleStretch) // overstretched?
+                {
+                    newlength = dist - GrappleStretch;
+                    if (QMath.Dot(v, dir) < 0f) // only if not already moving in hook direction
+                        v += frametime * dir * GrappleForceRubberOverstretch;
+                }
+                hl[0] = newlength;
+            }
+
+            if (actor.MoveType == MoveType.Fly)
+                actor.MoveType = MoveType.Walk;
+
+            if ((hookState & HookState.Releasing) != 0)
+            {
+                hl[0] = dist;
+            }
+            else
+            {
+                // then pull the player along the rope toward the latch point
+                float spring = QMath.Bound(0f, (dist - hl[0]) / GrappleStretch, 1f);
+                v *= 1f - frametime * GrappleAirFriction;
+                v += frametime * dir * spring * GrappleForceRubber;
+
+                Vector3 dv = QMath.Dot(v - v0, dir) * dir;
+                if (tarzan >= 2 && hook.Aiment is { IsFreed: false } aim)
+                {
+                    bool aimWalks = aim.MoveType == MoveType.Walk;
+                    bool aimNade = aim.ClassName == "nade";
+                    if (aimWalks || aimNade)
+                    {
+                        v -= dv * 0.5f;
+                        aim.Velocity -= dv * 0.5f;
+                        aim.Flags &= ~EntFlags.OnGround;
+                        if (aimNade)
+                            aim.NextThink = Api.Clock.Time + GrappleNadeTime; // delay its think after letting go
+                    }
+                }
+
+                actor.Flags &= ~EntFlags.OnGround;
+            }
+
+            actor.Velocity = v;
+        }
+        else
+        {
+            // tarzan 0: the simple straight reel — pull toward a point just short of the hook; ramp down near it.
+            Vector3 end = hook.Origin - dir * GrappleLengthMin;
+            float edist = (end - myorg).Length();
+            float spd;
+            if (edist < 200f) spd = edist * (GrappleSpeedPull / 200f);
+            else spd = GrappleSpeedPull;
+            if (spd < 50f) spd = 0f;
+            actor.Velocity = dir * spd;
+            actor.MoveType = MoveType.Fly;          // QC sets the owner to MOVETYPE_FLY while reeling
+            actor.Flags &= ~EntFlags.OnGround;
+        }
     }
 
     // RemoveHook / GrapplingHookReset — drop the chain and restore the owner's movement.

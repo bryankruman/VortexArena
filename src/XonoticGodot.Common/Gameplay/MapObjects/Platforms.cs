@@ -27,17 +27,34 @@ public static class Platforms
     /// <summary><c>spawnfunc(func_plat)</c>.</summary>
     public static void PlatSetup(Entity this_)
     {
-        if ((this_.SpawnFlags & Crush) != 0)
+        // QC has a q3compat branch here (spawnflags=0, dmg default 2, medplat sounds, CPMA sound_start/end +
+        // pt1_strt/pt1_end map-pack probe). This port layer has no live q3compat flag (CompatRemaps.cs:17), so
+        // there is no path that sets it; we keep it false to mirror the rest of the mapobject layer.
+        const bool q3compat = false;
+
+#pragma warning disable CS0162 // unreachable q3compat branch — kept to document the Base algorithm
+        if (q3compat)
+        {
+            this_.SpawnFlags = 0;           // Q3 plats have no spawnflags
+            if (this_.Dmg == 0f) this_.Dmg = 2f;
+        }
+        else if ((this_.SpawnFlags & Crush) != 0)
+        {
             this_.Dmg = 10000f;
+        }
+#pragma warning restore CS0162
 
         if (this_.Dmg != 0f && string.IsNullOrEmpty(this_.Message))
             this_.Message = "was squished";
+        if (this_.Dmg != 0f && string.IsNullOrEmpty(this_.Message2))
+            this_.Message2 = "was squished by";
 
-        // default sounds
+        // default sounds; the 'sounds' selector + legacy sound1/sound2 overrides are applied by the shared seam.
         if (string.IsNullOrEmpty(this_.Noise))
             this_.Noise = "plats/plat1.wav";   // moving
         if (string.IsNullOrEmpty(this_.Noise1))
             this_.Noise1 = "plats/plat2.wav";  // stop
+        MapMover.ApplyPlatSounds(this_, q3compat);  // sounds==1 -> plat1/2, ==2/q3 -> medplat, then sound1/2 overrides
 
         // QC stores angles into mangle then clears angles (plats don't rotate via .angles).
         this_.MAngle = this_.Angles;
@@ -47,10 +64,15 @@ public static class Platforms
         if (!MapMover.InitMovingBrushTrigger(this_))
             return;
 
+        // QC parses the .platmovetype spawn-key into platmovetype_start/_end here (movers default linear).
+        MapMover.SetPlatMoveType(this_, this_.Platmovetype);
+
         this_.Blocked = PlatCrush;
 
-        if (this_.Speed == 0f) this_.Speed = 150f;
-        if (this_.Lip == 0f) this_.Lip = 16f;
+#pragma warning disable CS0162 // unreachable q3compat default (see q3compat const above)
+        if (this_.Speed == 0f) this_.Speed = q3compat ? 200f : 150f;
+        if (this_.Lip == 0f) this_.Lip = q3compat ? 8f : 16f;
+#pragma warning restore CS0162
         if (this_.Height == 0f) this_.Height = this_.Size.Z - this_.Lip;
 
         // pos1 = top (spawn), pos2 = pos1 lowered by height.
@@ -72,7 +94,10 @@ public static class Platforms
     /// </summary>
     public static void PlatReset(Entity this_)
     {
-        if (!string.IsNullOrEmpty(this_.TargetName))
+        // No live q3compat flag in this layer (CompatRemaps.cs:17); mirror Base with it pinned false.
+        const bool q3compat = false;
+
+        if (!string.IsNullOrEmpty(this_.TargetName) && !q3compat)
         {
             MapMover.SetOrigin(this_, this_.Pos1);
             this_.MoverState = MapMover.StateUp;   // QC sets STATE_UP for a start-raised plat
@@ -82,7 +107,10 @@ public static class Platforms
         {
             MapMover.SetOrigin(this_, this_.Pos2);
             this_.MoverState = MapMover.StateBottom;
-            this_.Use = PlatTriggerUse;
+            // QC: a targeted Q3COMPAT ground plat uses plat_target_use; everything else plat_trigger_use.
+            this_.Use = (!string.IsNullOrEmpty(this_.TargetName) && q3compat)
+                ? PlatTargetUse
+                : PlatTriggerUse;
         }
     }
 
@@ -90,9 +118,38 @@ public static class Platforms
     public static void PlatUse(Entity self, Entity actor)
     {
         self.Use = null;
-        if (self.MoverState != MapMover.StateUp && self.MoverState != MapMover.StateTop)
-            return; // QC objerrors "not in up state"; headless: ignore
+        if (self.MoverState != MapMover.StateUp)
+            return; // QC objerrors "plat_use: not in up state"; headless: ignore
         PlatGoDown(self);
+    }
+
+    /// <summary>
+    /// QC <c>plat_target_use</c>: a Q3COMPAT targeted ground plat's re-raise/refresh handler — a topped plat
+    /// refreshes its dwell, otherwise (any non-up state) it raises. Reachable only on Q3COMPAT plats (which the
+    /// port can't currently produce — no live q3compat flag) and the CSQC path.
+    /// </summary>
+    public static void PlatTargetUse(Entity self, Entity actor)
+    {
+        if (self.MoverState == MapMover.StateTop)
+            self.NextThink = self.LTime + 1f;
+        else if (self.MoverState != MapMover.StateUp)
+            PlatGoUp(self);
+    }
+
+    /// <summary>
+    /// QC <c>plat_outside_touch</c>: a mapper-wired outside trigger sends a topped plat down. Same live-creature +
+    /// health guard as the center touch; stock func_plat never spawns this trigger, so it is custom-wiring only.
+    /// </summary>
+    public static void PlatOutsideTouch(Entity self, Entity toucher)
+    {
+        if (!MapMover.IsCreature(toucher))
+            return;
+        if (toucher.GetResource(ResourceType.Health) <= 0f)
+            return;
+
+        Entity plat = self.Enemy!;
+        if (plat.MoverState == MapMover.StateTop)
+            PlatGoDown(plat);
     }
 
     /// <summary>
@@ -126,6 +183,14 @@ public static class Platforms
         {
             tmin.Y = (this_.Mins.Y + this_.Maxs.Y) / 2f;
             tmax.Y = tmin.Y + 1f;
+        }
+
+        // QC rejects a degenerate volume (delete + objerror "plat_spawn_inside_trigger: platform has too small
+        // a height"). Headless: drop the trigger rather than register an inverted box.
+        if (tmin.X >= tmax.X || tmin.Y >= tmax.Y || tmin.Z >= tmax.Z)
+        {
+            MapMover.RemoveEntity(trigger);
+            return;
         }
 
         Api.Entities.SetSize(trigger, tmin, tmax);

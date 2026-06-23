@@ -185,10 +185,27 @@ public sealed class Blaster : Weapon
     {
         self.Touch = null; // event_damage = func_null; prevent re-entry
 
+        // QC g_projectiles_interact==1 hack (blaster.qc:16-22,38-39): if the toucher is itself a projectile
+        // that normally ignores knockback (damageforcescale 0), temporarily give it damageforcescale=1 so the
+        // blast can knock it around — the Blaster can "shoot" other projectiles. Restored afterwards.
+        // Projectiles in the port carry EntFlags.Item as the FL_PROJECTILE stand-in (see Attack: missile.Flags).
+        bool zeroDamageForceScale = false;
+        if (other is not null
+            && (Api.Services is null || Api.Cvars.GetFloat("g_projectiles_interact") == 1f)
+            && (other.Flags & EntFlags.Item) != 0
+            && other.DamageForceScale == 0f)
+        {
+            other.DamageForceScale = 1f;
+            zeroDamageForceScale = true;
+        }
+
         Vector3 center = self.Origin + (self.Mins + self.Maxs) * 0.5f;
         WeaponSplash.RadiusDamage(self, center, Primary.Damage, Primary.EdgeDamage, Primary.Radius,
             self.Owner, RegistryId, Primary.Force,
             forceScale: new Vector3(1f, 1f, Primary.ForceZScale), directHit: other); // QC force_xyzscale.z
+
+        if (zeroDamageForceScale)
+            other!.DamageForceScale = 0f; // restore: projectiles default to ignoring knockback
 
         WeaponSplash.ImpactSound(self, "weapons/laserimpact.wav"); // QC SND_LASERIMPACT (wr_impacteffect)
         // QC: pointparticles(EFFECT_BLASTER_IMPACT, org2, w_backoff * 1000, 1) — the impact sprays back out of

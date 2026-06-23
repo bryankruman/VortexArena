@@ -167,4 +167,73 @@ public static class TriggerTouch
             return; // one teleport per tick — the mover has moved off this (fixed) overlap box
         }
     }
+
+    /// <summary>
+    /// CLIENT-PREDICTION warpzone pass — the local-player predictor's analogue of the server's post-move
+    /// <see cref="Run"/> for <c>trigger_warpzone</c> (the seamless-portal teleport, lib/warpzone/server.qc
+    /// WarpZone_Touch → WarpZone_Teleport). Warps <paramref name="mover"/> through any LINKED warpzone whose
+    /// trigger box it now overlaps — origin/velocity/angles/avelocity rotated by the zone's seam transform, ground
+    /// cleared, OldOrigin pinned to cancel interpolation, and the <c>.fixangle</c> view-snap signal stamped — in
+    /// PREDICTED mode (NONE of the server-only side effects: no SUB_UseTargets target relays, no projectile/stuck
+    /// recovery, no f0/f1 re-trace). Faithful to Xonotic, whose warpzone crossing runs on CSQC too
+    /// (WarpZone_FixPMove transforms pmove_org/input_angles); predicting the crossing keeps the local origin and
+    /// view in lockstep with authority so a warpzone no longer rubber-bands the camera through the server's
+    /// post-touch correction snap, exactly the way <see cref="PredictTeleportsAmbient"/> closes that gap for
+    /// trigger_teleport.
+    ///
+    /// Mirrors the other predictors: resolves zones through the published ambient
+    /// <see cref="XonoticGodot.Common.Gameplay.WarpzoneTrace.AmbientManager"/> (the QC global g_warpzones,
+    /// wired per-match by TraceService.SetWarpzoneManager) so it works on the demo facade AND the listen-server
+    /// wrapper; does NOT early-out on a SOLID_NOT mover (the prediction carrier is deliberately non-solid); fires
+    /// at most one warp per call (the warp moves the mover off the fixed overlap box). The crossing gate matches
+    /// the authoritative <see cref="XonoticGodot.Common.Gameplay.WarpzoneManager.Teleport"/> EXACTLY (only warp
+    /// when moving INTO the IN plane) so the predicted warp fires on the same tick the server's touch does.
+    /// </summary>
+    public static void PredictWarpzonesAmbient(Entity mover)
+    {
+        if (Api.Services is null || mover.IsFreed)
+            return;
+
+        var manager = XonoticGodot.Common.Gameplay.WarpzoneTrace.AmbientManager;
+        if (manager is null)
+            return;
+
+        // Box from the mover's CURRENT origin (no relink dependency) + DP's 1-unit areagrid expansion, matching
+        // the jumppad/teleport predictors.
+        Vector3 areaMin = (mover.Origin + mover.Mins) - Vector3.One;
+        Vector3 areaMax = (mover.Origin + mover.Maxs) + Vector3.One;
+
+        foreach (XonoticGodot.Common.Gameplay.Warpzone wz in manager.Zones)
+        {
+            if (!wz.Linked || wz.Trigger is not { } trig)
+                continue;
+            if (ReferenceEquals(trig, mover) || trig.IsFreed || trig.Solid != Solid.Trigger)
+                continue;
+            if (!CollisionWorld.BoxesOverlap(areaMin, areaMax, trig.AbsMin, trig.AbsMax))
+                continue;
+            // QC WarpZone_Teleport gate (matches WarpzoneManager.Teleport): only warp when crossing INTO the
+            // plane (velocity has a component against the IN forward that faces the entity). An entity loitering
+            // at the mouth or moving back out is not warped — predict identically to authority or the reconcile
+            // re-introduces the snap we are trying to remove.
+            var t = wz.Transform;
+            if (Vector3.Dot(mover.Velocity, t.InForward) > 0f && mover.Velocity.LengthSquared() > 1f)
+                continue;
+
+            Vector3 newOrigin = t.TransformOrigin(mover.Origin);
+            mover.Velocity = t.TransformVelocity(mover.Velocity);
+            mover.AVelocity = t.TransformVelocity(mover.AVelocity);
+            Vector3 newAngles = t.TransformAngles(mover.Angles);
+            mover.Angles = newAngles;
+            Api.Entities.SetOrigin(mover, newOrigin);
+            mover.OldOrigin = newOrigin;            // QC: cancel interpolation across the seam (a teleport, not a slide)
+            mover.Flags &= ~EntFlags.OnGround;      // QC UNSET_ONGROUND
+
+            // QC player.fixangle = true: snap the local view to the rotated facing across the seam this tick
+            // (the host reads FixAngle/FixAngleAngles off the carrier after the prediction step). Predicted only —
+            // the server stamps its own authoritative fixangle.
+            mover.FixAngle = true;
+            mover.FixAngleAngles = newAngles;
+            return; // one warp per tick — the mover has moved off this (fixed) overlap box
+        }
+    }
 }

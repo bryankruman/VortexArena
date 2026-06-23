@@ -173,6 +173,21 @@ public abstract partial class GameType : IRegistered
     public virtual void OnInit() { }
 
     /// <summary>
+    /// Tear down every hook this gametype subscribed to the global chains (<see cref="MutatorHooks"/>,
+    /// <c>Combat.Death</c>, etc.) when it activated — the symmetric counterpart to each gametype's
+    /// <c>Activate()</c>, mirroring <see cref="MutatorActivation.DeactivateAll"/> for mutators. The base is a
+    /// no-op (DM/TDM and the objective modes override it to remove their handlers); every concrete gametype
+    /// overrides it and guards on its own "was I subscribed?" flag so it is safe to call even when the
+    /// gametype never activated.
+    ///
+    /// This is what lets a gametype's hooks be dropped on a progs reload / registry reset (so a CTS map's
+    /// Shotgun-only PlayerSpawn/PlayerPreThink handlers can't leak onto a subsequently-booted DM world) and
+    /// when a live world switches gametypes (a campaign level change, a gametype vote). Without a virtual
+    /// here the global hook chains retained handlers bound to a discarded gametype instance.
+    /// </summary>
+    public virtual void Deactivate() { }
+
+    /// <summary>
     /// QC <c>WinningConditionHelper_equality</c> (server/scores.qc:500/537): are the top two contenders
     /// currently <em>tied</em> on this gametype's primary win key? The overtime/sudden-death cascade
     /// (server/world.qc <c>WinningCondition_Scores</c> → <c>GetWinningCode</c>) routes a tie at the time/score

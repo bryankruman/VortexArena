@@ -126,6 +126,11 @@ public sealed class Electro : Weapon
         Combo.EdgeDamage = Bal("g_balance_electro_combo_edgedamage", 25f);
         Combo.Force = Bal("g_balance_electro_combo_force", 120f);
         Combo.Radius = Bal("g_balance_electro_combo_radius", 150f);
+        // QC WEP_CVAR(WEP_ELECTRO, combo_speed) — chain ripple delay = distance/speed. Was permanently 1000
+        // (the field default) because Configure never seeded it; Base default is 2000.
+        ComboSpeed = Bal("g_balance_electro_combo_speed", 2000f);
+        ComboComboRadiusThruwall = Bal("g_balance_electro_combo_comboradius_thruwall", 200f);
+        CombocSafeAmmoCheck = BalBool("g_balance_electro_combo_safeammocheck", true);
     }
 
     // METHOD(Electro, wr_think) — common/weapons/weapon/electro.qc
@@ -236,37 +241,47 @@ public sealed class Electro : Weapon
             return;
         }
 
-        // midair combo: detonate orbs within midaircombo_radius (defaults on in xonotic balance), and if any
-        // were found and midaircombo_explode is set, blow up the bolt too.
+        // midair combo: convert nearby orbs into a chained combo while the bolt is still in flight (default OFF
+        // in the shipped balance — midaircombo_radius 0). If any were converted and midaircombo_explode is set,
+        // blow up the bolt too. QC W_Electro_Bolt_Think:261-309: each orb becomes electro_orb_chain + is
+        // scheduled to W_Electro_ExplodeCombo (delayed by midaircombo/combo_speed) — exactly what TriggerCombo
+        // does, so we reuse it (gives the chain ripple + ELECTRO_COMBO + impact sound + MURDER_COMBO deathtype).
         if (Primary.MidairComboRadius > 0f)
         {
-            bool found = false;
-            var orbs = Api.Entities.FindInRadius(self.Origin, Primary.MidairComboRadius)
-                .Where(e => e.ClassName == "electro_orb" && !e.IsFreed).ToList();
-            foreach (Entity e in orbs)
-            {
-                // own/teammate/enemy gating is the midaircombo_own/_teammate/_enemy cvars; default enemy-only,
-                // but without team data here we trigger any non-self orb (the common FFA case).
-                e.Owner = self.Owner;
-                e.Touch = null; e.Think = null; e.TakeDamage = DamageMode.No;
-                WeaponSplash.RadiusDamage(e, e.Origin, Combo.Damage, Combo.EdgeDamage, Combo.Radius,
-                    self.Owner, RegistryId, Combo.Force);
-                EffectEmitter.Emit("ELECTRO_COMBO", e.Origin);
-                Api.Entities.Remove(e);
-                found = true;
-            }
+            int before = CountOrbs(self.Origin, Primary.MidairComboRadius);
+            // own/teammate/enemy gating is the midaircombo_own/_teammate/_enemy cvars (all default 1, so any orb
+            // triggers); team data isn't threaded here, so we trigger any non-self orb (the common FFA case).
+            TriggerCombo(self.Origin, Primary.MidairComboRadius, self.Owner);
+            bool found = before > 0;
             if (found && Primary.MidairComboExplode)
             {
                 ExplodeBolt(self, null);
                 return;
             }
+            // QC reschedules on midaircombo_interval (0.1), not the bolt's idle 0.05 step.
+            self.NextThink = MathF.Min(Api.Clock.Time + 0.1f, deathTime);
+            return;
         }
-        self.NextThink = MathF.Min(Api.Clock.Time + 0.05f, deathTime);
+        // QC default branch (midaircombo off): nextthink = ltime — no per-tick think.
+        self.NextThink = deathTime;
     }
+
+    // Count live electro_orbs within radius (the midair-combo "did we trigger anything?" probe — TriggerCombo
+    // renames them to electro_orb_chain, so we must sample before it runs).
+    private int CountOrbs(Vector3 org, float rad)
+        => Api.Entities.FindInRadius(org, rad).Count(e => e.ClassName == "electro_orb" && !e.IsFreed);
 
     // W_Electro_Explode (bolt path) — bolt blast + trigger nearby orbs into a combo. electro.qc
     private void ExplodeBolt(Entity self, Entity? directHit)
     {
+        // W_Electro_Explode (electro.qc:197-200): a direct bolt hit on a flying enemy earns the ELECTROBITCH
+        // airshot announcement for the firer. Test BEFORE the projectile is removed.
+        if (directHit is not null && self.Owner is { } owner
+            && directHit.TakeDamage == DamageMode.Aim && (directHit.Flags & EntFlags.Client) != 0
+            && !ReferenceEquals(directHit, owner) && !Teams.SameTeam(directHit, owner) // QC DIFF_TEAM
+            && directHit.DeadState == DeadFlag.No && IsFlying(directHit))
+            NotificationSystem.Announce(owner, "ACHIEVEMENT_ELECTROBITCH");
+
         self.Touch = null;
         self.Think = null;
         self.TakeDamage = DamageMode.No;
@@ -274,12 +289,15 @@ public sealed class Electro : Weapon
         // Trigger orbs within comboradius FIRST (so they chain off this blast).
         TriggerCombo(self.Origin, Primary.ComboRadius, self.Owner);
 
+        // deathTag = plain weapon tag so the obituary reads MURDER_BOLT; directHit lets the struck target skip
+        // the LOS reduction (QC passes directhitentity through to RadiusDamage).
         WeaponSplash.RadiusDamage(self, self.Origin, Primary.Damage, Primary.EdgeDamage, Primary.Radius,
-            self.Owner, RegistryId, Primary.Force);
+            self.Owner, RegistryId, Primary.Force, directHit: directHit, accuracyWeapon: this, deathTag: DeathBolt);
 
         // wr_impacteffect (electro.qc:741): the plain PRIMARY impact is EFFECT_ELECTRO_IMPACT — the expanding
         // blue shockwave ring. ELECTRO_BALLEXPLODE belongs to the secondary orb (HITTYPE_SECONDARY, :726).
         EffectEmitter.Emit("ELECTRO_IMPACT", self.Origin);
+        WeaponSplash.ImpactSound(self, "weapons/electro_impact.wav"); // QC SND_ELECTRO_IMPACT (wr_impacteffect)
         Api.Entities.Remove(self);
     }
 
@@ -314,19 +332,30 @@ public sealed class Electro : Weapon
         orb.Velocity = WeaponFiring.ProjectileVelocity(dir, up, Secondary.Speed, Secondary.SpeedUp);
         orb.Angles = QMath.VecToAngles(orb.Velocity);
 
-        orb.Touch = (self, other) => OrbTouch(self, other);
-        orb.Think = self => ExplodeOrb(self); // adaptor_think2use_hittype_splash at lifetime
+        // A bounced orb's kill line reads MURDER_COMBO (QC W_Electro_Orb_Touch:466 ORs HITTYPE_BOUNCE onto the
+        // orb's projectiledeathtype). The port Entity has no projectiledeathtype field, so we track the bounce
+        // on a captured flag the touch/think closures share, and fold it into the orb's deathTag at explode.
+        bool[] bounced = { false };
+
+        orb.Touch = (self, other) => OrbTouch(self, other, bounced);
+        orb.Think = self => ExplodeOrb(self, bounced); // adaptor_think2use_hittype_splash at lifetime
         orb.NextThink = Api.Clock.Time + Secondary.Lifetime;
         // W_Electro_Orb_Damage: a shot-down orb detonates as a combo (crediting whoever shot it).
+        // Projectiles.MakeShootable installs the QC W_CheckProjectileDamage gate + HP-subtract shim (combo-able,
+        // exception 1 so it passes the stock g_projectiles_damage -2), then fires this ProjectileDamage at hp<=0.
         orb.ProjectileDamage = (self, attacker) =>
         {
             self.Owner = attacker ?? self.Owner;
             self.Touch = null; self.Think = null; self.TakeDamage = DamageMode.No;
             WeaponSplash.RadiusDamage(self, self.Origin, Combo.Damage, Combo.EdgeDamage, Combo.Radius,
-                self.Owner, RegistryId, Combo.Force);
+                self.Owner, RegistryId, Combo.Force, accuracyWeapon: this, deathTag: DeathCombo);
             EffectEmitter.Emit("ELECTRO_COMBO", self.Origin);
+            WeaponSplash.ImpactSound(self, "weapons/electro_impact_combo.wav"); // QC SND_ELECTRO_IMPACT_COMBO
             Api.Entities.Remove(self);
         };
+        // Wire the shoot-down-into-combo path live (Wave-1 seam): exception 1 = combo-able regardless of the
+        // stock g_projectiles_damage -2, matching QC W_Electro_Orb_Damage's is_combo branch.
+        Projectiles.MakeShootable(orb, exception: 1f);
 
         // MUTATOR_CALLHOOK(EditProjectile, actor, proj) (electro.qc). invincibleproj zeroes the orb's health
         // here, so a shot-down combo can't be triggered — matching QC.
@@ -338,35 +367,59 @@ public sealed class Electro : Weapon
     }
 
     // W_Electro_Orb_Touch — burst on a player (touchexplode), otherwise bounce. electro.qc
-    private void OrbTouch(Entity self, Entity other)
+    private void OrbTouch(Entity self, Entity other, bool[] bounced)
     {
         bool hitPlayer = other.TakeDamage == DamageMode.Aim || (other.Flags & EntFlags.Client) != 0;
         if (hitPlayer && Secondary.TouchExplode)
         {
-            ExplodeOrb(self);
+            ExplodeOrb(self, bounced);
             return;
         }
-        // bounce off the world (engine MOVETYPE_BOUNCE handles the reflection).
+        // QC W_Electro_Orb_Touch:462 — don't bounce-sound off / stick to the firer's OWN other projectiles.
+        if (ReferenceEquals(other.Owner, self.Owner) && other.ClassName == self.ClassName)
+            return;
+        // bounce off the world (engine MOVETYPE_BOUNCE handles the reflection); a bounced orb's kill reads
+        // MURDER_COMBO (QC ORs HITTYPE_BOUNCE here).
+        bounced[0] = true;
         Api.Sound.Play(self, SoundChannel.Body, "weapons/electro_bounce.wav");
         self.Angles = QMath.VecToAngles(self.Velocity);
     }
 
     // W_Electro_Explode (orb path) — orb blast (secondary balance). electro.qc
-    private void ExplodeOrb(Entity self)
+    private void ExplodeOrb(Entity self, bool[] bounced)
     {
         self.Touch = null;
         self.Think = null;
         self.TakeDamage = DamageMode.No;
 
+        // deathTag carries HITTYPE_SECONDARY (QC W_Electro_Attack_Orb: projectiledeathtype = m_id|HITTYPE_SECONDARY),
+        // plus HITTYPE_BOUNCE if the orb had already bounced — so the obituary reads MURDER_ORBS (or MURDER_COMBO
+        // for a bounced orb) and wr_impacteffect picks the ELECTRO_BALLEXPLODE/secondary branch.
+        string death = bounced[0] ? Damage.DeathTypes.WithHitType(DeathOrb, Damage.DeathTypes.Bounce) : DeathOrb;
         WeaponSplash.RadiusDamage(self, self.Origin, Secondary.Damage, Secondary.EdgeDamage, Secondary.Radius,
-            self.Owner, RegistryId, Secondary.Force);
+            self.Owner, RegistryId, Secondary.Force, accuracyWeapon: this, deathTag: death);
 
         EffectEmitter.Emit("ELECTRO_BALLEXPLODE", self.Origin);
+        WeaponSplash.ImpactSound(self, "weapons/electro_impact.wav"); // QC SND_ELECTRO_IMPACT (secondary wr_impacteffect)
         Api.Entities.Remove(self);
     }
 
-    /// <summary>g_balance_electro_combo_speed — chain delay = distance/speed (0 = instant). Default 1000.</summary>
-    public float ComboSpeed = 1000f;
+    /// <summary>g_balance_electro_combo_speed — chain delay = distance/speed (0 = instant). Base default 2000 (seeded in Configure).</summary>
+    public float ComboSpeed = 2000f;
+
+    /// <summary>g_balance_electro_combo_comboradius_thruwall — orbs beyond this distance must pass an LOS trace to chain.</summary>
+    public float ComboComboRadiusThruwall = 200f;
+
+    /// <summary>g_balance_electro_combo_safeammocheck — secondary checkammo also requires the follow-up combo bolt's ammo.</summary>
+    public bool CombocSafeAmmoCheck = true;
+
+    // QC projectiledeathtype tags. The bolt is the plain weapon tag; the orb adds HITTYPE_SECONDARY; a combo
+    // blast adds HITTYPE_BOUNCE (electro.qc:150,187 — "use THIS type for a combo because primary can't bounce").
+    // These string tags (passed as deathTag to RadiusDamage) are what drive the MURDER_BOLT/ORBS/COMBO obituary
+    // split in DeathMessages — the int RegistryId path can only ever produce MURDER_BOLT.
+    private string DeathBolt => Damage.DeathTypes.FromWeapon(NetName);
+    private string DeathOrb => Damage.DeathTypes.WithHitType(DeathBolt, Damage.DeathTypes.Secondary);
+    private string DeathCombo => Damage.DeathTypes.WithHitType(DeathBolt, Damage.DeathTypes.Bounce);
 
     /// <summary>
     /// Port of W_Electro_TriggerCombo (electro.qc): every live electro_orb within <paramref name="rad"/> of
@@ -383,6 +436,18 @@ public sealed class Electro : Weapon
             .Where(e => e.ClassName == "electro_orb" && !e.IsFreed).ToList();
         foreach (Entity e in orbs)
         {
+            // QC W_Electro_TriggerCombo:85-96 thruwall test: an orb farther than combo_comboradius_thruwall must
+            // pass a LOS trace from the blast, or the chain aborts to it (combos don't reach orbs around corners
+            // beyond the thruwall distance). Within thruwall distance the chain always reaches (the default WarpZone
+            // find is non-thruwall, but the explicit thruwall cvar re-enables near-range thru-wall chaining).
+            if (ComboComboRadiusThruwall > 0f
+                && (e.Origin - org).Length() > ComboComboRadiusThruwall)
+            {
+                TraceResult tr = Api.Trace.Trace(org, Vector3.Zero, Vector3.Zero, e.Origin, MoveFilter.NoMonsters, e);
+                if (tr.Fraction < 1f)
+                    continue; // through a wall and outside thruwall range — abort
+            }
+
             e.Owner = own;
             e.ClassName = "electro_orb_chain"; // so a re-trigger doesn't pick it up again
             e.Touch = null;
@@ -402,15 +467,36 @@ public sealed class Electro : Weapon
         // chain to orbs within combo_comboradius before blasting.
         TriggerCombo(self.Origin, Combo.ComboRadius, self.Owner);
         self.Think = null;
+        // QC W_Electro_ExplodeCombo:187 — deathtype = m_id | HITTYPE_BOUNCE (a combo can't use the primary's
+        // plain tag because primary can't bounce), so the obituary reads MURDER_COMBO.
         WeaponSplash.RadiusDamage(self, self.Origin, Combo.Damage, Combo.EdgeDamage, Combo.Radius,
-            self.Owner, RegistryId, Combo.Force);
+            self.Owner, RegistryId, Combo.Force, accuracyWeapon: this, deathTag: DeathCombo);
         EffectEmitter.Emit("ELECTRO_COMBO", self.Origin);
+        WeaponSplash.ImpactSound(self, "weapons/electro_impact_combo.wav"); // QC SND_ELECTRO_IMPACT_COMBO
         Api.Entities.Remove(self);
     }
 
-    // METHOD(Electro, wr_checkammo1) — electro.qc
+    // bool IsFlying(entity) — common/physics/player.qc:843, the airshot test: airborne, not swimming, and at
+    // least 24u of clearance below (so a player skimming the ground doesn't count). Used by the ELECTROBITCH check.
+    private static bool IsFlying(Entity e)
+    {
+        if (e.OnGround) return false;
+        if (e.WaterLevel >= 2) return false; // WATERLEVEL_SWIMMING
+        TraceResult tr = Api.Trace.Trace(e.Origin, e.Mins, e.Maxs,
+            e.Origin - new Vector3(0f, 0f, 24f), MoveFilter.Normal, e);
+        return tr.Fraction >= 1f;
+    }
+
+    // METHOD(Electro, wr_checkammo1) — electro.qc:667. Base also ORs in the clip-load term (weapon_load >= ammo)
+    // for the reloadable weapon; with reload_ammo defaulting 0 the clip is unused, so the resource check matches.
     public bool CheckAmmoPrimary(Entity actor) => actor.GetResource(AmmoType) >= Primary.Ammo;
 
-    // METHOD(Electro, wr_checkammo2) — electro.qc
-    public bool CheckAmmoSecondary(Entity actor) => actor.GetResource(AmmoType) >= Secondary.Ammo;
+    // METHOD(Electro, wr_checkammo2) — electro.qc:674. QC combo_safeammocheck (default 1): "true if you can fire
+    // at least one secondary blob AND one primary shot after it" — so the auto-switch leaves the weapon while it
+    // can still afford the follow-up combo bolt, not just one bare orb.
+    public bool CheckAmmoSecondary(Entity actor)
+    {
+        float need = CombocSafeAmmoCheck ? Secondary.Ammo + Primary.Ammo : Secondary.Ammo;
+        return actor.GetResource(AmmoType) >= need;
+    }
 }

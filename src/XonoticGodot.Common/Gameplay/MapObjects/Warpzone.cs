@@ -116,6 +116,10 @@ public sealed class Warpzone
     /// <summary>The target name linking this zone to its partner (QC .target / .targetname).</summary>
     public string TargetName = "", Target = "";
 
+    /// <summary>QC <c>.enemy</c> — the linked partner zone (the OUT side). Set when the pair is linked; used to fire
+    /// the partner's targets on a crossing (QC <c>SUB_UseTargets_SkipTargets(this.enemy, ...)</c>).</summary>
+    public Warpzone? Partner;
+
     public bool Linked => Transform.Valid;
 }
 
@@ -128,6 +132,14 @@ public sealed class WarpzoneManager
 {
     private readonly List<Warpzone> _zones = new();
     public IReadOnlyList<Warpzone> Zones => _zones;
+
+    /// <summary>
+    /// QC <c>.warpzone_teleport_finishtime</c> — the per-entity same-frame re-teleport guard (server.qc:186). After a
+    /// crossing the entity emerges potentially inside/touching the PARTNER zone (or re-touches this one as the touch
+    /// pass re-fires); a teleport is suppressed while <c>time &lt;= finishtime</c> so a single cross can't ping-pong
+    /// between the two zones in one frame. Keyed by entity (QC stores it on the edict); pruned lazily when freed.
+    /// </summary>
+    private readonly Dictionary<Entity, float> _teleportFinishTime = new();
 
     /// <summary>Register a warpzone (QC trigger_warpzone spawnfunc → IL_PUSH(g_warpzones)).</summary>
     public Warpzone Add(Warpzone wz) { _zones.Add(wz); return wz; }
@@ -164,6 +176,7 @@ public sealed class WarpzoneManager
         wz.OutOrigin = partner.InOrigin;
         wz.OutAngles = partner.InAngles;
         wz.Transform = new WarpzoneTransform(wz.InOrigin, wz.InAngles, partner.InOrigin, partner.InAngles);
+        wz.Partner = partner; // QC this.enemy = partner — for the partner-zone target relay on a crossing
     }
 
     private Warpzone? FindByTargetName(string name, Warpzone? excludeSelf = null)
@@ -178,17 +191,34 @@ public sealed class WarpzoneManager
     }
 
     /// <summary>
-    /// QC WarpZone_Teleport: warp <paramref name="e"/> through <paramref name="wz"/> — transform its origin,
-    /// velocity, angles and view. Only fires when the entity is actually moving INTO the surface (velocity has a
-    /// component against the IN forward), so an entity loitering at the mouth or moving away isn't teleported.
-    /// Returns true if the teleport happened.
+    /// QC <c>WarpZone_Touch</c> + <c>WarpZone_Teleport</c>: warp <paramref name="e"/> through <paramref name="wz"/> —
+    /// transform its origin, velocity, angles and view, momentum preserved. The crossing is gated by the QC
+    /// plane-side test <c>WarpZone_PlaneDist(this, origin + view_ofs) &gt;= 0 → skip</c> (server.qc:193): an entity is
+    /// only teleported once it is on the FAR (negative) side of the IN plane — i.e. it has actually crossed the
+    /// surface — regardless of its velocity sign, exactly like Base (an entity loitering just past the plane with
+    /// outward/zero velocity is still teleported). The QC same-frame re-teleport guard
+    /// (<c>warpzone_teleport_finishtime</c>) prevents a ping-pong between the paired zones in one frame. Returns true
+    /// if the teleport happened.
     /// </summary>
     public bool Teleport(Entity e, Warpzone wz)
     {
         if (!wz.Linked) return false;
-        // QC: only warp when crossing INTO the plane (moving against the surface normal that faces the entity).
-        if (Vector3.Dot(e.Velocity, wz.Transform.InForward) > 0f && e.Velocity.LengthSquared() > 1f)
-            return false; // moving back out of the zone — ignore
+
+        // QC server.qc:186 — already teleported this frame (the entity emerges in/near the partner zone and would
+        // immediately re-touch). Suppress until the guard expires.
+        float now = MapMover.Now();
+        if (_teleportFinishTime.TryGetValue(e, out float finish))
+        {
+            if (e.IsFreed) _teleportFinishTime.Remove(e);   // don't pin a freed edict (QC stores it on the entity)
+            else if (now <= finish) return false;
+        }
+
+        // QC server.qc:193 — WarpZone_PlaneDist(this, toucher.origin + toucher.view_ofs) >= 0 → wrong side, don't
+        // teleport yet. PlaneDist = (point - warpzone_origin)·warpzone_forward; the entity must be PAST the plane
+        // (negative side) before it warps. This is the plane-side test, NOT a velocity-direction gate.
+        Vector3 point = e.Origin + e.ViewOfs;
+        if (Vector3.Dot(point - wz.Transform.InOrigin, wz.Transform.InForward) >= 0f)
+            return false; // not yet across the seam
 
         Vector3 newOrigin = wz.Transform.TransformOrigin(e.Origin);
         e.Velocity = wz.Transform.TransformVelocity(e.Velocity);
@@ -198,10 +228,20 @@ public sealed class WarpzoneManager
         else e.Origin = newOrigin;
         e.OldOrigin = newOrigin; // QC: cancel interpolation across the seam (a teleport, not a slide)
 
-        // QC WarpZone_Touch fires the zone's targets on a crossing (SUB_UseTargets on this + this.enemy); a map
-        // can chain a relay/sound/etc. off a warpzone. No-op when the trigger carries no .target.
-        if (wz.Trigger is { } trig && !string.IsNullOrEmpty(trig.Target))
-            MapMover.UseTargets(trig, e, trig);
+        // QC server.qc:355 — stamp the same-frame re-teleport guard so the partner-zone touch (which the entity now
+        // overlaps after emerging) doesn't immediately warp it straight back. Base uses
+        // time + PHYS_INPUT_FRAMETIME - dt as a back-teleport guard; with no per-move dt here we hold for one frame.
+        _teleportFinishTime[e] = now + MapMover.FrameTime();
+
+        // QC WarpZone_Touch fires the targets of BOTH this zone and its partner (this.enemy) on a crossing, with the
+        // QC skip masks: this → SkipTargets BIT(1)|BIT(3); this.enemy → BIT(1)|BIT(2) (server.qc:218-219). A map can
+        // chain a relay/sound/door off either side of a warpzone. No-op when neither trigger carries a target.
+        if (wz.Trigger is { } trig)
+            MapMover.UseTargetsEx(trig, e, trig, preventReuse: false,
+                skipTargets: MapMover.SkipTarget1 | MapMover.SkipTarget3);
+        if (wz.Partner?.Trigger is { } partnerTrig)
+            MapMover.UseTargetsEx(partnerTrig, e, e, preventReuse: false,
+                skipTargets: MapMover.SkipTarget1 | MapMover.SkipTarget2);
         return true;
     }
 
@@ -357,8 +397,10 @@ public sealed class WarpzoneManager
     {
         a.OutOrigin = b.InOrigin; a.OutAngles = b.InAngles;
         a.Transform = new WarpzoneTransform(a.InOrigin, a.InAngles, b.InOrigin, b.InAngles);
+        a.Partner = b;
         b.OutOrigin = a.InOrigin; b.OutAngles = a.InAngles;
         b.Transform = new WarpzoneTransform(b.InOrigin, b.InAngles, a.InOrigin, a.InAngles);
+        b.Partner = a;
     }
 
     // =============================================================================================

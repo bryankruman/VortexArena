@@ -1095,25 +1095,39 @@ public partial class ClientWorld : Node3D
                 _ = CsqcModelEffects.Apply(Effects, node, e, st.Effects, modelFlags: 0, frameTime, Api.Services?.Sound, ghostBit);
 
             // (4) ITEM VISIBILITY FX (item-only — these flags are never set on players/monsters): QC ItemDraw's
-            //     alpha pass (client/items/items.qc:163-210). Priority matches QC (availability, then the expiring
-            //     fade layered on top): an unavailable picked-up item is the cl_ghost_items "ghost"; an expiring
-            //     loot item fades + emits despawn puffs; an available, non-expiring item resets to opaque once.
-            if (e.ItemExpiringFx)
+            //     alpha pass (client/items/items.qc:144-210). QC sets a base alpha from the DISTANCE fade
+            //     (g_items_maxdist/cl_items_fadedist) FIRST, then multiplies the availability (ghost) / weapon-stay /
+            //     expiring (despawn) factors on top. The port composes the same way: distFade is the base, the
+            //     ghost/despawn fade multiplies onto it. An available, non-expiring item that is also un-faded by
+            //     distance resets to opaque once (no per-frame churn).
+            if (IsItemEntity(e))
             {
-                DriveItemDespawnFx(e, node, st);
-                st.ItemFaded = true;
-            }
-            else if (!e.ItemAvailable)
-            {
-                DriveItemGhostFx(node, st);
-                st.ItemFaded = true;
-            }
-            else if (st.ItemFaded)
-            {
-                // Back to available (respawned) — undo the prior ghost/despawn fade exactly once (no per-frame churn).
-                SetTreeTransparency(node, st, 0f);
-                node.SetGameplayVisible(true);
-                st.ItemFaded = false;
+                float distAlpha = ItemDistanceAlpha(e, viewOrigin); // QC lines 144-158 base alpha
+                if (e.ItemExpiringFx)
+                {
+                    DriveItemDespawnFx(e, node, st, distAlpha);
+                    st.ItemFaded = true;
+                }
+                else if (!e.ItemAvailable)
+                {
+                    DriveItemGhostFx(node, st, distAlpha);
+                    st.ItemFaded = true;
+                }
+                else if (distAlpha < 0.999f)
+                {
+                    // Available but distance-faded: apply only the distance alpha (QC's available branch keeps the
+                    // base alpha, colormod 1, no ghost/stay multiply). Hidden once fully faded out past fade_end.
+                    SetTreeTransparency(node, st, 1f - distAlpha);
+                    node.SetGameplayVisible(distAlpha > 0.001f);
+                    st.ItemFaded = true;
+                }
+                else if (st.ItemFaded)
+                {
+                    // Back to available + in-range — undo the prior ghost/despawn/distance fade exactly once.
+                    SetTreeTransparency(node, st, 0f);
+                    node.SetGameplayVisible(true);
+                    st.ItemFaded = false;
+                }
             }
 
             // (5) STATUS-EFFECT BURNING (QC ENT_CLIENT_STATUSEFFECTS): a burning entity emits a fire particle burst
@@ -1132,11 +1146,12 @@ public partial class ClientWorld : Node3D
     /// <c>'-1 -1 -1'</c> = no tint) is left for a follow-up. Reuses the per-instance transparency the despawn fade
     /// uses (never touches the shared/cached item materials); the bob+spin keeps running (driven in EntityNode).
     /// </summary>
-    private void DriveItemGhostFx(EntityNode node, CsqcState st)
+    private void DriveItemGhostFx(EntityNode node, CsqcState st, float distAlpha = 1f)
     {
         float ghost = Mathf.Clamp(CvarF("cl_ghost_items", 0.45f), 0f, 1f); // QC autocvar_cl_ghost_items default 0.45
-        SetTreeTransparency(node, st, 1f - ghost);
-        node.SetGameplayVisible(ghost > 0.001f);
+        float alpha = ghost * Mathf.Clamp(distAlpha, 0f, 1f); // QC: alpha = distFade; then alpha *= cl_ghost_items
+        SetTreeTransparency(node, st, 1f - alpha);
+        node.SetGameplayVisible(alpha > 0.001f);
     }
 
     /// <summary>
@@ -1145,14 +1160,16 @@ public partial class ClientWorld : Node3D
     /// <c>EFFECT_ITEM_DESPAWN</c> puffs at <c>origin + (0,0,16)</c>. Honors <c>cl_items_animate</c> bit 2 (fade)
     /// and bit 4 (particles); the pure timing/bit logic lives in <see cref="ItemDespawnFx"/> so it's unit-tested.
     /// </summary>
-    private void DriveItemDespawnFx(Entity e, EntityNode node, CsqcState st)
+    private void DriveItemDespawnFx(Entity e, EntityNode node, CsqcState st, float distAlpha = 1f)
     {
         ItemDespawnFx fx = st.Despawn ??= new ItemDespawnFx();
         int animate = (int)CvarF("cl_items_animate", 7f); // xonotic-client.cfg default 7 (bob+fade+particles)
-        fx.Tick(Now(), animate, out float alpha, out bool emitPuff);
+        fx.Tick(Now(), animate, out float despawnAlpha, out bool emitPuff);
 
-        // QC: this.alpha *= (wait - time)/IT_DESPAWNFX_TIME — apply as a per-instance transparency on the model
-        // (bit 2). Bit 2 clear → Tick returns 1, so this is a no-op (item stays opaque, just particles).
+        // QC: alpha = distFade (base); then alpha *= (wait - time)/IT_DESPAWNFX_TIME — apply as a per-instance
+        // transparency on the model (animate bit 2). Bit 2 clear → Tick returns 1, so only the distance fade
+        // (if any) applies; both clear → opaque, just particles.
+        float alpha = despawnAlpha * Mathf.Clamp(distAlpha, 0f, 1f);
         SetTreeTransparency(node, st, 1f - alpha);
         node.SetGameplayVisible(alpha > 0.001f); // hidden once fully faded (QC drawmask 0); transparency handles the gradient
 
@@ -1160,6 +1177,48 @@ public partial class ClientWorld : Node3D
         // pickup/respawn bursts take (EffectSystem.Spawn); item_despawn resolves from effectinfo.txt.
         if (emitPuff)
             Effects.Spawn("ITEM_DESPAWN", e.Origin + new NVec3(0f, 0f, 16f));
+    }
+
+    /// <summary>
+    /// QC ItemDraw's distance alpha-fade (client/items/items.qc:144-158): an item past the server's
+    /// <c>g_items_maxdist</c> (the per-item networked <c>fade_end</c>; default 4500) is fully hidden, and within the
+    /// last <c>cl_items_fadedist</c> (default 500) units before that it linearly fades to zero. The port doesn't
+    /// network the per-item <c>fade_end</c>, so we read <c>g_items_maxdist</c> as the effective value (matching the
+    /// server's <c>if(!fade_end) fade_end = autocvar_g_items_maxdist</c>, items.qc:1051) — uniform across items, the
+    /// stock case. Returns the fade alpha in [0,1] (1 = no fade / disabled), to be composed multiplicatively with
+    /// the availability (ghost) and expiring (despawn) fades — exactly as QC sets <c>this.alpha</c> here FIRST and
+    /// then multiplies the ghost/stay/despawn factors on top. Returns 1 when the fade is disabled
+    /// (<c>fade_end &lt;= 0</c>) or no view origin is available. The bbox-centre offset matches QC's
+    /// <c>vlen(org - this.origin - 0.5*(mins+maxs))</c>.
+    /// </summary>
+    private float ItemDistanceAlpha(Entity e, NVec3? viewOrigin)
+    {
+        // fade_end: the per-item networked value isn't carried on the port wire, so use g_items_maxdist (the
+        // server's fallback when fade_end is 0). 0 / unset → no distance fade (QC: `if(this.fade_end ...)`).
+        float fadeEnd = CvarF("g_items_maxdist", 4500f);
+        if (fadeEnd <= 0f || viewOrigin is not { } org)
+            return 1f;
+
+        // QC vdist(org - this.origin, >, fade_end): a cheap reject on the raw origin distance.
+        float originDist = (org - e.Origin).Length();
+        if (originDist > fadeEnd)
+            return 0f; // fully past the draw distance → hidden (QC alpha = 0)
+
+        float fadeDist = CvarF("cl_items_fadedist", 500f); // xonotic-client.cfg default 500; 0 disables fading
+        if (fadeDist <= 0f)
+            return 1f;
+
+        float fadeStart = Mathf.Max(500f, fadeEnd - fadeDist); // QC: max(500, fade_end - cl_items_fadedist)
+        if (originDist <= fadeStart)
+            return 1f; // inside the solid-draw radius
+
+        // QC: bound(0, (fade_end - vlen(org - origin - 0.5*(mins+maxs))) / (fade_end - fade_start), 1).
+        NVec3 bboxCentre = e.Origin + 0.5f * (e.Mins + e.Maxs);
+        float centreDist = (org - bboxCentre).Length();
+        float denom = fadeEnd - fadeStart;
+        if (denom <= 0f)
+            return 1f; // degenerate band → no gradient (treat as solid; the > fade_end reject already hid the far ones)
+        return Mathf.Clamp((fadeEnd - centreDist) / denom, 0f, 1f);
     }
 
     /// <summary>
@@ -1354,6 +1413,23 @@ public partial class ClientWorld : Node3D
             || s.Contains("devastator") || s.Contains("arc") || s.Contains("porto") || s.Contains("vaporizer"))
             return true;
         return false;
+    }
+
+    /// <summary>
+    /// True when <paramref name="e"/> is a world pickup (the QC <c>ENT_CLIENT_ITEM</c> the client ItemDraw alpha
+    /// pass runs for) — a spawned <c>item</c>/<c>item_*</c>/<c>weapon_*</c>/<c>ammo_*</c> classname (the same set
+    /// <see cref="IsProjectile"/> excludes from projectile routing), or any entity already carrying a networked
+    /// item render status (animate class / not-available / expiring). Gates the item-only ghost/despawn/distance
+    /// fade so it never touches players or monsters (which would wrongly hide a distant enemy under the distance
+    /// fade — QC ItemDraw runs only for the item entity class).
+    /// </summary>
+    private static bool IsItemEntity(Entity e)
+    {
+        string cn = e.ClassName.ToLowerInvariant();
+        if (cn == "item" || cn.StartsWith("item_") || cn.StartsWith("weapon_") || cn.StartsWith("ammo_"))
+            return true;
+        // A networked item that arrived as the generic proxy classname still carries item render status.
+        return e.ItemAnimate != 0 || e.ItemExpiringFx || !e.ItemAvailable;
     }
 
     // =================================================================================================

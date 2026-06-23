@@ -62,8 +62,11 @@ public sealed class GlobalForcesMutator : MutatorBase
         if (_onPlayerDamage is not null) GameHooks.PlayerDamageSplitHealthArmor.Remove(_onPlayerDamage);
     }
 
-    private static bool IsLivePlayer(Entity e) =>
-        (e.Flags & EntFlags.Client) != 0 && e.DeadState == DeadFlag.No;
+    // QC server-side IS_PLAYER (server/utils.qh:9) is classname-only — (v).classname == "player" — with NO dead
+    // test, so a just-killed body still classed "player" is shoved by the spread. Match Base: client flag only,
+    // do NOT exclude on DeadState (the old DeadState==No filter was a port divergence that froze corpses).
+    private static bool IsPlayer(Entity e) =>
+        (e.Flags & EntFlags.Client) != 0;
 
     // MUTATOR_HOOKFUNCTION(mutator_globalforces, PlayerDamage_SplitHealthArmor)
     private bool OnPlayerDamage(ref GameHooks.PlayerDamageArgs args)
@@ -85,7 +88,7 @@ public sealed class GlobalForcesMutator : MutatorBase
         // QC: FOREACH_CLIENT(IS_PLAYER(it) && it != frag_target, { ... })
         foreach (Entity it in Api.Entities.FindByClass("player"))
         {
-            if (ReferenceEquals(it, target) || !IsLivePlayer(it)) continue;
+            if (ReferenceEquals(it, target) || !IsPlayer(it)) continue;
 
             // QC: if (range) if (vdist(it.origin - frag_target.origin, >, range)) continue;
             if (Range != 0f && Vector3.Distance(it.Origin, target.Origin) > Range) continue;

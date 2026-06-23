@@ -103,6 +103,9 @@ public static class MonsterAI
         /// <summary>When the current scripted animation ends (QC .anim_finished).</summary>
         public float AnimFinished;
 
+        /// <summary>Earliest time the next throttled voice cue may play (QC .msound_delay): pain 1.2s, idle 7s.</summary>
+        public float MSoundDelay;
+
         /// <summary>Logical animation phase driving timing (see <see cref="MonsterAnim"/>). Client playback is CSQC.</summary>
         public MonsterAnim Anim = MonsterAnim.Idle;
 
@@ -248,6 +251,7 @@ public static class MonsterAI
             {
                 e.Health += Cvar("g_monsters_miniboss_healthboost", 100f);
                 st.IsMiniboss = true;
+                e.Effects |= EfRed; // QC Monster_Miniboss_Setup:523 — the red glow that marks a miniboss
             }
         }
 
@@ -303,6 +307,9 @@ public static class MonsterAI
         // descriptor's Spawn overrides st.DamageForceScale after this call) is re-synced onto the edict every frame
         // in RunThink; here we seed the default so a hit before the first think still pushes.
         e.DamageForceScale = st.DamageForceScale;
+
+        // QC Monster_Spawn_Setup:1364 — Monster_Sound(monstersound_spawn, 0, false, CH_VOICE): the spawn cue.
+        MonsterSound(e, st, "spawn", 0f, false, SoundChannel.Voice);
 
         return st;
     }
@@ -546,6 +553,9 @@ public static class MonsterAI
     public static bool ValidTarget(Entity self, Entity? targ, bool skipFacing = false)
     {
         if (self is null || targ is null || targ == self || targ.IsFreed) return false;
+        // QC Monster_ValidTarget:108 — game_stopped || time < game_starttime: no target acquisition before the
+        // match clock starts or once the match is stopped (warmup/intermission).
+        if (MatchHalted()) return false;
         if (targ.TakeDamage == DamageMode.No) return false;
         if (targ.DeadState != DeadFlag.No || targ.Health <= 0f) return false;
         if (self.DeadState != DeadFlag.No || self.Health <= 0f) return false;
@@ -638,6 +648,26 @@ public static class MonsterAI
     private static bool IsCrouching(Entity e) => false;
 
     /// <summary>
+    /// Port of <c>Monster_Sound</c> (sv_monsters.qc:368): play one of the monster's voice cues, honouring the
+    /// <c>g_monsters_sounds</c> master gate and the shared <c>msound_delay</c> throttle. <paramref name="cue"/>
+    /// is the suffix of the fixed-path sample (sight/pain/death/idle/melee/attack/ranged/spawn) — the full
+    /// <c>.sounds</c>-file GlobalSound lookup + skin-keyed Monster_Sounds_Update is a presentation gap left for
+    /// the client (named no-op). When <paramref name="delayToo"/> the cue is skipped while still inside the
+    /// previous throttle window (QC's pain 1.2s / idle 7s self-spam guards); every cue advances the window by
+    /// <paramref name="soundDelay"/>.
+    /// </summary>
+    private static void MonsterSound(Entity self, MonsterState st, string cue, float soundDelay, bool delayToo,
+        SoundChannel chan)
+    {
+        // QC: if (!autocvar_g_monsters_sounds || (delaytoo && time < this.msound_delay)) return;
+        if (Cvar("g_monsters_sounds", 1f) == 0f) return;
+        if (delayToo && Now < st.MSoundDelay) return;
+        if (st.Def.Model is not null)
+            Api.Sound.Play(self, chan, "monsters/" + st.Def.NetName + "_" + cue + ".wav");
+        st.MSoundDelay = Now + soundDelay; // QC: this.msound_delay = time + sound_delay
+    }
+
+    /// <summary>
     /// Port of <c>Monster_Enemy_Check</c> (sv_monsters.qc): drop the current enemy if it became invalid or
     /// strayed out of range, otherwise keep it; if we have none, try to acquire one.
     /// </summary>
@@ -648,10 +678,27 @@ public static class MonsterAI
             Entity en = self.Enemy;
             Vector3 targOrigin = (en.AbsMin + en.AbsMax) * 0.5f;
             bool tooFar = (self.Origin - targOrigin).Length() > st.TargetRange;
+
+            // QC Monster_Enemy_Check:1247 re-traces LOS to the held enemy each second and drops it when something
+            // solid (not the enemy itself) blocks the way — so an enemy that ducks behind a wall is RELEASED, it
+            // isn't held until it strays out of range. (WarpZone_TraceLine -> our MOVE_NOMONSTERS traceline.)
+            bool losBlocked = false;
+            TraceResult tr = Api.Trace.Trace(self.Origin, Vector3.Zero, Vector3.Zero, targOrigin,
+                MoveFilter.NoMonsters, self);
+            if (tr.Fraction < 1f && tr.Ent != en)
+                losBlocked = true;
+
+            // QC also drops a frozen enemy (STAT(FROZEN, enemy)). (The alpha<0.5 drop QC also has is a no-op here:
+            // the headless Entity carries no render-alpha field — same documented deferral as ValidTarget.)
+            bool frozenEnemy = StatusEffectsCatalog.Frozen != null
+                               && StatusEffectsCatalog.Has(en, StatusEffectsCatalog.Frozen);
+
             if (en.IsFreed || en.DeadState != DeadFlag.No || en.Health < 1f
                 || (en.Flags & EntFlags.NoTarget) != 0
+                || frozenEnemy
                 || en.TakeDamage == DamageMode.No
-                || tooFar)
+                || tooFar
+                || losBlocked)
             {
                 self.Enemy = null;
             }
@@ -662,8 +709,8 @@ public static class MonsterAI
         }
 
         self.Enemy = FindTarget(self, st);
-        if (self.Enemy is not null && st.Def.Model is not null)
-            Api.Sound.Play(self, SoundChannel.Voice, "monsters/" + st.Def.NetName + "_sight.wav");
+        if (self.Enemy is not null)
+            MonsterSound(self, st, "sight", 0f, false, SoundChannel.Voice); // QC monstersound_sight (no throttle)
     }
 
     // ====================================================================================
@@ -705,6 +752,35 @@ public static class MonsterAI
             self.MoveType = MoveType.Bounce;
             return;
         }
+
+        // QC Monster_Move:826-840 — the match-state halt: game_stopped, the prematch clock (time < game_starttime),
+        // and the round-not-started gate all force the monster to brake-and-idle (it doesn't roam/chase before the
+        // match goes live or after it stops). RunThink's spawn_time gate covers `time < this.spawn_time`; the
+        // MonsterMove mutator hook + draggedby + campaign_bots_may_start remain host concerns (deferred).
+        if (MatchHalted())
+        {
+            BrakeSimple(self, st.StopSpeed, flyOrSwim);
+            if (Now >= st.SpawnTime) st.Anim = MonsterAnim.Idle;
+            return;
+        }
+
+        // QC Monster_Move:859-863 — prune a stale follow leader: drop monster_follow when the leader is on a
+        // different team (teamplay + g_monsters_teams) or has become a spectator/observer, so the monster stops
+        // tailing a leader it should no longer follow. (IS_SPEC/IS_OBSERVER -> a leader that left active play; the
+        // headless proxy reads that as "no longer a live client".)
+        if (st.Follow is not null)
+        {
+            bool leaderGone = st.Follow.IsFreed || (st.Follow.Flags & EntFlags.Client) == 0;
+            bool diffTeam = IsTeamplay && Cvar("g_monsters_teams", 1f) != 0f
+                            && self.Team != 0f && st.Follow.Team != self.Team;
+            if (leaderGone || diffTeam)
+                st.Follow = null;
+        }
+
+        // QC Monster_Move:880 — Monster_Sound(monstersound_idle, 7, true, CH_VOICE) when the monster has no enemy:
+        // the ~7s-throttled wandering idle voice. (delaytoo gates AND advances msound_delay so it can't spam.)
+        if (self.Enemy is null)
+            MonsterSound(self, st, "idle", 7f, true, SoundChannel.Voice);
 
         // Pick destination by movestate (Monster_Move_Target).
         bool running = self.Enemy is not null || st.MonsterMoveTo != Vector3.Zero;
@@ -1085,6 +1161,8 @@ public static class MonsterAI
         {
             Vector3 force = QMath.Normalize(hit.Origin - self.Origin);
             Combat.Damage(hit, self, self, damage * SkillMod(st), deathType, hit.Origin, force);
+            // QC Monster_Attack_Check:468/478 plays monstersound_melee on a connecting (==1) melee swing.
+            MonsterSound(self, st, "melee", 0f, false, SoundChannel.Voice);
             return true;
         }
         return false;
@@ -1319,8 +1397,9 @@ public static class MonsterAI
             self.Health -= take;
             st.PainFinished = Now + 0.34f;
             st.Anim = MonsterAnim.Pain;
-            if (st.Def.Model is not null)
-                Api.Sound.Play(self, SoundChannel.Body, "monsters/" + st.Def.NetName + "_pain.wav");
+            // QC Monster_Damage:1101 — Monster_Sound(monstersound_pain, 1.2, true, CH_PAIN): the 1.2s throttle
+            // (delaytoo) stops a stream of hits from machine-gunning the pain voice.
+            MonsterSound(self, st, "pain", 1.2f, true, SoundChannel.Body);
         }
 
         // Pause health regen after a hit (QC sets .dmg_time; the port's regen pause is .pauseregen_finished).
@@ -1366,9 +1445,8 @@ public static class MonsterAI
         if (deathType == DeathTypes.Kill) st.CanDrop = false;
         MonsterFramework.DropItem(self, st, attacker);
 
-        // Death sound.
-        if (st.Def.Model is not null)
-            Api.Sound.Play(self, SoundChannel.Voice, "monsters/" + st.Def.NetName + "_death.wav");
+        // Death sound (QC Monster_Dead:1044 — monstersound_death, no throttle).
+        MonsterSound(self, st, "death", 0f, false, SoundChannel.Voice);
 
         // QC Monster_Dead:1046 — ++monsters_killed, but ONLY for a NATURAL (map-placed, first-life) monster.
         // Command/wave-spawned (MONSTERFLAG_SPAWNED) and already-respawned (MONSTERFLAG_RESPAWNED) kills never
@@ -1600,6 +1678,9 @@ public static class MonsterAI
             st.SpawnTime = Now;
             st.PainFinished = Now;
             st.Anim = MonsterAnim.Idle;
+            // QC Monster_Miniboss_Setup:523-528 re-applies EF_RED on a RESPAWNED miniboss (MarkDead cleared
+            // s.Effects to 0). A regular monster comes back with no glow.
+            if (st.IsMiniboss) s.Effects |= EfRed;
             // Re-arm the monster damage seam (the corpse left GtEventDamage installed, but a respawn re-establishes
             // the full live contract) + re-seed knockback receptivity for the generic apply-push.
             s.GtEventDamage = MonsterEventDamage;
@@ -1649,6 +1730,19 @@ public static class MonsterAI
     /// <summary>Whether team play is active (QC <c>teamplay</c>); read from the gametype cvar.</summary>
     public static bool IsTeamplay => Cvar("teamplay", 0f) != 0f;
 
+    /// <summary>
+    /// QC <c>game_stopped || time &lt; game_starttime</c> (Monster_ValidTarget:108): monsters do nothing before
+    /// the match clock starts or once it has been stopped (warmup/intermission). Read from the same host seams the
+    /// damage pipeline and Domination use (<see cref="Scoring.GameScores.GameStopped"/> +
+    /// <see cref="StartItem.GameStartTimeProvider"/>); headless tests with no host wire-up read as "match live".
+    /// </summary>
+    public static bool MatchHalted()
+    {
+        if (Scoring.GameScores.GameStopped) return true;
+        float gameStart = StartItem.GameStartTimeProvider?.Invoke() ?? 0f;
+        return Now < gameStart;
+    }
+
     /// <summary>QC WATERLEVEL_WETFEET: the threshold below which a swimmer is considered out of water.</summary>
     public const int WaterLevel_WetFeet = 1;
 
@@ -1685,6 +1779,9 @@ public static class MonsterAI
     public const int MonsterFlag_Respawned = 1 << 15;
     /// <summary>QC MONSTER_RESPAWN_DEATHPOINT (reuses MONSTERFLAG_FLY_VERTICAL's bit per zombie.qh).</summary>
     public const int MonsterRespawn_DeathPoint = 1 << 3;
+
+    /// <summary>DP <c>EF_RED = 128</c> (dpextensions.qc:179) — the red glow QC stamps on a miniboss (and re-applies on respawn).</summary>
+    public const int EfRed = 128;
 }
 
 /// <summary>QC monster skill levels (sv_monsters.qh: MONSTER_SKILL_*).</summary>

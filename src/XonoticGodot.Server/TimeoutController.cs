@@ -12,13 +12,23 @@ namespace XonoticGodot.Server;
 ///
 /// Faithful to QC: the LEADTIME→ACTIVE→resume state machine, the per-player allowance, the guard chain (no
 /// timeout during a vote, before the match starts, or too late in the match), and the early-resume shortening
-/// to <c>sv_timeout_resumetime</c>. The engine "slowmo freeze" is modeled as <see cref="IsPaused"/>, which the
-/// world honors by freezing movement/scoring exactly like intermission. Center-print countdown text is
-/// presentation; this core carries the broadcast events.
+/// to <c>sv_timeout_resumetime</c>. The pause is modeled both as <see cref="IsPaused"/> (which the world honors
+/// by freezing scoring/round flow like intermission) and as the Base <c>slowmo</c> extreme slow-motion: when
+/// the pause begins this core fires <see cref="ApplySlowmo"/> with <see cref="SlowmoValue"/> (0.0001) and
+/// restores the captured original slowmo when it ends, so the host can drive the engine slowmo cvar and let
+/// players inch during the pause exactly as Base does (<c>TIMEOUT_SLOWMO_VALUE</c>).
+///
+/// The per-second center-print countdown (QC <c>CENTER_TIMEOUT_BEGINNING</c>/<c>CENTER_TIMEOUT_ENDING</c>) and
+/// the <c>ANNCE_PREPARE</c> warning cue are carried as host-wired sinks (<see cref="CenterPrintBeginning"/>,
+/// <see cref="CenterPrintEnding"/>, <see cref="AnnouncePrepare"/>) so this Godot-free core drives the same
+/// presentation timeline as <c>timeout_handler_think</c> while leaving the notification encoding to the host.
 /// </summary>
 public sealed class TimeoutController
 {
     public const int Inactive = 0, LeadTime = 1, ActivePause = 2;
+
+    /// <summary>QC <c>TIMEOUT_SLOWMO_VALUE</c> (common.qh): the extreme slow-motion the pause runs at.</summary>
+    public const float SlowmoValue = 0.0001f;
 
     private readonly Dictionary<Player, int> _allowed = new();
 
@@ -43,6 +53,39 @@ public sealed class TimeoutController
     /// <summary>Broadcast sink (QC bprint). Host-wires to the chat/console broadcast.</summary>
     public Action<string>? Broadcast { get; set; }
 
+    /// <summary>
+    /// QC <c>Send_Notification(MSG_CENTER, CENTER_TIMEOUT_BEGINNING, n)</c>: per-second lead-in countdown
+    /// center-print, fired once per remaining whole second of the lead-time. Host re-encodes into the
+    /// per-client center-print stream.
+    /// </summary>
+    public Action<int>? CenterPrintBeginning { get; set; }
+
+    /// <summary>
+    /// QC <c>Send_Notification(MSG_CENTER, CENTER_TIMEOUT_ENDING, n)</c>: per-second pause-ending countdown
+    /// center-print, fired once per remaining whole second of the active pause.
+    /// </summary>
+    public Action<int>? CenterPrintEnding { get; set; }
+
+    /// <summary>
+    /// QC <c>Send_Notification(MSG_ANNCE, ANNCE_PREPARE)</c>: the warning announcer cue played when only
+    /// <c>sv_timeout_resumetime</c> seconds remain on the active pause.
+    /// </summary>
+    public Action? AnnouncePrepare { get; set; }
+
+    /// <summary>
+    /// QC <c>cvar_set("slowmo", ...)</c>: host sink to drive the engine slowmo cvar. Called with
+    /// <see cref="SlowmoValue"/> when the pause begins and with the captured original slowmo when it ends.
+    /// </summary>
+    public Action<float>? ApplySlowmo { get; set; }
+
+    /// <summary>
+    /// QC <c>autocvar_slowmo</c> read into <c>orig_slowmo</c> (main.qc:352): the slowmo value to restore once
+    /// the timeout finishes. Defaults to the live <c>slowmo</c> cvar; captured at pause-begin.
+    /// </summary>
+    public Func<float> OrigSlowmo { get; set; } = static () => Cvars.FloatOr("slowmo", 1f);
+
+    private float _restoreSlowmo = 1f;
+
     // ---- host-wired predicates ----
     public Func<bool> VoteActive { get; set; } = static () => false;
     public Func<bool> Warmup { get; set; } = static () => false;
@@ -53,6 +96,10 @@ public sealed class TimeoutController
     public Func<float> Clock { get; set; } = static () => Api.Services is not null ? Api.Clock.Time : 0f;
 
     private float _lastTick;
+
+    // The last whole-second value handed to a per-second center-print, so each integer second fires exactly
+    // once even when Think() is pumped with a multi-second dt (QC fires one center-print per --counter step).
+    private int _lastCountdownSecond = -1;
 
     private float Now => Clock();
 
@@ -92,6 +139,7 @@ public sealed class TimeoutController
         Time = Cvars.FloatOr("sv_timeout_length", 120f);
         LeadTimeRemaining = Cvars.FloatOr("sv_timeout_leadtime", 4f);
         _lastTick = Now;
+        _lastCountdownSecond = -1;
         Broadcast?.Invoke($"^2* {(caller?.NetName ?? "server")} called a timeout"
             + (caller is not null ? $" ({AllowedOf(caller)} left)" : ""));
         return true;
@@ -115,6 +163,7 @@ public sealed class TimeoutController
         else // ACTIVE
         {
             Time = Cvars.FloatOr("sv_timeout_resumetime", 3f);
+            _lastCountdownSecond = -1; // re-arm the ending countdown from the shortened time
             Broadcast?.Invoke("^2* the game will resume");
         }
         return true;
@@ -134,23 +183,55 @@ public sealed class TimeoutController
 
         if (Status == LeadTime)
         {
+            // QC CENTER_TIMEOUT_BEGINNING: one center-print per whole second of lead-time remaining.
+            EmitCountdown((int)System.Math.Ceiling(LeadTimeRemaining), CenterPrintBeginning);
             LeadTimeRemaining -= dt;
             if (LeadTimeRemaining <= 0f)
             {
                 Status = ActivePause;
                 LeadTimeRemaining = 0f;
+                _lastCountdownSecond = -1; // re-arm for the ENDING countdown
+                // QC: cvar_set("slowmo", TIMEOUT_SLOWMO_VALUE) — drop to extreme slow-motion so players can
+                // still inch during the pause (orig_slowmo captured here to restore on resume).
+                _restoreSlowmo = OrigSlowmo();
+                ApplySlowmo?.Invoke(SlowmoValue);
                 Broadcast?.Invoke("^2* the game is paused");
             }
         }
         else if (Status == ActivePause)
         {
+            // QC CENTER_TIMEOUT_ENDING + ANNCE_PREPARE warning at sv_timeout_resumetime seconds left.
+            int secondsLeft = (int)System.Math.Ceiling(Time);
+            EmitCountdown(secondsLeft, CenterPrintEnding,
+                resumeWarnAt: (int)Cvars.FloatOr("sv_timeout_resumetime", 3f));
             Time -= dt;
             if (Time <= 0f)
             {
+                // QC: cvar_set("slowmo", orig_slowmo) — restore normal time flow.
+                ApplySlowmo?.Invoke(_restoreSlowmo);
                 Broadcast?.Invoke("^2* the game has resumed");
                 Reset();
             }
         }
+    }
+
+    /// <summary>
+    /// Fire <paramref name="sink"/> once for every whole second from the last emitted boundary down to
+    /// <paramref name="secondsLeft"/> (inclusive), so a multi-second <c>dt</c> still produces one center-print
+    /// per second exactly as the QC per-frame <c>--counter</c> would. When <paramref name="resumeWarnAt"/> is
+    /// crossed, also play the ANNCE_PREPARE cue (QC fires it the tick <c>timeout_time == resumetime</c>).
+    /// </summary>
+    private void EmitCountdown(int secondsLeft, Action<int>? sink, int resumeWarnAt = -1)
+    {
+        if (secondsLeft < 1) return;
+        int from = _lastCountdownSecond < 0 ? secondsLeft : _lastCountdownSecond - 1;
+        for (int n = from; n >= secondsLeft; n--)
+        {
+            if (n < 1) break;
+            sink?.Invoke(n);
+            if (resumeWarnAt > 0 && n == resumeWarnAt) AnnouncePrepare?.Invoke();
+        }
+        _lastCountdownSecond = secondsLeft;
     }
 
     private void Reset()
@@ -159,5 +240,6 @@ public sealed class TimeoutController
         Caller = null;
         Time = 0f;
         LeadTimeRemaining = 0f;
+        _lastCountdownSecond = -1;
     }
 }

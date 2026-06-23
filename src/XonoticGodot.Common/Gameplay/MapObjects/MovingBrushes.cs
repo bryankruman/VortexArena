@@ -246,6 +246,10 @@ public static class MovingBrushes
     public static void PathCornerSetup(Entity this_)
     {
         this_.ClassName = "path_corner";
+        // QC corner.qc: set_platmovetype(this, this.platmovetype) — parse this corner's per-corner ease/turn
+        // override string ("start end [force]") into PlatMoveStart/PlatMoveEnd so a riding func_train can pick it
+        // up in TrainNext. A corner with no platmovetype key leaves the 0/0 smoothstep default.
+        MapMover.SetPlatMoveType(this_, this_.Platmovetype);
         MapMover.SetOrigin(this_, this_.Origin);
         MapMover.IndexRegister(this_);
     }
@@ -291,6 +295,12 @@ public static class MovingBrushes
             this_.CrushInterval = 0.25f;
         this_.CrushNextTime = MapMover.Now();
 
+        // QC: if(!set_platmovetype(this, this.platmovetype)) return; then stash the parsed start/end as the train's
+        // defaults (platmovetype_start_default / _end_default) — restored in TrainNext whenever a corner carries no
+        // override. The port re-derives the default by re-parsing this.Platmovetype (the train's own key string).
+        if (!MapMover.SetPlatMoveType(this_, this_.Platmovetype))
+            return;
+
         MapMover.IndexRegister(this_);
 
         // Find the first path_corner and snap onto it, then schedule the first move.
@@ -331,8 +341,12 @@ public static class MovingBrushes
         // else: wait for TrainUse() to start.
     }
 
-    /// <summary>QC <c>train_next</c>: move to the current target corner; on arrival, wait then continue.</summary>
-    private static void TrainNext(Entity this_)
+    /// <summary>
+    /// QC <c>train_next</c>: move to the current target corner; on arrival, wait then continue. Exposed as
+    /// <c>internal</c> so a path-following dynlight (DynamicLight.FindPath) can reuse the func_train pathing
+    /// instead of parking on its first corner.
+    /// </summary>
+    internal static void TrainNext(Entity this_)
     {
         Entity? targ = this_.FutureTarget;
         if (targ is null)
@@ -344,6 +358,19 @@ public static class MovingBrushes
         this_.FutureTarget = TrainNextFind(targ);
         this_.GoalEntity = targ;
         this_.Wait = targ.Wait != 0f ? targ.Wait : 0.1f;
+
+        // QC train_next: a corner with a platmovetype key overrides this leg's ease curve; otherwise restore the
+        // train's own default. PathCornerSetup already parsed the corner's string into its PlatMoveStart/End.
+        if (!string.IsNullOrEmpty(targ.Platmovetype))
+        {
+            this_.PlatMoveStart = targ.PlatMoveStart;
+            this_.PlatMoveEnd = targ.PlatMoveEnd;
+        }
+        else
+        {
+            // no corner override — re-parse the train's own platmovetype key to restore platmovetype_*_default.
+            MapMover.SetPlatMoveType(this_, this_.Platmovetype);
+        }
 
         float speed = targ.Speed != 0f ? targ.Speed : this_.Speed;
         Vector3 dest = targ.Origin - this_.DestVec;
@@ -392,7 +419,17 @@ public static class MovingBrushes
             MapMover.UseTargets(corner, null, null);
         this_.GoalEntity = null;
 
-        if (this_.Wait < 0f || this_.TrainWaitTurning) // no waiting, or we already waited while turning
+        // QC train_wait: if the NEXT corner is flagged TRAIN_NEEDACTIVATION, pause here and re-arm train_use so a
+        // trigger must restart the train at this intermediate corner (multi-segment "wait for activation" trains).
+        Entity? tg = this_.FutureTarget;
+        if (tg is not null && (tg.SpawnFlags & TrainNeedActivation) != 0)
+        {
+            this_.TrainWaitTurning = false;
+            this_.Use = TrainUse;
+            this_.Think = null;
+            this_.NextThink = 0f;
+        }
+        else if (this_.Wait < 0f || this_.TrainWaitTurning) // no waiting, or we already waited while turning
         {
             this_.TrainWaitTurning = false;
             TrainNext(this_);

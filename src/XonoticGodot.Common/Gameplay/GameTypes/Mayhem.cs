@@ -307,6 +307,14 @@ public sealed class Mayhem : GameType
     private const float  DefaultPointLimit  = 1000f; // mayhem.qh gametype_init pointlimit=1000
     private const float  DefaultLeadLimit   = 0f;    // mayhem.qh gametype_init leadlimit=0
 
+    /// <summary>
+    /// QC mayhem.qh <c>gametype_init</c> default time limit, in MINUTES (<c>"timelimit=15 …"</c>). Applied by the
+    /// host (<c>GameWorld.ActivateGameType</c>) when Mayhem is selected and no explicit <c>timelimit</c> cvar was
+    /// set, mirroring QC's GameType_SetTeamplay/gametype_init applying the gametype's default args. (mayhem.qh's
+    /// <c>m_legacydefaults</c> lists 20 min, but the active <c>gametype_init</c> string is 15 — 15 is canonical.)
+    /// </summary>
+    public const float DefaultTimeLimitMinutes = 15f;
+
     // ----- respawn delay cvars (shared with DM; xonotic-server.cfg g_respawn_delay_small/large = 2) -----
     private const string CvarRespawnDelaySmall = "g_respawn_delay_small";
     private const string CvarRespawnDelayLarge = "g_respawn_delay_large";
@@ -340,7 +348,8 @@ public sealed class Mayhem : GameType
     public override void OnInit()
     {
         // QC INIT(mayhem): identity is set in the ctor; the limits are read on demand. gametype_init flags
-        // (USEPOINTS) and map-size gating are engine/map-pool concerns.
+        // (USEPOINTS) and map-size gating are engine/map-pool concerns. The gametype_init "timelimit=15"
+        // default is exposed via DefaultTimeLimitMinutes for the host to apply on select (see that member).
     }
 
     /// <summary>QC FFA equality (server/scores.qc:537): the top two players are tied on the primary score, so a
@@ -413,7 +422,7 @@ public sealed class Mayhem : GameType
         MutatorHooks.ForbidThrowCurrentWeapon.Add(_forbidThrowHandler);
     }
 
-    public void Deactivate()
+    public override void Deactivate()
     {
         if (_deathHandler is null)
             return;

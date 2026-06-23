@@ -1,8 +1,11 @@
 // Port of Base/.../qcsrc/common/mutators/mutator/status_effects/* (status_effects.qh networking:
 //      ENT_CLIENT_STATUSEFFECTS, StatusEffects_Write/Send, STATUSEFFECT_FLAG_PERSISTENT/ACTIVE,
 //      StatusEffects_update; sv_status_effects.qc m_apply/m_remove/m_tick dirty-marking).
+using System;
 using System.Collections.Generic;
 using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Gameplay.Damage;
+using static XonoticGodot.Common.Gameplay.Sounds;
 using XonoticGodot.Common.Services;
 
 namespace XonoticGodot.Common.Gameplay;
@@ -52,6 +55,30 @@ public sealed class StatusEffectDef : IRegistered
     public bool Hidden;            // QC m_hidden — no HUD element (spawnshield/stunned/webbed)
     public float Lifetime;         // QC m_lifetime — default duration cap (0 = none)
     public string? Model;          // buff model / drop model
+
+    /// <summary>
+    /// QC <c>m_sound_rm</c> (all.qh:44): the sound played on a NORMAL removal of an active, non-persistent
+    /// effect (sv_status_effects.qc:46-47). The registered port sound-catalog name (resolved null-safe via
+    /// <see cref="SoundSystem.PlayOn(Entity,string)"/> — a no-op if the sound isn't registered yet).
+    /// Null/empty = no removal sound.
+    /// </summary>
+    public string? RemovalSound;
+
+    /// <summary>
+    /// QC <c>m_persistent(this, actor)</c> (all.qh:55; burning.qc:9-12 lava, superweapons.qc:4-7 unlimited):
+    /// recomputed every tick — when it returns true the effect carries the PERSISTENT flag and never times
+    /// out. Null = the base default (always false, all.qh:55).
+    /// </summary>
+    public Func<Entity, bool>? PersistentCheck;
+
+    /// <summary>
+    /// QC per-effect <c>m_tick</c> body (burning/spawnshield/stunned set/clear EF_* and self-extinguish):
+    /// invoked every tick while the effect is active, AFTER the PERSISTENT recompute and BEFORE the timeout
+    /// check. Returns true to request a NORMAL self-removal this tick (burning in water/while frozen,
+    /// stunned while frozen — sv_status_effects per-effect m_tick). Null = no per-effect tick.
+    /// </summary>
+    public Func<Entity, ActiveStatusEffect, bool>? OnTick;
+
     public StatusEffectDef(string name, bool isBuff = false) { Name = name; IsBuff = isBuff; }
 }
 
@@ -94,14 +121,39 @@ public static class StatusEffectsCatalog
 
         // --- core debuffs / status (status_effect/*.qh) ---
         R(new StatusEffectDef("frozen") { Hidden = true });
-        R(new StatusEffectDef("burning") { Hidden = true });
+        // STATUSEFFECT_Burning (burning.qc): EF_FLAME flame + Fire_ApplyDamage. m_persistent = burning while
+        // standing in lava (g_balance_contents_playerdamage_lava_burn, default 0). m_tick self-extinguishes in
+        // non-lava water or while STAT(FROZEN). m_sound_rm = the steam-burst hiss (burning.qh SND_Burning_Remove).
+        R(new StatusEffectDef("burning")
+        {
+            Hidden = true,
+            Lifetime = 10f,
+            RemovalSound = "steam_burst",
+            PersistentCheck = BurningPersistent,
+            OnTick = BurningTick,
+        });
         // STATUSEFFECT_SpawnShield (spawnshield.qh): hidden, 10s cap — post-spawn damage protection.
-        R(new StatusEffectDef("spawnshield") { Hidden = true, Lifetime = 10f });
-        // STATUSEFFECT_Stunned (stunned.qh): hidden, 10s cap — shockwave/onslaught stun.
-        R(new StatusEffectDef("stunned") { Hidden = true, Lifetime = 10f });
+        // m_tick sets EF_ADDITIVE|EF_FULLBRIGHT shimmer once time >= game_starttime (presentation; the port
+        // has no per-entity .effects field, see EffectsFlags todo — the OnTick keeps the parity tick alive).
+        R(new StatusEffectDef("spawnshield") { Hidden = true, Lifetime = 10f, OnTick = SpawnShieldTick });
+        // STATUSEFFECT_Stunned (stunned.qh): hidden, 10s cap — shockwave/onslaught stun. m_tick self-removes
+        // while STAT(FROZEN); m_sound_rm = the spark snap (ons_spark1). EF_SHOCK aura is presentation (no .effects).
+        R(new StatusEffectDef("stunned")
+        {
+            Hidden = true,
+            Lifetime = 10f,
+            RemovalSound = "ons_spark1",
+            OnTick = StunnedTick,
+        });
         // STATUSEFFECT_Superweapon (superweapons.qh): superweapon ammo window (QC netname "superweapons";
-        // XonoticGodot consumers use the singular "superweapon").
-        R(new StatusEffectDef("superweapon"));
+        // XonoticGodot consumers use the singular "superweapon"). m_persistent = IT_UNLIMITED_SUPERWEAPONS
+        // (so the networked PERSISTENT bit is now set instead of faking it with a 999s timer);
+        // m_sound_rm = POWEROFF on the countdown lapse (server/client.qc play_countdown).
+        R(new StatusEffectDef("superweapon")
+        {
+            RemovalSound = "POWEROFF",
+            PersistentCheck = SuperweaponPersistent,
+        });
         // STATUSEFFECT_Webbed (monsters/monster/spider.qh): spider-web movement slow.
         R(new StatusEffectDef("webbed") { Hidden = true });
 
@@ -119,6 +171,198 @@ public static class StatusEffectsCatalog
         Registry<StatusEffectDef>.Sort();
     }
 
+    // ============================================================================================
+    //  Per-effect m_persistent / m_tick bodies (QC status_effect/<effect>.qc)
+    // ============================================================================================
+
+    private const int ContentLava = (int)Contents.Lava;
+
+    /// <summary>QC Burning <c>m_persistent</c> (burning.qc:9-12): keep burning while standing in lava (only
+    /// when <c>g_balance_contents_playerdamage_lava_burn</c> is enabled — default 0, so normally false).</summary>
+    private static bool BurningPersistent(Entity e)
+        => CvarBool("g_balance_contents_playerdamage_lava_burn")
+           && e.WaterLevel != 0 && e.WaterType == ContentLava;
+
+    /// <summary>QC Burning <c>m_tick</c> (burning.qc:13-23): self-extinguish in non-lava water or while
+    /// frozen, otherwise apply the per-tick fire damage (<see cref="FireApplyDamage"/>). Returns true to
+    /// request the NORMAL self-removal. EF_FLAME is presentation (client emits the flame burst per frame).</summary>
+    private static bool BurningTick(Entity e, ActiveStatusEffect s)
+    {
+        if (IsStatusFrozen(e) || (e.WaterLevel != 0 && e.WaterType != ContentLava))
+            return true;   // m_remove(NORMAL)
+        FireApplyDamage(e, s);
+        return false;
+    }
+
+    /// <summary>QC Stunned <c>m_tick</c> (stunned.qc:16-26): self-remove while frozen; the EF_SHOCK aura is
+    /// presentation (no per-entity .effects field in the port). Shock_ApplyDamage is #if'd-out in Base too.</summary>
+    private static bool StunnedTick(Entity e, ActiveStatusEffect s)
+        => IsStatusFrozen(e);
+
+    /// <summary>QC SpawnShield <c>m_tick</c> (spawnshield.qc:9-14): EF_ADDITIVE|EF_FULLBRIGHT shimmer once
+    /// the match clock passes game_starttime — presentation only (no .effects field), so this is a no-op
+    /// keep-alive that documents the parity tick (the shimmer is a client-render todo).</summary>
+    private static bool SpawnShieldTick(Entity e, ActiveStatusEffect s) => false;
+
+    /// <summary>QC Superweapon <c>m_persistent</c> (superweapons.qc:4-7): persistent while the entity carries
+    /// IT_UNLIMITED_SUPERWEAPONS — this is what sets the networked PERSISTENT bit (the HUD infinity glyph)
+    /// instead of the bespoke 999s-timer fake in SuperweaponTimeout.</summary>
+    private static bool SuperweaponPersistent(Entity e)
+        => (e.Items & (int)ItemFlag.UnlimitedSuperweapons) != 0;
+
+    /// <summary>Look up a def by its RegistryId (== list index), bounds-safe. Null if out of range.</summary>
+    private static StatusEffectDef? ByIndexInRegistry(int id)
+        => (id >= 0 && id < Registry<StatusEffectDef>.Count) ? Registry<StatusEffectDef>.ById(id) : null;
+
+    private static bool CvarBool(string name)
+        => Api.Services != null && Api.Cvars.GetFloat(name) != 0f;
+
+    /// <summary>QC <c>STAT(FROZEN, e) || StatusEffects_active(STATUSEFFECT_Frozen, e)</c>: the gametype
+    /// freeze stat OR the frozen status effect (burning/stunned self-extinguish while frozen).</summary>
+    private static bool IsStatusFrozen(Entity e)
+        => e.FrozenStat != 0 || (Frozen != null && Has(e, Frozen));
+
+    // ============================================================================================
+    //  Fire damage-over-time (QC server/damage.qc Fire_AddDamage / Fire_ApplyDamage)
+    // ============================================================================================
+
+    /// <summary>QC <c>StatusEffects_gettime(this, actor)</c> (status_effects.qc:17-28): the effect's end time,
+    /// clamped up to <paramref name="now"/> so an effect whose timer has just lapsed still reads as active
+    /// for the current frame (the burn-stacking math relies on this). Permanent (ExpireTime &lt;= 0) returns now.</summary>
+    public static float GetTime(Entity e, StatusEffectDef def, float now)
+    {
+        foreach (var s in e.StatusEffects)
+            if (s.DefId == def.RegistryId)
+                return (s.ExpireTime > 0f && s.ExpireTime >= now) ? s.ExpireTime : now;
+        return 0f;
+    }
+
+    /// <summary>
+    /// QC <c>Fire_AddDamage(e, o, d, t, dt)</c> (server/damage.qc:965-1070): ignite (or stack onto an existing
+    /// burn) <paramref name="e"/> for total damage <paramref name="d"/> over time <paramref name="t"/> seconds,
+    /// attributed to <paramref name="owner"/> with deathtype <paramref name="deathType"/>. Implements the QC
+    /// overlap LEMMA so re-igniting a burning target combines damage/time without exceeding maxdps, instead of
+    /// the old plain overwrite. Stores the DPS on <see cref="Entity.FireDamagePerSec"/> and ticks via
+    /// <see cref="FireApplyDamage"/>. The single faithful entry point ignition sites (fireball/napalm/wyvern,
+    /// lava/inferno) should call so the Strength convention is consistent. Returns the damage actually added.
+    /// </summary>
+    public static float FireAddDamage(Entity e, Entity? owner, float d, float t, string deathType)
+    {
+        if (Burning is null) return -1f;
+        if (d <= 0f) return -1f;
+        if (e.DeadState != DeadFlag.No) return -1f;   // QC: IS_PLAYER(e) && IS_DEAD(e)
+
+        float now = Api.Services != null ? Api.Clock.Time : 0f;
+        t = MathF.Max(t, 0.1f);
+        float dps = d / t;
+
+        if (Has(e, Burning))
+        {
+            float fireEndTime = GetTime(e, Burning, now);
+            float minTime = fireEndTime - now;
+            float maxTime = MathF.Max(minTime, t);
+            float minDps = e.FireDamagePerSec;
+            float maxDps = MathF.Max(minDps, dps);
+
+            if (maxTime > minTime || maxDps > minDps)
+            {
+                float minDamage = minDps * minTime;
+                float maxDamage = minDamage + d;
+                float totalDamage = MathF.Min(maxDamage, maxTime * maxDps);
+                // alternate (LEMMA): never below mindps, never beyond maxtime.
+                float totalTime = (minDps > 0f) ? MathF.Min(maxTime, totalDamage / minDps) : maxTime;
+
+                e.FireDamagePerSec = (totalTime > 0f) ? totalDamage / totalTime : dps;
+                Apply(e, Burning, totalTime, dps, owner);
+                if (totalDamage > 1.2f * minDamage)
+                {
+                    e.FireDeathType = deathType;
+                    if (!ReferenceEquals(e.FireOwner, owner))
+                    {
+                        e.FireOwner = owner;
+                        e.FireHitSound = false;
+                    }
+                }
+                return MathF.Max(0f, totalDamage - minDamage);
+            }
+            return 0f;
+        }
+
+        e.FireDamagePerSec = dps;
+        Apply(e, Burning, t, dps, owner);
+        e.FireDeathType = deathType;
+        e.FireOwner = owner;
+        e.FireHitSound = false;
+        return d;
+    }
+
+    /// <summary>
+    /// QC <c>Fire_ApplyDamage(e)</c> (server/damage.qc:1072-1105): the per-tick burn hit —
+    /// <c>fire_damagepersec * min(frametime, fireend-time)</c> dealt with the stored fire deathtype + owner
+    /// (frame-rate independent, unlike the old <c>strength*0.05</c>/frame). Plus the fire TRANSFER to adjacent
+    /// overlapping damageable entities (g_balance_firetransfer_damage 0.8 / _time 0.9) is left as a host-loop
+    /// todo (needs the g_damagedbycontents iteration, owned outside this file).
+    /// </summary>
+    private static void FireApplyDamage(Entity e, ActiveStatusEffect s)
+    {
+        float now = Api.Services != null ? Api.Clock.Time : 0f;
+        float frameTime = Api.Services != null ? Api.Clock.FrameTime : 0f;
+        if (frameTime <= 0f) frameTime = 1f / 72f;   // headless fallback (SimulationLoop TicRate)
+
+        // Resolve the burn owner: prefer the stored fire_owner, else the application source.
+        Entity? owner = e.FireOwner ?? s.Source;
+        // Resolve the per-second burn rate: prefer the stacked fire_damagepersec (set by FireAddDamage);
+        // fall back to the legacy convention where Strength carries the DPS directly (ignition sites that
+        // call StatusEffectsCatalog.Apply(Burning, ..., strength: dps) without going through FireAddDamage).
+        float dps = e.FireDamagePerSec > 0f ? e.FireDamagePerSec : s.Strength;
+
+        float fireEndTime = GetTime(e, Burning!, now);
+        float t = MathF.Min(frameTime, fireEndTime - now);
+        if (t < 0f) t = 0f;
+        float dmg = dps * t;
+        if (dmg <= 0f) return;
+
+        string deathType = !string.IsNullOrEmpty(e.FireDeathType) ? e.FireDeathType : DeathTypes.Fire;
+        // QC Damage(e, e, fire_owner, d, fire_deathtype, ...): inflictor is the burning entity itself.
+        Combat.Damage(e, e, owner, dmg, deathType, e.Origin, System.Numerics.Vector3.Zero);
+    }
+
+    // ============================================================================================
+    //  Lifecycle mass-clear (QC StatusEffects_removeall / StatusEffects_clearall)
+    // ============================================================================================
+
+    /// <summary>
+    /// QC <c>StatusEffects_removeall(actor, removal_type)</c> (status_effects.qc:58-66): remove every active
+    /// effect, running each effect's m_remove mechanics (so a NORMAL removal plays the per-effect removal
+    /// sound). The host wires this to PlayerDies / MonsterDies / ClientDisconnect / MakePlayerObserver /
+    /// reset_map_global / PutClientInServer so stale burning/stunned/superweapon timers don't survive
+    /// death/respawn/map reset (see cross-file todos for the dispatch sites).
+    /// </summary>
+    public static void RemoveAll(Entity e, StatusEffectRemoval removal = StatusEffectRemoval.Normal)
+    {
+        if (e is null || e.StatusEffects.Count == 0) return;
+        // Snapshot the present def ids (Remove mutates the list as it goes).
+        var ids = new List<int>(e.StatusEffects.Count);
+        foreach (var s in e.StatusEffects) ids.Add(s.DefId);
+        foreach (int id in ids)
+        {
+            var def = ByIndexInRegistry(id);
+            if (def != null) Remove(e, def, removal);
+        }
+    }
+
+    /// <summary>
+    /// QC <c>StatusEffects_clearall(store)</c>: forcibly drop every effect with NO mechanics or sound (the
+    /// CLEAR path — used on a spectatee-effect store and on map reset after the NORMAL pass got the sounds).
+    /// Marks the entity dirty so the cleared state networks.
+    /// </summary>
+    public static void ClearAll(Entity e)
+    {
+        if (e is null || e.StatusEffects.Count == 0) return;
+        e.StatusEffects.Clear();
+        Update(e);
+    }
+
     public static bool Has(Entity e, StatusEffectDef def)
     {
         foreach (var s in e.StatusEffects) if (s.DefId == def.RegistryId) return true;
@@ -128,6 +372,11 @@ public static class StatusEffectsCatalog
     public static void Apply(Entity e, StatusEffectDef def, float duration, float strength = 1f, Entity? source = null)
     {
         float now = Api.Services != null ? Api.Clock.Time : 0f;
+        // QC StatusEffects_apply guard (status_effects.qc:33): a positive-but-non-future timer is a no-op
+        // (the effect's window is already over). duration <= 0 is the port's deliberate "permanent" convention
+        // (used by SuperweaponTimeout's persistence + FreezeTag/NadeIce until-thawed), so it is NOT rejected.
+        if (duration > 0f && now + duration <= now)
+            return;
         // QC m_apply: automatically enable the ACTIVE flag when applied (sv_status_effects.qc:34).
         // refresh if already present
         for (int i = 0; i < e.StatusEffects.Count; i++)
@@ -155,31 +404,88 @@ public static class StatusEffectsCatalog
         Update(e);   // QC StatusEffects_update(actor)
     }
 
-    public static void Remove(Entity e, StatusEffectDef def)
+    /// <summary>QC <c>StatusEffects_remove(this, actor, NORMAL)</c> — the default removal path (plays the
+    /// removal sound unless persistent). Equivalent to <c>Remove(e, def, StatusEffectRemoval.Normal)</c>.</summary>
+    public static void Remove(Entity e, StatusEffectDef def) => Remove(e, def, StatusEffectRemoval.Normal);
+
+    /// <summary>
+    /// QC <c>m_remove(this, actor, removal_type)</c> (sv_status_effects.qc:40-51 + the per-effect overrides):
+    /// remove the effect, running the per-effect mechanics and — for a NORMAL removal of an active,
+    /// non-persistent effect — the removal sound (<see cref="StatusEffectDef.RemovalSound"/>). TIMEOUT/CLEAR
+    /// removals play no sound (TIMEOUT is the expiry path; CLEAR is a forced removal with no mechanics).
+    /// </summary>
+    public static void Remove(Entity e, StatusEffectDef def, StatusEffectRemoval removal)
     {
-        int removed = e.StatusEffects.RemoveAll(s => s.DefId == def.RegistryId);
-        if (removed > 0)
+        for (int i = 0; i < e.StatusEffects.Count; i++)
+        {
+            if (e.StatusEffects[i].DefId != def.RegistryId) continue;
+            var s = e.StatusEffects[i];
+            // QC m_remove: sound(actor, CH_TRIGGER, m_sound_rm) on a NORMAL removal of an active,
+            // non-persistent effect. (sv_status_effects.qc:46; persistent effects stay silent per #2620.)
+            if (removal == StatusEffectRemoval.Normal
+                && (s.Flags & StatusEffectFlags.Active) != 0
+                && (s.Flags & StatusEffectFlags.Persistent) == 0
+                && !string.IsNullOrEmpty(def.RemovalSound)
+                && Api.Services != null)
+            {
+                SoundSystem.PlayOn(e, Sounds.ByName(def.RemovalSound!), SoundChannel.Item, SoundLevels.VolBase, SoundLevels.AttenNorm);
+            }
+            e.StatusEffects.RemoveAt(i);
             Update(e);   // QC m_remove -> StatusEffects_update(actor)
+            return;
+        }
     }
 
-    /// <summary>Per-frame tick: expire effects and apply periodic burn damage. Called by the server loop.</summary>
+    /// <summary>
+    /// QC <c>StatusEffects_tick(actor)</c> (status_effects.qc:9-15 — FOREACH active effect -> m_tick), fused
+    /// with the base <c>m_tick</c> (sv_status_effects.qc:11-27). For each active effect: recompute the
+    /// PERSISTENT flag from its <see cref="StatusEffectDef.PersistentCheck"/> (BITSET, dirty-mark on change);
+    /// a PERSISTENT effect never times out; otherwise run the per-effect <see cref="StatusEffectDef.OnTick"/>
+    /// (which may request a NORMAL self-removal — e.g. burning self-extinguishes in water/while frozen and
+    /// applies its fire damage) and finally expire the timer (TIMEOUT removal). Called per damageable entity
+    /// by the server loop.
+    /// </summary>
     public static void Tick(Entity e, float now)
     {
-        bool changed = false;
+        // Iterate by id (the active list can be mutated by m_tick/removal). Snapshot the present def ids.
         for (int i = e.StatusEffects.Count - 1; i >= 0; i--)
         {
+            if (i >= e.StatusEffects.Count) continue;   // list shrank under us
             var s = e.StatusEffects[i];
-            // QC m_tick: a PERSISTENT effect does NOT time out (sv_status_effects.qc:20-22).
-            bool persistent = (s.Flags & StatusEffectFlags.Persistent) != 0;
-            if (!persistent && s.ExpireTime > 0f && now >= s.ExpireTime) { e.StatusEffects.RemoveAt(i); changed = true; continue; }
-            // burning: periodic damage (full burn logic layered on by the status-effects subsystem)
-            if (Burning != null && s.DefId == Burning.RegistryId)
+            var def = ByIndexInRegistry(s.DefId);
+            if (def is null) continue;
+
+            // QC m_tick: BITSET(flg, PERSISTENT, m_persistent(this, actor)); dirty-mark on a real change.
+            bool wantPersistent = def.PersistentCheck != null && def.PersistentCheck(e);
+            bool isPersistent = (s.Flags & StatusEffectFlags.Persistent) != 0;
+            if (wantPersistent != isPersistent)
             {
-                Damage.Combat.Damage(e, null, s.Source, s.Strength * 0.05f, "burning", e.Origin, System.Numerics.Vector3.Zero);
+                if (wantPersistent) s.Flags |= StatusEffectFlags.Persistent;
+                else s.Flags &= ~StatusEffectFlags.Persistent;
+                e.StatusEffects[i] = s;
+                isPersistent = wantPersistent;
+                Update(e);   // QC: if(oldflag != flg) StatusEffects_update(actor)
             }
+
+            // QC m_tick: a PERSISTENT effect does NOT time out (sv_status_effects.qc:20-22).
+            if (isPersistent)
+            {
+                def.OnTick?.Invoke(e, s);   // persistent burning still applies fire damage / EF tick
+                continue;
+            }
+
+            // Per-effect m_tick body (burning fire damage + water/frozen extinguish, stunned frozen-extinguish).
+            // A true return is the per-effect m_remove(NORMAL) request.
+            if (def.OnTick != null && def.OnTick(e, s))
+            {
+                Remove(e, def, StatusEffectRemoval.Normal);
+                continue;
+            }
+
+            // QC m_tick timeout: time > statuseffect_time -> m_remove(TIMEOUT) (no removal sound).
+            if (s.ExpireTime > 0f && now >= s.ExpireTime)
+                Remove(e, def, StatusEffectRemoval.Timeout);
         }
-        if (changed)
-            Update(e);   // QC m_remove(TIMEOUT) -> StatusEffects_update(actor)
     }
 
     // ============================================================================================

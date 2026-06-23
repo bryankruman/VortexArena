@@ -29,12 +29,16 @@ namespace XonoticGodot.Common.Gameplay;
 ///        the player beside them facing their angles. The "1-team-only-one-player" advantage guard and the
 ///        per-teammate <c>msnt_timer</c> cooldown are ported.
 ///
-/// NOTE (deferred / approximated, all flagged inline): <c>checkpvs</c> (PVS visibility), the
-/// <c>tracebox_hits_trigger_hurt</c> hurt-volume check, the <c>pointcontents</c> lava/slime/sky reject, and the
-/// nade-in-range reject (needs the projectile entity list) have no clean mutator-reachable equivalent yet, so the
-/// relocation does the geometry traces it CAN and skips those extra rejections — a faithful superset (it may keep
-/// a spot QC would have rejected for a hurt trigger / lava). The <c>closetodeath</c> sub-branch uses the player's
-/// current origin as the death origin (the port has no <c>.death_origin</c> field reachable here).
+/// The sky-surface reject (Q3SURFACEFLAG_SKY) and the lava/slime/water <c>pointcontents</c> reject ARE now applied
+/// (via the trace's surfaceflags + <c>Api.Trace.PointContents</c>), and both the look-at facing and the relocation
+/// facing are latched into the networked FixAngle channel so the spawn orientation actually reaches the client.
+///
+/// NOTE (still deferred / approximated, all flagged inline): <c>checkpvs</c> (PVS visibility), the
+/// <c>tracebox_hits_trigger_hurt</c> hurt-volume check, and the nade-in-range reject (needs the projectile entity
+/// list) have no clean mutator-reachable equivalent yet, so the relocation does the traces it CAN and skips those
+/// rejections — a faithful superset (it may keep a spot QC would have rejected for a hurt trigger / nearby nade).
+/// The <c>closetodeath</c> sub-branch uses the player's current origin as the death origin (the port has no
+/// <c>.death_origin</c> field reachable here).
 /// QC kept <c>.msnt_lookat</c> / <c>.msnt_timer</c> on the spot/player edicts; adding Entity fields is out of this
 /// task's edit scope, so both live in <see cref="ConditionalWeakTable{TKey,TValue}"/> maps keyed by the entity.
 /// </summary>
@@ -46,6 +50,10 @@ public sealed class SpawnNearTeammateMutator : MutatorBase
 
     /// <summary>QC SPAWN_PRIO_NEAR_TEAMMATE_SAMETEAM (server/spawnpoints.qh:11).</summary>
     public const int PrioNearTeammateSameTeam = 100;
+
+    /// <summary>DP SUPERCONTENTS_* water|slime|lava (Base/darkplaces/bspfile.h) — the "liquids" mask used to map
+    /// QC <c>pointcontents(p) != CONTENT_EMPTY</c> onto the port's bitmask PointContents (matches PlayerPhysics).</summary>
+    private const int SuperContentsLiquidsMask = 0x00000010 | 0x00000020 | 0x00000040;
 
     public SpawnNearTeammateMutator() => NetName = "spawn_near_teammate";
 
@@ -161,7 +169,7 @@ public sealed class SpawnNearTeammateMutator : MutatorBase
             //     player.angles_x = -player.angles.x; player.angles_z = 0;
             // vectoangles + the explicit pitch flip == fixedvectoangles (the round-trippable look-at facing).
             Vector3 ang = QMath.FixedVecToAngles(mate.Origin - player.Origin);
-            player.Angles = new Vector3(ang.X, ang.Y, 0f);
+            FaceAngles(player, new Vector3(ang.X, ang.Y, 0f));
         }
         return false;
     }
@@ -305,8 +313,16 @@ public sealed class SpawnNearTeammateMutator : MutatorBase
         if (vert.Fraction == 1.0f) return null; // above void or too high
         Vector3 vertEnd = vert.EndPos;
 
-        // QC also rejects sky surfaces, lava/slime (pointcontents), and hurt-trigger volumes here — no clean
-        // mutator-reachable equivalent (NOTE in the class doc); the geometry traces are kept.
+        // QC: if (trace_dphitq3surfaceflags & Q3SURFACEFLAG_SKY) goto skip; — don't relocate onto a sky leak.
+        if ((vert.DpHitQ3SurfaceFlags & MutatorConstants.Q3SurfaceFlagSky) != 0) return null;
+
+        // QC: if (pointcontents(vectical_trace_endpos) != CONTENT_EMPTY) goto skip; — no lava/slime/water (the QC
+        // comment names exactly those three as the "annoying" content to avoid). PointContents returns a
+        // SUPERCONTENTS bitmask in the port, so test the liquids mask rather than the legacy CONTENT_EMPTY value.
+        if ((Api.Trace.PointContents(vertEnd) & SuperContentsLiquidsMask) != 0) return null;
+
+        // QC also rejects hurt-trigger volumes here (tracebox_hits_trigger_hurt) — no clean mutator-reachable
+        // equivalent yet (NOTE in the class doc); the geometry + sky + liquids rejects are kept.
 
         // QC: make sure there's floor (or a wall) ahead so the player won't immediately fall.
         Vector3 floorStart = vertEnd + up * plMax.Z + forward * plMax.X;
@@ -323,7 +339,22 @@ public sealed class SpawnNearTeammateMutator : MutatorBase
     {
         if (Api.Services is not null) Api.Entities.SetOrigin(player, pos);
         else player.Origin = pos;
-        player.Angles = new Vector3(mate.Angles.X, mate.Angles.Y, 0f);
+        FaceAngles(player, new Vector3(mate.Angles.X, mate.Angles.Y, 0f));
+    }
+
+    /// <summary>
+    /// Force the spawned player to face <paramref name="angles"/> on the respawn edge. QC just writes
+    /// <c>player.angles</c> here (PlayerSpawn runs while <c>fixangle</c> is already set from PutPlayerInServer,
+    /// so the DP client honors it). The port split orientation into two channels: <c>Angles</c> alone never
+    /// reaches the camera — it's overwritten by the client's input view angles next tick — so the spawn facing
+    /// must be latched into the networked FixAngle/FixAngleAngles channel (SpawnSystem.PutPlayerInServer:559-560
+    /// sets it to the SPAWNPOINT angles; we overwrite that here with the teammate-facing).
+    /// </summary>
+    private static void FaceAngles(Entity player, Vector3 angles)
+    {
+        player.Angles = angles;
+        player.FixAngle = true;
+        player.FixAngleAngles = angles;
     }
 
     private static void SetLookAt(Entity spot, Entity? mate) =>
@@ -359,12 +390,75 @@ public sealed class SpawnNearTeammateMutator : MutatorBase
         }
     }
 
-    /// <summary>QC <c>expr_evaluate(s)</c> for a cvar string: false for "" / "0" / "false", true otherwise.</summary>
+    /// <summary>
+    /// Faithful port of QC <c>expr_evaluate(string s)</c> (lib/cvar.qh:48). A boolean cvar-expression
+    /// interpreter: an optional leading '+' (no-op) or '-' (negate the result); then each whitespace token is a
+    /// predicate that must hold (logical AND) — either a comparison <c>var>=x</c> / <c>var&lt;=x</c> /
+    /// <c>var&gt;</c> / <c>var&lt;</c> / <c>var==x</c> / <c>var!=x</c> (numeric, via cvar()) or
+    /// <c>var===s</c> / <c>var!==s</c> (string, via cvar_string()), or a bare token which is either a literal
+    /// number (its own truthiness) or a cvar name (cvar()'s truthiness), optionally '!'-prefixed to invert.
+    /// If any predicate fails, the AND fails (and is NOT inverted by '-'); otherwise the running result flips.
+    /// This is what lets the overkill ruleset value <c>g_spawn_near_teammate "!g_assault !g_freezetag"</c>
+    /// correctly disable the mutator during assault / freezetag instead of always reading as enabled.
+    /// </summary>
     private static bool ExprEvaluate(string s)
     {
-        if (string.IsNullOrEmpty(s)) return false;
-        s = s.Trim();
-        if (s == "0" || string.Equals(s, "false", System.StringComparison.OrdinalIgnoreCase)) return false;
-        return true;
+        s ??= string.Empty;
+        bool ret = false;
+        if (s.Length > 0 && s[0] == '+') s = s.Substring(1);
+        else if (s.Length > 0 && s[0] == '-') { ret = true; s = s.Substring(1); }
+
+        bool exprFail = false;
+        foreach (string tok in s.Split((char[]?)null, System.StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (!ExprToken(tok)) { exprFail = true; break; }
+        }
+        if (!exprFail) ret = !ret;
+        return ret;
     }
+
+    // One whitespace token of expr_evaluate's AND chain — returns true if the predicate holds (QC: continue).
+    private static bool ExprToken(string s)
+    {
+        int o;
+        // Operators tested in EXACTLY QC's BINOP source order (>= <= == != === !==, then > <). strstrofs finds
+        // the FIRST occurrence, so for a "var===x" token the leading "==" matches before "===" is ever tried —
+        // a faithful quirk of expr_evaluate (lib/cvar.qh:69-80), not reordered here.
+        if ((o = s.IndexOf(">=", System.StringComparison.Ordinal)) >= 0)
+            return CvarF(s.Substring(0, o)) >= Stof(s.Substring(o + 2));
+        if ((o = s.IndexOf("<=", System.StringComparison.Ordinal)) >= 0)
+            return CvarF(s.Substring(0, o)) <= Stof(s.Substring(o + 2));
+        if ((o = s.IndexOf("==", System.StringComparison.Ordinal)) >= 0)
+            return CvarF(s.Substring(0, o)) == Stof(s.Substring(o + 2));
+        if ((o = s.IndexOf("!=", System.StringComparison.Ordinal)) >= 0)
+            return CvarF(s.Substring(0, o)) != Stof(s.Substring(o + 2));
+        if ((o = s.IndexOf("===", System.StringComparison.Ordinal)) >= 0)
+            return Cvar(s.Substring(0, o)) == s.Substring(o + 3);
+        if ((o = s.IndexOf("!==", System.StringComparison.Ordinal)) >= 0)
+            return Cvar(s.Substring(0, o)) != s.Substring(o + 3);
+        if ((o = s.IndexOf('>')) >= 0)
+            return CvarF(s.Substring(0, o)) > Stof(s.Substring(o + 1));
+        if ((o = s.IndexOf('<')) >= 0)
+            return CvarF(s.Substring(0, o)) < Stof(s.Substring(o + 1));
+
+        // Bare token: literal number (its own value) or cvar name; optional leading '!' inverts.
+        string k = s;
+        bool b = true;
+        if (k.Length > 0 && k[0] == '!') { k = k.Substring(1); b = false; }
+        float f = Stof(k);
+        // QC: boolean((ftos(f) == k) ? f : cvar(k)) — if k is a literal number use it, else read the cvar.
+        float val = (Ftos(f) == k) ? f : CvarF(k);
+        return (val != 0f) == b;
+    }
+
+    // cvar(name) / cvar_string(name) analogues; "" when services aren't up (cvar of a missing name is 0/"").
+    private static float CvarF(string name) => Api.Services is null ? 0f : Api.Cvars.GetFloat(name);
+    private static string Cvar(string name) => Api.Services is null ? string.Empty : Api.Cvars.GetString(name);
+
+    // QC stof/ftos: parse a leading float (0 on failure), and the canonical float→string (used to detect literals).
+    private static float Stof(string s) =>
+        float.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float v) ? v : 0f;
+
+    private static string Ftos(float f) =>
+        f.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture);
 }

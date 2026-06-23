@@ -36,6 +36,27 @@ public sealed class InstagibMutator : MutatorBase
     /// <summary>QC autocvar_g_instagib_extralives — armor "lives" granted by an ExtraLife pickup.</summary>
     public float ExtraLives = 1f;
 
+    /// <summary>QC autocvar_g_instagib_damagedbycontents (default true) — lava/slime/drown still hurt.</summary>
+    public bool DamagedByContents = true;
+
+    /// <summary>QC autocvar_g_instagib_friendlypush (default true) — Vaporizer knockback affects teammates.</summary>
+    public bool FriendlyPush = true;
+
+    /// <summary>QC autocvar_g_instagib_allow_jetpacks — keep Jetpack/FuelRegen pickups on the map.</summary>
+    public bool AllowJetpacks;
+
+    /// <summary>QC autocvar_g_instagib_ammo_convert_cells — turn cell packs into Vaporizer cells.</summary>
+    public bool AmmoConvertCells;
+
+    /// <summary>QC autocvar_g_instagib_ammo_convert_rockets.</summary>
+    public bool AmmoConvertRockets;
+
+    /// <summary>QC autocvar_g_instagib_ammo_convert_shells.</summary>
+    public bool AmmoConvertShells;
+
+    /// <summary>QC autocvar_g_instagib_ammo_convert_bullets.</summary>
+    public bool AmmoConvertBullets;
+
     public InstagibMutator() => NetName = "instagib";
 
     // QC: expr_evaluate(cvar_string("g_instagib")) — instagib is the headline arena mutator.
@@ -51,6 +72,8 @@ public sealed class InstagibMutator : MutatorBase
     private HookHandler<MutatorHooks.ForbidRandomStartWeaponsArgs>? _onForbidRandom;
     private HookHandler<MutatorHooks.SetWeaponArenaArgs>? _onSetWeaponArena;
     private HookHandler<MutatorHooks.SetStartItemsArgs>? _onSetStartItems;
+    private HookHandler<GameHooks.PlayerDamageArgs>? _onSplitHealthArmor;
+    private HookHandler<MutatorHooks.FilterItemDefinitionArgs>? _onFilterItemDef;
 
     public override void Hook()
     {
@@ -63,6 +86,8 @@ public sealed class InstagibMutator : MutatorBase
         _onForbidRandom ??= OnForbidRandomStartWeapons;
         _onSetWeaponArena ??= OnSetWeaponArena;
         _onSetStartItems ??= OnSetStartItems;
+        _onSplitHealthArmor ??= OnPlayerDamageSplitHealthArmor;
+        _onFilterItemDef ??= OnFilterItemDefinition;
 
         MutatorHooks.DamageCalculate.Add(_onDamageCalc);
         MutatorHooks.PlayerDies.Add(_onPlayerDies);
@@ -73,6 +98,11 @@ public sealed class InstagibMutator : MutatorBase
         MutatorHooks.ForbidRandomStartWeapons.Add(_onForbidRandom);
         MutatorHooks.SetWeaponArena.Add(_onSetWeaponArena);
         MutatorHooks.SetStartItems.Add(_onSetStartItems);
+        // QC PlayerDamage_SplitHealthArmor: armor never absorbs damage in instagib (take = damage, save = 0)
+        // — without this the port's 70% armor block corrupts the armor-as-lives model + the no-ammo bleed.
+        GameHooks.PlayerDamageSplitHealthArmor.Add(_onSplitHealthArmor);
+        // QC FilterItem: convert/replace/remove map weapons, powerups, ammo and jetpacks.
+        MutatorHooks.FilterItemDefinition.Add(_onFilterItemDef);
 
         if (Api.Services is not null)
         {
@@ -83,6 +113,15 @@ public sealed class InstagibMutator : MutatorBase
             if (start != 0f) AmmoStart = start;
             float xl = Api.Cvars.GetFloat("g_instagib_extralives");
             if (xl != 0f) ExtraLives = xl;
+            // QC defaults (mutators.cfg): damagedbycontents/friendlypush both default 1, the rest default 0.
+            // The cvars are registered with those defaults, so GetFloat returns the live/default value.
+            DamagedByContents = Api.Cvars.GetFloat("g_instagib_damagedbycontents") != 0f;
+            FriendlyPush = Api.Cvars.GetFloat("g_instagib_friendlypush") != 0f;
+            AllowJetpacks = Api.Cvars.GetFloat("g_instagib_allow_jetpacks") != 0f;
+            AmmoConvertCells = Api.Cvars.GetFloat("g_instagib_ammo_convert_cells") != 0f;
+            AmmoConvertRockets = Api.Cvars.GetFloat("g_instagib_ammo_convert_rockets") != 0f;
+            AmmoConvertShells = Api.Cvars.GetFloat("g_instagib_ammo_convert_shells") != 0f;
+            AmmoConvertBullets = Api.Cvars.GetFloat("g_instagib_ammo_convert_bullets") != 0f;
         }
     }
 
@@ -97,6 +136,8 @@ public sealed class InstagibMutator : MutatorBase
         if (_onForbidRandom is not null) MutatorHooks.ForbidRandomStartWeapons.Remove(_onForbidRandom);
         if (_onSetWeaponArena is not null) MutatorHooks.SetWeaponArena.Remove(_onSetWeaponArena);
         if (_onSetStartItems is not null) MutatorHooks.SetStartItems.Remove(_onSetStartItems);
+        if (_onSplitHealthArmor is not null) GameHooks.PlayerDamageSplitHealthArmor.Remove(_onSplitHealthArmor);
+        if (_onFilterItemDef is not null) MutatorHooks.FilterItemDefinition.Remove(_onFilterItemDef);
     }
 
     private static bool IsPlayer(Entity? e) => e is not null && (e.Flags & EntFlags.Client) != 0;
@@ -105,6 +146,15 @@ public sealed class InstagibMutator : MutatorBase
     private bool OnDamageCalculate(ref MutatorHooks.DamageCalculateArgs args)
     {
         Entity target = args.Target;
+        Entity? attacker = args.Attacker;
+
+        // QC FIRST branch: g_friendlyfire == 0 && SAME_TEAM && both players → no damage at all.
+        if (Api.Services is not null
+            && Api.Cvars.GetFloat("g_friendlyfire") == 0f
+            && IsPlayer(target) && IsPlayer(attacker)
+            && Teams.SameTeam(target, attacker!))
+            args.Damage = 0f;
+
         if (!IsPlayer(target))
             return false;
 
@@ -112,13 +162,24 @@ public sealed class InstagibMutator : MutatorBase
         if (args.DeathType == DeathTypes.Fall)
             args.Damage = 0f;
 
-        Entity? attacker = args.Attacker;
+        // QC: lava/slime/drown damage only counts when g_instagib_damagedbycontents is set (default true).
+        if (!DamagedByContents)
+        {
+            string baseDeath = DeathTypes.BaseOf(args.DeathType);
+            if (baseDeath == DeathTypes.Drown || baseDeath == DeathTypes.Slime || baseDeath == DeathTypes.Lava)
+                args.Damage = 0f;
+        }
+
         string wep = DeathTypes.WeaponNetNameOf(args.DeathType);
         if (IsPlayer(attacker))
         {
             // QC: vaporizer hit on a player with armor → eat a "life" (armor point) and do no damage.
             if (wep == "vaporizer")
             {
+                // QC: !friendlypush && SAME_TEAM → no knockback on teammates.
+                if (!FriendlyPush && Teams.SameTeam(target, attacker!))
+                    args.Force = Vector3.Zero;
+
                 float armor = target.GetResource(ResourceType.Armor);
                 if (armor > 0f)
                 {
@@ -211,10 +272,24 @@ public sealed class InstagibMutator : MutatorBase
         if (!IsPlayer(player)) return;
 
         bool godmode = (player.Flags & EntFlags.GodMode) != 0;
-        if (player.DeadState != DeadFlag.No)
+        bool unlimitedAmmo = (player.Items & (int)ItemFlag.UnlimitedAmmo) != 0;
+        bool gameStopped = Api.Cvars.GetFloat("g_game_stopped") != 0f;
+        // QC autocvar_g_rm && autocvar_g_rm_laser — rocketminsta downgrade mode.
+        bool rocketMinsta = Api.Cvars.GetFloat("g_rm") != 0f && Api.Cvars.GetFloat("g_rm_laser") != 0f;
+
+        if (player.DeadState != DeadFlag.No || gameStopped)
             StopCountdown(player);
-        else if (player.GetResource(ResourceType.Cells) > 0f || godmode)
+        else if (player.GetResource(ResourceType.Cells) > 0f || unlimitedAmmo || godmode)
             StopCountdown(player);
+        else if (rocketMinsta)
+        {
+            // QC: under rocketminsta the player's weapon is downgraded instead of bleeding out.
+            if (!player.InstagibNeedAmmo)
+            {
+                NotificationSystem.Center(player, "INSTAGIB_DOWNGRADE");
+                player.InstagibNeedAmmo = true;
+            }
+        }
         else
         {
             player.InstagibNeedAmmo = true;
@@ -240,11 +315,28 @@ public sealed class InstagibMutator : MutatorBase
         float dmg = hp <= 10f ? 5f : 10f;
         Combat.Damage(player, player, player, dmg, "noammo", player.Origin, System.Numerics.Vector3.Zero);
 
-        // QC announcer countdown + "find ammo" centerprint past 80hp.
+        // QC: annce = (hp <= 5) ? ANNCE_INSTAGIB_TERMINATED : Announcer_PickNumber(CNT_NORMAL, ceil(hp/10)).
+        // Announcer_PickNumber(CNT_NORMAL, n) plays the NUM_<n> spoken-number announcer (the "1".."10" clips).
         if (hp <= 5f)
+        {
             NotificationSystem.Announce(player, "INSTAGIB_TERMINATED");
+        }
+        else
+        {
+            int num = (int)System.Math.Ceiling(hp / 10f);
+            if (num < 1) num = 1;
+            if (num > 10) num = 10;
+            NotificationSystem.Announce(player, $"NUM_{num}");
+        }
+
+        // QC "find ammo" centerprint past 80hp; the >90 variant is the louder MULTI ("get some ammo or you'll be dead").
         if (hp > 80f)
-            NotificationSystem.Center(player, "INSTAGIB_FINDAMMO");
+        {
+            if (hp <= 90f)
+                NotificationSystem.Center(player, "INSTAGIB_FINDAMMO");
+            else
+                NotificationSystem.Send(NotifBroadcast.OneOnly, player, MsgType.Multi, "MULTI_INSTAGIB_FINDAMMO");
+        }
     }
 
     /// <summary>
@@ -273,6 +365,60 @@ public sealed class InstagibMutator : MutatorBase
         toucher.GiveResource(ResourceType.Armor, ExtraLives);
         NotificationSystem.Center(toucher, "EXTRALIVES", ExtraLives);
         return true;
+    }
+
+    // MUTATOR_HOOKFUNCTION(mutator_instagib, PlayerDamage_SplitHealthArmor) — armor never absorbs damage:
+    // take = damage, save = 0. (QC M_ARGV(4) = M_ARGV(7); M_ARGV(5) = 0.) This is what makes armor act as
+    // discrete "lives" instead of a 70% damage sponge, and keeps the no-ammo bleed at its raw 10/5 per tick.
+    private bool OnPlayerDamageSplitHealthArmor(ref GameHooks.PlayerDamageArgs args)
+    {
+        args.DamageTake = args.DamageSave + args.DamageTake; // = the full incoming damage (take + save split)
+        args.DamageSave = 0f;
+        return false; // CBC_ORDER_ANY
+    }
+
+    // MUTATOR_HOOKFUNCTION(mutator_instagib, FilterItem) — convert/replace/remove map items.
+    // The port's item registry is still classname/netname-based (no GameItem itemdef on the spawn def yet),
+    // so the switch on item.itemdef / item.weapon is approximated by matching the definition's classname /
+    // NetName tags (the same stand-in NIX/melee_only use). Returns true to delete/suppress the spawn.
+    private bool OnFilterItemDefinition(ref MutatorHooks.FilterItemDefinitionArgs args)
+    {
+        Entity def = args.Definition;
+        string cls = def.ClassName;
+        string net = def.NetName;
+
+        // QC: big powerups (Strength/Shield/HealthMega/ArmorMega) → random instagib powerup deck under
+        // g_powerups, else deleted. The instagib powerup item economy (deck + spawnfuncs) isn't ported yet,
+        // so we faithfully DELETE them here (the replace-with-random-powerup deck is a cross-file TODO).
+        if (cls is "item_strength" or "item_shield" or "item_health_mega" or "item_armor_mega"
+            || net is "strength" or "shield" or "health_mega" or "armor_mega")
+            return true;
+
+        // QC: Invisibility / ExtraLife / Speed are kept (return false = allowed).
+        if (cls is "item_invisible" or "item_invisibility" or "item_extralife" or "item_speed"
+            || net is "invisibility" or "extralife" or "speed")
+            return false;
+
+        // QC: ammo packs convert to vaporizer cells when the matching convert cvar is set; either way the
+        // original pack is removed (replaced). Without an item-spawn replace seam we can only delete here.
+        if (cls is "item_cells" || net == "cells")
+            return AmmoConvertCells;
+        if (cls is "item_rockets" || net == "rockets")
+            return AmmoConvertRockets;
+        if (cls is "item_shells" || net == "shells")
+            return AmmoConvertShells;
+        if (cls is "item_bullets" || net == "bullets")
+            return AmmoConvertBullets;
+
+        // QC: Jetpack / FuelRegen removed unless g_instagib_allow_jetpacks.
+        if (cls is "item_jetpack" or "item_fuel_regen" || net is "jetpack" or "fuel_regen")
+            return !AllowJetpacks;
+
+        // QC: Devastator / Vortex weapon pickups → vaporizer cells (replaced, so delete the original).
+        if (cls is "weapon_devastator" or "weapon_vortex" || net is "devastator" or "vortex")
+            return true;
+
+        return false; // everything else spawns normally
     }
 
     private bool OnForbidThrow(ref MutatorHooks.ForbidThrowCurrentWeaponArgs args) => true;

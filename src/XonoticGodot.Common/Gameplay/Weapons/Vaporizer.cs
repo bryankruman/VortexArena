@@ -100,7 +100,9 @@ public sealed class Vaporizer : Weapon
             }
             else if (st.JumpInterval <= Api.Clock.Time)
             {
-                st.JumpInterval = Api.Clock.Time + 0.7f; // WEP_CVAR_PRI(WEP_BLASTER, refire)
+                // QC vaporizer.qc:340: jump_interval = time + WEP_CVAR_PRI(WEP_BLASTER, refire) *
+                // W_WeaponRateFactor(actor) — the sv_weaponrate (+ Speed powerup/buff) scaling.
+                st.JumpInterval = Api.Clock.Time + 0.7f * WeaponRateFactor(actor); // WEP_CVAR_PRI(WEP_BLASTER, refire)
                 BlasterSecondary(actor, slot);
             }
         }
@@ -118,7 +120,9 @@ public sealed class Vaporizer : Weapon
         float damage = Primary.Damage > 0f ? Primary.Damage : 10000f;
 
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out _);
-        ShotInfo shot = WeaponFiring.SetupShot(actor, forward);
+        // QC W_SetupShot(..., vaporizer_damage, thiswep.m_id): pass wep+maxDamage so the accuracy "fired"
+        // denominator is credited (the sister Vortex does this; vaporizer.qc:136).
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, wep: this, maxDamage: damage);
 
         // FireRailgunBullet: pierces targets, applies the configured knockback force (+ falloff if set).
         // headshotNotify: true — the Vaporizer announces headshots (QC vaporizer.qc:145).
@@ -126,25 +130,54 @@ public sealed class Vaporizer : Weapon
         Entity? hit = WeaponFiring.FireRailgunBullet(actor, shot.Origin, end, damage, RegistryId, Primary.Force,
             headshotNotify: true);
 
-        Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/minstanexfire.wav");
+        // QC vaporizer.qc:139: sound played separately at VOL_BASE * 0.8 (and bypasses the strength sound).
+        Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/minstanexfire.wav", SoundLevels.VolBase * 0.8f);
 
-        // Rocket-Minsta: a Devastator-style explosion at the beam endpoint.
-        if (Api.Services is not null && Api.Cvars.GetFloat("g_rm") != 0f)
-            RocketMinstaExplosion(actor, end);
+        // Rail-endpoint trace (world-only) → the impact point + surface flags, used for the beam visual, the
+        // impact effect/sound, and the Rocket-Minsta sky/noimpact explosion gate (QC trace_endpos / trace_
+        // dphitq3surfaceflags after FireRailgunBullet). FireRailgunBullet pierces players, so a fresh world
+        // trace gives the wall endpoint the beam actually stopped at.
+        TraceResult impTr = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, end, MoveFilter.WorldOnly, actor);
+        Vector3 endpos = impTr.EndPos;
 
-        // W_DecreaseAmmo: instagib spends exactly 1 cell, otherwise primary_ammo.
-        bool instagib = Instagib || (Api.Services is not null && Api.Cvars.GetFloat("g_instagib") != 0f);
-        actor.TakeResource(AmmoType, instagib ? 1f : Primary.Ammo);
+        // QC vaporizer.qc:156-157: the cylindric rail beam (gauntletbeam on a hit, lgbeam otherwise) + muzzle
+        // flash (EFFECT_VORTEX_MUZZLEFLASH). The port nets a sweep effect (VAPORIZER_BEAM_HIT when a player was
+        // pierced, VAPORIZER_BEAM otherwise) and reuses the shared Vortex muzzle flash.
+        EffectEmitter.Emit(hit is not null ? "VAPORIZER_BEAM_HIT" : "VAPORIZER_BEAM", shot.Origin, endpos, 0);
+        EffectEmitter.Emit("VORTEX_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
 
-        // Deferred (client render): yoda/impressive achievements, SendCSQCVaporizerBeamParticle, muzzle flash.
+        // QC vaporizer.qc:407-413 wr_impacteffect: EFFECT_VORTEX_IMPACT + SND_VAPORIZER_IMPACT (neximpact) at
+        // the beam endpoint. The port emits impacts server-side like the Vortex.
+        EffectEmitter.Emit("VORTEX_IMPACT", endpos);
+        WeaponSplash.ImpactSoundAt(endpos, "weapons/neximpact.wav"); // SND_VAPORIZER_IMPACT
+
+        // Rocket-Minsta: a Devastator-style explosion at the beam endpoint — but NOT when the beam hit sky or a
+        // noimpact surface (QC vaporizer.qc:169-171: trace_dphitq3surfaceflags & (SKY | NOIMPACT)).
+        if (Api.Services is not null && Api.Cvars.GetFloat("g_rm") != 0f
+            && (impTr.DpHitQ3SurfaceFlags & (WeaponFiring.Q3SurfaceFlagSky | Q3SurfaceFlagNoImpact)) == 0)
+            RocketMinstaExplosion(actor, endpos);
+
+        // W_DecreaseAmmo (vaporizer.qc:173): (autocvar_g_instagib) ? 1 : primary_ammo. Base keys this on the
+        // LIVE cvar only — a non-instagib Vaporizer pickup spends the full primary_ammo per shot.
+        actor.TakeResource(AmmoType, InstagibActive ? 1f : Primary.Ammo);
+
+        // Deferred (client render): yoda/impressive achievements, the CSQC beam team-color/colorboost.
     }
 
-    // W_RocketMinsta_Explosion — radius blast at the rail endpoint (g_rm_*). vaporizer.qc
+    // W_RocketMinsta_Explosion — radius blast at the rail endpoint (g_rm_*). vaporizer.qc:108.
     private void RocketMinstaExplosion(Entity actor, Vector3 loc)
     {
+        // QC tags the blast WEP_DEVASTATOR.m_id | HITTYPE_SPLASH and credits WEP_DEVASTATOR accuracy — so the
+        // RocketMinsta mutator's devastator-keyed no-self-damage / force-gib hooks match, and the obituary/
+        // accuracy attribute to the Devastator, not the Vaporizer. Resolve the Devastator's death tag and pass
+        // it as the SPECIAL deathTag (RadiusDamage routes it through the string pipeline + ORs HITTYPE_SPLASH on
+        // the indirect victims). accuracyWeapon = the Devastator credits "fired" damage (QC vaporizer.qc:110-111).
+        var devastator = Weapons.ByName("devastator");
+        string? devTag = devastator is not null ? Damage.DeathTypes.FromWeapon(devastator.NetName) : null;
         WeaponSplash.RadiusDamage(actor, loc,
-            Cvar("g_rm_damage", 35f), Cvar("g_rm_edgedamage", 15f), Cvar("g_rm_radius", 90f),
-            actor, RegistryId, Cvar("g_rm_force", 200f));
+            Cvar("g_rm_damage", 70f), Cvar("g_rm_edgedamage", 38f), Cvar("g_rm_radius", 140f),
+            actor, RegistryId, Cvar("g_rm_force", 400f),
+            accuracyWeapon: devastator, deathTag: devTag);
     }
 
     // W_Blaster_Attack via the Blaster weapon — the secondary knockback laser.
@@ -158,20 +191,32 @@ public sealed class Vaporizer : Weapon
         blaster.FirePrimaryDirect(actor, slot);
     }
 
-    // W_RocketMinsta_Attack(mode 0) — a fan of short-lived bouncing laser bolts (g_rm_laser_*). vaporizer.qc
+    // W_RocketMinsta_Attack(mode 0) — a fan of short-lived bouncing laser bolts (g_rm_laser_*). vaporizer.qc:222.
     private void RocketMinstaLaserBarrage(Entity actor, WeaponSlot slot)
     {
-        int count = (int)MathF.Max(1f, Cvar("g_rm_laser_count", 1f));
-        float damage = Cvar("g_rm_laser_damage", 25f);
-        float radius = Cvar("g_rm_laser_radius", 80f);
-        float force = Cvar("g_rm_laser_force", 300f);
-        float speed = Cvar("g_rm_laser_speed", 5000f);
-        float spread = Cvar("g_rm_laser_spread", 0f);
+        // Cvar fallbacks are the Base mutators.cfg:447-460 defaults (the cfg ships these; the fallbacks fire
+        // only on a bare config). count 3, damage 80, radius 150, force 400, speed 6000, lifetime 30, spread 0.05.
+        int count = (int)MathF.Max(1f, Cvar("g_rm_laser_count", 3f));
+        float damage = Cvar("g_rm_laser_damage", 80f);
+        float radius = Cvar("g_rm_laser_radius", 150f);
+        float force = Cvar("g_rm_laser_force", 400f);
+        float speed = Cvar("g_rm_laser_speed", 6000f);
+        float spread = Cvar("g_rm_laser_spread", 0.05f);
         float zspread = Cvar("g_rm_laser_zspread", 0f);
-        float lifetime = Cvar("g_rm_laser_lifetime", 0.3f);
+        float lifetime = Cvar("g_rm_laser_lifetime", 30f);
+
+        // QC vaporizer.qc:230,245: the bolts set up + tag as WEP_ELECTRO (proj.projectiledeathtype = WEP_ELECTRO
+        // .m_id) — so the RocketMinsta mutator's electro-keyed no-self-damage hook matches and the kill feed /
+        // accuracy attribute to the Electro, not the Vaporizer. Fall back to the Vaporizer id if Electro is
+        // somehow unregistered.
+        var electro = Weapons.ByName("electro");
+        int laserDeathType = electro?.RegistryId ?? RegistryId;
 
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out Vector3 right, out _);
         ShotInfo shot = WeaponFiring.SetupShot(actor, forward, new Vector3(0, 0, -3), new Vector3(0, 0, -3));
+
+        // QC vaporizer.qc:233: W_MuzzleFlash(WEP_ELECTRO) — the barrage uses electro muzzle effects.
+        EffectEmitter.Emit("ELECTRO_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
 
         for (int i = 0; i < count; ++i)
         {
@@ -185,28 +230,31 @@ public sealed class Vaporizer : Weapon
             Api.Entities.SetSize(proj, new Vector3(0, 0, -3), new Vector3(0, 0, -3));
             Api.Entities.SetOrigin(proj, shot.Origin);
 
-            // velocity = (w_shotdir + (((i+0.5)/count)*2 - 1) * right * spread) * speed; z += zspread*signed.
+            // velocity = (w_shotdir + (((i+0.5)/count)*2 - 1) * right * spread) * speed; z += zspread*(random-0.5).
+            // QC uses (random() - 0.5) → [-0.5,0.5] (not a full signed [-1,1]); dormant at the default zspread 0.
             float lat = ((i + 0.5f) / count) * 2f - 1f;
             Vector3 v = (shot.Dir + lat * right * spread) * speed;
-            v.Z += zspread * Prandom.Signed();
+            v.Z += zspread * (Prandom.Float() - 0.5f);
             proj.Velocity = v;
             proj.Angles = QMath.VecToAngles(proj.Velocity);
 
             proj.Touch = (self, other) =>
             {
                 WeaponSplash.RadiusDamage(self, self.Origin, damage / count, damage / count, radius,
-                    self.Owner, RegistryId, force / count, directHit: other);
+                    self.Owner, laserDeathType, force / count, directHit: other);
                 Api.Entities.Remove(self);
             };
             proj.Think = self => { WeaponSplash.RadiusDamage(self, self.Origin, damage / count, damage / count,
-                radius, self.Owner, RegistryId, force / count); Api.Entities.Remove(self); };
+                radius, self.Owner, laserDeathType, force / count); Api.Entities.Remove(self); };
             proj.NextThink = Api.Clock.Time + lifetime;
 
             // MUTATOR_CALLHOOK(EditProjectile, actor, proj) — fired per laser bolt (vaporizer.qc RM laser barrage).
             var ep = new MutatorHooks.EditProjectileArgs(actor, proj);
             MutatorHooks.EditProjectile.Call(ref ep);
         }
-        Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/electro_fire2.wav");
+
+        // QC vaporizer.qc:229: mode-0 fan plays SND_CRYLINK_FIRE (electro_fire2 is only the mode-1 rapid stream).
+        Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/crylink_fire.wav");
     }
 
     private static float Cvar(string name, float fallback)
@@ -216,6 +264,26 @@ public sealed class Vaporizer : Weapon
         return v != 0f ? v : fallback;
     }
 
-    // METHOD(Vaporizer, wr_checkammo1) — vaporizer.qc (instagib needs 1 cell).
-    public bool CheckAmmoPrimary(Entity actor) => actor.GetResource(AmmoType) >= (Instagib ? 1f : Primary.Ammo);
+    // METHOD(Vaporizer, wr_checkammo1) — vaporizer.qc:362 (instagib needs 1 cell, else primary_ammo). QC re-reads
+    // autocvar_g_instagib here, so the non-instagib loadout correctly requires the full primary_ammo per shot.
+    public bool CheckAmmoPrimary(Entity actor)
+        => actor.GetResource(AmmoType) >= (InstagibActive ? 1f : Primary.Ammo);
+
+    // METHOD(Vaporizer, wr_checkammo2) — vaporizer.qc:370: the Blaster-laser secondary is free at the default
+    // Blaster ammo 0 (return true); otherwise it needs WEP_CVAR_PRI(WEP_BLASTER, ammo) cells.
+    public bool CheckAmmoSecondary(Entity actor)
+    {
+        float blasterAmmo = Cvar("g_balance_blaster_primary_ammo", 0f);
+        return blasterAmmo <= 0f || actor.GetResource(AmmoType) >= blasterAmmo;
+    }
+
+    /// <summary>QC <c>autocvar_g_instagib</c>: the live instagib gate. <see cref="Instagib"/> is the class default
+    /// (true — the Vaporizer is the instagib loadout weapon), but the per-shot/per-check cost must re-read the
+    /// cvar so a non-instagib Vaporizer pickup spends/needs the full <c>primary_ammo</c> (vaporizer.qc reads
+    /// <c>autocvar_g_instagib</c> at every W_DecreaseAmmo / wr_checkammo).</summary>
+    private bool InstagibActive => Instagib && (Api.Services is null || Api.Cvars.GetFloat("g_instagib") != 0f);
+
+    /// <summary>QC Q3SURFACEFLAG_NOIMPACT (BIT(0)) — a surface nothing impacts; the RM explosion is suppressed
+    /// when the rail endpoint lands on it (or on sky), matching vaporizer.qc:170.</summary>
+    private const int Q3SurfaceFlagNoImpact = 0x1;
 }

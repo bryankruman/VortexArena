@@ -43,6 +43,11 @@ public sealed class Spider : Monster
     // Monster_Spawn + METHOD(Spider, mr_setup) — spider.qc
     public override void Spawn(Entity e)
     {
+        // mr_setup: if (!RES_HEALTH) SetResourceExplicit(RES_HEALTH, g_monster_spider_health). Seed StartHealth
+        // from the cvar BEFORE Setup so a server override of g_monster_spider_health is honoured (Setup seeds
+        // e.Health from StartHealth then applies MONSTER_SKILLMOD, matching QC's health *= skillmod ordering).
+        StartHealth = MonsterAI.Cvar("g_monster_spider_health", StartHealth);
+
         var st = MonsterAI.Setup(this, e);
         Api.Entities.SetSize(e, new Vector3(-30, -30, -25), new Vector3(30, 30, 30));
 
@@ -105,6 +110,9 @@ public sealed class Spider : Monster
             makeTrigger: true,              // spider.qc:134 PROJECTILE_MAKETRIGGER
             onExplode: p =>
             {
+                // M_Spider_Attack_Web_Explode: Send_Effect(EFFECT_ELECTRO_IMPACT, this.origin, '0 0 0', 1).
+                EffectEmitter.Emit("ELECTRO_IMPACT", p.Origin);
+
                 // STATUSEFFECT_Webbed to everything alive in radius except other spiders (QC web explode).
                 foreach (Entity it in Api.Entities.FindInRadius(p.Origin, 25f))
                 {
@@ -115,6 +123,15 @@ public sealed class Spider : Monster
                     MonsterFramework.ApplyFor(MonsterFramework.Webbed, it, webDuration, 1f, p.Owner);
                 }
             });
+        // QC nets the web as CSQCProjectile(proj, true, PROJECTILE_ELECTRO, true): the electro ORB visual
+        // (ebomb model + TR_NEXUIZPLASMA plasma trail + electro_fly loop). SpawnProjectile stamps NetName from
+        // the monster def ("spider"), which ProjectileCatalog.Resolve maps to the GENERIC fallback. Override the
+        // NetName so Resolve's `Has(s, "electro_orb", "electro")` branch matches -> ProjectileType.Electro,
+        // giving the web its QC-faithful orb/plasma/electro_fly presentation. (Deathtype is carried separately
+        // via the deathType argument, and the Webbed self-exclusion filter keys off the VICTIM's NetName, so
+        // renaming this projectile is safe.)
+        web.NetName = "electro_orb";
+
         // QC W_SetupProjVelocity_Explicit(..., web_speed, web_speed_up, ...) adds an upward launch component.
         web.Velocity += new Vector3(0, 0, MonsterAI.Cvar("g_monster_spider_attack_web_speed_up", WebSpeedUp));
 

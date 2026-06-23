@@ -59,12 +59,32 @@ public sealed class Ctf : GameType
     private const string CvarScoreReturn  = "g_ctf_score_return";
     private const string CvarScorePenaltyDrop = "g_ctf_score_penalty_drop";
     private const string CvarScorePenaltyReturned = "g_ctf_score_penalty_returned";
+    private const string CvarScoreCaptureAssist = "g_ctf_score_capture_assist";       // SCORE to the previous dropper on a capture
+    private const string CvarScorePickupDroppedEarly = "g_ctf_score_pickup_dropped_early"; // dropped-pickup score, fresh drop
+    private const string CvarScorePickupDroppedLate  = "g_ctf_score_pickup_dropped_late";  // dropped-pickup score, near auto-return
     private const float  DefaultScoreCapture = 1f; // team SCORE per capture (CTF_CAPS always +1)
     private const float  DefaultScoreKill    = 20f;
     private const float  DefaultScorePickupBase = 0f;
     private const float  DefaultScoreReturn  = 5f;
     private const float  DefaultScorePenaltyDrop = 0f;
     private const float  DefaultScorePenaltyReturned = 0f;
+    private const float  DefaultScoreCaptureAssist = 0f;
+    private const float  DefaultScorePickupDroppedEarly = 0f;
+    private const float  DefaultScorePickupDroppedLate  = 0f;
+
+    // ----- carrier-death drop toss velocity (g_ctf_drop_velocity_*; gametypes-server.cfg defaults) -----
+    private const string CvarDropVelocityUp   = "g_ctf_drop_velocity_up";   // 200 — upward kick when a flag is dropped
+    private const string CvarDropVelocitySide = "g_ctf_drop_velocity_side"; // 100 — randomized sideways kick
+    private const float  DefaultDropVelocityUp   = 200f;
+    private const float  DefaultDropVelocitySide = 100f;
+
+    // ----- stalemate / enemy-FC reveal (g_ctf_stalemate*; gametypes-server.cfg defaults) -----
+    private const string CvarStalemate            = "g_ctf_stalemate";              // 1 — reveal carriers after a long hold
+    private const string CvarStalemateTime        = "g_ctf_stalemate_time";         // 60 — per-flag hold before it goes stale
+    private const string CvarStalemateEndCond     = "g_ctf_stalemate_endcondition"; // 1 — end when ONE flag un-stales (2 = both)
+    private const float  DefaultStalemateTime     = 60f;
+    private const float  DefaultStalemateEndCond  = 1f;
+    private const float  WpfeThinkRate            = 0.5f; // QC WPFE_THINKRATE — stalemate re-check cadence
 
     // ----- flag timing + collect-delay cvars (g_ctf_flag_*; xonotic defaults) -----
     private const string CvarFlagReturnTime   = "g_ctf_flag_return_time";   // seconds a dropped flag auto-returns after
@@ -136,6 +156,9 @@ public sealed class Ctf : GameType
     public float ScoreReturn     => TryCvar(CvarScoreReturn, out float v) ? v : DefaultScoreReturn;
     public float ScorePenaltyDrop => TryCvar(CvarScorePenaltyDrop, out float v) ? v : DefaultScorePenaltyDrop;
     public float ScorePenaltyReturned => TryCvar(CvarScorePenaltyReturned, out float v) ? v : DefaultScorePenaltyReturned;
+    public float ScoreCaptureAssist => TryCvar(CvarScoreCaptureAssist, out float v) ? v : DefaultScoreCaptureAssist;
+    public float ScorePickupDroppedEarly => TryCvar(CvarScorePickupDroppedEarly, out float v) ? v : DefaultScorePickupDroppedEarly;
+    public float ScorePickupDroppedLate  => TryCvar(CvarScorePickupDroppedLate,  out float v) ? v : DefaultScorePickupDroppedLate;
     public float FlagReturnTime   => TryCvar(CvarFlagReturnTime, out float v) ? v : DefaultFlagReturnTime;
     public float FlagCollectDelay => TryCvar(CvarFlagCollectDelay, out float v) ? v : DefaultFlagCollectDelay;
 
@@ -148,6 +171,16 @@ public sealed class Ctf : GameType
 
     public bool MatchEnded { get; private set; }
     public int LeaderTeam { get; private set; }
+
+    /// <summary>
+    /// QC ctf_stalemate: both teams have held flags long enough that carriers are revealed (the anti-stall
+    /// "show the enemy flagcarrier location" state). Drives the reserved CTF_STALEMATE OBJECTIVE_STATUS bit
+    /// (read by the net status producer) and the enemy-FC waypoint reveal. Maintained by <see cref="CheckStalemate"/>.
+    /// </summary>
+    public bool Stalemate { get; private set; }
+
+    /// <summary>QC wpforenemy_nextthink: the next time <see cref="CheckStalemate"/> re-evaluates (WPFE_THINKRATE).</summary>
+    private float _stalemateNextThink;
 
     private HookHandler<DeathEvent>? _deathHandler;
 
@@ -248,6 +281,8 @@ public sealed class Ctf : GameType
             return;
         MatchEnded = false;
         LeaderTeam = Teams.None;
+        Stalemate = false;
+        _stalemateNextThink = 0f;
         Scoring.GameScores.ResetTeams();  // QC Score_ClearAll at match start: zero both team slots before declaring
         DeclareScoreRules();
         Scoring.GameScores.SeedTeams(TeamCount); // zero both team slots for the active teams (stable leader scan)
@@ -289,7 +324,7 @@ public sealed class Ctf : GameType
         if (f is not null) Scoring.GameScores.AddToPlayer(p, f, n);
     }
 
-    public void Deactivate()
+    public override void Deactivate()
     {
         if (_deathHandler is null)
             return;
@@ -370,9 +405,26 @@ public sealed class Ctf : GameType
         if (fromBase)
             flag.PickupTime = Api.Services is not null ? Api.Clock.Time : 0f; // QC PICKUP_BASE timing baseline
 
-        // QC ctf_Handle_Pickup scoring: PICKUP_BASE awards g_ctf_score_pickup_base to the carrier's team.
-        if (fromBase && ScorePickupBase != 0f)
-            player.ScoreFrags += (int)ScorePickupBase;
+        // QC ctf_Handle_Pickup scoring: PICKUP_BASE awards g_ctf_score_pickup_base to the carrier's team; a
+        // PICKUP_DROPPED awards an interpolated early→late score scaled by how much auto-return time is left
+        // (sv_ctf.qc:819) — a fresh drop pays "early", one about to time out pays "late".
+        if (fromBase)
+        {
+            if (ScorePickupBase != 0f)
+            {
+                player.ScoreFrags += (int)ScorePickupBase;
+                AddTeamScore(player.Team, (int)ScorePickupBase); // QC GameRules_scoring_add_team(player, SCORE, pickup_base)
+            }
+        }
+        else
+        {
+            int droppedScore = DroppedPickupScore(flag);
+            if (droppedScore != 0)
+            {
+                player.ScoreFrags += droppedScore;
+                AddTeamScore(player.Team, droppedScore); // QC GameRules_scoring_add_team(player, SCORE, pickup_dropped_score)
+            }
+        }
         AddCol(player, "CTF_PICKUPS", 1); // QC GameRules_scoring_add(player, CTF_PICKUPS, 1)
 
         // Attach the world flag entity to the carrier (QC setattachment + FLAG_CARRY_OFFSET).
@@ -387,6 +439,21 @@ public sealed class Ctf : GameType
         NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, $"CTF_PICKUP_{TeamSuffix(flag.HomeTeam)}", player.NetName);
         NotificationSystem.Center(player, $"CTF_PICKUP_{TeamSuffix(flag.HomeTeam)}");
         return true;
+    }
+
+    /// <summary>
+    /// QC ctf_Handle_Pickup PICKUP_DROPPED score (sv_ctf.qc:819): interpolate between
+    /// g_ctf_score_pickup_dropped_early (fresh drop) and _late (about to auto-return) by the fraction of the
+    /// auto-return time remaining, rounded as QC <c>floor(x + 0.5)</c>.
+    /// </summary>
+    private int DroppedPickupScore(FlagState flag)
+    {
+        float returnTime = FlagReturnTime;
+        float remaining = returnTime > 0f
+            ? QClamp(((flag.DropTime + returnTime) - Now) / returnTime, 0f, 1f)
+            : 1f; // no auto-return → treated as fully "early"
+        float score = ScorePickupDroppedLate * (1f - remaining) + ScorePickupDroppedEarly * remaining;
+        return (int)System.MathF.Floor(score + 0.5f);
     }
 
     /// <summary>
@@ -425,6 +492,18 @@ public sealed class Ctf : GameType
                 Scoring.GameScores.SetBestTime(player, cf, Scoring.GameScores.TimeEncode(captime));
         }
 
+        // QC ctf_Handle_Capture capture-assist (sv_ctf.qc:673): the teammate who previously dropped this flag
+        // (its last ctf_dropper) is credited g_ctf_score_capture_assist for setting up the cap.
+        if (carried.Dropper is { } assistPlayer && !ReferenceEquals(assistPlayer, player))
+        {
+            int assist = (int)ScoreCaptureAssist;
+            if (assist != 0)
+            {
+                assistPlayer.ScoreFrags += assist;
+                AddTeamScore(assistPlayer.Team, assist); // QC GameRules_scoring_add_team(ctf_dropper, SCORE, score_assist)
+            }
+        }
+
         // QC ctf_Handle_Capture: the global "flag captured" voice + the kill-feed line + the capturer's centerprint.
         FlagAnnounceSound(carried.HomeTeam, "CAPTURE");
         NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, $"CTF_CAPTURE_{TeamSuffix(carried.HomeTeam)}", player.NetName);
@@ -458,9 +537,11 @@ public sealed class Ctf : GameType
         AddCol(player, "CTF_RETURNS", 1); // QC GameRules_scoring_add(player, CTF_RETURNS, 1)
         AddTeamScorePenalty(flag.HomeTeam, (int)ScorePenaltyReturned);
 
-        // QC ctf_Handle_Return: the global "flag returned" voice + the kill-feed line.
+        // QC ctf_Handle_Return: the global "flag returned" voice + the team-colored kill-feed line
+        // (APP_TEAM_NUM(flag.team, INFO_CTF_RETURN)) + the returner's centerprint (CENTER_CTF_RETURN).
         FlagAnnounceSound(flag.HomeTeam, "RETURNED");
-        NotificationSystem.Info("CTF_FLAGRETURN_TIMEOUT_NEUTRAL");
+        NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, $"CTF_RETURN_{TeamSuffix(flag.HomeTeam)}", player.NetName);
+        NotificationSystem.Center(player, $"CTF_RETURN_{TeamSuffix(flag.HomeTeam)}");
 
         flag.ResetToBase();
         RespawnFlagEntity(flag);
@@ -475,9 +556,10 @@ public sealed class Ctf : GameType
         if (flag.Status != FlagStatus.Dropped)
             return;
 
-        // QC ctf_CheckFlagReturn: the global "flag returned" voice + the timeout kill-feed line (no player credit).
+        // QC ctf_CheckFlagReturn: the global "flag returned" voice + the team-colored timeout kill-feed line
+        // (APP_NUM(flag.team, INFO_CTF_FLAGRETURN_TIMEOUT); the neutral flag uses the _NEUTRAL variant). No player credit.
         FlagAnnounceSound(flag.HomeTeam, "RETURNED");
-        NotificationSystem.Info("CTF_FLAGRETURN_TIMEOUT_NEUTRAL");
+        NotificationSystem.Info($"CTF_FLAGRETURN_TIMEOUT_{TeamSuffix(flag.HomeTeam)}");
 
         flag.ResetToBase();
         RespawnFlagEntity(flag);
@@ -525,6 +607,13 @@ public sealed class Ctf : GameType
             fe.GtLandTime = 0f;
             fe.GtCapturer = carrier;
             GametypeEntities.SetOrigin(fe, carrier.Origin + FlagDropOffset);
+            // QC ctf_Handle_Throw DROP_NORMAL (sv_ctf.qc:571): toss the flag up + a randomized sideways kick on top
+            // of the carrier's velocity (W_CalculateProjectileVelocity) so it tumbles away from where they fell.
+            float up   = Cvar(CvarDropVelocityUp,   DefaultDropVelocityUp);
+            float side = Cvar(CvarDropVelocitySide, DefaultDropVelocitySide);
+            float cx = Prandom.Float() * 2f - 1f; // QC crandom() ∈ [-1,1]
+            float cy = Prandom.Float() * 2f - 1f;
+            fe.Velocity = carrier.Velocity + new Vector3(cx * side, cy * side, up);
         }
     }
 
@@ -1159,6 +1248,97 @@ public sealed class Ctf : GameType
             else if (returnTime > 0f && flag.Status == FlagStatus.Dropped && now >= flag.DropTime + returnTime)
                 AutoReturnFlag(flag);
         }
+
+        // QC ctf_FlagThink (sv_ctf.qc:1084): poll the stalemate condition at WPFE_THINKRATE.
+        if (Cvar(CvarStalemate, 1f) != 0f && now >= _stalemateNextThink)
+        {
+            _stalemateNextThink = now + WpfeThinkRate;
+            CheckStalemate(now);
+        }
+        else if (Cvar(CvarStalemate, 1f) == 0f && Stalemate)
+            Stalemate = false; // stalemate disabled mid-match → clear it
+    }
+
+    /// <summary>
+    /// QC ctf_CheckStalemate (sv_ctf.qc:903): both teams have held flags long enough (each beyond
+    /// g_ctf_stalemate_time, or instantly in one-flag) → enter the stalemate "reveal carriers" state. End the
+    /// stalemate per g_ctf_stalemate_endcondition (1 = when fewer than two flags are still stale, 2 = when none
+    /// is). Sets <see cref="Stalemate"/>; the net status producer maps it to the CTF_STALEMATE OBJECTIVE_STATUS
+    /// bit and the enemy-FC waypoint reveal is a presentation follow-on (see todos).
+    /// </summary>
+    public void CheckStalemate(float now)
+    {
+        float staleTime = Cvar(CvarStalemateTime, DefaultStalemateTime);
+        int endCond = (int)Cvar(CvarStalemateEndCond, DefaultStalemateEndCond);
+
+        // QC: a flag is "stale" if it's away from base AND (held past stalemate_time OR neutral/one-flag = instant).
+        int staleRed = 0, staleBlue = 0, staleYellow = 0, stalePink = 0, staleNeutral = 0;
+        foreach (FlagState f in Flags.Values)
+        {
+            if (f.Status == FlagStatus.AtBase)
+                continue;
+            bool instant = f.HomeTeam == Teams.None; // QC `|| !it.team` — neutral flags are instantly stale
+            if (!instant && now < f.PickupTime + staleTime)
+                continue;
+            switch (f.HomeTeam)
+            {
+                case Teams.Red:    staleRed++;     break;
+                case Teams.Blue:   staleBlue++;    break;
+                case Teams.Yellow: staleYellow++;  break;
+                case Teams.Pink:   stalePink++;    break;
+                default:           staleNeutral++; break;
+            }
+        }
+
+        int staleFlags = OneFlag
+            ? (staleNeutral >= 1 ? 1 : 0)
+            : (staleRed >= 1 ? 1 : 0) + (staleBlue >= 1 ? 1 : 0) + (staleYellow >= 1 ? 1 : 0) + (stalePink >= 1 ? 1 : 0);
+
+        // QC ctf_CheckStalemate set/clear ladder.
+        if (OneFlag && staleFlags == 1)
+            Stalemate = true;
+        else if (staleFlags >= 2)
+            Stalemate = true;
+        else if (staleFlags == 0 && endCond == 2)
+            Stalemate = false;
+        else if (staleFlags < 2 && endCond == 1)
+            Stalemate = false;
+    }
+
+    /// <summary>
+    /// QC ctf_RemovePlayer (sv_ctf.qc:2372), called from the MakePlayerObserver / ClientDisconnect / portal /
+    /// vehicle hooks: a carrier who leaves play (disconnect, spectate, portal, board a vehicle) drops the flag
+    /// where they stand, and any flag still referencing this player as pass sender / pass target / dropper has
+    /// those back-links cleared so the flag can never get stuck pointing at a gone player.
+    /// </summary>
+    public void RemovePlayer(Player player)
+    {
+        if (CarriedBy(player) is not null)
+            DropFlag(player); // QC ctf_Handle_Throw(player, NULL, DROP_NORMAL)
+
+        foreach (FlagState f in Flags.Values)
+        {
+            if (ReferenceEquals(f.PassSender, player)) f.PassSender = null;
+            if (ReferenceEquals(f.PassTarget, player)) f.PassTarget = null;
+            if (ReferenceEquals(f.Dropper, player))    f.Dropper    = null;
+        }
+    }
+
+    /// <summary>
+    /// QC MUTATOR_HOOKFUNCTION(ctf, PlayerUseKey) (sv_ctf.qc:2452): the +use key in a carrier's hands throws the
+    /// flag (g_ctf_throw); in an empty-handed teammate's hands it requests a pass from the nearest carrier
+    /// (g_ctf_pass_request). <paramref name="roster"/> is the live player list (needed to find a carrier to
+    /// request from). Returns true if the key was consumed (a throw or pass-request fired).
+    /// </summary>
+    public bool HandleUseKey(Player player, IReadOnlyList<Player> roster)
+    {
+        if (MatchEnded || player.IsDead)
+            return false;
+        // Carrier → throw (QC: carrier presses +use → ctf_Handle_Throw DROP_THROW).
+        if (CarriedBy(player) is not null)
+            return ThrowFlag(player);
+        // Empty-handed teammate → ask the nearest in-radius carrier to pass (QC g_ctf_pass_request).
+        return RequestPass(player, roster);
     }
 
     // ============================================================================================

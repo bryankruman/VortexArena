@@ -39,8 +39,12 @@ namespace XonoticGodot.Common.Gameplay;
 [GameType]
 public sealed class Cts : GameType
 {
-    private const string CvarFinishKillDelay = "g_cts_finish_kill_delay"; // delay before the post-finish retract
-    private const string CvarMapName         = "mapname";
+    private const string CvarFinishKillDelay   = "g_cts_finish_kill_delay"; // delay before the post-finish retract
+    private const string CvarMapName           = "mapname";
+    private const string CvarSelfDamage        = "g_cts_selfdamage";        // 1 = normal self/fall damage; 0 = suppressed
+    private const string CvarRemoveProjectiles = "g_cts_removeprojectiles"; // delete a dead runner's live projectiles
+    private const string CvarDropMonsterItems  = "g_cts_drop_monster_items";// keep monster-dropped items in CTS
+    private const float  DefaultFinishKillDelay = 2f;                       // QC g_cts_finish_kill_delay default (sv_cts.qc)
     /// <summary>Per-player CTS run state (QC race_* fields; only fastest-completion-time matters here).</summary>
     public sealed class CtsState
     {
@@ -57,6 +61,11 @@ public sealed class Cts : GameType
     private readonly Dictionary<Player, CtsState> _states = new();
 
     private HookHandler<DeathEvent>? _deathHandler;
+    private HookHandler<MutatorHooks.DamageCalculateArgs>? _damageHandler;
+    private HookHandler<MutatorHooks.ForbidThrowCurrentWeaponArgs>? _forbidThrowHandler;
+    private HookHandler<MutatorHooks.FilterItemDefinitionArgs>? _filterItemHandler;
+    private HookHandler<MutatorHooks.PlayerSpawnArgs>? _playerSpawnHandler;
+    private HookHandler<MutatorHooks.PlayerPreThinkArgs>? _preThinkHandler;
 
     /// <summary>Optional sink for the host/controller to react to a death/finish.</summary>
     public IMatchEvents? Events;
@@ -160,6 +169,19 @@ public sealed class Cts : GameType
         DeclareScoreRules();
         _deathHandler = OnDeath;
         Combat.Death.Add(_deathHandler);
+
+        // QC sv_cts.qc mutator hooks — the CTS combat/loadout rules. These chains are dispatched globally
+        // (DamageSystem / spawn / weapon-drop / item-filter), so subscribing here makes the CTS rules live.
+        _damageHandler      = OnDamageCalculate;            // Damage_Calculate: self/fall-damage suppression
+        _forbidThrowHandler = OnForbidThrowCurrentWeapon;   // ForbidThrowCurrentWeapon + ForbidDropCurrentWeapon
+        _filterItemHandler  = OnFilterItemDefinition;       // FilterItem / MonsterDropItem (loot filtering)
+        _playerSpawnHandler = OnPlayerSpawn;                // WantWeapon → WEP_SHOTGUN (force the loadout)
+        _preThinkHandler    = OnPlayerPreThink;             // keep every live runner on the Shotgun each frame
+        MutatorHooks.DamageCalculate.Add(_damageHandler);
+        MutatorHooks.ForbidThrowCurrentWeapon.Add(_forbidThrowHandler);
+        MutatorHooks.FilterItemDefinition.Add(_filterItemHandler);
+        MutatorHooks.PlayerSpawn.Add(_playerSpawnHandler);
+        MutatorHooks.PlayerPreThink.Add(_preThinkHandler);
     }
 
     /// <summary>
@@ -187,12 +209,17 @@ public sealed class Cts : GameType
     /// <summary>QC <c>g_race_qualifying</c> for CTS — defaults to 1 (sv_cts.qh sets it on add): solo time-trial.</summary>
     public bool Qualifying => !TryCvar("g_race_qualifying", out float v) || v != 0f;
 
-    public void Deactivate()
+    public override void Deactivate()
     {
         if (_deathHandler is null)
             return;
         Combat.Death.Remove(_deathHandler);
         _deathHandler = null;
+        if (_damageHandler is not null)      { MutatorHooks.DamageCalculate.Remove(_damageHandler);            _damageHandler = null; }
+        if (_forbidThrowHandler is not null) { MutatorHooks.ForbidThrowCurrentWeapon.Remove(_forbidThrowHandler); _forbidThrowHandler = null; }
+        if (_filterItemHandler is not null)  { MutatorHooks.FilterItemDefinition.Remove(_filterItemHandler);    _filterItemHandler = null; }
+        if (_playerSpawnHandler is not null) { MutatorHooks.PlayerSpawn.Remove(_playerSpawnHandler);            _playerSpawnHandler = null; }
+        if (_preThinkHandler is not null)    { MutatorHooks.PlayerPreThink.Remove(_preThinkHandler);            _preThinkHandler = null; }
     }
 
     public CtsState GetState(Player p)
@@ -264,7 +291,10 @@ public sealed class Cts : GameType
     /// <summary>QC g_cts_finish_kill_delay: schedule the runner to be retracted to start after the kill delay.</summary>
     private void ScheduleRetract(Player p, float now)
     {
-        float delay = TryCvar(CvarFinishKillDelay, out float v) ? v : 0f;
+        // QC sv_cts.qc: g_cts_finish_kill_delay defaults to 2 s; only an explicit 0 disables the retract and -1
+        // makes it instant. When the gametypes cfg isn't loaded the cvar reads empty → fall back to the 2 s default
+        // (the old fallback-to-0 retracted the runner instantly without the cfg).
+        float delay = TryCvar(CvarFinishKillDelay, out float v) ? v : DefaultFinishKillDelay;
         _retractAt[p] = now + System.MathF.Max(0f, delay);
     }
 
@@ -309,15 +339,121 @@ public sealed class Cts : GameType
         return best;
     }
 
-    /// <summary>QC MUTATOR_HOOKFUNCTION(cts, PlayerDies): a death only forces a respawn; CTS never scores frags.</summary>
+    /// <summary>
+    /// QC MUTATOR_HOOKFUNCTION(cts, PlayerDies): a death only forces a respawn; CTS never scores frags. The
+    /// runner's respawn is FORCED (RESPAWN_FORCE) so the dead runner restarts the stage immediately instead of
+    /// waiting the generic delay (QC g_cts_respawn_delay -1 = instant), and the in-progress run is abandoned.
+    /// </summary>
     private bool OnDeath(ref DeathEvent ev)
     {
         if (ev.Victim is not Player victim)
             return false;
 
+        // QC: frag_target.respawn_flags |= RESPAWN_FORCE — CTS forces an immediate respawn so the runner can
+        // re-attempt the stage at once (g_cts_respawn_delay_small/large are -1). NOTE (cross-file): the generic
+        // DeadPlayerThink → RespawnTiming.Calculate path overwrites RespawnFlags/RespawnTime on the death edge,
+        // so this flag alone isn't yet honored end-to-end (see todos).
+        victim.RespawnFlags |= RespawnFlag.Force;
+
         // Abandon the in-progress run (QC race_AbandonRaceCheck) so the next start re-stamps the timer.
         GetState(victim).RunStartTime = 0f;
+        // Also cancel a pending finish-retract for the runner — a death already sends them to respawn.
+        _retractAt.Remove(victim);
         Events?.OnFrag(ev.Attacker as Player, victim, ev.DeathType);
         return false;
+    }
+
+    // ============================================================================================
+    //  CTS combat / loadout rules (QC sv_cts.qc mutator hooks)
+    // ============================================================================================
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(cts, Damage_Calculate)</c>: when <c>g_cts_selfdamage</c> is 0 (e.g. ruleset-XDF),
+    /// zero self-inflicted damage and all fall damage so a runner can rocket-jump/fall without losing the run.
+    /// With <c>g_cts_selfdamage 1</c> (the stock default) damage is left intact.
+    /// </summary>
+    private bool OnDamageCalculate(ref MutatorHooks.DamageCalculateArgs a)
+    {
+        // QC autocvar_g_cts_selfdamage defaults to 1 (normal damage); only an explicit 0 suppresses it.
+        bool selfDamage = !TryCvar(CvarSelfDamage, out float v) || v != 0f;
+        if (selfDamage)
+            return false;
+
+        bool isSelf = a.Attacker is not null && ReferenceEquals(a.Attacker, a.Target);
+        bool isFall = DeathTypes.BaseOf(a.DeathType) == DeathTypes.Fall;
+        if (isSelf || isFall)
+            a.Damage = 0f; // QC: frag_damage = 0
+        return false;
+    }
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(cts, ForbidThrowCurrentWeapon)</c> + <c>ForbidDropCurrentWeapon</c>: no weapon
+    /// dropping or throwing in CTS (this port folds both QC hooks into the single ForbidThrowCurrentWeapon chain).
+    /// </summary>
+    private bool OnForbidThrowCurrentWeapon(ref MutatorHooks.ForbidThrowCurrentWeaponArgs a) => true;
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(cts, FilterItem)</c> + <c>MonsterDropItem</c>: drop (delete) loot/monster-dropped
+    /// items in CTS unless <c>g_cts_drop_monster_items</c> keeps the monster ones. Non-loot map items are kept.
+    /// </summary>
+    private bool OnFilterItemDefinition(ref MutatorHooks.FilterItemDefinitionArgs a)
+    {
+        // QC: if (ITEM_IS_LOOT(item)) { if (item.monster_item && g_cts_drop_monster_items) return false; return true; }
+        // The item-class registry doesn't expose the loot/monster_item flags yet, so we key off the classname tag:
+        // dropped weapons/ammo (the loot in weapon-light CTS maps) carry the "droppedweapon" / "dropped_*" class.
+        string id = a.Definition.ClassName;
+        bool isLoot = id.StartsWith("dropped", System.StringComparison.Ordinal)
+                   || id == "droppedweapon";
+        if (!isLoot)
+            return false; // a fixed map item — keep it
+
+        bool isMonsterDrop = id.Contains("monster", System.StringComparison.Ordinal);
+        bool keepMonsterItems = TryCvar(CvarDropMonsterItems, out float v) && v != 0f;
+        if (isMonsterDrop && keepMonsterItems)
+            return false; // QC: monster_item && g_cts_drop_monster_items → keep
+        return true;      // QC: delete the loot
+    }
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(cts, WantWeapon)</c> (<c>want = (weapon == WEP_SHOTGUN)</c>, mutator-blocked):
+    /// CTS gives only the Shotgun. On spawn, force the runner's owned set to exactly the Shotgun and select it.
+    /// </summary>
+    private bool OnPlayerSpawn(ref MutatorHooks.PlayerSpawnArgs a)
+    {
+        ForceShotgunOnly(a.Player);
+        return false;
+    }
+
+    /// <summary>QC keeps the Shotgun-only loadout enforced each frame (the WantWeapon set is re-evaluated on respawn).</summary>
+    private bool OnPlayerPreThink(ref MutatorHooks.PlayerPreThinkArgs a)
+    {
+        Entity player = a.Player;
+        if ((player.Flags & EntFlags.Client) != 0 && player.DeadState == DeadFlag.No)
+            ForceShotgunOnly(player);
+        return false;
+    }
+
+    /// <summary>Force the player's owned weapon set to exactly {Shotgun} and switch to it (QC WantWeapon → WEP_SHOTGUN).</summary>
+    private static void ForceShotgunOnly(Entity player)
+    {
+        Weapon? shotgun = Weapons.ByName("shotgun");
+        if (shotgun is null)
+            return;
+        if (player.OwnedWeaponSet.Has(shotgun)
+            && ReferenceEquals(Inventory.CurrentWeapon(player), shotgun)
+            && CountOwned(player) == 1)
+            return; // already shotgun-only with it active — nothing to do this frame
+        player.OwnedWeaponSet.Clear();
+        Inventory.GiveWeapon(player, shotgun);
+        Inventory.SwitchWeapon(player, shotgun);
+    }
+
+    /// <summary>Number of weapons in the player's owned set (cheap guard so the per-frame force is idempotent).</summary>
+    private static int CountOwned(Entity player)
+    {
+        int n = 0;
+        foreach (Weapon w in Weapons.All)
+            if (player.OwnedWeaponSet.Has(w)) n++;
+        return n;
     }
 }

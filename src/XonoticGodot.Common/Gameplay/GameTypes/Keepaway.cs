@@ -38,8 +38,19 @@ namespace XonoticGodot.Common.Gameplay;
 ///  - the ballcarrier damage/force scaling matrix (<see cref="DamageScale"/>, QC Damage_Calculate
 ///    ballcarrier/noncarrier damage/force).
 ///
-/// Deferred (NOTE — cross-boundary): the ball model/effects/waypoints (CSQC), multiple-ball chaining
-/// (g_keepaway_ballcarrier_maxballs), and the carrier highspeed PlayerPhysics modifier.
+/// Wired in Wave 2: the procedural ball now spawns through the shared <see cref="BallEntity"/> framework
+/// (<see cref="SpawnBall"/>/<see cref="AdoptBall"/>, driven by the host round-drive seam), pickup/drop/world-touch
+/// play their KA sounds + notifications (<see cref="PickUp"/>/<see cref="Drop"/>/<see cref="BallTouchEntity"/>),
+/// the carried ball orbits its carrier each <see cref="Tick"/>, the 0.5 s self-recapture lockout is honored, the
+/// possession damage/force matrix reads the real vector cvars (<see cref="DamageScale"/>), and normal frags are
+/// suppressed (<see cref="OnGiveFragsForKill"/>). The HUD KA_CARRYING mod-icon reads <see cref="Ball"/>.Carrier
+/// via the net status block, so simply maintaining the carrier feeds it.
+///
+/// Deferred (NOTE — cross-boundary): the ball model/glow/effects + respawn/spark particles + waypoint sprites
+/// (CSQC presentation), the carried-ball invisibility alpha sync, multiple-ball chaining
+/// (g_keepaway_ballcarrier_maxballs), the carrier highspeed PlayerPhysics modifier (g_keepaway_ballcarrier_highspeed),
+/// and the use-key / disconnect / observe drop triggers (need the PlayerUseKey / MakePlayerObserver / ClientDisconnect
+/// / DropSpecialItems mutator hooks, which are not yet on MutatorHooks — see todos). Death-drop IS wired (OnDeath).
 /// </summary>
 [GameType]
 public sealed class Keepaway : GameType
@@ -54,8 +65,11 @@ public sealed class Keepaway : GameType
     private const string CvarScoreKillAc     = "g_keepaway_score_killac";     // bonus per kill while carrying
     private const string CvarScoreBcKill     = "g_keepaway_score_bckill";     // bonus for killing the carrier
     private const float  DefaultScoreTimePoints = 0f; // QC default off (time scoring opt-in)
-    private const float  DefaultScoreKillAc     = 0f;
-    private const float  DefaultScoreBcKill     = 0f;
+    // QC keepaway.cfg / autocvar defaults: g_keepaway_score_killac 1, g_keepaway_score_bckill 1 (BIT(0)-style
+    // bonus of 1 each). When the server cfg is unloaded (headless/tests) these fallbacks must award 1, not 0,
+    // to match Base — see registry keepaway.score.killbonuses.
+    private const float  DefaultScoreKillAc     = 1f;
+    private const float  DefaultScoreBcKill     = 1f;
 
     /// <summary>The (single) ball (QC keepawayball / g_kaballs[0]).</summary>
     public readonly BallState Ball = new();
@@ -69,6 +83,8 @@ public sealed class Keepaway : GameType
     public Player? Leader { get; private set; }
 
     private HookHandler<DeathEvent>? _deathHandler;
+    private HookHandler<MutatorHooks.GiveFragsForKillArgs>? _giveFragsHandler;
+    private HookHandler<MutatorHooks.DamageCalculateArgs>? _damageCalcHandler;
 
     public Keepaway()
     {
@@ -137,6 +153,36 @@ public sealed class Keepaway : GameType
 
         _deathHandler = OnDeath;
         Combat.Death.Add(_deathHandler);
+
+        // QC MUTATOR_HOOKFUNCTION(ka, GiveFragsForKill): no normal frags are counted in Keepaway (only the
+        // ka-specific time/kill bonuses score). Zero the per-kill frag and claim the hook so the FFA frag path is
+        // suppressed while ka is active — without this the normal +1 kill frag would leak into the ka score.
+        _giveFragsHandler ??= OnGiveFragsForKill;
+        MutatorHooks.GiveFragsForKill.Add(_giveFragsHandler);
+
+        // QC MUTATOR_HOOKFUNCTION(ka, Damage_Calculate): scale player-vs-player damage/force by the possession
+        // matrix. Wiring the live DamageSystem.DamageCalculate hook here makes DamageScale/DamageForceScale
+        // actually affect combat (registry keepaway.damage.matrix — previously zero callers).
+        _damageCalcHandler ??= OnDamageCalculate;
+        MutatorHooks.DamageCalculate.Add(_damageCalcHandler);
+    }
+
+    /// <summary>QC MUTATOR_HOOKFUNCTION(ka, Damage_Calculate): apply the ballcarrier/noncarrier damage+force
+    /// matrix to player-vs-player hits (no-op for non-player attacker/target, mirroring the QC IS_PLAYER guard).</summary>
+    private bool OnDamageCalculate(ref MutatorHooks.DamageCalculateArgs args)
+    {
+        if (args.Attacker is not Player attacker || args.Target is not Player target)
+            return false; // QC: only apply scaling to player versus player combat
+        args.Damage = DamageScale(attacker, target, args.Damage);
+        args.Force *= DamageForceScale(attacker, target);
+        return false;
+    }
+
+    /// <summary>QC MUTATOR_HOOKFUNCTION(ka, GiveFragsForKill): M_ARGV(2,float)=0; return true. No frags in ka.</summary>
+    private bool OnGiveFragsForKill(ref MutatorHooks.GiveFragsForKillArgs args)
+    {
+        args.FragScore = 0f; // QC: no frags counted in keepaway
+        return true;         // QC returns true so GiveFrags reads the zeroed delta back
     }
 
     /// <summary>Ball-carry-time remainder accumulator (QC SP_KEEPAWAY_BCTIME += frametime), whole seconds banked.</summary>
@@ -149,12 +195,22 @@ public sealed class Keepaway : GameType
         if (f is not null) Scoring.GameScores.AddToPlayer(p, f, n);
     }
 
-    public void Deactivate()
+    public override void Deactivate()
     {
         if (_deathHandler is null)
             return;
         Combat.Death.Remove(_deathHandler);
         _deathHandler = null;
+        if (_giveFragsHandler is not null)
+        {
+            MutatorHooks.GiveFragsForKill.Remove(_giveFragsHandler);
+            _giveFragsHandler = null;
+        }
+        if (_damageCalcHandler is not null)
+        {
+            MutatorHooks.DamageCalculate.Remove(_damageCalcHandler);
+            _damageCalcHandler = null;
+        }
     }
 
     /// <summary>
@@ -168,33 +224,41 @@ public sealed class Keepaway : GameType
         Ball.Carrier = player;
         Ball.PickupTime = Api.Services is not null ? Api.Clock.Time : 0f;
         AddCol(player, "KEEPAWAY_PICKUPS", 1); // QC ka_TouchEvent: GameRules_scoring_add(toucher, KEEPAWAY_PICKUPS, 1)
-        // Attach the ball entity to the carrier (QC ka_TouchEvent setattachment + SOLID_NOT).
+        // Attach the ball entity to the carrier (QC ka_TouchEvent setattachment + SOLID_NOT + carried-ball think).
         if (BallEntity is Entity e)
         {
-            GametypeEntities.AttachToCarrier(e, player, Vector3.Zero);
-            e.NextThink = 0f; // carried ball has no respawn think
+            global::XonoticGodot.Common.Gameplay.BallEntity.AttachToCarrier(e, player, Vector3.Zero);
+            e.Think = null;        // carried-ball orbit is driven from Tick, not the loose-ball relocate think
+            e.NextThink = 0f;      // carried ball has no respawn think
+            SoundSystem.PlayOn(e, Sounds.ByName("KA_PICKEDUP")); // QC SND_KA_PICKEDUP, ATTEN_NONE
         }
+
+        // QC ka_TouchEvent messages: kill-feed line to all + centerprint to everyone-except + self centerprint.
+        NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, "KEEPAWAY_PICKUP", player.NetName);
+        NotificationSystem.Send(NotifBroadcast.AllExcept, player, MsgType.Center, "KEEPAWAY_PICKUP", player.NetName);
+        NotificationSystem.Send(NotifBroadcast.One, player, MsgType.Center, "KEEPAWAY_PICKUP_SELF");
         return true;
     }
 
-    /// <summary>QC ka_DropEvent: the carrier loses the ball (on death, use-key, or disconnect).</summary>
+    /// <summary>QC ka_DropEvent: the carrier loses the ball (on death, use-key, disconnect, or observe).</summary>
     public void Drop()
     {
         Player? carrier = Ball.Carrier;
+        if (carrier is null)
+            return;
         Ball.Carrier = null;
-        // Detach the ball entity, drop it where the carrier stood, and re-arm the relocate timer (QC ka_DropEvent).
+        // Detach + drop at the carrier's feet with the crandom scatter, arm the 0.5 s self-recapture lockout, and
+        // re-arm the relocate timer (QC ka_DropEvent: setattachment NULL + '0 0 200'+crandom + wait/previous_owner).
         if (BallEntity is Entity e)
         {
-            GametypeEntities.DetachFromCarrier(e);
-            e.Solid = Solid.Trigger;
-            e.MoveType = MoveType.Bounce;
-            e.TakeDamage = DamageMode.Yes;
-            if (carrier is not null)
-                GametypeEntities.SetOrigin(e, carrier.Origin + new Vector3(0f, 0f, 10f));
-            e.Velocity = new Vector3(0f, 0f, 200f);
+            global::XonoticGodot.Common.Gameplay.BallEntity.DropFromCarrier(e, RespawnTime, takesDamage: true);
             e.Think = RespawnBallThink;
-            e.NextThink = GametypeEntities.Now + RespawnTime;
         }
+
+        // QC ka_DropEvent messages and sounds: kill-feed line to all + centerprint to all + global drop sfx.
+        NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, "KEEPAWAY_DROPPED", carrier.NetName);
+        NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Center, "KEEPAWAY_DROPPED", carrier.NetName);
+        SoundSystem.PlayGlobal(Sounds.ByName("KA_DROPPED")); // QC SND_KA_DROPPED, NULL emitter, ATTEN_NONE
     }
 
     // ============================================================================================
@@ -202,44 +266,70 @@ public sealed class Keepaway : GameType
     // ============================================================================================
 
     /// <summary>
-    /// QC ka_SpawnBalls: create the single world ball entity at <paramref name="origin"/> (touch = pickup,
-    /// think = relocate when loose). Returns the entity (or null when no facade is wired). The respawn timer
-    /// starts armed so an untouched ball relocates after <see cref="RespawnTime"/>.
+    /// QC ka_SpawnBalls: create the single world ball entity at <paramref name="origin"/> via the shared
+    /// <see cref="BallEntity"/> framework (touch = pickup, built-in relocate think + EF_DIMLIGHT / glow_trail /
+    /// damageforcescale defaults). Returns the entity (or null when no facade is wired). The Keepaway ball
+    /// immediately relocates to a random map location and arms the respawn timer (QC ka_RespawnBall tail of
+    /// ka_SpawnBalls). The host's round-drive seam (GameWorld) calls this once the match is live, since the
+    /// Keepaway ball is procedural (no map entity) — see <see cref="AdoptBall"/>.
     /// </summary>
     public Entity? SpawnBall(Vector3 origin)
     {
-        Entity? e = GametypeEntities.SpawnObjective("keepawayball", origin, Teams.None,
-            new Vector3(-24f, -24f, -24f), new Vector3(24f, 24f, 24f),
-            touch: BallTouchEntity, think: RespawnBallThink);
-        if (e is not null)
+        var cfg = new BallConfig
         {
-            e.MoveType = MoveType.Bounce;
-            e.TakeDamage = DamageMode.Yes;
-            e.NextThink = GametypeEntities.Now + RespawnTime;
-        }
+            // QC ka_TouchEvent / ka_RespawnBall: our touch picks up / handles world-touch; RespawnTime drives the
+            // built-in relocate think (RelocateOnRespawn defaulted true by BallKind.KeepawayBall).
+            Touch = BallTouchEntity,
+            RespawnTime = RespawnTime,
+        };
+        Entity? e = global::XonoticGodot.Common.Gameplay.BallEntity.SpawnForGametype(BallKind.KeepawayBall, origin, cfg);
+        return AdoptBall(e);
+    }
+
+    /// <summary>
+    /// Adopt a ball created by the host's round-drive seam (QC ka_Handler_CheckBall → ka_SpawnBalls) as THIS
+    /// gametype's single ball. The shared <see cref="global::XonoticGodot.Common.Gameplay.BallEntity"/> spawner
+    /// builds + relocates the edict; the gametype records it and clears any carrier. Returns the same entity.
+    /// </summary>
+    public Entity? AdoptBall(Entity? e)
+    {
         BallEntity = e;
         Ball.Carrier = null;
         return e;
     }
 
-    /// <summary>QC ka_RespawnBall (think): relocate a loose ball and re-arm the timer.</summary>
+    /// <summary>QC ka_RespawnBall (think): relocate a loose ball to a random map location, re-arm the timer, and
+    /// play the respawn sound (ATTEN_NONE).</summary>
     public void RespawnBall(Entity e)
     {
         if (!ReferenceEquals(e, BallEntity) || Ball.Carrier is not null)
             return;
-        // The actual MoveToRandomMapLocation is a host/physics concern; here we just bounce it upward and
-        // re-arm so a ball that nobody collects keeps cycling its relocate timer (QC nextthink loop).
-        e.Solid = Solid.Trigger;
-        e.MoveType = MoveType.Bounce;
-        e.Velocity = new Vector3(0f, 0f, 200f);
-        e.NextThink = GametypeEntities.Now + RespawnTime;
+        // QC ka_RespawnBall: MoveToRandomMapLocation (with the SelectSpawnPoint fallback) + '0 0 200' kick + arm.
+        global::XonoticGodot.Common.Gameplay.BallEntity.Relocate(e, RespawnTime);
+        e.Think = RespawnBallThink;
+        SoundSystem.PlayOn(e, Sounds.ByName("KA_RESPAWN")); // QC SND_KA_RESPAWN, ATTEN_NONE
     }
 
-    /// <summary>Entity touch trampoline: a live player picks the loose ball up (QC ka_TouchEvent).</summary>
+    /// <summary>Entity touch trampoline (QC ka_TouchEvent): a live player picks the loose ball up; a non-player
+    /// world touch plays the touch sfx; the 0.5 s self-recapture lockout is honored.</summary>
     private void BallTouchEntity(Entity self, Entity other)
     {
-        if (other is Player p && !p.IsDead && Ball.Carrier is null)
+        if (Ball.Carrier is not null)
+            return; // already carried
+
+        if (other is Player p)
+        {
+            if (p.IsDead)
+                return;
+            // QC ka_DropEvent self-recapture lockout: a carrier who just dropped can't instantly re-grab it.
+            if (global::XonoticGodot.Common.Gameplay.BallEntity.IsRecaptureLocked(self, p))
+                return;
             PickUp(p);
+            return;
+        }
+
+        // QC ka_TouchEvent: the ball just touched a non-player (most likely the world) — spark + touch sfx.
+        SoundSystem.PlayOn(self, Sounds.ByName("KA_TOUCH")); // QC SND_KA_TOUCH, ATTEN_NORM
     }
 
     private void RespawnBallThink(Entity self) => RespawnBall(self);
@@ -263,16 +353,33 @@ public sealed class Keepaway : GameType
 
     private float ScaleFactor(Player attacker, Player target, string carrierCvar, string nonCarrierCvar)
     {
-        // QC stores a vector cvar (self.x, otherCarrier.y, noncarrier.z); the facade exposes floats, so we read
-        // the three component cvars by suffix. Default 1 (no scaling) when unset.
+        // QC Damage_Calculate reads a single VECTOR cvar and indexes its component: .x = self-damage,
+        // .y = damage to (other) ballcarriers, .z = damage to noncarriers (the carrier vs. noncarrier branch
+        // is selected by whether the ATTACKER carries). Base ships only the vector form
+        // (g_keepaway_ballcarrier_damage "1 1 1"), so we must parse the vector string — not absent _x/_y/_z
+        // suffix cvars — to honor a server-set non-default value. Default 1 (no scaling) when unset.
         bool attackerCarries = ReferenceEquals(Ball.Carrier, attacker);
         bool targetCarries = ReferenceEquals(Ball.Carrier, target);
-        string baseName = attackerCarries ? carrierCvar : nonCarrierCvar;
-        string suffix = ReferenceEquals(target, attacker) ? "_x" : (targetCarries ? "_y" : "_z");
-        return Cvar(baseName + suffix, 1f);
+        string cvarName = attackerCarries ? carrierCvar : nonCarrierCvar;
+        int component = ReferenceEquals(target, attacker) ? 0 : (targetCarries ? 1 : 2);
+        return CvarVectorComponent(cvarName, component, 1f);
     }
 
-    private static float Cvar(string name, float fallback) => TryCvar(name, out float v) ? v : fallback;
+    /// <summary>Read component <paramref name="index"/> (0=x,1=y,2=z) of a vector cvar string ("a b c"),
+    /// falling back to <paramref name="fallback"/> when unset/short (QC autocvar &lt;vector&gt; semantics).</summary>
+    private static float CvarVectorComponent(string name, int index, float fallback)
+    {
+        if (Api.Services is null)
+            return fallback;
+        string s = Api.Cvars.GetString(name);
+        if (string.IsNullOrEmpty(s))
+            return fallback;
+        string[] parts = s.Split((char[]?)null, System.StringSplitOptions.RemoveEmptyEntries);
+        if (index < 0 || index >= parts.Length)
+            return fallback;
+        return float.TryParse(parts[index], System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out float v) ? v : fallback;
+    }
 
     /// <summary>
     /// Advance Keepaway one step (QC ka_BallThink_Carried): while the ball is carried, accrue
@@ -309,6 +416,17 @@ public sealed class Keepaway : GameType
         {
             _bcTimeRemainder -= wholeSecs;
             AddCol(carrier, "KEEPAWAY_BCTIME", wholeSecs);
+        }
+
+        // QC ka_BallThink_Carried orbit anim: the carried ball orbits the carrier in the xy plane (single ball,
+        // so cnt=chainCount=1). Keeps the ball entity riding the carrier so the model/glow tracks them.
+        if (BallEntity is Entity e)
+        {
+            Vector3 pos = global::XonoticGodot.Common.Gameplay.BallEntity.CarryOrbit(
+                carrier.Origin, GametypeEntities.Now, cnt: 1, chainCount: 1);
+            GametypeEntities.SetOrigin(e, pos);
+            // QC also syncs the ball alpha to the carrier's invisibility (this.alpha = this.owner.alpha); the
+            // entity layer has no alpha field yet, so that visual sync is deferred to presentation (see todos).
         }
     }
 

@@ -40,7 +40,7 @@ public sealed class Onslaught : GameType
 {
     // ----- generator health cvar + default (QC autocvar_g_onslaught_gen_health) -----
     private const string CvarGenHealth    = "g_onslaught_gen_health";
-    private const float  DefaultGenHealth = 2000f; // QC default g_onslaught_gen_health
+    private const float  DefaultGenHealth = 2500f; // QC default g_onslaught_gen_health (gametypes-server.cfg:576)
 
     /// <summary>A team's generator (QC <c>onslaught_generator</c> entity: health + destroyed state).</summary>
     public sealed class GeneratorState
@@ -78,6 +78,8 @@ public sealed class Onslaught : GameType
         public readonly List<OnsNode> Neighbors = new();
         /// <summary>Stable id (control-point id for the legacy CaptureControlPoint API).</summary>
         public int Id;
+        /// <summary>QC .targetname: the map name an <c>onslaught_link</c> uses to reference this node (or empty).</summary>
+        public string Name = string.Empty;
     }
 
     /// <summary>Every node in the power graph (generators + control points), QC ons_worldgeneratorlist + ons_worldcplist.</summary>
@@ -89,6 +91,12 @@ public sealed class Onslaught : GameType
     /// <summary>Generator nodes keyed by team, and control-point nodes keyed by id, for fast lookup.</summary>
     private readonly Dictionary<int, OnsNode> _genNodes = new();
     private readonly Dictionary<int, OnsNode> _cpNodes = new();
+
+    /// <summary>Nodes keyed by their QC .targetname (for resolving <c>onslaught_link</c> target/target2 → edges).</summary>
+    private readonly Dictionary<string, OnsNode> _nodesByName = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Staged onslaught_link target/target2 name pairs, resolved into edges post-spawn (QC ons_DelayedLinkSetup).</summary>
+    private readonly List<(string a, string b)> _stagedLinks = new();
 
     /// <summary>The round-phase driver (QC round_handler) — created on <see cref="Activate"/>.</summary>
     public RoundHandler? Handler { get; private set; }
@@ -133,14 +141,16 @@ public sealed class Onslaught : GameType
         _generators.Clear();
         _genNodes.Clear();
         _cpNodes.Clear();
+        _nodesByName.Clear();
+        _stagedLinks.Clear();
         CpCombat.Reset();
     }
 
     /// <summary>Starting generator health (g_onslaught_gen_health, else 2000), QC max_health.</summary>
     public float GeneratorHealth => TryCvar(CvarGenHealth, out float v) && v > 0f ? v : DefaultGenHealth;
 
-    /// <summary>Starting control-point health (g_onslaught_cp_health, else 200), QC max_health.</summary>
-    public float ControlPointHealth => TryCvar("g_onslaught_cp_health", out float v) && v > 0f ? v : 200f;
+    /// <summary>Starting control-point health (g_onslaught_cp_health, else 1000), QC max_health (gametypes-server.cfg:578).</summary>
+    public float ControlPointHealth => TryCvar("g_onslaught_cp_health", out float v) && v > 0f ? v : 1000f;
 
     public void Activate()
     {
@@ -167,19 +177,26 @@ public sealed class Onslaught : GameType
 
         // QC round_handler_Spawn(Onslaught_CheckTeams?, Onslaught_CheckWinner, ...). Onslaught rounds restart
         // when a generator falls; the handler drives warmup/countdown.
+        // QC round_handler_Spawn(Onslaught_CheckPlayers, Onslaught_CheckWinner, Onslaught_RoundStart) then
+        // round_handler_Init(5, g_onslaught_warmup, g_onslaught_round_timelimit) at ons_DelayedInit
+        // (sv_onslaught.qc:2155-2156): the FIRST round arms with end-delay 5. Inside Onslaught_CheckWinner,
+        // when a round actually ends, QC calls round_handler_Init(7, …) (sv_onslaught.qc:1236), so every
+        // SUBSEQUENT round uses end-delay 7 — a 2 s longer end-delay after round 1. We reproduce that by
+        // bumping EndDelay to 7 the moment CanRoundEnd first reports the round decided (see CanRoundEndOns).
+        // (Onslaught_CheckPlayers — canRoundStart — is `return 1`.)
         Handler = new RoundHandler(() => Api.Services is not null ? Api.Clock.Time : 0f)
         {
             CanRoundStart = () => true,
-            CanRoundEnd = () => CheckWinner() != 0,
+            CanRoundEnd = CanRoundEndOns,
             OnRoundStart = () => { },
         };
-        Handler.Init(7f, Cvar("g_onslaught_warmup", 5f), Cvar("g_onslaught_round_timelimit", 0f));
+        Handler.Init(5f, Cvar("g_onslaught_warmup", 5f), Cvar("g_onslaught_round_timelimit", 500f));
 
         _deathHandler = OnDeath;
         Combat.Death.Add(_deathHandler);
     }
 
-    public void Deactivate()
+    public override void Deactivate()
     {
         if (_deathHandler is null)
             return;
@@ -245,7 +262,14 @@ public sealed class Onslaught : GameType
     /// QC onslaught_generator spawn: add a generator node for <paramref name="team"/> at full health,
     /// captured + linked (a live generator is always powered). Returns the node.
     /// </summary>
-    public OnsNode AddGenerator(int team)
+    public OnsNode AddGenerator(int team) => AddGenerator(team, null);
+
+    /// <summary>
+    /// QC onslaught_generator spawn with a map <paramref name="name"/> (.targetname): same as
+    /// <see cref="AddGenerator(int)"/> but also indexes the node by name so an <c>onslaught_link</c> can
+    /// reference it (see <see cref="StageLink"/>/<see cref="ResolveLinks"/>).
+    /// </summary>
+    public OnsNode AddGenerator(int team, string? name)
     {
         float h = GeneratorHealth;
         var gen = new GeneratorState { Health = h, MaxHealth = h };
@@ -253,6 +277,7 @@ public sealed class Onslaught : GameType
         Nodes.Add(node);
         _generators[team] = gen;
         _genNodes[team] = node;
+        RegisterNodeName(node, name);
         return node;
     }
 
@@ -260,19 +285,82 @@ public sealed class Onslaught : GameType
     /// QC onslaught_controlpoint spawn: add a (neutral) control-point node with a stable
     /// <paramref name="controlPointId"/>. CPs start neutral, unlinked, shielded until power reaches them.
     /// </summary>
-    public OnsNode AddControlPoint(int controlPointId)
+    public OnsNode AddControlPoint(int controlPointId) => AddControlPoint(controlPointId, null);
+
+    /// <summary>
+    /// QC onslaught_controlpoint spawn with a map <paramref name="name"/> (.targetname): same as
+    /// <see cref="AddControlPoint(int)"/> but also indexes the node by name so an <c>onslaught_link</c> can
+    /// reference it (see <see cref="StageLink"/>/<see cref="ResolveLinks"/>).
+    /// </summary>
+    public OnsNode AddControlPoint(int controlPointId, string? name)
     {
         var node = new OnsNode { IsGenerator = false, Team = Teams.None, Captured = false, Id = controlPointId };
         Nodes.Add(node);
         _cpNodes[controlPointId] = node;
+        RegisterNodeName(node, name);
         return node;
     }
+
+    /// <summary>Index a node by its QC .targetname so links can resolve it (no-op for empty names).</summary>
+    private void RegisterNodeName(OnsNode node, string? name)
+    {
+        if (string.IsNullOrEmpty(name))
+            return;
+        node.Name = name!;
+        _nodesByName[name!] = node;
+    }
+
+    /// <summary>The node with the given QC .targetname (or null), for <c>onslaught_link</c> resolution.</summary>
+    public OnsNode? NodeByName(string name)
+        => !string.IsNullOrEmpty(name) && _nodesByName.TryGetValue(name, out var n) ? n : null;
 
     /// <summary>QC ons_worldlinklist: connect two nodes with a power link (bidirectional).</summary>
     public void Link(OnsNode a, OnsNode b)
     {
         if (!a.Neighbors.Contains(b)) a.Neighbors.Add(b);
         if (!b.Neighbors.Contains(a)) b.Neighbors.Add(a);
+    }
+
+    /// <summary>
+    /// QC <c>spawnfunc(onslaught_link)</c>: stage an <c>onslaught_link</c> map entity by its two referenced
+    /// node names (<c>.target</c> → goalentity, <c>.target2</c> → enemy). The actual edge is created later by
+    /// <see cref="ResolveLinks"/>, mirroring QC's deferred <c>ons_DelayedLinkSetup</c> (INITPRIO_FINDTARGET):
+    /// links are resolved AFTER all generators/control-points have spawned, so spawn order doesn't matter.
+    /// Empty names are dropped (QC: a link with target=="" or target2=="" is removed without linking).
+    /// </summary>
+    public void StageLink(string target, string target2)
+    {
+        if (string.IsNullOrEmpty(target) || string.IsNullOrEmpty(target2))
+            return; // QC: if (this.target == "" || this.target2 == "") delete(this); return;
+        _stagedLinks.Add((target, target2));
+    }
+
+    /// <summary>
+    /// QC <c>ons_DelayedLinkSetup</c> (INITPRIO_FINDTARGET post-spawn pass): turn every staged
+    /// <see cref="StageLink"/> name pair into a graph edge by resolving each name to its node
+    /// (<c>find(targetname)</c>), then re-propagate power (<see cref="UpdateLinks"/>) so the freshly-linked
+    /// generators expose their first attackable neighbors. Call once after the BSP entity lump has spawned all
+    /// onslaught_* nodes. Unresolvable names are skipped (QC objerror) so a partial map still links what it can.
+    /// Returns the number of edges created.
+    /// </summary>
+    public int ResolveLinks()
+    {
+        int created = 0;
+        foreach ((string a, string b) in _stagedLinks)
+        {
+            OnsNode? na = NodeByName(a);  // QC this.goalentity = find(NULL, targetname, this.target)
+            OnsNode? nb = NodeByName(b);  // QC this.enemy     = find(NULL, targetname, this.target2)
+            if (na is null || nb is null || ReferenceEquals(na, nb))
+                continue;                 // QC objerror "can not find target"/"target2" — skip a dangling link
+            if (!na.Neighbors.Contains(nb))
+            {
+                Link(na, nb);
+                created++;
+            }
+        }
+        _stagedLinks.Clear();
+        UpdateLinks(); // QC: ons_Link_CheckUpdate → onslaught_updatelinks once the graph edges exist
+        return created;
     }
 
     /// <summary>The generator node owned by a team (or null).</summary>
@@ -435,6 +523,35 @@ public sealed class Onslaught : GameType
         }
         return false;
     }
+
+    /// <summary>
+    /// QC Onslaught_CheckWinner used as the round handler's <c>canRoundEnd</c> predicate: the round is decided
+    /// once <see cref="CheckWinner"/> is non-zero. On the first transition to "decided" this also bumps the
+    /// handler's end-delay from 5 → 7, mirroring the <c>round_handler_Init(7, …)</c> that QC fires inside
+    /// Onslaught_CheckWinner when a winner is found (sv_onslaught.qc:1236) — so round 1 ends with a 5 s delay
+    /// and every later round with 7 s.
+    /// </summary>
+    private bool CanRoundEndOns()
+    {
+        bool decided = CheckWinner() != 0;
+        if (decided && Handler is not null)
+            Handler.EndDelay = 7f; // QC round_handler_Init(7, …) inside Onslaught_CheckWinner on a decided round
+        return decided;
+    }
+
+    /// <summary>
+    /// QC <c>Onslaught_CheckPlayers</c> (round_handler canRoundStart) — <c>return 1</c>: Onslaught always allows
+    /// the round to start. Public so the host (GameWorld.EnableRounds) can wire the LIVE round handler off the
+    /// real predicate instead of the generic default (matching how CA/FreezeTag are now driven).
+    /// </summary>
+    public bool CanRoundStartLive() => true;
+
+    /// <summary>
+    /// QC <c>Onslaught_CheckWinner</c> (round_handler canRoundEnd): the round is decided once a winner exists.
+    /// Public companion to <see cref="CanRoundStartLive"/> so the host can drive the live handler off the real
+    /// predicate. Same body as the gametype-owned <see cref="CanRoundEndOns"/> (incl. the 5→7 end-delay bump).
+    /// </summary>
+    public bool CanRoundEndLive() => CanRoundEndOns();
 
     /// <summary>
     /// QC Onslaught_CheckWinner (Team_GetWinnerTeam_WithOwnedItems): the round is decided when at most one

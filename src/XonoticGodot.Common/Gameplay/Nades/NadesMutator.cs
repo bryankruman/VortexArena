@@ -35,6 +35,7 @@ public sealed class NadesMutator : MutatorBase
     private HookHandler<MutatorHooks.PlayerPreThinkArgs>? _onPreThink;
     private HookHandler<MutatorHooks.PlayerDiesArgs>? _onDies;
     private HookHandler<MutatorHooks.DamageCalculateArgs>? _onDamageCalc;
+    private HookHandler<MutatorHooks.VehicleEnterArgs>? _onVehicleEnter;
 
     public override void Hook()
     {
@@ -46,12 +47,15 @@ public sealed class NadesMutator : MutatorBase
         _onPreThink ??= OnPlayerPreThink;
         _onDies ??= OnPlayerDies;
         _onDamageCalc ??= OnDamageCalculate;
+        _onVehicleEnter ??= OnVehicleEnter;
 
         MutatorHooks.PlayerSpawn.Add(_onSpawn);
         MutatorHooks.PlayerPreThink.Add(_onPreThink);
         // QC PlayerDies hook is CBC_ORDER_LAST (it tosses the held nade + awards bonus after other handlers).
         MutatorHooks.PlayerDies.Add(_onDies, HookOrder.Last);
         MutatorHooks.DamageCalculate.Add(_onDamageCalc);
+        // QC VehicleEnter (sv_nades.qc:667): boarding a vehicle tosses the held nade.
+        MutatorHooks.VehicleEnter.Add(_onVehicleEnter);
     }
 
     public override void Unhook()
@@ -60,6 +64,7 @@ public sealed class NadesMutator : MutatorBase
         if (_onPreThink is not null) MutatorHooks.PlayerPreThink.Remove(_onPreThink);
         if (_onDies is not null) MutatorHooks.PlayerDies.Remove(_onDies);
         if (_onDamageCalc is not null) MutatorHooks.DamageCalculate.Remove(_onDamageCalc);
+        if (_onVehicleEnter is not null) MutatorHooks.VehicleEnter.Remove(_onVehicleEnter);
     }
 
     // =====================================================================================
@@ -187,6 +192,25 @@ public sealed class NadesMutator : MutatorBase
 
         // QC: the killcount/spree bonus award (+ teamkill/suicide wipe), then wipe the victim's bonus.
         NadeBonus.OnPlayerDies(attacker, victim);
+        return false;
+    }
+
+    // =====================================================================================
+    //  VehicleEnter (sv_nades.qc:667)
+    // =====================================================================================
+    private bool OnVehicleEnter(ref MutatorHooks.VehicleEnterArgs args)
+    {
+        Entity player = args.Player;
+        if (Api.Services is null) return false;
+
+        // QC: if (player.nade) toss_nade(player, true, '0 0 100', max(player.nade.wait, time + 0.05));
+        // A player can't keep a primed nade while boarding a vehicle — toss it upward (same args as the
+        // death-toss so the throw is owner-credited and detonates on its existing fuse).
+        if (player.Nade is not null)
+        {
+            float boomAt = MathF.Max(player.Nade.NadeWait, Api.Clock.Time + 0.05f);
+            NadeProjectile.Toss(player, true, new System.Numerics.Vector3(0f, 0f, 100f), boomAt);
+        }
         return false;
     }
 

@@ -17,8 +17,9 @@ namespace XonoticGodot.Common.Gameplay;
 ///
 /// Scoring (QC freezetag_Add_Score + PlayerPreThink revive): kills give no frags
 /// (GiveFragsForKill → 0); freezing an enemy → attacker SCORE +1, victim −1; freezing a teammate or
-/// self → −1; reviving a teammate → reviver SCORE +1 (and FREEZETAG_REVIVALS +1). Round wins are the
-/// team score that drives the win condition.
+/// self → −1; reviving a teammate → reviver FREEZETAG_REVIVALS +1 plus SCORE — with revive_time_to_score
+/// ON (the stock default) the SCORE accrues over time (+1 per 1.5 s reviving) rather than on completion,
+/// and the revived player gets no SCORE. Round wins are the team score that drives the win condition.
 ///
 /// Faithfully ported (Godot-free essence):
 ///  - smallest-team assignment on join (<see cref="TeamBalance"/>);
@@ -30,7 +31,10 @@ namespace XonoticGodot.Common.Gameplay;
 /// Faithfully ported (objective layer):
 ///  - the freeze applies the shared <see cref="StatusEffectsCatalog.Frozen"/> status effect (QC STAT(FROZEN));
 ///  - revive-progress accumulation + range geometry over the roster (<see cref="ReviveTick"/>, QC
-///    PlayerPreThink IN_REVIVING_RANGE box-overlap) with the auto-revive timeout (g_freezetag_frozen_maxtime);
+///    PlayerPreThink IN_REVIVING_RANGE box-overlap) with the time-to-score model (revive_time_to_score 1.5 /
+///    revive_speed_t2s 0.25, progress not cleared out of range, SCORE accrued over time), the auto-revive
+///    timeout + smooth base-progress ramp (g_freezetag_frozen_maxtime / _revive_auto / _revive_auto_progress),
+///    and the post-revive spawn shield (g_freezetag_revive_spawnshield);
 ///  - round warmup/countdown timing via the shared <see cref="RoundHandler"/> (QC round_handler_Spawn with
 ///    freezetag_CheckTeams / freezetag_CheckWinner), driven by <see cref="Tick"/>;
 ///  - FT's start-loadout (<see cref="ApplyStartItems"/>, QC g_ft_start_health/armor 100/100 + ammo).
@@ -51,9 +55,14 @@ public sealed class FreezeTag : GameType
     private const int    DefaultTeams      = 2;
 
     // ----- revive geometry/score cvars (g_freezetag_*) -----
-    private const string CvarReviveSpeed = "g_freezetag_revive_speed";       // progress/sec when a teammate is in range
+    private const string CvarReviveSpeed = "g_freezetag_revive_speed";       // progress/sec when a teammate is in range (t2s OFF)
+    private const string CvarReviveSpeedT2s = "g_freezetag_revive_speed_t2s"; // progress/sec when a teammate is in range (t2s ON)
     private const string CvarReviveClearSpeed = "g_freezetag_revive_clearspeed"; // progress/sec decay out of range
     private const string CvarReviveExtraSize = "g_freezetag_revive_extra_size";  // bbox expansion for the range test
+    private const string CvarReviveTimeToScore = "g_freezetag_revive_time_to_score"; // seconds of reviving per +1 SCORE (0 = off)
+    private const string CvarReviveAuto = "g_freezetag_revive_auto";         // auto-thaw on/off gate
+    private const string CvarReviveAutoProgress = "g_freezetag_revive_auto_progress"; // ramp the thaw ring from freeze time
+    private const string CvarReviveSpawnShield = "g_freezetag_revive_spawnshield"; // post-revive spawn-shield seconds
     private const string CvarFrozenMaxtime = "g_freezetag_frozen_maxtime";   // auto-thaw after this many seconds (0 = off)
     private const string CvarStartHealth = "g_ft_start_health";
     private const string CvarStartArmor  = "g_ft_start_armor";
@@ -61,8 +70,11 @@ public sealed class FreezeTag : GameType
     private const string CvarRoundTimelimit = "g_freezetag_round_timelimit";
     private const string CvarRoundEndDelay = "g_freezetag_round_enddelay";
     private const float  DefaultReviveSpeed = 0.4f;
-    private const float  DefaultReviveClearSpeed = 0.4f;
+    private const float  DefaultReviveSpeedT2s = 0.25f;
+    private const float  DefaultReviveClearSpeed = 1.6f;
     private const float  DefaultReviveExtraSize = 100f;
+    private const float  DefaultReviveTimeToScore = 1.5f;
+    private const float  DefaultReviveSpawnShield = 1f;
     private const float  DefaultStartHealth = 100f;
     private const float  DefaultStartArmor  = 100f;
 
@@ -77,9 +89,24 @@ public sealed class FreezeTag : GameType
 
     public float ReviveClearSpeed => TryCvar(CvarReviveClearSpeed, out float s) ? s : DefaultReviveClearSpeed;
     public float ReviveExtraSize  => TryCvar(CvarReviveExtraSize, out float s) ? s : DefaultReviveExtraSize;
-    public float FrozenMaxtime    => TryCvar(CvarFrozenMaxtime, out float s) ? s : 0f;
+    public float FrozenMaxtime    => TryCvar(CvarFrozenMaxtime, out float s) ? s : 60f;
     public float StartHealth      => TryCvar(CvarStartHealth, out float s) ? s : DefaultStartHealth;
     public float StartArmor       => TryCvar(CvarStartArmor, out float s) ? s : DefaultStartArmor;
+
+    /// <summary>QC g_freezetag_revive_speed_t2s: progress/sec used while time-to-score reviving is active.</summary>
+    public float ReviveSpeedT2s => TryCvar(CvarReviveSpeedT2s, out float s) ? s : DefaultReviveSpeedT2s;
+
+    /// <summary>QC g_freezetag_revive_time_to_score (default 1.5, ON): seconds of reviving per +1 SCORE; 0 = off.</summary>
+    public float ReviveTimeToScore => TryCvar(CvarReviveTimeToScore, out float s) ? s : DefaultReviveTimeToScore;
+
+    /// <summary>QC g_freezetag_revive_auto (default 1): whether frozen players auto-thaw at the maxtime timeout.</summary>
+    public bool ReviveAuto => TryCvar(CvarReviveAuto, out float s) ? s != 0f : true;
+
+    /// <summary>QC g_freezetag_revive_auto_progress (default 1): ramp the thaw ring smoothly from freeze time.</summary>
+    public bool ReviveAutoProgress => TryCvar(CvarReviveAutoProgress, out float s) ? s != 0f : true;
+
+    /// <summary>QC g_freezetag_revive_spawnshield (default 1 s): spawn-shield granted to a freshly revived player.</summary>
+    public float ReviveSpawnShield => TryCvar(CvarReviveSpawnShield, out float s) ? s : DefaultReviveSpawnShield;
 
     // Per-team round wins (QC ST_FT_ROUNDS, team slot 1 — the TEAM primary) now live in the unified GameScores
     // two-slot team store — the source of truth (common/scores.qh). FT's player primary is SP_SCORE (the
@@ -87,6 +114,12 @@ public sealed class FreezeTag : GameType
 
     /// <summary>Per-player freeze + revive-progress state (QC STAT(FROZEN)/STAT(REVIVE_PROGRESS)).</summary>
     public readonly Dictionary<Player, FrozenState> Frozen = new();
+
+    /// <summary>
+    /// Per-reviver fractional time-to-score accumulator (QC <c>.freezetag_revive_time</c>). While a reviver
+    /// stands near a frozen teammate it accrues frametime/revive_time_to_score; each whole unit yields +1 SCORE.
+    /// </summary>
+    private readonly Dictionary<Player, float> _reviveTime = new();
 
     public readonly RoundState Round = new();
 
@@ -142,6 +175,7 @@ public sealed class FreezeTag : GameType
         LeaderTeam = Teams.None;
         Round.Reset();
         Frozen.Clear();
+        _reviveTime.Clear();
         Scoring.GameScores.ResetTeams(); // QC Score_ClearAll at match start: zero both team slots before declaring
 
         // QC sv_freezetag.qc GameRules_scoring(freezetag_teams, SFL_SORT_PRIO_PRIMARY, 0, {
@@ -160,7 +194,7 @@ public sealed class FreezeTag : GameType
         {
             CanRoundStart = CheckTeams,
             CanRoundEnd = () => CheckWinner() != 0,
-            OnRoundStart = () => { Frozen.Clear(); }, // QC: thaw everyone at the start of a new round
+            OnRoundStart = () => { Frozen.Clear(); _reviveTime.Clear(); }, // QC reset_map_players: thaw everyone + clear revive-time accumulators at the start of a new round
         };
         float warmup = TryCvar(CvarWarmup, out float w) ? w : 5f;
         float rtl = TryCvar(CvarRoundTimelimit, out float t) ? t : 180f;
@@ -177,7 +211,7 @@ public sealed class FreezeTag : GameType
     /// </summary>
     public void Tick() => Handler?.Tick();
 
-    public void Deactivate()
+    public override void Deactivate()
     {
         if (_deathHandler is null)
             return;
@@ -225,9 +259,9 @@ public sealed class FreezeTag : GameType
         st.IsFrozen = true;
         st.ReviveProgress = 0f;
         st.FrozenTime = now;
-        // QC freezetag_Freeze: auto-thaw timer (g_freezetag_frozen_maxtime), 0 = never.
+        // QC freezetag_Freeze: arm the auto-thaw timer only when revive_auto is on AND maxtime > 0.
         float maxtime = FrozenMaxtime;
-        st.FrozenTimeout = maxtime > 0f ? now + maxtime : 0f;
+        st.FrozenTimeout = (ReviveAuto && maxtime > 0f) ? now + maxtime : 0f;
         // QC sets RES_HEALTH = 1 on freeze; the entity stays "dead" for combat but counts via IsFrozen.
         targ.SetResource(ResourceType.Health, 1f);
         // QC STAT(FROZEN): apply the shared Frozen status effect so the rest of the sim sees the freeze.
@@ -255,19 +289,24 @@ public sealed class FreezeTag : GameType
     /// QC freezetag_Unfreeze: clear the freeze and restore the player to alive. Used both by a successful
     /// revive and by round reset. Does not award score by itself (the revive path does that).
     /// </summary>
-    public void Unfreeze(Player targ)
+    public void Unfreeze(Player targ, float spawnShieldSeconds = 0f)
     {
         if (Frozen.TryGetValue(targ, out var st))
         {
             st.IsFrozen = false;
             st.ReviveProgress = 0f;
             st.FrozenTimeout = 0f;
+            st.FrozenTime = 0f;
         }
         targ.DeadState = DeadFlag.No;
         // QC freezetag_Unfreeze: clear the Frozen status effect and restore full start health.
         if (StatusEffectsCatalog.Frozen is { } frozenDef)
             StatusEffectsCatalog.Remove(targ, frozenDef);
         targ.SetResource(ResourceType.Health, StartHealth);
+        // QC PlayerPreThink full-revive: spawnshieldtime = time + g_freezetag_revive_spawnshield (so a freshly
+        // thawed player isn't instantly re-frozen). The damage pipeline reads Entity.SpawnShieldExpire.
+        if (spawnShieldSeconds > 0f)
+            targ.SpawnShieldExpire = (Api.Services is not null ? Api.Clock.Time : 0f) + spawnShieldSeconds;
     }
 
     /// <summary>
@@ -285,16 +324,29 @@ public sealed class FreezeTag : GameType
             return false;
 
         var st = GetState(frozen);
-        st.ReviveProgress = System.Math.Clamp(st.ReviveProgress + dt * ReviveSpeed, 0f, 1f);
+        // QC PlayerPreThink: t2s ON uses revive_speed_t2s (0.25); t2s OFF uses revive_speed*(1-base_progress).
+        // From a single explicit reviver there is no auto-progress floor, so base_progress is 0 here.
+        bool t2s = ReviveTimeToScore > 0f;
+        float spd = t2s ? ReviveSpeedT2s : ReviveSpeed;
+        st.ReviveProgress = System.Math.Clamp(st.ReviveProgress + dt * System.Math.Max(1f / 60f, spd), 0f, 1f);
+
+        // QC: with t2s active, score accrues over time (revive_time_to_score seconds per +1), not on completion.
+        if (t2s)
+        {
+            float acc = (_reviveTime.TryGetValue(reviver, out float rt) ? rt : 0f) + dt / ReviveTimeToScore;
+            while (acc > 1f) { reviver.ScoreFrags += 1; acc -= 1f; }
+            _reviveTime[reviver] = acc;
+        }
+
         if (st.ReviveProgress < 1f)
             return false;
 
-        Unfreeze(frozen);
-        // QC freezetag PlayerPreThink full-revive: each nearby reviver gets FREEZETAG_REVIVALS +1 and SCORE +1;
-        // the revived player also returns to play.
+        Unfreeze(frozen, ReviveSpawnShield);
+        // QC freezetag PlayerPreThink full-revive: each nearby reviver gets FREEZETAG_REVIVALS +1 (and, with t2s
+        // OFF, SCORE +1 on completion; with t2s ON the SCORE was already awarded by the time-to-score accrual).
         AddRevival(reviver);
-        reviver.ScoreFrags += 1;
-        frozen.ScoreFrags += 1;
+        if (!t2s)
+            reviver.ScoreFrags += 1;
         return true;
     }
 
@@ -309,9 +361,14 @@ public sealed class FreezeTag : GameType
     /// <summary>
     /// QC PlayerPreThink revive loop, ported over the roster: for every frozen player, accumulate revive
     /// progress while a living teammate is within reviving range (box-overlap expanded by
-    /// <see cref="ReviveExtraSize"/>), decay it when nobody is near, and auto-thaw at the frozen-maxtime
-    /// timeout. On reaching 1.0 the player is unfrozen and each nearby reviver gets SCORE +1. Call once per
-    /// frame with the frame delta after <see cref="SetRoster"/>. Returns the number of players thawed.
+    /// <see cref="ReviveExtraSize"/>). With time-to-score active (the stock default) progress advances at
+    /// revive_speed_t2s, is NOT cleared when nobody is near (it sticks at max of the manual progress and the
+    /// auto-thaw ramp), and each in-range reviver accrues SCORE over time (+1 per revive_time_to_score sec);
+    /// with t2s off, progress advances at revive_speed*(1-base) and decays at clearspeed out of range, and the
+    /// SCORE +1 is awarded on completion. The frozen-maxtime auto-thaw (gated on revive_auto) provides a
+    /// smooth base-progress ramp (revive_auto_progress) and a last-resort thaw that credits nobody. On reaching
+    /// 1.0 the player is unfrozen (with a spawn shield) and manual revivers get FREEZETAG_REVIVALS +1. Call once
+    /// per frame with the frame delta after <see cref="SetRoster"/>. Returns the number of players thawed.
     /// </summary>
     public int ReviveTick(float dt)
     {
@@ -319,8 +376,13 @@ public sealed class FreezeTag : GameType
             return 0;
         float now = Api.Services is not null ? Api.Clock.Time : 0f;
         float extra = ReviveExtraSize;
-        float speed = ReviveSpeed;
         float clear = ReviveClearSpeed;
+        float maxtime = FrozenMaxtime;
+        bool t2s = ReviveTimeToScore > 0f;
+        float t2sTime = ReviveTimeToScore;
+        bool autoRevive = ReviveAuto && maxtime > 0f;
+        bool autoProgress = autoRevive && ReviveAutoProgress;
+        float spawnShield = ReviveSpawnShield;
         int thawed = 0;
 
         for (int i = 0; i < _roster.Count; i++)
@@ -330,8 +392,9 @@ public sealed class FreezeTag : GameType
                 continue;
             var st = GetState(frozen);
 
-            // Count nearby living unfrozen teammates (QC IN_REVIVING_RANGE box-overlap).
-            int revivers = 0;
+            // Collect nearby living unfrozen teammates (QC IN_REVIVING_RANGE box-overlap) — the revivers chain.
+            // n == -1 marks an automatic revive of last resort (no manual reviver but the maxtime timeout elapsed).
+            int n = 0;
             for (int j = 0; j < _roster.Count; j++)
             {
                 Player it = _roster[j];
@@ -340,37 +403,82 @@ public sealed class FreezeTag : GameType
                 if (!Teams.SameTeam(it, frozen))
                     continue;
                 if (InRevivingRange(frozen, it, extra))
-                    revivers++;
+                    n++;
             }
+            if (n == 0 && st.FrozenTimeout > 0f && now >= st.FrozenTimeout)
+                n = -1;
 
-            // Auto-thaw timeout (QC freezetag_frozen_timeout): counts as a reviver of last resort.
-            bool autoThaw = st.FrozenTimeout > 0f && now >= st.FrozenTimeout;
+            // QC base_progress: with auto-revive-progress on, the thaw ring fills smoothly from freeze time so the
+            // bar reflects the auto-thaw countdown even with no reviver near.
+            float baseProgress = 0f;
+            if (autoProgress && st.FrozenTimeout > 0f)
+                baseProgress = System.Math.Clamp(1f - (st.FrozenTimeout - now) / maxtime, 0f, 1f);
 
-            if (revivers == 0 && !autoThaw)
+            if (n == 0)
             {
-                // decay progress when nobody is near (QC clearspeed)
-                st.ReviveProgress = System.Math.Clamp(st.ReviveProgress - dt * clear, 0f, 1f);
+                // No teammate nearby (and no auto-thaw): hold/clear the bar per the t2s mode.
+                if (t2s)
+                {
+                    // With time-to-score active, progress is NOT cleared (it would let players stack points by
+                    // entering/exiting the zone); it sticks at max(manual progress, auto-ramp floor). A higher
+                    // manual progress also shortens the remaining auto-thaw time.
+                    if (st.ReviveProgress > baseProgress)
+                    {
+                        baseProgress = st.ReviveProgress;
+                        if (autoRevive)
+                            st.FrozenTimeout = now + maxtime * (1f - st.ReviveProgress);
+                    }
+                    st.ReviveProgress = baseProgress;
+                }
+                else
+                {
+                    // t2s OFF: decay toward the auto-ramp floor at clearspeed (scaled by 1-base_progress).
+                    float decayed = st.ReviveProgress - dt * clear * (1f - baseProgress);
+                    st.ReviveProgress = System.Math.Clamp(decayed, baseProgress, 1f);
+                }
                 continue;
             }
 
-            st.ReviveProgress = System.Math.Clamp(st.ReviveProgress + dt * System.Math.Max(1f / 60f, speed), 0f, 1f);
-            if (autoThaw)
-                st.ReviveProgress = 1f;
+            // At least one reviver (or the auto-thaw of last resort): advance progress.
+            // QC: t2s ON uses revive_speed_t2s; t2s OFF uses revive_speed*(1-base_progress).
+            float spd = t2s ? ReviveSpeedT2s : ReviveSpeed * (1f - baseProgress);
+            st.ReviveProgress = System.Math.Clamp(st.ReviveProgress + dt * System.Math.Max(1f / 60f, spd), baseProgress, 1f);
 
-            if (st.ReviveProgress >= 1f)
+            // QC: with t2s active each in-range reviver accrues time → +1 SCORE per revive_time_to_score seconds.
+            if (t2s && n > 0)
             {
-                Unfreeze(frozen);
-                thawed++;
-                // award each nearby reviver (QC: every reviver in range gets FREEZETAG_REVIVALS +1 and +1 SCORE)
                 for (int j = 0; j < _roster.Count; j++)
                 {
                     Player it = _roster[j];
                     if (ReferenceEquals(it, frozen) || it.IsDead || IsFrozen(it))
                         continue;
-                    if (Teams.SameTeam(it, frozen) && InRevivingRange(frozen, it, extra))
+                    if (!Teams.SameTeam(it, frozen) || !InRevivingRange(frozen, it, extra))
+                        continue;
+                    float acc = (_reviveTime.TryGetValue(it, out float rt) ? rt : 0f) + dt / t2sTime;
+                    while (acc > 1f) { it.ScoreFrags += 1; acc -= 1f; }
+                    _reviveTime[it] = acc;
+                }
+            }
+
+            if (st.ReviveProgress >= 1f)
+            {
+                Unfreeze(frozen, spawnShield);
+                thawed++;
+                // QC: an auto-revive (n == -1) credits nobody; a manual revive credits EVERY nearby reviver with
+                // FREEZETAG_REVIVALS +1 (and, with t2s OFF, SCORE +1 — t2s ON already scored via the accrual).
+                if (n > 0)
+                {
+                    for (int j = 0; j < _roster.Count; j++)
                     {
-                        AddRevival(it);
-                        it.ScoreFrags += 1;
+                        Player it = _roster[j];
+                        if (ReferenceEquals(it, frozen) || it.IsDead || IsFrozen(it))
+                            continue;
+                        if (Teams.SameTeam(it, frozen) && InRevivingRange(frozen, it, extra))
+                        {
+                            AddRevival(it);
+                            if (!t2s)
+                                it.ScoreFrags += 1;
+                        }
                     }
                 }
             }

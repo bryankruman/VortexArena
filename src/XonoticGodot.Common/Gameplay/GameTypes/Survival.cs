@@ -1,3 +1,4 @@
+using System.Numerics;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Gameplay.Damage;
 using XonoticGodot.Common.Gameplay.Scoring;
@@ -45,6 +46,9 @@ public sealed class Survival : GameType
     private const string CvarHunterCount = "g_survival_hunter_count";
     private const float  DefaultHunterCount = 0.25f;
 
+    // ----- teamkill-punishment cvar (QC g_survival_punish_teamkill = true) -----
+    private const string CvarPunishTeamkill = "g_survival_punish_teamkill";
+
     /// <summary>QC <c>survival_status</c> (SURV_STATUS_*): which side a player is on for the round.</summary>
     public enum SurvStatus
     {
@@ -71,6 +75,29 @@ public sealed class Survival : GameType
 
     /// <summary>Optional sink for the host/controller to react to an elimination.</summary>
     public IMatchEvents? Events;
+
+    /// <summary>
+    /// Optional host sink for the Survival notifications QC sends via <c>Send_Notification</c> (the actual
+    /// MSG_CENTER/MSG_INFO routing is a host/CSQC concern, so the gametype only signals WHAT to send and the
+    /// host wires it to the notification system). Set by the host on <see cref="Activate"/>; null = headless.
+    /// </summary>
+    public ISurvivalNotifications? Notifications;
+
+    /// <summary>The Survival notifications the gametype raises (QC Surv_RoundStart / Surv_CheckWinner sends).</summary>
+    public interface ISurvivalNotifications
+    {
+        /// <summary>QC <c>CENTER_SURVIVAL_SURVIVOR</c> / <c>CENTER_SURVIVAL_HUNTER</c>: tell each player their role
+        /// privately at round start (<paramref name="hunter"/> = the player is a hunter).</summary>
+        void Role(Player p, bool hunter);
+
+        /// <summary>QC <c>CENTER/INFO_SURVIVAL_HUNTER_WIN</c> / <c>SURVIVAL_SURVIVOR_WIN</c> / <c>ROUND_TIED</c>:
+        /// broadcast the round result. <paramref name="winningSide"/> is the side that won (None = tie).</summary>
+        void RoundResult(SurvStatus winningSide);
+
+        /// <summary>QC <c>CENTER_ALONE</c> (surv_LastPlayerForTeam_Notify): tell the now-sole survivor of a side
+        /// that their last same-status ally just died/left mid-round.</summary>
+        void Alone(Player p);
+    }
 
     /// <summary>QC checkrules end-of-round latch: true once one side has been entirely eliminated.</summary>
     public bool RoundOver { get; private set; }
@@ -127,10 +154,12 @@ public sealed class Survival : GameType
             CanRoundEnd = () => { CheckWinningCondition(); return RoundOver; },
             OnRoundStart = () => AssignRoles(_roster), // QC survival_RoundStart secretly assigns hunters
         };
-        float warmup = TryCvar("g_survival_warmup", out float w) ? w : 5f;
-        float rtl = TryCvar("g_survival_round_timelimit", out float t) ? t : 180f;
-        float edly = TryCvar("g_survival_round_enddelay", out float e) ? e : 5f;
-        Handler.Init(edly, warmup, rtl);
+        // QC round_handler_Init(5, g_survival_warmup=10, g_survival_round_timelimit=120). The end-delay arg is a
+        // hardcoded 5 in QC (NOT g_survival_round_enddelay, which gates a SEPARATE deferred-resolution path);
+        // warmup/round-timelimit come from cvars with Base-faithful fallbacks (10 / 120).
+        float warmup = TryCvar("g_survival_warmup", out float w) ? w : 10f;
+        float rtl = TryCvar("g_survival_round_timelimit", out float t) ? t : 120f;
+        Handler.Init(5f, warmup, rtl);
 
         // QC surv_Initialize GameRules_scoring(0, SFL_SORT_PRIO_PRIMARY, 0, { field(SP_SURV_SURVIVALS, "survivals",
         // 0); field(SP_SURV_HUNTS, "hunts", SFL_SORT_PRIO_SECONDARY); }): SP_SCORE is the player primary (banked
@@ -163,7 +192,7 @@ public sealed class Survival : GameType
         return n == 0 ? _roster.Count : n;
     }
 
-    public void Deactivate()
+    public override void Deactivate()
     {
         if (_deathHandler is null)
             return;
@@ -225,6 +254,12 @@ public sealed class Survival : GameType
         }
         for (int i = 0; i < hunters && i < playercount; i++)
             GetState(shuffled[i]).Status = SurvStatus.Hunter;
+
+        // QC Surv_RoundStart (sv_survival.qc:186-192): privately tell each live player their secret role at
+        // round start (prey see CENTER_SURVIVAL_SURVIVOR, hunters CENTER_SURVIVAL_HUNTER).
+        if (Notifications is not null)
+            foreach (Player p in live)
+                Notifications.Role(p, GetState(p).Status == SurvStatus.Hunter);
     }
 
     /// <summary>QC IS_PLAYER(it) &amp;&amp; !IS_DEAD(it): a live, non-observer player counts for the role split.</summary>
@@ -270,16 +305,82 @@ public sealed class Survival : GameType
         if (RoundOver)
             return false;
 
+        // QC surv_LastPlayerForTeam_Notify (PlayerDies): before the victim is removed, if its death leaves
+        // exactly one same-status ally alive, that lone survivor gets the CENTER_ALONE notify. Round-active only.
+        if (RoleAssigned)
+            NotifyLastForTeam(victim);
+
+        bool roundStarted = RoleAssigned; // QC: round_handler_IsActive() && round_handler_IsRoundStarted()
+
+        Player? attacker = ev.Attacker as Player;
+        bool sameStatus = attacker is not null && !ReferenceEquals(attacker, victim)
+            && StatusOf(attacker) != SurvStatus.None
+            && StatusOf(attacker) == StatusOf(victim);
+
         // QC GiveFragsForKill: bank the kill into the attacker's validkills instead of scoring it now (the score
-        // goes to the winning side at round end). A valid kill is by a live, distinct attacker.
-        if (ev.Attacker is Player attacker && !ReferenceEquals(attacker, victim) && GetState(attacker).Alive)
-            GetState(attacker).ValidKills += 1;
+        // goes to the winning side at round end). QC only banks while the round is actually started (not warmup).
+        // A valid kill is by a live, distinct attacker.
+        if (roundStarted && attacker is not null && !ReferenceEquals(attacker, victim) && GetState(attacker).Alive)
+        {
+            // QC ClientObituary teamkill frag adjustment: an ally frag awards +1 by default, so we must take it
+            // away plus one extra (-1 net banked) — or remove only one (-2) if the killer won't be auto-punished.
+            int delta = sameStatus ? (PunishTeamkill ? -1 : -2) : +1;
+            GetState(attacker).ValidKills += delta;
+        }
 
         GetState(victim).Alive = false; // eliminated for the round
-        Events?.OnFrag(ev.Attacker as Player, victim, ev.DeathType);
+        Events?.OnFrag(attacker, victim, ev.DeathType);
+
+        // QC PlayerDies teamkill punishment (sv_survival.qc:392-394): killing a same-status ally costs the
+        // killer their life (mirror damage), but only once the round has actually started and not for the
+        // "needs-kill" environmental deaths (slime/lava/swamp/void), which are routed differently.
+        if (PunishTeamkill && sameStatus && roundStarted && attacker is not null
+            && !NeedKill(ev.DeathType) && GetState(attacker).Alive)
+        {
+            // QC: Damage(attacker, attacker, attacker, 100000, DEATH_MIRRORDAMAGE, attacker.origin, '0 0 0').
+            Combat.Damage(attacker, attacker, attacker, 100000f, DeathTypes.MirrorDamage, attacker.Origin, Vector3.Zero);
+        }
 
         CheckWinningCondition();
         return false;
+    }
+
+    /// <summary>QC <c>g_survival_punish_teamkill</c> (default true): auto-kill a player who frags a same-status ally.</summary>
+    private static bool PunishTeamkill => !TryCvar(CvarPunishTeamkill, out float v) || v != 0f;
+
+    /// <summary>
+    /// QC <c>ITEM_DAMAGE_NEEDKILL(dt)</c> (util.qh:123): the environmental "must kill" deathtypes
+    /// (DEATH_HURTTRIGGER/SLIME/LAVA/SWAMP — the port's Void stands in for HURTTRIGGER). The teamkill
+    /// auto-punish is suppressed for these so a victim shoved into lava doesn't kill its (innocent) attacker.
+    /// </summary>
+    private static bool NeedKill(string? deathType)
+    {
+        string b = DeathTypes.BaseOf(deathType);
+        return b == DeathTypes.Void || b == DeathTypes.Slime || b == DeathTypes.Lava || b == DeathTypes.Swamp;
+    }
+
+    /// <summary>
+    /// QC <c>surv_LastPlayerForTeam_Notify</c> (sv_survival.qc:345-368): when <paramref name="leaving"/> dies or
+    /// leaves mid-round, if it leaves EXACTLY ONE living same-status ally, send that lone survivor CENTER_ALONE.
+    /// Called from the death path (and, host-side, from disconnect / forced-observe — see todos).
+    /// </summary>
+    public void NotifyLastForTeam(Player leaving)
+    {
+        if (Notifications is null || !RoleAssigned)
+            return;
+        SurvStatus side = StatusOf(leaving);
+        if (side == SurvStatus.None)
+            return;
+        Player? last = null;
+        foreach (var (p, st) in _states)
+        {
+            if (ReferenceEquals(p, leaving) || !st.Alive || st.Status != side)
+                continue;
+            if (last is null) last = p;
+            else return; // more than one same-status ally still alive → nobody is "alone"
+        }
+        if (last is not null)
+            Notifications.Alone(last);
     }
 
     /// <summary>
@@ -292,18 +393,43 @@ public sealed class Survival : GameType
         if (_states.Count == 0)
             return;
 
-        int prey = AlivePrey();
-        int hunters = AliveHunters();
-
-        if (prey > 0 && hunters > 0)
-            return; // both sides alive — round continues
-
         if (RoundOver)
             return; // already resolved (avoid double-awarding the round score)
 
+        int prey = AlivePrey();
+        int hunters = AliveHunters();
+
+        // QC Surv_CheckWinner (sv_survival.qc:76-95): the headline rule — if the round timer is up while both
+        // sides still have a living member, the round ends and the SURVIVORS win ("survive until time runs out").
+        // The Handler arms RoundEndTime from g_survival_round_timelimit; we test it here so the timeout fires on
+        // the live path (Handler.Tick → CanRoundEnd → CheckWinningCondition during the InProgress phase).
+        if (prey > 0 && hunters > 0)
+        {
+            if (RoundTimedOut())
+                EndRoundTimedOut();
+            return; // both sides alive — round continues until the timer (above) or a wipe
+        }
+
         RoundOver = true;
-        WinningSide = hunters > 0 ? SurvStatus.Hunter : SurvStatus.Prey; // QC: hunters win if any remain
+        // QC Surv_CheckWinner (sv_survival.qc:130-144): hunters win if any remain, else surviving prey win, else
+        // (both sides reached zero on the same frame) the round is a tie (ROUND_TIED).
+        WinningSide = hunters > 0 ? SurvStatus.Hunter
+            : prey > 0 ? SurvStatus.Prey
+            : SurvStatus.None; // tie
         UpdateScores(timedOut: false); // a side wipe ends the round → award the banked scores
+        Notifications?.RoundResult(WinningSide); // QC SURVIVAL_*_WIN broadcast (None winner → ROUND_TIED)
+    }
+
+    /// <summary>
+    /// QC Surv_CheckWinner's timer test (sv_survival.qc:78): true once the round handler's
+    /// <see cref="RoundHandler.RoundEndTime"/> (armed from <c>g_survival_round_timelimit</c>) has elapsed.
+    /// </summary>
+    private bool RoundTimedOut()
+    {
+        if (Handler is null || !Handler.IsRoundStarted)
+            return false;
+        float end = Handler.RoundEndTime;
+        return end > 0f && (Api.Services is not null ? Api.Clock.Time : 0f) >= end;
     }
 
     /// <summary>
@@ -381,6 +507,7 @@ public sealed class Survival : GameType
         RoundOver = true;
         WinningSide = SurvStatus.Prey; // QC: if the match times out, survivors win
         UpdateScores(timedOut: true);
+        Notifications?.RoundResult(SurvStatus.Prey); // QC CENTER/INFO_SURVIVAL_SURVIVOR_WIN broadcast
     }
 
     /// <summary>

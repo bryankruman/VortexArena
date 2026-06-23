@@ -162,7 +162,9 @@ public sealed class Golem : Monster
                 });
             gren.Velocity += new Vector3(0, 0, LightningSpeedUp); // QC speed_up launch component
 
-            Api.Sound.Play(self, SoundChannel.Weapon, "weapons/electro_fire2.wav");
+            // QC M_Golem_Attack_Lightning (golem.qc:132-168) emits NO launch sound — the only golem-lightning
+            // cues are SND_MON_GOLEM_LIGHTNING_IMPACT (electro_impact, in onExplode) on detonation and the
+            // monstersound_melee voice cue the ranged dispatch plays. No fabricated throw cue here.
         });
     }
 }

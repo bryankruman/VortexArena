@@ -35,8 +35,21 @@ namespace XonoticGodot.Common.Gameplay;
 ///    enough and they're a small enough fraction of the field (<see cref="UpdateLeaders"/>); the waypoint
 ///    sprite that marks them is the only client-side remainder.
 ///
-/// Deferred (NOTE — cross-boundary): the leader WAYPOINT SPRITE rendering, the dynamic-vampire damage modifier
-/// (Damage_Calculate), and the tie/time-limit overtime path — client / damage-pipeline concerns.
+/// Faithfully ported (cont. 3 — Wave-2 mutator hooks, subscribed in <see cref="Activate"/>):
+///  - the fixed LMS start loadout (QC SetStartItems: g_lms_start_health/armor 200/200 + ammo 60/320/160/180/0,
+///    unlimited-ammo flag per g_use_ammunition);
+///  - the forced weapon arena (QC SetWeaponArena: g_lms_weaponarena "most_available");
+///  - no weapon dropping (QC ForbidThrowCurrentWeapon);
+///  - regen/rot disabled (QC PlayerRegen: g_lms_regenerate / g_lms_rot, both off by default);
+///  - the dynamic-vampire damage modifier (QC Damage_Calculate: under-dogs steal a scaled fraction of damage
+///    dealt to leaders, base 0.1 + 0.1/life behind, capped 0.5, clamped at start_health);
+///  - the map-item filter (QC FilterItemDefinition: suppress map items unless g_lms_items / g_pickup_items&gt;0).
+///
+/// Deferred (NOTE — cross-boundary, tracked in the lms registry shard): the leader WAYPOINT SPRITE rendering +
+/// periodic visibility window + HUD mod-icon (client/SV_StartFrame), respawn denial wired off OutOfGame
+/// (CalculateRespawnTime — currently the round gate substitutes), the late-join NewPlayerLives/AddPlayer +
+/// forfeit RemovePlayer rank reshuffle + map/round reset forwarding from MatchController, and the tie/time-limit
+/// overtime path — all need a host-side .Call site outside this file.
 /// </summary>
 [GameType]
 public sealed class LastManStanding : GameType
@@ -51,6 +64,9 @@ public sealed class LastManStanding : GameType
     private const string CvarExtraLives        = "g_lms_extra_lives";        // lives granted by an extralife pickup
     private const string CvarLeaderLivesDiff   = "g_lms_leader_lives_diff";  // min lead over 2nd to be a leader (2)
     private const string CvarLeaderMinPercent  = "g_lms_leader_minpercent";  // leaders must be <= this fraction (0.5)
+
+    // ----- loadout / regen / arena / vampire cvars (QC SetStartItems / PlayerRegen / SetWeaponArena / Damage_Calculate) -----
+    private const string CvarWeaponArena = "g_lms_weaponarena"; // forced weapon arena ("most_available")
 
     /// <summary>Per-player LMS bookkeeping (QC LMS_LIVES / LMS_RANK scoring fields + FRAGS_PLAYER_OUT_OF_GAME).</summary>
     public sealed class LmsState
@@ -72,6 +88,12 @@ public sealed class LastManStanding : GameType
     private readonly Dictionary<Player, LmsState> _states = new();
 
     private HookHandler<DeathEvent>? _deathHandler;
+    private HookHandler<MutatorHooks.SetStartItemsArgs>? _startItemsHandler;
+    private HookHandler<MutatorHooks.SetWeaponArenaArgs>? _weaponArenaHandler;
+    private HookHandler<MutatorHooks.ForbidThrowCurrentWeaponArgs>? _forbidThrowHandler;
+    private HookHandler<MutatorHooks.PlayerRegenArgs>? _regenHandler;
+    private HookHandler<MutatorHooks.DamageCalculateArgs>? _damageCalcHandler;
+    private HookHandler<MutatorHooks.FilterItemDefinitionArgs>? _filterItemHandler;
 
     /// <summary>Optional sink for the host/controller to react to a frag/elimination.</summary>
     public IMatchEvents? Events;
@@ -192,6 +214,27 @@ public sealed class LastManStanding : GameType
 
         _deathHandler = OnDeath;
         Combat.Death.Add(_deathHandler);
+
+        // QC mutator hooks (LMS is a CA-like fixed-loadout survival mode): the fixed start loadout, the forced
+        // weapon arena, no weapon-drop, no regen/rot, dynamic vampire, and the map-item filter. These are the
+        // shared Wave-1 seams already wired into the spawn/damage/item pipelines (Mayhem/CA subscribe the same way).
+        _startItemsHandler = OnSetStartItems;
+        MutatorHooks.SetStartItems.Add(_startItemsHandler);
+
+        _weaponArenaHandler = OnSetWeaponArena;
+        MutatorHooks.SetWeaponArena.Add(_weaponArenaHandler);
+
+        _forbidThrowHandler = OnForbidThrowCurrentWeapon;
+        MutatorHooks.ForbidThrowCurrentWeapon.Add(_forbidThrowHandler);
+
+        _regenHandler = OnPlayerRegen;
+        MutatorHooks.PlayerRegen.Add(_regenHandler);
+
+        _damageCalcHandler = OnDamageCalculate;
+        MutatorHooks.DamageCalculate.Add(_damageCalcHandler);
+
+        _filterItemHandler = OnFilterItemDefinition;
+        MutatorHooks.FilterItemDefinition.Add(_filterItemHandler);
     }
 
     /// <summary>QC <c>GameRules_scoring_add</c>: mirror the authoritative <see cref="LmsState"/> into the networked
@@ -204,12 +247,19 @@ public sealed class LastManStanding : GameType
         if (rank is not null) Scoring.GameScores.SetPlayer(p, rank, st.Rank);
     }
 
-    public void Deactivate()
+    public override void Deactivate()
     {
         if (_deathHandler is null)
             return;
         Combat.Death.Remove(_deathHandler);
         _deathHandler = null;
+
+        if (_startItemsHandler is not null) { MutatorHooks.SetStartItems.Remove(_startItemsHandler); _startItemsHandler = null; }
+        if (_weaponArenaHandler is not null) { MutatorHooks.SetWeaponArena.Remove(_weaponArenaHandler); _weaponArenaHandler = null; }
+        if (_forbidThrowHandler is not null) { MutatorHooks.ForbidThrowCurrentWeapon.Remove(_forbidThrowHandler); _forbidThrowHandler = null; }
+        if (_regenHandler is not null) { MutatorHooks.PlayerRegen.Remove(_regenHandler); _regenHandler = null; }
+        if (_damageCalcHandler is not null) { MutatorHooks.DamageCalculate.Remove(_damageCalcHandler); _damageCalcHandler = null; }
+        if (_filterItemHandler is not null) { MutatorHooks.FilterItemDefinition.Remove(_filterItemHandler); _filterItemHandler = null; }
     }
 
     /// <summary>Look up (or lazily create, seeded with <see cref="StartingLives"/>) a player's LMS state.</summary>
@@ -400,6 +450,121 @@ public sealed class LastManStanding : GameType
         }
     }
 
+    // ============================================================================================
+    //  Mutator-style hooks (QC SetStartItems / SetWeaponArena / ForbidThrowCurrentWeapon /
+    //  PlayerRegen / Damage_Calculate / FilterItem) — LMS is a CA-like fixed-loadout survival mode
+    // ============================================================================================
+
+    /// <summary>
+    /// QC MUTATOR_HOOKFUNCTION(lms, SetStartItems): give the fixed LMS spawn loadout
+    /// (g_lms_start_health/armor 200/200 + ammo 60/320/160/180/0, balance-xonotic.cfg). Strip the unlimited
+    /// flags, then grant unlimited ammo when g_use_ammunition is off (QC: <c>if(!cvar("g_use_ammunition"))
+    /// start_items |= IT_UNLIMITED_AMMO</c>). Tag convention matches the other SetStartItems handlers.
+    /// </summary>
+    private bool OnSetStartItems(ref MutatorHooks.SetStartItemsArgs args)
+    {
+        StartLoadout l = args.Loadout;
+        l.ItemFlags.Remove("UNLIMITED_AMMO");
+        l.ItemFlags.Remove("UNLIMITED_SUPERWEAPONS");
+        if (Cvar("g_use_ammunition", 1f) == 0f)
+            l.ItemFlags.Add("UNLIMITED_AMMO");
+
+        l.Health      = Cvar("g_lms_start_health", 200f);
+        l.Armor       = Cvar("g_lms_start_armor", 200f);
+        l.AmmoShells  = Cvar("g_lms_start_ammo_shells", 60f);
+        l.AmmoBullets = Cvar("g_lms_start_ammo_nails", 320f);
+        l.AmmoRockets = Cvar("g_lms_start_ammo_rockets", 160f);
+        l.AmmoCells   = Cvar("g_lms_start_ammo_cells", 180f);
+        l.AmmoFuel    = Cvar("g_lms_start_ammo_fuel", 0f);
+        return false;
+    }
+
+    /// <summary>
+    /// QC MUTATOR_HOOKFUNCTION(lms, SetWeaponArena): default the weapon arena to g_lms_weaponarena
+    /// ("most_available") when the configured arena is unset / "0".
+    /// </summary>
+    private bool OnSetWeaponArena(ref MutatorHooks.SetWeaponArenaArgs args)
+    {
+        if (args.Arena == "0" || string.IsNullOrEmpty(args.Arena))
+            args.Arena = CvarString(CvarWeaponArena, "most_available");
+        return false;
+    }
+
+    /// <summary>QC MUTATOR_HOOKFUNCTION(lms, ForbidThrowCurrentWeapon): always forbid dropping the current weapon.</summary>
+    private bool OnForbidThrowCurrentWeapon(ref MutatorHooks.ForbidThrowCurrentWeaponArgs args) => true;
+
+    /// <summary>
+    /// QC MUTATOR_HOOKFUNCTION(lms, PlayerRegen): disable regen and rot unless g_lms_regenerate / g_lms_rot
+    /// are set (both default 0). Returns true (regen fully off) when neither is enabled — matching QC's
+    /// <c>return (!regenerate &amp;&amp; !rot)</c>, the common case (both off ⇒ no regen, no rot).
+    /// </summary>
+    private bool OnPlayerRegen(ref MutatorHooks.PlayerRegenArgs args)
+    {
+        bool regenerate = Cvar("g_lms_regenerate", 0f) != 0f;
+        bool rot = Cvar("g_lms_rot", 0f) != 0f;
+        return !regenerate && !rot;
+    }
+
+    /// <summary>
+    /// QC MUTATOR_HOOKFUNCTION(lms, Damage_Calculate): the dynamic vampire — an under-dog (more lives behind)
+    /// who hits a leader steals a fraction of the dealt damage as health. factor = base(0.1) + 0.1*lives_behind
+    /// (over the 2-life threshold), capped at 0.5; health is clamped at start_health. ENABLED by default
+    /// (g_lms_dynamic_vampire 1). Reads the live LmsState lives, not the (deferred) frags field.
+    /// </summary>
+    private bool OnDamageCalculate(ref MutatorHooks.DamageCalculateArgs args)
+    {
+        if (Cvar("g_lms_dynamic_vampire", 1f) == 0f)
+            return false;
+
+        if (args.Attacker is not Player attacker || args.Target is not Player target)
+            return false;
+        if (ReferenceEquals(attacker, target))
+            return false;
+        if (attacker.IsDead || target.IsDead)
+            return false;
+
+        float factorBase = Cvar("g_lms_dynamic_vampire_factor_base", 0.1f);
+        float factorIncrease = Cvar("g_lms_dynamic_vampire_factor_increase", 0.1f);
+        float factorMax = Cvar("g_lms_dynamic_vampire_factor_max", 0.5f);
+        int minDiff = TryCvar("g_lms_dynamic_vampire_min_lives_diff", out float md) ? (int)md : 2;
+
+        // Read lives through GetState so a not-yet-tracked combatant is lazily seeded with StartingLives
+        // (mirrors QC, where every spawned player already has LMS_LIVES set), not treated as 0.
+        int diff = GetState(target).Lives - GetState(attacker).Lives - minDiff;
+        if (diff < 0)
+            return false;
+
+        float vampireFactor = factorBase + diff * factorIncrease;
+        if (vampireFactor <= 0f)
+            return false;
+        vampireFactor = System.Math.Min(vampireFactor, factorMax);
+
+        // QC clamps the steal at start_health (the LMS start health, 200 by default).
+        float startHealth = Cvar("g_lms_start_health", 200f);
+        float healed = attacker.GetResource(ResourceType.Health) + args.Damage * vampireFactor;
+        attacker.SetResource(ResourceType.Health, System.Math.Min(healed, startHealth));
+        return false;
+    }
+
+    /// <summary>
+    /// QC MUTATOR_HOOKFUNCTION(lms, FilterItemDefinition): suppress map item spawns. Items are kept only when
+    /// g_lms_items or g_pickup_items&gt;0; otherwise everything is filtered, EXCEPT ITEM_ExtraLife/ITEM_HealthMega
+    /// when g_powerups + g_lms_extra_lives are on (those become the extra-life pickups). Returns true to FILTER OUT.
+    /// Definitions are matched by ClassName (the item registry isn't fully ported — same stand-in Mayhem/NIX use).
+    /// </summary>
+    private bool OnFilterItemDefinition(ref MutatorHooks.FilterItemDefinitionArgs args)
+    {
+        if (Cvar("g_lms_items", 0f) != 0f || Cvar("g_pickup_items", -1f) > 0f)
+            return false; // items allowed → don't filter
+
+        string id = args.Definition.ClassName;
+        bool isExtraLifeOrMega = id is "item_extralife" or "item_health_mega" or "item_healthmega";
+        if (Cvar("g_powerups", -1f) != 0f && Cvar(CvarExtraLives, 0f) != 0f && isExtraLifeOrMega)
+            return false; // kept: HealthMega is replaced with an extralife
+
+        return true; // filter out all other map items
+    }
+
     private static bool TryCvar(string name, out float value)
     {
         value = 0f;
@@ -410,5 +575,14 @@ public sealed class LastManStanding : GameType
             return false;
         value = Api.Cvars.GetFloat(name);
         return true;
+    }
+
+    private static float Cvar(string name, float fallback) => TryCvar(name, out float v) ? v : fallback;
+
+    private static string CvarString(string name, string fallback)
+    {
+        if (Api.Services is null) return fallback;
+        string s = Api.Cvars.GetString(name);
+        return string.IsNullOrEmpty(s) ? fallback : s;
     }
 }

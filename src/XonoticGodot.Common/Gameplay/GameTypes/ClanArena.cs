@@ -26,8 +26,12 @@ namespace XonoticGodot.Common.Gameplay;
 ///    with CA_CheckTeams / CA_CheckWinner / CA_RoundStart), driven by <see cref="Tick"/>;
 ///  - stalemate prevention on the round time limit (<see cref="PreventStalemate"/>, QC CA_PreventStalemate by
 ///    survivor count and/or total team health);
-///  - CA's start-loadout (<see cref="ApplyStartItems"/>, QC g_ca_start_health/armor 200/200 + ammo);
-///  - the g_ca_damage2score scoreboard accrual (<see cref="AddDamageScore"/>).
+///  - CA's start-loadout via the live SetStartItems hook (<see cref="OnSetStartItems"/>, QC g_ca_start_health/
+///    armor 200/200 + ammo) and the "most" weapon arena (<see cref="OnSetWeaponArena"/>);
+///  - the g_ca_damage2score scoreboard accrual on the live PlayerDamage_SplitHealthArmor hook
+///    (<see cref="OnSplitHealthArmor"/>, with the per-player decimal carry of <see cref="AddScoreFloat2Int"/>);
+///  - no map pickups (<see cref="OnFilterItemDefinition"/>), no regen (<see cref="OnPlayerRegen"/>), no weapon
+///    drop (<see cref="OnForbidThrowCurrentWeapon"/>), and the round-outcome / "alone" notifications.
 ///
 /// Faithfully ported (damage rule):
 ///  - the no-friendly-fire damage filter (QC ca Damage_Calculate): a live player takes ZERO damage from a
@@ -140,9 +144,21 @@ public sealed class ClanArena : GameType
         }
     }
 
+    private const string CvarWeaponArena = "g_ca_weaponarena"; // QC sv_clanarena.qh:17 default "most"
+
+    /// <summary>Per-player decimal accumulator for the SCORE damage2score accrual — QC <c>.float2int_decimal_fld</c>
+    /// (sv_clanarena.qc:271). Carries the sub-point remainder across hits so rounding matches GameRules_scoring_add_float2int.</summary>
+    private readonly Dictionary<Player, float> _scoreDecimal = new();
+
     /// <summary>HookHandler so Deactivate can remove the exact instance (CA's PlayerDies path).</summary>
     private HookHandler<DeathEvent>? _deathHandler;
     private HookHandler<MutatorHooks.DamageCalculateArgs>? _damageHandler;
+    private HookHandler<MutatorHooks.SetStartItemsArgs>? _startItemsHandler;
+    private HookHandler<MutatorHooks.SetWeaponArenaArgs>? _weaponArenaHandler;
+    private HookHandler<MutatorHooks.FilterItemDefinitionArgs>? _filterItemHandler;
+    private HookHandler<MutatorHooks.ForbidThrowCurrentWeaponArgs>? _forbidThrowHandler;
+    private HookHandler<MutatorHooks.PlayerRegenArgs>? _regenHandler;
+    private HookHandler<GameHooks.PlayerDamageArgs>? _splitHandler;
 
     public void Activate()
     {
@@ -172,12 +188,39 @@ public sealed class ClanArena : GameType
         };
         Handler.Init(Cvar(CvarRoundEndDelay, 5f), Cvar(CvarWarmup, 5f), Cvar(CvarRoundTimelimit, 180f));
 
+        _scoreDecimal.Clear();
+
         _deathHandler = OnDeath;
         Combat.Death.Add(_deathHandler);
 
         // QC ca Damage_Calculate: install the no-friendly-fire filter (zero self/team/fall damage on live players).
         _damageHandler = OnDamageCalculate;
         MutatorHooks.DamageCalculate.Add(_damageHandler);
+
+        // QC ca SetStartItems: 200/200 + full ammo (the defining CA survivability). SpawnSystem.ComputeStartItems
+        // fires this hook live, so subscribing here applies the loadout on every spawn (Wave-1 seam, _wave1-seams.md:190).
+        _startItemsHandler = OnSetStartItems;
+        MutatorHooks.SetStartItems.Add(_startItemsHandler);
+
+        // QC ca SetWeaponArena: default the arena to g_ca_weaponarena ("most") so players spawn with the full arsenal.
+        _weaponArenaHandler = OnSetWeaponArena;
+        MutatorHooks.SetWeaponArena.Add(_weaponArenaHandler);
+
+        // QC ca FilterItem: no map item/powerup pickups in CA.
+        _filterItemHandler = OnFilterItemDefinition;
+        MutatorHooks.FilterItemDefinition.Add(_filterItemHandler);
+
+        // QC ca ForbidThrowCurrentWeapon: can't drop the current weapon.
+        _forbidThrowHandler = OnForbidThrowCurrentWeapon;
+        MutatorHooks.ForbidThrowCurrentWeapon.Add(_forbidThrowHandler);
+
+        // QC ca PlayerRegen: no health/armor regen in CA.
+        _regenHandler = OnPlayerRegen;
+        MutatorHooks.PlayerRegen.Add(_regenHandler);
+
+        // QC ca PlayerDamage_SplitHealthArmor: the live g_ca_damage2score scoreboard accrual.
+        _splitHandler = OnSplitHealthArmor;
+        GameHooks.PlayerDamageSplitHealthArmor.Add(_splitHandler);
     }
 
     /// <summary>
@@ -209,17 +252,20 @@ public sealed class ClanArena : GameType
     /// </summary>
     public void Tick() => Handler?.Tick();
 
-    public void Deactivate()
+    public override void Deactivate()
     {
         if (_deathHandler is null)
             return;
         Combat.Death.Remove(_deathHandler);
         _deathHandler = null;
-        if (_damageHandler is not null)
-        {
-            MutatorHooks.DamageCalculate.Remove(_damageHandler);
-            _damageHandler = null;
-        }
+        if (_damageHandler is not null)     { MutatorHooks.DamageCalculate.Remove(_damageHandler);             _damageHandler = null; }
+        if (_startItemsHandler is not null) { MutatorHooks.SetStartItems.Remove(_startItemsHandler);           _startItemsHandler = null; }
+        if (_weaponArenaHandler is not null){ MutatorHooks.SetWeaponArena.Remove(_weaponArenaHandler);         _weaponArenaHandler = null; }
+        if (_filterItemHandler is not null) { MutatorHooks.FilterItemDefinition.Remove(_filterItemHandler);    _filterItemHandler = null; }
+        if (_forbidThrowHandler is not null){ MutatorHooks.ForbidThrowCurrentWeapon.Remove(_forbidThrowHandler); _forbidThrowHandler = null; }
+        if (_regenHandler is not null)      { MutatorHooks.PlayerRegen.Remove(_regenHandler);                  _regenHandler = null; }
+        if (_splitHandler is not null)      { GameHooks.PlayerDamageSplitHealthArmor.Remove(_splitHandler);    _splitHandler = null; }
+        _scoreDecimal.Clear();
     }
 
     public int AssignTeam(Player joiner, IReadOnlyList<Player> roster)
@@ -238,40 +284,138 @@ public sealed class ClanArena : GameType
     }
 
     /// <summary>
-    /// QC CA Damage_Calculate accrual (g_ca_damage2score): credit the scoreboard SCORE of an attacker for
-    /// damage dealt to an enemy — <c>damage / 100 * g_ca_damage2score</c>. This is cosmetic (it does not feed
-    /// the round-win limit). The damage pipeline calls this when CA is active. No-op for self/teamdamage.
+    /// QC <c>MUTATOR_HOOKFUNCTION(ca, PlayerDamage_SplitHealthArmor)</c> (sv_clanarena.qc:481): the live
+    /// g_ca_damage2score scoreboard accrual. Credits the attacker's SCORE for damage dealt to an enemy
+    /// (minus the overkill excess), subtracts it for friendly fire, and self-penalises an environmental
+    /// suicide (kill/drown/hurttrigger/camp/lava/slime/swamp). The remainder carries across hits via the
+    /// per-player decimal accumulator (QC float2int_decimal_fld). Cosmetic — does not feed the round-win limit.
     /// </summary>
-    public void AddDamageScore(Player attacker, Player victim, float damageDealt)
+    private bool OnSplitHealthArmor(ref GameHooks.PlayerDamageArgs a)
     {
-        if (MatchEnded || damageDealt <= 0f)
-            return;
-        if (ReferenceEquals(attacker, victim) || Teams.SameTeam(attacker, victim))
-            return;
+        // QC gate: no accrual before game_starttime, nor while the round is active-but-not-started. The CA
+        // round handler is always "active" (spawned) once a CA match runs, so QC's (IsActive && !IsRoundStarted)
+        // reduces to !IsRoundStarted here.
+        float now = Api.Services is not null ? Api.Clock.Time : 0f;
+        if (Handler is not null && (now < Handler.GameStartTime || !Handler.IsRoundStarted))
+            return false;
+
         float d2s = Damage2Score;
         if (d2s <= 0f)
-            return;
-        // QC GameRules_scoring_add_float2int(scorer, SCORE, damage, ..., g_ca_damage2score): the accumulator
-        // adds 1 point per (100/d2s) damage. We model the integer SCORE gain directly.
-        attacker.ScoreFrags += (int)(damageDealt * d2s / 100f);
+            return false;
+
+        if (a.Target is not Player target)
+            return false;
+
+        // QC: excess = max(0, frag_damage - damage_take - damage_save); skip if no effective damage landed.
+        float damageTake = System.Math.Clamp(a.DamageTake, 0f, target.GetResource(ResourceType.Health));
+        float damageSave = System.Math.Clamp(a.DamageSave, 0f, target.GetResource(ResourceType.Armor));
+        float excess = System.Math.Max(0f, a.FragDamage - damageTake - damageSave);
+        float effective = a.FragDamage - excess;
+        if (effective == 0f)
+            return false;
+
+        Player? scorer = null;
+        float scorerDamage = 0f;
+
+        if (a.FragAttacker is Player atk)
+        {
+            // Enemy hit credits the attacker; friendly fire debits them.
+            scorerDamage = Teams.SameTeam(atk, target) ? -effective : effective;
+            scorer = atk;
+        }
+        else
+        {
+            // Environmental suicide: penalise the victim (QC's enumerated self-death deathtypes).
+            string dt = DeathTypes.BaseOf(a.FragDeathType);
+            if (dt is DeathTypes.Kill or DeathTypes.Drown or "hurttrigger" or "camp"
+                   or DeathTypes.Lava or DeathTypes.Slime or DeathTypes.Swamp)
+            {
+                scorerDamage = -effective;
+                scorer = target;
+            }
+        }
+
+        if (scorer is not null)
+            AddScoreFloat2Int(scorer, scorerDamage, d2s);
+        return false;
     }
 
     /// <summary>
-    /// QC PutPlayerInServer CA branch: give the round's start loadout — g_ca_start_health/armor (200/200) and
-    /// full ammo. Called by the host when (re)spawning a player into a CA round.
+    /// QC <c>GameRules_scoring_add_float2int(scorer, SCORE, value, float2int_decimal_fld, factor)</c>
+    /// (common/gametypes/sv_rules.qc): accumulate <c>value * factor / 100</c> as a fractional point total,
+    /// carry the sub-point remainder in the per-player decimal field, and emit only the whole-point delta
+    /// (<c>floor(counter + 0.5)</c>) to the SCORE column — so rounding matches QC across many small hits.
     /// </summary>
-    public void ApplyStartItems(Player p)
+    private void AddScoreFloat2Int(Player scorer, float value, float factor)
     {
-        float h = StartHealth;
-        p.MaxHealth = h;
-        p.SetResource(ResourceType.Health, h);
-        p.SetResource(ResourceType.Armor, StartArmor);
-        p.SetResource(ResourceType.Shells,  Cvar("g_ca_start_ammo_shells", 60f));
-        p.SetResource(ResourceType.Bullets, Cvar("g_ca_start_ammo_nails", 320f));
-        p.SetResource(ResourceType.Rockets, Cvar("g_ca_start_ammo_rockets", 160f));
-        p.SetResource(ResourceType.Cells,   Cvar("g_ca_start_ammo_cells", 180f));
-        p.SetResource(ResourceType.Fuel,    Cvar("g_ca_start_ammo_fuel", 0f));
+        _scoreDecimal.TryGetValue(scorer, out float carry);
+        carry += value * factor / 100f;
+        int whole = (int)System.MathF.Floor(carry + 0.5f);
+        if (whole != 0)
+        {
+            Scoring.GameScores.AddToPlayer(scorer, Scoring.GameScores.Score, whole);
+            carry -= whole;
+        }
+        _scoreDecimal[scorer] = carry;
     }
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(ca, SetStartItems)</c> (sv_clanarena.qc:435): the CA spawn loadout —
+    /// g_ca_start_health/armor (200/200) + full ammo (60/320/160/180/0). Strips the unlimited flags, then
+    /// grants unlimited ammo when g_use_ammunition is off (QC <c>if(!cvar("g_use_ammunition")) start_items |=
+    /// IT_UNLIMITED_AMMO</c>). SpawnSystem.ComputeStartItems fires this live (the readplayerstartcvars seam).
+    /// </summary>
+    private bool OnSetStartItems(ref MutatorHooks.SetStartItemsArgs args)
+    {
+        StartLoadout l = args.Loadout;
+        l.ItemFlags.Remove("UNLIMITED_AMMO");
+        l.ItemFlags.Remove("UNLIMITED_SUPERWEAPONS");
+        if (Cvar("g_use_ammunition", 1f) == 0f)
+            l.ItemFlags.Add("UNLIMITED_AMMO");
+
+        l.Health      = StartHealth;
+        l.Armor       = StartArmor;
+        l.AmmoShells  = Cvar("g_ca_start_ammo_shells", 60f);
+        l.AmmoBullets = Cvar("g_ca_start_ammo_nails", 320f);
+        l.AmmoRockets = Cvar("g_ca_start_ammo_rockets", 160f);
+        l.AmmoCells   = Cvar("g_ca_start_ammo_cells", 180f);
+        l.AmmoFuel    = Cvar("g_ca_start_ammo_fuel", 0f);
+        return false;
+    }
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(ca, SetWeaponArena)</c> (sv_clanarena.qc:627): default the weapon arena to
+    /// g_ca_weaponarena ("most") when the configured arena is unset / "0", so players spawn with the full arsenal.
+    /// </summary>
+    private bool OnSetWeaponArena(ref MutatorHooks.SetWeaponArenaArgs args)
+    {
+        if (args.Arena == "0" || string.IsNullOrEmpty(args.Arena))
+            args.Arena = CvarString(CvarWeaponArena, "most");
+        return false;
+    }
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(ca, FilterItem)</c> (sv_clanarena.qc:469): remove map pickups in CA. Powerups
+    /// are filtered when g_powerups &lt;= 0; ALL items are filtered when g_pickup_items &lt;= 0 (the stock default,
+    /// so CA maps spawn no pickups). Returns true to FILTER OUT. Powerups are matched by classname (the item
+    /// registry isn't fully ported — the same stand-in Mayhem/LMS/NIX use).
+    /// </summary>
+    private bool OnFilterItemDefinition(ref MutatorHooks.FilterItemDefinitionArgs args)
+    {
+        string id = args.Definition.ClassName;
+        bool isPowerup = id is "item_strength" or "item_shield" or "item_invincible";
+        if (Cvar("g_powerups", 0f) <= 0f && isPowerup)
+            return true;
+        if (Cvar("g_pickup_items", 0f) <= 0f)
+            return true;
+        return false;
+    }
+
+    /// <summary>QC <c>MUTATOR_HOOKFUNCTION(ca, ForbidThrowCurrentWeapon)</c>: always forbid dropping the current weapon.</summary>
+    private bool OnForbidThrowCurrentWeapon(ref MutatorHooks.ForbidThrowCurrentWeaponArgs args) => true;
+
+    /// <summary>QC <c>MUTATOR_HOOKFUNCTION(ca, PlayerRegen)</c>: no health/armor regeneration in CA (return true).</summary>
+    private bool OnPlayerRegen(ref MutatorHooks.PlayerRegenArgs args) => true;
 
     /// <summary>
     /// QC CA_CheckTeams (canRoundStart): the countdown may proceed once every active team has at least one
@@ -350,15 +494,51 @@ public sealed class ClanArena : GameType
 
         if (winner > 0)
         {
+            // QC CA_CheckWinner: ROUND_TEAM_WIN center+info to all, then bank the round point.
+            string suffix = TeamSuffix(winner);
+            NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Center, $"ROUND_TEAM_WIN_{suffix}");
+            NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, $"ROUND_TEAM_WIN_{suffix}");
             Scoring.GameScores.AddToTeam(winner, Scoring.GameScores.TeamSlotSecondary, 1); // QC TeamScore_AddToTeam(winner, ST_CA_ROUNDS, +1)
             Round.Number++;
             UpdateLeaderAndCheckLimit();
         }
         else
         {
+            // QC CA_CheckWinner: -1 → ROUND_TIED, -2 → ROUND_OVER (no winner this round).
+            string name = winner == -1 ? "ROUND_TIED" : "ROUND_OVER";
+            NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Center, name);
+            NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, name);
             Round.Number++; // tie / stalemate: a round elapsed, no team score
         }
         return winner;
+    }
+
+    /// <summary>QC <c>APP_TEAM_NUM</c> team-code → notification suffix (RED/BLUE/YELLOW/PINK).</summary>
+    private static string TeamSuffix(int team) => team switch
+    {
+        Teams.Red => "RED", Teams.Blue => "BLUE", Teams.Yellow => "YELLOW", Teams.Pink => "PINK", _ => "NEUTRAL",
+    };
+
+    /// <summary>
+    /// QC <c>ca_LastPlayerForTeam_Notify</c> (sv_clanarena.qc:360): when a death/leave leaves exactly one living
+    /// teammate, center-print "You are now alone!" (CENTER_ALONE) to that last survivor. Only fires while a round
+    /// is active and started (not warmup). Call from the host's PlayerDies/disconnect path with the leaving player.
+    /// </summary>
+    public void NotifyLastPlayerForTeam(Player leaving, IReadOnlyList<Player> roster)
+    {
+        if (Handler is null || !Handler.IsRoundStarted) // QC: !warmup_stage && IsActive && IsRoundStarted
+            return;
+        Player? last = null;
+        for (int i = 0; i < roster.Count; i++)
+        {
+            Player p = roster[i];
+            if (ReferenceEquals(p, leaving) || p.IsDead || !Teams.SameTeam(leaving, p))
+                continue;
+            if (last is null) last = p;
+            else return; // more than one teammate alive → not alone
+        }
+        if (last is not null)
+            NotificationSystem.Center(last, "ALONE");
     }
 
     /// <summary>
@@ -408,6 +588,13 @@ public sealed class ClanArena : GameType
     }
 
     private static float Cvar(string name, float fallback) => TryCvar(name, out float v) ? v : fallback;
+
+    private static string CvarString(string name, string fallback)
+    {
+        if (Api.Services is null) return fallback;
+        string s = Api.Cvars.GetString(name);
+        return string.IsNullOrEmpty(s) ? fallback : s;
+    }
 
     /// <summary>
     /// Count living players per team over the current roster (QC CA_count_alive_players), then resolve the

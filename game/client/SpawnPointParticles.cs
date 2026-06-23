@@ -26,7 +26,8 @@ public sealed partial class SpawnPointParticles : Node3D
     /// counts; a 0.2s pulse at count 1 through the accumulator reads the same).</summary>
     [Export] public float PulseInterval { get; set; } = 0.2f;
 
-    /// <summary>Only points within this range of the camera emit (qu).</summary>
+    /// <summary>Fallback draw-cull range (qu) when <c>cl_spawn_point_dist_max</c> can't be read. Upstream's
+    /// cull distance is the <c>cl_spawn_point_dist_max</c> cvar (0 ⇒ no distance cull).</summary>
     [Export] public float DrawDistance { get; set; } = 2000f;
 
     /// <summary>The effect player (EffectSystem) — wired by ClientWorld.</summary>
@@ -38,9 +39,21 @@ public sealed partial class SpawnPointParticles : Node3D
         "info_player_team1", "info_player_team2", "info_player_team3", "info_player_team4",
     };
 
-    private readonly List<NVec3> _points = new();
+    /// <summary>Discovered spawn points: world origin (Quake space) + the spot's team (0/neutral or 1..4).</summary>
+    private readonly List<(NVec3 Origin, int Team)> _points = new();
     private float _pulseTimer;
     private float _rescanTimer;
+
+    /// <summary>Port of CSQC <c>Team_ColorRGB(team - 1)</c> (= <c>colormapPaletteColor(team-1)</c>): the per-team
+    /// glow tint. Neutral / unteamed spots (and the team-1 == -1 neutral index) read white, matching upstream.</summary>
+    private static Color TeamColorRgb(int team) => team switch
+    {
+        1 => new Color(1f, 0.0625f, 0.0625f),   // red
+        2 => new Color(0.0625f, 0.0625f, 1f),   // blue
+        3 => new Color(1f, 1f, 0.0625f),        // yellow
+        4 => new Color(1f, 0.0625f, 1f),        // pink
+        _ => new Color(1f, 1f, 1f),
+    };
 
     public override void _Process(double delta)
     {
@@ -58,7 +71,7 @@ public sealed partial class SpawnPointParticles : Node3D
             _points.Clear();
             foreach (string cls in SpawnClasses)
                 foreach (Entity e in Api.Entities.FindByClass(cls))
-                    _points.Add(e.Origin);
+                    _points.Add((e.Origin, (int)e.Team));
         }
         if (_points.Count == 0)
             return;
@@ -68,20 +81,34 @@ public sealed partial class SpawnPointParticles : Node3D
             return;
         _pulseTimer = PulseInterval;
 
+        // Draw-distance cull range = cl_spawn_point_dist_max (upstream Spawn_Draw); 0 disables the distance
+        // cull entirely (Base only computes vdist when the cvar is non-zero). Fall back to DrawDistance only
+        // if the cvar is somehow unreadable (returns <0 never; GetFloat yields 0 for an unset cvar → no cull,
+        // matching upstream's "0 ⇒ draw everything").
+        float distMax = XonoticGodot.Game.Menu.MenuState.Cvars.GetFloat("cl_spawn_point_dist_max");
+        bool cull = distMax > 0f;
+
         // Camera position for the draw-distance cull (Quake space).
         NVec3 eye = default;
-        Camera3D? cam = GetViewport()?.GetCamera3D();
-        if (cam is not null)
-            eye = Coords.ToQuake(cam.GlobalTransform.Origin);
-
-        float dd2 = DrawDistance * DrawDistance;
-        foreach (NVec3 p in _points)
+        if (cull)
         {
-            NVec3 d = p - eye;
-            if (NVec3.Dot(d, d) > dd2)
-                continue;
+            Camera3D? cam = GetViewport()?.GetCamera3D();
+            if (cam is not null)
+                eye = Coords.ToQuake(cam.GlobalTransform.Origin);
+        }
+
+        float dd2 = distMax * distMax;
+        foreach ((NVec3 origin, int team) in _points)
+        {
+            if (cull)
+            {
+                NVec3 d = origin - eye;
+                if (NVec3.Dot(d, d) > dd2)
+                    continue;
+            }
+            // Per-team tint (Team_ColorRGB(team-1)); neutral spots read white.
             // Slight lift so the glow sits above the floor (upstream uses the spawnpoint bbox).
-            Effects.Spawn("SPAWNPOINT", p + new NVec3(0f, 0f, 8f));
+            Effects.Spawn("SPAWNPOINT", origin + new NVec3(0f, 0f, 8f), color: TeamColorRgb(team));
         }
     }
 }

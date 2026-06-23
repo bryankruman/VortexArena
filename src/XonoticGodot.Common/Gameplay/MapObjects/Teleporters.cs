@@ -15,6 +15,7 @@
 using System.Numerics;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Gameplay.Damage;
+using XonoticGodot.Common.Gameplay.Scoring;
 using XonoticGodot.Common.Math;
 using XonoticGodot.Common.Services;
 
@@ -26,6 +27,16 @@ public static class Teleporters
     // teleport.qh spawnflag bits.
     public const int ObserversOnly = 1 << 0; // TELEPORT_OBSERVERS_ONLY
     public const int KeepSpeed = 1 << 1;     // TELEPORT_KEEP_SPEED — only skips the g_teleport_maxspeed clamp, NOT direction
+    public const int InvertTeams = 1 << 2;   // INVERT_TEAMS (defs.qh) — flip the team-ownership gate
+
+    // teleporters.qh TELEPORT_FLAG_* bits (which side effects a teleport produces). A map teleporter passes
+    // TELEPORT_FLAGS_TELEPORTER (sound|particles|tdeath); a Porto portal passes TELEPORT_FLAGS_PORTAL (+force_tdeath).
+    public const int FlagSound = 1 << 0;       // TELEPORT_FLAG_SOUND
+    public const int FlagParticles = 1 << 1;   // TELEPORT_FLAG_PARTICLES
+    public const int FlagTdeath = 1 << 2;      // TELEPORT_FLAG_TDEATH
+    public const int FlagForceTdeath = 1 << 3; // TELEPORT_FLAG_FORCE_TDEATH (telefrag even with g_telefrags 0)
+    public const int FlagsTeleporter = FlagSound | FlagParticles | FlagTdeath; // TELEPORT_FLAGS_TELEPORTER
+    public const int FlagsPortal = FlagsTeleporter | FlagForceTdeath;          // TELEPORT_FLAGS_PORTAL
 
     /// <summary>QC nudge applied to a destination origin so the player hull clears the floor: 1 - mins.z - 24.</summary>
     public const float DestZNudge = 1f - (-24f) - 24f; // = 1 (PL_MIN.z = -24)
@@ -91,9 +102,11 @@ public static class Teleporters
     /// <summary>QC <c>trigger_teleport_use</c>: teamplay claims the teleporter for the activator's team.</summary>
     private static void TeleportUse(Entity self, Entity actor)
     {
-        // QC: this.team = actor.team; SendFlags |= 1; — a team-owned teleporter only works for that team.
-        // The networking SendFlags is client-side; the team assignment (gameplay) is ported here.
-        self.Team = actor.Team;
+        // QC: if(teamplay) this.team = actor.team; SendFlags |= SF_TRIGGER_UPDATE; — a team-owned teleporter
+        // only works for that team. The networking SendFlags is client-side; the team assignment (gameplay,
+        // teamplay-gated as in Base) is ported here, and is now enforced by the team gate in TeleportActive.
+        if (GameScores.Teamplay)
+            self.Team = actor.Team;
     }
 
     /// <summary>QC <c>Teleport_Active</c>: gate on active state, deadness, and OBSERVERS_ONLY.</summary>
@@ -103,6 +116,17 @@ public static class Teleporters
             return false;
         if (MapMover.IsDead(player))
             return false;
+        // QC teleport.qc:38-39 — a team-claimed teleporter (this.team set, see TeleportUse) only relocates
+        // matching-team players; INVERT_TEAMS flips the sense. DIFF_TEAM honors the teamplay global.
+        //   if(this.team) if(((spawnflags & INVERT_TEAMS) == 0) == DIFF_TEAM(this, player)) return false;
+        if (self.Team != 0f)
+        {
+            bool diffTeam = GameScores.Teamplay
+                ? self.Team != player.Team
+                : !ReferenceEquals(self, player);
+            if (((self.SpawnFlags & InvertTeams) == 0) == diffTeam)
+                return false;
+        }
         if (self.ClassName == "trigger_teleport" && (self.SpawnFlags & ObserversOnly) != 0)
             return false;
         // QC also checks player.teleportable / vehicle / turret — approximated by "is a creature".
@@ -176,17 +200,10 @@ public static class Teleporters
         // QC: locout = dest.origin + '0 0 1' * (1 - player.mins.z - 24)  — clear the floor by the hull height.
         Vector3 locout = dest.Origin + new Vector3(0f, 0f, 1f - player.Mins.Z - 24f);
 
-        // QC TeleportPlayer (teleporters.qc:100-115, TELEPORT_FLAG_PARTICLES): the teleport flash fires at
-        // BOTH ends — the entry point the player vanished from and the exit they appear at. Server-side only
-        // (the client prediction pass must not double-emit).
-        Vector3 entryOrigin = player.Origin;
-        if (!predicted)
-            EffectEmitter.Emit("TELEPORT", entryOrigin);
-
-        TeleportPlayer(teleporter, player, locout, dest.MAngle, outVel, predicted);
-
-        if (!predicted)
-            EffectEmitter.Emit("TELEPORT", player.Origin);
+        // QC Simple_TeleportPlayer passes TELEPORT_FLAGS_TELEPORTER (sound|particles|tdeath); the flash/sound
+        // are emitted INSIDE TeleportPlayer under the 0.2s pushltime debounce (so the particle is debounced too,
+        // matching Base), not unconditionally here.
+        TeleportPlayer(teleporter, player, locout, dest.MAngle, outVel, FlagsTeleporter, predicted);
         return dest;
     }
 
@@ -253,16 +270,27 @@ public static class Teleporters
     /// Genuinely out of scope: the CSQC particle effect, the warpzone post-teleport callback, projectile
     /// re-owning, and the bot aim reset.
     /// </summary>
-    public static void TeleportPlayer(Entity teleporter, Entity player, Vector3 to, Vector3 toAngles, Vector3 toVelocity, bool predicted = false)
+    public static void TeleportPlayer(Entity teleporter, Entity player, Vector3 to, Vector3 toAngles, Vector3 toVelocity, int tflags = FlagsTeleporter, bool predicted = false)
     {
         Entity telefragger = teleporter.Owner ?? player;
         Vector3 from = player.Origin;
 
-        // Effect/sound debounce (QC pushltime: one effect per teleporter per 0.2s) — only for players, and never
-        // during client prediction (the sound is a server-authoritative #ifdef SVQC side effect).
+        // QC makevectors(to_angles) — the exit flash sits 32u ahead of the destination facing (teleporters.qc:101).
+        QMath.AngleVectors(toAngles, out Vector3 toForward, out _, out _);
+
+        // Effect/sound debounce (QC pushltime: one teleport effect per teleporter per 0.2s, players only, and never
+        // during client prediction — the sound/particles are a server-authoritative #ifdef SVQC side effect). Both
+        // the flash AND the sound live under this debounce, gated by the TELEPORT_FLAG bits (teleporters.qc:80-105).
         if (!predicted && (player.Flags & EntFlags.Client) != 0 && teleporter.PushLTime < MapMover.Now())
         {
-            MapMover.Sound(player, SoundChannel.Auto, string.IsNullOrEmpty(teleporter.Noise) ? "misc/teleport.wav" : teleporter.Noise);
+            if ((tflags & FlagSound) != 0)
+                MapMover.Sound(player, SoundChannel.Item /* CH_TRIGGER */, TeleportSound(teleporter.Noise));
+            if ((tflags & FlagParticles) != 0)
+            {
+                // QC: Send_Effect(EFFECT_TELEPORT, player.origin, …) and (…, to + v_forward*32, …) — both ends.
+                EffectEmitter.Emit("TELEPORT", from);
+                EffectEmitter.Emit("TELEPORT", to + toForward * 32f);
+            }
             teleporter.PushLTime = MapMover.Now() + 0.2f;
         }
 
@@ -285,9 +313,19 @@ public static class Teleporters
             // kill-credit pusher window, and the teleport-time bookkeeping are all authoritative.
             if (!predicted)
             {
-                // QC: telefrag gated on g_telefrags and (not race/cts), and not during a pre-start round.
-                bool telefragsOn = Cvar("g_telefrags", 1f) != 0f;
-                if (telefragsOn && player.TakeDamage != DamageMode.No && !MapMover.IsDead(player))
+                // QC teleporters.qc:148-150 — the full telefrag gate:
+                //   (tflags & TELEPORT_FLAG_TDEATH) && player.takedamage && !IS_DEAD(player)
+                //   && !g_race && !g_cts
+                //   && (autocvar_g_telefrags || (tflags & TELEPORT_FLAG_FORCE_TDEATH))
+                //   && !(round_handler_IsActive() && !round_handler_IsRoundStarted())
+                // FORCE_TDEATH (the Porto-portal path) telefrags even with g_telefrags 0. The !g_race/!g_cts and
+                // round-pre-start suppression need a static gametype/round-state accessor not reachable from this
+                // file (see todos) — TeleportRoundGateSuppressed is the seam-stub where they'll plug in.
+                bool tdeathOn = (tflags & FlagTdeath) != 0
+                    && player.TakeDamage != DamageMode.No && !MapMover.IsDead(player)
+                    && (Cvar("g_telefrags", 1f) != 0f || (tflags & FlagForceTdeath) != 0)
+                    && !TeleportRoundGateSuppressed();
+                if (tdeathOn)
                     Telefrag(player, teleporter, telefragger, to);
 
                 // kill-credit window: a teleporter with an owner credits it for hazard kills shortly after.
@@ -309,9 +347,9 @@ public static class Teleporters
 
     /// <summary>
     /// Port of QC <c>tdeath</c>: gib everything live and damageable whose bbox overlaps the freshly-placed
-    /// player at <paramref name="at"/> (the exact telefragmin/telefragmax box loop). Teammates are spared
-    /// unless <c>g_telefrags_teamplay</c> is set; a dead-body / monster teleportee gibs itself instead of
-    /// telefragging others.
+    /// player at <paramref name="at"/> (the exact telefragmin/telefragmax box loop). A teammate is spared only
+    /// when <c>teamplay &amp;&amp; g_telefrags_teamplay &amp;&amp; same-team</c> (Base default g_telefrags_teamplay 1 =
+    /// "never telefrag teammates"); a dead-body / monster teleportee gibs itself instead of telefragging others.
     /// </summary>
     private static void Telefrag(Entity player, Entity teleporter, Entity telefragger, Vector3 at)
     {
@@ -323,7 +361,9 @@ public static class Teleporters
         Vector3 deathMin = at + player.Mins, deathMax = at + player.Maxs;
         float radius = MathF.Max(deathMin.Length(), deathMax.Length());
 
-        bool teamTelefrags = Cvar("g_telefrags_teamplay", 0f) != 0f;
+        // QC autocvar_g_telefrags_teamplay (default 1, xonotic-server.cfg:60) — note the Base NAME/sense: a value
+        // of 1 means SPARE teammates. (cl_/g_ unregistered at runtime → Cvar() returns this faithful default.)
+        bool spareTeammates = GameScores.Teamplay && Cvar("g_telefrags_teamplay", 1f) != 0f;
         bool teleporteeAlive = (player.Flags & EntFlags.Client) != 0
             && !MapMover.IsDead(player) && player.GetResource(ResourceType.Health) >= 1f;
 
@@ -336,8 +376,8 @@ public static class Teleporters
 
             if (teleporteeAlive)
             {
-                // a live player telefrags the occupants (teammates spared unless telefrags_teamplay).
-                if (!teamTelefrags && player.Team != 0f && head.Team == player.Team)
+                // QC: skip when (teamplay && g_telefrags_teamplay && head.team == player.team) — teammate spared.
+                if (spareTeammates && head.Team == player.Team)
                     continue;
                 if ((head.Flags & EntFlags.Client) == 0 || MapMover.IsDead(head) || head.GetResource(ResourceType.Health) < 1f)
                     continue;
@@ -351,6 +391,37 @@ public static class Teleporters
             }
         }
     }
+
+    /// <summary>
+    /// QC SND(TELEPORT) with the optional teleporter.noise override: when noise is a space-separated word list,
+    /// pick one at random (Base RandomSelection over FOREACH_WORD, all weight 1) instead of using it verbatim.
+    /// </summary>
+    private static string TeleportSound(string? noise)
+    {
+        if (string.IsNullOrWhiteSpace(noise))
+            return "misc/teleport.wav";
+        string[] words = noise.Split((char[]?)null, System.StringSplitOptions.RemoveEmptyEntries);
+        if (words.Length <= 1)
+            return words.Length == 1 ? words[0] : "misc/teleport.wav";
+        // RandomSelection with uniform weight 1: each candidate has probability 1/totalWeight of being chosen.
+        string chosen = words[0];
+        float total = 0f;
+        foreach (string w in words)
+        {
+            total += 1f;
+            if (Prandom.Float() * total <= 1f)
+                chosen = w;
+        }
+        return chosen;
+    }
+
+    /// <summary>
+    /// QC <c>!(round_handler_IsActive() &amp;&amp; !round_handler_IsRoundStarted())</c> plus the <c>!g_race &amp;&amp; !g_cts</c>
+    /// telefrag suppression (teleporters.qc:148-150). The active per-gametype RoundHandler and a static
+    /// race/cts gametype flag are not reachable from this file yet, so this returns false (never suppress) —
+    /// faithful for the common non-round, non-race case. See todos for the cross-file accessor to wire here.
+    /// </summary>
+    private static bool TeleportRoundGateSuppressed() => false;
 
     private static float Cvar(string name, float fallback)
     {

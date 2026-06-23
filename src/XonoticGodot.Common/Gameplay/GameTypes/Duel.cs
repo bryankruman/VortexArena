@@ -21,12 +21,17 @@ namespace XonoticGodot.Common.Gameplay;
 ///  - frag-limit end-of-match latch (g_duel default pointlimit=0 ⇒ unlimited unless fraglimit set).
 ///
 /// Faithfully ported (the duel-relevant slice, cont.):
-///  - the powerup FilterItemDefinition hook (<see cref="FilterItem"/>, QC: block powerups unless
-///    g_duel_with_powerups).
+///  - the powerup FilterItemDefinition hook (<see cref="OnFilterItemDefinition"/>, QC: block powerups unless
+///    g_duel_with_powerups), subscribed live into MutatorHooks.FilterItemDefinition in <see cref="Activate"/>.
 ///
-/// Deferred (NOTE — cross-boundary): map-size support gating (m_isAlwaysSupported diameter &lt; 3250 /
-/// m_isForcedSupported on DM maps) and the spree/announcer + score networking/HUD shared with DM — map-pool
-/// and client concerns.
+/// Deferred (NOTE — cross-boundary, recorded as cross-file todos):
+///  - the hard 1v1 player limit (QC GetPlayerLimit → 2): there is no GetPlayerLimit mutator hook to subscribe
+///    to, and the two enforcement points live in files this class doesn't own — ClientManager.JoinAllowed
+///    (free-slot join gate) and BotPopulation.TargetBotCount (bot-fill cap reads g_maxplayers, not the duel 2);
+///  - the 'playerA vs playerB' duel title (QC Announcer_Duel → CenterPrintPanel.SetDuelTitle): the panel side
+///    exists but the m_1v1 countdown driver that calls it is a client/HUD concern;
+///  - map-size support gating (m_isAlwaysSupported diameter &lt; 3250 / m_isForcedSupported on DM maps) — a
+///    map-pool/MapInfoBackend concern.
 /// </summary>
 [GameType]
 public sealed class Duel : GameType
@@ -45,6 +50,7 @@ public sealed class Duel : GameType
     public const int PlayerLimit = 2;
 
     private HookHandler<DeathEvent>? _deathHandler;
+    private HookHandler<MutatorHooks.FilterItemDefinitionArgs>? _filterItemHandler;
 
     /// <summary>Optional sink for the host/controller to react to a frag (e.g. schedule the respawn).</summary>
     public IMatchEvents? Events;
@@ -77,11 +83,22 @@ public sealed class Duel : GameType
     public bool WithPowerups => Api.Services is not null && Api.Cvars.GetFloat("g_duel_with_powerups") != 0f;
 
     /// <summary>
-    /// QC MUTATOR_HOOKFUNCTION(duel, FilterItemDefinition): block powerup items from spawning unless
-    /// g_duel_with_powerups is set. Returns true if the item should be FILTERED OUT (not spawned).
+    /// QC MUTATOR_HOOKFUNCTION(duel, FilterItemDefinition) (sv_duel.qc:14): block powerup items from spawning
+    /// unless g_duel_with_powerups is set. Returns true if the item should be FILTERED OUT (not spawned).
+    /// Subscribed live via the MutatorHooks.FilterItemDefinition chain in <see cref="Activate"/> (matching how
+    /// Mayhem/TeamMayhem register their item filters); the hook's <c>Definition</c> is the item entity, so the
+    /// powerup test is by classname (the same stand-in Mayhem/NixMutator use — the item-class registry isn't
+    /// fully ported).
     /// </summary>
-    public bool FilterItem(GameItemDef definition)
-        => definition.IsPowerup && !WithPowerups;
+    private bool OnFilterItemDefinition(ref MutatorHooks.FilterItemDefinitionArgs args)
+    {
+        string id = args.Definition.ClassName;
+        // QC: if(definition.instanceOfPowerup) return !autocvar_g_duel_with_powerups;
+        bool isPowerup = id is "item_strength" or "item_shield" or "item_invincible";
+        if (isPowerup)
+            return !WithPowerups;
+        return false;
+    }
 
     /// <summary>
     /// The frag limit currently in force (g_duellimit, else fraglimit, else default 0 = unlimited). 0 means
@@ -109,10 +126,20 @@ public sealed class Duel : GameType
         Scoring.GameScores.SetSortKeys(Scoring.GameScores.Score);
         _deathHandler = OnDeath;
         Combat.Death.Add(_deathHandler);
+
+        // QC MUTATOR_HOOKFUNCTION(duel, FilterItemDefinition): keep powerups out of the item pool unless
+        // g_duel_with_powerups is set. Subscribe the filter into the live hook chain the same way Mayhem does.
+        _filterItemHandler = OnFilterItemDefinition;
+        MutatorHooks.FilterItemDefinition.Add(_filterItemHandler);
     }
 
-    public void Deactivate()
+    public override void Deactivate()
     {
+        if (_filterItemHandler is not null)
+        {
+            MutatorHooks.FilterItemDefinition.Remove(_filterItemHandler);
+            _filterItemHandler = null;
+        }
         if (_deathHandler is null)
             return;
         Combat.Death.Remove(_deathHandler);

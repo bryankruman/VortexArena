@@ -24,8 +24,11 @@ namespace XonoticGodot.Server;
 /// </summary>
 public sealed class WarmupController
 {
-    /// <summary>QC RESTART_COUNTDOWN: seconds of countdown after warmup ends before the match goes live.</summary>
-    public const float RestartCountdown = 5f;
+    /// <summary>QC RESTART_COUNTDOWN (vote.qh:66): seconds of countdown after warmup ends before the match goes live.</summary>
+    public const float RestartCountdown = 10f;
+
+    /// <summary>QC ReadyRestart_force: the campaign restart uses a fixed 3s countdown instead of RESTART_COUNTDOWN.</summary>
+    public const float CampaignCountdown = 3f;
 
     private readonly HashSet<Player> _ready = new();
 
@@ -60,6 +63,47 @@ public sealed class WarmupController
     public Action? OnMatchRestart { get; set; }
 
     /// <summary>
+    /// QC <c>autocvar_g_campaign</c> in the warmup path: when true there is no warmup (it's forced off at
+    /// worldspawn) and the ready-restart uses the 3s campaign countdown rather than RESTART_COUNTDOWN. The host
+    /// wires this to its campaign state; defaults false (a normal match).
+    /// </summary>
+    public bool CampaignActive { get; set; }
+
+    /// <summary>
+    /// QC <c>timeout_status</c> guard at the top of <c>ReadyCount</c>: while a timeout is active or pending the
+    /// ready-count must not reset the game. The host wires this to its timeout machinery (this port defers full
+    /// timeout interaction — see the class docstring); defaults false (no timeout).
+    /// </summary>
+    public Func<bool>? TimeoutActive { get; set; }
+
+    /// <summary>
+    /// QC <c>map_minplayers</c> / the <c>g_warmup &gt; 1</c> "minimum N players (incl. bots)" mode: the minimum
+    /// player count below which warmup will NOT end (the ReadyCount minplayers gate). Resolved in <see cref="Begin"/>
+    /// from <c>g_warmup</c> (&gt;1 ⇒ that value) and otherwise the host-provided map minimum. 0 = no minimum.
+    /// </summary>
+    public int MinPlayers { get; private set; }
+
+    /// <summary>
+    /// Host hook for the resolved map minimum-player count (QC <c>map_minplayers</c>, world.qc:697). Only consulted
+    /// when <c>g_warmup &lt;= 1</c>; with <c>g_warmup &gt; 1</c> the cvar value is the minimum directly. Defaults 0.
+    /// </summary>
+    public Func<int>? MapMinPlayers { get; set; }
+
+    /// <summary>
+    /// QC ReadyRestart_force: <c>if (autocvar_teamplay_lockonrestart &amp;&amp; teamplay) lockteams = !warmup_stage;</c>.
+    /// Fired on every restart with the lock state to apply (true = lock teams now that the match is going live). The
+    /// host wires this to its team-lock (Commands.TeamsLocked); no-op if unwired.
+    /// </summary>
+    public Action<bool>? OnLockTeams { get; set; }
+
+    /// <summary>
+    /// QC the COUNTDOWN_STOP_MINPLAYERS / COUNTDOWN_STOP_BADTEAMS notifications: fired when a ready-count during the
+    /// live countdown aborts back to warmup because too few players are present (argument = the required minimum) or
+    /// the teams are unbalanced (argument = -1, the QC bad-teams case). The host maps it to the broadcast.
+    /// </summary>
+    public Action<int>? OnCountdownStop { get; set; }
+
+    /// <summary>
     /// T40: fired once per whole second of the pre-match (game-start) countdown — the server-side analogue of
     /// the CSQC <c>Announcer_Countdown</c> CNT_GAMESTART tick (this port has no CSQC announcer timer). The
     /// argument is the visible seconds remaining (the QC <c>countdown_rounded</c> = floor(0.5 + secondsLeft)):
@@ -89,23 +133,42 @@ public sealed class WarmupController
     public void Begin()
     {
         _started = true;
-        WarmupStage = Cvars.WarmupStage;
         _ready.Clear();
         _lastCountdownSecond = int.MinValue; // T40: re-arm the game-start countdown announcer.
 
+        // QC readlevelcvars (world.qc:2198-2211): campaign forces warmup off; otherwise warmup_stage = g_warmup
+        // and a g_warmup value outside [0,1] (e.g. -1 "until enough players" or >1 "minimum N players") means an
+        // infinite warmup_limit (-1). The plain g_warmup==1 path resolves the timed limit.
+        int gWarmup = Cvars.Int("g_warmup");
+        WarmupStage = !CampaignActive && gWarmup != 0;
+        ResolveMinPlayers(gWarmup);
+
         if (WarmupStage)
         {
-            ResolveWarmupLimit();
+            if (gWarmup < 0 || gWarmup > 1)
+                WarmupLimit = -1f; // don't start until there's enough players
+            else
+                ResolveWarmupLimit(); // g_warmup == 1: timed (or 0->timelimit, -1->until-ready) limit
             _warmupStartTime = Now;
             // QC: during warmup there's no countdown; game_starttime sits in the future until ready.
             GameStartTime = WarmupLimit < 0f ? float.MaxValue : _warmupStartTime + WarmupLimit;
         }
         else
         {
-            // No warmup: a short countdown then live (QC restart into match stage).
+            // QC world.qc:2220-2222: !warmup && !campaign -> game_starttime = time + g_start_delay (0 listen /
+            // 15 dedicated). Campaign starts immediately (g_start_delay not applied). No ready-restart countdown
+            // here — Begin only arms the pre-match join window; the countdown comes from a later ReadyRestart.
             WarmupLimit = 0f;
-            GameStartTime = Now + RestartCountdown;
+            float startDelay = CampaignActive ? 0f : Cvars.FloatOr("g_start_delay", 0f);
+            GameStartTime = Now + startDelay;
         }
+    }
+
+    // QC map_minplayers resolution (world.qc:697) collapsed: g_warmup>1 means that value is the minimum directly,
+    // otherwise the host-provided map minimum. 0 = no minimum (the ReadyCount minplayers gate is inert).
+    private void ResolveMinPlayers(int gWarmup)
+    {
+        MinPlayers = gWarmup > 1 ? gWarmup : (MapMinPlayers?.Invoke() ?? 0);
     }
 
     private void ResolveWarmupLimit()
@@ -140,22 +203,72 @@ public sealed class WarmupController
     }
 
     /// <summary>
-    /// QC <c>ReadyCount</c>: if enough players are ready (the <c>g_warmup_majority_factor</c> fraction, min 1),
-    /// end warmup and restart the match. Called whenever the ready set changes. Only acts during warmup.
+    /// QC <c>ReadyCount</c> (vote.qc:553): re-count the ready players and decide whether to (a) abort a running
+    /// countdown back to warmup (too few players / unbalanced teams), (b) switch an infinite warmup to timed once
+    /// there are enough players, or (c) end warmup and restart when the human-ready majority is met. Called whenever
+    /// the ready set changes (F4, join, spectate, disconnect) — NOT gated on warmup, because the abort path runs
+    /// during the live countdown too.
     /// </summary>
     public void ReadyCountCheck()
     {
-        if (!WarmupStage)
+        // QC: cannot reset the game while a timeout is active or pending.
+        if (TimeoutActive?.Invoke() == true)
             return;
 
         var roster = Roster();
-        int players = roster.Count; // QC ReadyCount counts every player (bots included)
-        if (players == 0)
-            return;
+        int totalPlayers = roster.Count; // QC total_players: every player (bots incl.)
+        int humanPlayers = 0;
+        int humansReady = 0;
+        foreach (var p in roster)
+        {
+            if (p.IsBot) continue;
+            humanPlayers++;
+            if (_ready.Contains(p)) humansReady++;
+        }
 
-        float factor = Cvars.FloatOr("g_warmup_majority_factor", 0.8f);
-        int needed = System.Math.Max(1, (int)MathF.Ceiling(players * System.Math.Clamp(factor, 0f, 1f)));
-        if (ReadyCount >= needed)
+        // QC badteams: teams unbalanced by >= sv_teamnagger (default 2). The actual size-difference compute lives
+        // in the teamplay layer (sv-teamplay.nagger gap); this controller can't see team sizes, so the host wires
+        // TeamBalance via a future seam. Until then badteams stays false (matches the port's current behaviour:
+        // sv_teamnagger has no networked feed). NOTE recorded in todos.
+        bool badteams = false;
+
+        if (totalPlayers < MinPlayers || badteams)
+        {
+            // QC: someone bailed during the live countdown -> abort back to warmup and notify.
+            if (GameStartTime > Now)
+            {
+                WarmupStage = !CampaignActive && Cvars.WarmupStage; // re-enter warmup (CAN change after this point)
+                GameStartTime = Now;
+                _lastCountdownSecond = int.MinValue; // re-arm the announcer for the next countdown
+                OnCountdownStop?.Invoke(totalPlayers < MinPlayers ? MinPlayers : -1);
+                // QC GiveWarmupResources re-give when reset_map already ran at countdown start is a per-player
+                // loadout concern owned by SpawnSystem/GameWorld — see todos (warmup loadout re-give on abort).
+            }
+            WarmupLimit = -1f;
+            return; // don't restart: ready players present but too few / bad teams
+        }
+
+        // QC: enough players & teams ok, but still in infinite warmup -> switch to a timed warmup.
+        if (WarmupLimit <= 0f && GameStartTime <= Now)
+        {
+            float lim = Cvars.FloatOr("g_warmup_limit", -1f);
+            if (lim == 0f)
+                lim = Cvars.TimeLimitMinutes * 60f;
+            WarmupLimit = lim;
+            if (WarmupLimit > 0f)
+            {
+                _warmupStartTime = Now;       // anchor the now-timed warmup window
+                GameStartTime = Now + WarmupLimit;
+            }
+            // implicit else (g_warmup -1 && g_warmup_limit -1): warmup continues until enough RUPs (no time limit).
+        }
+
+        // QC: humans_ready && humans_ready >= rint(human_players * bound(0.5, g_warmup_majority_factor, 1)).
+        if (humansReady == 0)
+            return;
+        float factor = System.Math.Clamp(Cvars.FloatOr("g_warmup_majority_factor", 0.8f), 0.5f, 1f);
+        int needed = (int)MathF.Round(humanPlayers * factor, MidpointRounding.ToEven); // QC rint (round-half-to-even)
+        if (humansReady >= needed)
             ReadyRestart(forceWarmupEnd: true);
     }
 
@@ -207,17 +320,30 @@ public sealed class WarmupController
     {
         _started = true; // the warmup/countdown flow now drives the match start time
 
-        // QC: warmup_stage = forceWarmupEnd ? 0 : autocvar_g_warmup.
-        WarmupStage = forceWarmupEnd ? false : Cvars.WarmupStage;
+        // QC ReadyRestart (vote.qc:531-543): forceWarmupEnd or campaign ends warmup; otherwise restart back into
+        // warmup if g_warmup is still enabled.
+        WarmupStage = (forceWarmupEnd || CampaignActive) ? false : Cvars.WarmupStage;
 
-        // QC ReadyRestart_force: set game_starttime.
-        GameStartTime = WarmupStage ? Now /* no countdown in warmup */ : Now + RestartCountdown;
+        // QC ReadyRestart_force (vote.qc:455-460): warmup -> no countdown; campaign -> 3s; else RESTART_COUNTDOWN (10s).
+        if (WarmupStage)
+            GameStartTime = Now; // no countdown in warmup
+        else if (CampaignActive)
+            GameStartTime = Now + CampaignCountdown;
+        else
+            GameStartTime = Now + RestartCountdown;
 
         _ready.Clear();
         _lastCountdownSecond = int.MinValue; // T40: a restart arms a fresh game-start countdown to announce.
 
         if (WarmupStage)
+        {
+            _warmupStartTime = Now; // re-anchor the timed-warmup window
             ResolveWarmupLimit();
+        }
+
+        // QC: if (autocvar_teamplay_lockonrestart && teamplay) lockteams = !warmup_stage.
+        if (Cvars.FloatOr("teamplay_lockonrestart", 0f) != 0f && Cvars.Teamplay)
+            OnLockTeams?.Invoke(!WarmupStage);
 
         OnMatchRestart?.Invoke();
 

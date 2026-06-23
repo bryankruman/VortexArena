@@ -27,18 +27,31 @@ public sealed class HkTurret : Turret
     private const float ShotRadius = 200f;
     private const float ShotSpeed = 500f;
     private const float ShotSpeedMax = 1000f;
-    private const float ShotTurnRate = 0.1f;     // hk_shot_speed_turnrate
+    private const float ShotTurnRate = 0.25f;    // hk_shot_speed_turnrate
     private const float ShotForce = 600f;
     private const float ShotRefire = 5f;
     private const float TargetRange = 6000f;
     private const float TargetRangeMin = 220f;
-    private const float TargetRangeOptimal = 3000f;
+    private const float TargetRangeOptimal = 5000f;
     private const float AmmoMax = 240f;
     private const float AmmoRecharge = 16f;
     private const float AimSpeed = 100f;
-    private const float AimMaxPitch = 30f;
+    private const float AimMaxPitch = 20f;
     private const float AimMaxRot = 360f;
     private const float FireTolerance = 500f;
+    private const float RespawnTime = 90f;       // g_turrets_unit_hk_respawntime
+
+    // target-selection scoring biases (g_turrets_unit_hk_target_select_*)
+    private const float RangeBias = 0.5f;
+    private const float SameBias = 0.01f;
+    private const float AngleBias = 0.1f;
+    private const float MissileBias = 0f;
+    private const float PlayerBias = 1f;
+
+    // head-track motor rates (g_turrets_unit_hk_track_*)
+    private const float TrackAccelPitch = 0.25f;
+    private const float TrackAccelRot = 0.6f;
+    private const float TrackBlendRate = 0.2f;
 
     // QC hk.qc tr_setup: LOS, vehicles, range-limited, team-checked (+ trigger targets, players via flags).
     private const int Select = TurretAI.SelectLos | TurretAI.SelectPlayers | TurretAI.SelectRangeLimits
@@ -55,7 +68,7 @@ public sealed class HkTurret : Turret
 
     public override void Spawn(Entity e)
         => TurretSpawn.Init(this, e, new Vector3(-32f, -32f, 0f), new Vector3(32f, 32f, 64f),
-            AmmoMax, AmmoRecharge, shotVolly: 0);
+            AmmoMax, AmmoRecharge, shotVolly: 0, respawnTime: RespawnTime);
 
     public override void Think(Entity e)
     {
@@ -64,7 +77,10 @@ public sealed class HkTurret : Turret
         var p = new TurretParams(Select, TargetRangeMin, TargetRange, ShotDamage, ShotRefire,
             AimSpeed, FireTolerance, lead: false,
             rangeOptimal: TargetRangeOptimal, shotSpeed: ShotSpeed, aimMaxPitch: AimMaxPitch, aimMaxRot: AimMaxRot,
-            aimSimple: true, clearTarget: true, trackType: TurretAI.TrackFluidInertia);
+            aimSimple: true, clearTarget: true,
+            rangeBias: RangeBias, sameBias: SameBias, angleBias: AngleBias, missileBias: MissileBias, playerBias: PlayerBias,
+            trackType: TurretAI.TrackFluidInertia,
+            trackAccelPitch: TrackAccelPitch, trackAccelRot: TrackAccelRot, trackBlendRate: TrackBlendRate);
         TurretAI.RunCombat(e, in p, Attack);
     }
 

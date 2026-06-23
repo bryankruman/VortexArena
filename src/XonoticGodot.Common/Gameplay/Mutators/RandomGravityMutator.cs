@@ -14,8 +14,9 @@ namespace XonoticGodot.Common.Gameplay;
 /// re-reads <c>sv_gravity</c> per tick, so the change takes effect immediately. Enabled by the
 /// <c>g_random_gravity</c> cvar.
 ///
-/// Ported: the per-frame roll on SV_StartFrame (gated by game-stopped / game_starttime / round-start), the
-/// exact <c>cvar_set("sv_gravity", ...)</c> formula, and the delay schedule. QC's <c>cvar_settemp</c> on enable
+/// Ported: the per-frame roll on SV_StartFrame (gated by game-stopped + game_starttime + the delay schedule), the
+/// exact <c>cvar_set("sv_gravity", ...)</c> formula. QC's round-start gate is not ported (no global RoundHandler
+/// reachable from Common — see OnStartFrame). QC's <c>cvar_settemp</c> on enable
 /// (so the original gravity is restored at match end) is a host-side cvar-stack concern not modelled here — the
 /// host owns cvar restore on map change; NOTEd.
 ///
@@ -59,9 +60,16 @@ public sealed class RandomGravityMutator : MutatorBase
         // QC: if(game_stopped || !cvar("g_random_gravity")) return false;
         if (VehicleCommon.GameStopped || Api.Cvars.GetFloat("g_random_gravity") == 0f) return false;
         float time = args.Time;
-        // QC: if(time < gravity_delay) return false; (the per-frame round/start-time gates use game_stopped above
-        // as the available "not live" signal — a faithful superset of the round-not-started branch).
+        // QC: if(time < gravity_delay) return false;
         if (time < _gravityDelay) return false;
+        // QC: if(time < game_starttime) return false; — suppress re-rolls during the pre-match warmup/countdown.
+        // StartItem.GameStartTimeProvider is the host-wired countdown-end seam (same one DamageSystem/Domination use);
+        // unwired (headless tests) it reads 0, so the gate is a no-op there — matches "match already live".
+        if (time < (StartItem.GameStartTimeProvider?.Invoke() ?? 0f)) return false;
+        // QC: if(round_handler_IsActive() && !round_handler_IsRoundStarted()) return false; — NOT ported: there is no
+        // global RoundHandler accessor reachable from Common (RoundHandler is per-gametype; DamageSystem.cs notes the
+        // same). In round modes (CA/Freezetag) gravity can still roll in the inter-round pre-start window until a
+        // global round-state seam exists (crossTaskNeeds).
 
         float min = Api.Cvars.GetFloat("g_random_gravity_min");
         float max = Api.Cvars.GetFloat("g_random_gravity_max");

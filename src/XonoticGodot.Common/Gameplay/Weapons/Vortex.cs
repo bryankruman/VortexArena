@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Math;
 using XonoticGodot.Common.Services;
@@ -270,20 +271,39 @@ public sealed class Vortex : Weapon
         mydmg *= charge;
         myforce *= charge;
 
+        // QC vortex.qc:122: capture IsFlying(actor) BEFORE the trace — the rail trace overwrites the global
+        // trace state FireRailgunBullet's yoda check reads, so the shooter's airborne status (for the yoda
+        // mid-air-kill announce) must be sampled here, before firing.
+        bool flying = IsFlying(actor);
+
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out _);
         // QC vortex.qc:137: W_SetupShot(..., mydmg, dtype) — the fired credit is the POST-charge damage.
         ShotInfo shot = WeaponFiring.SetupShot(actor, forward, wep: this, maxDamage: mydmg, recoil: 5f);
 
         Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/nexfire.wav");
-        // Overcharge sound when charged past the anim limit (a louder zap the more overcharged it is).
+        // Overcharge sound when charged past the anim limit — a LOUDER zap the more overcharged it is. QC
+        // vortex.qc:139: VOL_BASE * (charge - 0.5*animlimit) / (1 - 0.5*animlimit). VOL_BASE = 0.7 (sound.qh).
         if (Cvars.ChargeAnimLimit > 0f && charge > Cvars.ChargeAnimLimit)
-            Api.Sound.Play(actor, SoundChannel.Body, "weapons/nexcharge.wav");
+        {
+            const float volBase = 0.7f; // QC VOL_BASE
+            float vol = volBase * (charge - 0.5f * Cvars.ChargeAnimLimit) / (1f - 0.5f * Cvars.ChargeAnimLimit);
+            Api.Sound.Play(actor, SoundChannel.Body, "weapons/nexcharge.wav", volume: vol);
+        }
 
         // FireRailgunBullet: pierces targets, applies knockback `myforce` (+ falloff cvars when set).
         // headshotNotify: false — the Vortex does NOT announce headshots (QC vortex.qc:144).
         Vector3 end = shot.Origin + shot.Dir * WeaponFiring.MaxShotDistance;
-        WeaponFiring.FireRailgunBullet(actor, shot.Origin, end, mydmg, RegistryId, myforce,
+        Entity? hit = WeaponFiring.FireRailgunBullet(actor, shot.Origin, end, mydmg, RegistryId, myforce,
             headshotNotify: false);
+
+        // Yoda (mid-air rail kill) + Impressive (every-other cross-team rail hit) announcements — QC
+        // vortex.qc:141-162. QC sets the `yoda` / `impressive_hits` globals inside the Damage path
+        // (server/damage.qc:646-651) on a cross-team damaging hit, and yoda additionally requires the victim
+        // to be a flying PLAYER. The port's FireRailgunBullet doesn't surface those globals, so we re-derive
+        // them locally from the first pierced victim (the rail's primary target): a live, damageable,
+        // cross-team player counts as an impressive hit; if that victim is also airborne AND the shooter is
+        // airborne, it's a yoda.
+        Announce(actor, hit, flying);
 
         // W_DecreaseAmmo(thiswep, actor, WEP_CVAR_BOTH(ammo)) — clip/resource via the shared helper.
         DecreaseAmmo(actor, slot, isSecondary ? Cvars.SecondaryAmmo : Cvars.Ammo);
@@ -297,12 +317,64 @@ public sealed class Vortex : Weapon
         EffectEmitter.Emit("VORTEX_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
     }
 
+    // Per-actor `vortex_lasthit` (QC .float vortex_lasthit, vortex.qc:156-162). QC stores it on the player
+    // edict; the port has no Vortex field on Entity (cross-file), so we track it in a weak side-table keyed
+    // by actor — same observable "only every second consecutive hit" cadence, no Entity.cs edit.
+    private static readonly ConditionalWeakTable<Entity, StrongBox<int>> _vortexLastHit = new();
+
+    private static int GetLastHit(Entity actor) => _vortexLastHit.TryGetValue(actor, out var b) ? b.Value : 0;
+    private static void SetLastHit(Entity actor, int v) => _vortexLastHit.GetOrCreateValue(actor).Value = v;
+
+    // Yoda / Impressive — port of vortex.qc:141-162. `flying` is the shooter's airborne status captured before
+    // the trace. `hit` is FireRailgunBullet's first pierced victim (the rail's primary target).
+    private void Announce(Entity actor, Entity? hit, bool flying)
+    {
+        if ((actor.Flags & EntFlags.Client) == 0) return; // only real clients get announces
+
+        // QC ++impressive_hits (damage.qc:646): a cross-team damaging hit on a hittable victim. The rail always
+        // deals damage > 0, so any live, damageable, cross-team target counts.
+        bool impressiveHit = hit is not null
+            && hit.TakeDamage != DamageMode.No
+            && hit.DeadState == DeadFlag.No
+            && !ReferenceEquals(hit, actor)
+            && !Teams.SameTeam(hit, actor);
+
+        // QC yoda (damage.qc:648-651): the victim is a non-special-death PLAYER and IsFlying(victim); plus the
+        // vortex block also gates on the SHOOTER flying (vortex.qc:154 `if (yoda && flying)`).
+        if (impressiveHit && flying
+            && (hit!.Flags & EntFlags.Client) != 0 && IsFlying(hit))
+            NotificationSystem.Announce(actor, "ACHIEVEMENT_YODA");
+
+        // QC vortex.qc:156-162: impressive fires only when THIS shot AND the previous one both landed a hit
+        // (actor.vortex_lasthit), then resets so it's every-other. vortex_lasthit is then set to this shot's
+        // hit state.
+        int impressive = impressiveHit ? 1 : 0;
+        if (impressive != 0 && GetLastHit(actor) != 0)
+        {
+            NotificationSystem.Announce(actor, "ACHIEVEMENT_IMPRESSIVE");
+            impressive = 0; // only every second time
+        }
+        SetLastHit(actor, impressive);
+    }
+
+    // bool IsFlying(entity) — common/physics/player.qc, the airshot test: airborne, not swimming, and at least
+    // 24u of clearance below (so a player skimming the ground doesn't count). Mirrors Devastator/Mortar.
+    private static bool IsFlying(Entity e)
+    {
+        if (e.OnGround) return false;
+        if (e.WaterLevel >= 2) return false; // WATERLEVEL_SWIMMING
+        TraceResult tr = Api.Trace.Trace(e.Origin, e.Mins, e.Maxs,
+            e.Origin - new Vector3(0f, 0f, 24f), MoveFilter.Normal, e);
+        return tr.Fraction >= 1f;
+    }
+
     // METHOD(Vortex, wr_setup / wr_resetplayer) — seed the per-slot charge + chargepool.
     // NOTE: QC seeds these in wr_resetplayer (on respawn, vortex.qc:299-311); the port has no respawn-reset
     // weapon hook, so the seed runs on switch-in (wr_setup) — a switch away+back also re-seeds (deviation,
     // pre-existing for the charge; the pool seed follows the same convention).
     public override void WrSetup(Entity actor, WeaponSlot slot)
     {
+        SetLastHit(actor, 0); // QC wr_setup/wr_resetplayer: actor.vortex_lasthit = 0 (impressive streak reset)
         if (!Cvars.Charge) return;
         var st = actor.WeaponState(slot);
         st.VortexCharge = Cvars.ChargeStart;

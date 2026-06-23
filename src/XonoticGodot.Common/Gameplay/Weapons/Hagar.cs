@@ -159,8 +159,12 @@ public sealed class Hagar : Weapon
         missile.Touch = (self, other) => Explode(self, Primary.Damage, Primary.EdgeDamage, Primary.Radius, Primary.Force);
         missile.Think = self => Explode(self, Primary.Damage, Primary.EdgeDamage, Primary.Radius, Primary.Force);
         missile.NextThink = deathTime;
-        // W_Hagar_Damage: shot down -> burst.
+        // W_Hagar_Damage: shot down -> burst. Projectiles.MakeShootable installs the QC W_CheckProjectileDamage
+        // gate + RES_HEALTH subtraction and only invokes this callback once hp hits 0 (W_PrepareExplosionByDamage),
+        // so a non-lethal graze no longer detonates the rocket. exception=1: the Hagar is combo-able regardless of
+        // g_projectiles_damage (the rocket can be shot down even under the stock -2 ladder).
         missile.ProjectileDamage = (self, attacker) => Explode(self, Primary.Damage, Primary.EdgeDamage, Primary.Radius, Primary.Force);
+        Projectiles.MakeShootable(missile, exception: 1f);
 
         // MUTATOR_CALLHOOK(EditProjectile, actor, missile) (hagar.qc).
         var ep = new MutatorHooks.EditProjectileArgs(actor, missile);
@@ -187,7 +191,9 @@ public sealed class Hagar : Weapon
         missile.Touch = (self, other) => BounceTouch(self, other, deathTime);
         missile.Think = self => Explode(self, Secondary.Damage, Secondary.EdgeDamage, Secondary.Radius, Secondary.Force);
         missile.NextThink = deathTime;
+        // W_Hagar_Damage shoot-down (same gate as the primary). exception=1: combo-able under g_projectiles_damage.
         missile.ProjectileDamage = (self, attacker) => Explode(self, Secondary.Damage, Secondary.EdgeDamage, Secondary.Radius, Secondary.Force);
+        Projectiles.MakeShootable(missile, exception: 1f);
 
         // MUTATOR_CALLHOOK(EditProjectile, actor, missile) (hagar.qc W_Hagar_Attack2).
         var ep = new MutatorHooks.EditProjectileArgs(actor, missile);
@@ -200,14 +206,17 @@ public sealed class Hagar : Weapon
     // W_Hagar_Touch2 — bounce once then explode on the next contact / on a player. hagar.qc
     private void BounceTouch(Entity self, Entity other, float deathTime)
     {
-        bool hitPlayer = other.TakeDamage == DamageMode.Aim || (other.Flags & EntFlags.Client) != 0;
-        if (self.Count > 0 || hitPlayer)
+        // Base keys ONLY on toucher.takedamage == DAMAGE_AIM (the extra EntFlags.Client OR was a port divergence).
+        if (self.Count > 0 || other.TakeDamage == DamageMode.Aim)
         {
             Explode(self, Secondary.Damage, Secondary.EdgeDamage, Secondary.Radius, Secondary.Force);
             return;
         }
         ++self.Count; // first bounce: keep going (engine MOVETYPE_BOUNCEMISSILE reflects the velocity)
+        // QC Send_Effect(EFFECT_HAGAR_BOUNCE, this.origin, this.velocity, 1) — the bounce spark particle.
+        EffectEmitter.Emit("HAGAR_BOUNCE", self.Origin, self.Velocity, 1);
         self.Angles = QMath.VecToAngles(self.Velocity);
+        self.Owner = null; // QC this.owner = NULL: a bounced rocket can hurt its firer.
     }
 
     // W_Hagar_Attack2_Load_Release — fire a full load of `load_max` rockets at once in a spread. hagar.qc
@@ -241,7 +250,9 @@ public sealed class Hagar : Weapon
             missile.Touch = (self, other) => Explode(self, Secondary.Damage, Secondary.EdgeDamage, Secondary.Radius, Secondary.Force);
             missile.Think = self => Explode(self, Secondary.Damage, Secondary.EdgeDamage, Secondary.Radius, Secondary.Force);
             missile.NextThink = deathTime;
+            // W_Hagar_Damage shoot-down per loaded rocket. exception=1: combo-able under g_projectiles_damage.
             missile.ProjectileDamage = (self, attacker) => Explode(self, Secondary.Damage, Secondary.EdgeDamage, Secondary.Radius, Secondary.Force);
+            Projectiles.MakeShootable(missile, exception: 1f);
 
             // MUTATOR_CALLHOOK(EditProjectile, actor, missile) — fired per loaded rocket (hagar.qc load-release loop).
             var ep = new MutatorHooks.EditProjectileArgs(actor, missile);

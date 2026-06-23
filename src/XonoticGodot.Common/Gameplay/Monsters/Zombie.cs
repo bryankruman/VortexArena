@@ -157,13 +157,15 @@ public sealed class Zombie : Monster
         st.Anim = MonsterAI.MonsterAnim.Attack;
 
         // Restore the normal block armor after the block ends (QC M_Zombie_Defend_Block_End via Monster_Delay).
-        float restore = MonsterAI.Cvar("g_monsters_armor_blockpercent", 0.6f);
+        // monsters.cfg:127 `set g_monsters_armor_blockpercent 0.5` — Base default fallback is 0.5, not 0.6.
+        float restore = MonsterAI.Cvar("g_monsters_armor_blockpercent", 0.5f);
         MonsterAI.QueueDelayedAttack(e, st, 2f, 2.1f, self =>
         {
             if (self.Health <= 0f) return;
             self.ArmorValue = restore;
         });
 
-        Api.Sound.Play(e, SoundChannel.Voice, "monsters/zombie_melee.wav");
+        // Base M_Zombie_Defend_Block plays NO sound (only setanim blockstart). The zombie 'melee' cue is
+        // commented out in zombie.dpm_0.sounds, so the prior monsters/zombie_melee.wav play was a divergence.
     }
 }

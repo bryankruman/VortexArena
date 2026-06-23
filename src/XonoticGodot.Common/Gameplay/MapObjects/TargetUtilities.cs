@@ -269,7 +269,7 @@ public static class TargetUtilities
     //  target_changelevel (target/changelevel.qc) — end / switch the level
     // ===================================================================
 
-    public const int ChangeLevelMultiplayer = 1 << 0; // CHANGELEVEL_MULTIPLAYER
+    public const int ChangeLevelMultiplayer = 1 << 1; // CHANGELEVEL_MULTIPLAYER = BIT(1) (changelevel.qh)
 
     /// <summary>
     /// Host seam (XonoticGodot.Server): end the current match / advance to the next level (QC <c>NextLevel()</c>),
@@ -492,9 +492,9 @@ public static class TargetUtilities
         bool gave = ApplyGiveTokens(self, actor, self.NetName);
         if (gave)
         {
-            // QC: centerprint(actor, this.message) — text is presentation-side; play the audible half.
-            if (!string.IsNullOrEmpty(self.Message))
-                MapMover.Sound(actor, SoundChannel.Voice, "misc/talk.wav");
+            // QC: if(GiveItems(...)) centerprint(actor, this.message). The give has no sound in Base — route the
+            // text through the Wave-1 centerprint seam (no-ops until the host wires the networked channel).
+            MapMover.Centerprint(actor, self.Message);
         }
     }
 
@@ -587,13 +587,9 @@ public static class TargetUtilities
         if (!MapMover.InitMovingBrushTrigger(this_))
             return;
 
-        // soundpack (QC: sounds > 0 -> medieval/metal plat sounds)
-        if (this_.Sounds > 0)
-        {
-            this_.Noise1 = "plats/medplat1.wav";
-            this_.Noise2 = "plats/medplat1.wav";
-            this_.Noise3 = "plats/medplat2.wav";
-        }
+        // soundpack (QC: sounds > 0 -> medieval/metal plat sounds). Routed through the Wave-1 seam so the
+        // promoted `sounds` map key is honored (the inline default-pack hardcode is gone).
+        MapMover.ApplySecretSounds(this_);
         if (string.IsNullOrEmpty(this_.Noise))
             this_.Noise = "misc/talk.wav"; // sound on touch
 
@@ -793,7 +789,8 @@ public static class TargetUtilities
 
         if (!string.IsNullOrEmpty(self.Message))
         {
-            // centerprint text is presentation-side; play the audible half (QC play2(toucher, this.noise)).
+            // QC: if(IS_CLIENT(toucher)) centerprint(toucher, this.message); play2(toucher, this.noise).
+            MapMover.Centerprint(toucher, self.Message);
             MapMover.Sound(toucher, SoundChannel.Voice, self.Noise);
         }
     }

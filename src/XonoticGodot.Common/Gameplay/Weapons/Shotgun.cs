@@ -1,5 +1,6 @@
 using System.Numerics;
 using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Gameplay.Damage;
 using XonoticGodot.Common.Math;
 using XonoticGodot.Common.Services;
 
@@ -12,9 +13,10 @@ namespace XonoticGodot.Common.Gameplay;
 ///
 /// Identity/attributes from shotgun.qh; balance from bal-wep-xonotic.cfg (g_balance_shotgun_*).
 /// This port covers the full pellet fan (spread, solid penetration, distance falloff, knockback force),
-/// the melee swing (swing-arc damage scaling + multi-hit dedupe), and the alt triple-shot (secondary==2).
-/// Only client-render/weapon-frame pieces are left out: the multi-frame melee sweep timing, casings, and
-/// muzzle/woosh effects.
+/// the melee swing (swing-arc damage scaling + multi-hit dedupe, HITTYPE_SECONDARY slap obituary, per-trace
+/// woosh fx), shell-casing eject, the impact ricochet ping, and the out-of-ammo auto-melee fallback.
+/// Left out (weapon-frame/online concerns): the multi-frame melee sweep + melee_delay wind-up timing, the
+/// staged triple-shot (secondary==2) frame sequence, and antilag take-back on the melee/setup traces.
 /// </summary>
 [Weapon]
 public sealed class Shotgun : Weapon
@@ -53,6 +55,9 @@ public sealed class Shotgun : Weapon
 
     public PrimaryBalance Primary;
     public SecondaryBalance Secondary;
+
+    /// <summary>QC IT_UNLIMITED_AMMO item bit (mirrors the local const used by WeaponFireGate/Vortex).</summary>
+    private const int ItUnlimitedAmmo = 1 << 0;
 
 
     public Shotgun()
@@ -137,14 +142,25 @@ public sealed class Shotgun : Weapon
         // weapon_prepareattack(..., true, WEP_CVAR_SEC(refire)) on the shared ATTACK_FINISHED — which the
         // primary only held for animtime — plus the melee_blockedbyfiring guard (default 0, so NOT gated by
         // shotgun_primarytime). That is what lets the slap land immediately after a blast.
-        if (Secondary.Secondary == 1 && fire == FireMode.Secondary
+        //
+        // QC also auto-melees on an EMPTY primary press (shotgun.qc:343): a non-bot whose shells AND clip are
+        // exhausted (and has no IT_UNLIMITED_AMMO) slaps instead of dry-firing. So the gate triggers on EITHER
+        // a secondary press OR an out-of-ammo primary press.
+        bool unlimited = actor.UnlimitedAmmo || (actor.Items & ItUnlimitedAmmo) != 0;
+        bool emptyPrimaryAutoMelee = fire == FireMode.Primary
+            && actor is not Player { IsBot: true }
+            && actor.GetResource(AmmoType) <= 0f
+            && st.ClipLoad == 0
+            && !unlimited;
+        if (Secondary.Secondary == 1
+            && (fire == FireMode.Secondary || emptyPrimaryAutoMelee)
             && (!Secondary.MeleeBlockedByFiring || Api.Clock.Time >= st.ShotgunPrimaryTime)
             && PrepareAttack(actor, slot, FireMode.Secondary))
         {
             Melee(actor, slot);
         }
-        // Multi-frame scheduling of the triple-shot (W_Shotgun_Attack3_Frame1/2) and the out-of-ammo
-        // auto-melee fallback are weapon-frame loop concerns driven by the weapon-system tick, not the blast.
+        // Multi-frame scheduling of the triple-shot (W_Shotgun_Attack3_Frame1/2) is a weapon-frame loop concern
+        // driven by the weapon-system tick, not the blast.
     }
 
     // Refire/animtime from the (cvar-seeded) balance blocks (primary fan vs secondary melee/triple).
@@ -176,11 +192,18 @@ public sealed class Shotgun : Weapon
             TraceResult impTr = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, impEnd, MoveFilter.WorldOnly, actor);
             // w_backoff = the impact surface normal (trace_plane_normal), -force_dir fallback when no hit.
             Vector3 backoff = impTr.PlaneNormal.LengthSquared() > 1e-6f ? impTr.PlaneNormal : -shot.Dir;
-            EffectEmitter.Emit("SHOTGUN_IMPACT", impTr.EndPos, backoff * 1000f);
+            // QC wr_impacteffect (CSQC shotgun.qc:400-410): EFFECT_SHOTGUN_IMPACT at w_org + w_backoff*2 plus
+            // the 5%-chance / 0.25s-throttled SND_RIC_RANDOM ricochet — both routed through the shared seam now
+            // (BulletImpactFx owns the impact puff + the previously-dead SoundSystem.PlayRic).
+            WeaponFiring.BulletImpactFx(actor, impTr.EndPos, backoff, "SHOTGUN_IMPACT");
         }
 
         Api.Sound.Play(actor, SoundChannel.WeaponAuto, "weapons/shotgun_fire.wav");
         EffectEmitter.Emit("SHOTGUN_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
+
+        // Casing eject — QC W_Shotgun_Attack (shotgun.qc:78-83): SpawnCasing when g_casings>=1 (default 2). The
+        // shared seam gates on g_casings>=2 and computes the QC view-frame eject velocity; a Shell casing.
+        WeaponFiring.EjectCasing(actor, shot.Origin, WeaponFiring.CasingType.Shell);
     }
 
     // W_Shotgun_Attack2 + W_Shotgun_Melee_Think — a single melee swing in front of the actor. shotgun.qc
@@ -198,6 +221,13 @@ public sealed class Shotgun : Weapon
         int traces = (int)Secondary.MeleeTraces;
         if (traces < 1) traces = 1;
 
+        // QC tags every melee Damage() with WEP_SHOTGUN.m_id | HITTYPE_SECONDARY (shotgun.qc:152), which is what
+        // selects WEAPON_SHOTGUN_MURDER_SLAP over WEAPON_SHOTGUN_MURDER in wr_killmessage. The int-deathtype
+        // ApplyDamage seam can't carry the HITTYPE bit (it resolves the id to a bare weapon tag), so the slap
+        // routes through Combat.Damage directly with the secondary-tagged deathtype, mirroring how Crylink's
+        // secondary threads HITTYPE_SECONDARY into its damage tag.
+        string slapDeathType = DeathTypes.WithHitType(DeathTypes.FromWeapon(NetName), DeathTypes.Secondary);
+
         Entity? lastHit = null;
         for (int i = 0; i < traces; ++i)
         {
@@ -206,6 +236,10 @@ public sealed class Shotgun : Weapon
             Vector3 targPos = eye + meleePath * swingFactor + forward * Secondary.MeleeRange;
 
             TraceResult tr = Api.Trace.Trace(eye, Vector3.Zero, Vector3.Zero, targPos, MoveFilter.Normal, actor);
+            // QC Send_Effect(EFFECT_SHOTGUN_WOOSH, trace_endpos, -melee_path, 1) per swing trace (shotgun.qc:126),
+            // plus the swing sound is already played once above; the woosh fx is emitted at each sweep endpoint.
+            WeaponFiring.MeleeWoosh(actor, tr.EndPos, -meleePath, "SHOTGUN_WOOSH", swingSound: null);
+
             Entity? victim = tr.Ent;
             if (tr.Fraction < 1f && victim is not null && victim.TakeDamage != DamageMode.No && victim != lastHit)
             {
@@ -215,8 +249,7 @@ public sealed class Shotgun : Weapon
                 float swingDamage = baseDmg * MathF.Min(1f, swingFactor + 1f);
 
                 Vector3 force = forward * Secondary.Force;
-                WeaponFiring.ApplyDamage(victim, actor, swingDamage, RegistryId, force: force,
-                    hitLoc: eye);
+                Combat.Damage(victim, actor, actor, swingDamage, slapDeathType, eye, force);
 
                 if (Secondary.MeleeMultihit != 0f)
                 {

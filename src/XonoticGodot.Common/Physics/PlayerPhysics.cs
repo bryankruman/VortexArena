@@ -76,8 +76,15 @@ public sealed class PlayerPhysics : IPlayerPhysics
     private const float PauseFuelRegen = 2f;
 
     // --- movement sounds ---
-    private const float FootstepInterval = 0.3f;
+    // QC nextstep = time + 0.3 + random()*0.1 (player.qc:674 / :695): a 0.3s base interval with up to 0.1s of
+    // jitter so footsteps don't sound metronomic. The jitter is audio-only and gated to the server tick
+    // (#ifdef SVQC), so it must NOT advance the shared deterministic Prandom stream (which the predicting
+    // client also consumes for spread/effects) — a server-only draw from that stream would desync the seed.
+    // Use a dedicated, server-local RNG for the cosmetic cadence jitter instead.
+    private const float FootstepIntervalBase = 0.3f;
+    private const float FootstepIntervalJitter = 0.1f;
     private const float FootstepSpeedThreshold = 0.6f; // fraction of maxspeed before footsteps play
+    private static readonly System.Random FootstepJitterRng = new();
 
     // --- crouch hull (sv_player_crouch_mins/maxs) ---
     private static readonly Vector3 CrouchMins = new(-16f, -16f, -24f);
@@ -1636,8 +1643,13 @@ public sealed class PlayerPhysics : IPlayerPhysics
         player.WasFlying = false;
         if (player.WaterLevel >= WaterLevelSwimming)
             return;
-        // (QC also bails when on a ladder or holding an active grappling hook; the port doesn't model those here.)
-        player.LastFootstepTime = Now(); // QC nextstep: suppress a footstep for FootstepInterval after landing
+        // QC PM_check_hitground bails on a ladder or while any weapon slot holds an active grappling hook
+        // (player.qc:669-678). The port models the ladder via player.LadderEntity; the hook is not yet a
+        // shared Entity field (see todos), so only the ladder leg is reproduced here.
+        if (player.LadderEntity is not null)
+            return;
+        // QC nextstep = time + 0.3 + random()*0.1: jittered suppression window after landing.
+        player.LastFootstepTime = Now() + FootstepIntervalBase + FootstepJitter();
         if (TraceSteps(player, out bool metal))
         {
             float vol = player.IsDucked ? SoundLevels.VolMuffled : SoundLevels.VolBase;
@@ -1646,23 +1658,38 @@ public sealed class PlayerPhysics : IPlayerPhysics
     }
 
     /// <summary>QC <c>PM_Footsteps</c> (player.qc:689): periodic footsteps while moving on the ground, throttled
-    /// to <see cref="FootstepInterval"/> and gated on speed. Silent while ducked (QC returns on IS_DUCKED).
+    /// to <see cref="FootstepIntervalBase"/> (jittered) and gated on speed + g_footsteps. Silent while ducked.
     /// Emitted on CH_PLAYER (auto) so consecutive steps stack rather than cancel each other.</summary>
     private static void Footsteps(Entity player, in MovementParameters mp)
     {
+        // QC: if (!autocvar_g_footsteps) return; — server-side master gate (xonotic-server.cfg:306 default 1).
+        // Read raw (treat unset as the stock 1, so an absent cvar keeps footsteps on as in Base).
+        if (Api.Cvars.GetString("g_footsteps") == "0")
+            return;
         if (player.IsDucked)
             return;
         float now = Now();
-        if (now - player.LastFootstepTime < FootstepInterval)
+        // QC: if (time >= this.lastground + 0.2) return; — only within 0.2s of the last grounded tick. OnGround
+        // flickers on stairs/slopes so this gates footsteps to genuinely-grounded motion.
+        if (now >= player.LastGroundTime + 0.2f)
             return;
         float speed2 = Vec2LenSq(player.Velocity);
         float threshold = mp.MaxSpeed * FootstepSpeedThreshold;
         if (speed2 < threshold * threshold)
             return;
+        // QC nextstep window: (time > nextstep) || (time < nextstep - 10). LastFootstepTime mirrors .nextstep
+        // (a FUTURE time). The second disjunct re-arms a clock that jumped far backwards (round reset / new map).
+        if (!(now > player.LastFootstepTime || now < player.LastFootstepTime - 10f))
+            return;
+        // QC nextstep = time + 0.3 + random()*0.1 (jittered cadence; audio-only, server-local RNG).
+        player.LastFootstepTime = now + FootstepIntervalBase + FootstepJitter();
         if (TraceSteps(player, out bool metal))
             PlayMovementSound(player, metal ? "STEP_METAL" : "STEP", SoundLevels.VolBase);
-        player.LastFootstepTime = now;
     }
+
+    /// <summary>QC <c>random() * 0.1</c> footstep-cadence jitter — cosmetic, server-only, so drawn from a
+    /// dedicated RNG that does NOT advance the shared deterministic <see cref="Prandom"/> stream.</summary>
+    private static float FootstepJitter() => (float)FootstepJitterRng.NextDouble() * FootstepIntervalJitter;
 
     /// <summary>Downward step-surface probe (QC <c>tracebox origin → origin-'0 0 1'</c>): false when the surface
     /// is NOSTEPS (play nothing); otherwise reports via <paramref name="metal"/> whether it is a METALSTEPS surface.</summary>

@@ -51,7 +51,10 @@ public class WarpzoneTests
         mgr.Link();
         Assert.True(a.Linked && b.Linked);
 
-        var e = new Entity { Origin = new Vector3(0, 0, 0), Velocity = new Vector3(-200, 0, 0) };
+        // The entity has crossed the IN plane: its center+view_ofs is on the FAR (negative) side, which is the
+        // Base gate (server.qc:193 WarpZone_PlaneDist(this, origin + view_ofs) >= 0 → don't teleport yet). ViewOfs
+        // pushes the plane-side probe past the seam while the actual warp still transforms Origin (0,0,0)→(100,0,0).
+        var e = new Entity { Origin = new Vector3(0, 0, 0), ViewOfs = new Vector3(-1, 0, 0), Velocity = new Vector3(-200, 0, 0) };
         float speedBefore = e.Velocity.Length();
         bool warped = mgr.Teleport(e, a);
 

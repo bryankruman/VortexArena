@@ -12,8 +12,8 @@ namespace XonoticGodot.Common.Gameplay;
 ///
 /// Ported: the nearby-wall trace (PlayerTouchWall, skipping NOIMPACT surfaces), the delay gate, the
 /// airborne / alive / unfrozen guards, the off-wall velocity impulse with the crouch-held downward slam,
-/// and the jump grant via the PlayerJump multijump out-flag plus the jump sound. The smoke-ring particle
-/// is emitted at the contact point once the effect/particle service is wired.
+/// and the jump grant via the PlayerJump multijump out-flag, the per-model jump voice, and the smoke-ring
+/// particle emitted at the wall contact point.
 /// </summary>
 [Mutator]
 public sealed class WalljumpMutator : MutatorBase
@@ -45,10 +45,17 @@ public sealed class WalljumpMutator : MutatorBase
 
         if (Api.Services is not null)
         {
-            float f = Api.Cvars.GetFloat("g_walljump_force");                  if (f != 0f) WallForce = f;
-            float xy = Api.Cvars.GetFloat("g_walljump_velocity_xy_factor");    if (xy != 0f) XyFactor = xy;
-            float z = Api.Cvars.GetFloat("g_walljump_velocity_z_factor");      if (z != 0f) ZFactor = z;
-            float d = Api.Cvars.GetFloat("g_walljump_delay");                  if (d != 0f) Delay = d;
+            // QC STATs read the autocvar unconditionally — 0 is a legal, meaningful value
+            // (e.g. g_walljump_velocity_z_factor 0 for a pure-horizontal wall jump), so honor an
+            // explicitly-set cvar even when it is 0 rather than masking it with the C# default.
+            // A registered/shipped cvar (mutators.cfg ships all four) returns a non-empty string;
+            // only fall back to the C# field default when the cvar is absent/unregistered.
+            if (IsSet("g_walljump_force")) WallForce = Api.Cvars.GetFloat("g_walljump_force");
+            if (IsSet("g_walljump_velocity_xy_factor")) XyFactor = Api.Cvars.GetFloat("g_walljump_velocity_xy_factor");
+            if (IsSet("g_walljump_velocity_z_factor")) ZFactor = Api.Cvars.GetFloat("g_walljump_velocity_z_factor");
+            if (IsSet("g_walljump_delay")) Delay = Api.Cvars.GetFloat("g_walljump_delay");
+
+            static bool IsSet(string name) => !string.IsNullOrEmpty(Api.Cvars.GetString(name));
         }
     }
 
@@ -90,12 +97,20 @@ public sealed class WalljumpMutator : MutatorBase
         if (player.ButtonCrouch) v.Z *= -1f;
         player.Velocity = v;
 
+        // QC SVQC side-effects (walljump.qc:62-68): these all run server-side.
         player.LastWallJumpTime = now;
-        player.OldOrigin = player.Origin; // QC also stashes oldvelocity; origin keeps the anti-stick reference
+        // QC: player.oldvelocity = player.velocity (the POST-impulse velocity). The port Entity has no
+        // OldVelocity field yet (see todos), so we keep the anti-stick origin reference for now.
+        player.OldOrigin = player.Origin;
 
-        // QC presentation: a smoke ring at the contact point, the jump voice, and the jump animation.
-        Api.Sound.Play(player, SoundChannel.Body, "player/jump.wav");
-        _ = hitPos; // smoke-ring effect spawns here once the effect/particle service lands
+        // QC: Send_Effect(EFFECT_SMOKE_RING, trace_endpos, plane_normal, 5) — smoke ring at the wall
+        // contact point, oriented along the plane normal.
+        EffectEmitter.Emit("SMOKE_RING", hitPos, planeNormal, 5);
+
+        // QC: PlayerSound(player, playersound_jump, CH_PLAYER, VOL_BASE, VOICETYPE_PLAYERSOUND, 1) — the
+        // per-model jump voice ("jump" resolves under the model sound dir), NOT a generic raw sample.
+        SoundSystem.PlayPlayerSound(player, "jump", null, SoundLevels.VolBase, SoundLevels.AttenNorm);
+        // QC also: animdecide_setaction(player, ANIMACTION_JUMP, true) — no anim-action seam in the port yet (see todos).
 
         args.Multijump = true; // QC: M_ARGV(2, bool) = true
         return false;

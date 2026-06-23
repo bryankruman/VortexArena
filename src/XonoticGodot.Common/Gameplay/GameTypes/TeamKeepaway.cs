@@ -8,53 +8,78 @@ namespace XonoticGodot.Common.Gameplay;
 
 /// <summary>
 /// The Team Keepaway (TKA) gametype — port of <c>CLASS(TeamKeepaway, Gametype)</c>
-/// (common/gametypes/gametype/tka/tka.qh + sv_tka.qc, which shares the keepaway ball mechanics in
-/// common/gametypes/gametype/keepaway/sv_keepaway.qc).
+/// (common/gametypes/gametype/tka/{tka.qh,sv_tka.qc}). The team variant of Keepaway: a single ball sits on the
+/// map and the team that holds it scores for kills its members make while in possession. Concretely
+/// (QC sv_tka.qc PlayerDies, applied PER-TEAM):
+///  - the DISTINGUISHING TKA rule (<c>g_tka_score_team</c>, default 1): while ANY teammate carries the ball,
+///    EVERY cross-team kill that team makes scores <c>g_tka_score_killac</c> for the team — not just the
+///    carrier's own kills (the FFA Keepaway semantics);
+///  - fragging the enemy ball-carrier scores <c>g_tka_score_bckill</c> bonus points for the team and credits
+///    the killer's TKA_CARRIERKILLS column, independent of whether the killer carries;
+///  - frags themselves award no DM frag points (QC GiveFragsForKill zeroes the frag delta).
+/// The first team to the point limit (<c>g_tka_point_limit</c> → mapinfo 50) — or to a lead of
+/// <c>g_tka_point_leadlimit</c> — wins.
 ///
-/// The team version of Keepaway: there is one ball; the team that holds it earns points for kills its members
-/// make while in possession. Concretely (QC keepaway scoring, applied per-team in TKA):
-///  - a ball-carrier who frags an enemy scores <c>g_keepaway_score_killac</c> points for their team;
-///  - fragging the enemy ball-carrier scores <c>g_keepaway_score_bckill</c> bonus points;
-///  - frags themselves award no DM frag points (QC GiveFragsForKill zeroes the frag score).
-/// The first team to the point limit (cvar <c>g_tka_point_limit</c>, default 50) wins.
+/// IMPORTANT — cvar family: TKA has its OWN <c>g_tka_*</c> / <c>g_tkaball_*</c> tunables (DISTINCT engine cvars
+/// from Keepaway's <c>g_keepaway_*</c>). This port reads the TKA cvars throughout (scoring, damage/force matrix,
+/// respawn time), so it honors TKA's tuning rather than Keepaway's.
 ///
 /// Faithfully ported (the possession-scoring rule):
-///  - which team currently holds the ball (<see cref="BallTeam"/>) and which player carries it;
-///  - Combat.Death → carrier-team kill scoring (carrier-kill bonus + kill-while-carrying points);
-///  - per-team score (<see cref="TeamScore"/>) and point-limit win check (<see cref="PointLimit"/>).
+///  - which team currently holds the ball (<see cref="BallTeam"/>) and which player carries it (<see cref="Carrier"/>);
+///  - Combat.Death → team kill scoring (the g_tka_score_team team-has-ball scan, carrier-kill bonus, and
+///    DIFF_TEAM team-kill exclusion — QC PlayerDies);
+///  - per-team score (<see cref="ScoreFor"/>) and point-limit / lead-limit win check (<see cref="CheckPointLimit"/>).
 ///
-/// Faithfully ported (objective layer):
-///  - the world ball entity with carry/drop/respawn (<see cref="SpawnBall"/>/<see cref="GiveBall"/>/
-///    <see cref="DropBall"/>, QC ka_TouchEvent / ka_DropEvent / ka_RespawnBall);
-///  - the possession-based damage scaling matrix (<see cref="DamageScale"/>, QC Damage_Calculate).
+/// Faithfully ported (objective layer, via the shared <see cref="BallEntity"/> framework):
+///  - the world ball entity with carry/drop/respawn-relocate (<see cref="SpawnBall"/> / <see cref="GiveBall"/> /
+///    <see cref="DropBall"/>, QC tka_TouchEvent / tka_DropEvent / tka_RespawnBall) plus pickup/drop/world-touch
+///    sounds + notifications, the 0.5 s self-recapture lockout, and the carried-ball orbit anim (<see cref="Tick"/>);
+///  - the possession-based damage AND force scaling matrix (<see cref="DamageScale"/> / <see cref="DamageForceScale"/>,
+///    QC Damage_Calculate), subscribed to the live MutatorHooks.DamageCalculate channel;
+///  - per-team timed-possession points (<c>g_tka_score_timepoints</c>, off by default) + the TKA_BCTIME column.
 ///
-/// Deferred (NOTE — cross-boundary): the ball model/effects/waypoints (CSQC), the carrier-highspeed PlayerPhysics
-/// modifier, and the timed-possession points (g_keepaway_score_timepoints, off by default in TKA).
+/// Deferred (NOTE — cross-boundary): the TKA_BALLSTATUS HUD mod-icon + team-colored carrier waypoints/radar (CSQC
+/// presentation, Wave 3), the carrier-highspeed PlayerPhysics modifier (<c>g_tka_ballcarrier_highspeed</c>, default
+/// 1 = no effect), multi-ball chaining (<c>g_tka_ballcarrier_maxballs</c>), and the use-key / disconnect / observe
+/// drop triggers (need MutatorHooks.PlayerUseKey / MakePlayerObserver / ClientDisconnect / DropSpecialItems, not yet
+/// on MutatorHooks — see todos). Death-drop IS wired (<see cref="OnDeath"/>).
 /// </summary>
 [GameType]
 public sealed class TeamKeepaway : GameType
 {
-    // ----- point limit cvars + default (gametype default pointlimit=50) -----
+    // ----- point limit cvars + default (gametype default pointlimit=50; lead limit default 0) -----
     private const string CvarPointLimit    = "g_tka_point_limit";
+    private const string CvarLeadLimit     = "g_tka_point_leadlimit";
     private const string CvarFragLimit     = "fraglimit"; // GameRules_limit_score writes the point limit here
-    private const int    DefaultPointLimit = 50;          // gametype_init "pointlimit=50"
+    private const int    DefaultPointLimit = 50;          // gametype_init "pointlimit=50" (mapinfo default)
 
-    // ----- kill-scoring cvars (shared keepaway scoring) -----
-    private const string CvarScoreKillAc = "g_keepaway_score_killac"; // points for a kill while carrying
-    private const string CvarScoreBcKill = "g_keepaway_score_bckill"; // bonus for killing the enemy carrier
-    private const int    DefaultScoreKillAc = 0;
-    private const int    DefaultScoreBcKill = 0;
+    // ----- kill-scoring cvars (TKA's OWN g_tka_* family — distinct from Keepaway's g_keepaway_*) -----
+    private const string CvarScoreKillAc    = "g_tka_score_killac"; // team points for a kill while the team holds the ball
+    private const string CvarScoreBcKill    = "g_tka_score_bckill"; // team bonus for killing the enemy carrier
+    private const string CvarScoreTeam      = "g_tka_score_team";   // any teammate's kill scores while team holds ball
+    private const string CvarScoreTimePoint = "g_tka_score_timepoints"; // team points/sec while a teammate carries
+    private const string CvarNonCarrierWarn = "g_tka_noncarrier_warn";  // centerprint warn on a no-ball-possession kill
+    // QC defaults (sv_tka.qc autocvars / balance): g_tka_score_killac 1, g_tka_score_bckill 1, g_tka_score_team 1.
+    // When the server cfg is unloaded (headless/tests) these fallbacks must match Base, not 0.
+    private const int    DefaultScoreKillAc = 1;
+    private const int    DefaultScoreBcKill = 1;
+    private const bool   DefaultScoreTeam   = true;
 
     // ----- team count cvars (g_tka_teams_override >= 2 ? override : g_tka_teams), clamped 2..4 -----
     private const string CvarTeamsOverride = "g_tka_teams_override";
     private const string CvarTeams         = "g_tka_teams";
     private const int    DefaultTeams      = 2;
 
+    // ----- ball respawn cvar (TKA's own g_tkaball_respawntime, NOT g_keepawayball_respawntime) -----
+    private const string CvarRespawnTime = "g_tkaball_respawntime";
+
     // Per-team score (QC ST_SCORE, team slot 0 — the TEAM primary) now lives in the unified GameScores two-slot
     // team store — the source of truth (common/scores.qh). TKA's team primary IS ST_SCORE (stprio=PRIMARY, with no
     // slot-1 team field), like TDM. Read/written via ScoreFor / GameScores.AddToTeam (slot 0).
 
     private HookHandler<DeathEvent>? _deathHandler;
+    private HookHandler<MutatorHooks.GiveFragsForKillArgs>? _giveFragsHandler;
+    private HookHandler<MutatorHooks.DamageCalculateArgs>? _damageCalcHandler;
 
     /// <summary>Optional sink for the host/controller to react to a kill.</summary>
     public IMatchEvents? Events;
@@ -62,11 +87,17 @@ public sealed class TeamKeepaway : GameType
     /// <summary>The player currently carrying the ball (QC <c>.ballcarried</c> owner), or null if loose.</summary>
     public Player? Carrier { get; private set; }
 
-    /// <summary>QC checkrules end-of-match latch: true once a team reaches the point limit.</summary>
+    /// <summary>QC checkrules end-of-match latch: true once a team reaches the point/lead limit.</summary>
     public bool MatchEnded { get; private set; }
 
     /// <summary>The team color code that reached the point limit, or 0 if none yet.</summary>
     public int WinningTeam { get; private set; }
+
+    /// <summary>Per-team timed-possession remainder accumulator (QC float2int_decimal_fld) so fractional points carry over.</summary>
+    private float _timePointsRemainder;
+
+    /// <summary>Ball-carry-time remainder accumulator (QC TKA_BCTIME += frametime), whole seconds banked.</summary>
+    private float _bcTimeRemainder;
 
     public TeamKeepaway()
     {
@@ -78,13 +109,13 @@ public sealed class TeamKeepaway : GameType
     /// <summary>The single world ball entity (QC keepawayball edict), or null (headless).</summary>
     public Entity? BallEntity { get; private set; }
 
-    /// <summary>QC g_keepawayball_respawntime: seconds a loose ball waits before relocating.</summary>
-    public float RespawnTime => TryCvar("g_keepawayball_respawntime", out float v) && v > 0f ? v : 10f;
+    /// <summary>QC g_tkaball_respawntime: seconds a loose ball waits before relocating.</summary>
+    public float RespawnTime => TryCvar(CvarRespawnTime, out float v) && v > 0f ? v : 10f;
 
     public override void OnInit()
     {
-        // QC TKA shares keepaway's ball: one ball spawned at map start (see SpawnBall). gametype_init flags
-        // (TEAMPLAY|USEPOINTS) and teams=2 are the engine's job; OnInit clears the ball reference.
+        // QC tka shares keepaway's ball: one ball spawned procedurally at map start (see SpawnBall). gametype_init
+        // flags (TEAMPLAY|USEPOINTS) and teams=2 are the engine's job; OnInit clears the ball reference.
         BallEntity = null;
         Carrier = null;
     }
@@ -96,52 +127,134 @@ public sealed class TeamKeepaway : GameType
     public override bool RequestsTeamSpawns => TryCvar("g_tka_team_spawns", out float v) ? v != 0f : false;
 
     /// <summary>
-    /// QC ka_SpawnBalls: create the single world ball entity at <paramref name="origin"/> (touch = pickup,
-    /// think = relocate when loose). Returns the entity (or null when no facade is wired).
+    /// QC tka_SpawnBalls: create the single world ball entity at <paramref name="origin"/> via the shared
+    /// <see cref="BallEntity"/> framework (touch = pickup, built-in relocate think + the orbblue.md3 model /
+    /// EF_DIMLIGHT / glow_trail / g_tkaball_damageforcescale 2 defaults). The Keepaway-family ball immediately
+    /// relocates to a random map location and arms the respawn timer (QC tka_RespawnBall tail of tka_SpawnBalls).
+    /// The host's round-drive seam (GameWorld) calls this once the match is live, since the TKA ball is
+    /// procedural (no map entity) — see <see cref="AdoptBall"/>. Returns the entity (or null when headless).
     /// </summary>
     public Entity? SpawnBall(Vector3 origin)
     {
-        Entity? e = GametypeEntities.SpawnObjective("keepawayball", origin, Teams.None,
-            new Vector3(-24f, -24f, -24f), new Vector3(24f, 24f, 24f),
-            touch: BallTouchEntity, think: RespawnBallThink);
-        if (e is not null)
+        var cfg = new BallConfig
         {
-            e.MoveType = MoveType.Bounce;
-            e.TakeDamage = DamageMode.Yes;
-            e.NextThink = GametypeEntities.Now + RespawnTime;
-        }
+            // QC tka_TouchEvent / tka_RespawnBall: our touch handles pickup + world-touch; RespawnTime drives the
+            // built-in relocate think (RelocateOnRespawn defaulted true by BallKind.KeepawayBall).
+            Touch = BallTouchEntity,
+            RespawnTime = RespawnTime,
+        };
+        Entity? e = global::XonoticGodot.Common.Gameplay.BallEntity.SpawnForGametype(BallKind.KeepawayBall, origin, cfg);
+        return AdoptBall(e);
+    }
+
+    /// <summary>
+    /// Adopt a ball created by the host's round-drive seam (QC tka_Handler_CheckBall → tka_SpawnBalls) as THIS
+    /// gametype's single ball: record it and clear any carrier. Returns the same entity.
+    /// </summary>
+    public Entity? AdoptBall(Entity? e)
+    {
         BallEntity = e;
         Carrier = null;
         return e;
     }
 
-    /// <summary>Entity touch trampoline: a live player picks the loose ball up (QC ka_TouchEvent).</summary>
+    /// <summary>Entity touch trampoline (QC tka_TouchEvent): a live player picks the loose ball up; a non-player
+    /// world touch plays the touch sfx; the 0.5 s self-recapture lockout is honored.</summary>
     private void BallTouchEntity(Entity self, Entity other)
     {
-        if (other is Player p && !p.IsDead && Carrier is null)
+        if (Carrier is not null)
+            return; // already carried
+
+        if (other is Player p)
+        {
+            if (p.IsDead)
+                return;
+            // QC tka_DropEvent self-recapture lockout: a carrier who just dropped can't instantly re-grab it.
+            if (global::XonoticGodot.Common.Gameplay.BallEntity.IsRecaptureLocked(self, p))
+                return;
             GiveBall(p);
+            return;
+        }
+
+        // QC tka_TouchEvent: the ball just touched a non-player (most likely the world) — spark + touch sfx.
+        SoundSystem.PlayOn(self, Sounds.ByName("KA_TOUCH")); // QC SND_KA_TOUCH, ATTEN_NORM
     }
 
-    private void RespawnBallThink(Entity self)
+    /// <summary>QC tka_RespawnBall (think): relocate a loose ball to a fresh random map location, re-arm the
+    /// timer, and play the respawn sound (ATTEN_NONE).</summary>
+    public void RespawnBall(Entity self)
     {
         if (!ReferenceEquals(self, BallEntity) || Carrier is not null)
             return;
-        self.Velocity = new Vector3(0f, 0f, 200f);
-        self.NextThink = GametypeEntities.Now + RespawnTime;
+        // QC tka_RespawnBall: MoveToRandomMapLocation (with the SelectSpawnPoint fallback) + '0 0 200' kick + arm.
+        global::XonoticGodot.Common.Gameplay.BallEntity.Relocate(self, RespawnTime);
+        self.Think = RespawnBallThink;
+        SoundSystem.PlayOn(self, Sounds.ByName("KA_RESPAWN")); // QC SND_KA_RESPAWN, ATTEN_NONE
     }
 
+    private void RespawnBallThink(Entity self) => RespawnBall(self);
+
+    // ============================================================================================
+    //  Possession damage/force scaling (QC tka Damage_Calculate)
+    // ============================================================================================
+
     /// <summary>
-    /// QC Damage_Calculate (ka, applied in TKA): scale player-vs-player damage by ball possession. The
-    /// x/y/z components of g_keepaway_ballcarrier_damage / g_keepaway_noncarrier_damage select the
-    /// self/other-carrier/noncarrier case. Returns the scaled damage.
+    /// QC Damage_Calculate (tka): scale player-vs-player damage by ball possession. The x/y/z components of
+    /// <c>g_tka_ballcarrier_damage</c> / <c>g_tka_noncarrier_damage</c> select the self/other-carrier/noncarrier
+    /// case (the carrier-vs-noncarrier branch is chosen by whether the ATTACKER carries). Returns the scaled
+    /// damage. (Force scaling is the same matrix on the force cvars; <see cref="DamageForceScale"/> exposes it.)
     /// </summary>
     public float DamageScale(Player attacker, Player target, float damage)
+        => damage * ScaleFactor(attacker, target, "g_tka_ballcarrier_damage", "g_tka_noncarrier_damage");
+
+    /// <summary>The QC force multiplier for a hit (same matrix as <see cref="DamageScale"/> on the force cvars).</summary>
+    public float DamageForceScale(Player attacker, Player target)
+        => ScaleFactor(attacker, target, "g_tka_ballcarrier_force", "g_tka_noncarrier_force");
+
+    private float ScaleFactor(Player attacker, Player target, string carrierCvar, string nonCarrierCvar)
     {
+        // QC Damage_Calculate reads a single VECTOR cvar and indexes its component: .x = self-damage,
+        // .y = damage to (other) ballcarriers, .z = damage to noncarriers. Base ships these as vectors
+        // (g_tka_ballcarrier_damage "1 1 1"), so we parse the vector string. Default 1 (no scaling) when unset.
         bool attackerCarries = ReferenceEquals(Carrier, attacker);
         bool targetCarries = ReferenceEquals(Carrier, target);
-        string baseName = attackerCarries ? "g_keepaway_ballcarrier_damage" : "g_keepaway_noncarrier_damage";
-        string suffix = ReferenceEquals(target, attacker) ? "_x" : (targetCarries ? "_y" : "_z");
-        return damage * (TryCvar(baseName + suffix, out float v) ? v : 1f);
+        string cvarName = attackerCarries ? carrierCvar : nonCarrierCvar;
+        int component = ReferenceEquals(target, attacker) ? 0 : (targetCarries ? 1 : 2);
+        return CvarVectorComponent(cvarName, component, 1f);
+    }
+
+    /// <summary>Read component <paramref name="index"/> (0=x,1=y,2=z) of a vector cvar string ("a b c"),
+    /// falling back to <paramref name="fallback"/> when unset/short (QC autocvar &lt;vector&gt; semantics).</summary>
+    private static float CvarVectorComponent(string name, int index, float fallback)
+    {
+        if (Api.Services is null)
+            return fallback;
+        string s = Api.Cvars.GetString(name);
+        if (string.IsNullOrEmpty(s))
+            return fallback;
+        string[] parts = s.Split((char[]?)null, System.StringSplitOptions.RemoveEmptyEntries);
+        if (index < 0 || index >= parts.Length)
+            return fallback;
+        return float.TryParse(parts[index], System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out float v) ? v : fallback;
+    }
+
+    /// <summary>QC MUTATOR_HOOKFUNCTION(tka, Damage_Calculate): apply the ballcarrier/noncarrier damage+force
+    /// matrix to player-vs-player hits (no-op for non-player attacker/target, mirroring the QC IS_PLAYER guard).</summary>
+    private bool OnDamageCalculate(ref MutatorHooks.DamageCalculateArgs args)
+    {
+        if (args.Attacker is not Player attacker || args.Target is not Player target)
+            return false; // QC: only apply scaling to player versus player combat
+        args.Damage = DamageScale(attacker, target, args.Damage);
+        args.Force *= DamageForceScale(attacker, target);
+        return false;
+    }
+
+    /// <summary>QC MUTATOR_HOOKFUNCTION(tka, GiveFragsForKill): M_ARGV(2,float)=0; return true. No frags in TKA.</summary>
+    private bool OnGiveFragsForKill(ref MutatorHooks.GiveFragsForKillArgs args)
+    {
+        args.FragScore = 0f; // QC: no frags counted in keepaway
+        return true;         // QC returns true so GiveFrags reads the zeroed delta back
     }
 
     /// <summary>The team color code (see <see cref="Teams"/>) of the current ball-carrier, or 0 if loose.</summary>
@@ -157,6 +270,9 @@ public sealed class TeamKeepaway : GameType
             return DefaultPointLimit;
         }
     }
+
+    /// <summary>The lead limit in force (g_tka_point_leadlimit; QC mapinfo default 0 = no lead limit).</summary>
+    public int LeadLimit => TryCvar(CvarLeadLimit, out float v) ? (int)v : 0;
 
     /// <summary>Number of teams in play (g_tka_teams_override if &gt;= 2, else g_tka_teams), clamped to 2..4.</summary>
     public int TeamCount
@@ -177,6 +293,8 @@ public sealed class TeamKeepaway : GameType
         MatchEnded = false;
         WinningTeam = 0;
         Carrier = null;
+        _timePointsRemainder = 0f;
+        _bcTimeRemainder = 0f;
         GS.ResetTeams(); // QC Score_ClearAll at match start: zero both team slots before declaring
 
         // QC sv_tka.qc GameRules_scoring(tka_teams, SFL_SORT_PRIO_PRIMARY, SFL_SORT_PRIO_PRIMARY, {
@@ -193,6 +311,18 @@ public sealed class TeamKeepaway : GameType
 
         _deathHandler = OnDeath;
         Combat.Death.Add(_deathHandler);
+
+        // QC MUTATOR_HOOKFUNCTION(tka, GiveFragsForKill): no normal frags are counted in TKA (only the team
+        // killac/bckill bonuses score). Zero the per-kill frag and claim the hook so the frag path is suppressed
+        // while tka is active.
+        _giveFragsHandler ??= OnGiveFragsForKill;
+        MutatorHooks.GiveFragsForKill.Add(_giveFragsHandler);
+
+        // QC MUTATOR_HOOKFUNCTION(tka, Damage_Calculate): scale player-vs-player damage/force by the possession
+        // matrix. Wiring the live DamageSystem.DamageCalculate hook here makes DamageScale/DamageForceScale
+        // actually affect combat (registry tka.damage.matrix — previously zero callers).
+        _damageCalcHandler ??= OnDamageCalculate;
+        MutatorHooks.DamageCalculate.Add(_damageCalcHandler);
     }
 
     /// <summary>QC <c>GameRules_scoring_add(player, SP_X, n)</c> for a TKA player column (no-op if unregistered).</summary>
@@ -202,44 +332,67 @@ public sealed class TeamKeepaway : GameType
         if (f is not null) Scoring.GameScores.AddToPlayer(p, f, n);
     }
 
-    public void Deactivate()
+    public override void Deactivate()
     {
         if (_deathHandler is null)
             return;
         Combat.Death.Remove(_deathHandler);
         _deathHandler = null;
+        if (_giveFragsHandler is not null)
+        {
+            MutatorHooks.GiveFragsForKill.Remove(_giveFragsHandler);
+            _giveFragsHandler = null;
+        }
+        if (_damageCalcHandler is not null)
+        {
+            MutatorHooks.DamageCalculate.Remove(_damageCalcHandler);
+            _damageCalcHandler = null;
+        }
     }
 
-    /// <summary>QC ka_TouchEvent: a player picked up the ball and is now the carrier (attaches the entity).</summary>
+    /// <summary>QC tka_TouchEvent: a player picked up the ball and is now the carrier (attaches the entity,
+    /// plays the pickup sfx + notifications, credits TKA_PICKUPS).</summary>
     public void GiveBall(Player carrier)
     {
         if (MatchEnded || carrier.IsDead || Carrier is not null)
             return;
         Carrier = carrier;
-        AddCol(carrier, "TKA_PICKUPS", 1); // QC ka_TouchEvent: GameRules_scoring_add(toucher, TKA_PICKUPS, 1)
+        AddCol(carrier, "TKA_PICKUPS", 1); // QC tka_TouchEvent: GameRules_scoring_add(toucher, TKA_PICKUPS, 1)
+        _bcTimeRemainder = 0f;             // fresh carry-time accumulator for the new carrier
         if (BallEntity is Entity e)
         {
-            GametypeEntities.AttachToCarrier(e, carrier, Vector3.Zero);
-            e.NextThink = 0f;
+            global::XonoticGodot.Common.Gameplay.BallEntity.AttachToCarrier(e, carrier, Vector3.Zero);
+            e.Think = null;   // carried-ball orbit is driven from Tick, not the loose-ball relocate think
+            e.NextThink = 0f; // carried ball has no respawn think
+            SoundSystem.PlayOn(e, Sounds.ByName("KA_PICKEDUP")); // QC SND_KA_PICKEDUP, ATTEN_NONE
         }
+
+        // QC tka_TouchEvent messages: kill-feed line to all + centerprint to everyone-except + self centerprint.
+        NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, "KEEPAWAY_PICKUP", carrier.NetName);
+        NotificationSystem.Send(NotifBroadcast.AllExcept, carrier, MsgType.Center, "KEEPAWAY_PICKUP", carrier.NetName);
+        NotificationSystem.Send(NotifBroadcast.One, carrier, MsgType.Center, "KEEPAWAY_PICKUP_SELF");
     }
 
-    /// <summary>QC ka_DropEvent: the ball was dropped / reset; detach it, drop it, and re-arm the respawn.</summary>
+    /// <summary>QC tka_DropEvent: the ball was dropped / reset; detach it, drop it (with crandom scatter + the
+    /// 0.5 s self-recapture lockout), re-arm the respawn, and play the drop sfx + notifications.</summary>
     public void DropBall()
     {
         Player? carrier = Carrier;
         Carrier = null;
         if (BallEntity is Entity e)
         {
-            GametypeEntities.DetachFromCarrier(e);
-            e.Solid = Solid.Trigger;
-            e.MoveType = MoveType.Bounce;
-            e.TakeDamage = DamageMode.Yes;
-            if (carrier is not null)
-                GametypeEntities.SetOrigin(e, carrier.Origin + new Vector3(0f, 0f, 10f));
-            e.Velocity = new Vector3(0f, 0f, 200f);
-            e.NextThink = GametypeEntities.Now + RespawnTime;
+            // Detach + drop at the carrier's feet with the crandom scatter, arm the 0.5 s self-recapture lockout,
+            // and re-arm the relocate timer (QC tka_DropEvent: setattachment NULL + '0 0 200'+crandom + wait).
+            global::XonoticGodot.Common.Gameplay.BallEntity.DropFromCarrier(e, RespawnTime, takesDamage: true);
+            e.Think = RespawnBallThink;
         }
+        if (carrier is null)
+            return;
+
+        // QC tka_DropEvent messages and sounds: kill-feed line to all + centerprint to all + global drop sfx.
+        NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, "KEEPAWAY_DROPPED", carrier.NetName);
+        NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Center, "KEEPAWAY_DROPPED", carrier.NetName);
+        SoundSystem.PlayGlobal(Sounds.ByName("KA_DROPPED")); // QC SND_KA_DROPPED, NULL emitter, ATTEN_NONE
     }
 
     /// <summary>The current score for a team color code (QC teamscores(team, ST_SCORE); 0 if none).</summary>
@@ -250,11 +403,20 @@ public sealed class TeamKeepaway : GameType
     public override bool ReportsTie(IReadOnlyList<Player> roster)
         => TeamTie.TopTwoTied(GS.LeaderTeam(), GS.SecondTeam(), ScoreFor);
 
+    /// <summary>g_tka_score_team (default 1): any teammate's kill scores while the team holds the ball.</summary>
+    private bool ScoreTeam => TryCvar(CvarScoreTeam, out float v) ? v != 0f : DefaultScoreTeam;
+
+    /// <summary>QC team-has-ball scan: does <paramref name="team"/> currently hold the (single) ball? In Base this
+    /// is <c>IL_EACH(g_tkaballs, SAME_TEAM(it.owner, frag_attacker))</c>; with one ball it is simply whether the
+    /// carrier is on that team.</summary>
+    private bool TeamHasBall(int team) => team != Teams.None && BallTeam == team;
+
     /// <summary>
-    /// The obituary handler — QC keepaway PlayerDies scoring, applied per-team for TKA. A frag only scores if
-    /// the attacker's team currently holds the ball: the attacker's team gains <c>g_keepaway_score_killac</c>
-    /// for the kill, plus <c>g_keepaway_score_bckill</c> if the victim was the (enemy) ball-carrier. DM frag
-    /// points are never awarded (QC GiveFragsForKill zeroes them). Then re-check the point limit.
+    /// The obituary handler — QC sv_tka.qc PlayerDies, applied per-team. A cross-team frag scores for the
+    /// attacker's team when the attacker personally carries OR (g_tka_score_team) a teammate holds the ball:
+    /// the team gains <c>g_tka_score_killac</c>, plus <c>g_tka_score_bckill</c> + a TKA_CARRIERKILLS credit when
+    /// the victim was the (enemy) ball-carrier. DM frag points are never awarded (handled by GiveFragsForKill).
+    /// Then drop the ball if the carrier died and re-check the limit.
     /// </summary>
     private bool OnDeath(ref DeathEvent ev)
     {
@@ -264,26 +426,40 @@ public sealed class TeamKeepaway : GameType
             return false;
 
         Player? attacker = ev.Attacker as Player;
-        bool realKill = attacker is not null && !ReferenceEquals(attacker, victim);
+        // QC PlayerDies guard: frag_attacker != frag_target && IS_PLAYER(frag_attacker) && DIFF_TEAM(attacker, target).
+        bool scoringKill = attacker is not null
+            && !ReferenceEquals(attacker, victim)
+            && !Teams.SameTeam(attacker, victim);
 
         // QC: the bonus for fragging the enemy ball-carrier is checked BEFORE the ball drops below.
         bool victimWasCarrier = ReferenceEquals(Carrier, victim);
 
-        if (realKill && attacker is not null && ReferenceEquals(Carrier, attacker))
+        if (scoringKill && attacker is not null)
         {
-            // Attacker's team holds the ball → score for kills made while carrying.
             int team = (int)attacker.Team;
-            AddTeamScore(team, ScoreKillAc);
+            bool attackerCarries = ReferenceEquals(Carrier, attacker);
+            bool teamHasBall = ScoreTeam && TeamHasBall(team);
+
             if (victimWasCarrier)
-                AddTeamScore(team, ScoreBcKill); // killed the enemy ball-carrier (bonus)
+            {
+                // QC: GameRules_scoring_add(attacker, TKA_CARRIERKILLS, 1) + team bckill bonus (independent of
+                // whether the attacker carries — any cross-team kill of the carrier counts).
+                AddCol(attacker, "TKA_CARRIERKILLS", 1);
+                AddTeamScore(team, ScoreBcKill);
+            }
+            else if (!attackerCarries && !teamHasBall)
+            {
+                // QC: a no-possession kill warns the killer (only when not team-scoring with the ball held).
+                if (TryCvar(CvarNonCarrierWarn, out float warn) && warn != 0f)
+                    NotificationSystem.Send(NotifBroadcast.OneOnly, attacker, MsgType.Center, "KEEPAWAY_WARN");
+            }
+
+            // QC: add killac to the team if the attacker carries OR (team scoring on AND the team holds the ball).
+            if (attackerCarries || teamHasBall)
+                AddTeamScore(team, ScoreKillAc);
         }
 
-        // QC sv_tka.qc: TKA_CARRIERKILLS is credited whenever the VICTIM was the ball-carrier (independent of
-        // whether the attacker carries), GameRules_scoring_add(frag_attacker, TKA_CARRIERKILLS, 1).
-        if (realKill && attacker is not null && victimWasCarrier)
-            AddCol(attacker, "TKA_CARRIERKILLS", 1);
-
-        // If the carrier died, the ball drops where they fell (QC ka_DropEvent on PlayerDies).
+        // If the carrier died, the ball drops where they fell (QC PlayerDies → tka_DropEvent).
         if (victimWasCarrier)
             DropBall();
 
@@ -296,30 +472,107 @@ public sealed class TeamKeepaway : GameType
     {
         if (team == Teams.None || delta == 0)
             return;
-        GS.AddToTeam(team, GS.TeamSlotScore, delta); // QC TeamScore_AddToTeam(team, ST_SCORE, delta)
+        GS.AddToTeam(team, GS.TeamSlotScore, delta); // QC GameRules_scoring_add_team(attacker, SCORE, delta)
     }
 
-    /// <summary>QC GameRules_limit_score: latch the match once a team reaches the point limit.</summary>
+    /// <summary>g_tka_score_timepoints (default 0/off): team points per second while a teammate carries.</summary>
+    private int ScoreTimePoints => TryCvar(CvarScoreTimePoint, out float v) ? (int)v : 0;
+
+    /// <summary>
+    /// Advance Team Keepaway one step (QC tka_BallThink_Carried): while the ball is carried, accrue
+    /// <see cref="ScoreTimePoints"/> per second to the carrier's TEAM score (carrying the fractional remainder
+    /// like QC's float2int accumulator) and TKA_BCTIME to the carrier, orbit the carried ball, then re-check the
+    /// limit. <paramref name="dt"/> is the frame delta (QC frametime). Call each tick; safe after MatchEnded.
+    /// </summary>
+    public void Tick(float dt)
+    {
+        if (MatchEnded)
+        {
+            CheckPointLimit();
+            return;
+        }
+
+        Player? carrier = Carrier;
+        if (carrier is not null && !carrier.IsDead)
+        {
+            int team = (int)carrier.Team;
+
+            // QC tka_BallThink_Carried: if (g_tka_score_timepoints) GameRules_scoring_add_team_float2int(owner,
+            // SCORE, timepoints*frametime, ...). Bank whole points to the team and carry the fractional remainder.
+            int pps = ScoreTimePoints;
+            if (pps > 0)
+            {
+                _timePointsRemainder += pps * dt;
+                int whole = (int)_timePointsRemainder; // floor toward zero (pps, dt >= 0)
+                if (whole != 0)
+                {
+                    _timePointsRemainder -= whole;
+                    AddTeamScore(team, whole);
+                }
+            }
+
+            // QC tka_BallThink_Carried: GameRules_scoring_add(owner, TKA_BCTIME, frametime). Integer column, so
+            // bank whole seconds and carry the fractional remainder.
+            _bcTimeRemainder += dt;
+            int wholeSecs = (int)_bcTimeRemainder;
+            if (wholeSecs != 0)
+            {
+                _bcTimeRemainder -= wholeSecs;
+                AddCol(carrier, "TKA_BCTIME", wholeSecs);
+            }
+
+            // QC tka_BallThink_Carried orbit anim: the carried ball orbits the carrier in the xy plane (single
+            // ball, so cnt=chainCount=1). Keeps the ball entity riding the carrier so the model/glow tracks them.
+            if (BallEntity is Entity e)
+            {
+                Vector3 pos = global::XonoticGodot.Common.Gameplay.BallEntity.CarryOrbit(
+                    carrier.Origin, GametypeEntities.Now, cnt: 1, chainCount: 1);
+                GametypeEntities.SetOrigin(e, pos);
+                // QC also syncs ball.alpha to owner.alpha (invisibility); the entity layer has no alpha field yet,
+                // so that visual sync is deferred to presentation (see todos).
+            }
+        }
+
+        CheckPointLimit();
+    }
+
+    /// <summary>QC GameRules_limit_score / GameRules_limit_lead: latch the match once a team reaches the point
+    /// limit, or leads the runner-up by the lead limit.</summary>
     public void CheckPointLimit()
     {
-        int limit = PointLimit;
-        if (limit <= 0)
+        if (MatchEnded)
             return;
 
-        // QC GameRules_limit_score: the leading team (the flag-aware ST_SCORE leader) reaching the limit wins.
-        int leader = GS.LeaderTeam();
-        if (leader != Teams.None && ScoreFor(leader) >= limit)
+        int leaderTeam = GS.LeaderTeam();
+        if (leaderTeam == Teams.None)
+            return;
+        int leaderScore = ScoreFor(leaderTeam);
+
+        // QC GameRules_limit_score: the leading team reaching the point limit wins.
+        int limit = PointLimit;
+        if (limit > 0 && leaderScore >= limit)
         {
             MatchEnded = true;
-            WinningTeam = leader;
+            WinningTeam = leaderTeam;
+            return;
+        }
+
+        // QC GameRules_limit_lead: the leader winning by at least the lead limit ends the match.
+        int lead = LeadLimit;
+        if (lead > 0)
+        {
+            int secondTeam = GS.SecondTeam();
+            int secondScore = secondTeam == Teams.None ? 0 : ScoreFor(secondTeam);
+            if (leaderScore - secondScore >= lead)
+            {
+                MatchEnded = true;
+                WinningTeam = leaderTeam;
+            }
         }
     }
 
-    private int ScoreKillAc
-        => TryCvar(CvarScoreKillAc, out float v) ? (int)v : DefaultScoreKillAc;
-
-    private int ScoreBcKill
-        => TryCvar(CvarScoreBcKill, out float v) ? (int)v : DefaultScoreBcKill;
+    private int ScoreKillAc => TryCvar(CvarScoreKillAc, out float v) ? (int)v : DefaultScoreKillAc;
+    private int ScoreBcKill => TryCvar(CvarScoreBcKill, out float v) ? (int)v : DefaultScoreBcKill;
 
     private static bool TryCvar(string name, out float value)
     {

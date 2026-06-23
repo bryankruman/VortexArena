@@ -13,9 +13,10 @@ namespace XonoticGodot.Common.Gameplay;
 ///
 /// Identity/attributes from mortar.qh; balance from bal-wep-xonotic.cfg (g_balance_mortar_*).
 /// This phase ports both grenade projectiles, their bounce/lifetime/contact detonation and the splash
-/// damage, remote-detonate-primary, sticky (type 2) grenades, and shoot-down. Only the airshot achievement
-/// and CSQC bounce-model effects are render-only. No-TrueAim (WEP_FLAG_NOTRUEAIM): grenades launch straight
-/// along v_forward.
+/// damage, remote-detonate-primary, sticky (type 2) grenades, shoot-down (live via Projectiles.MakeShootable),
+/// the bounce particle (EFFECT_HAGAR_BOUNCE), the HITTYPE_SECONDARY/HITTYPE_BOUNCE kill-message deathtype, and
+/// the airshot achievement on an airborne direct hit. Only the CSQC in-flight grenade model/trail remains
+/// render-only. No-TrueAim (WEP_FLAG_NOTRUEAIM): grenades launch straight along v_forward.
 /// </summary>
 [Weapon]
 public sealed class Mortar : Weapon
@@ -177,22 +178,33 @@ public sealed class Mortar : Weapon
         int type = bal.Type;
         float damage = bal.Damage, edge = bal.EdgeDamage, radius = bal.Radius, force = bal.Force;
         float lifetimeBounce = bal.LifetimeBounce;
-        int deathType = RegistryId; // QC also OR's HITTYPE_BOUNCE on a bounced kill (cosmetic kill message).
+        // QC gren.projectiledeathtype = thiswep.m_id (| HITTYPE_SECONDARY for the bouncing secondary). We carry
+        // the string deathtype so the bounce-vs-explode kill message (which keys on HITTYPE_SECONDARY) and the
+        // dynamically-OR'd HITTYPE_BOUNCE both survive to the obituary; HITTYPE_BOUNCE is added in Explode.
+        string deathBase = Damage.DeathTypes.FromWeapon(NetName);
+        if (secondary) deathBase = Damage.DeathTypes.WithHitType(deathBase, Damage.DeathTypes.Secondary);
         gren.Count = 0; // QC .gl_bouncecnt — bounce counter lives on the entity (lambdas can't capture a ref)
 
         // cnt = time + lifetime (forced detonation deadline). Primary thinks each frame; secondary uses a
         // single timed think. We model both with one Think that detonates once the deadline passes.
         float deathTime = Api.Clock.Time + bal.Lifetime;
 
-        gren.Think = self => OnThink(self, deathTime, damage, edge, radius, force, deathType);
+        gren.Think = self => OnThink(self, deathTime, damage, edge, radius, force, deathBase);
         gren.NextThink = secondary ? deathTime : Api.Clock.Time;
 
         gren.Touch = (self, other) =>
             OnTouch(self, other, type, lifetimeBounce, deathTime,
-                damage, edge, radius, force, deathType);
+                damage, edge, radius, force, deathBase);
 
-        // W_Mortar_Grenade_Damage: shot down -> explode (the damage pipeline calls this once HP hits 0).
-        gren.ProjectileDamage = (self, attacker) => Explode(self, damage, edge, radius, force, deathType);
+        // W_Mortar_Grenade_Damage: shot down -> explode. Projectiles.MakeShootable installs the QC
+        // W_CheckProjectileDamage gate + RES_HEALTH subtraction and invokes this callback only once HP hits 0
+        // (faithful to W_PrepareExplosionByDamage), so a non-lethal graze no longer detonates the grenade.
+        gren.ProjectileDamage = (self, attacker) =>
+            Explode(self, damage, edge, radius, force, deathBase, self.Count > 0, directHit: null);
+
+        // QC: gren.takedamage = DAMAGE_YES + SetResource(RES_HEALTH) + event_damage = W_Mortar_Grenade_Damage.
+        // No exception (-1): a grenade is destructible by anyone the g_projectiles_damage ladder permits.
+        Projectiles.MakeShootable(gren, exception: -1f);
 
         Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/grenade_fire.wav");
         EffectEmitter.Emit("GRENADE_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
@@ -208,42 +220,48 @@ public sealed class Mortar : Weapon
 
     // W_Mortar_Grenade_Think1 — detonate at the lifetime deadline, or when remote-detonate was requested
     // and the grenade has bounced enough times. mortar.qc
-    private void OnThink(Entity self, float deathTime, float damage, float edge, float radius, float force, int deathType)
+    private void OnThink(Entity self, float deathTime, float damage, float edge, float radius, float force, string deathBase)
     {
         self.NextThink = Api.Clock.Time;
         if (Api.Clock.Time > deathTime)
         {
-            Explode(self, damage, edge, radius, force, deathType);
+            // QC Think1: this.projectiledeathtype |= HITTYPE_BOUNCE on a forced (timeout) detonation.
+            Explode(self, damage, edge, radius, force, deathBase, bounced: true, directHit: null);
             return;
         }
         // gl_detonate_later (latched in DeadState by the secondary remote-detonate sweep) + min bounce count.
         if (self.DeadState == DeadFlag.Dying && self.Count >= RemoteMinBounceCount)
-            Explode(self, damage, edge, radius, force, deathType);
+            Explode(self, damage, edge, radius, force, deathBase, self.Count > 0, directHit: null);
     }
 
     // W_Mortar_Grenade_Touch1/2 — explode on player/impact, or bounce (type 1). mortar.qc
     private void OnTouch(Entity self, Entity other, int type, float lifetimeBounce,
-        float deathTime, float damage, float edge, float radius, float force, int deathType)
+        float deathTime, float damage, float edge, float radius, float force, string deathBase)
     {
         bool hitPlayer = other.TakeDamage == DamageMode.Aim || (other.Flags & EntFlags.Client) != 0;
 
         if (hitPlayer || type == 0)
         {
-            Explode(self, damage, edge, radius, force, deathType);
+            // QC `this.use(this, NULL, toucher)` -> W_Mortar_Grenade_Explode(this, toucher): the toucher is the
+            // direct-hit entity (skips the blast LOS reduction + drives the airshot achievement). A grenade that
+            // has already bounced carries HITTYPE_BOUNCE.
+            Explode(self, damage, edge, radius, force, deathBase, self.Count > 0,
+                directHit: hitPlayer ? other : null);
             return;
         }
 
         if (type == 1) // bounce: the engine MOVETYPE_BOUNCE reflects velocity; we just count + fuse.
         {
             Api.Sound.Play(self, SoundChannel.Body, "weapons/grenade_bounce1.wav");
-            ++self.Count; // QC .gl_bouncecnt
+            EffectEmitter.Emit("HAGAR_BOUNCE", self.Origin, self.Velocity, 1); // QC Send_Effect(EFFECT_HAGAR_BOUNCE)
+            ++self.Count; // QC .gl_bouncecnt (also where QC OR's HITTYPE_BOUNCE onto the deathtype)
             if (lifetimeBounce != 0f && self.Count == 1)
             {
                 float fuse = Api.Clock.Time + lifetimeBounce;
                 if (fuse < deathTime)
                 {
                     self.NextThink = fuse;
-                    self.Think = s => Explode(s, damage, edge, radius, force, deathType);
+                    self.Think = s => Explode(s, damage, edge, radius, force, deathBase, bounced: true, directHit: null);
                 }
             }
         }
@@ -257,18 +275,46 @@ public sealed class Mortar : Weapon
         }
     }
 
-    // W_Mortar_Grenade_Explode — radius damage + knockback, then remove. mortar.qc
-    private void Explode(Entity self, float damage, float edge, float radius, float force, int deathType)
+    // W_Mortar_Grenade_Explode / _Explode2 — radius damage + knockback, then remove. mortar.qc
+    private void Explode(Entity self, float damage, float edge, float radius, float force,
+        string deathBase, bool bounced, Entity? directHit)
     {
+        // QC W_Mortar_Grenade_Explode: a flying enemy directly struck earns the airshot achievement for the
+        // owner. Test runs BEFORE the entity is removed (mortar.qc:7-10 / :40-43).
+        if (directHit is not null && self.Owner is { } owner
+            && directHit.TakeDamage == DamageMode.Aim && (directHit.Flags & EntFlags.Client) != 0
+            && !ReferenceEquals(directHit, owner) && !Teams.SameTeam(directHit, owner) // QC DIFF_TEAM
+            && directHit.DeadState == DeadFlag.No && IsFlying(directHit))
+            NotificationSystem.Announce(owner, "ACHIEVEMENT_AIRSHOT");
+
         self.Touch = null;
         self.Think = null;
         self.TakeDamage = DamageMode.No;
+        self.ProjectileDamage = null; // QC this.event_damage = func_null
 
-        WeaponSplash.RadiusDamage(self, self.Origin, damage, edge, radius, self.Owner, deathType, force);
+        // QC OR's HITTYPE_BOUNCE onto the deathtype once the grenade has bounced / timed out (kill message).
+        string deathType = bounced ? Damage.DeathTypes.WithHitType(deathBase, Damage.DeathTypes.Bounce) : deathBase;
+
+        // deathTag carries the full string deathtype (weapon | HITTYPE_SECONDARY | HITTYPE_BOUNCE) so the
+        // obituary picks BOUNCE vs EXPLODE; directHit lets the struck target skip the LOS reduction (QC passes
+        // directhitentity through to RadiusDamage); accuracyWeapon credits the splash hit to this weapon.
+        WeaponSplash.RadiusDamage(self, self.Origin, damage, edge, radius, self.Owner, RegistryId, force,
+            directHit: directHit, accuracyWeapon: this, deathTag: deathType);
 
         WeaponSplash.ImpactSound(self, "weapons/grenade_impact.wav"); // QC SND_MORTAR_IMPACT (wr_impacteffect)
         EffectEmitter.Emit("GRENADE_EXPLODE", self.Origin);
         Api.Entities.Remove(self);
+    }
+
+    // bool IsFlying(entity) — common/physics/player.qc:843, the airshot test: airborne, not swimming, and at
+    // least 24u of clearance below (so a player skimming the ground doesn't count).
+    private static bool IsFlying(Entity e)
+    {
+        if (e.OnGround) return false;
+        if (e.WaterLevel >= 2) return false; // WATERLEVEL_SWIMMING
+        TraceResult tr = Api.Trace.Trace(e.Origin, e.Mins, e.Maxs,
+            e.Origin - new Vector3(0f, 0f, 24f), MoveFilter.Normal, e);
+        return tr.Fraction >= 1f;
     }
 
     // METHOD(Mortar, wr_checkammo1) — mortar.qc

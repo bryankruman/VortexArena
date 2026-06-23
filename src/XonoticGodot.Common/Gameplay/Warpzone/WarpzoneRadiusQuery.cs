@@ -430,6 +430,15 @@ public static class WarpzoneRadiusQuery
     private static bool IsBadEntity(Entity e)
     {
         if (e.IsFreed) return true;
+
+        // QC's leading `is_pure(e)` guard = (e.pure_data && e.solid == SOLID_NOT): a bare data object created
+        // without a spawnfunc, left non-solid. The port has no `pure_data` flag, but the dominant pure case — a
+        // data object with no real classname AND non-solid — is captured by the empty-classname branch below plus
+        // this Solid.Not pairing. We require BOTH conditions exactly as is_pure (a non-solid REAL entity, e.g. a
+        // non-solid item, still keeps its classname and is NOT treated as pure), so legitimate non-solid victims
+        // are not excluded. A faithful full port needs an Entity.PureData flag (see todos).
+        if (e.Solid == Solid.Not && string.IsNullOrEmpty(e.ClassName)) return true;
+
         string s = e.ClassName;
         switch (s)
         {

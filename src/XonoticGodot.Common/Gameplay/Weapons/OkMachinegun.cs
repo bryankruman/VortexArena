@@ -39,6 +39,10 @@ public sealed class OkMachinegun : Weapon
         public int   SecondaryRefireType; // g_balance_okmachinegun_secondary_refire_type (1 = own jump_interval timer)
         public float ReloadAmmo;        // g_balance_okmachinegun_reload_ammo
         public float ReloadTime;        // g_balance_okmachinegun_reload_time
+        public float DamageFalloffHalflife;      // g_balance_okmachinegun_damagefalloff_halflife
+        public float DamageFalloffMinDist;       // g_balance_okmachinegun_damagefalloff_mindist
+        public float DamageFalloffMaxDist;       // g_balance_okmachinegun_damagefalloff_maxdist
+        public float DamageFalloffForceHalflife; // g_balance_okmachinegun_damagefalloff_forcehalflife
     }
 
     public Balance Cvars;
@@ -71,6 +75,11 @@ public sealed class OkMachinegun : Weapon
         Cvars.SecondaryRefireType = BalInt("g_balance_okmachinegun_secondary_refire_type", 1);
         Cvars.ReloadAmmo = Bal("g_balance_okmachinegun_reload_ammo", 30f);
         Cvars.ReloadTime = Bal("g_balance_okmachinegun_reload_time", 1.5f);
+        // damagefalloff cvars — all 0 in bal-wep-xonotic.cfg (no falloff), but ported for fidelity to fireBullet_falloff.
+        Cvars.DamageFalloffHalflife = Bal("g_balance_okmachinegun_damagefalloff_halflife", 0f);
+        Cvars.DamageFalloffMinDist = Bal("g_balance_okmachinegun_damagefalloff_mindist", 0f);
+        Cvars.DamageFalloffMaxDist = Bal("g_balance_okmachinegun_damagefalloff_maxdist", 0f);
+        Cvars.DamageFalloffForceHalflife = Bal("g_balance_okmachinegun_damagefalloff_forcehalflife", 0f);
     }
 
     // METHOD(OverkillMachineGun, wr_think)
@@ -113,16 +122,27 @@ public sealed class OkMachinegun : Weapon
 
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out _);
         ShotInfo shot = WeaponFiring.SetupShot(actor, forward, WeaponFiring.MaxShotDistance, penetrateWalls: true);
+        Api.Sound.Play(actor, SoundChannel.WeaponAuto, "weapons/uzi_fire.wav");
+
+        // QC okmachinegun.qc:24-28 — punchangle recoil PRNG unless g_norecoil: random()-0.5 on pitch+yaw.
+        if ((actor.Flags & EntFlags.Client) != 0 && Api.Cvars.GetFloat("g_norecoil") == 0f)
+            actor.PunchAngle = new Vector3(Prandom.Float() - 0.5f, Prandom.Float() - 0.5f, 0f);
 
         // okmachinegun_spread = bound(spread_min, spread_min + spread_add * misc_bulletcounter, spread_max)
         float spread = QMath.Clamp(Cvars.SpreadMin + Cvars.SpreadAdd * st.MiscBulletCounter,
             Cvars.SpreadMin, Cvars.SpreadMax);
 
+        // fireBullet_falloff with the EFFECT_RIFLE tracer trail (okmachinegun.qc:36-48).
         WeaponFiring.FireBullet(actor, shot.Origin, shot.Dir, WeaponFiring.MaxShotDistance, Cvars.Damage,
-            RegistryId, spread, Cvars.SolidPenetration, force: Cvars.Force);
-        Api.Sound.Play(actor, SoundChannel.WeaponAuto, "weapons/uzi_fire.wav");
+            RegistryId, spread, Cvars.SolidPenetration,
+            Cvars.DamageFalloffHalflife, Cvars.DamageFalloffMinDist, Cvars.DamageFalloffMaxDist,
+            force: Cvars.Force, falloffForceHalflife: Cvars.DamageFalloffForceHalflife,
+            tracerEffect: "RIFLE");
 
         ++st.MiscBulletCounter;
+
+        // W_MuzzleFlash + casing (okmachinegun.qc:52-58): eject a brass casing at g_casings >= 2 (gate inside).
+        WeaponFiring.EjectCasing(actor, shot.Origin, WeaponFiring.CasingType.Bullet);
 
         // ATTACK_FINISHED + weapon_thinkf(WFRAME_FIRE1, refire, Attack_Auto): self-reschedule while held.
         float rate = WeaponRateFactor();

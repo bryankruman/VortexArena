@@ -1347,6 +1347,14 @@ public sealed class GameWorld
         // same world); only the active round-based gametype's case below re-installs them.
         _roundPrep = null;
         _roundSync = null;
+        // Tear down any prior gametype's global hook subscriptions before activating the new one, so a live
+        // gametype switch (campaign level change, a gametype vote) doesn't leave the old mode's handlers
+        // (e.g. CTS's Shotgun-only PlayerSpawn/PlayerPreThink) running on the new mode. Deactivate is
+        // idempotent per gametype, so deactivating all-but-the-incoming-one is safe (the incoming gametype's
+        // Activate() below re-subscribes it). Mirrors MutatorActivation reconciling the mutator hook set.
+        foreach (GameType gt in Registry<GameType>.All)
+            if (!ReferenceEquals(gt, GameType))
+                gt.Deactivate();
         switch (GameType)
         {
             case Deathmatch dm:

@@ -117,8 +117,13 @@ namespace XonoticGodot.Common.Framework
         public Vector3 FinalDestCtl;       // QC controller .finaldest — overshoot target
         public float AnimStartTime;        // QC .animstate_starttime — bezier start (controller only)
         public float AnimEndTime;          // QC .animstate_endtime — bezier end (controller only)
-        public int PlatMoveStart = 1;      // QC .platmovetype_start — ease-in curve id (1 = linear)
-        public int PlatMoveEnd = 1;        // QC .platmovetype_end — ease-out curve id (1 = linear)
+        // QC .platmovetype_start / .platmovetype_end are uninitialized floats — default 0. With 0/0 the
+        // (start==1 && end==1) linear shortcut in SUB_CalcMove FAILS, so a long (>=0.15s) mover runs the
+        // bezier branch with cubic_speedfunc(0,0,t) = -2t^3+3t^2 (smoothstep ease-in-out). An explicit
+        // "platmovetype" key (set_platmovetype) or "1 1" selects the linear branch. Matching Base's default
+        // here is what makes every stock door/plat/train S-curve eased rather than constant-velocity linear.
+        public int PlatMoveStart;          // QC .platmovetype_start — ease curve id (0 = smoothstep default)
+        public int PlatMoveEnd;            // QC .platmovetype_end   — ease curve id (0 = smoothstep default)
     }
 }
 
@@ -897,13 +902,14 @@ namespace XonoticGodot.Common.Gameplay
         /// ("start end [force]") into <see cref="Entity.PlatMoveStart"/>/<see cref="Entity.PlatMoveEnd"/>. One
         /// token sets both ends; a 3rd "force" token skips the sanity check. Returns false (and leaves the
         /// values parsed) on an insane reverse curve — QC <c>objerror</c>s there; the headless caller treats a
-        /// false return as "reject this mover / keep linear". A null/empty string leaves the port's existing
-        /// defaults (PlatMoveStart/End = 1, linear) untouched so stock movers are unaffected.
+        /// false return as "reject this mover / keep its default curve". A null/empty string leaves the
+        /// port's default (PlatMoveStart/End = 0, the smoothstep ease — same as QC's uninitialized float
+        /// fields and set_platmovetype's n==0 branch), so stock movers ease exactly as Base.
         /// </summary>
         public static bool SetPlatMoveType(Entity e, string? s)
         {
             if (string.IsNullOrWhiteSpace(s))
-                return true; // no key — keep the existing (linear) defaults
+                return true; // no key — Base's n==0 path also yields 0/0 (already the field default)
 
             string[] argv = s.Split((char[]?)null, System.StringSplitOptions.RemoveEmptyEntries);
             int n = argv.Length;

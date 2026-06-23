@@ -178,6 +178,90 @@ public static class Inventory
         return string.IsNullOrEmpty(s) ? WeaponOrderByPriorityDefault : PriorityNamesToIds(s);
     }
 
+    /// <summary>
+    /// PER-CLIENT, PER-GROUP priority source (QC <c>CS_CVAR(this).cvar_cl_weaponpriorities[number]</c>, the ten
+    /// replicated <c>cl_weaponpriority0..9</c> explosives/energy/hitscan/… category lists): given the player and a
+    /// group number 0..9, returns that group's replicated priority list in NUMBER (registry-id) form (the
+    /// post-fixup value the server's <c>sentcvar</c> handler stored — see Commands.cs CmdSentCvar's
+    /// cl_weaponpriorityN W_FixWeaponOrder_AllowIncomplete branch), or null/empty for "not replicated" (fall back
+    /// to the global cvar read in <see cref="WeaponPriorityForGroup"/>). Installed by the server's
+    /// <c>Commands</c> ctor alongside <see cref="PriorityProvider"/>; null by default so the listen-server/local
+    /// path reads the cvar facade directly.
+    /// </summary>
+    public static Func<Entity, int, string?>? PriorityProviderForGroup;
+
+    /// <summary>
+    /// QC <c>CS_CVAR(this).cvar_cl_weaponpriorities[number]</c> — the player's priority list for impulse-group
+    /// <paramref name="number"/> (0..9). Consults the per-client per-group <see cref="PriorityProviderForGroup"/>
+    /// first (the sentcvar-replicated value, already in id form); otherwise the corresponding
+    /// <c>cl_weaponpriorityN</c> is read off the server cvar facade (name form → ids). Falls back to the main
+    /// <see cref="WeaponPriority"/> list when the group cvar is unset/out-of-range, matching an unset category list.
+    /// </summary>
+    public static string WeaponPriorityForGroup(Entity e, int number)
+    {
+        if (number is < 0 or > 9)
+            return WeaponPriority(e);
+
+        string? per = PriorityProviderForGroup?.Invoke(e, number);
+        if (!string.IsNullOrEmpty(per))
+            return per;
+
+        if (Api.Services is not null)
+        {
+            string s = Api.Cvars.GetString("cl_weaponpriority" + number);
+            if (!string.IsNullOrEmpty(s))
+                return PriorityNamesToIds(s);
+        }
+        // Unset group list → behave like QC's empty category (nothing to cycle); fall back to the main list so the
+        // bind still moves the player to a usable weapon rather than no-op.
+        return WeaponPriority(e);
+    }
+
+    /// <summary>
+    /// PER-CLIENT by-impulse-group order source (QC <c>CS_CVAR(this).weaponorder_byimpulse</c>, the space-separated
+    /// weapon-id list ordered by the weapons' impulse/group, used by <c>W_NextWeapon</c>/<c>W_PreviousWeapon</c>
+    /// list==1). Returns the player's replicated order in NUMBER (registry-id) form, or null/empty to fall back to
+    /// <see cref="WeaponOrderByImpulseDefault"/>. Installed by the server's <c>Commands</c> ctor; null by default.
+    /// </summary>
+    public static Func<Entity, string?>? WeaponOrderByImpulseProvider;
+
+    /// <summary>
+    /// QC <c>CS_CVAR(this).weaponorder_byimpulse</c>: the weapons in impulse/group order. Consults the per-client
+    /// <see cref="WeaponOrderByImpulseProvider"/> first, otherwise the registry-derived default.
+    /// </summary>
+    public static string WeaponOrderByImpulse(Entity e)
+    {
+        string? per = WeaponOrderByImpulseProvider?.Invoke(e);
+        return string.IsNullOrEmpty(per) ? WeaponOrderByImpulseDefault : per;
+    }
+
+    /// <summary>
+    /// Stock <c>weaponorder_byimpulse</c> default: weapon ids sorted by ascending (Impulse, RegistryId) — i.e. the
+    /// order the weapon keys 1..0 lay weapons out — built once from the registry. (QC fills this from
+    /// W_FixWeaponOrder over the impulse order; absent a replicated value we approximate with the impulse sort.)
+    /// </summary>
+    public static string WeaponOrderByImpulseDefault
+    {
+        get
+        {
+            if (_weaponOrderByImpulse is null || _weaponOrderByImpulseCount != Registry<Weapon>.Count)
+            {
+                _weaponOrderByImpulseCount = Registry<Weapon>.Count;
+                var ids = new List<int>();
+                for (int i = 0; i < _weaponOrderByImpulseCount; i++) ids.Add(i);
+                ids.Sort((a, b) =>
+                {
+                    int ia = Registry<Weapon>.ById(a).Impulse, ib = Registry<Weapon>.ById(b).Impulse;
+                    return ia != ib ? ia.CompareTo(ib) : a.CompareTo(b);
+                });
+                _weaponOrderByImpulse = string.Join(' ', ids);
+            }
+            return _weaponOrderByImpulse;
+        }
+    }
+    private static string? _weaponOrderByImpulse;
+    private static int _weaponOrderByImpulseCount = -1;
+
     /// <summary>Stock fallback priority by id (registry order, reversed → strongest first) when no cvar is set.</summary>
     public static string WeaponOrderByPriorityDefault
     {
@@ -395,6 +479,18 @@ public static class Inventory
         if (w >= 0) SwitchWeaponWithComplain(e, Registry<Weapon>.ById(w));
     }
 
+    /// <summary>
+    /// Port of <c>weapon_priority_handle</c> (impulse.qc:89) → <c>W_CycleWeapon(this, cvar_cl_weaponpriorities[number],
+    /// dir, …)</c>: cycle the per-GROUP custom priority list (cl_weaponpriority0..9) for impulse group
+    /// <paramref name="number"/> (0..9) in <paramref name="dir"/> (prev=-1 / best=0 / next=+1). The impulse router
+    /// (WeaponImpulses.PriorityHandle, 200-229) calls this so the group number selects the right category list,
+    /// rather than always cycling the single main <c>cl_weaponpriority</c>.
+    /// </summary>
+    public static void CycleWeaponGroup(Entity e, int number, float dir)
+    {
+        CycleWeapon(e, WeaponPriorityForGroup(e, number), dir);
+    }
+
     /// <summary>Port of <c>W_NextWeaponOnImpulse</c> (selection.qc): next weapon in the impulse-share group.</summary>
     public static void NextWeaponOnImpulse(Entity e, float imp)
     {
@@ -410,7 +506,7 @@ public static class Inventory
     public static void NextWeapon(Entity e, int list)
     {
         if (list == 0) CycleWeapon(e, WeaponOrderById, -1);
-        else if (list == 1) CycleWeapon(e, WeaponPriority(e), -1); // by-impulse order not modeled; fall back to priority
+        else if (list == 1) CycleWeapon(e, WeaponOrderByImpulse(e), -1); // QC weaponorder_byimpulse (list 1)
         else if (list == 2) CycleWeapon(e, WeaponPriority(e), -1);
     }
 
@@ -418,7 +514,7 @@ public static class Inventory
     public static void PreviousWeapon(Entity e, int list)
     {
         if (list == 0) CycleWeapon(e, WeaponOrderById, +1);
-        else if (list == 1) CycleWeapon(e, WeaponPriority(e), +1);
+        else if (list == 1) CycleWeapon(e, WeaponOrderByImpulse(e), +1); // QC weaponorder_byimpulse (list 1)
         else if (list == 2) CycleWeapon(e, WeaponPriority(e), +1);
     }
 

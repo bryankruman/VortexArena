@@ -52,6 +52,22 @@ public static class Triggers
             return false;
         if (self.TakeDamage == DamageMode.No || self.MaxHealthMover == 0f)
             return false;
+
+        // QC multi_eventdamage: a NOSPLASH trigger ignores indirect (non-special, splash) damage so it can't
+        // be set off by nearby blasts — only by a direct shot.
+        if ((self.SpawnFlags & MapMover.SpawnNoSplash) != 0
+            && !DeathTypes.IsSpecial(ev.DeathType) && DeathTypes.HasHitType(ev.DeathType, DeathTypes.Splash))
+            return false;
+
+        // QC multi_eventdamage: a team-restricted shootable trigger only fires for a matching-team attacker
+        // (or the opposite team with INVERT_TEAMS), mirroring the multi_touch team gate.
+        if (self.Team != 0f && ev.Attacker is not null)
+        {
+            bool noInvert = (self.SpawnFlags & MapMover.SpawnInvertTeams) == 0;
+            if (noInvert == (self.Team != ev.Attacker.Team))
+                return false;
+        }
+
         self.Health = self.MaxHealthMover; // keep it alive so the kill path's early-out fires
         self.Enemy = ev.Attacker;
         self.GoalEntity = ev.Inflictor;
@@ -119,6 +135,16 @@ public static class Triggers
         if ((self.SpawnFlags & MapMover.SpawnAllEntities) == 0 && !MapMover.IsCreature(toucher))
             return;
 
+        // team gate (QC multi_touch): a team-restricted trigger only fires for the matching team
+        // (or the opposite team with INVERT_TEAMS). Fire only when
+        //   (no-invert AND same-team) OR (invert AND different-team).
+        if (self.Team != 0f)
+        {
+            bool noInvert = (self.SpawnFlags & MapMover.SpawnInvertTeams) == 0;
+            if (noInvert == (self.Team != toucher.Team))
+                return;
+        }
+
         // facing check: if the trigger has a movedir ("angle"), the toucher must face roughly that way.
         if (self.MoveDir != Vector3.Zero)
         {
@@ -126,6 +152,10 @@ public static class Triggers
             if (QMath.Dot(fwd, self.MoveDir) < 0f)
                 return;
         }
+
+        // pressed-keys gate (QC multi_touch): a key-gated trigger only fires while the player holds one of
+        // the required keys. The port's server Entity has no pressedkeys field yet, so this gate is skipped
+        // (see todos: add Entity.PressedKeys fed from the client input state, then enforce it here).
 
         self.Enemy = toucher;
         self.GoalEntity = toucher;
@@ -214,6 +244,15 @@ public static class Triggers
         if (self.Active != MapMover.ActiveActive)
             return;
 
+        // team gate (QC trigger_hurt_touch): a team-restricted hurt volume only bites the matching team
+        // (or the opposite team with INVERT_TEAMS).
+        if (self.Team != 0f)
+        {
+            bool noInvert = (self.SpawnFlags & MapMover.SpawnInvertTeams) == 0;
+            if (noInvert == (self.Team != toucher.Team))
+                return;
+        }
+
         if (MapMover.IsCreature(toucher))
         {
             // QC throttles creatures to one hit per second (per toucher).
@@ -226,9 +265,11 @@ public static class Triggers
                 Combat.Damage(toucher, self, attacker, self.Dmg, DeathTypes.Void, toucher.Origin, Vector3.Zero);
             }
         }
-        else
+        else if (MapMover.IsPushable(toucher))
         {
-            // non-creatures (projectiles flagged damagedbytriggers) take damage every touch.
+            // QC gates non-creatures on toucher.damagedbytriggers (projectiles/loot/bodies); the port has no
+            // such field, so IsPushable stands in for it (same set, matching the TargetUtilities convention).
+            // Those take damage every touch.
             Combat.Damage(toucher, self, self, self.Dmg, DeathTypes.Void, toucher.Origin, Vector3.Zero);
         }
     }
@@ -279,14 +320,21 @@ public static class Triggers
         if (self.Delay > 0f)
             toucher.TriggerHealTime = MapMover.Now() + self.Delay;
 
-        // QC Heal(targ, src, amount, limit): give up to `limit` total (the field topoff).
+        // QC Heal(targ, src, amount, limit): give up to `limit` total (the field topoff). Returns whether
+        // any health was actually added (the toucher was below the cap).
+        bool playTheSound = (self.SpawnFlags & HealSoundAlways) != 0;
         float before = toucher.GetResource(ResourceType.Health);
-        if (before < self.MaxHealthMover)
-        {
+        bool healed = before < self.MaxHealthMover;
+        if (healed)
             toucher.GiveResourceWithLimit(ResourceType.Health, self.Health, self.MaxHealthMover);
+
+        // QC: play the heal sound when HEAL_SOUND_ALWAYS is set OR a heal actually happened (so a topped-off
+        // creature in a HEAL_SOUND_ALWAYS field still gets the cue).
+        if (playTheSound || healed)
             MapMover.Sound(toucher, SoundChannel.Auto, self.Noise);
-        }
     }
+
+    public const int HealSoundAlways = 1 << 2; // HEAL_SOUND_ALWAYS
 
     // ===================================================================
     //  trigger_gravity
@@ -453,9 +501,9 @@ public static class Triggers
 
         if (store.CounterCnt == self.Count)
         {
-            if (announce)
-                MapMover.Sound(actor, SoundChannel.Voice, "misc/talk.wav"); // CENTER_SEQUENCE_COMPLETED (audible part)
-
+            // CENTER_SEQUENCE_COMPLETED — a text-only MSG_CENTER notification in QC (no sound is emitted).
+            // The port has no localized-notification channel for this string yet, so the "sequence complete"
+            // TEXT is dropped (see todos); we no longer play the invented misc/talk.wav (an audio divergence).
             doActivate = true;
 
             if (self.RespawnTimeMover != 0f)
@@ -466,8 +514,8 @@ public static class Triggers
         }
         else if (announce)
         {
-            // CENTER_SEQUENCE_COUNTER / _FEWMORE — the "N more" countdown (text is client-side).
-            MapMover.Sound(actor, SoundChannel.Voice, "misc/talk.wav");
+            // CENTER_SEQUENCE_COUNTER / _FEWMORE — the "N more" countdown is also a text-only MSG_CENTER
+            // notification in QC (no sound). Text dropped pending the notification channel; no sound emitted.
         }
 
         if (doActivate)
@@ -615,6 +663,7 @@ public static class Triggers
             return;
 
         ++MapObjectsState.SecretsFound;
+        MapMover.Centerprint(toucher, self.Message); // QC centerprints "You found a secret!" (via SUB_UseTargets)
         MapMover.UseTargets(self, toucher, toucher);
         self.Touch = null; // can't delete inside a touch callback; just disarm
     }
@@ -642,11 +691,34 @@ public static class Triggers
         MapMover.IndexRegister(this_);
     }
 
+    /// <summary>
+    /// QC <c>g_swamped</c> — the players currently claimed by some swamp this frame. Tracked here (rather than
+    /// scanning all clients) so <see cref="SwampThink"/> can clear a player's stamp the frame it leaves the
+    /// volume / the swamp goes inactive, matching QC's IL_EACH(g_swamped, …) clear-then-restamp pass.
+    /// </summary>
+    private static readonly List<Entity> _swamped = new();
+
     /// <summary>QC <c>swamp_think</c>: re-mark the players inside the volume each frame and damage on interval.</summary>
     private static void SwampThink(Entity self)
     {
         self.NextThink = MapMover.Now();
-        if (self.Active != MapMover.ActiveActive || Api.Services is null)
+        if (Api.Services is null)
+            return;
+
+        // QC: first drop every player this swamp had claimed last frame (so a player who left the volume — or
+        // is in this swamp while it is inactive — has their stamp removed and regains full speed). They get
+        // re-claimed below only if still inside an ACTIVE swamp.
+        for (int i = _swamped.Count - 1; i >= 0; i--)
+        {
+            Entity it = _swamped[i];
+            if (ReferenceEquals(it.SwampSlug, self))
+            {
+                it.SwampSlug = null;
+                _swamped.RemoveAt(i);
+            }
+        }
+
+        if (self.Active != MapMover.ActiveActive)
             return;
 
         Vector3 center = (self.AbsMin + self.AbsMax) * 0.5f;
@@ -656,15 +728,24 @@ public static class Triggers
         {
             if ((it.Flags & EntFlags.Client) == 0 || MapMover.IsDead(it))
                 continue;
-            // only claim a player not already in another active swamp this frame.
-            if (it.SwampSlug is not null && !ReferenceEquals(it.SwampSlug, self))
+            // QC: it.swampslug.active == ACTIVE_NOT — only claim a player whose current swamp is inactive
+            // (or who has no swamp). A player already in another ACTIVE swamp keeps it.
+            if (it.SwampSlug is not null && it.SwampSlug.Active == MapMover.ActiveActive)
                 continue;
 
+            if (it.SwampSlug is null)
+                _swamped.Add(it);
             it.SwampSlug = self; // marks them swamped (movement code reads SwampSlug.SwampSlowdown)
+        }
 
+        // QC: damage every player currently claimed by THIS swamp, on the per-toucher interval.
+        foreach (Entity it in _swamped)
+        {
+            if (!ReferenceEquals(it.SwampSlug, self))
+                continue;
             if (MapMover.Now() > it.SwampNextTime)
             {
-                Combat.Damage(it, self, self, self.Dmg, DeathTypes.Void, it.Origin, Vector3.Zero);
+                Combat.Damage(it, self, self, self.Dmg, DeathTypes.Swamp, it.Origin, Vector3.Zero);
                 it.SwampNextTime = MapMover.Now() + self.SwampInterval;
             }
         }
@@ -870,6 +951,7 @@ public static class Triggers
         {
             // all keys supplied: fire target, kill killtarget, remove self.
             MapMover.Sound(toucher, SoundChannel.Voice, self.Noise);
+            MapMover.Centerprint(toucher, self.Message); // QC centerprint(toucher, "Unlocked!")
 
             if (!string.IsNullOrEmpty(self.Target))
                 KeylockTrigger(self, toucher, self.Target);

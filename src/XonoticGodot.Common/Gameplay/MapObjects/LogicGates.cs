@@ -7,7 +7,7 @@
 //   relay_teamcheck.qc-> trigger_relay_teamcheck (+ RELAYTEAMCHECK_NOTEAM/_INVERT)
 //   relay_activators.qc-> relay_activate / relay_deactivate / relay_activatetoggle (+ generic_setactive)
 //   gamestart.qc      -> trigger_gamestart
-//   magicear.qc       -> trigger_magicear (string-match core; left unwired — no say pipeline yet)
+//   magicear.qc       -> trigger_magicear (string-match core; LIVE via the server Chat.Say pipeline)
 //
 // These are pure relay/timer entities: they fire their targets (MapMover.UseTargets, the port of
 // SUB_UseTargets) on .use or on a schedule, with no volume. trigger_relay / target_relay / target_delay /
@@ -436,16 +436,34 @@ public static class LogicGates
     }
 
     /// <summary>
-    /// QC <c>game_starttime</c> — the match start time (countdown end). The headless gametype runs from t=0 (the
-    /// host applies the real countdown upstream), so default to 0; a host can set it for fidelity.
+    /// QC <c>game_starttime</c> — the match start time (countdown end). Backed by
+    /// <see cref="GameStartTimeProvider"/>: a host wires it to the live world's countdown end (e.g.
+    /// <c>GameWorld.GameStartTime</c>, the same value the RoundHandler/Warmup hold) the way it wires
+    /// <c>StartItem.GameStartTimeProvider</c>/<c>Announcer.GameStartTime</c>; when unwired it reads 0 (the
+    /// headless t=0 start). Setting it overrides the provider with a fixed value for tests/standalone use.
     /// </summary>
-    public static float GameStartTime { get; set; }
+    public static float GameStartTime
+    {
+        get => _gameStartTimeOverride ?? GameStartTimeProvider?.Invoke() ?? 0f;
+        set => _gameStartTimeOverride = value;
+    }
+
+    private static float? _gameStartTimeOverride;
+
+    /// <summary>
+    /// Host-wired source of the live match countdown-end time (QC <c>game_starttime</c>). Set by the host at boot
+    /// (e.g. <c>LogicGates.GameStartTimeProvider = () =&gt; GameWorld.GameStartTime</c>) so the <c>.wait</c> branch
+    /// of <see cref="GamestartSetup"/> schedules relative to the real countdown end rather than 0. A direct set of
+    /// <see cref="GameStartTime"/> takes precedence over this provider.
+    /// </summary>
+    public static System.Func<float>? GameStartTimeProvider { get; set; }
 
     // ===================================================================
     //  trigger_magicear (magicear.qc) — chat pattern match -> SUB_UseTargets / text replace
-    //  LOWEST PRIORITY: no say-processing pipeline exists yet, so this is ported but UNWIRED. The TUBA
-    //  melody branch is out of scope (W_Tuba_HasPlayed). The magicears list is kept (linked via Enemy)
-    //  so a future say hook can walk it exactly like QC's trigger_magicear_processmessage_forallears.
+    //  LIVE: the server Chat.Say pipeline (XonoticGodot.Server/Chat.cs) calls MagicEarProcessAllEars on every
+    //  non-empty player say (chat.qc:75-76), so registered ears now see messages on the live path. The TUBA
+    //  melody branch is out of scope (W_Tuba_HasPlayed). The magicears list is linked via Enemy and walked
+    //  exactly like QC's trigger_magicear_processmessage_forallears.
     // ===================================================================
 
     public const int MagicEarIgnoreSay = 1 << 0;             // MAGICEAR_IGNORE_SAY
@@ -465,7 +483,7 @@ public static class LogicGates
     /// <summary>QC <c>magicear_matched</c> — set by the last <see cref="MagicEarProcessMessage"/> call.</summary>
     public static bool MagicEarMatched;
 
-    /// <summary><c>spawnfunc(trigger_magicear)</c> — register a chat-trigger ear (unwired; no say pipeline yet).</summary>
+    /// <summary><c>spawnfunc(trigger_magicear)</c> — register a chat-trigger ear (live: driven by Chat.Say).</summary>
     public static void MagicEarSetup(Entity this_)
     {
         this_.Enemy = MagicEars;
@@ -604,8 +622,8 @@ public static class LogicGates
     /// <summary>
     /// Port of <c>trigger_magicear_processmessage_forallears</c>: run <paramref name="msgin"/> through every
     /// registered ear (walking <see cref="MagicEars"/> via <see cref="Entity.Enemy"/>), short-circuiting on the
-    /// first match unless that ear has MAGICEAR_CONTINUE. Returns the (possibly replaced) message. Unwired until
-    /// a say pipeline calls it.
+    /// first match unless that ear has MAGICEAR_CONTINUE. Returns the (possibly replaced) message. Called live by
+    /// the server Chat.Say pipeline for every non-empty player say.
     /// </summary>
     public static string MagicEarProcessAllEars(Entity source, int teamsay, Entity? privatesay, string msgin)
     {

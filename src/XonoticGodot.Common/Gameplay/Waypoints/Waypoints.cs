@@ -39,72 +39,123 @@ public static class SpriteRule
 /// <summary>The full WP_* registry (the subset the port wires; extend freely — adding a def is one line).</summary>
 public static class WaypointRegistry
 {
-    private static readonly Vector3 Orange = new(1f, 0.5f, 0f);
+    private static readonly Vector3 Orange = new(1f, 0.5f, 0f);     // WP_REVIVING_COLOR / Assault / Race / Ons / Buff
     private static readonly Vector3 Cyan = new(0f, 1f, 1f);
     private static readonly Vector3 Green = new(0f, 1f, 0f);
     private static readonly Vector3 Tan = new(0.8f, 0.8f, 0f);
     private static readonly Vector3 White = new(1f, 1f, 1f);
+    private static readonly Vector3 Red = new(1f, 0f, 0f);
+    private static readonly Vector3 Magenta = new(1f, 0f, 1f);      // WP_Item
     private static readonly Vector3 FrozenCol = new(0.25f, 0.9f, 1f);
+    private static readonly Vector3 NbBallCol = new(0.91f, 0.85f, 0.62f);
+    private static readonly Vector3 SeekerCol = new(0.5f, 1f, 0f);
+    private static readonly Vector3 ReturnCol = new(0f, 0.8f, 0.8f);
 
     private const int IconObjective = 1; // every RADARICON_* except NONE is 1 (the color distinguishes)
 
-    private static readonly Dictionary<string, WaypointDef> Defs = Build();
-
     private static Dictionary<string, WaypointDef> Build()
     {
+        // Faithful 1:1 port of all.inc REGISTER_WAYPOINT(<name>, _(text), icon, color, blink). The fourth blink
+        // arg defaults to 1 in QC and is the per-def base blink (OnsCPDefend 0.5 / OnsCPAttack 2 / Seeker 2);
+        // spritelookupblinkvalue still overrides it for superweapon Weapon=2, Item=m_waypointblink, FlagReturn=2.
         var d = new Dictionary<string, WaypointDef>();
-        void Add(string name, string text, string icon, Vector3 col, float blink, int radar)
+        void Add(string name, string text, string icon, Vector3 col, float blink = 1f, int radar = IconObjective)
             => d[name] = new WaypointDef(name, text, icon, col, blink, radar);
 
         // ---- player pings (no icon → text) ----
-        Add("Waypoint", "Waypoint", "", Cyan, 1f, IconObjective);
-        Add("Helpme", "Help me!", "", Orange, 1f, IconObjective);
-        Add("Here", "Here", "", Green, 1f, IconObjective);
-        Add("Danger", "Danger", "", Orange, 1f, IconObjective);
+        Add("Waypoint", "Waypoint", "", Cyan);
+        Add("Helpme", "Help me!", "", Orange);
+        Add("Here", "Here", "", Green);
+        Add("Danger", "DANGER", "", Orange);
+
+        // ---- FreezeTag ----
+        Add("Frozen", "Frozen!", "", FrozenCol);
+        Add("Reviving", "Reviving", "", Orange);
+
+        // ---- generic item (itemstime / pickups) ----
+        Add("Item", "Item", "", Magenta);
+
+        // ---- Race / CTS ----
+        Add("RaceCheckpoint", "Checkpoint", "", Orange);
+        Add("RaceFinish", "Finish", "", Orange);
+        Add("RaceStart", "Start", "", Orange);
+        Add("RaceStartFinish", "Start", "", Orange);
+
+        // ---- Assault ----
+        Add("AssaultDefend", "Defend", "as_defend", Orange);
+        Add("AssaultDestroy", "Destroy", "as_destroy", Orange);
+        Add("AssaultPush", "Push", "", Orange);
 
         // ---- CTF flags (icons; the home/taken/lost/carrying state machine resolves the def server-side) ----
-        Add("FlagCarrier", "Flag", "", Tan, 1f, IconObjective);
-        Add("FlagBaseNeutral", "Flag", "flag_neutral_taken", Tan, 1f, IconObjective);
-        Add("FlagBaseRed", "Flag", "flag_red_taken", Tan, 1f, IconObjective);
-        Add("FlagBaseBlue", "Flag", "flag_blue_taken", Tan, 1f, IconObjective);
-        Add("FlagBaseYellow", "Flag", "flag_yellow_taken", Tan, 1f, IconObjective);
-        Add("FlagBasePink", "Flag", "flag_pink_taken", Tan, 1f, IconObjective);
-        Add("FlagDroppedNeutral", "Flag", "flag_neutral_lost", White, 1f, IconObjective);
-        Add("FlagDroppedRed", "Flag", "flag_red_lost", White, 1f, IconObjective);
-        Add("FlagDroppedBlue", "Flag", "flag_blue_lost", White, 1f, IconObjective);
-        Add("FlagDroppedYellow", "Flag", "flag_yellow_lost", White, 1f, IconObjective);
-        Add("FlagDroppedPink", "Flag", "flag_pink_lost", White, 1f, IconObjective);
-        Add("FlagCarrierEnemyNeutral", "Flag", "flag_neutral_carrying", Tan, 1f, IconObjective);
-        Add("FlagCarrierEnemyRed", "Flag", "flag_red_carrying", Tan, 1f, IconObjective);
-        Add("FlagCarrierEnemyBlue", "Flag", "flag_blue_carrying", Tan, 1f, IconObjective);
-        Add("FlagCarrierEnemyYellow", "Flag", "flag_yellow_carrying", Tan, 1f, IconObjective);
-        Add("FlagCarrierEnemyPink", "Flag", "flag_pink_carrying", Tan, 1f, IconObjective);
-        Add("FlagReturn", "Return flag", "", new Vector3(0f, 0.8f, 0.8f), 1f, IconObjective);
+        Add("FlagCarrier", "Flag carrier", "", Tan);
+        Add("FlagBaseNeutral", "White base", "flag_neutral_taken", Tan);
+        Add("FlagBaseRed", "Red base", "flag_red_taken", Tan);
+        Add("FlagBaseBlue", "Blue base", "flag_blue_taken", Tan);
+        Add("FlagBaseYellow", "Yellow base", "flag_yellow_taken", Tan);
+        Add("FlagBasePink", "Pink base", "flag_pink_taken", Tan);
+        Add("FlagDroppedNeutral", "Dropped flag", "flag_neutral_lost", White);
+        Add("FlagDroppedRed", "Dropped flag", "flag_red_lost", White);
+        Add("FlagDroppedBlue", "Dropped flag", "flag_blue_lost", White);
+        Add("FlagDroppedYellow", "Dropped flag", "flag_yellow_lost", White);
+        Add("FlagDroppedPink", "Dropped flag", "flag_pink_lost", White);
+        Add("FlagCarrierEnemyNeutral", "Enemy carrier", "flag_neutral_carrying", Tan);
+        Add("FlagCarrierEnemyRed", "Enemy carrier", "flag_red_carrying", Tan);
+        Add("FlagCarrierEnemyBlue", "Enemy carrier", "flag_blue_carrying", Tan);
+        Add("FlagCarrierEnemyYellow", "Enemy carrier", "flag_yellow_carrying", Tan);
+        Add("FlagCarrierEnemyPink", "Enemy carrier", "flag_pink_carrying", Tan);
+        // FlagReturn's all.inc blink is 1, but spritelookupblinkvalue overrides it to 2 (waypointsprites.qc:215);
+        // that override is static (not wp_extra-dependent) so we bake it into the def here.
+        Add("FlagReturn", "Return flag here", "", ReturnCol, 2f);
 
         // ---- Domination ----
-        Add("DomNeut", "Control point", "dom_icon_neutral-highlighted", Cyan, 1f, IconObjective);
-        Add("DomRed", "Control point", "dom_icon_red-highlighted", Cyan, 1f, IconObjective);
-        Add("DomBlue", "Control point", "dom_icon_blue-highlighted", Cyan, 1f, IconObjective);
-        Add("DomYellow", "Control point", "dom_icon_yellow-highlighted", Cyan, 1f, IconObjective);
-        Add("DomPink", "Control point", "dom_icon_pink-highlighted", Cyan, 1f, IconObjective);
+        Add("DomNeut", "Control point", "dom_icon_neutral-highlighted", Cyan);
+        Add("DomRed", "Control point", "dom_icon_red-highlighted", Cyan);
+        Add("DomBlue", "Control point", "dom_icon_blue-highlighted", Cyan);
+        Add("DomYellow", "Control point", "dom_icon_yellow-highlighted", Cyan);
+        Add("DomPink", "Control point", "dom_icon_pink-highlighted", Cyan);
 
         // ---- Key Hunt ----
-        Add("KeyDropped", "Key", "kh_dropped", Cyan, 1f, IconObjective);
-        Add("KeyCarrierRed", "Key", "kh_red_carrying", Cyan, 1f, IconObjective);
-        Add("KeyCarrierBlue", "Key", "kh_blue_carrying", Cyan, 1f, IconObjective);
-        Add("KeyCarrierYellow", "Key", "kh_yellow_carrying", Cyan, 1f, IconObjective);
-        Add("KeyCarrierPink", "Key", "kh_pink_carrying", Cyan, 1f, IconObjective);
+        Add("KeyDropped", "Dropped key", "kh_dropped", Cyan);
+        Add("KeyCarrierFriend", "Key carrier", "", Green);
+        Add("KeyCarrierFinish", "Run here", "", Cyan);
+        Add("KeyCarrierRed", "Key carrier", "kh_red_carrying", Cyan);
+        Add("KeyCarrierBlue", "Key carrier", "kh_blue_carrying", Cyan);
+        Add("KeyCarrierYellow", "Key carrier", "kh_yellow_carrying", Cyan);
+        Add("KeyCarrierPink", "Key carrier", "kh_pink_carrying", Cyan);
 
-        // ---- Assault / FreezeTag / misc ----
-        Add("AssaultDefend", "Defend", "as_defend", Orange, 1f, IconObjective);
-        Add("AssaultDestroy", "Destroy", "as_destroy", Orange, 1f, IconObjective);
-        Add("AssaultPush", "Push", "", Orange, 1f, IconObjective);
-        Add("Frozen", "Frozen", "", FrozenCol, 1f, IconObjective);
-        Add("Reviving", "Reviving", "", Orange, 1f, IconObjective);
-        Add("Monster", "Monster", "", new Vector3(1f, 0f, 0f), 1f, IconObjective);
-        Add("Vehicle", "Vehicle", "", White, 1f, IconObjective);
+        // ---- Keepaway / Team Keepaway ----
+        Add("KaBall", "Ball", "notify_ballpickedup", Cyan);
+        Add("KaBallCarrier", "Ball carrier", "keepawayball_carrying", Red);
+        Add("TkaBallCarrierRed", "Ball carrier", "tka_taken_red", Cyan);
+        Add("TkaBallCarrierBlue", "Ball carrier", "tka_taken_blue", Cyan);
+        Add("TkaBallCarrierYellow", "Ball carrier", "tka_taken_yellow", Cyan);
+        Add("TkaBallCarrierPink", "Ball carrier", "tka_taken_pink", Cyan);
+
+        // ---- Last Man Standing ----
+        Add("LmsLeader", "Leader", "", Cyan);
+
+        // ---- Nexball ----
+        Add("NbBall", "Ball", "", NbBallCol);
+        Add("NbGoal", "Goal", "", Orange);
+
+        // ---- Onslaught (control points + generators; per-def attack/defend blink) ----
+        Add("OnsCP", "Control point", "", Orange);
+        Add("OnsCPDefend", "Control point", "", Orange, 0.5f);
+        Add("OnsCPAttack", "Control point", "", Orange, 2f);
+        Add("OnsGen", "Generator", "", Orange);
+        Add("OnsGenShielded", "Generator", "", Orange);
+
+        // ---- pickups / monsters / vehicles / buffs ----
+        Add("Weapon", "Weapon", "", new Vector3(0f, 0f, 0f));
+        Add("Monster", "Monster", "", Red);
+        Add("Vehicle", "Vehicle", "", White);
+        Add("VehicleIntruder", "Intruder!", "", White);
+        Add("Seeker", "Tagged", "", SeekerCol, 2f);
+        Add("Buff", "Buff", "", Orange);
         return d;
     }
+
+    private static readonly Dictionary<string, WaypointDef> Defs = Build();
 
     /// <summary>Look up a def by name (the WP_* netname). Returns a magenta "?" text fallback for unknown names.</summary>
     public static WaypointDef Get(string name)

@@ -145,6 +145,9 @@ public static class Resources
     public static void GiveResourceWithLimit(this Entity e, ResourceType res, float amount, float limit)
     {
         if (amount <= 0f) return;
+        // QC sv_resources.qc:165: MUTATOR_CALLHOOK(GiveResourceWithLimit, …) may forbid or rewrite
+        // amount/limit before the trim. No shipped mutator subscribes (latent), and ResourceHooks has no
+        // GiveResourceWithLimit chain yet — see todos to add it; faithful for stock play.
         float current = GetResource(e, res);
         if (limit != LimitNone && current + amount > limit)
             amount = limit - current;
@@ -155,7 +158,26 @@ public static class Resources
     public static void TakeResource(this Entity e, ResourceType res, float amount)
     {
         if (amount <= 0f) return;
+        // QC sv_resources.qc:191: MUTATOR_CALLHOOK(TakeResource, …) may forbid or rewrite the drain.
+        // No shipped mutator subscribes (latent), and ResourceHooks has no TakeResource chain yet —
+        // see todos to add it; faithful for stock play.
         SetResource(e, res, GetResource(e, res) - amount);
+    }
+
+    /// <summary>
+    /// TakeResourceWithLimit(receiver, res_type, amount, limit) — common/resources/sv_resources.qc:205.
+    /// Clamps the drain so the post-take total can't drop below -limit (the SVQC form, not the odd CSQC one).
+    /// </summary>
+    public static void TakeResourceWithLimit(this Entity e, ResourceType res, float amount, float limit)
+    {
+        if (amount <= 0f) return;
+        // QC sv_resources.qc:211: MUTATOR_CALLHOOK(TakeResourceWithLimit, …) may forbid or rewrite
+        // amount/limit. No shipped mutator subscribes (latent), and ResourceHooks has no chain yet —
+        // see todos to add it; faithful for stock play.
+        float current = GetResource(e, res);
+        if (current - amount < -limit)
+            amount = current - limit; // QC: amount = -limit + current_amount
+        TakeResource(e, res, amount);
     }
 
     private static float Cvar(string name, float fallback)

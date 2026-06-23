@@ -100,9 +100,9 @@ public sealed class Machinegun : Weapon
         Cvars.BurstRefire = Bal("g_balance_machinegun_burst_refire", 0.06f);
         Cvars.BurstRefire2 = Bal("g_balance_machinegun_burst_refire2", 0.45f);
         Cvars.BurstAnimtime = Bal("g_balance_machinegun_burst_animtime", 0.3f);
-        Cvars.BurstSpread = Bal("g_balance_machinegun_burst_spread", 0.04f);
-        Cvars.SpreadDecay = Bal("g_balance_machinegun_spread_decay", 0f);
-        Cvars.SpreadCrouchmod = Bal("g_balance_machinegun_spread_crouchmod", 0.25f);
+        Cvars.BurstSpread = Bal("g_balance_machinegun_burst_spread", 0f);       // bal-wep-xonotic.cfg: 0 (no-spread burst)
+        Cvars.SpreadDecay = Bal("g_balance_machinegun_spread_decay", 0.048f);   // bal-wep-xonotic.cfg: 0.048 (time-decay model)
+        Cvars.SpreadCrouchmod = Bal("g_balance_machinegun_spread_crouchmod", 1f); // bal-wep-xonotic.cfg: 1
     }
 
     // METHOD(MachineGun, wr_think) — common/weapons/weapon/machinegun.qc
@@ -117,7 +117,10 @@ public sealed class Machinegun : Weapon
                 // The QC multi-frame loop is summarized to one bullet per fire tick; the spread/heat
                 // accumulator persists across calls so held-fire spread still grows.
                 if (PrepareAttack(actor, slot, fire))
+                {
+                    st.MiscBulletCounter = 0; // QC machinegun.qc:293 resets the counter on each auto trigger pull.
                     AttackAuto(actor, slot, st);
+                }
             }
             else if (fire == FireMode.Secondary && Cvars.Burst > 0f)
             {
@@ -288,9 +291,17 @@ public sealed class Machinegun : Weapon
         // no surface was hit. impTr.PlaneNormal IS that surface normal — far more faithful than -shot.Dir for
         // angled hits (the impact sprays off the wall, not straight back at the shooter).
         Vector3 backoff = impTr.PlaneNormal.LengthSquared() > 1e-6f ? impTr.PlaneNormal : -shot.Dir;
-        EffectEmitter.Emit("MACHINEGUN_IMPACT", impTr.EndPos, backoff * 1000f);
+        // QC wr_impacteffect (machinegun.qc:417-421): emit the impact puff AND, unless silent, the random
+        // ricochet ping (SND_RIC_RANDOM). The shared seam wires SoundSystem.PlayRic — bare EffectEmitter.Emit
+        // played no ric. Hitting a sky surface is silent (the bullet passes through it).
+        bool silent = (impTr.DpHitQ3SurfaceFlags & WeaponFiring.Q3SurfaceFlagSky) != 0 || impTr.Fraction >= 1f;
+        WeaponFiring.BulletImpactFx(actor, impTr.EndPos, backoff, "MACHINEGUN_IMPACT", silent);
         Api.Sound.Play(actor, SoundChannel.WeaponAuto, "weapons/uzi_fire.wav");
         EffectEmitter.Emit("MACHINEGUN_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
+
+        // QC casing code (machinegun.qc:108-112/205-209/250-254): eject a brass bullet casing per shot when
+        // g_casings >= 2 (the seam gates that internally and computes the QC view-frame eject velocity).
+        WeaponFiring.EjectCasing(actor, shot.Origin, WeaponFiring.CasingType.Bullet);
     }
 
     // Port of MachineGun_Update_Spread (machinegun.qc): time-based decay model, or the legacy
@@ -312,9 +323,12 @@ public sealed class Machinegun : Weapon
         st.SpreadUpdateTime = Api.Clock.Time;
     }
 
-    // QC recoil: punchangle gets a small random kick (g_norecoil default off). Deterministic PRNG.
+    // QC recoil: punchangle gets a small random kick, gated by !autocvar_g_norecoil (machinegun.qc:61,165,218).
+    // With g_norecoil 1 the kick is suppressed entirely. Deterministic PRNG.
     private static void Recoil(Entity actor)
     {
+        if (Api.Services is not null && Api.Cvars.GetFloat("g_norecoil") != 0f)
+            return;
         Vector3 p = actor.PunchAngle;
         p.X = Prandom.Float() - 0.5f;
         p.Y = Prandom.Float() - 0.5f;

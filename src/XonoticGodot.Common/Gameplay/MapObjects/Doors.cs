@@ -34,6 +34,7 @@ public static class Doors
     public const int GoldKey = 1 << 3;     // SPAWNFLAGS_GOLD_KEY
     public const int SilverKey = 1 << 4;   // SPAWNFLAGS_SILVER_KEY
     public const int Toggle = 1 << 5;      // DOOR_TOGGLE — wait in both states for a trigger
+    public const int NoSplash = 1 << 8;    // NOSPLASH (defs.qh) — generic anti-splashdamage spawnflag
     public const int NonSolid = 1 << 10;   // DOOR_NONSOLID
     public const int Crush = 1 << 11;      // DOOR_CRUSH — instakill blockers
 
@@ -61,6 +62,7 @@ public static class Doors
 
         if (!MapMover.InitMovingBrushTrigger(this_))
             return;
+        this_.Effects |= AdvancedMovers.EfLowPrecision; // QC: this.effects |= EF_LOWPRECISION (door.qc:779)
         this_.ClassName = "door";
 
         this_.Blocked = DoorBlocked;
@@ -173,11 +175,10 @@ public static class Doors
         if ((this_.Dmg != 0f || (this_.SpawnFlags & Crush) != 0) && string.IsNullOrEmpty(this_.Message))
             this_.Message = "was squished";
 
-        // Default door sounds (QC uses plats/medplat*.wav).
-        if (this_.Noise2 == "")
-            this_.Noise2 = "plats/medplat1.wav"; // moving
-        if (this_.Noise1 == "")
-            this_.Noise1 = "plats/medplat2.wav"; // stop
+        // QC door_init_shared only assigns the medplat soundpack when `sounds > 0 || q3compat`
+        // (Q3 doors are hard-coded to have sounds); otherwise Noise1/Noise2 stay empty and the
+        // move/stop _sound calls are no-ops. ApplyDoorSounds reads Entity.Sounds and gates this.
+        MapMover.ApplyDoorSounds(this_);
 
         if (this_.Wait == 0f)
             this_.Wait = 3f;
@@ -400,7 +401,11 @@ public static class Doors
         door.DoorFinished = MapMover.Now() + 2f;
 
         if (door.Dmg == 0f && !string.IsNullOrEmpty(door.Message))
-            MapMover.Sound(other, SoundChannel.Voice, door.Noise); // play2(toucher, noise); message text is client-side
+        {
+            // QC centerprint(toucher, message) + play2(toucher, noise).
+            MapMover.Centerprint(other, door.Message);
+            MapMover.Sound(other, SoundChannel.Voice, door.Noise);
+        }
     }
 
     /// <summary>
@@ -645,6 +650,18 @@ public static class Doors
         if (v.ClassName is not ("door" or "door_rotating"))
             return false;
         Entity door = v.Owner ?? v;
+
+        // NOSPLASH: a non-special splash (blast) hit deals no damage to the door (QC door_damage
+        // early-returns before TakeResource). The pipeline already drove health below 1, so resuscitate
+        // the owner and leave it closed — the kill path's "resuscitated to HP>=1, don't die" early-out
+        // keeps the brush intact and the door never opens from splash.
+        // QC reads NOSPLASH off the hit brush (`this`), i.e. the victim, not the group owner.
+        if ((v.SpawnFlags & NoSplash) != 0
+            && !DeathTypes.IsSpecial(ev.DeathType) && DeathTypes.HasHitType(ev.DeathType, DeathTypes.Splash))
+        {
+            door.Health = door.MaxHealthMover;
+            return false;
+        }
 
         // key doors can't be damage-opened (QC door_damage early-returns when itemkeys remain).
         if (door.ItemKeys != 0)

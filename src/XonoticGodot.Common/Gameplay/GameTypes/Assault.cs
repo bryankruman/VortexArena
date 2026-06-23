@@ -25,17 +25,29 @@ namespace XonoticGodot.Common.Gameplay;
 ///    / func_assault_destructible / target_assault_roundend) where shooting the active destructible runs its
 ///    decreaser to whittle the objective's health, and destroying an objective activates the next
 ///    (<see cref="DamageDestructible"/> → <see cref="DecreaseObjective"/>, QC assault_objective_decrease_use);
-///  - objective destruction → attackers win the round (<see cref="DestroyFinalObjective"/>, QC roundend.winning);
+///  - objective destruction → attackers win the round (<see cref="DestroyFinalObjective"/>, QC roundend.winning),
+///    ending the match immediately in campaign (QC autocvar_g_campaign branch) or broadcasting CENTER_ASSAULT_-
+///    OBJ_DESTROYED when a second round is to follow;
+///  - the per-spawn role centerprint (<see cref="OnPlayerSpawn"/>, QC MUTATOR_HOOKFUNCTION(as, PlayerSpawn)):
+///    "You are attacking!"/"You are defending!" keyed on the live attacker team;
+///  - the defender timelimit win (<see cref="DriveFrame"/>/<see cref="TimeLimitReached"/>, QC
+///    WinningCondition_Assault default-to-defender branch); the host calls <see cref="DriveFrame"/> per CheckRules
+///    frame and wires <see cref="CanRoundStart"/>/<see cref="CanRoundEnd"/> into its round handler;
 ///  - the two-round role swap (<see cref="StartSecondRound"/>) keyed on the attackers' destruction time.
 ///
-/// Deferred (NOTE — cross-boundary): turret team-swap, the engine round-restart machinery (ReadyRestart_force), the
-/// objective/wall models + waypoint sprites (CSQC), and the score networking/HUD.
+/// Deferred (NOTE — cross-boundary, needs host/CSQC wiring outside this file): turret team-swap (QC
+/// assault_roundstart_use / TurretSpawn hook), the engine round-restart machinery (ReadyRestart_force + the 5s
+/// AS_ROUND_DELAY freeze + map reset), the objective/wall models + waypoint sprites/health bars (CSQC), the
+/// func_assault_wall toggle + destructible heal, the objective .message broadcast, the warmup-incompatible
+/// ReadLevelCvars override, and the score networking/HUD.
 /// </summary>
 [GameType]
 public sealed class Assault : GameType
 {
-    /// <summary>QC ASSAULT_VALUE_INACTIVE: the health sentinel for an objective that isn't yet active.</summary>
-    public const float ObjectiveInactive = 1000000f;
+    /// <summary>QC ASSAULT_VALUE_INACTIVE (sv_assault.qh): the health sentinel for an objective that isn't yet
+    /// active. Base value is 1000 — aligned here (was 1e6) so a map that authors an objective health between 1000
+    /// and 1e6 gates identically to Base.</summary>
+    public const float ObjectiveInactive = 1000f;
 
     /// <summary>
     /// Round/role state for a two-round Assault match (QC assault_attacker_team + the round counter and the
@@ -60,6 +72,9 @@ public sealed class Assault : GameType
     public AssaultState State { get; } = new();
 
     private HookHandler<DeathEvent>? _deathHandler;
+
+    // QC MUTATOR_HOOKFUNCTION(as, PlayerSpawn): on spawn, centerprint the player's role (attacking/defending).
+    private HookHandler<MutatorHooks.PlayerSpawnArgs>? _spawnHandler;
 
     /// <summary>Optional sink for the host/controller to react to a kill.</summary>
     public IMatchEvents? Events;
@@ -380,14 +395,38 @@ public sealed class Assault : GameType
 
         _deathHandler = OnDeath;
         Combat.Death.Add(_deathHandler);
+
+        // QC MUTATOR_HOOKFUNCTION(as, PlayerSpawn): tell each spawning player whether they attack or defend.
+        _spawnHandler = OnPlayerSpawn;
+        MutatorHooks.PlayerSpawn.Add(_spawnHandler);
     }
 
-    public void Deactivate()
+    public override void Deactivate()
     {
+        if (_spawnHandler is not null)
+        {
+            MutatorHooks.PlayerSpawn.Remove(_spawnHandler);
+            _spawnHandler = null;
+        }
         if (_deathHandler is null)
             return;
         Combat.Death.Remove(_deathHandler);
         _deathHandler = null;
+    }
+
+    /// <summary>
+    /// QC MUTATOR_HOOKFUNCTION(as, PlayerSpawn): on spawn, centerprint the player's role — attackers get
+    /// CENTER_ASSAULT_ATTACKING ("You are attacking!"), everyone else CENTER_ASSAULT_DEFENDING
+    /// ("You are defending!"). Keyed on the live attacker team (which swaps each round).
+    /// </summary>
+    private bool OnPlayerSpawn(ref MutatorHooks.PlayerSpawnArgs args)
+    {
+        Framework.Entity player = args.Player;
+        if ((int)player.Team == State.AttackerTeam)
+            NotificationSystem.Send(NotifBroadcast.One, player, MsgType.Center, "ASSAULT_ATTACKING");
+        else
+            NotificationSystem.Send(NotifBroadcast.One, player, MsgType.Center, "ASSAULT_DEFENDING");
+        return false;
     }
 
     /// <summary>
@@ -421,7 +460,11 @@ public sealed class Assault : GameType
         // (TeamScore_AddToTeam(attacker, ST_ASSAULT_OBJECTIVES, 666 - current)) so they top the team scoreboard.
         GS.SetTeamScore(State.AttackerTeam, GS.TeamSlotSecondary, 666);
 
-        if (isFinalRound || State.Round >= 1)
+        // QC WinningCondition_Assault: in campaign there is no second round, the match ends the instant the player
+        // destroys the objective ("ent.cnt == 1 || autocvar_g_campaign" => WINNING_YES).
+        bool campaign = TargetUtilities.IsCampaign?.Invoke() ?? false;
+
+        if (isFinalRound || State.Round >= 1 || campaign)
         {
             MatchEnded = true; // QC: second round (or campaign single round) ends the match
             return;
@@ -429,6 +472,10 @@ public sealed class Assault : GameType
 
         // First round won by attackers: remember their time; a second round will swap roles.
         State.FirstRoundDestroyTime = elapsedAttackSeconds;
+        // QC: starting round 2 — broadcast "Objective destroyed in <time>!" to everyone, with the seconds the
+        // attackers took (Send_Notification(NOTIF_ALL, ..., CENTER_ASSAULT_OBJ_DESTROYED, ceil(time-game_starttime))).
+        NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Center, "ASSAULT_OBJ_DESTROYED",
+            (float)System.Math.Ceiling(elapsedAttackSeconds));
         // Round is not yet over for the match — the host should call StartSecondRound to flip sides.
     }
 
@@ -481,6 +528,60 @@ public sealed class Assault : GameType
         if (isFinalRound || State.Round >= 1)
             MatchEnded = true;
     }
+
+    /// <summary>QC game_starttime — when the (current round's) match clock begins. The host raises it for the
+    /// countdown and re-stamps it on a second round; default 0 (headless clock runs from t=0).</summary>
+    public float GameStartTime { get; set; }
+
+    /// <summary>
+    /// QC WinningCondition_Assault, the per-frame win check (run from MUTATOR_HOOKFUNCTION(as, CheckRules_World)):
+    /// if the attackers already destroyed the core this stays decided; otherwise, once the round's time limit
+    /// elapses with the core still standing the defenders win. The host calls this once per frame (the
+    /// CheckRules cadence) — it is a no-op until the time limit passes. <paramref name="now"/> is the current
+    /// match clock (Api.Clock.Time); the QC default timelimit is 20 minutes (mapinfo default args "timelimit=20").
+    ///
+    /// Returns true once the match (or, mid-match, the round) is decided — the host then either ends the match
+    /// (<see cref="MatchEnded"/>) or, for a non-final round, swaps roles via <see cref="StartSecondRound"/>.
+    /// The faster-destroyer comparison falls out naturally: round two's time limit is set from
+    /// <see cref="AssaultState.FirstRoundDestroyTime"/>, so if the second attackers don't beat it the defenders
+    /// (= the first round's attackers) win on time.
+    /// </summary>
+    public bool DriveFrame(float now)
+    {
+        if (MatchEnded)
+            return true;
+        if (WinningTeam != 0)
+            return true; // attackers already destroyed the core this round (DestroyFinalObjective latched)
+
+        // QC: timelimit defaults to 20 for Assault; in round two it is FirstRoundDestroyTime (the host re-stamps it).
+        float timelimit = Api.Services is not null ? Api.Cvars.GetFloat("timelimit") : 0f;
+        float limitSeconds = State.Round >= 1 && State.FirstRoundDestroyTime > 0f
+            ? State.FirstRoundDestroyTime                 // round 2: beat round 1's destruction time
+            : timelimit * 60f;                            // round 1 (or no recorded time): the map time limit
+
+        if (limitSeconds <= 0f)
+            return false; // no time limit configured — only objective destruction can decide the round
+
+        if (now - GameStartTime < limitSeconds)
+            return false; // time still on the clock; the round continues
+
+        // Time elapsed with the core intact → the defenders win the round (QC default SetWinners(defender)).
+        TimeLimitReached(isFinalRound: State.Round >= 1 || (TargetUtilities.IsCampaign?.Invoke() ?? false));
+        return true;
+    }
+
+    /// <summary>
+    /// QC CA-style round gate: Assault has no per-round "enough players" precondition (the round simply runs the
+    /// objective clock), so the round may always start. Exposed for the host to wire into
+    /// <c>GameWorld.EnableRounds(CanRoundStart, CanRoundEnd, …)</c> in place of the generic defaults.
+    /// </summary>
+    public bool CanRoundStart() => true;
+
+    /// <summary>
+    /// QC round-end gate for the host's round handler: the round ends once it is decided — either the attackers
+    /// destroyed the core (<see cref="WinningTeam"/> latched) or the time limit elapsed (<see cref="DriveFrame"/>).
+    /// </summary>
+    public bool CanRoundEnd() => MatchEnded || WinningTeam != 0;
 
     /// <summary>Player kills don't decide Assault (the objectives do); the handler just notifies the host.</summary>
     private bool OnDeath(ref DeathEvent ev)

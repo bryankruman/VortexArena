@@ -51,6 +51,9 @@ public sealed class BotPopulation
     private int _tokenIndex;             // QC bot_strategytoken (index into _brains)
     private bool _tokenTaken = true;     // QC bot_strategytoken_taken (true → rotate next frame)
     private int _seedCounter = 1;
+    private float _autoskillNextThink;   // QC autoskill_nextthink (5 s autoskill recheck clock)
+    // QC the per-client totalfrags_lastcheck baseline: frags-since-last-autoskill is ScoreFrags - this.
+    private readonly Dictionary<Player, int> _fragsLastCheck = new();
 
     // per-tick input cache (the both-readers-one-command seam; mirrors ServerNet's TickInputTime cache).
     // TickInput implements IMovementInput by delegating to its struct field so InputFor can return the SAME
@@ -148,7 +151,15 @@ public sealed class BotPopulation
             b.Nav.Skill = b.Bot.BotSkill;
         }
 
-        // (e) autoskill (bot.qc:741-747) — ships skill_auto 0; unported (see residuals).
+        // (e) autoskill (bot.qc:741-747): every 5 s, if skill_auto is set, retune the `skill` cvar toward the
+        // best human's recent frag rate (the cvar resync above then writes it onto every bot next frame).
+        if (time > _autoskillNextThink)
+        {
+            float a = Cvars.Float("skill_auto");
+            if (a != 0f)
+                Autoskill(a);
+            _autoskillNextThink = time + 5f;
+        }
 
         // (f) population fill/trim (bot.qc:749-753): one add per frame; a failed spawn backs off 10s.
         if (time > _nextThink)
@@ -322,13 +333,25 @@ public sealed class BotPopulation
     /// The brain is created by the ClientManager OnBotConnected hook → <see cref="RegisterBot"/>.</summary>
     private BotBrain? SpawnBot(string? name, float? skill)
     {
-        (string botName, string model) = string.IsNullOrWhiteSpace(name)
+        (string botName, string model, int forcedTeam) = string.IsNullOrWhiteSpace(name)
             ? PickNameAndModel()
-            : (name!, "");
+            : (name!, "", 0);
 
         ClientManager.ClientInfo info = _world.Clients.ClientConnect(isBot: true, netName: botName);
         Player p = info.Player;
         p.BotSkill = skill ?? Cvars.Skill;                  // QC the global `skill` cvar seeds new bots
+
+        // QC bot_forced_team (bot.qc:255-262 / client.qc:592): a bots.txt-pinned team (argv5) overrides the
+        // auto-balance that ClientConnect just ran — but only in teamplay and not under bot_vs_human/2-team.
+        // Pin it via Teamplay.SetBotForcedTeam (so future autobalance/shuffle keeps honoring it) and re-run
+        // AssignBestTeam, which already early-outs on a pinned bot; the initial call ran before the pin existed.
+        if (forcedTeam != 0 && _world.Teamplay.IsTeamGame
+            && !(Cvars.Bool("bot_vs_human") && _world.Teamplay.TeamCount == 2))
+        {
+            _world.Teamplay.SetBotForcedTeam(p, forcedTeam);
+            _world.Teamplay.AssignBestTeam(p, _world.Clients.Players);
+        }
+
         if (!string.IsNullOrEmpty(model))
         {
             _preferredModel[p] = model;
@@ -417,6 +440,7 @@ public sealed class BotPopulation
         }
         _tickInputs.Remove(p);
         _preferredModel.Remove(p);
+        _fragsLastCheck.Remove(p);
         BotRemoved?.Invoke(p);
     }
 
@@ -480,10 +504,63 @@ public sealed class BotPopulation
     }
 
     // =============================================================================================
+    // autoskill (QC autoskill, bot.qc:569-613)
+    // =============================================================================================
+
+    /// <summary>
+    /// QC <c>autoskill(factor)</c>: compare the best human's and best bot's frags gained since the last check;
+    /// if bots lag by ≥2 (scaled by <paramref name="factor"/>) bump <c>skill</c> up (cap 17), if they lead by
+    /// ≥2 bump it down (floor 0). When no human or no bot scored this window, only the counters are reset; in
+    /// the "nothing to do" middle band the counters are KEPT so they keep accumulating (QC the early return).
+    /// The <c>skill</c> cvar write is picked up by the per-frame resync above (branch d).
+    /// </summary>
+    private void Autoskill(float factor)
+    {
+        int bestBot = -1, bestPlayer = -1;
+        foreach (ClientManager.ClientInfo c in _world.Clients.Clients)
+        {
+            Player p = c.Player;
+            if (p.IsObserver) continue;                       // QC IS_PLAYER
+            int gained = p.ScoreFrags - (_fragsLastCheck.TryGetValue(p, out int last) ? last : 0);
+            if (c.IsBot)
+                bestBot = System.Math.Max(bestBot, gained);
+            else
+                bestPlayer = System.Math.Max(bestPlayer, gained);
+        }
+
+        if (bestBot < 0 || bestPlayer < 0)
+        {
+            // no human or no bot scoring this window: do nothing, but fall through to reset the counters.
+        }
+        else if (bestBot <= bestPlayer * factor - 2f)
+        {
+            float skill = Cvars.Skill;
+            if (skill < 17f)
+                Cvars.Set("skill", skill + 1f);
+        }
+        else if (bestBot >= bestPlayer * factor + 2f)
+        {
+            float skill = Cvars.Skill;
+            if (skill > 0f)
+                Cvars.Set("skill", skill - 1f);
+        }
+        else
+        {
+            return; // "not doing anything" middle band: keep the counters, wait for them to accumulate.
+        }
+
+        // reset the per-client baselines (QC FOREACH_CLIENT it.totalfrags_lastcheck = it.totalfrags).
+        foreach (ClientManager.ClientInfo c in _world.Clients.Clients)
+            if (!c.Player.IsObserver)
+                _fragsLastCheck[c.Player] = c.Player.ScoreFrags;
+    }
+
+    // =============================================================================================
     // bots.txt (QC bot_setnameandstuff — the name/model slice)
     // =============================================================================================
 
-    private List<(string Name, string Model)>? _botRows; // parsed once per world; null until first use
+    // QC bots.txt rows: name (argv0), model (argv1) + the forced-team index (argv5, 1..4; 0 = none).
+    private List<(string Name, string Model, int ForcedTeam)>? _botRows; // parsed once per world
 
     /// <summary>
     /// Pick a name + model from the bot config file (QC bot_setnameandstuff over bot_config_file=bots.txt):
@@ -493,7 +570,7 @@ public sealed class BotPopulation
     /// small built-in name table when the file isn't mounted. The skin/shirt/pants columns and the 12 skill
     /// modifiers are unported (single-knob skill; see residuals).
     /// </summary>
-    private (string name, string model) PickNameAndModel()
+    private (string name, string model, int forcedTeam) PickNameAndModel()
     {
         _botRows ??= ParseBotFile();
 
@@ -506,19 +583,21 @@ public sealed class BotPopulation
         string suffix = Cvars.String("bot_suffix");
 
         // prefer rows whose decorated name is unused (QC prio weighting), random among the preferred set.
-        var candidates = new List<(string Name, string Model)>();
-        foreach ((string Name, string Model) row in _botRows)
+        var candidates = new List<(string Name, string Model, int ForcedTeam)>();
+        foreach ((string Name, string Model, int ForcedTeam) row in _botRows)
             if (!used.Contains(prefix + row.Name + suffix))
                 candidates.Add(row);
         if (candidates.Count == 0)
             candidates = _botRows;
 
         string baseName = "Bot", model = "";
+        int forcedTeam = 0;
         if (candidates.Count > 0)
         {
-            (string Name, string Model) row = candidates[_nameRng.Next(candidates.Count)];
+            (string Name, string Model, int ForcedTeam) row = candidates[_nameRng.Next(candidates.Count)];
             baseName = row.Name;
             model = row.Model;
+            forcedTeam = row.ForcedTeam;
         }
 
         string name = prefix + baseName + suffix;
@@ -531,7 +610,7 @@ public sealed class BotPopulation
         }
 
         string modelPath = string.IsNullOrEmpty(model) ? "" : $"models/player/{model}.iqm"; // QC appends .iqm
-        return (name, modelPath);
+        return (name, modelPath, forcedTeam);
     }
 
     private readonly Random _nameRng = new(12345);
@@ -549,7 +628,7 @@ public sealed class BotPopulation
         _botRows ??= ParseBotFile();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var models = new List<string>();
-        foreach ((string Name, string Model) row in _botRows)
+        foreach ((string Name, string Model, int ForcedTeam) row in _botRows)
         {
             if (string.IsNullOrEmpty(row.Model)) continue;
             string path = $"models/player/{row.Model}.iqm";   // QC appends .iqm (matches PickNameAndModel)
@@ -559,9 +638,9 @@ public sealed class BotPopulation
     }
 
     /// <summary>Parse bot_config_file (bots.txt) rows via the world's ConfigReader; comments (// #) skipped.</summary>
-    private List<(string Name, string Model)> ParseBotFile()
+    private List<(string Name, string Model, int ForcedTeam)> ParseBotFile()
     {
-        var rows = new List<(string, string)>();
+        var rows = new List<(string, string, int)>();
         string file = Cvars.String("bot_config_file");
         if (string.IsNullOrEmpty(file)) file = "bots.txt";
         string? text = _world.ConfigReader?.Invoke(file);
@@ -576,14 +655,19 @@ public sealed class BotPopulation
                 string[] f = line.Split('\t');
                 if (f.Length == 0 || string.IsNullOrWhiteSpace(f[0]))
                     continue;
-                rows.Add((f[0].Trim(), f.Length > 1 ? f[1].Trim() : ""));
+                // argv(5) = forced-team index (QC bot_forced_team = stof(argv(5))); kept only if 1..4.
+                int forcedTeam = 0;
+                if (f.Length > 5 && int.TryParse(f[5].Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int t)
+                    && t >= 1 && t <= 4)
+                    forcedTeam = t;
+                rows.Add((f[0].Trim(), f.Length > 1 ? f[1].Trim() : "", forcedTeam));
             }
         }
         if (rows.Count == 0)
         {
             // no bots.txt mounted: the old built-in table (kept so a bare test floor still names its bots).
             foreach (string n in new[] { "Hellfire", "Toxic", "Scorcher", "Discbot", "Nexus", "Eureka", "Sensible", "Mystery" })
-                rows.Add((n, ""));
+                rows.Add((n, "", 0));
         }
         return rows;
     }

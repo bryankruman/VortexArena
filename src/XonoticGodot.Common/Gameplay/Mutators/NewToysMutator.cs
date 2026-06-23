@@ -1,7 +1,6 @@
 // Port of common/mutators/mutator/new_toys/sv_new_toys.qc (+ new_toys/new_toys.qc nt_IsNewToy/nt_GetReplacement)
 
 using XonoticGodot.Common.Framework;
-using XonoticGodot.Common.Math;
 using XonoticGodot.Common.Services;
 
 namespace XonoticGodot.Common.Gameplay;
@@ -17,15 +16,19 @@ namespace XonoticGodot.Common.Gameplay;
 /// (<see cref="GetFullReplacement"/> / <see cref="GetReplacement"/>), the new-toy weapon set
 /// (<see cref="IsNewToy"/>), the MUTATOR_ONADD/REMOVE weapon-unblock (clear <see cref="WeaponFlags.MutatorBlocked"/>
 /// on the new-toy weapons so they're givable, restore it when the mutator drops), and the SetStartItems rearrange
-/// — for each start weapon with a replacement, swap it for the new-toy variant per <c>g_new_toys_autoreplace</c>
-/// (NEVER keeps it, ALWAYS swaps, RANDOM keeps-or-swaps 50/50).
+/// — for each start weapon with a replacement, OR in its resolved tokens per <c>g_new_toys_autoreplace</c>
+/// (NEVER keeps it, ALWAYS swaps it for the new-toy variant, RANDOM grants BOTH the core and the new-toy — faithful
+/// to QC's bit-OR of both <c>nt_GetReplacement</c> tokens into <c>newdefault</c>, not a 50/50 coin-flip).
 ///
-/// NOTE (deferred — map item pipeline): QC also hooks <c>SetWeaponreplace</c> and <c>FilterItem</c> to rewrite
-/// the weapon a map <c>weapon_*</c> entity spawns as and to swap its pickup sound. The port has no map
-/// item-entity spawn / weaponreplace pipeline yet (MapObjectsRegistry registers no <c>weapon_*</c> spawnfuncs),
-/// so those two hooks have nothing to fire against — the SetStartItems half (the start loadout) is the live,
-/// faithful part; the map-spawn half is flagged in crossTaskNeeds and reactivates for free once an item pipeline
-/// lands (the mapping helpers below already encode all of nt_GetReplacement).
+/// NOTE (deferred — map item pipeline, cross-file): QC also hooks <c>SetWeaponreplace</c> and <c>FilterItem</c> to
+/// rewrite the weapon a map <c>weapon_*</c> entity spawns as and to swap its pickup sound. The port's weapon-spawn
+/// pipeline (<c>ItemSpawnFuncs.WeaponSpawn → StartItem.Spawn</c>) DOES exist and DOES register one
+/// <c>weapon_&lt;netname&gt;</c> spawnfunc per weapon, but there is no <c>SetWeaponreplace</c>/<c>FilterItem</c> hook
+/// chain in <c>MutatorHooks</c> for those weapon entities and no <c>W_Apply_Weaponreplace</c> equivalent / per-entity
+/// <c>"new_toys"</c> BSP-key parse — so those two hooks have nothing to fire against. Wiring them needs new seams in
+/// files this unit may not touch (MutatorHooks, ItemSpawnFuncs, the BSP entity parser, SoundsList pickup-sound
+/// override); the mapping helpers below already encode all of <c>nt_GetReplacement</c>, so the handlers reactivate
+/// for free once those seams land. Tracked in the parity registry (mapreplace.set_weaponreplace, pickup.roflsound).
 /// </summary>
 [Mutator]
 public sealed class NewToysMutator : MutatorBase
@@ -125,26 +128,26 @@ public sealed class NewToysMutator : MutatorBase
     {
         StartLoadout l = args.Loadout;
 
-        // QC walks every weapon, tokenizes its replacement, and ORs the resolved weapons into newdefault, applying
-        // them under start_weapons_defaultmask. The port's loadout is a NetName set, so for each currently-default
-        // weapon with a replacement, swap it for the resolved token (one chosen at random for the RANDOM list).
-        var add = new List<string>();
-        var remove = new List<string>();
+        // QC walks every weapon, tokenizes nt_GetReplacement(it.netname, autoreplace), and ORs EVERY resolved
+        // token's weapon-bit into newdefault whenever the source weapon's bit is set in start_weapons. So for a
+        // start weapon `w` the resolved set replaces it:
+        //   NEVER (or no mapping) → {w}            (unchanged)
+        //   ALWAYS               → {newtoy}        (core dropped, new-toy added)
+        //   RANDOM               → {w, newtoy}     (BOTH bits OR'd in — player receives both, NOT a coin-flip)
+        // The port's loadout is a NetName set (HashSet), so we mirror that: gather the resolved token set for each
+        // current start weapon, then rebuild Weapons from the union. (No start_weapons_defaultmask in the port —
+        // the whole start set is treated as the default mask, matching the stock blaster-only loadout.)
+        var resolved = new HashSet<string>(StringComparer.Ordinal);
         foreach (string have in l.Weapons)
         {
+            // nt_GetReplacement returns the space-joined token list for this autoreplace mode; OR every token in.
             string repl = GetReplacement(have, AutoReplace);
-            if (repl == have) continue; // no change (NEVER, or no mapping)
-
-            // RANDOM yields "core newtoy" — pick one token; ALWAYS yields the single new-toy token.
-            string[] toks = repl.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            string chosen = toks.Length <= 1 ? repl : toks[Prandom.RangeInt(0, toks.Length)];
-            if (chosen == have) continue;
-
-            remove.Add(have);
-            add.Add(chosen);
+            foreach (string tok in repl.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+                resolved.Add(tok);
         }
-        foreach (string r in remove) l.Weapons.Remove(r);
-        foreach (string a in add) l.Weapons.Add(a);
+
+        l.Weapons.Clear();
+        foreach (string tok in resolved) l.Weapons.Add(tok);
         return false;
     }
 

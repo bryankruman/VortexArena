@@ -151,6 +151,19 @@ public static class TurretAI
     public static void Forget(Entity e) => _states.Remove(e);
 
     /// <summary>
+    /// Read a turret framework cvar (QC <c>autocvar_g_turrets_*</c>), falling back to the turrets.cfg default
+    /// when there are no engine services or the cvar isn't registered in the store. The turret cvars aren't
+    /// seeded in the port's cvar table, so <c>GetFloat</c> alone would read 0 — which is wrong for the non-zero
+    /// defaults (maxdelay 1, mindelay 0.1, aimidle 5); detect "unset" via the empty <c>GetString</c> and supply
+    /// the Base default instead.
+    /// </summary>
+    private static float Cvar(string name, float fallback)
+    {
+        if (Api.Services is null) return fallback;
+        return Api.Cvars.GetString(name).Length == 0 ? fallback : Api.Cvars.GetFloat(name);
+    }
+
+    /// <summary>
     /// The world-space forward of the head: the turret body angles plus the slewed local head angles. This is
     /// what shots travel along and what the on-target/angle checks use (QC <c>this.angles + this.tur_head.angles</c>).
     /// </summary>
@@ -184,14 +197,15 @@ public static class TurretAI
     /// missile rule). Mirrors the QC reject-cascade (which returns a negative reason code on reject, >0 accept).
     /// </summary>
     public static bool ValidTarget(Entity turret, Entity? target, int selectFlags, in TurretParams p)
-        => ValidTarget(turret, target, selectFlags, p.RangeMin, p.RangeMax, p.AimMaxPitch, p.AimMaxRot);
+        => ValidTarget(turret, target, selectFlags, p.RangeMin, p.RangeMax, p.AimMaxPitch, p.AimMaxRot,
+            p.FireToleranceDist > 0f ? p.FireToleranceDist : 64f);
 
     /// <summary>Overload without per-axis angle limits (chain hops, support scans) — angle gating only when SelectAngleLimits is set with sane defaults.</summary>
     public static bool ValidTarget(Entity turret, Entity? target, int selectFlags, float rangeMin, float rangeMax)
         => ValidTarget(turret, target, selectFlags, rangeMin, rangeMax, 90f, 360f);
 
     public static bool ValidTarget(Entity turret, Entity? target, int selectFlags, float rangeMin, float rangeMax,
-        float aimMaxPitch, float aimMaxRot)
+        float aimMaxPitch, float aimMaxRot, float fireToleranceDist = 64f)
     {
         if (target is null || target.IsFreed) return false;
         if (ReferenceEquals(target, turret)) return false;
@@ -263,8 +277,9 @@ public static class TurretAI
             Vector3 eye = turret.Origin + new Vector3(0f, 0f, 16f);
             Vector3 aimAt = TargetCenter(target);
             TraceResult tr = Api.Trace.Trace(eye, Vector3.Zero, Vector3.Zero, aimAt, MoveFilter.Normal, turret);
-            // Blocked if the trace stopped well short of the target (QC aim_firetolerance_dist test).
-            if ((aimAt - tr.EndPos).Length() > 64f && !ReferenceEquals(tr.Ent, target))
+            // Blocked if the trace stopped well short of the target (QC aim_firetolerance_dist test:
+            // sv_turrets.qc:791 vdist(v_tmp - trace_endpos, >, aim_firetolerance_dist)).
+            if ((aimAt - tr.EndPos).Length() > fireToleranceDist && !ReferenceEquals(tr.Ent, target))
                 return false;
         }
 
@@ -532,9 +547,10 @@ public static class TurretAI
         }
 
         // (Re)acquire a target. QC: scan when the current one is invalid, on the validate throttle, but never
-        // more often than the mindelay.
-        const float minDelay = 0.1f; // autocvar_g_turrets_targetscan_mindelay
-        const float maxDelay = 0.6f; // autocvar_g_turrets_targetscan_maxdelay
+        // more often than the mindelay. Cvar-backed (QC autocvar_g_turrets_targetscan_*) with the turrets.cfg
+        // framework defaults — the maxdelay default is 1 (the port previously hardcoded 0.6, rescanning too often).
+        float minDelay = Cvar("g_turrets_targetscan_mindelay", 0.1f);
+        float maxDelay = Cvar("g_turrets_targetscan_maxdelay", 1f);
         bool doScan = st.TargetSelectTime + maxDelay < now;
 
         if (st.TargetValidateTime < now && !ValidTarget(turret, turret.Enemy, p.SelectFlags, in p))
@@ -558,7 +574,7 @@ public static class TurretAI
             return null;
         }
 
-        st.AimIdleUntil = now + 5f;   // autocvar_g_turrets_aimidle_delay — hold aim briefly after losing target
+        st.AimIdleUntil = now + Cvar("g_turrets_aimidle_delay", 5f);   // hold aim briefly after losing target
 
         // Aim + track (separate head bone).
         st.AimPos = AimPoint(turret, enemy, in p);
@@ -588,6 +604,10 @@ public static class TurretAI
     {
         TurretState st = State(turret);
         float now = Api.Services is not null ? Api.Clock.Time : 0f;
+
+        // QC turret_fire master fire-disable: autocvar_g_turrets_nofire short-circuits the whole fire (no
+        // weapon, no refire/ammo/volley bookkeeping) so the turret tracks but never shoots.
+        if (Cvar("g_turrets_nofire", 0f) != 0f) return;
 
         fire(turret, enemy);
 

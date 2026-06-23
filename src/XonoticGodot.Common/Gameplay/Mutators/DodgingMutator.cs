@@ -27,16 +27,19 @@ public sealed class DodgingMutator : MutatorBase
     public float UpSpeed = 200f;
 
     /// <summary>QC autocvar_sv_dodging_delay — minimum seconds between dodges.</summary>
-    public float Delay = 0.5f;
+    public float Delay = 0.6f;
 
     /// <summary>QC autocvar_sv_dodging_horiz_force_slowest — horizontal force at the low end of the speed range.</summary>
-    public float HorizForceSlowest = 200f;
+    public float HorizForceSlowest = 400f;
 
     /// <summary>QC autocvar_sv_dodging_horiz_force_fastest — horizontal force at the high end of the speed range.</summary>
     public float HorizForce = 400f;
 
+    /// <summary>QC autocvar_sv_dodging_horiz_force_frozen — flat horizontal force used while frozen (PHYS_FROZEN).</summary>
+    public float HorizForceFrozen = 200f;
+
     /// <summary>QC autocvar_sv_dodging_horiz_speed_min — speed mapped to the slowest force.</summary>
-    public float HorizSpeedMin = 400f;
+    public float HorizSpeedMin = 200f;
 
     /// <summary>QC autocvar_sv_dodging_horiz_speed_max — speed mapped to the fastest force.</summary>
     public float HorizSpeedMax = 1000f;
@@ -62,6 +65,24 @@ public sealed class DodgingMutator : MutatorBase
     /// <summary>QC cl_dodging_timeout — max seconds between the two taps of a double-tap.</summary>
     public float Timeout = 0.2f;
 
+    /// <summary>QC autocvar_sv_dodging_frozen — let a frozen (Freeze Tag) player dodge.</summary>
+    public bool FrozenDodging;
+
+    /// <summary>QC autocvar_sv_dodging_frozen_doubletap — when set, a frozen player still needs the double-tap;
+    /// when clear, a single tap triggers the dodge (the frozen_no_doubletap path).</summary>
+    public bool FrozenDoubletap;
+
+    /// <summary>QC autocvar_sv_dodging_clientselect — require a per-client opt-in (cl_dodging) before dodging works.</summary>
+    public bool ClientSelect;
+
+    /// <summary>
+    /// PER-CLIENT opt-in source (QC <c>CS_CVAR(this).cvar_cl_dodging</c>, replicated). When <see cref="ClientSelect"/>
+    /// is set, the server consults this to decide if a given client has dodging enabled. Defaults to reading the
+    /// server-side <c>cl_dodging</c> cvar (the listen-server / not-yet-replicated value); the server's replication
+    /// layer can install a real per-client provider. Mirrors <see cref="Inventory.PriorityProvider"/>.
+    /// </summary>
+    public static Func<Entity, bool>? ClientDodgingProvider;
+
     public DodgingMutator() => NetName = "dodging";
 
     // QC SVQC: REGISTER_MUTATOR(dodging, cvar("g_dodging")).
@@ -86,6 +107,7 @@ public sealed class DodgingMutator : MutatorBase
             float d = Api.Cvars.GetFloat("sv_dodging_delay");              if (d != 0f) Delay = d;
             float f = Api.Cvars.GetFloat("sv_dodging_horiz_force_fastest"); if (f != 0f) HorizForce = f;
             float fs = Api.Cvars.GetFloat("sv_dodging_horiz_force_slowest"); if (fs != 0f) HorizForceSlowest = fs;
+            float ff = Api.Cvars.GetFloat("sv_dodging_horiz_force_frozen");  if (ff != 0f) HorizForceFrozen = ff;
             float sn = Api.Cvars.GetFloat("sv_dodging_horiz_speed_min");     if (sn != 0f) HorizSpeedMin = sn;
             float sx = Api.Cvars.GetFloat("sv_dodging_horiz_speed_max");     if (sx != 0f) HorizSpeedMax = sx;
             float ht = Api.Cvars.GetFloat("sv_dodging_height_threshold");    if (ht != 0f) HeightThreshold = ht;
@@ -95,6 +117,9 @@ public sealed class DodgingMutator : MutatorBase
             MaxSpeed = Api.Cvars.GetFloat("sv_dodging_maxspeed");
             AirMaxSpeed = Api.Cvars.GetFloat("sv_dodging_air_maxspeed");
             float to = Api.Cvars.GetFloat("cl_dodging_timeout");            if (to != 0f) Timeout = to;
+            FrozenDodging = Api.Cvars.GetFloat("sv_dodging_frozen") != 0f;
+            FrozenDoubletap = Api.Cvars.GetFloat("sv_dodging_frozen_doubletap") != 0f;
+            ClientSelect = Api.Cvars.GetFloat("sv_dodging_clientselect") != 0f;
         }
     }
 
@@ -125,39 +150,46 @@ public sealed class DodgingMutator : MutatorBase
         if (Api.Services is null) return false;
         float now = Api.Clock.Time;
 
+        // QC frozen_dodging / frozen_no_doubletap: a frozen (Freeze Tag) player can dodge when sv_dodging_frozen,
+        // and with sv_dodging_frozen_doubletap clear a *single* tap fires (bypassing the state-change + timeout).
+        bool frozenDodging = PhysFrozen(player) && FrozenDodging;
+        bool frozenNoDoubletap = frozenDodging && !FrozenDoubletap;
+
         float mvF = player.MovementForward;  // movement.x  (forward + / back -)
         float mvR = player.MovementRight;    // movement.y  (right + / left -)
         var pressed = (PressedKeyBits)player.PressedKeys;
-        bool dodgeButton = (pressed & PressedKeyBits.Crouch) == 0 && DodgeButtonHeld(player);
+        // QC PHYS_INPUT_BUTTON_DODGE — the dedicated +dodge button, checked unconditionally (no crouch exclusion).
+        bool dodgeButton = DodgeButtonHeld(player);
 
         float tapX = 0f, tapY = 0f;
         bool detected = false;
 
         // QC X(COND,BTN,RESULT): a fresh press in a movement direction is a double-tap if it landed within
-        // the timeout of the previous press in the same direction (or if +dodge is held). Each direction is
-        // checked inline (rather than via a closure) to keep the ref-into-entity-field semantics explicit.
-        if (mvF < 0f && (pressed & PressedKeyBits.Backward) == 0)
+        // the timeout of the previous press in the same direction (or if +dodge is held). The frozen_no_doubletap
+        // path forces both the state-change test and the timeout to pass. Each direction is checked inline
+        // (rather than via a closure) to keep the ref-into-entity-field semantics explicit.
+        if (mvF < 0f && ((pressed & PressedKeyBits.Backward) == 0 || frozenNoDoubletap))
         {
             tapX -= 1f;
-            if ((now - player.DodgeLastBackwardTime) < Timeout || dodgeButton) detected = true;
+            if ((now - player.DodgeLastBackwardTime) < Timeout || frozenNoDoubletap || dodgeButton) detected = true;
             player.DodgeLastBackwardTime = now;
         }
-        if (mvF > 0f && (pressed & PressedKeyBits.Forward) == 0)
+        if (mvF > 0f && ((pressed & PressedKeyBits.Forward) == 0 || frozenNoDoubletap))
         {
             tapX += 1f;
-            if ((now - player.DodgeLastForwardTime) < Timeout || dodgeButton) detected = true;
+            if ((now - player.DodgeLastForwardTime) < Timeout || frozenNoDoubletap || dodgeButton) detected = true;
             player.DodgeLastForwardTime = now;
         }
-        if (mvR < 0f && (pressed & PressedKeyBits.Left) == 0)
+        if (mvR < 0f && ((pressed & PressedKeyBits.Left) == 0 || frozenNoDoubletap))
         {
             tapY -= 1f;
-            if ((now - player.DodgeLastLeftTime) < Timeout || dodgeButton) detected = true;
+            if ((now - player.DodgeLastLeftTime) < Timeout || frozenNoDoubletap || dodgeButton) detected = true;
             player.DodgeLastLeftTime = now;
         }
-        if (mvR > 0f && (pressed & PressedKeyBits.Right) == 0)
+        if (mvR > 0f && ((pressed & PressedKeyBits.Right) == 0 || frozenNoDoubletap))
         {
             tapY += 1f;
-            if ((now - player.DodgeLastRightTime) < Timeout || dodgeButton) detected = true;
+            if ((now - player.DodgeLastRightTime) < Timeout || frozenNoDoubletap || dodgeButton) detected = true;
             player.DodgeLastRightTime = now;
         }
 
@@ -168,14 +200,13 @@ public sealed class DodgingMutator : MutatorBase
             if ((now - player.LastDodgingTime) >= Delay)
             {
                 QMath.AngleVectors(player.Angles, out Vector3 forward, out Vector3 right, out _);
-                float horiz = Horiz2D(player.Velocity);
 
                 bool canGround = IsCloseToGround(player) && (MaxSpeed == 0f || player.Velocity.Length() < MaxSpeed);
                 bool canWall = WallDodging && IsCloseToWall(player, forward, right);
                 bool canAir = AirDodging && (AirMaxSpeed == 0f || player.Velocity.Length() < AirMaxSpeed);
 
                 if (canGround || canWall || canAir)
-                    started = BeginDodge(player, tapX, tapY, DetermineForce(horiz));
+                    started = BeginDodge(player, tapX, tapY, DetermineForce(player));
             }
         }
 
@@ -197,9 +228,24 @@ public sealed class DodgingMutator : MutatorBase
         // +dodge bind lands it can set a flag the input layer exposes here.)
         => false;
 
-    // float determine_force(player) — map current horizontal speed to a force in [slowest..fastest].
-    private float DetermineForce(float horizSpeed)
-        => MapBoundRanges(horizSpeed, HorizSpeedMin, HorizSpeedMax, HorizForceSlowest, HorizForce);
+    // QC PHYS_DODGING_ENABLED(s) = CS_CVAR(s).cvar_cl_dodging — the per-client opt-in, consulted only when
+    // sv_dodging_clientselect is set. Uses the replicated provider if installed, else the server cvar.
+    private static bool ClientDodgingEnabled(Entity player)
+    {
+        if (ClientDodgingProvider is { } p) return p(player);
+        return Api.Services is not null && Api.Cvars.GetFloat("cl_dodging") != 0f;
+    }
+
+    // float determine_force(player) — a frozen player gets the flat frozen force; otherwise map the current
+    // horizontal speed to a force in [slowest..fastest].
+    private float DetermineForce(Entity player)
+    {
+        if (PhysFrozen(player)) return HorizForceFrozen;
+        return MapBoundRanges(Horiz2D(player.Velocity), HorizSpeedMin, HorizSpeedMax, HorizForceSlowest, HorizForce);
+    }
+
+    // QC PHYS_FROZEN(this) — the gametype freeze stat (Freeze Tag etc.).
+    private static bool PhysFrozen(Entity player) => player.FrozenStat != 0;
 
     // QC map_bound_ranges(x, from_min, from_max, to_min, to_max) — clamp x to [from_min,from_max] then lerp.
     private static float MapBoundRanges(float x, float fromMin, float fromMax, float toMin, float toMax)
@@ -252,7 +298,7 @@ public sealed class DodgingMutator : MutatorBase
     {
         if (Api.Services is null) return false;
         if ((Api.Clock.Time - player.LastDodgingTime) < Delay) return false;
-        return BeginDodge(player, direction.X, direction.Y, DetermineForce(Horiz2D(player.Velocity)));
+        return BeginDodge(player, direction.X, direction.Y, DetermineForce(player));
     }
 
     // Set up the dodge state (caller has already validated the delay + state gates). QC sets dodging_action,
@@ -277,8 +323,11 @@ public sealed class DodgingMutator : MutatorBase
     {
         if (player.DodgingAction == 0f) return;
 
-        // QC: no dodging while swimming or dead.
-        if (player.WaterLevel >= 2 || player.DeadState != DeadFlag.No)
+        // QC: no dodging while swimming, dead, or (clientselect) when the client hasn't opted in — unless the
+        // player is a frozen dodger (which is allowed independent of the per-client cl_dodging gate).
+        bool frozenDodging = PhysFrozen(player) && FrozenDodging;
+        if (player.WaterLevel >= 2 || player.DeadState != DeadFlag.No
+            || (ClientSelect && !ClientDodgingEnabled(player) && !frozenDodging))
         {
             player.DodgingAction = 0f;
             player.DodgingDirection = Vector3.Zero;
@@ -303,9 +352,12 @@ public sealed class DodgingMutator : MutatorBase
         {
             player.Flags &= ~EntFlags.OnGround; // QC UNSET_ONGROUND
             player.Velocity += UpSpeed * up;
-            // QC: if autocvar_sv_dodging_sound, PlayerSound(playersound_jump) + animdecide ANIMACTION_JUMP.
+            // QC: if autocvar_sv_dodging_sound, PlayerSound(playersound_jump). (The sound is gated by the cvar.)
             if (Api.Services is not null && Api.Cvars.GetFloat("sv_dodging_sound") != 0f)
                 Api.Sound.Play(player, SoundChannel.Body, "player/jump.wav");
+            // QC also calls animdecide_setaction(this, ANIMACTION_JUMP, true) UNCONDITIONALLY here (outside the
+            // sound guard) so the dodge hop shows the jump pose. No animdecide/anim-action seam exists in the
+            // port yet — see todos for the cross-file infrastructure needed to drive ANIMACTION_JUMP.
             player.DodgingSingleAction = 0f;
         }
 

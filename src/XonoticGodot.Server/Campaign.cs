@@ -73,6 +73,13 @@ public sealed class Campaign
     /// <summary>True once <see cref="PreInit"/> failed and the campaign was aborted (fall back to normal play).</summary>
     public bool Aborted { get; private set; }
 
+    /// <summary>
+    /// QC <c>Campaign_GetLevelNum</c> (<c>server/campaign.qc</c>): the 1-based level number shown on the client
+    /// welcome/info dialog (<c>campaign_level + 1</c>). The host networks this in SendWelcomeMessage when
+    /// <c>g_campaign</c>.
+    /// </summary>
+    public int LevelNum => Level + 1;
+
     /// <summary>Diagnostics sink (QC bprint/LOG). Defaults to swallowing.</summary>
     public Action<string>? Log { get; set; }
 
@@ -88,6 +95,20 @@ public sealed class Campaign
 
     /// <summary>Writes <c>campaign.cfg</c>'s contents. Defaults to <see cref="System.IO"/>.</summary>
     public Action<string>? CfgWriter { get; set; }
+
+    /// <summary>
+    /// QC <c>GetMapname()</c>: the map the engine actually loaded (host-wired). Used by <see cref="Validate"/>
+    /// (QC <c>Campaign_Invalid</c>) to confirm the loaded map matches the campaign file's level-0 entry. When
+    /// unset the map check is skipped (the menu pre-resolves the map, so a mismatch is unlikely).
+    /// </summary>
+    public Func<string>? LoadedMapName { get; set; }
+
+    /// <summary>
+    /// QC <c>MapInfo_CurrentGametype() != MapInfo_Type_FromString(campaign_gametype[0])</c>: returns true when the
+    /// running gametype does NOT match the campaign file's level-0 gametype NetName (host-wired). Used by
+    /// <see cref="Validate"/>; when unset the gametype check is skipped.
+    /// </summary>
+    public Func<string, bool>? GametypeMismatch { get; set; }
 
     /// <summary>
     /// QC <c>CampaignSetup</c>: issued when the campaign transitions to a level. Args: (campaignName, index,
@@ -240,6 +261,42 @@ public sealed class Campaign
         SettempCvars.Set("bot_number", _entries[0].Bots);
         SettempCvars.Set("bot_vs_human", "0");
 
+        // QC: MapInfo_SwitchGameType(...) is reproduced indirectly (the host boots with CurrentGametype),
+        // then Campaign_Invalid() revalidates the running map/gametype against the loaded entry.
+        if (!Validate())
+            return false;
+
+        return true;
+    }
+
+    /// <summary>
+    /// QC <c>Campaign_Invalid</c> (<c>server/campaign.qc</c>): confirm the running gametype + map match the loaded
+    /// level-0 entry, else <see cref="Bailout"/> and return false. Base calls it at the end of
+    /// <c>CampaignPreInit</c> and the start of <c>CampaignPostInit</c>. The map/gametype probes are host-wired
+    /// (<see cref="LoadedMapName"/> / <see cref="GametypeMismatch"/>); when a probe is unset its check is skipped.
+    /// </summary>
+    public bool Validate()
+    {
+        if (_entries.Count < 1)
+            return true;
+
+        if (GametypeMismatch is not null && GametypeMismatch(_entries[0].Gametype))
+        {
+            Bailout("wrong gametype!");
+            return false;
+        }
+
+        if (LoadedMapName is not null)
+        {
+            string wanted = _entries[0].MapName;
+            string actual = LoadedMapName();
+            if (!string.Equals(wanted, actual, StringComparison.Ordinal))
+            {
+                Bailout($"wrong map: {wanted} != {actual}");
+                return false;
+            }
+        }
+
         return true;
     }
 
@@ -250,6 +307,9 @@ public sealed class Campaign
     public void PostInit()
     {
         if (_entries.Count < 1)
+            return;
+        // QC: now some sanity checks — Campaign_Invalid() at PostInit entry. Aborted stops the limit application.
+        if (!Validate())
             return;
         if (Cvars.Bool("_campaign_testrun"))
         {

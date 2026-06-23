@@ -79,8 +79,11 @@ public class MusicSystemTests
         Assert.Equal(MapMover.ActiveNot, e.Active);
         Assert.NotNull(e.Use);
 
-        // Trigger it: should activate.
+        // QC target_music_use (music.qc:59-72) gates on IS_REAL_CLIENT(actor): only a real client
+        // activator sends/re-sends the override. A bare (non-client) trigger source is a no-op, so the
+        // activator must carry EntFlags.Client to exercise the activation path.
         Entity activator = Api.Entities.Spawn();
+        activator.Flags |= EntFlags.Client;
         e.Use!(e, activator);
         Assert.Equal(MapMover.ActiveActive, e.Active);
 

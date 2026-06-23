@@ -14,8 +14,9 @@ namespace XonoticGodot.Common.Gameplay;
 /// Identity/attributes from devastator.qh; balance from bal-wep-xonotic.cfg (g_balance_devastator_*).
 /// This port covers the rocket projectile, its acceleration, laser guiding (W_Devastator_SteerTo steering
 /// toward the owner's aim, gated by guidedelay/guiderate + the rl_release latch), the spawnshield/proximity
-/// remote-detonation gate, shoot-down, and the splash damage. Only the rocket-jump remote variant, the
-/// airshot achievement and CSQC fly-sound networking are left out (render/online).
+/// remote-detonation gate, shoot-down (event_damage -> W_PrepareExplosionByDamage), the airshot achievement,
+/// the HITTYPE_BOUNCE kill-message split, and the splash damage. Only the rocket-jump remote variant
+/// (remote_jump*, stock-off), per-weapon bot aim (wr_aim) and CSQC fly-sound networking are left out.
 /// </summary>
 [Weapon]
 public sealed class Devastator : Weapon
@@ -127,6 +128,13 @@ public sealed class Devastator : Weapon
         }
     }
 
+    // METHOD(Devastator, wr_setup) — arm the rl_release latch on equip so the first primary press launches a
+    // rocket (instead of being eaten as a "still guiding the previous one" hold). devastator.qc:491-494.
+    public override void WrSetup(Entity actor, WeaponSlot slot)
+    {
+        actor.WeaponState(slot).RlRelease = true;
+    }
+
     // Refire/animtime from the (cvar-seeded) balance block — the Devastator has a single fire mode (the
     // secondary remote-detonate is a press action, not a refire-gated shot).
     public override float RefireFor(FireMode fire) => Cvars.Refire;
@@ -182,13 +190,23 @@ public sealed class Devastator : Weapon
 
         missile.Touch = (self, other) => OnTouch(self, other);
         missile.Think = self => OnThink(self, actor, slot, deathTime);
-        missile.ProjectileDamage = (self, attacker) => Explode(self, null);
+        // W_Devastator_Damage -> W_PrepareExplosionByDamage: the shoot-down callback only fires once HP hits 0
+        // (Projectiles.MakeShootable runs the W_CheckProjectileDamage gate + RES_HEALTH subtraction first), so a
+        // non-lethal graze no longer detonates the rocket. A shot-down rocket carries HITTYPE_BOUNCE (no direct hit).
+        missile.ProjectileDamage = (self, attacker) => Explode(self, null, bounced: true);
         missile.NextThink = Api.Clock.Time;
 
         // MUTATOR_CALLHOOK(EditProjectile, actor, missile) (devastator.qc) — before the rocket's first think,
         // so invincibleproj zeroes the rocket's health before it can be shot down.
         var ep = new MutatorHooks.EditProjectileArgs(actor, missile);
         MutatorHooks.EditProjectile.Call(ref ep);
+
+        // QC missile.event_damage = W_Devastator_Damage (+ DAMAGE_YES + RES_HEALTH already set above). Install the
+        // GtEventDamage shoot-down shim the damage pipeline actually dispatches; without this the rocket's
+        // ProjectileDamage callback is dead (no live invoker on the flying-rocket path). No exception (-1): the
+        // rocket is destructible by whoever the g_projectiles_damage ladder permits. Called AFTER EditProjectile so
+        // an invincibleproj-zeroed rocket is already at 0 hp and the first hit detonates it (faithful).
+        Projectiles.MakeShootable(missile, exception: -1f);
 
         Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/rocket_fire.wav");
         EffectEmitter.Emit("ROCKET_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
@@ -204,23 +222,27 @@ public sealed class Devastator : Weapon
         self.NextThink = Api.Clock.Time;
         if (Api.Clock.Time > deathTime)
         {
-            Explode(self, null);
+            // QC W_Devastator_Think: this.projectiledeathtype |= HITTYPE_BOUNCE on a lifetime-timeout detonation
+            // so wr_killmessage classifies it as a SPLASH (not DIRECT) kill.
+            Explode(self, null, bounced: true);
             return;
         }
 
-        // accelerate: velspeed = speed - (velocity . forward); add up to speedaccel*frametime along forward.
+        // accelerate: velspeed = speed*W_WeaponSpeedFactor - (velocity . forward); add up to
+        // speedaccel*W_WeaponSpeedFactor*frametime along forward (QC W_Devastator_Think:198-200).
+        float speedFactor = WeaponSpeedFactor();
         Vector3 forward = QMath.Normalize(self.Velocity);
         if (forward == Vector3.Zero) forward = QMath.Forward(self.Angles);
         float velAlong = QMath.Dot(self.Velocity, forward);
-        float velSpeed = Cvars.Speed - velAlong;
+        float velSpeed = Cvars.Speed * speedFactor - velAlong;
         if (velSpeed > 0f)
-            self.Velocity += forward * MathF.Min(Cvars.SpeedAccel * Api.Clock.FrameTime, velSpeed);
+            self.Velocity += forward * MathF.Min(Cvars.SpeedAccel * speedFactor * Api.Clock.FrameTime, velSpeed);
 
         // Laser guiding (W_Devastator_Think): while this is the owner's active rocket, the primary is still HELD
         // (rl_release latch clear — releasing fire stops guiding and re-arms a launch), the guide-delay has passed,
         // and the owner is alive, steer the rocket toward the owner's aim, capped at guiderate deg/s.
         var st = owner.WeaponState(slot);
-        if (ReferenceEquals(st.LastRocket, self) && !st.RlRelease && Cvars.GuideRate > 0f
+        if (ReferenceEquals(st.LastRocket, self) && !st.RlRelease && !st.ButtonAttack2 && Cvars.GuideRate > 0f
             && Api.Clock.Time > self.LTime && owner.DeadState == DeadFlag.No)
         {
             // guideratedelay ramp: the turn rate eases in over guideratedelay after steering starts.
@@ -245,6 +267,8 @@ public sealed class Devastator : Weapon
 
             if (self.Count == 0)
             {
+                // QC Send_Effect(EFFECT_ROCKET_GUIDE, ...) on the first guide tick (devastator.qc:243).
+                EffectEmitter.Emit("ROCKET_GUIDE", self.Origin, self.Velocity, 1);
                 Api.Sound.Play(owner, SoundChannel.Body, "weapons/rocket_mode.wav");
                 self.Count = 1;
             }
@@ -306,41 +330,97 @@ public sealed class Devastator : Weapon
     // W_Devastator_DoRemoteExplode — the actual remote (secondary) blast: remote_* balance.
     private void DoRemoteExplode(Entity self, Entity owner)
     {
+        // QC W_Devastator_Unregister — clear lastrocket on ALL slots (the port slot-0-only clear ignored the
+        // rocket's actual weaponentity slot, leaving a stale lastrocket reference in dual-wield play).
+        Unregister(self);
+
         self.Touch = null;
         self.Think = null;
         self.TakeDamage = DamageMode.No;
         self.ProjectileDamage = null;
-        if (owner.WeaponState(new WeaponSlot(0)) is { } s0 && ReferenceEquals(s0.LastRocket, self)) s0.LastRocket = null;
+
+        // QC OR's HITTYPE_BOUNCE onto the remote blast deathtype (devastator.qc:123) so wr_killmessage classifies
+        // a remote detonation as a SPLASH kill (the rocket-jump variant remote_jump* is not ported — stock 0).
+        string deathType = Damage.DeathTypes.WithHitType(Damage.DeathTypes.FromWeapon(NetName), Damage.DeathTypes.Bounce);
 
         // QC's remote blast goes through the plain RadiusDamage wrapper (forcexyzscale '1 1 1') — only the
         // CONTACT explosion (W_Devastator_Explode) applies force_xyscale, so no force shaping here.
         WeaponSplash.RadiusDamage(self, self.Origin, Cvars.RemoteDamage, Cvars.RemoteEdgeDamage,
-            Cvars.RemoteRadius, owner, RegistryId, Cvars.RemoteForce);
+            Cvars.RemoteRadius, owner, RegistryId, Cvars.RemoteForce, accuracyWeapon: this, deathTag: deathType);
         WeaponSplash.ImpactSound(self, "weapons/rocket_impact.wav"); // QC SND_ROCKET_IMPACT (wr_impacteffect)
         EffectEmitter.Emit("ROCKET_EXPLODE", self.Origin);
         Api.Entities.Remove(self);
     }
 
     // W_Devastator_Touch — explode on contact with the world or an entity. devastator.qc
-    private void OnTouch(Entity self, Entity other) => Explode(self, other);
+    private void OnTouch(Entity self, Entity other) => Explode(self, other, bounced: false);
 
     // W_Devastator_Explode — radius damage + knockback (force_xyscale shaping) at impact, then remove. devastator.qc
-    private void Explode(Entity self, Entity? directHit)
+    private void Explode(Entity self, Entity? directHit, bool bounced)
     {
+        // QC W_Devastator_Unregister (devastator.qc:7-15): clear owner.lastrocket on EVERY weapon slot so a dead
+        // rocket can never be guided/remote-detonated again (and the obituary doesn't chase a freed entity).
+        Unregister(self);
+
+        // QC airshot achievement (devastator.qc:21-24): a flying enemy directly struck mid-air earns the owner the
+        // airshot announce. Tested BEFORE the entity is removed.
+        if (directHit is not null && self.Owner is { } owner
+            && directHit.TakeDamage == DamageMode.Aim && (directHit.Flags & EntFlags.Client) != 0
+            && !Teams.SameTeam(directHit, owner) && !ReferenceEquals(directHit, owner) // QC DIFF_TEAM
+            && directHit.DeadState == DeadFlag.No && IsFlying(directHit))
+            NotificationSystem.Announce(owner, "ACHIEVEMENT_AIRSHOT");
+
         self.Touch = null;
         self.Think = null;
         self.TakeDamage = DamageMode.No;
         self.ProjectileDamage = null;
 
+        // QC wr_killmessage keys on HITTYPE_BOUNCE|HITTYPE_SPLASH to pick MURDER_SPLASH vs MURDER_DIRECT. A
+        // timed-out / shot-down rocket carries HITTYPE_BOUNCE (no direct hit); a contact hit does not (the splash
+        // tag is added per-victim by RadiusDamage so the DIRECT victim stays DIRECT).
+        string deathType = Damage.DeathTypes.FromWeapon(NetName);
+        if (bounced) deathType = Damage.DeathTypes.WithHitType(deathType, Damage.DeathTypes.Bounce);
+
         // QC scales the HORIZONTAL knockback by force_xyscale (force_xyzscale.x/.y, devastator.qc:29-31;
         // Z stays 1); the direct-hit entity skips the LOS reduction.
         WeaponSplash.RadiusDamage(self, self.Origin, Cvars.Damage, Cvars.EdgeDamage, Cvars.Radius,
             self.Owner, RegistryId, Cvars.Force,
-            forceScale: new Vector3(Cvars.ForceXyScale, Cvars.ForceXyScale, 1f), directHit: directHit);
+            forceScale: new Vector3(Cvars.ForceXyScale, Cvars.ForceXyScale, 1f),
+            directHit: directHit, accuracyWeapon: this, deathTag: deathType);
 
         WeaponSplash.ImpactSound(self, "weapons/rocket_impact.wav"); // QC SND_ROCKET_IMPACT (wr_impacteffect)
         EffectEmitter.Emit("ROCKET_EXPLODE", self.Origin);
         Api.Entities.Remove(self);
+    }
+
+    // W_Devastator_Unregister (devastator.qc:7-15) — clear owner.lastrocket on ALL weapon slots that point at this
+    // rocket (the QC scans weaponentities[0..MAX_WEAPONSLOTS); the port slot-0-only clear missed the 2nd slot).
+    private static void Unregister(Entity self)
+    {
+        if (self.Owner is not { } owner) return;
+        for (int i = 0; i < MutatorConstants.MaxWeaponSlots; ++i)
+            if (owner.WeaponState(new WeaponSlot(i)) is { } s && ReferenceEquals(s.LastRocket, self))
+                s.LastRocket = null;
+    }
+
+    // QC W_WeaponSpeedFactor: g_weaponspeedfactor (default 1) — multiplies the rocket's target speed + per-tick
+    // acceleration. Mirrors the WeaponImpulses reader (only positive values take effect).
+    private static float WeaponSpeedFactor()
+    {
+        if (Api.Services is null) return 1f;
+        float f = Api.Cvars.GetFloat("g_weaponspeedfactor");
+        return f > 0f ? f : 1f;
+    }
+
+    // bool IsFlying(entity) — common/physics/player.qc, the airshot test: airborne, not swimming, and at least
+    // 24u of clearance below (so a player skimming the ground doesn't count).
+    private static bool IsFlying(Entity e)
+    {
+        if (e.OnGround) return false;
+        if (e.WaterLevel >= 2) return false; // WATERLEVEL_SWIMMING
+        TraceResult tr = Api.Trace.Trace(e.Origin, e.Mins, e.Maxs,
+            e.Origin - new Vector3(0f, 0f, 24f), MoveFilter.Normal, e);
+        return tr.Fraction >= 1f;
     }
 
     // wr_think secondary — flag every live rocket this actor owns to remote-detonate (rl_detonate_later).

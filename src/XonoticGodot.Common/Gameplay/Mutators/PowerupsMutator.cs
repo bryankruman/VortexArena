@@ -1,22 +1,35 @@
 // Port of qcsrc/common/mutators/mutator/powerups/sv_powerups.qc (the consumer side of the powerups) +
-// the per-powerup m_tick alpha from powerup/invisibility.qc:33-43.
+// the per-powerup m_tick/m_apply/m_remove from powerup/{strength,shield,speed,invisibility}.qc.
 //
 // The powerup STATUS-EFFECT DEFS (strength/shield/speed/invisibility) and the PRODUCER (ItemPickupRules
 // applying them on pickup) already exist; this is the CONSUMER side QC kept in sv_powerups.qc:
 //   Damage_Calculate (30-59)            -> strength ×damage/×force, shield ×takedamage/×takeforce
 //   PlayerPhysics_UpdateStats (179-186) -> speed ×highspeed (rides MutatorHooks.PlayerPhysics -> SpeedMultiplier)
 //   WeaponRateFactor (188-194)          -> speed ×attack_time_multiplier (the new WeaponRateFactor hook)
+//   PlayerDies (149-161)                -> drop each active powerup as a pickup-able item (drop_ondeath)
 //   invisibility m_tick (invisibility.qc:33) -> alpha = invisibility_alpha while active (PlayerPreThink)
+// plus the per-effect m_tick/m_apply/m_remove the port has no per-effect tick for, folded into PlayerPreThink:
+//   strength/shield m_tick (28-33)      -> actor.effects |= (EF_BLUE|EF_RED) | EF_ADDITIVE | EF_FULLBRIGHT glow
+//   *.qc m_apply / m_remove(TIMEOUT)    -> INFO_POWERUP_X broadcast + CENTER_POWERUP_X / CENTER_POWERDOWN_X
+//   *.qc m_tick play_countdown(SND_POWEROFF) -> the last-6-seconds countdown beep (client.qc:1532)
 //
 // All keyed off StatusEffects being active on the entity (QC StatusEffects_active), NOT a g_powerups cvar:
 // the powerups mutator is always-registered in QC; its hooks only fire when a player HAS the effect. So this
 // mutator is always enabled (IsEnabled true) and every handler self-gates on StatusEffectsCatalog.Has.
 //
-// Deferred (consistent with the CloakedMutator precedent / the spec): the obituary item codes, the
-// drop-on-death/use-key item drop, the strength-fire sound, and the radar/monster/bot invisibility hooks
-// (CustomizeWaypoint/MonsterValidTarget/Bot_ForbidAttack — those chains aren't wired in the port yet).
+// Still deferred — these need cross-file seams that don't exist in the port yet (noted to the Wave-2/3 owners):
+//   - the strength-fire sound (W_PlayStrengthSound — needs a fired-weapon hook, called from weapons/tracing.qc);
+//   - the radar/monster/bot invisibility stealth (CustomizeWaypoint/MonsterValidTarget/Bot_ForbidAttack hooks
+//     are not defined in MutatorHooks);
+//   - the obituary item codes + server-browser mutator strings (LogDeath_AppendItemCodes/BuildMutatorsString
+//     hooks are not defined);
+//   - the +use drop (PlayerUseKey hook is being added in Wave-1 but isn't live for this file yet);
+//   - the WP_Item waypoint sprite on a dropped powerup (no reachable WaypointSprite API here).
 
+using System.Numerics;
 using XonoticGodot.Common.Framework;
+using static XonoticGodot.Common.Gameplay.Items;
+using XonoticGodot.Common.Math;
 using XonoticGodot.Common.Services;
 
 namespace XonoticGodot.Common.Gameplay;
@@ -46,11 +59,28 @@ public sealed class PowerupsMutator : MutatorBase
     private float _speedAttackRate = 0.8f;     // g_balance_powerup_speed_attack_time_multiplier
     private float _invisibilityAlpha = 0.15f;  // g_balance_powerup_invisibility_alpha
 
+    // ---- drop-on-death config (xonotic-server.cfg:208-209, 245) ----
+    private int _dropOnDeath = 1;              // g_powerups_drop_ondeath (0=off, 1=timer continues, 2=freeze)
+    private float _droppedLifetime = 20f;      // g_items_dropped_lifetime (frozen-timer drop lifetime)
+
+    // QC EF_* render bits (dpextensions.qc) the strength/shield glow ORs into actor.effects. EF_ADDITIVE/
+    // EF_FULLBRIGHT live in EntityMutatorState.EffectFlags; EF_BLUE/EF_RED are powerup-only here (the
+    // client EF_BLUE/EF_RED -> dynamic-light path is in game/client/CsqcModelEffects.cs).
+    private const int EfBlue = 64;   // EF_BLUE  (strength glow)
+    private const int EfRed = 128;   // EF_RED   (shield glow)
+    private const int StrengthGlow = EfBlue | EffectFlags.Additive | EffectFlags.FullBright;
+    private const int ShieldGlow = EfRed | EffectFlags.Additive | EffectFlags.FullBright;
+
+    // Per-player prior active-set, so PlayerPreThink can detect the apply/timeout EDGES the QC m_apply/m_remove
+    // hooks fire on (the port has no per-effect tick). Keyed by entity; entries clear when the effect lapses.
+    private readonly System.Collections.Generic.Dictionary<Entity, byte> _prevActive = new();
+
     // ---- hook handlers ----
     private HookHandler<MutatorHooks.DamageCalculateArgs>? _onDamageCalc;
     private HookHandler<MutatorHooks.PlayerPhysicsArgs>? _onPhysics;
     private HookHandler<MutatorHooks.WeaponRateFactorArgs>? _onRate;
     private HookHandler<MutatorHooks.PlayerPreThinkArgs>? _onPreThink;
+    private HookHandler<MutatorHooks.PlayerDiesArgs>? _onPlayerDies;
 
     public override void Hook()
     {
@@ -58,11 +88,13 @@ public sealed class PowerupsMutator : MutatorBase
         _onPhysics ??= OnPlayerPhysics;
         _onRate ??= OnWeaponRateFactor;
         _onPreThink ??= OnPlayerPreThink;
+        _onPlayerDies ??= OnPlayerDies;
 
         MutatorHooks.DamageCalculate.Add(_onDamageCalc);
         MutatorHooks.PlayerPhysics.Add(_onPhysics);
         MutatorHooks.WeaponRateFactor.Add(_onRate);
         MutatorHooks.PlayerPreThink.Add(_onPreThink);
+        MutatorHooks.PlayerDies.Add(_onPlayerDies);
 
         if (Api.Services is not null)
         {
@@ -75,6 +107,9 @@ public sealed class PowerupsMutator : MutatorBase
             R(ref _speedHighspeed, "g_balance_powerup_speed_highspeed");
             R(ref _speedAttackRate, "g_balance_powerup_speed_attack_time_multiplier");
             R(ref _invisibilityAlpha, "g_balance_powerup_invisibility_alpha");
+            R(ref _droppedLifetime, "g_items_dropped_lifetime");
+            // g_powerups_drop_ondeath defaults to 1; a 0 is meaningful (off) so read it directly.
+            _dropOnDeath = (int)Api.Cvars.GetFloat("g_powerups_drop_ondeath");
         }
     }
 
@@ -84,6 +119,8 @@ public sealed class PowerupsMutator : MutatorBase
         if (_onPhysics is not null) MutatorHooks.PlayerPhysics.Remove(_onPhysics);
         if (_onRate is not null) MutatorHooks.WeaponRateFactor.Remove(_onRate);
         if (_onPreThink is not null) MutatorHooks.PlayerPreThink.Remove(_onPreThink);
+        if (_onPlayerDies is not null) MutatorHooks.PlayerDies.Remove(_onPlayerDies);
+        _prevActive.Clear();
     }
 
     private static void R(ref float field, string cvar)
@@ -150,26 +187,175 @@ public sealed class PowerupsMutator : MutatorBase
         return false;
     }
 
+    // Bit per powerup in the prior-active bitmap (apply/timeout edge detection).
+    private const byte AStrength = 1;
+    private const byte AShield = 2;
+    private const byte ASpeed = 4;
+    private const byte AInvis = 8;
+
     // =====================================================================================
-    //  invisibility m_tick (invisibility.qc:33) — alpha while active, restored on lapse
+    //  Per-frame powerup tick (the QC per-effect m_tick / m_apply / m_remove, which the port has no per-effect
+    //  tick hook for, run here under PlayerPreThink): invisibility alpha, strength/shield glow bits, the
+    //  pickup/powerdown notifications (on the active EDGE), and the last-seconds countdown beep.
     // =====================================================================================
     private bool OnPlayerPreThink(ref MutatorHooks.PlayerPreThinkArgs args)
     {
         Entity player = args.Player;
         if ((player.Flags & EntFlags.Client) == 0) return false;
 
-        // QC InvisibilityStatusEffect.m_tick sets actor.alpha = invisibility_alpha each frame while active and
-        // m_remove restores default_player_alpha. The port has no per-effect tick, so do it here (mirrors the
-        // BuffsMutator invisible-buff alpha handling): set the powerup alpha while held, restore to 1 on lapse.
-        if (Active(player, "invisibility"))
-        {
+        bool strength = Active(player, "strength");
+        bool shield = Active(player, "shield");
+        bool speed = Active(player, "speed");
+        bool invis = Active(player, "invisibility");
+
+        // ---- invisibility alpha (InvisibilityStatusEffect.m_tick / m_remove, invisibility.qc:33-43) ----
+        // QC sets actor.alpha = invisibility_alpha each frame while active and m_remove restores
+        // default_player_alpha. Mirrors the BuffsMutator invisible-buff alpha handling: set while held,
+        // restore to 1 on lapse.
+        if (invis)
             player.Alpha = _invisibilityAlpha;
-        }
         else if (player.Alpha == _invisibilityAlpha)
-        {
             player.Alpha = 1f; // default_player_alpha
+
+        // ---- strength/shield glow (strength.qc:31 / shield.qc:31 m_tick + m_remove:14) ----
+        // QC m_tick ORs (EF_BLUE/EF_RED | EF_ADDITIVE | EF_FULLBRIGHT) into actor.effects every frame while
+        // active; m_remove clears the same bits. Idempotent, so set/clear here without edge tracking.
+        if (strength) player.Effects |= StrengthGlow; else player.Effects &= ~StrengthGlow;
+        if (shield) player.Effects |= ShieldGlow; else player.Effects &= ~ShieldGlow;
+
+        // ---- pickup/powerdown notifications + countdown beep (m_apply / m_remove(TIMEOUT) / m_tick) ----
+        byte now = (byte)((strength ? AStrength : 0) | (shield ? AShield : 0)
+                        | (speed ? ASpeed : 0) | (invis ? AInvis : 0));
+        _prevActive.TryGetValue(player, out byte prev);
+        if (now != prev)
+        {
+            // QC !g_cts gate on the INFO broadcast (strength.qc:22). g_cts is the CTS gametype flag.
+            bool notCts = !(Api.Services is not null && Api.Cvars.GetFloat("g_cts") != 0f);
+            NotifyEdge(player, strength, (prev & AStrength) != 0, "STRENGTH", notCts);
+            NotifyEdge(player, shield, (prev & AShield) != 0, "SHIELD", notCts);
+            NotifyEdge(player, speed, (prev & ASpeed) != 0, "SPEED", notCts);
+            NotifyEdge(player, invis, (prev & AInvis) != 0, "INVISIBILITY", notCts);
+            if (now == 0) _prevActive.Remove(player);
+            else _prevActive[player] = now;
         }
+
+        // QC every powerup m_tick: play_countdown(actor, StatusEffects_gettime(this, actor), SND_POWEROFF).
+        if (strength) PlayCountdown(player, "strength");
+        if (shield) PlayCountdown(player, "shield");
+        if (speed) PlayCountdown(player, "speed");
+        if (invis) PlayCountdown(player, "invisibility");
+
         return false;
+    }
+
+    // QC m_apply / m_remove(STATUSEFFECT_REMOVE_TIMEOUT): broadcast the pickup + center-print on the rising
+    // edge, center-print the powerdown on the falling edge (the INFO_POWERDOWN broadcast is commented out in
+    // Base, so only the CENTER fires on removal). Names map to the registered POWERUP_/POWERDOWN_ notifs.
+    private static void NotifyEdge(Entity player, bool active, bool wasActive, string name, bool notCts)
+    {
+        if (active && !wasActive)
+        {
+            if (notCts)
+                NotificationSystem.Info("POWERUP_" + name, player.NetName);
+            NotificationSystem.Center(player, "POWERUP_" + name);
+        }
+        else if (!active && wasActive)
+        {
+            NotificationSystem.Center(player, "POWERDOWN_" + name);
+        }
+    }
+
+    // QC play_countdown(this, finished, samp) (server/client.qc:1532): beep once per integer second crossed in
+    // the last 6 seconds. floor(time_left - frametime) != floor(time_left) is the "crossed a second" test.
+    private static void PlayCountdown(Entity player, string name)
+    {
+        if (Api.Services is null) return;
+        var def = StatusEffectsCatalog.ByName(name);
+        if (def is null) return;
+        float finished = StatusEffectExpire(player, def);
+        if (finished <= 0f) return; // permanent / not active
+        float now = Api.Clock.Time;
+        float frametime = Api.Clock.FrameTime;
+        float timeLeft = finished - now;
+        if (timeLeft < 6f
+            && System.MathF.Floor(timeLeft - frametime) != System.MathF.Floor(timeLeft))
+        {
+            // CH_INFO, VOL_BASE, ATTEN_NORM → SoundChannel.Auto, default vol/atten.
+            Api.Sound.Play(player, SoundChannel.Auto, "misc/poweroff.wav");
+        }
+    }
+
+    // =====================================================================================
+    //  PlayerDies (sv_powerups.qc:149) — drop each active powerup as a pickup-able item (drop_ondeath)
+    // =====================================================================================
+    private bool OnPlayerDies(ref MutatorHooks.PlayerDiesArgs args)
+    {
+        // QC: if(!autocvar_g_powerups_drop_ondeath) return; (default 1 = on, timer continues; 2 = freeze).
+        if (_dropOnDeath == 0 || Api.Services is null) return false;
+
+        Entity target = args.Target;
+        bool freezeTimer = _dropOnDeath == 2;
+
+        // QC FOREACH(StatusEffects, it.instanceOfPowerupStatusEffect, …): drop the four powerups it holds.
+        DropPowerup(target, "strength", freezeTimer);
+        DropPowerup(target, "shield", freezeTimer);
+        DropPowerup(target, "speed", freezeTimer);
+        DropPowerup(target, "invisibility", freezeTimer);
+        return false;
+    }
+
+    // Port of powerups_DropItem (sv_powerups.qc:93): spawn a pickup-able item carrying the powerup's REMAINING
+    // (freeze, mode 2) or ABSOLUTE (continue, mode 1) timer. ItemTouch re-applies it on pickup — for an
+    // expiring (continue) drop it stores the absolute finish time and ItemTouch subtracts `time`; for a frozen
+    // drop expiring is off and the stored value is the remaining seconds (max(existing,dur) on pickup).
+    // Deferred vs QC: the WP_Item countdown waypoint sprite (no reachable WaypointSprite API in this file).
+    private void DropPowerup(Entity owner, string name, bool freezeTimer)
+    {
+        var def = StatusEffectsCatalog.ByName(name);
+        if (def is null) return;
+        float finishedAbs = StatusEffectExpire(owner, def);
+        if (finishedAbs <= 0f) return; // not active / permanent
+
+        float now = Api.Clock.Time;
+        float timeLeft = finishedAbs - now;
+        if (timeLeft <= 1f) return; // QC: if(timeleft <= 1) return;
+
+        // QC: finished = freezeTimer ? timeleft : t (remaining vs absolute end time).
+        float finished = freezeTimer ? timeLeft : finishedAbs;
+        // QC: e.lifetime = freezeTimer ? g_items_dropped_lifetime : timeleft.
+        float lifetime = freezeTimer ? _droppedLifetime : timeLeft;
+
+        Entity e = Api.Entities.Spawn();
+        switch (name)
+        {
+            case "strength":     e.ClassName = "item_strength";     e.NetName = "strength";   e.StrengthFinished = finished;     break;
+            case "shield":       e.ClassName = "item_invincible";   e.NetName = "invincible"; e.InvincibleFinished = finished;   break;
+            case "speed":        e.ClassName = "item_speed";        e.NetName = "speed";      e.SpeedFinished = finished;        break;
+            case "invisibility": e.ClassName = "item_invisibility"; e.NetName = "invisibility"; e.InvisibilityFinished = finished; break;
+            default: Api.Entities.Remove(e); return;
+        }
+
+        Vector3 org = owner.Origin;
+        Api.Entities.SetOrigin(e, org);
+        e.Origin = org;
+        // QC W_CalculateProjectileVelocity(this, velocity, v_forward * 750, false) — toss forward off the corpse.
+        e.Velocity = owner.Velocity + QMath.Forward(owner.Angles) * 750f;
+        e.MoveType = MoveType.Toss;
+        e.Solid = Solid.Trigger;
+        e.Flags |= EntFlags.Item;
+        e.ItemIsLoot = true;
+
+        // QC: if(!freezeTimer) ITEM_SET_EXPIRING(e, true). The continue-timer drop expires itself; ItemTouch
+        // converts the stored ABSOLUTE finish to remaining by subtracting `time` on pickup.
+        if (!freezeTimer)
+            e.ItemIsExpiring = true;
+
+        // The dropped item is picked up through the canonical Item_Touch path.
+        e.Touch = (self, other) => ItemPickupRules.ItemTouch(self, other);
+
+        // QC e.lifetime drives the dropped-item think; expire the loot when it runs out.
+        e.NextThink = now + lifetime;
+        e.Think = self => Api.Entities.Remove(self);
     }
 
     // =====================================================================================
@@ -182,5 +368,13 @@ public sealed class PowerupsMutator : MutatorBase
         if (e is null) return false;
         var def = StatusEffectsCatalog.ByName(name);
         return def is not null && StatusEffectsCatalog.Has(e, def);
+    }
+
+    // QC StatusEffects_gettime(def, e): the ABSOLUTE expire time, 0 when not active/permanent.
+    private static float StatusEffectExpire(Entity e, StatusEffectDef def)
+    {
+        foreach (var s in e.StatusEffects)
+            if (s.DefId == def.RegistryId) return s.ExpireTime;
+        return 0f;
     }
 }

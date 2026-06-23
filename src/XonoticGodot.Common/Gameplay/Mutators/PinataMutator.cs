@@ -26,11 +26,22 @@ public sealed class PinataMutator : MutatorBase
     public PinataMutator() => NetName = "pinata";
 
     // QC: REGISTER_MUTATOR(pinata, expr_evaluate(g_pinata) && !MUTATOR_IS_ENABLED(mutator_instagib) && !MUTATOR_IS_ENABLED(ok)).
+    // g_pinata is a QC string evaluated via expr_evaluate (matches the sibling RocketFlyingMutator's
+    // expr_evaluate(g_rocket_flying) idiom); ExprEvaluate handles expression-string values, not just 0/1.
     public override bool IsEnabled =>
         Api.Services is not null
-        && Api.Cvars.GetFloat("g_pinata") != 0f
+        && ExprEvaluate(Api.Cvars.GetString("g_pinata"))
         && !OtherEnabled("instagib")
         && !OtherEnabled("overkill");
+
+    /// <summary>QC <c>expr_evaluate(s)</c> for a cvar string: false for "" / "0" / "false", true otherwise.</summary>
+    private static bool ExprEvaluate(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return false;
+        s = s.Trim();
+        if (s == "0" || string.Equals(s, "false", System.StringComparison.OrdinalIgnoreCase)) return false;
+        return true;
+    }
 
     // QC MUTATOR_IS_ENABLED reads the other mutator's enable predicate (not its added state, so activation
     // order between the three can't race).

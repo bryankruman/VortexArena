@@ -52,6 +52,7 @@ public sealed class BuffsMutator : MutatorBase
     private float _bashForceSelf = 1.2f;         // g_buffs_bash_force_self
     private float _disabilitySlowTime = 3f;      // g_buffs_disability_slowtime
     private float _disabilitySpeed = 0.7f;       // g_buffs_disability_speed
+    private float _disabilityAttackTime = 1.5f;  // g_buffs_disability_attack_time_multiplier (weapon fire-time slow)
     private float _vengeanceMult = 0.4f;         // g_buffs_vengeance_damage_multiplier
     private float _luckChance = 0.15f;           // g_buffs_luck_chance
     private float _luckMult = 2f;                // g_buffs_luck_damagemultiplier
@@ -59,12 +60,24 @@ public sealed class BuffsMutator : MutatorBase
     private float _magnetRangeBuff = 100f;       // g_buffs_magnet_range_buff
     private float _pickupDelay = 0.7f;           // g_buffs_pickup_delay
 
+    // ---- inferno (burn-on-hit + fire/lava resistance) ----
+    private float _infernoDamageMult = 0.3f;     // g_buffs_inferno_damagemultiplier
+    private float _infernoBurnMinTime = 0.5f;    // g_buffs_inferno_burntime_min_time
+    private float _infernoBurnTargetDamage = 150f; // g_buffs_inferno_burntime_target_damage
+    private float _infernoBurnTargetTime = 5f;   // g_buffs_inferno_burntime_target_time
+    private float _infernoBurnFactor = 2f;       // g_buffs_inferno_burntime_factor
+
+    // ---- swapper (swap places with the nearest enemy on drop-weapon) ----
+    private float _swapperRange = 1500f;         // g_buffs_swapper_range
+
     // ---- hook handlers ----
     private HookHandler<MutatorHooks.DamageCalculateArgs>? _onDamageCalc;
     private HookHandler<GameHooks.PlayerDamageArgs>? _onSplit;
     private HookHandler<MutatorHooks.PlayerRegenArgs>? _onRegen;
     private HookHandler<MutatorHooks.PlayerPhysicsArgs>? _onPhysics;
     private HookHandler<MutatorHooks.PlayerPreThinkArgs>? _onPreThink;
+    private HookHandler<MutatorHooks.WeaponRateFactorArgs>? _onRate;
+    private HookHandler<MutatorHooks.ForbidThrowCurrentWeaponArgs>? _onForbidThrow;
 
     public override void Hook()
     {
@@ -73,12 +86,16 @@ public sealed class BuffsMutator : MutatorBase
         _onRegen ??= OnPlayerRegen;
         _onPhysics ??= OnPlayerPhysics;
         _onPreThink ??= OnPlayerPreThink;
+        _onRate ??= OnWeaponRateFactor;
+        _onForbidThrow ??= OnForbidThrowCurrentWeapon;
 
         MutatorHooks.DamageCalculate.Add(_onDamageCalc);
         GameHooks.PlayerDamageSplitHealthArmor.Add(_onSplit);
         MutatorHooks.PlayerRegen.Add(_onRegen);
         MutatorHooks.PlayerPhysics.Add(_onPhysics);
         MutatorHooks.PlayerPreThink.Add(_onPreThink);
+        MutatorHooks.WeaponRateFactor.Add(_onRate);
+        MutatorHooks.ForbidThrowCurrentWeapon.Add(_onForbidThrow);
 
         if (Api.Services is not null)
         {
@@ -95,12 +112,19 @@ public sealed class BuffsMutator : MutatorBase
             R(ref _bashForceSelf, "g_buffs_bash_force_self");
             R(ref _disabilitySlowTime, "g_buffs_disability_slowtime");
             R(ref _disabilitySpeed, "g_buffs_disability_speed");
+            R(ref _disabilityAttackTime, "g_buffs_disability_attack_time_multiplier");
             R(ref _vengeanceMult, "g_buffs_vengeance_damage_multiplier");
             R(ref _luckChance, "g_buffs_luck_chance");
             R(ref _luckMult, "g_buffs_luck_damagemultiplier");
             R(ref _magnetRangeItem, "g_buffs_magnet_range_item");
             R(ref _magnetRangeBuff, "g_buffs_magnet_range_buff");
             R(ref _pickupDelay, "g_buffs_pickup_delay");
+            R(ref _infernoDamageMult, "g_buffs_inferno_damagemultiplier");
+            R(ref _infernoBurnMinTime, "g_buffs_inferno_burntime_min_time");
+            R(ref _infernoBurnTargetDamage, "g_buffs_inferno_burntime_target_damage");
+            R(ref _infernoBurnTargetTime, "g_buffs_inferno_burntime_target_time");
+            R(ref _infernoBurnFactor, "g_buffs_inferno_burntime_factor");
+            R(ref _swapperRange, "g_buffs_swapper_range");
 
             // QC buffs_Initialize: spawn the configured number of buffs if none exist yet.
             SpawnInitialBuffs();
@@ -114,6 +138,8 @@ public sealed class BuffsMutator : MutatorBase
         if (_onRegen is not null) MutatorHooks.PlayerRegen.Remove(_onRegen);
         if (_onPhysics is not null) MutatorHooks.PlayerPhysics.Remove(_onPhysics);
         if (_onPreThink is not null) MutatorHooks.PlayerPreThink.Remove(_onPreThink);
+        if (_onRate is not null) MutatorHooks.WeaponRateFactor.Remove(_onRate);
+        if (_onForbidThrow is not null) MutatorHooks.ForbidThrowCurrentWeapon.Remove(_onForbidThrow);
     }
 
     private static void R(ref float field, string cvar)
@@ -344,15 +370,18 @@ public sealed class BuffsMutator : MutatorBase
         float damage = args.Damage;
         Vector3 force = args.Force;
 
-        // QC: no recurrence for vengeance's own reflected damage.
-        if (dt == "buff_vengeance") { return false; }
+        // QC: no recurrence for inferno's or vengeance's own dealt damage.
+        if (dt == DeathTypes.BuffInferno || dt == DeathTypes.BuffVengeance) { return false; }
+
+        bool needKill = IsNeedKill(dt);
 
         // resistance — flat damage reduction (also on self-damage).
         if (Active(target, "resistance"))
             damage = QMath.Bound(0f, damage * (1f - _resistanceBlock), damage);
 
-        // medic — survive a fatal hit with a sliver of health, by chance.
-        if (Active(target, "medic") && attacker is not null
+        // medic — survive a fatal hit with a sliver of health, by chance. QC guards with !ITEM_DAMAGE_NEEDKILL
+        // so lava/slime/swamp/void hits are never wrongly survived.
+        if (Active(target, "medic") && attacker is not null && !needKill
             && target.GetResource(ResourceType.Health) - damage <= 0f)
         {
             if (Prandom.Float() <= _medicSurviveChance)
@@ -363,8 +392,9 @@ public sealed class BuffsMutator : MutatorBase
         if (Active(target, "jump") && dt == DeathTypes.Fall)
             damage = 0f;
 
-        // vengeance — reflect a share back at the attacker (after a short delay, like QC).
-        if (Active(target, "vengeance") && attacker is not null && !ReferenceEquals(attacker, target))
+        // vengeance — reflect a share back at the attacker (after a short delay, like QC). QC guards with
+        // !ITEM_DAMAGE_NEEDKILL so a lava/slime/void kill doesn't reflect.
+        if (Active(target, "vengeance") && attacker is not null && !ReferenceEquals(attacker, target) && !needKill)
         {
             float reflected = damage * _vengeanceMult;
             ScheduleVengeance(target, attacker, reflected);
@@ -384,17 +414,55 @@ public sealed class BuffsMutator : MutatorBase
                 StatusEffectsCatalog.Apply(target, stunned, _disabilitySlowTime);
         }
 
-        // luck — chance to crit for a damage multiplier.
-        if (!ReferenceEquals(attacker, target) && Active(attacker, "luck") && _luckMult > 0f)
+        // inferno (carrier as target) — immune to plain fire, half damage from lava.
+        if (Active(target, "inferno"))
         {
-            if (Prandom.Float() <= _luckChance)
-                damage *= _luckMult;
+            if (dt == DeathTypes.Fire) damage = 0f;
+            if (dt == DeathTypes.Lava) damage *= 0.5f; // QC: TODO cvarize
+        }
+
+        if (!ReferenceEquals(attacker, target))
+        {
+            // luck — chance to crit for a damage multiplier.
+            if (Active(attacker, "luck") && _luckMult > 0f)
+            {
+                if (Prandom.Float() <= _luckChance)
+                    damage *= _luckMult;
+            }
+
+            // inferno (carrier as attacker) — set the target alight, burning for a log-curve time.
+            if (Active(attacker, "inferno"))
+            {
+                float btime = InfernoBurnTime(damage);
+                MonsterFramework.AddFireDamage(target, attacker, damage * _infernoDamageMult, btime,
+                    DeathTypes.BuffInferno);
+            }
         }
 
         args.Damage = damage;
         args.Force = force;
         return false;
     }
+
+    // float buff_Inferno_CalculateTime(dmg) — burn duration grows logarithmically with the hit's damage:
+    //   offset_y + (target_time - offset_y) * logn((dmg) * ((factor-1)/target_damage) + 1, factor)
+    private float InfernoBurnTime(float dmg)
+    {
+        float offsetY = _infernoBurnMinTime;
+        float intersectX = _infernoBurnTargetDamage;
+        float intersectY = _infernoBurnTargetTime;
+        float b = _infernoBurnFactor;
+        if (b <= 0f || b == 1f || intersectX == 0f) return offsetY;
+        // logn(x, base) = log(x) / log(base)
+        float arg = dmg * ((b - 1f) / intersectX) + 1f;
+        if (arg <= 0f) return offsetY;
+        float logn = MathF.Log(arg) / MathF.Log(b);
+        return offsetY + (intersectY - offsetY) * logn;
+    }
+
+    // QC ITEM_DAMAGE_NEEDKILL(dt): DEATH_HURTTRIGGER (= void) / DEATH_SLIME / DEATH_LAVA / DEATH_SWAMP.
+    private static bool IsNeedKill(string dt)
+        => dt == DeathTypes.Void || dt == DeathTypes.Slime || dt == DeathTypes.Lava || dt == DeathTypes.Swamp;
 
     // buff_Vengeance_DelayedDamage — reflect after 0.1s so it doesn't recurse into this hook.
     private static void ScheduleVengeance(Entity owner, Entity enemy, float dmg)
@@ -465,6 +533,69 @@ public sealed class BuffsMutator : MutatorBase
             player.SpeedMultiplier *= _disabilitySpeed;
 
         return false;
+    }
+
+    // =====================================================================================
+    //  WeaponRateFactor — disability (Stunned) slows the victim's weapon fire-rate
+    // =====================================================================================
+
+    // QC disability WeaponRateFactor: a stunned player's refire/animtime factor is multiplied by
+    // g_buffs_disability_attack_time_multiplier (1.5 → slower firing).
+    private bool OnWeaponRateFactor(ref MutatorHooks.WeaponRateFactorArgs args)
+    {
+        var stunned = StatusEffectsCatalog.ByName("stunned");
+        if (stunned is not null && StatusEffectsCatalog.Has(args.Player, stunned))
+            args.Factor *= _disabilityAttackTime;
+        return false;
+    }
+
+    // =====================================================================================
+    //  ForbidThrowCurrentWeapon — swapper buff: drop-weapon swaps you with the nearest enemy
+    // =====================================================================================
+
+    // QC swapper ForbidThrowCurrentWeapon: pressing drop-weapon while the swapper buff is held teleports you to
+    // swap places with the nearest enemy in range (origin/velocity/angles exchanged), consuming the buff.
+    // Returning true suppresses the normal weapon drop.
+    private bool OnForbidThrowCurrentWeapon(ref MutatorHooks.ForbidThrowCurrentWeaponArgs args)
+    {
+        if (Api.Services is null || VehicleCommon.GameStopped) return false;
+        Entity player = args.Player;
+        if (!Active(player, "swapper")) return false;
+
+        // Find the nearest valid enemy within g_buffs_swapper_range.
+        Entity? closest = null;
+        float bestDist2 = _swapperRange * _swapperRange;
+        foreach (Entity head in Api.Entities.FindInRadius(player.Origin, _swapperRange))
+        {
+            if (!IsPlayer(head) || ReferenceEquals(head, player)) continue;
+            if (Teams.SameTeam(head, player)) continue;       // QC DIFF_TEAM
+            if (head.DeadState != DeadFlag.No || IsFrozen(head) || head.Vehicle is not null) continue;
+            float d2 = (head.Origin - player.Origin).LengthSquared();
+            if (d2 < bestDist2) { bestDist2 = d2; closest = head; }
+        }
+        if (closest is null) return false;
+
+        Vector3 myOrg = player.Origin, myVel = player.Velocity, myAng = player.Angles;
+        Vector3 theirOrg = closest.Origin, theirVel = closest.Velocity, theirAng = closest.Angles;
+
+        // QC: Drop_Special_Items(closest) + MUTATOR_CALLHOOK(PortalTeleport, player) — both omitted here (the
+        // DropSpecialItems / PortalTeleport hooks are not ported; see todos). Core position/velocity swap:
+        Api.Entities.SetOrigin(player, theirOrg);
+        Api.Entities.SetOrigin(closest, myOrg);
+        player.Velocity = theirVel;
+        player.Angles = theirAng;
+        player.OldOrigin = theirOrg;
+        closest.Velocity = myVel;
+        closest.Angles = myAng;
+        closest.OldOrigin = myOrg;
+
+        // QC: SND_KA_RESPAWN at both ends (+ EFFECT_ELECTRO_COMBO x2 — no effect-spawn service yet; see todos).
+        SoundSystem.PlayOn(player, "KA_RESPAWN");
+        SoundSystem.PlayOn(closest, "KA_RESPAWN");
+
+        // QC: buff_RemoveAll(player) — the swap consumes the buff.
+        RemoveAllBuffs(player);
+        return true;
     }
 
     // =====================================================================================

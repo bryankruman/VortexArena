@@ -8,9 +8,11 @@
 // trigger), or on damage (if it has health / is shootable). After firing it fires its targets, waits
 // `.wait`, and returns; wait < 0 means it never returns.
 //
-// Now ported in full: shootable buttons via the damage pipeline's Death hook (button_damage), the
-// button_setactive deactivate-while-pressed bookkeeping (wait_remaining/activation_time), and the
-// alternate (pressed) texture frame. Genuinely client-only: CSQC networking.
+// Now ported in full: shootable buttons via the per-hit event_damage seam (button_damage —
+// DONTACCUMULATEDMG single-hit, NOSPLASH splash-immunity, and health == -1 fire-on-any-attack all
+// faithful), the button_setactive deactivate-while-pressed bookkeeping (wait_remaining/activation_time),
+// and the alternate (pressed) texture frame. Genuinely client-only: CSQC networking. The round-restart
+// button_reset re-arm is wired centrally in GameWorld.ResetMapObjects, not here.
 
 using System.Numerics;
 using XonoticGodot.Common.Framework;
@@ -25,13 +27,9 @@ public static class Buttons
 {
     public const int DontAccumulateDmg = 1 << 7; // BUTTON_DONTACCUMULATEDMG
 
-    private static bool _deathHooked;
-
     /// <summary><c>spawnfunc(func_button)</c>.</summary>
     public static void ButtonSetup(Entity this_)
     {
-        EnsureDeathHook();
-
         MapMover.SetMovedir(this_);
 
         if (!MapMover.InitMovingBrushTrigger(this_))
@@ -41,11 +39,13 @@ public static class Buttons
         this_.Blocked = ButtonBlocked;
         this_.Use = ButtonUse;
 
-        // Shootable button (health set): fire when killed (event_damage = button_damage). Otherwise touch.
+        // Shootable button (health set, incl. -1 = fire on ANY attack): the per-hit event_damage shim
+        // (button_damage) decides what a hit does. Otherwise touch. QC: button.qc spawnfunc.
         if (this_.Health != 0f)
         {
             this_.MaxHealthMover = this_.Health;
             this_.TakeDamage = DamageMode.Yes;
+            MapMover.InstallEventDamage(this_, ButtonDamage);
         }
         else
         {
@@ -55,6 +55,9 @@ public static class Buttons
         if (this_.Speed == 0f) this_.Speed = 40f;
         if (this_.Wait == 0f) this_.Wait = 1f;
         if (this_.Lip == 0f) this_.Lip = 4f;
+
+        // QC also does `if (wait < 0 && q3compat) wait = 0.1` (q3 -1 = return immediately), but this port
+        // layer has no live q3compat flag (CompatRemaps documents it as a port-wide gap), so it never fires.
 
         this_.Pos1 = this_.Origin;
         this_.Pos2 = this_.Pos1 + this_.MoveDir * (MathF.Abs(QMath.Dot(this_.MoveDir, this_.Size)) - this_.Lip);
@@ -140,7 +143,7 @@ public static class Buttons
         if (this_.MaxHealthMover != 0f)
         {
             this_.Health = this_.MaxHealthMover;
-            this_.TakeDamage = DamageMode.No; // reset on return
+            this_.TakeDamage = DamageMode.No; // will be reset upon return
         }
 
         if (this_.MoverState == MapMover.StateUp || this_.MoverState == MapMover.StateTop)
@@ -190,31 +193,48 @@ public static class Buttons
     /// <summary>QC <c>button_blocked</c>: do nothing (just don't come all the way back out).</summary>
     public static void ButtonBlocked(Entity self, Entity blocker) { }
 
-    // ================= shootable buttons via the damage pipeline =================
+    // ================= shootable buttons via the per-hit event_damage seam =================
 
     /// <summary>
-    /// Subscribe once to <see cref="Combat.Death"/>: when a shootable button is driven below 1 health the
-    /// pipeline fires the Death hook before corpse-ifying. We restore its health (so the kill path's
-    /// "resuscitated, don't die" early-out keeps the brush intact) and press it — QC's <c>button_damage</c>.
+    /// QC <c>button_damage</c> (the <c>.event_damage</c> callback): faithful per-hit damage reaction for a
+    /// shootable button. Installed via <see cref="MapMover.InstallEventDamage"/> at spawn and dispatched by
+    /// the damage pipeline for every hit on the brush (not just a lethal one), so the QC single-hit /
+    /// splash-immune / fire-on-any semantics are reproduced exactly — none of which the accumulate-then-die
+    /// <see cref="Combat.Death"/> hook could express.
     /// </summary>
-    private static void EnsureDeathHook()
+    private static void ButtonDamage(
+        Entity self, Entity? inflictor, Entity? attacker, string deathType, float damage,
+        Vector3 hitLoc, Vector3 force)
     {
-        if (_deathHooked)
-            return;
-        _deathHooked = true;
-        Combat.Death.Add(OnDeath);
-    }
-
-    private static bool OnDeath(ref DeathEvent ev)
-    {
-        Entity self = ev.Victim;
-        if (self.ClassName != "button")
-            return false;
         if (self.Active != MapMover.ActiveActive)
-            return false;
-        self.Health = self.MaxHealthMover; // keep it alive so the kill path's HP>=1 early-out fires
-        self.Enemy = ev.Attacker;
-        ButtonFire(self);
-        return false; // non-exclusive
+            return;
+
+        // NOSPLASH: ignore non-special splash damage (QC button_damage early-out).
+        if ((self.SpawnFlags & MapMover.SpawnNoSplash) != 0)
+            if (!DeathTypes.IsSpecial(deathType) && DeathTypes.HasHitType(deathType, DeathTypes.Splash))
+                return;
+
+        if ((self.SpawnFlags & DontAccumulateDmg) != 0)
+        {
+            // DONTACCUMULATEDMG: fire only on a single hit whose damage meets/exceeds current health, and
+            // never subtract health. A high-HP button needs one big hit; small hits never open it.
+            // (health == -1: this branch fires on ANY hit, since any damage >= -1.)
+            if (self.Health <= damage)
+            {
+                self.Enemy = attacker;
+                ButtonFire(self);
+            }
+        }
+        else
+        {
+            // Default: accumulate damage; fire once driven to/below zero. (health == -1 starts <= 0, so any
+            // attack — even a damageless InstaGib laser — fires immediately. QC `health -1 = fire on ANY`.)
+            self.Health -= damage;
+            if (self.Health <= 0f)
+            {
+                self.Enemy = attacker;
+                ButtonFire(self);
+            }
+        }
     }
 }

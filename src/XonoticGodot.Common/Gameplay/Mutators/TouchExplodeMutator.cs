@@ -17,17 +17,20 @@ namespace XonoticGodot.Common.Gameplay;
 [Mutator]
 public sealed class TouchExplodeMutator : MutatorBase
 {
+    // Defaults mirror mutators.cfg (radius 50 / damage 20 / edgedamage 0 / force 300) so a headless run
+    // without the cfg still matches Base; Hook() reads the live cvars unconditionally like QC autocvar_*.
+
     /// <summary>QC autocvar_g_touchexplode_radius.</summary>
-    public float Radius = 100f;
+    public float Radius = 50f;
 
     /// <summary>QC autocvar_g_touchexplode_damage.</summary>
-    public float DamageAmount = 50f;
+    public float DamageAmount = 20f;
 
     /// <summary>QC autocvar_g_touchexplode_edgedamage.</summary>
-    public float EdgeDamage = 20f;
+    public float EdgeDamage = 0f;
 
     /// <summary>QC autocvar_g_touchexplode_force.</summary>
-    public float Force = 200f;
+    public float Force = 300f;
 
     public TouchExplodeMutator() => NetName = "touchexplode";
 
@@ -42,12 +45,15 @@ public sealed class TouchExplodeMutator : MutatorBase
         _onPreThink ??= OnPlayerPreThink;
         MutatorHooks.PlayerPreThink.Add(_onPreThink);
 
+        // QC reads autocvar_g_touchexplode_* directly each blast. These cvars are registered (mutators.cfg
+        // 163-166) so we read them unconditionally — a non-zero guard would wrongly pin edgedamage at its
+        // default when the cfg legitimately sets it to 0.
         if (Api.Services is not null)
         {
-            float r = Api.Cvars.GetFloat("g_touchexplode_radius");      if (r != 0f) Radius = r;
-            float d = Api.Cvars.GetFloat("g_touchexplode_damage");      if (d != 0f) DamageAmount = d;
-            float e = Api.Cvars.GetFloat("g_touchexplode_edgedamage");  if (e != 0f) EdgeDamage = e;
-            float f = Api.Cvars.GetFloat("g_touchexplode_force");       if (f != 0f) Force = f;
+            Radius = Api.Cvars.GetFloat("g_touchexplode_radius");
+            DamageAmount = Api.Cvars.GetFloat("g_touchexplode_damage");
+            EdgeDamage = Api.Cvars.GetFloat("g_touchexplode_edgedamage");
+            Force = Api.Cvars.GetFloat("g_touchexplode_force");
         }
     }
 
@@ -100,18 +106,20 @@ public sealed class TouchExplodeMutator : MutatorBase
         Vector3 org = (p1.Origin + p2.Origin) * 0.5f;
         org.Z += (p1.Mins.Z + p2.Mins.Z) * 0.5f;
 
-        // QC: sound(p1, CH_TRIGGER, SND_TOUCHEXPLODE) + Send_Effect(EFFECT_EXPLOSION_SMALL, org).
-        // SND_TOUCHEXPLODE is the grenade-impact sample; the explosion particle is networked by the host.
-        Api.Sound.Play(p1, SoundChannel.Item, "weapons/grenade_impact.wav");
+        // QC: sound(p1, CH_TRIGGER, SND_TOUCHEXPLODE) + Send_Effect(EFFECT_EXPLOSION_SMALL, org, '0 0 0', 1).
+        // SND_TOUCHEXPLODE is the grenade-impact sample; CH_TRIGGER == SoundChannel.TriggerAuto (-3).
+        Api.Sound.Play(p1, SoundChannel.TriggerAuto, "weapons/grenade_impact.wav");
+        EffectEmitter.Emit("EXPLOSION_SMALL", org);
 
-        // QC spawns a temp inflictor at the midpoint and RadiusDamage's around it. QC tags the blast
-        // DEATH_TOUCHEXPLODE; the int-deathtype radius helper carries 0 (no weapon) — the dedicated
-        // touchexplode death id is part of the deathtype-registry phase, but the blast geometry is faithful.
+        // QC spawns a temp inflictor at the midpoint and RadiusDamage's around it, tagging the blast
+        // DEATH_TOUCHEXPLODE (DMG_NOWEP, no attacker credit). The string deathTag "touchexplode" carries the
+        // intent (matching the nade-boom callers); full obituary resolution still needs a DeathTypes
+        // TOUCHEXPLODE registry entry + SelectSpecial branch (cross-file — see todos).
         Entity e = Api.Entities.Spawn();
         e.ClassName = "touchexplode";
         Api.Entities.SetOrigin(e, org);
         WeaponSplash.RadiusDamage(e, org, DamageAmount, EdgeDamage, Radius, attacker: null,
-            deathType: 0, force: Force);
+            deathType: 0, force: Force, deathTag: "touchexplode");
         Api.Entities.Remove(e);
     }
 

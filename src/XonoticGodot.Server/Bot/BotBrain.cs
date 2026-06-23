@@ -69,6 +69,7 @@ public sealed class BotBrain
 
     // QC timing fields
     private float _chooseEnemyTime;
+    private float _stickEnemyTime;  // QC .havocbot_stickenemy_time (keep current enemy through a brief LOS break)
     private float _strategyTime;
     private float _aimTime;
     private float _chooseWeaponTime;
@@ -346,6 +347,12 @@ public sealed class BotBrain
             Aim.AimAt(lookDir, bot.Origin, Skill, dt, now, 0f, hasEnemy: false);
         }
 
+        // 4b) idle reload (QC havocbot_ai:181-211): when NOT attacking (no enemy this frame), keep the held
+        // weapon topped up so it never runs dry mid-fight, and — for higher-skill bots — pre-rotate to an
+        // owned reloadable weapon whose magazine isn't full so it can be reloaded next.
+        if (enemy is not { IsFreed: false })
+            IdleReload(bot, now);
+
         // 5) assemble the command (the caller's same-tick physics/weapon drivers consume it).
         bool wantJump = Nav.WantJump;
         if (wantJump)
@@ -491,6 +498,53 @@ public sealed class BotBrain
         }
     }
 
+    /// <summary>
+    /// QC <c>havocbot_ai</c> idle-reload block (havocbot.qc:181-211), run only while NOT attacking: keep the
+    /// bot's guns loaded between fights so a reloadable weapon doesn't run dry mid-combat. Two skill tiers,
+    /// matching QC:
+    /// <list type="bullet">
+    /// <item>skill ≥ 2 — if the currently-held weapon's magazine isn't full, reload it now (drives the same
+    /// reload impulse a human's +reload would, via <see cref="WeaponImpulses"/> impulse 20).</item>
+    /// <item>skill ≥ 5 — if we're not mid-reload, pre-rotate to any owned reloadable weapon whose stored clip
+    /// isn't full, so the held-weapon branch reloads it on the following think (QC sets <c>m_switchweapon</c>).</item>
+    /// </list>
+    /// </summary>
+    private void IdleReload(Player bot, float now)
+    {
+        if (Skill < 2f) return; // bots below this skill never reload on purpose (QC skill >= 2 gate)
+
+        var slot = new WeaponSlot(0);
+        var st = bot.WeaponState(slot);
+
+        // skill >= 2: reload the held weapon if its magazine isn't full. ClipLoad < 0 is QC's "scheduled for
+        // reload" sentinel (a reload is already pending), so only act on a genuinely partial clip.
+        if (st.ClipLoad >= 0 && st.ClipLoad < st.ClipSize)
+        {
+            WeaponImpulses.Handle(bot, ReloadImpulse); // QC CS(this).impulse = IMP_weapon_reload.impulse
+            return;                                    // QC: don't also pre-rotate while a reload is starting
+        }
+
+        // skill >= 5: if we're not reloading a weapon already, switch to any owned reloadable weapon whose
+        // stored clip isn't full, so the held-weapon branch reloads it next think (QC havocbot.qc:200-209).
+        if (Skill < 5f) return;
+        if (st.ClipLoad < 0) return; // already reloading (sentinel) — don't switch away mid-reload
+
+        foreach (string netName in Bot.OwnedWeapons)
+        {
+            Weapon? w = Weapons.ByName(netName);
+            if (w is null || (w.SpawnFlags & WeaponFlags.Reloadable) == 0) continue;
+            if (ReferenceEquals(w, ChosenWeapon)) continue; // the held weapon is handled by the skill>=2 branch
+            if (Weapon.GetWeaponLoad(st, w.RegistryId) < w.ReloadingAmmo())
+            {
+                if (Bot.OwnedWeaponSet.Has(w))
+                    Inventory.SwitchWeapon(Bot, w);
+                break; // QC: rotate to the first under-loaded weapon found, then stop
+            }
+        }
+    }
+
+    private const int ReloadImpulse = 20; // common/impulses/all.qh IMP_weapon_reload
+
     /// <summary>Pick the highest-impulse owned weapon matching the type preference (hitscan/splash/any).</summary>
     private Weapon? PickOwned(bool wantHitscan, bool wantSplash)
     {
@@ -590,12 +644,36 @@ public sealed class BotBrain
     /// </summary>
     private void ChooseEnemy(float now)
     {
+        bool superbot = Skill > BotAim.SuperbotSkill;
+
         var current = Bot.Enemy;
-        if (current is { IsFreed: false } && ShouldAttack(Bot, current))
+        if (current is { IsFreed: false })
         {
-            // keep tracking; re-evaluate on the slower clock
-            if (now < _chooseEnemyTime)
-                return;
+            if (!ShouldAttack(Bot, current))
+            {
+                // enemy died / became invalid → drop it and re-scan now (QC havocbot_chooseenemy:1342-1349).
+                Bot.Enemy = null;
+                _chooseEnemyTime = now;
+            }
+            else if (_stickEnemyTime != 0f && now < _stickEnemyTime)
+            {
+                // QC sticky-enemy window (bot_ai_enemydetectioninterval_stickingtoenemy, default 4): keep
+                // tracking the current enemy through a brief LOS break (rounding a pillar/corner) as long as
+                // it's still close + still traces clear, so the bot doesn't instantly forget a target that
+                // ducked behind cover for a moment (havocbot_chooseenemy:1350-1366).
+                Vector3 eyeS = Bot.Origin + Aim.ViewOffset;
+                var targPos = (current.AbsMin != current.AbsMax)
+                    ? (current.AbsMin + current.AbsMax) * 0.5f : current.Origin + current.ViewOfs;
+                var trS = Api.Trace.Trace(eyeS, Vector3.Zero, Vector3.Zero, targPos, MoveFilter.Normal, Bot);
+                if ((trS.Fraction >= 1f || ReferenceEquals(trS.Ent, current))
+                    && (targPos - Bot.Origin).Length() < 1000f)
+                {
+                    // remain on this enemy for a short window (QC: chooseenemy_finished = time + 0.5).
+                    _chooseEnemyTime = now + 0.5f;
+                    return;
+                }
+                _stickEnemyTime = 0f; // stop preferring this enemy
+            }
         }
         else
         {
@@ -604,10 +682,12 @@ public sealed class BotBrain
 
         if (now < _chooseEnemyTime)
             return;
-        _chooseEnemyTime = now + (Skill > BotAim.SuperbotSkill ? 0.1f : EnemyDetectionInterval);
+        _chooseEnemyTime = now + (superbot ? 0.1f : EnemyDetectionInterval);
 
         Vector3 eye = Bot.Origin + Aim.ViewOffset;
         Entity? best = null;
+        // QC: non-SUPERBOT rates by squared distance (nearest wins); SUPERBOT by bound(50,hp+armor,250)*dist
+        // (prefer the weak/close kill) — a LOWER rating is better in both, so the radius² seeds the ceiling.
         float bestRating = EnemyDetectionRadius * EnemyDetectionRadius;
 
         foreach (var e in Players())
@@ -615,7 +695,16 @@ public sealed class BotBrain
             if (!ShouldAttack(Bot, e)) continue;
             var center = (e.AbsMin != e.AbsMax) ? (e.AbsMin + e.AbsMax) * 0.5f : e.Origin + e.ViewOfs;
             float d2 = (center - eye).LengthSquared();
-            if (d2 >= bestRating) continue;
+
+            // QC SUPERBOT target rating: account for the target's health+armor so a skilled bot prefers
+            // finishing a weak/close enemy over a healthy/far one (havocbot_chooseenemy:1409-1426).
+            float rating = d2;
+            if (superbot)
+            {
+                float hp = e.Health + e.GetResource(ResourceType.Armor);
+                rating = QMath.Bound(50f, hp, 250f) * d2;
+            }
+            if (rating >= bestRating) continue;
 
             // PVS pre-filter (QC checkpvs): a target in a non-visible cluster can't possibly be seen, so skip
             // the expensive traceline. Conservative (no false negatives) and a no-op on an unvised map.
@@ -626,11 +715,15 @@ public sealed class BotBrain
             if (tr.Fraction >= 1f || ReferenceEquals(tr.Ent, e))
             {
                 best = e;
-                bestRating = d2;
+                bestRating = rating;
             }
         }
 
         Bot.Enemy = best;
+        // QC: arm the sticky-enemy window so a target acquired now is tracked through a brief LOS break.
+        _stickEnemyTime = best is not null
+            ? now + Cvars.FloatOr("bot_ai_enemydetectioninterval_stickingtoenemy", 4f)
+            : 0f;
     }
 
     /// <summary>

@@ -25,6 +25,12 @@ public sealed class Intermission
     /// <summary>QC <c>sv_mapchange_delay</c> default (xonotic-server.cfg): seconds to hold the scoreboard before switching.</summary>
     public const float DefaultMapChangeDelay = 5f;
 
+    /// <summary>
+    /// QC IntermissionThink: after <c>intermission_exittime</c> the server waits up to this many seconds for a
+    /// player to press fire/jump/atck2/hook/use before auto-advancing the map (<c>time &lt; intermission_exittime + 10</c>).
+    /// </summary>
+    public const float InputGracePeriod = 10f;
+
     /// <summary>QC <c>intermission_running</c>: the match is over and the scoreboard is frozen on screen.</summary>
     public bool Running { get; private set; }
 
@@ -86,9 +92,10 @@ public sealed class Intermission
     public void RequestExit() => _exitRequested = true;
 
     /// <summary>
-    /// Advance intermission one frame (QC IntermissionThink, world-side). Once the exit time elapses — or a
-    /// player has <see cref="RequestExit"/>ed after it — <see cref="ReadyToChangeLevel"/> flips true. No-op
-    /// until <see cref="Begin"/> has run.
+    /// Advance intermission one frame (QC IntermissionThink, world-side). After the exit time elapses the map
+    /// auto-advances once the <see cref="InputGracePeriod"/> (+10s, QC) passes, or immediately when a player has
+    /// <see cref="RequestExit"/>ed (pressed fire/jump/atck2/hook/use). <see cref="ReadyToChangeLevel"/> then
+    /// flips true. No-op until <see cref="Begin"/> has run.
     /// </summary>
     public void Think()
     {
@@ -106,11 +113,13 @@ public sealed class Intermission
         }
 
         if (now < ExitTime)
-            return;
+            return; // QC: if (time < intermission_exittime) return;
 
-        // past the hold time: QC waits up to +10s for a fire/jump, then auto-advances. We auto-advance at
-        // the exit time unless the host wants the grace period (RequestExit short-circuits it either way).
-        ReadyToChangeLevel = true;
+        // Past the hold time (QC IntermissionThink): wait up to +10s for a fire/jump/atck2/hook/use before
+        // auto-advancing. An explicit RequestExit (a button press) short-circuits the grace and advances now;
+        // otherwise the map auto-advances once the grace window elapses.
+        if (_exitRequested || now >= ExitTime + InputGracePeriod)
+            ReadyToChangeLevel = true;
     }
 
     /// <summary>Clear intermission state (QC reset on map change / restart) so a fresh match can run.</summary>
