@@ -5,7 +5,7 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 15
   worst_gaps:
-    - "Signature networked BRG_* healray/damage beam (the visible green/red ray + bumble_raygun_draw multi-segment cylinder, the ENT_CLIENT_BUMBLE_RAYGUN net entity) NOT IMPLEMENTED — only a placeholder EffectEmitter.TeHealBeam/TeBeam stub. (Logic now live; only the networked beam visual is absent.)"
+    - "Signature networked BRG_* healray/damage beam (the visible green/red ray + bumble_raygun_draw multi-segment cylinder, the ENT_CLIENT_BUMBLE_RAYGUN net entity) NOT IMPLEMENTED — only a placeholder EffectEmitter.TeHealBeam/TeBeam stub. (Raygun LOGIC is now fully faithful + live — incl. the heal hp-limit fix to Resources.LimitNone; only the networked beam visual + a freezetag-only FROZEN lock guard remain.)"
     - "vr_death gib toss (gun1/gun2/gun3 + body via vehicle_tossgib) and the tumble EFFECT_EXPLOSION_SMALL/MEDIUM/BIG + SND_ROCKET_IMPACT death FX + bumblebee_dead_touch (50% early body blowup) NOT IMPLEMENTED. The death LOGIC/blast/respawn is now LIVE (Wave-2 GtEventDamage seam); only the gib/FX/audio presentation remains."
     - "All vehicle HUD/crosshair presentation NOT IMPLEMENTED: vr_hud, vr_crosshair (vCROSS_HEAL), the three aux crosshairs (lock + two gunner), the 'No right/left gunner!' prompts, the 0..100% ammo/energy/shield HUD mirroring, cosmetic gun models + cockpit offsets + scale 1.5, MENUQC describe text."
     - "FIXED Wave-4 (impact.bouncepain): now a proper `override Impact(Entity)` -> VehicleCommon.Impact(1,100,200); Think snapshots OldVelocity; Bumblebee's own .Touch now chains VehicleCommon.Touch (QC lines 391/404) so the vr_impact dispatch is reached. Live, faithful to Base's touch-board bounce-pain."
@@ -17,8 +17,8 @@ features:
       - "common/vehicles/vehicle/bumblebee.qc:740 (spawnfunc(vehicle_bumblebee))"
       - "common/vehicles/vehicle/bumblebee.qh:27 (REGISTER_VEHICLE BUMBLEBEE)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleSpawnFuncs.cs:55 (Bumblebee)"
-      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:222 (SpawnFuncs.Register vehicle_bumblebee)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleSpawnFuncs.cs:60 (Bumblebee)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:236 (SpawnFuncs.Register vehicle_bumblebee)"
     constants:
       - { name: "g_vehicle_bumblebee", base: "true (1)", port: "MasterSwitchEnabled: unset/!=0 -> on", match: true }
     status:
@@ -154,8 +154,8 @@ features:
     base_refs:
       - "common/vehicles/vehicle/bumblebee.qc:518 (heal lock + raygun fire block)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Vehicles/Bumblebee.cs:610 (FireRay)"
-      - "src/XonoticGodot.Common/Gameplay/Vehicles/Bumblebee.cs:326 (heal lock in Frame)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Bumblebee.cs:620 (FireRay)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Bumblebee.cs:362 (heal lock in Frame)"
     constants:
       - { name: "raygun", base: "false (heal mode)", port: "false (RaygunDamage)", match: true }
       - { name: "raygun_range", base: "2048", port: "2048", match: true }
@@ -170,7 +170,7 @@ features:
       - { name: "healgun_sps", base: "100", port: "100", match: true }
       - { name: "healgun_locktime", base: "2.5", port: "2.5", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: missing
@@ -179,13 +179,14 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "QC heals a non-client target (e.g. friendly-vehicle RES_HEALTH path) up to RES_LIMIT_NONE (unbounded); the port substitutes target.MaxHealth as the hpLimit for the no-limit case, capping non-player heal at max_health (Bumblebee.cs FireRay heal branch)."
-      - "The visible BRG_* beam is a placeholder EffectEmitter.TeHealBeam/TeBeam stub (Bumblebee.cs:623-625), not the networked CSQC bumble_raygun beam; the per-tick BRG_START/BRG_END send + `wait = time + 1` beam-hold are not modeled."
+      - "Heal-lock target test omits the QC frozen guards (`STAT(FROZEN, trace_ent)` skip + `STAT(FROZEN, enemy)` lock-drop, bumblebee.qc:519/524) — a freezetag-only edge: the heal beam can lock onto / heal a frozen teammate. Minor; everything else in the lock/heal logic is faithful."
+      - "The visible BRG_* beam is a placeholder EffectEmitter.TeHealBeam/TeBeam stub (Bumblebee.cs:633-635), not the networked CSQC bumble_raygun beam; the per-tick BRG_START/BRG_END send + `wait = time + 1` beam-hold are not modeled."
     verification:
-      - { kind: code, ref: "FireRay implements both modes (Damage at dps*frametime + energy drain in damage mode; Heal + armor/shield top-up teamplay-gated in heal mode) + instagib extralives armor cap; constants diffed equal", result: pass }
-      - { kind: code, ref: "Reachable live now that the pilot Frame runs (boarding live). hp-limit nuance + missing networked beam visual remain", result: pass }
+      - { kind: code, ref: "FireRay implements both modes (Damage at dps*frametime DEATH_GENERIC + energy drain by aps in damage mode; Heal + armor/shield top-up teamplay-gated in heal mode) + instagib extralives armor cap; constants diffed equal", result: pass }
+      - { kind: code, ref: "Heal hp-limit FIX: Bumblebee.cs:657 now uses Resources.LimitNone (-1, uncapped) for a non-client heal target — matching QC's `IS_PLAYER ? healgun_hmax : RES_LIMIT_NONE` exactly; GiveResourceWithLimit honors LimitNone (Resources.cs:152). The baseline-recorded MaxHealth cap is gone.", result: pass }
+      - { kind: code, ref: "Reachable live: the pilot Frame runs (boarding live via +use). Only the frozen-guard nuance + the networked beam visual remain", result: pass }
     confidence: high
-    notes: "Wave-2 LIVE (was dead): both raygun modes + heal lock run once boarded. Residual: non-player heal cap nuance (logic partial) and the networked beam visual (presentation missing)."
+    notes: "FIX since baseline: the heal hp-limit (logic partial) is now faithful — non-player targets heal uncapped via Resources.LimitNone, matching RES_LIMIT_NONE. Residual: missing FROZEN lock guards (small freezetag-only logic gap) and the networked beam visual (presentation missing). Both raygun modes + heal lock run live once boarded."
 
   - id: vehicle-bumblebee.gunner.frame
     name: "Side-gunner turret: per-gun lock + lead + aim + plasma fire"

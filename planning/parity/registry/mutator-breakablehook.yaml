@@ -5,8 +5,8 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 5
   worst_gaps:
-    - "TEAMPLAY REGRESSION (introduced by Wave-2): the new DiffTeam(a,b) helper reads the STATIC GameScores.Teamplay bool, but that static is NEVER assigned on the server gameplay path (its only writer is ScoreInfoBlock.Apply — the CLIENT network-deserialise — and ScoreInfoBlock has no live caller anywhere). So on the live server DiffTeam always takes the FFA branch !ReferenceEquals(a,b). In a TEAM game (CTF etc.) shooting a TEAMMATE's hook now wrongly fires the punish (5 splash to the teammate + force-removes the hook); Base DIFF_TEAM uses team!=team and skips same-team. The OLD port code (!Teams.SameTeam) handled teamplay correctly, so this is a genuine regression vs both Base and the pre-Wave-2 port."
-    - "FFA self-break is now FIXED: with GameScores.Teamplay false the FFA branch !ReferenceEquals(owner,owner)=false, so shooting your OWN hook with g_breakablehook_owner 1 no longer deals spurious 5 self-splash + removal — matches Base DIFF_TEAM(owner,owner)=false."
+    - "TEAMPLAY REGRESSION (Wave-2, STILL OPEN after the second-pass fix-up commit 4be8357): the DiffTeam(a,b) helper reads the STATIC GameScores.Teamplay bool, which is NEVER assigned on the server gameplay path — its only writer is ScoreInfoBlock.Apply (the CLIENT NET_HANDLE deserialise), and ScoreInfoBlock still has ZERO callers anywhere (re-confirmed by grep 2026-06-22: only the class def + the dead Serialize/Hash references inside it). So on the live (listen-)server DiffTeam always takes the FFA branch !ReferenceEquals(a,b). In a TEAM game (CTF/TDM/CA etc.) shooting a TEAMMATE's hook wrongly fires the punish (5 splash to the teammate + force-removes the hook); Base DIFF_TEAM uses team!=team and skips same-team. The OLD pre-Wave-2 port (!Teams.SameTeam) handled teamplay correctly, so this remains a genuine regression vs both Base and the pre-Wave-2 port. Shared bug class with NadeOrbHelper.DiffTeam, Teleporters, WeaponAccuracyEvents, KickTeamkiller, SpawnNearTeammate (all key off the dead static)."
+    - "FFA self-break is FIXED (Wave-2): with GameScores.Teamplay false the FFA branch !ReferenceEquals(owner,owner)=false, so shooting your OWN hook with g_breakablehook_owner 1 no longer deals spurious 5 self-splash + removal — matches Base DIFF_TEAM(owner,owner)=false."
 features:
   - id: breakablehook.activation.enable_cvar
     name: "Mutator registration + enable via g_breakablehook"
@@ -30,11 +30,11 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "[Mutator]-discovered into Mutators.All; MutatorActivation.Apply() walks Mutators.All and Add()s each IsEnabled mutator → Hook() subscribes the handler. Enable predicate reads g_breakablehook live (IsEnabled, BreakablehookMutator.cs:38). UNCHANGED by Wave-2.", result: pass }
-      - { kind: test, ref: "tests/XonoticGodot.Tests/MutatorBatchT51Tests.cs:102 (Mutators.ByName(\"breakablehook\")) + :522 (IsEnabled under g_breakablehook 1)", result: pass }
+      - { kind: code, ref: "[Mutator]-discovered into Mutators.All; MutatorActivation.Apply() (MutatorActivation.cs:60-64) walks Mutators.All and Add()s each IsEnabled mutator → Hook() subscribes the handler. Enable predicate reads g_breakablehook live (IsEnabled, BreakablehookMutator.cs:38). Re-confirmed UNCHANGED 2026-06-22.", result: pass }
+      - { kind: test, ref: "tests/XonoticGodot.Tests/MutatorBatchT51Tests.cs:102 (Mutators.ByName(\"breakablehook\")) + :522 (IsEnabled under g_breakablehook 1) — both present.", result: pass }
       - { kind: code, ref: "mutators.cfg defaults g_breakablehook 0 / g_breakablehook_owner 0 both match port GetFloat default-0 semantics", result: pass }
     confidence: high
-    notes: "Server-only mutator (_mod.inc is #ifdef SVQC only; no client/HUD/sound component). Enable predicate reads g_breakablehook live; defaults match. On the real activation loop, not dead. VERIFIED against Base source; Wave-2 did not touch this feature."
+    notes: "Server-only mutator (_mod.inc is #ifdef SVQC only; no client/HUD/sound component). Enable predicate reads g_breakablehook live; defaults match. On the real activation loop, not dead. Re-audited 2026-06-22 (post second-pass fix-up): no change to this feature."
 
   - id: breakablehook.damage.gate
     name: "Gate damage to the grapple chain (own-hook / disabled zeroing)"
@@ -58,10 +58,10 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "DamageSystem.cs:254-259 builds DamageCalculateArgs, Calls the chain live, writes back dc.Damage. Chain is takedamage=Aim with Owner=actor (Hook.cs:241-258). RealOwner => Owner.", result: pass }
+      - { kind: code, ref: "DamageSystem.cs:254-259 builds DamageCalculateArgs(target=targ), Calls the chain live, writes back dc.Damage. Chain target is the shootable grapplinghook (Hook.cs:241 ClassName, :247 TakeDamage=Aim, :242 Owner=actor). target.RealOwner => Owner (DamageEntityState.cs:135, partial Entity), so RealOwner == the firer. Re-confirmed UNCHANGED 2026-06-22.", result: pass }
       - { kind: test, ref: "tests/XonoticGodot.Tests/MutatorBatchT51Tests.cs:519 Breakablehook_ZeroesDamage_OnOwnHook_WhenOwnerBreakOff asserts args.Damage==0", result: pass }
     confidence: high
-    notes: "Independent if-block from the punish branch, matching Base. Self-hit gate uses ReferenceEquals(attacker, owner) == QC frag_attacker==frag_target.realowner. Wave-2 changed Breakable/BreakableOwner from fields to live-reading properties; the gate logic + the line that zeroes damage are unchanged and remain faithful. VERIFIED."
+    notes: "Independent if-block from the punish branch, matching Base. Self-hit gate uses ReferenceEquals(attacker, owner) == QC frag_attacker==frag_target.realowner. Wave-2's swap of Breakable/BreakableOwner from fields to live-reading properties does not affect this block's correctness; the gate logic + the zeroing line are unchanged and faithful. VERIFIED."
 
   - id: breakablehook.owner.punish_splash
     name: "Punish hook owner with 5 splash + remove on cross-team break"
@@ -89,15 +89,15 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "TEAMPLAY REGRESSION: in a team game (CTF/TDM/CA etc.) breaking a TEAMMATE's hook now fires the punish (5 splash to the teammate + force-remove), because DiffTeam falls to the FFA branch !ReferenceEquals(attacker, owner) when the static GameScores.Teamplay is false — and it is ALWAYS false on the server (no live writer). Base DIFF_TEAM uses team!=team in teamplay and would skip a same-team break. The pre-Wave-2 port (!Teams.SameTeam) handled this correctly, so this is a regression vs both Base and the old port."
-      - "Self-break in a TEAM game is also wrongly punished (FFA branch !ReferenceEquals(owner,owner) IS false so self is still skipped — OK; but an ALLY hit is the broken case)."
+      - "TEAMPLAY REGRESSION (STILL OPEN): in a team game (CTF/TDM/CA etc.) breaking a TEAMMATE's hook fires the punish (5 splash to the teammate + force-remove), because DiffTeam falls to the FFA branch !ReferenceEquals(attacker, owner) when the static GameScores.Teamplay is false — and it is ALWAYS false on the server (no live writer; ScoreInfoBlock.Apply has zero callers, re-verified 2026-06-22). Base DIFF_TEAM uses team!=team in teamplay and would skip a same-team break. The pre-Wave-2 port (!Teams.SameTeam) handled this correctly, so this is a regression vs both Base and the old port. NOT addressed by the second-pass fix-up commit (4be8357)."
+      - "Self-break in a TEAM game: the FFA branch !ReferenceEquals(owner,owner) IS false so a self-hit is still skipped — OK; the broken case is an ALLY hit."
     verification:
-      - { kind: code, ref: "GameScores.Teamplay writer search: the ONLY assignment is ScoreInfoBlock.cs:135 (Apply = client NET_HANDLE deserialise). grep for ScoreInfoBlock.Apply/Serialize/Deserialize across src returns ZERO callers — the scoreboard-layout block is not wired into the snapshot composer. No server/GameWorld/host assignment exists. So the static defaults false and stays false during a live match.", result: fail }
-      - { kind: code, ref: "Truth table on the live path (GameScores.Teamplay==false ⇒ DiffTeam == !ReferenceEquals): FFA enemy break = true (punish, correct); FFA self-break = false (no punish, CORRECT — the old baseline self-hit bug is FIXED); TEAMPLAY same-team ally break = true (punish, WRONG — Base team!=team is false); TEAMPLAY cross-team break = true (punish, coincidentally correct).", result: fail }
-      - { kind: code, ref: "Value parity unchanged + faithful: 5 dmg, hook|splash deathtype (DeathTypes.WithHitType/FromWeapon), owner.Origin, zero force, inflictor=attacker (BreakablehookMutator.cs:73-74; Combat.Damage). DMG_NOWEP weaponentity arg has no functional effect.", result: pass }
-      - { kind: test, ref: "MutatorBatchT51Tests.cs:519 is an FFA self-hit (Team unset, Teamplay default false) → with the new DiffTeam the punish no longer fires, so the spurious 5 self-splash the baseline flagged is gone. The test only asserts args.Damage==0 so it neither catches nor exercises the teamplay regression.", result: pass }
+      - { kind: code, ref: "GameScores.Teamplay writer search (re-run 2026-06-22): the ONLY assignment is ScoreInfoBlock.cs:135 (Apply = client NET_HANDLE deserialise). grep ScoreInfoBlock across src returns the class def only (ScoreInfoBlock.cs:36) — no Apply/Serialize/Deserialize CALLER; the scoreboard-layout block is not wired into the snapshot composer. No server/GameWorld/host assignment exists (server uses the SEPARATE instance world.Teamplay / Cvars.Teamplay, NOT the static). So GameScores.Teamplay defaults false and stays false during a live match.", result: fail }
+      - { kind: code, ref: "Truth table on the live path (GameScores.Teamplay==false ⇒ DiffTeam == !ReferenceEquals): FFA enemy break = true (punish, correct); FFA self-break = false (no punish, CORRECT — old baseline self-hit bug is FIXED); TEAMPLAY same-team ally break = true (punish, WRONG — Base team!=team is false); TEAMPLAY cross-team break = true (punish, coincidentally correct).", result: fail }
+      - { kind: code, ref: "Value parity faithful: 5 dmg, hook|splash deathtype (DeathTypes.WithHitType/FromWeapon), owner.Origin, zero force, inflictor=attacker (BreakablehookMutator.cs:73-74; Combat.Damage). DMG_NOWEP weaponentity arg has no functional effect. Re-confirmed UNCHANGED 2026-06-22.", result: pass }
+      - { kind: test, ref: "MutatorBatchT51Tests.cs:519 is an FFA self-hit (Team unset, Teamplay default false) → with DiffTeam the punish no longer fires, so the spurious 5 self-splash the baseline flagged is gone. The test only asserts args.Damage==0 so it neither catches nor exercises the teamplay regression (no team-game ally-break test exists).", result: pass }
     confidence: high
-    notes: "Wave-2 swapped !Teams.SameTeam for a DiffTeam(a,b) helper meant to mirror QC DIFF_TEAM. It CLOSED the baseline FFA self-hit gap but OPENED a teamplay gap because it keys off the dead static GameScores.Teamplay (vs the authoritative server-side Teamplay INSTANCE GameWorld.Teamplay / world.Teamplay.IsTeamGame). NadeOrbHelper.DiffTeam (NadeOrbHelper.cs:33) and Teleporters (Teleporters.cs:124,366) have the SAME dead-static dependency — this is a shared bug class. A correct fix would read the live server team-game flag (e.g. world.Teamplay.IsTeamGame) or special-case self (attacker!=owner) AND same-team. Still logic: partial — the divergence merely moved from the FFA self-hit edge to the teamplay same-team case. VERIFIED by Base+port read + exhaustive writer search."
+    notes: "Wave-2 swapped !Teams.SameTeam for a DiffTeam(a,b) helper meant to mirror QC DIFF_TEAM. It CLOSED the FFA self-hit gap but OPENED a teamplay gap because it keys off the dead static GameScores.Teamplay (vs the authoritative server-side instance world.Teamplay.IsTeamGame / Cvars.Teamplay). The second-pass fix-up commit (4be8357) did NOT touch this — re-audited 2026-06-22, regression persists. A correct fix reads the live server team-game flag or special-cases self (attacker!=owner) AND same-team. Still logic: partial — the divergence sits in the teamplay same-team case. VERIFIED by Base+port read + exhaustive writer search."
 
   - id: breakablehook.remove.drop_chain
     name: "Remove the hook chain when broken (RemoveHook proxy)"
@@ -120,9 +120,9 @@ features:
     divergence_rationale: "Port's RemoveHook is private to Hook.cs; the mutator removes the chain by invoking the grapplinghook's own ProjectileDamage callback (Hook.cs:258: (self,attacker) => RemoveHook(actor.WeaponState(slot))), the same encapsulated path used when the chain is shot down normally. Behaviorally equivalent to QC's direct RemoveHook(frag_target): removes the chain entity and clears the owner's weapon hook slot."
     gaps: []
     verification:
-      - { kind: code, ref: "Hook.cs:258 wires ProjectileDamage to RemoveHook(actor.WeaponState(slot)); mutator invokes it (BreakablehookMutator.cs:78). RemoveHook (Hook.cs:418+) removes st.Hook and nulls the slot. UNCHANGED by Wave-2.", result: pass }
+      - { kind: code, ref: "Hook.cs:258 wires ProjectileDamage to RemoveHook(actor.WeaponState(slot)); mutator invokes it (BreakablehookMutator.cs:78). RemoveHook removes st.Hook and nulls the slot. Re-confirmed UNCHANGED 2026-06-22.", result: pass }
     confidence: medium
-    notes: "Removal fires only inside the punish branch, so WHEN it runs now inherits that branch's teamplay regression (breakablehook.owner.punish_splash): in a team game a teammate-hook break will wrongly remove the chain. The removal MECHANICS themselves are faithful and unchanged. Minor incidental note (not specific to this mutator): the port's RemoveHook does not explicitly restore MOVETYPE_WALK whereas QC RemoveHook does when reeling."
+    notes: "Removal fires only inside the punish branch, so WHEN it runs inherits that branch's teamplay regression (breakablehook.owner.punish_splash): in a team game a teammate-hook break will wrongly remove the chain. The removal MECHANICS themselves are faithful and unchanged. Minor incidental note (not specific to this mutator): the port's RemoveHook does not explicitly restore MOVETYPE_WALK whereas QC RemoveHook does when reeling."
 
   - id: breakablehook.cvar.live_reread
     name: "Live per-call cvar read (mid-match toggling of breaking rules)"
@@ -144,6 +144,6 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "BreakablehookMutator.cs:30 `public bool Breakable => ... GetFloat(\"g_breakablehook\") != 0f;` and :33 BreakableOwner likewise. Wave-2 removed the Hook()-time snapshot (the field assignments are gone from Hook()). OnDamageCalculate (:55-81) reads these properties, so each Damage_Calculate now re-reads the cvars — mid-match g_breakablehook_owner toggling takes effect immediately, matching Base's autocvar live-read.", result: pass }
+      - { kind: code, ref: "BreakablehookMutator.cs:30 `public bool Breakable => ... GetFloat(\"g_breakablehook\") != 0f;` and :33 BreakableOwner likewise. No Hook()-time snapshot exists (Hook() only subscribes the handler, BreakablehookMutator.cs:43-47). OnDamageCalculate (:55-81) reads these properties, so each Damage_Calculate re-reads the cvars — mid-match g_breakablehook_owner toggling takes effect immediately, matching Base's autocvar live-read. Re-confirmed UNCHANGED 2026-06-22.", result: pass }
     confidence: high
-    notes: "FIXED by Wave-2: the baseline snapshot-once-at-Hook() divergence is closed — Breakable/BreakableOwner are now live-reading expression-bodied properties. Mid-match toggling of g_breakablehook_owner (the only knob the baseline flagged) now behaves as in Base. logic + timing upgraded partial→faithful."
+    notes: "FIXED by Wave-2: the baseline snapshot-once-at-Hook() divergence is closed — Breakable/BreakableOwner are live-reading expression-bodied properties. Mid-match toggling of g_breakablehook_owner now behaves as in Base. logic + timing remain faithful at this re-audit."

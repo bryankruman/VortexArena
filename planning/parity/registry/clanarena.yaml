@@ -5,10 +5,9 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 20
   worst_gaps:
-    - "damage2score is WIRED LIVE but FUNCTIONALLY DEAD: its QC gate reads ca.Handler.IsRoundStarted, but ca.Handler (the owned Common RoundHandler) is NEVER ticked (ClanArena.Tick has no caller), so IsRoundStarted is permanently false and the accrual always returns early — the SCORE column still stays 0"
-    - "Per-player ROUNDS_PL award still missing: EnableRounds never sets RoundHandler.OnRoundCounted for CA"
-    - "'You are now alone!' (CENTER_ALONE) still dead: NotifyLastPlayerForTeam has no live caller (and its IsRoundStarted gate would also be permanently false)"
-    - "Inter-round grace fire-block still missing: WeaponUseForbidden in WeaponFireDriver.cs is still a stub returning false (only the 5s->10s countdown length was fixed)"
+    - "Per-player ROUNDS_PL award still missing: EnableRounds never sets RoundHandler.OnRoundCounted for CA, and the CA branch doesn't either"
+    - "'You are now alone!' (CENTER_ALONE) still dead: NotifyLastPlayerForTeam has zero live callers (not wired into any PlayerDies/disconnect path) — though its IsRoundStarted gate WOULD now work via the mirror if it were called"
+    - "Inter-round grace fire-block still missing: WeaponUseForbidden in WeaponFireDriver.cs is still a stub returning false (unchanged since baseline)"
     - "Late-joiner forced-Observer / INGAME_JOINING state still missing; eliminated-greyout still approximates eliminated == dead"
 features:
   - id: clanarena.round.lifecycle
@@ -40,7 +39,7 @@ features:
     verification:
       - { kind: trace, ref: "ActivateGameType CA branch calls EnableRounds(ca.CheckTeams, ()=>ca.CheckWinner()!=0, endDelay g_ca_round_enddelay, countdown g_ca_warmup, roundTimeLimit g_ca_round_timelimit) (GameWorld.cs:1384-1390); the live Server RoundHandler.Think drives it; cfg tree (xonotic-server.cfg->gametypes-server.cfg) loaded by GameWorld.cs:433 LoadServerConfig sets g_ca_warmup 10", result: pass }
     confidence: high
-    notes: "MAJOR rewire vs baseline: the LIVE Server RoundHandler now uses CA's real CheckTeams/CheckWinner predicates and CA's own warmup/timelimit/end-delay cvars (10/180/0), not the generic 5/5/180 defaults. The dead Common ClanArena.Handler still exists but is only used as a passive RoundEndTime/RoundsPlayed mirror target (MirrorRoundTiming); ca.Tick() is never called so its Phase never advances."
+    notes: "The LIVE Server RoundHandler uses CA's real CheckTeams/CheckWinner predicates and CA's own warmup/timelimit/end-delay cvars (10/180/0), not the generic 5/5/180 defaults. ca.Tick() is still never called, but the owned Common ClanArena.Handler is now a fuller mirror target: MirrorRoundTiming copies RoundEndTime/RoundsPlayed AND (post-fixup) GameStartTime + the live round PHASE via MirrorRoundStarted, which is what un-broke damage2score. logic stays partial only because the per-player ROUNDS_PL award (clanarena.scoring.per_round_award) is still unwired."
 
   - id: clanarena.round.checkteams_gate
     name: "Round-start gate (every active team has a live player)"
@@ -120,7 +119,7 @@ features:
     verification:
       - { kind: trace, ref: "CheckWinner.timeUp = Handler.RoundEndTime>0 && now>=Handler.RoundEndTime (ClanArena.cs:483); _roundSync=MirrorRoundTiming(caRounds, ca.Handler) runs each frame after Rounds.Think (GameWorld.cs:1262,1394) mirroring live RoundEndTime into ca.Handler. PreventStalemate reads PreventStalemateMode (g_ca_prevent_stalemate); both survivor and health bits implemented", result: pass }
     confidence: high
-    notes: "FIXED vs baseline (dead->live): the stalemate/timelimit resolver is now on the live canRoundEnd path. The cross-handler RoundEndTime mirror is the load-bearing seam — it IS wired (unlike IsRoundStarted, which is NOT mirrored and breaks damage2score; see clanarena.scoring.damage2score)."
+    notes: "FIXED vs baseline (dead->live): the stalemate/timelimit resolver is now on the live canRoundEnd path. The cross-handler RoundEndTime mirror is the load-bearing seam and IS wired. (Post-fixup MirrorRoundTiming now also mirrors IsRoundStarted/GameStartTime, which fixed damage2score; see clanarena.scoring.damage2score.)"
 
   - id: clanarena.damage.no_friendly_fire
     name: "No friendly-fire / self / fall damage; no mirror damage"
@@ -179,24 +178,24 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/ClanArena.cs:OnSplitHealthArmor (ClanArena.cs:293)"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/ClanArena.cs:AddScoreFloat2Int (decimal carry)"
       - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:438 (GameHooks.PlayerDamageSplitHealthArmor.Call)"
+      - "src/XonoticGodot.Server/GameWorld.cs:MirrorRoundTiming (now mirrors IsRoundStarted + GameStartTime into ca.Handler, GameWorld.cs:2733-2734)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/RoundHandler.cs:MirrorRoundStarted (RoundHandler.cs:165)"
     constants:
       - { name: "g_ca_damage2score", base: "100 (dmg per point)", port: "100 (Damage2Score; live cvar from gametypes-server.cfg:264)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "FUNCTIONALLY DEAD despite being wired: OnSplitHealthArmor returns early whenever !Handler.IsRoundStarted, but Handler is ca's OWN Common RoundHandler whose Phase never advances — ClanArena.Tick() (which would call Handler.Tick()) has NO caller, and MirrorRoundTiming only copies RoundEndTime/RoundsPlayed, not the phase. So Handler.IsRoundStarted is permanently false and the accrual ALWAYS returns at ClanArena.cs:299 — the SCORE column stays 0 in every match."
-      - "Handler.GameStartTime is also never set on the owned handler (defaults 0), so the `now < Handler.GameStartTime` half of the gate is harmless, but the IsRoundStarted half is the killer."
+    gaps: []
     verification:
-      - { kind: trace, ref: "DamageSystem.cs:438 fires PlayerDamageSplitHealthArmor.Call unconditionally; ClanArena subscribes OnSplitHealthArmor (ClanArena.cs:222-223). BUT OnSplitHealthArmor:299 gates on !Handler.IsRoundStarted; ca.Handler is the owned Common RoundHandler (ClanArena.cs:66,183) whose Tick() is never invoked (grep ca.Tick / Handler.Tick on CA -> ClanArena.Tick at line 253 has zero callers), so Phase stays WaitingToStart and IsRoundStarted is always false", result: fail }
+      - { kind: trace, ref: "DamageSystem.cs:438 fires PlayerDamageSplitHealthArmor.Call unconditionally; ClanArena subscribes OnSplitHealthArmor (ClanArena.cs:222-223). The fixup (commit 4be8357) extended MirrorRoundTiming to push the LIVE handler's phase + start time into ca.Handler each frame: owned.GameStartTime = live.GameStartTime; owned.MirrorRoundStarted(live.IsRoundStarted) (GameWorld.cs:2733-2734). MirrorRoundTiming runs every frame via _roundSync after Rounds.Think (GameWorld.cs:1316-1320, wired in the CA branch GameWorld.cs:1454). So OnSplitHealthArmor:299's gate (now < Handler.GameStartTime || !Handler.IsRoundStarted) reads the live round phase, and the accrual fires once the round is InProgress. Gate matches Base sv_clanarena.qc:483 (IsActive reduces to true since the handler is always spawned)", result: pass }
     confidence: high
-    notes: "Logic + decimal-carry (AddScoreFloat2Int, excess subtraction, friendly-fire debit, environmental self-penalty) are all correctly IMPLEMENTED and the hook IS subscribed on the live damage path — but the round-phase gate reads an un-driven handler, so nothing ever accrues. STILL OPEN (was dead in baseline for a different reason: no caller; now has a caller but the gate is permanently closed). The fix is to either tick ca.Handler, mirror IsRoundStarted/GameStartTime in MirrorRoundTiming, or read the live GameWorld.Rounds phase instead of ca.Handler."
+    notes: "FIXED vs baseline (dead/partial -> faithful/live): the SCORE accrual now actually runs. The baseline killer was that ca.Handler's phase never advanced (ClanArena.Tick has no caller and MirrorRoundTiming only copied RoundEndTime/RoundsPlayed); the fixup added a new RoundHandler.MirrorRoundStarted seam and made MirrorRoundTiming push live IsRoundStarted + GameStartTime into ca.Handler each frame. Logic + decimal-carry (AddScoreFloat2Int, excess subtraction, friendly-fire debit, environmental self-penalty) were already faithful. Worst case 1-frame phase lag (mirror runs in EndFrame, damage reads it next tick) — functionally exact."
 
   - id: clanarena.loadout.start_items
     name: "CA start loadout: 200 health / 200 armor / full ammo"
@@ -407,12 +406,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "'You are now alone!' (CENTER_ALONE) is still NOT sent: NotifyLastPlayerForTeam has no live caller (ca_LastPlayerForTeam_Notify not wired into any PlayerDies/disconnect path), and its own !Handler.IsRoundStarted gate would be permanently true anyway (same un-ticked owned handler issue as damage2score)."
+      - "'You are now alone!' (CENTER_ALONE) is still NOT sent: NotifyLastPlayerForTeam (ClanArena.cs:527) has ZERO live callers (ca_LastPlayerForTeam_Notify not wired into the port's PlayerDies/disconnect path — Base calls it from PlayerDies + disconnect, sv_clanarena.qc:374/393/406). Its own !Handler.IsRoundStarted gate WOULD now pass via the post-fixup MirrorRoundStarted mirror, so the only remaining defect is the missing caller — not the gate."
       - "The round-win announcer cue is not separately played (QC plays the win sound via the notification; the port Sends the Center+Info notifications but no dedicated Annce cue is wired here)."
     verification:
       - { kind: trace, ref: "CheckWinner (live via canRoundEnd) Sends ROUND_TEAM_WIN_<suffix> Center+Info on a team win and ROUND_TIED/ROUND_OVER on tie/stalemate (ClanArena.cs:499-510); notifications registered in NotificationsList.cs. NotifyLastPlayerForTeam (ALONE) has zero callers (grep)", result: pass }
     confidence: high
-    notes: "PARTIALLY FIXED vs baseline (dead->live for the team-outcome prints): ROUND_TEAM_WIN/TIED/OVER now fire from the live CheckWinner. STILL OPEN: the 'You are now alone!' CENTER_ALONE print (NotifyLastPlayerForTeam dead) and any dedicated round-win announcer cue."
+    notes: "Team-outcome prints (ROUND_TEAM_WIN/TIED/OVER) fire from the live CheckWinner (already true at baseline). STILL OPEN, unchanged this pass: the 'You are now alone!' CENTER_ALONE print (NotifyLastPlayerForTeam has no caller) and any dedicated round-win announcer cue. Note the prior-baseline claim that ALONE's gate would also be permanently false is now stale — the gate works via MirrorRoundStarted; only the caller is missing."
 
   - id: clanarena.round.grace_no_fire
     name: "Round-start grace period: weapons cannot be fired"

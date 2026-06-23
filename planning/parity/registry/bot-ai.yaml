@@ -2,6 +2,13 @@ unit: bot-ai
 category: bot
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-22"
+# Re-audited after the second-pass fix-up (commit 4be8357) on branch claude/parity-port-waves:
+#   2 baseline defects closed — (1) target.shouldattack: the Bot_ForbidAttack mutator veto is now ported &
+#   live (Survival); (2) move.steer / population.fixcount: the bunnyhop 1.25x waypoint linear-cost branch is
+#   no longer dead (WaypointNetwork.Skill is now seeded from the server skill in ForMap before costs bake).
+#   No regressions, no newly-unmapped Base features. All headline worst-gaps (wr_aim secondary/detonate,
+#   havocbot_dodge, bot scripting, weapon-priority lists, straight-line goal rating, dead danger-ROUTING
+#   producer, jetpack/rocketjump/keyboard-movement) remain OPEN.
 summary:
   feature_count: 21
   worst_gaps:
@@ -49,7 +56,7 @@ features:
       - { kind: code, ref: "TargetBotCount read branch-for-branch vs bot_fixcount:623-664", result: pass }
       - { kind: code, ref: "GameWorld.OnStartFrame:914 Bots.ServerFrame()", result: pass }
     confidence: high
-    notes: "Unchanged by Waves 1-2. intermission keep-unless-empty, game-stopped skip, and skill-cvar resync are all ported. QC's waypoint-link re-cost across the bunnyhop threshold has no LIVE analogue (the Wave-2 bunnyhop-cost branch reads WaypointNetwork.Skill, which is never assigned → defaults 0 → branch always false → costs are not skill-scaled, same as before)."
+    notes: "intermission keep-unless-empty, game-stopped skip, and skill-cvar resync are all ported. CORRECTION (post second-pass fix-up, commit 4be8357): QC's waypoint-link re-cost across the bunnyhop threshold now HAS a live analogue — WaypointNetwork.ForMap takes a skill arg (GameWorld.LoadWaypointNetwork passes (int)Cvars.Skill + bot_ai_bunnyhop_skilloffset) and sets net.Skill BEFORE the link costs are baked, so LinearCost's skill>=offset 1.25x bunnyhop speedup actually scales the route costs. The port bakes once at load using the server skill (QC reads the global skill live per call); a mid-match `skill N` change still resyncs every bot's BotSkill but does NOT re-cost the already-baked shared graph — a minor divergence, but the branch is no longer dead."
 
   - id: bot-ai.population.strategytoken
     name: "Strategy-token rotation (one goal search per frame)"
@@ -276,12 +283,11 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Bot_ForbidAttack mutator hook is not consulted (no mutator can veto a bot target, e.g. invisibility/race-exempt mutators). (UNCHANGED.)"
+    gaps: []
     verification:
-      - { kind: code, ref: "ShouldAttack vs bot_shouldattack: team/neutral/ignore-bots/takedamage/dead/notarget/alpha/frozen filters present", result: pass }
+      - { kind: code, ref: "ShouldAttack vs bot_shouldattack: team/neutral/ignore-bots/takedamage/dead/notarget/alpha/frozen filters present, THEN the ForbidAttackHook veto at the tail (BotBrain.cs:776). Hook is null by default (no veto), reset to null on every gametype activation (GameWorld.cs:1409), and set ONLY for Survival (GameWorld.cs:1542) to (self,targ) => surv.StatusOf(bot)==surv.StatusOf(victim) — verified live on the Survival activation path; the (self,targ) order maps to QC's (this=bot, targ).", result: pass }
     confidence: high
-    notes: "Unchanged. in-chat (typefrag) check present; the only missing branch is the mutator hook."
+    notes: "WAVE second-pass FIX (gap closed, commit 4be8357): the QC bot_shouldattack tail MUTATOR_CALLHOOK(Bot_ForbidAttack,this,targ) (aim.qc:127) is now ported as a static ForbidAttackHook veto evaluated last in ShouldAttack. It is genuinely LIVE — wired for Survival (forbids attacking a same-survival_status player, faithful to sv_survival.qc:484-490) and correctly reset on gametype switch so it doesn't leak across modes. QC only Survival registers this hook in stock, so wiring just that mode is faithful coverage. in-chat (typefrag) check present. No remaining gaps in this row."
 
   - id: bot-ai.weapon.choose
     name: "Weapon selection by range + combos (havocbot_chooseweapon)"
@@ -441,9 +447,9 @@ features:
       - "The brain's danger-check JumpStepHeight (BotNavigation const = 48) is still a hardcoded constant, and is even inconsistent with Base's jumpstepheightvec (stepheight + jumpheight_vec*0.85 ≈ 70 @ stock) and with the live Steer reach (StepHeightLive + JumpHeightApex, missing the ×0.85). Non-default physics adjusts the Steer obstacle-jump but not this const."
       - "QC's full movetogoal handling of teleport/ladder/box-volume waypoints, water swim-up, and the per-goal stop/turn logic is partially collapsed; complex waypoint traversal is less robust than stock. (UNCHANGED.)"
     verification:
-      - { kind: code, ref: "Steer reads sv_stepheight live + StepHeightLive+JumpHeightApex for the jump trace; TravelCost now ports the waypoint_gettravelcost underwater/crouch/JUMP-source fall math faithfully (used at link-build). JumpStepHeight const (48) still hardcoded in the brain danger check.", result: pass }
+      - { kind: code, ref: "Steer reads sv_stepheight live + StepHeightLive+JumpHeightApex for the jump trace; TravelCost ports the waypoint_gettravelcost underwater/crouch/JUMP-source fall math faithfully (used at link-build) and LinearCost's bunnyhop 1.25x now applies (Skill seeded in ForMap, Waypoint.cs:655/669 from GameWorld.cs:2688). JumpStepHeight const (48) still hardcoded in the brain danger check.", result: pass }
     confidence: medium
-    notes: "WAVE-2 PARTIAL: step/obstacle-jump heights in Steer are now derived live from sv_stepheight/sv_jumpvelocity/sv_gravity (closes the 'hardcoded 34/48, non-default physics ignored' gap for Steer), and TravelCost gained a faithful underwater/crouched/JUMP-source-fall port. BUT the public JumpStepHeight const (48) the BRAIN's danger check reads is still hardcoded and now diverges from both Base (~70 with the ×0.85) and the live Steer reach. The bunnyhop 1.25× linear-cost branch reads WaypointNetwork.Skill which is never set (always 0 → branch dead). Core 'walk to goal, jump over obstacles' faithful; jetpack/rocketjump are separate (missing) features."
+    notes: "WAVE-2 PARTIAL + second-pass fix-up: step/obstacle-jump heights in Steer are derived live from sv_stepheight/sv_jumpvelocity/sv_gravity (closes the 'hardcoded 34/48, non-default physics ignored' gap for Steer), and TravelCost gained a faithful underwater/crouched/JUMP-source-fall port. CORRECTION (commit 4be8357): the bunnyhop 1.25× linear-cost branch is NO LONGER dead — WaypointNetwork.Skill is now seeded from the server skill (GameWorld.LoadWaypointNetwork → ForMap(...,skill,bunnyOffset)) BEFORE link costs bake, so LinearCost applies the speedup at skill>=offset on the route costs (verified live). Costs bake once at load (QC reads global skill live), a minor divergence. STILL OPEN: the public JumpStepHeight const (48) the BRAIN's danger check reads is hardcoded and diverges from both Base (~70 with the ×0.85) and the live Steer reach. Core 'walk to goal, jump over obstacles' faithful; jetpack/rocketjump are separate (missing) features."
 
   - id: bot-ai.move.bunnyhop
     name: "Bunnyhopping toward far goals (havocbot_bunnyhop)"

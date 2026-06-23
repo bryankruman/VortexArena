@@ -5,7 +5,7 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 19
   worst_gaps:
-    - "cmd usetarget / killtarget are STILL DEAD: the Cheats.Command switch has those cases (and now log attempts), but neither verb is Register()ed in Commands.cs nor present in the ClientCommandRegistry allowlist (only god/notarget/noclip/fly/give are), so no client command ever routes to them. Wave-2 did NOT wire these."
+    - "cmd usetarget / killtarget are STILL DEAD: the Cheats.Command switch has those cases (and log attempts), but neither verb is Register()ed in Commands.cs (only god/notarget/noclip/fly/give at Commands.cs:604-608) nor present in the ClientCommandRegistry allowlist (only god/notarget/noclip/fly/give at ClientCommandRegistry.cs:92), so no client command ever routes to them. Re-verified unchanged on the 2026-06-22 second pass."
     - "No CopyBody / corpse-clone mechanic (CLONE_MOVING 140 / CLONE_STANDING 142); sv_clones is an unread stub and the gating omits its clone-allowance branch."
     - "No CheatFrame per-frame hook and no Drag subsystem: cannot pick up/carry/throw entities (cheat or normal-range g_grab_range), no te_lightning1 drag beam, no dragbox/dragpoint race map editor; g_grab_range cvar exists but is never read."
     - "No SPEEDRUN_INIT/SPEEDRUN personal-waypoint, no TELEPORT (MoveToRandomMapLocation for the player / info_autoscreenshot), no R00T radius nuke, no teleporttotarget, no pointparticles/trailparticles/make/penalty cheat commands."
@@ -51,7 +51,7 @@ features:
       - "src/XonoticGodot.Server/Cheats.cs:AddCheats"
       - "src/XonoticGodot.Server/Cheats.cs:CheatCountTotal"
       - "src/XonoticGodot.Server/Campaign.cs:PreIntermission"
-      - "src/XonoticGodot.Server/GameWorld.cs:2036"
+      - "src/XonoticGodot.Server/GameWorld.cs:2121"
     constants:
       - { name: "campaign save gate", base: "campaign_won && cheatcount_total==0", port: "Won!=0 && cheatCount==0", match: true }
     status:
@@ -66,7 +66,7 @@ features:
     gaps: []
     verification:
       - { kind: code, ref: "Campaign.cs PreIntermission vs server/campaign.qc:219", result: pass }
-      - { kind: code, ref: "GameWorld.cs:2036 feeds Cheats.CheatCountTotal into PreIntermission", result: pass }
+      - { kind: code, ref: "GameWorld.cs:2121 feeds Cheats.CheatCountTotal into PreIntermission", result: pass }
     confidence: high
     notes: "Per-cheat increment + intermission cheatCount==0 gate are faithful and live; both reps (per-player keyed by Player + total) maintained. Live producers of counts are now god/notarget/noclip/fly/give AND the GIVE_ALL impulse 99 (newly wired by Wave-2). usetarget/killtarget remain dead so they never bump the count in a real match."
 
@@ -77,7 +77,7 @@ features:
       - "server/cheats.qc:CheatCommand (case god)"
     port_refs:
       - "src/XonoticGodot.Server/Cheats.cs:Command (case god)"
-      - "src/XonoticGodot.Server/Commands.cs:535 (Register god -> CmdCheat)"
+      - "src/XonoticGodot.Server/Commands.cs:604 (Register god -> CmdCheat)"
       - "src/XonoticGodot.Server/ClientCommandRegistry.cs:92 (allowlist)"
       - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:426"
     constants: []
@@ -93,7 +93,7 @@ features:
     gaps: []
     verification:
       - { kind: test, ref: "ServerInfraTests.cs:Cheats_GatedBySvCheats (god ON path + count)", result: pass }
-      - { kind: code, ref: "Registered (Commands.cs:535) AND client-allowed (ClientCommandRegistry.cs:92); DamageSystem honors GodMode on the live damage path", result: pass }
+      - { kind: code, ref: "Registered (Commands.cs:604) AND client-allowed (ClientCommandRegistry.cs:92); DamageSystem honors GodMode on the live damage path", result: pass }
     confidence: high
     notes: "BITXOR toggle, ON/OFF echo, DID_CHEAT only on the ON edge — matches Base; godmode honored by DamageSystem. Wave-2 added logAttempt: true on the gate (cosmetic, only fires on refusal)."
 
@@ -104,7 +104,7 @@ features:
       - "server/cheats.qc:CheatCommand (case notarget)"
     port_refs:
       - "src/XonoticGodot.Server/Cheats.cs:Command (case notarget)"
-      - "src/XonoticGodot.Server/Commands.cs:536 (Register notarget)"
+      - "src/XonoticGodot.Server/Commands.cs:605 (Register notarget)"
       - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:552"
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:204"
     constants: []
@@ -131,7 +131,7 @@ features:
       - "server/cheats.qc:CheatCommand (case noclip)"
     port_refs:
       - "src/XonoticGodot.Server/Cheats.cs:Command (case noclip)"
-      - "src/XonoticGodot.Server/Commands.cs:537 (Register noclip)"
+      - "src/XonoticGodot.Server/Commands.cs:606 (Register noclip)"
     constants: []
     status:
       logic: faithful
@@ -155,7 +155,7 @@ features:
       - "server/cheats.qc:CheatCommand (case fly)"
     port_refs:
       - "src/XonoticGodot.Server/Cheats.cs:Command (case fly)"
-      - "src/XonoticGodot.Server/Commands.cs:538 (Register fly)"
+      - "src/XonoticGodot.Server/Commands.cs:607 (Register fly)"
     constants: []
     status:
       logic: faithful
@@ -180,7 +180,7 @@ features:
       - "server/items/items.qc:GiveItems"
     port_refs:
       - "src/XonoticGodot.Server/Cheats.cs:Command (case give)"
-      - "src/XonoticGodot.Server/Commands.cs:539 (Register give)"
+      - "src/XonoticGodot.Server/Commands.cs:608 (Register give)"
       - "src/XonoticGodot.Common/Gameplay/Items/GiveItems.cs:Apply"
     constants: []
     status:
@@ -217,12 +217,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL DEAD on the live path: Wave-2 did NOT touch the routing. 'usetarget' is NOT Register()ed in Commands.cs (only god/notarget/noclip/fly/give at Commands.cs:535-539) and NOT in the ClientCommandRegistry allowlist (ClientCommandRegistry.cs:92). The Cheats.Command 'usetarget' case is therefore unreachable from a client cmd. Wiring it requires a Register call + an allowlist entry."
+      - "STILL DEAD on the live path: Wave-2 did NOT touch the routing. 'usetarget' is NOT Register()ed in Commands.cs (only god/notarget/noclip/fly/give at Commands.cs:604-608) and NOT in the ClientCommandRegistry allowlist (ClientCommandRegistry.cs:92). The Cheats.Command 'usetarget' case is therefore unreachable from a client cmd. Wiring it requires a Register call + an allowlist entry."
       - "Logic caveat (only visible if wired): port AddCheats(1) runs even when no target name is given (FireNamedTarget early-returns on empty); Base also DID_CHEATs unconditionally so this is minor."
     verification:
-      - { kind: code, ref: "grep usetarget in src/XonoticGodot.Server -> only Cheats.cs case; no Register(\"usetarget\"); absent from ClientCommandRegistry allowlist (verified post-Wave-2)", result: fail }
+      - { kind: code, ref: "grep usetarget in src/XonoticGodot.Server -> only the Cheats.cs case; Commands.cs:604-608 Register()s ONLY god/notarget/noclip/fly/give; ClientCommandRegistry.cs:92 allowlists ONLY god/notarget/noclip/fly/give. Re-verified 2026-06-22 (second adversarial pass).", result: fail }
     confidence: high
-    notes: "The case spawns a transient .target ent, MapMover.UseTargets, removes it — the FLOW matches Base, but nothing dispatches to it. Wave-2 added logAttempt to the gate but the case is still unreachable."
+    notes: "The case spawns a transient .target ent, MapMover.UseTargets, removes it — the FLOW matches Base, but nothing dispatches to it. Wave-2 added logAttempt to the gate but the case is still unreachable. Confirmed still dead on the second pass."
 
   - id: sv-cheats.cmd.killtarget
     name: "cmd killtarget — remove a named target (SUB_UseTargets killtarget)"
@@ -246,9 +246,9 @@ features:
       - "STILL DEAD on the live path: same as usetarget — 'killtarget' is neither Register()ed nor in the ClientCommandRegistry allowlist, so the Cheats.Command 'killtarget' case is unreachable from a client cmd. Wave-2 did NOT wire it."
       - "Same empty-arg caveat as usetarget (would AddCheats(1) on empty target name)."
     verification:
-      - { kind: code, ref: "grep killtarget in src/XonoticGodot.Server -> only Cheats.cs case; no Register(\"killtarget\"); absent from ClientCommandRegistry allowlist (verified post-Wave-2)", result: fail }
+      - { kind: code, ref: "grep killtarget in src/XonoticGodot.Server -> only the Cheats.cs case; not Register()ed (Commands.cs:604-608) nor allowlisted (ClientCommandRegistry.cs:92). Re-verified 2026-06-22 (second adversarial pass).", result: fail }
     confidence: high
-    notes: "Flow matches Base, but no dispatcher routes to it."
+    notes: "Flow matches Base, but no dispatcher routes to it. Confirmed still dead on the second pass."
 
   - id: sv-cheats.impulse.give_all
     name: "Cheat impulse GIVE_ALL (99) — give all"
@@ -258,7 +258,7 @@ features:
       - "common/impulses/all.qh:156"
     port_refs:
       - "src/XonoticGodot.Server/Cheats.cs:GiveAll"
-      - "src/XonoticGodot.Server/Commands.cs:1379 (CmdImpulse: if (imp == 99) Cheats.GiveAll)"
+      - "src/XonoticGodot.Server/Commands.cs:1470 (CmdImpulse: if (imp == 99) Cheats.GiveAll)"
       - "src/XonoticGodot.Server/ClientCommandRegistry.cs:69 (impulse allowlisted)"
     constants:
       - { name: "impulse number", base: "99", port: "99 (CmdImpulse routes imp==99)", match: true }
@@ -273,7 +273,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "CmdImpulse (Commands.cs:1379) now routes imp==99 -> _world.Cheats.GiveAll(caller). Live path: client `impulse 99` -> ClientCommandRegistry allows 'impulse' (line 69) -> CmdImpulse -> GiveAll (runs sv_cheats gate + counts). _world.Cheats is a live instance (GameWorld.cs:173) with Log wired to ChatBroadcast (GameWorld.cs:708).", result: pass }
+      - { kind: code, ref: "CmdImpulse (Commands.cs:1470) now routes imp==99 -> _world.Cheats.GiveAll(caller). Live path: client `impulse 99` -> ClientCommandRegistry allows 'impulse' (line 69) -> CmdImpulse -> GiveAll (runs sv_cheats gate + counts). _world.Cheats is a live instance (GameWorld.cs:173) with Log wired to ChatBroadcast (GameWorld.cs:766).", result: pass }
       - { kind: test, ref: "ServerInfraTests.cs:Cheats_GiveAll_GrantsWeaponsAndResources", result: pass }
     confidence: high
     notes: "FIXED by Wave-2 (was dead/stub at baseline). Matches Base CheatImpulse GIVE_ALL = CheatCommand(tokenize('give all')); the GIVE_ALL case is 'already counted as cheat' in Base — port's GiveAll counts once via AddCheats(1) iff give succeeded. Faithful and genuinely live."
@@ -495,7 +495,7 @@ features:
     base_refs:
       - "server/campaign.qc:CampaignPreInit"
     port_refs:
-      - "src/XonoticGodot.Server/Campaign.cs:218 (PreInit sv_cheats bailout)"
+      - "src/XonoticGodot.Server/Campaign.cs:239 (PreInit sv_cheats bailout)"
     constants:
       - { name: "behavior when sv_cheats!=0 at campaign PreInit", base: "Unload + CampaignBailout ('JOLLY CHEATS...')", port: "Unload + Bailout ('cheats are enabled')", match: true }
     status:

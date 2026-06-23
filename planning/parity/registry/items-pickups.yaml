@@ -1,15 +1,15 @@
 unit: items-pickups
 category: item
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-23"
 summary:
   feature_count: 12
   worst_gaps:
-    - "cl_autoswitch / CTS autoswitch: FIXED 2026-06-23 — the AutoswitchProvider/CtsAutoswitchProvider/CtsActiveProvider seams are now wired in the Commands ctor (Commands.cs:331-334) right beside Inventory.PriorityProvider: AutoswitchProvider=GetAutoswitch(p), CtsAutoswitchProvider=GetClientCvarFloat(p,\"cl_autoswitch_cts\",-1), CtsActiveProvider=_world.GameType is Cts. Picking up a better weapon now auto-switches in a real match."
-    - "respawn-countdown waypoint sprites + per-second ITEMRESPAWNCOUNTDOWN sound missing: long-respawn megas/powerups show no radar countdown and no ticking sound"
-    - "team-item random selection (Item_FindTeam) not wired: maps grouping items by team spawn/respawn each independently instead of one-at-a-time"
-    - "simple items (sv_simple_items, Base default 1) not ported: always renders the 3D model, never the flat _simple sprite"
-    - "distance alpha-fade (g_items_maxdist/cl_items_fadedist) confirmed NOT wired client-side (far items pop, no fade). NOTE: FuelRegen/Jetpack pickup center-prints are now FIXED (live+faithful, Wave-2)."
+    - "cl_autoswitch / CTS autoswitch: FIXED (re-verified 2026-06-23) — AutoswitchProvider/CtsAutoswitchProvider/CtsActiveProvider are wired in the Commands ctor (Commands.cs:351-354) right beside Inventory.PriorityProvider: AutoswitchProvider=GetAutoswitch(p) (backed by the live _autoswitch dict, set by ClientCommand_autoswitch + sentcvar), CtsAutoswitchProvider=GetClientCvarFloat(p,\"cl_autoswitch_cts\",-1), CtsActiveProvider=_world.GameType is Cts. The Commands ctor runs for every GameWorld, so picking up a better weapon auto-switches on the real match path. (The DRIFT/net-entity-state 'dead' notes for this seam are STALE — they predate commit 4be8357.)"
+    - "respawn-countdown waypoint sprites + per-second ITEMRESPAWNCOUNTDOWN sound STILL MISSING: long-respawn megas/powerups show no radar countdown and no ticking sound (item still reappears on time)."
+    - "team-item random selection (Item_FindTeam) STILL not wired: maps grouping items by team spawn/respawn each independently instead of one-at-a-time."
+    - "simple items (sv_simple_items, Base default 1) STILL not ported: always renders the 3D model, never the flat _simple sprite."
+    - "distance alpha-fade (g_items_maxdist 4500 / cl_items_fadedist 500): FIXED 2026-06-23 — ClientWorld.ItemDistanceAlpha (game/client/ClientWorld.cs:1194-1222, added in Wave 1-2 ec788f7, absent on main) computes the QC base alpha and composes it multiplicatively under ghost/despawn exactly as ItemDraw does (lines 1097-1131). The baseline's 'CONFIRMED ABSENT' was a stale miss. (Edge: only runs for items that enter IsItemEntity — animating/ghost/expiring; a non-animating available item, e.g. spawnflag 1024, doesn't distance-fade.) FuelRegen/Jetpack pickup center-prints + negative-take TakeResourceWithLimit also live+faithful."
 features:
   - id: items-pickups.def.resource_items
     name: "Health / Armor / Ammo item definitions, models, colors, sounds, bboxes"
@@ -103,7 +103,7 @@ features:
       - { name: "negative amount = take", base: "TakeResourceWithLimit(player,res,-amount,ammomax)", port: "TakeResourceWithLimit(res,-amount,cap) (FIXED 2026-06-23 — was TakeResource; now calls the floored helper with the same ammomax/cap arg as QC)", match: true }
       - { name: "IT_PICKUPMASK held-flag transfer", base: "items & ~player.items & IT_PICKUPMASK", port: "same", match: true }
       - { name: "team item always eaten", base: "if(item.team) pickedup=true", port: "if(Team!=0) pickedUp=true", match: true }
-      - { name: "cl_autoswitch / CTS autoswitch on weapon give", base: "Item_GiveTo head+tail (_switchweapon, w_getbestweapon, W_SwitchWeapon_Force)", port: "logic ported (ItemGiveTo head ll.68-83 + tail ll.135-155); providers WIRED 2026-06-23 in Commands.cs:331-334 -> AutoswitchEnabled() live", match: true }
+      - { name: "cl_autoswitch / CTS autoswitch on weapon give", base: "Item_GiveTo head+tail (_switchweapon, w_getbestweapon, W_SwitchWeapon_Force)", port: "logic ported (ItemGiveTo head ll.68-83 + tail ll.135-155, faithfully collapsed to slot 0); providers WIRED in Commands.cs:351-354 (ctor runs per GameWorld) -> AutoswitchEnabled() live; CTS branch reads cl_autoswitch_cts via GetClientCvarFloat", match: true }
       - { name: "FuelRegen/Jetpack pickup center-print", base: "CENTER_ITEM_FUELREGEN_GOT / CENTER_ITEM_JETPACK_GOT", port: "ItemGiveTo ll.106-116: NotificationSystem.Center(ITEM_FUELREGEN_GOT/ITEM_JETPACK_GOT) on the live give path", match: true }
     status:
       logic: faithful
@@ -116,7 +116,8 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code_read, ref: "ItemGiveTo (ItemPickupRules.cs:62-160) vs Item_GiveTo (items.qc:522-684): autoswitch logic present AND now wired (Commands.cs:331-334 assigns the three providers beside Inventory.PriorityProvider); fuelregen/jetpack Center present+live; negative-take now TakeResourceWithLimit(res,-amount,cap)", result: pass }
+      - { kind: code_read, ref: "ItemGiveTo (ItemPickupRules.cs:62-160) vs Item_GiveTo (items.qc:522-684): autoswitch logic matches QC head/tail AND is wired (Commands.cs:351-354 assigns the three providers beside Inventory.PriorityProvider; _autoswitch dict fed by ClientCommand_autoswitch + sentcvar); fuelregen/jetpack Center(player,...) live (NotificationSystem.Center exists; CENTER_ITEM_*_GOT registered); negative-take now TakeResourceWithLimit(res,-amount,cap) matching items.qc:507 + sv_resources.qc:205 clamp", result: pass }
+      - { kind: code_read, ref: "Inventory.GetBestWeapon/SwitchWeapon/ClientHasWeapon all exist (Inventory.cs:296/85/308); GetAutoswitch (Commands.cs:280) reads live _autoswitch dict", result: pass }
       - { kind: unit_test, ref: "ItemSpawnTouchTests.HealthMega_AtCap_NotTaken + WeaponPickup_GivesWeaponInBothReps + Jetpack_Touch_GivesBitAndFuel (no autoswitch/center-print-specific test added)", result: pass }
     confidence: high
     notes: "FIXED 2026-06-23: (1) the cl_autoswitch / CTS-autoswitch re-selection providers (AutoswitchProvider/CtsAutoswitchProvider/CtsActiveProvider) are now wired in the Commands ctor (Commands.cs:331-334) — AutoswitchEnabled() reads the replicated cl_autoswitch via GetAutoswitch, cl_autoswitch_cts via GetClientCvarFloat, and g_cts via _world.GameType is Cts; picking up a better weapon now auto-switches in a real match. (2) GiveAmmoTo's negative-amount branch now calls TakeResourceWithLimit(res,-amount,cap) (ItemPickupRules.cs:246) matching items.qc:507 (was the dead TakeResource path). FuelRegen/Jetpack center-prints, resource gives, weapon-grant (dual-rep), powerup timers, and IT_PICKUPMASK transfer all remain faithful. No autoswitch/center-print unit test added — code-read-verified."
@@ -364,7 +365,7 @@ features:
       - { name: "cl_items_animate", base: "7 (bob|fade|particles)", port: "7", match: true }
       - { name: "despawn puff cadence", base: "0.25 -> 0.0625 halving", port: "same", match: true }
       - { name: "pickup/respawn particles", base: "EFFECT_ITEM_PICKUP/_RESPAWN at (absmin+absmax)*0.5", port: "EmitItemEffect at origin+(mins+maxs)*0.5", match: true }
-      - { name: "distance fade (g_items_maxdist/cl_items_fadedist)", base: "4500 / 500 — alpha=bound(...) past fade_start, alpha=0 past fade_end (client/items/items.qc:147-158)", port: "CONFIRMED ABSENT: ClientWorld item-FX pass does only ghost + despawn, no distance alpha", match: false }
+      - { name: "distance fade (g_items_maxdist/cl_items_fadedist)", base: "4500 / 500 — alpha=bound(...) past fade_start, alpha=0 past fade_end (client/items/items.qc:147-158)", port: "FIXED 2026-06-23: ClientWorld.ItemDistanceAlpha (ClientWorld.cs:1194-1222) reproduces the QC formula (raw-origin vdist reject > fade_end -> 0; fadeStart=max(500,fade_end-fadedist); bbox-centre lerp) and is composed as the base alpha under ghost/despawn (ll.1097-1131). fade_end := g_items_maxdist (port doesn't network per-item fade_end, == QC's fallback). LIVE on the per-frame item-FX pass.", match: true }
       - { name: "simple items (sv_simple_items/cl_simple_items)", base: "swap to _simple sprite, no bob", port: "NOT ported (always 3D)", match: false }
       - { name: "stay-weapon / vehicle-hud tint (cl_weapon_stay_alpha/color, cl_items_vehicle_*)", base: "applied in ItemDraw availability branch", port: "ghost (0.45) applied; stay-weapon + vehicle tints not applied", match: false }
     status:
@@ -377,14 +378,15 @@ features:
     intended_divergence: true
     divergence_rationale: "Pickup/respawn particles + ghost/despawn fades are driven from the authoritative server pickup/respawn EVENT + the client render flags rather than the CSQC ITS_AVAILABLE net transition (with its isnew/PVS guards). Documented in ItemPickupRules.EmitItemEffect as equivalent-but-guard-free: it fires only on the real gameplay event, never when an item merely streams into a client's PVS."
     gaps:
-      - "VERIFIER (confirmed, was 'not confirmed'): distance alpha-fade (g_items_maxdist 4500 / cl_items_fadedist 500) is NOT wired — ClientWorld's item-visibility pass implements only the ghost (cl_ghost_items) and despawn (ITS_EXPIRING) branches of QC ItemDraw; the fade_end / fade_start distance-alpha block (client/items/items.qc:147-158) has no port equivalent. Far items pop instead of fading."
       - "stay-weapon translucency tint (cl_weapon_stay_alpha 0.75 / cl_weapon_stay_color) and the vehicle-hud item tint (cl_items_vehicle_*) from ItemDraw's availability branch are not applied — only the unavailable-ghost (0.45) alpha is."
       - "simple items (sv_simple_items default 1 + cl_simple_items) not ported — always renders the full 3D model with bob, never the flat non-bobbing _simple sprite."
+      - "distance-fade edge: ItemDistanceAlpha only runs for entities IsItemEntity accepts (ItemAnimate!=0 || expiring || !available). A non-animating, available item (e.g. spawnflag 1024 suppressing animation) skips the distance branch entirely, so it never fades by distance. Stock items animate, so this is a corner case."
     verification:
-      - { kind: code_read, ref: "EntityNode.SyncFromEntity bob/spin + ClientWorld.DriveItem*Fx", result: pass }
-      - { kind: unit_test, ref: "ItemSpawnTouchTests.ItemBobAnim_MatchesQcWaveforms + ItemDespawnFx_FirstTick_* + ItemTouch_TakenItem_EmitsPickupEffectAtBboxCentre", result: pass }
+      - { kind: code_read, ref: "EntityNode.SyncFromEntity bob/spin + ClientWorld.DriveItem*Fx + ItemDistanceAlpha (ClientWorld.cs:1097-1222) composed as base alpha under ghost/despawn; matches client/items/items.qc:144-210", result: pass }
+      - { kind: code_read, ref: "git show main:ClientWorld.cs has no ItemDistanceAlpha; added in ec788f7 (Wave 1-2) — distance fade is genuinely NEW, not pre-existing", result: pass }
+      - { kind: unit_test, ref: "ItemSpawnTouchTests.ItemBobAnim_MatchesQcWaveforms + ItemDespawnFx_FirstTick_* + ItemTouch_TakenItem_EmitsPickupEffectAtBboxCentre (no distance-fade-specific test)", result: pass }
     confidence: high
-    notes: "Bob/spin is live on the render path (EntityNode); ghost-on-pickup and loot despawn fade+puffs are live in ClientWorld. The bob base offset also lifts tall models clear of the floor."
+    notes: "FIXED 2026-06-23: distance alpha-fade (g_items_maxdist/cl_items_fadedist) is now ported (ClientWorld.ItemDistanceAlpha) and live on the per-frame item-FX pass, composed as the base alpha under ghost/despawn exactly as QC ItemDraw orders it — closing what the baseline listed as CONFIRMED ABSENT. Bob/spin is live on the render path (EntityNode); ghost-on-pickup and loot despawn fade+puffs are live in ClientWorld. The bob base offset also lifts tall models clear of the floor. Still open: stay-weapon/vehicle tints + simple items."
 
   - id: items-pickups.itemstime.hud_feed
     name: "itemstime mutator — timed-item respawn-countdown table for the HUD"

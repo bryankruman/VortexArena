@@ -212,7 +212,7 @@ features:
     verification:
       - { kind: codetrace, ref: "Explode BFG loop (Fireball.cs:359-403): ownerHealthBefore snapshot BEFORE RadiusDamage, ownerHealthAfter re-read AFTER (RadiusDamage mutates resources synchronously via Combat.Damage), gate = after>=before && Cnt==0; per-target DIFF_TEAM + two tracelines; points=1-sqrt(dist/r); accuracy_add when good damage; Damage with HITTYPE_BOUNCE|HITTYPE_SPLASH; FIREBALL_BFGDAMAGE Emit.", result: pass }
     confidence: high
-    notes: "MAJOR FIX vs baseline (was partial/broken on 4 fronts). cnt gate now real (fed by lifetime cnt=1 + the depletion cnt=1). Owner-survived gate is now the QC after-blast health+armor compare (RadiusDamage applies self-damage synchronously, so the after-read is correct). DIFF_TEAM same-team skip added. Second LOS trace (shooter visible) added. accuracy_add hit credit + BFGDAMAGE effect added. Residual is only the independent-player stub + render visuals."
+    notes: "MAJOR FIX vs baseline (was partial/broken on 4 fronts). cnt gate now real (fed by lifetime cnt=1 + the depletion cnt=1). Owner-survived gate is now the QC after-blast health+armor compare (RadiusDamage applies self-damage synchronously, so the after-read is correct). DIFF_TEAM same-team skip added. Second LOS trace (shooter visible) added. accuracy_add hit credit + BFGDAMAGE effect added. Residual is only the independent-player stub + render visuals. CONFIRMED (2026-06-22 re-audit): the RadiusDamage attacker arg is self.Owner while the health-survival baseline uses self.RealOwner ?? self — these are IDENTICAL for the fireball because RealOwner is a computed alias of Owner (DamageEntityState.cs:135) and the primary fireball never decouples Owner (only the firemine does, and the firemine never calls Explode). So the attacker == Base's this.realowner. Faithful."
 
   - id: weapon-fireball.primary.laserscorch
     name: "Laser scorch: periodically set one nearby enemy alight (weighted nearest, prefer not-burning)"
@@ -269,7 +269,7 @@ features:
     verification:
       - { kind: codetrace, ref: "Attack1: if(Primary.Health>0){ proj.TakeDamage=Yes; proj.Health; proj.ProjectileDamage=(self.Cnt=1; Explode) }; default 0 -> whole block skipped.", result: fail }
     confidence: medium
-    notes: "Mildly improved vs baseline: the depletion handler (cnt=1 + Explode, so the resulting blast skips the BFG sweep) is now wired. Still dead at default health 0; missing the g_projectiles_damage gate."
+    notes: "Mildly improved vs baseline: the depletion handler (cnt=1 + Explode, so the resulting blast skips the BFG sweep) is now wired. Still dead at default health 0; missing the g_projectiles_damage gate. NOTE (2026-06-22 re-audit): a faithful Projectiles.MakeShootable helper (W_CheckProjectileDamage + RES_HEALTH-subtract shim) now EXISTS in the port (Devastator/Electro/Hagar/Arc adopt it) — Fireball does NOT adopt it, so the gate is still absent; this row could be closed by wiring MakeShootable when health>0."
 
   - id: weapon-fireball.secondary.firemine
     name: "Secondary: lob gravity bouncing firemine (MOVETYPE_BOUNCE, ±4, up-launch)"
@@ -299,7 +299,7 @@ features:
     verification:
       - { kind: codetrace, ref: "Attack2 (Fireball.cs:413) spawns grenade MOVETYPE_BOUNCE ±4, ProjectileVelocity(dir,up,900,100,0,0) = W_SetupProjVelocity_UP_SEC, gravity 1, fire sound + muzzleflash, EditProjectile hook.", result: pass }
     confidence: high
-    notes: "Unchanged/faithful. Arc launch + bbox + balance faithful; the missing f_diff is a small visual nicety, not damage-affecting."
+    notes: "Unchanged/faithful. Arc launch + bbox + balance faithful; the missing f_diff is a small visual nicety, not damage-affecting. CONFIRMED (2026-06-22 re-audit): neither Base Attack2 nor the port sets proj.team on the firemine (only the primary fireball Attack1 sets team in both) — so the firemine's same-team LaserPlay gate compares against an UNSET team identically in Base and port; this shared quirk is faithful, not a divergence."
 
   - id: weapon-fireball.secondary.firemine.lifecycle
     name: "Firemine think/touch: scorch nearby, self-destruct at lifetime, ignite-on-touch-or-bounce"

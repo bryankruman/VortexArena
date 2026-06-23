@@ -5,12 +5,11 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 16
   worst_gaps:
-    - "REGRESSION (Wave-2): the walk/strafe manual gravity sub-step now reads autocvar_sv_gameplayfix_gravityunaffectedbyticrate via Api.Cvars.GetFloat, but that cvar is NOT registered/seeded anywhere in the port, so GetFloat returns 0 -> GravityTicrateFactor() returns 1.0 instead of QC's default 0.5. The locomotion gravity step is now 2x too strong vs Base default (was hardcoded 0.5 = correct before the change). The rest of the engine hardcodes GravityUnaffectedByTicrate=true (FlyMove.cs)."
-    - "Death blowup is still simplified on presentation: no 4 physics gib entities (head MF_ROCKET+EF_FLAME bounce+fade via spiderbot_headfade, 2 tossed guns body-vel v_forward*700, body frame 11) and no spiderbot_headfade head EXPLOSION_BIG+ROCKET_IMPACT on final fade; the per-burn EFFECT_EXPLOSION_SMALL visual is still a TODO. The ~10% burn-tick SND_ROCKET_IMPACT audio + the 250-dmg blast + 45s respawn ARE now faithful."
+    - "Death blowup is still simplified on presentation: no 4 physics gib entities (head MF_ROCKET+EF_FLAME bounce+fade via spiderbot_headfade, 2 tossed guns body-vel v_forward*700, body frame 11) and no spiderbot_headfade head EXPLOSION_BIG+ROCKET_IMPACT on final fade; the per-burn EFFECT_EXPLOSION_SMALL visual is still a TODO. The ~10% burn-tick SND_ROCKET_IMPACT audio + the 250-dmg blast + 45s respawn ARE faithful."
     - "vr_impact / bouncepain (g_vehicle_spiderbot_bouncepain) still not ported; pushable (jumppad launches) + mass=5000 still not modeled. Stock bouncepain default '0 0 0' is a no-op, so zero live effect with stock cvars."
-    - "Head turret aim + body turn + head slew now step by the elapsed 0.1s think dt (NOT TicRate FrameTime), so the ~6x-too-slow magnitude error is FIXED; residual is only that response is quantized to the 0.1s think cadence (coarser, not wrong-magnitude)."
-    - "Client-only presentation still TODO across the unit: EFFECT_SPIDERBOT_MINIGUN_MUZZLEFLASH, gun barrel spin, aux crosshairs, vehicle_ammo2/reload2 HUD %, EFFECT_SPIDERBOT_ROCKETLAUNCH / PROJECTILE_SPIDERROCKET visuals, walk/strafe/idle engine sounds (re-architected client-side)."
+    - "Client-only presentation still TODO across the unit: EFFECT_SPIDERBOT_MINIGUN_MUZZLEFLASH, gun barrel spin, aux crosshairs, vehicle_ammo2/reload2 HUD %, EFFECT_SPIDERBOT_ROCKETLAUNCH / PROJECTILE_SPIDERROCKET visuals, walk/strafe/idle engine sounds (re-architected client-side), and the per-pain EFFECT_SMOKE_SMALL puff (the gameplay-authoritative DmgShake jitter from vehicles_painframe IS now produced)."
     - "view_ofs '0 0 70' / height 170 (seated camera offset + chase distance) still not modeled on the headless server descriptor (client-view concern)."
+    - "FIXED since 2026-06-22 baseline (commit 4be8357): the Wave-2 locomotion-gravity regression (GravityTicrateFactor read an unregistered cvar -> 1.0 -> 2x-too-strong gravity) is resolved — the factor is now hardcoded 0.5, matching QC's sv_gameplayfix_gravityunaffectedbyticrate default-true. Also fixed: vr_spawn no longer wrongly nulls Touch (run-over crush restored), and vehicles_painframe is now invoked each Think (low-health DmgShake jitter)."
 features:
   - id: vehicle-spiderbot.identity.registration
     name: "Spiderbot vehicle type registration + identity (model, name, hitbox, view)"
@@ -88,6 +87,7 @@ features:
       - { name: "damageforcescale", base: "0.03", port: "0.03", match: true }
       - { name: "movetype", base: "MOVETYPE_STEP", port: "MoveType.Step", match: true }
       - { name: "solid", base: "SOLID_SLIDEBOX", port: "Solid.SlideBox", match: true }
+      - { name: "touch handler", base: "vehicles_touch (vr_spawn does NOT settouch func_null)", port: "shared VehicleCommon.Touch (Spawn no longer nulls Touch)", match: true }
       - { name: "pushable", base: "true (jumppads)", port: "not set", match: false }
       - { name: "health_regen / pause", base: "10 / 5", port: "10 / 5", match: true }
       - { name: "shield_regen / pause", base: "25 / 0.35", port: "25 / 0.35", match: true }
@@ -106,8 +106,9 @@ features:
       - "Port adds a MoveGround vehicle flag not present in QC vr_setup; harmless shared-helper flag, not a Base value."
     verification:
       - { kind: code, ref: "Spiderbot.Spawn sets health/shield/respawntime/gravity/damageforcescale/movetype/solid + the gun sub-entities; flags HasShield|ShieldRegen|HealthRegen|MoveGround|DmgShake", result: pass }
+      - { kind: code, ref: "Spawn no longer sets vehicle.Touch=null (commit 4be8357); SpawnVehicle installs VehicleCommon.Touch (crush/ram/board) and it now survives spawn — matches Base vr_spawn which has no settouch func_null (spiderbot.qc:581-605)", result: pass }
     confidence: high
-    notes: "Unchanged by Waves 1-2. Gun1/gun2 head sub-entities created once. tur_head.frame=1, body frame=5 (idle). VehicleAmmo1 seeded full."
+    notes: "FIXED-SINCE-BASELINE (4be8357): Spawn previously nulled Touch (disabling run-over crush), diverging from Base vr_spawn; the reset is removed so the shared crush/touch handler stays live. Gun1/gun2 head sub-entities created once. tur_head.frame=1, body frame=5 (idle). VehicleAmmo1 seeded full."
 
   - id: vehicle-spiderbot.enter
     name: "vr_enter — W2MODE=GUIDE, seat the pilot, reattach a carried CTF flag to the head"
@@ -195,8 +196,9 @@ features:
     verification:
       - { kind: code, ref: "Think computes dt = ThinkRate (0.1), reschedules NextThink = Time + dt, and passes dt to Frame; Frame now multiplies slew/turn/gravity by dt (NOT FrameTime/TicRate). RunThink (SimulationLoop.cs:276) fires when due and the +0.1 reschedule keeps it ~once/0.1s.", result: pass }
       - { kind: code, ref: "Seated input stashed on body.VehInput (GameWorld.cs:1098-1105); consumed same tick by the vehicle Think.", result: pass }
+      - { kind: code, ref: "Think now calls VehicleCommon.PainFrame(vehicle) at its tail each tick (commit 4be8357), porting vehicles_painframe (sv_vehicles.qc:594-618) which QC runs after vr_think — low-health (<=50%) DmgShake velocity jitter is produced (spiderbot has VHF_DMGSHAKE); the EFFECT_SMOKE_SMALL puff is deferred (client/net).", result: pass }
     confidence: high
-    notes: "FIXED in Wave-2: the prior DOUBLE timing defect (invoke every 0.1s but step by FrameTime ~0.0167 => ~6x too slow) is resolved by stepping by dt=0.1. Pilot glue + game_stopped park + empty-spiderbot BrakeSimple all faithful."
+    notes: "FIXED in Wave-2: the prior DOUBLE timing defect (invoke every 0.1s but step by FrameTime ~0.0167 => ~6x too slow) is resolved by stepping by dt=0.1. Pilot glue + game_stopped park + empty-spiderbot BrakeSimple all faithful. FIXED-SINCE-BASELINE (4be8357): vehicles_painframe is now wired into Think (low-health jitter live)."
 
   - id: vehicle-spiderbot.frame.head_aim
     name: "Head turret aim toward the pilot crosshair (turn + pitch within limits)"
@@ -276,10 +278,10 @@ features:
       - { name: "turnspeed", base: "90", port: "90", match: true }
       - { name: "turnspeed_strafe", base: "300", port: "300", match: true }
       - { name: "movement_inertia", base: "0.15", port: "0.15", match: true }
-      - { name: "gravity step factor g", base: "0.5 if sv_gameplayfix_gravityunaffectedbyticrate (default true) else 1 => 0.5 in stock", port: "GravityTicrateFactor() reads the cvar via GetFloat, but the cvar is UNREGISTERED => returns 0 => factor 1.0 (NOT 0.5)", match: false }
+      - { name: "gravity step factor g", base: "0.5 if sv_gameplayfix_gravityunaffectedbyticrate (default true) else 1 => 0.5 in stock", port: "GravityTicrateFactor() => 0.5f (hardcoded constant, Spiderbot.cs:710)", match: true }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: faithful
       presentation: na
       audio: na
@@ -287,13 +289,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "REGRESSION (Wave-2): the manual walk/strafe gravity sub-step now computes g via GravityTicrateFactor() = (GetFloat('sv_gameplayfix_gravityunaffectedbyticrate') != 0 ? 0.5 : 1). That cvar is not registered/seeded anywhere in the port, so GetFloat returns 0 (EngineServices.cs:370) and g resolves to 1.0 — DOUBLE the QC stock value of 0.5. Before Wave-2 the factor was hardcoded 0.5 (correct). The engine itself treats this fix as default-true (FlyMove.cs:61 GravityUnaffectedByTicrate=true), so reading the unregistered cvar is both wrong vs Base default and inconsistent with the engine. Manifests as too-strong gravity during walk/strafe."
-      - "Body-turn step now multiplies by dt=0.1 (the elapsed think dt), matching QC's aggregate per-frame rate — the prior ~6x-too-slow turn is FIXED."
+      - "Body-turn step multiplies by dt=0.1 (the elapsed think dt), matching QC's aggregate per-frame rate; response is quantized to the 0.1s think cadence (coarser granularity, not wrong-magnitude)."
     verification:
       - { kind: code, ref: "Frame: idle->BrakeSimple(50); forward/back->MoveSimple(walk500); strafe->MoveSimple(strafe400); body yaw turned by turnspeed*dt; vert preserved + g*dt*sv_gravity step when velz<=20 with g=GravityTicrateFactor()", result: pass }
-      - { kind: code, ref: "GravityTicrateFactor (Spiderbot.cs:702-706) returns 0.5 only if GetFloat('sv_gameplayfix_gravityunaffectedbyticrate') != 0; grep shows the cvar is never registered/seeded => GetFloat returns 0 (EngineServices.cs:366-371) => factor 1.0", result: fail }
+      - { kind: code, ref: "GravityTicrateFactor (Spiderbot.cs:710) now returns a constant 0.5f (commit 4be8357), matching QC's sv_gameplayfix_gravityunaffectedbyticrate default-true and the engine's hardcoded GravityUnaffectedByTicrate (FlyMove/PlayerPhysics). No unregistered-cvar read remains.", result: pass }
     confidence: high
-    notes: "Body-turn timing FIXED in Wave-2; gravity factor REGRESSED in the same change. To fix the regression: either hardcode 0.5 again, default the cvar to 1 in the port's cvar store, or read PhysicsContext.GravityUnaffectedByTicrate. Frame indices (0/1 fwd/back, 2/3 strafe, 5 idle) set as the networked body frame. Walk/strafe/idle engine sounds re-architected client-side."
+    notes: "FIXED-SINCE-BASELINE (4be8357): the Wave-2 gravity regression (unregistered-cvar read -> factor 1.0 -> 2x-too-strong gravity) is resolved — factor hardcoded back to 0.5. Body-turn timing was already FIXED in Wave-2 (dt=0.1 step). Frame indices (0/1 fwd/back, 2/3 strafe, 5 idle) set as the networked body frame. Walk/strafe/idle engine sounds re-architected client-side."
 
   - id: vehicle-spiderbot.frame.jump
     name: "Directional jump (launch from wishmove) + jump/land latch"

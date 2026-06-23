@@ -5,10 +5,10 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 15
   worst_gaps:
-    - "Speed attack-rate boost still skips per-weapon animtime paths: Electro/Machinegun/Shotgun/Rifle/OkHmg/OkMachinegun call the parameterless WeaponRateFactor() which does NOT invoke the WeaponRateFactor hook, so those weapons do not fire faster under Speed (the shared fire/reload gate + Hlac/Fireball/Seeker/Vaporizer DO hook it)."
-    - "Invisibility stealth still entirely missing: enemy radar shows the cloaked player, monsters still target, bots still attack (CustomizeWaypoint/MonsterValidTarget/Bot_ForbidAttack unported — no hook chains)."
-    - "Strength-fire sound still missing (W_PlayStrengthSound + prevstrengthsound/prevstrengthsoundattempt anti-spam not ported; no fired-weapon hook)."
-    - "Drop-on-death now LIVE+faithful, but the WP_Item countdown waypoint sprite, the +use drop (PlayerUseKey), and the ItemTouched waypoint-kill hook are still unported."
+    - "Speed attack-rate boost still skips per-weapon animtime paths: Electro/Machinegun/Shotgun/Rifle/OkHmg/OkMachinegun call the parameterless WeaponRateFactor() which does NOT invoke the WeaponRateFactor hook, so those weapons do not fire faster under Speed (the shared fire/reload gate + Hlac/Fireball/Seeker/Vaporizer/OkWeapons DO hook it). UNCHANGED by the second-pass fix-up."
+    - "Invisibility stealth still effectively missing for this unit: PowerupsMutator subscribes none of the three stealth chains. The Bot_ForbidAttack SEAM now exists+live (BotBrain.ForbidAttackHook, wired by survival) but powerups doesn't set it; MonsterValidTarget has no mutator chain; CustomizeWaypoint unported. So bots/monsters still attack and the radar still shows a cloaked player."
+    - "Strength-fire sound still missing (W_PlayStrengthSound + prevstrengthsound/prevstrengthsoundattempt anti-spam not ported; no fired-weapon hook). SND_STRENGTH_FIRE registered but no caller."
+    - "Drop-on-death is LIVE+faithful, but the WP_Item countdown waypoint sprite, the +use drop (PlayerUseKey), and the ItemTouched waypoint-kill hook are still unported. NOTE: the PlayerUseKey seam is now LIVE (VehicleBoarding.cs:106 FirePlayerUseKey) but PowerupsMutator does not subscribe it — the +use drop remains dead for powerups."
     - "Death-log item codes (S/I) + server-browser mutator strings (:powerups / Powerups) still unported."
     - "Powerdown center-print fires on ANY status-effect falling edge, not just TIMEOUT (Base gates m_remove on removal_type==STATUSEFFECT_REMOVE_TIMEOUT); stopsound(CH_TRIGGER_SINGLE) on removal still unported."
 features:
@@ -36,9 +36,9 @@ features:
     gaps: []
     verification:
       - { kind: code, ref: "DamageSystem.cs:256 MutatorHooks.DamageCalculate.Call on the live damage path; IsEnabled=Api.Services!=null (always-on, mirrors QC always-registered powerups mutator)", result: pass }
-      - { kind: value, ref: "balance-xonotic.cfg:236-240 vs PowerupsMutator defaults (R() override at Hook())", result: pass }
+      - { kind: value, ref: "balance-xonotic.cfg:236 vs PowerupsMutator defaults (R() override at Hook())", result: pass }
     confidence: high
-    notes: "Unchanged by Wave-1/2. Self-hit (target==attacker) uses the gentler self-multipliers; matches the QC branch exactly."
+    notes: "Re-confirmed unchanged. Self-hit (target==attacker) uses the gentler self-multipliers; matches the QC branch exactly."
 
   - id: powerups.shield.take_damage_force
     name: "Shield (invincible): incoming damage + force reduction"
@@ -62,9 +62,9 @@ features:
     gaps: []
     verification:
       - { kind: code, ref: "OnDamageCalculate target-shield branch; force reduction skipped when target==attacker (matches QC targ != attacker)", result: pass }
-      - { kind: value, ref: "balance-xonotic.cfg:228-229", result: pass }
+      - { kind: value, ref: "balance-xonotic.cfg:228", result: pass }
     confidence: high
-    notes: "Unchanged by Wave-1/2. Checks the status effect on the TARGET (not attacker); force reduction skipped on self-hit, matching QC."
+    notes: "Re-confirmed unchanged. Checks the status effect on the TARGET (not attacker); force reduction skipped on self-hit, matching QC."
 
   - id: powerups.speed.highspeed
     name: "Speed: movement highspeed multiplier"
@@ -88,7 +88,7 @@ features:
     verification:
       - { kind: code, ref: "PlayerPhysics.cs:196 fires PlayerPhysics hook; SpeedMultiplier composes (reset to 1 then ApplyHighSpeed)", result: pass }
     confidence: high
-    notes: "Unchanged by Wave-1/2. Base v0.8.6 has NO regen consumer of STATUSEFFECT_Speed (only PlayerPhysics_UpdateStats + WeaponRateFactor consume it), so omitting a regen speed-up is faithful."
+    notes: "Re-confirmed unchanged. Base v0.8.6 has NO regen consumer of STATUSEFFECT_Speed (only PlayerPhysics_UpdateStats + WeaponRateFactor consume it), so omitting a regen speed-up is faithful."
 
   - id: powerups.speed.attack_rate
     name: "Speed: weapon attack-rate (refire) multiplier"
@@ -97,7 +97,7 @@ features:
       - "common/mutators/mutator/powerups/sv_powerups.qc:WeaponRateFactor (188-194)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:OnWeaponRateFactor"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireGate.cs:WeaponRateFactor(actor) (424)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireGate.cs:WeaponRateFactor(actor) (450-456)"
     constants:
       - { name: "g_balance_powerup_speed_attack_time_multiplier", base: "0.8", port: "0.8", match: true }
     status:
@@ -110,11 +110,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Per-weapon animtime/refire paths still call the parameterless WeaponRateFactor() which does NOT invoke the WeaponRateFactor hook, so those weapons do not fire faster while Speed is held. Confirmed parameterless callers (unchanged from baseline): Electro.cs:140,191; Machinegun.cs:153,241; OkHmg.cs:162; OkMachinegun.cs:148; Rifle.cs:180,230; Shotgun.cs:109."
+      - "Per-weapon animtime/refire paths still call the parameterless WeaponRateFactor() which does NOT invoke the WeaponRateFactor hook, so those weapons do not fire faster while Speed is held. Confirmed parameterless callers (UNCHANGED from baseline; re-grepped 2026-06-22): Electro.cs:140,191; Machinegun.cs:153,241; OkHmg.cs:162; OkMachinegun.cs:148; Rifle.cs:180,230; Shotgun.cs:109."
     verification:
-      - { kind: code, ref: "WeaponFireGate.WeaponRateFactor(actor) (line 429) + Hlac/Fireball/Seeker/Vaporizer/OffhandBlaster call the hooked overload; grep WeaponRateFactor() still finds the 6-weapon parameterless bypass set", result: fail }
+      - { kind: code, ref: "WeaponFireGate.WeaponRateFactor(actor) (line 450) calls the hooked overload; the hooked path is used by Hlac/Fireball/Seeker/Vaporizer/OkWeapons + the shared fire gate (WeaponFireGate.cs:118,296). grep 'WeaponRateFactor()' still finds the same 6-weapon parameterless bypass set.", result: fail }
     confidence: high
-    notes: "No change since baseline: the same 6 weapons bypass the hook. The shared fire/reload gate IS hooked (boost partially applies). WeaponRateFactor-wide issue, also affects the Speed buff (not powerup-specific)."
+    notes: "STILL OPEN, no change since baseline: the same 6 weapons bypass the hook. The WeaponFireGate Wave fix-up edit (line 64-176) was the Shotgun out-of-ammo auto-melee button-decoupling, NOT a WeaponRateFactor change. The shared fire/reload gate IS hooked (boost partially applies). WeaponRateFactor-wide issue, also affects the Speed buff (not powerup-specific)."
 
   - id: powerups.invisibility.alpha
     name: "Invisibility: player translucency while held"
@@ -123,7 +123,7 @@ features:
       - "common/mutators/mutator/powerups/powerup/invisibility.qc:m_tick (33-43)"
       - "common/mutators/mutator/powerups/powerup/invisibility.qc:m_remove (4-21)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:OnPlayerPreThink"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:OnPlayerPreThink (215-218)"
     constants:
       - { name: "g_balance_powerup_invisibility_alpha", base: "0.15", port: "0.15", match: true }
     status:
@@ -140,9 +140,9 @@ features:
       - "QC guards both apply AND restore with if(!actor.vehicle); the port still has no vehicle guard."
       - "QC m_remove restores default_player_alpha (a map/global default that can be != 1); the port hardcodes 1f. Cosmetic in practice (default is 1)."
     verification:
-      - { kind: code, ref: "GameWorld.cs:1037 fires PlayerPreThink on the live client-move path; OnPlayerPreThink sets player.Alpha only, restores to 1f when Alpha==invisibilityAlpha", result: pass }
+      - { kind: code, ref: "GameWorld.cs:1095 fires PlayerPreThink on the live client-move path; OnPlayerPreThink sets player.Alpha only, restores to 1f when Alpha==invisibilityAlpha", result: pass }
     confidence: high
-    notes: "Unchanged by Wave-1/2 (the PlayerPreThink-folded alpha already existed). Restore-on-lapse guarded by Alpha==invisibilityAlpha (a player at 0.15 by other means would spuriously restore — edge case)."
+    notes: "Re-confirmed unchanged (the PlayerPreThink-folded alpha already existed pre-fix-up). Restore-on-lapse guarded by Alpha==invisibilityAlpha (a player at 0.15 by other means would spuriously restore — edge case). Note: a SetDefaultAlpha seam (FireSetDefaultAlpha) was ADDED in Wave-1 but is not consumed here, so the hardcoded 1f restore is still the truth."
 
   - id: powerups.invisibility.stealth
     name: "Invisibility: radar/monster/bot stealth"
@@ -163,13 +163,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Enemy waypoint sprites of an invisible player are NOT team-restricted: a cloaked flag/objective carrier still shows on enemy radar (CustomizeWaypoint unported)."
-      - "Monsters still acquire an invisible player as a target (MonsterValidTarget unported)."
-      - "Bots still shoot an invisible player (Bot_ForbidAttack unported)."
+      - "Enemy waypoint sprites of an invisible player are NOT team-restricted: a cloaked flag/objective carrier still shows on enemy radar (CustomizeWaypoint unported — no waypoint customize chain exists)."
+      - "Monsters still acquire an invisible player as a target (MonsterValidTarget has no mutator hook chain; only the monster's own MonsterAI.ValidTarget exists, which the powerups mutator cannot veto)."
+      - "Bots still shoot an invisible player. A Bot_ForbidAttack seam NOW EXISTS and is live (Server/Bot/BotBrain.cs:42 ForbidAttackHook, called at BotBrain.cs:776; wired only by the survival gametype at GameWorld.cs:1542) but PowerupsMutator does NOT set it — so bot stealth is still missing for powerups."
     verification:
-      - { kind: code, ref: "grep CustomizeWaypoint/MonsterValidTarget/Bot_ForbidAttack across src/+game/: only code comments (PowerupsMutator header, MonsterAI.cs); no hook chains defined in MutatorHooks, no live handler", result: fail }
+      - { kind: code, ref: "PowerupsMutator port_refs empty; it subscribes none of the three. CustomizeWaypoint/MonsterValidTarget chains undefined in MutatorHooks; Bot_ForbidAttack exists as BotBrain.ForbidAttackHook but powerups never assigns it (re-grepped 2026-06-22).", result: fail }
     confidence: high
-    notes: "No change since baseline. PowerupsMutator header (lines 21-23) explicitly defers these three chains (the hooks are not defined in MutatorHooks)."
+    notes: "STILL OPEN. Partial seam progress only: Bot_ForbidAttack went from undefined to defined+live-by-survival, but the powerups subscription is absent so behavior is unchanged. PowerupsMutator header (lines 20-27) explicitly still defers all three."
 
   - id: powerups.glow.effects
     name: "Strength/Shield player glow (EF_BLUE / EF_RED + EF_ADDITIVE + EF_FULLBRIGHT)"
@@ -179,7 +179,7 @@ features:
       - "common/mutators/mutator/powerups/powerup/shield.qc:m_tick (28-33), m_remove (4-16)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:OnPlayerPreThink (223-224)"
-      - "game/net/ServerNet.cs:1727 (Effects networked) + game/net/ClientEntityView.cs:129 (decode) + game/client/CsqcModelEffects.cs:119-122 (render)"
+      - "game/net/ServerNet.cs (Effects networked) + game/net/ClientEntityView.cs (decode) + game/client/CsqcModelEffects.cs:119-120 (render)"
     constants:
       - { name: "EF_BLUE (strength)", base: "64", port: "64 (EfBlue, set on player.Effects)", match: true }
       - { name: "EF_RED (shield)", base: "128", port: "128 (EfRed, set on player.Effects)", match: true }
@@ -195,12 +195,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Presentation fidelity: Base's EF_ADDITIVE|EF_FULLBRIGHT recolors the WHOLE model additively; the port renders the glow primarily as a blue/red OmniLight3D (EF_BLUE/EF_RED -> dynamic light, CsqcModelEffects.cs:119-120), and the EF_ADDITIVE/EF_FULLBRIGHT bits only affect per-instance-material meshes (shared/shader-material player models skip them — a documented CsqcModelEffects render gap). So a holder visibly glows blue/red, but not via the exact whole-body additive-fullbright recolor."
+      - "Presentation fidelity: Base's EF_ADDITIVE|EF_FULLBRIGHT recolors the WHOLE model additively; the port renders the glow primarily as a blue/red OmniLight3D (EF_BLUE->blue light, EF_RED->red light, CsqcModelEffects.cs:119-120), and the EF_ADDITIVE/EF_FULLBRIGHT bits only affect per-instance-material meshes (shared/shader-material player models skip them — a documented CsqcModelEffects render gap). So a holder visibly glows blue/red, but not via the exact whole-body additive-fullbright recolor."
     verification:
-      - { kind: code, ref: "OnPlayerPreThink ORs StrengthGlow=(EF_BLUE|Additive|FullBright)/ShieldGlow=(EF_RED|...) into player.Effects each frame (idempotent set/clear); PlayerPreThink is live (GameWorld.cs:1037)", result: pass }
-      - { kind: code, ref: "player.Effects networks via EntityField.Effects (NetEntity.cs:165/219/260) -> ServerNet.cs:1727 -> ClientEntityView.cs:129 -> CsqcModelEffects.Apply (ClientWorld.cs:1095) emits a blue light for EF_BLUE / red for EF_RED", result: pass }
+      - { kind: code, ref: "OnPlayerPreThink ORs StrengthGlow=(EF_BLUE|Additive|FullBright)/ShieldGlow=(EF_RED|...) into player.Effects each frame (idempotent set/clear); PlayerPreThink is live (GameWorld.cs:1095)", result: pass }
+      - { kind: code, ref: "player.Effects networks via the Effects field -> CsqcModelEffects.Apply emits a blue light for EF_BLUE / red for EF_RED (CsqcModelEffects.cs:119-120). The Wave-3 forced-appearance override added to CsqcModelEffects.Apply defaults to no-op (bit-identical to the prior call) so this row is unaffected by it.", result: pass }
     confidence: high
-    notes: "FIXED vs baseline (was logic/values/timing/presentation:missing, liveness:na). Strength glows BLUE (EF_BLUE), Shield glows RED (EF_RED) — matches Base (strength.qc:31 EF_BLUE, shield clears EF_RED). NOTE: the dead helper CsqcModelEffectFlags.RoleGlowFlags/ComposeForcedAppearance has the colors INVERTED (strength->EF_RED) but it has NO live caller, so it does not affect this row (belongs to the cl-csqcmodel unit)."
+    notes: "Re-confirmed (was FIXED at baseline; still faithful). Strength glows BLUE (EF_BLUE), Shield glows RED (EF_RED) — matches Base (strength.qc:31 EF_BLUE | EF_ADDITIVE | EF_FULLBRIGHT; shield uses EF_RED). The dead helper CsqcModelEffectFlags.RoleGlowFlags has the colors INVERTED but has NO live caller, so it does not affect this row."
 
   - id: powerups.strength.fire_sound
     name: "Strength-fire sound (anti-spammed) on firing while Strength active"
@@ -223,9 +223,9 @@ features:
     gaps:
       - "Firing any weapon while Strength is active never plays the SND_STRENGTH_FIRE cue; the prevstrengthsound/prevstrengthsoundattempt anti-spam timers are not modeled (no W_PlayStrengthSound hook / fired-weapon hook in the port)."
     verification:
-      - { kind: code, ref: "Sound STRENGTH_FIRE registered (SoundsList.cs) but grep PlayStrengthSound/prevstrengthsound finds no caller in src/+game/", result: fail }
+      - { kind: code, ref: "Sound STRENGTH_FIRE registered (SoundsList.cs:70) but grep PlayStrengthSound/prevstrengthsound finds no caller in src/+game/ (re-grepped 2026-06-22)", result: fail }
     confidence: high
-    notes: "No change since baseline. PowerupsMutator header (line 21) explicitly defers the strength-fire sound (needs a fired-weapon hook from weapons/tracing.qc). Values verified in xonotic-server.cfg:604-605."
+    notes: "STILL OPEN, no change. PowerupsMutator header (line 21) explicitly defers the strength-fire sound (needs a fired-weapon hook from weapons/tracing.qc). Values verified in xonotic-server.cfg."
 
   - id: powerups.notifications
     name: "Pickup/powerdown notifications (center-print + broadcast)"
@@ -248,12 +248,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Powerdown center-print fires on ANY falling edge (timeout, death-drop, clear), but Base gates the m_remove CENTER on removal_type==STATUSEFFECT_REMOVE_TIMEOUT only — so a powerup removed by other means would wrongly center-print POWERDOWN_X."
-      - "stopsound(actor, CH_TRIGGER_SINGLE) on any removal (kills the pickup sound) is still not ported."
+      - "Powerdown center-print fires on ANY falling edge (timeout, death-drop, clear), but Base gates the m_remove CENTER on removal_type==STATUSEFFECT_REMOVE_TIMEOUT only (strength.qc:7) — so a powerup removed by other means would wrongly center-print POWERDOWN_X."
+      - "stopsound(actor, CH_TRIGGER_SINGLE) on any removal (kills the pickup sound, strength.qc:13) is still not ported."
     verification:
-      - { kind: code, ref: "NotifyEdge: rising edge -> NotificationSystem.Info(POWERUP_X,netname) (when !g_cts) + Center(POWERUP_X); falling edge -> Center(POWERDOWN_X). Notifs registered (NotificationsList.cs:729-732 INFO, 969-976 CENTER incl. all POWERDOWN_*). PlayerPreThink live (GameWorld.cs:1037); Client+rising-edge gating mirrors QC !wasactive && IS_PLAYER && !g_cts.", result: pass }
+      - { kind: code, ref: "NotifyEdge: rising edge -> NotificationSystem.Info(POWERUP_X,netname) (when !g_cts) + Center(POWERUP_X); falling edge -> Center(POWERDOWN_X). Notifs registered (NotificationsList.cs:729-732 INFO, 969-976 CENTER incl. all POWERDOWN_*). PlayerPreThink live (GameWorld.cs:1095); Client+rising-edge gating mirrors QC !wasactive && IS_PLAYER && !g_cts.", result: pass }
     confidence: high
-    notes: "FIXED vs baseline (was logic/presentation:missing, liveness:na). Edge tracked via _prevActive bitmap so re-pickup while still active does not re-notify (matches QC !wasactive). Two residual gaps: the TIMEOUT-only gate on the powerdown print, and the stopsound-on-removal."
+    notes: "Re-confirmed (was FIXED at baseline). Edge tracked via _prevActive bitmap so re-pickup while still active does not re-notify (matches QC !wasactive). Two residual gaps confirmed against strength.qc: the TIMEOUT-only gate on the powerdown print, and the stopsound-on-removal."
 
   - id: powerups.countdown_beep
     name: "Powerdown countdown beep (play_countdown SND_POWEROFF)"
@@ -279,9 +279,9 @@ features:
     gaps:
       - "Base gates play_countdown on IS_REAL_CLIENT (real humans); the port gates the PreThink on EntFlags.Client (incl. bots), so a bot near expiry triggers the server-side beep too. Negligible (sound to a bot is harmless)."
     verification:
-      - { kind: code, ref: "PlayCountdown matches Base exactly: timeLeft<6 && floor(timeLeft-frametime)!=floor(timeLeft) -> Api.Sound.Play(player, Auto, misc/poweroff.wav). poweroff.ogg exists; .wav path is the codebase convention. Called per active powerup each PreThink (live).", result: pass }
+      - { kind: code, ref: "PlayCountdown matches Base exactly: timeLeft<6 && floor(timeLeft-frametime)!=floor(timeLeft) -> Api.Sound.Play(player, Auto, misc/poweroff.wav). POWEROFF sound registered (SoundsList.cs:186). Called per active powerup each PreThink (live).", result: pass }
     confidence: high
-    notes: "FIXED vs baseline (was logic/timing/audio:missing, liveness:na). The last-6-seconds, once-per-second-crossed beep math is bit-faithful to server/client.qc:1532."
+    notes: "Re-confirmed (was FIXED at baseline). The last-6-seconds, once-per-second-crossed beep math is bit-faithful to server/client.qc:1532."
 
   - id: powerups.item.apply_stack
     name: "Powerup pickup -> status-effect apply + stacking (max vs add)"
@@ -289,8 +289,8 @@ features:
     base_refs:
       - "server/items/items.qc:Item_GiveTo (powerup block 598-637)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:ApplyPowerupTimers (250)"
-      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:ApplyTimer (264)"
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:ApplyPowerupTimers (254)"
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:ApplyTimer (268)"
     constants:
       - { name: "g_powerups_stack", base: "0", port: "0", match: true }
       - { name: "g_balance_powerup_strength_time", base: "30", port: "30", match: true }
@@ -308,9 +308,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "ItemGiveTo -> ApplyPowerupTimers (ItemPickupRules.cs:129); stack=add / nostack=max(existing,dur); equivalent to QC max(t, time+finished). ItemTouch expiring conversion (lines 368-389) subtracts time for continue-timer drops — verified faithful to items.qc:714-733.", result: pass }
+      - { kind: code, ref: "ItemGiveTo -> ApplyPowerupTimers (ItemPickupRules.cs:129); stack=add / nostack=max(existing,dur); equivalent to QC max(t, time+finished). ItemTouch expiring conversion (lines 372-393) subtracts time for continue-timer drops — re-verified faithful to items.qc:714-733.", result: pass }
     confidence: high
-    notes: "apply_stack logic unchanged by Wave-1/2 (the only ItemPickupRules edit was ADDING the expiring-timer conversion in ItemTouch, which this row relies on and which is now confirmed faithful). Superweapons always-add path also present."
+    notes: "Re-confirmed faithful. The second-pass fix-up added autoswitch + fuelregen/jetpack center-prints to Item_GiveTo, but the powerup-timer apply/stack and the expiring-timer conversion in ItemTouch are unchanged and intact. Superweapons always-add path also present (ApplySuperweaponTimer)."
 
   - id: powerups.item.defs_spawn_gate
     name: "Powerup item defs + spawn gating (MUTATORBLOCKED) + jetpack fuel"
@@ -344,9 +344,10 @@ features:
       - "g_jetpack_fuel CvarOr fallback is 100 in the port but the Base default is 8 (fuel/sec); only matters on the .count override path with the cvar unset."
       - "m_botvalue not set on the port pickups (Base 11000 for strength/shield/speed/invisibility, 3000 for jetpack/fuelregen) — bot item desirability may be miscalibrated."
     verification:
-      - { kind: code, ref: "PowerupItem.cs unchanged by Wave-1/2 (no diff). ApplyMutatorBlock gates on g_powerups + g_powerups_<x>; RespawnTime 120; ItemDef.Glow per item.", result: pass }
+      - { kind: code, ref: "PowerupItem.cs unchanged by the fix-up (no diff). ApplyMutatorBlock gates on g_powerups + g_powerups_<x>; RespawnTime 120; ItemDef.Glow per item.", result: pass }
+      - { kind: code, ref: "ItemPickupRules.cs now ALSO center-prints ITEM_FUELREGEN_GOT / ITEM_JETPACK_GOT on newly-granted held-flag powerups (fix-up addition, lines 106-117) — a presentation improvement matching items.qc:581-587; does not change this row's faithful/partial status but tightens the jetpack/fuelregen pickup feedback.", result: pass }
     confidence: medium
-    notes: "Unchanged by Wave-1/2. Speed/Invisibility use buff.md3 placeholder skins 9/12 (matches Base MDL_BUFF). ShieldItem netname 'invincible' matches QC."
+    notes: "Item defs unchanged. Speed/Invisibility use buff.md3 placeholder skins (matches Base MDL_BUFF). ShieldItem netname 'invincible' matches QC. Residual value gaps (jetpack fuel fallback, m_botvalue) unchanged."
 
   - id: powerups.drop.ondeath_onuse
     name: "Drop powerup on death / on +use (with countdown waypoint)"
@@ -358,7 +359,7 @@ features:
       - "common/mutators/mutator/powerups/sv_powerups.qc:ItemTouched (142-147)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:OnPlayerDies (291-305), DropPowerup (312-359)"
-      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:ItemTouch (345) expiring conversion (368-389)"
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:ItemTouch (349) expiring conversion (372-393)"
     constants:
       - { name: "g_powerups_drop_ondeath", base: "1", port: "1 (read at Hook())", match: true }
       - { name: "g_powerups_drop", base: "0", port: "none (PlayerUseKey path unported)", match: false }
@@ -374,14 +375,14 @@ features:
     divergence_rationale: null
     gaps:
       - "No WP_Item countdown waypoint sprite on the dropped powerup (powerups_DropItem waypoint + powerups_DropItem_Think unported — no reachable WaypointSprite API from this file)."
-      - "+use drop (g_powerups_drop, PlayerUseKey hook) is still unported — only drop-on-death is live."
+      - "+use drop (g_powerups_drop, PlayerUseKey hook) is still unported. NOTE: the PlayerUseKey hook is NOW live (MutatorHooks.FirePlayerUseKey fired at VehicleBoarding.cs:106) but PowerupsMutator does not subscribe to it — only drop-on-death is live. So the seam exists; the powerups subscription is the remaining work."
       - "ItemTouched hook (kills the dropped powerup's waypoint sprite on pickup) unported (moot while there is no waypoint)."
       - "Frozen drop uses ItemIsExpiring=false as the freeze marker rather than Base's RES_ARMOR=1 marker (logically equivalent for the give-time conversion)."
     verification:
       - { kind: code, ref: "OnPlayerDies fires on the live death path (DamageSystem.cs:589 PlayerDies.Call); drops each of strength/shield/speed/invisibility via DropPowerup. timeleft<=1 skip, finished=freeze?timeLeft:absolute, lifetime=freeze?20:timeLeft, velocity=owner.vel+forward*750 — matches sv_powerups.qc:93-140 except the waypoint.", result: pass }
-      - { kind: code, ref: "Continue-timer drop: ItemIsExpiring=true + StrengthFinished=absolute; ItemTouch subtracts Now (ItemPickupRules.cs:371) so ApplyTimer gets remaining duration — round-trip faithful.", result: pass }
+      - { kind: code, ref: "Continue-timer drop: ItemIsExpiring=true + StrengthFinished=absolute; ItemTouch subtracts Now (ItemPickupRules.cs:375) so ApplyTimer gets remaining duration — round-trip faithful.", result: pass }
     confidence: high
-    notes: "FIXED vs baseline (was all-missing, liveness:na -> drop-on-death now LIVE+faithful). The primary Base-default behavior (g_powerups_drop_ondeath=1) is restored. Residual: the WP_Item waypoint sprite and the +use drop remain unported (presentation:missing, logic:partial)."
+    notes: "Re-confirmed (was FIXED at baseline -> drop-on-death LIVE+faithful). The primary Base-default behavior (g_powerups_drop_ondeath=1) is restored. Residual: the WP_Item waypoint sprite and the +use drop (now seam-available, subscription-missing) remain unported."
 
   - id: powerups.obituary_mutator_strings
     name: "Death-log item codes (S/I) + server-browser mutator strings"
@@ -405,9 +406,9 @@ features:
       - "Death log does not append 'S' (Strength) / 'I' (Shield) item codes for a victim who held the powerup (LogDeath_AppendItemCodes unported)."
       - "Server-browser mutator strings do not include ':powerups'/'Powerups' (or the ':no_powerups'/', No powerups' variant when g_powerups==0)."
     verification:
-      - { kind: code, ref: "grep LogDeath_AppendItemCodes/BuildMutatorsString/:powerups/no_powerups in src/+game/ — no powerup contribution (the hooks are not defined)", result: fail }
+      - { kind: code, ref: "grep LogDeath_AppendItemCodes/BuildMutatorsString/:powerups/no_powerups in src/+game/ — no powerup contribution; the only BuildMutatorsString mentions are comments in Cloaked/RocketFlying/SuperSpec deferrals (re-grepped 2026-06-22)", result: fail }
     confidence: medium
-    notes: "No change since baseline. Low gameplay impact (stats/serverlist cosmetics) but a real divergence; matches the CloakedMutator deferral pattern."
+    notes: "STILL OPEN, no change. Low gameplay impact (stats/serverlist cosmetics) but a real divergence; matches the CloakedMutator deferral pattern."
 
   - id: powerups.hud.timer_bars
     name: "HUD active-powerups panel (timer bars + icons)"
@@ -433,6 +434,6 @@ features:
     gaps:
       - "Strength/Shield m_active CSQC override (force-show in _hud_configure) is the editor-only path; not separately verified."
     verification:
-      - { kind: code, ref: "PowerupsPanel.cs unchanged by Wave-1/2 (no diff). Walks Player.StatusEffects each frame; HudManager registers it (line 126); hud_panel_powerups_* cvars registered.", result: pass }
+      - { kind: code, ref: "PowerupsPanel.cs unchanged by the fix-up (no diff). Walks Player.StatusEffects each frame; HudManager registers it (line 126); hud_panel_powerups_* cvars registered.", result: pass }
     confidence: medium
-    notes: "Unchanged by Wave-1/2. Reads live status effects + surfaces persistent item-flag powerups (jetpack/fuelregen/unlimited-superweapons) as infinity entries. Not runtime-verified visually."
+    notes: "Unchanged. Reads live status effects + surfaces persistent item-flag powerups (jetpack/fuelregen/unlimited-superweapons) as infinity entries. Not runtime-verified visually."

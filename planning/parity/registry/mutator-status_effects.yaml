@@ -5,11 +5,11 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 13
   worst_gaps:
-    - "Lifecycle mass-clear is still DEAD: RemoveAll/ClearAll now exist (with per-effect m_remove + sound) but NO host caller wires them to PlayerDies/MonsterDies/ClientDisconnect/MakePlayerObserver/reset_map_global/PutClientInServer. Stale burning/stunned/superweapon timers can still survive death/respawn/map reset; SpectateCopy effect-aliasing still absent."
-    - "Removal sounds are wired but two of three resolve to NULL: Remove() now plays def.RemovalSound via Sounds.ByName on a NORMAL removal, but ByName is StringComparer.Ordinal (case-sensitive) and the burning sound 'steam_burst' is not registered at all while stunned's 'ons_spark1' mismatches the registered key 'ONS_SPARK1' — both silently no-op. Only superweapon 'POWEROFF' resolves and actually plays."
-    - "Per-effect presentation (.effects flags) still missing: SpawnShield EF_ADDITIVE|EF_FULLBRIGHT post-game_starttime shimmer and Stunned EF_SHOCK aura have no port mechanism (no per-entity .effects field). Burning EF_FLAME is a client particle burst (not the .effects flag) — visual present, mechanism divergent."
-    - "Frozen status effect still has no MDL_ICE block entity, no RemoveGrapplingHooks-on-freeze, and no SVQC lava/STAT_FROZEN per-effect extinguish; the blue self-flash is replaced by an intended per-model colormod. (UNCHANGED from baseline.)"
-    - "Player spawnshield is still NOT the spawnshield status effect — it remains the bespoke Entity.SpawnShieldExpire timer (SpawnSystem:605); only monsters use the registered spawnshield def. SuperweaponTimeout still re-applies a 999s timer (the PERSISTENT bit is now set independently by the per-tick m_persistent recompute, so the fake timer is now belt-and-suspenders, not the persistence source)."
+    - "Per-effect .effects-flag presentation is still missing: SpawnShield EF_ADDITIVE|EF_FULLBRIGHT post-game_starttime shimmer and Stunned EF_SHOCK aura have no port mechanism (no per-entity .effects field; SpawnShieldTick is a documented no-op). Burning EF_FLAME is a client particle burst (not the .effects flag) — visual present, mechanism divergent."
+    - "Frozen status effect still has no MDL_ICE block entity, no RemoveGrapplingHooks-on-freeze, no SVQC lava/STAT_FROZEN per-effect extinguish for the frozen def itself, and no local full-screen blue CSQC drawfill self-flash; the blue self-flash is replaced by an intended per-model colormod. (UNCHANGED from baseline.)"
+    - "Player spawnshield is still NOT the spawnshield status effect — it remains the bespoke Entity.SpawnShieldExpire timer (SpawnSystem:605); only monsters use the registered spawnshield def (with a no-op tick). Superweapon per-second play_countdown beep (last 6s) is absent (only the Remove-time POWEROFF plays). (UNCHANGED.)"
+    - "HUD infinity glyph is still inferred from ExpireTime<=0 (permanent timer) rather than the now-networked PERSISTENT flag (PowerupsPanel:220); behaviorally close but flag-derivation diverges. m_color/m_icon/m_name still dropped from the def (HUD reconstructs from PowerupMeta). (UNCHANGED.)"
+    - "SpectateCopy effect-aliasing (client.statuseffects = spectatee.statuseffects) has no port analogue — intentional N/A (no statuseffects_store entity; remote viewing covered by the per-entity NetEntity blob). (UNCHANGED.)"
 features:
   - id: status_effects.framework.registry
     name: "StatusEffects registry + StatusEffect base class (32 slots, m_id, attribs)"
@@ -23,7 +23,7 @@ features:
     constants:
       - { name: "REGISTRY size", base: "32", port: "Registry<StatusEffectDef> (unbounded; sized by count)", match: true }
       - { name: "m_lifetime default", base: "30", port: "0 on def (HUD falls back to StatusEffectLifetime=30)", match: true }
-      - { name: "m_sound_rm on def", base: "present (steam_burst/ons_spark1/POWEROFF)", port: "RESTORED: StatusEffectDef.RemovalSound (burning=steam_burst, stunned=ons_spark1, superweapon=POWEROFF)", match: true }
+      - { name: "m_sound_rm on def", base: "present (SND_Burning_Remove/SND_Stunned_Remove/SND_POWEROFF)", port: "RESTORED + RESOLVING: RemovalSound (burning=BURNING_REMOVE->desertfactory/steam_burst, stunned=STUNNED_REMOVE->onslaught/ons_spark1, superweapon=POWEROFF->misc/poweroff) — all three registered keys resolve", match: true }
       - { name: "m_persistent on def", base: "present (burning lava / superweapon unlimited)", port: "RESTORED: StatusEffectDef.PersistentCheck Func<Entity,bool>", match: true }
       - { name: "m_tick on def", base: "present (per-effect body)", port: "RESTORED: StatusEffectDef.OnTick Func", match: true }
       - { name: "m_color/m_icon/m_name on def", base: "present", port: "still dropped (HUD uses PowerupMeta table)", match: false }
@@ -37,11 +37,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "StatusEffectDef still drops m_color/m_icon/m_name (HUD reconstructs label/icon/color from a separate PowerupMeta table in PowerupsPanel). m_sound_rm/m_persistent/m_tick methods are now CARRIED on the def (Wave-2), closing most of the data-poverty gap."
+      - "StatusEffectDef still drops m_color/m_icon/m_name (HUD reconstructs label/icon/color from a separate PowerupMeta table in PowerupsPanel). m_sound_rm/m_persistent/m_tick methods are carried on the def, and the m_sound_rm names now use the registered SND_* def keys (BURNING_REMOVE/STUNNED_REMOVE/POWEROFF) that all resolve — closing the data-poverty gap except the cosmetic m_color/m_icon/m_name."
     verification:
-      - { kind: code, ref: "RegisterAll now seeds RemovalSound/PersistentCheck/OnTick on burning/spawnshield/stunned/superweapon; called at GameInit.cs:26", result: pass }
+      - { kind: code, ref: "RegisterAll seeds RemovalSound/PersistentCheck/OnTick on burning/spawnshield/stunned/superweapon (StatusEffects.cs:127-156); called at GameInit.cs:26; removal-sound keys match SoundsList.cs:134-135,186", result: pass }
     confidence: high
-    notes: "Wave-2 restored the def's behavioral methods (sound/persistent/tick). Only the cosmetic m_color/m_icon/m_name remain dropped (intentionally reconstructed elsewhere)."
+    notes: "Wave-2 restored the def's behavioral methods; the second-pass fix-up corrected the two removal-sound names to the registered keys so all three now resolve. Only the cosmetic m_color/m_icon/m_name remain dropped (intentionally reconstructed elsewhere)."
 
   - id: status_effects.framework.flags_enums
     name: "ACTIVE/PERSISTENT flags + REMOVE_NORMAL/TIMEOUT/CLEAR enums"
@@ -67,9 +67,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "Remove(Entity,def,StatusEffectRemoval) now takes the removal_type; Tick passes Timeout on expiry + Normal on self-remove; RemoveAll passes Normal; ClearAll is the CLEAR path. The enum dispatch is now exercised on the live path.", result: pass }
+      - { kind: code, ref: "Remove(Entity,def,StatusEffectRemoval) takes the removal_type; Tick passes Timeout on expiry + Normal on self-remove; RemoveAll passes Normal; ClearAll is the CLEAR path. All three enum branches are now exercised on the LIVE path (RemoveAll/ClearAll wired at 5 lifecycle sites).", result: pass }
     confidence: high
-    notes: "FIXED: the removal-type enum is now live — Remove() carries removal_type and the NORMAL/TIMEOUT/CLEAR branches are all reachable (TIMEOUT from Tick expiry, NORMAL from self-remove/RemoveAll, CLEAR from ClearAll)."
+    notes: "Live: the removal-type enum is fully exercised — TIMEOUT from Tick expiry, NORMAL from self-remove/RemoveAll (now wired to death/disconnect/observe/reset), CLEAR from ClearAll (wired to respawn/observe/disconnect)."
 
   - id: status_effects.framework.apply
     name: "StatusEffects_apply (set timer+flags, auto ACTIVE, mark dirty, eff_time<=time guard)"
@@ -93,11 +93,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Apply now reproduces Base's non-future-timer guard for duration>0 (StatusEffects.cs:378). The duration<=0 => permanent (ExpireTime=0) convention is retained deliberately (used by SuperweaponTimeout 999s and FreezeTag/NadeIce until-thawed) — not a Base divergence at duration>0."
+      - "Apply reproduces Base's non-future-timer guard for duration>0 (StatusEffects.cs:378). The duration<=0 => permanent (ExpireTime=0) convention is retained deliberately (used by SuperweaponTimeout 999s and FreezeTag/NadeIce until-thawed) — not a Base divergence at duration>0."
     verification:
-      - { kind: code, ref: "live Apply sites: Fireball.FireAddDamage->Apply, NadeNapalmBoom:190, MonsterFramework:99, GiveItems(superweapon/powerup/buff), BuffsMutator(buff+stunned), FreezeTag, SuperweaponTimeout(999s); guard at StatusEffects.cs:378", result: pass }
+      - { kind: code, ref: "live Apply sites: Fireball.FireAddDamage->Apply, NadeNapalmBoom, MonsterFramework, GiveItems(superweapon/powerup/buff), BuffsMutator(buff+stunned), FreezeTag, SuperweaponTimeout(999s); guard at StatusEffects.cs:378", result: pass }
     confidence: high
-    notes: "Refresh-if-present + replace semantics intact; Wave-2 added the duration>0 non-future guard, matching Base more closely."
+    notes: "Unchanged by the second pass. Refresh-if-present + replace semantics intact; duration>0 non-future guard matches Base."
 
   - id: status_effects.framework.remove
     name: "StatusEffects_remove (zero timer+flags, removal sound if NORMAL & active & !persistent)"
@@ -107,25 +107,24 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/StatusEffects.cs:StatusEffectsCatalog.Remove (3-arg with StatusEffectRemoval)"
     constants:
-      - { name: "play m_sound_rm on NORMAL removal", base: "yes", port: "yes (NORMAL + active + !persistent + RemovalSound set) but 2/3 sounds resolve to null", match: false }
+      - { name: "play m_sound_rm on NORMAL removal", base: "yes", port: "yes (NORMAL + active + !persistent + RemovalSound set); all 3 sounds now resolve", match: true }
       - { name: "removal_type parameter", base: "int removal_type (NORMAL/TIMEOUT/CLEAR)", port: "present: Remove(Entity,def,StatusEffectRemoval)", match: true }
-      - { name: "removal sound name resolution", base: "registered SND_* always plays", port: "Sounds.ByName is StringComparer.Ordinal: 'POWEROFF' resolves; 'ons_spark1' != 'ONS_SPARK1'; 'steam_burst' unregistered", match: false }
+      - { name: "removal sound name resolution", base: "registered SND_* always plays", port: "RemovalSound uses the registered SND_* keys (BURNING_REMOVE/STUNNED_REMOVE/POWEROFF); Sounds.ByName (Ordinal) resolves all three; assets present on disk", match: true }
     status:
       logic: faithful
       values: na
       timing: na
       presentation: na
-      audio: partial
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Removal sound is wired (Remove plays def.RemovalSound on a NORMAL removal of an active, non-persistent effect) but only superweapon's 'POWEROFF' actually resolves. Burning's 'steam_burst' is not a registered sound (no desertfactory/steam_burst asset in SoundsList) and stunned's 'ons_spark1' is the WRONG CASE — the registry key is 'ONS_SPARK1' and Sounds.ByName uses StringComparer.Ordinal, so both return null and PlayOn silently no-ops."
-      - "Remove still runs no extra per-effect m_remove side-mechanics beyond the sound (e.g. Frozen_ice_remove). The per-effect bodies live in OnTick (apply-time), not a m_remove override; the only m_remove mechanic Base needs here that the port lacks is the frozen ice-block teardown."
+      - "Remove runs no extra per-effect m_remove side-mechanics beyond the sound (the per-effect bodies live in OnTick at apply/tick time, not an m_remove override). The only m_remove mechanic Base needs here that the port lacks is the frozen ice-block teardown (covered under status_effects.frozen)."
     verification:
-      - { kind: code, ref: "Remove(Entity,def,removal) plays Sounds.ByName(RemovalSound) for NORMAL+Active+!Persistent (StatusEffects.cs:425-432); SoundsList has 'POWEROFF' + 'ONS_SPARK1' (uppercase) but NO steam_burst; Registry.ByName uses StringComparer.Ordinal (Registry.cs:32)", result: pass }
+      - { kind: code, ref: "Remove(Entity,def,removal) plays SoundSystem.PlayOn(e, Sounds.ByName(RemovalSound), Item, ...) for NORMAL+Active+!Persistent (StatusEffects.cs:425-432); SoundsList registers BURNING_REMOVE=desertfactory/steam_burst, STUNNED_REMOVE=onslaught/ons_spark1, POWEROFF=misc/poweroff (SoundsList.cs:134-135,186); all three sample files exist under assets/data/.../sound", result: pass }
     confidence: high
-    notes: "Big improvement (removal_type + sound path now exist and are live), but the audio is effectively only firing for superweapon-POWEROFF because of one missing sound asset and one case-mismatched name."
+    notes: "FIXED audio (partial->faithful): the second-pass fix-up renamed the burning/stunned removal sounds to the registered SND_* keys (BURNING_REMOVE/STUNNED_REMOVE), so all three removal sounds (incl. the previously-silent steam_burst and case-mismatched ons_spark1) now resolve and play on a NORMAL removal."
 
   - id: status_effects.framework.tick
     name: "StatusEffects_tick — per-frame: PERSISTENT recompute, timeout removal, per-effect m_tick"
@@ -136,7 +135,7 @@ features:
       - "common/mutators/mutator/status_effects/sv_status_effects.qc:SV_StartFrame hook"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/StatusEffects.cs:StatusEffectsCatalog.Tick"
-      - "src/XonoticGodot.Server/GameWorld.cs:1187"
+      - "src/XonoticGodot.Server/GameWorld.cs:1245"
     constants:
       - { name: "tick scope", base: "all g_damagedbycontents ents with .statuseffects, not MOVETYPE_NOCLIP", port: "live, non-observer, non-dead players only (OnPlayerPostThink); monsters tick burning via MonsterFramework", match: false }
       - { name: "PERSISTENT recompute per tick (BITSET via m_persistent)", base: "yes", port: "yes: def.PersistentCheck(e) -> set/clear Persistent flag, dirty-mark on change", match: true }
@@ -152,13 +151,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Tick scope is still live players only (skips observers/dead via OnPlayerPostThink guard, GameWorld.cs:1171/1180), not all damagedbycontents entities. Monsters tick burning through their own MonsterFramework path; a non-player non-monster ignite would not tick. (UNCHANGED scope; acceptable since players + monsters cover the real ignite victims.)"
-      - "Presentation half of per-effect m_tick (.effects EF_ADDITIVE|FULLBRIGHT / EF_SHOCK) is still not produced (no per-entity .effects field); the OnTick bodies for spawnshield are documented no-ops."
+      - "Tick scope is still live players only (skips observers/dead via the OnPlayerPostThink guard, GameWorld.cs:1229/1238), not all damagedbycontents entities. Monsters tick burning through their own MonsterFramework path; a non-player non-monster ignite would not tick. (UNCHANGED scope; acceptable since players + monsters cover the real ignite victims.)"
+      - "Presentation half of per-effect m_tick (.effects EF_ADDITIVE|FULLBRIGHT / EF_SHOCK) is still not produced (no per-entity .effects field); the OnTick body for spawnshield is a documented no-op."
     verification:
-      - { kind: code, ref: "Tick(p,Time) per live player in OnPlayerPostThink (GameWorld.cs:1187), gated !observer && !gameStopped && !IsDead; Tick recomputes PersistentCheck (BITSET), dirty-marks, runs OnTick, expires via Remove(TIMEOUT)", result: pass }
-      - { kind: code, ref: "Burn no longer strength*0.05/frame: BurningTick -> FireApplyDamage uses dps*min(frametime,fireend-now) (frame-rate independent, StatusEffects.cs:306-328)", result: pass }
+      - { kind: code, ref: "Tick(p,Time) per live player in OnPlayerPostThink (GameWorld.cs:1245), gated !observer && !gameStopped && !IsDead; Tick recomputes PersistentCheck (BITSET), dirty-marks, runs OnTick, expires via Remove(TIMEOUT)", result: pass }
+      - { kind: code, ref: "Burn is frame-rate-independent: BurningTick -> FireApplyDamage uses dps*min(frametime,fireend-now) (StatusEffects.cs:306-328)", result: pass }
     confidence: high
-    notes: "FIXED: the collapsed generic Tick is replaced by a faithful per-effect dispatch (PERSISTENT recompute + OnTick + TIMEOUT expiry). Burn is now frame-rate-independent. Only the .effects-flag presentation and the all-damagedbycontents scope remain."
+    notes: "Unchanged by the second pass (caller line moved 1187->1245). Faithful per-effect dispatch (PERSISTENT recompute + OnTick + TIMEOUT expiry); burn is frame-rate-independent. Only the .effects-flag presentation and the all-damagedbycontents scope remain."
 
   - id: status_effects.framework.gettime
     name: "StatusEffects_gettime (timer read with still-active-this-frame clamp)"
@@ -182,7 +181,7 @@ features:
     verification:
       - { kind: code, ref: "GetTime(e,def,now) implemented (StatusEffects.cs:232-238); consumed by FireAddDamage (fireEndTime for the stacking LEMMA) and FireApplyDamage (t = min(frametime, fireend-now))", result: pass }
     confidence: high
-    notes: "FIXED: a faithful GetTime wrapper now exists and is the live input to the fire-DOT stacking + per-tick clamp (the very Base consumer the baseline noted was missing)."
+    notes: "Unchanged. Faithful GetTime wrapper is the live input to the fire-DOT stacking + per-tick clamp."
 
   - id: status_effects.framework.persistent
     name: "m_persistent flag (passive grant: no timeout) + per-frame recompute"
@@ -209,11 +208,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The explicit SetPersistent(Entity,def,bool) setter still has no external caller — but it is now redundant: the per-tick PersistentCheck recompute in Tick is the live m_persistent mechanism and it DOES set the networked PERSISTENT bit (so the HUD/overlay can read it). The bespoke 999s SuperweaponTimeout re-apply is retained but no longer the persistence source."
+      - "The explicit SetPersistent(Entity,def,bool) setter still has no external caller — but it is redundant: the per-tick PersistentCheck recompute in Tick is the live m_persistent mechanism and it DOES set the networked PERSISTENT bit (so the HUD/overlay can read it). The bespoke 999s SuperweaponTimeout re-apply is retained but is not the persistence source."
     verification:
       - { kind: code, ref: "Tick computes wantPersistent = def.PersistentCheck(e), BITSETs the Persistent flag + dirty-marks on change (StatusEffects.cs:459-468); BurningPersistent/SuperweaponPersistent defined and attached at RegisterAll", result: pass }
     confidence: high
-    notes: "FIXED dead->live: the m_persistent recompute is now wired into the live Tick and sets the networked PERSISTENT bit. The standalone SetPersistent remains caller-less but is no longer load-bearing."
+    notes: "Unchanged. The m_persistent recompute is wired into the live Tick and sets the networked PERSISTENT bit; standalone SetPersistent remains caller-less but is not load-bearing."
 
   - id: status_effects.framework.removeall_lifecycle
     name: "removeall/clearall on death, disconnect, observer, map reset, PutClientInServer; SpectateCopy alias"
@@ -227,25 +226,30 @@ features:
       - "common/mutators/mutator/status_effects/sv_status_effects.qc:PutClientInServer"
       - "common/mutators/mutator/status_effects/sv_status_effects.qc:SpectateCopy"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/StatusEffects.cs:RemoveAll (DEAD: no caller)"
-      - "src/XonoticGodot.Common/Gameplay/StatusEffects.cs:ClearAll (DEAD: no caller)"
-    constants: []
+      - "src/XonoticGodot.Common/Gameplay/StatusEffects.cs:RemoveAll / ClearAll"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:596 (PlayerDies/MonsterDies -> RemoveAll NORMAL)"
+      - "src/XonoticGodot.Server/ClientManager.cs:420 (PutObserverInServer -> RemoveAll+ClearAll)"
+      - "src/XonoticGodot.Server/ClientManager.cs:568 (PutClientInServer respawn -> ClearAll)"
+      - "src/XonoticGodot.Server/ClientManager.cs:614 (ClientDisconnect -> RemoveAll+ClearAll)"
+      - "src/XonoticGodot.Server/GameWorld.cs:2622 (reset_map_global -> RemoveAll NORMAL)"
+    constants:
+      - { name: "RemoveAll runs per-effect m_remove + removal sound", base: "yes (NORMAL)", port: "yes: RemoveAll snapshots ids then Remove(e,def,NORMAL) each (plays the resolved removal sound)", match: true }
+      - { name: "ClearAll wipes with no mechanics", base: "yes (CLEAR)", port: "yes: ClearAll clears the list + dirty-marks", match: true }
     status:
-      logic: stub
+      logic: faithful
       values: na
       timing: na
       presentation: na
-      audio: na
-      liveness: dead
+      audio: faithful
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "RemoveAll(actor, removal_type) and ClearAll(store) now EXIST (RemoveAll snapshots ids then Remove()s each with mechanics+sound; ClearAll wipes + dirty-marks) but NO host site wires them to PlayerDies/MonsterDies/ClientDisconnect/MakePlayerObserver/reset_map_global/PutClientInServer. grep across src/+game/ finds zero callers outside StatusEffects.cs. Stale burning/stunned/superweapon timers can still survive death/respawn/map reset."
-      - "Base's SpectateCopy effect-aliasing (client.statuseffects = spectatee.statuseffects) still has no port analogue (the per-entity NetEntity blob covers remote viewing, but the explicit spectatee-effect aliasing on the spectator's own store is absent)."
+      - "Base's SpectateCopy effect-aliasing (client.statuseffects = spectatee.statuseffects) still has no port analogue — intentional N/A: there is no separate statuseffects_store entity for spectators, and remote viewing of a spectatee's burning/frozen overlay is covered by the per-entity NetEntity blob (ClientManager.cs:419 documents the N/A)."
     verification:
-      - { kind: grep, ref: "grep StatusEffectsCatalog.(RemoveAll|ClearAll) across src/ game/ tests/ returns only StatusEffects.cs definitions — no PlayerDies/disconnect/observer/reset dispatch site", result: pass }
+      - { kind: code, ref: "RemoveAll wired: DamageSystem.cs:596 (death), ClientManager.cs:420-421 (observe), :614-615 (disconnect), GameWorld.cs:2622 (map/round reset). ClearAll wired: ClientManager.cs:421/568/615 (observe/respawn/disconnect). All on the live match path.", result: pass }
     confidence: high
-    notes: "STILL OPEN: the mass-clear functions are now written (a partial Wave-2 advance from 'missing' to 'stub') but remain DEAD — the host lifecycle dispatch sites were never wired. Player-spawn paths still mask some staleness by reapplying spawnshield/superweapon fresh."
+    notes: "FIXED dead->live (the #1 baseline gap): the second-pass fix-up wired RemoveAll/ClearAll to every Base lifecycle hook — PlayerDies/MonsterDies (DamageSystem death path), ClientDisconnect, MakePlayerObserver, reset_map_global, and PutClientInServer respawn. Stale burning/stunned/superweapon timers no longer survive death/respawn/observe/disconnect/reset. Only the spectatee alias remains (intentional N/A)."
 
   - id: status_effects.net.entity
     name: "ENT_CLIENT_STATUSEFFECTS networking (grouped bitmap + per-effect time+flags)"
@@ -276,7 +280,7 @@ features:
     verification:
       - { kind: code, ref: "Write/Read round-trip mirrors QC Writebits order; ServerNet.cs:1676 calls Flush(p) and ships the blob under EntityField.StatusEffects (NetEntity.cs:82, 32-bit mask); client decodes via NetEntity.cs:281", result: pass }
     confidence: high
-    notes: "Unchanged by Wave-2; still faithful + live. Full-snapshot vs delta is the only deliberate change."
+    notes: "Unchanged; still faithful + live. Full-snapshot vs delta is the only deliberate change."
 
   - id: status_effects.hud.powerups_feed
     name: "Client HUD powerups feed (HUD_Powerups_add -> m_tick -> addPowerupItem)"
@@ -302,11 +306,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Infinity glyph is still driven by ExpireTime<=0 (permanent timer) at PowerupsPanel:220 rather than the networked PERSISTENT flag — even though the PERSISTENT bit is now actually set server-side (framework.persistent FIXED), the HUD wasn't re-wired to read it. For unlimited superweapons the glyph still appears via the separate items-flag fallback (PowerupsPanel:248). Behaviorally close; flag-derivation diverges. (PowerupsPanel.cs was NOT touched in Wave-2.)"
+      - "Infinity glyph is still driven by ExpireTime<=0 (permanent timer) at PowerupsPanel:220 rather than the networked PERSISTENT flag — even though the PERSISTENT bit is now set server-side (framework.persistent), the HUD wasn't re-wired to read it. For unlimited superweapons the glyph still appears via the separate items-flag fallback (PowerupsPanel:248). Behaviorally close; flag-derivation diverges. (PowerupsPanel.cs unchanged by the second pass.)"
     verification:
-      - { kind: code, ref: "AppendPlayerPowerups iterates Entity.StatusEffects, skips def.Hidden, clamps 0..99, lifetime fallback 30, infinite=ExpireTime<=0 (line 220); jetpack/fuelregen/unlimited-SW shown infinite via items bits (248)", result: pass }
+      - { kind: code, ref: "AppendPlayerPowerups iterates Entity.StatusEffects, skips def.Hidden, clamps 0..99, lifetime fallback 30, infinite=ExpireTime<=0 (line 220); jetpack/fuelregen/unlimited-SW shown infinite via items bits (244-249)", result: pass }
     confidence: high
-    notes: "Unchanged. Now that the PERSISTENT bit IS networked, a follow-up could switch the HUD to read FlagsOf(...,Persistent); today it still infers infinity from a <=0 timer."
+    notes: "Unchanged. A follow-up could switch the HUD to read FlagsOf(...,Persistent); today it still infers infinity from a <=0 timer."
 
   - id: status_effects.burning
     name: "Burning effect (EF_FLAME, Fire_AddDamage/ApplyDamage, water/frozen extinguish, lava persistence, removal sound)"
@@ -319,33 +323,32 @@ features:
       - "server/damage.qc:Fire_ApplyDamage"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/StatusEffects.cs:FireAddDamage / FireApplyDamage / BurningTick / BurningPersistent"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Fireball.cs:331,487 (FireAddDamage ignite)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Fireball.cs:337,499 (FireAddDamage ignite)"
       - "game/client/ClientWorld.cs:1137 (per-frame EF_FLAME particle burst on burning entities)"
     constants:
       - { name: "m_hidden / m_lifetime", base: "true / 10", port: "Hidden=true / Lifetime=10", match: true }
-      - { name: "m_sound_rm", base: "desertfactory/steam_burst (SND_Burning_Remove)", port: "RemovalSound='steam_burst' SET but UNREGISTERED -> resolves null -> silent", match: false }
+      - { name: "m_sound_rm", base: "desertfactory/steam_burst (SND_Burning_Remove)", port: "RemovalSound='BURNING_REMOVE' -> desertfactory/steam_burst (registered, asset present) -> resolves + plays on NORMAL removal", match: true }
       - { name: "lava persistence cvar", base: "g_balance_contents_playerdamage_lava_burn=0 (default off)", port: "BurningPersistent reads the cvar + WaterType==Lava (default-off, faithful)", match: true }
       - { name: "burn damage model", base: "fire_damagepersec*min(frametime,fireend-time)/tick; dps from d/t stacking LEMMA (Fire_AddDamage)", port: "FireAddDamage stacking LEMMA + FireApplyDamage = dps*min(frametime,fireend-now) (frame-rate independent)", match: true }
-      - { name: "deathtype + owner attribution", base: "DEATH_FIRE(->'FIRE') + fire_owner + fire hitsound", port: "FireDeathType (DeathTypes.Fire->'FIRE' registered) + FireOwner + FireHitSound fields used", match: true }
+      - { name: "deathtype + owner attribution", base: "DEATH_FIRE(->'FIRE') + fire_owner + fire hitsound", port: "FireDeathType (DeathTypes.Fire->'FIRE') + FireOwner + FireHitSound fields used", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
       presentation: partial
-      audio: missing
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
       - "EF_FLAME .effects flag is still never set on the actor (no per-entity .effects field). A client-side EF_FLAME PARTICLE burst IS emitted per frame on burning entities (ClientWorld.cs:1137), so a flame visual exists; only the .effects-flag mechanism is absent (presentation: partial)."
-      - "Removal steam-burst sound never plays: RemovalSound='steam_burst' is set on the def, but there is no registered 'steam_burst'/desertfactory sound in SoundsList, so Sounds.ByName returns null and the NORMAL-removal PlayOn no-ops (audio: missing)."
       - "Fire TRANSFER to adjacent overlapping damageable entities (g_balance_firetransfer_damage 0.8 / _time 0.9) is left as a host-loop todo (FireApplyDamage comments note it needs the g_damagedbycontents iteration). Minor."
     verification:
-      - { kind: code, ref: "Fireball ignites via FireAddDamage (line 331 burnpain, 487 firemine) with the proper deathtype; napalm/MonsterFramework still use Apply(Burning,strength:dps) but FireApplyDamage falls back to s.Strength as dps and DeathTypes.Fire, so they too are frame-rate-independent now", result: pass }
-      - { kind: code, ref: "BurningTick self-extinguishes when IsStatusFrozen(e) || (WaterLevel!=0 && WaterType!=Lava) -> Remove(NORMAL); BurningPersistent keeps burning in lava only when the cvar is set (default 0)", result: pass }
+      - { kind: code, ref: "Fireball ignites via FireAddDamage (line 337 burnpain, 499 firemine) with the proper deathtype; napalm/MonsterFramework use Apply(Burning,strength:dps) but FireApplyDamage falls back to s.Strength as dps and DeathTypes.Fire, so they too are frame-rate-independent", result: pass }
+      - { kind: code, ref: "BurningTick self-extinguishes when IsStatusFrozen(e) || (WaterLevel!=0 && WaterType!=Lava) -> Remove(NORMAL); BurningPersistent keeps burning in lava only when the cvar is set (default 0); the NORMAL removal now plays BURNING_REMOVE=desertfactory/steam_burst (asset present)", result: pass }
       - { kind: code, ref: "ClientWorld.cs:1137 Effects.Spawn('EF_FLAME',...) per frame when HasStatusEffect(e,Burning)", result: pass }
     confidence: high
-    notes: "Major FIX: the burn damage curve is now Base-faithful (Fire_AddDamage stacking LEMMA + frame-rate-independent Fire_ApplyDamage), the deathtype is the registered DeathTypes.Fire->'FIRE' with FireOwner/FireHitSound attribution, and water/frozen self-extinguish + lava persistence are implemented. Only the .effects-flag presentation and the (unregistered) steam_burst removal sound remain."
+    notes: "FIXED audio (missing->faithful): the second-pass fix-up renamed the removal sound to the registered BURNING_REMOVE (desertfactory/steam_burst) key, which now resolves and plays. The burn damage curve, deathtype attribution, and water/frozen/lava behavior remain Base-faithful. Only the .effects-flag presentation (a particle burst stands in) and the fire-transfer host loop remain."
 
   - id: status_effects.frozen
     name: "Frozen effect (ice model block, RemoveGrapplingHooks, lava/STAT_FROZEN extinguish, blue overlay)"
@@ -373,12 +376,12 @@ features:
     intended_divergence: true
     divergence_rationale: "Frozen is shown via an icy-blue per-model colormod on the frozen player's mesh (ClientWorld.cs:1072) so every frozen player reads as frozen map-wide, rather than Base's local-only full-screen blue CSQC drawfill self-flash. Deliberate presentation choice (visible to all observers, not just the frozen viewer)."
     gaps:
-      - "No MDL_ICE block entity spawned around a status-frozen entity; no RemoveGrapplingHooks on freeze; no SVQC lava/STAT_FROZEN auto-extinguish for the frozen def (it has no OnTick — note burning/stunned DO self-extinguish while frozen, but frozen itself doesn't auto-clear in lava). (UNCHANGED from baseline.)"
+      - "No MDL_ICE block entity spawned around a status-frozen entity; no RemoveGrapplingHooks on freeze; no SVQC lava/STAT_FROZEN auto-extinguish for the frozen def itself (it has no OnTick — note burning/stunned DO self-extinguish while frozen, but frozen itself doesn't auto-clear in lava). (UNCHANGED from baseline.)"
       - "Base's local full-screen blue freeze flash (CSQC drawfill) for the frozen viewer is not implemented (only the model tint)."
     verification:
       - { kind: code, ref: "ApplyFrozen live (NadeIceBoom, FreezeTag); ClientWorld:1072 applies FrozenColormod when HasStatusEffect(e,Frozen). frozen def in RegisterAll has Hidden only — no OnTick/PersistentCheck.", result: pass }
     confidence: medium
-    notes: "UNCHANGED by Wave-2 (the frozen def itself got no OnTick). Model-tint divergence intended; ice block + grapple-detach + self-flash + frozen-self-lava-extinguish are genuine gaps."
+    notes: "UNCHANGED by the second pass (the frozen def got no OnTick). Model-tint divergence intended; ice block + grapple-detach + self-flash + frozen-self-lava-extinguish are genuine gaps."
 
   - id: status_effects.spawnshield_stunned_superweapon
     name: "SpawnShield (EF_ADDITIVE|FULLBRIGHT), Stunned (EF_SHOCK), Superweapon (persistence + countdown sound)"
@@ -402,24 +405,24 @@ features:
       - { name: "SpawnShield EF_ADDITIVE|EF_FULLBRIGHT shimmer (after game_starttime)", base: "yes", port: "no (SpawnShieldTick is a documented no-op; no .effects field)", match: false }
       - { name: "Stunned EF_SHOCK aura", base: "yes", port: "no (presentation; StunnedTick only self-removes while frozen)", match: false }
       - { name: "Superweapon PERSISTENT via m_persistent", base: "yes", port: "yes: SuperweaponPersistent sets the networked PERSISTENT bit per tick", match: true }
-      - { name: "Superweapon m_sound_rm POWEROFF on lapse", base: "yes", port: "yes: RemovalSound='POWEROFF' resolves + plays on NORMAL removal", match: true }
+      - { name: "Superweapon m_sound_rm POWEROFF on lapse", base: "yes", port: "yes: RemovalSound='POWEROFF'->misc/poweroff resolves + plays on NORMAL removal", match: true }
       - { name: "Superweapon play_countdown beep", base: "yes (last-6s beep)", port: "no (Remove-time POWEROFF only; per-second countdown beep absent)", match: false }
-      - { name: "Stunned m_sound_rm ons_spark1", base: "yes", port: "RemovalSound='ons_spark1' SET but case-mismatched ('ONS_SPARK1') -> resolves null -> silent", match: false }
+      - { name: "Stunned m_sound_rm", base: "ons_spark1 (SND_Stunned_Remove)", port: "yes: RemovalSound='STUNNED_REMOVE'->onslaught/ons_spark1 resolves + plays on NORMAL removal", match: true }
     status:
       logic: partial
       values: faithful
       timing: faithful
       presentation: missing
-      audio: partial
+      audio: faithful
       liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
       - "Player spawnshield is STILL not the spawnshield status effect — it remains the bespoke Entity.SpawnShieldExpire timer (SpawnSystem:605, read by DamageSystem.HasSpawnShield). The registered spawnshield def is only applied to monsters via MonsterFramework, and its OnTick (SpawnShieldTick) is a no-op, so the EF_ADDITIVE|EF_FULLBRIGHT post-game_starttime shimmer is never produced for any entity. (UNCHANGED.)"
-      - "Stunned EF_SHOCK aura still not applied (presentation: missing). StunnedTick now self-removes while frozen (logic improvement) and Stunned carries RemovalSound='ons_spark1', but the name is the wrong case for the Ordinal registry key 'ONS_SPARK1' so the spark sound silently no-ops."
-      - "Superweapon persistence is now genuinely set via the per-tick SuperweaponPersistent m_persistent recompute (networked PERSISTENT bit), and the POWEROFF removal sound resolves and plays. SuperweaponTimeout still re-applies a 999s timer (now redundant belt-and-suspenders, not the persistence source). The per-second play_countdown beep over the last 6s is still absent."
+      - "Stunned EF_SHOCK aura still not applied (presentation: missing). StunnedTick self-removes while frozen (logic correct). The removal sound is now correct: RemovalSound='STUNNED_REMOVE' resolves to onslaught/ons_spark1 and plays."
+      - "Superweapon persistence is set the Base way (per-tick SuperweaponPersistent m_persistent recompute, networked PERSISTENT bit), and the POWEROFF removal sound resolves and plays. SuperweaponTimeout still re-applies a 999s timer (redundant belt-and-suspenders, not the persistence source). The per-second play_countdown beep over the last 6s is still absent."
     verification:
-      - { kind: code, ref: "SuperweaponPersistent = (Items & UnlimitedSuperweapons)!=0 attached to the superweapon def -> Tick sets PERSISTENT; RemovalSound='POWEROFF' resolves (SoundsList 'POWEROFF') and plays on NORMAL removal; StunnedTick self-removes while frozen; SpawnShieldTick is a no-op", result: pass }
+      - { kind: code, ref: "SuperweaponPersistent = (Items & UnlimitedSuperweapons)!=0 attached to the superweapon def -> Tick sets PERSISTENT; RemovalSound='POWEROFF' (misc/poweroff) and STUNNED_REMOVE (onslaught/ons_spark1) resolve and play on NORMAL removal; StunnedTick self-removes while frozen; SpawnShieldTick is a no-op", result: pass }
       - { kind: code, ref: "SuperweaponTimeout still Apply(p,sw,999f) when unlimited (PlayerFrameLogic:345); player spawnshield via SpawnSystem:605 SpawnShieldExpire; stunned applied by BuffsMutator:384", result: pass }
     confidence: high
-    notes: "Partial FIX: superweapon PERSISTENT is now set the Base way (m_persistent recompute) and its POWEROFF removal sound plays; stunned gained a frozen-extinguish OnTick. Still open: player-spawnshield is a separate timer (so the spawnshield-status-effect path is dead for players, live only for monsters with a no-op tick), the EF_* shimmer/shock auras are absent, the stunned spark sound is the wrong case, and the superweapon per-second countdown beep is missing."
+    notes: "FIXED audio (partial->faithful): the second-pass fix-up corrected the stunned removal sound to STUNNED_REMOVE (resolves to onslaught/ons_spark1), so both stunned and superweapon removal sounds now play. Superweapon PERSISTENT is set the Base way. Still open: player-spawnshield is a separate timer (the spawnshield-status-effect path is live only for monsters with a no-op tick), the EF_* shimmer/shock auras are absent, and the superweapon per-second countdown beep is missing."

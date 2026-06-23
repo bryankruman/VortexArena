@@ -2,16 +2,18 @@ unit: turret-flac
 category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-22"
+# Re-audited 2026-06-22 post second-pass fix-up (commit 4be8357). Death blast removed; respawn-offset gap retracted.
 summary:
   feature_count: 10
   worst_gaps:
-    - "port turret_die does a min(ammo,50) RadiusDamage death blast that Base does NOT — the Base blast (sv_turrets.qc:182) is commented out; the port adds an unintended on-death explosion"
     - "fuse time uses DistAimPos/shotSpeed (muzzle->aim distance) instead of Base tur_impacttime, which comes from a forward tracebox to trace_endpos (sv_turrets.qc:523) — diverges when geometry stops the shot short"
     - "all presentation missing: PROJECTILE_HAGAR trail, BLASTER muzzleflash, head-frame cycle, TFL_DMG_HEADSHAKE head-shake, head model/bone"
     - "hidden player FLAC weapon (FlacAttack, impulse 5) not implemented"
-    - "respawn schedules at now+respawntime; Base nextthink = time + respawntime - 0.2 (minor 0.2s timing offset)"
   notable_fixes_since_last_audit:
-    - "Wave-2 closed the four numeric/aim gaps that dominated the prior audit: shot_spread 0.0125->0.02, target_range_optimal 2000->1250, aim_maxpitch 90->35, respawntime 60->90, the target_select_*bias weights (rangebias 0.25 / anglebias 0.5 / playerbias 0) now passed, the track accel_rot 0.7 / blendrate 0.2 now passed, and the unintended zPredict aim flag removed."
+    - "Second-pass commit (4be8357) REMOVED the port-added on-death RadiusDamage blast in TurretAI.Die — now matches Base turret_die, whose ammo-scaled blast is commented out (sv_turrets.qc:182). lifecycle.respawn logic+values upgraded partial->faithful."
+    - "Baseline correction: the alleged -0.2 respawn timing offset is NOT a real divergence. Base nets respawntime exactly (turret_die: nextthink=time+0.2 -> turret_hide; turret_hide: nextthink=time+respawntime-0.2; 0.2 cancels). The port schedules now+respawntime from Die. timing was already faithful; that sub-gap is dropped."
+    - "Second-pass also threaded aim_firetolerance_dist (150) into ValidTarget's LOS-block tolerance (TurretAI.cs:200-201, was hardcoded 64f) matching sv_turrets.qc:791, and removed the never-read TFL_DMG_RETALIATE attacker-adoption from TurretAI.Damage (Base never reads that flag) — both increase damage/aim-path fidelity."
+    - "(Prior Wave-2, still standing) the numeric/aim/bias/track gaps: shot_spread 0.0125->0.02, target_range_optimal 2000->1250, aim_maxpitch 90->35, respawntime 60->90, biases rangebias 0.25/anglebias 0.5/playerbias 0 passed, track accel_rot 0.7/blendrate 0.2 passed, zPredict aim flag dropped."
 features:
   - id: turret-flac.identity.spawn
     name: "FLAC turret identity, hitbox, model, health, map spawn"
@@ -254,26 +256,25 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:280,324-334 (EventDamage routes non-player edicts via GtEventDamage)"
     constants:
       - { name: "respawntime", base: "90", port: "90 (FlacTurret.Spawn passes respawnTime: RespawnTime)", match: true }
-      - { name: "respawn nextthink offset", base: "time + respawntime - 0.2 (sv_turrets.qc:162)", port: "now + respawntime (no -0.2)", match: false }
-      - { name: "death blast", base: "NONE — RadiusDamage(min(ammo,50)...) is commented out (sv_turrets.qc:182)", port: "min(ammo,50) RadiusDamage at 250 radius (DEATH_TURRET)", match: false }
+      - { name: "respawn net delay", base: "respawntime exactly (turret_die nextthink=time+0.2 -> turret_hide nextthink=time+respawntime-0.2; the 0.2 cancels)", port: "now + respawntime (from Die)", match: true }
+      - { name: "death blast", base: "NONE — RadiusDamage(min(ammo,50)...) is commented out (sv_turrets.qc:182)", port: "NONE — RadiusDamage removed from TurretAI.Die (commit 4be8357)", match: true }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Port TurretAI.Die (lines 751-755) still fires a min(ammo,50) RadiusDamage death blast (250 radius, force min(ammo,50)*5, DEATH_TURRET); Base turret_die has this blast COMMENTED OUT (sv_turrets.qc:182) — Base turrets do not explode on death. The port adds an unintended on-death AoE. STILL OPEN."
-      - "Respawn schedules at now + respawntime; Base schedules nextthink = time + respawntime - 0.2 (sv_turrets.qc:162). Minor 0.2s timing offset (turret_hide already runs ~0.2s into the death sequence in Base)."
+    gaps: []
     verification:
-      - { kind: code, ref: "FlacTurret.Spawn now calls TurretSpawn.Init(... respawnTime: RespawnTime) with RespawnTime=90; TurretSpawn.Init sets st.RespawnTime=respawnTime (line 74). Matches turrets.cfg:58 (90)", result: pass }
-      - { kind: code, ref: "Base sv_turrets.qc:182 RadiusDamage in turret_die is commented out; port TurretAI.Die:751-755 actively does the blast", result: fail }
-      - { kind: code, ref: "death/respawn now driven by a LIVE event_damage path: DamageSystem.Apply(280)->EventDamage(324)->GtEventDamage(331-333)->TurretAI.EventDamage->TakeResource health + Combat.Death->OnAnyDeath(648-654)->Die. The pre-damage gate (TurretAI.Damage) now runs on the live path (Wave-2 wired the GtEventDamage shim in TurretSpawn.Init)", result: pass }
+      - { kind: code, ref: "FlacTurret.Spawn calls TurretSpawn.Init(... respawnTime: RespawnTime) with RespawnTime=90; TurretSpawn.Init sets st.RespawnTime=respawnTime (line 74). Matches turrets.cfg:58 (90)", result: pass }
+      - { kind: code, ref: "TurretAI.Die (TurretAI.cs:742-770) no longer does any RadiusDamage; comment cites sv_turrets.qc:182 commented-out blast. Base turret_die has //RadiusDamage(...) — confirmed both sides deal no death AoE", result: pass }
+      - { kind: code, ref: "Respawn net delay re-derived: Base turret_die sets nextthink=time+0.2 (turret_hide) and turret_hide sets nextthink=time+respawntime-0.2 (turret_respawn) => net = respawntime; port Die sets NextThink=now+RespawnTime => same net delay. The prior audit's -0.2 'gap' was a misread", result: pass }
+      - { kind: code, ref: "death/respawn driven by a LIVE event_damage path: DamageSystem.EventDamage(331-333) routes non-player edicts with GtEventDamage -> TurretAI.EventDamage (wired e.GtEventDamage at TurretSpawn.Init:90) -> Damage gate + TakeResource(Health) + Combat.Death.Call -> OnAnyDeath -> Die. The pre-damage gate (TurretAI.Damage) runs on the live path", result: pass }
     confidence: high
-    notes: "FIXED since prior audit: respawntime now 90 (was generic 60 default) — values mismatch narrowed to the -0.2 offset only. Wave-2 also made the turret damage->death path genuinely LIVE (event_damage shim routed through DamageSystem), so the pre-damage gate + retaliation in TurretAI.Damage now actually run. STILL OPEN: the extra death blast Base does not produce. logic stays partial because of the unintended blast."
+    notes: "FIXED this audit (commit 4be8357): the port-added min(ammo,50) RadiusDamage death blast was REMOVED from TurretAI.Die, matching Base's commented-out blast — logic+values upgraded partial->faithful. BASELINE CORRECTION: the alleged -0.2 respawn timing offset is not real; Base nets respawntime exactly (the +0.2 in turret_die and the -0.2 in turret_hide cancel), so timing was always faithful and that sub-gap is dropped. Also (4be8357) the never-read TFL_DMG_RETALIATE attacker-adoption was removed from TurretAI.Damage to match Base (no Base code reads that flag). respawntime 90 + LIVE event_damage path stand. No remaining gaps on this row."
 
   - id: turret-flac.obituary.death_message
     name: "FLAC kill obituary / death notification (DEATH_TURRET_FLAC)"

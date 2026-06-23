@@ -5,11 +5,11 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 14
   worst_gaps:
-    - "Fire gate does no fire-time trace: Base's AIMDIST firecheck rides a tracebox in turret_do_updates (tur_dist_impact_to_aimpos), which makes a wall between muzzle and aimpos block the shot (de-facto LOS); the port's OnTarget (TurretAI.cs:801) is still a pure geometric barrel-line check, so the port fires THROUGH walls."
-    - "FIXED: the Wave-2 retaliation regression (TurretAI.Damage set `turret.Enemy = attacker` on every hit) is removed — Base never adopts the attacker as an enemy through the damage path (TFL_DMG_RETALIATE is set on the machinegun but NEVER READ by any Base code), so the port no longer turns to face whoever shot it. Acquisition is scan/score-only, matching Base."
-    - "Die() still does a RadiusDamage death blast that Base has COMMENTED OUT (sv_turrets.qc:182) — a stock machinegun turret should do zero death explosion damage. (NOT fixed in Wave-2.)"
-    - "validate_target still omits checkpvs (Base validate_target:688 rejects targets outside the turret PVS, independent of the LOS flag); headshake (tur_head jitter on hit) still absent (no tur_head sub-entity)."
-    - "All client presentation still missing: head sub-entity/model at tag_head, muzzle flash, EFFECT_BULLET tracer, head-bone animation, low-health sparks/smoke, team glow, waypoint sprite/healthbar, death gibs."
+    - "Fire gate does no fire-time trace: Base's AIMDIST firecheck rides a tracebox in turret_do_updates (sv_turrets.qc:519-521 → tur_dist_impact_to_aimpos, used at firecheck:933-935), which makes a wall between muzzle and aimpos block the shot (de-facto fire-time LOS); the port's OnTarget (TurretAI.cs:800) is still a pure geometric barrel-line check, so the port fires THROUGH walls. STILL OPEN."
+    - "validate_target still omits checkpvs (Base validate_target:688 rejects targets outside the turret PVS, the SECOND gate after owner, independent of the LOS flag); the port's ValidTarget (TurretAI.cs:207) has no PVS reject. STILL OPEN."
+    - "Headshake (TFL_DMG_HEADSHAKE: tur_head.angles += rand*damage on every hit, sv_turrets.qc:228-234) still absent — TurretAI.Damage has no jitter code and there is no tur_head sub-entity to jitter. Cosmetic. STILL OPEN."
+    - "All client presentation still missing: head sub-entity/model at tag_head (no tur_head entity at all), muzzle flash (MDL_MACHINEGUN_MUZZLEFLASH at tag_fire), EFFECT_BULLET tracer (both emitted on the TURRET path in machinegun_weapon.qc:22-24, OUTSIDE the isPlayer gate), head-bone animation, low-health sparks/smoke, team glow, waypoint sprite/healthbar, death gibs (cl_turrets.qc)."
+    - "FIXED since baseline: Die() no longer applies the ammo-scaled RadiusDamage death blast (Base has it COMMENTED OUT at sv_turrets.qc:182). The current TurretAI.Die (line 752-754) emits NO area damage — matching Base. The baseline yaml row had recorded this as 'STILL APPLIED', which contradicted the committed code; corrected here."
 features:
   - id: turret-machinegun.spawn.spawnfunc
     name: "Map spawnfunc + g_turrets master gate"
@@ -20,7 +20,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawnFuncs.cs:51 (Machinegun) + :25 (Spawn)"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:205 (Register turret_machinegun)"
-      - "src/XonoticGodot.Server/GameWorld.cs:2158 (SpawnFuncs.TrySpawn in SpawnMapEntities)"
+      - "src/XonoticGodot.Server/GameWorld.cs:2353 (SpawnFuncs.TrySpawn in SpawnMapEntities)"
     constants:
       - { name: "g_turrets", base: "1", port: "default-on (MasterSwitchEnabled)", match: true }
     status:
@@ -290,7 +290,7 @@ features:
       - "common/turrets/sv_turrets.qc:960 (turret_fire)"
       - "common/turrets/sv_turrets.qc:496 (turret_do_updates tracebox → tur_dist_impact_to_aimpos)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:588 (fire gate in RunCombat) + :603 (Fire) + :801 (OnTarget)"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:589 (fire gate in RunCombat) + :603 (Fire) + :800 (OnTarget)"
     constants:
       - { name: "refire", base: "time + shot_refire (0.1)", port: "now + 0.1", match: true }
       - { name: "ammo cost", base: "ammo -= shot_dmg (10)", port: "Ammo -= ShotDamage (10)", match: true }
@@ -307,7 +307,7 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Fire-time on-target test still does NO trace: Base computes tur_dist_impact_to_aimpos from a tracebox in turret_do_updates, so a wall between muzzle and aimpos stops the trace short and the AIMDIST firecheck refuses to fire (de-facto fire-time LOS). The port's OnTarget (TurretAI.cs:801) is still a pure geometric barrel-line distance, so it fires THROUGH obstructions. Still open."
+      - "Fire-time on-target test still does NO trace: Base computes tur_dist_impact_to_aimpos from a tracebox in turret_do_updates (sv_turrets.qc:519-521; the live `else` branch, the verified shortcut above it is commented out), so a wall between muzzle and aimpos stops the trace short and the AIMDIST firecheck (firecheck:933-935) refuses to fire (de-facto fire-time LOS). The port's OnTarget (TurretAI.cs:800) is still a pure geometric barrel-line distance, so it fires THROUGH obstructions. Still open."
       - "Firecheck is still simplified: no 'target of opportunity' (tur_impactent) shortcut (firecheck:910), no AFF friendly-fire avoidance branch (firecheck:929), and no volley-status pre-ammo check (firecheck:937). (The g_turrets_nofire gate is now present — that sub-condition is closed.)"
     verification:
       - { kind: code, ref: "RunCombat:588-594 fire gate + Fire vs turret_firecheck/turret_fire — refire/ammo/volley/nofire match; OnTarget:801 still geometric (no trace); firecheck flags still simplified", result: fail }
@@ -411,11 +411,11 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:739 (Die) + :773 (Respawn) + :641 (EnsureDeathHook/OnAnyDeath)"
       - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs (Combat.Death.Call via TurretAI.EventDamage:730)"
     constants:
-      - { name: "respawntime", base: "60 (hide for respawntime-0.2)", port: "60 (NextThink = now + RespawnTime)", match: true }
-      - { name: "death blast", base: "COMMENTED OUT (no RadiusDamage) at sv_turrets.qc:182", port: "RadiusDamage min(ammo,50)/edge .25/r250/force*5 — STILL APPLIED", match: false }
+      - { name: "respawntime", base: "60 (turret_hide: nextthink = time + respawntime - 0.2)", port: "60 (NextThink = now + RespawnTime)", match: true }
+      - { name: "death blast", base: "COMMENTED OUT (no RadiusDamage) at sv_turrets.qc:182", port: "NO RadiusDamage — removed (TurretAI.Die:752-754 emits no area damage)", match: true }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: faithful
       presentation: missing
       audio: missing
@@ -423,11 +423,10 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Die() STILL applies a RadiusDamage death blast that Base has COMMENTED OUT (sv_turrets.qc:182) — a stock machinegun turret should do zero death explosion damage. NOT fixed in Wave-2. Still open."
       - "No client death FX: the non-NORESPAWN branch in Base turret_die does NO sound/effect (only the NORESPAWN branch plays SND_ROCKET_IMPACT + EFFECT_ROCKET_EXPLODE before delete); base/head gib toss lives in cl_turrets.qc (client). Port emits none of the client FX/gibs. Still open."
       - "Respawn restores state but does not re-stamp a head model / send a full CSQC update (TNSF_FULL_UPDATE) — no networking layer. Still open."
     verification:
       - { kind: test, ref: "TurretLifecycleTests.Die_Unsolidifies_StopsDamage_AndSchedulesRespawn / Respawn_RestoresFullCombatState / LethalDamage_ThroughTheSharedDeathHook_RunsDie", result: pass }
-      - { kind: code, ref: "Die:751-755 RadiusDamage(boom...) vs sv_turrets.qc:182 (commented out) — death blast unintended-extra unchanged", result: fail }
+      - { kind: code, ref: "TurretAI.Die:752-754 — NO RadiusDamage (only a comment noting Base sv_turrets.qc:182 is commented out); the rule logic (unsolidify/takedamage NO/respawn schedule) matches turret_die. Death blast now MATCHES Base (zero area damage)", result: pass }
     confidence: high
-    notes: "Death+respawn lifecycle live via Combat.Death (now reached through the new EventDamage shim's lethal branch). The death blast remains an unintended extra and all client FX/gibs are still missing. Unchanged by Wave-2 except that the lethal path now flows through EventDamage rather than the bare Combat.Death subscription."
+    notes: "FIX since baseline: the ammo-scaled RadiusDamage death blast is GONE (TurretAI.Die:752-754 has only a comment). Base sv_turrets.qc:182 has its RadiusDamage commented out, so a stock machinegun turret deals no blast on death — the port now matches. The baseline yaml row had recorded the blast as 'STILL APPLIED' (logic/values partial), contradicting the committed code; corrected to faithful. Death+respawn lifecycle live via Combat.Death, reached through the EventDamage shim's lethal branch. All client death FX/gibs still missing (presentation/audio)."

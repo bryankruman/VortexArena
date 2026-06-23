@@ -1,12 +1,12 @@
 unit: turret-plasma_dual
 category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-23"
+last_audited: "2026-06-22"
 summary:
   feature_count: 11
   worst_gaps:
-    - "TFL_DMG_HEADSHAKE jitter (tur_head.angles += (random-0.5)*damage on every hit) is STILL NOT implemented — TurretAI.Damage does friendly-fire/retaliate/shove only, no head jolt. Head does not flinch when shot. (Wave-2 did not touch this.)"
-    - "TFL_DMG_DEATH_NORESPAWN-only death FX/sound branch aside, the death blast is now Base-faithful: Wave-4 removed the port-added ammo-scaled RadiusDamage from TurretAI.Die (Base turret_die has it commented out for all turrets)."
+    - "TFL_DMG_HEADSHAKE jitter (tur_head.angles += (random-0.5)*damage on every hit) is STILL NOT implemented — TurretAI.Damage does friendly-fire + MOVE-shove only, no head jolt. Head does not flinch when shot. (Second-pass fix-up did not touch this.)"
+    - "TFL_DMG_DEATH_NORESPAWN-only death FX/sound branch aside, the death blast is now Base-faithful: the port-added ammo-scaled RadiusDamage was removed from TurretAI.Die (Base turret_die has it commented out for all turrets)."
     - "Dual aim zPredict was true (PlasmaDualTurret.Think) diverging from Base plasma tr_setup (LEAD|SHOTTIMECOMPENSATE|SPLASH, no TFL_AIM_ZPREDICT); Wave-4 set it to false, resolving the single-vs-dual asymmetry."
     - "Head-frame wheel animation (tr_attack ++tur_head.frame; tr_think 0..6 idling at 0 and 3) STILL never implemented; muzzle/projectile/beam CSQC effects all NOTE-only (server head bone not modeled)."
     - "Respawn -0.2 hide/respawn split + EF_NODRAW hide-frame still not modeled (turret schedules Respawn directly at now+RespawnTime)."
@@ -276,7 +276,7 @@ features:
     notes: "FIX (Wave-2): track_accel_rot 0.7 + track_blendrate 0.2 now fed (was ctor-default 0.5/0.35). Motor algorithm faithful (per-axis accel*frametime clamp + avelocity blend + brake-at-limit); all constants now match plasma_dual.cfg."
 
   - id: turret-plasma_dual.damage.gating_die_respawn
-    name: "Damage handling: friendly-fire scale, retaliate, die + timed respawn"
+    name: "Damage handling: friendly-fire scale, MOVE-shove, die + timed respawn"
     layer: [authority]
     base_refs:
       - "common/turrets/sv_turrets.qc:turret_damage"
@@ -308,10 +308,11 @@ features:
       - "Respawn timing: Base hides (EF_NODRAW) at time+0.2 then turret_respawn at respawntime-0.2; port schedules Respawn directly at now+RespawnTime (60). The -0.2 hide/respawn split + EF_NODRAW hide-frame not modeled (timing unknown). UNCHANGED."
       - "Death FX/sound (SND_ROCKET_IMPACT + EFFECT_ROCKET_EXPLODE) only fire in Base on TFL_DMG_DEATH_NORESPAWN; plasma_dual always respawns so this branch never applies. tr_death is a no-op for plasma_dual."
     verification:
-      - { kind: code-trace, ref: "Wave-2 wired the damage gate LIVE: TurretSpawn.Init sets e.GtEventDamage=TurretAI.EventDamage; DamageSystem.Apply -> EventDamage (line 280) -> GtEventDamage (line 331-333) for non-player edicts -> TurretAI.EventDamage -> Damage() gate + TakeResource + Combat.Death -> OnAnyDeath -> Die", result: pass }
-      - { kind: code-read, ref: "TurretAI.Die no longer does WeaponSplash.RadiusDamage; matches sv_turrets.qc:182 //RadiusDamage commented out (no death blast)", result: pass }
+      - { kind: code-trace, ref: "Damage gate is LIVE: TurretSpawn.Init:90 sets e.GtEventDamage=TurretAI.EventDamage; DamageSystem.cs:331-333 routes a non-player edict with a GtEventDamage to it (and returns) -> TurretAI.EventDamage -> Damage() gate + TakeResource + Combat.Death -> OnAnyDeath -> Die", result: pass }
+      - { kind: code-read, ref: "TurretAI.Die (line 742) no longer does WeaponSplash.RadiusDamage; matches sv_turrets.qc:182 //RadiusDamage commented out (no death blast)", result: pass }
+      - { kind: code-read, ref: "TurretAI.Damage (line 673-696) no longer sets turret.Enemy=attacker; verified against Base turret_damage (sv_turrets.qc:207-251) which has NO `this.enemy=attacker` — TFL_DMG_RETALIATE is set (sv_turrets.qc:1274) but never read anywhere. The retaliation removal (commit 4be8357) closes a previously-undetected port-only divergence.", result: pass }
     confidence: high
-    notes: "FIX (Wave-4): the port-added ammo-scaled RadiusDamage death blast in TurretAI.Die was removed, matching Base turret_die (RadiusDamage commented out for all turrets). FIX (Wave-2 liveness): the pre-damage gate (TurretAI.Damage) is wired live via GtEventDamage + DamageSystem routing. STILL OPEN: the unmodeled -0.2 hide/respawn split + EF_NODRAW hide-frame."
+    notes: "FIX (second-pass): the port-added retaliation (turret adopts whoever shot it as its enemy) was REMOVED from TurretAI.Damage — Base turret_damage never adopts the attacker (the TFL_DMG_RETALIATE flag is set but unread), so target acquisition is now scan/score-only as in Base. Earlier FIX: the port-added ammo-scaled RadiusDamage death blast in TurretAI.Die was removed, matching Base turret_die. The pre-damage gate (TurretAI.Damage) is wired live via GtEventDamage + DamageSystem routing. STILL OPEN: the unmodeled -0.2 hide/respawn split + EF_NODRAW hide-frame (timing unknown)."
 
   - id: turret-plasma_dual.damage.headshake
     name: "TFL_DMG_HEADSHAKE: jolt head angles by random*damage on hit"
@@ -332,11 +333,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "TFL_DMG_HEADSHAKE is set by plasma tr_setup but STILL NEVER honored: TurretAI.EventDamage/Damage do friendly-fire/retaliate/shove + health subtract only — no tur_head.angles jolt. Wave-2 wired the damage path live but did NOT add the headshake jolt. grep confirms zero headshake code in src/.../Turrets/ (only NOTE comments)."
+      - "TFL_DMG_HEADSHAKE is set by plasma tr_setup but STILL NEVER honored: TurretAI.EventDamage/Damage do friendly-fire-scale + MOVE-shove + health subtract only — no tur_head.angles jolt (Base sv_turrets.qc:226-234: tur_head.angles.x/y += (random()-0.5)*damage + SendFlags TNSF_ANG). The damage path is live but the headshake branch was not ported. grep confirms zero headshake code in src/.../Turrets/ (only NOTE comments)."
     verification:
       - { kind: code-read, ref: "grep headshake/HeadAngles+=random across src/.../Turrets -> only NOTE comments; TurretAI.Damage + TurretAI.EventDamage bodies have no head-angle jitter", result: fail }
     confidence: high
-    notes: "STILL OPEN. Head reacts to hits in Base (visible flinch that also nudges aim while alive); the port's head is rigid under fire. Wave-2 made the damage gate live but the headshake branch was not ported."
+    notes: "STILL OPEN. Head reacts to hits in Base (visible flinch that also nudges aim while alive); the port's head is rigid under fire. The damage gate is live but the headshake branch was not ported. Tracking concern: the server-side tur_head bone is not modeled in the port, so this is cross-file work shared with the head-frame-anim gap."
 
   - id: turret-plasma_dual.presentation.head_frame_anim
     name: "Head-frame wheel animation (tr_think 0..6 + ++frame on fire)"

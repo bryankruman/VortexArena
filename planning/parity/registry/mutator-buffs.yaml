@@ -7,7 +7,6 @@ summary:
   worst_gaps:
     - "Map buff items (item_buff_* + Q3/QL/WOP compat classnames) still never spawn: no spawnfunc exists, so buffs are unobtainable on stock maps even with g_buffs=-1 (on)."
     - "FilterItem powerup-replacement (g_buffs>0 mode) is still not implemented, so the second obtain path is also dead."
-    - "Jump buff velocity is STILL dead: JumpVelocityOverride is written by the mutator (BuffsMutator.cs:519/524) but read by no physics code (PlayerPhysics.cs:822 uses mp.JumpVelocity/JumpVelocityCrouch; the PlayerJump hook BuffsMutator does not subscribe); a Jump-buffed player still jumps at normal height."
     - "Disability buff fire-rate slow is LIVE (WeaponRateFactor x1.5), but projectile-speed (WeaponSpeedFactor x0.7) and monster run/walk (MonsterMove x0.7) slows are still absent."
     - "No carrier buff_model glow, no buff_Effect particle trail, and no WP_Buff radar/HUD waypoint on buff items."
     - "INFO_ITEM_BUFF (pickup-to-others), drop (PlayerUseKey/g_buffs_drop), and the mutator-string report are still missing."
@@ -369,23 +368,22 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:OnPlayerPhysics"
     constants:
-      - { name: "g_buffs_jump_velocity", base: "600", port: "600 (set but never read)", match: false }
+      - { name: "g_buffs_jump_velocity", base: "600", port: "600 (now read at PlayerPhysics.cs:827)", match: true }
       - { name: "g_buffs_jump", base: "0 (off)", port: "0", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
-      timing: na
+      timing: faithful
       presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "STILL DEAD. player.JumpVelocityOverride is written by OnPlayerPhysics (BuffsMutator.cs:519/524) but read by NO physics code. PlayerPhysics.cs:822 still selects mp.JumpVelocityCrouch/mp.JumpVelocity (built from cvars in MovementParameters); the PlayerJump hook (PlayerPhysics.cs:826-829, the only path that can override mjumpheight) is NOT subscribed by BuffsMutator (it subscribes PlayerPhysics, which has no reader). The Wave-2 PlayerPhysics.cs edits were footstep-only and did not wire the override. The sole writers/decls of JumpVelocityOverride are BuffsMutator + EntityMutatorState.cs:158 (the field). A Jump-buffed player jumps at normal height."
+    gaps: []
     verification:
-      - { kind: code, ref: "grep JumpVelocityOverride: writer=BuffsMutator 519/524, decl=EntityMutatorState:158; PlayerPhysics.cs:822 reads mp.JumpVelocity[Crouch], never the override; PlayerJump hook (826-829) unsubscribed by BuffsMutator", result: fail }
+      - { kind: code, ref: "OnPlayerPhysics (BuffsMutator.cs:519/524) writes player.JumpVelocityOverride (reset 0 each frame, =_jumpVelocity when jump buff held) inside the PlayerPhysics hook fired at PlayerPhysics.cs:196; PlayerJump (called from CheckPlayerJump at PlayerPhysics.cs:265->768) reads it at PlayerPhysics.cs:827-828 (`if (JumpVelocityOverride != 0f) mjumpheight = JumpVelocityOverride`) and applies it as the jump impulse — REPLACING the cvar-built mp.JumpVelocity[Crouch], matching QC's STAT(MOVEVARS_JUMPVELOCITY) overwrite", result: pass }
     confidence: high
-    notes: "NOT fixed by Wave-2 (regression-free, same as baseline). The override must be folded into the jump impulse — either via the PlayerJump hook (PlayerJumpArgs.JumpHeight) or by reading JumpVelocityOverride at PlayerPhysics.cs:822."
+    notes: "CLOSED since the 2026-06-22 baseline by the second-pass fix-up commit (4be8357): the JumpVelocityOverride reader at PlayerPhysics.cs:827-828 was added. The mutator handler runs at the hook (line 196) before PlayerJump in the same Move(), so the override is set then consumed in-frame. 600 matches Base g_buffs_jump_velocity; crouch jump also overridden, matching the QC stat overwrite."
 
   - id: buffs.jump.fall_immunity
     name: "Jump buff — fall-damage immunity"
@@ -466,10 +464,10 @@ features:
     divergence_rationale: null
     gaps:
       - "Movement-speed slow (Stunned x0.7 via SpeedMultiplier, OnPlayerPhysics:531-533) is LIVE."
-      - "Weapon fire-time slow (WeaponRateFactor x1.5) is LIVE: OnWeaponRateFactor (544-550) multiplies args.Factor by 1.5 for a stunned player; WeaponRateFactor.Call has live sites at WeaponFireGate.cs:429 and OffhandBlasterMutator.cs:98."
-      - "STILL MISSING: weapon projectile-speed slow (WeaponSpeedFactor x0.7) and monster run/walk slow (MonsterMove x0.7) — BuffsMutator subscribes neither hook (no WeaponSpeedFactor mutator-hook chain exists at all; MonsterMove is unsubscribed)."
+      - "Weapon fire-time slow (WeaponRateFactor x1.5) is LIVE: OnWeaponRateFactor (544-550) multiplies args.Factor by 1.5 for a stunned player; WeaponRateFactor.Call has a live site at WeaponFireGate.cs:455."
+      - "STILL MISSING: weapon projectile-speed slow (WeaponSpeedFactor x0.7) and monster run/walk slow (MonsterMove x0.7) — BuffsMutator subscribes neither hook (no WeaponSpeedFactor mutator-hook chain exists at all — Devastator/WeaponImpulses read a static g_weaponspeedfactor, not a per-player hook; MonsterMove is unsubscribed)."
     verification:
-      - { kind: code, ref: "Stunned apply in OnDamageCalculate:410-415; OnPlayerPhysics:531-533 SpeedMultiplier *=0.7; OnWeaponRateFactor:544-550 *=1.5 (live via WeaponFireGate.cs:429); no WeaponSpeedFactor/MonsterMove handlers", result: pass }
+      - { kind: code, ref: "Stunned apply in OnDamageCalculate:410-415; OnPlayerPhysics:531-533 SpeedMultiplier *=0.7; OnWeaponRateFactor:544-550 *=1.5 (live via WeaponFireGate.cs:455); no WeaponSpeedFactor/MonsterMove handlers", result: pass }
     confidence: high
     notes: "Partial fix by Wave-2 and re-verified: the weapon fire-rate slow (WeaponRateFactor x1.5) is wired and live, closing one of the three missing slow vectors. Projectile-speed + monster-move slows remain absent."
 

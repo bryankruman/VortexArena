@@ -231,7 +231,8 @@ features:
       - "No standalone STRAFE_L/R or PAIN gaits (Base never drives these from the SVQC brain either — they are leftover model anim states — so this is parity-by-omission, not a behavioral gap)."
       - "JUMP/LAND/TURN gait cases exist in ApplyGait but are never assigned (same as Base — the brain never sets them)."
     verification:
-      - { kind: code_read, ref: "WalkerMoveTo waterlevel switch + ApplyGait Swim/Jump/Land/Turn/Roam cases vs walker.qc:471-537. SWIM gait is LIVE: the walker is MOVETYPE_STEP, and SimulationLoop.Tick -> MoveTypePhysics.RunEntity routes Step through WalkMove (CheckWater -> WaterLevel 0/1/2/3 via the 3-pt hull probe, MoveTypePhysics.cs:470-491) + CheckWaterTransition every tick. So e.WaterLevel IS computed for STEP turrets and the WETFEET/SWIMMING/SUBMERGED branches fire. The Wave-4 'dead' flag was a false negative (its grep missed the engine-side WaterLevel writes in MoveTypePhysics, looking only at PlayerPhysics/SpawnSystem).", result: pass }
+      - { kind: code_read, ref: "WalkerMoveTo waterlevel switch + ApplyGait Swim/Jump/Land/Turn/Roam cases vs walker.qc:471-537. SWIM gait is LIVE: the walker is MOVETYPE_STEP, and MoveTypePhysics.RunEntity routes Step through WalkMove (MoveTypePhysics.cs:66/75) which calls CheckWater (line 331) -> WaterLevel 0/1/2/3 via the 3-pt hull probe (MoveTypePhysics.cs:470-492) + CheckWaterTransition every tick. So e.WaterLevel IS computed for STEP turrets and the WETFEET/SWIMMING/SUBMERGED branches fire. RE-VERIFIED 2026-06-22 against current MoveTypePhysics.cs.", result: pass }
+      - { kind: code_read, ref: "WalkerMoveTo case 0 (WATERLEVEL_NONE) does `goto case 1` (no break) — faithfully reproducing Base's fall-through (walker.qc:253-264 case NONE has no break): on dry land the RUN it just set is immediately clobbered to WALK by the WETFEET/SWIMMING case, exactly as in Base.", result: pass }
     confidence: high
     notes: "FIXED in Wave 2 and LIVE: the SWIM gait logic + constants are ported faithfully AND reachable — MOVETYPE_STEP turrets get WaterLevel computed by the engine WalkMove/CheckWater path each tick (the earlier 'dead on drive' note was a false positive). JUMP/LAND/TURN/STRAFE/PAIN are unreachable in Base too (parity-by-omission)."
   - id: turret-walker.weapon.minigun
@@ -308,7 +309,7 @@ features:
       - "No te_explosion launch flash at the rocket muzzle (client-render)."
       - "No tag_rocket01/tag_rocket02 alternation (port has no head tags; fires from a single muzzle org)."
     verification:
-      - { kind: code_read, ref: "FireRocket plays weapons/hagar_fire.wav (SND_TUR_WALKER_FIRE = hagar_fire, all.inc:154); WalkerRocketThink (GuidedProjectile.cs:280-308) has no loop state machine / 1% roll / te_explosion", result: pass }
+      - { kind: code_read, ref: "FireRocket plays weapons/hagar_fire.wav (SND_TUR_WALKER_FIRE = hagar_fire, verified all.inc:154); WalkerRocketThink (GuidedProjectile.cs:280-308) RE-CONFIRMED 2026-06-22 to have no loop state machine, no random()<0.01 roll, no shot_dmg==1337 sentinel, no te_explosion (grep for loop/1337/0.01 in GuidedProjectile.cs returns nothing). Ballistics/damage/burst/jitter/steer-pull faithful; the loop maneuver + launch flash + tag alternation remain unported.", result: pass }
     confidence: high
     notes: "FIXED in Wave 2: the launch sound is now hagar_fire (was weapons/rocket_fire.wav) — audio now faithful. Ballistics/damage/burst/jitter/steer-pull faithful; the loop maneuver, launch flash, and tag alternation remain missing (logic: partial)."
   - id: turret-walker.weapon.melee

@@ -1,21 +1,25 @@
 unit: tmayhem
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-22"  # second-pass re-audit (commits ec788f7/a76c8bc/4be8357)
 summary:
   feature_count: 15
   worst_gaps:
-    - "timelimit=20 gametype default is never applied per-select (port reads the global timelimit cvar, default 20 — mitigated, not fixed)."
+    - "timelimit=20 gametype default is still not RESET per-select for a non-20 leftover: Wave-2 wired a live SeedTimeLimit(20) in OnInit, but its guard only writes when timelimit already == 20 (the generic default), so it is a 20→20 no-op and a prior mode's non-20 timelimit is NOT reset. Behavior unchanged from baseline mitigation."
     - "DEATH_CAMP environmental-suicide penalty omitted (no campcheck deathtype in the port; non-default mutator only)."
     - "Menu point-limit slider uses the generic fraglimit_override 5..100 instead of QC's g_tmayhem_point_limit 200..3000 (menu/mapinfo concern, deferred)."
   notes: >
-    Wave-1/2 re-audit (branch claude/parity-port-waves, commit ec788f7): the single biggest baseline
-    gap — the DEAD SetWeaponArena chain (players spawning Blaster-only) — is now genuinely CLOSED.
-    MutatorHooks.SetWeaponArena.Call is live at SpawnSystem.ComputeStartItems (the readplayerstartcvars
-    seam, reached on the real spawn path via ApplyStartLoadout) and the warmup path. With TeamMayhem
-    active, OnSetWeaponArena fills "most_available", ExpandWeaponArena resolves it to weapons_most, and
-    players spawn with the full arsenal + unlimited ammo. No regressions found; the Deactivate
-    non-override→override fix is a correctness improvement.
+    Wave-1/2 + second-pass re-audit (branch claude/parity-port-waves, commits ec788f7 / a76c8bc / 4be8357):
+    the single biggest baseline gap — the DEAD SetWeaponArena chain (players spawning Blaster-only) —
+    remains genuinely CLOSED and re-verified. MutatorHooks.SetWeaponArena.Call is live at
+    SpawnSystem.ComputeStartItems:679 (the readplayerstartcvars seam, reached on the real spawn path via
+    ApplyStartLoadout←SpawnSystem.cs:544) and the warmup path (:892). With TeamMayhem active, OnSetWeaponArena
+    fills "most_available", ExpandWeaponArena resolves it to weapons_most, and players spawn with the full
+    arsenal + unlimited ammo. NEW since baseline: Wave-2 also wired a live SeedTimeLimit(20) call in
+    TeamMayhem.OnInit (GameWorld.cs:495 calls OnInit before ActivateGameType) — formerly dead scaffolding.
+    Adversarial check: the seed's guard only fires when timelimit==20 (and writes 20), so it is observably a
+    no-op and does NOT actually reset a non-20 leftover; the identity timelimit gap is therefore an intent/
+    liveness improvement only, not a closed gap. No regressions found.
 features:
   - id: tmayhem.identity.registration
     name: "Gametype identity + registration (tmayhem netname, teamplay, USEPOINTS, limit/team defaults)"
@@ -25,7 +29,7 @@ features:
       - "common/gametypes/gametype/tmayhem/sv_tmayhem.qc:tmayhem_Initialize"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/TeamMayhem.cs:TeamMayhem (ctor/OnInit)"
-      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (case TeamMayhem, line 1369)"
+      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (case TeamMayhem, line 1429); OnInit at GameWorld.cs:495"
     constants:
       - { name: "netname", base: "tmayhem", port: "tmayhem", match: true }
       - { name: "teamgame", base: "true (TEAMPLAY)", port: "true", match: true }
@@ -42,11 +46,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "timelimit=20 gametype_init default is still not applied per-select. Mayhem.cs gained a DefaultTimeLimitMinutes=15 constant in Wave-2, but the host (GameWorld) never reads it (dead scaffolding) and tmayhem has no equivalent member. MITIGATED: the global timelimit cvar default is itself 20 (Cvars.cs:108), so stock play matches Base; the divergence only bites if a prior mode/admin left a non-20 timelimit, which the port would not reset to the tmayhem default."
+      - "timelimit=20 gametype_init default is NOT reset per-select for a non-20 leftover. NEW since baseline: Wave-2 added a live SeedTimeLimit(20) in TeamMayhem.OnInit (TeamMayhem.cs:93, called at GameWorld.cs:495 before ActivateGameType), so the scaffolding is no longer dead — but its guard `if GetFloat(timelimit)==20` only writes when the value is already the generic default 20 (Cvars.cs:108), so it sets 20→20 (no-op) and does NOT reset a prior mode/admin's non-20 timelimit to the tmayhem default. Net behavior is unchanged from the baseline mitigation: stock play matches Base (both defaults are 20); a non-20 leftover still bleeds through. Same self-cancelling guard as Tdm.SeedTimeLimit, but for Tdm the gametype default (15) ≠ generic (20) so Tdm's guard meaningfully fires; tmayhem's never does anything observable."
     verification:
-      - { kind: code, ref: "GameWorld.ActivateGameType:1369 case TeamMayhem → tm.Activate (reached from boot via line 521); TeamMayhem ctor sets NetName/TeamGame; global timelimit default = 20 at Cvars.cs:108; no DefaultTimeLimitMinutes reference in GameWorld; MayhemScoringTests.TeamMayhem_Identity_TeamCount_AndPointLimitDefault", result: pass }
+      - { kind: code, ref: "GameWorld.ActivateGameType:1429 case TeamMayhem → tm.Activate (reached from boot via line 525); GameWorld.cs:495 GameType?.OnInit() runs before ActivateGameType so SeedTimeLimit is LIVE; TeamMayhem ctor sets NetName/TeamGame; generic timelimit default = 20 at Cvars.cs:108; SeedTimeLimit guard (TeamMayhem.cs:103-112) only writes when value==20 → observable no-op; MayhemScoringTests.TeamMayhem_Identity_TeamCount_AndPointLimitDefault", result: pass }
     confidence: high
-    notes: "pointlimit/leadlimit defaults correctly hardcoded (1500/0). VERIFIED 2026-06-22 post-Wave2: case TeamMayhem live in ActivateGameType (line 1369, reached from boot via 521). timelimit=20 gap UNCHANGED from baseline (cosmetic — global cvar default already 20). m_legacydefaults \"1500 20 2 0\" not ported (menu/mapinfo concern, see tmayhem.menu.describe_support)."
+    notes: "pointlimit/leadlimit defaults correctly hardcoded (1500/0). RE-VERIFIED 2026-06-22 second-pass: case TeamMayhem live in ActivateGameType (now line 1429, reached from boot via 525). timelimit handling CHANGED in form (SeedTimeLimit now wired/live in OnInit, was dead) but UNCHANGED in observable behavior (the guard makes it a 20→20 no-op; a non-20 leftover is not reset). values stays partial. m_legacydefaults \"1500 20 2 0\" not ported (menu/mapinfo concern, see tmayhem.menu.describe_support)."
 
   - id: tmayhem.teams.count
     name: "Team count 2..4 (g_tmayhem_teams_override >= 2 ? override : g_tmayhem_teams)"
@@ -55,7 +59,7 @@ features:
       - "common/gametypes/gametype/tmayhem/sv_tmayhem.qc:tmayhem_DelayedInit"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/TeamMayhem.cs:TeamMayhem.TeamCount"
-      - "src/XonoticGodot.Server/GameWorld.cs:2609 (case TeamMayhem → tm.TeamCount)"
+      - "src/XonoticGodot.Server/GameWorld.cs:2708 (case TeamMayhem → tm.TeamCount)"
     constants:
       - { name: "g_tmayhem_teams", base: "2", port: "2", match: true }
       - { name: "g_tmayhem_teams_override", base: "0 (>=2 wins)", port: "0 (>=2 wins)", match: true }
@@ -187,7 +191,7 @@ features:
     divergence_rationale: "Port routes the per-kill recompute through the Combat.Death bus (OnDeath) and suppresses the +1 frag by running Scores in non-owning mode (OwnsScore=false) rather than subscribing to a GiveFragsForKill hook. Observable result (no ±1 frag; score == the recompute) matches Base; the kills/teamkills/suicides aux columns are still maintained by the obituary so the recompute reads them."
     gaps: []
     verification:
-      - { kind: code, ref: "VERIFIED 2026-06-22 (re-confirmed post-Wave2): GameWorld SubscribeToDeaths(teamGame, ownsScore:false) runs BEFORE ActivateGameType, so Scores ticks the aux kills/teamkills/suicides columns before TeamMayhem.OnDeath recomputes; Scores.Obituary guards every SP_SCORE/team write behind `if (OwnsScore)`, all skipped here → no +1 frag. TeamMayhem.OnDeath:238/243 then calls MayhemScoring.Calculate(teamGame:true).", result: pass }
+      - { kind: code, ref: "RE-VERIFIED 2026-06-22 second-pass: GameWorld SubscribeToDeaths (GameWorld.cs:520, teamGame, ownsScore:false) runs BEFORE ActivateGameType (525), so Scores ticks the aux kills/teamkills/suicides columns before TeamMayhem.OnDeath recomputes; Scores.Obituary guards every SP_SCORE/team write behind `if (OwnsScore)`, all skipped here → no +1 frag. TeamMayhem.OnDeath:266/271 then calls MayhemScoring.Calculate(teamGame:true).", result: pass }
     confidence: high
     notes: "Same architecture as Mayhem.OnDeath; the recompute routes to the team total (teamGame:true). The QC GiveFragsForKill hook is NOT subscribed; the effect is produced by OwnsScore=false + the OnDeath recompute (the divergence). Untouched by Wave-2."
 
@@ -307,7 +311,7 @@ features:
     gaps:
       - "QC's 'most_available' intersects weapons_most with the weapons actually present on the map (weaponarena_available_most_update via weaponsInMapAll); the port has no map-weapon set, so ExpandWeaponArena falls back to the full weapons_most — which is exactly what QC itself does when the map has no weapons, but on a weapon-bearing map the port would grant a SUPERSET of QC's 'most_available' arena. Documented divergence, low impact (tmayhem maps have pickup_items off / weapons removed, so the map-weapon set is typically empty anyway)."
     verification:
-      - { kind: code, ref: "FIX VERIFIED 2026-06-22 (was baseline liveness:dead/logic:partial): MutatorHooks.SetWeaponArena.Call NOW exists at SpawnSystem.cs:679 (inside ComputeStartItems, reached on the real spawn path via ApplyStartLoadout←SpawnSystem.cs:544) and :892 (warmup). TeamMayhem subscribes OnSetWeaponArena in Activate (TeamMayhem.cs:159-160), which runs at boot (GameWorld ActivateGameType:1369←521) before any spawn. OnSetWeaponArena fills 'most_available' when g_weaponarena is empty (TeamMayhem.cs:313-318); ExpandWeaponArena resolves it to weapons_most (WEP_FLAG_NORMAL, non-hidden, non-mutator-blocked) and sets arenaActive=true; ComputeStartItems then clears DefaultLoadout and grants the full set + UNLIMITED flags. All referenced APIs (Weapons.All, WepSet.Has, Weapons.ByName, WeaponFlags.Normal/Hidden/MutatorBlocked, ItemFlag.Unlimited*) exist.", result: pass }
+      - { kind: code, ref: "FIX VERIFIED 2026-06-22 (was baseline liveness:dead/logic:partial): MutatorHooks.SetWeaponArena.Call NOW exists at SpawnSystem.cs:679 (inside ComputeStartItems, reached on the real spawn path via ApplyStartLoadout←SpawnSystem.cs:544) and :892 (warmup). TeamMayhem subscribes OnSetWeaponArena in Activate (TeamMayhem.cs:187-188), which runs at boot (GameWorld ActivateGameType:1429←525) before any spawn. OnSetWeaponArena fills 'most_available' when g_weaponarena is empty (TeamMayhem.cs:313-318); ExpandWeaponArena resolves it to weapons_most (WEP_FLAG_NORMAL, non-hidden, non-mutator-blocked) and sets arenaActive=true; ComputeStartItems then clears DefaultLoadout and grants the full set + UNLIMITED flags. All referenced APIs (Weapons.All, WepSet.Has, Weapons.ByName, WeaponFlags.Normal/Hidden/MutatorBlocked, ItemFlag.Unlimited*) exist.", result: pass }
     confidence: high
     notes: "THE BIGGEST BASELINE GAP — now CLOSED. Players no longer spawn Blaster-only; they get the full 'most' arsenal + unlimited ammo, faithful to Base. The shared SpawnSystem seam fix simultaneously revives the same dead chain for Mayhem/CA/LMS/Instagib/Melee/Overkill. Only residual divergence is the map-weapon intersection for the *_available keywords, documented above."
 
@@ -371,8 +375,8 @@ features:
       - "common/gametypes/gametype/tmayhem/tmayhem.qh:gametype_init (pointlimit=1500 leadlimit=0)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/TeamMayhem.cs:UpdateLeaderAndCheckLimit/PointLimit/LeadLimit/LeaderTeam/ReportsTie"
-      - "src/XonoticGodot.Server/GameWorld.cs:1718 (DriveGametypeFrame case TeamMayhem)"
-      - "src/XonoticGodot.Server/GameWorld.cs:2175 (winner team), 292 (MatchEnded)"
+      - "src/XonoticGodot.Server/GameWorld.cs:1795 (DriveGametypeFrame case TeamMayhem)"
+      - "src/XonoticGodot.Server/GameWorld.cs:2265 (winner team), 292 (MatchEnded)"
     constants:
       - { name: "pointlimit", base: "1500", port: "1500", match: true }
       - { name: "leadlimit", base: "0 (no lead limit)", port: "0", match: true }
@@ -390,7 +394,7 @@ features:
     gaps:
       - "Minor: the port hardcodes 1500 as the point-limit fallback rather than reading the (mapinfo-set) fraglimit cvar that QC's GameRules_limit_score leaves in place; effective value matches for stock play but a map/admin fraglimit override would not be honoured for tmayhem the way it is in Base. Unchanged from baseline."
     verification:
-      - { kind: code, ref: "UpdateLeaderAndCheckLimit enforces point+lead limit on ST_SCORE leader via DriveGametypeFrame (GameWorld.cs:1718); ReportsTie wired in CheckRulesAndIntermission; winner team at GameWorld.cs:2175; MatchEnded at 292", result: pass }
+      - { kind: code, ref: "UpdateLeaderAndCheckLimit enforces point+lead limit on ST_SCORE leader via DriveGametypeFrame (GameWorld.cs:1795); ReportsTie wired in CheckRulesAndIntermission; winner team at GameWorld.cs:2265; MatchEnded at 292", result: pass }
     confidence: high
     notes: "Leader read through the flag-aware GameScores.LeaderTeam()/SecondTeam(). Untouched by Wave-2 (the GameWorld round-timelimit changes were CA/FreezeTag-only, not tmayhem)."
 
@@ -401,7 +405,7 @@ features:
       - "common/gametypes/gametype/tmayhem/sv_tmayhem.qc:MUTATOR_HOOKFUNCTION(tmayhem, reset_map_players)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/TeamMayhem.cs:TeamMayhem.ResetMapPlayers"
-      - "src/XonoticGodot.Server/GameWorld.cs:2514 (ResetMap → ResetMapPlayers)"
+      - "src/XonoticGodot.Server/GameWorld.cs:2604 (ResetMap → ResetMapPlayers)"
     constants: []
     status:
       logic: faithful

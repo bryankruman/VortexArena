@@ -5,11 +5,12 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 14
   worst_gaps:
-    - "okrpc missile shoot-down is DEAD: OkRpc sets ProjectileDamage+TakeDamage=Yes but never calls Projectiles.MakeShootable, so the damage pipeline has no GtEventDamage shim to route shoot-down into Explode (the new wave shim is used by Mortar/Devastator etc., NOT okrpc). Shooting the chainsaw out of the air does nothing."
-    - "Wave-2 FX (muzzle/casing/recoil/tracer) landed ONLY on okmachinegun. okhmg/okshotgun/oknex got NONE of it despite Base okhmg also doing W_MuzzleFlash+SpawnCasing+punchangle+EFFECT_RIFLE."
-    - "No client impact effects/ric sounds on ANY OK weapon: even okmachinegun never calls BulletImpactFx (EFFECT_MACHINEGUN_IMPACT + SND_RIC_RANDOM); only fire sounds + the new tracer/casing play."
-    - "okhmg_nadesupport still missing: HMG nade self-damage not reduced to 10%."
-    - "okrpc missile: still not CSQC-networked (no visible chainsaw), not bot-dodgeable, not damagedbycontents (lava won't detonate it)."
+    - "okrpc shoot-down now LIVE+faithful (closed this pass): OkRpc.Attack:166 now calls Projectiles.MakeShootable(missile, exception:-1) which installs the GtEventDamage shim DamageSystem.EventDamage:331 dispatches for the non-player missile; ShootDown runs W_CheckProjectileDamage(-1) + RES_HEALTH subtract + fires ProjectileDamage→Explode at hp<=0. Correctly INERT under stock g_projectiles_damage=-2 (CheckProjectileDamage returns false at mode<=-2), exactly like Base — the chainsaw is only shootable when a server raises the cvar, identical to every other Base projectile (Mortar/Devastator use the same exception:-1 shim)."
+    - "Wave-2 FX (recoil/casing/RIFLE tracer) landed ONLY on okmachinegun. okhmg/okshotgun/oknex still got NONE of it despite Base okhmg ALSO doing W_MuzzleFlash+SpawnCasing(type3, g_casings>=2)+punchangle+fireBullet(EFFECT_RIFLE) — OkHmg.cs/OkNex.cs/OkShotgun.cs are byte-identical to main."
+    - "No client impact effects / ric sounds on ANY OK weapon, incl. okmachinegun: none call WeaponFiring.BulletImpactFx, so no wr_impacteffect puff (EFFECT_MACHINEGUN_IMPACT/VORTEX_IMPACT/SHOTGUN_IMPACT/ROCKET_EXPLODE) and no SND_RIC_RANDOM / SND_OK_NEX_IMPACT / SND_ROCKET_IMPACT play."
+    - "No W_MuzzleFlash on ANY OK weapon (incl. okmachinegun): only the casing+tracer+recoil part of the bullet FX was migrated; the muzzle flash is still absent."
+    - "okhmg_nadesupport still missing: NadeProjectile.NadeDamage switch has no okhmg case, so HMG nade self-damage is not reduced to max_health*0.1."
+    - "okrpc missile still not CSQC-networked (no visible flying chainsaw), not registered for bot dodge (bot_dodge/IL_PUSH g_bot_dodge), and not damagedbycontents (IL_PUSH g_damagedbycontents) — lava/slime won't detonate the in-flight chainsaw even at g_projectiles_damage>=0."
     - "Overkill mode has no menu toggle (reachable only via ruleset/cvar) — but this MATCHES Base, so it is faithful, not a regression."
 features:
   - id: overkill-weapons.okmachinegun.primary_auto
@@ -48,14 +49,15 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "FIXED (Wave-2): now uses fireBullet_falloff with the damagefalloff cvars + the EFFECT_RIFLE tracer trail; muzzle/casing eject (EjectCasing, g_casings>=2 gate) and the punchangle recoil PRNG (random()-0.5 on pitch/yaw, gated !g_norecoil) are wired LIVE on the player path — at parity with the base Machinegun port's bullet presentation."
+      - "FIXED (Wave-2, re-confirmed): AttackAuto:136 uses FireBullet with the damagefalloff cvars + the EFFECT_RIFLE tracer trail (tracerEffect:\"RIFLE\" → registered trail EffectsList.cs:106, EmitTrail networks to clients); casing eject (AttackAuto:145 EjectCasing(Bullet), g_casings>=2 gate, up-vel 70-rand*5 matching machinegun.qc:111) and the punchangle recoil PRNG (AttackAuto:129 Prandom.Float()-0.5 on pitch/yaw, gated EntFlags.Client && !g_norecoil) are wired LIVE on the WrThink→AttackAuto player path."
+      - "STILL OPEN: no W_MuzzleFlash — okmachinegun.qc:51 muzzle flash is not emitted (only the casing was migrated from the same QC block)."
       - "STILL OPEN: no wr_impacteffect — OkMachinegun never calls WeaponFiring.BulletImpactFx, so EFFECT_MACHINEGUN_IMPACT puff and the SND_RIC_RANDOM ricochet ping (which the base Machinegun port DOES emit) do not play."
     verification:
       - { kind: value-diff, ref: "bal-wep-xonotic.cfg:815-831 + damagefalloff_* (all 0)", result: pass }
-      - { kind: code-read, ref: "AttackAuto: FireBullet(...,tracerEffect:RIFLE) + recoil PunchAngle (Prandom, !g_norecoil) + EjectCasing(Bullet); both gated EntFlags.Client; QC okmachinegun.qc:24-58 line-by-line", result: pass }
-      - { kind: code-read, ref: "no BulletImpactFx call in OkMachinegun (cf. Machinegun.cs:298) — impact puff + ric still absent", result: pass }
+      - { kind: code-read, ref: "AttackAuto:128-145 FireBullet(...,tracerEffect:\"RIFLE\") + recoil PunchAngle (Prandom, EntFlags.Client && !g_norecoil) + EjectCasing(Bullet); reached LIVE via WrThink (WeaponFireDriver); QC okmachinegun.qc:24-58 line-by-line", result: pass }
+      - { kind: code-read, ref: "no BulletImpactFx and no muzzle-flash call in OkMachinegun (cf. Machinegun.cs) — impact puff + ric + muzzle flash still absent", result: pass }
     confidence: high
-    notes: "Casing routed via EffectEmitter.EmitByEffectInfoName(casing_bullet) → live effect Sink (same engine-fallback temp-entity the base bullet weapons use); tracer via EmitTrail (live KeyHunt/Rifle path). misc_bulletcounter drives accumulating spread, reset each trigger pull. Self-reschedules per refire while ATCK held."
+    notes: "Casing routed via EffectEmitter.EmitByEffectInfoName(casing_bullet) → registered CASING_BULLET effect (EffectsList.cs:100) which networks live to EffectSystem.SpawnCasing; tracer via EmitTrail→Emit (networked RIFLE trail). misc_bulletcounter drives accumulating spread, reset each trigger pull (WrThink:106). Self-reschedules per refire while ATCK held. Files unchanged since the Wave-4 baseline."
 
   - id: overkill-weapons.okhmg.primary_auto
     name: "OK Heavy MachineGun primary — superweapon auto bullet"
@@ -240,6 +242,8 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Weapons/OkRpc.cs:Attack"
       - "src/XonoticGodot.Common/Gameplay/Weapons/OkRpc.cs:OnThink"
       - "src/XonoticGodot.Common/Gameplay/Weapons/OkRpc.cs:Explode"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Projectiles.cs:MakeShootable/ShootDown/CheckProjectileDamage"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:280,331 (EventDamage non-player GtEventDamage dispatch)"
     constants:
       - { name: "primary_ammo", base: "10", port: "10", match: true }
       - { name: "primary_animtime", base: "1", port: "1", match: true }
@@ -256,28 +260,29 @@ features:
       - { name: "reload_ammo", base: "10", port: "10", match: true }
       - { name: "reload_time", base: "1", port: "1", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: partial
       audio: partial
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "NEWLY CONFIRMED (shoot-down DEAD): OkRpc sets missile.TakeDamage=Yes + missile.ProjectileDamage=Explode but NEVER calls Projectiles.MakeShootable, which is the ONLY thing that installs the GtEventDamage shim the damage pipeline dispatches (DamageSystem.EventDamage only routes non-player victims via GtEventDamage; ProjectileDamage is never invoked otherwise). So a missile that takes RadiusDamage falls into PlayerDamage/PlayerCorpseDamage (player-resource paths), never runs Explode → the chainsaw cannot be shot out of the air. W_OverkillRocketPropelledChainsaw_Damage is effectively unported. (Pre-existing; the new MakeShootable shim — used by Mortar/Devastator/etc. — was not wired into okrpc.)"
+      - "FIXED this pass (shoot-down DEAD→LIVE+faithful): OkRpc.Attack:166 now calls Projectiles.MakeShootable(missile, exception:-1), installing the GtEventDamage shim. DamageSystem.Damage:280 dispatches a non-player TakeDamage=Yes victim through EventDamage:331→GtEventDamage→ShootDown, which runs W_CheckProjectileDamage(-1) + RES_HEALTH subtract and fires ProjectileDamage→Explode only at hp<=0. Verified that under stock balance-xonotic.cfg g_projectiles_damage=-2 this is correctly INERT (CheckProjectileDamage returns false at mode<=-2) — exactly matching Base, which also makes okrpc unshootable at stock balance; it becomes live when a server raises the cvar (same exception:-1 contract as Mortar/Devastator). The okrpc Explode now also clears self.GtEventDamage (the QC event_damage=func_null)."
       - "STILL OPEN: missile not networked as a CSQC projectile (no visible flying chainsaw on clients) — CSQCProjectile(PROJECTILE_RPC) omitted."
       - "STILL OPEN: missile not registered for bot dodge (QC bot_dodge=true, bot_dodgerating=damage*2, IL_PUSH g_bot_dodge)."
-      - "STILL OPEN: missile does NOT set damagedbycontents / IL_PUSH g_damagedbycontents, so lava/slime won't detonate the in-flight chainsaw (QC does)."
-      - "STILL OPEN: no wr_impacteffect (rocket-explosion impact particle / SND_ROCKET_IMPACT)."
+      - "STILL OPEN: missile does NOT set damagedbycontents / IL_PUSH g_damagedbycontents, so lava/slime won't detonate the in-flight chainsaw even at g_projectiles_damage>=0 (QC does)."
+      - "STILL OPEN: no wr_impacteffect (rocket-explosion impact particle EFFECT_ROCKET_EXPLODE / SND_ROCKET_IMPACT) and no W_MuzzleFlash."
       - "Accuracy bookkeeping (first-hit fired/hit add, explode 'add fired back') omitted (stat-only)."
       - "Pass-through victim filter is `(Flags & Client) && TakeDamage!=No` vs QC IS_PLAYER(trace_ent): could catch a spectator client edict carrying the Client flag. Minor; corpses filtered by TakeDamage."
     verification:
       - { kind: value-diff, ref: "bal-wep-xonotic.cfg:874-895 — all 14 okrpc cvars match", result: pass }
-      - { kind: code-read, ref: "OkRpc.Attack sets ProjectileDamage but no Projectiles.MakeShootable; cf. Mortar.cs:207 / Devastator.cs:205 which DO call it. DamageSystem.cs:331 only dispatches GtEventDamage for non-player victims; OkRpc never installs GtEventDamage → shoot-down dead.", result: fail }
-      - { kind: code-read, ref: "OkRpc.OnThink tracebox pass-through damage2 + Explode RadiusDamage on contact/lifetime are spawned + thought LIVE (the missile flies, passes-through-damages, and explodes on touch/timeout); only the shoot-DOWN path is dead", result: pass }
+      - { kind: code-read, ref: "OkRpc.Attack:166 Projectiles.MakeShootable(missile, exception:-1) installs GtEventDamage; DamageSystem.cs:280→331-334 dispatches a non-player TakeDamage=Yes victim through GtEventDamage→ShootDown→ProjectileDamage(Explode) at hp<=0. Matches Base W_OverkillRocketPropelledChainsaw_Damage (okrpc.qc:42-51, W_CheckProjectileDamage(...,-1)).", result: pass }
+      - { kind: value-diff, ref: "Projectiles.CheckProjectileDamage at g_projectiles_damage=-2 (balance-xonotic.cfg:202) returns false → okrpc inert at stock balance, identical to Base", result: pass }
+      - { kind: code-read, ref: "OkRpc.OnThink tracebox pass-through damage2 + Explode RadiusDamage on contact/lifetime spawned + thought LIVE; the missile flies, passes-through-damages, explodes on touch/timeout AND is shootable when the cvar permits", result: pass }
     confidence: high
-    notes: "Flight/pass-through/contact-explosion are faithful and live (Accel/pass-through use Api.Clock.FrameTime == fixed sim tic). logic downgraded faithful→partial and liveness live→partial because the shoot-down branch (a real QC behavior: health 25 shootable missile) does not execute. Fix is a one-liner: call Projectiles.MakeShootable(missile) after seeding health+ProjectileDamage."
+    notes: "Flight/pass-through/contact-explosion faithful and live (Accel/pass-through use Api.Clock.FrameTime == fixed sim tic). logic upgraded partial→faithful and liveness partial→live this pass: the shoot-down branch (health-25 shootable missile) is now wired through the live damage pipeline and is gated exactly like Base. Remaining gaps are CSQC networking / bot-dodge / damagedbycontents / impact FX (render+online subset)."
 
   - id: overkill-weapons.shared.secondary_blaster_jump
     name: "Shared secondary — Overkill blaster jump (own jump_interval timer)"
@@ -480,10 +485,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "FIXED for okmachinegun ONLY: muzzle flash/casing eject (g_casings>=2) + punchangle recoil PRNG + EFFECT_RIFLE tracer are now wired LIVE."
-      - "STILL OPEN: okhmg/okshotgun/oknex/okrpc got NONE of the Wave-2 FX seam — no muzzle flash, no casings (okhmg + okshotgun), no recoil (okhmg), no tracer (okhmg)."
+      - "FIXED for okmachinegun ONLY: casing eject (g_casings>=2) + punchangle recoil PRNG + EFFECT_RIFLE tracer are wired LIVE (re-confirmed this pass)."
+      - "STILL OPEN: okhmg/okshotgun/oknex got NONE of the Wave-2 FX seam — OkHmg.cs/OkNex.cs/OkShotgun.cs are byte-identical to main. No casings (okhmg type3 + okshotgun type1), no recoil (okhmg), no tracer (okhmg EFFECT_RIFLE)."
+      - "STILL OPEN: NO OK weapon (incl. okmachinegun) emits W_MuzzleFlash — the muzzle flash from okhmg.qc:51 / okmachinegun.qc:51 / okrpc W_MuzzleFlash is absent everywhere."
       - "STILL OPEN: NO OK weapon (incl. okmachinegun) calls BulletImpactFx — no client impact particles (EFFECT_MACHINEGUN_IMPACT / VORTEX_IMPACT / SHOTGUN_IMPACT / ROCKET_EXPLODE) and no impact/ricochet sounds (SND_RIC_RANDOM, SND_OK_NEX_IMPACT, SND_ROCKET_IMPACT)."
     verification:
-      - { kind: code-read, ref: "OkMachinegun.AttackAuto EjectCasing+recoil+RIFLE tracer present; grep shows no BulletImpactFx for any OK weapon and no FX in OkHmg/OkShotgun/OkNex/OkRpc", result: partial }
+      - { kind: code-read, ref: "OkMachinegun.AttackAuto EjectCasing+recoil+RIFLE tracer present; git diff main..HEAD empty for OkHmg/OkNex/OkShotgun; grep shows no BulletImpactFx and no W_MuzzleFlash for any OK weapon", result: partial }
     confidence: high
-    notes: "Fire sounds (uzi_fire/nexfire/rocket_fire/shotgun_fire) ARE played server-side. The shared Wave-2 FX seam (EjectCasing/tracer/recoil/BulletImpactFx) exists and is live for the base bullet weapons; only okmachinegun was migrated onto the casing/tracer/recoil part of it, and the impact-FX part was wired to NO OK weapon."
+    notes: "Fire sounds (uzi_fire/nexfire/rocket_fire/shotgun_fire) ARE played server-side. The shared Wave-2 FX seam (EjectCasing/tracer/recoil/BulletImpactFx/MeleeWoosh) exists and is live for the base bullet weapons; only okmachinegun was migrated onto the casing/tracer/recoil part of it. The muzzle-flash and impact-FX parts of the seam are wired to NO OK weapon."

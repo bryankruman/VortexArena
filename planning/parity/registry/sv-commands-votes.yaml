@@ -1,16 +1,16 @@
 unit: sv-commands-votes
 category: server
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-22"  # re-audited post second-pass fix-up commit 4be8357
 summary:
   feature_count: 16
   worst_gaps:
     - "radarmap / gettaginfo / animbench / bbox / trace / stuffto / adminmsg / anticheat(cmd) / delrec / database / effectindexdump / make_mapinfo / printstats: still not registered as commands (missing)"
-    - "REGRESSION: the new vote 'allready' warmup gate reads VoteController.WarmupStage which is NEVER wired in GameWorld (defaults () => false), so an allready vote is now ALWAYS rejected with 'Game already started' even during warmup — previously it fell through and was votable"
-    - "Wave-2 added the QC timeout_status / game_starttime / IS_CLIENT vote-call guards in VoteController.CmdCall/CmdMaster, but TimeoutActive/GameStartTime/IsClient/WarmupStage/InGame are NONE of them wired in GameWorld.WireCommandsWarmupVoting — the new guard code is present but DEAD (defaults make every new branch a no-op)"
-    - "Timeout slowmo + per-second CENTER_TIMEOUT countdown + ANNCE_PREPARE machinery added to TimeoutController, but ApplySlowmo/CenterPrintBeginning/CenterPrintEnding/AnnouncePrepare sinks are NOT wired in GameWorld — pause is still a hard freeze (IsPaused) with no inching, no countdown center-print, no announce"
-    - "Vote spectator-exclusion remains dead: VoteController.IsPlayer + the new InGame are both unwired (default true/false), so sv_vote_nospectators 2 still never drops spectator ballots"
-    - "map/nextmap vote parse still skips ValidateMap/MapInfo_FixName/recent-map; per-command arg restriction (VoteCommand_checkargs / sv_vote_command_restriction_*) still absent"
+    - "vote-call guard chain DEAD: TimeoutActive / GameStartTime / IsClient are still NEVER wired in GameWorld (post-fixup commit 4be8357 wired WarmupStage/WarmupOrIntermission/Roster/FindPlayer/Broadcast ONLY). The CmdCall/CmdMaster guard branches compile but no-op (defaults TimeoutActive=()=>false, GameStartTime=()=>0, IsClient=_=>true), so the timeout-active and pre-match game_starttime vote bars never fire."
+    - "Timeout slowmo + per-second CENTER_TIMEOUT countdown + ANNCE_PREPARE machinery exists in TimeoutController, but ApplySlowmo/CenterPrintBeginning/CenterPrintEnding/AnnouncePrepare sinks are STILL NOT wired in GameWorld (only VoteActive/Warmup/GameStartTime/IsPlayerOf/Broadcast are) — pause is still a hard freeze (GameStopped includes Timeout.IsPaused, GameWorld.cs:1061) with no inching, no countdown center-print, no announce."
+    - "Vote spectator-exclusion remains dead: VoteController.IsPlayer + InGame are both still unwired (default true/false), so sv_vote_nospectators 2 still never drops spectator ballots."
+    - "map/nextmap vote parse still skips ValidateMap/MapInfo_FixName/recent-map; per-command arg restriction (VoteCommand_checkargs / sv_vote_command_restriction_*) still absent."
+    - "FIXED since baseline (commit 4be8357): the 'allready' warmup-gate regression — Voting.WarmupStage is now wired to the live Warmup.WarmupStage (GameWorld.cs:721), so an allready vote during warmup is no longer always rejected."
 features:
   - id: sv-commands-votes.dispatch.client_parse
     name: "Client command dispatch (cmd <verb>) + privilege split + flood/UTF-8/ban pre-gates"
@@ -97,9 +97,9 @@ features:
       - "ANNCE_VOTE_CALL announce + the networked Nagger vote HUD are not emitted by this core (broadcast text only)."
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/ServerInfraTests.cs:Vote_CallAndPass_SinglePlayerAutoMajority", result: pass }
-      - { kind: code, ref: "VoteController.cs:144-158 new gamestart/IsClient/timeout_status branches present; GameWorld.cs:682-687 wires Roster/FindPlayer/Broadcast/WarmupOrIntermission ONLY — TimeoutActive/GameStartTime/IsClient never assigned (grep 'Voting.TimeoutActive=' -> no match)", result: fail }
+      - { kind: code, ref: "VoteController.cs:145-158 gamestart/IsClient/timeout_status branches present; GameWorld.cs:715-721 wires Roster/FindPlayer/Broadcast/WarmupOrIntermission/WarmupStage ONLY — TimeoutActive/GameStartTime/IsClient STILL never assigned (grep 'Voting.TimeoutActive='/'Voting.GameStartTime='/'Voting.IsClient=' -> no match, confirmed post-fixup commit 4be8357)", result: fail }
     confidence: high
-    notes: "FIX: DefaultTimeout const 30->24 now matches Base sv_vote_timeout (values upgraded partial->faithful). The timeout/gamestart logic gaps are now 'code exists but unwired/dead' rather than 'absent'; behaviorally unchanged from baseline. Voteban check, sv_vote_call, already-called, spectator gate, wait cooldown, nasty-char + whitelist parse, caller auto-yes remain present and live."
+    notes: "FIX (pre-baseline): DefaultTimeout const 30->24 matches Base sv_vote_timeout. The timeout-active + pre-match game_starttime + !IS_CLIENT guards are 'code exists but unwired/dead' (TimeoutActive=()=>false, GameStartTime=()=>0 so Now<0 never true, IsClient=_=>true). The post-baseline fix-up commit wired WarmupStage but NOT these three predicates — vote.call is behaviorally unchanged from baseline. Voteban check, sv_vote_call, already-called, spectator gate, wait cooldown, nasty-char + whitelist parse, caller auto-yes remain present and live."
 
   - id: sv-commands-votes.vote.parse_whitelist
     name: "VoteCommand_parse — whitelist match, nasty-char sanitize, command rewriting"
@@ -132,14 +132,14 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "REGRESSION: the new 'allready' case rejects unless WarmupStage() is true, but VoteController.WarmupStage is NEVER wired in GameWorld (defaults () => false) — so an allready vote is now ALWAYS rejected with 'Game already started. Use the resetmatch command...' even during warmup. Baseline let it fall through (votable, though un-gated). Net: allready voting is now broken in the common warmup case."
       - "map/nextmap parse still does not run ValidateMap/MapInfo_FixName nor the sv_vote_override_mostrecent recent-map block: an invalid or recently-played map name is accepted into the vote."
       - "No per-command arg restriction (VoteCommand_checkargs / sv_vote_command_restriction_<cmd> charlist + min-arg count) is applied."
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/ServerInfraTests.cs:Vote_CheckNasty_RejectsInjection / Vote_CheckInList_WholeWordAndMapNormalization", result: pass }
-      - { kind: code, ref: "VoteController.cs:605-613 timelimit FloatOr 5/60 (FIXED); :564-577 kick/kickban now '# <index>' form (FIXED); :550-562 movetoX cases added (FIXED); :619-624 allready gated on unwired WarmupStage() (REGRESSION); :579-587 map still no ValidateMap", result: fail }
+      - { kind: code, ref: "VoteController.cs:609 timelimit FloatOr 5/60; :564-577 kick/kickban '# <index>' form; :550-562 movetoX cases; :619-625 allready gated on WarmupStage() which is NOW wired (GameWorld.cs:721 -> live Warmup.WarmupStage); :579-587 map still no ValidateMap", result: pass }
+      - { kind: code, ref: "GameWorld.cs:721 Voting.WarmupStage = () => Warmup.WarmupStage; WarmupController.cs:39/154 WarmupStage is a live-driven property — allready gate now resolves correctly during warmup (REGRESSION FIXED)", result: pass }
     confidence: high
-    notes: "FIXES: timelimit fallback 0/9999 -> 5/60 (now matches Base, no wiring needed — pure const default); kick/kickban now emit the QC 'kick # <index> ...' form with kickban appending g_ban_default_bantime/masksize/~; movetoauto/movetored/... special parse cases added. REGRESSION: allready warmup gate added but its predicate is unwired -> always rejects. STILL OPEN: ValidateMap/recent-map and checkargs/sv_vote_command_restriction."
+    notes: "FIX (this audit, commit 4be8357): the baseline 'allready always rejected' REGRESSION is closed — Voting.WarmupStage is now wired to the live Warmup.WarmupStage (GameWorld.cs:721), so an allready vote during warmup passes the gate (and is still correctly rejected once the match has started). Pre-existing FIXES retained: timelimit fallback 5/60; kick/kickban 'kick # <index> ...' form (kickban appends g_ban_default_bantime/masksize/~); movetoauto/movetored/... special parse cases. STILL OPEN: ValidateMap/recent-map and checkargs/sv_vote_command_restriction. logic stays partial only on these two remaining gaps."
 
   - id: sv-commands-votes.vote.count
     name: "VoteCount — tally, thresholds, spectator exclusion, accept/reject/timeout resolution"
@@ -167,7 +167,7 @@ features:
       - "Wave-2 changed the real-player predicate to IsPlayer(it) || InGame(it) (correct QC IS_PLAYER||INGAME shape) but BOTH predicates are unwired in GameWorld: IsPlayer defaults _ => true and InGame defaults _ => false. realPlayers therefore still == all clients, so the spectator-exclusion branch (!spectators_allowed && realPlayers>0) STILL never drops spectator ballots under sv_vote_nospectators 2."
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/ServerInfraTests.cs:Vote_Reject_WhenMajorityNo", result: pass }
-      - { kind: code, ref: "VoteController.cs:384 real = IsPlayer(it) || InGame(it); GameWorld.cs grep 'Voting.IsPlayer'/'Voting.InGame' -> no match (both unwired)", result: fail }
+      - { kind: code, ref: "VoteController.cs:384 real = IsPlayer(it) || InGame(it); GameWorld.cs (post-fixup 4be8357) grep 'Voting.IsPlayer='/'Voting.InGame=' -> still no match (both unwired, defaults true/false)", result: fail }
     confidence: high
     notes: "No effective change from baseline. The IS_PLAYER||INGAME union was added (closes the moot count-divergence note) but the spectator-exclusion path is still dead because its predicate is unwired. Threshold math, 0-player auto-accept, early accept/reject, of-voted timeout, master playerlimit guard all remain faithful."
 
@@ -230,7 +230,7 @@ features:
       - "Wave-2 ADDED the timeout_status guard to the master-vote-call branch (CmdMaster), but VoteController.TimeoutActive is unwired (defaults () => false) so the guard is DEAD — same root cause as vote.call."
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/ServerInfraTests.cs:Vote_MasterLogin_GrantsAndDoRuns", result: pass }
-      - { kind: code, ref: "VoteController.cs:237-238 master-vote timeout_status guard present; GameWorld.cs does not wire Voting.TimeoutActive (dead)", result: fail }
+      - { kind: code, ref: "VoteController.cs:237-238 master-vote timeout_status guard present; GameWorld.cs (post-fixup 4be8357) still does not wire Voting.TimeoutActive (dead)", result: fail }
     confidence: high
     notes: "login (password), do (whitelist = commands+master_commands), and call-master-vote branches all present and live; master status persists across a vote reset like QC .vote_master. The new master-vote timeout guard is present-but-dead; master-ids still absent."
 
@@ -267,7 +267,7 @@ features:
       - "Wave-2 ADDED per-second CENTER_TIMEOUT_BEGINNING/ENDING center-print + ANNCE_PREPARE machinery (EmitCountdown firing CenterPrintBeginning/CenterPrintEnding/AnnouncePrepare), but those sinks are NOT wired in GameWorld -> no countdown center-print and no announce cue are produced (broadcast text only). Presentation/audio still missing in effect."
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/ServerInfraTests.cs:Timeout_LeadThenPauseThenResume", result: pass }
-      - { kind: code, ref: "GameWorld.cs:734-738 wires Timeout.VoteActive/Warmup/GameStartTime/IsPlayerOf/Broadcast ONLY; grep 'Timeout.ApplySlowmo'/'Timeout.CenterPrint'/'Timeout.AnnouncePrepare' -> no match; GameWorld.cs:1003 GameStopped still includes Timeout.IsPaused (hard freeze)", result: fail }
+      - { kind: code, ref: "GameWorld.cs:792-796 wires Timeout.VoteActive/Warmup/GameStartTime/IsPlayerOf/Broadcast ONLY (post-fixup 4be8357); grep 'Timeout.ApplySlowmo='/'Timeout.CenterPrint'/'Timeout.AnnouncePrepare' -> still no match; GameWorld.cs:1061 GameStopped still includes Timeout.IsPaused (hard freeze)", result: fail }
     confidence: high
     notes: "No effective change from baseline. The slowmo + countdown + announce machinery now EXISTS in TimeoutController but every host sink is unwired (dead), so the pause is still a hard freeze with no inching, no center-print countdown, no ANNCE_PREPARE. liveness downgraded to partial (the new presentation/slowmo paths are reachable code but dead in effect). Guard chain, early-resume shortening, per-player allowance, IsPlayerOf-wired must-be-player check all remain faithful and live."
 

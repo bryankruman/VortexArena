@@ -5,10 +5,10 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 13
   worst_gaps:
-    - "REGRESSION (Wave-2 STEP->Walk alias): WalkMove's applyGravity gate is `!inWater && ent.MoveType == MoveType.Walk && !WaterJump` (MoveTypePhysics.cs:331) — it omits MOVETYPE_STEP. Base walk.qc:12 applies gravity for `WALK || STEP`. Now that STEP routes through WalkMove, a MOVETYPE_STEP body (monster corpse/body, MonsterAI.cs:210) gets NO gravity in this integrator — it slides + stair-steps but never free-falls. Previously (freefall PhysicsStep) it fell but didn't step; the Wave-2 change traded the stepping gap for a gravity gap on the corpse path."
-    - "Per-entity bounce only PARTIALLY wired: Entity now HAS BounceFactor/BounceStop (EntityWeaponState.cs:46,49) and PhysicsToss reads them (FIX), and mortar (0.5/0.075), electro-secondary (0.3/0.05), raptor (0.2/0) wire them on the real spawn path. BUT MonsterAI.SpawnProjectile (MonsterAI.cs:1270) STILL declares bounceFactor/bounceStop params and NEVER assigns them to proj — so spider web (0.3/0.05) is dropped to defaults; golem zap (0.5/0.075) only matches by coincidence. Nexball basketball (BallEntity.cs, MoveType.Bounce) and racer chassis (Racer.cs:226, should be 0.25/0) set NO bounce fields -> default 0.5/0.075."
-    - "Movetype_Physics_MatchTicrate (sub-tick interpolation: tic_* snapshots, floor(dt/tr) whole frames clamped to 32, residual-dt trace continuation + gravity half-step, sloppy straight-line interp) is STILL entirely missing — no between-tick interpolation in this layer for client-side moveables (gibs/casings/projectiles/trains)."
-    - "CheckWaterTransition STILL fires a hardcoded misc/water_in.wav on any water/slime crossing instead of routing through the entity's .contentstransition callback (no such mechanism in the port); no water_out cue, lava/slime contact-damage transition unwired."
+    - "Movetype_Physics_MatchTicrate (sub-tick interpolation: tic_* snapshots, floor(dt/tr) whole frames clamped to 32, residual-dt trace continuation + gravity half-step, sloppy straight-line interp) is STILL entirely missing — no between-tick interpolation in this layer for client-side moveables (gibs/casings/projectiles/trains). Re-grep 2026-06-22: zero hits for MatchTicrate/tic_origin/tic_velocity in src/."
+    - "Per-entity bounce STILL only partially wired: PhysicsToss reads ent.BounceFactor/BounceStop (live, correct) and mortar (0.5/0.075), electro-secondary (0.3/0.05), raptor (0.2/0) wire them on the real spawn path. BUT MonsterAI.SpawnProjectile (MonsterAI.cs:1276) STILL declares bounceFactor/bounceStop params (:1280) and NEVER assigns them to proj (verified: body :1282-1355 has no assignment) — so spider web (Spider.cs:109 passes 0.3/0.05) is dropped to defaults; golem zap (Golem.cs:153 0.5/0.075) matches only by coincidence. Nexball basketball (BallEntity.cs MoveType.Bounce, no fields, Base 0.6/0.075) and racer chassis (Racer.cs:226 MoveType.Bounce, no fields, Base 0.25/0) -> default 0.5/0.075."
+    - "CheckWaterTransition STILL fires a hardcoded misc/water_in.wav (MoveTypePhysics.cs:241) on any water/slime crossing instead of routing through the entity's .contentstransition callback (no such mechanism in the port — re-grep 2026-06-22: zero ContentsTransition hits); no water_out cue, lava/slime contact-damage transition unwired."
+    - "MOVETYPE_PHYSICS-rider fast-path STILL missing in PushMove (push.qc:124-129): a MOVETYPE_PHYSICS rider goes through the normal PushEntity sweep + stuck-check instead of a translate-and-relink. Low impact (port rarely uses MOVETYPE_PHYSICS riders)."
 features:
   - id: physics-movetypes.dispatch.frame
     name: "Per-tick movetype dispatch + live server entity loop"
@@ -36,7 +36,7 @@ features:
     verification:
       - { kind: code, ref: "RunEntity (MoveTypePhysics.cs:27) switch matches _Movetype_Physics_Frame branch-for-branch; Toss/Bounce/BounceMissile/FlyMissile/Fly/FlyWorldOnly fold into PhysicsToss (MoveTypePhysics.cs:78-86); clients skipped per SV_PlayerPhysics split", result: pass }
     confidence: high
-    notes: "Unchanged by Wave-2. Switch order/branches still match _Movetype_Physics_Frame. STEP now dispatches to WalkMove (not PhysicsStep) — see physics-movetypes.step.physics."
+    notes: "Switch order/branches still match _Movetype_Physics_Frame. STEP dispatches to WalkMove (not PhysicsStep) and now gets gravity correctly — see physics-movetypes.step.physics (regression closed by the 2026-06-22 second-pass fix-up, commit 4be8357)."
 
   - id: physics-movetypes.flymove.slide
     name: "FlyMove slide-and-step solver (clip planes, crease, gravity half-step)"
@@ -139,7 +139,7 @@ features:
       - { name: "mortar grenade bounce", base: "0.5 / 0.075 (g_balance_mortar_bounce*)", port: "wired Mortar.cs:163-164 (0.5/0.075)", match: true }
       - { name: "electro-secondary orb bounce", base: "0.3 / 0.05 (g_balance_electro_secondary_bounce*)", port: "wired Electro.cs:328-329 (0.3/0.05)", match: true }
       - { name: "raptor vehicle bounce", base: "0.2 / 0 (g_vehicle_raptor_bounce*)", port: "wired Raptor.cs:130-131 (0.2/0)", match: true }
-      - { name: "spider web projectile bounce", base: "0.3 / 0.05 (spider.qc:154-155)", port: "Spider.cs:109 passes 0.3/0.05 -> SpawnProjectile DROPS them -> default 0.5/0.075", match: false }
+      - { name: "spider web projectile bounce", base: "0.3 / 0.05 (spider.qc:154-155)", port: "Spider.cs:109 passes 0.3/0.05 -> SpawnProjectile (MonsterAI.cs:1276) DROPS them -> default 0.5/0.075", match: false }
       - { name: "golem zap projectile bounce", base: "0.5 / 0.075 (golem)", port: "Golem.cs:153 passes 0.5/0.075 -> SpawnProjectile DROPS them; coincidentally equals defaults", match: false }
       - { name: "nexball basketball bounce", base: "0.6 / 0.075 (g_nexball_basketball_bounce*)", port: "BallEntity.cs sets MoveType.Bounce but NO bounce fields -> default 0.5/0.075", match: false }
       - { name: "racer chassis bounce", base: "0.25 / 0 (g_vehicle_racer_bounce*)", port: "Racer.cs:226 MoveType.Bounce but NO bounce fields -> default 0.5/0.075", match: false }
@@ -156,10 +156,10 @@ features:
     divergence_rationale: null
     gaps:
       - "FIXED (Wave-2): Entity.BounceFactor/BounceStop now exist (EntityWeaponState.cs:46,49) and PhysicsToss reads them via `==0 ? default : value`, matching Base's `(!x)?default:x`. The settle-threshold d is now the SIGNED Dot (MoveTypePhysics.cs:175), matching Base with grenadebouncedownslopes=1 (was abs() before). Mortar, electro-secondary, and raptor producers wire their values on the live spawn path."
-      - "STILL OPEN: MonsterAI.SpawnProjectile (MonsterAI.cs:1270) declares bounceFactor/bounceStop parameters but NEVER assigns them to proj.BounceFactor/proj.BounceStop (verified: method returns proj at :1349 with no assignment). So spider web (Spider.cs:109 passes 0.3/0.05) is silently dropped to the 0.5/0.075 defaults; golem zap (Golem.cs:153 passes 0.5/0.075) is also dropped but happens to equal the defaults. One-line fix: assign the params inside SpawnProjectile."
-      - "STILL OPEN: nexball basketball (BallEntity.cs MoveType.Bounce) sets no bounce fields -> 0.5/0.075 instead of Base 0.6/0.075 (bouncefactor wrong; bouncestop coincidentally matches). Racer chassis (Racer.cs:226) sets no bounce fields -> 0.5/0.075 instead of Base 0.25/0 (both wrong)."
+      - "STILL OPEN (re-verified 2026-06-22): MonsterAI.SpawnProjectile (MonsterAI.cs:1276) declares bounceFactor/bounceStop parameters (:1280) but NEVER assigns them to proj.BounceFactor/proj.BounceStop (verified: body :1282-1355 has zero assignment, method returns proj at :1355). So spider web (Spider.cs:109 passes 0.3/0.05) is silently dropped to the 0.5/0.075 defaults; golem zap (Golem.cs:153 passes 0.5/0.075) is also dropped but happens to equal the defaults. One-line fix: assign the params inside SpawnProjectile."
+      - "STILL OPEN (re-verified 2026-06-22): nexball basketball (BallEntity.cs MoveType.Bounce at :188/:237/:260/:311, no BounceFactor/BounceStop anywhere in the file) -> 0.5/0.075 instead of Base 0.6/0.075 (bouncefactor wrong; bouncestop coincidentally matches). Racer chassis (Racer.cs:226 MoveType.Bounce, no bounce fields) -> 0.5/0.075 instead of Base 0.25/0 (both wrong)."
     verification:
-      - { kind: code, ref: "MoveTypePhysics.cs:163,172-175 read ent.BounceFactor/BounceStop + signed Dot; Mortar.cs:163, Electro.cs:328, Raptor.cs:130 wire (pass). MonsterAI.cs:1270-1349 SpawnProjectile drops params (fail); BallEntity.cs/Racer.cs:226 no fields (fail)", result: fail }
+      - { kind: code, ref: "MoveTypePhysics.cs:163,172-177 read ent.BounceFactor/BounceStop + signed Dot; Mortar.cs:163-164, Electro.cs:328-329, Raptor.cs:130-131 wire (pass). MonsterAI.cs:1276-1355 SpawnProjectile drops params (fail); BallEntity.cs/Racer.cs:226 no fields (fail)", result: fail }
     confidence: high
     notes: "Major Wave-2 progress: control flow + numerics now faithful, signed-d fixed, and the field plumbing exists with three live producers correctly wired. Remaining: MonsterAI.SpawnProjectile param-drop (spider), and the BallEntity/Racer producers that don't set the fields. Casings are NOT on this server path — they ride the client-only ShellCasings.cs system (own bounce 0.25 shell / 0.5 bullet, faithful), out of this unit's scope."
 
@@ -174,10 +174,10 @@ features:
       - "src/XonoticGodot.Engine/Simulation/MoveTypePhysics.cs:PhysicsStep"
     constants:
       - { name: "step->walk alias", base: "_Movetype_Physics_Step => _Movetype_Physics_Walk (step.qc:5, full slide+stair)", port: "STEP routes through WalkMove (RunEntity MoveTypePhysics.cs:59-71)", match: true }
-      - { name: "step gravity gate", base: "applygravity for `WALK || STEP` (walk.qc:12)", port: "WalkMove applyGravity == MoveType.Walk ONLY (MoveTypePhysics.cs:331) — STEP excluded", match: false }
+      - { name: "step gravity gate", base: "applygravity for `WALK || STEP` (walk.qc:12)", port: "WalkMove applyGravity == (MoveType.Walk || MoveType.Step) (MoveTypePhysics.cs:332) — STEP now included", match: true }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: faithful
       presentation: na
       audio: na
@@ -185,12 +185,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "FIXED (Wave-2): STEP now dispatches to WalkMove (RunEntity MoveTypePhysics.cs:59-71) instead of the freefall-only PhysicsStep, matching Base step.qc:5 (the 1-line _Movetype_Physics_Walk alias). MOVETYPE_STEP bodies now get the full Walk slide + explicit up/forward/down stair stepping. The old hardcoded misc/hitground.wav land cue is gone from the live path (PhysicsStep retained as dead reference only)."
-      - "REGRESSION (Wave-2): WalkMove's applyGravity gate is `!inWater && ent.MoveType == MoveType.Walk && !WaterJump` (MoveTypePhysics.cs:331) and OMITS MoveType.Step. Base walk.qc:12 is `!CheckWater && (WALK || STEP) && !WATERJUMP`. So a MOVETYPE_STEP body routed here gets applyGravity=false -> NO gravity in FlyMove -> it slides/stair-steps but never free-falls. Before Wave-2 the freefall PhysicsStep gave STEP bodies gravity; the alias change traded the stepping gap for a gravity gap on the corpse/body path. One-line fix: include MoveType.Step in the applyGravity condition."
+      - "FIXED (Wave-2): STEP now dispatches to WalkMove (RunEntity MoveTypePhysics.cs:59-71) instead of the freefall-only PhysicsStep, matching Base step.qc:5 (the 1-line _Movetype_Physics_Walk alias). MOVETYPE_STEP bodies get the full Walk slide + explicit up/forward/down stair stepping. The old hardcoded misc/hitground.wav land cue is gone from the live path (PhysicsStep retained as dead reference only)."
+      - "FIXED (2026-06-22 second-pass fix-up, commit 4be8357): WalkMove's applyGravity gate is now `!inWater && (ent.MoveType == MoveType.Walk || ent.MoveType == MoveType.Step) && !WaterJump` (MoveTypePhysics.cs:332), matching Base walk.qc:12 `!CheckWater && (WALK || STEP) && !WATERJUMP`. The Wave-2 STEP-gravity regression (gate omitted Step, so a routed STEP body never free-fell) is closed — STEP bodies now both stair-step AND fall under gravity in this integrator."
     verification:
-      - { kind: code, ref: "RunEntity MoveTypePhysics.cs:59 calls WalkMove for MoveType.Step (FIX). WalkMove:331 applyGravity excludes Step; FlyMove.Run:542/691 only applies gravity when applyGravity true -> STEP body unaffected by gravity (regression). step.qc:5 alias + walk.qc:12 dual WALK/STEP gravity confirmed in Base.", result: fail }
+      - { kind: code, ref: "RunEntity MoveTypePhysics.cs:59 calls WalkMove for MoveType.Step. WalkMove:332 applyGravity now includes MoveType.Step (git show 4be8357 confirms the one-line fix landed after the baseline). step.qc:5 alias + walk.qc:12 dual WALK/STEP gravity confirmed in Base. Step is live: monsters MonsterAI.cs:213/1681, turrets/walker/ewheel, spiderbot vehicle.", result: pass }
     confidence: high
-    notes: "Live (monster bodies set MoveType.Step, MonsterAI.cs:210). Wave-2 closed the stepping gap but introduced a gravity-gate omission. Net: corpse/body now steps but doesn't fall under gravity in this integrator. Both are single-line fixes."
+    notes: "Live (monster bodies, walker/ewheel turrets, spiderbot all set MoveType.Step). Wave-2 closed the stepping gap; the follow-up second-pass fix-up (4be8357, dated 2026-06-23) closed the gravity-gate omission. Net: STEP bodies now both step and fall. Fully faithful."
 
   - id: physics-movetypes.walk.stepmove
     name: "WalkMove slide + explicit stair up/down stepping"
@@ -206,7 +206,7 @@ features:
       - { name: "sv_gameplayfix_stepdown_maxspeed", base: "400 (physicsX.cfg:60)", port: "StepDownMaxSpeed=400 (vdist >= 400 skip)", match: true }
       - { name: "sv_gameplayfix_stepmultipletimes", base: "1 (xonotic-server.cfg:563)", port: "in-loop step always enabled via stepHeight pass-through", match: true }
       - { name: "sv_gameplayfix_downtraceonground", base: "engine default 1", port: "DownTraceOnGround=true", match: true }
-      - { name: "applygravity movetype gate", base: "WALK || STEP (walk.qc:12)", port: "MoveType.Walk only (MoveTypePhysics.cs:331)", match: false }
+      - { name: "applygravity movetype gate", base: "WALK || STEP (walk.qc:12)", port: "MoveType.Walk || MoveType.Step (MoveTypePhysics.cs:332)", match: true }
       - { name: "progress epsilon", base: "0.03125", port: "0.03125", match: true }
       - { name: "sv_wallfriction body", base: "#if 0 no-op", port: "no-op", match: true }
       - { name: "IS_ONSLICK exception on stepdown skip", base: "vdist(>=400) && !IS_ONSLICK (walk.qc:151)", port: "no onslick modeling — !onslick always taken", match: true }
@@ -220,12 +220,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "FIXED (Wave-2): sv_stepheight 18->31, sv_gameplayfix_stepdown 1->2 (now SET_ONGROUND + groundentity on a good descending-stair landing, MoveTypePhysics.cs:441-445, matching walk.qc:171-175), and the sv_gameplayfix_stepdown_maxspeed 400 gate added (MoveTypePhysics.cs:427). The CheckWater gravity-gate-too-early bug is also closed (see physics-movetypes.checkwater)."
-      - "MINOR: applygravity (MoveTypePhysics.cs:331) gates on `MoveType.Walk` only; Base walk.qc:12 gates on `WALK || STEP`. For a genuine MoveType.Walk entity this is faithful, but it is the same omission that breaks STEP-body gravity (tracked as the regression in physics-movetypes.step.physics). Left noted here because the fix is in WalkMove."
+      - "FIXED (Wave-2): sv_stepheight 18->31, sv_gameplayfix_stepdown 1->2 (now SET_ONGROUND + groundentity on a good descending-stair landing, MoveTypePhysics.cs:441-445, matching walk.qc:171-175), and the sv_gameplayfix_stepdown_maxspeed 400 gate added (MoveTypePhysics.cs:426-428). The CheckWater gravity-gate-too-early bug is also closed (see physics-movetypes.checkwater)."
+      - "FIXED (2026-06-22 second-pass fix-up): applygravity (MoveTypePhysics.cs:332) now gates on `MoveType.Walk || MoveType.Step`, matching Base walk.qc:12 `WALK || STEP`. The earlier Walk-only omission (which also broke STEP-body gravity) is closed. No residual gaps on this row."
     verification:
-      - { kind: code, ref: "MoveTypePhysics.cs:20 StepHeight=31, :319 StepDown=2, :320 StepDownMaxSpeed=400, :427 vdist gate, :441-445 SET_ONGROUND glue; all match walk.qc PHYS_STEPHEIGHT(31)/STEPDOWN(2)/STEPDOWN_MAXSPEED(400). applyGravity:331 omits Step.", result: pass }
+      - { kind: code, ref: "MoveTypePhysics.cs:20 StepHeight=31, :319 StepDown=2, :320 StepDownMaxSpeed=400, :426-428 vdist gate, :441-445 SET_ONGROUND glue; all match walk.qc PHYS_STEPHEIGHT(31)/STEPDOWN(2)/STEPDOWN_MAXSPEED(400). applyGravity:332 now includes Step (WALK||STEP).", result: pass }
     confidence: high
-    notes: "Wave-2 brought the Walk tunables to full parity (stepheight 31, stepdown==2 glue, maxspeed gate) and fixed the CheckWater gravity gate. Control flow (primary FlyMove, downtraceonground re-probe, up/forward/down explicit step, revert-on-no-progress, down-step glue) faithful. The only residual is the applyGravity `WALK || STEP` omission, which only bites STEP entities."
+    notes: "Wave-2 brought the Walk tunables to full parity (stepheight 31, stepdown==2 glue, maxspeed gate) and fixed the CheckWater gravity gate; the 2026-06-22 second-pass fix-up closed the applyGravity WALK||STEP omission. Control flow (primary FlyMove, downtraceonground re-probe, up/forward/down explicit step, revert-on-no-progress, down-step glue) faithful. No residual gaps."
 
   - id: physics-movetypes.push.pusher
     name: "MOVETYPE_PUSH movers (local-time advance + think)"

@@ -311,7 +311,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Arc.cs:CheckAmmoPrimary"
       - "src/XonoticGodot.Common/Gameplay/Weapons/Arc.cs:CheckAmmoSecondary"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireGate.cs:493 (WeaponAmmo.Check Arc case)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireGate.cs:519 (WeaponAmmo.Check Arc case)"
     constants:
       - { name: "beam_ammo gate", base: "!beam_ammo || cells > 0", port: "Beam.Ammo==0 || cells > 0", match: true }
       - { name: "bolt_ammo gate", base: "cells >= bolt_ammo (1)", port: "cells >= 1", match: true }
@@ -328,9 +328,9 @@ features:
     gaps:
       - "Minor: Base wr_checkammo2 bolt branch also counts reloaded `weapon_load` (cells >= bolt_ammo from the reserve) as satisfying; the port has no per-weapon reload reserve, so this OR-term is absent. Irrelevant without the reload system (g_balance_arc_reload_ammo 0 at stock)."
     verification:
-      - { kind: value-diff, ref: "Arc.cs:464-476 vs arc.qc:664-679; dispatch confirmed live at WeaponFireGate.cs:493 -> CheckAmmoWithAutoSwitch -> SwitchToOtherWeapon", result: pass }
+      - { kind: value-diff, ref: "Arc.cs:464-476 vs arc.qc:664-679; dispatch confirmed live at WeaponFireGate.cs:519 -> CheckAmmoWithAutoSwitch -> SwitchToOtherWeapon", result: pass }
     confidence: high
-    notes: "FIXED in Wave-2 (both baseline gaps closed): primary CheckAmmoPrimary is now `Beam.Ammo==0 || cells > 0` (Arc.cs:465), matching `!beam_ammo || GetResource>0` — a player with 1-5 cells now keeps firing the beam instead of auto-switching (the confirmed bug). Secondary burst-beam branch is now `OverheatMax>0 && (BurstAmmo==0 || cells>0)` (Arc.cs:475) matching arc.qc:676-678. Bolt gate `cells >= bolt_ammo` already matched. Dispatched live via WeaponAmmo.Check (Arc case, WeaponFireGate.cs:493) into the auto-switch. Status upgraded partial->faithful."
+    notes: "FIXED in Wave-2 (both baseline gaps closed): primary CheckAmmoPrimary is now `Beam.Ammo==0 || cells > 0` (Arc.cs:465), matching `!beam_ammo || GetResource>0` — a player with 1-5 cells now keeps firing the beam instead of auto-switching (the confirmed bug). Secondary burst-beam branch is now `OverheatMax>0 && (BurstAmmo==0 || cells>0)` (Arc.cs:475) matching arc.qc:676-678. Bolt gate `cells >= bolt_ammo` already matched. Dispatched live via WeaponAmmo.Check (Arc case, WeaponFireGate.cs:519) into the auto-switch. Status upgraded partial->faithful."
 
   - id: weapon-arc.beam.visual
     name: "Visible beam rendering (Draw_ArcBeam / ENT_CLIENT_ARC_BEAM)"

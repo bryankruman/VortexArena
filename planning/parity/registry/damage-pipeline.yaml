@@ -5,11 +5,11 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 9
   worst_gaps:
-    - "REGRESSION (Wave-2 fire rewrite): the new frametime-based burn tick (StatusEffects.FireApplyDamage deals dps*min(frametime,remaining)) is correct for fireball (now routes through FireAddDamage which sets .FireDamagePerSec=raw dps) and napalm (raw Apply passes raw dps as Strength -> tick fallback treats Strength as dps), BUT MonsterFramework.AddFireDamage STILL pre-scales Strength as `dps/0.05*FrameTime` (MonsterFramework.cs:96) and the new tick then multiplies that by frametime AGAIN -> wyvern (Wyvern.cs:164) and the Inferno buff (BuffsMutator.cs:437) now deal ~dps*FrameTime^2/0.05 ≈ 0.4% of intended fire damage. The old tick (Strength*0.05) matched the pre-scaled convention; the rewrite broke it for the two AddFireDamage callers."
     - "No central Heal() dispatcher (QC server/damage.qc:948 — game_stopped/frozen/dead gating + .event_heal route + limit cap) still does not exist in the port; healing remains ad-hoc per entity/item with no shared gate. Unchanged from baseline."
     - "Damage() front gate still omits the QC game_stopped check (damage.qc:46) AND the spectator killcount==FRAGS_SPECTATOR early-out (damage.qc:485) inside DamageSystem.Apply — both still gated at the gametype/caller layer. Unchanged from baseline."
-    - "Teamplay: complainTeamDamage now drives the mode-4 mirror multiplier (DamageSystem.Apply:202-203) but the team-kill complaint SOUND (teamkill_soundtime/teamkill_complain) is still NOT played, and g_teamdamage_resetspeed decay of dmg_team is still not applied. In-code fallbacks still 2/0 vs stock 4/1 (correct only when xonotic-server.cfg is loaded)."
+    - "Teamplay: complainTeamDamage drives the mode-4 mirror multiplier (DamageSystem.Apply:202-203) but the team-kill complaint SOUND (teamkill_soundtime/teamkill_complain) is still NOT played (Apply:268 `_ = complainTeamDamage` discard), and g_teamdamage_resetspeed decay of dmg_team is still not applied. In-code fallbacks still 2/0 vs stock 4/1 (correct only when xonotic-server.cfg is loaded)."
     - "Fire TRANSFER (g_balance_firetransfer_damage 0.8 / _time 0.9 to adjacent g_damagedbycontents entities) is still entirely missing — left as a documented host-loop TODO in FireApplyDamage; burning never chains between bunched-up players."
+    - "Napalm ignition (NadeNapalmBoom.cs:190) still uses the raw StatusEffectsCatalog.Apply(strength=dps) path instead of FireAddDamage: correct dps via the FireApplyDamage Strength fallback, but no overlap LEMMA merge and no FireDeathType attribution (its burn ticks fall back to generic DeathTypes.Fire). Lava-contents ignition feeder still not wired."
 features:
   - id: damage-pipeline.dispatch.front_gate
     name: "Damage() front gate + hook/sound same-team rule + always-lethal kill/teamchange"
@@ -33,11 +33,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "QC game_stopped early-out (damage.qc:46) is still NOT checked inside Apply — gating lives at the gametype/caller layer (DamageSystem.cs:124 comment confirms); a damage call made while game_stopped would still apply."
+      - "QC game_stopped early-out (damage.qc:46) is still NOT checked inside Apply — gating lives at the gametype/caller layer; a damage call made while game_stopped would still apply."
       - "Spectator killcount==FRAGS_SPECTATOR early-out (damage.qc:485) is still gated at the gametype layer, not in Apply; functionally covered but not at this seam."
     verification:
-      - { kind: code, ref: "DamageSystem.Apply — IsFreed/TakeDamage gate, soundOrHook same-team return, IsAlwaysLethal block clears SpawnShield + GodMode then sets damage 100000 (unchanged by Wave-2)", result: pass }
-      - { kind: code, ref: "GameInit.cs installs Combat.System = new DamageSystem(); broad live Combat.Damage / WeaponSplash.RadiusDamage caller fan-out", result: pass }
+      - { kind: code, ref: "DamageSystem.Apply — IsFreed/TakeDamage gate, soundOrHook same-team return, IsAlwaysLethal block clears SpawnShield + GodMode then sets damage 100000 (unchanged by the waves)", result: pass }
+      - { kind: code, ref: "GameInit installs Combat.System = new DamageSystem(); broad live Combat.Damage / WeaponSplash.RadiusDamage caller fan-out", result: pass }
     confidence: high
     notes: "Unchanged from baseline. Hook/sound same-team rule via HITTYPE_SOUND flag + 'hook' weapon-name tag. game_stopped/spectator gating still external — a known but low-risk seam gap."
 
@@ -67,14 +67,14 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "In-code fallbacks still differ from stock Base defaults: CvarTeamplayMode fallback 2 (DamageSystem.cs:179) vs xonotic-server.cfg:279 teamplay_mode 4; CvarFriendlyFireVirtualForce fallback 0 (DamageSystem.cs:228) vs xonotic-server.cfg:285 g_friendlyfire_virtual_force 1. Cvars read live, so correct when the server cfg is loaded; a headless run with no cfg behaves wrong. Unchanged from baseline."
-      - "complainTeamDamage is now USED for the mode-4 mirror multiplier (DamageSystem.Apply:202-203), but the team-kill complaint SOUND timer (teamkill_soundtime/teamkill_complain) is still NOT wired — a friendly-fire offender hears no complaint cue."
-      - "g_teamdamage_resetspeed (decay of dmg_team over time) is still not applied — accumulated team damage never bleeds off (DmgTeam only grows)."
+      - "In-code fallbacks still differ from stock Base defaults: CvarTeamplayMode fallback 2 (DamageSystem.cs) vs xonotic-server.cfg:279 teamplay_mode 4; CvarFriendlyFireVirtualForce fallback 0 vs xonotic-server.cfg:285 g_friendlyfire_virtual_force 1. Cvars read live, so correct when the server cfg is loaded; a headless run with no cfg behaves wrong. Unchanged from baseline."
+      - "complainTeamDamage is USED for the mode-4 mirror multiplier (DamageSystem.Apply:202-203), but the team-kill complaint SOUND timer (teamkill_soundtime/teamkill_complain) is still NOT wired (Apply:268 `_ = complainTeamDamage` discard) — a friendly-fire offender hears no complaint cue. Unchanged from baseline."
+      - "g_teamdamage_resetspeed (decay of dmg_team over time) is still not applied — accumulated team damage never bleeds off (DmgTeam only grows). Unchanged from baseline."
     verification:
-      - { kind: code, ref: "DamageSystem.Apply:179-236 — modes 1/2/3/4, virtual ff + virtual mirror routing into DmgTake/DmgSave; mode-4 complaint/mirror math faithful", result: pass }
-      - { kind: code, ref: "grep teamkill_complain/teamkill_soundtime/resetspeed in src/ — no complaint sound or decay present", result: fail }
+      - { kind: code, ref: "DamageSystem.Apply:179-248 — modes 1/2/3/4, virtual ff + virtual mirror routing into DmgTake/DmgSave; mode-4 complaint/mirror math faithful", result: pass }
+      - { kind: code, ref: "grep teamkill_complain/teamkill_soundtime/resetspeed in src/ — no complaint sound or decay present; Apply:268 discards complainTeamDamage past the mirror multiplier", result: fail }
     confidence: high
-    notes: "Mode 1-4 + virtual paths faithful. Baseline's `_ = complainTeamDamage` discard is gone (now feeds the mirror multiplier), but the complaint sound + dmg_team decay are still unwired and the fallbacks still diverge."
+    notes: "Unchanged from baseline. Mode 1-4 + virtual paths faithful; complaint sound + dmg_team decay still unwired and the fallbacks still diverge."
 
   - id: damage-pipeline.dispatch.factors_selfdamage
     name: "Global weapon damage/force factors + self-damage percent + Damage_Calculate hook"
@@ -99,7 +99,7 @@ features:
     gaps: []
     verification:
       - { kind: code, ref: "DamageSystem.Apply:263 — self-damage percent applied once when attacker==targ; Damage_Calculate hook (MutatorHooks.DamageCalculate) fires after global factors / before self-damage", result: pass }
-      - { kind: code, ref: "WeaponSplash.RadiusDamage:187-190 comment confirms selfdamage NOT scaled in splash (DMG1)", result: pass }
+      - { kind: code, ref: "WeaponSplash.RadiusDamage comment confirms selfdamage NOT scaled in splash (DMG1)", result: pass }
     confidence: high
     notes: "Unchanged from baseline (already faithful). Factors gated on !IsSpecial like QC; Damage_Calculate mutator hook lets mutators rewrite damage/mirror/force."
 
@@ -143,12 +143,14 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:PlayerDamage"
       - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:PlayerCorpseDamage"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:HandicapTotal"
       - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:EmitPainSound"
     constants:
       - { name: "g_spawnshield_blockdamage", base: "1 (full block)", port: "1", match: true }
       - { name: "g_maxpushtime", base: "8 s", port: "8 s", match: true }
       - { name: "g_balance_pause_health_regen", base: "5 s", port: "5 s", match: true }
       - { name: "pain debounce", base: "0.5 s", port: "0.5 s", match: true }
+      - { name: "voluntary handicap (cl_handicap*)", base: "forced x voluntary, bound [1,10]", port: "VoluntaryHandicapProvider * forced (now wired)", match: true }
       - { name: "armorimpact sound gate", base: "save>10 & non-fatal", port: "save>10 & (initialHealth-take)>0", match: true }
       - { name: "bodyimpact2 / bodyimpact1 gate", base: "take>30 / take>10", port: "take>30 / take>10", match: true }
       - { name: "sv_gibhealth (corpse gib floor)", base: "100", port: "100", match: true }
@@ -163,14 +165,16 @@ features:
     divergence_rationale: null
     gaps:
       - "Bot-aim shake (QC player.qc, v_angle jitter scaled by damage/skill) is not ported — bots are not visually staggered by taking damage. Unchanged."
-      - "IsTypeFrag is still always set false (DamageSystem.PlayerDamage:400-421 — PHYS_INPUT_BUTTON_CHAT not wired). A CONSUMER now exists (Scores.cs:622 reads victim.IsTypeFrag for the typefrag bonus), so the seam is plumbed end-to-end, but the producer is hardwired false so the TYPEFRAG path never triggers. Partial-presentation."
+      - "IsTypeFrag is still always set false (DamageSystem.PlayerDamage:400/406/416/421 — PHYS_INPUT_BUTTON_CHAT not wired). A CONSUMER exists (Scores.cs reads victim.IsTypeFrag for the typefrag bonus), so the seam is plumbed end-to-end, but the producer is hardwired false so the TYPEFRAG path never triggers. Unchanged from baseline — presentation stays partial."
       - "Pain anim selection (ANIMACTION_PAIN1/2) is host-side and not driven here (presentation); pain/death VOICE volume matches QC (VOL_BASE)."
     verification:
-      - { kind: code, ref: "DamageSystem.PlayerDamage + Killed — handicap, shield, split, godmode tab (MaxArmorValue+=save+take), regen pause, pusher window, SplitHealthArmor hook, armor/body-impact + pain sounds, corpse setup, gib", result: pass }
-      - { kind: code, ref: "Scores.cs:622 now consumes victim.IsTypeFrag, but DamageSystem.PlayerDamage:400/406/416/421 hardwire it false", result: pass }
+      - { kind: code, ref: "DamageSystem.PlayerDamage + Killed — handicap (forced x voluntary), shield, split, godmode tab, regen pause, pusher window, SplitHealthArmor hook, armor/body-impact + pain sounds, corpse setup, gib", result: pass }
+      - { kind: code, ref: "HandicapTotal now multiplies forced HandicapTake/Give by VoluntaryHandicapProvider (cl_handicap*), wired live in Commands.cs:366 (server) reading the per-client cvar store — was forced-only at baseline", result: pass }
+      - { kind: code, ref: "ModelSoundDir now resolves the real per-model `.sounds` manifest via Sounds.ModelSoundsFile(model,skin) (QC get_model_datafilename) instead of always-null/default — per-model pain/death voice; was hardwired null at baseline", result: pass }
+      - { kind: code, ref: "Scores.cs consumes victim.IsTypeFrag, but DamageSystem.PlayerDamage hardwires it false (chat-input unwired)", result: pass }
       - { kind: test, ref: "MonsterDamageDeathTests / GameplaySystemsTests death-hook coverage", result: pass }
     confidence: high
-    notes: "Unchanged behavior from baseline. Corpse transition + PlayerCorpseDamage gib ported. New since baseline: Scores.cs consumes IsTypeFrag, but it is still always false (chat-input unwired), so no functional change."
+    notes: "Logic/values/timing/audio faithful. Two real refinements since baseline (both LIVE): voluntary cl_handicap* now wired into HandicapTotal (was forced-only), and ModelSoundDir now resolves the real per-model .sounds pack (was null/default). Presentation stays partial: IsTypeFrag still hardwired false + bot-aim shake missing."
 
   - id: damage-pipeline.knockback.calcpush
     name: "Knockback application + damage_explosion_calcpush momentum projection"
@@ -227,7 +231,7 @@ features:
       - { name: "g_throughfloor_damage / _force", base: "0.75 / 0.75", port: "0.75 / 0.75", match: true }
       - { name: "throughfloor max_stddev dmg/force", base: "2 / 10", port: "2 / 10", match: true }
       - { name: "throughfloor steps player/other", base: "1..100 / 1..10", port: "1..100 / 1..10", match: true }
-      - { name: "HITTYPE_SPLASH on indirect/non-special victim (damage.qc:917-920)", base: "OR'd", port: "OR'd via SplashDeathType (WeaponSplash.RadiusDamage:212/222)", match: true }
+      - { name: "HITTYPE_SPLASH on indirect/non-special victim (damage.qc:917-920)", base: "OR'd (incl. indirect weapon-blast hits)", port: "OR'd via SplashDeathType on BOTH the special-deathTag path AND the int weapon-id indirect path", match: true }
       - { name: "MIN_DAMAGEEXTRARADIUS per-target dist shrink", base: "bound(0.1, damageextraradius, 16) (damage.qc:767)", port: "not applied", match: false }
     status:
       logic: faithful
@@ -243,11 +247,11 @@ features:
       - "RadiusDamage_running recursion guard (damage.qc:715-724) is replaced by per-call method-local target buffers (safe re-entry), so the explicit backtrace-on-recursion warning is gone (intentional, harmless)."
     verification:
       - { kind: code, ref: "WeaponSplash.RadiusDamage:49-237 — falloff, force ref point gated by g_player_damageplayercenter, multi-sample through-floor LOS, warpzone find+trace, Prandom box sampling", result: pass }
-      - { kind: code, ref: "HITTYPE_SPLASH now WIRED: directHit is a real param (RadiusDamage:51); isIndirect = !ReferenceEquals(e,directHit) (:202); indirect non-special victims routed through DamageSystem.SplashDeathType (:212 deathTag path, :222 int-weapon path) which ORs HITTYPE_SPLASH (no-op for IsSpecial); direct hits keep the plain tag via WeaponFiring.ApplyDamage", result: pass }
-      - { kind: code, ref: "Live consumers of the bit confirm the channel is exercised: DeathMessages.cs:41, Devastator.cs:378, Breakable/Buttons/Doors/Triggers HasHitType(Splash) gates", result: pass }
+      - { kind: code, ref: "HITTYPE_SPLASH WIRED + improved: isIndirect=!ReferenceEquals(e,directHit); special-deathTag path AND the int weapon-id indirect path now both resolve to a string tag and OR HITTYPE_SPLASH via DamageSystem.SplashDeathType (no-op for IsSpecial); direct hits keep the plain int fast path (WeaponSplash.cs:189-234)", result: pass }
+      - { kind: code, ref: "Live consumers of the bit confirm the channel is exercised: DeathMessages.cs, Devastator.cs, Breakable/Buttons/Doors/Triggers HasHitType(Splash) gates", result: pass }
       - { kind: test, ref: "SplashDamageSingleApplicationTests.OneBlast_AppliesDamageAndKnockbackExactlyOnce; DevastatorForceXyScaleTests", result: pass }
     confidence: high
-    notes: "FIX vs baseline: the HITTYPE_SPLASH omission (the unit's #1 worst-gap) is now closed and LIVE. RadiusDamage is the single central splash path for every blast weapon, so all indirect victims now carry the splash bit (specials exempted, direct hits plain), restoring the splash-vs-direct kill/effect classification. logic upgraded partial->faithful. Remaining: MIN_DAMAGEEXTRARADIUS shrink (minor). Damage_DamageInfo blast broadcast remains a deliberate headless no-op."
+    notes: "HITTYPE_SPLASH remains closed and LIVE (baseline FIX held), and is now slightly broader: the int weapon-id indirect path also resolves to a string deathtype so it can carry the splash bit (previously only the special-deathTag path could). RadiusDamage is the single central splash path for every blast weapon. Remaining: MIN_DAMAGEEXTRARADIUS shrink (minor). Damage_DamageInfo blast broadcast remains a deliberate headless no-op."
 
   - id: damage-pipeline.fire.burning
     name: "Burning damage-over-time (Fire_AddDamage / Fire_ApplyDamage + fire transfer)"
@@ -260,36 +264,35 @@ features:
       - "src/XonoticGodot.Common/Gameplay/StatusEffects.cs:FireApplyDamage"
       - "src/XonoticGodot.Common/Gameplay/StatusEffects.cs:Tick"
       - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterFramework.cs:AddFireDamage"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Fireball.cs:331"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Fireball.cs:337"
       - "src/XonoticGodot.Common/Gameplay/Nades/Booms/NadeNapalmBoom.cs:190"
     constants:
       - { name: "g_balance_firetransfer_damage", base: "0.8", port: "not implemented (documented TODO)", match: false }
       - { name: "g_balance_firetransfer_time", base: "0.9", port: "not implemented (documented TODO)", match: false }
-      - { name: "min ignite time", base: "max(t, 0.1) s (Fire_AddDamage:972)", port: "FireAddDamage: max(t,0.1) (faithful); AddFireDamage: burnTime<=0 -> 1s (no 0.1 floor)", match: false }
+      - { name: "min ignite time", base: "max(t, 0.1) s (Fire_AddDamage:972)", port: "FireAddDamage: max(t,0.1) (faithful); all callers (incl. monster AddFireDamage) now route through it", match: true }
       - { name: "per-tick damage", base: "fire_damagepersec * min(frametime, remaining) (Fire_ApplyDamage:1081-1082)", port: "FireApplyDamage: dps*min(frametime,fireend-now) where dps = FireDamagePerSec (set by FireAddDamage) else Strength fallback", match: true }
-      - { name: "ignition Strength convention", base: "dps stored in .fire_damagepersec, ticked by frametime", port: "INCONSISTENT: fireball=FireAddDamage(raw dps->FireDamagePerSec) OK; napalm=raw Apply(strength=dps) OK via fallback; wyvern/inferno=AddFireDamage pre-scales Strength=dps/0.05*FrameTime -> DOUBLE-scaled by new tick (BROKEN)", match: false }
-      - { name: "overlap-ignition merge (LEMMA)", base: "combine without exceeding maxdps (Fire_AddDamage:975-1058)", port: "FireAddDamage implements the LEMMA; raw-Apply ignition sites (napalm/wyvern/inferno) still overwrite", match: false }
+      - { name: "ignition Strength convention", base: "dps stored in .fire_damagepersec, ticked by frametime", port: "CONSISTENT for the raw-dps sources: fireball + monster/wyvern + inferno all route through FireAddDamage (FireDamagePerSec=raw dps); napalm uses raw Apply(strength=dps) -> correct via the FireApplyDamage Strength fallback", match: true }
+      - { name: "overlap-ignition merge (LEMMA)", base: "combine without exceeding maxdps (Fire_AddDamage:975-1058)", port: "FireAddDamage implements the LEMMA (fireball/monster/wyvern/inferno); napalm raw-Apply ignition still overwrites", match: false }
     status:
       logic: partial
-      values: partial
-      timing: partial
+      values: faithful
+      timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "REGRESSION: wyvern (Wyvern.cs:164) and Inferno buff (BuffsMutator.cs:437) ignite via MonsterFramework.AddFireDamage, which still pre-scales Strength = dps/0.05*FrameTime (MonsterFramework.cs:96) for the OLD tick convention. The Wave-2 tick rewrite (FireApplyDamage) now multiplies Strength by frametime AGAIN, so these two sources deal ~dps*FrameTime^2/0.05 (≈0.4% at 72fps) — far less than intended. Was faithful-enough under the old Strength*0.05 tick; the rewrite broke it without updating AddFireDamage. FIX: route AddFireDamage through StatusEffectsCatalog.FireAddDamage (pass raw dps), or set .FireDamagePerSec=dps directly."
-      - "Fire TRANSFER is still entirely missing: QC Fire_ApplyDamage:1094-1104 re-ignites every overlapping non-frozen non-independent g_damagedbycontents entity at firetransfer_damage 0.8 over firetransfer_time 0.9 — left as a documented host-loop TODO in FireApplyDamage. Burning never chains between bunched-up players."
-      - "Overlap-merge LEMMA is now implemented in FireAddDamage (fireball path), but the napalm/wyvern/inferno raw-Apply ignition sites still overwrite the status effect rather than combining — stacked fire from those sources deals a different total/duration than QC."
-      - "Burn deathtype/owner attribution is now carried for FireAddDamage callers (.FireDeathType/.FireOwner set in FireAddDamage, used by FireApplyDamage); but the raw-Apply ignition sites (napalm/wyvern/inferno) never set .FireDeathType, so their burn ticks fall back to the generic DeathTypes.Fire ('fire') and lose the originating-weapon obituary."
+      - "Fire TRANSFER is still entirely missing: QC Fire_ApplyDamage:1094-1104 re-ignites every overlapping non-frozen non-independent g_damagedbycontents entity at firetransfer_damage 0.8 over firetransfer_time 0.9 — left as a documented host-loop TODO in FireApplyDamage. Burning never chains between bunched-up players. Unchanged from baseline."
+      - "Napalm (NadeNapalmBoom.cs:190) still ignites via the raw StatusEffectsCatalog.Apply(strength=dps) path rather than FireAddDamage: the per-tick DPS is correct (Strength fallback), but it does NOT use the overlap LEMMA merge (stacked napalm fire overwrites instead of combining) and does NOT set .FireDeathType (its burn ticks fall back to generic DeathTypes.Fire, losing the napalm obituary)."
       - "QC lava-contents ignition (main.qc:105 Fire_AddDamage on DEATH_LAVA) is still not wired as an ignition source; the Burning m_persistent lava-stick (BurningPersistent, g_balance_contents_playerdamage_lava_burn) IS ported but has no ignition feeder."
     verification:
-      - { kind: code, ref: "StatusEffects.Tick:448-489 runs per active effect: PERSISTENT recompute + OnTick (BurningTick -> FireApplyDamage) + TIMEOUT expiry; called live GameWorld.cs:1187 per non-dead player per frame", result: pass }
-      - { kind: code, ref: "FireApplyDamage:307-329 deals dps*min(frametime,remaining) with dps = FireDamagePerSec (set by FireAddDamage) else Strength fallback; frametime-correct for raw-dps Strength", result: pass }
-      - { kind: code, ref: "Fireball.cs:331/487 now call FireAddDamage (sets FireDamagePerSec=raw dps) -> faithful. NadeNapalmBoom.cs:190 raw Apply(strength=dps) -> correct via fallback. MonsterFramework.cs:96 pre-scales Strength=dps/0.05*FrameTime + tick re-multiplies by frametime -> wyvern/inferno BROKEN", result: fail }
+      - { kind: code, ref: "StatusEffects.Tick:448-489 runs per active effect: PERSISTENT recompute + OnTick (BurningTick -> FireApplyDamage) + TIMEOUT expiry; called live GameWorld.cs:1245 per non-dead player per frame", result: pass }
+      - { kind: code, ref: "FireApplyDamage:307-329 deals dps*min(frametime,remaining) with dps = FireDamagePerSec (set by FireAddDamage) else Strength fallback; frametime-correct", result: pass }
+      - { kind: code, ref: "REGRESSION FIXED: MonsterFramework.AddFireDamage (MonsterFramework.cs:89-94) now routes through StatusEffectsCatalog.FireAddDamage with the RAW totalDamage/burnTime — the old `dps/0.05*FrameTime` Strength pre-scale (which the Wave-2 tick rewrite double-counted) is gone. Wyvern.cs:164 (5*skill burn) and BuffsMutator.cs:437 (inferno) are live callers and pass a real deathType, so their burns are now full-strength and carry the correct deathtype attribution", result: pass }
+      - { kind: code, ref: "Fireball.cs:337/499 call FireAddDamage (FireDamagePerSec=raw dps, deathtype with HITTYPE_BOUNCE) -> faithful. NadeNapalmBoom.cs:190 raw Apply(strength=dps) -> correct dps via fallback, but no LEMMA / no FireDeathType", result: pass }
     confidence: high
-    notes: "MIXED vs baseline. FIX: the LEMMA merge + frametime-correct per-tick + removal sound (steam_burst) + PERSISTENT (lava-stick/superweapon) machinery were added, and the fireball path is now genuinely faithful (was inconsistent raw-dps). REGRESSION: the tick rewrite broke wyvern/inferno fire (double frametime-scaling via the un-updated MonsterFramework.AddFireDamage pre-scaler). Fire transfer + raw-site LEMMA + special-deathtype attribution for napalm/wyvern remain open."
+    notes: "REGRESSION RESOLVED. The baseline's #1 worst-gap — the Wave-2 tick rewrite double-scaling wyvern/inferno fire to ~0.4% via the un-updated MonsterFramework.AddFireDamage pre-scaler — is now fixed: AddFireDamage routes through FireAddDamage with raw dps/time, so all monster/wyvern/inferno burns are full-strength AND carry their deathtype. values/timing back to faithful. logic stays partial only because fire TRANSFER is still missing and napalm's raw-Apply site skips the LEMMA + deathtype. Lava-ignition feeder still absent."
 
   - id: damage-pipeline.heal.dispatcher
     name: "Central Heal() dispatcher (game_stopped/frozen/dead gate + event_heal route + limit cap)"
@@ -313,4 +316,4 @@ features:
     verification:
       - { kind: code, ref: "grep for static Heal / event_heal / EventHeal in src/.../Gameplay/Damage/ — no central dispatcher present", result: fail }
     confidence: high
-    notes: "Unchanged from baseline — Wave-2 did not add a Heal() dispatcher. Flagged missing for tracking; the damage-pipeline unit's QC scope (server/damage.qc) includes Heal()."
+    notes: "Unchanged from baseline — the waves did not add a Heal() dispatcher. Flagged missing for tracking; the damage-pipeline unit's QC scope (server/damage.qc) includes Heal()."

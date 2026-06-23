@@ -1,13 +1,12 @@
 unit: warpzones
 category: mapobject
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-23"
 summary:
   feature_count: 18
   worst_gaps:
     - "No client portal render: the warpzone surface is a static dark mirror placeholder (HeroMaterials.BuildPortal), not a SubViewport camera view of the linked OUT plane — you cannot see through a warpzone."
-    - "No client view rotate across the seam (WarpZone_FixView / ENT_CLIENT_WARPZONE_TELEPORTED unported) — crossing snaps the camera."
-    - "Warpzone crossing is STILL not client-predicted on the live path: TriggerTouch.PredictWarpzonesAmbient was ADDED (Wave-2) but has NO caller — EntityMovementStep calls only PredictJumppadsAmbient + PredictTeleportsAmbient — so the server teleport still arrives as a rubber-band correction (dead code)."
+    - "No client view rotate across the seam (WarpZone_FixView / ENT_CLIENT_WARPZONE_TELEPORTED unported) — even though the ORIGIN is now predicted, the camera still snaps/rotates jarringly at the seam."
     - "No near-clip fix / roll-kill at the seam (WarpZone_FixNearClip / cl_rollkillspeed unported)."
     - "func_camera / func_warpzone_camera (fixed dpcamera view) not implemented."
     - "trigger_warpzone_reconnect + WarpZone_Think (runtime/moving-warpzone re-link) not implemented — links computed once at init."
@@ -74,7 +73,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:WarpzoneSpawns"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:WarpzoneManager.AddMapZone"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:108"
-      - "src/XonoticGodot.Server/GameWorld.cs:393"
+      - "src/XonoticGodot.Server/GameWorld.cs:421"
     constants:
       - { name: "scale default", base: "modelscale then 1", port: "not modeled (scale=1 implicit)", match: false }
       - { name: "solid / movetype", base: "SOLID_TRIGGER / MOVETYPE_NONE", port: "Solid.Trigger / MoveType.None", match: true }
@@ -93,7 +92,7 @@ features:
     verification:
       - { kind: unit_test, ref: "WarpzoneSpawnTests.MapWarpzones_Spawn_Orient_And_Link_FromBrushGeometry", result: pass }
     confidence: high
-    notes: "Sink WarpzoneSpawns.Sink wired in GameWorld.cs:393 to Warpzones.OnMapEntity; deferred plane/link in InitMapZones."
+    notes: "Sink WarpzoneSpawns.Sink wired in GameWorld.cs:421 to Warpzones.OnMapEntity; deferred plane/link in InitMapZones."
   - id: warpzones.spawn.brushplane
     name: "Auto-orient IN plane from brush geometry (getsurface* area-weighted normal)"
     layer: [authority]
@@ -128,7 +127,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:WarpzoneManager.Link"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:WarpzoneManager.InitMapZones"
-      - "src/XonoticGodot.Server/GameWorld.cs:552"
+      - "src/XonoticGodot.Server/GameWorld.cs:605"
       - "src/XonoticGodot.Server/Cvars.cs:105"
     constants:
       - { name: "sv_warpzone_allow_selftarget", base: "0", port: "0", match: true }
@@ -230,7 +229,7 @@ features:
     verification:
       - { kind: unit_test, ref: "WarpzoneTraceTests.TraceLine_Crosses_One_Portal_And_Accumulates_The_Transform / TraceLine_Pathological_Self_Recrossing_Chain_Stops_At_The_Guard", result: pass }
     confidence: high
-    notes: "Live callers: WeaponFiring.cs:141 (aim), :233 + :358 (hitscan). Manager published via TraceService.SetWarpzoneManager (GameWorld.cs:558)."
+    notes: "Live callers: WeaponFiring.cs:141 (aim), :245 + :383 (hitscan). Manager published via TraceService.SetWarpzoneManager (GameWorld.cs:611)."
   - id: warpzones.combat.findradius
     name: "Splash radius damage reaches victims through portals (blast-frame falloff)"
     layer: [shared]
@@ -268,7 +267,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:PlacePortoPortal"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:LinkPair"
-      - "src/XonoticGodot.Server/GameWorld.cs:389"
+      - "src/XonoticGodot.Server/GameWorld.cs:413"
     constants:
       - { name: "porto trigger bounds", base: "weapon-defined", port: "+/-48 box (PortoMins/Maxs)", match: false }
     status:
@@ -283,7 +282,7 @@ features:
     gaps:
       - "Porto portals share the missing client portal render — they teleport correctly server-side but show as dark placeholders, same as map warpzones."
     verification:
-      - { kind: code, ref: "GameWorld.cs:389 Warpzones.PlacePortoPortal", result: pass }
+      - { kind: code, ref: "GameWorld.cs:413 Warpzones.PlacePortoPortal", result: pass }
     confidence: medium
     notes: "Server transform is faithful; the +/-48 trigger box is a port choice (Base Porto portal bounds not re-verified here)."
   - id: warpzones.client.render
@@ -372,6 +371,8 @@ features:
       - "lib/warpzone/server.qc:WarpZone_Teleport"
     port_refs:
       - "src/XonoticGodot.Engine/Simulation/TriggerTouch.cs:PredictWarpzonesAmbient"
+      - "game/net/EntityMovementStep.cs:107"
+      - "game/net/NetGame.cs:983"
     constants: []
     status:
       logic: faithful
@@ -385,7 +386,7 @@ features:
     gaps:
       - "Render/view side of the crossing still missing: a predicted warp relocates the carrier in lockstep with authority (no rubber-band) and stamps .fixangle, but the seamless view-rotate/portal render (warpzones.client.render / .fixview / .teleported_view) is unported — the camera still snaps visually across the seam even though the origin no longer corrects."
     verification:
-      - { kind: code, ref: "FIX 2026-06-23: PredictWarpzonesAmbient is now CALLED on the live prediction path (EntityMovementStep.Step, after PredictTeleportsAmbient) AND its crossing gate was rewritten to the plane-side test Dot((origin+view_ofs)-InOrigin, InForward) >= 0 -> skip, matching WarpzoneManager.Teleport (Warpzone.cs:220) EXACTLY. AmbientManager published per-match via GameWorld.cs:607.", result: pass }
+      - { kind: code, ref: "FIX 2026-06-23: PredictWarpzonesAmbient is now CALLED on the live prediction path (EntityMovementStep.Step, after PredictTeleportsAmbient) AND its crossing gate was rewritten to the plane-side test Dot((origin+view_ofs)-InOrigin, InForward) >= 0 -> skip, matching WarpzoneManager.Teleport (Warpzone.cs:220) EXACTLY. AmbientManager published per-match via TraceService.SetWarpzoneManager (GameWorld.cs:611); the predictor's live caller chain is NetGame.cs:983 (new EntityMovementStep) -> Step -> PredictWarpzonesAmbient (EntityMovementStep.cs:107). RE-VERIFIED 2026-06-23 on branch claude/parity-port-waves.", result: pass }
     confidence: high
     notes: "FIX (2026-06-23): liveness dead->live, logic stub->faithful. Wave-2 wrote PredictWarpzonesAmbient but left it unwired and carrying the stale velocity-direction gate; both are now resolved — EntityMovementStep drives it each predicted tick and the gate matches authority, so a warpzone crossing is client-predicted (origin no longer rubber-bands). Remaining open: the client render/view-rotate (separate rows warpzones.client.render/.fixview/.teleported_view)."
   - id: warpzones.camera
@@ -435,7 +436,7 @@ features:
     gaps:
       - "Link()/InitMapZones() run once at boot and never re-derive. Maps with moving warpzones (spawnflag 1 -> WarpZone_Think) or runtime trigger_warpzone_reconnect/target_warpzone_reconnect will have stale transforms."
     verification:
-      - { kind: code, ref: "no warpzone_reconnect / WarpZone_Think symbols; Link called once GameWorld.cs:552", result: fail }
+      - { kind: code, ref: "no warpzone_reconnect / WarpZone_Think symbols; Link called once GameWorld.cs:605", result: fail }
     confidence: high
     notes: "Affects the subset of maps with dynamic warpzones; static maps unaffected."
   - id: warpzones.observer_warp

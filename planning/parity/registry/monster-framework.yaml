@@ -5,13 +5,12 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 15
   worst_gaps:
-    - "Round-restart reset sweep is STILL DEAD: MonsterAI.Reset/ResetAll + Entity.Reset delegate exist, but the live ResetMapObjects (GameWorld.cs:2544) only deletes projectiles — no e.Reset pass ever fires, so monsters are not restored/removed on a round restart. (UNCHANGED by Wave-1/2.)"
+    - "Round-restart reset sweep is STILL DEAD (UNCHANGED): MonsterAI.Reset/ResetAll + Entity.Reset delegate exist, but the live ResetMapObjects (GameWorld.cs:2638) still only deletes projectiles — no e.Reset pass ever fires, and ResetAll has only a TEST caller (MonsterDamageDeathTests.cs:410). So monsters are not restored/removed on a round restart."
     - "Team/skill colors unported: monster_setupcolors (skill-keyed colormap + glowmod) and monster_changeteam (team radar icon) still have no port equivalent (empty port_refs)."
     - "Healthbar waypoint sprite (g_monsters_healthbars, WP_Monster) still not implemented: no monster health bars, no per-hit health update."
-    - "Monster sounds are now GATED + THROTTLED + cover all 8 cues, but still play via FIXED PATHS monsters/<name>_<cue>.wav — the .sounds-file GlobalSound lookup + skin-keyed Monster_Sounds_Update is still a fixed-path approximation (presentation/fidelity gap, not an API gap)."
+    - "Monster sounds are GATED + THROTTLED and now also honour a per-monster .sounds cue set (SoundCues; Zombie={death,sight,idle}, bit-faithful to zombie.dpm_0.sounds) — but still play via FIXED PATHS monsters/<name>_<cue>.wav, not the .sounds-file GlobalSound lookup + skin-keyed Monster_Sounds_Update (fidelity gap, not an API gap). Monsters with SoundCues==null still play all cues."
     - "g_monsters_quake_resize (MONSTER_SIZE_QUAKE x1.3) and g_monsters_playerclip_collisions (DPCONTENTS_PLAYERCLIP) still not ported."
     - "ValidTarget still omits QC's checkpvs coarse cull, vehicle-vs-melee rejection, typefrag/chat gate, crouch 75% range scaling, and alpha<0.5 fade gate (headless Entity has no alpha/crouch field)."
-    - "MatchHalted's game_stopped term is dead-wired: MonsterAI.MatchHalted reads Scoring.GameScores.GameStopped (NO live writer — re-verified 2026-06-22), not the live VehicleCommon.GameStopped the server actually drives (GameWorld.cs:1243). Only the time<game_starttime (prematch) term is live. So monster target/move halt works for the warmup/countdown window but NOT for intermission/timeout. ONE-LINE FIX available (read the right global)."
     - "Monster_CheckDanger trigger_hurt avoidance (danger code 4) still not ported."
 features:
   - id: monster-framework.spawn.master_switch
@@ -146,9 +145,9 @@ features:
       - "common/monsters/sv_monsters.qc:101 (Monster_ValidTarget)"
       - "common/monsters/sv_monsters.qc:70 (monster_facing)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:553 (ValidTarget + MatchHalted prematch gate)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:553 (ValidTarget + MatchHalted gate)"
       - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:588 (MonsterFacing)"
-      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:1738 (MatchHalted)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:1747 (MatchHalted -> VehicleCommon.GameStopped)"
     constants:
       - { name: "g_monsters_lineofsight", base: "1", port: "1", match: true }
       - { name: "g_monsters_target_infront", base: "0", port: "0", match: true }
@@ -169,12 +168,12 @@ features:
       - "Alpha-fade gate (QC alpha<0.5 && alpha!=0 rejects) is a no-op: the headless Entity has no alpha field, so a faded/cloaked target stays targetable. (UNCHANGED.)"
       - "Typefrag/chat gate not ported: QC rejects a chatting target when !g_monsters_typefrag (matches default-1; diverges only when g_monsters_typefrag 0). (UNCHANGED.)"
       - "Vehicle-vs-melee rejection (QC: IS_VEHICLE(targ) && !MON_FLAG_RANGED) not in ValidTarget; the port's ValidTarget has no vehicle gate at all. (UNCHANGED.)"
-      - "WAVE-2 PARTIAL: ValidTarget now calls MatchHalted() (the QC game_stopped || time<game_starttime prematch guard) — but MatchHalted's game_stopped term is DEAD because it reads the WRONG global: MonsterAI.MatchHalted (MonsterAI.cs:1741) reads Scoring.GameScores.GameStopped, which has NO live writer (re-verified 2026-06-22: only the public setter exists, nobody on the server path assigns it). The server actually drives match-stopped state into VehicleCommon.GameStopped (GameWorld.cs:1243, = Intermission.Running||MatchEnded||Timeout.IsPaused) — the global the vehicle/mutator ports read. So pre-match acquisition is now correctly suppressed (the time<game_starttime half is live), but intermission/timeout is NOT detected here. One-line fix: read VehicleCommon.GameStopped (or g_game_stopped cvar) instead."
+      - "SECOND-PASS FIX (closes the Wave-2 dead-wire): ValidTarget calls MatchHalted() (QC game_stopped || time<game_starttime) and MatchHalted (MonsterAI.cs:1747) now reads the LIVE VehicleCommon.GameStopped — written every frame at GameWorld.OnEndFrame (GameWorld.cs:1301) from GameStopped (=Intermission.Running||MatchEnded||Timeout.IsPaused, GameWorld.cs:1061) — plus a g_game_stopped cvar fallback (that cvar is unregistered, so the fallback is inert/harmless) and StartItem.GameStartTimeProvider for prematch. Both the prematch AND the intermission/timeout halves are now live. The earlier never-written Scoring.GameScores.GameStopped read is gone."
     verification:
-      - { kind: code, ref: "ValidTarget covers self/dead/notarget/team/follow/lineofsight-trace/facing-cone + the new MatchHalted prematch gate; still missing checkpvs+alpha+typefrag+vehicle", result: pass }
-      - { kind: code, ref: "grep 'GameScores.GameStopped =' src game = NO writer; MonsterAI.MatchHalted reads Scoring.GameScores.GameStopped (never written) NOT VehicleCommon.GameStopped (written GameWorld.cs:1243). game_stopped half false-on-live; StartItem.GameStartTimeProvider live-wired GameWorld.cs:550 (prematch half works).", result: fail }
+      - { kind: code, ref: "ValidTarget covers self/dead/notarget/team/follow/lineofsight-trace/facing-cone + the now-live MatchHalted gate; still missing checkpvs+alpha+typefrag+vehicle+crouch", result: pass }
+      - { kind: code, ref: "MatchHalted (MonsterAI.cs:1747) reads VehicleCommon.GameStopped; LIVE writer = GameWorld.OnEndFrame:1301 (VehicleCommon.GameStopped = GameStopped) per-tick; GameStopped:1061 = Intermission.Running||MatchEnded||Timeout.IsPaused. RunThink->ValidTarget/Move live on the match path. Dead-wire resolved.", result: pass }
     confidence: high
-    notes: "WAVE-2 PARTIAL FIX (re-verified 2026-06-22): prematch guard added + LIVE (time<game_starttime). game_stopped half dead-wired — MatchHalted reads the never-written Scoring.GameScores.GameStopped instead of the live VehicleCommon.GameStopped; trivial to fix. Core rejection set + facing cone faithful; checkpvs/alpha/typefrag/vehicle/crouch still missing."
+    notes: "SECOND-PASS FIX (re-verified 2026-06-23): the Wave-2 dead-wired game_stopped half is now LIVE — MatchHalted reads VehicleCommon.GameStopped (written per-tick by the server), so monster target acquisition is suppressed for prematch AND intermission/timeout. Core rejection set + facing cone faithful; checkpvs/alpha/typefrag/vehicle/crouch still missing (logic/values remain partial for those)."
 
   - id: monster-framework.target.find_enemycheck
     name: "Target acquisition + enemy retention (Monster_FindTarget / Monster_Enemy_Check)"
@@ -241,12 +240,12 @@ features:
     gaps:
       - "movelib_move_simple / movelib_brake_simple are approximated with a fixed 0.4 lerp / (1 - stopspeed*0.01) decay 'so behavior is stable regardless of frametime' rather than the QC frametime-scaled accel — timing/feel diverges slightly. (UNCHANGED.)"
       - "steerlib_attract2 (the QC steering blend toward moveto with leadahead 500/0.95) is replaced by a direct (moveto-origin) yaw turn; the steer-prediction smoothing is not modeled. (UNCHANGED.)"
-      - "WAVE-2 PARTIAL: the MatchHalted brake-and-idle halt was added + is LIVE (driven by RunThink->Move on every monster Think), but its game_stopped term is dead-wired — MatchHalted reads the never-written Scoring.GameScores.GameStopped, not the live VehicleCommon.GameStopped (same defect as target.validtarget; re-verified 2026-06-22). So monsters brake-and-idle for the prematch countdown but NOT for intermission/timeout. MonsterMove mutator hook + draggedby + campaign_bots_may_start remain deferred host concerns."
+      - "SECOND-PASS FIX (closes the Wave-2 dead-wire): the MatchHalted brake-and-idle halt is LIVE (RunThink->Move on every monster Think) and MatchHalted now reads the live VehicleCommon.GameStopped (per-tick from GameWorld.OnEndFrame:1301), so monsters brake-and-idle for the prematch countdown AND intermission/timeout. MonsterMove mutator hook + draggedby + campaign_bots_may_start remain deferred host concerns; the movelib/steerlib approximations remain (the residual partial)."
     verification:
       - { kind: code, ref: "MoveTarget movestate switch, +-25 yaw clamp, 2.5x speed cap, wander truncate-trace all match; movelib lerp + steerlib still approximated", result: pass }
-      - { kind: code, ref: "Follow-prune now drops st.Follow on leaderGone (freed/non-client) OR diff-team in teamplay (QC Monster_Move:860-863); idle voice now emitted via MonsterSound(idle,7,delaytoo)", result: pass }
+      - { kind: code, ref: "Follow-prune drops st.Follow on leaderGone (freed/non-client) OR diff-team in teamplay (QC Monster_Move:860-863); idle voice via MonsterSound(idle,7,delaytoo); brake-idle halt gated by now-live MatchHalted (VehicleCommon.GameStopped)", result: pass }
     confidence: high
-    notes: "WAVE-2 FIX: idle wandering voice now emitted; follow-prune (diff-team/spectator-leader) now implemented; prematch halt added (game_stopped half dead). The movelib/steerlib approximations remain the residual fidelity caveats."
+    notes: "SECOND-PASS FIX: the brake-and-idle halt's game_stopped term is now LIVE (was dead in Wave-2). Idle voice + follow-prune still faithful. The movelib/steerlib approximations remain the residual fidelity caveats (logic/timing stay partial for those)."
 
   - id: monster-framework.move.danger
     name: "Edge/lava danger avoidance (Monster_CheckDanger)"
@@ -388,7 +387,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:1557 (RespawnCheck) + 1569 (Respawn)"
       - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:1502 (Reset) + 1531 (ResetAll)"
       - "src/XonoticGodot.Common/Gameplay/Monsters/EntityMonsterReset.cs:19 (Entity.Reset delegate)"
-      - "src/XonoticGodot.Server/GameWorld.cs:2544 (ResetMapObjects — STILL does NOT call Entity.Reset)"
+      - "src/XonoticGodot.Server/GameWorld.cs:2638 (ResetMapObjects — STILL does NOT call Entity.Reset)"
     constants:
       - { name: "g_monsters_respawn", base: "1", port: "1", match: true }
       - { name: "g_monsters_respawn_delay", base: "20", port: "20", match: true }
@@ -405,13 +404,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Round-restart reset is STILL DEAD (UNCHANGED by Wave-1/2). Entity.Reset is installed (=MonsterAI.Reset) and ResetAll exists, but the live reset_map path (GameWorld.ResetMapObjects, GameWorld.cs:2544) STILL only removes projectiles — it never iterates entities calling e.Reset. Re-verified: no e.Reset?.Invoke caller anywhere on the server path. So on a round restart natural monsters are NOT restored to spawn / SPAWNED monsters are NOT removed via this hook."
-      - "Respawn re-stamp is a subset of Monster_Spawn (health/solid/takedamage/spawnshield/think) and does not re-run monster_setupcolors (team-colors still unported); it now DOES re-apply miniboss EF_RED (see spawn.miniboss)."
+      - "Round-restart reset is STILL DEAD (UNCHANGED through the second-pass fix-up). Entity.Reset is installed (=MonsterAI.Reset, MonsterAI.cs:302) and ResetAll exists (MonsterAI.cs:1615), but the live reset_map path (GameWorld.ResetMapObjects, GameWorld.cs:2638) STILL only re-links map objects + removes projectiles — it never iterates entities calling e.Reset. Re-verified 2026-06-23: the ONLY caller of MonsterAI.ResetAll is a test (MonsterDamageDeathTests.cs:410); no e.Reset?.Invoke on the server path. So on a round restart natural monsters are NOT restored to spawn / SPAWNED monsters are NOT removed via this hook."
+      - "Respawn re-stamp is a subset of Monster_Spawn (health/solid/takedamage/spawnshield/think) and does not re-run monster_setupcolors (team-colors still unported); it DOES re-apply miniboss EF_RED (see spawn.miniboss)."
     verification:
       - { kind: code, ref: "RespawnCheck honors AlwaysRespawn/NORESPAWN/g_monsters_respawn; Respawn (driven LIVE by DeadThink) restores at spawn or death point after delay (+ EF_RED re-apply); score awarded to a client killer for natural", result: pass }
-      - { kind: code, ref: "ResetMapObjects (GameWorld.cs:2544) STILL deletes only projectiles; no Entity.Reset sweep -> MonsterAI.Reset/ResetAll still have no live caller", result: fail }
+      - { kind: code, ref: "ResetMapObjects (GameWorld.cs:2638) STILL deletes only projectiles; no Entity.Reset sweep. MonsterAI.ResetAll caller grep = only MonsterDamageDeathTests.cs:410 (test). No live caller.", result: fail }
     confidence: high
-    notes: "UNCHANGED defect: the round-restart per-entity reset is still present-but-dead. Respawn (the corpse-fade revive) is live + faithful (now also re-flags miniboss EF_RED); scoring/counters faithful."
+    notes: "UNCHANGED defect: the round-restart per-entity reset is still present-but-dead (ResetAll only test-called). Respawn (the corpse-fade revive) is live + faithful (also re-flags miniboss EF_RED); scoring/counters faithful."
 
   - id: monster-framework.spawn_drivers.stats
     name: "Spawn drivers + monster_spawner + map-stats (spawnmonster / monster_spawner / monsters_setstatus)"
@@ -483,12 +482,14 @@ features:
       - "common/monsters/sv_monsters.qc:368 (Monster_Sound)"
       - "common/monsters/sv_monsters.qc:1212 (Monster_Anim / CSQCMODEL_AUTOUPDATE)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:660 (MonsterSound: g_monsters_sounds gate + msound_delay throttle, all 8 cues)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:660 (MonsterSound: g_monsters_sounds gate + msound_delay throttle + per-monster SoundCues cue gate)"
       - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:106 (MSoundDelay state field)"
+      - "src/XonoticGodot.Common/Gameplay/EntityClasses.cs:25 (Monster.SoundCues — null=play-all, set=.sounds-defined cues)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Zombie.cs:41 (SoundCues={death,sight,idle}, bit-faithful to zombie.dpm_0.sounds)"
     constants:
       - { name: "g_monsters_healthbars", base: "0", port: "not implemented (no WP_Monster)", match: false }
-      - { name: "g_monsters_sounds", base: "1", port: "1 (now gated in MonsterSound)", match: true }
-      - { name: "monster sound cues", base: "8 (death/sight/ranged/melee/pain/spawn/idle/attack) via .sounds GlobalSound", port: "7 fixed-path cues wired (sight/pain/death/idle/melee/spawn + ranged via per-monster); fixed-path, not .sounds-file", match: false }
+      - { name: "g_monsters_sounds", base: "1", port: "1 (gated in MonsterSound)", match: true }
+      - { name: "monster sound cues", base: "8 cue fields (death/sight/ranged/melee/pain/spawn/idle/attack) via .sounds GlobalSound; a commented-out/absent cue => empty sample => silent (throttle still advances)", port: "fixed-path monsters/<name>_<cue>.wav gated by per-monster SoundCues set (Zombie={death,sight,idle} matches its .sounds; SoundCues==null => play all). Cue-gating now models the .sounds presence test, but the path/lookup is still fixed-path not GlobalSound", match: false }
       - { name: "idle voice delay / pain delay", base: "7 / 1.2 (msound_delay throttle)", port: "7 / 1.2 (MSoundDelay throttle, delayToo)", match: true }
     status:
       logic: partial
@@ -498,14 +499,15 @@ features:
       audio: partial
       liveness: partial
     intended_divergence: true
-    divergence_rationale: "CSQC per-frame model frame playback (Monster_Anim frame groups, mr_anim, CSQCMODEL_AUTOUPDATE) is intentionally render-deferred — the headless authority port maintains only the server-side animation PHASE (idle/walk/run/attack/pain/death) that drives timing, the same authority/presentation split used by the turret and vehicle ports. The healthbar sprite is NOT an intended divergence (gap). The monster sound system is now wired (gate + throttle + cues) but plays FIXED-PATH samples (monsters/<name>_<cue>.wav) instead of the .sounds-file GlobalSound lookup + skin-keyed Monster_Sounds_Update — that fixed-path approximation is a deliberate fidelity simplification (no per-skin sound packs ported), not a missing API."
+    divergence_rationale: "CSQC per-frame model frame playback (Monster_Anim frame groups, mr_anim, CSQCMODEL_AUTOUPDATE) is intentionally render-deferred — the headless authority port maintains only the server-side animation PHASE (idle/walk/run/attack/pain/death) that drives timing, the same authority/presentation split used by the turret and vehicle ports. The healthbar sprite is NOT an intended divergence (gap). The monster sound system is wired (gate + throttle + per-monster SoundCues cue-gate) but plays FIXED-PATH samples (monsters/<name>_<cue>.wav) instead of the .sounds-file GlobalSound lookup + skin-keyed Monster_Sounds_Update — that fixed-path approximation is a deliberate fidelity simplification (no per-skin sound packs ported), not a missing API. The SoundCues set now mirrors the .sounds presence test so a Base-silent cue stays silent."
     gaps:
       - "Healthbar waypoint sprite (WP_Monster) STILL entirely missing: no floating health bar above monsters, no WaypointSprite_UpdateMaxHealth/Health on hit, no _Kill on death, even with g_monsters_healthbars 1. (UNCHANGED.)"
-      - "WAVE-2 PARTIAL FIX on sounds: the MonsterSound helper now applies the g_monsters_sounds master gate AND the msound_delay throttle (pain 1.2s / idle 7s, delaytoo) and is invoked for spawn/sight/pain/death/idle/melee. RESIDUAL: cues still play via FIXED PATHS, NOT the .sounds-file GlobalSound lookup; no skin-keyed Monster_Sounds_Update; no random-variant sample selection; the spamsound SND_BODYIMPACT1 body-impact placeholder is still absent."
+      - "SECOND-PASS FIX on sounds: MonsterSound now also honours a per-monster SoundCues set (the .sounds presence test) on top of the g_monsters_sounds master gate + msound_delay throttle (pain 1.2s / idle 7s, delaytoo). Zombie declares {death,sight,idle}, bit-faithful to zombie.dpm_0.sounds (ranged/melee/pain/spawn are commented out in Base => silent). RESIDUAL: cues still play via FIXED PATHS, NOT the .sounds-file GlobalSound lookup; no skin-keyed Monster_Sounds_Update; no random-variant sample selection; SND_BODYIMPACT1 body-impact placeholder still absent; the other monsters still have SoundCues==null (play-all) so their per-cue .sounds fidelity is not yet asserted."
       - "MONSTER_SIZE_QUAKE x1.3 resize (g_monsters_quake_resize, default 1) STILL not ported — no MONSTER_SIZE_QUAKE handling at all; latent today since no port monster carries the flag. (UNCHANGED.)"
       - "g_monsters_playerclip_collisions (DPCONTENTS_PLAYERCLIP on the hit-contents mask, default 1) STILL not ported — the port doesn't model dphitcontentsmask, so monsters ignore playerclip brushes. (UNCHANGED.)"
     verification:
-      - { kind: code, ref: "MonsterSound: gates on Cvar(g_monsters_sounds)!=0, honours delayToo vs MSoundDelay, plays monsters/<NetName>_<cue>.wav, advances MSoundDelay by soundDelay; called for spawn/sight/idle/melee/pain/death", result: pass }
+      - { kind: code, ref: "MonsterSound: gates on Cvar(g_monsters_sounds)!=0, honours delayToo vs MSoundDelay, emits monsters/<NetName>_<cue>.wav only when SoundCues is null OR Contains(cue), advances MSoundDelay regardless; called for spawn/sight/idle/melee/pain/death", result: pass }
+      - { kind: code, ref: "Zombie.SoundCues={death,sight,idle} verified against Base zombie.dpm_0.sounds (death/sight/idle live; ranged/melee/pain/spawn commented out)", result: pass }
       - { kind: code, ref: "grep WP_Monster/healthbars/GlobalSound/.sounds-file lookup/quake_resize/playerclip across src+game = still none (re-verified)", result: fail }
     confidence: high
-    notes: "WAVE-2 PARTIAL FIX: the monster sound system is now gated + throttled + covers the major cues (was 3 ungated fixed paths). RESIDUAL biggest cluster: healthbar sprite + the .sounds-file/skin sound packs + quake-resize/playerclip. CSQC frame playback remains the intended-divergence render deferral."
+    notes: "SECOND-PASS FIX: sound emission now respects a per-monster .sounds cue set (SoundCues), making a Base-silent cue silent in the port too (Zombie verified bit-faithful). RESIDUAL biggest cluster: healthbar sprite + the .sounds-file/skin sound packs (still fixed-path, only Zombie's cue set audited) + quake-resize/playerclip. CSQC frame playback remains the intended-divergence render deferral."

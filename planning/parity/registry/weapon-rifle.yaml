@@ -2,14 +2,18 @@ unit: weapon-rifle
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-22"
+# Re-audited 2026-06-22 (post Wave-1/2 + second-pass fix-up, branch claude/parity-port-waves):
+# adversarial re-verification of all 16 rows against current Base+port. Net change vs the prior
+# worst_gaps: casing CLOSED (verified networks+renders), 4 still open; NO regressions found; the
+# deathtype.secondary characterization was stale and is corrected (the deathTag channel now exists).
 summary:
   feature_count: 16
   worst_gaps:
-    - "Secondary kills still print WEAPON_RIFLE_MURDER not *_MURDER_HAIL: FireBullets passes deathType=RegistryId only, and the int->string firing/damage API still has no channel to carry HITTYPE_SECONDARY (UNCHANGED by Wave-2 — architectural)"
-    - "Brass casing ejection is wired in code (EjectCasing called with the correct g_casings>=2 gate + QC eject velocity) but DEAD on the live path: EmitByEffectInfoName(\"casing_bullet\") yields a null-Effect request that the server net encoder (ServerNet.WriteEffect / EffectNetProtocol.Encode) drops, and the client never routes the name to EffectSystem.SpawnCasing — so no shell is networked or rendered"
-    - "Rifle-specific bot wr_aim still missing: BotAim gained live aim-skill cvar reads but NOT the probabilistic primary/secondary 'riflemooth' toggle, the force-primary>1000u rule, or bot_aim (1000000,0,0.001); bots still never use the rifle secondary"
+    - "Secondary kills still print WEAPON_RIFLE_MURDER not *_MURDER_HAIL: FireBullets passes deathType=RegistryId with NO deathTag. CORRECTION vs prior audit — this is NO LONGER architectural: the deathTag channel that carries HITTYPE_SECONDARY now EXISTS (WeaponFiring.ApplyDamage deathTag arg + DeathTypes.WithHitType) and MachineGun's snipe secondary already uses it; the rifle is now just a ONE-LINE omission (FireBullets doesn't build/pass deathTag for its secondary). DeathMessages.cs:82-85 has the faithful RIFLE HAIL/PIERCING branch ready."
+    - "Rifle-specific bot wr_aim still missing: BotAim has generic aim-skill cvar reads but NOT the probabilistic primary/secondary 'riflemooth' toggle, the force-primary>1000u rule, or bot_aim (1000000,0,0.001); bots still never use the rifle secondary"
     - "Zoom-from-eye shot re-aim still not ported (headless server has no zoom button); low impact, only matters while scoped"
-    - "wr_resetplayer (rifle_accumulator reset on spawn across all slots) still not ported; benign at stock bursttime 0"
+    - "wr_resetplayer (rifle_accumulator reset on spawn across all slots) still not ported; RifleAccumulator never reset on spawn; benign at stock bursttime 0"
+    - "(now CLOSED, was the #2 worst gap) Brass casing ejection now networks + renders the real bouncing brass: CASING_BULLET/CASING_SHELL are registered Effects (EffectsList.cs:100-101) so EmitByEffectInfoName resolves a non-null Effect that ServerNet.WriteEffect encodes (origin+velocity) and EffectSystem.Spawn routes to SpawnCasing on both the networked Name and in-process effectinfo-name paths"
 features:
   - id: rifle.identity
     name: "Rifle registration & identity (flags, color, ammo, models, impulse)"
@@ -236,7 +240,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:81-85 (rifle case)"
       - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:ApplyDamage (int->string deathTag map)"
     constants:
-      - { name: "secondary deathtype flag", base: "m_id | HITTYPE_SECONDARY", port: "RegistryId only", match: false }
+      - { name: "secondary deathtype flag", base: "m_id | HITTYPE_SECONDARY", port: "RegistryId only, no deathTag passed", match: false }
     status:
       logic: partial
       values: na
@@ -247,11 +251,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "UNCHANGED by Wave-2. Secondary rifle kills still print WEAPON_RIFLE_MURDER instead of WEAPON_RIFLE_MURDER_HAIL: FireBullets passes deathType=RegistryId (an int) and the int->string firing/damage API (ApplyDamage / DeathTypes.FromWeapon) has no channel to carry HITTYPE_SECONDARY into the deathtype. The suffix machinery (DeathTypes.WithHitType / `|secondary`) and the DeathMessages rifle HAIL branch both exist and are faithful; the flag simply never reaches them."
+      - "STILL OPEN, but CORRECTED characterization (was wrongly called architectural). Secondary rifle kills still print WEAPON_RIFLE_MURDER instead of WEAPON_RIFLE_MURDER_HAIL because Rifle.FireBullets (Rifle.cs:265,271-273) passes deathType=RegistryId and NO deathTag. The HITTYPE-carrying channel NOW EXISTS: WeaponFiring.ApplyDamage has a `deathTag` string override (WeaponFiring.cs:642,654) and DeathTypes.WithHitType(tag, Secondary) builds the `|secondary` suffix; MachineGun's mode-0 snipe secondary already uses exactly this (MachineGun.cs:291-295). DeathMessages.cs:82-85 has the faithful RIFLE HAIL/PIERCING branch keyed off HasHitType(Secondary). So this is now a ONE-LINE omission in the rifle's secondary fire path, not a missing API."
     verification:
-      - { kind: code, ref: "Rifle.cs:265 deathType=RegistryId (comment still 'cosmetic'); the firing API drops all HITTYPE bits; DeathMessages.cs:81-85 keys HAIL off HasHitType(Secondary)", result: fail }
+      - { kind: code, ref: "Rifle.cs:265 deathType=RegistryId, FireBullet call (cs:271-273) passes no deathTag for the secondary; DeathMessages.cs:82-85 keys HAIL off HasHitType(Secondary) and is reachable (MachineGun.cs:291-295 proves the deathTag channel is live)", result: fail }
     confidence: high
-    notes: "STILL OPEN. Architectural gap in the shared firing->damage API, not a one-line rifle fix; affects every weapon whose kill message branches on HITTYPE (machinegun snipe, hagar burst). Cross-ref fx-deathtypes unit."
+    notes: "STILL OPEN. The shared firing->damage API gap claimed by the prior audit is FIXED — the deathTag channel exists and is exercised by MachineGun. The rifle simply needs to build deathTag = WithHitType(FromWeapon(NetName), Secondary) for its secondary fire (and add HITTYPE_BOUNCE handling for the bounce variants). Cross-ref fx-deathtypes / weapon-machinegun units."
 
   - id: rifle.fx.muzzleflash
     name: "Muzzle flash effect (EFFECT_RIFLE_MUZZLEFLASH)"

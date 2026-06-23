@@ -111,7 +111,7 @@ features:
     verification:
       - { kind: code, ref: "`float playtime = Api.Clock.Time;` vs QC `time - CS(attacker).startplaytime`; grep for startplaytime across src/ finds no per-client timestamp", result: fail }
     confidence: high
-    notes: "Sim clock remains a documented stand-in. Divergence real (not intended), skews the threshold for mid-match joiners."
+    notes: "Re-verified 2026-06-22 post-Wave: `float playtime = Api.Clock.Time;` (KickTeamkillerMutator.cs:98) is unchanged and a grep for startplaytime/StartPlayTime across src/ still finds ONLY the mutator's own comment — no per-client spectator->player transition timestamp exists anywhere. Sim clock remains a documented stand-in. Divergence real (not intended), skews the threshold for mid-match joiners. The ONLY remaining open gap in this unit."
 
   - id: mutator-kick_teamkiller.detect.threshold
     name: "Rate threshold: teamkills >= lower_limit AND teamkills >= rate*playtime/60"
@@ -172,7 +172,7 @@ features:
       - { kind: code, ref: "Wave-4 fix: the LastAction observer placeholder was replaced with three injected Server-action delegates (ForceObserver/KickClient/BanClient), wired in GameWorld.WireServerInfrastructure (GameWorld.cs:723-736) like Minigames.ObserverForcer. Default branch now calls ClientManager.PutObserverInServer (real MoveType.None/Solid.Not/TakeDamage.No/FragsSpectator); sev1 -> Bans.DropClient; sev2 -> Bans.KickBanClient(bantime, g_ban_default_masksize)", result: pass }
       - { kind: code, ref: "Play-ban join gate now enforced: ClientManager.JoinAllowed consults the new ForcedSpectate predicate (wired to Bans.IsPlayBanned, GameWorld.cs:717), refusing +jump/autojoin for a g_playban_list client (QC Join_Try). g_ban_default_masksize consumed by sev2", result: pass }
     confidence: high
-    notes: "Wave-4 FIX: all three severity branches now run real punitive actions on the live PlayerDies path. The default (play-ban) branch force-spectates through ClientManager.PutObserverInServer (not a bare IsObserver flip) so the offender's body becomes non-solid/non-damageable/spectator, AND the g_playban_list write is now enforced at join via ClientManager.ForcedSpectate = Bans.IsPlayBanned (so the offender can't fire/autojoin back). Severity 1 reaches Bans.DropClient and severity 2 reaches Bans.KickBanClient with g_kick_teamkiller_bantime + g_ban_default_masksize. Dead LastAction observer removed. Upgraded logic/values partial->faithful, liveness partial->live."
+    notes: "Re-verified 2026-06-22 post-Wave (adversarial): the three delegates are genuinely wired on the LIVE boot path. GameWorld.cs:749-762 (inside WireServerInfrastructure, called at GameWorld.cs:723 from WireCommandsWarmupVoting) sets ForceObserver=Clients.PutObserverInServer (ClientManager.cs:409), KickClient=>Bans.DropClient (itself wired at GameWorld.cs:736 to Commands.KickHandler+ClientDisconnect, returns true), BanClient=>Bans.KickBanClient(bantime,masksize) (Bans.cs:282). The mutator's OnPlayerDies is invoked via MutatorHooks.PlayerDies.Call at DamageSystem.cs:589 on the real kill path. Play-ban join gate live: Clients.ForcedSpectate=Bans.IsPlayBanned (GameWorld.cs:743) consulted in ClientManager.JoinAllowed (ClientManager.cs:286). No regression vs Wave-4: all three severity branches still run real punitive actions; g_kick_teamkiller_bantime + g_ban_default_masksize consumed by sev2. logic/values faithful, liveness live."
 
   - id: mutator-kick_teamkiller.notify.broadcast
     name: "Broadcast + center-print notifications on punishment (severity-dependent)"

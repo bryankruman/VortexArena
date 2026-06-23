@@ -5,10 +5,10 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 21
   worst_gaps:
-    - "Wave-2 added the full sound/notification/VFX layer (siren, capture jingle, collect/drop/destroy cues, START/SCAN/ROUNDSTART/INTERFERE/MEET/HELP center-prints, PICKUP/DROP/LOST/PUSHED/DESTROYED/CAPTURE info lines, NEXUIZPLASMA capture trail) AND fixed every wrong default (maxdist 4000->150, score_collect 1->3, score_carrierfrag 1->2, delay_return 15->60, key bbox -10..10 -> -25..25). These were the worst baseline gaps and are now closed on the live path."
-    - "Carried key STILL does not orbit the carrier (fixed (0,0,20) offset vs KH_KEY_XYDIST 24 / XYSPEED 45 / ZSHIFT 22 makevectors circle) — only un-fixed cosmetic."
-    - "Voluntary +use drop (DropOneKey) is now fully implemented but DEAD: no PlayerUseKey hook routes the +use key to it (WeaponImpulses routes +use only to VehicleBoarding.UseKey). The push branch of LoserTeam is also dead (no pusher/previous_owner tracking ever sets key.Pusher)."
-    - "Bot role RoleKeyHunt is UNCHANGED and still DEAD: FindByClass('keyhunt_key') vs spawned 'item_kh_key', and reads key.Owner vs carrier on Entity.GtCarrier (BotObjectiveRoles.cs not touched by Wave-1/2)."
+    - "Wave-2 added the full sound/notification/VFX layer + fixed every wrong default; the second-pass fix-up then WIRED the two formerly-dead seams: the +use voluntary key-drop is now LIVE (impulse 21 -> WeaponImpulses.Handle -> VehicleBoarding.UseKey -> FirePlayerUseKey -> KeyHunt.OnUseKey -> DropOneKey) and the push branch of LoserTeam is now LIVE (Player.Pusher/PushLTime set by DamageSystem/Teleporters/Laser -> DropAllKeys records key.Pusher -> push attribution fires)."
+    - "Carried key STILL does not orbit the carrier (fixed (0,0,20) offset vs the stock Base orbit KH_KEY_XYDIST 24 / XYSPEED 45 / ZSHIFT 22; KH_PLAYER_USE_ATTACHMENT is COMMENTED OUT in Base so the orbit path is the live one) — only un-fixed cosmetic."
+    - "Bot role RoleKeyHunt is UNCHANGED and still DEAD: FindByClass('keyhunt_key') vs spawned 'item_kh_key', and reads key.Owner vs carrier on Entity.GtCarrier (BotObjectiveRoles.cs not touched by any wave)."
+    - "Drop-on-death is still only wired on the PlayerDies path (OnDeath); MakePlayerObserver / ClientDisconnect / DropSpecialItems do NOT route to DropAllKeys (no port analogue)."
     - "Carrier/noncarrier damage+force matrix, lava/trigger return_when_unreachable destroy, and waypoint sprites remain entirely unimplemented; capture per-carrier SP_SCORE + nades_GiveBonus still absent (only team total + one carrier's KH_CAPS credited)."
 features:
   - id: keyhunt.controller.round_loop
@@ -35,14 +35,14 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "delay_tracking (radar/waypoint reveal countdown) is still unimplemented; the KEYHUNT_SCAN 'Scanning frequency range...' center-print IS now sent once at round start (CenterAll('KEYHUNT_SCAN')), but the timed tracking-device reveal it gates is moot (no waypoints)."
-      - "Round-start KEYHUNT_ROUNDSTART countdown center-print IS now sent (CenterAll('KEYHUNT_ROUNDSTART', DelayRound) on the WaitingForPlayers->Countdown edge)."
-      - "Base kh_WaitForPlayers/kh_StartRound also gate on time >= game_starttime; the port's Tick does not gate the round on game_starttime (minor: warmup-edge timing only)."
+      - "delay_tracking (radar/waypoint reveal countdown) is still unimplemented; the KEYHUNT_SCAN 'Scanning frequency range...' center-print IS sent once at round start (CenterAll('KEYHUNT_SCAN')), but the timed tracking-device reveal it gates is moot (no waypoints)."
+      - "Round-start KEYHUNT_ROUNDSTART countdown center-print IS sent (CenterAll('KEYHUNT_ROUNDSTART', DelayRound) on the WaitingForPlayers->Countdown edge)."
+      - "Base kh_WaitForPlayers/kh_StartRound also gate on time >= game_starttime; the port's Tick does not gate the round on game_starttime (minor: warmup-edge timing only). Note KH also calls the generic EnableRounds() (GameWorld.cs:1483) with no callbacks, so a parallel generic RoundHandler sits in InProgress forever — it serves the round-counter + the impulse gate only, and KH's own Phase machine is the authority."
     verification:
-      - { kind: code, ref: "GameWorld.cs:1729 'case KeyHunt kh: kh.Tick(); break;' in the per-frame objective switch", result: pass }
-      - { kind: code, ref: "GameWorld.cs:1419-1422 ActivateGameType: kh.Activate() + kh.SetRoster(Clients.Players) (live backing list, ClientManager.Players => _players)", result: pass }
+      - { kind: code, ref: "GameWorld.cs:1806 'case KeyHunt kh: kh.Tick(); break;' in the per-frame objective switch", result: pass }
+      - { kind: code, ref: "GameWorld.cs:1479-1483 ActivateGameType: kh.Activate() + kh.SetRoster(Clients.Players) (live backing list) + EnableRounds()", result: pass }
     confidence: high
-    notes: "Controller live: Tick in the per-frame objective resolution switch; roster is the live ClientManager backing list (set once at Activate, reference not snapshot). ROUNDSTART + SCAN center-prints now wired (presentation upgraded missing->partial). delay_tracking still the only timing/value gap."
+    notes: "Controller live: Tick in the per-frame objective resolution switch; roster is the live ClientManager backing list (set once at Activate). ROUNDSTART + SCAN center-prints wired. delay_tracking still the only timing/value gap. UNCHANGED vs prior audit."
 
   - id: keyhunt.round.spawn_keys
     name: "Spawn one key per team onto a random live teammate at round start"
@@ -70,11 +70,11 @@ features:
     gaps:
       - "Per-team spawn angle 360*i/AVAILABLE_TEAMS is not used; the port gives a cosmetic random yaw spin instead (no player-visible effect — the key is on a moving carrier and the dropped spin is cosmetic anyway)."
     verification:
-      - { kind: code, ref: "KeyHunt.cs:524-543 SpawnKey -> GametypeEntities.SpawnObjective('item_kh_key', origin, team, KeyMins, KeyMaxs, touch, think); KeyMins/Maxs now match Base const -25..25", result: pass }
-      - { kind: code, ref: "KeyHunt.cs:480-483 StartRound sends KEYHUNT_START_<team> center-print to the initial owner (NotifBroadcast.One)", result: pass }
-      - { kind: code, ref: "KeyHunt.cs:498-513 PickRandomLivePlayer reservoir Prandom()*seen<=1 matches QC random()*players<=1", result: pass }
+      - { kind: code, ref: "KeyHunt.cs:545-564 SpawnKey -> GametypeEntities.SpawnObjective('item_kh_key', origin, team, KeyMins, KeyMaxs, touch, think); KeyMins/Maxs match Base const -25..25", result: pass }
+      - { kind: code, ref: "KeyHunt.cs:494-505 StartRound sends KEYHUNT_START_<team> center-print to the initial owner (NotifBroadcast.One)", result: pass }
+      - { kind: code, ref: "KeyHunt.cs:519-534 PickRandomLivePlayer reservoir Prandom()*seen<=1 matches QC random()*players<=1", result: pass }
     confidence: high
-    notes: "FIXED vs baseline: key bbox -10/-10/-46..10/10/3 -> -25/-25/-46..25/25/4 (matches current Base const, values partial->faithful); KEYHUNT_START 'You are starting with the X Key' now sent (presentation partial->faithful). Spawned classname item_kh_key (still breaks the bot role which searches keyhunt_key)."
+    notes: "UNCHANGED + faithful. Spawned classname item_kh_key (still breaks the bot role which searches keyhunt_key)."
 
   - id: keyhunt.key.presentation_model
     name: "Key model + team colormap + fullbright glow + per-team netname"
@@ -98,9 +98,9 @@ features:
     gaps: []
     verification:
       - { kind: test, ref: "KeyHuntVisualTests.cs (tests/XonoticGodot.Tests) SpawnKey model/color/spin", result: pass }
-      - { kind: code, ref: "KeyHunt.cs:550-559 SetKeyVisual sets Model + FullBright + Skin + Team + per-team NetName", result: pass }
+      - { kind: code, ref: "KeyHunt.cs:571-580 SetKeyVisual sets Model + FullBright + Skin + Team + per-team NetName", result: pass }
     confidence: high
-    notes: "Unchanged + still faithful. Networked entity stream renders the key (model+effects+team+netname). Per-team skin (red 0/blue 1/yellow 2/pink 3) + colored name faithful."
+    notes: "UNCHANGED + faithful. Networked entity stream renders the key (model+effects+team+netname). Per-team skin (red 0/blue 1/yellow 2/pink 3) + colored name faithful."
 
   - id: keyhunt.key.carried_orbit
     name: "Carried key orbits the carrier (XYSPEED circle); stops on drop"
@@ -127,12 +127,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL OPEN: a carried key sits at a fixed (0,0,20) offset on the carrier (all three call sites — AssignKey/AssignKeyNoScore/CollectKey — pass new Vector3(0,0,20) to AttachToCarrier); it does NOT circle the carrier at radius 24 per kh_Key_Think (makevectors('0 1 0'*(cnt+(time%360)*XYSPEED)); setorigin v_forward*XYDIST). Z offset is also 20 vs KH_KEY_ZSHIFT 22. KeyThinkEntity does not re-orbit a carried key."
+      - "STILL OPEN: a carried key sits at a fixed (0,0,20) offset on the carrier (all three call sites — AssignKey/AssignKeyNoScore/CollectKey — pass new Vector3(0,0,20) to AttachToCarrier); it does NOT circle the carrier at radius 24 per kh_Key_Think. VERIFIED the orbit IS the live Base path: KH_PLAYER_USE_ATTACHMENT is COMMENTED OUT in Base (sv_keyhunt.qc:37), so the #ifndef orbit block (lines 677-680: makevectors('0 1 0'*(cnt+(time%360)*XYSPEED)); setorigin v_forward*XYDIST + z) runs. Z offset is also 20 vs KH_KEY_ZSHIFT 22. KeyThinkEntity does not re-orbit a carried key."
     verification:
-      - { kind: test, ref: "KeyHuntVisualTests.cs CarriedKey stops spinning (AVelocity=0 via AttachToCarrier)", result: pass }
-      - { kind: code, ref: "KeyHunt.cs:296/617/642 each AttachToCarrier(..., new Vector3(0,0,20)); KeyThinkEntity (671) does not orbit a carried key (Base kh_Key_Think lines 677-680 do)", result: pass }
+      - { kind: code, ref: "KeyHunt.cs:317/638/663 each AttachToCarrier(..., new Vector3(0,0,20)); KeyThinkEntity (692) does not orbit a carried key (Base kh_Key_Think:677-680 do, KH_PLAYER_USE_ATTACHMENT undefined)", result: pass }
     confidence: high
-    notes: "UNCHANGED vs baseline. Attach stops the spin (correct) but never replaces it with the XYDIST/XYSPEED orbit. Cosmetic-only gap."
+    notes: "UNCHANGED. Attach stops the spin (correct) but never replaces it with the XYDIST/XYSPEED orbit. Cosmetic-only gap."
 
   - id: keyhunt.key.touch_collect
     name: "Touch by enemy collects a dropped key (+collect score, delay_collect re-pickup gate)"
@@ -157,10 +156,10 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "KeyHunt.cs:625-655 CollectKey: SoundOn(player,'KH_COLLECT') unconditional + InfoTeam(HomeTeam,'PICKUP',name) + enemy-only collect score + KH_PICKUPS; delay_collect dropper gate intact", result: pass }
+      - { kind: code, ref: "KeyHunt.cs:646-676 CollectKey: SoundOn(player,'KH_COLLECT') unconditional + InfoTeam(HomeTeam,'PICKUP',name) + enemy-only collect score + KH_PICKUPS; delay_collect dropper gate intact", result: pass }
       - { kind: code, ref: "KeyTouchEntity wired as the entity touch trampoline in SpawnObjective(touch:)", result: pass }
     confidence: high
-    notes: "FIXED vs baseline: score_collect 1->3 (values partial->faithful); SND_KH_COLLECT now played (audio missing->faithful); INFO_KEYHUNT_PICKUP now sent (presentation missing->faithful). delay_collect re-collect gate + enemy-only collect score still faithful. Live via entity touch."
+    notes: "UNCHANGED + faithful. delay_collect re-collect gate + enemy-only collect score faithful. Live via entity touch."
 
   - id: keyhunt.capture.all_owned_and_in_range
     name: "Capture: all keys on one team AND carriers within maxdist"
@@ -183,11 +182,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Base measures every carrier against the FIRST key's owner (the looping key's owner.origin); port measures against an 'anchor' (first key's carrier). Equivalent geometry (the all-pairs-within-maxdist invariant differs only by which carrier is the reference point — at radius 150 the difference is sub-detectable). Not a real defect."
+      - "Base measures every carrier against the FIRST key's owner.origin; port measures against an 'anchor' (first key's carrier). Equivalent geometry at radius 150 (the all-pairs-within-maxdist invariant differs only by which carrier is the reference point). Not a real defect."
     verification:
-      - { kind: code, ref: "KeyHunt.cs:869-910 CheckCaptureGeometry anchor + per-carrier Vector3.Distance > MaxDist loop; MaxDist default now 150", result: pass }
+      - { kind: code, ref: "KeyHunt.cs:898-939 CheckCaptureGeometry anchor + per-carrier Vector3.Distance > MaxDist loop; MaxDist default 150 (matches Base kh_Key_Think:687-700)", result: pass }
     confidence: high
-    notes: "FIXED vs baseline: maxdist 4000->150 (values partial->faithful). The 'meet up' mechanic now functions. Geometry logic faithful; live via per-key KeyThinkEntity + TickKeys."
+    notes: "UNCHANGED + faithful. The 'meet up' mechanic functions. Geometry logic faithful; live via per-key KeyThinkEntity + TickKeys."
 
   - id: keyhunt.capture.instant_path_dead
     name: "Instant capture-on-pickup path (no maxdist) — dead"
@@ -212,7 +211,7 @@ features:
     verification:
       - { kind: code, ref: "Live touch path is KeyTouchEntity->CollectKey->CheckCaptureGeometry; AssignKey/CheckCapture only called by tests (no GameWorld/entity-feed caller)", result: pass }
     confidence: high
-    notes: "UNCHANGED vs baseline. Vestigial headless capture path; risk if a future caller picks the wrong one."
+    notes: "UNCHANGED. Vestigial headless capture path; risk if a future caller picks the wrong one."
 
   - id: keyhunt.capture.scoring
     name: "Capture scoring: team SCORE + KH_CAPS + per-carrier SP_SCORE/nade bonus"
@@ -240,10 +239,10 @@ features:
       - "STILL OPEN: Base kh_Scores_Event credits the SCORE via GameRules_scoring_add_team_float2int(player, SCORE, f, ..., team:1) which credits BOTH the key carrier's individual SP_SCORE (scoreboard rank) AND the team ST_SCORE; the port's WinnerTeam adds only the team total + one carrier's SP_KH_CAPS column. Per-carrier SP_SCORE is absent."
       - "STILL OPEN: kh_WinnerTeam calls nades_GiveBonus(key.owner, g_nades_bonus_score_high) per carrier; the port has no nade bonus."
     verification:
-      - { kind: code, ref: "Base sv_keyhunt.qc:533-535 per-key: kh_Scores_Event(key.owner,...'capture',f) + GameRules_scoring_add_team(key.owner,KH_CAPS,1) + nades_GiveBonus; kh_Scores_Event:190 add_team_float2int(...,team:1) credits SP_SCORE+ST_SCORE", result: pass }
-      - { kind: code, ref: "KeyHunt.cs:938-958 WinnerTeam total=(teams-1)*ScoreCapture AddTeamScore(owner,total) + CreditCapture(owner) (team ST_KH_CAPS + one carrier KH_CAPS), but no per-carrier SP_SCORE / nade bonus", result: pass }
+      - { kind: code, ref: "Base sv_keyhunt.qc:533-535 per-key: kh_Scores_Event(key.owner,...'capture',f) + GameRules_scoring_add_team(key.owner,KH_CAPS,1) + nades_GiveBonus", result: pass }
+      - { kind: code, ref: "KeyHunt.cs:967-1000 WinnerTeam total=(teams-1)*ScoreCapture AddTeamScore(owner,total) + CreditCapture(owner) (team ST_KH_CAPS + one carrier KH_CAPS), but no per-carrier SP_SCORE / nade bonus", result: pass }
     confidence: medium
-    notes: "Team-score magnitude/mechanism FAITHFUL. The capture VFX/jingle/win-notify formerly listed here as a gap are now PRESENT (moved to keyhunt.notify.center_info, which is now fixed). Residual logic gap: per-carrier SP_SCORE + nade bonus."
+    notes: "UNCHANGED. Team-score magnitude/mechanism FAITHFUL. Residual logic gap: per-carrier SP_SCORE + nade bonus."
 
   - id: keyhunt.round.finish_reset
     name: "Finish round: remove keys, count down, restart"
@@ -266,9 +265,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "WinnerTeam removes keys + sets Phase=WaitingForPlayers; Tick re-enters Countdown (RoundStartTime=now+DelayRound) and sends CenterAll('KEYHUNT_ROUNDSTART', DelayRound) on the edge, so the delay_round countdown is now announced", result: pass }
+      - { kind: code, ref: "WinnerTeam removes keys + sets Phase=WaitingForPlayers; Tick re-enters Countdown (RoundStartTime=now+DelayRound) and sends CenterAll('KEYHUNT_ROUNDSTART', DelayRound) on the edge", result: pass }
     confidence: high
-    notes: "FIXED vs baseline: the KEYHUNT_ROUNDSTART countdown center-print is now sent on the WaitingForPlayers->Countdown re-entry (presentation missing->faithful). Keys removed + delay_round honored via the state machine."
+    notes: "UNCHANGED + faithful. Keys removed + delay_round honored via the state machine; ROUNDSTART countdown announced on re-entry."
 
   - id: keyhunt.loss.timeout_return
     name: "Dropped key auto-returns/destroys after delay_return"
@@ -294,9 +293,9 @@ features:
     gaps:
       - "Per-player even-distribution of score_destroyed is simplified (LoserTeam splits a flat per-team chunk among other teams rather than DistributeEvenly per-player including key-holders); minor magnitude divergence vs Base kh_LoserTeam's DistributeEvenly. See keyhunt.loss.loser_team_push_destroy for the detail."
     verification:
-      - { kind: code, ref: "KeyHunt.cs:681-685 KeyThinkEntity: key.DropTime>0 && Now>DropTime+DelayReturn -> AutoReturnKey -> LoserTeam(HomeTeam, key) (matches Base kh_Key_Think:684-686 if(!owner) if(time>pain_finished) kh_LoserTeam)", result: pass }
+      - { kind: code, ref: "KeyHunt.cs:702-706 KeyThinkEntity: key.DropTime>0 && Now>DropTime+DelayReturn -> AutoReturnKey -> LoserTeam(HomeTeam, key) (matches Base kh_Key_Think:683-686 if(!owner) if(time>pain_finished) kh_LoserTeam)", result: pass }
     confidence: high
-    notes: "FIXED vs baseline: delay_return 15->60 (values partial->faithful) AND a timed-out key now routes through LoserTeam (destroy split + DESTROYED notify + SND_KH_DESTROY + TE_EXPLOSION + FinishRound) instead of a silent reset (logic/presentation/audio partial/missing->faithful). Distribution magnitude is the only residual."
+    notes: "UNCHANGED + faithful. A timed-out key routes through LoserTeam (push OR destroy split + notify + SND_KH_DESTROY + TE_EXPLOSION + round end). Distribution magnitude is the only residual."
 
   - id: keyhunt.loss.loser_team_push_destroy
     name: "Loser team: push (score_push) vs destroyed (score_destroyed split)"
@@ -305,6 +304,7 @@ features:
       - "common/gametypes/gametype/keyhunt/sv_keyhunt.qc:kh_LoserTeam"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/KeyHunt.cs:LoserTeam"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/KeyHunt.cs:DropAllKeys"
     constants:
       - { name: "g_balance_keyhunt_score_push", base: "60", port: "60 (DefaultScorePush)", match: true }
       - { name: "g_balance_keyhunt_score_destroyed", base: "50", port: "50 (DefaultScoreDestroyed)", match: true }
@@ -315,18 +315,17 @@ features:
       timing: faithful
       presentation: faithful
       audio: faithful
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "PUSH BRANCH IS DEAD: LoserTeam credits a pusher (score_push + KH_PUSHES + INFO_KEYHUNT_PUSHED) only if lostKey.Pusher is set within ProtectTime, but NOTHING ever sets key.Pusher — no push/off-map-fall tracking exists, so the push branch can never execute. Every loss falls into the destroy branch."
-      - "DESTROY DISTRIBUTION SIMPLIFIED: Base splits score_destroyed via DistributeEvenly across the other teams AND credits each non-loser key-holder a 'destroyed_holdingkey' chunk (score_destroyed_ownfactor); the port adds a flat (score_destroyed/otherTeams) integer chunk to each other team's ST_SCORE only. previous_owner -score_destroyed log line absent."
-      - "Destroy notify (CENTER_ROUND_TEAM_LOSS + INFO_KEYHUNT_DESTROYED), SND_KH_DESTROY, and the tar boom (TE_EXPLOSION ~ te_tarexplosion) ARE now sent."
+      - "DESTROY DISTRIBUTION SIMPLIFIED: Base splits score_destroyed via DistributeEvenly across the other teams AND credits each non-loser key-holder a 'destroyed_holdingkey' chunk (score_destroyed_ownfactor); the port adds a flat (score_destroyed/otherTeams) integer chunk to each other team's ST_SCORE only. The previous_owner -score_push / -score_destroyed log lines (not actually deducted in Base either) are absent."
+      - "MECHANISM: Base credits the pusher via kh_Scores_Event(attacker,'push',score_push) into the team-aware SCORE pipeline; the port adds ScorePush to pusher.ScoreFrags directly (magnitude faithful, mechanism divergence — same class as carrier_frag)."
     verification:
-      - { kind: code, ref: "KeyHunt.cs:797-845 LoserTeam: push branch gated on lostKey.Pusher (never set anywhere — verified no key.Pusher assignment except DropOneKey which nulls it); destroy branch credits per-team chunk + CenterAll(ROUND_TEAM_LOSS) + InfoTeam(DESTROYED) + SoundGlobal(KH_DESTROY) + EffectEmitter.Emit(TE_EXPLOSION)", result: pass }
-      - { kind: code, ref: "grep: key.Pusher only assigned in DropOneKey (= null); no pusher-tracking caller -> push branch dead", result: pass }
+      - { kind: code, ref: "KeyHunt.cs:824-874 LoserTeam: push branch gated on lostKey.Pusher (set in DropAllKeys from a recent enemy pusher) -> ScorePush + KH_PUSHES + INFO_KEYHUNT_PUSHED; destroy branch credits per-team chunk + CenterAll(ROUND_TEAM_LOSS) + InfoTeam(DESTROYED) + SoundGlobal(KH_DESTROY) + EffectEmitter.Emit(TE_EXPLOSION). Matches Base kh_LoserTeam:584-665", result: pass }
+      - { kind: code, ref: "Player.Pusher/PushLTime ARE set: DamageSystem.cs:404-405 (enemy-player damage sets targ.Pusher=attacker + maxpushtime window), Teleporters.cs:334-335, Laser.cs:188. DropAllKeys:731 reads (player.Pusher within PushLTime) -> records key.Pusher=mypusher (mirrors QC kh_Key_DropAll key.pusher=mypusher)", result: pass }
     confidence: high
-    notes: "Wave-2 added the destroy half (live via the timeout path -> keyhunt.loss.timeout_return). The PUSH half is implemented but DEAD (no pusher tracking). Distribution magnitude simplified vs DistributeEvenly + destroyed_holdingkey. liveness=partial: destroy live, push dead."
+    notes: "FIXED vs baseline: the push branch is NO LONGER DEAD. Baseline said 'NOTHING ever sets key.Pusher'; verified Player.Pusher/PushLTime are now set by the damage/teleport/laser push-credit window (DamageSystem PlayerDamage), DropAllKeys records the recent enemy pusher onto each dropped key, and a subsequent timeout-return credits the pusher (score_push + KH_PUSHES + PUSHED notify) when on another team. liveness partial->live. Distribution magnitude still simplified vs DistributeEvenly + destroyed_holdingkey (logic/values partial)."
 
   - id: keyhunt.drop.on_death
     name: "Drop all keys on death/suicide/observe/disconnect"
@@ -344,7 +343,7 @@ features:
       - { name: "g_balance_keyhunt_dropvelocity", base: "300", port: "300 (DefaultDropVelocity)", match: true }
       - { name: "g_balance_keyhunt_protecttime", base: "0.8", port: "0.8 (DefaultProtectTime)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: partial
       presentation: faithful
@@ -353,13 +352,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL OPEN (liveness): only the PlayerDies path (OnDeath -> DropAllKeys) is wired. The MakePlayerObserver / ClientDisconnect / DropSpecialItems hooks (all kh_Key_DropAll in Base) have no port analogue calling DropAllKeys -> a player who observes/disconnects/has items stripped keeps their key state in limbo."
-      - "STILL OPEN (logic): ProtectTime is now set on drop (pushltime window) but it only feeds the DEAD push branch of LoserTeam (no pusher is ever recorded), so the protect window has no observable effect yet."
+      - "STILL OPEN (liveness): only the PlayerDies path (OnDeath -> DropAllKeys) is wired. The MakePlayerObserver / ClientDisconnect / DropSpecialItems hooks (all kh_Key_DropAll in Base) have no port analogue calling DropAllKeys -> a player who observes/disconnects/has items stripped keeps their key state in limbo. Verified: DropAllKeys has exactly one caller (KeyHunt.cs:394 OnDeath); InfraClientDisconnect (GameWorld.cs:861) does not route to KH."
     verification:
-      - { kind: code, ref: "KeyHunt.cs:704-739 DropAllKeys: DetachFromCarrier + Toss + SetOrigin(player) + Velocity = player.Velocity + fwd*DropVelocity (makevectors -1 0 0 *(45+45*rand) + 0 360 0*rand), KH_LOSSES + InfoTeam(LOST) + SoundOn(KH_DROP); OnDeath is the only live caller", result: pass }
-      - { kind: code, ref: "grep: no DropAllKeys call from any observer/disconnect/dropspecialitems path", result: pass }
+      - { kind: code, ref: "KeyHunt.cs:725-765 DropAllKeys: DetachFromCarrier + Toss + SetOrigin(player) + Velocity = player.Velocity + fwd*DropVelocity (makevectors -1 0 0 *(45+45*rand) + 0 360 0*rand), KH_LOSSES + InfoTeam(LOST) + SoundOn(KH_DROP); also records key.Pusher=mypusher + ProtectTime; OnDeath is the only live caller", result: pass }
+      - { kind: code, ref: "grep: no DropAllKeys call from any observer/disconnect/dropspecialitems path (only OnDeath)", result: pass }
     confidence: high
-    notes: "FIXED vs baseline: throw physics now present (dropvelocity 300 + the makevectors fling, values partial->faithful, presentation missing->faithful); SND_KH_DROP + INFO_KEYHUNT_LOST now sent (audio missing->faithful). STILL only 1 of 4 Base drop hooks wired (liveness stays partial); ProtectTime set but moot (push branch dead)."
+    notes: "logic upgraded to faithful: ProtectTime/key.Pusher now feed a LIVE push branch (see loss.loser_team_push_destroy) — the protect window has an observable effect. STILL only 1 of 4 Base drop hooks wired (liveness stays partial; timing partial reflects the missing observe/disconnect drop edges)."
 
   - id: keyhunt.drop.voluntary_use
     name: "Voluntary +use drop of one key (kh_Key_DropOne)"
@@ -369,6 +367,9 @@ features:
       - "common/gametypes/gametype/keyhunt/sv_keyhunt.qc:MUTATOR_HOOKFUNCTION(kh, PlayerUseKey)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/KeyHunt.cs:DropOneKey"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/KeyHunt.cs:OnUseKey"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleBoarding.cs:UseKey"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponImpulses.cs:Handle"
     constants:
       - { name: "g_balance_keyhunt_throwvelocity", base: "400", port: "400 (DefaultThrowVelocity)", match: true }
     status:
@@ -377,15 +378,17 @@ features:
       timing: faithful
       presentation: faithful
       audio: faithful
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "VERIFIED DEAD: DropOneKey is fully implemented (throw at throwvelocity 400, delay_collect re-collect gate via DropperTeam+DropTime, KH_LOSSES + INFO_KEYHUNT_DROP + SND_KH_DROP) but NOTHING calls it. The +use key (WeaponImpulses) is routed only to VehicleBoarding.UseKey; the PlayerUseKey mutator hook that Base uses to reach kh_Key_DropOne is not wired (WeaponImpulses.cs notes the PlayerUseKey hook is 'not yet live')."
+      - "Minor: Base PlayerUseKey gates on MUTATOR_RETURNVALUE == 0 (only drops if no earlier hook consumed the press); the port's OnUseKey unconditionally attempts the drop and returns whether it dropped. With only KH subscribed on the KH path this is observationally equivalent, but if CTF/Keepaway also subscribed PlayerUseKey on the same match (impossible — single gametype) the ordering would matter. Not a defect for KeyHunt."
     verification:
-      - { kind: code, ref: "KeyHunt.cs:746-782 DropOneKey complete; grep finds no caller outside KeyHunt.cs (only the compiled dll). WeaponImpulses.cs:120-190 routes IMPULSE(use) to VehicleBoarding.UseKey only", result: pass }
+      - { kind: code, ref: "KeyHunt.cs:287-292 OnUseKey -> DropOneKey; subscribed via MutatorHooks.PlayerUseKey.Add(_useKeyHandler) in Activate (KeyHunt.cs:225-226), removed in Deactivate", result: pass }
+      - { kind: code, ref: "LIVE CHAIN: Commands.cs:1475 WeaponImpulses.Handle(caller, imp) on the impulse-command path; WeaponImpulses.cs:119-129 case Use(21) -> UseHandle -> VehicleBoarding.UseKey; VehicleBoarding.cs:106 (not seated, no vehicle boarded) -> MutatorHooks.FirePlayerUseKey(pl) -> PlayerUseKey.Call -> KeyHunt.OnUseKey", result: pass }
+      - { kind: code, ref: "impulse-21 gate Commands.cs:1459-1461 only blocks while _world.Rounds.IsRoundStarted==false; KH's generic EnableRounds() handler (no canRoundEnd) sits in InProgress after the first 5s, so +use is NOT blocked during KH play", result: pass }
     confidence: high
-    notes: "CHANGED vs baseline (missing->coded-but-dead): the mechanic exists but has no live +use entry. A one-line wiring (route the PlayerUseKey hook to kh.DropOneKey when GameType is KeyHunt) would revive it. The describe() 'the key can be dropped to pass it to teammates' is still not reachable in play."
+    notes: "FIXED vs baseline (dead -> live): the second-pass fix-up wired MutatorHooks.PlayerUseKey (FirePlayerUseKey added at VehicleBoarding.UseKey tail) AND KeyHunt subscribes it in Activate. The +use impulse now reaches kh.DropOneKey on the real match path. DropOneKey itself unchanged (throwvelocity 400, delay_collect gate, DROP notif+sound)."
 
   - id: keyhunt.combat.carrier_damage_force
     name: "Carrier/noncarrier damage + force multipliers"
@@ -412,7 +415,7 @@ features:
     verification:
       - { kind: code, ref: "keyhunt_carrier_damage/force unread in port; grep finds the analogue only in Keepaway.cs/TeamKeepaway.cs, not KeyHunt", result: pass }
     confidence: high
-    notes: "UNCHANGED vs baseline. Low player-visible impact at stock values; flagged as a logic gap for tuned servers."
+    notes: "UNCHANGED. Low player-visible impact at stock values; flagged as a logic gap for tuned servers."
 
   - id: keyhunt.combat.carrier_frag
     name: "Carrier-frag bonus + team-kill penalty"
@@ -436,9 +439,9 @@ features:
     gaps:
       - "Base kh_HandleFrags credits via kh_Scores_Event which adjusts the SCORE float (then the engine adds the implicit +1 normal frag); the port adds (ScoreCarrierFrag-1) to attacker.ScoreFrags directly. Functionally equivalent (the -1 offset accounts for the engine's +1), but the port routes through ScoreFrags rather than the team-aware SCORE pipeline — a minor mechanism divergence, not a magnitude one."
     verification:
-      - { kind: code, ref: "KeyHunt.cs:351-368 OnDeath carrier-frag: enemy -> attacker.ScoreFrags += ScoreCarrierFrag-1 + KH_KCKILLS; same-team -> attacker.ScoreFrags -= keysHeld*ScoreCollect (matches Base kh_HandleFrags:960/964 -nk*score_collect and score_carrierfrag-1)", result: pass }
+      - { kind: code, ref: "KeyHunt.cs:372-389 OnDeath carrier-frag: enemy -> attacker.ScoreFrags += ScoreCarrierFrag-1 + KH_KCKILLS; same-team -> attacker.ScoreFrags -= keysHeld*ScoreCollect (matches Base kh_HandleFrags -nk*score_collect and score_carrierfrag-1)", result: pass }
     confidence: high
-    notes: "FIXED vs baseline: score_carrierfrag 1->2 (values partial->faithful); the (-1) offset AND the same-team carrier-frag penalty (-nk*score_collect) are now implemented (logic partial->faithful). KH_KCKILLS credited on enemy carrier-frag."
+    notes: "UNCHANGED + faithful. The (-1) offset AND the same-team carrier-frag penalty are implemented; KH_KCKILLS credited on enemy carrier-frag."
 
   - id: keyhunt.unreachable.damage_destroy
     name: "Lava/slime/trigger destroy + damage-return (return_when_unreachable)"
@@ -467,7 +470,7 @@ features:
     verification:
       - { kind: code, ref: "return_when_unreachable/delay_damage_return/damageforcescale unread; no event_damage on the key entity (grep finds no matches in src)", result: pass }
     confidence: high
-    notes: "UNCHANGED vs baseline. Keys can rest in hazards until delay_return (60s) instead of returning in delay_damage_return (5s)."
+    notes: "UNCHANGED. Keys can rest in hazards until delay_return (60s) instead of returning in delay_damage_return (5s)."
 
   - id: keyhunt.alarm.siren
     name: "Periodic alarm while one team holds all keys"
@@ -489,10 +492,10 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "KeyHunt.cs:888-894 CheckCaptureGeometry: when all keys on one team, if(_sirenTime<now) SoundOn(anchor,'KH_ALARM'); _sirenTime=now+2.5 (matches Base kh_Key_Think:691-695 siren_time loop)", result: pass }
-      - { kind: code, ref: "SoundsList.cs:103 Add('KH_ALARM','kh/alarm') registered; live via the per-key think path", result: pass }
+      - { kind: code, ref: "KeyHunt.cs:918-923 CheckCaptureGeometry: when all keys on one team, if(_sirenTime<now) SoundOn(anchor,'KH_ALARM'); _sirenTime=now+2.5 (matches Base kh_Key_Think:688-694 siren_time loop)", result: pass }
+      - { kind: code, ref: "SoundsList registers KH_ALARM (kh/alarm); live via the per-key think path", result: pass }
     confidence: high
-    notes: "FIXED vs baseline: SND_KH_ALARM now plays every 2.5s on the anchor carrier while one team owns all keys (missing->faithful). Live via CheckCaptureGeometry on the entity think path."
+    notes: "UNCHANGED + faithful. SND_KH_ALARM plays every 2.5s on the anchor carrier while one team owns all keys. Live via CheckCaptureGeometry on the entity think path."
 
   - id: keyhunt.notify.center_info
     name: "Center-print + info notification storm (START/SCAN/ROUNDSTART/INTERFERE/MEET/HELP + PICKUP/DROP/LOST/PUSHED/DESTROYED/CAPTURE) + capture VFX"
@@ -520,15 +523,15 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The PUSHED info line (INFO_KEYHUNT_PUSHED) is wired in LoserTeam but unreachable (the push branch is dead — see keyhunt.loss.loser_team_push_destroy)."
+      - "The PUSHED info line (INFO_KEYHUNT_PUSHED) is now REACHABLE — the push branch is live (see keyhunt.loss.loser_team_push_destroy). (Previously listed as unreachable.)"
       - "The 'Run here'(Finish) <-> 'Key Carrier'(Friend) waypoint-sprite flip on the all-owned transition is absent (waypoint sprites unimplemented — see keyhunt.waypoints.sprites). The interfere/meet/help CENTER volley itself IS implemented."
       - "Capture VFX uses TE_EXPLOSION at the midpoint as a stand-in for te_customflash; the NEXUIZPLASMA carrier-chain trail is faithful."
     verification:
-      - { kind: code, ref: "KeyHunt.cs:1005-1048 UpdateInterfereMessages: time+0.2 deferred volley, MEET (carrier) / HELP (teammate) / INTERFERE_<team> (others) — matches Base kh_Key_Think:706-720", result: pass }
-      - { kind: code, ref: "KeyHunt.cs:938-998 WinnerTeam+CaptureVfx: ROUND_TEAM_WIN center + KEYHUNT_CAPTURE info + EmitTrail(TR_NEXUIZPLASMA) chain + TE_EXPLOSION midpoint + SoundGlobal(KH_CAPTURE)", result: pass }
-      - { kind: code, ref: "NotificationsList.cs:681-936 all KEYHUNT_* + ROUND_TEAM_WIN/LOSS strings registered; KeyHunt.cs now sends START/SCAN/ROUNDSTART/INTERFERE/MEET/HELP/PICKUP/DROP/LOST/PUSHED/DESTROYED/CAPTURE", result: pass }
+      - { kind: code, ref: "KeyHunt.cs:1034-1077 UpdateInterfereMessages: time+0.2 deferred volley, MEET (carrier) / HELP (teammate) / INTERFERE_<team> (others) — matches Base kh_Key_Think:706-720", result: pass }
+      - { kind: code, ref: "KeyHunt.cs:967-1028 WinnerTeam+CaptureVfx: ROUND_TEAM_WIN center + KEYHUNT_CAPTURE info + EmitTrail(TR_NEXUIZPLASMA) chain + TE_EXPLOSION midpoint + SoundGlobal(KH_CAPTURE)", result: pass }
+      - { kind: code, ref: "NotificationsList registers all KEYHUNT_* + ROUND_TEAM_WIN/LOSS; KeyHunt.cs sends START/SCAN/ROUNDSTART/INTERFERE/MEET/HELP/PICKUP/DROP/LOST/PUSHED/DESTROYED/CAPTURE", result: pass }
     confidence: high
-    notes: "FIXED vs baseline (the biggest player-facing gap): the entire notification storm + capture VFX/jingle is now sent on live paths (logic/timing/presentation missing->faithful). Residual: PUSHED unreachable (push branch dead), no waypoint flip (sprites missing), customflash approximated by TE_EXPLOSION."
+    notes: "UNCHANGED + faithful (the whole notification storm + capture VFX/jingle on live paths). The PUSHED line is now genuinely reachable. Residual: no waypoint flip (sprites missing), customflash approximated by TE_EXPLOSION."
 
   - id: keyhunt.hud.objective_status
     name: "OBJECTIVE_STATUS key-state pack + HUD modicons"
@@ -553,10 +556,10 @@ features:
     divergence_rationale: "VERIFIED self-consistent: Base packs the SVQC NUM_TEAM code (red 5/blue 14/yellow 13/pink 10) and CSQC HUD_Mod_KH decodes ((s>>5i)&31)-1, comparing against CSQC NUM_TEAM (4/13/12/9). The port instead packs (teamIndex+1) (red 2..pink 5), and ModIconsPanel.DrawKeyhunt uses the SAME ((s>>5i)&31)-1 decode but compares against Num1..Num4 = 1..4 (a 1-based index) with MyTeam also 1-based. dropped (30->29 / case 29) and self (31->30) handling match Base exactly. Net: the rendered icons are observationally identical; only the on-wire team encoding differs (a port-internal convention, never interoperating with a Base server). Flagged in KeyHunt.PackKeyState."
     gaps: []
     verification:
-      - { kind: code, ref: "Base teams.qh CSQC NUM_TEAM_1..4 = 4/13/12/9 vs SVQC 5/14/13/10; cl_keyhunt.qc:25 decode -1; ModIconsPanel Num1..4=1..4 + MyTeam 1-based", result: pass }
+      - { kind: code, ref: "Base teams.qh CSQC NUM_TEAM_1..4 = 4/13/12/9 vs SVQC 5/14/13/10; cl_keyhunt.qc:25 decode -1; ModIconsPanel Num1..4=1..4 + MyTeam 1-based; KeyHunt.cs:1096-1116 PackKeyState (TeamIndex+1, 30 dropped, 31 self)", result: pass }
       - { kind: test, ref: "tests/XonoticGodot.Tests/GametypeStatusTests.cs", result: pass }
     confidence: high
-    notes: "Unchanged + still faithful. Personalized per recipient (self slot 31), packed/decoded faithfully; quad/horizontal/vertical layout + carrying-all blink + per-team skin art ported. Divergence verified observationally identical."
+    notes: "UNCHANGED + faithful. Personalized per recipient (self slot 31), packed/decoded faithfully; quad/horizontal/vertical layout + carrying-all blink + per-team skin art ported. Divergence verified observationally identical."
 
   - id: keyhunt.waypoints.sprites
     name: "Dropped-key + carrier waypoint sprites (Run here / Key Carrier)"
@@ -582,7 +585,7 @@ features:
     verification:
       - { kind: code, ref: "No WP_Key* / waypoint sprite spawn in KeyHunt.cs (grep finds none)", result: pass }
     confidence: high
-    notes: "UNCHANGED vs baseline. Tracking-device delay visibility logic also moot without sprites."
+    notes: "UNCHANGED. Tracking-device delay visibility logic also moot without sprites."
 
   - id: keyhunt.bot.role
     name: "Bot KeyHunt role (carrier/defense/offense/freelancer goal rating)"
@@ -606,10 +609,10 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "VERIFIED STILL DEAD (BotObjectiveRoles.cs NOT touched by Wave-1/2): RoleKeyHunt calls Api.Entities.FindByClass('keyhunt_key') (BotObjectiveRoles.cs:213) but keys spawn with classname 'item_kh_key' (KeyHunt.cs:532) -> the scan finds nothing every frame."
-      - "VERIFIED STILL: it reads key.Owner to locate the carrier (BotObjectiveRoles.cs:218-223), but the carrier is stored on Entity.GtCarrier by AttachToCarrier; Entity.Owner is never set -> carrier targeting broken even if the classname matched."
+      - "VERIFIED STILL DEAD (BotObjectiveRoles.cs not touched by any wave): RoleKeyHunt calls Api.Entities.FindByClass('keyhunt_key') (BotObjectiveRoles.cs:213) but keys spawn with classname 'item_kh_key' (KeyHunt.cs:553) -> the scan finds nothing every frame."
+      - "VERIFIED STILL: it reads key.Owner to locate the carrier, but the carrier is stored on Entity.GtCarrier by AttachToCarrier (EntityGametypeState.cs:217); Entity.Owner is never set -> carrier targeting broken even if the classname matched."
       - "The four QC roles (carrier/defense/offense/freelancer with role timeouts + kh_Key_AllOwnedByWhichTeam-driven ratingscale switching + HavocBot_ChooseRole random role pick) are collapsed into a single freelancer-style rating."
     verification:
-      - { kind: code, ref: "git diff main -- BotObjectiveRoles.cs is empty (unchanged); spawn classname item_kh_key (KeyHunt.cs:532) vs FindByClass('keyhunt_key') (BotObjectiveRoles.cs:213); GtCarrier (AttachToCarrier) vs key.Owner read", result: pass }
+      - { kind: code, ref: "BotObjectiveRoles.cs:213 FindByClass('keyhunt_key') vs spawn classname item_kh_key (KeyHunt.cs:553); GtCarrier (EntityGametypeState.cs:217 AttachToCarrier) vs key.Owner read", result: pass }
     confidence: high
-    notes: "UNCHANGED vs baseline and still dead. Wired in BotRoles dispatch (kh/keyhunt -> RoleKeyHunt) but cannot find or target keys. Two-line fix (classname 'item_kh_key' + read GtCarrier) would revive it."
+    notes: "UNCHANGED and still dead. Wired in BotRoles dispatch (kh/keyhunt -> RoleKeyHunt) but cannot find or target keys. Two-line fix (classname 'item_kh_key' + read GtCarrier) would revive it."

@@ -5,11 +5,11 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 11
   worst_gaps:
-    - "Surface-flag branches are inert: the slick/clip-reflect and noimpact-fail branches now EXIST in OnTouch (with correct per-branch sounds), but IsSlickOrClip/IsNoImpact are hardcoded `return false` (Porto.cs:288,293) because the headless touch carries no per-contact Q3 surface flags. So a porto still places a portal on a slick or sky/noimpact face that Base rejects, SND_PORTO_BOUNCE never plays, and the portal normal is approximated from -velocity instead of the impact plane."
-    - "No portal-aim trajectory preview: Base draws a reflecting red/blue Draw_CylindricLine polyline (Porto_Draw) with the CheckWireframeBox 96^3 size gate showing where the in/out portals would land while you hold porto — the port renders nothing. Still entirely missing."
-    - "porto_forbidden is still dead (read in WrThink:89 but never set or decremented — no porto_ticker SV_StartFrame mutator, no race respawn setter), and there is STILL no W_Porto_Remove / wr_resetplayer death-or-respawn cleanup of porto_current or the live projectile (a porto in flight or a placed portal can outlive its owner's death)."
-    - "Projectile blue reclassification suspect: ProjectileCatalog classifier (line 261) returns PortoRed unconditionally for classname 'porto'; the red->blue type swap on a combined shot is modelled by flipping EF_RED/EF_BLUE on the entity, but the client likely never re-renders the blue variant mid-flight."
-    - "Non-secondary aim-hold (porto_v_angle) reworked so a Primary tick no longer wipes the held angle, but the 'ATCK2 released' edge can't be observed from a Primary-only tick, so the hold is approximate; dormant anyway (secondary defaults on)."
+    - "Death/respawn cleanup STILL MISSING: no W_Porto_Remove / wr_resetplayer port anywhere (grep finds PortoCurrent/PortoForbidden touched only inside Porto.cs). A porto in flight or a placed portal can outlive its owner's death; on respawn the porto_current latch is never cleared and porto_forbidden is never set."
+    - "porto_forbidden is STILL dead (read in WrThink:89 but never set or decremented — no porto_ticker SV_StartFrame mutator, no race-respawn setter). In Race/CTS, Base blocks re-firing a porto across a respawn; the port does not."
+    - "No portal-aim trajectory preview (Porto_Draw): Base draws a reflecting red/blue Draw_CylindricLine polyline with the CheckWireframeBox 96^3 size gate showing where the in/out portals would land while you hold porto. The port renders nothing. Still entirely missing."
+    - "Projectile blue reclassification suspect: client classifier (ProjectileCatalog.cs:261) STILL returns PortoRed unconditionally for classname 'porto'; the red->blue swap on a combined shot flips EF_RED/EF_BLUE on the server entity but the client never re-renders the blue variant mid-flight."
+    - "No center-print notifications (CENTER_PORTO_CREATED_IN/OUT/FAILED) and no throwable-drop (W_ThrowNewWeapon) on soft fail."
 features:
   - id: weapon-porto.identity.attributes
     name: "Weapon identity, models, color, flags, ammo type"
@@ -37,9 +37,9 @@ features:
     gaps:
       - "Crosshair string/size (crosshairporto, 0.6) not carried on the port weapon (cosmetic)."
     verification:
-      - { kind: code, ref: "Porto.cs ctor vs porto.qh CLASS(PortoLaunch)", result: pass }
+      - { kind: code, ref: "Porto.cs ctor (45-56) vs porto.qh CLASS(PortoLaunch)", result: pass }
     confidence: high
-    notes: "Auto-registered via [Weapon] attribute; superweapon, weaponstart 0 (map-placed only). Unchanged by Wave-2."
+    notes: "Auto-registered via [Weapon] attribute; superweapon, weaponstart 0 (map-placed only). Unchanged by the second-pass fix-up."
 
   - id: weapon-porto.fire.launch
     name: "Fire: eye-shot launch of the bouncing portal projectile"
@@ -51,12 +51,13 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Porto.cs:Attack"
     constants:
       - { name: "primary/secondary speed", base: "1000 qu/s", port: "1000 (cvar-seeded)", match: true }
-      - { name: "W_SetupShot recoil", base: "4", port: "4", match: true }
+      - { name: "W_SetupShot recoil", base: "4", port: "4 (Porto.cs:147)", match: true }
       - { name: "spread / speed_up / speed_z", base: "0 / 0 / 0", port: "0 / 0 / 0", match: true }
       - { name: "model scale", base: "4", port: "render scale 4 (ProjectileCatalog); entity scale not set", match: true }
       - { name: "movetype", base: "MOVETYPE_BOUNCEMISSILE", port: "MoveType.BounceMissile", match: true }
+      - { name: "dphitcontentsmask", base: "DPCONTENTS_SOLID|BODY|PLAYERCLIP", port: "not set on the projectile", match: false }
       - { name: "FL_PROJECTILE flag", base: "FL_PROJECTILE (32768)", port: "EntFlags.Item (256) (mislabeled)", match: false }
-      - { name: "eye-shot override", base: "w_shotdir=v_forward; w_shotorg projected onto eye ray", port: "dir=forward from eye", match: true }
+      - { name: "eye-shot override", base: "w_shotdir=v_forward; w_shotorg projected onto eye ray", port: "dir=forward from eye (Porto.cs:147-149)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -68,11 +69,12 @@ features:
     divergence_rationale: null
     gaps:
       - "gren.Flags set to EntFlags.Item (256) but commented 'QC FL_PROJECTILE'; the port has no FL_PROJECTILE flag (32768). Mostly inert for porto but the projectile is not flagged as a projectile."
-      - "right_vector (portal roll axis) is stored in AVelocity and reflected on each placement/slick bounce, but only about the approximated -velocity normal (not the true impact plane), so portal orientation is approximate."
+      - "gren.dphitcontentsmask (SOLID|BODY|PLAYERCLIP) is not set on the spawned projectile, so the engine bouncemissile move uses its default contents mask rather than Base's; the OnTouch ProbeImpact re-trace recovers the PLAYERCLIP flag independently, so this is mostly cosmetic for the placement decision."
+      - "right_vector (portal roll axis) carried in AVelocity and reflected on each placement/slick bounce; now reflected about the TRUE impact plane normal recovered by ProbeImpact (was -velocity), so orientation is closer to Base but still derived from a re-trace rather than the original collision plane."
     verification:
-      - { kind: code, ref: "Porto.cs:Attack vs porto.qc:W_Porto_Attack; WeaponFireDriver.cs:155 drives WrThink->Attack live", result: pass }
+      - { kind: code, ref: "Porto.cs:Attack (141-195) vs porto.qc:W_Porto_Attack; WeaponFireDriver.cs:155 drives WrThink->Attack live", result: pass }
     confidence: high
-    notes: "porto/fire.wav played; CSQCProjectile PORTO_RED/BLUE realised in ProjectileCatalog. EditProjectile mutator hook is called. Plays live via WeaponFireDriver. Unchanged by Wave-2."
+    notes: "porto/fire.wav played; CSQCProjectile PORTO_RED/BLUE realised in ProjectileCatalog. EditProjectile mutator hook is called (Porto.cs:190-191). Plays live via WeaponFireDriver. Unchanged by the second-pass fix-up."
 
   - id: weapon-porto.fire.refire_gate
     name: "Fire gating: single-portal latch + porto_forbidden + refire"
@@ -97,11 +99,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "porto_forbidden is still dead: WrThink reads st.PortoForbidden but nothing in src/ ever sets it (no race respawn setter) or decrements it (no porto_ticker SV_StartFrame mutator port). In Race/CTS, Base blocks re-firing a porto across a respawn; the port does not."
+      - "porto_forbidden is still dead: WrThink reads st.PortoForbidden but nothing in src/ ever sets it (no race respawn setter) or decrements it (no porto_ticker SV_StartFrame mutator port). Confirmed by grep: PortoForbidden (EntityWeaponState.cs:26,279) has only the reader at Porto.cs:89. In Race/CTS, Base blocks re-firing a porto across a respawn; the port does not."
     verification:
-      - { kind: code, ref: "Porto.cs:WrThink + grep: PortoForbidden (EntityWeaponState.cs:26,279) has only the reader at Porto.cs:89, no setter/decrementer in src/", result: fail }
+      - { kind: code, ref: "Porto.cs:WrThink (89) + grep PortoForbidden: reader-only, no setter/decrementer in src/", result: fail }
     confidence: high
-    notes: "porto_current + PrepareAttack refire gate are faithful and live (WeaponFireDriver); only the forbidden gate is inert. Unchanged by Wave-2."
+    notes: "porto_current + PrepareAttack refire gate are faithful and live (WeaponFireDriver); only the forbidden gate is inert. Unchanged by the second-pass fix-up."
 
   - id: weapon-porto.fire.aim_hold
     name: "Secondary aim-hold (porto_v_angle) in non-secondary mode"
@@ -122,12 +124,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Reworked so the Primary tick no longer blanket-clears PortoVAngleHeld (the old `else { PortoVAngleHeld=false }` bug is gone): the hold is now only set on a Secondary tick and cleared when the held-angle shot is consumed (Porto.cs:117-132). But the QC release condition `if (!(fire & 2)) porto_v_angle_held = 0` cannot be reproduced from a Primary-only tick — the port can't observe an 'ATCK2 released' edge — so the hold is never released until a shot consumes it, which diverges from Base when the player taps then releases secondary without firing primary."
+      - "The hold is set on a Secondary tick and cleared when the held-angle shot is consumed (Porto.cs:117-132), but the QC release condition `if (!(fire & 2)) porto_v_angle_held = 0` cannot be reproduced from a Primary-only tick — the port can't observe an 'ATCK2 released' edge — so the hold is never released until a shot consumes it, which diverges from Base when the player taps then releases secondary without firing primary."
       - "Only reachable when g_balance_porto_secondary=0 (non-default); dormant in stock play."
     verification:
       - { kind: code, ref: "Porto.cs:WrThink non-secondary branch (117-132) vs porto.qc:wr_think (373-396); WeaponFireDriver.cs:155/157", result: fail }
     confidence: medium
-    notes: "Default xonotic balance has secondary=1, so this whole branch is dormant in stock play. The captured angle IS now usable by a following primary fire (Attack:144 reads PortoVAngle) — the catastrophic always-wipe bug is fixed — but the release-edge gap keeps it partial. Liveness stays dead (non-default cvar)."
+    notes: "Default xonotic balance has secondary=1, so this whole branch is dormant in stock play. The captured angle IS usable by a following primary fire (Attack:144 reads PortoVAngle) — the catastrophic always-wipe bug is fixed — but the release-edge gap keeps it partial. Liveness stays dead (non-default cvar). Unchanged by the second-pass fix-up."
 
   - id: weapon-porto.touch.placement_tree
     name: "On-touch portal placement decision tree (in/out/combined red->blue)"
@@ -136,33 +138,36 @@ features:
       - "common/weapons/weapon/porto.qc:W_Porto_Touch"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Porto.cs:OnTouch"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Porto.cs:ProbeImpact"
     constants:
       - { name: "type 0 -> in-portal only", base: "Portal_SpawnInPortalAtTrace", port: "PlacePortal(isIn=true)+Success", match: true }
       - { name: "type 1 -> out-portal only", base: "Portal_SpawnOutPortalAtTrace", port: "PlacePortal(isIn=false)+Success", match: true }
-      - { name: "type -1 -> red in, flip blue, then out", base: "EF_RED->EF_BLUE chaining", port: "EffectRed->EffectBlue chaining", match: true }
-      - { name: "slick/clip reflect-and-continue", base: "yes (SND_PORTO_BOUNCE + reflect right_vector/angles)", port: "branch present but IsSlickOrClip()==false always (Porto.cs:288) -> never taken", match: false }
-      - { name: "noimpact fail", base: "yes (SND_PORTO_UNSUPPORTED + Fail + Portal_ClearAll if cnt<0)", port: "branch present but IsNoImpact()==false always (Porto.cs:293) -> never taken", match: false }
-      - { name: "creature-hit ignore", base: "yes (downtrace test)", port: "yes (approx: ignore contact if TakeDamage!=No or Client, Porto.cs:208)", match: true }
-      - { name: "not-owner delete", base: "yes (playerid mismatch + SND_PORTO_UNSUPPORTED)", port: "yes (owner null/freed -> unsupported + cleanup, Porto.cs:220)", match: true }
+      - { name: "type -1 -> red in, flip blue, then out", base: "EF_RED->EF_BLUE chaining", port: "EffectRed->EffectBlue chaining (Porto.cs:262-279)", match: true }
+      - { name: "slick/clip reflect-and-continue", base: "yes (SND_PORTO_BOUNCE + reflect right_vector/angles)", port: "branch present + now REACHABLE via ProbeImpact surface-flag re-trace (Q3SURFACEFLAG_SLICK|DPCONTENTS_PLAYERCLIP), Porto.cs:231-238", match: true }
+      - { name: "noimpact fail", base: "yes (SND_PORTO_UNSUPPORTED + Fail + Portal_ClearAll if cnt<0)", port: "branch present + now REACHABLE via ProbeImpact (Q3SURFACEFLAG_NOIMPACT); calls PortalClearWithId if cnt<0, Porto.cs:242-248", match: true }
+      - { name: "creature-hit ignore", base: "yes (downtrace test)", port: "yes (ignore if TakeDamage!=No or Client, Porto.cs:211-218)", match: true }
+      - { name: "not-owner delete", base: "yes (playerid mismatch + SND_PORTO_UNSUPPORTED)", port: "yes (owner null/freed -> unsupported + cleanup, Porto.cs:222-227)", match: true }
+      - { name: "combined cnt<0 noimpact portal clear", base: "Portal_ClearAll_PortalsOnly (ALL owner portals)", port: "PortalClearWithId(owner,id) (just this shot's portals)", match: false }
       - { name: "CheckWireframeBox 96x96x96 surface-size gate", base: "yes (in Porto_Draw preview)", port: "missing (no headless surface-size trace)", match: false }
       - { name: "create sound timing", base: "SND_PORTO_CREATE only inside success branch (once)", port: "porto/create played once per success branch in OnTouch; PlacePortal no longer plays it", match: true }
     status:
       logic: partial
-      values: partial
+      values: faithful
       timing: faithful
       presentation: na
-      audio: partial
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Surface-flag branches are structurally present but DEAD: IsSlickOrClip and IsNoImpact are hardcoded `return false` (Porto.cs:288,293) because the headless touch carries no per-contact Q3 surface flags / hit contents. So porto still places a portal on a slick/clip or sky/noimpact face that Base rejects, and SND_PORTO_BOUNCE is never played in practice."
+      - "Surface-flag gating logic differs from Base in WHERE the flags come from: Base reads trace_dphit* off the ORIGINAL bouncemissile collision trace; the port re-probes with a short worldonly traceline (ProbeImpact, Porto.cs:302-320) because the engine touch carries no per-contact flags. The TraceService genuinely fills DpHitQ3SurfaceFlags/DpHitContents from the BSP surface (TraceService.cs:626-627), so the slick/clip + noimpact branches are now reachable and play the right cues — but the re-trace can disagree with the true contact face (e.g. on a glancing bounce the probe ray may miss or hit an adjacent face), so the branch selection is approximate rather than exact."
+      - "Combined cnt<0 noimpact fail clears only THIS shot's portals (PortalClearWithId) whereas Base clears ALL of the owner's portals (Portal_ClearAll_PortalsOnly) — a mild logic divergence."
       - "No CheckWireframeBox surface-size gate: a hit on a wall too small for a 96^3 portal is accepted (Base rejects via the preview-side wireframe check)."
-      - "OnTouch treats any non-creature, owned, world-brush hit as a valid flat surface and places; uses the negated velocity (SurfaceNormal, Porto.cs:297) as the portal normal, not the true impact plane normal — orientation is approximate."
+      - "Base's final 'else' branch verifies realowner.portal_in.portal_id == this.portal_id before placing the out-portal of a combined shot; the port's blue-shot branch (Porto.cs:273-279) places unconditionally and has no portal_in id check or the mismatch->ClearAll fail path."
     verification:
-      - { kind: code, ref: "Porto.cs:OnTouch (198-280) vs porto.qc:W_Porto_Touch (166-286); sounds now per-branch", result: partial }
+      - { kind: code, ref: "Porto.cs:OnTouch (198-280) + ProbeImpact (302-320) vs porto.qc:W_Porto_Touch (166-286); TraceService.cs:626-627 fills surface flags", result: partial }
     confidence: high
-    notes: "WAVE-2 FIX: the audio defect is genuinely closed — create plays once on success (PlacePortal no longer double-plays), unsupported on the fail paths, bounce on the (currently-unreachable) slick branch. Creature-ignore + not-owner branches are now present (approximated headless). The in/out/combined chaining is live. Remaining failure is the surface-flag gating, which is inert because the trace flags aren't available on the touch."
+    notes: "SECOND-PASS FIX: the surface-flag branches are no longer hardcoded `return false` — ProbeImpact re-traces the impact face and reads real Q3 surface flags + the true plane normal, so slick/clip reflect (porto/bounce) and noimpact fail (porto/unsupported) are genuinely reachable on the live path, and the portal normal is the real wall plane (falling back to -velocity only on a probe miss). The PortalClearWithId host hook is now WIRED (GameWorld.cs:416), so the cnt<0 in-portal cleanup is a real call. Remaining divergences: re-trace approximation, ClearAll-vs-ClearWithID scope, missing wireframe size gate, missing portal_in id check on the final out-portal branch."
 
   - id: weapon-porto.touch.portal_spawn
     name: "Realise the placed portal (Portal_SpawnIn/OutPortalAtTrace) as a warpzone"
@@ -178,7 +183,7 @@ features:
       - "src/XonoticGodot.Server/GameWorld.cs:412"
     constants:
       - { name: "in/out pair link", base: "Portal_Connect two-way transform", port: "Warpzones.PlacePortoPortal pair link", match: true }
-      - { name: "portal angles", base: "fixedvectoangles2(plane_normal, right_vector)", port: "normal from -velocity (FixedVecToAngles in warpzone)", match: false }
+      - { name: "portal angles", base: "fixedvectoangles2(plane_normal, right_vector)", port: "normal from ProbeImpact true plane (FixedVecToAngles in warpzone)", match: false }
       - { name: "portal bbox", base: "'-48 -48 -48' / '48 48 48'", port: "n/a (warpzone unit)", match: false }
       - { name: "g_balance_portal_health", base: "200", port: "n/a (warpzone unit)", match: false }
       - { name: "g_balance_portal_lifetime", base: "15 s (refreshed per use)", port: "n/a (warpzone unit)", match: false }
@@ -192,12 +197,12 @@ features:
     intended_divergence: true
     divergence_rationale: "The port realises porto portals as the warpzone subsystem (linked warpzone pair via Warpzones.PlacePortoPortal) rather than a dedicated portal entity with MDL_PORTAL/health/SOLID_BSP. The teleport transform is shared with warpzones. Portal health/damage/lifetime/expire-explode behavior is delegated to (and audited by) the warpzone unit, not this weapon unit."
     gaps:
-      - "Portal angle derivation uses only the surface normal (from negated velocity, Porto.cs:341), not Base's fixedvectoangles2(normal, right_vector); right_vector is carried but the bounce uses the approximated normal, so portal roll may differ."
+      - "Portal angle derivation now uses the TRUE impact-plane normal recovered by ProbeImpact (was -velocity), but Base uses fixedvectoangles2(normal, right_vector); the port passes only the normal to the warpzone (right_vector is carried+reflected but not handed to PlacePortoPortal), so portal roll may still differ."
       - "Portal health (200, damageable) / 15 s lifetime / expire (porto/expire) + explode (porto/explode + ROCKET_EXPLODE) and MDL_PORTAL visuals are not realised here (warpzone-unit scope)."
     verification:
       - { kind: code, ref: "GameWorld.cs:412-413 wires Porto.PortalSpawner -> Warpzones.PlacePortoPortal; confirmed live in Boot", result: pass }
     confidence: medium
-    notes: "PortalSpawner is wired LIVE in GameWorld.Boot (line 412), so placement reaches the warpzone manager on the real match path. PortalClearWithId is declared (Porto.cs:331) but NOT wired in GameWorld (no host assignment found) — the cnt<0 fail in-portal cleanup is a no-op. Whether the realised warpzone teleports correctly + expires at 15s is unverified here (warpzone unit owns it)."
+    notes: "PortalSpawner is wired LIVE in GameWorld.Boot (line 412), so placement reaches the warpzone manager on the real match path. PortalClearWithId is NOW ALSO WIRED (GameWorld.cs:416 -> Warpzones.ClearPortoPortal), closing the prior 'declared but unwired' no-op. Whether the realised warpzone teleports correctly + expires at 15s is unverified here (warpzone unit owns it)."
 
   - id: weapon-porto.lifecycle.lifetime_self_destruct
     name: "Lifetime self-destruct + success cleanup (Think/Fail/Success)"
@@ -213,9 +218,9 @@ features:
     constants:
       - { name: "lifetime (nextthink)", base: "5 s", port: "5 (cvar-seeded)", match: true }
       - { name: "clear porto_current on end", base: "yes", port: "yes (CleanupProjectile)", match: true }
-      - { name: "Think-time not-owner handling", base: "playerid mismatch -> plain delete (no fail)", port: "ownerGone checked; cleanup runs uniformly (no fail behaviour anyway since silent)", match: true }
+      - { name: "Think-time not-owner handling", base: "playerid mismatch -> plain delete (no fail)", port: "ownerGone checked; cleanup runs uniformly (silent either way)", match: true }
       - { name: "throwable-drop on soft fail", base: "yes (W_ThrowNewWeapon if weaponthrowable + still has porto)", port: "missing", match: false }
-      - { name: "Portal_ClearWithID on combined fail (cnt<0)", base: "yes", port: "PortalClearWithId?.Invoke present (Porto.cs:357) but host hook never wired -> no-op", match: false }
+      - { name: "Portal_ClearWithID on combined fail (cnt<0)", base: "yes", port: "PortalClearWithId?.Invoke (Porto.cs:382) + host hook NOW WIRED (GameWorld.cs:416)", match: true }
       - { name: "lifetime-expiry sound", base: "W_Porto_Fail plays NO sound (silent on pure timeout)", port: "PortoThink plays NO sound (silent)", match: true }
     status:
       logic: partial
@@ -228,13 +233,11 @@ features:
     divergence_rationale: null
     gaps:
       - "No throwable-drop: when a combined porto fails softly Base can drop it as a pickup (W_ThrowNewWeapon) with CENTER_PORTO_FAILED; the port just cleans up."
-      - "Portal_ClearWithID on a combined-shot timeout calls PortalClearWithId (Porto.cs:357), but that host hook is never assigned in GameWorld, so the already-placed in-portal is NOT cleared on a soft fail."
-      - "PortoSuccess always resolves the owner's weapon slot from the captured firing slot now (CleanupProjectile takes slot) — the old new WeaponSlot(0) hardcode is gone; the per-slot porto_current latch is cleared correctly."
       - "No center-print notifications (CENTER_PORTO_CREATED_IN/OUT/FAILED) anywhere."
     verification:
-      - { kind: code, ref: "Porto.cs:PortoThink/PortoSuccess/CleanupProjectile (346-373) vs porto.qc:W_Porto_Think/_Fail/_Success", result: partial }
+      - { kind: code, ref: "Porto.cs:PortoThink/PortoSuccess/CleanupProjectile (371-398) vs porto.qc:W_Porto_Think/_Fail/_Success; GameWorld.cs:416 wires PortalClearWithId", result: partial }
     confidence: high
-    notes: "WAVE-2 FIX: the spurious porto/unsupported-on-every-expiry sound is GONE (PortoThink is silent, matching W_Porto_Fail), and the slot is now carried through cleanup (no more hardcoded slot-0). Self-destruct timer faithful and live. Remaining: throwable-drop, center-prints, and the unwired PortalClearWithId host hook."
+    notes: "SECOND-PASS FIX: the combined-shot soft-fail in-portal cleanup is now a REAL call — PortoThink invokes PortalClearWithId on cnt<0, and the host hook is wired to Warpzones.ClearPortoPortal (GameWorld.cs:416), so a placed in-portal is now torn out on a soft timeout (was a no-op in the baseline). Self-destruct timer faithful and live; slot carried through cleanup (no hardcoded slot-0); PortoThink silent (matches W_Porto_Fail). Remaining: throwable-drop and center-prints."
 
   - id: weapon-porto.lifecycle.death_reset_cleanup
     name: "Death / respawn cleanup (W_Porto_Remove, wr_resetplayer)"
@@ -255,11 +258,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "On player death/reset Base clears porto_current and hard-fails the live projectile (W_Porto_Remove) and clears all of the player's portals (Portal_ClearAll). The port STILL has no such hook (no wr_resetplayer / W_Porto_Remove port found): a porto in flight or a placed portal can survive its owner's death."
+      - "On player death/reset Base clears porto_current and hard-fails the live projectile (W_Porto_Remove) and clears all of the player's portals (Portal_ClearAll). The port STILL has no such hook (no wr_resetplayer / W_Porto_Remove port found; grep shows PortoCurrent only touched inside Porto.cs): a porto in flight or a placed portal can survive its owner's death."
     verification:
       - { kind: code, ref: "grep: no ResetPlayer/WrResetPlayer/W_Porto_Remove/porto cleanup-on-death in Weapon.cs or src/; PortoCurrent only touched inside Porto.cs", result: fail }
     confidence: high
-    notes: "Unchanged by Wave-2. Portal cleanup-on-death is a player-observable gap if porto is ever live in a match."
+    notes: "Unchanged by the second-pass fix-up. Portal cleanup-on-death is a player-observable gap if porto is ever live in a match (the PortalClearWithId hook now exists and is wired, so a death-reset port could reuse it — but no caller drives it on death/respawn)."
 
   - id: weapon-porto.presentation.trajectory_preview
     name: "Portal-aim trajectory preview (Porto_Draw reflecting red/blue polyline)"
@@ -285,7 +288,7 @@ features:
     verification:
       - { kind: code, ref: "grep: no Porto_Draw / polyline / trajectory preview in src/ or game/", result: fail }
     confidence: high
-    notes: "Unchanged by Wave-2. Most visible porto-specific presentation gap. The CheckWireframeBox 96^3 size gate lives here in Base (not the touch path)."
+    notes: "Unchanged by the second-pass fix-up. Most visible porto-specific presentation gap. The CheckWireframeBox 96^3 size gate lives here in Base (not the touch path)."
 
   - id: weapon-porto.presentation.projectile_render
     name: "Projectile render (PORTO_RED / PORTO_BLUE, trail, scale)"
@@ -310,11 +313,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Net-side CSQCProjectile type swap on red->blue chaining is done by flipping EF_RED/EF_BLUE on the entity, but the client classifier (ProjectileCatalog.cs:261) returns PortoRed unconditionally for classname 'porto' — the blue variant almost certainly never renders mid-flight."
+      - "Net-side CSQCProjectile type swap on red->blue chaining is done by flipping EF_RED/EF_BLUE on the entity, but the client classifier (ProjectileCatalog.cs:261) STILL returns PortoRed unconditionally for classname 'porto' — the blue variant almost certainly never renders mid-flight (classifier keys on classname only, never reads the effect flags)."
     verification:
       - { kind: code, ref: "ProjectileCatalog.cs:165-167 PortoRed/PortoBlue descs; line 261 classifier returns PortoRed only", result: partial }
     confidence: medium
-    notes: "Catalog entries present (scale 4, TR_WIZSPIKE, red/blue glow). In-match render not runtime-verified (porto rarely placed); the runtime red->blue reclassification remains suspect. Unchanged by Wave-2."
+    notes: "Catalog entries present (scale 4, TR_WIZSPIKE, red/blue glow). In-match render not runtime-verified (porto rarely placed); the runtime red->blue reclassification remains suspect. Unchanged by the second-pass fix-up."
 
   - id: weapon-porto.fire.strength_boost
     name: "Strength powerup launch-speed boost"
@@ -325,7 +328,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Porto.cs:Attack"
       - "src/XonoticGodot.Common/Gameplay/Weapons/Porto.cs:StrengthForce"
     constants:
-      - { name: "strength status-effect name", base: "STATUSEFFECT_Strength (netname \"strength\")", port: "queried as \"strength\" -> resolves (StatusEffects.cs:161)", match: true }
+      - { name: "strength status-effect name", base: "STATUSEFFECT_Strength (netname \"strength\")", port: "queried as \"strength\" -> resolves", match: true }
       - { name: "g_balance_powerup_strength_force", base: "3 (balance-xonotic.cfg:237)", port: "Bal(\"g_balance_powerup_strength_force\", 3f) seeded in Configure (Porto.cs:74)", match: true }
     status:
       logic: faithful
@@ -338,7 +341,6 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "Porto.cs:155 ByName(\"strength\") + Has(actor, str) vs StatusEffects.cs:161 R(new StatusEffectDef(\"strength\")); matches Ctf.cs:890 / ItemPickupRules.cs:255 canonical query", result: pass }
-      - { kind: value, ref: "Porto.cs:74 StrengthForce = Bal(\"g_balance_powerup_strength_force\", 3f) vs balance-xonotic.cfg:237 (=3)", result: pass }
+      - { kind: code, ref: "Porto.cs:155 ByName(\"strength\") + Has(actor, str) matches the canonical query; Porto.cs:74 StrengthForce = Bal(\"g_balance_powerup_strength_force\", 3f) vs balance-xonotic.cfg:237 (=3)", result: pass }
     confidence: high
-    notes: "WAVE-2 FIX (both defects closed): (1) the lookup name is now \"strength\" (was the bogus \"buff_strength\" that returned null), so the speed*=StrengthForce branch now actually runs under Strength; (2) StrengthForce is now read live from g_balance_powerup_strength_force (default 3, xonotic) instead of the hardcoded 4 (nexuiz25). Live via WeaponFireDriver->WrThink->Attack."
+    notes: "Lookup name is \"strength\" (the prior bogus \"buff_strength\" that returned null is gone), so the speed*=StrengthForce branch runs under Strength; StrengthForce read live from g_balance_powerup_strength_force (default 3). Live via WeaponFireDriver->WrThink->Attack. Unchanged by the second-pass fix-up."

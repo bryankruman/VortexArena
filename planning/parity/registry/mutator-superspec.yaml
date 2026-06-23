@@ -1,7 +1,7 @@
 unit: mutator-superspec
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-23"
+last_audited: "2026-06-22"
 summary:
   feature_count: 11
   worst_gaps:

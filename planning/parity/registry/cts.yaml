@@ -6,10 +6,10 @@ summary:
   feature_count: 21
   worst_gaps:
     - "Race timer / split / PB-server-best HUD panel exists but is never fed for CTS — no running clock, no checkpoint split, no medal flash (racetimer still in StartHiddenIds, no feeder)."
-    - "No finish/record notifications: Cts.LastRecord is computed but never consumed. Wave-2 added the full INFO_RACE_* sender to Race.cs but it is private to Race — CTS got no equivalent, so the runner still never sees set/improved/broke-record or RACE_FINISHED."
-    - "Death rules still partial: Cts.OnDeath now sets RESPAWN_FORCE, but RespawnTiming.Calculate (death edge, DeadPlayerThink) unconditionally overwrites RespawnFlags and reads the GENERIC g_respawn_delay_* (~2 s), not the CTS g_cts_respawn_delay -1 instant respawn; g_cts_removeprojectiles still unmodeled."
+    - "No finish/record notifications: Cts.LastRecord is computed but never consumed. The full INFO_RACE_* sender (Race.SendRecordNotification) is STILL a private method on Race — CTS got no equivalent, so the runner still never sees set/improved/broke-record or RACE_FINISHED."
     - "No forced keyboard-movement quantization; run clock is still wall-clock (Api.Clock.Time), not the QC per-frame .race_movetime accumulator (determinism + fairness)."
     - "Intermediate/defrag checkpoints unimplemented (target_checkpoint/trigger_race_checkpoint are no-ops for CTS): no ordered progress, no 'went backwards' penalty, no per-cp splits."
+    - "No CTS race bookkeeping (race_PreparePlayer/RetractPlayer, FRAGS_PLAYER_OUT_OF_GAME, checkpoint=-1), no speedaward, no GetRecords listing, no CTS bot role."
 features:
   - id: cts.mode.register_latch
     name: "CTS gametype registration + qualifying/independent-players latch"
@@ -210,12 +210,12 @@ features:
     divergence_rationale: null
     gaps:
       - "Cts.FinishStage computes LastRecord/LastRecordPlayer (Cts.cs:279-280) but NO code consumes them for CTS, so no record-set/improved/broken or finished notification is ever sent."
-      - "Wave-2 added a full INFO_RACE_* sender to Race.cs (Race.SendRecordNotification, Race.cs:514-554, including RACE_NEW_SET/IMPROVED/BROKEN/FAIL_RANKED/FAIL_UNRANKED/MISSING_UID and RACE_FINISHED) — but it is a PRIVATE method on Race, not shared, so CTS got no equivalent. Still dead for CTS."
+      - "The full INFO_RACE_* sender (Race.SendRecordNotification, Race.cs:514-550, firing RACE_NEW_SET/IMPROVED/BROKEN + RACE_FINISHED) is a PRIVATE static method on Race, NOT shared, so CTS still has no equivalent. Unchanged this re-audit — still dead for CTS."
       - "race_SendStatus (0 fail / 1 new time / 2 new rank / 3 server record) is not networked, so the HUD medal flash has no trigger."
     verification:
-      - { kind: code, ref: "Cts.FinishStage sets LastRecord but never calls NotificationSystem.Info; grep RACE_NEW_/RACE_FINISHED → only Race.cs fires them", result: fail }
+      - { kind: code, ref: "Cts.FinishStage sets LastRecord but never calls NotificationSystem.Info; grep RACE_NEW_/RACE_FINISHED in src → only Race.cs:507/544/547/550 fires them (Race.SendRecordNotification, private static). No CTS consumer of cts.LastRecord anywhere.", result: fail }
     confidence: high
-    notes: "STILL OPEN. The Race port now fires these notifications, but the CTS port does not — the sender was not factored into a shared path. Closing this for CTS is a small lift (mirror Race.SendRecordNotification in FinishStage)."
+    notes: "STILL OPEN. The Race port fires these notifications; the CTS port does not — the sender was never factored into a shared path. Closing this for CTS is a small lift (mirror Race.SendRecordNotification in FinishStage off LastRecord/LastRecordPlayer)."
 
   - id: cts.finish.kill_delay_retract
     name: "Finish kill-delay re-teleport to start (anti-speed-carry)"
@@ -227,7 +227,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:ScheduleRetract"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:RetractRunner"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:Tick"
-      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (cts.OnFinishRetract = p => Clients.Spawn(p)); GameWorld.cs:1753 (cts.Tick)"
+      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (cts.OnFinishRetract = p => Clients.Spawn(p), GameWorld.cs:1555); GameWorld.cs:1838 (cts.Tick)"
     constants:
       - { name: "g_cts_finish_kill_delay", base: "2 s (-1 instant, 0 off)", port: "read; DefaultFinishKillDelay=2 when cvar unset", match: true }
     status:
@@ -242,7 +242,7 @@ features:
     gaps:
       - "It is a re-spawn (Clients.Spawn), not the QC silent kill — no death sound/notify, acceptable but unverified for spawn-point selection at the start line."
     verification:
-      - { kind: code, ref: "Cts.cs:47 DefaultFinishKillDelay=2f; ScheduleRetract:297 falls back to 2f when cvar unset; OnFinishRetract wired in ActivateGameType (GameWorld:1478); cts.Tick fired in the server frame (GameWorld:1753)", result: pass }
+      - { kind: code, ref: "Cts.cs:47 DefaultFinishKillDelay=2f; ScheduleRetract:297 falls back to 2f when cvar unset; OnFinishRetract wired in ActivateGameType (GameWorld:1555); cts.Tick fired in the server frame (GameWorld:1838)", result: pass }
     confidence: high
     notes: "FIXED vs baseline: the kill-delay default is now 2 s (DefaultFinishKillDelay), matching Base, instead of the old fallback-to-0 instant retract. Retract is live (OnFinishRetract + per-frame Tick)."
 
@@ -324,7 +324,7 @@ features:
       - "DIVERGENCE: Base WantWeapon only governs the START loadout (want_weapon → start_items, world.qc:1862); CTS players CAN still pick up map weapons mid-run. The port re-clears OwnedWeaponSet to shotgun-only EVERY prethink frame (OnPlayerPreThink → ForceShotgunOnly), which strips any weapon a runner picks up mid-stage on a weapon-bearing CTS map. The spawn loadout is now correct, but the per-frame enforcement over-restricts vs Base."
       - "g_cts_weapon_stay 2 (weapon-stay behavior for CTS map weapons) is not modeled."
     verification:
-      - { kind: code, ref: "OnPlayerSpawn (MutatorHooks.PlayerSpawn, live in ClientManager.cs:570) + OnPlayerPreThink (MutatorHooks.PlayerPreThink, live in GameWorld.cs:1037) both call ForceShotgunOnly; no WantWeapon/start-weapon hook in the port", result: pass }
+      - { kind: code, ref: "OnPlayerSpawn (MutatorHooks.PlayerSpawn, live in ClientManager.cs:590) + OnPlayerPreThink (MutatorHooks.PlayerPreThink, live in GameWorld.cs:1095) both call ForceShotgunOnly; no WantWeapon/start-weapon hook in the port", result: pass }
     confidence: high
     notes: "FIXED vs baseline (was missing): runners now spawn shotgun-only and it is live. But it is implemented via a per-frame OwnedWeaponSet wipe rather than the Base WantWeapon start-loadout filter, so mid-run map-weapon pickups are stripped — a new logic divergence (logic: partial)."
 
@@ -363,27 +363,27 @@ features:
       - "server/race.qc:race_AbandonRaceCheck"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:OnDeath"
+      - "src/XonoticGodot.Common/Gameplay/Player/RespawnTiming.cs:Calculate (gametype-defaulted delay + OR Force)"
+      - "src/XonoticGodot.Server/GameWorld.cs:1904 (RespawnTiming.Calculate(..., GameType?.NetName))"
     constants:
-      - { name: "g_cts_respawn_delay_small/large", base: "-1 (instant)", port: "RespawnTiming reads generic g_respawn_delay_* (~2 s)", match: false }
-      - { name: "respawn_flags RESPAWN_FORCE", base: "set on death, honored", port: "set in OnDeath but clobbered by RespawnTiming.Calculate", match: false }
+      - { name: "g_cts_respawn_delay_small/large", base: "-1 (instant)", port: "GametypeDefaulted('cts',...) reads g_cts_respawn_delay_*=-1 → 0 (instant); cfg loaded at boot", match: true }
+      - { name: "respawn_flags RESPAWN_FORCE", base: "set on death, honored", port: "set in OnDeath, now OR'd-in (preserved) by RespawnTiming.Calculate", match: true }
       - { name: "g_cts_removeprojectiles", base: "0 (off)", port: "not modeled", match: false }
     status:
-      logic: partial
-      values: partial
-      timing: partial
+      logic: faithful
+      values: faithful
+      timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "OnDeath now sets victim.RespawnFlags |= Force, but it is ineffective: RespawnTiming.Calculate (run once on the death edge in DeadPlayerThink, GameWorld.cs:1819) does `p.RespawnFlags = flags` (RespawnTiming.cs:75), unconditionally overwriting the CTS Force flag (it only sets Force when g_forced_respawn != 0)."
-      - "The respawn delay still comes from the GENERIC g_respawn_delay_small/large (default ~2 s, RespawnTiming.cs:27-28), NOT the CTS g_cts_respawn_delay_small/large = -1 instant respawn (gametypes-server.cfg:192-194). So the dead runner waits ~2 s instead of respawning instantly."
-      - "g_cts_removeprojectiles (delete the dead player's live projectiles) is unmodeled."
+      - "g_cts_removeprojectiles (delete the dead player's live projectiles when set) is unmodeled. Default is 0 (off) so the stock path matches; only an explicit g_cts_removeprojectiles 1 diverges (no projectile sweep on death)."
     verification:
-      - { kind: code, ref: "Cts.OnDeath sets RespawnFlag.Force + clears RunStartTime (abandon). DeadPlayerThink → RespawnTiming.Calculate overwrites RespawnFlags and reads generic g_respawn_delay_* — the Force flag + CTS -1 delay are not honored end-to-end.", result: fail }
+      - { kind: code, ref: "Cts.OnDeath sets RespawnFlag.Force + clears RunStartTime (abandon). RespawnTiming.Calculate now (a) OR's in Force instead of clobbering RespawnFlags (RespawnTiming.cs:82) and (b) reads delays via GametypeDefaulted (RespawnTiming.cs:32-37); the live caller passes GameType?.NetName='cts' (GameWorld.cs:1904). g_cts_respawn_delay_small/large=-1 in gametypes-server.cfg:192-194 (ConfigLoader execs it) → GametypeDefaulted returns 0 = instant; g_respawn_delay_forced defaults 0 (xonotic-server.cfg:269) so no override. Force + instant respawn honored end-to-end.", result: pass }
     confidence: high
-    notes: "Abandon-run on death is faithful and live. The RESPAWN_FORCE set is new but DEAD (clobbered downstream); the CTS instant-respawn delay and removeprojectiles remain unimplemented. Still partial vs baseline (marginal improvement, not a closed gap)."
+    notes: "FIXED vs baseline (was logic/values/timing partial, the Force set DEAD): RespawnTiming now (1) preserves the CTS RESPAWN_FORCE via |= instead of clobbering it, and (2) reads the respawn delay through GAMETYPE_DEFAULTED_SETTING so the CTS g_cts_respawn_delay_*=-1 collapses to an instant respawn — both wired on the live DeadPlayerThink edge with GameType?.NetName. Only g_cts_removeprojectiles (default-off) remains."
 
   - id: cts.items.loot_filter
     name: "Loot/monster-item filtering (g_cts_drop_monster_items)"

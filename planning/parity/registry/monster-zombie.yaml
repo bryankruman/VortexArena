@@ -5,11 +5,10 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 11
   worst_gaps:
-    - "Zombie animation never plays: the 14 mr_anim frame groups are collapsed to a logical phase enum that never sets Entity.Frame; monsters always network Frame=0 (the client frame-drive path exists but is fed a constant 0), so the model is pinned to its static pose. UNCHANGED by Wave-2 (still no `.Frame =`, CSQC monster anim still a named no-op)."
-    - "Wave-2 routed ALL monster voice cues through Monster_Sound but the port plays a literal monsters/<name>_<cue>.wav for EVERY cue, ignoring whether the cue is DEFINED in the model's .sounds file. The zombie has pain/melee/spawn/ranged COMMENTED OUT (silent in Base), so the port now ATTEMPTS pain/spawn/melee sounds Base never plays — and the assets don't even exist (only death/idle/sight .ogg shipped)."
-    - "REGRESSION: Wave-2 ADDED a spawn-cue sound (Setup:312) and a melee-connect sound (MeleeAttack:1165). For the zombie both cues are commented-out/silent in Base, so two new audio divergences were introduced on rows that were previously audio:na."
-    - "Sound delivery still diverges from Base's GlobalSound .sounds-file table: literal monsters/<name>_<cue>.wav paths, no random sample, no skin-keyed Monster_Sounds_Update. (Wave-2 DID add the g_monsters_sounds master gate + the msound_delay throttle — that sub-gap is now closed.)"
-    - "FIXED by Wave-2: block armor-restore fallback corrected 0.6 -> 0.5 (matches g_monsters_armor_blockpercent), and the bogus block sound (monsters/zombie_melee.wav) removed (Base block is silent)."
+    - "Zombie animation is still fully dead: the 14 mr_anim frame groups are collapsed to a 6-value logical phase enum that never assigns Entity.Frame; monsters network Frame=0, so the model is pinned to its static pose. Re-verified post-fixup: still no `.Frame =` anywhere under src/**/Monsters/**; MonsterAI.cs:1064 still carries the explicit 'CSQC monster animation frame playback' named no-op. No visible spawn/walk/run/melee(x3)/leap/block/pain(x2)/death(x2) anim."
+    - "FIXED (Wave-4 fixup 4be8357): the Wave-2 audio regressions are GONE. A per-monster SoundCues set was added (Zombie.cs:41 = {death,sight,idle}) and MonsterSound (MonsterAI.cs:670) now gates emission on cueDefined — so the zombie no longer ATTEMPTS spawn/melee/pain/ranged sounds Base leaves silent. The SoundCues set matches zombie.dpm_0.sounds EXACTLY (death/sight/idle defined; ranged/melee/pain/spawn commented out)."
+    - "Sound DELIVERY still diverges from Base's GlobalSound .sounds-file table: the port plays a literal monsters/<name>_<cue>.wav while the shipped asset is sound/monsters/zombie/<cue>.ogg, with no random sample and no skin-keyed Monster_Sounds_Update. This is now moot for the zombie's three audible cues (the gate fires exactly the defined cues) but the path-form + sample-table machinery remains unported (latent/cosmetic; death is audible in effect)."
+    - "Spawn no-think/no-push window is still hardcoded to 1/3s rather than derived from anim_spawn '30 1 3' via animfixfps/animstate_endtime (close approximation, not model-exact)."
 features:
   - id: monster-zombie.identity.def
     name: "Zombie identity / model / bbox / class flags"
@@ -36,9 +35,9 @@ features:
     gaps:
       - "Class flags (UNDEAD/MELEE/RIDE) are documented in comments but not stored as spawnflags; MON_FLAG_RIDE (monster riding) is unported across the whole monster family."
     verification:
-      - { kind: code-read, ref: "zombie.qh vs Zombie.cs ctor+Spawn (unchanged by Wave-2)", result: pass }
+      - { kind: code-read, ref: "zombie.qh vs Zombie.cs ctor+Spawn (unchanged by fixup; ctor now also seeds SoundCues)", result: pass }
     confidence: high
-    notes: "Identity/size faithful. The categorical flags carry no behavior the zombie itself needs except UNDEAD's corpse-respawn, which is implemented via AlwaysRespawn+RespawnAtDeathPoint+gib threshold. Unchanged by Wave-2."
+    notes: "Identity/size faithful. The categorical flags carry no behavior the zombie itself needs except UNDEAD's corpse-respawn, which is implemented via AlwaysRespawn+RespawnAtDeathPoint+gib threshold. Unchanged by the fixup."
 
   - id: monster-zombie.setup.mr_setup
     name: "Spawn setup: always-respawn at death point, loot, spawn shield, no-push spawn window"
@@ -48,7 +47,7 @@ features:
       - "common/monsters/sv_monsters.qc:Monster_Spawn_Setup:1364 (monstersound_spawn)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Monsters/Zombie.cs:Spawn"
-      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:Setup (spawn-sound MonsterSound:312)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:Setup (spawn-sound MonsterSound:312, now SoundCues-gated)"
     constants:
       - { name: "g_monster_zombie_health", base: "200", port: "200 (live cvar; 200 fallback)", match: true }
       - { name: "g_monster_zombie_speed_walk", base: "300", port: "300", match: true }
@@ -57,25 +56,24 @@ features:
       - { name: "g_monster_zombie_loot", base: "health_medium", port: "health_medium", match: true }
       - { name: "respawntime", base: "0.2", port: "0.2", match: true }
       - { name: "spawn_damageforcescale", base: "0.0001", port: "0.0001", match: true }
-      - { name: "spawn_sound_cue", base: "COMMENTED OUT in zombie.dpm_0.sounds -> silent", port: "monsters/zombie_spawn.wav (asset absent)", match: false }
+      - { name: "spawn_sound_cue", base: "COMMENTED OUT in zombie.dpm_0.sounds -> empty sample -> SILENT", port: "'spawn' NOT in SoundCues -> no Play call -> SILENT", match: true }
     status:
       logic: faithful
       values: faithful
       timing: partial
       presentation: na
-      audio: partial
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
       - "Spawn-anim/no-think window hardcoded to 1/3s instead of being derived from anim_spawn '30 1 3' via animfixfps/animstate_endtime (close approximation, not model-exact)."
-      - "REGRESSION (Wave-2): Setup now calls MonsterSound(e,st,'spawn',...), but the zombie 'spawn' cue is commented out in zombie.dpm_0.sounds (Base spawn is SILENT) and no monsters/zombie_spawn asset exists — the port attempts a sound Base never plays."
     verification:
       - { kind: code-read, ref: "zombie.qc:mr_setup vs Zombie.Spawn + MonsterAI.Setup", result: pass }
       - { kind: value-diff, ref: "monsters.cfg lines 2-13 vs Zombie.cs cvar reads", result: pass }
-      - { kind: data-file, ref: "zombie.dpm_0.sounds: //spawn commented out; sound/monsters/zombie/ has only death/idle/sight.ogg", result: fail }
+      - { kind: data-file, ref: "zombie.dpm_0.sounds: //spawn commented out; SoundCues={death,sight,idle} excludes spawn -> MonsterSound:670 cueDefined=false -> no Play", result: pass }
     confidence: high
-    notes: "NORESPAWN cleared, APPEAR cleared, RESPAWN_DEATHPOINT set, respawntime 0.2 — all faithful. SpawnShield + 0.0001 forcescale during spawn faithful. NEW Wave-2 spawn-sound call is an audio divergence (Base zombie spawn is silent)."
+    notes: "FIXED: the Wave-2 spawn-sound regression is gone. Setup still calls MonsterSound(e,st,'spawn',...) (mirroring Base, which DOES call Monster_Sound for the spawn cue), but the SoundCues gate excludes 'spawn' so no sample is emitted — exactly matching Base's empty-sample/silent behavior. NORESPAWN cleared, APPEAR cleared, RESPAWN_DEATHPOINT set, respawntime 0.2, SpawnShield + 0.0001 forcescale all faithful. Only the spawn-window timing approximation remains."
 
   - id: monster-zombie.think.forcescale_restore
     name: "Per-think: restore knockback scale after spawn animation"
@@ -98,9 +96,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code-read, ref: "zombie.qc:mr_think vs Zombie.Think (unchanged by Wave-2)", result: pass }
+      - { kind: code-read, ref: "zombie.qc:mr_think vs Zombie.Think (unchanged by fixup)", result: pass }
     confidence: high
-    notes: "Once time>=spawn_time, forcescale restored to 0.55; then RunThink runs the shared chase/attack loop. Ticked live by SimulationLoop.RunThink. Unchanged by Wave-2."
+    notes: "Once time>=spawn_time, forcescale restored to 0.55; then RunThink runs the shared chase/attack loop. Ticked live by SimulationLoop.RunThink. Unchanged."
 
   - id: monster-zombie.attack.melee
     name: "Melee attack: 3-way anim roll + forward traceline damage"
@@ -111,31 +109,30 @@ features:
       - "common/monsters/sv_monsters.qc:468/478 (monstersound_melee on connecting swing)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Monsters/Zombie.cs:Attack"
-      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MeleeAttack (melee-sound MonsterSound:1165)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MeleeAttack (melee-sound MonsterSound:1171, now SoundCues-gated)"
     constants:
       - { name: "g_monster_zombie_attack_melee_damage", base: "55", port: "55 (live cvar)", match: true }
       - { name: "g_monster_zombie_attack_melee_delay", base: "1", port: "1 (live cvar)", match: true }
       - { name: "deathtype", base: "DEATH_MONSTER_ZOMBIE_MELEE", port: "DeathTypes.MonsterZombieMelee", match: true }
       - { name: "melee_anim_split", base: "0.33/0.66 -> melee1/2/3", port: "PRNG draw consumed, frame unused", match: false }
       - { name: "skill_mod", base: "0.5+skill*0.09", port: "same SkillMod", match: true }
-      - { name: "melee_sound_cue", base: "COMMENTED OUT in zombie.dpm_0.sounds -> silent", port: "monsters/zombie_melee.wav (asset absent)", match: false }
+      - { name: "melee_sound_cue", base: "COMMENTED OUT in zombie.dpm_0.sounds -> empty sample -> SILENT", port: "'melee' NOT in SoundCues -> no Play call -> SILENT", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
       presentation: missing
-      audio: partial
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
       - "The 3-way melee anim choice (melee1/2/3) is rolled but never mapped to a frame — no visible melee variety (presentation)."
-      - "REGRESSION (Wave-2): MeleeAttack now calls MonsterSound(self,st,'melee',...) on a connecting swing, but the zombie 'melee' cue is commented out in zombie.dpm_0.sounds (Base melee is SILENT) and no monsters/zombie_melee asset exists — the port attempts a sound Base never plays."
     verification:
       - { kind: code-read, ref: "zombie.qc:M_Zombie_Attack + Monster_Attack_Melee vs Zombie.Attack + MeleeAttack", result: pass }
-      - { kind: data-file, ref: "zombie.dpm_0.sounds: //melee commented out", result: fail }
+      - { kind: data-file, ref: "zombie.dpm_0.sounds: //melee commented out; SoundCues excludes melee -> MonsterSound:670 cueDefined=false -> no Play", result: pass }
     confidence: high
-    notes: "Damage*skillmod via real Combat.Damage, correct deathtype, dostop=true freeze, cooldown=delay. PRNG draw kept for stream parity. NEW Wave-2 melee-connect sound is an audio divergence (Base zombie melee is silent)."
+    notes: "FIXED: the Wave-2 melee-connect-sound regression is gone. MeleeAttack still calls MonsterSound(self,st,'melee',...) on a connecting swing (mirroring Base's monstersound_melee), but the SoundCues gate excludes 'melee' so no sample plays — matching Base's silent zombie melee. Damage*skillmod via real Combat.Damage, correct deathtype, dostop=true freeze, cooldown=delay; PRNG draw kept for stream parity. Only the 3-way anim presentation gap remains."
 
   - id: monster-zombie.attack.block
     name: "Defend block: raise armor + freeze when hurt vs healthy enemy"
@@ -167,10 +164,10 @@ features:
       - "blockstart/blockend anim frames ('8 1 1' / '7 1 1') are never played (presentation)."
     verification:
       - { kind: code-read, ref: "zombie.qc:M_Zombie_Defend_Block(_End) vs Zombie.DefendBlock", result: pass }
-      - { kind: value-diff, ref: "monsters.cfg:127 g_monsters_armor_blockpercent=0.5 vs DefendBlock fallback 0.5 (Wave-2 fixed 0.6->0.5)", result: pass }
-      - { kind: data-file, ref: "Base M_Zombie_Defend_Block plays no sound; Wave-2 removed the spurious zombie_melee.wav", result: pass }
+      - { kind: value-diff, ref: "monsters.cfg:127 g_monsters_armor_blockpercent=0.5 vs DefendBlock fallback 0.5 (Zombie.cs:164)", result: pass }
+      - { kind: data-file, ref: "Base M_Zombie_Defend_Block plays no sound; port plays no block sound (Zombie.cs:171 comment)", result: pass }
     confidence: high
-    notes: "TWO baseline gaps FIXED by Wave-2: armor-restore fallback corrected 0.6->0.5, and the bogus block sound (monsters/zombie_melee.wav) removed — Base block is silent. Only the block anim presentation gap remains."
+    notes: "Armor-restore fallback 0.5 (matches g_monsters_armor_blockpercent) and silent block both verified at Zombie.cs:164/171. Only the block-anim presentation gap remains. Unchanged by the fixup (these were already correct after Wave-2)."
 
   - id: monster-zombie.attack.leap
     name: "Leap attack: ballistic toss toward enemy when at range"
@@ -199,9 +196,9 @@ features:
     gaps:
       - "anim_shoot '0 1 5' leap animation never played (presentation)."
     verification:
-      - { kind: code-read, ref: "zombie.qc RANGED + Monster_Attack_Leap(_Check) vs Zombie.Attack + Leap (unchanged by Wave-2)", result: pass }
+      - { kind: code-read, ref: "zombie.qc RANGED + Monster_Attack_Leap(_Check) vs Zombie.Attack + Leap (unchanged by fixup)", result: pass }
     confidence: medium
-    notes: "Leap velocity, vertical boost, guards, and tracetoss-lands-on-enemy gate all faithful. TraceToss is a stepped approximation of QC tracetoss (medium confidence on arc fidelity). Note Base zombie has NO ranged cue ('//ranged' commented out), so leap remains audio:na even after Wave-2's sound routing."
+    notes: "Leap velocity, vertical boost, guards, and tracetoss-lands-on-enemy gate all faithful. TraceToss is a stepped approximation of QC tracetoss (medium confidence on arc fidelity). Base zombie has NO ranged cue ('//ranged' commented out) and SoundCues excludes 'ranged', so leap is audio:na (correct)."
 
   - id: monster-zombie.attack.leap_touch
     name: "Leap contact: contact damage + knockback, then disarm to stop spam"
@@ -226,44 +223,43 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code-read, ref: "zombie.qc:M_Zombie_Attack_Leap_Touch vs Zombie.LeapTouch (unchanged by Wave-2)", result: pass }
+      - { kind: code-read, ref: "zombie.qc:M_Zombie_Attack_Leap_Touch vs Zombie.LeapTouch (unchanged by fixup)", result: pass }
     confidence: high
-    notes: "damage*skillmod, correct deathtype, faithful face-moveto force vector, touch reset to Monster_Touch + state=0. World-hit (trace_dphitcontents) clear is handled by the OnGround state-clear in RunThink. Unchanged by Wave-2."
+    notes: "damage*skillmod, correct deathtype, faithful face-moveto force vector, touch reset to Monster_Touch + state=0. World-hit (trace_dphitcontents) clear handled by the OnGround state-clear in RunThink. Unchanged."
 
   - id: monster-zombie.pain.mr_pain
-    name: "Pain reaction: brief pain window + pain anim + (divergent) hurt sound"
+    name: "Pain reaction: brief pain window + pain anim + (now-silent) hurt sound"
     layer: [authority]
     base_refs:
       - "common/monsters/monster/zombie.qc:mr_pain"
       - "common/monsters/sv_monsters.qc:Monster_Damage:1101 (monstersound_pain, 1.2, true, CH_PAIN)"
       - "common/monsters/sv_monsters.qc:Monster_Sound:368"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MarkPain"
-      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MonsterSound"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MarkPain (MonsterSound:1408)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MonsterSound (SoundCues gate)"
     constants:
       - { name: "pain_finished_window", base: "time+0.34", port: "Now+0.34", match: true }
       - { name: "pain_throttle (msound_delay)", base: "1.2 (delaytoo)", port: "1.2 (delayToo)", match: true }
       - { name: "g_monsters_sounds gate", base: "autocvar_g_monsters_sounds", port: "Cvar g_monsters_sounds (default 1)", match: true }
       - { name: "pain_anim_split", base: "random()>0.5 -> pain1/pain2 (gated by spawn_time)", port: "Pain phase only", match: false }
-      - { name: "pain_sound", base: "COMMENTED OUT in zombie.dpm_0.sounds -> Base zombie pain SILENT", port: "monsters/zombie_pain.wav (asset absent)", match: false }
+      - { name: "pain_sound_cue", base: "COMMENTED OUT in zombie.dpm_0.sounds -> empty sample -> SILENT", port: "'pain' NOT in SoundCues -> no Play call -> SILENT", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
       presentation: missing
-      audio: partial
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL plays monsters/zombie_pain.wav on every (throttled) hit, but Base zombie pain is SILENT — the 'pain' cue is commented out in zombie.dpm_0.sounds, so Base's Monster_Sound passes an empty sample to sound7 (no audible sound). The port has no per-cue defined/commented gate; only death/idle/sight assets even exist."
-      - "Sound delivery still diverges from Base's GlobalSound .sounds-file table: literal monsters/<name>_<cue>.wav path, no random sample, no skin-keyed Monster_Sounds_Update. (PARTIALLY FIXED by Wave-2: the g_monsters_sounds master gate AND the 1.2s msound_delay throttle are now implemented.)"
       - "pain1/pain2 frame anims ('20 1 2' / '22 1 2') never played; pain is a logical phase only (presentation)."
+      - "Sound DELIVERY machinery (GlobalSound .sounds-file table, random sample, skin-keyed Monster_Sounds_Update) still unported — moot for the zombie since pain is correctly silent, but the path-form/sample-table seam is absent (latent)."
     verification:
-      - { kind: code-read, ref: "zombie.qc:mr_pain + Monster_Sound vs MonsterAI.MarkPain + MonsterSound (Wave-2 added gate+throttle)", result: pass }
-      - { kind: data-file, ref: "models/monsters/zombie.dpm_0.sounds (pain commented out); sound/monsters/zombie has no pain.ogg", result: fail }
+      - { kind: code-read, ref: "zombie.qc:mr_pain + Monster_Sound vs MonsterAI.MarkPain:1408 + MonsterSound:659 (g_monsters_sounds gate + 1.2s throttle + SoundCues gate)", result: pass }
+      - { kind: data-file, ref: "zombie.dpm_0.sounds //pain commented out; SoundCues={death,sight,idle} excludes pain -> MonsterSound:670 cueDefined=false -> no Play", result: pass }
     confidence: high
-    notes: "0.34 pain window faithful; Wave-2 added the g_monsters_sounds gate and 1.2s throttle (closing that sub-gap). But the core defect persists: the zombie has no pain cue, so playing monsters/zombie_pain.wav is wrong — Base zombie pain is silent. Audio remains partial."
+    notes: "FIXED: the core defect is closed. MarkPain still calls MonsterSound(self,st,'pain',1.2,true,...) (mirroring Base's monstersound_pain), but with the SoundCues gate the zombie emits no pain sample — matching Base's silent zombie pain. 0.34 pain window, g_monsters_sounds master gate, and 1.2s throttle all faithful. Audio is now faithful (silent in both). Only the pain-anim presentation gap and the latent delivery-machinery seam remain."
 
   - id: monster-zombie.death.mr_death
     name: "Death: corpse + death anim + death sound + respawn machinery"
@@ -274,12 +270,12 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MarkDead"
       - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MonsterDeadDamage"
-      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MonsterSound"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MonsterSound (death cue:1455)"
     constants:
       - { name: "death_armor_restore", base: "g_monsters_armor_blockpercent=0.5", port: "handled generically", match: true }
       - { name: "death_anim_split", base: "random()>0.5 -> die1/die2", port: "Death phase only", match: false }
-      - { name: "death_sound", base: "death cue DEFINED in .sounds (audible)", port: "monsters/zombie_death.wav (asset present: death.ogg)", match: true }
-      - { name: "g_monsters_sounds gate", base: "autocvar_g_monsters_sounds", port: "now gated via MonsterSound", match: true }
+      - { name: "death_sound", base: "death cue DEFINED in .sounds (audible)", port: "'death' IN SoundCues -> Play monsters/zombie_death.wav (asset death.ogg present)", match: true }
+      - { name: "g_monsters_sounds gate", base: "autocvar_g_monsters_sounds", port: "gated via MonsterSound", match: true }
       - { name: "corpse_gib_threshold", base: "-50 (Monster_Dead_Damage)", port: "-50", match: true }
       - { name: "live_gib_threshold", base: "-100", port: "-100", match: true }
     status:
@@ -293,12 +289,12 @@ features:
     divergence_rationale: null
     gaps:
       - "die1/die2 death anims ('9 1 0.5' / '12 1 0.5') never played; death is a logical phase only (presentation)."
-      - "Sound delivery still uses the literal path form (no GlobalSound random-sample / skin-keyed table), but the death cue IS a real shipped asset so this is audible and faithful in effect."
+      - "Sound DELIVERY uses literal monsters/zombie_death.wav while the shipped asset is sound/monsters/zombie/death.ogg (no GlobalSound table lookup, no random sample, no .ogg extension); the death cue IS a real shipped asset so this is audible/faithful in effect, but the path-form seam is latent."
     verification:
-      - { kind: code-read, ref: "zombie.qc:mr_death + Monster_Dead(_Damage) vs MarkDead + MonsterDeadDamage (Wave-2 routed through MonsterSound, now g_monsters_sounds-gated)", result: pass }
-      - { kind: data-file, ref: "zombie.dpm_0.sounds: 'death' defined; sound/monsters/zombie/death.ogg present", result: pass }
+      - { kind: code-read, ref: "zombie.qc:mr_death + Monster_Dead(_Damage) vs MarkDead + MonsterDeadDamage (MonsterSound:1455, g_monsters_sounds + SoundCues gated)", result: pass }
+      - { kind: data-file, ref: "zombie.dpm_0.sounds: 'death' defined; SoundCues includes 'death'; sound/monsters/zombie/death.ogg present", result: pass }
     confidence: high
-    notes: "Death sound + corpse + loot + scoring + gib thresholds faithful. Wave-2 added the g_monsters_sounds gate (a small fidelity improvement). 'death' is one of the three defined cues (death/idle/sight), so the literal-path play is audible and correct."
+    notes: "Death sound + corpse + loot + scoring + gib thresholds faithful. 'death' is in SoundCues and is a real shipped asset, so the literal-path play is audible and correct. g_monsters_sounds-gated. Only the death-anim presentation gap and the latent delivery-path seam remain."
 
   - id: monster-zombie.respawn.undead
     name: "Always-respawn at death point (undead): corpse rises unless gibbed"
@@ -328,7 +324,7 @@ features:
     verification:
       - { kind: code-read, ref: "zombie.qc:mr_setup + Monster_Respawn(_Check)/Dead_Think vs RespawnCheck/Respawn/DeadThink", result: pass }
     confidence: medium
-    notes: "AlwaysRespawn bypasses g_monsters_respawn/NORESPAWN; respawns at death point after corpse lifetime + 0.2s. Gibbing (corpse health <=-50, or live <=-100) removes the body and prevents the rise. Not yet exercised end-to-end in a live match (no stock map places it). Wave-2's miniboss EF_RED-on-respawn touches Respawn but is not zombie-specific (zombies aren't minibosses by default)."
+    notes: "AlwaysRespawn bypasses g_monsters_respawn/NORESPAWN; respawns at death point after corpse lifetime + 0.2s. Gibbing (corpse health <=-50, or live <=-100) removes the body and prevents the rise. Not yet exercised end-to-end in a live match (no stock map places it). The miniboss EF_RED-on-respawn glow touches Respawn but is not zombie-specific (zombies aren't minibosses by default)."
 
   - id: monster-zombie.presentation.animation
     name: "Zombie model animation (mr_anim frame groups)"
@@ -355,8 +351,8 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "UNCHANGED by Wave-2. None of the 14 mr_anim frame groups are mapped to Entity.Frame; the port keeps a 6-value logical MonsterAnim enum used only for server timing and never assigns Entity.Frame. Verified post-Wave-2: still no `.Frame =` anywhere under src/**/Monsters/**, and MonsterAI.cs:1058 still carries the explicit 'CSQC monster animation frame playback ... named no-op'. The client view frame-drive path exists but monsters always network Frame=0 -> static frame-0 pose. No visible spawn/walk/run/melee(x3)/leap/block/pain(x2)/death(x2) animation."
+      - "STILL UNCHANGED. None of the 14 mr_anim frame groups are mapped to Entity.Frame; the port keeps a 6-value logical MonsterAnim enum used only for server timing and never assigns Entity.Frame. Re-verified 2026-06-22: no `.Frame =` anywhere under src/**/Monsters/**, and MonsterAI.cs:1064 still carries the explicit 'CSQC monster animation frame playback (Monster_Anim / CSQCMODEL_AUTOUPDATE)' named no-op. Monsters network Frame=0 -> static frame-0 pose. No visible spawn/walk/run/melee(x3)/leap/block/pain(x2)/death(x2) animation."
     verification:
-      - { kind: code-read, ref: "grep: no `.Frame =` in src/**/Monsters/** (post-Wave-2); MonsterAI.cs:1058 named no-op", result: fail }
+      - { kind: code-read, ref: "grep: no `.Frame =` in src/**/Monsters/** (2026-06-22); MonsterAI.cs:1064 named no-op", result: fail }
     confidence: high
-    notes: "Whole monster family shares this reduction; the spec's per-frame anim table is fully unmapped. Wave-2 did NOT touch animation (it touched sound routing, match-halt gating, LOS drop, miniboss glow). Server timing (attack/pain/death windows) is faithful via the enum, but presentation is dead."
+    notes: "Whole monster family shares this reduction; the spec's per-frame anim table is fully unmapped. The Wave-4 fixup touched SOUND gating (SoundCues) only — it did NOT touch animation. Server timing (attack/pain/death windows) is faithful via the enum, but presentation is dead."
