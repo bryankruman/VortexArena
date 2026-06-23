@@ -1,0 +1,122 @@
+[
+{
+"file": "src/XonoticGodot.Common/Gameplay/GameTypes/TeamMayhem.cs",
+"cat": "gametype",
+"impact": "M",
+"shards": [
+"tmayhem"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/MapObjects/ViewLocation.cs",
+"cat": "mapobject",
+"impact": "M",
+"shards": [
+"mapobject-triggers"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/BugrigsMutator.cs",
+"cat": "mutator",
+"impact": "M",
+"shards": [
+"mutator-bugrigs"
+],
+"seams": [
+"S6"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/RocketFlyingMutator.cs",
+"cat": "mutator",
+"impact": "M",
+"shards": [
+"mutator-rocketflying"
+],
+"seams": [
+"S6"
+]
+},
+{
+"file": "src/XonoticGodot.Server/OverTimeManager.cs",
+"cat": "server",
+"impact": "M",
+"shards": [
+"sv-world-rules"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/MapObjects/MapModels.cs",
+"cat": "mapobject",
+"impact": "L",
+"shards": [
+"mapobject-misc"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/DoublejumpMutator.cs",
+"cat": "mutator",
+"impact": "L",
+"shards": [
+"mutator-doublejump"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/InvincibleProjectilesMutator.cs",
+"cat": "mutator",
+"impact": "L",
+"shards": [
+"mutator-invincibleproj"
+],
+"seams": [
+"S1",
+"S6"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs",
+"cat": "mutator",
+"impact": "L",
+"shards": [
+"mutator-sandbox"
+],
+"seams": [
+"S3",
+"S8"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/SuperSpecMutator.cs",
+"cat": "mutator",
+"impact": "L",
+"shards": [
+"mutator-superspec"
+],
+"seams": [
+"S6"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Physics/PMAccelerate.cs",
+"cat": "physics",
+"impact": "L",
+"shards": [
+"physics-player"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Engine/Simulation/FlyMove.cs",
+"cat": "physics",
+"impact": "L",
+"shards": [
+"physics-movetypes"
+],
+"seams": []
+}
+]
