@@ -120,6 +120,13 @@ public partial class ProjectileRenderer : Node3D
             body.Scale = Vector3.One * desc.ModelScale;
         root.AddChild(body);
 
+        // QC Projectile_Draw tints the PROJECTILE_ROCKETMINSTA_LASER body to the firer's team palette
+        // (projectile.qc:504-506: colormod = colormapPaletteColor(colormap & 0x0F) when colormap > 0). The bolt
+        // networks the owner's team in Colormap → ClientEntityView puts it on Entity.Team; apply the team color to
+        // the body (the real elaser model's meshes via the skin colormod, or the procedural glow sprite's modulate).
+        if (type == PType.RocketMinstaLaser)
+            ApplyTeamColormod(body, (int)entity.Team);
+
         // Trail. Preferred: the FAITHFUL per-segment path (DP CL_ParticleTrail) — each frame the follow loop
         // feeds the flight segment to the faithful sim, whose trailspacing stepping + shared accumulator
         // reproduce DP's exact trail density (the electro plasma line is one particle every 2qu — a rate-based
@@ -430,6 +437,44 @@ public partial class ProjectileRenderer : Node3D
                 return sprite;
             }
         }
+    }
+
+    /// <summary>
+    /// Tint a projectile body to a team palette colormod — the QC <c>ROCKETMINSTA_LASER</c> case in
+    /// <c>Projectile_Draw</c> (projectile.qc:504-506: <c>colormod = colormapPaletteColor(colormap &amp; 0x0F)</c>
+    /// when <c>colormap &gt; 0</c>). A real model body (the elaser meshes) routes through the skin-shader
+    /// colormod (<see cref="ModelTint.SetColormod"/> over its <see cref="MeshInstance3D"/>s); the procedural glow
+    /// sprite multiplies its <see cref="Sprite3D.Modulate"/> by the team color. A colorless map (team 0 — FFA /
+    /// unknown) is left untinted, matching the QC <c>colormap &gt; 0</c> guard.
+    /// </summary>
+    private static void ApplyTeamColormod(Node3D body, int colormap)
+    {
+        if (body is null)
+            return;
+        Color team = ModelTint.TeamColor(colormap, out bool hasTeam);
+        if (!hasTeam)
+            return; // QC: only tints when colormap > 0
+        // Procedural glow sprite: multiply its modulate (the bolt billboard) by the team color.
+        if (body is Sprite3D sprite)
+        {
+            sprite.Modulate *= team;
+            return;
+        }
+        // Real model body: drive the skin-shader colormod uniform across its meshes (plain-material meshes
+        // ignore the unset uniform — harmless, exactly as for player models).
+        var meshes = new List<MeshInstance3D>();
+        CollectMeshes(body, meshes);
+        if (meshes.Count > 0)
+            ModelTint.SetColormod(meshes, team);
+    }
+
+    /// <summary>Depth-first collect every <see cref="MeshInstance3D"/> at or under <paramref name="node"/>.</summary>
+    private static void CollectMeshes(Node node, List<MeshInstance3D> dst)
+    {
+        if (node is MeshInstance3D mi)
+            dst.Add(mi);
+        foreach (Node child in node.GetChildren())
+            CollectMeshes(child, dst);
     }
 
     // Per-projectile-type cache of the trail's ParticleProcessMaterial + DrawPass mesh. Every projectile of a

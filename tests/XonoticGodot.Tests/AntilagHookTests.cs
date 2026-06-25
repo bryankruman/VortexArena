@@ -67,6 +67,30 @@ public class AntilagHookTests
     }
 
     [Fact]
+    public void SetupShot_Brackets_Its_Trueaim_And_Muzzle_Traces_With_LagComp()
+    {
+        // QC tracing.qc:46/85/97 — at g_antilag==2 W_SetupShot's trueaim + muzzle-nudge traces run through the
+        // _antilag variants, so w_shotend/w_shotorg are computed against rewound enemy positions. Verify the port
+        // brackets that whole trace section with exactly ONE balanced Begin/End around THIS shooter.
+        Api.Services = new EngineServices(new CollisionWorld()); // empty world → trueaim/nudge traces miss at once
+        var rec = new RecordingLagComp();
+        LagComp.Provider = rec;
+        try
+        {
+            Entity actor = Api.Services.Entities.Spawn();
+            WeaponFiring.SetupShot(actor, new Vector3(1, 0, 0), WeaponFiring.MaxShotDistance);
+
+            Assert.Equal(1, rec.Begins);          // antilag_takeback ran before the SetupShot traces
+            Assert.Equal(1, rec.Ends);            // antilag_restore ran after (balanced, even on a clean miss)
+            Assert.Same(actor, rec.LastShooter);  // rewound to THIS shooter's view-time
+        }
+        finally
+        {
+            LagComp.Provider = null;
+        }
+    }
+
+    [Fact]
     public void Entity_Weapon_Field_RoundTrips_In_The_Delta_Codec()
     {
         var baseline = new NetEntityState { EntNum = 5, Kind = NetEntityKind.Player, Weapon = 3 };

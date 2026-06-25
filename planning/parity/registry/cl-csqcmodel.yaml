@@ -369,15 +369,15 @@ features:
       timing: faithful
       presentation: na
       audio: faithful
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Only reachable when modelFlags carries MF_ROCKET, but the live DriveCsqcModelHooks call hardcodes modelFlags:0 and MF_* is not networked. The Wave-added ForcedAppearance seam (ComposeForcedAppearance jetpackActive -> MF_ROCKET) COULD reach it, but has no caller — so the jetpack loop start/stop on the CSQC-model path STILL never fires (dead)."
+      - "Drives for remote players (the CSQC-model entity-node path). The LOCAL player's own first-person jetpack loop is not driven here (the local player has no rendered world model in the port); in Base CSQC_ClientMovement sets MF_ROCKET locally too. Remote/spectated players — the case where the loop is audible to others — now fire."
     verification:
-      - { kind: code, ref: "CsqcModelEffects.cs DriveJetpackLoop gated on (modelFlags & MF_ROCKET); modelFlags always 0 from ClientWorld.cs:1095; ComposeForcedAppearance(jetpackActive) has no caller", result: fail }
+      - { kind: code, ref: "Wave 5: NetEntityFlags.UsingJetpack (1<<8, enum widened byte->ushort + codec WriteUShort/ReadUShort) networked from ServerNet.BuildEntitySet (p.UsingJetpack && !IsDead && !Intermission, QC player.qc:878); ClientEntityView decodes it onto e.UsingJetpack; ClientWorld.DriveCsqcModelHooks composes ForcedAppearance(jetpackActive) -> CsqcModelEffects.Apply(...,forced) -> DriveJetpackLoop fires", result: pass }
     confidence: high
-    notes: "The loop logic (start once, VOL_BASE/cl_jetpack_attenuation 2, stop on clear) is a faithful port but unreachable: MF_ROCKET is never set on this path. STILL DEAD — the Wave added a path to force MF_ROCKET (ComposeForcedAppearance) but did not wire a caller."
+    notes: "WIRED LIVE (Wave 5): the IT_USING_JETPACK bit is now networked end-to-end (server BuildEntitySet -> NetEntityFlags.UsingJetpack -> client proxy e.UsingJetpack -> ComposeForcedAppearance jetpackActive -> MF_ROCKET) so DriveJetpackLoop start/stop fires on the CSQC-model path for remote players. The loop logic (start once, VOL_BASE/cl_jetpack_attenuation 2, stop on clear) was already a faithful port; this closes the missing caller. The same MF_ROCKET path also now drives the rocket trail return for the (rare) player-on-entity-node trail case."
   - id: cl-csqcmodel.networking.csqcmodel_contract
     name: "CSQCMODEL networked-property contract (effects/modelflags/skin/traileffect/colormap/colormod/glowmod/scale/alpha/v_angle/anim_*)"
     layer: [shared]

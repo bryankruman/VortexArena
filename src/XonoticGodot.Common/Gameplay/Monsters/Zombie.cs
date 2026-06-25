@@ -171,4 +171,20 @@ public sealed class Zombie : Monster
         // Base M_Zombie_Defend_Block plays NO sound (only setanim blockstart). The zombie 'melee' cue is
         // commented out in zombie.dpm_0.sounds, so the prior monsters/zombie_melee.wav play was a divergence.
     }
+
+    // mr_anim (zombie.qc): the MD3 frame-group table. The first component of each animfixfps('N …') is the
+    // group's start frame, which QC's setanim stamps onto .frame; the networked Entity.Frame drives the client
+    // ModelAnimator (CSQCMODEL_AUTOUPDATE). MonsterAI.DriveAnimFrame calls this each think to play the phase.
+    // The logical-phase enum collapses the 14 Base groups: spawn folds into Idle (the brain idles until
+    // spawn_time), melee1/2/3 all share frame 4, walk==run, and pain1 is the representative pain group.
+    public override float? AnimFrame(MonsterAnimPhase phase, bool die2) => phase switch
+    {
+        MonsterAnimPhase.Idle => 19f,   // anim_idle '19 1 1'
+        MonsterAnimPhase.Walk => 27f,   // anim_walk '27 1 1'
+        MonsterAnimPhase.Run => 27f,    // anim_run '27 1 1'
+        MonsterAnimPhase.Attack => 4f,  // anim_melee1/2/3 '4 1 5'
+        MonsterAnimPhase.Pain => 20f,   // anim_pain1 '20 1 2'
+        MonsterAnimPhase.Death => die2 ? 12f : 9f, // anim_die1 '9 1 0.5' -> anim_die2 '12 1 0.5'
+        _ => 19f,
+    };
 }

@@ -372,9 +372,11 @@ namespace XonoticGodot.Common.Gameplay
             // g_vehicles_enter==0. Requires the host collision to dispatch .Touch onto solids (cross-boundary).
             vehic.Touch = Touch;
 
-            // QC vehicles_spawn:1118 — this.event_heal = vehicles_heal. There is no central Heal()/event_heal
-            // dispatch sink in the port yet (the Combat.Heal seam is a separate cross-file TODO), so HealVehicle
-            // (the faithful sink body) is left callable but cannot be auto-dispatched here. Recorded as a todo.
+            // QC vehicles_spawn:1118 — this.event_heal = vehicles_heal. Install the framework heal SINK so the
+            // generic Combat.Heal dispatch (DamageContracts.Heal -> target.GtEventHeal) finds it: a func_heal /
+            // heal-nade onto a vehicle now tops up its health (limit fallback to max_health, dead/at-limit refusal,
+            // owner % mirror) exactly like the Onslaught generator/icon GtEventHeal sinks.
+            vehic.GtEventHeal = HealVehicle;
 
             // QC: return to spawn (this.angles = pos2; setorigin(this, pos1)).
             vehic.Angles = vehic.SpawnAngles;

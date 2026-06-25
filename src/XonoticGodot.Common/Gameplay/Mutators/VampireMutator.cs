@@ -77,4 +77,10 @@ public sealed class VampireMutator : MutatorBase
 
         return false; // not "exclusive" — let other handlers run (QC CBC_ORDER_ANY).
     }
+
+    // MUTATOR_HOOKFUNCTION(vampire, BuildMutatorsString) — sv_vampire.qc:25
+    public override string BuildMutatorsString(string s) => s + ":Vampire";
+
+    // MUTATOR_HOOKFUNCTION(vampire, BuildMutatorsPrettyString) — sv_vampire.qc:30
+    public override string BuildMutatorsPrettyString(string s) => s + ", Vampire";
 }

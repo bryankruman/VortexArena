@@ -30,6 +30,10 @@ public sealed class PhaserTurret : Turret
     private const float ShotRefire = 4f;
     private const float VelFactor = 0.75f;        // per-tick slow (QC FireImoBeam f_velfactor)
     private const float TargetRange = 3000f;
+    private const float HumPeriod = 2f;           // phaser_weapon.qc: re-trigger SND_TUR_PHASER every 2s (shot_spread clock)
+    private const string SndPhaser = "turrets/phaser";   // SND_TUR_PHASER (the phaser hum)
+    private const string SndImpact = "weapons/neximpact"; // SND_PhaserTurretAttack_IMPACT (neximpact)
+    private const SoundChannel BeamHumChannel = SoundChannel.Body; // CH_SHOTS_SINGLE — kept on the beam so Stop() silences it on end
     private const float TargetRangeMin = 0f;
     private const float TargetRangeOptimal = 1500f;
     private const float AmmoMax = 2000f;
@@ -88,11 +92,21 @@ public sealed class PhaserTurret : Turret
         beam.MoveType = MoveType.None;
         float endTime = now + ShotSpeed;
         float perTickDamage = ShotDamage / (ShotSpeed / System.Math.Max(Api.Clock.FrameTime, 0.0001f));
+        float nextHum = now + HumPeriod;   // QC beam.shot_spread = time + 2
 
-        beam.Think = self => BeamThink(self, endTime, perTickDamage);
+        beam.Think = self => BeamThink(self, endTime, perTickDamage, nextHum);
         beam.NextThink = now;
 
-        Api.Sound.Play(turret, SoundChannel.Weapon, "weapons/electro_fire.wav");
+        // phaser_weapon.qc wr_think (turret-edict branch): the phaser hum starts on the BEAM (CH_SHOTS_SINGLE)
+        // so it follows the beam and can be silenced on end; the player-manned branch (electro_fire) is not the
+        // turret path. The neximpact cue is played once at the spawn-time trace endpoint.
+        Api.Sound.Play(beam, BeamHumChannel, SndPhaser, SoundLevels.VolBase, SoundLevels.AttenNorm);
+
+        Vector3 shotOrg = TurretAI.ShotOrigin(turret);
+        Vector3 fwd = QMath.Forward(TurretAI.HeadWorldAngles(turret));
+        TraceResult impact = Api.Trace.Trace(shotOrg, Vector3.Zero, Vector3.Zero,
+            shotOrg + fwd * TargetRange, MoveFilter.Normal, turret);
+        Api.Sound.PlayAt(impact.EndPos, SoundChannel.ShotsAuto, SndImpact, SoundLevels.VolBase, SoundLevels.AttenNorm);
 
         // NOTE (client-render): the MDL_TUR_PHASER_BEAM visual scaled to the hit distance + the fireflag
         // charge/discharge head frames. The server-side beam (per-tick damage, phaser_weapon.qc) is done above.
@@ -100,17 +114,26 @@ public sealed class PhaserTurret : Turret
 
     // beam_think (phaser_weapon.qc): re-trace along the head's aim each frame, damage + slow the first hit, and
     // tear down + reset the turret refire when the duration elapses.
-    private void BeamThink(Entity beam, float endTime, float perTickDamage)
+    private void BeamThink(Entity beam, float endTime, float perTickDamage, float nextHum)
     {
         Entity turret = beam.Owner!;
         float now = Api.Services is not null ? Api.Clock.Time : 0f;
 
         if (now > endTime || turret.IsFreed || turret.DeadState != DeadFlag.No)
         {
-            // End of beam: set the real refire and remove (QC beam_think termination).
+            // End of beam: silence the hum (QC sound(this, CH_SHOTS_SINGLE, SND_Null)), set the real refire, remove.
+            if (Api.Services is not null) Api.Sound.Stop(beam, BeamHumChannel);
             if (!turret.IsFreed) TurretAI.State(turret).AttackFinished = now + ShotRefire;
             if (Api.Services is not null) Api.Entities.Remove(beam);
             return;
+        }
+
+        // phaser_weapon.qc beam_think: every 2s re-trigger SND_TUR_PHASER and re-arm the clock (shot_spread = time + 2).
+        if (now - nextHum > 0f)
+        {
+            nextHum = now + HumPeriod;
+            if (Api.Services is not null)
+                Api.Sound.Play(beam, BeamHumChannel, SndPhaser, SoundLevels.VolBase, SoundLevels.AttenNorm);
         }
 
         TurretState st = TurretAI.State(turret);
@@ -136,6 +159,10 @@ public sealed class PhaserTurret : Turret
             }
         }
 
+        // Re-park the think with the (possibly advanced) hum clock so the 2s re-trigger persists across frames
+        // (the QC beam carries shot_spread on the edict; here it rides the rebound delegate).
+        float carriedHum = nextHum;
+        beam.Think = self => BeamThink(self, endTime, perTickDamage, carriedHum);
         beam.NextThink = now;
     }
 

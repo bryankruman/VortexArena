@@ -97,6 +97,12 @@ public sealed class Mortar : Weapon
         Secondary.Speed = Bal("g_balance_mortar_secondary_speed", 1400f);
         Secondary.SpeedUp = Bal("g_balance_mortar_secondary_speed_up", 150f);
         Secondary.Type = BalInt("g_balance_mortar_secondary_type", 1);
+
+        // WEP_CVAR_SEC(WEP_MORTAR, remote_detonateprimary) / WEP_CVAR_PRI(WEP_MORTAR, remote_minbouncecnt)
+        // (mortar.qh:57-58; bal-wep-xonotic.cfg:144,164). Both default 0 (off) — secondary fire remote-detonates
+        // the firer's own live primary grenades once each has bounced remote_minbouncecnt times (wr_think / Think1).
+        RemoteDetonatePrimary = Bal("g_balance_mortar_secondary_remote_detonateprimary", 0f) != 0f;
+        RemoteMinBounceCount = BalInt("g_balance_mortar_primary_remote_minbouncecnt", 0);
     }
 
     /// <summary>g_balance_mortar_secondary_remote_detonateprimary — secondary remote-detonates primaries.</summary>
@@ -162,6 +168,9 @@ public sealed class Mortar : Weapon
         gren.MoveType = MoveType.Bounce;
         gren.BounceFactor = BounceFactor; // QC gren.bouncefactor / .bouncestop (engine MOVETYPE_BOUNCE)
         gren.BounceStop = BounceStop;
+        // CSQCProjectile(gren, ..., type==1 ? PROJECTILE_GRENADE_BOUNCING : PROJECTILE_GRENADE, ...) (mortar.qc:203-207).
+        // The bouncing grenade (type 1) renders the sideways-tumbling bouncing model; impact/stick (type 0/2) the plain one.
+        gren.CsqcProjectileBouncing = bal.Type == 1;
         Projectiles.MakeTrigger(gren); // QC PROJECTILE_MAKETRIGGER (SOLID_CORPSE): transparent to the firer's movement
         gren.Flags = EntFlags.Item; // QC FL_PROJECTILE
         Api.Entities.SetSize(gren, new Vector3(-3, -3, -3), new Vector3(3, 3, 3));

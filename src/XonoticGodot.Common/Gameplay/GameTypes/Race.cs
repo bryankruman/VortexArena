@@ -123,6 +123,24 @@ public sealed class Race : GameType
         /// <summary>QC <c>e.race_checkpoint_record[cp]</c>: this racer's personal-best split (seconds) per checkpoint
         /// index (sparse; 0 = none). Used for the HUD "my previous best" anticipation line.</summary>
         public readonly Dictionary<int, float> PersonalCheckpointRecords = new();
+
+        // ---- respawn-at-last-checkpoint (QC race_respawn_checkpoint / race_respawn_spotref, server/race.qc:807-809) ----
+
+        /// <summary>QC <c>race_respawn_checkpoint</c>: the checkpoint index this racer must respawn at (0 = start
+        /// line). Advanced as the racer crosses checkpoints in order; consulted by the spawn-point selection
+        /// (QC trigger_race_checkpoint_spawn_evalfunc) so a death returns the racer to their last checkpoint.</summary>
+        public int RespawnCheckpoint;
+
+        /// <summary>QC <c>race_respawn_spotref</c>: the checkpoint world entity at which this racer respawns
+        /// (server/race.qc:808 — "this is not a spot but a CP, but spawnpoint selection will deal with that"). The
+        /// host forces the next spawn to this entity via <see cref="Entity.SpawnPointTarg"/> (the one-shot redirect
+        /// SelectSpawnPoint short-circuits to), so a respawning racer is placed back at the checkpoint they reached.
+        /// Null = respawn at a normal start spawn (the racer hasn't passed any checkpoint yet).</summary>
+        public Entity? RespawnSpot;
+
+        /// <summary>QC <c>race_started</c>: this racer has crossed the start line at least once (so the lap clock is
+        /// running and the respawn falls back to the last checkpoint rather than the grid start).</summary>
+        public bool Started;
     }
 
     // ---- per-map / per-run checkpoint records (QC race_checkpoint_records[cp] et al, server/race.qc) ----
@@ -312,6 +330,14 @@ public sealed class Race : GameType
             return;
         }
 
+        // QC checkpoint_passed (server/race.qc:807-811): a crossing in order updates the racer's respawn anchor —
+        // the checkpoint they will be returned to on death. race_respawn_spotref is only re-pointed when the racer
+        // reaches a NEW checkpoint (or hasn't started yet), so a re-touch of the same CP keeps the prior spot.
+        if (st.RespawnCheckpoint != cpIndex || !st.Started)
+            st.RespawnSpot = self;     // QC player.race_respawn_spotref = this
+        st.RespawnCheckpoint = cpIndex; // QC player.race_respawn_checkpoint = this.race_checkpoint
+        st.Started = true;              // QC player.race_started = 1
+
         bool isFinish = self.GtIsFinishLine || cpIndex == 0;
         CrossCheckpoint(p, cpIndex, isFinish);
     }
@@ -335,6 +361,13 @@ public sealed class Race : GameType
         Winner = null;
         SuddenDeath = false;
         RaceCompleting = false;
+        // QC race_PreparePlayer: a fresh activation clears every racer's respawn anchor (re-derived as they race).
+        foreach (RaceState rs in _states.Values)
+        {
+            rs.RespawnCheckpoint = 0;
+            rs.RespawnSpot = null;
+            rs.Started = false;
+        }
         // QC rc_SetLimits: g_race_teams 2..4 makes race a team game (members add up laps to ST_RACE_LAPS).
         TeamGame = RaceTeams >= 2;
         if (TeamGame)
@@ -674,6 +707,11 @@ public sealed class Race : GameType
         RaceState st = GetState(p);
         st.LapStartTime = 0f;
         st.NextCheckpoint = -1; // re-expect the start line
+        // QC race_PreparePlayer (server/race.qc:1220): a retract to start clears the respawn anchor so the racer
+        // restarts from the grid/start line rather than their last mid-track checkpoint.
+        st.RespawnCheckpoint = 0;
+        st.RespawnSpot = null;
+        st.Started = false;
         OnFinishRetract?.Invoke(p);
     }
 
@@ -838,6 +876,9 @@ public sealed class Race : GameType
             st.Completed = false;
             st.PenaltyAccumulator = 0f;
             st.PenaltyUntil = 0f;
+            st.RespawnCheckpoint = 0; // QC race_PreparePlayer: reset the respawn anchor for the now-plain race
+            st.RespawnSpot = null;
+            st.Started = false;
         }
         return true;
     }
@@ -859,16 +900,51 @@ public sealed class Race : GameType
             return false;
 
         // Death never scores in race and never ends the race — the racer is simply sent back to respawn.
-        // QC race_AbandonRaceCheck: drop the in-progress lap so the next start line re-stamps the timer and
-        // the racer must re-cross checkpoints in order from the start.
+        // QC race_RetractPlayer (server/race.qc:1229): a racer is returned to their LAST passed checkpoint, not
+        // the grid start. If that checkpoint is the start/finish line (0) the lap clock is cleared (a fresh lap);
+        // otherwise the lap clock is kept and the racer resumes expecting the checkpoint AFTER the one they
+        // respawn at (QC race_checkpoint = race_respawn_checkpoint, advanced by the next crossing).
         RaceState st = GetState(victim);
-        st.LapStartTime = 0f;
-        st.NextCheckpoint = -1;
+        int respawnCp = st.RespawnSpot is not null ? st.RespawnCheckpoint : 0;
+        if (respawnCp == 0)
+        {
+            st.LapStartTime = 0f;        // QC race_ClearTime: start the next lap fresh at the start line
+            st.NextCheckpoint = -1;      // re-expect the start line
+        }
+        else
+        {
+            // resume from the respawn checkpoint: the next required CP is the one after it (wrap at the finish).
+            st.NextCheckpoint = respawnCp >= HighestCheckpoint ? 0 : respawnCp + 1;
+        }
         // QC race_AbandonRaceCheck (driven from PutClientInServer/respawn): once the race is completing, a racer
         // who dies and would respawn into a finished race is auto-abandoned rather than left running forever.
         AbandonRaceCheck(victim);
         Events?.OnFrag(ev.Attacker as Player, victim, ev.DeathType);
         return false;
+    }
+
+    /// <summary>
+    /// QC <c>trigger_race_checkpoint_spawn_evalfunc</c> + <c>race_respawn_spotref</c> (server/race.qc:1055/808):
+    /// place a (re)spawning racer back at the checkpoint they last reached (the SPAWN_PRIO_RACE_PREVIOUS_SPAWN
+    /// bias) rather than at a random grid start. The host calls this just before <c>SelectSpawnPoint</c>: it sets
+    /// the one-shot forced-spawn redirect (<see cref="Entity.SpawnPointTarg"/>) to the racer's respawn checkpoint
+    /// entity, which SelectSpawnPoint short-circuits to (and PutPlayerInServer consumes). A racer who hasn't
+    /// passed any checkpoint yet (or qualifying, which always restarts from the start line) keeps the normal
+    /// start-spawn selection. Returns true if a checkpoint respawn spot was applied.
+    /// </summary>
+    public bool ApplyRespawnSpot(Player p)
+    {
+        if (!_states.TryGetValue(p, out RaceState? st))
+            return false;
+        // QC: qualifying always respawns at the start line (race_RetractPlayer clears to checkpoint 0); only a
+        // plain race returns the racer to their last checkpoint.
+        if (Qualifying)
+            return false;
+        Entity? spot = st.RespawnSpot;
+        if (spot is null || spot.IsFreed || st.RespawnCheckpoint == 0)
+            return false; // no passed checkpoint (or back at the start line) — use the normal start spawn
+        p.SpawnPointTarg = spot; // QC race_respawn_spotref → the forced one-shot respawn spot
+        return true;
     }
 
     private static bool TryCvar(string name, out float value)

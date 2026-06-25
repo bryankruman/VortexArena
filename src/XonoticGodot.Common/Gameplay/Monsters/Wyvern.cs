@@ -35,6 +35,22 @@ public sealed class Wyvern : Monster
     // than the generic 0.34s; matches the anim_pain1 '3 1 2' ~0.5s frame group). Drives MarkPain's PainFinished.
     public override float PainWindow => 0.5f;
 
+    // METHOD(Wyvern, mr_anim) — wyvern.qc. The wyvern's MD3 (models/monsters/wyvern.dpm) frame-group layout:
+    //   anim_idle '0 1 1'  anim_walk '1 1 1'  anim_run '2 1 1'  anim_pain1 '3 1 2'  anim_pain2 '4 1 2'
+    //   anim_melee '5 1 5'  anim_shoot '6 1 5'  anim_die1 '7 1 0.5'  anim_die2 '8 1 0.5'
+    // The first component is the group's start frame; that is what QC's setanim stamps onto .frame and what the
+    // networked Entity.Frame drives client-side. mr_death plays die1 (falling), mr_deadthink plays die2 (landed).
+    public override float? AnimFrame(MonsterAnimPhase phase, bool die2) => phase switch
+    {
+        MonsterAnimPhase.Idle => 0f,    // anim_idle '0 1 1'
+        MonsterAnimPhase.Walk => 1f,    // anim_walk '1 1 1'
+        MonsterAnimPhase.Run => 2f,     // anim_run '2 1 1'
+        MonsterAnimPhase.Pain => 3f,    // anim_pain1 '3 1 2'
+        MonsterAnimPhase.Attack => 6f,  // anim_shoot '6 1 5' (both melee+ranged lob the fireball)
+        MonsterAnimPhase.Death => die2 ? 8f : 7f, // anim_die1 '7 …' falling -> anim_die2 '8 …' landed
+        _ => 0f,
+    };
+
     public Wyvern()
     {
         NetName = "wyvern";
@@ -106,13 +122,12 @@ public sealed class Wyvern : Monster
             }
 
             // METHOD(Wyvern, mr_deadthink): if (IS_ONGROUND(actor)) setanim(anim_die2). die2 is the landed
-            // corpse pose. The port's logical anim phase has no die1/die2 split (one MonsterAnim.Death), so the
-            // swap is observable only once CSQC monster frame playback lands; we still detect the landing so the
-            // anim hook is faithfully driven (and the corpse stops drifting once grounded).
+            // corpse pose. Flag the landing so DriveAnimFrame swaps the networked Entity.Frame from the falling
+            // die1 group to the landed die2 group (AnimFrame below); the corpse also stops drifting once grounded.
             else if (!ds.Landed && (e.Flags & EntFlags.OnGround) != 0)
             {
                 ds.Landed = true;
-                st.Anim = MonsterAI.MonsterAnim.Death; // die2 (same logical phase; CSQC plays the landed group)
+                st.DeathLanded = true; // mr_deadthink: setanim(anim_die2) — DriveAnimFrame plays the die2 group
             }
         }
 

@@ -223,7 +223,16 @@ public sealed class Vaporizer : Weapon
             Entity proj = Api.Entities.Spawn();
             proj.ClassName = "plasma_prim";
             proj.Owner = actor;
-            proj.NetName = NetName;
+            // QC nets each bolt as PROJECTILE_ROCKETMINSTA_LASER (vaporizer.qc:272) — a DISTINCT visual from the
+            // generic plasma/vaporizer bolt: models/elaser.mdl + the EFFECT_ROCKETMINSTA_LASER trail. The port keys
+            // the client's ProjectileCatalog off classname+netname, so tag the bolt's netname "rocketminsta" to pick
+            // the RocketMinstaLaser descriptor (red laser, elaser model) instead of falling through to "plasma".
+            proj.NetName = "rocketminsta";
+            // QC CSQCProjectile_SendEntity nets realowner.team as the bolt's colormap; projectile.qc tints the
+            // PROJECTILE_ROCKETMINSTA_LASER body to that team palette (colormod = colormapPaletteColor(colormap&0x0F)).
+            // Carry the firer's team so the colormap networks (ServerNet nets Colormap = (int)Team) and the client
+            // can apply the team colormod.
+            proj.Team = actor.Team;
             proj.MoveType = MoveType.BounceMissile;
             Projectiles.MakeTrigger(proj); // QC PROJECTILE_MAKETRIGGER (SOLID_CORPSE): transparent to the firer's movement
             proj.Flags = EntFlags.Item;

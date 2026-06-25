@@ -144,6 +144,17 @@ public sealed class Crylink : Weapon
     {
         var st = actor.WeaponState(slot);
 
+        // QC wr_think forced-reload pre-check (crylink.qc:494-498): if reloading is enabled
+        // (g_balance_crylink_reload_ammo != 0) and the clip has dropped below the cheapest per-shot cost
+        // (min(primary_ammo, secondary_ammo)), force a reload THIS tick. In QC this is the head of the
+        // if/else-if chain whose other arms are the fire1/fire2 branches, so a forced reload SUPPRESSES the
+        // firing branches that tick (but NOT the separate join-release block that follows — it always runs).
+        // Inactive at stock balance (reload_ammo defaults 0), but now genuinely live: flip
+        // g_balance_crylink_reload_ammo on and an under-stocked clip auto-reloads here exactly as Base.
+        bool forcedReload = ReloadingAmmo() != 0f && st.ClipLoad < MathF.Min(Primary.Ammo, Secondary.Ammo);
+        if (forcedReload)
+            WrReload(actor, slot);
+
         // crylink_waitrelease: after firing a join-enabled group, the spikes stay spread while fire is HELD;
         // they converge (W_Crylink_LinkJoin) only once the player RELEASES — the weapon's defining "time the
         // convergence onto a target" mechanic (crylink.qc describe()). QC gates the join on BOTH the
@@ -178,12 +189,13 @@ public sealed class Crylink : Weapon
 
         // Each spike volley is refire-gated (QC weapon_prepareattack with the primary/secondary refire). The
         // CrylinkWaitRelease guard additionally blocks a new volley while the previous group waits to join.
-        if (fire == FireMode.Primary && st.CrylinkWaitRelease != 1)
+        // A forced reload this tick is the QC if/else-if head and so suppresses both fire branches.
+        if (!forcedReload && fire == FireMode.Primary && st.CrylinkWaitRelease != 1)
         {
             if (PrepareAttack(actor, slot, fire))
                 Attack(actor, slot, st, Primary, secondary: false);
         }
-        else if (fire == FireMode.Secondary && SecondaryEnabled && st.CrylinkWaitRelease != 2)
+        else if (!forcedReload && fire == FireMode.Secondary && SecondaryEnabled && st.CrylinkWaitRelease != 2)
         {
             if (PrepareAttack(actor, slot, fire))
                 Attack(actor, slot, st, Secondary, secondary: true);
@@ -193,6 +205,10 @@ public sealed class Crylink : Weapon
     // Refire/animtime from the (cvar-seeded) per-mode balance blocks.
     public override float RefireFor(FireMode fire) => (fire == FireMode.Secondary ? Secondary : Primary).Refire;
     public override float AnimtimeFor(FireMode fire) => (fire == FireMode.Secondary ? Secondary : Primary).Animtime;
+
+    // QC wr_reload: W_Reload(actor, weaponentity, min(WEP_CVAR_PRI(ammo), WEP_CVAR_SEC(ammo)), SND_RELOAD)
+    // — the reload's per-shot ammo floor is the cheaper of the two modes' costs, not the generic 1.
+    protected override float ReloadingAmmoMin() => MathF.Min(Primary.Ammo, Secondary.Ammo);
 
     // W_Crylink_Attack / W_Crylink_Attack2 — spray `shots` spikes in a spread, linked into a converge group.
     private void Attack(Entity actor, WeaponSlot slot, WeaponSlotState st, ModeBalance bal, bool secondary)

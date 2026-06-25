@@ -315,13 +315,17 @@ public static class WeaponFireDriver
     }
 
     /// <summary>
-    /// QC <c>weaponUseForbidden</c> (weaponsystem.qc): the round is active but not yet started, or the
-    /// <c>ForbidWeaponUse</c> mutator hook says no — fire buttons are zeroed but switching stays allowed.
-    /// Neither the round_handler nor the ForbidWeaponUse hook is reachable from this headless driver, so this
-    /// is a faithful stub that always returns false today; it is the clean seam for that state when round
-    /// modes land. (The dead/game-stopped gating the original concern is already done by the caller.)
+    /// QC <c>weaponUseForbidden</c> (weaponsystem.qc:426): <c>round_handler_IsActive() &amp;&amp;
+    /// !round_handler_IsRoundStarted()</c> — a round-based mode is in its pre-round grace window (warmup /
+    /// countdown / end-delay), so the fire buttons are zeroed while switching stays allowed. The active
+    /// round handler lives in the server <see cref="GameWorld"/>, out of reach of this headless Common
+    /// driver, so the host wires it via <see cref="RoundFireForbidden"/>. (The <c>ForbidWeaponUse</c>
+    /// mutator hook half is not modeled — no port mutator forbids weapon use; the dead/game-stopped gating
+    /// is already done by the caller via <see cref="WeaponLocked"/>.)
     /// </summary>
-    private static bool WeaponUseForbidden(Entity player) => false;
+    public static Func<Entity, bool>? RoundFireForbidden { get; set; }
+
+    private static bool WeaponUseForbidden(Entity player) => RoundFireForbidden?.Invoke(player) ?? false;
 
     /// <summary>
     /// QC <c>weaponLocked</c> (weaponsystem.qc): the player can't fire at all — when locked the weapon system

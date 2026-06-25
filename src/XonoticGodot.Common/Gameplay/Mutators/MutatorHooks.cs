@@ -485,6 +485,17 @@ public static class MutatorHooks
     public static readonly HookChain<SetDefaultAlphaArgs> SetDefaultAlpha = new();
 
     /// <summary>
+    /// QC global <c>default_player_alpha</c> (server/world.qh): the resolved per-spawn player alpha, seeded by
+    /// the most recent <see cref="FireSetDefaultAlpha"/> at worldspawn. Lives in Common so the spawn/death/loadout
+    /// code (SpawnSystem, DamageSystem) can read the cloaked/running-guns seed without a cross-assembly reach into
+    /// the Server GameWorld. 1 = fully opaque (the default until the world-init driver fires).
+    /// </summary>
+    public static float DefaultPlayerAlpha { get; private set; } = 1f;
+
+    /// <summary>QC global <c>default_weapon_alpha</c> (server/world.qh): the held/exterior weapon spawn alpha (= player alpha under cloaked).</summary>
+    public static float DefaultWeaponAlpha { get; private set; } = 1f;
+
+    /// <summary>
     /// Fire <see cref="SetDefaultAlpha"/> and return the resolved (player, weapon) default alpha (QC
     /// <c>SetDefaultAlpha()</c> seeds <c>default_player_alpha = -1</c> / <c>default_weapon_alpha = +1</c>,
     /// runs <c>MUTATOR_CALLHOOK(SetDefaultAlpha)</c>, then reads the globals back). Cloaked lowers the player
@@ -498,6 +509,10 @@ public static class MutatorHooks
     {
         var a = new SetDefaultAlphaArgs(basePlayerAlpha, baseWeaponAlpha);
         SetDefaultAlpha.Call(ref a);
+        // Cache the resolved seed in Common so the spawn/death/loadout consumers read the same value the
+        // Server GameWorld seeds (QC reads the default_player_alpha/default_weapon_alpha globals directly).
+        DefaultPlayerAlpha = a.PlayerAlpha;
+        DefaultWeaponAlpha = a.WeaponAlpha;
         return (a.PlayerAlpha, a.WeaponAlpha);
     }
 

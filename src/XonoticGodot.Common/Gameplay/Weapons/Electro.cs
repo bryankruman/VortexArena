@@ -35,6 +35,11 @@ public sealed class Electro : Weapon
         public float Speed;       // g_balance_electro_primary_speed
         public float MidairComboRadius; // g_balance_electro_primary_midaircombo_radius (orb trigger while in flight)
         public bool  MidairComboExplode;// g_balance_electro_primary_midaircombo_explode
+        public float MidairComboInterval;// g_balance_electro_primary_midaircombo_interval (re-probe period)
+        public float MidairComboSpeed;  // g_balance_electro_primary_midaircombo_speed (first-orb chain delay = dist/speed)
+        public bool  MidairComboOwn;    // g_balance_electro_primary_midaircombo_own (trigger the firer's own orbs)
+        public bool  MidairComboTeammate;// g_balance_electro_primary_midaircombo_teammate (trigger teammates' orbs)
+        public bool  MidairComboEnemy;  // g_balance_electro_primary_midaircombo_enemy (trigger enemies' orbs)
     }
 
     /// <summary>Secondary-fire (orb) balance — QC WEP_CVAR_SEC(WEP_ELECTRO, *).</summary>
@@ -100,8 +105,13 @@ public sealed class Electro : Weapon
         Primary.Radius = Bal("g_balance_electro_primary_radius", 100f);
         Primary.Refire = Bal("g_balance_electro_primary_refire", 0.6f);
         Primary.Speed = Bal("g_balance_electro_primary_speed", 2500f);
-        Primary.MidairComboRadius = Bal("g_balance_electro_primary_midaircombo_radius", 0f);   // off by default in xonotic balance (on in some balances)
+        Primary.MidairComboRadius = Bal("g_balance_electro_primary_midaircombo_radius", 0f);   // off by default in xonotic balance (on in samual/xdf)
         Primary.MidairComboExplode = BalBool("g_balance_electro_primary_midaircombo_explode", true);
+        Primary.MidairComboInterval = Bal("g_balance_electro_primary_midaircombo_interval", 0.1f);
+        Primary.MidairComboSpeed = Bal("g_balance_electro_primary_midaircombo_speed", 2000f);
+        Primary.MidairComboOwn = BalBool("g_balance_electro_primary_midaircombo_own", true);
+        Primary.MidairComboTeammate = BalBool("g_balance_electro_primary_midaircombo_teammate", true);
+        Primary.MidairComboEnemy = BalBool("g_balance_electro_primary_midaircombo_enemy", true);
 
         Secondary.Ammo = Bal("g_balance_electro_secondary_ammo", 2f);
         Secondary.Animtime = Bal("g_balance_electro_secondary_animtime", 0.2f);
@@ -242,34 +252,73 @@ public sealed class Electro : Weapon
         }
 
         // midair combo: convert nearby orbs into a chained combo while the bolt is still in flight (default OFF
-        // in the shipped balance — midaircombo_radius 0). If any were converted and midaircombo_explode is set,
-        // blow up the bolt too. QC W_Electro_Bolt_Think:261-309: each orb becomes electro_orb_chain + is
-        // scheduled to W_Electro_ExplodeCombo (delayed by midaircombo/combo_speed) — exactly what TriggerCombo
-        // does, so we reuse it (gives the chain ripple + ELECTRO_COMBO + impact sound + MURDER_COMBO deathtype).
+        // in bal-wep-xonotic.cfg — midaircombo_radius 0 — but ON in samual/xdf, so the branch IS live there).
+        // QC W_Electro_Bolt_Think:261-309 has its own loop (NOT W_Electro_TriggerCombo): per-orb own/teammate/
+        // enemy gating + the first orb chains on midaircombo_speed (no combo_comboradius_thruwall LOS test).
         if (Primary.MidairComboRadius > 0f)
         {
-            int before = CountOrbs(self.Origin, Primary.MidairComboRadius);
-            // own/teammate/enemy gating is the midaircombo_own/_teammate/_enemy cvars (all default 1, so any orb
-            // triggers); team data isn't threaded here, so we trigger any non-self orb (the common FFA case).
-            TriggerCombo(self.Origin, Primary.MidairComboRadius, self.Owner);
-            bool found = before > 0;
+            bool found = MidairTriggerCombo(self.Origin, Primary.MidairComboRadius, self.Owner);
+            // if we triggered an orb, should we explode? if not, try again next probe (electro.qc:305-308).
             if (found && Primary.MidairComboExplode)
             {
                 ExplodeBolt(self, null);
                 return;
             }
-            // QC reschedules on midaircombo_interval (0.1), not the bolt's idle 0.05 step.
-            self.NextThink = MathF.Min(Api.Clock.Time + 0.1f, deathTime);
+            self.NextThink = MathF.Min(Api.Clock.Time + Primary.MidairComboInterval, deathTime);
             return;
         }
         // QC default branch (midaircombo off): nextthink = ltime — no per-tick think.
         self.NextThink = deathTime;
     }
 
-    // Count live electro_orbs within radius (the midair-combo "did we trigger anything?" probe — TriggerCombo
-    // renames them to electro_orb_chain, so we must sample before it runs).
-    private int CountOrbs(Vector3 org, float rad)
-        => Api.Entities.FindInRadius(org, rad).Count(e => e.ClassName == "electro_orb" && !e.IsFreed);
+    /// <summary>
+    /// Port of the midair-combo loop in W_Electro_Bolt_Think (electro.qc:261-309). Distinct from
+    /// W_Electro_TriggerCombo: it applies per-orb own/teammate/enemy gating (midaircombo_own/_teammate/_enemy),
+    /// chains the orb on midaircombo_speed (not combo_speed), and skips the combo_comboradius_thruwall LOS test.
+    /// Returns true if at least one orb was converted into a chained combo.
+    /// </summary>
+    private bool MidairTriggerCombo(Vector3 org, float rad, Entity? own)
+    {
+        if (Api.Services is null) return false;
+        bool found = false;
+        // Snapshot first: we mutate orbs (rename to electro_orb_chain + schedule) as we go.
+        var orbs = Api.Entities.FindInRadius(org, rad)
+            .Where(e => e.ClassName == "electro_orb" && !e.IsFreed).ToList();
+        foreach (Entity e in orbs)
+        {
+            // QC: skip an orb owned by an independent player who isn't the firer (no independent players in the
+            // default modes — dead-OFF-equivalent, but ported for faithfulness).
+            if (e.Owner is { IsIndependentPlayer: true } && !ReferenceEquals(own, e.Owner))
+                continue;
+
+            // QC electro.qc:276-281 — per-orb team gate. this.owner==e.owner -> _own; SAME_TEAM -> _teammate; else _enemy.
+            bool explode;
+            if (ReferenceEquals(own, e.Owner))
+                explode = Primary.MidairComboOwn;
+            else if (own is not null && e.Owner is not null && Teams.SameTeam(own, e.Owner))
+                explode = Primary.MidairComboTeammate;
+            else
+                explode = Primary.MidairComboEnemy;
+            if (!explode) continue;
+
+            // change owner to whoever caused the combo, lock it down, rename so a re-probe skips it.
+            e.Owner = own;
+            e.TakeDamage = DamageMode.No;
+            e.ClassName = "electro_orb_chain";
+            e.Touch = null;
+            e.ProjectileDamage = null;
+
+            // Only the first orb uses midaircombo_speed (delay = dist/speed, 0 = instant); the recursive ripple
+            // (ExplodeCombo -> TriggerCombo) then uses the normal combo_speed for the rest (electro.qc:290-298).
+            float delay = (Primary.MidairComboSpeed > 0f) ? (e.Origin - org).Length() / Primary.MidairComboSpeed : 0f;
+            e.Think = self => ExplodeCombo(self);
+            e.NextThink = Api.Clock.Time + delay;
+            if (delay <= 0f) ExplodeCombo(e);
+
+            found = true;
+        }
+        return found;
+    }
 
     // W_Electro_Explode (bolt path) — bolt blast + trigger nearby orbs into a combo. electro.qc
     private void ExplodeBolt(Entity self, Entity? directHit)

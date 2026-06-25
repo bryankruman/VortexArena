@@ -207,6 +207,17 @@ public abstract class NetTransport : IDisposable
             if (Peer is null) return;
             Peer.DisconnectPeer(peerId, now);
         }
+
+        /// <summary>QC <c>CS(e).ping_packetloss</c> (server/world.qc:74): a connected peer's measured packet loss
+        /// as a 0..1 fraction. ENet reports <see cref="ENetPacketPeer.PeerStatistic.PacketLoss"/> on a 0..65536
+        /// scale (ENET_PEER_PACKET_LOSS_SCALE); we normalize it. Returns 0 for an unknown/disconnected peer.</summary>
+        public float PacketLoss(int peerId)
+        {
+            if (Peer is null) return 0f;
+            ENetPacketPeer p = Peer.GetPeer(peerId);
+            if (p is null) return 0f;
+            return Mathf.Clamp((float)(p.GetStatistic(ENetPacketPeer.PeerStatistic.PacketLoss) / 65536.0), 0f, 1f);
+        }
     }
 
     // =====================================================================================

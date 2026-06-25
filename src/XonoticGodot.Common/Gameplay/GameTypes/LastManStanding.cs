@@ -94,6 +94,7 @@ public sealed class LastManStanding : GameType
     private HookHandler<MutatorHooks.PlayerRegenArgs>? _regenHandler;
     private HookHandler<MutatorHooks.DamageCalculateArgs>? _damageCalcHandler;
     private HookHandler<MutatorHooks.FilterItemDefinitionArgs>? _filterItemHandler;
+    private HookHandler<MutatorHooks.ItemTouchArgs>? _itemTouchHandler;
 
     /// <summary>Optional sink for the host/controller to react to a frag/elimination.</summary>
     public IMatchEvents? Events;
@@ -280,6 +281,11 @@ public sealed class LastManStanding : GameType
 
         _filterItemHandler = OnFilterItemDefinition;
         MutatorHooks.FilterItemDefinition.Add(_filterItemHandler);
+
+        // QC MUTATOR_HOOKFUNCTION(lms, ItemTouch): grant lives when a player picks up an item_extralife
+        // (the HealthMega that OnFilterItemDefinition replaced in place when g_lms_extra_lives is on).
+        _itemTouchHandler = OnItemTouch;
+        MutatorHooks.ItemTouch.Add(_itemTouchHandler);
     }
 
     /// <summary>QC <c>GameRules_scoring_add</c>: mirror the authoritative <see cref="LmsState"/> into the networked
@@ -305,6 +311,7 @@ public sealed class LastManStanding : GameType
         if (_regenHandler is not null) { MutatorHooks.PlayerRegen.Remove(_regenHandler); _regenHandler = null; }
         if (_damageCalcHandler is not null) { MutatorHooks.DamageCalculate.Remove(_damageCalcHandler); _damageCalcHandler = null; }
         if (_filterItemHandler is not null) { MutatorHooks.FilterItemDefinition.Remove(_filterItemHandler); _filterItemHandler = null; }
+        if (_itemTouchHandler is not null) { MutatorHooks.ItemTouch.Remove(_itemTouchHandler); _itemTouchHandler = null; }
     }
 
     /// <summary>Look up (or lazily create, seeded with <see cref="StartingLives"/>) a player's LMS state.</summary>
@@ -752,10 +759,13 @@ public sealed class LastManStanding : GameType
     }
 
     /// <summary>
-    /// QC MUTATOR_HOOKFUNCTION(lms, FilterItemDefinition): suppress map item spawns. Items are kept only when
-    /// g_lms_items or g_pickup_items&gt;0; otherwise everything is filtered, EXCEPT ITEM_ExtraLife/ITEM_HealthMega
-    /// when g_powerups + g_lms_extra_lives are on (those become the extra-life pickups). Returns true to FILTER OUT.
-    /// Definitions are matched by ClassName (the item registry isn't fully ported — same stand-in Mayhem/NIX use).
+    /// QC MUTATOR_HOOKFUNCTION(lms, FilterItemDefinition) + MUTATOR_HOOKFUNCTION(lms, FilterItem): suppress map
+    /// item spawns. Items are kept only when g_lms_items or g_pickup_items&gt;0; otherwise everything is filtered,
+    /// EXCEPT ITEM_ExtraLife/ITEM_HealthMega when g_powerups + g_lms_extra_lives are on. For a HealthMega in that
+    /// case we fold in Base's separate <c>FilterItem</c> + <c>lms_replace_with_extralife</c>: the item is REPLACED
+    /// IN PLACE with an item_extralife (ClassName retagged + its mega-health resource stripped) so picking it up
+    /// grants lives (via <see cref="OnItemTouch"/>) instead of health. Returns true to FILTER OUT. Definitions are
+    /// matched by ClassName (the item registry isn't fully ported — same stand-in Mayhem/NIX use).
     /// </summary>
     private bool OnFilterItemDefinition(ref MutatorHooks.FilterItemDefinitionArgs args)
     {
@@ -763,11 +773,44 @@ public sealed class LastManStanding : GameType
             return false; // items allowed → don't filter
 
         string id = args.Definition.ClassName;
-        bool isExtraLifeOrMega = id is "item_extralife" or "item_health_mega" or "item_healthmega";
+        bool isMega = id is "item_health_mega" or "item_healthmega";
+        bool isExtraLifeOrMega = id is "item_extralife" || isMega;
         if (Cvar("g_powerups", -1f) != 0f && Cvar(CvarExtraLives, 0f) != 0f && isExtraLifeOrMega)
-            return false; // kept: HealthMega is replaced with an extralife
+        {
+            // QC lms_replace_with_extralife: a HealthMega becomes an item_extralife. The port retags the EXISTING
+            // edict in place (rather than spawning a fresh ITEM_ExtraLife): set its classname so OnItemTouch routes
+            // it to GiveExtraLife, and zero its health resource so the normal give grants no mega-health. The item
+            // keeps its origin/respawn and re-touches as an extralife each cycle.
+            if (isMega)
+            {
+                args.Definition.ClassName = "item_extralife";
+                args.Definition.SetResourceExplicit(ResourceType.Health, 0f);
+            }
+            return false; // kept (HealthMega now acts as an extralife; a real item_extralife kept as-is)
+        }
 
         return true; // filter out all other map items
+    }
+
+    /// <summary>
+    /// QC MUTATOR_HOOKFUNCTION(lms, ItemTouch): when a still-in-game player picks up an item_extralife (the
+    /// replaced HealthMega), grant <see cref="ExtraLives"/> lives, centerprint CENTER_EXTRALIVES, and consume the
+    /// item. Matches the item by ClassName (Base keys off <c>item.itemdef == ITEM_ExtraLife</c>).
+    /// </summary>
+    private bool OnItemTouch(ref MutatorHooks.ItemTouchArgs args)
+    {
+        Entity item = args.Item;
+        if (args.Toucher is not Player p || p.IsDead)
+            return false;
+        if (item.ClassName != "item_extralife" && item.NetName != "extralife")
+            return false;
+
+        if (GiveExtraLife(p) > 0)
+        {
+            NotificationSystem.Center(p, "EXTRALIVES", ExtraLives); // QC CENTER_EXTRALIVES
+            Api.Entities?.Remove(item);                              // QC Inventory_pickupitem + MUT_ITEMTOUCH_PICKUP
+        }
+        return false;
     }
 
     private static bool TryCvar(string name, out float value)

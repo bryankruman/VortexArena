@@ -27,12 +27,12 @@ public static class Platforms
     /// <summary><c>spawnfunc(func_plat)</c>.</summary>
     public static void PlatSetup(Entity this_)
     {
-        // QC has a q3compat branch here (spawnflags=0, dmg default 2, medplat sounds, CPMA sound_start/end +
-        // pt1_strt/pt1_end map-pack probe). This port layer has no live q3compat flag (CompatRemaps.cs:17), so
-        // there is no path that sets it; we keep it false to mirror the rest of the mapobject layer.
-        const bool q3compat = false;
+        // QC's q3compat branch (spawnflags=0, dmg default 2, medplat sounds). q3compat is the live per-map flag
+        // (CompatRemaps.IsQ3Compat), set from the .arena/.defi map-pack probe at boot — true on a Q3/Q3DF import.
+        // (The CPMA sound_start/sound_end + pt1_strt/pt1_end map-pack file probe stays a documented gap — it needs
+        // GetField_fullspawndata / FindFileInMapPack, unavailable headless; the medplat default still applies.)
+        bool q3compat = CompatRemaps.IsQ3Compat;
 
-#pragma warning disable CS0162 // unreachable q3compat branch — kept to document the Base algorithm
         if (q3compat)
         {
             this_.SpawnFlags = 0;           // Q3 plats have no spawnflags
@@ -42,7 +42,6 @@ public static class Platforms
         {
             this_.Dmg = 10000f;
         }
-#pragma warning restore CS0162
 
         if (this_.Dmg != 0f && string.IsNullOrEmpty(this_.Message))
             this_.Message = "was squished";
@@ -69,10 +68,8 @@ public static class Platforms
 
         this_.Blocked = PlatCrush;
 
-#pragma warning disable CS0162 // unreachable q3compat default (see q3compat const above)
         if (this_.Speed == 0f) this_.Speed = q3compat ? 200f : 150f;
         if (this_.Lip == 0f) this_.Lip = q3compat ? 8f : 16f;
-#pragma warning restore CS0162
         if (this_.Height == 0f) this_.Height = this_.Size.Z - this_.Lip;
 
         // pos1 = top (spawn), pos2 = pos1 lowered by height.
@@ -82,10 +79,14 @@ public static class Platforms
 
         MapMover.IndexRegister(this_);
 
+        this_.Reset = PlatReset; // QC plat.qc: this.reset = plat_reset (round-restart re-arm)
         PlatReset(this_);
 
         // The "start moving" trigger that detects a creature standing on the plat (QC plat_delayedinit).
-        SpawnInsideTrigger(this_);
+        // QC: Q3 uses only a .targetname truth check to decide whether to spawn the inside trigger — a TARGETED
+        // Q3/Q3DF plat is driven by its trigger (plat_target_use) and gets no ride-detect volume (plat.qc:10-12).
+        if (!q3compat || string.IsNullOrEmpty(this_.TargetName))
+            SpawnInsideTrigger(this_);
     }
 
     /// <summary>
@@ -94,8 +95,9 @@ public static class Platforms
     /// </summary>
     public static void PlatReset(Entity this_)
     {
-        // No live q3compat flag in this layer (CompatRemaps.cs:17); mirror Base with it pinned false.
-        const bool q3compat = false;
+        // q3compat = the live per-map flag (set from the .arena/.defi probe). On a Q3/Q3DF import a TARGETED plat
+        // takes the ground-plat fork (start at the bottom, PlatTargetUse re-raises) instead of starting raised.
+        bool q3compat = CompatRemaps.IsQ3Compat;
 
         if (!string.IsNullOrEmpty(this_.TargetName) && !q3compat)
         {

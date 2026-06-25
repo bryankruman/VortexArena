@@ -60,6 +60,11 @@ public sealed class FirstPersonView
         /// <summary>True while the local player is Freeze-Tag frozen (QC STAT(FROZEN)). With cl_eventchase_frozen set
         /// this engages the event-chase third-person camera (QC MUTATOR_HOOKFUNCTION(cl_ft, WantEventchase)).</summary>
         public bool IsFrozen;
+
+        /// <summary>The view-origin recoil kick in Quake space (QC <c>view_punchvector</c>, decayed 30u/s). Added to
+        /// the rendered eye in FIRST PERSON ONLY (<c>vieworg += view_punchvector</c>, cl_player.qc:570 — inside the
+        /// non-chase branch), so it kicks the camera without skewing the aim. Suppressed while chase is active.</summary>
+        public NVec3 PunchOriginQuake;
     }
 
     /// <summary>
@@ -231,26 +236,54 @@ public sealed class FirstPersonView
     /// event-chase pull-back on death / third-person and the live zoom to the rendered fov.</summary>
     private void UpdateCamera(Camera3D camera, in ViewState st)
     {
+        float eyeZ = st.EyeHeightZ > 0f ? st.EyeHeightZ : EyeHeight;
+        NVec3 eyeQuake = st.OriginQuake + new NVec3(0f, 0f, eyeZ);
+
+        // QC cl_player.qc CalcRefdef: `if(autocvar_chase_active) vieworg = CSQCPlayer_ApplyChase(...)` runs the
+        // classic user third-person cam (chase_back/up/front/overhead/pitchangle). It takes precedence over the
+        // first-person + punch/bob branch, BUT the death/frozen event-chase cam (engaged via st.IsDead/IsFrozen)
+        // owns those special cases — so only run the classic chase when the host requested it AND no event-chase.
+        bool eventChaseWanted = WantEventChase(st);
+        bool classicChase = CameraMode == ChaseMode.Chase && !eventChaseWanted;
+
+        // The classic chase may rewrite the view angles (chase_overhead forces pitch = chase_pitchangle;
+        // chase_front flips the view to look back at the player). Resolve the final angles first, then build the
+        // camera basis from them so the orientation matches the chosen perspective.
+        NVec3 viewAngles = st.ViewAnglesQuake;
+        NVec3 camQuake;
+        if (classicChase)
+        {
+            ChaseActive = true;
+            _eventChaseRunning = false;
+            _eventChaseDistance = 0f;
+            camQuake = ApplyClassicChase(eyeQuake, ref viewAngles);
+        }
+        else
+        {
+            // Eye position in Quake space; the event-chase camera pulls back from the RAW player origin (lifted by
+            // cl_eventchase_viewoffset, not the eye) along -forward on death (or when the host forces third person).
+            // Returns the eye in first-person. Uses the (unmodified) view forward for the pull-back direction.
+            QMath.AngleVectors(viewAngles, out NVec3 efq, out _, out _);
+            camQuake = ApplyEventChase(st, eyeQuake, efq);
+
+            // QC cl_player.qc:570 `vieworg += view_punchvector` — the origin recoil kick is applied in the
+            // NON-chase (first-person) branch only, so a pulled-back third-person/death cam is never jolted.
+            if (!ChaseActive)
+                camQuake += st.PunchOriginQuake;
+        }
+
         // Orientation: derive the camera basis from the SAME Quake view vectors the sim and aiming use
         // (QMath.AngleVectors), converted axis-by-axis into Godot space. This guarantees the camera looks
         // exactly where movement goes and where AimForwardQuake shoots. Building it from a separate negated-yaw
         // Euler silently disagreed by a handedness flip (camera yaw and the wishdir yaw counter-rotated), so
         // WASD/aim drifted from the view — aligned only near a 45° heading. (Godot Basis(x,y,z) takes the
         // basis COLUMNS; the camera looks down its local -Z, so Z column = -forward.)
-        QMath.AngleVectors(st.ViewAnglesQuake, out NVec3 fq, out NVec3 rq, out NVec3 uq);
+        QMath.AngleVectors(viewAngles, out NVec3 fq, out NVec3 rq, out NVec3 uq);
         GVec3 right = Coords.ToGodot(rq);
         GVec3 up = Coords.ToGodot(uq);
         GVec3 fwd = Coords.ToGodot(fq);
         camera.GlobalBasis = new Basis(right, up, -fwd);
 
-        // Eye position in Quake space; the event-chase camera pulls back from the RAW player origin (lifted by
-        // cl_eventchase_viewoffset, not the eye) along -forward on death (or when the host forces third person).
-        // View_EventChase traces the box back so the camera doesn't clip walls. Returns the eye in first-person.
-        // Eye height follows the live view offset (lowers while crouched, QC STAT(PL_VIEW_OFS)/PL_CROUCH_VIEW_OFS);
-        // a 0 (unset) ViewState falls back to the static standing eye height.
-        float eyeZ = st.EyeHeightZ > 0f ? st.EyeHeightZ : EyeHeight;
-        NVec3 eyeQuake = st.OriginQuake + new NVec3(0f, 0f, eyeZ);
-        NVec3 camQuake = ApplyEventChase(st, eyeQuake, fq);
         camera.GlobalPosition = Coords.ToGodot(camQuake);
 
         // QC HUD_Contents samples pointcontents(view_origin) at the FINAL render origin (view.qc:1176) — the
@@ -271,12 +304,13 @@ public sealed class FirstPersonView
     /// smoothly (QC <c>eventchase_current_distance</c>) and box-tracing against the world so the camera stops
     /// short of geometry rather than clipping through it. Returns the eye unchanged in normal first-person.
     /// </summary>
-    private NVec3 ApplyEventChase(in ViewState st, NVec3 eyeQuake, NVec3 forwardQuake)
+    /// <summary>QC <c>WantEventchase</c> (view.qc): true when the death-cam (<c>cl_eventchase_death</c>) or the
+    /// Freeze-Tag frozen chase (<c>cl_eventchase_frozen</c>) should engage the pull-back camera. Separated from the
+    /// classic user <c>chase_active</c> cam so the two third-person geometries don't both run on the same frame.</summary>
+    private bool WantEventChase(in ViewState st)
     {
-        // QC WantEventchase (view.qc): cl_eventchase_death == 1 engages the chase IMMEDIATELY on death; == 2 (the
-        // SHIPPED default) waits until the corpse stops sliding (velocity == '0 0 0'), then LATCHES until respawn;
-        // == 0 disables the death chase. The local player keeps being simulated while dead, so Quake friction
-        // settles its velocity to exactly zero on the ground — making the QC velocity gate fire as intended.
+        // cl_eventchase_death == 1 engages immediately on death; == 2 (shipped default) waits until the corpse stops
+        // sliding (velocity == '0 0 0'), then LATCHES until respawn; == 0 disables the death chase.
         float chaseDeath = Cvar("cl_eventchase_death", 2f);
         bool deathChase = st.IsDead && (
             chaseDeath == 1f
@@ -284,7 +318,12 @@ public sealed class FirstPersonView
         // QC MUTATOR_HOOKFUNCTION(cl_ft, WantEventchase): while frozen in Freeze Tag, cl_eventchase_frozen pulls the
         // camera to third person so the encased player can see around themselves.
         bool frozenChase = st.IsFrozen && Cvar("cl_eventchase_frozen", 0f) != 0f;
-        bool wantChase = CameraMode != ChaseMode.None || deathChase || frozenChase;
+        return deathChase || frozenChase;
+    }
+
+    private NVec3 ApplyEventChase(in ViewState st, NVec3 eyeQuake, NVec3 forwardQuake)
+    {
+        bool wantChase = WantEventChase(st);
         ChaseActive = wantChase;
 
         if (!wantChase)
@@ -348,6 +387,91 @@ public sealed class FirstPersonView
             return tr.EndPos;
         }
         return target;
+    }
+
+    /// <summary>
+    /// The classic user third-person camera — port of <c>CSQCPlayer_ApplyChase</c> (cl_player.qc:453), engaged when
+    /// <c>chase_active</c> is set and the host requested <see cref="ChaseMode.Chase"/>. Pulls the camera back along
+    /// the view by <c>chase_back</c> and up by <c>chase_up</c> (the default branch), or — when
+    /// <c>chase_overhead</c> is set — flattens the pitch and drops an overhead cam sampling the lowest of a 5×5
+    /// trace grid. <c>chase_front</c> flips it to a frontal selfie view (only while spectating). Traces the world so
+    /// the camera stops short of geometry. Mutates <paramref name="viewAngles"/> for the overhead/front variants so
+    /// the caller's basis matches. Operates on the eye position <paramref name="v"/> (= QC vieworg post-smoothing).
+    /// </summary>
+    private NVec3 ApplyClassicChase(NVec3 v, ref NVec3 viewAngles)
+    {
+        // DarkPlaces engine defaults: chase_back 48, chase_up 24, chase_front 0, chase_overhead 0, chase_pitchangle 0.
+        float chaseBack = Cvar("chase_back", 48f);
+        float chaseUp = Cvar("chase_up", 24f);
+        bool chaseFront = Cvar("chase_front", 0f) != 0f;
+        bool chaseOverhead = Cvar("chase_overhead", 0f) != 0f;
+        // Spectating-only test (QC spectatee_status != -1): the local player chase (not spectating) treats this as
+        // false, so chase_front does nothing for one's own chase cam — matching the QC guard.
+        bool spectating = false;
+
+        if (chaseOverhead)
+        {
+            // QC: flatten pitch, sample a 5×5 grid of overhead trace destinations and keep the LOWEST ceiling hit.
+            viewAngles.X = 0f;
+            QMath.AngleVectors(viewAngles, out NVec3 forward, out _, out NVec3 up);
+
+            NVec3 BackUp(NVec3 ofs) => new(
+                v.X - forward.X * chaseBack + up.X * chaseUp + ofs.X,
+                v.Y - forward.Y * chaseBack + up.Y * chaseUp + ofs.Y,
+                v.Z - forward.Z * chaseBack + up.Z * chaseUp + ofs.Z);
+
+            NVec3 best = TraceEnd(v, BackUp(NVec3.Zero));
+            for (float ox = -16f; ox <= 16f; ox += 8f)
+                for (float oy = -16f; oy <= 16f; oy += 8f)
+                {
+                    NVec3 end = TraceEnd(v, BackUp(new NVec3(ox, oy, 0f)));
+                    if (best.Z > end.Z) best.Z = end.Z;
+                }
+            best.Z -= 8f;
+            viewAngles.X = Cvar("chase_pitchangle", 0f);
+            return best;
+        }
+
+        // Default branch: pull back along forward (negated, flipped for chase_front selfie) + lift by chase_up.
+        QMath.AngleVectors(viewAngles, out NVec3 fwd, out _, out _);
+        if (chaseFront && spectating)
+            fwd = -QMath.Normalize(fwd);
+
+        float cdist = -chaseBack - 8f; // QC trace "a little further" so it hits a surface consistently
+        NVec3 chaseDest = new(
+            v.X + fwd.X * cdist,
+            v.Y + fwd.Y * cdist,
+            v.Z + fwd.Z * cdist + chaseUp);
+
+        // QC traceline(v, chase_dest, MOVE_NOMONSTERS, NULL); then back off 8 along forward + 4 along the plane normal.
+        NVec3 endPos = chaseDest;
+        NVec3 planeNormal = NVec3.Zero;
+        if (Api.Services is not null)
+        {
+            TraceResult tr = Api.Trace.Trace(v, NVec3.Zero, NVec3.Zero, chaseDest, MoveFilter.WorldOnly, null);
+            endPos = tr.EndPos;
+            if (tr.Fraction < 1f) planeNormal = tr.PlaneNormal;
+        }
+        NVec3 result = new(
+            endPos.X + 8f * fwd.X + 4f * planeNormal.X,
+            endPos.Y + 8f * fwd.Y + 4f * planeNormal.Y,
+            endPos.Z + 8f * fwd.Z + 4f * planeNormal.Z);
+
+        if (chaseFront && spectating)
+        {
+            // QC: flip the view so the player looks at themselves — inverse pitch, yaw toward the (flipped) forward.
+            NVec3 newAng = QMath.VecToAngles(fwd);
+            viewAngles.X = -viewAngles.X;
+            viewAngles.Y = newAng.Y;
+        }
+        return result;
+    }
+
+    /// <summary>QC <c>traceline(start, end, MOVE_NOMONSTERS, NULL)</c> → trace_endpos; world-only line trace.</summary>
+    private static NVec3 TraceEnd(NVec3 start, NVec3 end)
+    {
+        if (Api.Services is null) return end;
+        return Api.Trace.Trace(start, NVec3.Zero, NVec3.Zero, end, MoveFilter.WorldOnly, null).EndPos;
     }
 
     // The dt of the latest UpdateView, so ApplyEventChase advances the smoothed distance against the same step.

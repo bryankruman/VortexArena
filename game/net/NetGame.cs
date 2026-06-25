@@ -2263,11 +2263,15 @@ public sealed partial class NetGame : Node3D
             {
                 _damageText.Camera = _camera;
                 Player? localPlayer = LocalServerPlayer;
+                // QC spectatee_status != -1 (playing or following a player → a meaningful view origin, so the
+                // close-range / out-of-view 2D heuristics may apply); a free-fly observer (IsObserving) always
+                // gets a world number.
+                bool canUse2d = _client is not null && !_client.IsObserving;
                 foreach (DamageTextEvent ev in dtm.DrainPending())
                 {
                     string wn = XonoticGodot.Common.Gameplay.Damage.DeathTypes.WeaponNetNameOf(ev.DeathType);
                     int colorKey = Weapons.ByName(wn) is { } w ? w.RegistryId : -1;
-                    _damageText.Add(ev, Coords.ToGodot(ev.Target.Origin), colorKey);
+                    _damageText.Add(ev, Coords.ToGodot(ev.Target.Origin), colorKey, canUse2d);
 
                     // Hit confirmation when the LOCAL player dealt the damage (not self-damage): the hitsound
                     // beep AND the crosshair hitmarker flash (QC HitSound + the crosshair hit indication). The
@@ -2281,8 +2285,19 @@ public sealed partial class NetGame : Node3D
             }
             if (Mutators.ByName("itemstime") is ItemstimeMutator itm && itm.IsEnabled)
             {
-                _fullHud.ItemsTime.Visible = true;
-                _fullHud.ItemsTime.SetItemTimes(itm.CurrentTimes);
+                // QC HUD_ItemsTime enable gate (itemstime.qc:293-296): with stock cvars (hud_panel_itemstime=2,
+                // sv_itemstime=1) an ALIVE player in a normal round sees NOTHING — only spectators (mode 1/2) and,
+                // in mode 2, also everyone during warmup or when sv_itemstime==2. STAT(ITEMSTIME) is modeled on
+                // the host as the live sv_itemstime tier (itm.Tier); spectatee_status / warmup_stage come off the
+                // local client. (Previously the panel was force-shown whenever the mutator was enabled.)
+                int panelMode = Mathf.RoundToInt(
+                    XonoticGodot.Game.Menu.MenuState.Cvars.GetFloat("hud_panel_itemstime"));
+                int spectatee = _client?.SpectateeStatus ?? 0;
+                bool warmup = _client?.MatchWarmup ?? false;
+                bool show = ItemsTimePanel.ShouldDraw(panelMode, spectatee, warmup, itm.Tier);
+                _fullHud.ItemsTime.Visible = show;
+                if (show)
+                    _fullHud.ItemsTime.SetItemTimes(itm.CurrentTimes);
             }
 
             // [T41] objective rings (QC view.qc HUD_Draw NADE_TIMER > CAPTURE_PROGRESS > REVIVE_PROGRESS): feed
@@ -2300,6 +2315,12 @@ public sealed partial class NetGame : Node3D
             // remote client has no LocalServerPlayer here so the rings stay hidden (the wepent props would be
             // the cross-client follow-up).
             UpdateCrosshairWeaponRings();
+
+            // [Wave5] in-vehicle HUD + aux lock crosshair (QC cl_vehicles.qc Vehicles_drawHUD / drawCrosshair +
+            // the TE_CSQC_VEHICLESETUP dispatch). On the host path the local Player carries the live vehicle link
+            // and the 0..100 stat mirror the descriptor Think writes each tick, so feed the VehicleHud panel
+            // straight from it (the cross-client VEHICLESTAT_* networking is the remote-client follow-up).
+            UpdateVehicleHud();
         }
 
         // Advance the announcer queue (play the next queued voice if the current one finished).
@@ -2582,6 +2603,14 @@ public sealed partial class NetGame : Node3D
             _client.ActiveWeaponId >= 0 ? XonoticGodot.Common.Gameplay.Weapons.ById(_client.ActiveWeaponId) : null;
         bool weaponZoom = activeWep is not null && activeWep.ZoomOnSecondary && BindTable.Attack2Held;
         _view.ZoomHeld = zoomActive && (BindTable.ZoomHeld || weaponZoom);
+
+        // QC cl_player.qc CalcRefdef: `if(autocvar_chase_active) vieworg = CSQCPlayer_ApplyChase(...)` — the classic
+        // user third-person camera (the menu Perspective radio binds chase_active 0/1, DialogSettingsGame:457,487).
+        // Engage the shared view's classic chase mode when chase_active != 0; the death/frozen event-chase still
+        // takes precedence inside FirstPersonView. (Negative chase_active is a DP debug split-screen; treat !=0 as on.)
+        _view.CameraMode = CvarOr(Api.Cvars, "chase_active", 0f) != 0f
+            ? Client.FirstPersonView.ChaseMode.Chase
+            : Client.FirstPersonView.ChaseMode.None;
 
         // Place the first-person camera at the predicted eye each frame (smooth even between snapshots, since
         // SendInput re-predicts every tick). C5: held until the first snapshot seeds the carrier — before that
@@ -2907,6 +2936,54 @@ public sealed partial class NetGame : Node3D
         }
     }
 
+    /// <summary>
+    /// Feed the in-vehicle HUD (QC <c>Vehicles_drawHUD</c> / <c>Vehicles_drawCrosshair</c> + the
+    /// <c>TE_CSQC_VEHICLESETUP</c> dispatch, common/vehicles/cl_vehicles.qc). On the host path the local
+    /// <see cref="Player"/> carries the live <c>.vehicle</c> link and the 0..100 stat mirror each descriptor
+    /// Think writes onto the pilot (<c>vehicle_health/shield/energy</c>), so this is the client-side feeder
+    /// the panel needs: pick the vehicle art set (ConfigureForVehicle), mirror the percentages (scaled to
+    /// 0..1, the QC <c>0.01 * STAT(...)</c>), and project the homing-lock target into an auxiliary lock
+    /// crosshair (SetAuxiliaryXhairLock). The cross-client VEHICLESTAT_* networking that would feed a pure
+    /// remote client is the follow-up; here the host-authoritative pilot state drives the panel directly.
+    /// </summary>
+    private void UpdateVehicleHud()
+    {
+        XonoticGodot.Game.Hud.VehicleHud hud = _fullHud.Vehicle;
+        Player? p = LocalServerPlayer;
+        Entity? veh = p?.Vehicle;
+
+        // Not piloting (on foot / observing / dead) → the hud_id == HUD_NORMAL exit case (hides + clears aux).
+        if (p is null || veh is null || p.IsDead || p.IsObserver)
+        {
+            if (hud.InVehicle)
+                hud.Exit();
+            return;
+        }
+
+        // TE_CSQC_VEHICLESETUP: select the art set from the descriptor NetName (re-shows the panel each time).
+        hud.ConfigureForVehicle((veh.VehicleDef?.NetName) switch
+        {
+            "raptor"    => XonoticGodot.Game.Hud.VehicleHud.VehicleHudKind.Raptor,
+            "spiderbot" => XonoticGodot.Game.Hud.VehicleHud.VehicleHudKind.Spiderbot,
+            "bumblebee" => XonoticGodot.Game.Hud.VehicleHud.VehicleHudKind.Bumblebee,
+            _           => XonoticGodot.Game.Hud.VehicleHud.VehicleHudKind.Racer,
+        });
+
+        // Mirror the pilot-side 0..100 percentages to the panel's [0,1] (QC 0.01 * STAT(VEHICLESTAT_*)).
+        hud.Health = Godot.Mathf.Clamp(p.VehicleHealth * 0.01f, 0f, 1f);
+        hud.Shield = Godot.Mathf.Clamp(p.VehicleShield * 0.01f, 0f, 1f);
+        hud.Energy = Godot.Mathf.Clamp(p.VehicleEnergy * 0.01f, 0f, 1f);
+        hud.Ammo1  = Godot.Mathf.Clamp(p.VehicleAmmo1 * 0.01f, 0f, 1f);
+        hud.Ammo2  = Godot.Mathf.Clamp(p.VehicleAmmo2 * 0.01f, 0f, 1f);
+
+        // Auxiliary lock-on crosshair (AuxiliaryXhair): the homing-lock target the vehicle is building/holding,
+        // projected from its Quake-space origin into Godot and tinted red→yellow→green by VehLockStrength.
+        if (veh.VehLockTarget is { } target && !target.IsFreed)
+            hud.SetAuxiliaryXhairLock(0, Coords.ToGodot(target.Origin), veh.VehLockStrength);
+        else
+            hud.ClearAuxiliaryXhair(0);
+    }
+
     /// <summary>Drain the networked match clock (NetControl.MatchState → ClientNet) into the TIMER panel each
     /// frame: GAMESTARTTIME / TIMELIMIT*60 / warmup, with "now" on the same server clock (LatestServerTime).
     /// The panel self-blanks until the first MatchState arrives, so this is safe to call every frame.</summary>
@@ -3169,6 +3246,32 @@ public sealed partial class NetGame : Node3D
             rt.RacePenaltyAccumulator = 0f;
             rt.RaceCheckpointTime = 0.0;
             if (cps.Visible) cps.Visible = false;          // CTS has no per-checkpoint split list
+
+            // QC race_SendStatus → cl_race.qc HUD_Mod_Race medal flash: when the LOCAL runner files a new record
+            // (Cts.FinishStage stamps LastRecordTime), raise the medal once — identical mapping to the Race branch
+            // (CTS forces g_race_qualifying=1, so its finish runs the same QC race_setTime → race_SendStatus path).
+            if (ReferenceEquals(cts.LastRecordPlayer, me) && cts.LastRecordTime > 0f
+                && cts.LastRecordTime != _lastFedRecordTime)
+            {
+                _lastFedRecordTime = cts.LastRecordTime;
+                XonoticGodot.Common.Gameplay.RaceRecordResult r = cts.LastRecord;
+                int status = r.Kind switch
+                {
+                    XonoticGodot.Common.Gameplay.RaceRecordKind.Fail => 0,
+                    _ when r.IsServerRecord => 3,                                            // newpos == 1
+                    XonoticGodot.Common.Gameplay.RaceRecordKind.NewImproved => 1,            // improved own rank → new time
+                    _ => 2,                                                                  // NewSet / NewBroken → new rank
+                };
+                rt.RaceStatus = status;
+                rt.RaceStatusName = me!.NetName;
+                rt.RaceStatusRank = status > 0 && r.NewPos > 0 ? CountOrdinal(r.NewPos) : "";
+                rt.RaceStatusRankIsMine = true;                                              // the local runner set it
+                rt.RaceStatusTime = cts.LastRecordTime + 5.0;                               // QC race_status_time = time + 5
+            }
+            else if (rt.RaceStatus >= 0 && rt.RaceStatusTime <= rt.Now)
+            {
+                rt.RaceStatus = -1; // QC: the flash expires after its 5s window
+            }
         }
         if (!rt.Visible) rt.Visible = true;
     }
@@ -3324,6 +3427,11 @@ public sealed partial class NetGame : Node3D
             _lastFedModeStatus = ms;
             _scoreboard.Title = ScoreboardTitle();
             _scoreboard.SetWireRows(sb, _client.LocalNetId, ms?.EliminatedNetIds); // grey-out (QC eliminatedPlayers)
+            // QC Scoreboard_Rankings_Draw: feed the networked race/CTS rankings (best-first (time, holder)) so the
+            // scoreboard's rankings block is live in race modes (empty otherwise → DrawRankings hides it). The local
+            // name (QC entcs_GetName(player_localnum)) drives the self-row highlight.
+            _scoreboard.SetRankings(sb.Rankings);
+            _scoreboard.RankingsSelfName = ResolveScoreboardName(_client.LocalNetId);
             FeedScoreboardHeader();
         }
         else if (sb is null)
@@ -4170,6 +4278,9 @@ public sealed partial class NetGame : Node3D
             // QC `view_angles += view_punchangle` (cl_player.qc): the recoil kick is added to the rendered VIEW
             // only — _viewAngles (the aim sent to the server) stays unpunched so shots still land on the crosshair.
             ViewAnglesQuake = _viewAngles + _client.PunchAngle,
+            // QC `vieworg += view_punchvector` (cl_player.qc:570): the origin recoil kick added to the rendered eye
+            // (first-person only — FirstPersonView suppresses it while chase/death-cam is active).
+            PunchOriginQuake = _client.PunchVector,
             IsDead = localDead,
             // QC STAT(FROZEN) → cl_ft WantEventchase: engage the third-person cam while Freeze-Tag frozen (host
             // path; the local Player carries the Frozen status effect). A pure remote client reads false here.

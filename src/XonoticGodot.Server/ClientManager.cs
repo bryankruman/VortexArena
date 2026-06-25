@@ -127,8 +127,23 @@ public sealed class ClientManager
     /// <summary>Fired after a successful (re)spawn (QC PutPlayerInServer tail) — alivetime start, view reset.</summary>
     public Action<Player>? OnClientSpawn { get; set; }
 
+    /// <summary>
+    /// Fired at the head of <see cref="Spawn"/>, BEFORE spawnpoint selection (QC the spawn_evalfunc / forced-spot
+    /// setup that runs ahead of SelectSpawnPoint). Lets the active gametype set a one-shot forced spawn
+    /// (<see cref="Player.SpawnPointTarg"/>) — e.g. Race returning a respawning racer to their last checkpoint.
+    /// </summary>
+    public Action<Player>? OnPreSpawn { get; set; }
+
     /// <summary>Fired before a client is removed (QC ClientDisconnect head) — finalize stats, <c>:part:</c>, cleanup.</summary>
     public Action<Player>? OnClientDisconnect { get; set; }
+
+    /// <summary>
+    /// QC <c>anticheat_spectatecopy</c> (the last line of server/client.qc <c>SpectateCopy</c>, client.qc:1837):
+    /// after the regular spectate mirror, a following observer's body angle inherits the spectatee's
+    /// evade-tracked view angle (<c>anticheat_div0_evade_v_angle</c>) instead of the raw angle. Wired by
+    /// <see cref="GameWorld"/> to <c>AntiCheat.SpectateCopy</c>; null = no override (raw angle stands).
+    /// </summary>
+    public Action<Player, Player>? SpectateAngleCopy { get; set; }
 
     /// <summary>
     /// [T39] Fired after a BOT client has connected and auto-joined (QC bot_clientconnect + havocbot_setupbot:
@@ -450,6 +465,13 @@ public sealed class ClientManager
         StatusEffectsCatalog.ClearAll(p);
 
         p.IsObserver = true;
+
+        // QC MUTATOR_HOOKFUNCTION(<mode>, MakePlayerObserver) (e.g. ctf_RemovePlayer): a player demoted to
+        // observer relinquishes any objective they hold — a CTF carrier drops the flag where they stand and any
+        // flag back-referencing them (pass sender/target, dropper) is cleared — so the objective can never stay
+        // stuck on a now-spectating player. Default is a no-op for non-objective modes.
+        _match.GameType?.OnPlayerRemoved(p);
+
         p.Spectatee = null;
         p.SpectateeStatus = 0;
         p.FragsStatus = Player.FragsSpectator;   // QC RES_HEALTH/.frags = FRAGS_SPECTATOR (scoreboard sentinel)
@@ -541,7 +563,7 @@ public sealed class ClientManager
     /// following observer so the observer's own owner-state snapshot — which the client renders the camera + HUD
     /// from — tracks the watched player.
     /// </summary>
-    private static void SpectateCopy(Player spectator, Player target)
+    private void SpectateCopy(Player spectator, Player target)
     {
         spectator.Origin = target.Origin;
         spectator.Velocity = target.Velocity;
@@ -551,6 +573,11 @@ public sealed class ClientManager
         spectator.SetResourceExplicit(ResourceType.Health, target.GetResource(ResourceType.Health));
         spectator.SetResourceExplicit(ResourceType.Armor, target.GetResource(ResourceType.Armor));
         spectator.ActiveWeaponId = target.ActiveWeaponId;
+
+        // QC SpectateCopy tail (server/client.qc:1837): anticheat_spectatecopy(this, spectatee) overrides the
+        // observer's body angle with the spectatee's evade-tracked view angle. Runs last so it wins over the
+        // raw .Angles copy above; no-op until the host wires it.
+        SpectateAngleCopy?.Invoke(spectator, target);
     }
 
     /// <summary>
@@ -584,6 +611,9 @@ public sealed class ClientManager
         // which applies the ACTIVE_ACTIVE spawnpoint gate — so pass targetCheck:true here (inert on stock maps where
         // every spot is active; needed once Onslaught control-point deactivation toggles spot.active).
         EnsureTeamSpawnsRequested();
+        // QC: the gametype's spawn_evalfunc / forced-spot setup runs before SelectSpawnPoint. Race uses this to
+        // redirect a respawning racer back to their last passed checkpoint (race_respawn_spotref).
+        OnPreSpawn?.Invoke(p);
         SpawnPoint? sp = SpawnSystem.SelectSpawnPoint(p, LivePlayers(), targetCheck: true);
         if (sp is null)
         {
@@ -644,6 +674,12 @@ public sealed class ClientManager
         StatusEffectsCatalog.ClearAll(p);
 
         OnClientDisconnect?.Invoke(p); // §5 disconnect hooks (finalize stats, :part:, voter/timeout cleanup)
+
+        // QC MUTATOR_HOOKFUNCTION(<mode>, ClientDisconnect) (e.g. ctf_RemovePlayer): let the active gametype
+        // relinquish any objective this leaving player holds — a CTF carrier drops the flag where they stand and
+        // every flag back-referencing them (pass sender/target, dropper) is cleared — BEFORE the roster removal
+        // below, so the drop can still see the player. Default is a no-op for non-objective modes.
+        _match.GameType?.OnPlayerRemoved(p);
 
         _clients.RemoveAt(idx);
         _players.Remove(p);

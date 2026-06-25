@@ -19,7 +19,8 @@ namespace XonoticGodot.Common.Gameplay;
 ///  - smallest-team assignment on join (<see cref="TeamBalance"/>);
 ///  - per-team keys with a carrier (<see cref="KeyState"/>), assigned by pickup
 ///    (<see cref="AssignKey"/>, QC kh_Key_AssignTo);
-///  - the all-keys-on-one-team capture check (<see cref="CheckCapture"/>, QC kh_Key_AllOwnedByWhichTeam)
+///  - the all-keys-on-one-team capture check (<see cref="AllOwnedByWhichTeam"/> →
+///    <see cref="CheckCaptureGeometry"/>, QC kh_Key_AllOwnedByWhichTeam → kh_Key_Think)
 ///    awarding the team the capture SCORE + KH_CAPS and resetting the keys;
 ///  - point-limit + lead-limit win condition (GameRules_limit_score → fraglimit).
 ///
@@ -300,7 +301,11 @@ public sealed class KeyHunt : GameType
     /// <summary>
     /// QC kh_Key_AssignTo (pickup/collect): <paramref name="player"/> picks up <paramref name="key"/>,
     /// becoming its carrier. Awards the collect SCORE to the player's team (QC kh_Scores_Event "collect").
-    /// Then checks whether this completes an all-keys capture for the player's team.
+    /// Then re-evaluates the all-keys-in-range capture geometry.
+    ///
+    /// Base-faithful: there is NO instant capture-on-pickup path in QC — kh_Key_AssignTo only assigns/attaches;
+    /// the capture itself is decided by kh_Key_Think with the maxdist geometry. So this routes the capture check
+    /// through <see cref="CheckCaptureGeometry"/> (the live, maxdist-gated path), NOT a no-maxdist shortcut.
     /// Returns the captured team color code if a capture just happened, else <see cref="Teams.None"/>.
     /// </summary>
     public int AssignKey(Player player, KeyState key)
@@ -316,49 +321,12 @@ public sealed class KeyHunt : GameType
         if (key.Entity is not null)
             GametypeEntities.AttachToCarrier(key.Entity, player, new Vector3(0f, 0f, 20f));
 
-        return CheckCapture();
+        // QC: the capture is decided by the maxdist geometry in kh_Key_Think, not at pickup time.
+        return CheckCaptureGeometry();
     }
 
     /// <summary>QC kh_Key_AssignTo(key, NULL) on drop/death: the key becomes loose (no carrier).</summary>
     public void DropKey(KeyState key) => key.Carrier = null;
-
-    /// <summary>
-    /// QC kh_Key_AllOwnedByWhichTeam → kh_FinishCapture: if every key is currently carried by a player and
-    /// all those carriers are on the SAME team, that team scores a capture (SCORE += ScoreCapture, KH_CAPS
-    /// +1) and the keys are reset (dropped). Returns the capturing team, or <see cref="Teams.None"/>.
-    /// </summary>
-    public int CheckCapture()
-    {
-        if (Keys.Count == 0)
-            return Teams.None;
-
-        int owner = Teams.None;
-        foreach (var key in Keys.Values)
-        {
-            Player? c = key.Carrier;
-            if (c is null || c.IsDead)
-                return Teams.None; // a key is loose → no capture
-            int t = (int)c.Team;
-            if (owner == Teams.None)
-                owner = t;
-            else if (owner != t)
-                return Teams.None; // keys split across teams → no capture
-        }
-
-        if (owner == Teams.None)
-            return Teams.None;
-
-        // ----- capture! (QC kh_FinishCapture) -----
-        AddTeamScore(owner, (int)ScoreCapture);
-        // QC GameRules_scoring_add_team(key.owner, KH_CAPS, 1): credit the capture column to a carrier on the
-        // capturing team. Reset all keys to loose for the next round.
-        CreditCapture(owner);
-        foreach (var key in Keys.Values)
-            key.Carrier = null;
-
-        UpdateLeaderAndCheckLimit();
-        return owner;
-    }
 
     private bool OnDeath(ref DeathEvent ev)
     {

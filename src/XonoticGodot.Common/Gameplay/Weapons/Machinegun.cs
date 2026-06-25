@@ -22,6 +22,7 @@ public sealed class Machinegun : Weapon
     public struct Balance
     {
         public int   Mode;              // g_balance_machinegun_mode (0 or 1)
+        public bool  First;             // g_balance_machinegun_first (mode-0 secondary "snipe" enabled; else ATCK2 zooms)
 
         public float SustainedDamage;   // g_balance_machinegun_sustained_damage
         public float SustainedSpread;   // g_balance_machinegun_sustained_spread
@@ -74,6 +75,7 @@ public sealed class Machinegun : Weapon
     public override void Configure()
     {
         Cvars.Mode = BalInt("g_balance_machinegun_mode", 1);
+        Cvars.First = BalBool("g_balance_machinegun_first", true); // bal-wep-xonotic.cfg: 1
 
         Cvars.SustainedDamage = Bal("g_balance_machinegun_sustained_damage", 10f);
         Cvars.SustainedSpread = Bal("g_balance_machinegun_sustained_spread", 0.03f);
@@ -163,18 +165,50 @@ public sealed class Machinegun : Weapon
         }
         else
         {
-            // mode 0: primary = single "first" shot, secondary (if first enabled) = a first-type snipe shot.
+            // mode 0: primary = a held-fire stream whose FIRST round is the more-powerful "first" shot and whose
+            // held continuation rounds are sustained shots; secondary (if first enabled) = a single first-type snipe.
             if (fire == FireMode.Primary)
             {
                 if (PrepareAttack(actor, slot, fire))
+                {
+                    // QC wr_think mode-0 primary: misc_bulletcounter=1 (=> first shot), W_MachineGun_Attack sets
+                    // ATTACK_FINISHED via first_refire, then weapon_thinkf(..., sustained_refire, ..._Attack_Frame)
+                    // hands the held-fire continuation to the self-rescheduling frame think below.
+                    st.MiscBulletCounter = 1;
                     AttackSingle(actor, slot, st, secondary: false);
+                    float rate = WeaponRateFactor();
+                    WeaponFireDriver.ScheduleThink(st, Cvars.SustainedRefire * rate,
+                        (pl, sl) => AttackFrame(pl, sl, pl.WeaponState(sl)));
+                }
             }
-            else if (fire == FireMode.Secondary)
+            else if (fire == FireMode.Secondary && Cvars.First)
             {
+                // QC wr_think mode-0 secondary gate: (fire & 2) && WEP_CVAR(first). When first==0 the ATCK2 is a
+                // zoom, not a fire mode (handled by ZoomOnSecondary), so the snipe shot is suppressed here.
                 if (PrepareAttack(actor, slot, fire))
+                {
+                    st.MiscBulletCounter = 1;
                     AttackSingle(actor, slot, st, secondary: true);
+                }
             }
         }
+    }
+
+    // METHOD(MachineGun, wr_zoom/wr_zoomdir) — common/weapons/weapon/machinegun.qc:406/431. ATTACK2 is a zoom
+    // (not a fire mode) when the active mode's secondary fire is disabled: mode 1 with burst==0, or mode 0 with
+    // first==0. At the stock balance (mode 1, burst 3) this is false — ATTACK2 fires the burst.
+    public override bool ZoomOnSecondary
+        => (Cvars.Mode == 1 && Cvars.Burst <= 0f) || (Cvars.Mode == 0 && !Cvars.First);
+
+    // METHOD(MachineGun, wr_aim) — common/weapons/weapon/machinegun.qc:269. Bots press the long-range no-spread
+    // burst SECONDARY beyond a skill-scaled switch distance, and the spread-prone primary inside it:
+    //   close  (dist <  3000 - bound(0,skill,10)*200) -> ATCK  (primary)
+    //   far    (dist >= 3000 - bound(0,skill,10)*200) -> ATCK2 (secondary burst)
+    // Returning true routes the already-decided shot onto the secondary button (BotBrain).
+    public override bool BotWantsSecondary(float enemyDistance, float skill, ref BotAimState ctx)
+    {
+        float switchDistance = 3000f - QMath.Clamp(skill, 0f, 10f) * 200f;
+        return enemyDistance >= switchDistance;
     }
 
     // QC the MachineGun refire is mode/burst-specific (no _primary_/_secondary_ cvar naming): mode 1 primary
@@ -264,23 +298,62 @@ public sealed class Machinegun : Weapon
     private float CrouchSpreadMod(Entity actor)
         => (actor.IsDucked && actor.OnGround) ? Cvars.SpreadCrouchmod : 1f;
 
-    // W_MachineGun_Attack (mode 0) — a single first/sustained-type shot.
+    // W_MachineGun_Attack (mode 0) — one shot whose values are the powerful "first" round when
+    // misc_bulletcounter == 1 (the trigger pull / snipe) and the weaker sustained round otherwise (a held-fire
+    // continuation round, machinegun.qc:59/74-103). The caller sets misc_bulletcounter before calling.
     private void AttackSingle(Entity actor, WeaponSlot slot, WeaponSlotState st, bool secondary)
     {
-        // misc_bulletcounter == 1 selects the "first" (more powerful, less spread) values.
-        st.MiscBulletCounter = 1;
+        bool isFirst = st.MiscBulletCounter == 1;
+        float damage = isFirst ? Cvars.FirstDamage : Cvars.SustainedDamage;
+        float spread = isFirst ? Cvars.FirstSpread : Cvars.SustainedSpread;
+        float force = isFirst ? Cvars.FirstForce : Cvars.SustainedForce;
+        float ammo = isFirst ? Cvars.FirstAmmo : Cvars.SustainedAmmo;
+
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out _);
-        // fired credit: first_damage (QC machinegun.qc:59 — misc_bulletcounter==1 here, set just above).
+        // fired credit: the selected per-shot damage (QC W_SetupShot uses the same first/sustained pick).
         ShotInfo shot = WeaponFiring.SetupShot(actor, forward, WeaponFiring.MaxShotDistance, penetrateWalls: true,
-            wep: this, maxDamage: Cvars.FirstDamage);
+            wep: this, maxDamage: damage);
         Recoil(actor);
 
         // QC W_MachineGun_Attack applies spread_crouchmod to the first/sustained spread when ducked+grounded.
         // The mode-0 secondary "snipe" ORs HITTYPE_SECONDARY into the bullet deathtype (QC wr_think:
         // thiswep.m_id | HITTYPE_SECONDARY) so the kill reads MURDER_SNIPE; primary stays the plain tag.
-        FireOne(actor, shot, Cvars.FirstDamage, Cvars.FirstSpread * CrouchSpreadMod(actor), Cvars.FirstForce,
-            secondary: secondary);
-        actor.TakeResource(AmmoType, Cvars.FirstAmmo);
+        FireOne(actor, shot, damage, spread * CrouchSpreadMod(actor), force, secondary: secondary);
+        actor.TakeResource(AmmoType, ammo);
+
+        // QC W_MachineGun_Attack (machinegun.qc:68): every mode-0 round re-parks ATTACK_FINISHED at
+        // first_refire — the after-stream cooldown floor the held-fire frame loop runs above.
+        st.AttackFinished = Api.Clock.Time + Cvars.FirstRefire * WeaponRateFactor();
+    }
+
+    // W_MachineGun_Attack_Frame (machinegun.qc:121) — the mode-0 primary held-fire self-continuation. While the
+    // player keeps ATCK held and has ammo, increment misc_bulletcounter (so all rounds after the first use the
+    // sustained values) and fire a sustained-type round every sustained_refire; otherwise return to READY.
+    private void AttackFrame(Entity actor, WeaponSlot slot, WeaponSlotState st)
+    {
+        float rate = WeaponRateFactor();
+        // QC W_MachineGun_Attack_Frame: abort immediately if switching weapons (m_weapon != m_switchweapon).
+        bool switching = st.SwitchWeaponId >= 0 && st.SwitchWeaponId != st.CurrentWeaponId;
+        // QC: abort to ready if no longer holding fire (st.ButtonAttack is set live by the driver each tick).
+        bool held = st.ButtonAttack;
+        bool hasAmmo = actor.UnlimitedAmmo || (actor.Items & (1 << 0)) != 0 || CheckAmmoPrimary(actor);
+        if (switching || !held || !hasAmmo)
+        {
+            // QC weapon_thinkf(..., sustained_refire, w_ready): settle to READY after the fire anim.
+            WeaponFireDriver.ScheduleThink(st, Cvars.SustainedRefire * rate, static (pl, sl) =>
+            {
+                WeaponSlotState s2 = pl.WeaponState(sl);
+                if (s2.State == WeaponFireState.InUse)
+                    s2.State = WeaponFireState.Ready;
+            });
+            return;
+        }
+
+        ++st.MiscBulletCounter;            // QC: ++misc_bulletcounter (>1 now => sustained values)
+        AttackSingle(actor, slot, st, secondary: false);
+        // QC weapon_thinkf(..., sustained_refire, W_MachineGun_Attack_Frame): keep streaming.
+        WeaponFireDriver.ScheduleThink(st, Cvars.SustainedRefire * rate,
+            (pl, sl) => AttackFrame(pl, sl, pl.WeaponState(sl)));
     }
 
     // fireBullet_falloff with the machinegun's solid penetration + force.

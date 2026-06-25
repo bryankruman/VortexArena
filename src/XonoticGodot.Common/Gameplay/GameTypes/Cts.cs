@@ -93,6 +93,10 @@ public sealed class Cts : GameType
     public RaceRecordResult LastRecord { get; private set; }
     public Player? LastRecordPlayer { get; private set; }
 
+    /// <summary>Absolute sim time of the most recent finish-time record attempt (QC race_SendStatus event time;
+    /// the HUD medal flash fades over this + 5s). 0 = none yet. Lets the client raise the medal once.</summary>
+    public float LastRecordTime { get; private set; }
+
     // Pending finish-retracts: runner -> absolute sim time to send them back to start (g_cts_finish_kill_delay).
     private readonly Dictionary<Player, float> _retractAt = new();
 
@@ -275,13 +279,65 @@ public sealed class Cts : GameType
             if (rtime is not null) Scoring.GameScores.AddToPlayer(p, rtime, Scoring.GameScores.TimeEncode(runTime));
         }
 
-        // QC race_setTime: file the completion time into the persistent per-map CTS ranking.
-        LastRecord = RaceRecords.SetTime(MapName, RecordType, runTime, p.PersistentId, p.NetName);
+        // QC race_setTime (server/race.qc:373): file the completion time into the persistent per-map CTS ranking,
+        // stash the classified result, stamp the event time (the HUD medal flash + 5s window), and broadcast the
+        // matching INFO_RACE_* notification. CTS forces g_race_qualifying=1, so the QC race_SendTime finish branch
+        // always runs race_setTime → race_SendStatus for a CTS finish, exactly as for a qualifying Race lap.
+        string uid = p.PersistentId;
+        LastRecord = RaceRecords.SetTime(MapName, RecordType, runTime, uid, p.NetName);
         LastRecordPlayer = p;
+        LastRecordTime = now;
+        SendRecordNotification(p, runTime, uid, LastRecord);
 
         // QC Race_FinalCheckpoint: schedule the kill-delay re-teleport back to the start.
         ScheduleRetract(p, now);
         return runTime;
+    }
+
+    /// <summary>
+    /// QC race_setTime's <c>showmessage</c> branch (server/race.qc:373): fire the right INFO_RACE_* line for the
+    /// classified result. Encoded-time tokens (<c>t</c>, <c>oldrec</c>) mirror QC's TIME_ENCODE'd notification
+    /// floats. Shared shape with <c>Race.SendRecordNotification</c> — CTS reaches the same QC code via qualifying.
+    /// </summary>
+    private static void SendRecordNotification(Player p, float time, string uid, RaceRecordResult r)
+    {
+        if (Api.Services is null)
+            return;
+        string name = p.NetName;
+        int t = Scoring.GameScores.TimeEncode(time);
+
+        if (r.Kind == RaceRecordKind.Fail)
+        {
+            // QC: an anonymous run (uid == "") can't be ranked → NEW_MISSING_UID.
+            if (string.IsNullOrEmpty(uid))
+            {
+                NotificationSystem.Info("RACE_NEW_MISSING_UID", name, t);
+                return;
+            }
+            int oldrec = Scoring.GameScores.TimeEncode(r.OldRecordTime);
+            // QC: a previously-ranked player who didn't improve → FAIL_RANKED (their own old rank/time);
+            // an unranked time (worse than the worst ranked) → FAIL_UNRANKED (vs the last rank).
+            if (r.OldPos != 0 && (r.NewPos == 0 || r.OldPos < r.NewPos))
+                NotificationSystem.Info("RACE_FAIL_RANKED", name, r.OldPos, t, oldrec);
+            else
+                NotificationSystem.Info("RACE_FAIL_UNRANKED", name, RaceRecords.RankingsCnt, t, oldrec);
+            return;
+        }
+
+        // A genuine new record.
+        int prevRec = Scoring.GameScores.TimeEncode(r.OldRecordTime);
+        switch (r.Kind)
+        {
+            case RaceRecordKind.NewImproved: // improved your own ranked time
+                NotificationSystem.Info("RACE_NEW_IMPROVED", name, r.NewPos, t, prevRec);
+                break;
+            case RaceRecordKind.NewSet:      // a position that was previously empty
+                NotificationSystem.Info("RACE_NEW_SET", name, r.NewPos, t);
+                break;
+            case RaceRecordKind.NewBroken:   // broke someone else's record at this rank
+                NotificationSystem.Info("RACE_NEW_BROKEN", name, r.OldRecordHolder, r.NewPos, t, prevRec);
+                break;
+        }
     }
 
     /// <summary>The current persistent server record (rank 1) CTS time for this map (0 if none).</summary>

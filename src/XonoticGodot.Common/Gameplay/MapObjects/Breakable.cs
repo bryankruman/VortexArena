@@ -78,7 +78,21 @@ public static class Breakable
 
         MapMover.IndexRegister(this_);
 
+        // QC: this.reset = func_breakable_reset — re-arm on a round/match restart (fired by ResetMapObjects).
+        this_.Reset = BreakableReset;
+
         // reset to the starting look/behavior.
+        BreakableReset(this_);
+    }
+
+    /// <summary>
+    /// QC <c>func_breakable_reset</c> (breakable.qc:307): restore the spawn behaviour on a round restart —
+    /// a START_DISABLED breakable goes (back) to broken/non-solid, everything else is restored to a live solid.
+    /// (QC also restores team_saved + func_breakable_look_restore — the team field isn't carried at this layer
+    /// and the colormod look is presentation-only, so only the behave state is reproduced.)
+    /// </summary>
+    public static void BreakableReset(Entity this_)
+    {
         if ((this_.SpawnFlags & StartDisabled) != 0)
             BehaveDestroyed(this_);
         else

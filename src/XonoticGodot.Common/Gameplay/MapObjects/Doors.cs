@@ -67,6 +67,7 @@ public static class Doors
 
         this_.Blocked = DoorBlocked;
         this_.Use = DoorUse;
+        this_.Reset = DoorReset; // QC door.qc: this.reset = door_reset (round-restart re-arm)
         this_.Active = MapMover.ActiveActive;
 
         if ((this_.SpawnFlags & NonSolid) != 0)
@@ -126,6 +127,7 @@ public static class Doors
 
         this_.Blocked = DoorBlocked;
         this_.Use = DoorUse;
+        this_.Reset = DoorReset; // QC door.qc: this.reset = door_reset (shared with func_door)
         this_.Active = MapMover.ActiveActive;
 
         // pos1 = closed angles (zero), pos2 = open-angle delta (movedir).
@@ -194,6 +196,30 @@ public static class Doors
         // QC: a key door never auto-returns.
         if (this_.ItemKeys != 0)
             this_.Wait = -1f;
+    }
+
+    /// <summary>
+    /// QC <c>door_reset</c> (door.qc:648): the round-restart hook. Snap the door home (pos1 = closed),
+    /// stop it, restore STATE_BOTTOM + ACTIVE_ACTIVE, drop any pending think, and re-init the key bits.
+    /// For func_door_rotating the "home" is the closed ANGLE (pos1) rather than a translated origin.
+    /// </summary>
+    public static void DoorReset(Entity this_)
+    {
+        if (this_.ClassName == "door_rotating")
+            this_.Angles = this_.Pos1;           // rotating door: closed angle (origin doesn't translate)
+        else
+            MapMover.SetOrigin(this_, this_.Pos1); // sliding door: snap to the closed origin
+
+        this_.Velocity = Vector3.Zero;
+        this_.AVelocity = Vector3.Zero;
+        this_.MoverState = MapMover.StateBottom;
+        this_.Active = MapMover.ActiveActive;
+        this_.Think = null;
+        this_.NextThink = 0f;
+
+        // QC #ifdef SVQC: door_init_keys(this) — re-arm the gold/silver key bits.
+        DoorInitKeys(this_);
+        // (QC also raises SendFlags |= SF_TRIGGER_RESET for CSQC; door networking is latent/commented in Base.)
     }
 
     /// <summary>QC <c>door_init_startopen</c>: place at pos2, then swap pos1/pos2 so it runs in reverse.</summary>

@@ -247,6 +247,21 @@ public sealed class ClanArena : GameType
     public void SetRoster(IReadOnlyList<Player> roster) => _roster = roster;
 
     /// <summary>
+    /// QC <c>round_handler_Think</c> at cnt==0: <c>FOREACH_CLIENT((IS_PLAYER(it) || INGAME(it)),
+    /// GameRules_scoring_add(it, ROUNDS_PL, 1))</c> — credit every present player one ROUNDS_PL point as the
+    /// round begins. The port has no INGAME_JOINING state, so the playing roster (IS_PLAYER) is the present set.
+    /// Wired to the live <see cref="RoundHandler.OnRoundCounted"/> by the host (GameWorld CA branch).
+    /// </summary>
+    public void AwardRoundStartScore()
+    {
+        Scoring.ScoreField? roundsPl = Scoring.GameScores.Field("ROUNDS_PL");
+        if (roundsPl is null)
+            return;
+        for (int i = 0; i < _roster.Count; i++)
+            Scoring.GameScores.AddToPlayer(_roster[i], roundsPl, 1);
+    }
+
+    /// <summary>
     /// Advance the CA round handler one frame (QC round_handler_Think). Resolves the round when CA_CheckWinner
     /// produces a result. Call each tick after <see cref="SetRoster"/>.
     /// </summary>

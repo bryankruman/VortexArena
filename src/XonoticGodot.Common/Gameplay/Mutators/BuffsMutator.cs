@@ -1,6 +1,7 @@
 using System.Numerics;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Gameplay.Damage;
+using XonoticGodot.Common.Gameplay.Scoring;
 using XonoticGodot.Common.Math;
 using XonoticGodot.Common.Services;
 
@@ -221,7 +222,16 @@ public sealed class BuffsMutator : MutatorBase
             return;
 
         for (int i = 0; i < count; i++)
-            SpawnBuff(RandomBuff());
+        {
+            Entity e = SpawnBuff(RandomBuff());
+            // QC buffs_DelayedInit: each auto-seeded buff gets spawnflags|=64 (always randomize/relocate), so it
+            // relocates on every reset even with g_buffs_random_location=0. Then arm the per-frame lifetime think.
+            e.BuffAlwaysRelocate = true;
+            MaybeRandomize(e);
+            float lifetime = Api.Cvars.GetFloat("g_buffs_random_lifetime");
+            e.BuffLifetime = lifetime > 0f ? Api.Clock.Time + lifetime : 0f;
+            BuffThink(e);
+        }
     }
 
     /// <summary>
@@ -244,10 +254,30 @@ public sealed class BuffsMutator : MutatorBase
         return e;
     }
 
+    // QC ITEM_TOUCH_NEEDKILL(): the buff settled in lava/slime (NODROP) or on a sky surface; a zero-length trace
+    // at the item reports the surface it's resting on. NoDropContents (DPCONTENTS_NODROP) covers lava brushes.
+    private const int NoDropContents = unchecked((int)0x80000000);
+    private const int Q3SurfaceFlagSky = 0x4;
+
+    private static bool BuffInNeedKill(Entity item)
+    {
+        if (Api.Services is null) return false;
+        TraceResult tr = Api.Trace.Trace(item.Origin, Vector3.Zero, Vector3.Zero, item.Origin, MoveFilter.Normal, item);
+        return (tr.DpHitContents & NoDropContents) != 0 || (tr.DpHitQ3SurfaceFlags & Q3SurfaceFlagSky) != 0;
+    }
+
     // void buff_Touch(entity this, entity toucher) — apply the buff to a touching player.
     private void BuffTouch(Entity item, Entity toucher)
     {
         if (Api.Services is null || VehicleCommon.GameStopped) return;
+
+        // QC buff_Touch: a buff item that touches lava/slime/void/sky relocates instead of being picked up.
+        if (BuffInNeedKill(item))
+        {
+            BuffRespawn(item);
+            return;
+        }
+
         if (!item.BuffActive || item.BuffDef is null) return;
         if (!IsPlayer(toucher) || toucher.DeadState != DeadFlag.No) return;
         if (Api.Clock.Time < toucher.BuffShield) return; // recently dropped/replaced a buff
@@ -289,15 +319,88 @@ public sealed class BuffsMutator : MutatorBase
 
     private void ScheduleRespawn(Entity item)
     {
+        // QC buff_Think respawn branch: after the respawn cooldown, clear the owner, optionally re-randomize the
+        // type (only when g_buffs_randomize is on for this gametype), optionally relocate (g_buffs_random_location
+        // or spawnflags&64), and re-activate. The cooldown is counted by a recurring per-frame think so the
+        // lifetime timer (buff_Respawn) can also fire while the buff sits untouched.
         float cooldown = Cvar("g_buffs_cooldown_respawn", 3f);
-        item.NextThink = Api.Clock.Time + cooldown;
+        float ready = Api.Clock.Time + cooldown;
+        item.Owner = null;
+        item.NextThink = ready;
         item.Think = self =>
         {
-            self.Owner = null;
-            self.BuffDef = RandomBuff();
+            // Cooldown elapsed: re-arm the buff (QC buff_Think + buff_Reset gating).
+            MaybeRandomize(self);
+            MaybeRelocate(self);
             if (self.BuffDef?.Model is { } m) Api.Entities.SetModel(self, m);
             self.BuffActive = true;
+            BuffThink(self);
         };
+    }
+
+    // QC buff_Think (the steady per-frame think on an active buff): re-randomize/relocate the buff when its
+    // random_lifetime elapses without anyone touching it. Recurs every frame (QC sets nextthink = time).
+    private void BuffThink(Entity item)
+    {
+        item.NextThink = Api.Clock.Time;
+        item.Think = self =>
+        {
+            if (self.BuffActive && self.BuffLifetime != 0f && Api.Clock.Time >= self.BuffLifetime)
+                BuffRespawn(self);
+            BuffThink(self);
+        };
+    }
+
+    // QC buff_Reset randomize gate: re-roll the buff type only when g_buffs_randomize is enabled for the current
+    // gametype (bit 1 = non-team, bit 2 = team). Default 0 → never randomize (the port previously always did).
+    private static void MaybeRandomize(Entity item)
+    {
+        if (Api.Services is null) return;
+        int randomize = (int)Api.Cvars.GetFloat("g_buffs_randomize");
+        int gate = GameScores.Teamplay ? 2 : 1;
+        if ((randomize & gate) != 0)
+            item.BuffDef = RandomBuff();
+    }
+
+    // QC buff_Reset / buff_Think relocate gate: relocate only when g_buffs_random_location is set or the buff
+    // entity carries the always-relocate spawnflag (64). buffs_DelayedInit sets spawnflag 64 on each auto-seeded
+    // buff; the port marks auto-spawned buffs the same way via BuffActive seeding (see SpawnBuff).
+    private void MaybeRelocate(Entity item)
+    {
+        if (Api.Services is null) return;
+        bool alwaysRelocate = item.BuffAlwaysRelocate;
+        if (Api.Cvars.GetFloat("g_buffs_random_location") != 0f || alwaysRelocate)
+            BuffRespawn(item);
+    }
+
+    // QC buff_Respawn: relocate an untouched/expired buff to a fresh random map spot (with the SelectSpawnPoint
+    // fallback), launch it upward, unstick it, arm the lifetime timer, and play the relocation sound. The
+    // EFFECT_ELECTRO_COMBO x2 visual and WaypointSprite_Ping are omitted (no effect-spawn / buff-waypoint
+    // service yet — same omissions documented for the swapper swap and the buffs.waypoint feature).
+    private void BuffRespawn(Entity item)
+    {
+        if (Api.Services is null || VehicleCommon.GameStopped) return;
+
+        // QC: velocity = '0 0 200'; MoveToRandomMapLocation, else SelectSpawnPoint fallback (randomvec*100 + up).
+        // RandomMapLocation already folds in the SelectSpawnPoint fallback (it samples a player spawnpoint, or
+        // jitters around the home origin when the map has none).
+        Vector3 dest = BallEntity.RandomMapLocation(item.Origin);
+        Api.Entities.SetOrigin(item, dest);
+        item.Velocity = (Prandom.Vec() * 100f) + new Vector3(0f, 0f, 200f);
+
+        // QC: tracebox(origin, mins*1.5, maxs*1.5, origin, MOVE_NOMONSTERS, this) → setorigin(trace_endpos) to unstick.
+        TraceResult tr = Api.Trace.Trace(dest, item.Mins * 1.5f, item.Maxs * 1.5f, dest, MoveFilter.NoMonsters, item);
+        Api.Entities.SetOrigin(item, tr.EndPos);
+
+        item.MoveType = MoveType.Toss;
+        item.Angles = Vector3.Zero;
+
+        // QC: lifetime = time + g_buffs_random_lifetime (re-respawn if still untouched after this).
+        float lifetime = Api.Cvars.GetFloat("g_buffs_random_lifetime");
+        item.BuffLifetime = lifetime > 0f ? Api.Clock.Time + lifetime : 0f;
+
+        // QC: sound(this, CH_TRIGGER, SND_KA_RESPAWN, VOL_BASE, ATTEN_NONE).
+        SoundSystem.PlayOn(item, "KA_RESPAWN");
     }
 
     // =====================================================================================

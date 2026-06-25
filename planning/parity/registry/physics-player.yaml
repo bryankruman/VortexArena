@@ -10,7 +10,7 @@ summary:
     - "Movement-sound cadence is Base-faithful (g_footsteps gate + 0.3+random()*0.1 jitter + nextstep window + ladder bail all ported in Wave-2, re-confirmed live 2026-06-22); residuals: the lastground+0.2 gate is functionally inert because the port updates LastGroundTime BEFORE UpdateMovementSounds runs (so it reads now), and PM_check_hitground's active-grappling-hook bail is still unported (hook is not yet a shared Entity field, though the ButtonHook input bit now exists)."
     - "func_water waterlevel-from-volume override (physics.qc:280-299) is NOT computed in LadderMove, and the viewloc 1D-rail sub-cases (ladder wishvel.z = movement_old.x; water wishvel.z = -160 + a separate viewloc accel path) are not ported — inert on stock Xonotic maps but real Base branches."
     - "sys_phys_fixspeed cl_*speed stuffcmd absent (replaced by client-side wishmove scaling -- intended)."
-    - "g_physics_clientselect non-default presets (CPMA/Warsow/etc.) are wired (Resolve/FromValues/PresetProvider) but have NO golden-trace coverage; only the stock Xonotic preset is verified byte-exact."
+    - "g_physics_clientselect non-default presets (CPMA/Warsow/etc.) are wired (Resolve/FromValues/PresetProvider); the Warsow-bunny leg is now selectable+covered (Wave-5: added `warsow` to g_physics_clientselect_options + PhysicsPresetTests drive Move->AirBranch->AirAccelerate), but the OTHER presets (cpma/quake3/...) still lack full golden-trace coverage; only the stock Xonotic preset is golden-trace byte-exact."
 features:
   - id: physics-player.core.branch_selection
     name: "PM_Main branch selection (waterjump/PM_Physics-hook/fly/swim/ladder/jetpack/ground/air)"
@@ -198,17 +198,18 @@ features:
       timing: faithful
       presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps: []
     verification:
       - { kind: code, ref: "PMAccelerate.AirAccelerate vs player.qc:343-375", result: pass }
       - { kind: value, ref: "physics.cfg:33 sets g_physics_xonotic_warsowbunny_airforwardaccel 1.00001 (ALL presets set 1.00001); port Defaults=1.00001f", result: pass }
+      - { kind: code, ref: "AirBranch dispatch PlayerPhysics.cs:563 (WarsowBunnyTurnAccel != 0 && accelerating && move.y==0 && move.x!=0) == Base physics.qc:360; ServerNet installs PresetProvider:307 + CaptureResolved:344 -> FromValues -> Resolve -> AirBranch reaches AirAccelerate on the live tick", result: pass }
+      - { kind: test, ref: "PhysicsPresetTests.WarsowPreset_DrivesPM_AirAccelerate_ThroughTheLiveMove (warsow-resolved params via PredictionOverride -> PlayerPhysics.Move -> AirBranch dispatch matches a hand-computed PM_AirAccelerate step) + AirAccelerate_MatchesBaseFormula_BothBranches (leaf math pinned to player.qc:343-375, both branches)", result: pass }
     gaps:
-      - "g_physics_clientselect non-default presets (CPMA/Warsow/etc.) — which is the ONLY way this Warsow-bunny path goes live — are wired (Resolve/FromValues/PresetProvider) but have NO golden-trace coverage; only the stock Xonotic preset is verified byte-exact, so this path's behavior under a real preset is unproven."
+      - "FromValues decodes sv_aircontrol via the magnitude-fallback helper, so the warsow preset's genuine `aircontrol 0` (no CPM redirect) is wrongly read back as the 100 default on the per-peer wire vector — a trailing Aircontrol pass runs where Base's warsow set has none. Separate air-strafe-blends concern, noted here because it perturbs the warsow path; the warsowbunny accel leaf itself is byte-exact."
     confidence: high
-    notes: "CORRECTION vs draft: the draft claimed airforwardaccel had no .cfg default (Base reads 0 when unset) and flagged match:false — that was WRONG. physics.cfg sets g_physics_<preset>_warsowbunny_airforwardaccel 1.00001 for EVERY preset incl. xonotic, so the port's 1.00001f is exact (match:true, values:faithful, value-gap removed). DEAD at the stock preset (selected only when sv_warsowbunny_turnaccel != 0, default 0); ported for fidelity with warsow/xdf/cpma presets that set turnaccel — but those presets are not golden-trace-verified."
+    notes: "CORRECTION vs draft: the draft claimed airforwardaccel had no .cfg default (Base reads 0 when unset) and flagged match:false — that was WRONG. physics.cfg sets g_physics_<preset>_warsowbunny_airforwardaccel 1.00001 for EVERY preset incl. xonotic, so the port's 1.00001f is exact (match:true, values:faithful, value-gap removed). 2026-06-24 Wave-5: LIVENESS UPGRADED dead->live. The AirBranch dispatch was already wired (PlayerPhysics.cs:563 == physics.qc:360) and the per-player preset resolution chain (ServerNet PresetProvider/CaptureResolved -> FromValues -> Resolve, ClientNet PredictionOverride) is genuinely installed on the real tick; the ONLY block to reachability was that the port's g_physics_clientselect_options omitted `warsow` (the one stock preset with warsowbunny_turnaccel 9), so `cl_physics warsow` failed Physics_Valid and fell back to turnaccel 0. Added `warsow` to g_physics_clientselect_options (assets/.../physics.cfg:10) so the path is selectable, and added PhysicsPresetTests coverage that drives the full live Move->AirBranch->AirAccelerate dispatch with a warsow-resolved param block plus a leaf-math pin to Base. The global-cvar path (a server running sv_warsowbunny_turnaccel != 0 via physicsWarsow.cfg) was already live via FromCvars. Residual gap: the aircontrol-0 magnitude-fallback quirk above."
 
   - id: physics-player.jump.playerjump
     name: "PlayerJump (guards, jumpspeedcap, landing friction, jump velocity)"

@@ -324,6 +324,14 @@ public static class SpawnSystem
     public static SpawnPoint? SelectSpawnPoint(Player forPlayer, IReadOnlyList<Player> livePlayers,
         float teamCheck = AutoTeamCheck, bool targetCheck = false, bool anyPoint = false)
     {
+        // QC SelectSpawnPoint (spawnpoints.qc): `if (this.spawnpoint_targ) return this.spawnpoint_targ;` — a
+        // target_spawnpoint that was `use`d on this player FORCES the next spawn to that spot, short-circuiting
+        // all gathering/scoring/team-filtering. The redirect is one-shot: PutPlayerInServer clears it (client.qc:735),
+        // so it only applies to the immediately-following spawn. (The forced spot can still be embedded — Base
+        // doesn't re-filter it either.)
+        if (forPlayer.SpawnPointTarg is { IsFreed: false } forced)
+            return ToSpawnPoint(forced);
+
         var spots = GatherSpawnPoints();
         if (spots.Count == 0)
             return null;
@@ -392,16 +400,23 @@ public static class SpawnSystem
             if (spot.SpawnRestriction == 2) return (-1f, 0f); // real-clients-only spot
         }
 
-        // Spawn_FilterOutBadSpots (server/spawnpoints.qc): discard a spot where the player hull would spawn
-        // EMBEDDED IN SOLID. QC traceboxes the spot's player-box and drops it on trace_startsolid; without this
-        // an in-solid spawnpoint gets picked and the player is stuck (origin frozen, velocity blows up). Check
-        // at the SAME placement the player lands at — spot.origin + the PutPlayerInServer z-nudge.
+        // Spawn_FilterOutBadSpots (server/spawnpoints.qc): a spot where the player hull would spawn EMBEDDED IN
+        // SOLID. QC nudges such a spot OUT of solid at link time (relocate_spawnpoint: move_out_of_solid, gated by
+        // g_spawnpoints_auto_move_out_of_solid default 1) and keeps it; only when it can't get out at all (or the
+        // cvar is off) is the spot unusable. The port has no link-time relocation, so do the equivalent here at
+        // select time: trace the player box at the actual placement (spot.origin + the PutPlayerInServer z-nudge)
+        // and, on trace_startsolid, attempt the move-out-of-solid relocation, persisting it onto the spot's origin
+        // (the spot entity is re-read each selection, so the nudge sticks like Base's permanent link-time move).
         if (Api.Services is not null)
         {
             Vector3 place = spot.Origin + new Vector3(0f, 0f, 1f - PlayerMins.Z - 24f);
             TraceResult bad = Api.Trace.Trace(place, PlayerMins, PlayerMaxs, place, MoveFilter.Normal, forPlayer);
             if (bad.StartSolid)
-                return (-1f, 0f);
+            {
+                if (!CvarBool("g_spawnpoints_auto_move_out_of_solid", true)
+                    || !RelocateSpawnOutOfSolid(spot, forPlayer))
+                    return (-1f, 0f); // couldn't get out of solid (or relocation disabled) — drop the spot
+            }
         }
 
         // NOTE: the race target requirement (race_spawns ⇒ spot must have a target) and the assault
@@ -494,6 +509,42 @@ public static class SpawnSystem
         return list;
     }
 
+    /// <summary>
+    /// Port of <c>relocate_spawnpoint</c>'s move-out-of-solid nudge (server/spawnpoints.qc:121-145, the
+    /// <c>move_out_of_solid</c> branch) collapsed to select time: the spot's player-hull placement is embedded in
+    /// solid, so step it straight up (the common rest-in-floor case) until the box is clear and commit the new
+    /// origin onto the spot entity. Returns false when no clear position is found within the box-height search
+    /// range — QC's <c>objerror "could not get out of solid at all!"</c> case, where the spot is dropped.
+    /// The trace is the PutPlayerInServer placement box (player hull at spot.origin + the z-nudge), so a success
+    /// here guarantees the player lands clear.
+    /// </summary>
+    private static bool RelocateSpawnOutOfSolid(Entity spot, Player forPlayer)
+    {
+        if (Api.Services is null)
+            return false;
+
+        float zNudge = 1f - PlayerMins.Z - 24f;
+        // Search up to the player-box height + a small margin (QC move_out_of_solid expands by the box extent).
+        float maxRise = (PlayerMaxs.Z - PlayerMins.Z) + 16f;
+        for (float dz = 2f; dz <= maxRise; dz += 2f)
+        {
+            Vector3 newOrigin = spot.Origin + new Vector3(0f, 0f, dz);
+            Vector3 place = newOrigin + new Vector3(0f, 0f, zNudge);
+            TraceResult t = Api.Trace.Trace(place, PlayerMins, PlayerMaxs, place, MoveFilter.Normal, forPlayer);
+            if (!t.StartSolid)
+            {
+                // Commit the relocation onto the spot (QC setorigin in relocate_spawnpoint). Persists across
+                // selections because GatherSpawnPoints re-reads the same live spot entity each time.
+                if (Api.Services is not null)
+                    Api.Entities.SetOrigin(spot, newOrigin);
+                else
+                    spot.Origin = newOrigin;
+                return true;
+            }
+        }
+        return false; // QC: "could not get out of solid at all!" — spot is unusable
+    }
+
     private static SpawnPoint ToSpawnPoint(Entity spot)
     {
         // QC never spawns tilted even if the spot says to: angles_z = 0.
@@ -521,7 +572,7 @@ public static class SpawnSystem
         // reset. Without this, after the first death+respawn the player stayed flagged a corpse forever: it could
         // never re-enter PlayerDamage (so it couldn't die again or award a frag) and was bullet-penetrable.
         p.IsCorpse = false;
-        p.Alpha = 1f;                      // QC default_player_alpha — fully visible (un-gib)
+        p.Alpha = MutatorHooks.DefaultPlayerAlpha; // QC default_player_alpha (client.qc:788) — cloaked/running-guns lower this
         p.BallisticsDensity = 0f;          // QC live-player density (corpse density reset)
         p.RespawnFlags = RespawnFlag.None; // QC this.respawn_flags = 0
         p.RespawnTimeMax = 0f;
@@ -545,6 +596,11 @@ public static class SpawnSystem
 
         // --- respawn bookkeeping cleared (QC: death_time/respawn_flags/respawn_time = 0) ---
         p.RespawnTime = 0f;
+
+        // QC client.qc:735 `this.spawnpoint_targ = NULL;` — a target_spawnpoint forced-spawn redirect is
+        // consumed by THIS spawn (SelectSpawnPoint short-circuits to it), so clear it now or every subsequent
+        // respawn would keep snapping back to the same forced spot.
+        p.SpawnPointTarg = null;
 
         // --- think cleared: "players have no think function" (QC setthink func_null; nextthink 0) ---
         p.Think = null;
@@ -838,8 +894,11 @@ public static class SpawnSystem
         // GiveRandomWeapons (QC server/items.qc:440): in random-start-weapons modes give N extra weapons
         // drawn at random (without replacement) from g_random_start_weapons. Default count is 0, so this is a
         // no-op in stock DM. Deterministic via the spawn RNG (ADR-0010: no nondeterministic random()).
+        // QC client.qc:644 gates this on the ForbidRandomStartWeapons hook: arena-style mutators
+        // (instagib/overkill/melee_only/nix) return true and suppress the random-start grant so it can't add
+        // weapons on top of their forced loadout.
         int randomCount = (int)Cvar(CvarRandomStartCount, 0f);
-        if (randomCount > 0)
+        if (randomCount > 0 && !MutatorHooks.FireForbidRandomStartWeapons(p))
             GiveRandomWeapons(p, randomCount, CvarStr(CvarRandomStartWeapons));
 
         // start_items (QC: this.items = start_items) — the starting powerup/key bitfield. The base value is

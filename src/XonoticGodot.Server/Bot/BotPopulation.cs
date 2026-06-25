@@ -249,7 +249,9 @@ public sealed class BotPopulation
             minPlayers: Cvars.Float("minplayers"),
             minPlayersPerTeam: Cvars.Float("minplayers_per_team"),
             botNumber: Cvars.Float("bot_number"),
-            playerLimit: Cvars.Int("g_maxplayers"),
+            // QC bot_fixcount calls GetPlayerLimit() (server/client.qc:2155), which short-circuits to 2 for
+            // duel — so bot-fill respects the 1v1 cap, not the raw g_maxplayers.
+            playerLimit: _world.GameType is Duel ? Duel.PlayerLimit : Cvars.Int("g_maxplayers"),
             maxClients: MaxClients,
             currentBots: _currentBots,
             time: time,

@@ -370,6 +370,12 @@ public sealed class Bumblebee : Vehicle
                 if (ok) { g3.Enemy = te; g3.VehLockTime = Time + HealgunLockTime; }
             }
             if (g3.Enemy is not null) beamAim = g3.Enemy.Origin;
+
+            // Auxiliary heal-lock crosshair (QC bumblebee_pilot_frame draws aux xhair '0 0.75 0' over the locked
+            // target). The bumblebee's heal lock is binary (locked or not — no build-up ramp), so mirror it onto
+            // the shared VehLockTarget/VehLockStrength that the client aux-crosshair feeder already projects.
+            vehicle.VehLockTarget = g3.Enemy;
+            vehicle.VehLockStrength = g3.Enemy is not null ? 1f : 0f;
         }
 
         // --- aim the raygun turret (gun3) --------------------------------------------------------------
@@ -383,8 +389,17 @@ public sealed class Bumblebee : Vehicle
         if (firing && haveEnergy)
             FireRay(vehicle, player, beamAim, dt);
 
+        // Mirror the 0..100 vehicle stats onto the pilot for the in-vehicle HUD (QC bumblebee_pilot_frame:
+        // vehicle_health/shield/energy + vehicle_ammo1/2 = (gun1/2.vehicle_energy / cannon_ammo) * 100). The
+        // client feeder (NetGame.UpdateVehicleHud) reads these off the pilot each frame.
+        player.VehicleHealth = vehicle.GetResource(ResourceType.Health) / StartHealth * 100f;
+        player.VehicleShield = vehicle.VehicleShield / MaxShield * 100f;
+        player.VehicleEnergy = vehicle.VehicleEnergy / MaxEnergy * 100f;
+        player.VehicleAmmo1 = vehicle.VehGun1 is not null ? vehicle.VehGun1.VehicleEnergy / CannonAmmoMax * 100f : 0f;
+        player.VehicleAmmo2 = vehicle.VehGun2 is not null ? vehicle.VehGun2.VehicleEnergy / CannonAmmoMax * 100f : 0f;
+
         // TODO(port,client): qcsrc/common/vehicles/vehicle/bumblebee.qc bumblebee_pilot_frame — engine sound,
-        //                    networked BRG_* heal-beam visual, aux crosshair lock color, vehicle_ammo/HUD %.
+        //                    networked BRG_* heal-beam visual (remote spectators), the gunner cockpit HUD.
     }
 
     // METHOD(Bumblebee, vr_impact) — bumblebee.qc: a hard bounce jolts the pilot (vehicles_impact).
@@ -627,10 +642,11 @@ public sealed class Bumblebee : Vehicle
         TraceResult tr = Api.Trace.Trace(start, Vector3.Zero, Vector3.Zero, end, MoveFilter.Normal, vehicle);
         Entity? target = tr.Ent;
 
-        // BRG_* beam: the visible heal/damage ray from gun3 to where it landed (green heal vs hot damage).
+        // BRG_* beam: the visible heal/damage ray from gun3 to where it landed. Base's bumble_raygun_draw
+        // tints by colormod = (count ? '1 0 0' : '0 1 0') — pure red in damage mode, pure green when healing.
         // Emitted each tick the ray is held; the short overlapping beams read as one continuous ray.
         if (RaygunDamage)
-            EffectEmitter.TeBeam("damage_beam", start, tr.EndPos, new Vector3(1f, 0.5f, 0.2f));
+            EffectEmitter.TeBeam("damage_beam", start, tr.EndPos, new Vector3(1f, 0f, 0f));
         else
             EffectEmitter.TeHealBeam(start, tr.EndPos);
 

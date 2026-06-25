@@ -198,6 +198,10 @@ public sealed class SandboxMutator : MutatorBase
             e.Edict.TakeDamage = DamageMode.Aim;
             e.Edict.Solid = Solid.BBox;
             e.Edict.MoveType = MoveType.Toss;
+            // QC sandbox_ObjectSpawn settouch(e, sandbox_ObjectFunction_Touch): velocity-scaled material
+            // impact fx/sound fire when the object's physics movement touches another entity. The toucher
+            // may be any entity (player, world, another object) — only its velocity is read.
+            e.Edict.Touch = (self, other) => ObjectTouch(e, other?.Velocity ?? Vector3.Zero);
         }
 
         _objects.Add(e);
@@ -360,14 +364,18 @@ public sealed class SandboxMutator : MutatorBase
         // TODO[cross-file]: CSQCMODEL_AUTOUPDATE(e) — object networking seam.
     }
 
-    /// <summary>QC <c>sandbox_ObjectFunction_Touch</c>: rate-limited velocity-scaled material impact fx/sound.</summary>
-    public void ObjectTouch(SandboxObject e, SandboxObject toucher)
+    /// <summary>QC <c>sandbox_ObjectFunction_Touch</c>: rate-limited velocity-scaled material impact fx/sound.
+    /// The toucher may be any entity (player, world, another object) — only its velocity is read.</summary>
+    public void ObjectTouch(SandboxObject e, Vector3 toucherVelocity)
     {
         if (e.Material is null) return;
         if (e.TouchTimer > Now) return;     // don't execute each frame
         e.TouchTimer = Now + 0.1f;
 
-        float intensity = e.Velocity.Length() + toucher.Velocity.Length();
+        // the object's velocity is maintained on its live edict by the physics step (the SandboxObject
+        // mirror is only authoritative in headless/tests where there is no edict).
+        Vector3 objVel = e.Edict is not null ? e.Edict.Velocity : e.Velocity;
+        float intensity = objVel.Length() + toucherVelocity.Length();
         if (intensity != 0f) intensity /= 2f; // average the two velocities
         if (!(intensity >= MaterialVelMin)) return; // impact too weak
 

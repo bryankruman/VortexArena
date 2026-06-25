@@ -24,8 +24,13 @@ public readonly struct ScoreRowWire
     /// client lists it in the <c>Scoreboard_Spectators_Draw</c> block instead of the score table. The port has no
     /// NUM_SPECTATOR team sentinel (observers keep their last team color), so we carry the flag explicitly.</summary>
     public readonly bool IsSpectator;
-    public ScoreRowWire(int netId, int[] columns, string name = "", int team = 0, bool isSpectator = false)
-    { NetId = netId; Columns = columns; Name = name ?? ""; Team = team; IsSpectator = isSpectator; }
+    /// <summary>QC <c>pl.ping_packetloss</c> (scoreboard.qc:1073, SP_PL): the player's measured packet loss
+    /// quantized to a 0..255 byte (QC <c>min(ceil(ping_packetloss*255),255)</c>, server/world.qc:74). 0 = no loss
+    /// (or a bot / unknown). The client de-quantizes to a 0..1 fraction for the SP_PL column.</summary>
+    public readonly int PacketLossByte;
+    public ScoreRowWire(int netId, int[] columns, string name = "", int team = 0, bool isSpectator = false,
+        int packetLossByte = 0)
+    { NetId = netId; Columns = columns; Name = name ?? ""; Team = team; IsSpectator = isSpectator; PacketLossByte = packetLossByte; }
 }
 
 /// <summary>The parsed scoreboard (client side after <see cref="ScoreboardBlock.Deserialize"/>).</summary>
@@ -33,6 +38,11 @@ public sealed class ScoreboardWire
 {
     public readonly List<ScoreRowWire> Rows = new();
     public readonly List<(int team, int score)> Teams = new();
+    /// <summary>QC the race/CTS rankings table (Scoreboard_Rankings_Draw grecordtime[]/grecordholder[]): the
+    /// top ranked finish times for this map, each an int24 TIME_ENCODE'd time + the holder display name, in rank
+    /// order (best first). Empty in non-race modes. The C# stand-in for QC's RACE_NET_SERVER_RANKINGS stream
+    /// (client/main.qc TE_CSQC_RACE) — here it rides the existing scoreboard block instead of a separate one.</summary>
+    public readonly List<(int timeEncoded, string holder)> Rankings = new();
 }
 
 /// <summary>
@@ -69,8 +79,10 @@ public static class ScoreboardBlock
         return rows;
     }
 
-    /// <summary>Serialize the full scoreboard block: field-count + layout hash (sanity), the player rows, then the team totals.</summary>
-    public static void Serialize(BitWriter w, IReadOnlyList<ScoreRowWire> rows, IReadOnlyList<(int team, int score)> teamScores)
+    /// <summary>Serialize the full scoreboard block: field-count + layout hash (sanity), the player rows, the team
+    /// totals, then (race/CTS) the rankings table.</summary>
+    public static void Serialize(BitWriter w, IReadOnlyList<ScoreRowWire> rows, IReadOnlyList<(int team, int score)> teamScores,
+        IReadOnlyList<(int timeEncoded, string holder)>? rankings = null)
     {
         int n = GameScores.NetworkedFields.Count;
         w.WriteByte(n);
@@ -85,6 +97,7 @@ public static class ScoreboardBlock
             w.WriteString(row.Name);    // entcs name slice (QC entcs_GetName)
             w.WriteByte(row.Team & 0xFF); // entcs team slice (QC entcs_GetScoreTeam)
             w.WriteBool(row.IsSpectator); // QC pl.team == NUM_SPECTATOR (drives Scoreboard_Spectators_Draw)
+            w.WriteByte(row.PacketLossByte & 0xFF); // QC ping_packetloss byte (server/world.qc:74)
             int m = System.Math.Min(row.Columns.Length, n);
             for (int j = 0; j < n; j++)
                 w.WriteInt24(j < m ? row.Columns[j] : 0);
@@ -96,6 +109,18 @@ public static class ScoreboardBlock
         {
             w.WriteByte(teamScores[i].team & 0xFF);
             w.WriteInt24(teamScores[i].score);
+        }
+
+        // QC the race/CTS rankings (Scoreboard_Rankings_Draw grecordtime[]/grecordholder[]): best-first finish
+        // times for this map (TIME_ENCODE'd) + holder names. Empty (count 0) in non-race modes — steady-state is
+        // a single byte. Capped at 255 like the row/team blocks.
+        int rkCount = rankings?.Count ?? 0;
+        w.WriteByte(rkCount > 255 ? 255 : rkCount);
+        int rkc = System.Math.Min(rkCount, 255);
+        for (int i = 0; i < rkc; i++)
+        {
+            w.WriteInt24(rankings![i].timeEncoded);
+            w.WriteString(rankings[i].holder ?? "");
         }
     }
 
@@ -115,9 +140,10 @@ public static class ScoreboardBlock
             string name = r.ReadString();    // entcs name slice
             int team = r.ReadByte();          // entcs team slice
             bool isSpec = r.ReadBool();        // QC pl.team == NUM_SPECTATOR
+            int plByte = r.ReadByte();          // QC ping_packetloss byte
             var cols = new int[n];
             for (int j = 0; j < n; j++) cols[j] = r.ReadInt24();
-            if (!r.BadRead) sb.Rows.Add(new ScoreRowWire(netId, cols, name, team, isSpec));
+            if (!r.BadRead) sb.Rows.Add(new ScoreRowWire(netId, cols, name, team, isSpec, plByte));
         }
         int teams = r.ReadByte();
         for (int i = 0; i < teams; i++)
@@ -125,6 +151,13 @@ public static class ScoreboardBlock
             int team = r.ReadByte();
             int score = r.ReadInt24();
             if (!r.BadRead) sb.Teams.Add((team, score));
+        }
+        int rankings = r.ReadByte();
+        for (int i = 0; i < rankings; i++)
+        {
+            int t = r.ReadInt24();
+            string holder = r.ReadString();
+            if (!r.BadRead) sb.Rankings.Add((t, holder));
         }
         if (r.BadRead || !layoutOk) return null; // unreadable, or the client's column layout disagrees
         return sb;

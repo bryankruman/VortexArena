@@ -412,6 +412,22 @@ public sealed class TeamKeepaway : GameType
     private bool TeamHasBall(int team) => team != Teams.None && BallTeam == team;
 
     /// <summary>
+    /// QC sv_tka.qc MUTATOR_HOOKFUNCTION(tka, Bot_ForbidAttack): "if neither player has the ball then don't attack
+    /// unless the ball is on the ground". A bot is forbidden from attacking <paramref name="targ"/> when neither
+    /// it nor the target carries the ball AND the ball is currently held (by anyone) AND it is NOT the case that
+    /// g_tka_score_team is on and the bot's team holds the ball (in which case any kill scores, so attacking is fine).
+    /// With one ball, "ball is held" = a carrier exists.
+    /// </summary>
+    public bool ForbidBotAttack(Player bot, Player targ)
+    {
+        bool haveHeldBall = Carrier is not null;
+        bool targCarries = ReferenceEquals(Carrier, targ);
+        bool botCarries = ReferenceEquals(Carrier, bot);
+        bool teamHasBall = ScoreTeam && TeamHasBall((int)bot.Team);
+        return !targCarries && !botCarries && haveHeldBall && !teamHasBall;
+    }
+
+    /// <summary>
     /// The obituary handler — QC sv_tka.qc PlayerDies, applied per-team. A cross-team frag scores for the
     /// attacker's team when the attacker personally carries OR (g_tka_score_team) a teammate holds the ball:
     /// the team gains <c>g_tka_score_killac</c>, plus <c>g_tka_score_bckill</c> + a TKA_CARRIERKILLS credit when

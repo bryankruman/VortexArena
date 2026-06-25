@@ -12,7 +12,8 @@
 // DONTACCUMULATEDMG single-hit, NOSPLASH splash-immunity, and health == -1 fire-on-any-attack all
 // faithful), the button_setactive deactivate-while-pressed bookkeeping (wait_remaining/activation_time),
 // and the alternate (pressed) texture frame. Genuinely client-only: CSQC networking. The round-restart
-// button_reset re-arm is wired centrally in GameWorld.ResetMapObjects, not here.
+// button_reset re-arm is wired via `this_.Reset = ButtonReset` in ButtonSetup; GameWorld.ResetMapObjects
+// fires every map entity's .Reset on a round/match restart (QC reset_map_global).
 
 using System.Numerics;
 using XonoticGodot.Common.Framework;
@@ -38,6 +39,7 @@ public static class Buttons
 
         this_.Blocked = ButtonBlocked;
         this_.Use = ButtonUse;
+        this_.Reset = ButtonReset; // QC button.qc: this.reset = button_reset (round-restart re-arm)
 
         // Shootable button (health set, incl. -1 = fire on ANY attack): the per-hit event_damage shim
         // (button_damage) decides what a hit does. Otherwise touch. QC: button.qc spawnfunc.

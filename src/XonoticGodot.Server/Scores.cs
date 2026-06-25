@@ -94,6 +94,8 @@ public sealed class PlayerScoreRow
         BestKillStreak = 0;
         MultiKill = 0;
         MultiKillBest = 0;
+        HandicapAvgGivenSum = 0f;
+        HandicapAvgTakenSum = 0f;
         _lastKillTime = 0f;
     }
 
@@ -144,6 +146,16 @@ public sealed class PlayerScoreRow
 
     /// <summary>The best multikill this match (double/triple/... medal).</summary>
     public int MultiKillBest { get; internal set; }
+
+    /// <summary>
+    /// QC <c>.handicap_avg_given_sum</c> / <c>.handicap_avg_taken_sum</c> (server/handicap.qh:71-72): the
+    /// damage-weighted running sums for the XonStat <c>handicapgiven</c>/<c>handicaptaken</c> report events.
+    /// Accumulated each frame the player deals/takes damage as <c>realdmg * Handicap_GetTotalHandicap(...)</c>
+    /// (QC PlayerFrame, server/client.qc:2865/2871); divided by the total DMG/DMGTAKEN score column at report
+    /// time to yield the average handicap over the match.
+    /// </summary>
+    public float HandicapAvgGivenSum { get; internal set; }
+    public float HandicapAvgTakenSum { get; internal set; }
 
     internal float _lastKillTime;
 }
@@ -473,7 +485,7 @@ public sealed class Scores
     /// keeps the scoreboard's kill/death/etc. columns consistent across every gametype in one place.
     /// <paramref name="teamGame"/> selects the team-aware matrix.
     /// </summary>
-    public void Obituary(Player? attacker, Player victim, string deathType, bool teamGame)
+    public void Obituary(Player? attacker, Player victim, string deathType, bool teamGame, Entity? inflictor = null)
     {
         // QC reads CS(targ).killcount (the victim's spree) for the obituary's spree_end/spree_lost arg BEFORE it
         // resets it to 0 (server/damage.qc:480). Capture it now so EmitObituary renders "ending their N frag
@@ -529,7 +541,7 @@ public sealed class Scores
         // QC Obituary's notification + sound emission (server/damage.qc:268-477): kill feed, frag/typefrag/
         // teamkill centerprints, the killstreak announcer, and first blood. Runs AFTER the scoring above so the
         // attacker's KillStreak reflects this kill (the 3rd kill announces KILLSTREAK_03). T40.
-        EmitObituary(attacker, victim, deathType, teamGame, victimStreakBefore);
+        EmitObituary(attacker, victim, deathType, teamGame, victimStreakBefore, inflictor);
 
         // QC: a kill resets the victim's kill spree (they died).
         if (!ReferenceEquals(attacker, victim))
@@ -549,7 +561,7 @@ public sealed class Scores
     /// <c>CS(attacker).killcount</c>) and the victim's pre-reset streak (<paramref name="victimStreakBefore"/>,
     /// QC <c>CS(targ).killcount</c>). Mirrors the SUICIDE / MURDER(team vs enemy) / ACCIDENT branch order.
     /// </summary>
-    private void EmitObituary(Player? attacker, Player victim, string deathType, bool teamGame, int victimStreakBefore)
+    private void EmitObituary(Player? attacker, Player victim, string deathType, bool teamGame, int victimStreakBefore, Entity? inflictor = null)
     {
         // QC: deathlocation = autocvar_notification_server_allows_location ? NearestLocation(...) : "". The cvar
         // ships 0, so location is off; the s2loc/s3loc token collapses to "" for an empty string. T40.
@@ -560,6 +572,20 @@ public sealed class Scores
         // =======  SUICIDE / ACCIDENT-TRAP (QC: targ == attacker, or no player attacker)  =======
         if (attacker is null || ReferenceEquals(attacker, victim))
         {
+            // QC HURTTRIGGER msg_from_ent (server/damage.qc:281-290,442-451): a trigger_hurt (DEATH_VOID) that
+            // carries a custom inflictor.message routes to DEATH_SELF_VOID_ENT with the mapper string as s2 (the
+            // generic "you ended up in the wrong place" line is replaced). msg_from_ent = inflictor.message != "".
+            string? entMessage = MsgFromEnt(deathType, inflictor, murder: false);
+            if (entMessage is not null)
+            {
+                // DEATH_SELF_VOID_ENT row: (s1=victim, s2=mapper message, s3loc=location, spree_lost=killcount).
+                NotificationSystem.Send(NotifBroadcast.One, victim, MsgType.Multi, "DEATH_SELF_VOID_ENT",
+                    victimName, entMessage, deathloc, victimStreakBefore);
+                NotificationSystem.Send(NotifBroadcast.AllExcept, victim, MsgType.Info, "DEATH_SELF_VOID_ENT",
+                    victimName, entMessage, deathloc, victimStreakBefore);
+                return;
+            }
+
             // QC SUICIDE shape: WEAPON_*_SUICIDE / DEATH_SELF_* with (s1=netname, s2loc=location, spree_lost=killcount).
             string self = weapon
                 ? DeathMessages.SelectSuicideMessage(DeathTypes.WeaponNetNameOf(deathType), deathType)
@@ -638,6 +664,21 @@ public sealed class Scores
                 SendChoiceToOne(victim, "FRAGGED", attackerName, killCountToTarget, attackerHealth, attackerArmor, attackerPing);
             }
 
+            // QC HURTTRIGGER msg_from_ent (server/damage.qc:420-426): an enemy-credited trigger_hurt (DEATH_VOID)
+            // carrying a custom inflictor.message2 routes to DEATH_MURDER_VOID_ENT with the mapper string as s3
+            // (s4loc=location). msg_from_ent = (DEATH_ENT == HURTTRIGGER && inflictor.message2 != "").
+            string? entMurder = MsgFromEnt(deathType, inflictor, murder: true);
+            if (entMurder is not null)
+            {
+                // DEATH_MURDER_VOID_ENT row: (s1=victim, s2=attacker, s3=mapper message2, s4loc=location,
+                // f1=spree_end=victimStreak, f2=spree_inf=killCountToAttacker).
+                NotificationSystem.Send(NotifBroadcast.One, victim, MsgType.Multi, "DEATH_MURDER_VOID_ENT",
+                    victimName, attackerName, entMurder, deathloc, victimStreakBefore, killCountToAttacker);
+                NotificationSystem.Send(NotifBroadcast.AllExcept, victim, MsgType.Info, "DEATH_MURDER_VOID_ENT",
+                    victimName, attackerName, entMurder, deathloc, victimStreakBefore, killCountToAttacker);
+                return;
+            }
+
             // QC the kill feed (server/damage.qc:418): Obituary_WeaponDeath, falling back to Obituary_SpecialDeath.
             string murder = weapon
                 ? DeathMessages.SelectKillMessage(DeathTypes.WeaponNetNameOf(deathType), deathType)
@@ -687,6 +728,22 @@ public sealed class Scores
         30 => "KILLSTREAK_30",
         _ => null,
     };
+
+    /// <summary>
+    /// QC <c>msg_from_ent</c> (server/damage.qc:283,420,444): a <c>trigger_hurt</c> (the HURTTRIGGER /
+    /// <see cref="DeathTypes.Void"/> deathtype) routes the obituary through the <c>DEATH_*_VOID_ENT</c> rows when
+    /// its inflictor carries a mapper-authored death string — <c>.message</c> for the self/accident line, or
+    /// <c>.message2</c> for the murder line (an enemy who took the trigger over). Returns the custom string, or
+    /// <c>null</c> to fall back to the fixed <c>DEATH_*_VOID</c> line (non-void deathtype, no inflictor, or empty
+    /// field). Only HURTTRIGGER gets this treatment in QC; the port carries trigger_hurt as DEATH_VOID.
+    /// </summary>
+    private static string? MsgFromEnt(string deathType, Entity? inflictor, bool murder)
+    {
+        if (inflictor is null || DeathTypes.BaseOf(deathType) != DeathTypes.Void)
+            return null;
+        string msg = murder ? inflictor.Message2 : inflictor.Message;
+        return string.IsNullOrEmpty(msg) ? null : msg;
+    }
 
     /// <summary>QC APP_TEAM_NUM(team, …): the team color suffix (RED/BLUE/YELLOW/PINK) for a team color code.</summary>
     private static string TeamSuffix(float team) => (int)team switch
@@ -754,6 +811,21 @@ public sealed class Scores
     public void AddDamageTaken(Player p, float amount)
     {
         if (amount > 0f) Row(p).AddAux(ScoreField.DamageTaken, (int)amount);
+    }
+
+    /// <summary>
+    /// QC common/playerstats.qc:262-265 — the damage-weighted handicap averages for the XonStat report:
+    /// <c>given&lt;=0 ? 1 : handicap_avg_given_sum / given</c> (and likewise for taken), where the denominators
+    /// are the player's total DMG / DMGTAKEN score columns. Returns (1, 1) for an unregistered player.
+    /// </summary>
+    public (float given, float taken) HandicapReportAverages(Player p)
+    {
+        if (!_rows.TryGetValue(p, out PlayerScoreRow? row))
+            return (1f, 1f);
+        float given = row.DamageDealt;
+        float taken = row.DamageTaken;
+        return (given <= 0f ? 1f : row.HandicapAvgGivenSum / given,
+                taken <= 0f ? 1f : row.HandicapAvgTakenSum / taken);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -918,14 +990,22 @@ public sealed class Scores
     // same rounding QC's GameRules_scoring_add ends up with on whole-number balance damage).
     private void OnDamageDealtScored(Entity attacker, float realdmg)
     {
-        if (attacker is Player p && _rows.ContainsKey(p))
+        if (attacker is Player p && _rows.TryGetValue(p, out PlayerScoreRow? row))
+        {
+            // QC server/client.qc:2865 — damage-weighted avg-sum for the handicapgiven report, BEFORE the column add.
+            row.HandicapAvgGivenSum += realdmg * DamageSystem.GetTotalHandicap(p, receiving: false);
             AddDamageDealt(p, realdmg);
+        }
     }
 
     private void OnDamageTakenScored(Entity victim, float realdmg)
     {
-        if (victim is Player p && _rows.ContainsKey(p))
+        if (victim is Player p && _rows.TryGetValue(p, out PlayerScoreRow? row))
+        {
+            // QC server/client.qc:2871 — damage-weighted avg-sum for the handicaptaken report.
+            row.HandicapAvgTakenSum += realdmg * DamageSystem.GetTotalHandicap(p, receiving: true);
             AddDamageTaken(p, realdmg);
+        }
     }
 
     private bool _teamGameForBus;
@@ -941,7 +1021,7 @@ public sealed class Scores
         if (attacker is not null && !_rows.ContainsKey(attacker))
             attacker = null;
 
-        Obituary(attacker, victim, ev.DeathType, _teamGameForBus);
+        Obituary(attacker, victim, ev.DeathType, _teamGameForBus, ev.Inflictor);
         return false;
     }
 }

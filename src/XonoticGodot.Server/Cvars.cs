@@ -152,6 +152,9 @@ public static class Cvars
         new("g_balance_teams_skill_unranked_factor", "0.666", Save,
             "assumed skill of unranked clients as a fraction of the server-average skill"),
         new("g_changeteam_bantime", "30", Save),
+        // QC xonotic-server.cfg:446 g_balance_kill_delay: the countdown (seconds) between a `kill` command / team
+        // change and the player actually dying — the kill-indicator/announcer countdown reads this.
+        new("g_balance_kill_delay", "2", Save, "delay (seconds) before a `kill` command actually kills you"),
         // QC sv_teamnagger (xonotic-server.cfg:300): team-size gap threshold for the unbalanced-teams nag; g_warmup
         // won't end while it's tripped. The warmup badteams gate (ReadyCount) reads this via Teamplay.
         new("sv_teamnagger", "2", Save, "team size difference threshold for the unbalanced-teams nag (0 = off)"),

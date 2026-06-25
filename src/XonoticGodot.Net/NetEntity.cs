@@ -20,11 +20,13 @@ public enum NetEntityKind : byte
 }
 
 /// <summary>
-/// Per-entity boolean flags carried in one byte when the <see cref="EntityField.Flags"/> bit is delta'd. These
+/// Per-entity boolean flags carried in two bytes when the <see cref="EntityField.Flags"/> bit is delta'd. These
 /// mirror the CSQCModel property flags that affect interpolation/rendering rather than a transform value.
+/// (Widened from a single byte to a <see cref="ushort"/> when <see cref="UsingJetpack"/> = bit 8 was added — the
+/// original 8-bit range was full; <see cref="EntityStateCodec"/> writes/reads the field as a 16-bit value.)
 /// </summary>
 [Flags]
-public enum NetEntityFlags : byte
+public enum NetEntityFlags : ushort
 {
     None = 0,
     Teleported = 1 << 0, // CSQCMODEL_PROPERTY_TELEPORTED / IFLAG_TELEPORTED — cancel interpolation this update
@@ -35,6 +37,11 @@ public enum NetEntityFlags : byte
     ItemAnimate1 = 1 << 5, // QC ITS_ANIMATE1 — powerup/weapon pickup: client spins yaw +180°/s and bobs 10 + 8·sin(2t)
     ItemAnimate2 = 1 << 6, // QC ITS_ANIMATE2 — health/armor pickup: client spins yaw -90°/s and bobs 8 + 4·sin(3t)
     ItemGhost = 1 << 7,    // QC !ITS_AVAILABLE — a picked-up item awaiting respawn: client renders it faded (cl_ghost_items)
+    // QC `ITEMS_STAT(this) & IT_USING_JETPACK` (common/physics/player.qc:878): the player's jetpack is firing this
+    // tick. CSQC derives csqcmodel_modelflags |= MF_ROCKET from this networked items bit (player.qc:879), which
+    // drives the rocket trail AND the looping jetpack-fly sound (csqcmodel_hooks.qc:611/645). The port networks it
+    // here so the client can re-derive MF_ROCKET per player (ComposeForcedAppearance) instead of networking MF_*.
+    UsingJetpack = 1 << 8,
 }
 
 /// <summary>
@@ -221,7 +228,7 @@ public static class EntityStateCodec
         if ((mask & EntityField.Health) != 0) w.WriteShort(current.Health);
         if ((mask & EntityField.Armor) != 0) w.WriteShort(current.Armor);
         if ((mask & EntityField.Alpha) != 0) w.WriteByte(current.Alpha & 0xFF); // 0 = opaque (default); 1..254 = alpha/255
-        if ((mask & EntityField.Flags) != 0) w.WriteByte((byte)current.Flags);
+        if ((mask & EntityField.Flags) != 0) w.WriteUShort((ushort)current.Flags); // 16-bit since UsingJetpack=bit 8 widened it
         if ((mask & EntityField.Owner) != 0) w.WriteUShort(current.Owner);
         if ((mask & EntityField.Weapon) != 0) w.WriteShort(current.Weapon);
         if ((mask & EntityField.Model) != 0) w.WriteString(current.Model);
@@ -262,7 +269,7 @@ public static class EntityStateCodec
         if ((mask & EntityField.Health) != 0) s.Health = r.ReadShort();
         if ((mask & EntityField.Armor) != 0) s.Armor = r.ReadShort();
         if ((mask & EntityField.Alpha) != 0) s.Alpha = r.ReadByte();
-        if ((mask & EntityField.Flags) != 0) s.Flags = (NetEntityFlags)r.ReadByte();
+        if ((mask & EntityField.Flags) != 0) s.Flags = (NetEntityFlags)r.ReadUShort();
         if ((mask & EntityField.Owner) != 0) s.Owner = r.ReadUShort();
         if ((mask & EntityField.Weapon) != 0) s.Weapon = r.ReadShort();
         if ((mask & EntityField.Model) != 0) s.Model = r.ReadString();

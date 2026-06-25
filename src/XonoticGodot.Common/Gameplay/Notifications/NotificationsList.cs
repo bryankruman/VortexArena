@@ -61,8 +61,70 @@ public static class NotificationsList
         RegisterGeneratedMulti();
         RegisterGeneratedChoice();
 
+        // Apply the MSG_CENTER durcnt (duration/count) specs from Base all.inc onto the registered center
+        // notifications (the .Center builder defaults durcnt to "" == "0 0" == default panel time).
+        ApplyCenterDurcnt();
+
         // Deterministic CL/SV ordering + ids (mirrors QC REGISTRY_SORT(Notifications) at boot).
         Notifications.Sort();
+    }
+
+    /// <summary>
+    /// The MSG_CENTER durcnt ("DURATION COUNT") column from Base <c>common/notifications/all.inc</c> — the only
+    /// center notifications whose durcnt differs from the default "0 0" (which means "use the panel default
+    /// time, no countdown"). Token 0 is the display duration, token 1 the ^COUNT count; tokens are a literal
+    /// number, an <c>fN</c> float-arg reference, or <c>item_centime</c> (== notification_item_centerprinttime).
+    /// Resolved at centerprint time by <c>HudNotifications.ShowCenter</c>. Keyed by bare notification name.
+    /// </summary>
+    private static readonly (string Name, string Durcnt)[] CenterDurcnt =
+    {
+        ("COUNTDOWN_BEGIN",            "2 0"),
+        ("COUNTDOWN_GAMESTART",        "1 f1"),
+        ("COUNTDOWN_ROUNDSTART",       "1 f2"),
+        ("COUNTDOWN_ROUNDSTOP",        "2 0"),
+        ("COUNTDOWN_STOP_MINPLAYERS",  "4 0"),
+        ("DISCONNECT_IDLING",          "1 f1"),
+        ("INSTAGIB_DOWNGRADE",         "5 0"),
+        ("INSTAGIB_FINDAMMO",          "1 9"),
+        ("INSTAGIB_FINDAMMO_FIRST",    "1 10"),
+        ("ITEM_BUFF_DROP",             "item_centime 0"),
+        ("ITEM_BUFF_GOT",              "item_centime 0"),
+        ("ITEM_FUELREGEN_GOT",         "item_centime 0"),
+        ("ITEM_JETPACK_GOT",           "item_centime 0"),
+        ("ITEM_WEAPON_DONTHAVE",       "item_centime 0"),
+        ("ITEM_WEAPON_DROP",           "item_centime 0"),
+        ("ITEM_WEAPON_GOT",            "item_centime 0"),
+        ("ITEM_WEAPON_NOAMMO",         "item_centime 0"),
+        ("ITEM_WEAPON_PRIMORSEC",      "item_centime 0"),
+        ("ITEM_WEAPON_UNAVAILABLE",    "item_centime 0"),
+        ("KEYHUNT_ROUNDSTART",         "1 f1"),
+        ("KEYHUNT_SCAN",               "f1 0"),
+        ("MOVETOSPEC_IDLING",          "1 f1"),
+        ("MOVETOSPEC_REMOVE",          "1 f1"),
+        ("NIX_COUNTDOWN",              "1 f2"),
+        ("OVERTIME_CONTROLPOINT",      "5 0"),
+        ("SURVIVAL_HUNTER",            "5 0"),
+        ("SURVIVAL_SURVIVOR",          "5 0"),
+        ("TEAMCHANGE_RED",             "1 f1"),
+        ("TEAMCHANGE_BLUE",            "1 f1"),
+        ("TEAMCHANGE_YELLOW",          "1 f1"),
+        ("TEAMCHANGE_PINK",            "1 f1"),
+        ("TEAMCHANGE_SPECTATE",        "1 f1"),
+        ("TEAMCHANGE_SUICIDE",         "1 f1"),
+        ("TIMEOUT_BEGINNING",          "1 f1"),
+        ("TIMEOUT_ENDING",             "1 f1"),
+        ("VEHICLE_STEAL_SELF",         "4 0"),
+    };
+
+    /// <summary>Stamp the Base durcnt specs onto the registered center notifications (see <see cref="CenterDurcnt"/>).</summary>
+    private static void ApplyCenterDurcnt()
+    {
+        foreach ((string name, string durcnt) in CenterDurcnt)
+        {
+            Notification? n = Notifications.ByName(MsgType.Center, name);
+            if (n is not null)
+                n.Durcnt = durcnt;
+        }
     }
 
     // The four team suffixes used by the MULTITEAM_* expansions (NUM_TEAM_1..4).

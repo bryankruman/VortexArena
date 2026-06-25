@@ -109,6 +109,46 @@ public sealed class Rifle : Weapon
     // the cheapest per-shot cost is the floor below which a reload is pointless. Both modes cost 10 here.
     protected override float ReloadingAmmoMin() => MathF.Min(Primary.Ammo, Secondary.Ammo);
 
+    // METHOD(Rifle, wr_resetplayer) — common/weapons/weapon/rifle.qc: on (re)spawn reset the burst budget so a
+    // fresh life starts with a full window (rifle_accumulator = time - bursttime). QC resets it across every
+    // weapon slot; the port has no respawn-wide reset hook, so — like Vortex/OkNex's charge seed — this runs in
+    // wr_setup (switch-in, live-dispatched by WeaponFireDriver on raise/spawn). The accumulator is per-slot and
+    // self-corrects via the Bound() at the top of WrThink, so seeding the current slot here is faithful (inert
+    // at stock bursttime 0, where time - 0 == time already bounds it). A switch away+back re-seeds (benign).
+    public override void WrSetup(Entity actor, WeaponSlot slot)
+    {
+        actor.WeaponState(slot).RifleAccumulator = Api.Clock.Time - BurstTime;
+    }
+
+    // METHOD(Rifle, wr_aim) — common/weapons/weapon/rifle.qc. The "riflemooth" bot toggle: bots mostly fire the
+    // single hard-hitting primary, but occasionally flip to the 4-bullet scatter secondary at closer ranges.
+    //   * beyond 1000 units -> force primary (the secondary's spread is useless at range): clear the toggle.
+    //   * while preferring primary  -> 1% chance per decision to flip to secondary (random() < 0.01).
+    //   * while preferring secondary -> 3% chance per decision to flip back to primary (random() < 0.03).
+    // QC drives bot_aim with (1000000, 0, 0.001) — effectively "always in range, no spread tolerance, tiny
+    // think time"; the shot-aim itself is handled by the generic BotAim, so here we only own the pri/sec pick.
+    // QC presses the button for the CURRENT toggle state, then rolls the flip for the NEXT decision — so the
+    // returned button reflects the pre-flip state and the random() only changes which mode the bot prefers
+    // going forward. Returning true routes the shot onto the secondary button (BotBrain dispatch).
+    public override bool BotWantsSecondary(float enemyDistance, float skill, ref BotAimState ctx)
+    {
+        if (enemyDistance > 1000f)
+            ctx.SecondaryToggle = false; // vdist(... > 1000) -> bot_secondary_riflemooth = false
+
+        bool fireSecondary = ctx.SecondaryToggle; // the button QC presses THIS frame (pre-flip)
+        if (!ctx.SecondaryToggle)
+        {
+            if (ctx.Random01 < 0.01f) // random() < 0.01 -> start preferring secondary next time
+                ctx.SecondaryToggle = true;
+        }
+        else
+        {
+            if (ctx.Random01 < 0.03f) // random() < 0.03 -> go back to preferring primary next time
+                ctx.SecondaryToggle = false;
+        }
+        return fireSecondary;
+    }
+
     // METHOD(Rifle, wr_think) — common/weapons/weapon/rifle.qc
     public override void WrThink(Entity actor, WeaponSlot slot, FireMode fire)
     {

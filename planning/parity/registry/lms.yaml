@@ -7,7 +7,7 @@ summary:
   worst_gaps:
     - "LMS still plays as a round-elimination mode (Activate calls EnableRounds with default CA predicates), not Base's continuous per-player-lives mode. Wave-5 wired ApplyRespawnTiming (the per-lives respawn-denial + dynamic delay) LIVE at DeadPlayerThink (GameWorld.cs:2126), but DeadPlayerThink still early-returns when Rounds.IsRoundStarted (GameWorld.cs:2110), so the round gate — not lives — still decides who is held dead. The headline logic inversion is UNCHANGED; only the timing seam beneath it went live. DefaultCanRoundEnd still counts alive *teams*, degenerate in an FFA where every player is Team.None."
     - "Leader RENDER presentation still missing: no glow (EF_ADDITIVE|EF_FULLBRIGHT PlayerPowerups), no WP_LmsLeader radar waypoint, no HUD mod-icon (leader count + colored +N lives lead). The recycled REDALIVE/BLUEALIVE/OBJECTIVE_STATUS leader stats are still not exported (no source consumer of LeaderCount/LeadersVisible/LeadersLivesDiff outside LastManStanding.cs). WAVE-5 PARTIAL WIN: the VISIBLE_LEADER/VISIBLE_OTHER centerprints + the local 'no more lives left' InfoMessage now fire live."
-    - "Extra-life pickups + map/round reset still dead/missing: SpawnExtraLife has no caller (FilterItemDefinition keeps a HealthMega in place but never swaps it for an item_extralife per Base's FilterItem + lms_replace_with_extralife), and there is no reset_map_players/reset_map_global equivalent — LmsState is never reset between matches (compounded by the round-handler divergence whose round resets don't touch LmsState). Both dormant under default g_lms_extra_lives=0 / single-match listen play, but real gaps."
+    - "Extra-life pickups are now LIVE (Wave-5 finish): OnFilterItemDefinition folds in Base's FilterItem + lms_replace_with_extralife (retags a HealthMega edict to item_extralife in place, RES_HEALTH zeroed) and the new OnItemTouch hook (MutatorHooks.ItemTouch) grants g_lms_extra_lives lives + CENTER_EXTRALIVES on pickup. Map/round reset is STILL missing: no reset_map_players/reset_map_global equivalent — LmsState is never reset between matches (compounded by the round-handler divergence whose round resets don't touch LmsState). Extra-lives dormant under default g_lms_extra_lives=0; the reset gap remains real."
     - "WAVE-5 WINS (now live): the late-join/forfeit LIFECYCLE landed — CanJoin/AddPlayer are wired via Clients.GametypeJoinGate/GametypeOnJoin (GameWorld.cs:874-875 → JoinAllowed ClientManager.cs:418 + Join ClientManager.cs:249); RemovePlayer (rank reshuffle + last-forfeiter tracking + INFO_LMS_NOLIVES) fires from InfraClientDisconnect (GameWorld.cs:948); ApplyRespawnTiming (0-lives RESPAWN_SILENT denial + dynamic delay) fires from DeadPlayerThink (GameWorld.cs:2126); DriveLeaderVisibility (VISIBLE_LEADER/OTHER centerprint edges) fires from DriveGametypeFrame (GameWorld.cs:2042); the local-eliminated InfoMessage is driven by the networked LMS_RANK (NetGame.cs:3257)."
     - "WAVE-2 WINS (still live + faithful): fixed start loadout (200/200 + 60/320/160/180/0), forced weapon arena (most_available), regen/rot off, map-item suppression, dynamic vampire, and weapon-drop forbid are all subscribed in Activate() and fire on the real spawn/damage/item paths."
 
@@ -321,7 +321,7 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "FilterItemDefinition is faithful + live, but the HealthMega→extralife *replacement* (Base's separate FilterItem hook + lms_replace_with_extralife) is NOT performed: the port's FilterItemDefinition only KEEPS item_extralife/item_health_mega when g_powerups+g_lms_extra_lives are on; it never swaps a HealthMega edict for an item_extralife. Since g_lms_extra_lives defaults 0, both Base and port suppress everything, so the live default behavior matches — the divergence only surfaces with extra-lives enabled (see lms.item.extra_life)."
+      - "FilterItemDefinition is faithful + live. The HealthMega→extralife *replacement* (Base's separate FilterItem hook + lms_replace_with_extralife) is now ALSO folded into OnFilterItemDefinition (Wave-5 finish): a HealthMega is retagged in place to item_extralife (RES_HEALTH zeroed) and grants lives via the live MutatorHooks.ItemTouch path. Since g_lms_extra_lives defaults 0, both Base and port suppress everything, so the live default behavior matches (see lms.item.extra_life, now live)."
       - "DEVIATION (port mechanics): the port matches item definitions by ClassName/NetName string ('item_extralife'/'item_health_mega'/'item_healthmega') because the item registry isn't fully ported, vs Base comparing def == ITEM_ExtraLife/ITEM_HealthMega pointers. Same stand-in Mayhem/NIX use."
     verification:
       - { kind: code, ref: "OnFilterItemDefinition subscribed in Activate(); returns true (filter out) unless g_lms_items!=0 || g_pickup_items>0, with the powerups+extra_lives keep-exception — matches Base FilterItemDefinition. Fired live from StartItem.Spawn (StartItem.cs:103); a true return deletes the item.", result: pass }
@@ -518,27 +518,28 @@ features:
       - "common/gametypes/gametype/lms/sv_lms.qc:MUTATOR_HOOKFUNCTION(lms, ItemTouch)"
       - "common/gametypes/gametype/lms/sv_lms.qc:lms_replace_with_extralife"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:SpawnExtraLife"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:OnFilterItemDefinition (in-place HealthMega->item_extralife replacement)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:OnItemTouch (MutatorHooks.ItemTouch subscriber)"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:GiveExtraLife"
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:ExtraLifeTouch"
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:372 (MutatorHooks.FireItemTouch)"
     constants:
       - { name: "g_lms_extra_lives", base: "0", port: "read", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: na
-      presentation: unknown
+      presentation: faithful
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "SpawnExtraLife has no caller: the FilterItemDefinition replacement keeps a HealthMega/extralife in place but does NOT swap a HealthMega edict for an item_extralife (Base's separate FilterItem + lms_replace_with_extralife), so extra-life items never appear; GiveExtraLife/ExtraLifeTouch are consequently unreachable. UNCHANGED."
-      - "Base replaces ITEM_HealthMega in place and requires g_powerups + g_lms_extra_lives; the port spawns a free-standing item_extralife via GametypeEntities.SpawnObjective, a different spawn mechanism with no map-item gating."
+      - "Replacement is now wired live: OnFilterItemDefinition folds in Base's FilterItem + lms_replace_with_extralife by retagging the HealthMega edict in place (ClassName='item_extralife', RES_HEALTH zeroed) and keeping it; OnItemTouch (subscribed to MutatorHooks.ItemTouch, fired from ItemPickupRules.ItemTouch:372) then grants g_lms_extra_lives lives + CENTER_EXTRALIVES and consumes the item. Dormant under the default g_lms_extra_lives=0."
+      - "DEVIATION (port mechanics, not Base behavior): the replacement retags the EXISTING HealthMega edict in place instead of spawning a fresh ITEM_ExtraLife (Item_CopyFields + StartItem) — the port has no item_extralife Pickup def in the registry. End state (an extralife at the HealthMega's spot that grants lives on touch and re-touches as an extralife after respawn) is equivalent. SpawnExtraLife/ExtraLifeTouch remain as an unused alternate free-standing spawn API (GametypeEntities.SpawnObjective)."
     verification:
-      - { kind: grep, ref: "no caller of SpawnExtraLife/GiveExtraLife outside LastManStanding.cs", result: fail }
+      - { kind: code, ref: "OnItemTouch subscribed in Activate() (MutatorHooks.ItemTouch.Add); fired live from ItemPickupRules.ItemTouch:372 (FireItemTouch). OnFilterItemDefinition retags a HealthMega to item_extralife + zeroes RES_HEALTH when g_powerups && g_lms_extra_lives; OnItemTouch matches ClassName=='item_extralife' and calls GiveExtraLife → +lives + CENTER_EXTRALIVES + remove.", result: pass }
     confidence: high
-    notes: "Unchanged. logic partial: the spawn pathway diverges from Base's in-place HealthMega replacement. Grant logic + CENTER_EXTRALIVES coded but dead; default g_lms_extra_lives=0 anyway."
+    notes: "WAVE-5 (finish) FIX: dead->live, logic partial->faithful. The HealthMega->extralife replacement (previously the only-Base-side gap) is now folded into OnFilterItemDefinition and grants lives via the live MutatorHooks.ItemTouch path. Default g_lms_extra_lives=0 still suppresses everything (matches Base), so the live default behavior is unchanged; the divergence only surfaces with extra lives + powerups enabled, where it now works."
 
   - id: lms.scoreboard.columns
     name: "LMS scoreboard columns (lives + rank, sorted rank-then-lives)"

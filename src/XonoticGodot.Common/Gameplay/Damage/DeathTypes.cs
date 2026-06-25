@@ -104,6 +104,10 @@ public static class DeathTypes
     /// <summary>QC DEATH_GENERIC — unattributed damage.</summary>
     public const string Generic = "generic";
 
+    /// <summary>QC DEATH_CAMP — campcheck mutator anti-camp damage. Self-only (no murder line); the obituary
+    /// is the camp-specific DEATH_SELF_CAMP ("thought they found a nice camping ground" / "Die camper!").</summary>
+    public const string Camp = "camp";
+
     /// <summary>QC DEATH_MIRRORDAMAGE — teamdamage reflected back at the attacker.</summary>
     public const string MirrorDamage = "mirrordamage";
 

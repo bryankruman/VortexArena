@@ -220,12 +220,14 @@ public sealed class Fireball : Weapon
         Api.Entities.SetSize(proj, new Vector3(-16, -16, -16), new Vector3(16, 16, 16));
         Api.Entities.SetOrigin(proj, shot.Origin);
 
-        // Shootable fireball (event_damage -> W_Fireball_Damage) when health > 0.
-        if (Primary.Health > 0f)
-        {
-            proj.TakeDamage = DamageMode.Yes;
-            proj.Health = Primary.Health;
-        }
+        // Shootable fireball: QC W_Fireball_Attack1 sets takedamage = DAMAGE_YES and event_damage =
+        // W_Fireball_Damage UNCONDITIONALLY (health defaults to 0, but the fireball is still marked damageable).
+        // W_Fireball_Damage returns early when RES_HEALTH <= 0, so a stock 0-HP fireball dies on any hit without
+        // depleting — Projectiles.MakeShootable's ShootDown reproduces this exactly (its hp<=0 recursion guard
+        // returns immediately at default 0 HP). A server raising fireball_health then gets the real
+        // W_CheckProjectileDamage gate + RES_HEALTH subtraction + explode-on-deplete.
+        proj.TakeDamage = DamageMode.Yes;
+        proj.Health = Primary.Health;
 
         // W_SetupProjVelocity_PRI: velocity = w_shotdir * speed (spread normally 0).
         proj.Velocity = WeaponFiring.ProjectileVelocity(shot.Dir, Vector3.UnitZ, Primary.Speed, 0f, 0f, Primary.Spread);
@@ -240,10 +242,13 @@ public sealed class Fireball : Weapon
         proj.NextThink = Api.Clock.Time;
         // proj.use = W_Fireball_Explode_use: a map trigger/use detonates the fireball (directhit = the trigger).
         proj.Use = (self, activator) => Explode(self, activator);
-        // W_Fireball_Damage: a shootable fireball (when health > 0) explodes when its HP is depleted (cnt=1 so
-        // the resulting blast skips the BFG sweep, like a timed-out fireball).
-        if (Primary.Health > 0f)
-            proj.ProjectileDamage = (self, attacker) => { self.Cnt = 1; Explode(self, null); };
+        // W_Fireball_Damage: a shot-down fireball explodes when its HP is depleted (cnt=1 so the resulting blast
+        // skips the BFG sweep, like a timed-out fireball). MakeShootable installs the W_CheckProjectileDamage gate
+        // (exception -1, "no exceptions" — matching W_Fireball_Damage's W_CheckProjectileDamage(..., -1)) and the
+        // RES_HEALTH subtraction; this ProjectileDamage callback is the W_PrepareExplosionByDamage explode handler
+        // it fires at hp<=0.
+        proj.ProjectileDamage = (self, attacker) => { self.Cnt = 1; Explode(self, null); };
+        Projectiles.MakeShootable(proj, exception: -1f);
 
         // MUTATOR_CALLHOOK(EditProjectile, actor, proj) (fireball.qc W_Fireball_Attack1).
         var ep = new MutatorHooks.EditProjectileArgs(actor, proj);

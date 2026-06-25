@@ -33,6 +33,18 @@ public abstract partial class Monster : IRegistered
     /// </summary>
     public virtual float PainWindow => 0.34f;
 
+    /// <summary>
+    /// Per-monster MD3 frame-group start index for a logical animation phase (QC <c>mr_anim</c>: this monster's
+    /// <c>actor.anim_idle/walk/run/pain1/shoot/die1/die2</c> frame groups). Translating the shared
+    /// <c>MonsterState.Anim</c> phase into the concrete networked <c>Entity.Frame</c> here is what makes the
+    /// model actually play the named frame groups client-side (the frame is networked and the
+    /// <c>ModelAnimator</c> follows it, CSQCMODEL_AUTOUPDATE). <paramref name="die2"/> selects the landed-corpse
+    /// pose for monsters that split death into a falling (die1) + landed (die2) anim.
+    /// Returns <c>null</c> for descriptors that haven't declared their <c>mr_anim</c> table yet, leaving
+    /// <c>Entity.Frame</c> untouched (the movement-derived heuristic / frame 0 — no regression).
+    /// </summary>
+    public virtual float? AnimFrame(MonsterAnimPhase phase, bool die2) => null;
+
     /// <summary>Initialize a spawned monster entity.</summary>
     public virtual void Spawn(Entity e) { }
     /// <summary>Per-think AI step.</summary>
@@ -40,6 +52,12 @@ public abstract partial class Monster : IRegistered
     /// <summary>Attack a target.</summary>
     public virtual void Attack(Entity e, Entity target) { }
 }
+
+/// <summary>
+/// Logical monster animation phase, shared across descriptors (mirrors <c>MonsterAI.MonsterAnim</c>). Lives on
+/// the descriptor layer so a monster's <see cref="Monster.AnimFrame"/> can map it to a concrete MD3 frame group.
+/// </summary>
+public enum MonsterAnimPhase { Idle, Walk, Run, Attack, Pain, Death }
 
 /// <summary>Base turret descriptor (QC CLASS(Turret), common/turrets/). Registered into <see cref="Turrets"/>.</summary>
 public abstract partial class Turret : IRegistered

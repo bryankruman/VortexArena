@@ -47,6 +47,9 @@ public partial class ScoreboardPanel : HudPanel
         public readonly int Deaths;
         /// <summary>Ping in ms (QC SP_PING); &lt; 0 = unknown (bot / not networked).</summary>
         public readonly int Ping;
+        /// <summary>QC <c>pl.ping_packetloss</c> (SP_PL): the player's packet loss as a 0..1 fraction
+        /// (de-quantized from the networked byte). 0 = no loss (or bot / unknown) → the SP_PL cell is blank.</summary>
+        public readonly float PacketLoss;
         /// <summary>True if this row is the local player (highlighted). Set by the feeder or matched by name.</summary>
         public readonly bool IsLocal;
         /// <summary>True if this player is eliminated for the round (QC <c>pl.eliminated</c>, the networked
@@ -56,13 +59,14 @@ public partial class ScoreboardPanel : HudPanel
         public readonly int[]? Columns;
 
         public ScoreRow(string name, int score, int team = 0, int deaths = -1, int ping = -1,
-            bool isLocal = false, int[]? columns = null, bool eliminated = false)
+            bool isLocal = false, int[]? columns = null, bool eliminated = false, float packetLoss = 0f)
         {
             Name = name ?? "";
             Score = score;
             Team = team;
             Deaths = deaths;
             Ping = ping;
+            PacketLoss = packetLoss;
             IsLocal = isLocal;
             Eliminated = eliminated;
             Columns = columns;
@@ -233,6 +237,8 @@ public partial class ScoreboardPanel : HudPanel
                 int deaths = deathsF is not null && (uint)deathsF.RegistryId < cols.Length ? cols[deathsF.RegistryId] : -1;
                 _rows.Add(new ScoreRow(wr.Name, score, wr.Team, deaths, ping: -1,
                     isLocal: wr.NetId == localNetId, columns: cols,
+                    // QC pl.ping_packetloss: de-quantize the networked 0..255 loss byte to a 0..1 fraction.
+                    packetLoss: wr.PacketLossByte / 255f,
                     // QC pl.eliminated (NET_HANDLE ENT_CLIENT_ELIMINATEDPLAYERS, client/main.qc:819): flag the
                     // rows the round-status block marked eliminated so DrawRow greys them.
                     eliminated: eliminatedNetIds is not null && eliminatedNetIds.Contains(wr.NetId)));
@@ -574,7 +580,17 @@ public partial class ScoreboardPanel : HudPanel
                 return new FieldText(r.Ping.ToString(), PingColor(r.Ping));
 
             case ColumnKind.Pl:
-                return new FieldText("", white); // packet-loss not networked yet (QC SP_PL) — blank
+            {
+                // QC SP_PL (scoreboard.qc:1070-1082): blank when there's no loss; else show ceil(pl*100),
+                // red-tinted by severity ('1 0.5 0.5' - '0 0.5 0.5' * bound(0, pl/0.2, 1); 20% loss = full red).
+                // The port doesn't track movement loss, so only packet loss contributes (QC's tmp == 0 branch).
+                float pl = r.PacketLoss;
+                if (pl <= 0f) return new FieldText("", white);
+                int v = Mathf.CeilToInt(pl * 100f);
+                float sev = Mathf.Clamp(pl / 0.2f, 0f, 1f);
+                Color c = new(1f, 0.5f - 0.5f * sev, 0.5f - 0.5f * sev, 1f);
+                return new FieldText(v.ToString(), c);
+            }
 
             case ColumnKind.Name:
                 return new FieldText(r.Name, white);
@@ -1109,23 +1125,43 @@ public partial class ScoreboardPanel : HudPanel
 
     private float DrawRankings(float x, float w, float y, float fade)
     {
-        // QC Scoreboard_Rankings_Draw is race/CTS only; gate on the mode + data (records aren't networked yet).
+        // QC Scoreboard_Rankings_Draw is race/CTS only; gate on the mode + data (the networked rankings table).
         if (_rankings.Count == 0) return y;
         if (GameScores.Gametype != "rc" && GameScores.Gametype != "cts") return y;
         if (y > Size2.Y - 40f) return y;
         var body = new Color(1f, 1f, 1f, RowFgAlpha() * fade);
         DrawText(new Vector2(x, y), "Rankings:", new Color(1f, 1f, 1f, 0.9f * fade), 14);
         y += 20f;
+        string selfName = HudText.Strip(RankingsSelfName);
         for (int i = 0; i < _rankings.Count && y < Size2.Y - 20f; i++)
         {
             (int t, string holder) = _rankings[i];
-            DrawText(new Vector2(x + 8f, y), $"{i + 1}.", body, 14);
+            // QC: a self-held row gets the brighter self highlight; alternate rows get the stripe.
+            bool isSelf = selfName.Length != 0 && HudText.Strip(holder) == selfName;
+            if (isSelf)
+                DrawRect(new Rect2(x, y - 1f, w, 18f), new Color(1f, 1f, 1f, SelfHighlightAlpha() * fade));
+            else if (TableHighlight() && (i % 2) == 0)
+                DrawRect(new Rect2(x, y - 1f, w, 18f), new Color(1f, 1f, 1f, TableHighlightAlpha() * fade));
+
+            // QC: gold / silver / bronze rank colors for the top 3, white otherwise.
+            Color rankColor = i switch
+            {
+                0 => new Color(0.933f, 0.733f, 0.200f, body.A),
+                1 => new Color(0.667f, 0.667f, 0.667f, body.A),
+                2 => new Color(0.800f, 0.467f, 0.267f, body.A),
+                _ => body,
+            };
+            DrawText(new Vector2(x + 8f, y), $"{i + 1}.", rankColor, 14);
             DrawText(new Vector2(x + 36f, y), GameScores.TimeEncodedToString(t, compact: false), body, 14);
             DrawColored(new Vector2(x + 140f, y), holder, body, 14);
             y += 18f;
         }
         return y + 6f;
     }
+
+    /// <summary>QC <c>strdecolorize(entcs_GetName(player_localnum))</c>: the local player's name, used to highlight
+    /// the player's own row in the rankings block. Fed by the match layer; "" disables the self-highlight.</summary>
+    public string RankingsSelfName { get; set; } = "";
 
     private void DrawFooter(float x, float w, float fade)
     {

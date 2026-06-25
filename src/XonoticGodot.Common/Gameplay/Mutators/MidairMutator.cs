@@ -107,4 +107,10 @@ public sealed class MidairMutator : MutatorBase
             bot.BotSkill = 0f;
         return false;
     }
+
+    // MUTATOR_HOOKFUNCTION(midair, BuildMutatorsString) — sv_midair.qc:48-51
+    public override string BuildMutatorsString(string s) => s + ":midair";
+
+    // MUTATOR_HOOKFUNCTION(midair, BuildMutatorsPrettyString) — sv_midair.qc:53-56
+    public override string BuildMutatorsPrettyString(string s) => s + ", Midair";
 }

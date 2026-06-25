@@ -51,6 +51,14 @@ public sealed class ItemstimeMutator : MutatorBase
         Api.Services is not null && Api.Cvars.GetFloat("sv_itemstime") != 0f;
 
     /// <summary>
+    /// The live <c>sv_itemstime</c> tier (QC <c>STAT(ITEMSTIME)</c> = <c>autocvar_sv_itemstime</c>; stats.qh:138):
+    /// 0 = off, 1 = spectators/warmup only, 2 = also alive players. The client HUD enable gate
+    /// (<see cref="XonoticGodot.Game.Hud.ItemsTimePanel.ShouldDraw"/>) reads this — modeled here on the host since
+    /// there is no networked STAT(ITEMSTIME) (the single-listen-server feed).
+    /// </summary>
+    public int Tier => Api.Services is null ? 0 : (int)Api.Cvars.GetFloat("sv_itemstime");
+
+    /// <summary>
     /// The published respawn-time table (QC it_times), keyed by the HUD panel's item names
     /// (health_mega / health_big / armor_mega / armor_big / strength / shield / superweapons). A value &gt; time
     /// is the absolute respawn time; a value &lt; -1 is the "another copy available now" encoding; an item not on

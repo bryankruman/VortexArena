@@ -109,6 +109,13 @@ public static class MonsterAI
         /// <summary>Logical animation phase driving timing (see <see cref="MonsterAnim"/>). Client playback is CSQC.</summary>
         public MonsterAnim Anim = MonsterAnim.Idle;
 
+        /// <summary>
+        /// The corpse has landed (QC <c>mr_deadthink</c> IS_ONGROUND): selects the landed-corpse death frame
+        /// group (die2) over the falling one (die1) for monsters that split their death anim. Set by the
+        /// descriptor's dead-think (e.g. the wyvern) and read by <c>DriveAnimFrame</c>; reset on respawn.
+        /// </summary>
+        public bool DeathLanded;
+
         // --- lifecycle: death / respawn / loot / miniboss (QC .monster_lifetime / .candrop / spawnflags) ---
 
         /// <summary>Hard kill time once set (QC .monster_lifetime); 0 = none. Set to time+5 on death (corpse fade).</summary>
@@ -1020,6 +1027,7 @@ public static class MonsterAI
         if (self.DeadState != DeadFlag.No || self.Health <= 0f)
         {
             DeadThink(self, st);
+            DriveAnimFrame(self, st); // die1/die2 corpse pose (the descriptor maps the phase to a frame group)
             return;
         }
 
@@ -1061,9 +1069,35 @@ public static class MonsterAI
 
         Move(self, st);
         AttackCheck(self, st);
-        // NOTE (client-render): CSQC monster animation frame playback (Monster_Anim / CSQCMODEL_AUTOUPDATE).
-        // The server-side anim PHASE that drives timing is maintained in st.Anim by Move/MarkPain/MarkDead.
+        // CSQC monster animation frame playback (Monster_Anim / CSQCMODEL_AUTOUPDATE): translate the logical
+        // anim PHASE (maintained in st.Anim by Move/MarkPain/MarkDead) into the descriptor's concrete MD3
+        // frame group and stamp it onto the networked Entity.Frame so the client ModelAnimator plays it.
+        DriveAnimFrame(self, st);
     }
+
+    /// <summary>
+    /// Map the monster's logical <see cref="MonsterAnim"/> phase to its descriptor's concrete MD3 frame-group
+    /// start index (QC <c>mr_anim</c>) and write it to the networked <see cref="Entity.Frame"/>, so the client
+    /// model actually plays the named group (CSQCMODEL_AUTOUPDATE). Descriptors that haven't declared their
+    /// frame table return <c>null</c> and leave <see cref="Entity.Frame"/> untouched (no regression).
+    /// </summary>
+    private static void DriveAnimFrame(Entity self, MonsterState st)
+    {
+        float? frame = st.Def.AnimFrame(ToPhase(st.Anim), st.DeathLanded);
+        if (frame.HasValue)
+            self.Frame = frame.Value;
+    }
+
+    /// <summary>Bridge the internal <see cref="MonsterAnim"/> to the descriptor-layer <see cref="MonsterAnimPhase"/>.</summary>
+    private static MonsterAnimPhase ToPhase(MonsterAnim a) => a switch
+    {
+        MonsterAnim.Walk => MonsterAnimPhase.Walk,
+        MonsterAnim.Run => MonsterAnimPhase.Run,
+        MonsterAnim.Attack => MonsterAnimPhase.Attack,
+        MonsterAnim.Pain => MonsterAnimPhase.Pain,
+        MonsterAnim.Death => MonsterAnimPhase.Death,
+        _ => MonsterAnimPhase.Idle,
+    };
 
     /// <summary>
     /// Port of <c>Monster_Touch</c> (sv_monsters.qc): a non-monster attackable that bumps into us and isn't
@@ -1686,6 +1720,7 @@ public static class MonsterAI
             st.SpawnTime = Now;
             st.PainFinished = Now;
             st.Anim = MonsterAnim.Idle;
+            st.DeathLanded = false; // a respawned monster's corpse-landed flag must clear so it isn't stuck on die2
             // QC Monster_Miniboss_Setup:523-528 re-applies EF_RED on a RESPAWNED miniboss (MarkDead cleared
             // s.Effects to 0). A regular monster comes back with no glow.
             if (st.IsMiniboss) s.Effects |= EfRed;

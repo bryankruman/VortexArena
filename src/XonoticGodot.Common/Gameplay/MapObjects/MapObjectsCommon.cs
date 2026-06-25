@@ -773,13 +773,12 @@ namespace XonoticGodot.Common.Gameplay
         // ====================================================================
 
         /// <summary>
-        /// Host-wired centerprint sink for map-object free-text messages (door <c>.message</c>,
-        /// jumppad/secret/trigger <c>.message</c>, keylock "Unlocked!"). QC calls the engine builtin
-        /// <c>centerprint(client, s)</c> which middles arbitrary text on a real client's HUD; the headless
-        /// gameplay layer can't reach the client directly, so the host assigns this delegate (it forwards the
-        /// text to the networked centerprint channel, the same place <see cref="NotificationSystem"/> drains
-        /// to). Left null in unit tests / a non-listen path — <see cref="Centerprint"/> then no-ops, exactly
-        /// like QC printing to a bot/world. Mirrors the other host seams (SpawnEntityHandler / GiveItemHandler).
+        /// OPTIONAL extra host hook for map-object free-text centerprints (door <c>.message</c>,
+        /// jumppad/secret/trigger <c>.message</c>, target_items, keylock "Unlocked!"). The actual delivery is
+        /// already done inside <see cref="Centerprint"/> by pushing the text down the <see cref="MsgType.CenterRaw"/>
+        /// notification channel (→ CenterPrintPanel.Add) — the same path chat /tell uses — so the player sees the
+        /// message on the live path with no host wiring required. This delegate is fired in addition, for any host
+        /// that wants to observe or augment those centerprints (e.g. logging/tests); leave it null otherwise.
         /// </summary>
         public static System.Action<Entity /*client*/, string /*message*/>? CenterprintHandler;
 

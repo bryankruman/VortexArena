@@ -206,9 +206,12 @@ public static class ProjectileCatalog
             Body = BodyFamily.GlowSprite, GlowColor = ElectroBlue, HasLight = true });
         Add(new Desc { Type = ProjectileType.BumbleBeam, TrailEffect = "TR_NEXUIZPLASMA", Trail = BluePlasma,
             Body = BodyFamily.GlowSprite, GlowColor = ElectroBlue, HasLight = true });
-        // EFFECT_ROCKETMINSTA_LASER (projectile.qc:384)
+        // MDL_PROJECTILE_ROCKETMINSTA_LASER = models/elaser.mdl (all.inc:107), EFFECT_ROCKETMINSTA_LASER trail,
+        // team colormod applied per-bolt by the renderer (projectile.qc:384,504-506). Falls back to the GlowSprite
+        // when the elaser model isn't mounted (headless / missing content).
         Add(new Desc { Type = ProjectileType.RocketMinstaLaser, TrailEffect = "ROCKETMINSTA_LASER", Trail = LaserRed,
-            Body = BodyFamily.GlowSprite, GlowColor = new Color(1.0f, 0.3f, 0.3f), HasLight = true });
+            Body = BodyFamily.GlowSprite, ModelPath = "models/elaser.mdl",
+            GlowColor = new Color(1.0f, 0.3f, 0.3f), HasLight = true });
         // Generic plasma (Fireball/Vaporizer "plasma_prim") — blue energy bolt with a light.
         Add(new Desc { Type = ProjectileType.Plasma, TrailEffect = "TR_NEXUIZPLASMA", Trail = BluePlasma,
             Body = BodyFamily.GlowSprite, GlowColor = ElectroBlue, HasLight = true });
@@ -251,7 +254,10 @@ public static class ProjectileCatalog
         if (Has(s, "hookbomb")) return ProjectileType.Hookbomb;
         if (Has(s, "grapplinghook", "hook")) return ProjectileType.Hookbomb;
         if (Has(s, "mine")) return ProjectileType.Mine;
-        if (Has(s, "grenade", "nade", "mortar")) return ProjectileType.Grenade;
+        // The bouncing mortar grenade (type 1) networks a "bouncing" token (ServerNet) so it draws the
+        // sideways-tumbling PROJECTILE_GRENADE_BOUNCING model rather than the plain PROJECTILE_GRENADE.
+        if (Has(s, "grenade", "nade", "mortar"))
+            return Has(s, "bouncing") ? ProjectileType.GrenadeBouncing : ProjectileType.Grenade;
         if (Has(s, "hagar")) return ProjectileType.Hagar;
         if (Has(s, "seeker_tag", "tag_tracker", "tag")) return ProjectileType.Tag;
         if (Has(s, "seeker_missile", "seeker")) return ProjectileType.Seeker;

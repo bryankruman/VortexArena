@@ -5,7 +5,6 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 13
   worst_gaps:
-    - "W_SetupShot trueaim + shotorg traces are NOT antilagged in the port: Base runs them through WarpZone_traceline_antilag/tracebox_antilag at g_antilag==2 (tracing.qc:46/85/97), so w_shotend/w_shotorg/w_shotdir are computed against REWOUND enemy positions for every weapon; the port's WeaponFiring.SetupShot uses plain present-position traces. Hitscan damage hit-reg is still rewound via the FireBullet bracket, but the trueaim point a projectile is launched toward (and the muzzle nudge) uses present positions."
     - "Vehicle occupants are never rewound: Base recurses antilag into a manned vehicle's body, the port has no vehicle recursion, so high-ping shots at a moving vehicle hit its present position only."
     - "g_antilag modes 1 (verified client-side) and 3 (prydon cursor hitscan) are unimplemented: a server set to either gets NO lag compensation at all (port treats anything != 2 as no-rewind)."
     - "Shotgun melee secondary is not lag-compensated: Base traces it through WarpZone_traceline_antilag (shotgun.qc:124); the port's Shotgun.Melee uses a plain trace."
@@ -163,23 +162,22 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:SetupShot"
     constants:
-      - { name: "trueaim trace (w_shotend)", base: "WarpZone_traceline_antilag at ANTILAG_LATENCY", port: "plain TraceLineWarpzone (no takeback)", match: false }
-      - { name: "muzzle-nudge traces (w_shotorg)", base: "tracebox_antilag at ANTILAG_LATENCY", port: "plain Trace (no takeback)", match: false }
+      - { name: "trueaim trace (w_shotend)", base: "WarpZone_traceline_antilag at ANTILAG_LATENCY", port: "TraceLineWarpzone bracketed by LagComp.Begin/End", match: true }
+      - { name: "muzzle-nudge traces (w_shotorg)", base: "tracebox_antilag at ANTILAG_LATENCY", port: "Trace bracketed by LagComp.Begin/End", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "W_SetupShot trueaim + shotorg traces are NOT antilagged in the port: Base runs them through WarpZone_traceline_antilag/tracebox_antilag at g_antilag==2, so w_shotend/w_shotorg/w_shotdir are computed against REWOUND enemy positions for every weapon (hitscan AND projectile); the port's WeaponFiring.SetupShot uses plain present-position traces. The actual hitscan damage trace is still rewound via the FireBullet bracket, but the trueaim ENDPOINT a projectile/bolt is aimed at, and the muzzle wall-nudge, use present positions — so a high-ping player's projectile (and the hitscan's aim direction) is slightly off vs Base."
+    gaps: []
     verification:
-      - { kind: code, ref: "WeaponFiring.cs:141 SetupShot uses Api.Trace.TraceLineWarpzone (plain); :146/163/165 plain Trace; no LagComp bracket. Base tracing.qc:46/85/97 use the _antilag variants.", result: fail }
+      - { kind: code, ref: "WeaponFiring.cs:141 LagComp.Begin(actor) wraps the trueaim TraceLineWarpzone + the eye/muzzle-nudge Traces, LagComp.End() in the finally at :190. Base tracing.qc:46/85/97 use the _antilag variants at g_antilag==2; LagComp.Begin no-ops unless a provider is installed and BeginLagComp's g_antilag==2 + cl_noantilag gate passes, matching Base's `antilag` flag.", result: pass }
     confidence: high
-    notes: "STILL OPEN after Wave-5 (re-verified 2026-06-22: WeaponFiring.SetupShot at :105-172 is unchanged; the doc comment at :102 still reads 'Still deferred vs QC: antilag, warpzones, the trueaim minrange clamp'). The trueaim trace at :141 (TraceLineWarpzone) and the muzzle-nudge traces at :146/163/165 are all plain present-position with NO LagComp bracket. The Wave-2/5 WeaponFiring edits added tracer/casing/ricochet/woosh FX seams but touched none of the SetupShot traces. SetupShot is called by EVERY weapon (hitscan + every projectile). liveness=dead because the antilag aspect of SetupShot has no code at all in the port; the SetupShot function itself is live, the rewind inside it is absent."
+    notes: "WAVE-5 FIX. SetupShot's trueaim + muzzle-nudge traces are now bracketed by the SHARED LagComp facade (the same machinery FireBullet/FireRailgunBullet/Arc use), so w_shotend/w_shotorg/w_shotdir are computed against rewound enemy positions for EVERY weapon (hitscan + every projectile) at g_antilag==2. The bracket is self-contained and balanced (Begin at :141, End in the finally at :190) and runs BEFORE the separate FireBullet/Arc damage-trace bracket — sequential, never nested, exactly like Base where W_SetupShot and the weapon's damage trace antilag independently. Gated identically (no-op for non-clients / cl_noantilag / modes != 2 / no provider). Class + method docstrings updated to drop the stale 'antilag deferred' claim. Remaining SetupShot gaps (warpzone untransform, trueaim minrange clamp, modes 1/3) are tracked elsewhere and out of scope here."
 
   - id: sv-antilag.solidmask.corpse
     name: "Shooter dphitcontentsmask -> SOLID|BODY|CORPSE for the duration of the trace"
@@ -258,7 +256,7 @@ features:
     verification:
       - { kind: code, ref: "BeginLagComp (ServerNet.cs:2046) gated on _antilagMode == 2, matching QC's autocvar_g_antilag != 2 -> lag = 0", result: pass }
     confidence: high
-    notes: "The stock default mode and the only one Xonotic servers normally run. Caveat: the gate only governs the FireBullet/FireRailgunBullet hitscan-damage bracket; the W_SetupShot trueaim traces (sv-antilag.setupshot.trueaim) are never rewound even at mode 2."
+    notes: "The stock default mode and the only one Xonotic servers normally run. The same g_antilag==2 gate now governs both the FireBullet/FireRailgunBullet/Arc hitscan-damage bracket AND the W_SetupShot trueaim/muzzle traces (sv-antilag.setupshot.trueaim, fixed Wave-5) — every SetupShot trace is rewound at mode 2."
 
   - id: sv-antilag.mode.client_verified_and_cursor
     name: "g_antilag==1 (verified client-side) and ==3 (prydon cursor) aim-correction"

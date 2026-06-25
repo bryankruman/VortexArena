@@ -362,15 +362,15 @@ features:
       timing: na
       presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Handler returns true (faithful) and is registered into the hook chain, but is STILL DEAD: a `FireForbidRandomStartWeapons` hook-chain method now exists (MutatorHooks.cs:382) yet has ZERO call site anywhere in src/ — no spawn/start-weapon path invokes it. The only references are its own definition and the four mutators (nix/instagib/melee_only/overkill) that Add/Remove the handler. Effect is moot only while the port grants no random start weapons; becomes a live bug if such a system lands and forgets to call FireForbidRandomStartWeapons. NOT closed by Wave-1/2."
+    gaps: []
     verification:
-      - { kind: code, ref: "grep ForbidRandomStartWeapons across src/ -> FireForbidRandomStartWeapons defined at MutatorHooks.cs:382 with zero callers; only Add/Remove in 4 mutators", result: fail }
+      - { kind: code, ref: "OnForbidRandomStartWeapons returns true (NixMutator.cs:126), registered into the hook chain (Hook line 64)", result: pass }
+      - { kind: code, ref: "FireForbidRandomStartWeapons now has a live caller: SpawnSystem.ApplyStartLoadout (SpawnSystem.cs:901) gates GiveRandomWeapons on it, on the real PutPlayerInServer non-warmup spawn path (SpawnSystem.cs:595)", result: pass }
     confidence: high
-    notes: "Same dead-handler pattern as instagib/melee_only/overkill. Logic correct, dispatch method exists but is never invoked."
+    notes: "CLOSED post-audit (Wave-5 re-verify): the random-start grant in SpawnSystem.ApplyStartLoadout (line 901) calls MutatorHooks.FireForbidRandomStartWeapons before GiveRandomWeapons, matching QC client.qc:644. The 2026-06-22 'zero call site' finding predates that wiring. Same live pattern now shared by instagib/melee_only/overkill."
 
   - id: mutator-nix.entity.target_items
     name: "OnEntityPreSpawn: delete target_items triggers"

@@ -174,13 +174,73 @@ public sealed class HudNotifications
             return;
 
         string cpid = notif?.Cpid ?? "";
-        // QC durcnt encodes an optional COUNT token + duration; we don't carry it on the wire, so drive the
-        // countdown from the first float arg when the message actually contains the ^COUNT placeholder.
-        int count = -1;
-        if (text.Contains(CenterPrintPanel.CountToken, StringComparison.Ordinal) && flts.Length > 0)
-            count = Math.Max(0, (int)flts[0]);
 
-        _hud.CenterPrint.Push(text, CenterPrintPanel.DefaultDuration, cpid, count);
+        // QC durcnt ("DURATION COUNT") is resolved at centerprint time (Local_Notification_centerprint_Add,
+        // notifications/all.qc:1069): token 0 is the display duration (arg_slot[0]) and token 1 the ^COUNT
+        // count (arg_slot[1]). Each token is a literal, an fN float-arg reference, or item_centime
+        // (== notification_item_centerprinttime = 1.5). The notification carries the raw durcnt; we resolve it
+        // here from the float args. An absent/"0 0" durcnt → duration 0 (the panel's default time) and no count.
+        ResolveDurcnt(notif?.Durcnt ?? "", flts, out float duration, out int durcntCount);
+
+        int count = -1;
+        if (text.Contains(CenterPrintPanel.CountToken, StringComparison.Ordinal))
+        {
+            // The ^COUNT countdown number comes from the durcnt count token when present, else from f1 (the
+            // standard countdown notifs encode "1 fN", so this matches; a "0 0"/absent durcnt falls back to f1).
+            count = durcntCount >= 0 ? durcntCount
+                  : (flts.Length > 0 ? Math.Max(0, (int)flts[0]) : -1);
+        }
+
+        _hud.CenterPrint.Push(text, duration, cpid, count);
+    }
+
+    /// <summary>QC notification_item_centerprinttime (common/notifications/all.qh:310). The display time of
+    /// item-pickup centerprints; mirrored here as the resolution of the durcnt <c>item_centime</c> token.</summary>
+    private const float ItemCenterprintTime = 1.5f;
+
+    /// <summary>
+    /// Resolve a MSG_CENTER durcnt ("DURATION COUNT") spec — the C# successor to the arg_slot loop in QC
+    /// <c>Local_Notification_centerprint_Add</c> (notifications/all.qc:1069). Token 0 → <paramref name="duration"/>
+    /// (seconds; 0/absent ⇒ the panel default time), token 1 → <paramref name="count"/> (the ^COUNT count;
+    /// -1 ⇒ none). Each token is the literal <c>item_centime</c> (== notification_item_centerprinttime),
+    /// an <c>fN</c> float-arg reference (1-based into <paramref name="flts"/>), or a literal number.
+    /// </summary>
+    private static void ResolveDurcnt(string durcnt, float[] flts, out float duration, out int count)
+    {
+        // QC default when durcnt is "" / "0 0": duration 0 (→ panel default time), no countdown.
+        duration = 0f;
+        count = -1;
+        if (string.IsNullOrEmpty(durcnt))
+            return;
+
+        string[] tok = durcnt.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (tok.Length > 0) duration = ResolveDurcntToken(tok[0], flts);
+        if (tok.Length > 1)
+        {
+            float c = ResolveDurcntToken(tok[1], flts);
+            count = c > 0f ? (int)c : (c == 0f ? -1 : 0); // 0 ⇒ no countdown (QC stof("0") with no ^COUNT)
+        }
+    }
+
+    private static float ResolveDurcntToken(string token, float[] flts)
+    {
+        if (string.Equals(token, "item_centime", StringComparison.Ordinal))
+        {
+            // QC ftos(autocvar_notification_item_centerprinttime); read the cvar if present, else the 1.5 default.
+            if (XonoticGodot.Common.Services.Api.Services is not null)
+            {
+                float v = XonoticGodot.Common.Services.Api.Cvars.GetFloat("notification_item_centerprinttime");
+                if (v != 0f) return v;
+            }
+            return ItemCenterprintTime;
+        }
+        // fN → the (N-1)th float arg (QC's f1..f4 map to arg_slot via the same numbered tokens).
+        if (token.Length >= 2 && (token[0] == 'f' || token[0] == 'F')
+            && int.TryParse(token.AsSpan(1), out int idx) && idx >= 1 && idx <= flts.Length)
+            return flts[idx - 1];
+        // literal number (QC: default branch stof(selected)).
+        return float.TryParse(token, System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out float lit) ? lit : 0f;
     }
 
     // =====================================================================================

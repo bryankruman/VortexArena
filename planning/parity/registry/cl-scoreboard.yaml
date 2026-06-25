@@ -189,20 +189,20 @@ features:
       - "game/hud/ScoreboardPanel.cs:GetField (Pl)"
     constants: []
     status:
-      logic: stub
-      values: missing
+      logic: faithful
+      values: faithful
       timing: na
-      presentation: stub
+      presentation: faithful
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "pl column always blank: GetField Pl returns empty string unconditionally; packet loss + movement loss are not networked. Base shows ceil(pl*100)~ceil(movementloss*100) red-tinted by severity, blank when both 0."
+      - "Movement loss (QC ping_movementloss, the '~N' suffix) is not tracked by the port — only packet loss contributes (QC's tmp==0 branch). The displayed value + red tint are otherwise bit-faithful."
     verification:
-      - { kind: code, ref: "GetField ColumnKind.Pl returns new FieldText(\"\", white)", result: fail }
+      - { kind: code, ref: "Wave 5: ENet PacketLoss (NetTransport.Server.PacketLoss, 0..65536→0..1) captured per human in ServerNet.RefreshScore as min(ceil(loss*255),255), networked via ScoreRowWire.PacketLossByte, de-quantized in SetWireRows, rendered by GetField Pl: blank when 0 else ceil(pl*100) tinted '1 0.5 0.5'-'0 0.5 0.5'*bound(0,pl/0.2,1)", result: pass }
     confidence: high
-    notes: "Explicitly commented as not-networked-yet in the port. Unchanged this audit."
+    notes: "FIXED Wave 5. Was a blank stub; now the live SP_PL value + severity tint, fed from real ENet packet-loss. Movement loss (a client prediction metric) is the only residual."
 
   - id: cl-scoreboard.field.name_icons
     name: "Name-cell icons (player color / ready / handicap / ignored / wants-join)"
@@ -475,21 +475,20 @@ features:
       - "game/hud/ScoreboardPanel.cs:SetRankings"
     constants: []
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: na
       presentation: partial
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "ScoreboardPanel.SetRankings (line 324) STILL has NO live caller (the only SetRankings call, NetGame.cs:3453, targets the ScorePanel overlay via ScorePanel.RankRow, not the scoreboard; race/CTS records are not networked) → the rankings block never shows on the real scoreboard."
-      - "No gold/silver/bronze rank colors, no speed-award line, no multi-column wrap / horizontal scroll, no self-row highlight."
+      - "No speed-award / all-time-fastest line, no multi-column wrap / horizontal scroll (single-column list)."
     verification:
-      - { kind: code, ref: "NetGame.cs:3453 panel.SetRankings(rows) where rows are ScorePanel.RankRow and panel = ScorePanel (UpdateScore); ScoreboardPanel.SetRankings still has no caller", result: fail }
+      - { kind: code, ref: "Wave 5: ServerNet.RefreshScore snapshots RaceRecords.ReadTime/ReadName (best-first, rc→RaceRecord/cts→CtsRecord, display cap 15) into _scoreRankings; ScoreboardBlock.Serialize/Deserialize carries ScoreboardWire.Rankings (int24 TIME_ENCODE + holder); NetGame.UpdateScoreboard feeds _scoreboard.SetRankings(sb.Rankings) + RankingsSelfName; DrawRankings now draws gold/silver/bronze ranks + self-row highlight, gated rc/cts", result: pass }
     confidence: high
-    notes: "DrawRankings is a simplified list, gated on gametype rc/cts + data, but the data never arrives. Unchanged this audit — NOT fixed by Wave 5."
+    notes: "FIXED Wave 5. The scoreboard rankings block is now its OWN live caller (distinct from the ScorePanel overlay): race/CTS records ride the scoreboard wire and feed ScoreboardPanel.SetRankings. Gold/silver/bronze + self-highlight added; speed-award line + multi-column wrap remain."
 
   - id: cl-scoreboard.block.mapstats
     name: "Map stats (monsters / secrets)"

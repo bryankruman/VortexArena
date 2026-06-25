@@ -75,6 +75,9 @@ public sealed class BotBrain
     private readonly GoalRater _rater = new();
     private readonly Random _rng;
 
+    // Per-bot wr_aim scratch (QC the actor fields a weapon's wr_aim stamps, e.g. rifle .bot_secondary_riflemooth).
+    private BotAimState _botAimState;
+
     // QC timing fields
     private float _chooseEnemyTime;
     private float _stickEnemyTime;  // QC .havocbot_stickenemy_time (keep current enemy through a brief LOS break)
@@ -218,7 +221,7 @@ public sealed class BotBrain
         if (bot.IsObserver)
         {
             if (StrategyTokenHeld) OnStrategyTokenUsed?.Invoke();
-            return Emit(bot, default, jump: false, crouch: false, attack: false, dt);
+            return Emit(bot, default, jump: false, crouch: false, attack: false, attack2: false, dt);
         }
         if (bot.IsDead)
         {
@@ -229,12 +232,12 @@ public sealed class BotBrain
             // QC: jump must be RELEASED for a frame (DEAD_DYING) so PlayerThink sees the keydown edge, then
             // PRESSED while DEAD_DEAD — that's how a bot asks to respawn through the same DEAD_* machine.
             bool jump = bot.DeadState == DeadFlag.Dead;
-            return Emit(bot, Vector3.Zero, jump, crouch: false, attack: false, dt);
+            return Emit(bot, Vector3.Zero, jump, crouch: false, attack: false, attack2: false, dt);
         }
 
         // ---- pre-game / campaign movement hold (QC bot_think:80-83 + :122-127) ----
         if (MovementHold?.Invoke() == true)
-            return Emit(bot, Vector3.Zero, jumpHeld, crouch: false, attack: false, dt);
+            return Emit(bot, Vector3.Zero, jumpHeld, crouch: false, attack: false, attack2: false, dt);
 
         // 1) target selection (throttled; SUPERBOT reacts fast)
         ChooseEnemy(now);
@@ -330,6 +333,7 @@ public sealed class BotBrain
 
         // 4) aim
         bool wantAttack = false;
+        bool wantAttack2 = false;
         Aim.UpdateShotVectors(bot.Origin);
         if (now >= _aimTime)
             _aimTime = now + AimInterval;
@@ -338,11 +342,28 @@ public sealed class BotBrain
         if (enemy is { IsFreed: false })
         {
             wantAttack = AimAndDecideFire(enemy, dt, now);
+            // QC per-weapon wr_aim: some weapons route the bot's shot onto the SECONDARY fire by range (e.g. the
+            // MachineGun presses its long-range no-spread burst beyond a skill-scaled distance). When the chosen
+            // weapon wants secondary at this range, move the already-decided shot from ATCK to ATCK2 (Base wr_aim
+            // sets exactly one of the two buttons).
+            if (wantAttack && ChosenWeapon is { } w)
+            {
+                // QC wr_aim re-rolls random() each decision and persists its toggle on the actor (the rifle's
+                // bot_secondary_riflemooth); carry that per-bot state + a fresh draw into the weapon's wr_aim.
+                _botAimState.Random01 = (float)_rng.NextDouble();
+                if (w.BotWantsSecondary((enemy.Origin - bot.Origin).Length(), Skill, ref _botAimState))
+                {
+                    wantAttack = false;
+                    wantAttack2 = true;
+                }
+            }
             // QC havocbot_ai:142-146: bot_nofire (and independent_players) suppress the fire button while
-            // leaving aim + combat movement intact. (Only the primary attack is wired here; secondary fire is
-            // the deferred per-weapon wr_aim — see residuals.)
+            // leaving aim + combat movement intact.
             if (Cvars.Bool("bot_nofire"))
+            {
                 wantAttack = false;
+                wantAttack2 = false;
+            }
             // combat movement (QC havocbot_dodge + the retreat-when-outgunned behaviour): strafe to dodge
             // incoming fire and, if much weaker than the enemy, back away while still facing it.
             move = CombatMovement(enemy, move, now);
@@ -365,11 +386,11 @@ public sealed class BotBrain
         bool wantJump = Nav.WantJump;
         if (wantJump)
             _jumpTime = now;        // QC bot_jump_time: keep jump held ~0.2s so ramp jumps register
-        return Emit(bot, move, wantJump || jumpHeld, Nav.WantCrouch, wantAttack, dt);
+        return Emit(bot, move, wantJump || jumpHeld, Nav.WantCrouch, wantAttack, wantAttack2, dt);
     }
 
     /// <summary>Stamp the bot's view onto the entity and record + return the assembled command.</summary>
-    private MovementInput Emit(Player bot, Vector3 move, bool jump, bool crouch, bool attack, float dt)
+    private MovementInput Emit(Player bot, Vector3 move, bool jump, bool crouch, bool attack, bool attack2, float dt)
     {
         var input = new MovementInput
         {
@@ -379,7 +400,7 @@ public sealed class BotBrain
             ButtonJump = jump,
             ButtonCrouch = crouch,
             ButtonAttack1 = attack,
-            ButtonAttack2 = false,
+            ButtonAttack2 = attack2,
         };
         LastInput = input;
 

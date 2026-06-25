@@ -149,6 +149,12 @@ namespace XonoticGodot.Common.Framework
         public XonoticGodot.Common.Gameplay.StatusEffectDef? BuffDef;
         /// <summary>QC .buff_active — a buff pickup is currently collectable (vs. on its respawn cooldown).</summary>
         public bool BuffActive;
+        /// <summary>QC .lifetime (on a buff pickup) — absolute time the untouched buff re-randomizes/relocates
+        /// (g_buffs_random_lifetime); 0 = no lifetime timer running.</summary>
+        public float BuffLifetime;
+        /// <summary>QC buff spawnflag 64 ("always randomize/relocate") — set on auto-seeded buffs by
+        /// buffs_DelayedInit so they relocate on every reset even when g_buffs_random_location is 0.</summary>
+        public bool BuffAlwaysRelocate;
 
         // --- movement stat overrides (QC STAT(MOVEVARS_*)) set by movement-affecting buffs ---
         // The C# successors to QC's per-player movement stats. The buffs PlayerPhysics hook writes these

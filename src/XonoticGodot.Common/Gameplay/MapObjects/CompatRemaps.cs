@@ -65,6 +65,23 @@ namespace XonoticGodot.Common.Gameplay
         private static bool Cts => IsCtsActive?.Invoke() ?? false;
 
         // =====================================================================================
+        //  Global q3compat flag (QC server/compat/quake3.qh `int q3compat`, set in world.qc:964-965)
+        // =====================================================================================
+
+        /// <summary>
+        /// Host seam reporting whether the current map is a Q3/Q3DF import (QC the global <c>q3compat</c> int, set
+        /// during worldspawn from <c>_MapInfo_FindArenaFile(mapname, ".arena"/".defi")</c> — i.e. the existence of a
+        /// sibling <c>.arena</c> (Q3COMPAT_ARENA) or <c>.defi</c> (Q3COMPAT_DEFI) file in the map pack). The
+        /// orchestrator wires this from the map-config file probe at boot, BEFORE the spawnfuncs run; unwired it
+        /// defaults to <c>false</c> (a stock Xonotic map), so every q3compat branch stays off in a bare unit test —
+        /// matching QC's <c>q3compat == 0</c> default.
+        /// </summary>
+        public static System.Func<bool>? Q3CompatProvider;
+
+        /// <summary>QC <c>Q3COMPAT_COMMON</c> (truthy <c>q3compat</c>): the active map is a Q3/Q3DF import.</summary>
+        public static bool IsQ3Compat => Q3CompatProvider?.Invoke() ?? false;
+
+        // =====================================================================================
         //  GetAmmoConsumption (common/resources/sv_resources.qc:231) — ammo-per-shot, for .count scaling
         // =====================================================================================
 

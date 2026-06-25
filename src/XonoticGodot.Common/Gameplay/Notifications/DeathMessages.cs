@@ -215,6 +215,7 @@ public static class DeathMessages
             DeathTypes.Swamp => "SWAMP",
             DeathTypes.Void => "VOID",
             DeathTypes.Fire => "FIRE",
+            DeathTypes.Camp => "CAMP",             // campcheck: self-only (no DEATH_MURDER_CAMP); murder -> GENERIC below
             DeathTypes.Telefrag => "TELEFRAG",     // murder-only in QC; self falls to GENERIC below
             DeathTypes.BuffInferno => "BUFF_INFERNO",
             DeathTypes.BuffVengeance => "BUFF_VENGEANCE",
@@ -230,6 +231,9 @@ public static class DeathMessages
             name = "GENERIC";
         // QC: NOAMMO is a self-death only; there is no DEATH_MURDER_NOAMMO.
         if (murder && name == "NOAMMO")
+            name = "FRAG";
+        // QC: CAMP registers DEATH_SELF_CAMP only (murder line NULL); a "murder" direction has no camp line.
+        if (murder && name == "CAMP")
             name = "FRAG";
 
         return (murder ? "DEATH_MURDER_" : "DEATH_SELF_") + name;

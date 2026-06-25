@@ -104,31 +104,35 @@ public sealed class Porto : Weapon
         }
         else
         {
-            // Non-secondary mode: secondary holds the aim angle (porto_v_angle), primary shoots the combined
-            // red->blue portal (type -1) along the held angle. QC wr_think processes both buttons in one call;
-            // the port driver calls WrThink once per fire-mode tick, so we model the same hold state machine but
-            // ONLY mutate it on the matching fire-mode tick — never blanket-clear the hold on a Primary tick
-            // (the bug that wiped the captured angle before the primary shot could read it):
-            //   - on the Secondary tick: capture/hold the aim angle (and keep it held while ATCK2 stays pressed);
-            //   - the hold is released by the absence of an ATCK2 tick, which the driver expresses as the
-            //     Secondary fire-mode no longer firing — we cannot observe a "released" edge from a Primary tick,
-            //     so we leave the hold intact and let the next Secondary tick re-arm it. (Dormant in stock play:
-            //     g_balance_porto_secondary defaults to 1, so this branch is never reached.)
-            if (fire == FireMode.Secondary)
+            // Non-secondary mode: secondary HOLDS the aim angle (porto_v_angle), primary shoots the combined
+            // red->blue portal (type -1) along the held angle. QC wr_think processes both buttons in one call
+            // every tick (porto.qc:372-396); the port driver instead calls WrThink once per fire-mode, but the
+            // driver records BOTH live buttons on the slot state (st.ButtonAttack2) before either call, so we can
+            // reproduce the exact QC bitmask logic from the Primary tick (which always runs every frame):
+            //   - while held: release the hold the instant ATCK2 is no longer down (QC `if (!(fire & 2)) held=0`);
+            //   - while not held: capture+hold the current aim angle on a fresh ATCK2 press (QC `if (fire & 2)`).
+            // We drive this ONLY on the Primary tick so the state machine ticks exactly once per frame with the
+            // real ATCK2 edge (the Secondary tick is a no-op here). (Dormant in stock play: g_balance_porto_secondary
+            // defaults to 1, so this branch is never reached.)
+            if (fire == FireMode.Primary)
             {
-                if (!st.PortoVAngleHeld)
+                bool atck2 = st.ButtonAttack2; // QC (fire & 2)
+                if (st.PortoVAngleHeld)
+                {
+                    if (!atck2)
+                        st.PortoVAngleHeld = false; // QC: if (!(fire & 2)) porto_v_angle_held = 0;
+                }
+                else if (atck2)
                 {
                     st.PortoVAngle = actor.Angles; // QC porto_v_angle = actor.v_angle
-                    st.PortoVAngleHeld = true;
+                    st.PortoVAngleHeld = true;      // QC porto_v_angle_held = 1
                 }
-            }
-            else if (fire == FireMode.Primary && canFire)
-            {
-                if (PrepareAttack(actor, slot, fire))
-                {
+
+                // QC: if (fire & 1) ... weapon_prepareattack ... W_Porto_Attack(type -1). The held angle (if any)
+                // overrides the aim — Attack reads st.PortoVAngle when PortoVAngleHeld is set (porto.qc:386-387
+                // makevectors(porto_v_angle) overriding the previously set angles).
+                if (canFire && PrepareAttack(actor, slot, fire))
                     Attack(actor, slot, st, Primary, type: -1);
-                    st.PortoVAngleHeld = false; // QC clears the hold once the held-angle shot is consumed
-                }
             }
         }
     }

@@ -127,6 +127,11 @@ public sealed partial class ClientEntityView : Node
         e.Skin = s.Skin;
         e.ModelIndex = s.ModelIndex;
         e.Effects = s.Effects;
+        // [W5-cloaked] Decode the networked render alpha (QC csqcmodel m_alpha) onto the proxy so PlayerModel/
+        // EntityNode renders the Cloaked / Invisibility / fade transparency. ServerNet.QuantizeAlpha sends 0 for
+        // a fully-opaque entity ("use default" sentinel — costs nothing on the wire) and 1..254 for a real fade
+        // (= byte/255). Mirror that mapping back to the float Entity.Alpha (1 = opaque) that ApplyAlpha consumes.
+        e.Alpha = s.Alpha == 0 ? 1f : s.Alpha / 255f;
         e.Health = s.Health;
         e.Team = s.Colormap;
         e.ActiveWeaponId = s.Weapon;
@@ -142,6 +147,10 @@ public sealed partial class ClientEntityView : Node
                       : (s.Flags & NetEntityFlags.ItemAnimate2) != 0 ? (byte)2 : (byte)0;
         // QC FL_DUCKED: a remote player's crouch drives LocomotionBlend (duck legs) + the lowered hull/nameplate.
         e.IsDucked = (s.Flags & NetEntityFlags.Crouched) != 0;
+        // QC IT_USING_JETPACK (common/physics/player.qc:878): a firing jetpack → the client derives
+        // csqcmodel_modelflags |= MF_ROCKET, which drives the looping jetpack-fly sound + rocket trail. Carried on
+        // the proxy so ClientWorld's effects pass can compose the per-player MF_ROCKET forced appearance.
+        e.UsingJetpack = (s.Flags & NetEntityFlags.UsingJetpack) != 0;
         // QC FL_ONGROUND: the skeletal PlayerModel's LocomotionBlend.SelectLegs picks the JUMP clip whenever the
         // player is airborne — so without copying the networked on-ground flag onto the proxy (Entity.OnGround is
         // derived from EntFlags.OnGround), every remote player reads as in-air and is frozen in the jump pose

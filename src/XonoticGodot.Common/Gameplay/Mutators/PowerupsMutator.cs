@@ -215,7 +215,7 @@ public sealed class PowerupsMutator : MutatorBase
         if (invis)
             player.Alpha = _invisibilityAlpha;
         else if (player.Alpha == _invisibilityAlpha)
-            player.Alpha = 1f; // default_player_alpha
+            player.Alpha = MutatorHooks.DefaultPlayerAlpha; // QC default_player_alpha (composes with Cloaked → 0.25, not 1)
 
         // ---- strength/shield glow (strength.qc:31 / shield.qc:31 m_tick + m_remove:14) ----
         // QC m_tick ORs (EF_BLUE/EF_RED | EF_ADDITIVE | EF_FULLBRIGHT) into actor.effects every frame while

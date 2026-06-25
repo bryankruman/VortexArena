@@ -31,7 +31,9 @@ public readonly struct ShotInfo
 /// These operate purely on <see cref="Entity"/> + the engine-services facade, so they unit-test headless.
 /// Spread (deterministic PRNG), solid-penetration multi-hit, exponential distance falloff, knockback force,
 /// railgun multi-pierce and the per-target headshot bbox (<see cref="Headshot"/>) are all implemented here.
-/// Antilag take-back, warpzone transforms and accuracy hitplot bookkeeping are the remaining online/render-only gaps.
+/// Antilag take-back brackets the SetupShot trueaim/muzzle traces and the FireBullet/FireRailgunBullet damage
+/// traces (g_antilag==2, via <see cref="LagComp"/>). Warpzone transforms and accuracy hitplot bookkeeping are the
+/// remaining online/render-only gaps.
 /// </summary>
 public static class WeaponFiring
 {
@@ -99,8 +101,10 @@ public static class WeaponFiring
     /// For penetrate-walls weapons (rifle/machinegun/okmg) QC deliberately trueaims only against bodies
     /// (DPCONTENTS_BODY|CORPSE), so the centered shot passes through glass/walls to hit a target behind
     /// them instead of stopping on the wall; we approximate that with a NoMonsters body trace when
-    /// <paramref name="penetrateWalls"/> is set. Still deferred vs QC: antilag, warpzones, the trueaim
-    /// minrange clamp and accuracy/hitplot bookkeeping.
+    /// <paramref name="penetrateWalls"/> is set. At g_antilag==2 the trueaim + muzzle-nudge traces are
+    /// bracketed by <see cref="LagComp"/> (QC tracing.qc:46/85/97), so w_shotend/w_shotorg/w_shotdir are
+    /// computed against rewound enemy positions. Still deferred vs QC: warpzones, the trueaim minrange clamp,
+    /// accuracy/hitplot bookkeeping, and g_antilag modes 1/3.
     /// </summary>
     public static ShotInfo SetupShot(Entity actor, Vector3 forward, Vector3 mins, Vector3 maxs,
         float range = MaxShotDistance, bool penetrateWalls = false,
@@ -122,11 +126,26 @@ public static class WeaponFiring
         Vector3 eye = actor.Origin + actor.ViewOfs;
         Vector3 aimEnd = eye + forward * range;
 
+        Vector3 shotEnd;
+        Vector3 shotOrg;
+
+        // [sv-antilag.setupshot.trueaim] Antilag bracket around the trueaim + muzzle-nudge traces (QC
+        // tracing.qc:46/85/97): at g_antilag==2 Base routes ALL of W_SetupShot's traces through the
+        // _antilag variants, so w_shotend/w_shotorg (and hence w_shotdir) are computed against REWOUND
+        // enemy positions for every weapon (hitscan AND projectile). LagComp.Begin/End is the shared
+        // facade FireBullet/Arc use; it rewinds players+monsters+nades to the shooter's view-time and is a
+        // no-op unless a provider is installed and g_antilag==2 with cl_noantilag unset (BeginLagComp),
+        // which matches Base's `antilag` flag (false for non-clients, takeback only at mode 2). On a client,
+        // in a test, or a bot-only server it stays null and these traces use present positions, exactly as
+        // before.
+        LagComp.Begin(actor);
+        try
+        {
+
         // Trueaim: where does the centered shot actually land? For penetrate-walls weapons QC deliberately
         // trueaims only against bodies (so the shot aims at a target behind glass rather than stopping on the
         // glass); with no body-only trace filter here, we aim straight at the full-range point and let the
         // penetrating fireBullet pass through the wall to reach it.
-        Vector3 shotEnd;
         if (penetrateWalls)
         {
             shotEnd = aimEnd;
@@ -144,7 +163,7 @@ public static class WeaponFiring
 
         // Nudge the muzzle origin so it never sits inside a wall (QC tracebox of the projectile size).
         TraceResult org = Api.Trace.Trace(eye, mins, maxs, eye, MoveFilter.Normal, actor);
-        Vector3 shotOrg = org.StartSolid ? eye : org.EndPos;
+        shotOrg = org.StartSolid ? eye : org.EndPos;
 
         // Muzzle offset (QC W_SetupShot: ent.(weaponentity).movedir) — slide the origin from the eye to the gun
         // muzzle so the shot visibly leaves the WEAPON, not the camera. Only a player carries a view weapon. The
@@ -163,6 +182,12 @@ public static class WeaponFiring
             shotOrg = Api.Trace.Trace(shotOrg, mins, maxs, shotOrg + dv, MoveFilter.Normal, actor).EndPos;
             Vector3 fwd = QMath.Normalize(forward) * muzzle.X;                      // forward
             shotOrg = Api.Trace.Trace(shotOrg, mins, maxs, shotOrg + fwd, MoveFilter.Normal, actor).EndPos;
+        }
+
+        }
+        finally
+        {
+            LagComp.End();
         }
 
         Vector3 shotDir = QMath.Normalize(shotEnd - shotOrg);

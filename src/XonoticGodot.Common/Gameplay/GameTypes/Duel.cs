@@ -24,10 +24,14 @@ namespace XonoticGodot.Common.Gameplay;
 ///  - the powerup FilterItemDefinition hook (<see cref="OnFilterItemDefinition"/>, QC: block powerups unless
 ///    g_duel_with_powerups), subscribed live into MutatorHooks.FilterItemDefinition in <see cref="Activate"/>.
 ///
+/// Cross-boundary enforcement (the limit is the const <see cref="PlayerLimit"/> = 2; the two QC GetPlayerLimit
+/// enforcement points live in host files this class doesn't own, so they read the const directly):
+///  - the human free-slot join gate (QC nJoinAllowed) — GameWorld.GametypeHasFreeSlot refuses a join once two
+///    clients are already in the duel, wired into ClientManager.JoinAllowed via Clients.GametypeJoinGate;
+///  - the bot-fill cap (QC bot_fixcount → GetPlayerLimit) — BotPopulation.FixCount feeds Duel.PlayerLimit (not
+///    g_maxplayers) as the player limit, so bot fill stops at the 1v1 cap.
+///
 /// Deferred (NOTE — cross-boundary, recorded as cross-file todos):
-///  - the hard 1v1 player limit (QC GetPlayerLimit → 2): there is no GetPlayerLimit mutator hook to subscribe
-///    to, and the two enforcement points live in files this class doesn't own — ClientManager.JoinAllowed
-///    (free-slot join gate) and BotPopulation.TargetBotCount (bot-fill cap reads g_maxplayers, not the duel 2);
 ///  - the 'playerA vs playerB' duel title (QC Announcer_Duel → CenterPrintPanel.SetDuelTitle): the panel side
 ///    exists but the m_1v1 countdown driver that calls it is a client/HUD concern;
 ///  - map-size support gating (m_isAlwaysSupported diameter &lt; 3250 / m_isForcedSupported on DM maps) — a

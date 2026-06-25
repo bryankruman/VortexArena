@@ -74,6 +74,7 @@ public sealed class InstagibMutator : MutatorBase
     private HookHandler<MutatorHooks.SetStartItemsArgs>? _onSetStartItems;
     private HookHandler<GameHooks.PlayerDamageArgs>? _onSplitHealthArmor;
     private HookHandler<MutatorHooks.FilterItemDefinitionArgs>? _onFilterItemDef;
+    private HookHandler<MutatorHooks.ItemTouchArgs>? _onItemTouch;
 
     public override void Hook()
     {
@@ -88,6 +89,7 @@ public sealed class InstagibMutator : MutatorBase
         _onSetStartItems ??= OnSetStartItems;
         _onSplitHealthArmor ??= OnPlayerDamageSplitHealthArmor;
         _onFilterItemDef ??= OnFilterItemDefinition;
+        _onItemTouch ??= OnItemTouch;
 
         MutatorHooks.DamageCalculate.Add(_onDamageCalc);
         MutatorHooks.PlayerDies.Add(_onPlayerDies);
@@ -103,6 +105,8 @@ public sealed class InstagibMutator : MutatorBase
         GameHooks.PlayerDamageSplitHealthArmor.Add(_onSplitHealthArmor);
         // QC FilterItem: convert/replace/remove map weapons, powerups, ammo and jetpacks.
         MutatorHooks.FilterItemDefinition.Add(_onFilterItemDef);
+        // QC ItemTouch: cells pickup full-heals; ExtraLife grants armor "lives".
+        MutatorHooks.ItemTouch.Add(_onItemTouch);
 
         if (Api.Services is not null)
         {
@@ -138,6 +142,7 @@ public sealed class InstagibMutator : MutatorBase
         if (_onSetStartItems is not null) MutatorHooks.SetStartItems.Remove(_onSetStartItems);
         if (_onSplitHealthArmor is not null) GameHooks.PlayerDamageSplitHealthArmor.Remove(_onSplitHealthArmor);
         if (_onFilterItemDef is not null) MutatorHooks.FilterItemDefinition.Remove(_onFilterItemDef);
+        if (_onItemTouch is not null) MutatorHooks.ItemTouch.Remove(_onItemTouch);
     }
 
     private static bool IsPlayer(Entity? e) => e is not null && (e.Flags & EntFlags.Client) != 0;
@@ -188,6 +193,8 @@ public sealed class InstagibMutator : MutatorBase
                     args.Damage = 0f;
                     // QC: ++hitsound_damage_dealt on both; CENTER_INSTAGIB_LIVES_REMAINING tells the
                     // target how many lives are left. (hitsound is a client-only feedback signal.)
+                    target.HitsoundDamageDealtTotal += 1f;
+                    attacker!.HitsoundDamageDealtTotal += 1f;
                     NotificationSystem.Center(target, "INSTAGIB_LIVES_REMAINING", armor);
                 }
             }
@@ -215,6 +222,8 @@ public sealed class InstagibMutator : MutatorBase
                 armor -= 1f;
                 attacker.SetResource(ResourceType.Armor, armor);
                 NotificationSystem.Center(attacker, "INSTAGIB_LIVES_REMAINING", armor);
+                // QC: frag_attacker.hitsound_damage_dealt += frag_mirrordamage.
+                attacker.HitsoundDamageDealtTotal += args.MirrorDamage;
             }
             args.MirrorDamage = 0f;
         }
@@ -273,7 +282,11 @@ public sealed class InstagibMutator : MutatorBase
 
         bool godmode = (player.Flags & EntFlags.GodMode) != 0;
         bool unlimitedAmmo = (player.Items & (int)ItemFlag.UnlimitedAmmo) != 0;
-        bool gameStopped = Api.Cvars.GetFloat("g_game_stopped") != 0f;
+        // QC global game_stopped — host-driven freeze (warmup-over / match-ended / intermission). Read the real
+        // host flag (VehicleCommon.GameStopped, set by the match loop), falling back to the cvar mirror — same
+        // pattern as VehicleCommon.FreezeIfGameStopped. The bare cvar alone is never written, so it read as 0.
+        bool gameStopped = VehicleCommon.GameStopped
+            || Api.Cvars.GetFloat("g_game_stopped") != 0f;
         // QC autocvar_g_rm && autocvar_g_rm_laser — rocketminsta downgrade mode.
         bool rocketMinsta = Api.Cvars.GetFloat("g_rm") != 0f && Api.Cvars.GetFloat("g_rm_laser") != 0f;
 
@@ -339,9 +352,32 @@ public sealed class InstagibMutator : MutatorBase
         }
     }
 
+    // MUTATOR_HOOKFUNCTION(mutator_instagib, ItemTouch) — sv_instagib.qc:379. Fired (notify-style) from the
+    // real item-pickup path (ItemPickupRules.ItemTouch -> MutatorHooks.FireItemTouch) just before the give, so
+    // a cells pickup full-heals the toucher and an ExtraLife pickup grants armor "lives".
+    private bool OnItemTouch(ref MutatorHooks.ItemTouchArgs args)
+    {
+        Entity item = args.Item;
+        Entity toucher = args.Toucher;
+
+        // QC: if (GetResource(item, RES_CELLS)) — any item that carries cells (the VaporizerCells/cells pack).
+        if (item.Pickup is AmmoPickup ammo && ammo.Resource == ResourceType.Cells)
+        {
+            OnCellsTouch(toucher);
+            return false; // MUT_ITEMTOUCH_CONTINUE
+        }
+
+        // QC: if (item.itemdef == ITEM_ExtraLife).
+        if (item.ClassName is "item_extralife" || item.NetName == "extralife"
+            || (item.Pickup is not null && item.Pickup.NetName == "extralife"))
+            OnExtraLifeTouch(toucher);
+
+        return false;
+    }
+
     /// <summary>
     /// QC ItemTouch for a vaporizer-cells item: refill to full health (the cells themselves are given by the
-    /// item's normal resource path). Exposed so the item pipeline can route an instagib cells pickup here.
+    /// item's normal resource path). Routed live from <see cref="OnItemTouch"/> on a cells pickup.
     /// </summary>
     public void OnCellsTouch(Entity toucher)
     {
@@ -399,16 +435,13 @@ public sealed class InstagibMutator : MutatorBase
             || net is "invisibility" or "extralife" or "speed")
             return false;
 
-        // QC: ammo packs convert to vaporizer cells when the matching convert cvar is set; either way the
-        // original pack is removed (replaced). Without an item-spawn replace seam we can only delete here.
-        if (cls is "item_cells" || net == "cells")
-            return AmmoConvertCells;
-        if (cls is "item_rockets" || net == "rockets")
-            return AmmoConvertRockets;
-        if (cls is "item_shells" || net == "shells")
-            return AmmoConvertShells;
-        if (cls is "item_bullets" || net == "bullets")
-            return AmmoConvertBullets;
+        // QC (sv_instagib.qc:326-341): cell/rocket/shell/bullet packs are ALWAYS removed (return true). When
+        // the matching g_instagib_ammo_convert_* cvar is set they're REPLACED with vaporizer cells first; the
+        // port has no item-spawn replace seam (the VaporizerCells economy isn't ported), so for now the
+        // original pack is unconditionally deleted either way. (Replace-with-VaporizerCells = cross-file TODO.)
+        if (cls is "item_cells" or "item_rockets" or "item_shells" or "item_bullets"
+            || net is "cells" or "rockets" or "shells" or "bullets")
+            return true;
 
         // QC: Jetpack / FuelRegen removed unless g_instagib_allow_jetpacks.
         if (cls is "item_jetpack" or "item_fuel_regen" || net is "jetpack" or "fuel_regen")
@@ -418,7 +451,15 @@ public sealed class InstagibMutator : MutatorBase
         if (cls is "weapon_devastator" or "weapon_vortex" || net is "devastator" or "vortex")
             return true;
 
-        return false; // everything else spawns normally
+        // QC: the VaporizerCells economy item (cells-carrier, not a weapon) is kept; loot Vaporizer is kept with
+        // a cells seed (sv_instagib.qc:349-355, 361-366) — not yet ported. Keep it explicitly here for forward
+        // compatibility once the economy lands.
+        if (cls is "item_vaporizer_cells" or "item_minst_cells" || net == "vaporizer_cells")
+            return false;
+
+        // QC fallthrough (sv_instagib.qc:368): everything else (stock weapons/items that don't carry cells) is
+        // DELETED by default — a normal DM map under instagib must not spawn its stock weapons or ammo.
+        return true;
     }
 
     private bool OnForbidThrow(ref MutatorHooks.ForbidThrowCurrentWeaponArgs args) => true;

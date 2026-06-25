@@ -15,6 +15,22 @@ public readonly struct WeaponSlot
 }
 
 /// <summary>
+/// Per-bot scratch state for a weapon's <see cref="Weapon.BotWantsSecondary"/> (QC <c>wr_aim</c>). QC's wr_aim
+/// stamps a couple of fields on the firing actor (e.g. the rifle's <c>bot_secondary_riflemooth</c>) to persist
+/// a primary/secondary preference across frames; this carries the equivalent per-bot state (owned by the bot's
+/// brain) plus a fresh 0..1 RNG draw so a stateful wr_aim can roll its flip chance. Stateless wr_aims
+/// (MachineGun) ignore it.
+/// </summary>
+public struct BotAimState
+{
+    /// <summary>QC rifle <c>.bot_secondary_riflemooth</c>: the bot currently prefers the secondary fire.</summary>
+    public bool SecondaryToggle;
+
+    /// <summary>A fresh QC <c>random()</c> draw in [0,1) for this decision (the brain re-rolls it each call).</summary>
+    public float Random01;
+}
+
+/// <summary>
 /// Base weapon descriptor — one singleton instance per weapon type, enrolled into <see cref="Registries.Weapons"/>.
 /// The C# successor to QuakeC's <c>CLASS(Weapon)</c> registrable (see common/weapons/weapon/*.qc).
 /// Concrete weapons (Blaster, Vortex, …) subclass this; declared <c>partial</c> so the weapons module can
@@ -71,6 +87,19 @@ public abstract partial class Weapon : IRegistered
     // --- behavior hooks (override in concrete weapons) ---
     /// <summary>Main fire/think driver (QC wr_think).</summary>
     public virtual void WrThink(Entity actor, WeaponSlot slot, FireMode fire) { }
+
+    /// <summary>
+    /// QC <c>wr_aim</c> — the per-weapon bot fire-button selection. Given the distance to the bot's enemy and
+    /// the bot's skill, decide whether this weapon's bot should press the SECONDARY fire (ATCK2) instead of the
+    /// primary (ATCK) for the shot it has already decided to take this frame. Default <c>false</c> (bots fire
+    /// primary only). Weapons whose secondary is range-useful (e.g. the MachineGun's long-range no-spread burst)
+    /// override this; see machinegun.qc:wr_aim.
+    ///
+    /// <para><paramref name="ctx"/> carries the per-bot wr_aim state (the QC fields a weapon's wr_aim stamps on
+    /// the actor, e.g. the rifle's <c>bot_secondary_riflemooth</c> toggle) plus a 0..1 RNG draw, so a stateful
+    /// wr_aim can persist its primary/secondary preference across frames.</para>
+    /// </summary>
+    public virtual bool BotWantsSecondary(float enemyDistance, float skill, ref BotAimState ctx) => false;
 
     /// <summary>Per-actor setup when the weapon becomes active (QC wr_setup).</summary>
     public virtual void WrSetup(Entity actor, WeaponSlot slot) { }
@@ -157,6 +186,24 @@ public abstract partial class MutatorBase : IRegistered
 
     /// <summary>Unsubscribe hooks (called when the mutator is disabled — QC the MUTATOR_REMOVING branch).</summary>
     public virtual void Unhook() { }
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(&lt;mut&gt;, BuildMutatorsString)</c> (the per-mutator hook that does
+    /// <c>M_ARGV(0, string) = strcat(M_ARGV(0, string), ":Tag")</c>). The C# successor to the
+    /// <c>BuildMutatorsString</c> hook chain: append this mutator's colon-delimited machine token (e.g.
+    /// <c>":Vampire"</c>) to the accumulator <paramref name="s"/> and return it. Used to build the
+    /// <c>:gameinfo:mutators:LIST</c> event-log line / the server-browser mutators field. Default: no
+    /// contribution (a mutator that doesn't hook BuildMutatorsString).
+    /// </summary>
+    public virtual string BuildMutatorsString(string s) => s;
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(&lt;mut&gt;, BuildMutatorsPrettyString)</c>: append this mutator's
+    /// human-readable token (e.g. <c>", Vampire"</c>) to <paramref name="s"/> and return it — the leading
+    /// <c>", "</c> is stripped once by the caller after the chain runs (QC <c>substring(..., 2, ...)</c>).
+    /// Used for the map-info "modifications" line shown to joining clients. Default: no contribution.
+    /// </summary>
+    public virtual string BuildMutatorsPrettyString(string s) => s;
 }
 
 /// <summary>
@@ -207,4 +254,18 @@ public abstract partial class GameType : IRegistered
     /// persistent <see cref="Waypoints.WaypointSprites"/> manager instead.) The net layer merges both, filters per
     /// peer, and feeds the radar + the 3D in-world sprite layer. Default: none (DM/TDM have no objectives).</summary>
     public virtual void CollectWaypoints(System.Collections.Generic.List<Waypoints.WaypointSprite> into) { }
+
+    /// <summary>
+    /// QC the shared body of the <c>MUTATOR_HOOKFUNCTION(&lt;mode&gt;, ClientDisconnect)</c> /
+    /// <c>MakePlayerObserver</c> hooks (e.g. <c>ctf_RemovePlayer</c>): a player who leaves play — disconnects or
+    /// becomes a spectator — must relinquish any objective they hold (a carried flag/ball/key) and have every
+    /// objective entity that still back-references them (pass sender/target, dropper, …) cleared so it can never
+    /// dangle pointing at a gone player. Default: none (DM/TDM hold no per-player objective state); objective
+    /// modes override it. Dispatched once on disconnect and once when a player is forced to observer.
+    ///
+    /// NAMING NOTE: this is <c>OnPlayerRemoved</c> (not the QC verb <c>RemovePlayer</c>) to avoid colliding with
+    /// the unrelated per-mode <c>RemovePlayer(Player)</c> state-dict cleanups on Cts/Race/Survival/LMS — those are
+    /// orphaned helpers with different semantics, not this leave-play objective hook.
+    /// </summary>
+    public virtual void OnPlayerRemoved(Player player) { }
 }

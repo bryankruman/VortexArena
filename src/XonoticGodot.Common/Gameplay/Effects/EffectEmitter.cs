@@ -270,9 +270,13 @@ public static class EffectEmitter
     public static void TeBeam(string effectName, Vector3 from, Vector3 to, Vector3 color)
         => Sink.Emit(new EffectRequest(null, effectName, from, to, 0, color, color, null));
 
-    /// <summary>The Bumblebee pilot heal-beam (BRG_*): a green straight beam from the gun to the heal target.</summary>
+    /// <summary>
+    /// The Bumblebee pilot heal-beam (BRG_*): a straight beam from the gun to the heal target. Base's
+    /// bumble_raygun_draw tints the cylinder by colormod = (count ? '1 0 0' : '0 1 0') — i.e. pure green
+    /// for the default heal ray (raygun 0). Matched here so the beam colour is bit-faithful to Base.
+    /// </summary>
     public static void TeHealBeam(Vector3 from, Vector3 to)
-        => TeBeam("heal_beam", from, to, new Vector3(0.3f, 1f, 0.4f));
+        => TeBeam("heal_beam", from, to, new Vector3(0f, 1f, 0f));
 
     /// <summary>te_gunshot — a bullet impact puff (QC te_gunshot(org, count)); maps to EFFECT_MACHINEGUN_IMPACT.</summary>
     public static void TeGunshot(Vector3 origin, int count) => Emit("MACHINEGUN_IMPACT", origin, default, count);

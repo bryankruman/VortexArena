@@ -651,6 +651,8 @@ public sealed class Commands
         Register("noclip", "noclip — toggle noclip (needs sv_cheats)", CmdCheat);
         Register("fly", "fly — toggle flymode (needs sv_cheats)", CmdCheat);
         Register("give", "give <all|weapon|resource amount> — give items (needs sv_cheats)", CmdCheat);
+        Register("usetarget", "usetarget <targetname> — fire a named target (needs sv_cheats)", CmdCheat);
+        Register("killtarget", "killtarget <targetname> — remove a named target (needs sv_cheats)", CmdCheat);
 
         // ---- sandbox (QC the SV_ParseClientCommand hook in common/mutators/mutator/sandbox/sv_sandbox.qc). The
         //      client `sandbox` alias emits `cmd g_sandbox <sub> …`; route it to the SandboxMutator's HandleCommand
@@ -1314,8 +1316,10 @@ public sealed class Commands
         Player p = ctx.Caller;
         if (p.FragsStatus == Player.FragsSpectator) return true;
         if (p.IsDead) { ctx.Print("already dead"); return true; }
-        XonoticGodot.Common.Gameplay.Damage.Combat.Damage(p, null, null, 100000f,
-            XonoticGodot.Common.Gameplay.Damage.DeathTypes.Kill, p.Origin, System.Numerics.Vector3.Zero);
+        // QC server/clientkill.qc ClientKill → ClientKill_TeamChange(this, 0): defer the suicide through the
+        // g_balance_kill_delay countdown (spoken kill announcer + CENTER_TEAMCHANGE_SUICIDE print). Begin() falls
+        // back to an immediate kill when the delay is <= 0, so the player always dies (then respawns) as before.
+        _world.KillCountdown.Begin(p, 0);
         return true;
     }
 
@@ -2019,18 +2023,34 @@ public sealed class Commands
             return true;
         }
         Player p = ctx.Caller;
-        if (p.IsDead) return true;                                   // QC: dead can't taunt (silent)
-        if (p.IsObserver || p.FragsStatus == Player.FragsSpectator) return true; // no body to play from (silent)
+        if (p.IsDead) return true;                                   // QC cmd.qc:1047 — dead can't taunt (silent)
+        if (p.IsObserver || p.FragsStatus == Player.FragsSpectator) return true; // QC cmd.qc:1053 — no body (silent)
 
-        // QC VoiceMessage(caller, e, msg) -> _GlobalSound: route the voice message through the full VOICETYPE
-        // dispatch so it reaches the correct recipients with the right gates/attenuation — TEAMRADIO goes to the
-        // emitter's team, TAUNT/AUTOTAUNT honour sv_taunt/sv_autotaunt/sv_gentle, LASTATTACKER hits the last
-        // attacker. VoiceMessages.VoiceTypeOf resolves the routing from the bare id (an id not in the voice-message
-        // catalog defaults to TAUNT, matching QC's _GetPlayerSoundSampleField fallback to playersound_taunt). The
-        // live real-client roster (Clients.Players) is the recipient set QC iterates via FOREACH_CLIENT. Previously
-        // this played only on the emitter, so all recipient routing/gates were dead.
+        // QC cmd.qc:1059-1061 — the optional [<message>] arg (everything from token 2 onward).
+        string msg = ctx.ArgCount >= 3 ? ctx.ArgTail(2) : "";
+
+        // QC VoiceMessage(caller, e, msg) macro (globalsound.qh:144-155): route the message text through Say first
+        // (so a voice/radio command's text appears in chat, is flood-throttled via the chat flood field, and the
+        // spectator gating downgrades a spectator say), THEN gate the sound on the resulting flood code.
+        //   ownteam = (voicetype == VOICETYPE_TEAMRADIO) -> teamsay
+        //   fake = IS_SPEC || IS_OBSERVER || flood < 0   (spec/observer already returned above, so fake == flood<0)
+        //   flood == 0 -> the macro `break`s: NO sound at all (the message was rejected/muted-silent by Say).
+        VoiceType vt = VoiceMessages.VoiceTypeOf(voiceType);
+        bool ownteam = vt == VoiceType.TeamRadio;
+        int flood = Chat.Say(p, ownteam ? 1 : 0, /*privatesay*/ null, msg, /*floodcontrol*/ true);
+        bool fake;
+        if (flood < 0) fake = true;
+        else if (flood > 0) fake = false;
+        else return true; // flood == 0: Say rejected the line (over flood limit) — emit no voice sound at all.
+
+        // QC _GlobalSound: route the voice message through the full VOICETYPE dispatch so it reaches the correct
+        // recipients with the right gates/attenuation — TEAMRADIO goes to the emitter's team, TAUNT/AUTOTAUNT honour
+        // sv_taunt/sv_autotaunt/sv_gentle, LASTATTACKER hits the last attacker. A `fake` sound (flooded speaker) is
+        // heard only by the emitter. VoiceMessages.VoiceTypeOf resolves the routing from the bare id (an unknown id
+        // defaults to TAUNT, matching QC's _GetPlayerSoundSampleField fallback). The live real-client roster
+        // (Clients.Players) is the recipient set QC iterates via FOREACH_CLIENT.
         if (Api.Services is not null)
-            SoundSystem.GlobalSound(p, voiceType, _world.Clients.Players);
+            SoundSystem.GlobalSound(p, voiceType, _world.Clients.Players, fake: fake);
         return true;
     }
 

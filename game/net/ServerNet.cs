@@ -110,6 +110,9 @@ public sealed class ServerNet : IDisposable
     // this tick's scoreboard snapshot (built once, broadcast to all; per-client gated by _scoreVersion).
     private readonly List<XonoticGodot.Net.ScoreRowWire> _scoreRows = new();
     private readonly List<(int team, int score)> _scoreTeams = new();
+    // QC the race/CTS rankings table (Scoreboard_Rankings_Draw): best-first (time, holder) for this map,
+    // captured from the persistent RaceRecords DB; empty in non-race modes.
+    private readonly List<(int timeEncoded, string holder)> _scoreRankings = new();
     private int _scoreVersion;
     // this tick's score-LAYOUT generation (the active label/flag set + gametype/teamplay): the ScoreInfo block
     // (QC ENT_CLIENT_SCORES_INFO) is sent per-client only when this changed since they last got it (a mode
@@ -1254,7 +1257,7 @@ public sealed class ServerNet : IDisposable
         // re-boarding. Routed to the server-authoritative VehicleBoarding.UseKey (Common-side, headless).
         bool useDown = resolved.ButtonUse;
         if (useDown && !st.UsePrevDown)
-            VehicleBoarding.UseKey(p);
+            UseKeyEdge(p);
         st.UsePrevDown = useDown;
 
         st.TickInput = resolved;
@@ -1360,12 +1363,26 @@ public sealed class ServerNet : IDisposable
         // +use rising edge from the merged state (once per tick, like the legacy path).
         bool useDown = merged.ButtonUse;
         if (useDown && !st.UsePrevDown)
-            VehicleBoarding.UseKey(p);
+            UseKeyEdge(p);
         st.UsePrevDown = useDown;
 
         st.TickInput = merged;
         st.TickInputTime = now;
         return merged;
+    }
+
+    /// <summary>
+    /// The +use rising-edge dispatcher (QC PlayerUseKey, client.qc): the engine fires PlayerUseKey once per press
+    /// and every interested mutator/gametype hooks it. We run the vehicle board/exit hook first (matching the
+    /// shipped order), then — if no vehicle consumed the key — the active gametype's +use hook. CTF's hook
+    /// (Ctf.HandleUseKey) throws the carried flag (g_ctf_throw) or requests a pass from the nearest carrier
+    /// (g_ctf_pass_request); the roster is the live player list it scans to find a carrier to request from.
+    /// </summary>
+    private void UseKeyEdge(Player p)
+    {
+        VehicleBoarding.UseKey(p);
+        if (_world.GameType is Ctf ctf)
+            ctf.HandleUseKey(p, _world.Clients.Players);
     }
 
     /// <summary>
@@ -1526,7 +1543,7 @@ public sealed class ServerNet : IDisposable
             _snapshotWriter.WriteBool(sendScores);
             if (sendScores)
             {
-                XonoticGodot.Net.ScoreboardBlock.Serialize(_snapshotWriter, _scoreRows, _scoreTeams);
+                XonoticGodot.Net.ScoreboardBlock.Serialize(_snapshotWriter, _scoreRows, _scoreTeams, _scoreRankings);
                 st.LastScoreVersion = _scoreVersion;
             }
 
@@ -1656,7 +1673,11 @@ public sealed class ServerNet : IDisposable
                 Model = p.Model,           // QC .model (playermodel) — the client loads the skeletal IQM by name
                 Flags = (p.OnGround ? NetEntityFlags.OnGround : 0)
                       | (p.IsDead ? NetEntityFlags.Dead : 0)
-                      | (p.IsDucked ? NetEntityFlags.Crouched : 0), // QC FL_DUCKED → remote crouch anim/hull
+                      | (p.IsDucked ? NetEntityFlags.Crouched : 0) // QC FL_DUCKED → remote crouch anim/hull
+                        // QC common/physics/player.qc:878 — csqcmodel_modelflags |= MF_ROCKET when
+                        // (IT_USING_JETPACK && !IS_DEAD && !intermission). Networked so the client re-derives
+                        // MF_ROCKET (rocket trail + looping jetpack-fly sound) for this player.
+                      | (p.UsingJetpack && !p.IsDead && !_world.Intermission.Running ? NetEntityFlags.UsingJetpack : 0),
                 // [T41/T46] the Feedback stats the client diffs/draws (view.qc HitSound + objective rings):
                 //   - HitDamageDealtTotal: cumulative damage dealt — the client diffs it to fire the hit sound.
                 //   - NadeTimer: 0..1 held-nade charge — drives the nade objective ring.
@@ -1711,7 +1732,13 @@ public sealed class ServerNet : IDisposable
             // model field. ProjectileRenderer ignores the model geometry, so this only feeds ProjectileCatalog.
             string netModel = e.Model;
             if (kind == NetEntityKind.Projectile && string.IsNullOrEmpty(netModel))
+            {
                 netModel = ProjectileCatalogKey(e.ClassName, e.NetName);
+                // QC CSQCProjectile sub-variant: a bouncing grenade (mortar type 1) networks its own model token so
+                // the client picks PROJECTILE_GRENADE_BOUNCING (sideways tumble) instead of PROJECTILE_GRENADE.
+                if (e.CsqcProjectileBouncing)
+                    netModel += " bouncing";
+            }
 
             int netId = EntityNetBase + e.Index;
             if (netId > ushort.MaxValue)
@@ -1893,19 +1920,48 @@ public sealed class ServerNet : IDisposable
         for (int i = 0; i < players.Count; i++)
         {
             Player p = players[i];
+            // QC ping_packetloss (server/world.qc:74): a connected human's measured ENet packet loss, quantized
+            // to a 0..255 byte (min(ceil(loss*255),255)); bots and unmapped players send 0.
+            int plByte = 0;
+            if (_byPlayer.TryGetValue(p, out PeerState? plSt))
+                plByte = System.Math.Min((int)System.MathF.Ceiling(_transport.PacketLoss(plSt.PeerId) * 255f), 255);
             // carry the entcs name/team slice so the client can label/group the row without an entcs stream
             // (the port has no entcs name source; the scoreboard would otherwise have an opaque net id).
             _scoreRows.Add(new XonoticGodot.Net.ScoreRowWire(NetIdFor(p),
                 XonoticGodot.Common.Gameplay.Scoring.GameScores.CaptureColumns(p), p.NetName, (int)p.Team,
                 // QC pl.team == NUM_SPECTATOR: an observer is listed in the scoreboard spectator block, not the
                 // score table. The port keeps the observer's last team color, so flag it explicitly here.
-                isSpectator: p.IsObserver || p.FragsStatus == Player.FragsSpectator));
+                isSpectator: p.IsObserver || p.FragsStatus == Player.FragsSpectator,
+                packetLossByte: plByte));
         }
 
         _scoreTeams.Clear();
         if (_world.Teamplay is { IsTeamGame: true })
             foreach (int t in XonoticGodot.Common.Gameplay.Teams.Active(_world.Teamplay.TeamCount))
                 _scoreTeams.Add((t, _world.Scores.TeamScore(t)));
+
+        // QC the race/CTS rankings table (Scoreboard_Rankings_Draw): in race modes, snapshot the persistent
+        // RaceRecords DB's best-first ranked times for this map so the client scoreboard's rankings block has
+        // data (the C# stand-in for RACE_NET_SERVER_RANKINGS). Non-race modes leave it empty (one byte on the wire).
+        _scoreRankings.Clear();
+        string gt = _world.GameType?.NetName ?? "";
+        if (gt == "rc" || gt == "cts")
+        {
+            string map = _world.Services.Cvars.GetString("mapname");
+            string recordType = gt == "cts"
+                ? XonoticGodot.Common.Gameplay.RaceRecords.CtsRecord
+                : XonoticGodot.Common.Gameplay.RaceRecords.RaceRecord;
+            // QC RANKINGS_DISPLAY_CNT caps what's networked for display; mirror with a small display cap.
+            const int displayCnt = 15;
+            for (int pos = 1; pos <= displayCnt; pos++)
+            {
+                float t = XonoticGodot.Common.Gameplay.RaceRecords.ReadTime(map, recordType, pos);
+                if (t == 0f) break; // ranked table is dense from rank 1; first empty slot ends it
+                _scoreRankings.Add((
+                    XonoticGodot.Common.Gameplay.Scoring.GameScores.TimeEncode(t),
+                    XonoticGodot.Common.Gameplay.RaceRecords.ReadName(map, recordType, pos)));
+            }
+        }
     }
 
     /// <summary>Net-id base for non-player entities, above the small ENet peer ids (so the two id spaces can't collide).</summary>
@@ -2000,6 +2056,11 @@ public sealed class ServerNet : IDisposable
         // owner's rendered view angles client-side. Owner-only (only the local player sees their own kick), so
         // it rides the owner block, not the entity stream. Small + cheap; sent unconditionally for lockstep.
         w.WriteVector(p.PunchAngle, XonoticGodot.Net.NetPrecision.Float);
+
+        // QC view punch ORIGIN kick (PM_check_punch punchvector, decayed 30u/s server-side): added to the rendered
+        // view ORIGIN (vieworg += view_punchvector, cl_player.qc:570) — owner-only, same block as PunchAngle. Stock
+        // content never sets it non-zero, but the seam is now wired end-to-end so any future origin kick is faithful.
+        w.WriteVector(p.PunchVector, XonoticGodot.Net.NetPrecision.Float);
 
         // QC STAT(MOVEVARS_HIGHSPEED) per-player (Physics_UpdateStats): the RESOLVED top-speed multiplier this tick
         // — the Speed powerup ×, the speed/disability buffs ×, the entrap nade × all folded into player.SpeedMultiplier

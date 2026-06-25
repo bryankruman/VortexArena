@@ -30,6 +30,15 @@ public sealed class ServerPlayerState
     // ---- fall-damage bookkeeping (QC .oldvelocity captured each CreatureFrame) ----
     public System.Numerics.Vector3 OldVelocity;
 
+    // ---- `kill` / team-change countdown (QC server/clientkill.qc killindicator.cnt / KillIndicator_Think) ----
+    // KillCntdownActive mirrors the presence of QC .killindicator; KillCntdownCnt is the indicator's `cnt`
+    // (whole seconds remaining); KillCntdownNextThink is the absolute sim time of the next per-second think
+    // (QC .nextthink). The port models the presentation-relevant subset of the kill indicator (announcer
+    // NUM_KILL + the CENTER_TEAMCHANGE countdown print) — the floating digit entity is not networked.
+    public bool KillCntdownActive;
+    public int KillCntdownCnt;
+    public float KillCntdownNextThink;
+
     /// <summary>Reset the transient timers on (re)spawn (QC PutPlayerInServer clears these). The regen/rot
     /// pause timers are primed on the Entity by SpawnSystem.PutPlayerInServer (REGEN3), not here.</summary>
     public void OnSpawn()
@@ -40,6 +49,9 @@ public sealed class ServerPlayerState
         WaterSoundFinished = 0f;
         InWater = false;
         OldVelocity = System.Numerics.Vector3.Zero;
+        KillCntdownActive = false;
+        KillCntdownCnt = 0;
+        KillCntdownNextThink = 0f;
     }
 }
 

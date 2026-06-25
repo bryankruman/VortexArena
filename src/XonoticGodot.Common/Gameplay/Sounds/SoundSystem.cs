@@ -255,10 +255,10 @@ public static class SoundSystem
     /// TAUNT/AUTOTAUNT which broadcast to a subset; null/empty falls back to playing on the emitter only.
     /// </summary>
     public static void GlobalSound(Entity emitter, string voiceMessageId,
-        IReadOnlyList<Entity>? recipients = null, string? modelSoundDir = null)
+        IReadOnlyList<Entity>? recipients = null, string? modelSoundDir = null, bool fake = false)
     {
         VoiceType vt = VoiceMessages.VoiceTypeOf(voiceMessageId);
-        _GlobalSound(emitter, voiceMessageId, vt, recipients, modelSoundDir);
+        _GlobalSound(emitter, voiceMessageId, vt, recipients, modelSoundDir, fake);
     }
 
     /// <summary>
@@ -274,8 +274,12 @@ public static class SoundSystem
     ///   <item><b>PLAYERSOUND</b>: broadcast to everyone at ATTEN_NORM.</item>
     /// </list>
     /// </summary>
+    /// <param name="fake">QC <c>fake</c> (globalsound.qc:341): when true the sound is heard ONLY by the emitter
+    /// (every voicetype branch collapses to <c>msg_entity = this; …</c> at MSG_ONE). Driven by the VoiceMessage
+    /// macro from the chat flood/spectator gate (fake = IS_SPEC || IS_OBSERVER || Say-flood &lt; 0): a spectator,
+    /// observer, or flood-faked speaker hears their own voice taunt but no one else does.</param>
     public static void _GlobalSound(Entity emitter, string voiceMessageId, VoiceType voiceType,
-        IReadOnlyList<Entity>? recipients, string? modelSoundDir = null)
+        IReadOnlyList<Entity>? recipients, string? modelSoundDir = null, bool fake = false)
     {
         // QC: if(this.classname == "body") return; — corpses don't speak.
         if (emitter is null || emitter.IsCorpse) return;
@@ -290,8 +294,8 @@ public static class SoundSystem
             case VoiceType.LastAttackerOnly:
             case VoiceType.LastAttacker:
             {
-                // QC: if(!this.pusher) break; play to the last attacker at the directional attenuation.
-                if (emitter.Pusher is { } attacker)
+                // QC: if(!fake) { if(!this.pusher) break; … } — a faked speaker skips the attacker emit.
+                if (!fake && emitter.Pusher is { } attacker)
                     Emit(attacker, sample, SoundLevels.VolBaseVoice, SoundLevels.AttenMin);
                 // QC: LASTATTACKER_ONLY stops here; LASTATTACKER also plays back to the speaker at ATTEN_NONE.
                 if (voiceType == VoiceType.LastAttackerOnly) break;
@@ -301,6 +305,8 @@ public static class SoundSystem
 
             case VoiceType.TeamRadio:
             {
+                // QC: if(fake) { msg_entity = this; X(); } — a faked speaker hears it alone.
+                if (fake) { Emit(emitter, sample, SoundLevels.VolBaseVoice, SoundLevels.AttenMin); break; }
                 // QC: FOREACH_CLIENT(IS_REAL_CLIENT(it) && SAME_TEAM(it, this), …) at the directional atten.
                 if (recipients is null) { Emit(emitter, sample, SoundLevels.VolBaseVoice, SoundLevels.AttenMin); break; }
                 foreach (Entity it in recipients)
@@ -319,6 +325,8 @@ public static class SoundSystem
                 }
                 if (!CvarBool(VoiceCvars.SvTaunt)) break;
                 if (CvarBool(VoiceCvars.SvGentle)) break;
+                // QC: if(fake) { msg_entity = this; X(); } — a faked speaker hears it alone.
+                if (fake) { Emit(emitter, sample, SoundLevels.VolBaseVoice, SoundLevels.AttenNorm); break; }
                 // QC broadcasts to all real clients (FOREACH_CLIENT(IS_REAL_CLIENT(it))) at the taunt atten.
                 if (recipients is null) { Emit(emitter, sample, SoundLevels.VolBaseVoice, SoundLevels.AttenNorm); break; }
                 foreach (Entity it in recipients)

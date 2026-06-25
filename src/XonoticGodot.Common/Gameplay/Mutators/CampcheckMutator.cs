@@ -168,9 +168,10 @@ public sealed class CampcheckMutator : MutatorBase
     // MUTATOR_HOOKFUNCTION(campcheck, PlayerDies) — clear the camp centerprint on death.
     private bool OnPlayerDies(ref MutatorHooks.PlayerDiesArgs args)
     {
-        // QC: Kill_Notification(NOTIF_ONE, frag_target, MSG_CENTER, CPID_CAMPCHECK) — clears the "Don't camp!"
-        // centerprint for the victim. The port's centerprint clear-by-id is a client concern; sending the
-        // notification is the faithful server-side action (the client groups/clears by CPID_CAMPCHECK).
+        // QC: Kill_Notification(NOTIF_ONE, frag_target, MSG_CENTER, CPID_CAMPCHECK) — retract the "Don't camp!"
+        // centerprint for the victim so a stale warning doesn't linger past death. SendCenterKill is the port's
+        // MSG_CENTER_KILL successor; NOTIF_ONE -> NotifBroadcast.One, target = the frag victim, group CPID_CAMPCHECK.
+        NotificationSystem.SendCenterKill(NotifBroadcast.One, args.Target, "CPID_CAMPCHECK");
         return false;
     }
 

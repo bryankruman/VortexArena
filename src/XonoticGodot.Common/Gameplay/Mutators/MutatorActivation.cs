@@ -78,4 +78,31 @@ public static class MutatorActivation
         foreach (MutatorBase mut in Mutators.All)
             Remove(mut);
     }
+
+    /// <summary>
+    /// QC <c>MUTATOR_CALLHOOK(BuildMutatorsString, s)</c> (server/gamelog.qc:50): run the BuildMutatorsString
+    /// hook chain — each currently-active (<see cref="MutatorBase.Added"/>) mutator appends its colon-delimited
+    /// machine token (e.g. <c>":Vampire"</c>) to the accumulator. Returns the full string. Only added mutators
+    /// contribute, mirroring QC where the hook only fires for mutators whose handler was subscribed.
+    /// </summary>
+    public static string BuildMutatorsString(string s)
+    {
+        foreach (MutatorBase mut in Mutators.All)
+            if (mut.Added)
+                s = mut.BuildMutatorsString(s);
+        return s;
+    }
+
+    /// <summary>
+    /// QC <c>MUTATOR_CALLHOOK(BuildMutatorsPrettyString, "")</c> (server/client.qc:1107): run the
+    /// BuildMutatorsPrettyString hook chain — each active mutator appends its <c>", &lt;Pretty&gt;"</c> token.
+    /// The caller strips the leading <c>", "</c> after the chain (QC <c>substring(s, 2, strlen(s) - 2)</c>).
+    /// </summary>
+    public static string BuildMutatorsPrettyString(string s)
+    {
+        foreach (MutatorBase mut in Mutators.All)
+            if (mut.Added)
+                s = mut.BuildMutatorsPrettyString(s);
+        return s;
+    }
 }

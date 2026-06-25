@@ -23,6 +23,8 @@ public static class BotObjectiveRoles
     private const float RatingFlag = 30000f;
     private const float RatingControlPoint = 10000f;
     private const float RatingBall = 8000f;
+    // QC havocbot_goalrating_tkaball ratingscale_sameteam: chasing your OWN team's carrier rates lower (TKA only).
+    private const float RatingBallSameTeam = 4000f;
     private const float RatingGenerator = 20000f;
     private const float RatingKey = 10000f;
 
@@ -202,7 +204,8 @@ public static class BotObjectiveRoles
     /// <summary>
     /// KeyHunt role (QC havocbot_role_kh_freelancer): rate the key entities — go to a teammate carrier to
     /// support, an enemy carrier to kill, or a dropped key to grab — plus items + roaming. Keys are the
-    /// spawned <c>keyhunt_key</c> map/state entities found by classname; carriers come from the gametype.
+    /// spawned <c>item_kh_key</c> entities found by classname (KeyHunt.SpawnKey); the carrier is the held
+    /// objective's <see cref="Entity.GtCarrier"/> back-link set by AttachToCarrier (NOT Entity.Owner).
     /// </summary>
     public static void RoleKeyHunt(BotBrain brain, GoalRater rater)
     {
@@ -210,17 +213,18 @@ public static class BotObjectiveRoles
         rater.Start();
         if (Api.Services is not null)
         {
-            Api.Entities.FindByClass("keyhunt_key", _scratch);
+            Api.Entities.FindByClass("item_kh_key", _scratch);
             for (int i = 0; i < _scratch.Count; i++)
             {
                 Entity key = _scratch[i];
                 if (key.IsFreed) continue;
-                // A carried key (key.Owner set) rates toward the carrier (ally to support, enemy to kill);
+                // A carried key (key.GtCarrier set) rates toward the carrier (ally to support, enemy to kill);
                 // a loose key rates toward its drop position.
-                Entity target = key.Owner ?? key;
+                Entity? carrier = key.GtCarrier;
+                Entity target = carrier ?? key;
                 Vector3 pos = target.Origin;
                 float scale = RatingKey;
-                if (key.Owner is not null && (int)key.Owner.Team == (int)bot.Team)
+                if (carrier is not null && (int)carrier.Team == (int)bot.Team)
                     scale *= 0.5f; // supporting an ally carrier is lower priority than grabbing/killing
                 rater.Rate(bot.Origin, target, pos, scale, 100000f);
             }
@@ -238,7 +242,9 @@ public static class BotObjectiveRoles
     /// <summary>
     /// Keepaway role (QC havocbot_role_ka_collector/carrier): if carrying the ball, fight enemies for points;
     /// otherwise chase the loose ball (or the enemy carrier to take it). The ball is the spawned
-    /// <c>keepaway_ball</c> entity; its <see cref="Entity.Owner"/> marks the carrier.
+    /// <c>keepawayball</c> entity; its <see cref="Entity.GtCarrier"/> marks the carrier while held
+    /// (== Base ka_TouchEvent's <c>ball.owner = toucher</c>; the port reserves <see cref="Entity.Owner"/>
+    /// for the previous-owner self-recapture lockout, set only on drop).
     /// </summary>
     public static void RoleKeepaway(BotBrain brain, GoalRater rater)
     {
@@ -246,7 +252,7 @@ public static class BotObjectiveRoles
         rater.Start();
 
         Entity? ball = FindBall();
-        bool carryingBall = ball is not null && ReferenceEquals(ball.Owner, bot);
+        bool carryingBall = ball is not null && ReferenceEquals(ball.GtCarrier, bot);
 
         if (carryingBall)
         {
@@ -256,9 +262,16 @@ public static class BotObjectiveRoles
         }
         else if (ball is not null)
         {
-            // Collector: go to the ball (or its carrier to take it).
-            Entity target = ball.Owner ?? ball;
-            rater.Rate(bot.Origin, target, target.Origin, RatingBall, 2000f);
+            // Collector: go to the ball (or its carrier to take it). Base havocbot_goalrating_ball / _tkaball
+            // prefer a loose ball, else the carrier (it.owner) — here GtCarrier when held.
+            Entity? carrier = ball.GtCarrier;
+            Entity target = carrier ?? ball;
+            // Team Keepaway (havocbot_goalrating_tkaball): a loose ball or an ENEMY carrier rates 8000; a SAME-TEAM
+            // carrier rates 4000 (chase your own carrier less). Plain (FFA) Keepaway has no teams, so always 8000.
+            float scale = RatingBall;
+            if (carrier is not null && (brain.GameType?.TeamGame ?? false) && (int)carrier.Team == (int)bot.Team)
+                scale = RatingBallSameTeam;
+            rater.Rate(bot.Origin, target, target.Origin, scale, 2000f);
             BotRoles.GoalrateItems(brain, rater, bot.Origin, 8000f);
         }
         else
@@ -274,7 +287,9 @@ public static class BotObjectiveRoles
     private static Entity? FindBall()
     {
         if (Api.Services is null) return null;
-        Api.Entities.FindByClass("keepaway_ball", _scratch);
+        // The live ball is spawned with classname "keepawayball" (BallEntity.WithKindDefaults, no underscore) for
+        // both Keepaway and Team Keepaway — querying the wrong class made the role inert (bots fell back to DM).
+        Api.Entities.FindByClass("keepawayball", _scratch);
         for (int i = 0; i < _scratch.Count; i++)
             if (!_scratch[i].IsFreed) return _scratch[i];
         return null;

@@ -108,6 +108,16 @@ public sealed class Notification : IRegistered
     /// <summary>Centerprint id group for MSG_CENTER (QC CPID_*); empty = CPID_Null. Client-side grouping.</summary>
     public string Cpid = "";
 
+    /// <summary>
+    /// The raw MSG_CENTER duration/count spec (QC <c>nent_durcnt</c>, the durcnt macro arg), e.g.
+    /// "item_centime 0", "1 f1", "4 0" or "" (== "0 0"). Token 0 is the display DURATION and token 1 the
+    /// ^COUNT countdown count; each token is a literal number, an <c>fN</c> float-arg reference, or the
+    /// <c>item_centime</c> token (== notification_item_centerprinttime = 1.5). Resolved at centerprint time
+    /// (QC <c>Local_Notification_centerprint_Add</c>, notifications/all.qc:1069) — see
+    /// <c>HudNotifications.ShowCenter</c>. Empty means "use the panel default duration / no countdown".
+    /// </summary>
+    public string Durcnt = "";
+
     // --- MSG_ANNCE payload ---
     /// <summary>Announcer sound filename without extension (QC <c>snd</c>), e.g. "headshot".</summary>
     public string Sound = "";
@@ -241,14 +251,18 @@ public static class Notifications
             Args = args, Icon = icon, Normal = normal, Gentle = gentle,
         });
 
-    /// <summary>QC <c>MSG_CENTER_NOTIF(name, default, strnum, flnum, args, cpid, durcnt, normal, gentle)</c>.</summary>
+    /// <summary>
+    /// QC <c>MSG_CENTER_NOTIF(name, default, strnum, flnum, args, cpid, durcnt, normal, gentle)</c>. The
+    /// <paramref name="durcnt"/> spec (QC the durcnt macro arg) is appended LAST so the existing positional
+    /// call sites keep binding; it carries the "DURATION COUNT" token pair (resolved at centerprint time).
+    /// </summary>
     public static Notification Center(string name, int strCount, int floatCount, string args, string cpid,
-        string normal, string gentle = "", bool enabled = true)
+        string normal, string gentle = "", bool enabled = true, string durcnt = "")
         => Register(new Notification
         {
             Name = name, Type = MsgType.Center, Enabled = enabled,
             StringCount = strCount, FloatCount = floatCount,
-            Args = args, Cpid = cpid, Normal = normal, Gentle = gentle,
+            Args = args, Cpid = cpid, Durcnt = durcnt, Normal = normal, Gentle = gentle,
         });
 
     /// <summary>

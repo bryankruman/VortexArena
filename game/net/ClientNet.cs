@@ -105,6 +105,11 @@ public sealed class ClientNet : IDisposable
     /// camera without skewing where shots go. Owner-replicated; zero while not recently fired.</summary>
     public NVec3 PunchAngle { get; private set; }
 
+    /// <summary>QC view punch ORIGIN kick (<c>punchvector</c>, PM_check_punch, decayed 30u/s): the weapon-recoil
+    /// origin kick added to the rendered view ORIGIN ONLY (<c>vieworg += view_punchvector</c>, cl_player.qc:570),
+    /// not the aim. Owner-replicated; zero while not recently fired (stock content never drives it non-zero).</summary>
+    public NVec3 PunchVector { get; private set; }
+
     /// <summary>
     /// QC <c>STAT(RESPAWN_TIME)</c>: the absolute sim time the local player becomes/became respawnable while
     /// dead, NEGATED while a respawn is imminent (DEAD_RESPAWNING) and 0 while alive. The HUD shows the
@@ -806,6 +811,7 @@ public sealed class ClientNet : IDisposable
             SpectateeStatusChangedTime = Api.Services is not null ? Api.Clock.Time : SpectateeStatusChangedTime;
         SpectateeStatus = newSpectatee;
         PunchAngle = r.ReadVector(NetPrecision.Float); // QC view punch (recoil kick) — added to the view angles
+        PunchVector = r.ReadVector(NetPrecision.Float); // QC view punch ORIGIN kick — added to the rendered origin
         LocalSpeedMultiplier = r.ReadFloat(); // QC STAT(MOVEVARS_HIGHSPEED) — mirrored onto the prediction carrier
 
         // [T57 accuracy] — the owner's own per-weapon accuracy bytes (QC ENT_CLIENT_ACCURACY, owner-only), read

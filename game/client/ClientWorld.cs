@@ -1080,19 +1080,28 @@ public partial class ClientWorld : Node3D
             ApplyLod(e, node, st, viewOrigin);
 
             // (3) EFFECTS: EF_* lights/particles/render-flags from the networked Effects bitfield. MF_* model
-            //     flags aren't networked, so 0 here for remote entities (EF_BRIGHTFIELD trail still applies).
+            //     flags aren't networked, so 0 here for remote entities (EF_BRIGHTFIELD trail still applies) —
+            //     EXCEPT MF_ROCKET, which the client re-derives from the networked IT_USING_JETPACK bit (QC
+            //     common/physics/player.qc:879) and passes via ComposeForcedAppearance below to drive the rocket
+            //     trail + looping jetpack-fly sound (csqcmodel_hooks.qc:611/645).
             //     Skip the per-frame material reset for the common no-effects prop UNLESS state is still active
             //     (so the frame effects turn off, we still run once to clear the light/render-flags) — QC sets a
             //     cheap int flag every frame; the port's reset walks meshes, so guard it to avoid churn.
             bool ghostBit = (e.Effects & CsqcModelEffectFlags.CSQCMODEL_EF_RESPAWNGHOST) != 0;
+            // QC IT_USING_JETPACK → csqcmodel_modelflags |= MF_ROCKET. Re-derived per player on the client (the
+            // Wave-3 ComposeForcedAppearance seam) since MF_* isn't networked. Drives the jetpack-fly loop + trail.
+            CsqcModelAppearance.ForcedAppearance forced = e.UsingJetpack
+                ? CsqcModelAppearance.ComposeForcedAppearance(strength: false, shield: false, jetpackActive: true, forcedGlowmod: (-1f, -1f, -1f))
+                : default;
             bool effectsActive = e.Effects != 0 || ghostBit || st.Effects.LoopChannel != 0
+                                 || e.UsingJetpack          // start the jetpack loop the frame the bit turns on
                                  || st.Effects.LastEffects != 0; // re-run ONE frame after effects clear so the
                                                                  // render-flags/visibility/light all reset (no stick)
             if (effectsActive)
                 // Trail return is unused here: entities in _entityNodes are non-projectiles (players/items/
                 // monsters); projectiles own their trail via ProjectileRenderer. EF_BRIGHTFIELD on a player
                 // model (rare) is the only dropped case — flagged as a known parity gap.
-                _ = CsqcModelEffects.Apply(Effects, node, e, st.Effects, modelFlags: 0, frameTime, Api.Services?.Sound, ghostBit);
+                _ = CsqcModelEffects.Apply(Effects, node, e, st.Effects, modelFlags: 0, frameTime, Api.Services?.Sound, ghostBit, forced);
 
             // (4) ITEM VISIBILITY FX (item-only — these flags are never set on players/monsters): QC ItemDraw's
             //     alpha pass (client/items/items.qc:144-210). QC sets a base alpha from the DISTANCE fade

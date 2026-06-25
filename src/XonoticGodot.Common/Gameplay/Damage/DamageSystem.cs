@@ -621,7 +621,7 @@ public sealed class DamageSystem : IDamageSystem
             Inventory.CurrentWeapon(victim), new WeaponSlot(0));
 
         // ----- become a corpse (QC player.qc ~528-591) -----
-        victim.Alpha = 1f;                    // QC default_player_alpha — fully visible
+        victim.Alpha = MutatorHooks.DefaultPlayerAlpha; // QC default_player_alpha (player.qc:540) — corpse inherits the cloaked seed
         victim.Angles = new Vector3(0f, victim.Angles.Y, 0f); // upright, untilted
         victim.AVelocity = Vector3.Zero;      // don't spin
         victim.ViewOfs = new Vector3(0f, 0f, -8f); // view from the floor
@@ -842,6 +842,13 @@ public sealed class DamageSystem : IDamageSystem
         float voluntary = VoluntaryHandicapProvider?.Invoke(e, receiving) ?? 1f;
         return forced * voluntary;
     }
+
+    /// <summary>
+    /// Public alias for <see cref="HandicapTotal"/> — the direct port of the public QC
+    /// <c>Handicap_GetTotalHandicap(player, receiving)</c>. Used by the scoring layer to damage-weight the
+    /// per-player handicapgiven/handicaptaken averages for the XonStat game report (server/client.qc PlayerFrame).
+    /// </summary>
+    public static float GetTotalHandicap(Entity e, bool receiving) => HandicapTotal(e, receiving);
 
     // ===============================================================================================
     //  small predicates / helpers

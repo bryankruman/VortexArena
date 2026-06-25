@@ -72,6 +72,7 @@ public static class MovingBrushes
 
         this_.Blocked = MapMover.GenericPlatBlocked;
         this_.Use = RotatingUse;          // a targeted func_rotating toggles its spin when triggered
+        this_.Reset = RotatingReset;      // QC rotating.qc: this.reset = func_rotating_reset (round restart)
         this_.Active = MapMover.ActiveActive;
 
         // STARTOFF: spawn stopped (and inactive).
@@ -102,6 +103,17 @@ public static class MovingBrushes
             this_.Active = state;
 
         this_.AVelocity = this_.Active == MapMover.ActiveNot ? Vector3.Zero : this_.Pos1;
+    }
+
+    /// <summary>
+    /// QC <c>func_rotating_reset</c> (rotating.qc:31): re-apply the spawn active state on a round restart —
+    /// STARTOFF rotators stop, all others spin. (QC leaves angles as a TODO, so we do too.)
+    /// </summary>
+    public static void RotatingReset(Entity this_)
+    {
+        RotatingSetActive(this_, (this_.SpawnFlags & RotatingStartOff) != 0
+            ? MapMover.ActiveNot
+            : MapMover.ActiveActive);
     }
 
     // ===================================================================

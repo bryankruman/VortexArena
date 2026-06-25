@@ -505,7 +505,8 @@ public static class TargetUtilities
         if (gave)
         {
             // QC: if(GiveItems(...)) centerprint(actor, this.message). The give has no sound in Base — route the
-            // text through the Wave-1 centerprint seam (no-ops until the host wires the networked channel).
+            // text through the centerprint seam, which delivers it to the activator's HUD via the CenterRaw
+            // notification channel (→ CenterPrintPanel.Add), the same path chat /tell and other map .message text use.
             MapMover.Centerprint(actor, self.Message);
         }
     }
@@ -631,7 +632,9 @@ public static class TargetUtilities
         if (this_.Wait == 0f)
             this_.Wait = 5f; // seconds before closing
 
-        // QC: this.reset = secret_reset; this.reset(this) — call the resetter once now (initial placement).
+        // QC: this.reset = secret_reset; this.reset(this) — call the resetter once now (initial placement),
+        // and leave it installed so GameWorld.ResetMapObjects re-arms it on a round/match restart.
+        this_.Reset = SecretReset;
         SecretReset(this_);
 
         MapMover.IndexRegister(this_);

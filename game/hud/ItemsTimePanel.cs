@@ -146,6 +146,22 @@ public partial class ItemsTimePanel : HudPanel
         QueueRedraw();
     }
 
+    /// <summary>
+    /// QC <c>HUD_ItemsTime</c> enable gate (itemstime.qc:293-296): the panel draws only for spectators (mode 1),
+    /// or for spectators + everyone during warmup + (when <c>sv_itemstime == 2</c>) alive players too (mode 2).
+    /// With the stock cvars (<c>hud_panel_itemstime = 2</c>, <c>sv_itemstime = 1</c>) an ALIVE player in a normal
+    /// round therefore sees NOTHING — only spectators do. <paramref name="panelMode"/> is
+    /// <c>hud_panel_itemstime</c>; <paramref name="spectateeStatus"/> is QC <c>spectatee_status</c> (0 = self,
+    /// playing); <paramref name="warmup"/> is QC <c>warmup_stage</c>; <paramref name="itemstimeStat"/> is
+    /// QC <c>STAT(ITEMSTIME)</c> (= the live <c>sv_itemstime</c> tier 0/1/2).
+    /// </summary>
+    public static bool ShouldDraw(int panelMode, int spectateeStatus, bool warmup, int itemstimeStat)
+    {
+        if (panelMode == 1) return spectateeStatus != 0;
+        if (panelMode == 2) return spectateeStatus != 0 || warmup || itemstimeStat == 2;
+        return false;
+    }
+
     // -------------------------------------------------------------------------------------------------
     //  hidespawned mode resolution (QC autocvar_hud_panel_itemstime_hidespawned: 0/1/2).
     //  HideSpawned (the legacy public flag) forces at least mode 1 so old callers keep their behavior.

@@ -90,22 +90,21 @@ features:
       - "src/XonoticGodot.Server/GameWorld.cs:ResetMapObjects"
     constants: []
     status:
-      logic: missing
-      values: na
+      logic: faithful
+      values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL DEAD after Wave-1/2/5. GameWorld.ResetMapObjects (GameWorld.cs:2882-2894) body is UNCHANGED — it only removes 'projectile'/'weapon_proj*' entities; it never iterates map movers and never invokes any .Reset. Its comment still falsely claims 'doors/plats/buttons reset via MapObjectsCommon'; no such call exists. The Wave-5 commit's 'gametype-singleton reset fix' touched Intermission/OverTime (GameWorld.cs:2790-2791), not map objects."
-      - "MISLEADING COMMENT (Buttons.cs:15): 'button_reset re-arm is wired centrally in GameWorld.ResetMapObjects, not here.' STILL FALSE — ResetMapObjects has no button (or any mover) reset wiring. A grep for `.Reset =` across MapObjects/ finds only DynamicLight, TargetMusic, VoiceScript — NONE of the func_* movers (door/plat/button/breakable/rotating/secret) assign Entity.Reset."
-      - "Net effect unchanged: a door/plat/button/breakable/secret caught mid-open (or a broken breakable) at a round restart stays in that state instead of snapping home + re-arming. func_breakable_reset also restores team_saved (unported)."
+      - "func_breakable_reset's team_saved restore is not reproduced (no team_saved field at this layer) and func_breakable_look_restore is presentation-only (colormod); the core behave-restore/destroyed state IS reset. door_reset's CSQC SendFlags |= SF_TRIGGER_RESET is skipped (door networking latent/commented in Base)."
     verification:
-      - { kind: code_read, ref: "RE-AUDITED 2026-06-24 (Wave-5 branch): GameWorld.cs:2882-2894 ResetMapObjects body = projectile/weapon_proj* cull only (no mover iteration, no e.Reset?.Invoke); grep `.Reset =` across MapObjects/ -> DynamicLight/TargetMusic(x2)/VoiceScript only (NO func_* mover); the only Entity.Reset dispatch in src/ is the monster path, never reached from ResetMapObjects; Buttons.cs:15 comment still falsely claims central wiring", result: fail }
+      - { kind: code_read, ref: "WIRED 2026-06-24 (Wave-5 fix-up): GameWorld.ResetMapObjects now iterates every non-client server entity and invokes e.Reset?.Invoke(e) (after the projectile cull). Each mover installs Entity.Reset at spawn: Doors.cs DoorReset (assigned in DoorSetup + DoorRotatingSetup; snaps Origin/Angles to pos1, STATE_BOTTOM, ACTIVE, clears think/velocity, re-inits keys), Buttons.cs ButtonReset, Platforms.cs PlatReset, MovingBrushes.cs RotatingReset (new, re-applies STARTOFF active state), Breakable.cs BreakableReset (new, behave-restore/destroyed), TargetUtilities.cs SecretReset. Buttons.cs:15 comment corrected.", result: pass }
+      - { kind: liveness, ref: "RestartMatch -> Warmup.ReadyRestart -> reset_map -> ResetMapObjects fires on the real `restart`/vote-restart/round-restart path; grep `.Reset =` across MapObjects/ now also finds Doors/Buttons/Platforms/MovingBrushes(rotating)/Breakable/TargetUtilities(secret). Snapshot iteration so MonsterAI.Reset (which removes SPAWNED monsters) is safe.", result: pass }
     confidence: high
-    notes: "Spawn-time initial placement IS live (PlatReset/ButtonReset/SecretReset run inline at setup); only the ROUND-RESTART reset path is dead. Cross-cutting: also affects logic-gate / target_* relays (separate units). Matters for round-based modes (CA/Freeze/CTS) on maps with mid-cycle movers."
+    notes: "WAVE-5 FIX-UP: the round-restart .reset pass is now genuinely live. ResetMapObjects fires every map entity's Entity.Reset (the QC reset_map_global model) — door/plat/button/breakable/rotating/secret all snap home + re-arm, and monster/logic-gate/target-music .Reset hooks (previously assigned but never dispatched from GameWorld) now fire too. Spawn-time initial placement was already live; this closes the round-restart hole. Residual: breakable team_saved + colormod look_restore (minor, noted in gaps)."
 
   - id: mapobject-func.door.slide
     name: "func_door — sliding door state machine, LinkDoors groups, field, touch/use/blocked"

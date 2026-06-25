@@ -366,6 +366,42 @@ public sealed class TargetUtilitiesTests
     }
 
     [Fact]
+    public void TargetItems_CenterprintsMessageToActivator()
+    {
+        Boot();
+        // QC target_items_use: if (GiveItems(...)) centerprint(actor, this.message). Prove the .message text is
+        // delivered to the activator on the live path — Centerprint() pushes it down the CenterRaw notification
+        // channel (→ CenterPrintPanel.Add), the same path chat /tell uses. Capture it on a recording sink.
+        Notifications.RegisterAll();
+        var prevSink = NotificationSystem.Sink;
+        var rec = new NotificationSystem.RecordingSink();
+        NotificationSystem.Sink = rec;
+        try
+        {
+            Entity ti = Spawn("target_items", e =>
+            {
+                e.NetName = "100 health";
+                e.Message = "Loadout!";
+            });
+            Entity actor = new Entity { ClassName = "player", Flags = EntFlags.Client, Health = 1f };
+            ti.Use!(ti, actor);
+
+            // Exactly one CenterRaw centerprint, targeted at the activator only, carrying the .message text.
+            NotificationDispatch? raw = null;
+            foreach (var d in rec.Log)
+                if (d.WireType == MsgType.CenterRaw) { raw = d; break; }
+            Assert.NotNull(raw);
+            Assert.Equal(NotifBroadcast.OneOnly, raw!.Value.Broadcast);
+            Assert.Same(actor, raw.Value.Target);
+            Assert.Equal("Loadout!", raw.Value.Text);
+        }
+        finally
+        {
+            NotificationSystem.Sink = prevSink;
+        }
+    }
+
+    [Fact]
     public void TargetItems_IgnoresNonPlayer()
     {
         Boot();

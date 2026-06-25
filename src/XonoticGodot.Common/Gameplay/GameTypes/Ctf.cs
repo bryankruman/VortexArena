@@ -1324,6 +1324,11 @@ public sealed class Ctf : GameType
         }
     }
 
+    /// <summary>QC ctf_RemovePlayer is hooked from both ClientDisconnect and MakePlayerObserver; this is the
+    /// gametype's live leave-play hook (see <see cref="GameType.OnPlayerRemoved"/>) — it forwards to
+    /// <see cref="RemovePlayer"/> so a leaving carrier drops the flag and stale back-links are cleared.</summary>
+    public override void OnPlayerRemoved(Player player) => RemovePlayer(player);
+
     /// <summary>
     /// QC MUTATOR_HOOKFUNCTION(ctf, PlayerUseKey) (sv_ctf.qc:2452): the +use key in a carrier's hands throws the
     /// flag (g_ctf_throw); in an empty-handed teammate's hands it requests a pass from the nearest carrier
