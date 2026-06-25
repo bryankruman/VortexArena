@@ -6,9 +6,9 @@ summary:
   feature_count: 8
   worst_gaps:
     - "handicap_level (0-16) is still never computed or networked, and the scoreboard player_handicap icon is absent: handicapped players are visually indistinguishable."
-    - "Xonstat handicapgiven/handicaptaken events are still registered but never populated (no damage-weighted avg-sum accumulation)."
     - "No explicit Handicap_Initialize on (re)connect/spawn; forced fields rely on the 1f construction default and handicap_level is never (re)set."
     - "Dynamic Handicap recompute cadence (PlayerSpawn/PlayerDies) and iteration scope (players only, not FOREACH_CLIENT(true) incl. spectators) still diverge from Base."
+    - "FIXED in Wave-5: the XonStat handicapgiven/handicaptaken events are now genuinely populated (damage-weighted avg-sum accumulation + report division, live on the score path)."
 features:
   - id: sv-handicap.damage.give_take_scaling
     name: "Damage scaling by give/take handicap in PlayerDamage"
@@ -187,30 +187,45 @@ features:
     name: "Per-player damage-weighted handicap avg for the game report"
     layer: [authority]
     base_refs:
-      - "server/client.qc:PlayerFrame"
-      - "common/playerstats.qc:264"
+      - "server/client.qc:2863-2874 (PlayerFrame)"
+      - "common/playerstats.qc:261-265"
       - "server/handicap.qh:71-72"
     port_refs:
-      - "src/XonoticGodot.Server/PlayerStats.cs:100"
+      - "src/XonoticGodot.Server/PlayerStats.cs:107 (AddEvent handicapgiven/handicaptaken)"
+      - "src/XonoticGodot.Server/PlayerStats.cs:243-248 (FinalizePlayer emits the report events)"
+      - "src/XonoticGodot.Server/PlayerStats.cs:76 (HandicapReportProvider seam)"
+      - "src/XonoticGodot.Server/Scores.cs:97-98,157-158 (HandicapAvgGivenSum/TakenSum row fields)"
+      - "src/XonoticGodot.Server/Scores.cs:991-1009 (OnDamageDealtScored/OnDamageTakenScored accumulation)"
+      - "src/XonoticGodot.Server/Scores.cs:821-829 (HandicapReportAverages division)"
+      - "src/XonoticGodot.Server/GameWorld.cs:876 (HandicapReportProvider wired live)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:851 (GetTotalHandicap public alias)"
     constants:
-      - { name: "given accumulation", base: "avg_given_sum += score_frame_dmg * total(give)", port: "not accumulated", match: false }
-      - { name: "taken accumulation", base: "avg_taken_sum += score_frame_dmgtaken * total(take)", port: "not accumulated", match: false }
-      - { name: "reported value", base: "given<=0 ? 1 : avg_given_sum/given", port: "event key registered, never filled", match: false }
+      - { name: "given accumulation", base: "avg_given_sum += score_frame_dmg * total(give)", port: "HandicapAvgGivenSum += realdmg * GetTotalHandicap(p,false), summed per damage event (handicap constant within a frame → identical to score_frame_dmg*h)", match: true }
+      - { name: "taken accumulation", base: "avg_taken_sum += score_frame_dmgtaken * total(take)", port: "HandicapAvgTakenSum += realdmg * GetTotalHandicap(p,true)", match: true }
+      - { name: "reported value", base: "given<=0 ? 1 : avg_given_sum/given (given/taken = the DMG/DMGTAKEN score cols)", port: "given<=0 ? 1f : HandicapAvgGivenSum/row.DamageDealt (taken likewise / row.DamageTaken)", match: true }
+      - { name: "accumulate-before-column-add order", base: "avg-sum += ... BEFORE GameRules_scoring_add(DMG/DMGTAKEN)", port: "HandicapAvgGivenSum += ... then AddDamageDealt (same order)", match: true }
     status:
-      logic: stub
-      values: missing
-      timing: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
       presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Xonstat handicapgiven/handicaptaken events are registered (PlayerStats.cs:100 AddEvent) but never populated (no damage-weighted avg-sum accumulation). Unchanged by Wave-5."
+    gaps: []
     verification:
-      - { kind: grep, ref: "PlayerStats.cs:100 registers keys via AddEvent; no handicap_avg_*_sum accumulation anywhere in src/**", result: fail }
+      - { kind: code, ref: "Scores.cs:991-1009 accumulates realdmg*GetTotalHandicap on WeaponAccuracyEvents.DamageDealtScored/TakenScored (subscribed at SubscribeToDeaths, GameWorld.cs:540); fired live from DamageSystem.cs:525/528 on the PlayerDamage path", result: pass }
+      - { kind: code, ref: "PlayerStats.cs:243-248 FinalizePlayer emits handicapgiven/handicaptaken via HandicapReportProvider -> Scores.HandicapReportAverages (GameWorld.cs:876); division by DMG/DMGTAKEN cols matches playerstats.qc:262-265", result: pass }
     confidence: high
-    notes: "The score_frame_dmg/dmgtaken columns DO exist in the port (WeaponAccuracyEvents) but are not weighted by handicap for the report. Still open."
+    notes: >-
+      FIXED in Wave-5: the events are no longer a dead stub. Per-frame damage now accumulates the
+      damage-weighted handicap sums (HandicapAvgGivenSum/TakenSum) on the live score bus, and FinalizePlayer
+      divides them by the DMG/DMGTAKEN score columns exactly like playerstats.qc, emitting both events through
+      the host-wired HandicapReportProvider. The per-event accumulation is algebraically identical to Base's
+      per-frame score_frame_dmg*h (handicap is constant within a player-frame). Like Base, this only actually
+      ships when XonStat reporting is enabled (PlayerStats.Enabled / g_playerstats_gamereport_uri) — that
+      gating is faithful, not a gap.
 
   - id: sv-handicap.dynamic.mutator
     name: "Dynamic Handicap mutator (auto-balance by score)"

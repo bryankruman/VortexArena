@@ -1,14 +1,14 @@
 unit: sv-cheats
 category: server
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 19
   worst_gaps:
-    - "cmd usetarget / killtarget are STILL DEAD: the Cheats.Command switch has those cases (and they self-count), but neither verb is Register()ed in Commands.cs (only god/notarget/noclip/fly/give at Commands.cs:649-653) nor present in the ClientCommandRegistry allowlist (only god/notarget/noclip/fly/give at ClientCommandRegistry.cs:99), so no client command ever routes to them. Wave-5 (the only commit after the 2026-06-22 second pass) did NOT touch this unit — re-verified unchanged on the 2026-06-22 third adversarial pass."
-    - "No CopyBody / corpse-clone mechanic (CLONE_MOVING 140 / CLONE_STANDING 142); sv_clones is an unread stub (Cvars.cs:352) and the gating omits its clone-allowance branch."
-    - "No CheatFrame per-frame hook and no Drag subsystem: cannot pick up/carry/throw entities (cheat or normal-range g_grab_range), no te_lightning1 drag beam, no dragbox/dragpoint race map editor; g_grab_range cvar exists (Cvars.cs:350) but is never read."
+    - "No CopyBody / corpse-clone mechanic (CLONE_MOVING 140 / CLONE_STANDING 142); sv_clones is an unread stub (Cvars.cs:355) and the gating omits its clone-allowance branch."
+    - "No CheatFrame per-frame hook and no Drag subsystem: cannot pick up/carry/throw entities (cheat or normal-range g_grab_range), no te_lightning1 drag beam, no dragbox/dragpoint race map editor; g_grab_range cvar exists (Cvars.cs:353) but is never read."
     - "No SPEEDRUN_INIT/SPEEDRUN personal-waypoint, no TELEPORT (MoveToRandomMapLocation for the player / info_autoscreenshot), no R00T radius nuke, no teleporttotarget, no pointparticles/trailparticles/make/penalty cheat commands."
+    - "g_max_info_autoscreenshot cvar default is 60 (Cvars.cs:354) vs Base 3 (xonotic-server.cfg:643); moot until info_autoscreenshot exists, but the default is wrong."
 features:
   - id: sv-cheats.gating.cheats_allowed
     name: "CheatsAllowed — sv_cheats snapshot + dead/observer/maycheat gating + refusal logging"
@@ -51,7 +51,7 @@ features:
       - "src/XonoticGodot.Server/Cheats.cs:AddCheats"
       - "src/XonoticGodot.Server/Cheats.cs:CheatCountTotal"
       - "src/XonoticGodot.Server/Campaign.cs:PreIntermission"
-      - "src/XonoticGodot.Server/GameWorld.cs:2358"
+      - "src/XonoticGodot.Server/GameWorld.cs:2509"
     constants:
       - { name: "campaign save gate", base: "campaign_won && cheatcount_total==0", port: "Won!=0 && cheatCount==0", match: true }
     status:
@@ -65,10 +65,10 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "Campaign.cs PreIntermission vs server/campaign.qc:219", result: pass }
-      - { kind: code, ref: "GameWorld.cs:2358 feeds Cheats.CheatCountTotal into PreIntermission(cheatCount: ...)", result: pass }
+      - { kind: code, ref: "Campaign.cs:357-400 PreIntermission vs server/campaign.qc:219", result: pass }
+      - { kind: code, ref: "GameWorld.cs:2509 feeds Cheats.CheatCountTotal into PreIntermission(cheatCount: ...)", result: pass }
     confidence: high
-    notes: "Per-cheat increment + intermission cheatCount==0 gate are faithful and live; both reps (per-player keyed by Player + total) maintained. Live producers of counts are god/notarget/noclip/fly/give AND the GIVE_ALL impulse 99. usetarget/killtarget remain dead so they never bump the count in a real match. Unchanged by Wave-5."
+    notes: "Per-cheat increment + intermission cheatCount==0 gate are faithful and live; both reps (per-player keyed by Player + total) maintained. Live producers of counts are god/notarget/noclip/fly/give, the GIVE_ALL impulse 99, AND now usetarget/killtarget (wired live by Wave-5). GameWorld.cs:2509 feeds Cheats.CheatCountTotal into PreIntermission; the save gate (Won!=0 && cheatCount==0, Campaign.cs:400, plus a _campaign_testrun bypass faithful to Base) is intact."
 
   - id: sv-cheats.cmd.god
     name: "cmd god — toggle FL_GODMODE"
@@ -206,23 +206,26 @@ features:
     port_refs:
       - "src/XonoticGodot.Server/Cheats.cs:Command (case usetarget)"
       - "src/XonoticGodot.Server/Cheats.cs:FireNamedTarget"
+      - "src/XonoticGodot.Server/Commands.cs:654 (Register usetarget -> CmdCheat)"
+      - "src/XonoticGodot.Server/ClientCommandRegistry.cs:99 (allowlist)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:MapMover.UseTargets"
     constants: []
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL DEAD on the live path: 'usetarget' is NOT Register()ed in Commands.cs (only god/notarget/noclip/fly/give at Commands.cs:649-653) and NOT in the ClientCommandRegistry allowlist (ClientCommandRegistry.cs:99). The Cheats.Command 'usetarget' case is therefore unreachable from a client cmd. Wave-5 did NOT wire it (Wave-5 added no cheat-command registrations). Wiring it requires a Register call + an allowlist entry."
-      - "Logic caveat (only visible if wired): port AddCheats(1) runs even when no target name is given (FireNamedTarget early-returns on empty); Base also DID_CHEATs unconditionally so this is minor."
+      - "Minor logic caveat: the port AddCheats(1) runs even when no target name is given (FireNamedTarget early-returns on empty argv[1]). Base ALSO DID_CHEATs unconditionally and calls SUB_UseTargets with an empty .target (which no-ops), so the cheat-count effect is identical; the only divergence is the port skips the transient-entity spawn on empty input (an unobservable optimization)."
     verification:
-      - { kind: code, ref: "grep usetarget in src/XonoticGodot.Server -> only the Cheats.cs case; Commands.cs:649-653 Register()s ONLY god/notarget/noclip/fly/give; ClientCommandRegistry.cs:99 allowlists ONLY god/notarget/noclip/fly/give. Re-verified 2026-06-22 (third adversarial pass, post-Wave-5).", result: fail }
+      - { kind: code, ref: "NOW WIRED: Register('usetarget', ..., CmdCheat) at Commands.cs:654; allowlisted at ClientCommandRegistry.cs:99; CmdCheat (Commands.cs:1755) routes ctx.Argv to _world.Cheats.Command -> case 'usetarget'. FireNamedTarget spawns a transient ent, sets .Target, fires MapMover.UseTargets (a real, widely-used primitive: doors/buttons/triggers all consume it), removes it. Re-verified 2026-06-25 (post-Wave-5).", result: pass }
+      - { kind: code, ref: "FireNamedTarget (Cheats.cs:183-192) vs server/cheats.qc:671-677 — spawn/set target/SUB_UseTargets/delete/DID_CHEAT flow matches", result: pass }
     confidence: high
-    notes: "The case spawns a transient .target ent, MapMover.UseTargets, removes it — the FLOW matches Base, but nothing dispatches to it. Confirmed still dead post-Wave-5."
+    notes: "CLOSED by Wave-5: usetarget is now Register()ed AND allowlisted, so a client `usetarget <name>` routes through CmdCheat -> Cheats.Command -> the usetarget case on the live match path. The baseline (2026-06-22) recorded this as STILL DEAD, but the current code (commit 023ba70, Wave-5 finish) wired it. Flow + gate (sv_cheats, AddCheats) faithful."
 
   - id: sv-cheats.cmd.killtarget
     name: "cmd killtarget — remove a named target (SUB_UseTargets killtarget)"
@@ -232,23 +235,26 @@ features:
     port_refs:
       - "src/XonoticGodot.Server/Cheats.cs:Command (case killtarget)"
       - "src/XonoticGodot.Server/Cheats.cs:FireNamedTarget"
+      - "src/XonoticGodot.Server/Commands.cs:655 (Register killtarget -> CmdCheat)"
+      - "src/XonoticGodot.Server/ClientCommandRegistry.cs:99 (allowlist)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:MapMover.UseTargets"
     constants: []
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL DEAD on the live path: same as usetarget — 'killtarget' is neither Register()ed (Commands.cs:649-653) nor in the ClientCommandRegistry allowlist (ClientCommandRegistry.cs:99), so the Cheats.Command 'killtarget' case is unreachable from a client cmd. Wave-5 did NOT wire it."
-      - "Same empty-arg caveat as usetarget (would AddCheats(1) on empty target name)."
+      - "Same minor empty-arg caveat as usetarget: AddCheats(1) fires on an empty target name (FireNamedTarget early-returns before spawning), but Base also DID_CHEATs unconditionally, so the cheat-count effect is identical."
     verification:
-      - { kind: code, ref: "grep killtarget in src/XonoticGodot.Server -> only the Cheats.cs case; not Register()ed (Commands.cs:649-653) nor allowlisted (ClientCommandRegistry.cs:99). Re-verified 2026-06-22 (third adversarial pass, post-Wave-5).", result: fail }
+      - { kind: code, ref: "NOW WIRED: Register('killtarget', ..., CmdCheat) at Commands.cs:655; allowlisted at ClientCommandRegistry.cs:99; CmdCheat -> Cheats.Command -> case 'killtarget'. FireNamedTarget sets .KillTarget then MapMover.UseTargets (removes matched entities). Re-verified 2026-06-25 (post-Wave-5).", result: pass }
+      - { kind: code, ref: "FireNamedTarget (Cheats.cs:183-192) vs server/cheats.qc:679-686 — spawn/set killtarget/SUB_UseTargets/delete/DID_CHEAT flow matches", result: pass }
     confidence: high
-    notes: "Flow matches Base, but no dispatcher routes to it. Confirmed still dead post-Wave-5."
+    notes: "CLOSED by Wave-5: killtarget is now Register()ed AND allowlisted; live on the match path via CmdCheat. Baseline recorded STILL DEAD; current code (commit 023ba70) wired it. Flow + gate faithful."
 
   - id: sv-cheats.impulse.give_all
     name: "Cheat impulse GIVE_ALL (99) — give all"
@@ -288,7 +294,7 @@ features:
     constants:
       - { name: "impulse numbers", base: "140 / 142", port: "none", match: false }
       - { name: "moving clone push", base: "v_forward*300", port: "none", match: false }
-      - { name: "sv_clones (clone cap)", base: "0", port: "0 (dead stub, Cvars.cs:352)", match: true }
+      - { name: "sv_clones (clone cap)", base: "0", port: "0 (dead stub, Cvars.cs:355)", match: true }
     status:
       logic: missing
       values: missing
@@ -301,7 +307,7 @@ features:
     gaps:
       - "No CopyBody / corpse-clone mechanic; the clone impulses do nothing and sv_clones is unread. Unchanged by Wave-5."
     verification:
-      - { kind: code, ref: "grep CopyBody/CHIMPULSE/sv_clones in src/** -> SpawnSystem.cs:518 only mentions CopyBody in a comment; no clone impulse; cvar stub only (Cvars.cs:352)", result: fail }
+      - { kind: code, ref: "grep CopyBody/CHIMPULSE/sv_clones in src/** -> SpawnSystem.cs:569 only mentions CopyBody in a comment; no clone impulse; cvar stub only (Cvars.cs:355). Re-verified 2026-06-25.", result: fail }
     confidence: high
     notes: "Requires a CopyBody corpse-spawn primitive that the port lacks. SpawnSystem.cs:518 references CopyBody only in a comment about respawn reusing the live edict."
 
@@ -442,7 +448,7 @@ features:
       - "server/cheats.qc:DragBox_Think"
     port_refs: []
     constants:
-      - { name: "g_grab_range (non-cheat drag range)", base: "200", port: "200 (dead cvar stub, Cvars.cs:350)", match: true }
+      - { name: "g_grab_range (non-cheat drag range)", base: "200", port: "200 (dead cvar stub, Cvars.cs:353)", match: true }
       - { name: "initial dragspeed", base: "64", port: "none", match: false }
       - { name: "draggee gravity while held", base: "0.00001", port: "none", match: false }
     status:
@@ -457,9 +463,9 @@ features:
     gaps:
       - "No CheatFrame per-frame hook and no Drag subsystem: cannot pick up/carry/throw entities (cheat or normal-range), no te_lightning1 drag beam. Unchanged by Wave-5."
       - "No dragbox_spawn/dragpoint_spawn/drag_remove/drag_setcnt/drag_save/drag_saveraceent/drag_clear race-checkpoint map-editor commands."
-      - "g_grab_range cvar exists (Cvars.cs:350) but is never read (no consumer)."
+      - "g_grab_range cvar exists (Cvars.cs:353) but is never read (no consumer)."
     verification:
-      - { kind: code, ref: "grep Drag(/CheatFrame/dragbox in src/** -> none (g_grab_range cvar stub only at Cvars.cs:350)", result: fail }
+      - { kind: code, ref: "grep Drag(/CheatFrame/dragbox in src/** -> none (g_grab_range cvar stub only at Cvars.cs:353). Re-verified 2026-06-25.", result: fail }
     confidence: high
     notes: "Large subsystem (object carry + race map editor). CheatFrame is the only cheat entry point invoked every frame in Base; the port has no equivalent per-frame cheat hook."
 
@@ -471,7 +477,7 @@ features:
       - "server/cheats.qc:info_autoscreenshot_findtarget"
     port_refs: []
     constants:
-      - { name: "g_max_info_autoscreenshot", base: "3 (xonotic-server.cfg:643)", port: "60 (cvar stub, Cvars.cs:351; no spawnfunc reads it)", match: false }
+      - { name: "g_max_info_autoscreenshot", base: "3 (xonotic-server.cfg:643)", port: "60 (cvar stub, Cvars.cs:354; no spawnfunc reads it)", match: false }
     status:
       logic: missing
       values: partial
@@ -483,9 +489,9 @@ features:
     divergence_rationale: null
     gaps:
       - "No info_autoscreenshot spawnfunc: the entity is dropped on map load and the TELEPORT cheat's preferred destination never exists."
-      - "g_max_info_autoscreenshot cvar exists but with default 60, not Base's 3 (xonotic-server.cfg:643); moot since nothing reads it, but the default is wrong. STILL not corrected by Wave-5."
+      - "g_max_info_autoscreenshot cvar exists but with default 60, not Base's 3 (xonotic-server.cfg:643); moot since nothing reads it, but the default is wrong. STILL not corrected by Wave-5 (re-verified Base=3, port=60 on 2026-06-25)."
     verification:
-      - { kind: code, ref: "grep info_autoscreenshot in src/** -> none; Cvars.cs:351 g_max_info_autoscreenshot default 60 vs Base 3", result: fail }
+      - { kind: code, ref: "grep info_autoscreenshot in src/** -> none; Cvars.cs:354 g_max_info_autoscreenshot default 60 vs Base xonotic-server.cfg:643 = 3. Re-verified 2026-06-25.", result: fail }
     confidence: high
     notes: "Map-author entity; the cap cvar exists as a stub but with the wrong default and no consumer."
 

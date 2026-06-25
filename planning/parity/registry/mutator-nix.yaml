@@ -3,13 +3,13 @@ category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-22"
 summary:
-  feature_count: 14
+  feature_count: 16
   worst_gaps:
-    - "Enable gate omits the instagib/overkill/weaponarena exclusion (IsEnabled = g_nix!=0 only); a direct cvar set can double-activate NIX alongside instagib/overkill."
-    - "OnEntityPreSpawn target_items deletion is NOT ported and has no dispatch site; target_items triggers survive under NIX and can fight it over weapons/ammo."
-    - "ForbidRandomStartWeapons handler is DEAD: a FireForbidRandomStartWeapons hook-method now exists (MutatorHooks.cs:382) but has zero call site repo-wide; effect moot only while the port grants no random start weapons."
-    - "Per-frame switch re-asserts SwitchWeapon every tick instead of QC's switch-only-when-target-not-owned guard; not bit-identical with g_nix_with_blaster (manual mid-round switch not sticky)."
-    - "BuildMutatorsString / BuildMutatorsPrettyString / SetModname not ported (no such hook chain in the port); NIX contributes no name to the scoreboard/mutator-list string."
+    - "Enable gate omits the instagib/overkill/weaponarena exclusion (IsEnabled = g_nix!=0 only); a direct cvar set can double-activate NIX alongside instagib/overkill. No cross-mutator exclusion helper exists in the port (Instagib's IsEnabled is also bare g_instagib!=0). UNCHANGED post-Wave-5."
+    - "OnEntityPreSpawn target_items deletion is NOT ported and has no mutator-hook dispatch site; target_items triggers survive under NIX and can fight it over weapons/ammo. UNCHANGED post-Wave-5."
+    - "ONREMOVE restore is a best-effort blaster loadout, not the QC start_ammo_*/start_weapons restore. UNCHANGED post-Wave-5."
+    - "Per-frame switch re-asserts SwitchWeapon every tick instead of QC's switch-only-when-target-not-owned guard; not bit-identical with g_nix_with_blaster (manual mid-round switch not sticky). UNCHANGED post-Wave-5."
+    - "BuildMutatorsString/Pretty/SetModname: Wave-5 added the MutatorBase virtuals + MutatorActivation.BuildMutatorsString/PrettyString callers + a LIVE BuildMutatorsString consumer (GameWorld.cs:865, sv_eventlog-gated) and Vampire/Midair overrides — but NixMutator still does NOT override them, so NIX contributes no token. SetModname + a BuildMutatorsPrettyString consumer still absent."
 features:
   - id: mutator-nix.enable.gate
     name: "Enable predicate (g_nix + arena-mutator exclusion)"
@@ -31,7 +31,7 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "IsEnabled is `Api.Cvars.GetFloat(\"g_nix\") != 0` only (NixMutator.cs:40-41). QC additionally requires `!MUTATOR_IS_ENABLED(mutator_instagib) && !MUTATOR_IS_ENABLED(ok) && !MapInfo_LoadedGametype.m_weaponarena`. With direct cvar sets, NIX can activate alongside instagib/overkill and the two fight over the per-frame loadout. The stock menu arena radio group hides this in normal play; exposure is console/config only. UNCHANGED by Wave-1/2 (NixMutator.cs is byte-identical to baseline)."
+      - "IsEnabled is `Api.Cvars.GetFloat(\"g_nix\") != 0` only (NixMutator.cs:40-41). QC additionally requires `!MUTATOR_IS_ENABLED(mutator_instagib) && !MUTATOR_IS_ENABLED(ok) && !MapInfo_LoadedGametype.m_weaponarena`. With direct cvar sets, NIX can activate alongside instagib/overkill and the two fight over the per-frame loadout. The stock menu arena radio group hides this in normal play; exposure is console/config only. UNCHANGED post-Wave-5 (NixMutator.cs byte-identical to baseline). No cross-mutator MUTATOR_IS_ENABLED helper exists in the port either — InstagibMutator.IsEnabled is also bare `g_instagib != 0` (InstagibMutator.cs:64), so the exclusion would have to be authored from scratch."
     verification:
       - { kind: code, ref: "NixMutator.IsEnabled (line 40) vs sv_nix.qc:34; no instagib/ok/weaponarena check present", result: fail }
       - { kind: code, ref: "[Mutator] discovery -> Mutators.All -> MutatorActivation.Apply (GameWorld.cs:539) activates when g_nix!=0", result: pass }
@@ -155,9 +155,9 @@ features:
       - "wpn.wr_resetplayer (weapon think-state reset) is not called on the per-round resync. The full-clip prefill for reloadable weapons (QC: weapon_load[nix_weapon] = wpn.reloading_ammo across slots) is also not explicit; the port relies on its lazy weapon-load seeding. Observable outcome largely preserved but not bit-identical."
     verification:
       - { kind: code, ref: "dt=ceil(nextchange-time), first-round start-now, nextchange+=roundtime, once-per-round NixLastChangeId gate (lines 183-220) vs sv_nix.qc:105-180", result: pass }
-      - { kind: code, ref: "PlayerPreThink.Call (GameWorld.cs:1174) drives it each tick; globals are instance fields (one per process)", result: pass }
+      - { kind: code, ref: "PlayerPreThink.Call (GameWorld.cs:1294) drives it each tick; globals are instance fields (one per process)", result: pass }
     confidence: high
-    notes: "Round clock/timing bit-faithful. PlayerPreThink dispatch now at GameWorld.cs:1174 (shifted from 988). wr_resetplayer + explicit reload prefill are the structural omissions."
+    notes: "Round clock/timing bit-faithful. PlayerPreThink dispatch now at GameWorld.cs:1294 (shifted from 1174). wr_resetplayer + explicit reload prefill are the structural omissions. NixMutator.cs byte-identical to baseline (no Wave-5 edit)."
 
   - id: mutator-nix.ammo.refill_trickle
     name: "Per-weapon ammo wipe/refill + trickle"
@@ -229,7 +229,7 @@ features:
       - "common/notifications/all.inc:765 (MSG_CENTER_NOTIF NIX_NEWWEAPON, durcnt 1, item_wepname, CPID_NIX)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/NixMutator.cs:217 (NotificationSystem.Center NIX_NEWWEAPON)"
-      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:945 (register)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:1007 (register)"
     constants: []
     status:
       logic: faithful
@@ -242,7 +242,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "register (NotificationsList.cs:945) f1count 0 durcnt 1 item_wepname CPID_NIX text matches all.inc:765; item_wepname resolves weapon-id->name (NotificationTokens.cs:88); suppressed when dt in [1,5] (line 216)", result: pass }
+      - { kind: code, ref: "register (NotificationsList.cs:1007) f1count 0 durcnt 1 item_wepname CPID_NIX text matches all.inc:765; item_wepname resolves weapon-id->name (NotificationTokens.cs:88); suppressed when dt in [1,5] (line 216)", result: pass }
     confidence: medium
     notes: "Registration text/args/CPID match QC exactly; arg (weapon-id) order matches. Not runtime-verified on the live HUD."
 
@@ -254,7 +254,7 @@ features:
       - "common/notifications/all.inc:764 (MSG_CENTER_NOTIF NIX_COUNTDOWN, durcnt 2, item_wepname, CPID_NIX, args \"1 f2\")"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/NixMutator.cs:223 (NotificationSystem.Center NIX_COUNTDOWN)"
-      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:944 (register)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:1006 (register)"
     constants: []
     status:
       logic: faithful
@@ -267,7 +267,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "de-duped on NixLastInfoTime != dt; fires only for dt in [1,5] (lines 223-228); args (next-weapon, dt) match QC order; register durcnt 2 / item_wepname / CPID_NIX / ^COUNT text matches all.inc:764", result: pass }
+      - { kind: code, ref: "de-duped on NixLastInfoTime != dt; fires only for dt in [1,5] (lines 223-228); args (next-weapon, dt) match QC order; register (NotificationsList.cs:1006) durcnt 2 / item_wepname / CPID_NIX / ^COUNT text + args \"1 f2\" matches all.inc:764", result: pass }
     confidence: medium
     notes: "^COUNT durcnt index and live HUD render not runtime-verified; registration and arg order match QC."
 
@@ -329,7 +329,7 @@ features:
       - "common/mutators/mutator/nix/sv_nix.qc:276 (PlayerSpawn)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/NixMutator.cs:129 (OnPlayerSpawn)"
-      - "src/XonoticGodot.Server/ClientManager.cs:619 (PlayerSpawn.Call)"
+      - "src/XonoticGodot.Server/ClientManager.cs:649 (PlayerSpawn.Call)"
     constants: []
     status:
       logic: partial
@@ -344,7 +344,7 @@ features:
       - "OnPlayerSpawn sets NixLastChangeId=-1 and calls GiveCurrentWeapon (both faithful) but does NOT set `player.items |= IT_UNLIMITED_SUPERWEAPONS` (QC sv_nix.qc:282). The port HAS a live superweapon-expiry pass (PlayerFrameLogic.SuperweaponTimeout, run every frame via PlayerPowerups at GameWorld.cs:1329) that strips superweapons unless IT_UNLIMITED_SUPERWEAPONS is set. MOOT in stock play: superweapons (e.g. Fireball, SpawnFlags = SuperWeapon|TypeSplash|NoDual, NO WEP_FLAG_NORMAL) fail CanChooseWeapon's Normal-flag requirement, so no superweapon ever enters the NIX rotation. Becomes a live bug only if a superweapon ever becomes choosable (e.g. via the unported g_weaponarena branch)."
     verification:
       - { kind: code, ref: "OnPlayerSpawn (lines 129-135): NixLastChangeId=-1 + GiveCurrentWeapon, no IT_UNLIMITED_SUPERWEAPONS vs sv_nix.qc:282", result: fail }
-      - { kind: code, ref: "PlayerSpawn.Call live at ClientManager.cs:619 (shifted from 542); PlayerPowerups/SuperweaponTimeout live at GameWorld.cs:1329; Fireball lacks WeaponFlags.Normal so excluded by CanChooseWeapon", result: pass }
+      - { kind: code, ref: "PlayerSpawn.Call live at ClientManager.cs:649 (shifted from 619); PlayerPowerups/SuperweaponTimeout live at GameWorld.cs:1329; Fireball lacks WeaponFlags.Normal so excluded by CanChooseWeapon", result: pass }
     confidence: high
     notes: "Spawn override is live and faithful; the missing IT_UNLIMITED_SUPERWEAPONS is latent (no superweapon is NIX-choosable under stock flags)."
 
@@ -414,8 +414,9 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "QC appends ':NIX'/', NIX' to the mutators string and returns 'NIX' from SetModname (used for the scoreboard mutator list, sv_cmd info, and playerstats modname). The port has no NIX BuildMutatorsString/BuildMutatorsPrettyString/SetModname hook chain (other mutators only mention these in comments; PlayerStats reads a flat `modname` cvar). NIX contributes nothing to any mutator-name string. Minor (cosmetic/reporting), no gameplay effect. NOT closed by Wave-1/2."
+      - "QC appends ':NIX'/', NIX' to the mutators string and returns 'NIX' from SetModname. POST-WAVE-5 the string infrastructure now EXISTS and is partly live: MutatorBase has virtual BuildMutatorsString/BuildMutatorsPrettyString (GameplayBases.cs:198/206), MutatorActivation.BuildMutatorsString/PrettyString iterate the active mutators (MutatorActivation.cs), a LIVE consumer feeds the event log (GameWorld.cs:865, gated by sv_eventlog), and Vampire/Midair override the virtuals. BUT NixMutator does NOT override either virtual, so NIX still appends no token to the mutators string. BuildMutatorsPrettyString has no live consumer yet, and SetModname has no virtual/hook at all. So this row stays missing for NIX: the only fix needed is two one-line overrides (s + \":NIX\" / s + \", NIX\") plus an eventual SetModname seam. Cosmetic/reporting, no gameplay effect."
     verification:
-      - { kind: code, ref: "grep BuildMutatorsString/SetModname across src/ -> only comment annotations (Cloaked/Powerups/RocketFlying/SuperSpec) + PlayerStats cvar read; no NIX hook and no such hook chain", result: fail }
+      - { kind: code, ref: "MutatorBase.BuildMutatorsString virtual default = identity (GameplayBases.cs:198); NixMutator overrides neither virtual (NixMutator.cs has no BuildMutators* member); grep override BuildMutatorsString -> only Vampire/Midair", result: fail }
+      - { kind: code, ref: "MutatorActivation.BuildMutatorsString live at GameWorld.cs:865 (sv_eventlog GameLogInit); BuildMutatorsPrettyString has zero live caller; SetModname absent from src/", result: fail }
     confidence: high
-    notes: "Mutator-name string infrastructure absent in the port; cosmetic gap."
+    notes: "Infra landed in Wave-5 and is live for the BuildMutatorsString path, but NIX itself contributes nothing (no override). Not closed; now a trivial two-line override away from the string-build half. SetModname still wholly absent."

@@ -5,11 +5,10 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 6
   worst_gaps:
-    - "STILL OPEN after Wave-5: the cloaked effect does not appear in-game. The SetDefaultAlpha hook fires live at worldspawn and seeds GameWorld.DefaultPlayerAlpha=0.25 (genuine Wave-2 fix, intact), and a full alpha network channel + a PlayerModel render path exist — BUT the chain is broken in the same two places as the prior audit: (1) the spawn/death consumers STILL hardcode player.Alpha=1f and never read DefaultPlayerAlpha (SpawnSystem.cs:524, DamageSystem.cs:624), so the server-side player alpha is never lowered; (2) the client net->render bridge (ClientEntityView.DriveEntity, game/net/ClientEntityView.cs:117-159) STILL does NOT copy decoded NetEntityState.Alpha onto Entity.Alpha, so even a correctly-set server alpha would render opaque. Result: players still render at full opacity with g_cloaked 1. Wave-5 edited GameWorld.cs heavily but left the cloaked alpha seam (lines 539-545) at its Wave-2 state and did not touch SpawnSystem/DamageSystem/ClientEntityView for alpha."
-    - "Spawn/death do not consume the seed: SpawnSystem.cs:524 sets p.Alpha=1f and DamageSystem.cs:624 sets victim.Alpha=1f — both still literal 1f, neither reads GameWorld.DefaultPlayerAlpha. Cross-assembly: DefaultPlayerAlpha lives on the Server GameWorld while these run in Common — no seam carries the seed down to the spawn/death code."
-    - "Client bridge drops the alpha: ClientEntityView.DriveEntity maps Origin/Angles/Velocity/Frame/Skin/ModelIndex/Effects/Health/Team/Weapon/flags/StatusEffects onto the proxy Entity but has ZERO Alpha line (grep 'Alpha' in ClientEntityView.cs = no matches). PlayerModel.ApplyAlpha(e.Alpha) is wired and real, but e.Alpha is always the default 1f, and nothing in game/client/ reads the decoded NetEntityState.Alpha."
-    - "No BuildMutatorsPrettyString / MUT_CLOAKED contribution: the scoreboard/HUD active-mutators string still would not list 'Cloaked' (no mutator-pretty-string / active-mutators-bitmask mechanism in the port). UNCHANGED."
-    - "No MENUQC metadata: still no describe text or create-game checkbox port for the cloaked mutator. UNCHANGED."
+    - "WAVE-5 CLOSED THE HEADLINE EFFECT: with g_cloaked 1 players now genuinely render semi-transparent end-to-end. Wave-5 (commit 023ba70) moved the alpha seed into Common (MutatorHooks.DefaultPlayerAlpha/DefaultWeaponAlpha, set by FireSetDefaultAlpha at GameWorld.cs:565 worldspawn), wired the server consumers (SpawnSystem.cs:575 and DamageSystem.cs:624 now read MutatorHooks.DefaultPlayerAlpha instead of hardcoding 1f), and — critically — wired the client net->render bridge that the prior audit flagged as the gating defect (ClientEntityView.cs:134 now decodes NetEntityState.Alpha onto Entity.Alpha; PlayerModel.Pose:160 calls ApplyAlpha(e.Alpha)). The 0.25 value round-trips faithfully through QuantizeAlpha (0.25->64/255=0.251)."
+    - "STILL OPEN — secondary alpha consumers: no exterior/held weapon-entity alpha-follow (Base weaponsystem.qc:116-117,170-171) and no vehicle-exit alpha restore (Base sv_vehicles.qc:814). These are minor relative to the now-working player body alpha."
+    - "STILL OPEN — Cloaked contributes nothing to the active-mutators pretty string. Wave-5 ADDED the general mechanism (MutatorBase.BuildMutatorsPrettyString virtual at GameplayBases.cs:206 + MutatorActivation.BuildMutatorsPrettyString chain runner at MutatorActivation.cs:101, used by MidairMutator), but CloakedMutator does NOT override it, no MUT_CLOAKED bit exists, AND the chain runner itself has no live caller (scoreboard/HUD never invokes it). So 'Cloaked' is still not displayed."
+    - "STILL OPEN — no MENUQC metadata: still no describe text or create-game checkbox port for the cloaked mutator (general menu-mutator gap)."
 features:
   - id: mutator-cloaked.enable.predicate
     name: "Enable predicate (g_cloaked cvar gate + registration/subscription)"
@@ -20,7 +19,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Mutators/CloakedMutator.cs:30 IsEnabled"
       - "src/XonoticGodot.Common/Gameplay/Mutators/CloakedMutator.cs:35 Hook"
       - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:Apply"
-      - "src/XonoticGodot.Server/GameWorld.cs:539 MutatorActivation.Apply()"
+      - "src/XonoticGodot.Server/GameWorld.cs:559 MutatorActivation.Apply()"
     constants:
       - { name: "g_cloaked", base: "0 (mutators.cfg:563)", port: "0 (assets/.../mutators.cfg:563)", match: true }
     status:
@@ -34,10 +33,10 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "VERIFIED (unchanged): CloakedMutator.IsEnabled = Api.Services is not null && Api.Cvars.GetFloat(\"g_cloaked\") != 0f (CloakedMutator.cs:30-31); MutatorActivation.Apply() called live at GameWorld.cs:539 (step 5b, before map entities spawn); Hook() Adds OnSetDefaultAlpha + reads g_balance_cloaked_alpha", result: pass }
+      - { kind: code, ref: "VERIFIED (unchanged): CloakedMutator.IsEnabled = Api.Services is not null && Api.Cvars.GetFloat(\"g_cloaked\") != 0f (CloakedMutator.cs:30-31); MutatorActivation.Apply() called live at GameWorld.cs:559 (step 5b, before map entities spawn); Hook() Adds OnSetDefaultAlpha + reads g_balance_cloaked_alpha", result: pass }
       - { kind: value, ref: "VERIFIED: assets/data/xonotic-data.pk3dir/mutators.cfg:563 'set g_cloaked 0' matches Base", result: pass }
     confidence: high
-    notes: "UNCHANGED by Wave-2/Wave-5. The mutator IS registered (auto-discovered via [Mutator]) and its handler IS subscribed on the live boot path when g_cloaked != 0. Note: Base uses expr_evaluate(cvar_string) which parses expressions; port uses a simple != 0 float check — functionally equivalent for the stock '0'/'1' usage (campaign Stormkeep sets g_cloaked 1). Line ref for MutatorActivation.Apply() shifted 535->539 due to Wave-5 GameWorld edits; behavior identical."
+    notes: "UNCHANGED by Wave-5 in behavior. The mutator IS registered (auto-discovered via [Mutator]) and its handler IS subscribed on the live boot path when g_cloaked != 0. Base uses expr_evaluate(cvar_string) which parses expressions; port uses a simple != 0 float check — functionally equivalent for the stock '0'/'1' usage (campaign Stormkeep sets g_cloaked 1). Line ref for MutatorActivation.Apply() shifted 539->559 due to Wave-5 GameWorld edits; behavior identical."
 
   - id: mutator-cloaked.alpha.set_default_alpha
     name: "SetDefaultAlpha override — set player/weapon alpha from g_balance_cloaked_alpha"
@@ -48,33 +47,31 @@ features:
       - "server/world.qh:72-73 default_player_alpha / default_weapon_alpha globals"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/CloakedMutator.cs:53 OnSetDefaultAlpha"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:420-446 SetDefaultAlphaArgs + SetDefaultAlpha chain + FireSetDefaultAlpha"
-      - "src/XonoticGodot.Server/GameWorld.cs:126,129 DefaultPlayerAlpha/DefaultWeaponAlpha"
-      - "src/XonoticGodot.Server/GameWorld.cs:545 (DefaultPlayerAlpha, DefaultWeaponAlpha) = MutatorHooks.FireSetDefaultAlpha(1f, 1f)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:485 SetDefaultAlpha chain + 493/496 DefaultPlayerAlpha/DefaultWeaponAlpha + 507-517 FireSetDefaultAlpha"
+      - "src/XonoticGodot.Server/GameWorld.cs:565 (DefaultPlayerAlpha, DefaultWeaponAlpha) = MutatorHooks.FireSetDefaultAlpha(1f, 1f)"
     constants:
       - { name: "g_balance_cloaked_alpha", base: "0.25 (mutators.cfg:564)", port: "0.25 (CloakedMutator.Alpha default + re-read in Hook()/OnSetDefaultAlpha)", match: true }
-      - { name: "default_player_alpha = alpha", base: "yes (world.qh global)", port: "GameWorld.DefaultPlayerAlpha set from args.PlayerAlpha", match: true }
-      - { name: "default_weapon_alpha = player alpha", base: "yes (world.qh global)", port: "GameWorld.DefaultWeaponAlpha set from args.WeaponAlpha (= player alpha)", match: true }
+      - { name: "default_player_alpha = alpha", base: "yes (world.qh global)", port: "MutatorHooks.DefaultPlayerAlpha set from args.PlayerAlpha", match: true }
+      - { name: "default_weapon_alpha = player alpha", base: "yes (world.qh global)", port: "MutatorHooks.DefaultWeaponAlpha set from args.WeaponAlpha (= player alpha)", match: true }
       - { name: "hook returns true (replaces default branch)", base: "true", port: "true (OnSetDefaultAlpha returns true)", match: true }
-      - { name: "SetDefaultAlpha() world-init driver fires the hook", base: "world.qc:105-112, called at worldspawn", port: "GameWorld.cs:545 fires FireSetDefaultAlpha at worldspawn (step 5b', after MutatorActivation.Apply)", match: true }
+      - { name: "SetDefaultAlpha() world-init driver fires the hook", base: "world.qc:105-112, called at worldspawn", port: "GameWorld.cs:565 fires FireSetDefaultAlpha at worldspawn (step 5b', after MutatorActivation.Apply)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "presentation partial (NOT fully closed): the override correctly computes and seeds GameWorld.DefaultPlayerAlpha = 0.25, but that seed is consumed by NOTHING that produces the visible effect (see default_alpha_consumers). So the hook is now live and faithful in its own scope, but the player still renders opaque because the downstream consumer + client-bridge links are broken. UNCHANGED by Wave-5."
+    gaps: []
     verification:
-      - { kind: code, ref: "VERIFIED: MutatorHooks.SetDefaultAlpha.Call has a live caller — FireSetDefaultAlpha (MutatorHooks.cs:440-446) invokes SetDefaultAlpha.Call(ref a), and GameWorld.cs:545 calls FireSetDefaultAlpha(1f,1f) at worldspawn after MutatorActivation.Apply(). Cloaked's OnSetDefaultAlpha writes args.PlayerAlpha=args.WeaponAlpha=0.25 and returns true.", result: pass }
-      - { kind: code, ref: "VERIFIED: GameWorld.cs:126/129 declare DefaultPlayerAlpha/DefaultWeaponAlpha (default 1f); line 545 assigns them from FireSetDefaultAlpha's return. The seed itself is correct.", result: pass }
+      - { kind: code, ref: "VERIFIED: MutatorHooks.FireSetDefaultAlpha (MutatorHooks.cs:507-517) calls SetDefaultAlpha.Call(ref a) and caches the result into the Common-side statics DefaultPlayerAlpha/DefaultWeaponAlpha. GameWorld.cs:565 calls FireSetDefaultAlpha(1f,1f) at worldspawn after MutatorActivation.Apply(). Cloaked's OnSetDefaultAlpha writes args.PlayerAlpha=args.WeaponAlpha=0.25 and returns true.", result: pass }
+      - { kind: code, ref: "VERIFIED: MutatorHooks.cs:493/496 declare the static DefaultPlayerAlpha/DefaultWeaponAlpha (default 1f), updated by FireSetDefaultAlpha. GameWorld.cs:565 also mirrors them onto the Server GameWorld props. The seed is correct AND now lives in Common where the spawn/death consumers can read it.", result: pass }
       - { kind: value, ref: "VERIFIED: mutators.cfg:564 'g_balance_cloaked_alpha 0.25' == port; CloakedMutator.Alpha defaults 0.25f and OnSetDefaultAlpha re-reads the cvar live (guarded a != 0).", result: pass }
-      - { kind: code, ref: "VERIFIED FAIL (downstream): grep for DefaultPlayerAlpha/DefaultWeaponAlpha across src/+game/ = ONLY GameWorld.cs + the CloakedMutator/RunningGunsMutator class doc-comments. No spawn/death/networking code reads the seed.", result: fail }
+      - { kind: code, ref: "VERIFIED (downstream now wired): MutatorHooks.DefaultPlayerAlpha is read by SpawnSystem.cs:575, DamageSystem.cs:624, and PowerupsMutator.cs:218 — the seed reaches spawned/dead players. The whole consumer chain is closed (see default_alpha_consumers).", result: pass }
     confidence: high
-    notes: "WAVE-2 FIX (intact through Wave-5): the hook chain is genuinely live (dead->live), the world-init driver exists (timing missing->faithful), and the override logic is faithful (stub->faithful). This is a real, verified closure of the row's own scope. The headline 'players go translucent' effect still does NOT appear because the SEED IS NOT CONSUMED — that gap lives entirely in default_alpha_consumers. Kept presentation=partial here (not faithful) because the override's visible purpose is unrealized end-to-end. Line ref shifted 541->545 (Wave-5 GameWorld edits); seam logic unchanged."
+    notes: "FIX (Wave-5): presentation partial->faithful. The override's visible purpose is now realized end-to-end — the seed it computes is consumed by spawn/death (server) and decoded+rendered on the client. Previously partial because the seed went nowhere. Logic/values/timing/liveness were already faithful/live in the prior audit (Wave-2). Line ref shifted 545->565 (Wave-5 GameWorld edits)."
 
   - id: mutator-cloaked.alpha.default_alpha_consumers
     name: "default_player_alpha / default_weapon_alpha applied at spawn, death, weapon entities, vehicle-exit; networked + rendered"
@@ -86,41 +83,42 @@ features:
       - "common/vehicles/sv_vehicles.qc:814 (restore player.alpha on vehicle exit)"
       - "common/mutators/mutator/powerups/powerup/invisibility.qc:16-18 (Invisibility expiry restores default_player/weapon_alpha)"
     port_refs:
-      - "game/net/ServerNet.cs:1653,1733 QuantizeAlpha(p.Alpha)/QuantizeAlpha(e.Alpha) — networking present"
-      - "src/XonoticGodot.Net/NetEntity.cs:89,124,169,223,264 EntityField.Alpha + NetEntityState.Alpha encode/decode — networking present"
-      - "game/client/PlayerModel.cs:160,217 ApplyAlpha(e.Alpha) — render present"
-      - "game/net/ClientEntityView.cs:117-159 DriveEntity — MISSING the Alpha map (the broken link, still open)"
-      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:524 p.Alpha = 1f (still hardcoded)"
-      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:624 victim.Alpha = 1f (still hardcoded)"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:575 p.Alpha = MutatorHooks.DefaultPlayerAlpha (now reads the seed)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:624 victim.Alpha = MutatorHooks.DefaultPlayerAlpha (corpse reads the seed)"
+      - "game/net/ServerNet.cs:1670,1760 QuantizeAlpha(p.Alpha)/QuantizeAlpha(e.Alpha) — networking present"
+      - "src/XonoticGodot.Net/NetEntity.cs:96,131,176,230,271 EntityField.Alpha + NetEntityState.Alpha encode/decode — networking present"
+      - "game/net/ClientEntityView.cs:134 e.Alpha = s.Alpha == 0 ? 1f : s.Alpha/255f — client net->render bridge NOW WIRED"
+      - "game/client/PlayerModel.cs:160,217 ApplyAlpha(e.Alpha) — render present + fed the decoded alpha"
     constants:
-      - { name: "spawn: player.alpha = default_player_alpha", base: "client.qc:788", port: "p.Alpha = 1f hardcoded (SpawnSystem.cs:524) — does NOT read GameWorld.DefaultPlayerAlpha", match: false }
-      - { name: "spawn: exteriorweapon.alpha = default_weapon_alpha", base: "client.qc:790", port: "none", match: false }
-      - { name: "death/corpse: this.alpha = default_player_alpha", base: "player.qc:540", port: "victim.Alpha = 1f hardcoded (DamageSystem.cs:624)", match: false }
+      - { name: "spawn: player.alpha = default_player_alpha", base: "client.qc:788", port: "p.Alpha = MutatorHooks.DefaultPlayerAlpha (SpawnSystem.cs:575)", match: true }
+      - { name: "spawn: exteriorweapon.alpha = default_weapon_alpha", base: "client.qc:790", port: "none (no exterior-weapon entity alpha-follow)", match: false }
+      - { name: "death/corpse: this.alpha = default_player_alpha", base: "player.qc:540", port: "victim.Alpha = MutatorHooks.DefaultPlayerAlpha (DamageSystem.cs:624)", match: true }
       - { name: "weapon entity follows owner alpha", base: "weaponsystem.qc:116-117,170-171", port: "none", match: false }
       - { name: "vehicle-exit restores player.alpha = default_player_alpha", base: "sv_vehicles.qc:814", port: "none", match: false }
       - { name: ".alpha networked to clients (wire channel)", base: "DP networked render field (entity state)", port: "PRESENT: ServerNet QuantizeAlpha + NetEntity EntityField.Alpha (byte, 0=opaque sentinel; 1..254 = alpha/255)", match: true }
-      - { name: ".alpha decoded onto the render entity (net->render bridge)", base: "DP applies networked alpha to the rendered ent", port: "MISSING: ClientEntityView.DriveEntity never copies NetEntityState.Alpha -> Entity.Alpha; nothing in game/client/ reads the decoded State.Alpha", match: false }
-      - { name: ".alpha rendered on the player model", base: "DP renders ent alpha", port: "PRESENT: PlayerModel.ApplyAlpha maps Entity.Alpha -> per-instance GeometryInstance3D.Transparency (real), but fed constant 1f", match: false }
+      - { name: ".alpha decoded onto the render entity (net->render bridge)", base: "DP applies networked alpha to the rendered ent", port: "PRESENT: ClientEntityView.DriveEntity:134 copies NetEntityState.Alpha -> Entity.Alpha (0->1f, else byte/255)", match: true }
+      - { name: ".alpha rendered on the player model", base: "DP renders ent alpha", port: "PRESENT: PlayerModel.ApplyAlpha maps Entity.Alpha -> per-instance GeometryInstance3D.Transparency (real), fed the decoded alpha each frame via Pose:160", match: true }
+      - { name: "0.25 round-trip fidelity", base: "0.25", port: "QuantizeAlpha(0.25)=round(63.75)->64; client 64/255=0.251 (1-byte quantization)", match: true }
     status:
-      logic: partial
-      values: missing
+      logic: faithful
+      values: faithful
       timing: na
-      presentation: partial
+      presentation: faithful
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL OPEN — server consumers ignore the seed: player spawn hardcodes p.Alpha=1f (SpawnSystem.cs:524) and PlayerDies hardcodes victim.Alpha=1f (DamageSystem.cs:624). Neither reads GameWorld.DefaultPlayerAlpha. (Structural barrier: DefaultPlayerAlpha is a Server-assembly GameWorld property; the spawn/death code lives in Common with no seam carrying the seed across.) So the server-side player alpha is never lowered to 0.25 — the cloaked value never enters the entity state at all. UNCHANGED by Wave-5."
-      - "STILL OPEN — client bridge drops alpha: ClientEntityView.DriveEntity (ClientEntityView.cs:117-159) copies Origin/Angles/Velocity/Frame/Skin/ModelIndex/Effects/Health/Team/Weapon/flags/StatusEffects onto the render proxy Entity but has NO line for Alpha (grep 'Alpha' = no matches). The decoded NetEntityState.Alpha (real, on the wire) is never read by any render/bridge code in game/client/, so it never reaches Entity.Alpha. PlayerModel.ApplyAlpha(e.Alpha) is therefore always fed the default 1f -> opaque. This is the gating defect for the whole effect even if the server side were fixed."
-      - "STILL OPEN — no weapon-entity alpha-follow (weaponsystem.qc:116/170) and no vehicle-exit alpha restore (sv_vehicles.qc:814)."
+      - "STILL OPEN (secondary) — no exterior/held weapon-entity alpha-follow: Base weaponsystem.qc:116-117,170-171 makes the held weapon model track default_weapon_alpha when the owner is at the default player alpha; the port has no such consumer. Minor vs the now-working player body alpha."
+      - "STILL OPEN (secondary) — no vehicle-exit alpha restore (Base sv_vehicles.qc:814 resets player.alpha = default_player_alpha when leaving a vehicle)."
     verification:
-      - { kind: code, ref: "VERIFIED: SpawnSystem.cs:524 'p.Alpha = 1f' and DamageSystem.cs:624 'victim.Alpha = 1f' both literal 1f (comments say 'QC default_player_alpha' but the value is hardcoded). grep DefaultPlayerAlpha/DefaultWeaponAlpha across src/+game/ = only GameWorld.cs + mutator doc-comments — no spawn/death consumer.", result: fail }
-      - { kind: code, ref: "VERIFIED (networking layer present): NetEntity.cs has EntityField.Alpha=1<<17 (line 89) + NetEntityState.Alpha (line 124) + diff/write/read (169/223/264); ServerNet.cs QuantizeAlpha(p.Alpha) at 1653 and QuantizeAlpha(e.Alpha) at 1733. The wire channel is real and live.", result: pass }
-      - { kind: code, ref: "VERIFIED FAIL (client bridge): grep 'Alpha' in game/net/ClientEntityView.cs = NO matches. DriveEntity does not set e.Alpha from s.Alpha. grep across game/client/ + game/net/ = no read of the decoded State.Alpha. So the decoded byte never renders.", result: fail }
-      - { kind: code, ref: "VERIFIED (render path real but starved): PlayerModel.ApplyAlpha (PlayerModel.cs:217) maps Entity.Alpha -> per-instance GeometryInstance3D.Transparency, called every frame from Pose (line 160). Correct and idempotent — but e.Alpha is always 1f (see bridge gap).", result: fail }
+      - { kind: code, ref: "VERIFIED (server consumers wired): SpawnSystem.cs:575 'p.Alpha = MutatorHooks.DefaultPlayerAlpha' (PutPlayerInServer respawn reset, live spawn path) and DamageSystem.cs:624 'victim.Alpha = MutatorHooks.DefaultPlayerAlpha' (PlayerDies corpse setup, live death path). Both read the Common-side seed set by FireSetDefaultAlpha at worldspawn.", result: pass }
+      - { kind: code, ref: "VERIFIED (networking layer present): NetEntity.cs has EntityField.Alpha=1<<17 (line 96) + NetEntityState.Alpha (line 131) + diff/write/read (176/230/271); ServerNet.cs QuantizeAlpha(p.Alpha) at 1670 and QuantizeAlpha(e.Alpha) at 1760. QuantizeAlpha (ServerNet.cs:1977) returns 0 for alpha>=1 (opaque sentinel), clamp(round(alpha*255),1,254) otherwise.", result: pass }
+      - { kind: code, ref: "VERIFIED (client bridge NOW wired — the prior gating defect): ClientEntityView.DriveEntity:134 'e.Alpha = s.Alpha == 0 ? 1f : s.Alpha/255f' decodes the networked byte onto the render proxy ([W5-cloaked] comment). The dequantize is the exact inverse of QuantizeAlpha.", result: pass }
+      - { kind: code, ref: "VERIFIED (render path real and fed): PlayerModel.ApplyAlpha (PlayerModel.cs:217) maps Entity.Alpha -> per-instance GeometryInstance3D.Transparency, called every frame from Pose (line 160) with the decoded e.Alpha. End-to-end the player now renders translucent under g_cloaked 1.", result: pass }
+      - { kind: code, ref: "VERIFIED (git): the bridge + Common-seed + consumer wiring all landed in commit 023ba70 (Wave 5 finish). The 2026-06-22 baseline predated Wave-5 and recorded the pre-fix hardcoded-1f state.", result: pass }
     confidence: high
-    notes: "Wave-2 built TWO of the four missing layers (the alpha network channel and the player-model render apply) — genuine infrastructure, still present after Wave-5. But the end-to-end chain is still broken: (a) the server never lowers player.Alpha (spawn/death hardcode 1f, ignoring the seed), and (b) the client net->render bridge (ClientEntityView) never maps the networked alpha onto the render entity. Either gap alone defeats the effect; both are present. Net status remains logic/presentation partial; liveness stays dead (no live path produces a translucent player). Wave-5 did NOT touch any of this — SpawnSystem/DamageSystem/ClientEntityView unchanged for alpha. The single highest-leverage fix is the one-line ClientEntityView Alpha map PLUS routing DefaultPlayerAlpha into the spawn/death alpha. Line ref for the death consumer shifted 618->624."
+    notes: "MAJOR FIX (Wave-5): logic partial->faithful, values missing->faithful, presentation partial->faithful, liveness dead->live for the player-body alpha. Wave-5 closed BOTH of the prior gating defects: (a) moved the seed into Common (MutatorHooks.DefaultPlayerAlpha) so SpawnSystem/DamageSystem/PowerupsMutator read it (no more cross-assembly barrier, no more hardcoded 1f), and (b) added the ClientEntityView net->render alpha bridge so the decoded NetEntityState.Alpha actually reaches PlayerModel.ApplyAlpha. The 0.25 cloaked value round-trips faithfully (1-byte quantization, 0.251 effective). Remaining gaps are the two SECONDARY consumers (exterior weapon-entity follow, vehicle-exit restore) — neither blocks the headline 'players go translucent' effect."
 
   - id: mutator-cloaked.report.mutators_pretty_string
     name: "Active-mutators string contribution (', Cloaked' + MUT_CLOAKED bit)"
@@ -129,9 +127,11 @@ features:
       - "common/mutators/mutator/cloaked/sv_cloaked.qc:15-18 MUTATOR_HOOKFUNCTION(cloaked, BuildMutatorsPrettyString)"
       - "common/util.qc:302 X(\"Cloaked\", _(\"Cloaked\"), MUT_CLOAKED, cvar(\"g_cloaked\"))"
       - "common/util.qh:62 const int MUT_CLOAKED = 7"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameplayBases.cs:206 MutatorBase.BuildMutatorsPrettyString (base no-op; Cloaked does NOT override)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:101 BuildMutatorsPrettyString chain runner (no live caller)"
     constants:
-      - { name: "pretty string append", base: "', Cloaked' (suppressed in CTS)", port: "none", match: false }
+      - { name: "pretty string append", base: "', Cloaked' (suppressed in CTS)", port: "none (CloakedMutator does not override BuildMutatorsPrettyString)", match: false }
       - { name: "MUT_CLOAKED bit", base: "7 (util.qh:62)", port: "none", match: false }
     status:
       logic: missing
@@ -139,15 +139,15 @@ features:
       timing: na
       presentation: missing
       audio: na
-      liveness: na
+      liveness: dead
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No BuildMutatorsPrettyString / MUT_CLOAKED equivalent: the scoreboard/HUD active-mutators display would not list 'Cloaked'. (Broader gap — the port lacks the mutator-pretty-string / active-mutators-bitmask mechanism generally.) UNCHANGED by Wave-2/Wave-5."
+      - "STILL OPEN — Cloaked contributes nothing to the active-mutators pretty string. Wave-5 added the GENERAL mechanism (MutatorBase.BuildMutatorsPrettyString virtual + MutatorActivation chain runner, used by MidairMutator -> ', Midair'), but: (1) CloakedMutator does NOT override BuildMutatorsPrettyString (still the base no-op), (2) no MUT_CLOAKED=7 bit exists, and (3) MutatorActivation.BuildMutatorsPrettyString has NO live caller — the scoreboard/HUD never invokes it (grep finds only the self-reference at MutatorActivation.cs:105). So 'Cloaked' is still not displayed anywhere."
     verification:
-      - { kind: code, ref: "VERIFIED (unchanged): grep BuildMutatorsPrettyString|MutatorsPrettyString|active_mutators|MUT_CLOAKED across src/+game/ = no matches.", result: fail }
+      - { kind: code, ref: "VERIFIED: MutatorBase.BuildMutatorsPrettyString exists (GameplayBases.cs:206, returns s unchanged) and MutatorActivation.BuildMutatorsPrettyString chain runner exists (MutatorActivation.cs:101). MidairMutator overrides it; CloakedMutator does NOT. grep MUT_CLOAKED = no hits in src/+game/. grep for an external caller of MutatorActivation.BuildMutatorsPrettyString = none (dead runner).", result: fail }
     confidence: high
-    notes: "UNCHANGED. The CloakedMutator class comment still states the mutators-string reporting is cosmetic and skipped — documented omission, recorded as a gap (not an intended_divergence of the core effect)."
+    notes: "PARTIAL INFRA PROGRESS, Cloaked STILL OPEN: the pretty-string mechanism now partly exists (Wave-5 added the base virtual + chain runner + a Midair example), upgrading the prior 'no mechanism at all' note. But for Cloaked specifically nothing is contributed, the MUT_CLOAKED bit is absent, and the runner has no live caller — so the user-visible behavior is unchanged. Kept all status dimensions missing for Cloaked's contribution; liveness=dead (the runner exists but is never called)."
 
   - id: mutator-cloaked.menu.metadata
     name: "MENUQC metadata (describe text + create-game checkbox)"
@@ -171,9 +171,9 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No port menu-mutator metadata: no Cloaked describe text or create-game checkbox (general menu-mutator gap across the port, not unique to cloaked). UNCHANGED by Wave-2/Wave-5."
+      - "STILL OPEN — no port menu-mutator metadata: no Cloaked describe text or create-game checkbox (general menu-mutator gap across the port, not unique to cloaked). UNCHANGED by Wave-5."
     verification:
-      - { kind: code, ref: "VERIFIED (unchanged): no MutatorCloaked menu class / describe / create-mutators checkbox found in port.", result: fail }
+      - { kind: code, ref: "VERIFIED (unchanged): no MutatorCloaked menu class / describe / create-mutators checkbox found in port (grep MutatorCloaked/cloaked-describe in src/+game/ = none beyond CloakedMutator.cs).", result: fail }
     confidence: high
     notes: "UNCHANGED. Pure menu presentation; no gameplay effect. Tracked for completeness."
 
@@ -183,24 +183,23 @@ features:
     base_refs:
       - "common/mutators/mutator/powerups/powerup/invisibility.qc:16-18 (m_remove: actor.alpha = default_player_alpha; exteriorweaponentity.alpha = default_weapon_alpha)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:216-218 (invisibility: player.Alpha = _invisibilityAlpha while held; restore to 1f on lapse)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:216 (invisibility held: player.Alpha = _invisibilityAlpha 0.15)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:218 (lapse: player.Alpha = MutatorHooks.DefaultPlayerAlpha — composes with cloaked)"
     constants:
       - { name: "Invisibility while held sets player.alpha", base: "invisibility_alpha (0.15)", port: "player.Alpha = _invisibilityAlpha 0.15 (PowerupsMutator.cs:216) — LIVE", match: true }
-      - { name: "Invisibility expiry restores to default_player_alpha", base: "yes (so under cloaked → 0.25, not 1)", port: "restores hardcoded 1f (PowerupsMutator.cs:218)", match: false }
+      - { name: "Invisibility expiry restores to default_player_alpha", base: "yes (so under cloaked → 0.25, not 1)", port: "restores MutatorHooks.DefaultPlayerAlpha (PowerupsMutator.cs:218) — composes with cloaked", match: true }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: na
-      presentation: partial
+      presentation: faithful
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Under cloaked in Base, losing Invisibility returns the player to the cloaked alpha (0.25) because invisibility.qc restores default_player_alpha (which cloaked set to 0.25). The port's PowerupsMutator restores a hardcoded 1f (PowerupsMutator.cs:218), so the two would not compose — it should restore GameWorld.DefaultPlayerAlpha. UNCHANGED by Wave-5."
-      - "Moreover, like cloaked itself, the powerup-set player.Alpha (0.15) is networked (ServerNet reads p.Alpha) but is dropped by the client bridge (ClientEntityView never maps NetEntityState.Alpha → Entity.Alpha), so even the Invisibility powerup's translucency does not render on remote players. The render path (PlayerModel.ApplyAlpha) exists but is fed constant 1f."
+    gaps: []
     verification:
-      - { kind: code, ref: "VERIFIED: PowerupsMutator.cs:216 sets player.Alpha = _invisibilityAlpha (0.15) while invisibility active (live per-frame), and 218 restores 1f on lapse (hardcoded, NOT GameWorld.DefaultPlayerAlpha). The set is live server-side, but the restore value still diverges under cloaked.", result: fail }
-      - { kind: code, ref: "VERIFIED: same un-rendered limitation — ClientEntityView drops Alpha, so neither the cloaked nor the invisibility-powerup alpha reaches the rendered player.", result: fail }
+      - { kind: code, ref: "VERIFIED: PowerupsMutator.cs:216 sets player.Alpha = _invisibilityAlpha (0.15) while invisibility active (live per-frame), and 218 restores MutatorHooks.DefaultPlayerAlpha on lapse (the same seed cloaked sets to 0.25). Under cloaked the restore correctly composes to 0.25, not 1f.", result: pass }
+      - { kind: code, ref: "VERIFIED (now renders): same alpha channel that cloaked uses — the powerup-set player.Alpha (0.15) and the restore are networked (ServerNet QuantizeAlpha) AND now decoded by the client bridge (ClientEntityView.cs:134) and rendered (PlayerModel.ApplyAlpha). So the Invisibility powerup translucency, and its cloaked-composing restore, are both visible on remote players.", result: pass }
     confidence: high
-    notes: "PARTIAL Wave-2 progress (intact through Wave-5): the Invisibility powerup actually WRITES player.Alpha while held (logic/liveness improved from the earlier all-stub state), so the alpha channel has a live producer. But (1) the expiry restore is still hardcoded 1f (should read DefaultPlayerAlpha to compose with cloaked) and (2) the alpha still doesn't render (client-bridge gap). So the composition with cloaked remains broken end-to-end."
+    notes: "FIX (Wave-5): logic/values/presentation/liveness partial->faithful. Two prior defects closed: (1) the expiry restore now reads MutatorHooks.DefaultPlayerAlpha (was hardcoded 1f) so it composes with cloaked -> 0.25, and (2) the alpha now renders (the ClientEntityView net->render bridge that previously dropped it is wired). The Invisibility powerup writes player.Alpha while held (live producer) and restores the cloaked-aware default on lapse, matching Base invisibility.qc:16-18. (Base also restores exteriorweaponentity.alpha = default_weapon_alpha; the port has no exterior-weapon-entity alpha-follow — tracked under default_alpha_consumers, not re-counted here.)"

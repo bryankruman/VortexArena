@@ -6,8 +6,8 @@ summary:
   feature_count: 13
   worst_gaps:
     - "Laser scorch target pick is a deterministic argmax (weight 1/(1+d), prefer not-burning) rather than QC's stochastic RandomSelection tie-break, and the find is a plain radius not warpzone-aware."
-    - "Firemine 'make it hot' owner-decouple: FIXED (Wave-4 fix-up) — the firer is captured separately and threaded for burn/obituary credit so post-decouple burns are credited to the firer (Base keeps .realowner; the port's RealOwner aliases Owner)."
     - "Bot wr_aim is still unported (no Fireball-specific lead/mode-switch); obituary kill/suicide lines ARE now live."
+    - "Shootable fireball now wired live via Projectiles.MakeShootable (Wave-5): the W_CheckProjectileDamage gate + RES_HEALTH subtraction + explode-on-deplete are present, and the default-0-HP no-op-on-shot matches Base exactly. Residual: the depletion explode is synchronous, not next-frame-deferred, and the owner-reassign-to-attacker + PrepareExplosionByDamage mutator hook are not done (shared MakeShootable simplification; only observable when a server raises fireball_health)."
     - "Render-side trails/visuals still deferred: plasma_prim FIREBALL flight trail, firemine trail, and the sphere.md3 BFG ball (effect EMITS are wired; the CSQC render fidelity is a separate layer, like every other weapon)."
 features:
   - id: weapon-fireball.identity
@@ -250,26 +250,34 @@ features:
     layer: [authority]
     base_refs:
       - "common/weapons/weapon/fireball.qc:W_Fireball_Damage"
+      - "server/weapons/common.qc:W_CheckProjectileDamage"
+      - "server/weapons/common.qc:W_PrepareExplosionByDamage"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Fireball.cs:Attack1 (proj.ProjectileDamage / Health gate)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Fireball.cs:Attack1 (proj.TakeDamage=Yes + proj.ProjectileDamage + Projectiles.MakeShootable, exception -1)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Projectiles.cs:MakeShootable / ShootDown / CheckProjectileDamage"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:331 (GtEventDamage live dispatch for non-player edicts)"
     constants:
-      - { name: "health", base: "0 (DAMAGE_YES but 0 HP)", port: "0 (only wires takedamage+ProjectileDamage when health>0)", match: true }
-      - { name: "depletion explode", base: "cnt=1; W_PrepareExplosionByDamage(W_Fireball_Explode_think)", port: "ProjectileDamage: self.Cnt=1; Explode(self,null)", match: true }
+      - { name: "health", base: "0 (DAMAGE_YES, event_damage set UNCONDITIONALLY, but 0 HP)", port: "0 (DAMAGE_YES + GtEventDamage now set UNCONDITIONALLY)", match: true }
+      - { name: "hp<=0 early return", base: "GetResource(HEALTH)<=0 -> return (a 0-HP fireball takes no damage, never explodes from being shot)", port: "ShootDown: self.Health<=0 -> return (same no-op at default 0 HP)", match: true }
+      - { name: "g_projectiles_damage gate", base: "W_CheckProjectileDamage(inflictor.realowner, this.realowner, deathtype, -1) (no exceptions)", port: "CheckProjectileDamage(inflictor.RealOwner, self.RealOwner, dt, exception:-1)", match: true }
+      - { name: "depletion explode", base: "TakeResource(HEALTH,damage); if<=0 -> cnt=1; W_PrepareExplosionByDamage(W_Fireball_Explode_think)", port: "self.Health-=damage; if<=0 -> TakeDamage=No; ProjectileDamage(self.Cnt=1; Explode(self,null))", match: true }
+      - { name: "explode timing + owner-reassign", base: "deferred to NEXT FRAME (nextthink=time; setthink) + realowner:=attacker (unless keep_owner) + PrepareExplosionByDamage hook", port: "synchronous Explode in the damage call; no owner-reassign, no hook", match: false }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
-      timing: na
+      timing: partial
       presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Still gated on health>0: with the default health 0 the port never makes the fireball damageable (takedamage stays default), so this path is dead at defaults. Net effect matches Base (a 0-HP fireball dies on any hit) only because the port also never marks it shootable — a server raising fireball health would now get cnt=1+explode-on-deplete (improved) but still no W_CheckProjectileDamage (g_projectiles_damage) gate and no W_PrepareExplosionByDamage delayed-explode timing."
+      - "Depletion explode is SYNCHRONOUS (fired inside the damage call) rather than Base's deferred next-frame W_PrepareExplosionByDamage (nextthink=time; setthink), and the port does NOT reassign realowner:=attacker nor call the PrepareExplosionByDamage mutator hook. Shared Projectiles.MakeShootable simplification (Devastator/Electro/Hagar/Arc/Minelayer/Mortar/Seeker/OkRpc all share it). Only observable when a server raises g_balance_fireball_primary_health > 0 — at the stock health 0 the whole path is a faithful no-op."
+      - "find/LaserPlay are still plain radius (warpzone-unaware) — unrelated to this row but the projectile world is non-warpzone like all port finds."
     verification:
-      - { kind: codetrace, ref: "Attack1: if(Primary.Health>0){ proj.TakeDamage=Yes; proj.Health; proj.ProjectileDamage=(self.Cnt=1; Explode) }; default 0 -> whole block skipped.", result: fail }
-    confidence: medium
-    notes: "Mildly improved vs baseline: the depletion handler (cnt=1 + Explode, so the resulting blast skips the BFG sweep) is now wired. Still dead at default health 0; missing the g_projectiles_damage gate. NOTE (2026-06-22 re-audit): a faithful Projectiles.MakeShootable helper (W_CheckProjectileDamage + RES_HEALTH-subtract shim) now EXISTS in the port (Devastator/Electro/Hagar/Arc adopt it) — Fireball does NOT adopt it, so the gate is still absent; this row could be closed by wiring MakeShootable when health>0."
+      - { kind: codetrace, ref: "Attack1 (Fireball.cs:229-251): proj.TakeDamage=DamageMode.Yes + proj.Health=Primary.Health set UNCONDITIONALLY; proj.ProjectileDamage=(Cnt=1; Explode(self,null)); Projectiles.MakeShootable(proj, exception:-1) installs GtEventDamage -> ShootDown (hp<=0 guard, CheckProjectileDamage gate, Health-=damage, explode-on-deplete). GtEventDamage is the LIVE seam: DamageSystem.cs:331-333 routes every non-player edict carrying GtEventDamage to it.", result: pass }
+    confidence: high
+    notes: "MAJOR FIX vs baseline (was logic:partial / liveness:dead). Wave-5 (commit 023ba70) wired Projectiles.MakeShootable into the fireball and made takedamage/event_damage UNCONDITIONAL, exactly matching W_Fireball_Attack1 (which sets DAMAGE_YES + event_damage regardless of health). The g_projectiles_damage gate (exception -1, 'no exceptions') and RES_HEALTH subtraction + explode-on-deplete are now all present and LIVE on the real damage path. At the stock health 0 the ShootDown hp<=0 guard returns immediately, reproducing Base's W_Fireball_Damage early-return (a stock fireball is marked damageable but takes no damage / never explodes from being shot) — bit-faithful. Residual divergence is timing-only: the depletion explode is synchronous not next-frame-deferred, and the owner-reassign + PrepareExplosionByDamage hook are skipped (a shared MakeShootable simplification, only reachable on a non-default raised-health server)."
 
   - id: weapon-fireball.secondary.firemine
     name: "Secondary: lob gravity bouncing firemine (MOVETYPE_BOUNCE, ±4, up-launch)"
@@ -341,7 +349,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/StatusEffects.cs:FireAddDamage"
       - "src/XonoticGodot.Common/Gameplay/StatusEffects.cs:FireApplyDamage"
-      - "src/XonoticGodot.Server/GameWorld.cs:1324 (StatusEffectsCatalog.Tick on the live player loop)"
+      - "src/XonoticGodot.Server/GameWorld.cs:1454 (StatusEffectsCatalog.Tick on the live player loop)"
     constants:
       - { name: "per-frame burn", base: "fire_damagepersec * min(frametime, fireend-time)", port: "dps * min(frametime, fireEnd-now)", match: true }
       - { name: "dps", base: "d / max(t,0.1)", port: "d / max(t,0.1)", match: true }
@@ -360,7 +368,7 @@ features:
     gaps:
       - "Fire transfer to adjacent overlapping damageable entities (g_balance_firetransfer_damage 0.8 / _time 0.9) is not modeled (needs the g_damagedbycontents iteration outside this file)."
     verification:
-      - { kind: codetrace, ref: "FireAddDamage implements the QC overlap LEMMA (totaldamage/totaltime/mindps) + return-value contract; FireApplyDamage deals fire_damagepersec*min(frametime,fireend-now) via Combat.Damage(e,e,fire_owner,...). Live: GameWorld player loop (GameWorld.cs:1324) -> StatusEffectsCatalog.Tick -> BurningTick -> FireApplyDamage (frame-rate independent).", result: pass }
+      - { kind: codetrace, ref: "FireAddDamage implements the QC overlap LEMMA (totaldamage/totaltime/mindps) + return-value contract; FireApplyDamage deals fire_damagepersec*min(frametime,fireend-now) via Combat.Damage(e,e,fire_owner,...). Live: GameWorld player loop (GameWorld.cs:1454) -> StatusEffectsCatalog.Tick -> BurningTick -> FireApplyDamage (frame-rate independent).", result: pass }
     confidence: high
     notes: "MAJOR FIX vs baseline (was partial: Strength*0.05/frame, no frametime, plain overwrite). The burn is now the faithful frametime-scaled DOT with the combine LEMMA, live on the per-player tick. Both the laser scorch and firemine ignite route through it. Residual: fire-transfer todo + the FireApplyDamage frametime headless fallback (1/72) when Api.Clock unavailable (test-only path)."
 

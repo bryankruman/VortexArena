@@ -1,12 +1,12 @@
 unit: sv-campaign
 category: server
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 14
   worst_gaps:
     - "Campaign_Invalid STILL inert: Wave-5 did NOT wire the two host probes (LoadedMapName / GametypeMismatch) — both remain null, so Validate() skips both checks and a level whose actual map/gametype diverges from the file is never detected or aborted."
-    - "Campaign_GetLevelNum STILL dead: Campaign.LevelNum (level+1) is computed but has ZERO readers in src/+game/ — no SendWelcomeMessage equivalent networks it, DialogWelcome has no campaign-level field, so the welcome/info dialog still cannot show 'Level N'."
+    - "Campaign_GetLevelNum now LIVE (closed this pass): GameWorld.SendCampaignWelcome (added in commit 023ba70) reads Campaign.LevelNum and surfaces 'Level N:' to the connecting human via Campaign.Log -> ChatBroadcast on the live InfraClientConnect path. Residual: presentation is a chat line, not Base's CSQC Welcome menu dialog (no per-level description), so presentation is partial not faithful."
     - "campaign_bots_may_start STILL wired ONLY into bot MOVEMENT (BotPopulation.MovementHeld). The round-handler campaign gate (Base round_handler.qc:38) remains EXPLICITLY DEFERRED (RoundHandler.cs:41 'campaign bot ...'); the monster move/think + campcheck + LMS start gates are not wired either."
     - "checkrulesEquality is still hardcoded false at the live PreIntermission call site (GameWorld.cs:2357): a degenerate exact-tie at the limit is scored a win where Base could score it a loss (out-of-scope, unchanged)."
 features:
@@ -416,22 +416,26 @@ features:
       - "server/campaign.qc:Campaign_GetLevelNum"
       - "server/client.qc:1080 (SendWelcomeMessage)"
     port_refs:
-      - "src/XonoticGodot.Server/Campaign.cs:LevelNum (Campaign_GetLevelNum = Level + 1; STILL NEVER READ/NETWORKED)"
+      - "src/XonoticGodot.Server/Campaign.cs:LevelNum (Campaign_GetLevelNum = Level + 1)"
+      - "src/XonoticGodot.Server/GameWorld.cs:SendCampaignWelcome (live reader, line 1006-1010)"
+      - "src/XonoticGodot.Server/GameWorld.cs:InfraClientConnect (welcome call, line 984-985)"
+      - "src/XonoticGodot.Server/GameWorld.cs:Campaign.Log wiring (line 882 -> Commands.ChatBroadcast)"
     constants:
-      - { name: "level num", base: "campaign_level + 1 (networked in SendWelcomeMessage when g_campaign)", port: "Campaign.LevelNum = Level+1 computed, but not networked/read", match: false }
+      - { name: "level num", base: "campaign_level + 1 (networked in SendWelcomeMessage when g_campaign; CSQC builds 'Level %d:')", port: "Campaign.LevelNum = Level+1, read by SendCampaignWelcome and surfaced as 'Level N:'", match: true }
     status:
-      logic: stub
+      logic: faithful
       values: faithful
       timing: na
-      presentation: missing
+      presentation: partial
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The Campaign.LevelNum property (QC Campaign_GetLevelNum = campaign_level + 1) exists but is STILL never read or networked anywhere in src/+game/ (grep confirms zero readers outside its own definition). Wave-5 did not add a SendWelcomeMessage equivalent that consults it, and DialogWelcome still has no campaign-level field. The value is computed but never reaches the client -> the welcome/info dialog still cannot show 'Level N'."
+      - "Presentation differs from Base: Base's CSQC net_handle_ServerWelcome (client/main.qc:1379) builds a full Welcome MENU DIALOG ('Level N: <level description>\\n\\nPress jump to enter the game') with the per-level description inserted by the menu. The port surfaces a single CHAT line ('^F1Level N:^7 ^BG<name>^7, press jump to enter the game') via Campaign.Log -> ChatBroadcast — the level number reaches the human correctly, but there is no Welcome menu dialog and no per-level description string. Functional level-number presentation is closed; the dialog UI is a port-equivalent print."
     verification:
-      - { kind: code, ref: "Campaign.LevelNum exists (Campaign.cs:81 -> Level + 1, value correct)", result: pass }
-      - { kind: grep, ref: "Campaign.LevelNum has ZERO readers in src/+game/ (only its own definition); no SendWelcomeMessage / welcome-message campaign-level networking path; DialogWelcome has no campaign-level field", result: fail }
+      - { kind: code, ref: "Campaign.LevelNum (Campaign.cs:81 -> Level + 1) matches QC Campaign_GetLevelNum = campaign_level + 1; Base CSQC displays that value as 'Level %d:' (main.qc:1392), so level+1 is correct", result: pass }
+      - { kind: code, ref: "GameWorld.SendCampaignWelcome (line 1009) reads Campaign.LevelNum; called from InfraClientConnect (line 985) gated on !p.IsBot && g_campaign — the live connect callback (Clients.OnClientConnect = InfraClientConnect, line 907)", result: pass }
+      - { kind: code, ref: "Campaign.Log = line => Commands.ChatBroadcast(line) (GameWorld.cs:882), so the welcome line genuinely reaches the connected client", result: pass }
     confidence: high
-    notes: "Unchanged this wave. The Campaign_GetLevelNum VALUE exists (LevelNum property, correct level+1) but the networking/presentation side is still entirely absent — no consumer reads it and no welcome-channel carries it. Cosmetic info-dialog feature; the HUD/menu campaign list separately shows progress, so low-impact."
+    notes: "FIXED this pass (Wave-5 commit 023ba70, AFTER the 2026-06-22 baseline write). Baseline had this dead/stub: LevelNum was computed but had zero readers. SendCampaignWelcome was added in 023ba70 and is the live reader on the connect path. The VALUE and LIVENESS are now faithful/live; presentation is partial because the port emits a chat line rather than reconstructing Base's CSQC Welcome menu dialog with the per-level description. Low-risk info-dialog feature."

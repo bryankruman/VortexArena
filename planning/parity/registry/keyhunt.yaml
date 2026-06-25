@@ -1,14 +1,15 @@
 unit: keyhunt
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-22"  # re-audited post-Wave-5 (commit 023ba70)
 summary:
   feature_count: 21
   worst_gaps:
-    - "Re-audit after Wave-5 (commit 66e378f): KeyHunt.cs + BotObjectiveRoles.cs are UNCHANGED vs the prior post-fix-up audit, and the Wave-5 GameWorld/Commands edits did not disturb the KH live path. Re-verified end-to-end: the +use voluntary key-drop is LIVE (impulse 21 Commands.cs:1618 -> WeaponImpulses.Handle Use(21) -> UseHandle -> VehicleBoarding.UseKey:106 FirePlayerUseKey -> PlayerUseKey.Call -> KeyHunt.OnUseKey -> DropOneKey) and the push branch of LoserTeam is LIVE (DamageSystem.cs:404-405 / Teleporters.cs:334 / Laser.cs:188 set Player.Pusher+PushLTime -> DropAllKeys:731 records key.Pusher -> LoserTeam re-gates pu.Team!=loserTeam -> score_push)."
+    - "Re-audit after Wave-5 finish (commit 023ba70 — KeyHunt.cs AND BotObjectiveRoles.cs WERE edited here, so the prior baseline's 'UNCHANGED' claim is now stale). TWO baseline gaps genuinely CLOSED: (1) keyhunt.bot.role flipped DEAD->LIVE — RoleKeyHunt now FindByClass('item_kh_key') (matches the spawn classname KeyHunt.cs:521) and reads key.GtCarrier (matches AttachToCarrier EntityGametypeState.cs:224), the two-line fix the prior baseline predicted; dispatched live at BotRoles.cs:96. (2) keyhunt.capture.instant_path_dead — the dangerous no-maxdist CheckCapture() method was DELETED and AssignKey now routes to CheckCaptureGeometry (the maxdist-gated path), removing the mis-score foot-gun (AssignKey itself is now wholly dead but harmless)."
+    - "Re-verified the two prior-audit fixes still HOLD post-Wave-5: the +use voluntary key-drop is LIVE (impulse 21 -> WeaponImpulses Use(21) UseHandle -> VehicleBoarding.UseKey:106 FirePlayerUseKey -> PlayerUseKey.Call -> KeyHunt.OnUseKey -> DropOneKey) and the push branch of LoserTeam is LIVE (DamageSystem.cs:404-405 / Teleporters.cs:334 / Laser.cs:188 set Player.Pusher+PushLTime -> DropAllKeys:699 records key.Pusher -> LoserTeam re-gates pu.Team!=loserTeam -> score_push). NB: GameWorld.cs/Commands.cs live in XonoticGodot.Server (the baseline's Common-path line refs were mislabeled); Tick GameWorld.cs:2168, Activate+SetRoster 1790-1792."
+    - "Bot role logic STILL only partial: the four QC roles (carrier/defense/offense/freelancer with role timeouts + AllOwnedByWhichTeam ratingscale switching + HavocBot_ChooseRole) are collapsed to one freelancer-style rating — but it now actually FIRES (finds keys + targets carriers)."
     - "Carried key STILL does not orbit the carrier (fixed (0,0,20) offset vs the stock Base orbit KH_KEY_XYDIST 24 / XYSPEED 45 / ZSHIFT 22; KH_PLAYER_USE_ATTACHMENT is COMMENTED OUT in Base sv_keyhunt.qc:37 so the #ifndef orbit block 677-679 is the live path) — only un-fixed cosmetic."
-    - "Bot role RoleKeyHunt is UNCHANGED and still DEAD: FindByClass('keyhunt_key') (BotObjectiveRoles.cs:213) vs spawned 'item_kh_key' (KeyHunt.cs:553), and reads key.Owner (line 220/223) vs carrier on Entity.GtCarrier (EntityGametypeState.cs:224)."
-    - "Drop-on-death is still only wired on the PlayerDies path (OnDeath -> DropAllKeys, the SOLE caller at KeyHunt.cs:394); MakePlayerObserver / ClientDisconnect / DropSpecialItems do NOT route to DropAllKeys (no port analogue)."
+    - "Drop-on-death is still only wired on the PlayerDies path (OnDeath -> DropAllKeys, the SOLE caller at KeyHunt.cs:362); MakePlayerObserver / ClientDisconnect / DropSpecialItems do NOT route to DropAllKeys (no port analogue)."
     - "Carrier/noncarrier damage+force matrix, lava/trigger return_when_unreachable destroy, and waypoint sprites remain entirely unimplemented; capture per-carrier SP_SCORE + nades_GiveBonus still absent (only team total + one carrier's KH_CAPS credited)."
 features:
   - id: keyhunt.controller.round_loop
@@ -127,11 +128,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL OPEN: a carried key sits at a fixed (0,0,20) offset on the carrier (all three call sites — AssignKey:317 / AssignKeyNoScore:638 / CollectKey:663 — pass new Vector3(0,0,20) to AttachToCarrier); it does NOT circle the carrier at radius 24 per kh_Key_Think. RE-VERIFIED the orbit IS the live Base path: KH_PLAYER_USE_ATTACHMENT is COMMENTED OUT (sv_keyhunt.qc:37 '// #define'), so the #ifndef orbit block (lines 677-679: makevectors('0 1 0'*(cnt+(time%360)*XYSPEED)); setorigin v_forward*XYDIST + z) runs. Z offset is also 20 vs KH_KEY_ZSHIFT 22. KeyThinkEntity (692) does not re-orbit a carried key."
+      - "STILL OPEN: a carried key sits at a fixed (0,0,20) offset on the carrier (all three call sites — AssignKey:322 / AssignKeyNoScore:606 / CollectKey:631 — pass new Vector3(0,0,20) to AttachToCarrier); it does NOT circle the carrier at radius 24 per kh_Key_Think. RE-VERIFIED the orbit IS the live Base path: KH_PLAYER_USE_ATTACHMENT is COMMENTED OUT (sv_keyhunt.qc:37 '// #define'), so the #ifndef orbit block (lines 677-679: makevectors('0 1 0'*(cnt+(time%360)*XYSPEED)); setorigin v_forward*XYDIST + z) runs. Z offset is also 20 vs KH_KEY_ZSHIFT 22. KeyThinkEntity (660) does not re-orbit a carried key."
     verification:
-      - { kind: code, ref: "KeyHunt.cs:317/638/663 each AttachToCarrier(..., new Vector3(0,0,20)); KeyThinkEntity (692) does not orbit a carried key (Base kh_Key_Think:677-679 do, KH_PLAYER_USE_ATTACHMENT undefined)", result: pass }
+      - { kind: code, ref: "KeyHunt.cs:322/606/631 each AttachToCarrier(..., new Vector3(0,0,20)); KeyThinkEntity (660) does not orbit a carried key (Base kh_Key_Think:677-679 do, KH_PLAYER_USE_ATTACHMENT undefined)", result: pass }
     confidence: high
-    notes: "UNCHANGED. Attach stops the spin (correct) but never replaces it with the XYDIST/XYSPEED orbit. Cosmetic-only gap. EntityGametypeState.cs +7 Wave-5 lines (GtEventHeal) are Onslaught-only and do not touch AttachToCarrier."
+    notes: "UNCHANGED (this row's behavior). Carry sites renumbered after Wave-5 removed CheckCapture (AssignKey shrank). Attach stops the spin (correct) but never replaces it with the XYDIST/XYSPEED orbit. Cosmetic-only gap."
 
   - id: keyhunt.key.touch_collect
     name: "Touch by enemy collects a dropped key (+collect score, delay_collect re-pickup gate)"
@@ -195,10 +196,9 @@ features:
       - "common/gametypes/gametype/keyhunt/sv_keyhunt.qc:kh_Key_Think"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/KeyHunt.cs:AssignKey"
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/KeyHunt.cs:CheckCapture"
     constants: []
     status:
-      logic: partial
+      logic: faithful
       values: na
       timing: na
       presentation: na
@@ -207,11 +207,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL OPEN: AssignKey/CheckCapture implement an instant capture WITHOUT the maxdist check; Base has no such path. The live collect path goes KeyTouchEntity->CollectKey->CheckCaptureGeometry, so AssignKey/CheckCapture have no live caller (dead code that would mis-score if ever wired)."
+      - "FIXED (Wave-5 commit 023ba70): the no-maxdist CheckCapture() method was DELETED, and AssignKey:325 now routes to CheckCaptureGeometry() — the same maxdist-gated capture the live path uses. The mis-score-if-wired foot-gun is gone. AssignKey itself is now wholly dead (zero source callers — only doc/test refs; the live collect path is KeyTouchEntity->CollectKey->CheckCaptureGeometry), but it would now score CORRECTLY if a future caller picked it, so the residual is harmless dead code, not a hazard."
     verification:
-      - { kind: code, ref: "Live touch path is KeyTouchEntity->CollectKey->CheckCaptureGeometry; AssignKey/CheckCapture only called by tests (no GameWorld/entity-feed caller)", result: pass }
+      - { kind: code, ref: "grep: CheckCapture() absent from src (deleted; only stale Release DLLs match); AssignKey:325 returns CheckCaptureGeometry(). AssignKey has no source caller (KeyHunt.cs:311 def + doc/test refs only); live path = KeyTouchEntity->CollectKey:643->CheckCaptureGeometry", result: pass }
     confidence: high
-    notes: "UNCHANGED. Vestigial headless capture path; risk if a future caller picks the wrong one."
+    notes: "PARTIALLY FIXED vs baseline: the dangerous no-maxdist shortcut (CheckCapture) is removed and AssignKey now uses the correct geometry; logic upgraded partial->faithful. Still dead (no live caller) but no longer a mis-score risk."
 
   - id: keyhunt.capture.scoring
     name: "Capture scoring: team SCORE + KH_CAPS + per-carrier SP_SCORE/nade bonus"
@@ -352,12 +352,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL OPEN (liveness): only the PlayerDies path (OnDeath -> DropAllKeys) is wired. The MakePlayerObserver / ClientDisconnect / DropSpecialItems hooks (all kh_Key_DropAll in Base) have no port analogue calling DropAllKeys -> a player who observes/disconnects/has items stripped keeps their key state in limbo. RE-VERIFIED: DropAllKeys has exactly ONE caller (KeyHunt.cs:394 OnDeath); no observer/disconnect/dropspecialitems path routes to it."
+      - "STILL OPEN (liveness): only the PlayerDies path (OnDeath -> DropAllKeys) is wired. The MakePlayerObserver / ClientDisconnect / DropSpecialItems hooks (all kh_Key_DropAll in Base) have no port analogue calling DropAllKeys -> a player who observes/disconnects/has items stripped keeps their key state in limbo. RE-VERIFIED: DropAllKeys has exactly ONE caller (KeyHunt.cs:362 OnDeath); no observer/disconnect/dropspecialitems path routes to it."
     verification:
-      - { kind: code, ref: "KeyHunt.cs:725-765 DropAllKeys: DetachFromCarrier + Toss + SetOrigin(player) + Velocity = player.Velocity + fwd*DropVelocity (makevectors -1 0 0 *(45+45*rand) + 0 360 0*rand), KH_LOSSES + InfoTeam(LOST) + SoundOn(KH_DROP); also records key.Pusher=mypusher + ProtectTime; OnDeath (394) is the only live caller", result: pass }
-      - { kind: code, ref: "grep: DropAllKeys has exactly two hits in src — the definition (725) and the OnDeath call (394); no observer/disconnect/dropspecialitems caller", result: pass }
+      - { kind: code, ref: "KeyHunt.cs:693+ DropAllKeys: DetachFromCarrier + Toss + SetOrigin(player) + Velocity = player.Velocity + fwd*DropVelocity (makevectors -1 0 0 *(45+45*rand) + 0 360 0*rand), KH_LOSSES + InfoTeam(LOST) + SoundOn(KH_DROP); also records key.Pusher=mypusher + ProtectTime; OnDeath (362) is the only live caller", result: pass }
+      - { kind: code, ref: "grep: DropAllKeys has exactly two hits in src — the definition (693) and the OnDeath call (362); no observer/disconnect/dropspecialitems caller", result: pass }
     confidence: high
-    notes: "logic faithful: ProtectTime/key.Pusher feed a LIVE push branch (see loss.loser_team_push_destroy) — the protect window has an observable effect. STILL only 1 of 4 Base drop hooks wired (liveness stays partial; timing partial reflects the missing observe/disconnect drop edges). UNCHANGED vs prior audit."
+    notes: "logic faithful: ProtectTime/key.Pusher feed a LIVE push branch (see keyhunt.loss.loser_team_push_destroy) — the protect window has an observable effect. STILL only 1 of 4 Base drop hooks wired (liveness stays partial; timing partial reflects the missing observe/disconnect drop edges). Line refs renumbered post-Wave-5; behavior unchanged."
 
   - id: keyhunt.drop.voluntary_use
     name: "Voluntary +use drop of one key (kh_Key_DropOne)"
@@ -605,14 +605,13 @@ features:
       timing: na
       presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "RE-VERIFIED STILL DEAD (BotObjectiveRoles.cs UNCHANGED by every wave incl. Wave-5): RoleKeyHunt calls Api.Entities.FindByClass('keyhunt_key') (BotObjectiveRoles.cs:213) but keys spawn with classname 'item_kh_key' (KeyHunt.cs:553) -> the scan finds nothing every frame."
-      - "RE-VERIFIED STILL: it reads key.Owner (BotObjectiveRoles.cs:220/223) to locate the carrier, but the carrier is stored on Entity.GtCarrier by AttachToCarrier (EntityGametypeState.cs:224); Entity.Owner is never set -> carrier targeting broken even if the classname matched."
-      - "The four QC roles (carrier/defense/offense/freelancer with role timeouts + kh_Key_AllOwnedByWhichTeam-driven ratingscale switching + HavocBot_ChooseRole random role pick) are collapsed into a single freelancer-style rating."
+      - "STILL PARTIAL (logic): the four QC roles (carrier/defense/offense/freelancer with role timeouts + kh_Key_AllOwnedByWhichTeam-driven ratingscale switching + HavocBot_ChooseRole random role pick) are collapsed into a single freelancer-style rating. The collapsed role now fires correctly (finds keys + rates ally-support 0.5x vs grab/kill), but the per-role behavior tree + timeouts are absent."
     verification:
-      - { kind: code, ref: "BotObjectiveRoles.cs:213 FindByClass('keyhunt_key') vs spawn classname item_kh_key (KeyHunt.cs:553); key.Owner read (220/223) vs GtCarrier (EntityGametypeState.cs:224 AttachToCarrier)", result: pass }
+      - { kind: code, ref: "FIXED in Wave-5 commit 023ba70: BotObjectiveRoles.cs:216 FindByClass('item_kh_key') now MATCHES the spawn classname (KeyHunt.cs:521 SpawnObjective('item_kh_key')); BotObjectiveRoles.cs:223 reads key.GtCarrier which MATCHES AttachToCarrier's back-link (EntityGametypeState.cs:224 obj.GtCarrier=carrier). Same-team carrier rated *0.5.", result: pass }
+      - { kind: code, ref: "Dispatched live: BotRoles.cs:96 'keyhunt' or 'kh' => RoleKeyHunt. The spawned key entity is registered with Api.Entities (SpawnObjective) so FindByClass returns it; GtCarrier is set/cleared on that same entity by Attach/DetachFromCarrier.", result: pass }
     confidence: high
-    notes: "UNCHANGED and still dead. Wired in BotRoles dispatch (kh/keyhunt -> RoleKeyHunt) but cannot find or target keys. Two-line fix (classname 'item_kh_key' + read GtCarrier) would revive it."
+    notes: "FIXED dead->LIVE (the two-line fix the prior baseline predicted, landed in Wave-5 023ba70): classname now item_kh_key + carrier read via GtCarrier. logic/values stay partial (single collapsed freelancer rating vs Base's 4-role behavior tree), but the role now genuinely locates keys and targets carriers on the live bot path."

@@ -5,9 +5,9 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 12
   worst_gaps:
-    - "Midair-combo (primary_midaircombo_radius) is still DEAD on the live path (default cvar 0) and, when force-enabled, still lacks own/teammate/enemy team-gating + the separate midaircombo_speed first-orb delay (it reuses the combo-chain path)."
-    - "IS_INDEPENDENT_PLAYER owner-gating (combo + midair) is unported — dead-OFF-equivalent (default modes have no independent players)."
+    - "Midair-combo (primary_midaircombo_radius) is now logic/values FAITHFUL (Wave-5 added a dedicated MidairTriggerCombo with own/teammate/enemy gating + the separate midaircombo_speed first-orb delay), but it is still DEAD on the live path because the xonotic default cvar is 0 (it only runs in samual/xdf where radius=100)."
     - "checkammo1/2 still omit Base's clip-load OR-term (weapon_load[m_id] >= ammo); a no-op while reload_ammo defaults 0, so it never fires in stock play."
+    - "IS_INDEPENDENT_PLAYER owner-gate is ported in the midair path but Entity.IsIndependentPlayer is hardwired false (no independent-player mode ported), so it is dead-OFF-equivalent; the non-midair W_Electro_TriggerCombo still omits the gate (same harmless effect)."
     - "Combo explode-over-time (combo_duration, default 0) and sticky orbs (MOVETYPE_FOLLOW, stick default 0) are intentionally omitted; harmless at defaults."
 features:
   - id: electro.primary.fire_gate
@@ -130,7 +130,7 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "IS_INDEPENDENT_PLAYER owner-gating in W_Electro_TriggerCombo is not ported (default modes have no independent players, so dead-OFF-equivalent)."
+      - "IS_INDEPENDENT_PLAYER owner-gating in W_Electro_TriggerCombo (Electro.cs:480-511) is not ported here (it IS ported in the midair path); dead-OFF-equivalent since Entity.IsIndependentPlayer is hardwired false and default modes have no independent players."
     verification:
       - { kind: code, ref: "Configure (Electro.cs:131-132) now sets ComboSpeed=Bal(combo_speed,2000) and ComboComboRadiusThruwall=Bal(...,200). TriggerCombo (Electro.cs:431-462) snapshots electro_orb in radius, applies the thruwall LOS abort beyond ComboComboRadiusThruwall (Trace, frac<1 -> continue), renames to electro_orb_chain, schedules ExplodeCombo with (origin-org).Length()/ComboSpeed delay, recursing within Combo.ComboRadius. ExplodeCombo (465-477) re-triggers then RadiusDamage(combo, deathTag=DeathCombo) + ELECTRO_COMBO + ImpactSound(electro_impact_combo). Driven live from ExplodeBolt->TriggerCombo.", result: pass }
     confidence: high
@@ -144,16 +144,16 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Electro.cs:BoltThink"
     constants:
-      - { name: "primary_midaircombo_radius", base: "0 (OFF)", port: "0 (OFF)", match: true }
+      - { name: "primary_midaircombo_radius", base: "0 (OFF in xonotic; 100 in samual/xdf)", port: "0 (seeded from cvar)", match: true }
       - { name: "primary_midaircombo_explode", base: "1", port: "true", match: true }
       - { name: "primary_midaircombo_interval", base: "0.1", port: "0.1", match: true }
-      - { name: "primary_midaircombo_own", base: "1", port: "any non-self orb (no gating)", match: false }
-      - { name: "primary_midaircombo_teammate", base: "1", port: "no gating", match: false }
-      - { name: "primary_midaircombo_enemy", base: "1", port: "no gating", match: false }
-      - { name: "primary_midaircombo_speed", base: "2000", port: "uses combo_speed chain path (no separate first-orb delay)", match: false }
+      - { name: "primary_midaircombo_own", base: "1", port: "true (Primary.MidairComboOwn — gated)", match: true }
+      - { name: "primary_midaircombo_teammate", base: "1", port: "true (Primary.MidairComboTeammate — gated)", match: true }
+      - { name: "primary_midaircombo_enemy", base: "1", port: "true (Primary.MidairComboEnemy — gated)", match: true }
+      - { name: "primary_midaircombo_speed", base: "2000", port: "2000 (first-orb delay = dist/midaircombo_speed; rest use combo_speed via the ExplodeCombo recursion)", match: true }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: faithful
       presentation: faithful
       audio: faithful
@@ -161,13 +161,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "DEAD on the live path: midaircombo_radius defaults 0 (bal-wep-xonotic.cfg), so the BoltThink branch (Electro.cs:249-264) never runs with stock balance."
-      - "When force-enabled: no own/teammate/enemy team-gating (port triggers any non-self orb — Base branches on midaircombo_own/_teammate/_enemy)."
-      - "When force-enabled: no separate midaircombo_speed first-orb-no-delay; the port reuses TriggerCombo (combo_speed delay for all orbs). Base gives the first orb a midaircombo_speed delay and the rest combo_speed."
+      - "DEAD on the live path: midaircombo_radius defaults 0 (bal-wep-xonotic.cfg), so the BoltThink midair branch (Electro.cs:258-269 -> MidairTriggerCombo) never runs under stock xonotic balance. The branch IS reachable (and now faithful) under samual/xdf balance where the cvar is 100."
+      - "IS_INDEPENDENT_PLAYER orb-owner skip is ported (Electro.cs:291) but Entity.IsIndependentPlayer is hardwired false, so the guard is dead-OFF-equivalent (no independent-player mode is ported). Harmless: default modes have no independent players."
     verification:
-      - { kind: code, ref: "BoltThink (Electro.cs:249) guards on Primary.MidairComboRadius>0 (Bal default 0). When on it calls CountOrbs+TriggerCombo(any non-self orb) and reschedules min(time+0.1, deathTime) — interval now matches Base 0.1, but no SAME_TEAM/own gating and the chain uses combo_speed not midaircombo_speed.", result: fail }
+      - { kind: code, ref: "BoltThink (Electro.cs:258) guards on Primary.MidairComboRadius>0 (Bal default 0, verified bal-wep-xonotic.cfg). When on, it calls MidairTriggerCombo (Electro.cs:280-321): FindInRadius(electro_orb) -> per-orb own/teammate/enemy gate (own==e.Owner?MidairComboOwn : Teams.SameTeam?MidairComboTeammate : MidairComboEnemy), renames to electro_orb_chain, schedules ExplodeCombo with first-orb delay dist/MidairComboSpeed (0=instant->immediate), the recursive ExplodeCombo->TriggerCombo ripple then uses combo_speed. If found && MidairComboExplode -> ExplodeBolt, else reschedule min(time+0.1, deathTime). Mirrors Base electro.qc:261-309 line-for-line. Wave-5 (commit 023ba70) added this; FAILS only on liveness (radius 0 at xonotic default).", result: fail }
     confidence: high
-    notes: "Re-verified 2026-06-22 (post-Wave-5, no Electro change since Wave-1/2): liveness still DEAD (Electro.cs:103 seeds MidairComboRadius=0 from bal-wep-xonotic.cfg). Audio/presentation now inherit the (fixed) combo-chain path so are no longer listed as missing, but the BoltThink branch (Electro.cs:249-264) is unreachable at stock balance. Interval value fixed to 0.1 (matches Base midaircombo_interval). STILL OPEN: own/teammate/enemy team-gating (Base electro.qc:277-281 branches on midaircombo_own/_teammate/_enemy) + the separate midaircombo_speed first-orb delay (Base electro.qc:290-296 — only the first orb uses midaircombo_speed, the rest combo_speed) remain unimplemented."
+    notes: "FIX (logic+values partial->faithful) since the 2026-06-22 baseline: Wave-5 (commit 023ba70) replaced the old TriggerCombo-reuse with a dedicated MidairTriggerCombo (Electro.cs:280-321) that ports the full Base W_Electro_Bolt_Think midair loop — per-orb own/teammate/enemy team-gating (electro.qc:276-281) AND the separate midaircombo_speed first-orb delay with the rest on combo_speed (electro.qc:290-298). All midaircombo cvars now seeded in Configure (Electro.cs:108-114) and verified against bal-wep-*.cfg. STILL OPEN / liveness DEAD: midaircombo_radius is 0 in xonotic balance so the branch is unreachable in stock play (faithful-but-dead; it is live+faithful under samual/xdf where radius=100). This is a deliberate faithful port of an off-by-default feature, not a divergence."
 
   - id: electro.secondary.orb_stream
     name: "Secondary orb stream (count orbs, one per animtime while held)"

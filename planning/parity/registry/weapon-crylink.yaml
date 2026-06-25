@@ -1,7 +1,7 @@
 unit: weapon-crylink
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 10
   worst_gaps:
@@ -296,11 +296,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The crylink.qc wr_think forced-reload pre-check (crylink.qc:495-498: if reload_ammo && clip_load < min(pri,sec) ammo -> wr_reload) is not mirrored in Crylink.WrThink; the base clip/reload machine covers reload generically. With reload_ammo default 0 the whole feature is INACTIVE — no live caller exercises it (dead at stock balance)."
+      - "Clip-load reload semantics: WrReload (the base WeaponFireGate machine) reloads the generic clip; QC's wr_reload also passes SND_RELOAD. The reload SOUND cue (SND_RELOAD) is whatever the base reload machine plays — not crylink-specific, faithful by inheritance. No crylink-specific reload gap remains."
     verification:
-      - { kind: code_read, ref: "crylink.qc:493-498,570-573 vs base Weapon reload machine (no per-weapon override in Crylink.cs — confirmed Crylink.cs has no WrReload/forced-reload code)", result: pass }
-    confidence: medium
-    notes: "RE-VERIFIED 2026-06-22. Unchanged. Reload disabled by stock balance (reload_ammo 0); generic base reload would handle it if enabled, using min(pri_ammo, sec_ammo) clip size. Dead at stock balance — INTENTIONAL liveness=dead (matches Base behavior at stock cvars), not a defect. No change vs baseline."
+      - { kind: code_read, ref: "crylink.qc:493-498 wr_think forced-reload head vs Crylink.cs:147-156 — `forcedReload = ReloadingAmmo()!=0 && st.ClipLoad < min(Primary.Ammo,Secondary.Ammo)` then WrReload(actor,slot); the fire1/fire2 branches are gated on `!forcedReload` (Crylink.cs:193,198) so a forced reload SUPPRESSES firing this tick exactly as the QC if/else-if head", result: pass }
+      - { kind: code_read, ref: "crylink.qc:570-573 wr_reload vs base WrReload (WeaponFireGate.cs:223) — ammoMin floor = ReloadingAmmoMin() overridden to min(Primary.Ammo,Secondary.Ammo) (Crylink.cs:211), matching W_Reload(...,min(WEP_CVAR_PRI(ammo),WEP_CVAR_SEC(ammo)),...); ReloadingAmmo() reads g_balance_crylink_reload_ammo (WeaponFireGate.cs:408, default 0)", result: pass }
+    confidence: high
+    notes: "RE-VERIFIED 2026-06-25 (Wave-5 FIX): the QC wr_think forced-reload pre-check is now MIRRORED in Crylink.WrThink (Crylink.cs:147-156) — previously absent (baseline gap). It is the head of the if/else-if firing chain (fire branches gated `!forcedReload`), structurally faithful to crylink.qc:495-516. ReloadingAmmoMin override (Crylink.cs:211) gives the correct min(pri,sec) clip size. Still INACTIVE at stock balance (g_balance_crylink_reload_ammo defaults 0 -> ReloadingAmmo()==0 -> forcedReload never true), so liveness stays `dead` at stock cvars (INTENTIONAL, matches Base) — but the path is now genuinely live the instant the cvar is flipped, whereas the baseline had no crylink code on this path at all. Logic gap CLOSED."
 
   - id: crylink.fx.trail_muzzle_impact
     name: "Trail (purple plasma), muzzle flash, impact particle, projectile render"

@@ -5,11 +5,11 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 19
   worst_gaps:
-    - "Race split-timer (#8) + checkpoints (#27) panels are now fed LIVE on a listen server (NetGame.UpdateRacePanels, host-side per-checkpoint records) — verified live. But a PURE (remote) client still has NO feed: there is no TE_CSQC_RACE net path, so the split/anticipation/speed/medal are host-only."
-    - "Race/CTS mod-icon (HUD_Mod_Race PB+server-best+medal flash) and the race best-time RANKINGS scoreboard column (getrankings/grecordtime[]) have NO port code at all — ScoreboardPanel.SetRankings exists but has no live caller (the NetGame:3453 SetRankings is the unrelated ScorePanel standings)."
-    - "Spawn grid by race_place + respawn-at-last-checkpoint not modeled (retract is a plain Clients.Spawn); no bot race role (havocbot_role_race); no speed awards (race_SpeedAwardFrame); force-keyboard movement quantization (M_SQRT1_2 octant snap + cl_movecliptokeyboard 2) absent."
-    - "Wrong-way spawnflag-4 kill is coded but still DEAD on the live path: WireObjectiveSpawns (GameWorld.cs:1796) calls SpawnCheckpoint without punishWrongWay:true, so no map checkpoint ever arms it; also uses DeathTypes.Void not Base DEATH_HURTTRIGGER."
-    - "Lap-limit default (port 7) differs from Base (-1 = consult mapinfo); qualifying-timelimit SOURCE (g_race_qualifying_timelimit) still unwired so the qualifying phase runs on the plain timelimit."
+    - "Wrong-way spawnflag-4 kill is coded but STILL DEAD on the live path: WireObjectiveSpawns (GameWorld.cs:1947) calls SpawnCheckpoint(e.Origin, e.Count) without reading e.SpawnFlags & 4, so no map checkpoint ever arms punishWrongWay; also uses DeathTypes.Void not Base DEATH_HURTTRIGGER. (e.SpawnFlags IS parsed at GameWorld.cs:2810 — the wiring is one branch away.)"
+    - "race_place START GRID ordering + trigger_race_checkpoint_verify map-load validation still missing; no bot race role (havocbot_role_race); no speed awards (race_SpeedAwardFrame); force-keyboard movement quantization (M_SQRT1_2 octant snap + cl_movecliptokeyboard 2) absent."
+    - "HUD_Mod_Race MOD-ICON (floating PB+server-best+medal flash) has no port code (ModIconsPanel has no Race case). The split-timer (#8) + checkpoints (#27) panels still feed host-side only (no TE_CSQC_RACE net path), so split/anticipation/speed/medal are listen-server only for the split panels."
+    - "Lap-limit default (port 7) differs from Base (-1 = consult mapinfo); qualifying-timelimit SOURCE (g_race_qualifying_timelimit) still unwired so the qualifying phase runs on the plain timelimit; cl_allow_uid* consent gate on the record DB still absent."
+    - "NEW since baseline (gaps the prior audit missed): respawn-at-last-checkpoint is now implemented + LIVE (RespawnSpot/ApplyRespawnSpot via Clients.OnPreSpawn → SpawnSystem SpawnPointTarg), and the race/CTS RANKINGS scoreboard column is now genuinely NETWORKED (ServerNet snapshots RaceRecords top-15 → ScoreboardBlock wire → ScoreboardPanel.SetRankings) so it works for a pure remote client."
 features:
   - id: race.mode.setup_limits
     name: "Mode setup + limits (teams, qualifying, lap/frag/time limits)"
@@ -94,9 +94,9 @@ features:
     gaps:
       - "Port assumes the finish is checkpoint index 0; Base's race_timed_checkpoint can be the highest CP (spawnflags & 8) on tracks where start != finish."
       - "Defrag target_checkpoint / target_startTimer / target_stopTimer chain not modeled for Race (CTS-only no-ops)."
-      - "SpawnCheckpoint has a punishWrongWay flag, but GameWorld.WireObjectiveSpawns (GameWorld.cs:1796) does not pass it, so the spawnflag-4 (wrong-order kill) checkpoint variant is never armed from the BSP lump."
+      - "SpawnCheckpoint has a punishWrongWay flag, but GameWorld.WireObjectiveSpawns (GameWorld.cs:1947) calls SpawnCheckpoint(e.Origin, e.Count) without reading e.SpawnFlags & 4, so the spawnflag-4 (wrong-order kill) checkpoint variant is never armed from the BSP lump. e.SpawnFlags IS parsed (GameWorld.cs:2810) — the wiring is one branch away."
     verification:
-      - { kind: code, ref: "GameWorld.WireObjectiveSpawns Race arm (GameWorld.cs:1791-1798): SpawnCheckpoint(e.Origin, e.Count) — no punishWrongWay", result: pass }
+      - { kind: code, ref: "GameWorld.WireObjectiveSpawns Race arm (GameWorld.cs:1942-1948): SpawnCheckpoint(e.Origin, e.Count) — no punishWrongWay despite e.SpawnFlags being available", result: pass }
     confidence: high
     notes: "Checkpoints + penalty zones are genuinely spawned from the BSP entity lump on the live path."
 
@@ -121,7 +121,7 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The spawnflag-4 wrong-order kill (CheckpointTouch -> Combat.Damage 10000, Race.cs:310-311) is DEAD: no caller passes punishWrongWay:true (WireObjectiveSpawns spawns every checkpoint with the flag off), so a wrong-order crossing is still merely ignored on the live path."
+      - "The spawnflag-4 wrong-order kill (CheckpointTouch -> Combat.Damage 10000, Race.cs:328-329) is DEAD: no caller passes punishWrongWay:true (WireObjectiveSpawns:1947 spawns every checkpoint with the flag off), so a wrong-order crossing is still merely ignored on the live path."
       - "Uses DeathTypes.Void instead of Base's DEATH_HURTTRIGGER for the wrong-way kill."
       - "No SUB_UseTargets / equipment-clear (Portal_ClearAll, porto_forbidden) on crossing."
     verification:
@@ -370,25 +370,28 @@ features:
       - "server/race.qc:spawnfunc(info_player_race)"
       - "server/race.qc:race_RetractPlayer"
     port_refs:
-      - "src/XonoticGodot.Server/GameWorld.cs:1740-1744"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:ApplyRespawnSpot"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:OnDeath (respawn-checkpoint resume)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:CheckpointTouch (RespawnSpot/RespawnCheckpoint update)"
+      - "src/XonoticGodot.Server/GameWorld.cs:1895 (Clients.OnPreSpawn = p => race.ApplyRespawnSpot(p))"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:332 (consumes Player.SpawnPointTarg)"
     constants: []
     status:
-      logic: missing
-      values: missing
+      logic: partial
+      values: partial
       timing: na
       presentation: na
       audio: na
-      liveness: dead
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No race_place grid: racers do not get ordered start positions in a multi-racer race."
-      - "Respawn does not return the racer to their last checkpoint / previous spawn (Base race_respawn_checkpoint/spotref + SPAWN_PRIO_RACE_PREVIOUS_SPAWN)."
+      - "race_place START-GRID ordering still missing: racers do not get ordered start positions in a multi-racer race (no race_place read / info_player_race grid)."
       - "trigger_race_checkpoint_verify map-load validation (missing-spawn error) not performed."
     verification:
-      - { kind: code, ref: "OnFinishRetract = Clients.Spawn; no race_place read", result: fail }
-    confidence: medium
-    notes: "Unchanged by Wave-2. GtCheckpointIndex/GtIsFinishLine fields exist, but spawn selection never reads race_place or the respawn checkpoint."
+      - { kind: code, ref: "Race.ApplyRespawnSpot sets Player.SpawnPointTarg to the last-passed checkpoint; wired LIVE via ClientManager.OnPreSpawn (invoked ClientManager.cs:616 before SelectSpawnPoint) → SpawnSystem.cs:332 short-circuits to the forced spot; OnDeath resumes NextCheckpoint after the respawn CP", result: partial }
+    confidence: high
+    notes: "FIXED (partial) since baseline — the prior audit marked this fully dead/missing. The respawn-at-last-checkpoint half (Base race_respawn_checkpoint / race_respawn_spotref / SPAWN_PRIO_RACE_PREVIOUS_SPAWN) is now implemented and genuinely live: crossing a CP in order re-points RespawnSpot, a death resumes from that CP (or clears the lap at the start line), and the host forces the next spawn there via SpawnPointTarg. Still open: the race_place start-grid ordering and the map-load checkpoint-verify."
 
   - id: race.movement.quantization
     name: "Force-keyboard movement quantization + race_movetime + FixClientCvars"
@@ -507,25 +510,30 @@ features:
       - "common/gametypes/gametype/race/cl_race.qc:HUD_Mod_Race"
       - "server/race.qc:race_send_recordtime"
       - "server/race.qc:getrankings"
-    port_refs: []
+    port_refs:
+      - "game/net/ServerNet.cs:1943-1964 (snapshot RaceRecords top-15 → _scoreRankings)"
+      - "src/XonoticGodot.Net/ScoreboardBlock.cs:114-160 (Serialize/Deserialize rankings block)"
+      - "game/net/NetGame.cs:3433 (_scoreboard.SetRankings(sb.Rankings))"
+      - "game/hud/ScoreboardPanel.cs:SetRankings / DrawRankings"
     constants:
-      - { name: "RACE_NET_SERVER_STATUS medal fade", base: "5 s", port: "none", match: false }
+      - { name: "RACE_NET_SERVER_STATUS medal fade", base: "5 s", port: "none (mod-icon medal not ported)", match: false }
+      - { name: "rankings display cap", base: "RANKINGS_DISPLAY_CNT", port: "15 (ServerNet displayCnt)", match: false }
     status:
-      logic: missing
-      values: missing
+      logic: partial
+      values: partial
       timing: na
-      presentation: missing
+      presentation: partial
       audio: na
-      liveness: na
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The HUD_Mod_Race mod-icon (personal-best + server-best times + the new-record/new-rank/fail medal flash with rank ordinal, faded over 5 s) is not ported."
-      - "No rankings scoreboard column; ScoreboardPanel.cs comment states records aren't networked yet, so getrankings/grecordtime[] equivalent is absent."
+      - "The HUD_Mod_Race MOD-ICON (the floating personal-best + server-best icon + the new-record/new-rank/fail medal flash with rank ordinal, faded over 5 s) is still NOT ported — ModIconsPanel has no Race case. (Note: the split-timer panel #8 has its OWN internal medal flash, fed via NetGame.UpdateRacePanels; that is race.hud.split_timer, not this mod-icon.)"
+      - "The rankings DISPLAY cap is a hardcoded 15 rather than Base's RANKINGS_DISPLAY_CNT cvar; ReadName/ReadTime are read straight from the persistent RaceRecords DB (no separate networked record-name stream)."
     verification:
-      - { kind: code, ref: "grep HUD_Mod_Race / rankings column / grecordtime in game/hud — none", result: fail }
+      - { kind: code, ref: "ServerNet.UpdateScoreboardRows fills _scoreRankings from RaceRecords.ReadTime/ReadName for gt rc|cts; ScoreboardBlock.Serialize writes the rankings block on every score-version snapshot (ServerNet.cs:1546); NetGame feeds ScoreboardPanel.SetRankings(sb.Rankings) — works for a PURE remote client", result: partial }
     confidence: high
-    notes: "Unchanged by Wave-2. Distinct from race.hud.split_timer (whose own medal flash is internal); this is the mod-icon + rankings scoreboard, which have no port code at all."
+    notes: "FIXED (partial) since baseline — the prior audit marked this entirely missing/dead. The RANKINGS scoreboard column half is now genuinely networked + live: the server snapshots the per-map RaceRecords top-15 (best-first TIME_ENCODE'd time + holder name) into the scoreboard wire, and the client renders it via the real net path (no longer the unrelated ScorePanel standings). STILL OPEN: the HUD_Mod_Race floating mod-icon itself (PB/server-best icon + ordinal medal flash) has no port code."
 
   - id: race.speed_awards
     name: "Speed awards (round-best + all-time-best speed at checkpoint)"

@@ -5,10 +5,12 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 20
   worst_gaps:
-    - "Per-player ROUNDS_PL award still missing: EnableRounds never sets RoundHandler.OnRoundCounted for CA, and the CA branch passes onRoundStart:null (GameWorld.cs:1621) — the per-player rounds stat stays 0"
-    - "'You are now alone!' (CENTER_ALONE) still dead: NotifyLastPlayerForTeam (ClanArena.cs:527) has zero live callers (not wired into any PlayerDies/disconnect path) — its IsRoundStarted gate WOULD now pass via the mirror, so only the caller is missing"
-    - "Inter-round grace fire-block still missing/dead: WeaponUseForbidden in WeaponFireDriver.cs:324 is still a stub returning false (Wave-5 touched this file but only published OffhandFirePressed; the round-phase gate was not added)"
+    - "'You are now alone!' (CENTER_ALONE) still dead: NotifyLastPlayerForTeam (ClanArena.cs:542) has zero live callers (not wired into any PlayerDies/disconnect path) — its IsRoundStarted gate WOULD now pass via the mirror, so only the caller is missing"
     - "Late-joiner forced-Observer / INGAME_JOINING state still missing; eliminated-greyout still approximates eliminated == dead"
+    - "Cosmetic: no dedicated round-win announcer cue; RESPAWN_SILENT/FORCE flags + respawn_time = time+2 not explicitly modeled"
+  fixed_since_baseline:
+    - "Per-player ROUNDS_PL award now LIVE+faithful: GameWorld CA branch sets caRounds.OnRoundCounted = ca.AwardRoundStartScore (GameWorld.cs:1761); _roundPrep sets the live roster (GameWorld.cs:1764) before Rounds.Think (GameWorld.cs:1525) fires OnRoundCounted at cnt==0 (RoundHandler.cs:242). Was dead/missing."
+    - "Inter-round grace fire-block now LIVE+faithful: WeaponFireDriver.RoundFireForbidden = _ => Rounds is {IsRoundStarted:false} wired in EnableRounds (GameWorld.cs:1113, which CA calls); WeaponUseForbidden (WeaponFireDriver.cs:328) now invokes it on the live per-tick fire path (Frame, GameWorld.cs:1498). Was dead stub returning false."
 features:
   - id: clanarena.round.lifecycle
     name: "Round wait/countdown/live/end-delay state machine"
@@ -19,14 +21,14 @@ features:
       - "common/gametypes/gametype/clanarena/sv_clanarena.qh:REGISTER_MUTATOR(ca)"
     port_refs:
       - "src/XonoticGodot.Server/RoundHandler.cs:Think (the LIVE handler, GameWorld.Rounds)"
-      - "src/XonoticGodot.Server/GameWorld.cs:EnableRounds (CA passes CheckTeams/CheckWinner + g_ca cvars, GameWorld.cs:1618-1624)"
-      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (case ClanArena, GameWorld.cs:1611)"
+      - "src/XonoticGodot.Server/GameWorld.cs:EnableRounds (CA passes CheckTeams/CheckWinner + g_ca cvars, GameWorld.cs:1751-1757)"
+      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (case ClanArena, GameWorld.cs:1744)"
     constants:
       - { name: "countdown_count_s", base: "10 (g_ca_warmup, gametypes-server.cfg:263)", port: "10 (EnableRounds countdown: Cvars.FloatOr(\"g_ca_warmup\",5); shipped gametypes-server.cfg:263 sets 10, loaded live via LoadServerConfig)", match: true }
       - { name: "end_delay_s", base: "0 (g_ca_round_enddelay, gametypes-server.cfg:266)", port: "0 (EnableRounds endDelay: Cvars.FloatOr(\"g_ca_round_enddelay\",5); shipped cfg:266 = 0)", match: true }
       - { name: "round_timelimit_s", base: "180 (g_ca_round_timelimit, gametypes-server.cfg:265)", port: "180 (EnableRounds roundTimeLimit: g_ca_round_timelimit)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
@@ -34,12 +36,11 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Per-player ROUNDS_PL award at round start is still missing: the CA branch calls EnableRounds with onRoundStart:null (GameWorld.cs:1621) and EnableRounds only wires OnRoundReset + OnCountdownTick (GameWorld.cs:1007-1008), never RoundHandler.OnRoundCounted (see clanarena.scoring.per_round_award)."
+    gaps: []
     verification:
-      - { kind: trace, ref: "ActivateGameType CA branch calls EnableRounds(ca.CheckTeams, ()=>ca.CheckWinner()!=0, onRoundStart:null, endDelay g_ca_round_enddelay, countdown g_ca_warmup, roundTimeLimit g_ca_round_timelimit) (GameWorld.cs:1618-1624); the live Server RoundHandler.Think drives it; cfg tree (xonotic-server.cfg->gametypes-server.cfg) loaded by LoadServerConfig sets g_ca_warmup 10 / enddelay 0 / timelimit 180 (verified gametypes-server.cfg:263-266)", result: pass }
+      - { kind: trace, ref: "ActivateGameType CA branch calls EnableRounds(ca.CheckTeams, ()=>ca.CheckWinner()!=0, onRoundStart:null, endDelay g_ca_round_enddelay, countdown g_ca_warmup, roundTimeLimit g_ca_round_timelimit) (GameWorld.cs:1751-1757); the live Server RoundHandler.Think drives it; cfg tree (xonotic-server.cfg->gametypes-server.cfg) loaded by LoadServerConfig sets g_ca_warmup 10 / enddelay 0 / timelimit 180 (verified gametypes-server.cfg:263-266). FIXED since baseline: the per-player ROUNDS_PL award (the sub-defect that kept logic=partial) is now wired (see clanarena.scoring.per_round_award), so the lifecycle is logic-faithful.", result: pass }
     confidence: high
-    notes: "Unchanged since the prior (2eea096) audit. The LIVE Server RoundHandler uses CA's real CheckTeams/CheckWinner predicates and CA's own warmup/timelimit/end-delay cvars (10/0/180), not the generic 5/5/180 defaults. ca.Tick() is still never called, but the owned Common ClanArena.Handler is a mirror target: MirrorRoundTiming (GameWorld.cs:2967) copies RoundEndTime/RoundsPlayed AND GameStartTime + the live round PHASE via MirrorRoundStarted, which is what un-broke damage2score. logic stays partial only because the per-player ROUNDS_PL award is still unwired."
+    notes: "FIX since 2eea096 baseline: logic partial->faithful. The LIVE Server RoundHandler uses CA's real CheckTeams/CheckWinner predicates and CA's own warmup/timelimit/end-delay cvars (10/0/180), not the generic 5/5/180 defaults. The owned Common ClanArena.Handler is a mirror target: MirrorRoundTiming (GameWorld.cs:3126) copies RoundEndTime/RoundsPlayed AND GameStartTime + the live round PHASE via MirrorRoundStarted, which is what un-broke damage2score. The remaining partial sub-defect (per-player ROUNDS_PL never awarded) is now closed — Wave-5 wired OnRoundCounted = ca.AwardRoundStartScore (GameWorld.cs:1761), so the full lifecycle (state machine + the per-round-start award) is faithful."
 
   - id: clanarena.round.checkteams_gate
     name: "Round-start gate (every active team has a live player)"
@@ -393,7 +394,7 @@ features:
       - "common/gametypes/gametype/clanarena/sv_clanarena.qc:ca_LastPlayerForTeam_Notify (CENTER_ALONE)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/ClanArena.cs:CheckWinner (Sends ROUND_TEAM_WIN_*/TIED/OVER, ClanArena.cs:499-510)"
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/ClanArena.cs:NotifyLastPlayerForTeam (ALONE; DEAD - no caller, ClanArena.cs:527)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/ClanArena.cs:NotifyLastPlayerForTeam (ALONE; DEAD - no caller, ClanArena.cs:542)"
       - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs (ROUND_TEAM_WIN_*/ROUND_TIED/ROUND_OVER/ALONE registered)"
     constants: []
     status:
@@ -406,7 +407,7 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "'You are now alone!' (CENTER_ALONE) is still NOT sent: NotifyLastPlayerForTeam (ClanArena.cs:527) has ZERO live callers (grep src/ shows only the definition; ca_LastPlayerForTeam_Notify not wired into the port's PlayerDies/disconnect path — Base calls it from PlayerDies + disconnect, sv_clanarena.qc:374/393/406). Its own !Handler.IsRoundStarted gate WOULD now pass via MirrorRoundStarted, so the only remaining defect is the missing caller — not the gate."
+      - "'You are now alone!' (CENTER_ALONE) is still NOT sent: NotifyLastPlayerForTeam (ClanArena.cs:542) has ZERO live callers (grep src/ shows only the definition; ca_LastPlayerForTeam_Notify not wired into the port's PlayerDies/disconnect path — Base calls it from PlayerDies + disconnect, sv_clanarena.qc:374/393/406). Its own !Handler.IsRoundStarted gate WOULD now pass via MirrorRoundStarted, so the only remaining defect is the missing caller — not the gate. STILL OPEN after Wave-5."
       - "The round-win announcer cue is not separately played (QC plays the win sound via the notification; the port Sends the Center+Info notifications but no dedicated Annce cue is wired here)."
     verification:
       - { kind: trace, ref: "CheckWinner (live via canRoundEnd) Sends ROUND_TEAM_WIN_<suffix> Center+Info on a team win and ROUND_TIED/ROUND_OVER on tie/stalemate (ClanArena.cs:499-510); notifications registered in NotificationsList.cs. NotifyLastPlayerForTeam (ALONE) has zero callers (grep src/)", result: pass }
@@ -418,51 +419,58 @@ features:
     layer: [shared]
     base_refs:
       - "common/gametypes/gametype/clanarena/clanarena.qc:describe (ten second grace period)"
-      - "server/round_handler.qc (round active but not started)"
+      - "server/weapons/weaponsystem.qc:weaponUseForbidden (round_handler_IsActive() && !round_handler_IsRoundStarted())"
+      - "server/round_handler.qh:round_handler_IsRoundStarted (!wait && !cnt)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireDriver.cs:WeaponUseForbidden (still a stub -> false, WeaponFireDriver.cs:324)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireDriver.cs:WeaponUseForbidden (now invokes RoundFireForbidden, WeaponFireDriver.cs:328)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireDriver.cs:RoundFireForbidden (host-wired predicate, WeaponFireDriver.cs:326)"
+      - "src/XonoticGodot.Server/GameWorld.cs:EnableRounds sets RoundFireForbidden = _ => Rounds is {IsRoundStarted:false} (GameWorld.cs:1113); cleared in ActivateGameType (GameWorld.cs:1707)"
+      - "src/XonoticGodot.Server/GameWorld.cs:Frame calls WeaponFireDriver.Frame per client per tick (GameWorld.cs:1498)"
     constants:
-      - { name: "grace_seconds", base: "10 (g_ca_warmup countdown)", port: "10 countdown (g_ca_warmup live), but NO fire block", match: false }
+      - { name: "grace_seconds", base: "10 (g_ca_warmup countdown)", port: "10 countdown (g_ca_warmup live); fire is now BLOCKED during the whole countdown+end-delay grace window", match: true }
     status:
-      logic: missing
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Players can still fire during the inter-round grace countdown: WeaponUseForbidden is still a stub that always returns false (WeaponFireDriver.cs:324); no round-phase (active-but-not-started) gate is wired. Wave-5 (commit 66e378f) touched WeaponFireDriver.cs but only published Entity.OffhandFirePressed and routed it through the existing forbidden zeroing — it did NOT add the round-phase gate to WeaponUseForbidden."
+      - "Minor: the QC ForbidWeaponUse mutator-hook half of weaponUseForbidden is not modeled (RoundFireForbidden only carries the round-grace half). No bundled port mutator forbids weapon use, so functionally complete for CA."
     verification:
-      - { kind: trace, ref: "WeaponFireDriver.WeaponUseForbidden (line 324) still `=> false;` unconditionally; git show 66e378f -- WeaponFireDriver.cs confirms the Wave-5 edit is only the OffhandFirePressed publish + zeroing, not a round-grace gate", result: pass }
+      - { kind: trace, ref: "EnableRounds (called by the CA branch, GameWorld.cs:1751) sets WeaponFireDriver.RoundFireForbidden = _ => Rounds is {IsRoundStarted:false} (GameWorld.cs:1113); WeaponUseForbidden (WeaponFireDriver.cs:328) now `=> RoundFireForbidden?.Invoke(player) ?? false`, invoked on the live per-tick fire path WeaponFireDriver.Frame (GameWorld.cs:1498) which zeroes the fire buttons. Port IsRoundStarted (`_started && !_wait && _cnt==0`, Server RoundHandler.cs:87) == Base `(!wait && !cnt)`; the Rounds!=null install gate == round_handler_IsActive(). So fire is blocked during countdown (cnt>0) AND end-delay (wait), matching Base weaponUseForbidden exactly. ActivateGameType clears the predicate to null for non-round modes (GameWorld.cs:1707).", result: pass }
     confidence: high
-    notes: "Unchanged in substance since baseline. The countdown is 10s (g_ca_warmup reaches the live handler), so values/timing are faithful — but the actual fire-BLOCK during grace is STILL missing/dead (WeaponUseForbidden stub). The first round's pre-game / game_stopped fire-lock is handled by the caller (WeaponLocked); only the inter-round grace window is unguarded."
+    notes: "FIX since 2eea096 baseline: missing/dead -> faithful/live. Wave-5 (post-baseline, commit 023ba70/965a42f) replaced the `=> false` stub with a host-wired Func RoundFireForbidden, installed live for every round-based mode in EnableRounds. The predicate is bit-faithful to Base weaponUseForbidden's round-grace half (active && !round-started), so players can no longer fire during the inter-round grace countdown or end-delay. The first round's pre-game / game_stopped fire-lock is still handled separately by the caller (WeaponLocked). Only the unmodeled ForbidWeaponUse mutator hook (no port consumer) remains."
 
   - id: clanarena.scoring.per_round_award
     name: "Per-player ROUNDS_PL award at round start"
     layer: [authority]
     base_refs:
-      - "server/round_handler.qc:round_handler_Think (GameRules_scoring_add(it, ROUNDS_PL, 1) at cnt==0)"
+      - "server/round_handler.qc:round_handler_Think (FOREACH_CLIENT(IS_PLAYER||INGAME) GameRules_scoring_add(it, ROUNDS_PL, 1) at f==0, lines 44-46)"
     port_refs:
-      - "src/XonoticGodot.Server/RoundHandler.cs:OnRoundCounted (hook exists, fired at cnt==0 RoundHandler.cs:242; NOT set for CA)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/ClanArena.cs:AwardRoundStartScore (ClanArena.cs:255)"
+      - "src/XonoticGodot.Server/RoundHandler.cs:OnRoundCounted (fired at f==0 RoundHandler.cs:242)"
+      - "src/XonoticGodot.Server/GameWorld.cs:CA branch sets caRounds.OnRoundCounted = ca.AwardRoundStartScore (GameWorld.cs:1761) + _roundPrep = ca.SetRoster(Clients.Players) (GameWorld.cs:1764)"
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:ROUNDS_PL field (registered GameScores.cs:155) + AddToPlayer (GameScores.cs:409)"
     constants:
-      - { name: "rounds_pl_per_round", base: "+1 per present player when the round starts", port: "0 (EnableRounds never sets Rounds.OnRoundCounted; CA branch passes onRoundStart:null)", match: false }
+      - { name: "rounds_pl_per_round", base: "+1 per present player when the round starts", port: "+1 per roster player (AwardRoundStartScore: GameScores.AddToPlayer(p, ROUNDS_PL, 1) for each _roster member)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: na
+      logic: faithful
+      values: faithful
+      timing: faithful
       presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "QC awards SP_ROUNDS_PL (+1) to every present player when a round begins. The live RoundHandler fires OnRoundCounted at cnt==0 (RoundHandler.cs:242), but EnableRounds only wires OnRoundReset + OnCountdownTick (GameWorld.cs:1007-1008) and CA's branch never assigns OnRoundCounted (GameWorld.cs:1621 passes onRoundStart:null), so the per-player rounds stat stays 0."
+      - "Minor: QC's present-set is IS_PLAYER(it) || INGAME(it); the port has no INGAME_JOINING state, so the playing roster (Clients.Players, the IS_PLAYER set) is the present set. A late joiner waiting out a round (INGAME but not yet IS_PLAYER) would not yet get the bump — consistent with the port's missing INGAME state (see clanarena.join.late_join_observer), not a separate defect."
     verification:
-      - { kind: trace, ref: "Server RoundHandler.Think invokes OnRoundCounted at cnt==0 (RoundHandler.cs:242); grep OnRoundCounted across src/ -> only the property def + the Think invocation, never assigned for CA; EnableRounds (GameWorld.cs:1002-1018) does not set it", result: pass }
+      - { kind: trace, ref: "FIXED since baseline. GameWorld CA branch wires caRounds.OnRoundCounted = ca.AwardRoundStartScore (GameWorld.cs:1761). DriveGametypeFrame loop runs _roundPrep (ca.SetRoster(Clients.Players), GameWorld.cs:1524/1764) BEFORE Rounds.Think (GameWorld.cs:1525), and Think fires OnRoundCounted at the f==0 round-begin edge (RoundHandler.cs:242) — so AwardRoundStartScore reads the just-set live roster and adds +1 ROUNDS_PL to each via GameScores.AddToPlayer. ROUNDS_PL field is registered (GameScores.cs:155). Order + field + delta verified against Base round_handler.qc:44-46.", result: pass }
     confidence: high
-    notes: "Unchanged from baseline (still dead). Minor scoreboard column, distinct from the team ST_CA_ROUNDS round-win count which IS awarded."
+    notes: "FIX since 2eea096 baseline: missing/dead -> faithful/live. Wave-5 added ClanArena.AwardRoundStartScore (ClanArena.cs:255) and the host wired it to the live RoundHandler.OnRoundCounted edge with a roster-refresh prep that runs first. Minor scoreboard column, distinct from the team ST_CA_ROUNDS round-win count (also awarded)."
 
   - id: clanarena.spawn.no_regen_forced_spectate
     name: "No health/armor regen; dead players forced to spectate (no respawn calc)"

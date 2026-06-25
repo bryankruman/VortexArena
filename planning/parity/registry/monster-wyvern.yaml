@@ -5,9 +5,7 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 17
   worst_gaps:
-    - "In-flight fireball renders as a GENERIC CSQC projectile, not PROJECTILE_FIREMINE: the monster_projectile IS now networked + drawn, but ProjectileCatalog.Classify resolves netname 'wyvern' -> Generic, so there is no fire-mine fire-sprite/glow/FIREMINE trail."
-    - "Monster animation frame groups (mr_anim idle/walk/run/pain/shoot/die1/die2) are never driven — only a logical MonsterAnim phase exists (system-wide CSQC playback deferral)."
-    - "die2 landed-corpse frame swap is detected (mr_deadthink hook now driven) but the actual frame group is CSQC-deferred."
+    - "In-flight fireball renders as a GENERIC CSQC projectile, not PROJECTILE_FIREMINE: the monster_projectile IS networked + drawn, but ProjectileCatalog.Classify resolves netname 'wyvern' -> Generic, so there is no fire-mine fire-sprite/glow/FIREMINE trail."
     - "The wyvern's MENUQC describe() flavor prose is not surfaced (DialogMonsterTools lists only the name)."
 features:
   - id: wyvern.identity.spawnflags_hitbox
@@ -35,7 +33,7 @@ features:
     verification:
       - { kind: source, ref: "wyvern.qh vs Wyvern.cs Spawn (SetSize + Fly flags)", result: pass }
     confidence: high
-    notes: "MON_FLAG_RIDE (ridable) is set but neither Base nor port wires riding for the wyvern; cosmetic flag here. Unchanged by Wave-2."
+    notes: "MON_FLAG_RIDE (ridable) is set but neither Base nor port wires riding for the wyvern; cosmetic flag here. Unchanged by Wave-5."
 
   - id: wyvern.setup.stats
     name: "mr_setup: health, speeds, force scale, loot"
@@ -65,7 +63,7 @@ features:
     verification:
       - { kind: value, ref: "monsters.cfg:67-78 vs Wyvern.cs fields/Cvar fallbacks", result: pass }
     confidence: high
-    notes: "Each value read via MonsterAI.Cvar(name, fallback) so live cvar tuning carries through. Setup (MonsterAI.cs) also fires the spawn voice cue via MonsterSound('spawn', CH_VOICE, g_monsters_sounds-gated) — re-verified 06-22; does not affect these stats."
+    notes: "Each value read via MonsterAI.Cvar(name, fallback) so live cvar tuning carries through. Setup (MonsterAI.cs) also fires the spawn voice cue via MonsterSound('spawn', CH_VOICE, g_monsters_sounds-gated). Unchanged by Wave-5."
 
   - id: wyvern.attack.dispatch
     name: "Attack: 1s wind-up, ranged+melee both lob a fireball"
@@ -91,9 +89,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: source, ref: "M_Wyvern_Attack vs Wyvern.Attack + QueueDelayedAttack", result: pass }
+      - { kind: source, ref: "M_Wyvern_Attack vs Wyvern.Attack + QueueDelayedAttack; Attack sets st.Anim=Attack (drives anim_shoot frame 6 via DriveAnimFrame)", result: pass }
     confidence: high
-    notes: "Base derives MELEE/RANGED in Monster_Attack_Check and both branches do the same thing; port AttackCheck just gates enemy+cooldown and Wyvern.Attack always lobs the fireball — equivalent. Unchanged by Wave-2."
+    notes: "Base derives MELEE/RANGED in Monster_Attack_Check and both branches do the same thing; port AttackCheck just gates enemy+cooldown and Wyvern.Attack always lobs the fireball — equivalent. Unchanged by Wave-5."
 
   - id: wyvern.fireball.spawn
     name: "Fireball projectile spawn (speed, size, spin, lifetime, muzzle)"
@@ -125,7 +123,7 @@ features:
     verification:
       - { kind: source, ref: "wr_think vs FireFireball/SpawnProjectile", result: pass }
     confidence: high
-    notes: "QC missile is SOLID_TRIGGER; port leaves it SOLID_BBOX (makeTrigger=false). Functionally both detonate on touch with a damageable target; not a behavioral gap. Unchanged by Wave-2."
+    notes: "QC missile is SOLID_TRIGGER; port leaves it SOLID_BBOX (makeTrigger=false). Functionally both detonate on touch with a damageable target; not a behavioral gap. Unchanged by Wave-5."
 
   - id: wyvern.fireball.radiusdamage
     name: "Fireball explosion: radius damage + knockback"
@@ -153,7 +151,7 @@ features:
     verification:
       - { kind: source, ref: "RadiusDamage args vs WeaponSplash.RadiusDamage(deathTag); Explode() fired on Touch + lifetime", result: pass }
     confidence: high
-    notes: "Routes through the real damage pipeline; obituary deathtype carried so kills credit the wyvern line. Unchanged by Wave-2."
+    notes: "Routes through the real damage pipeline; obituary deathtype carried so kills credit the wyvern line. Unchanged by Wave-5."
 
   - id: wyvern.fireball.burning
     name: "Fireball ignites everything in radius (burning DoT)"
@@ -179,9 +177,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: source, ref: "Re-verified 06-22: MonsterFramework.AddFireDamage now routes through StatusEffectsCatalog.FireAddDamage (StatusEffects.cs:249), a faithful port of QC Fire_AddDamage incl. the overlap LEMMA, fire_damagepersec storage, and deathtype/owner attribution; the burn tick (FireApplyDamage) deals fire_damagepersec * min(frametime, fireend-time) — frame-rate-independent, NOT the old strength*0.05/frame approximation. onExplode loop matches FOREACH_ENTITY_RADIUS (it!=own && TakeDamage==Aim, 5*skillmod, damagetime).", result: pass }
+      - { kind: source, ref: "MonsterFramework.AddFireDamage routes through StatusEffectsCatalog.FireAddDamage, a faithful port of QC Fire_AddDamage incl. the overlap LEMMA, fire_damagepersec storage, and deathtype/owner attribution; the burn tick deals fire_damagepersec * min(frametime, fireend-time) — frame-rate-independent. onExplode loop matches FOREACH_ENTITY_RADIUS (it!=own && TakeDamage==Aim, 5*skillmod, damagetime).", result: pass }
     confidence: high
-    notes: "FIXED by the Wave-2 fix-up: the old strength*0.05*FrameTime accumulator was replaced by the shared faithful FireAddDamage entry point (commit ec788f7 reworked MonsterFramework.AddFireDamage). Burn DoT total + per-tick cadence now match QC's accumulated fire damage under the live tick rate. The same fix benefits every igniting monster + the player Fireball/napalm."
+    notes: "Faithful via the shared FireAddDamage entry point. Burn DoT total + per-tick cadence match QC. Unchanged by Wave-5."
 
   - id: wyvern.fireball.explode_effect
     name: "Fireball blast particle (EFFECT_FIREBALL_EXPLODE)"
@@ -204,9 +202,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: source, ref: "Re-verified 06-22: EffectEmitter.Emit(\"FIREBALL_EXPLODE\") in onExplode -> Effects.ByName resolves the registered effect (EffectsList.cs:122) -> Sink.Emit; onExplode is invoked from SpawnProjectile.Explode (MonsterAI.cs:1320) on Touch AND lifetime; live sink = EffectNetSink (ServerNet.cs:287) -> client RenderSink (ClientWorld.cs:352)", result: pass }
+      - { kind: source, ref: "EffectEmitter.Emit(\"FIREBALL_EXPLODE\") in onExplode -> Effects.ByName resolves the registered effect -> Sink.Emit; onExplode invoked from SpawnProjectile.Explode on Touch AND lifetime; live sink = EffectNetSink -> client RenderSink", result: pass }
     confidence: high
-    notes: "FIXED by Wave-2, independently re-confirmed live on the match path. Same emission/registration pattern as the player Fireball weapon (Fireball.cs:408). Blast particle is emitted on the server explode path and networked to the client; client-side particle fidelity is the system-wide effect-renderer concern shared by all effects."
+    notes: "Blast particle emitted on the server explode path and networked to the client. Same emission/registration pattern as the player Fireball weapon. Unchanged by Wave-5."
 
   - id: wyvern.fireball.firemine_visual
     name: "In-flight fireball CSQC visual (PROJECTILE_FIREMINE)"
@@ -214,8 +212,8 @@ features:
     base_refs:
       - "common/monsters/monster/wyvern.qc:wr_think (CSQCProjectile(missile, true, PROJECTILE_FIREMINE, true))"
     port_refs:
-      - "game/net/ServerNet.cs:1948 (Classify -> NetEntityKind.Projectile for the monster_projectile)"
-      - "game/client/ProjectileCatalog.cs:234 (Classify) / :180 (Firemine Desc, FireSprite + FIREMINE trail)"
+      - "game/net/ServerNet.cs:2004 (Classify -> NetEntityKind.Projectile for the monster_projectile)"
+      - "game/client/ProjectileCatalog.cs:237 (Classify) / :180 (Firemine Desc, FireSprite + FIREMINE trail)"
     constants:
       - { name: "csqc projectile type", base: "PROJECTILE_FIREMINE", port: "Generic (netname 'wyvern' matches no Firemine/Fireball key)", match: false }
     status:
@@ -228,11 +226,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "In-flight fireball renders as the GENERIC CSQC projectile, not PROJECTILE_FIREMINE. The monster_projectile is now networked (FlyMissile + FL_PROJECTILE marker + Owner => ServerNet.Classify NetEntityKind.Projectile) and the client DOES draw a projectile, but ProjectileCatalog.Classify keys on classname/model/netname = 'monster_projectile  wyvern', which matches no Firemine/Fireball rule and falls through to Generic — so there is no fire-mine FireSprite body, FireOrange glow, light, or FIREMINE trail."
+      - "In-flight fireball renders as the GENERIC CSQC projectile, not PROJECTILE_FIREMINE. The monster_projectile is networked (FlyMissile + FL_PROJECTILE marker + Owner => ServerNet.Classify NetEntityKind.Projectile) and the client DOES draw a projectile, but ProjectileCatalog.Classify keys on classname/model/netname = 'monster_projectile  wyvern', which matches no Firemine/Fireball rule and falls through to Generic — so there is no fire-mine FireSprite body, FireOrange glow, light, or FIREMINE trail."
     verification:
-      - { kind: source, ref: "Re-verified 06-22: SpawnProjectile (MonsterAI.cs:1276) sets ClassName='monster_projectile', NetName=Def.NetName ('wyvern'), no Model, MoveType.FlyMissile, Flags|=Item, Owner=actor. ServerNet.Classify (:1948) returns Projectile (Item+Owner+IsProjectileMoveType). ProjectileCatalog.Classify (:234) on 'monster_projectile  wyvern' hits NO firemine/fireball branch -> Generic (:269). A Firemine Desc EXISTS (:180) but is unreachable for the wyvern netname.", result: fail }
+      - { kind: source, ref: "Re-verified 06-22 (post Wave-5): SpawnProjectile (MonsterAI.cs:1320) sets ClassName='monster_projectile', NetName=Def.NetName ('wyvern'), no Model, MoveType.FlyMissile, Flags|=Item, Owner=actor. ServerNet.Classify (:2004) returns Projectile. ProjectileCatalog.Classify (:237) on 'monster_projectile  wyvern' hits NO firemine/fireball branch -> Generic (:275). A Firemine Desc EXISTS (:180) but is unreachable for the wyvern netname. UNCHANGED by Wave-5.", result: fail }
     confidence: high
-    notes: "PARTIAL improvement vs baseline (which wrongly said the projectile is invisible/server-only): the projectile IS now CSQC-networked and rendered, but as the wrong (Generic) visual. To close: add a 'wyvern'->Firemine (or a monster_projectile+netname) branch in ProjectileCatalog.Classify, OR set proj.Model/ClassName so it keys to Firemine. Until then the spinning fire-mine model/glow/trail is still absent. Same spawner is shared by mage/golem (which DO match via netname 'mage'/'golem')."
+    notes: "STILL OPEN: the projectile IS CSQC-networked and rendered, but as the wrong (Generic) visual. To close: add a 'wyvern'->Firemine (or a monster_projectile+netname) branch in ProjectileCatalog.Classify, OR set proj.Model/ClassName so it keys to Firemine. Same spawner is shared by mage/golem (which DO match via netname 'mage'/'golem')."
 
   - id: wyvern.fireball.fire_sound
     name: "Fireball launch sound (electro_fire)"
@@ -254,9 +252,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: source, ref: "SND_WyvernAttack_FIRE vs Api.Sound.Play (unchanged by Wave-2)", result: pass }
+      - { kind: source, ref: "SND_WyvernAttack_FIRE vs Api.Sound.Play (unchanged by Wave-5)", result: pass }
     confidence: high
-    notes: "QC plays the fire sound only for a player actor via W_SetupShot_Dir; the port plays it unconditionally on fire. Minor — for a monster actor the original is silent on launch, port adds the cue. Treated as faithful (same intended sound). Wave-2 left this Api.Sound.Play in place (the launch sound is NOT routed through the new throttled MonsterSound voice path)."
+    notes: "QC plays the fire sound only for a player actor via W_SetupShot_Dir; the port plays it unconditionally on fire. Minor — for a monster actor the original is silent on launch, port adds the cue. Treated as faithful (same intended sound)."
 
   - id: wyvern.brain.think_move
     name: "Per-frame brain: flying chase + attack check"
@@ -282,9 +280,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: trace, ref: "SpawnFromMap wires e.Think -> {NextThink=Now; Def.Think} -> Wyvern.Think -> RunThink -> Move+AttackCheck; the Think wrapper re-arms NextThink every frame so the brain runs every tick", result: pass }
+      - { kind: trace, ref: "SpawnFromMap wires e.Think -> {NextThink=Now; Def.Think} -> Wyvern.Think -> RunThink -> Move+AttackCheck; the Think wrapper re-arms NextThink every frame so the brain runs every tick. Move sets st.Anim=Idle/Walk/Run, and RunThink calls DriveAnimFrame after Move so the locomotion frame group is driven.", result: pass }
     confidence: high
-    notes: "mr_think is a no-op in Base; the wyvern now overrides Think to drive the dead-branch scatter/land hooks before delegating to the shared flying brain (MonsterAI.RunThink). FlyMove engine integrator handles MoveType.Fly. Wave-2 added the MatchHalted brake-and-idle gate + idle voice cue + LOS-drop in Move — these are framework changes that the wyvern inherits faithfully (no wyvern-specific regression)."
+    notes: "mr_think is a no-op in Base; the wyvern overrides Think to drive the dead-branch scatter/land hooks before delegating to the shared flying brain. FlyMove engine integrator handles MoveType.Fly. Unchanged by Wave-5."
 
   - id: wyvern.pain
     name: "Pain reaction (0.5s window, pain anim)"
@@ -293,25 +291,25 @@ features:
       - "common/monsters/monster/wyvern.qc:METHOD(Wyvern, mr_pain)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Monsters/Wyvern.cs:36 (PainWindow => 0.5f)"
-      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:1406 (MarkPain: PainFinished = Now + st.Def.PainWindow)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Wyvern.cs:48 (AnimFrame Pain => 3f)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:1440 (MarkPain: PainFinished + st.Anim=Pain)"
     constants:
       - { name: "pain_finished window", base: "0.5", port: "0.5 (Wyvern.PainWindow override)", match: true }
-      - { name: "pain anim", base: "anim_pain1 '3 1 2'", port: "MonsterAnim.Pain (no frame group)", match: false }
+      - { name: "pain anim", base: "anim_pain1 '3 1 2'", port: "AnimFrame Pain => frame 3 (networked Entity.Frame)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: stub
+      presentation: faithful
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "anim_pain1 '3 1 2' frame group is not played (logical MonsterAnim.Pain only); CSQC monster frame playback deferred system-wide."
+    gaps: []
     verification:
-      - { kind: source, ref: "Re-verified 06-22: Wyvern.cs:36 now overrides PainWindow => 0.5f (vs the generic 0.34f at EntityClasses.cs:34); MarkPain (MonsterAI.cs:1406) consumes it via st.PainFinished = Now + st.Def.PainWindow, matching Base wyvern.qc:142 (pain_finished = time + 0.5). Live: Wyvern.Spawn -> MonsterAI.Setup installs MonsterEventDamage as e.GtEventDamage (:301) -> on a hit DamageSystem routes here -> MarkPain. Audio: MarkPain:1410 calls MonsterSound(self, st, \"pain\", 1.2f, true, CH/Body) — the QC 1.2s delaytoo throttle (wyvern.qc/Monster_Damage:1101), playing monsters/wyvern_pain.wav gated by g_monsters_sounds.", result: pass }
+      - { kind: source, ref: "Re-verified 06-22 (post Wave-5): Wyvern.cs:36 overrides PainWindow => 0.5f; MarkPain (MonsterAI.cs:1440) sets st.PainFinished = Now + st.Def.PainWindow and st.Anim=Pain; DriveAnimFrame maps Pain -> AnimFrame(Pain)=3f onto the networked Entity.Frame; ClientEntityView classifies the monster as Generic -> OnEntityUpdate(frameDriven:true) -> ModelAnimator.FollowEntityFrame plays MD3 frame 3 (anim_pain1). Audio: MonsterSound('pain', 1.2s throttle, CH/Body) plays wyvern_pain.wav gated by g_monsters_sounds.", result: pass }
     confidence: high
-    notes: "FIXED by Wave-2: the wyvern now exposes its wider 0.5s pain window via the PainWindow override, genuinely consumed on the live damage path (values + timing now faithful; baseline was 0.34s generic). Pain AUDIO routes through the throttled MonsterSound (1.2s self-spam guard). Only the anim_pain1 FRAME GROUP (presentation) remains CSQC-deferred — the same system-wide monster-animation deferral as wyvern.anim.frame_table."
+    notes: "FIXED by Wave-5: the anim_pain1 '3 1 2' frame group is now genuinely networked + played (presentation stub -> faithful), via the new AnimFrame/DriveAnimFrame/FollowEntityFrame seam. Logic/values/timing/audio remain faithful (0.5s window honored on the live damage path)."
 
   - id: wyvern.death
     name: "Death: die anim + random corpse launch scatter"
@@ -320,27 +318,27 @@ features:
       - "common/monsters/monster/wyvern.qc:METHOD(Wyvern, mr_death)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Monsters/Wyvern.cs:Think (dead branch, ds.Scattered)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Wyvern.cs:50 (AnimFrame Death => die2?8:7)"
       - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MarkDead"
     constants:
       - { name: "death velocity x", base: "400*random()-200", port: "400*Prandom.Float()-200", match: true }
       - { name: "death velocity y", base: "400*random()-200", port: "400*Prandom.Float()-200", match: true }
       - { name: "death velocity z", base: "100*random()+100", port: "100*Prandom.Float()+100", match: true }
-      - { name: "death anim", base: "anim_die1 '7 1 0.5'", port: "MonsterAnim.Death (no frame group)", match: false }
+      - { name: "death anim", base: "anim_die1 '7 1 0.5'", port: "AnimFrame Death (die2=false) => frame 7 (networked Entity.Frame)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: na
-      presentation: stub
+      presentation: faithful
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "anim_die1 falling-frame group is not played (logical MonsterAnim.Death only); CSQC monster frame playback deferred system-wide."
+    gaps: []
     verification:
-      - { kind: source, ref: "Re-verified 06-22: Wyvern.Think dead branch applies the 400r-200/400r-200/100r+100 scatter on the first dead frame + restores Gravity 1; MarkDead leaves a flyer's velocity untouched (EntFlags.Fly skips the zero, MonsterAI.cs:1484) and sets MoveType.Toss so the corpse arcs and falls; the spawn-time Think wrapper (MonsterAI.cs:410) re-arms NextThink every frame and is NOT overwritten on a non-gibbed kill, so the dead branch genuinely runs on the live corpse; Prandom.Float()=[0,1) matches QC random()", result: pass }
+      - { kind: source, ref: "Re-verified 06-22 (post Wave-5): Wyvern.Think dead branch applies the 400r-200/400r-200/100r+100 scatter on the first dead frame + restores Gravity 1; MarkDead sets st.Anim=Death (MonsterAI.cs:1524) and leaves a flyer's velocity untouched; RunThink's dead branch calls DeadThink THEN DriveAnimFrame (MonsterAI.cs:1030), so AnimFrame(Death,die2=false)=7 (anim_die1) is networked and played client-side via FollowEntityFrame. Prandom.Float()=[0,1) matches QC random().", result: pass }
     confidence: high
-    notes: "FIXED by Wave-2 on logic+values, re-confirmed live. A killed wyvern tumbles out of the air with the exact QC scatter. Death sound routes through MonsterSound (faithful). NUANCE: a GIBBED kill replaces .Think with a fade-only lambda (MarkDead:1497) so the scatter is skipped — faithful, since a gibbed monster is in pieces and SUB_Removed at +0.1s in QC too. Only the die1 frame group (presentation) remains CSQC-deferred. Per-edict scatter state is in a ConditionalWeakTable, reset on respawn (Spawn calls _deathStates.Remove)."
+    notes: "FIXED by Wave-5 on presentation: the anim_die1 falling frame group (frame 7) is now networked + played (stub -> faithful). Logic/values/audio remain faithful — a killed wyvern tumbles with the exact QC scatter. NUANCE: a GIBBED kill replaces .Think with a fade-only lambda (MarkDead) so the scatter is skipped — faithful, since a gibbed monster is in pieces. Per-edict scatter state is in a ConditionalWeakTable, reset on respawn."
 
   - id: wyvern.deadthink
     name: "Dead-think: swap to anim_die2 once the corpse lands"
@@ -348,24 +346,25 @@ features:
     base_refs:
       - "common/monsters/monster/wyvern.qc:METHOD(Wyvern, mr_deadthink)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Monsters/Wyvern.cs:Think (dead branch, ds.Landed on EntFlags.OnGround)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Wyvern.cs:Think (dead branch, ds.Landed on EntFlags.OnGround -> st.DeathLanded)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Wyvern.cs:50 (AnimFrame Death, die2 => frame 8)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:DriveAnimFrame"
     constants:
-      - { name: "on-ground die2 swap", base: "if(IS_ONGROUND) setanim(anim_die2)", port: "if(OnGround) st.Anim=Death (die2 phase) — driven each dead frame", match: true }
+      - { name: "on-ground die2 swap", base: "if(IS_ONGROUND) setanim(anim_die2)", port: "if(OnGround) st.DeathLanded=true -> AnimFrame(Death,die2=true)=8 networked", match: true }
     status:
       logic: faithful
       values: na
       timing: faithful
-      presentation: stub
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "die2 landed-corpse frame group is not played: the port's logical anim phase has no die1/die2 split (one MonsterAnim.Death), so the visible swap is CSQC-deferred. The landing IS detected and the hook IS driven."
+    gaps: []
     verification:
-      - { kind: source, ref: "Re-verified 06-22: Wyvern.Think runs every frame (Think wrapper MonsterAI.cs:410 re-arms NextThink and survives a non-gibbed kill); the dead branch detects EntFlags.OnGround and fires the die2 hook once (ds.Landed guard)", result: pass }
+      - { kind: source, ref: "Re-verified 06-22 (post Wave-5): Wyvern.Think runs every frame (Think wrapper re-arms NextThink, survives a non-gibbed kill); the dead branch detects EntFlags.OnGround and sets st.DeathLanded=true once (ds.Landed guard). RunThink's dead branch calls DriveAnimFrame, which reads st.DeathLanded -> AnimFrame(Death, die2=true)=8 (anim_die2) onto the networked Entity.Frame; the client FollowEntityFrame animator swaps to MD3 frame 8. st.DeathLanded is reset on respawn (MonsterAI.cs:1723).", result: pass }
     confidence: high
-    notes: "FIXED by Wave-2 on logic+liveness, re-confirmed: the mr_deadthink on-ground hook is genuinely driven on the live corpse-fall path (previously absent). The die1/die2 frame distinction is the same system-wide CSQC monster-animation deferral as wyvern.anim.frame_table."
+    notes: "FIXED by Wave-5 on presentation: the mr_deadthink on-ground die2 frame swap (frame 8) is now genuinely networked + played (stub -> faithful) — the landed-corpse pose is visible. Logic+liveness were already faithful (the hook is driven on the live corpse-fall path)."
 
   - id: wyvern.anim.frame_table
     name: "Animation frame groups (mr_anim)"
@@ -373,26 +372,30 @@ features:
     base_refs:
       - "common/monsters/monster/wyvern.qc:METHOD(Wyvern, mr_anim) (idle/walk/run/pain/melee/shoot/die1/die2)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MonsterAnim (logical phase enum only)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Wyvern.cs:43 (AnimFrame override: Idle 0 / Walk 1 / Run 2 / Pain 3 / Attack 6 / Death 7|8)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:1084 (DriveAnimFrame -> Entity.Frame)"
+      - "game/net/ClientEntityView.cs:203 (Generic monster -> frameDriven:true)"
+      - "game/client/ModelAnimator.cs:268 (FollowEntityFrame plays Entity.Frame as the MD3 playhead)"
     constants:
-      - { name: "anim_idle/walk/run", base: "'0 1 1'/'1 1 1'/'2 1 1'", port: "MonsterAnim.Idle/Walk/Run (no frames)", match: false }
-      - { name: "anim_shoot", base: "'6 1 5'", port: "MonsterAnim.Attack (no frames)", match: false }
-      - { name: "anim_die1/die2", base: "'7 1 0.5'/'8 1 0.5'", port: "MonsterAnim.Death (no frames)", match: false }
+      - { name: "anim_idle/walk/run", base: "'0 1 1'/'1 1 1'/'2 1 1'", port: "AnimFrame Idle 0 / Walk 1 / Run 2", match: true }
+      - { name: "anim_pain1", base: "'3 1 2'", port: "AnimFrame Pain 3", match: true }
+      - { name: "anim_shoot", base: "'6 1 5'", port: "AnimFrame Attack 6", match: true }
+      - { name: "anim_die1/die2", base: "'7 1 0.5'/'8 1 0.5'", port: "AnimFrame Death 7 (falling) / 8 (landed via die2)", match: true }
     status:
-      logic: stub
-      values: missing
-      timing: na
-      presentation: stub
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Monster animation frame groups (mr_anim idle/walk/run/pain/shoot/die1/die2) are never driven — only a logical MonsterAnim phase exists (system-wide CSQC playback deferral)."
+      - "anim_melee '5 1 5' and anim_pain2 '4 1 2' have no distinct phase: the port collapses both melee+ranged onto Attack=anim_shoot 6 (faithful for the wyvern — both QC branches lob a fireball) and uses a single Pain=3 (pain1) without the pain1/pain2 alternation. Cosmetic; no behavioral difference."
     verification:
-      - { kind: source, ref: "MonsterAnim is an abstract phase enum; no .dpm frame-group playback wired (unchanged by Wave-2)", result: fail }
+      - { kind: source, ref: "Re-verified 06-22 (post Wave-5): the Wyvern.AnimFrame override (Wyvern.cs:43) maps each MonsterAnimPhase to the QC frame-group START index; MonsterAI.RunThink calls DriveAnimFrame (MonsterAI.cs:1075 live branch + :1030 dead branch) which stamps that frame onto the networked Entity.Frame; ServerNet sends Frame (:1752), ClientEntityView copies it (:126) and routes the Generic-classified monster through OnEntityUpdate(frameDriven:true) (:203); ModelAnimator.Advance in FollowEntityFrame mode (:268) uses Entity.Frame directly as the MD3 morph playhead. Every wyvern group is count=1 (a single held keyframe), so a static frame per phase is faithful.", result: pass }
     confidence: high
-    notes: "Systemic to all five ported monsters: the server keeps a MonsterAnim phase for timing; the model never plays the named frame groups. Wave-2 added more PHASE-setting sites (die2 landing) but no actual CSQC frame playback. Re-audit when CSQC monster animation lands."
+    notes: "FIXED by Wave-5 (the worst baseline gap): the monster animation frame groups are now genuinely driven AND networked AND played client-side. The new AnimFrame/DriveAnimFrame seam + the ClientEntityView Generic->frameDriven path + ModelAnimator.FollowEntityFrame close the long-standing system-wide CSQC monster-animation deferral. NOTE: depends on the wyvern.dpm asset actually carrying >1 frame for the morph; the C# seam is fully wired regardless. Same seam now serves the Zombie (Zombie.cs:180) and any monster that declares an AnimFrame table."
 
   - id: wyvern.obituary
     name: "Kill notification (was fireballed by a Wyvern)"
@@ -416,7 +419,7 @@ features:
     verification:
       - { kind: source, ref: "NotificationsList.cs:179 D(MON_WYVERN, notify_death, ...)", result: pass }
     confidence: high
-    notes: "Carried by DEATH_MONSTER_WYVERN through RadiusDamage/MarkDead -> Combat.Death obituary. Unchanged by Wave-2."
+    notes: "Carried by DEATH_MONSTER_WYVERN through RadiusDamage/MarkDead -> Combat.Death obituary. Unchanged by Wave-5."
 
   - id: wyvern.spawnfunc
     name: "Map spawnfunc monster_wyvern (+ spawner/random/Invasion)"
@@ -442,7 +445,7 @@ features:
     verification:
       - { kind: trace, ref: "GameInit -> MapObjectsRegistry.RegisterAll -> SpawnFuncs.Register(monster_wyvern) -> SpawnFromMap wires think", result: pass }
     confidence: high
-    notes: "Also reachable via monster_spawner (MonsterSpawnFuncs.MonsterSpawner), spawnmonster random, and Invasion waves. Unchanged by Wave-2."
+    notes: "Also reachable via monster_spawner (MonsterSpawnFuncs.MonsterSpawner), spawnmonster random, and Invasion waves. Unchanged by Wave-5."
 
   - id: wyvern.menu.describe
     name: "MENUQC monster-tooltip description text"
@@ -463,8 +466,8 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The wyvern's MENUQC describe() prose is not surfaced: DialogMonsterTools only lists the monster name in a toggle, with no description text."
+      - "The wyvern's MENUQC describe() prose is not surfaced: DialogMonsterTools only lists the monster name in a toggle, with no description text. (Note: even Base shows describe() only in the monster-book page, not the monster-tools dialog; the port has no monster-book equivalent.)"
     verification:
-      - { kind: source, ref: "DialogMonsterTools.cs has only the (\"wyvern\",\"Wyvern\") name entry; no 'flying reptilian'/'fresh prey'/describe text anywhere", result: fail }
+      - { kind: source, ref: "DialogMonsterTools.cs has only the (\"wyvern\",\"Wyvern\") name entry; no 'flying reptilian'/'fresh prey'/describe text anywhere. Unchanged by Wave-5.", result: fail }
     confidence: high
-    notes: "MENUQC-only flavor text; low gameplay impact. Now confirmed missing (was unknown in the baseline). Mirrors monster-spider.menu.describe. Unchanged by Wave-2."
+    notes: "STILL OPEN: MENUQC-only flavor text; low gameplay impact. Mirrors monster-spider.menu.describe."

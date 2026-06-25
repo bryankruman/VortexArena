@@ -2,23 +2,29 @@ unit: weapon-rifle
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-22"
-# Re-audited 2026-06-22 (post Wave-1/2 + second-pass fix-up + Wave-5 partial, branch
-# claude/parity-port-waves): adversarial re-verification of all 16 rows against current Base+port.
-# Wave-5 (HEAD 66e378f) touched ONLY WeaponFireDriver (added the +hook/offhand-fire button publish)
-# and is RIFLE-NEUTRAL — Rifle.cs / BotAim.cs / WeaponFiring.cs / EffectsList.cs / DeathMessages.cs /
-# DeathTypes.cs are all unchanged since the prior pass. Re-confirmed: 12 rows faithful+live, 4 still
-# open (deathtype.secondary one-line omission, bot_aim, zoom_eye, resetplayer). NO fixes, NO
-# regressions, NO newly-unmapped Base features this pass. The deathTag channel (FireBullet deathTag
-# param + ApplyDamage override + DeathTypes.WithHitType/HasHitType/Secondary) and MachineGun's live
-# use of it (MachineGun.cs:291-295) re-verified; rifle still passes deathType=RegistryId with no tag.
+# Re-audited 2026-06-22 (post Wave-1/2 + second-pass fix-up + Wave-5 FULL, branch
+# claude/parity-port-waves, HEAD 023ba70): adversarial re-verification of all 16 rows against current
+# Base+port. Wave-5's full run DID touch the rifle this time: two previously open rows are now CLOSED.
+#   * rifle.bot_aim: Rifle now overrides BotWantsSecondary (Rifle.cs:133) implementing wr_aim's
+#     riflemooth toggle (force-primary>1000u, 1% flip-to-sec, 3% flip-back). LIVE: BotBrain.cs:354
+#     calls w.BotWantsSecondary(...) and routes the result onto ButtonAttack2 (BotBrain.cs:357,403).
+#     The per-bot SecondaryToggle/Random01 carry via BotAimState (GameplayBases.cs:24). FIX.
+#   * rifle.resetplayer: Rifle now overrides WrSetup (Rifle.cs:118) seeding RifleAccumulator =
+#     time - bursttime, dispatched live by WeaponFireDriver.cs:281 on switch-in. Same documented
+#     switch-in-vs-respawn convention as Vortex/OkNex/Tuba (intended port-wide divergence). FIX.
+# Still open (2): deathtype.secondary (one-line FireBullet deathTag omission — UNCHANGED), zoom_eye
+# (no server zoom button — UNCHANGED). NO regressions: Wave-5's WeaponFiring.cs change added LagComp
+# antilag bracketing to SetupShot's trueaim traces (improvement, rifle-neutral); all rifle constants
+# + call paths intact. The deathTag channel (FireBullet deathTag param + ApplyDamage override +
+# DeathMessages rifle HAIL/PIERCING branch DeathMessages.cs:82-85) re-confirmed ready & unused by rifle.
 summary:
   feature_count: 16
   worst_gaps:
-    - "Secondary kills still print WEAPON_RIFLE_MURDER not *_MURDER_HAIL: FireBullets passes deathType=RegistryId with NO deathTag. CORRECTION vs prior audit — this is NO LONGER architectural: the deathTag channel that carries HITTYPE_SECONDARY now EXISTS (WeaponFiring.ApplyDamage deathTag arg + DeathTypes.WithHitType) and MachineGun's snipe secondary already uses it; the rifle is now just a ONE-LINE omission (FireBullets doesn't build/pass deathTag for its secondary). DeathMessages.cs:82-85 has the faithful RIFLE HAIL/PIERCING branch ready."
-    - "Rifle-specific bot wr_aim still missing: BotAim has generic aim-skill cvar reads but NOT the probabilistic primary/secondary 'riflemooth' toggle, the force-primary>1000u rule, or bot_aim (1000000,0,0.001); bots still never use the rifle secondary"
-    - "Zoom-from-eye shot re-aim still not ported (headless server has no zoom button); low impact, only matters while scoped"
-    - "wr_resetplayer (rifle_accumulator reset on spawn across all slots) still not ported; RifleAccumulator never reset on spawn; benign at stock bursttime 0"
-    - "(now CLOSED, was the #2 worst gap) Brass casing ejection now networks + renders the real bouncing brass: CASING_BULLET/CASING_SHELL are registered Effects (EffectsList.cs:100-101) so EmitByEffectInfoName resolves a non-null Effect that ServerNet.WriteEffect encodes (origin+velocity) and EffectSystem.Spawn routes to SpawnCasing on both the networked Name and in-process effectinfo-name paths"
+    - "Secondary kills still print WEAPON_RIFLE_MURDER not *_MURDER_HAIL: FireBullets calls FireBullet (Rifle.cs:311-313) with NO deathTag. The deathTag channel that carries HITTYPE_SECONDARY EXISTS (WeaponFiring.FireBullet deathTag param cs:239 -> ApplyDamage cs:319,667 -> DeathTypes tag) and MachineGun's snipe secondary already uses it; DeathMessages.cs:82-85 has the faithful RIFLE HAIL/PIERCING branch keyed off sec/bounce. So this remains a ONE-LINE omission in the rifle's secondary fire path, not a missing API. Worst remaining gap."
+    - "Zoom-from-eye shot re-aim still not ported (headless server has no zoom button); low impact, only matters while scoped (Rifle.cs:303-304 keeps the trueaim origin)"
+    - "(now CLOSED) Rifle bot wr_aim: BotWantsSecondary (Rifle.cs:133) ports the riflemooth pri/sec toggle and is LIVE via BotBrain.cs:354 -> ButtonAttack2; bots now use the rifle secondary at close range"
+    - "(now CLOSED) wr_resetplayer: WrSetup (Rifle.cs:118) seeds rifle_accumulator = time-bursttime, dispatched live by WeaponFireDriver.cs:281 (switch-in, the established Vortex/OkNex convention)"
+    - "(closed prior pass) Brass casing ejection networks + renders the real bouncing brass via registered CASING_BULLET/CASING_SHELL Effects -> WriteEffect -> EffectSystem.Spawn -> SpawnCasing"
 features:
   - id: rifle.identity
     name: "Rifle registration & identity (flags, color, ammo, models, impulse)"
@@ -241,9 +247,9 @@ features:
       - "common/weapons/weapon/rifle.qc:W_Rifle_Attack2 (m_id | HITTYPE_SECONDARY)"
       - "common/weapons/weapon/rifle.qc:wr_killmessage"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:FireBullets (deathType = RegistryId, cs:265)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:FireBullets (deathType = RegistryId, cs:305; FireBullet call cs:311-313)"
       - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:81-85 (rifle case)"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:ApplyDamage (int->string deathTag map)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:FireBullet/ApplyDamage (deathTag channel, cs:239/319/667)"
     constants:
       - { name: "secondary deathtype flag", base: "m_id | HITTYPE_SECONDARY", port: "RegistryId only, no deathTag passed", match: false }
     status:
@@ -256,11 +262,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL OPEN, but CORRECTED characterization (was wrongly called architectural). Secondary rifle kills still print WEAPON_RIFLE_MURDER instead of WEAPON_RIFLE_MURDER_HAIL because Rifle.FireBullets (Rifle.cs:265,271-273) passes deathType=RegistryId and NO deathTag. The HITTYPE-carrying channel NOW EXISTS: WeaponFiring.ApplyDamage has a `deathTag` string override (WeaponFiring.cs:642,654) and DeathTypes.WithHitType(tag, Secondary) builds the `|secondary` suffix; MachineGun's mode-0 snipe secondary already uses exactly this (MachineGun.cs:291-295). DeathMessages.cs:82-85 has the faithful RIFLE HAIL/PIERCING branch keyed off HasHitType(Secondary). So this is now a ONE-LINE omission in the rifle's secondary fire path, not a missing API."
+      - "STILL OPEN (UNCHANGED this pass). Secondary rifle kills still print WEAPON_RIFLE_MURDER instead of WEAPON_RIFLE_MURDER_HAIL because Rifle.FireBullets builds deathType=RegistryId (Rifle.cs:305) and calls WeaponFiring.FireBullet (Rifle.cs:311-313) WITHOUT a deathTag. The HITTYPE-carrying channel EXISTS and is wired: WeaponFiring.FireBullet has a `deathTag` param (cs:239) that flows to ApplyDamage (cs:319,667), and MachineGun's mode-0 snipe secondary already uses it. DeathMessages.cs:82-85 has the faithful RIFLE HAIL/PIERCING branch keyed off sec/bounce. So this is a ONE-LINE omission in the rifle's secondary fire path, not a missing API."
     verification:
-      - { kind: code, ref: "Rifle.cs:265 deathType=RegistryId, FireBullet call (cs:271-273) passes no deathTag for the secondary; DeathMessages.cs:82-85 keys HAIL off HasHitType(Secondary) and is reachable (MachineGun.cs:291-295 proves the deathTag channel is live)", result: fail }
+      - { kind: code, ref: "Rifle.cs:305 deathType=RegistryId; FireBullet call (cs:311-313) passes no deathTag for the secondary; DeathMessages.cs:82-85 keys HAIL off the sec flag and is reachable (the deathTag channel is live & used by MachineGun)", result: fail }
     confidence: high
-    notes: "STILL OPEN. The shared firing->damage API gap claimed by the prior audit is FIXED — the deathTag channel exists and is exercised by MachineGun. The rifle simply needs to build deathTag = WithHitType(FromWeapon(NetName), Secondary) for its secondary fire (and add HITTYPE_BOUNCE handling for the bounce variants). Cross-ref fx-deathtypes / weapon-machinegun units."
+    notes: "STILL OPEN, worst remaining gap. The deathTag channel exists and is exercised by MachineGun. The rifle simply needs to build deathTag = WithHitType(FromWeapon(NetName), Secondary) for its secondary fire (and add HITTYPE_BOUNCE handling for the *_PIERCING bounce variants). Cross-ref fx-deathtypes / weapon-machinegun units."
 
   - id: rifle.fx.muzzleflash
     name: "Muzzle flash effect (EFFECT_RIFLE_MUZZLEFLASH)"
@@ -445,7 +451,7 @@ features:
       - "common/weapons/weapon/rifle.qc:wr_zoom (SVQC & CSQC)"
       - "common/weapons/weapon/rifle.qc:wr_zoomdir"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:FireBullets (comment: zoom kept as trueaim, cs:262-263)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:FireBullets (comment: zoom kept as trueaim, cs:303-304)"
       - "game/client/ReticleOverlay.cs"
     constants:
       - { name: "zoom re-aim", base: "w_shotdir = v_forward when zoomed", port: "none (keeps trueaim origin)", match: false }
@@ -462,7 +468,7 @@ features:
     gaps:
       - "UNCHANGED by Wave-2. When zoomed, Base re-aims the rifle shot straight from the eye (w_shotdir = v_forward) for pixel-accurate long shots; the port keeps the trueaim origin (the headless server input has no zoom button). Low impact: only matters while scoped, and the secondary-zoom path is OFF at stock secondary 1."
     verification:
-      - { kind: code, ref: "Rifle.cs:262-263 comment (zoom not wired); rifle.qc:16-20 zoom re-aim block", result: fail }
+      - { kind: code, ref: "Rifle.cs:303-304 comment (zoom not wired); rifle.qc:16-20 zoom re-aim block", result: fail }
     confidence: medium
     notes: "STILL OPEN. Generic +zoom reticle (gfx/reticle_nex) handled by ReticleOverlay. Rifle does not override ZoomOnSecondary, matching stock secondary 1 (ATCK2 fires, doesn't zoom)."
 
@@ -472,48 +478,53 @@ features:
     base_refs:
       - "common/weapons/weapon/rifle.qc:wr_aim"
     port_refs:
-      - "src/XonoticGodot.Server/Bot/BotAim.cs"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:BotWantsSecondary (cs:133)"
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:354 (dispatch -> ButtonAttack2)"
+      - "src/XonoticGodot.Common/Gameplay/GameplayBases.cs:BotAimState (cs:24)"
     constants:
-      - { name: "to-secondary flip chance", base: "1% (random()<0.01)", port: "none", match: false }
-      - { name: "to-primary flip chance", base: "3% (random()<0.03)", port: "none", match: false }
-      - { name: "force-primary range", base: ">1000 units", port: "none", match: false }
-      - { name: "bot_aim params", base: "(1000000, 0, 0.001)", port: "none (generic BotAim)", match: false }
+      - { name: "to-secondary flip chance", base: "1% (random()<0.01)", port: "ctx.Random01<0.01 (cs:141)", match: true }
+      - { name: "to-primary flip chance", base: "3% (random()<0.03)", port: "ctx.Random01<0.03 (cs:146)", match: true }
+      - { name: "force-primary range", base: ">1000 units", port: "enemyDistance>1000 -> SecondaryToggle=false (cs:135)", match: true }
+      - { name: "bot_aim params", base: "(1000000, 0, 0.001)", port: "shot-aim owned by generic BotBrain.AimAndDecideFire; BotWantsSecondary owns only pri/sec pick", match: true }
+      - { name: "press button for CURRENT state then roll flip for NEXT", base: "PHYS_INPUT_BUTTON_ATCK[2] set pre-flip, random() updates toggle after", port: "fireSecondary = pre-flip SecondaryToggle, then roll (cs:138-149)", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: faithful
+      values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "UNCHANGED for the rifle. Wave-2 made BotAim read its generic aim-skill cvars (bot_ai_aimskill_*) live each frame, but did NOT add the rifle-specific wr_aim: the probabilistic primary/secondary 'riflemooth' toggle, the forced-primary-beyond-1000-units rule, and the bot_aim 1000000/0/0.001 tuning are still absent; bots still drive only primary fire."
+      - "MINOR: QC's wr_aim itself calls bot_aim(1000000,0,0.001) to perform the aim; the port splits responsibility — the generic BotBrain.AimAndDecideFire does the aim/lead/deviation, and BotWantsSecondary only chooses pri vs sec. Equivalent outcome (the rifle's bot_aim tuning is effectively 'always in range, tiny think'), but the exact (1000000,0,0.001) tuning is not threaded into the aim solver per-weapon. Cosmetic w.r.t. fire-mode selection, which is what wr_aim's rifle-specific behavior is about."
     verification:
-      - { kind: code, ref: "BotAim.cs diff is generic aim-skill cvar live-reads (offset/think/mouse/fixedrate/blendrate/mix*/filt*/firetolerance); no per-weapon pri/sec toggle, no rifle wr_aim", result: fail }
+      - { kind: code, ref: "Rifle.cs:133-150 BotWantsSecondary vs rifle.qc:96-120 wr_aim: >1000u forces primary, 1% flip-to-sec, 3% flip-back, button reflects pre-flip state — constant-for-constant", result: pass }
+      - { kind: code, ref: "BotBrain.cs:354 calls w.BotWantsSecondary((enemy-bot).Length(), Skill, ref _botAimState); true -> wantAttack=false/wantAttack2=true (cs:356-357) -> Emit ButtonAttack2 (cs:389,403); per-bot SecondaryToggle persists, Random01 re-rolled each call (cs:353)", result: pass }
     confidence: high
-    notes: "STILL OPEN. Same class of gap as the MachineGun bot wr_aim. The Wave-2 BotAim change is a real but unrelated improvement (server-side aim retuning now takes effect via cvars)."
+    notes: "FIX vs baseline (missing/dead -> faithful/live). Wave-5 added the Rifle.BotWantsSecondary override and the BotAimState scratch struct; the bot brain dispatches it live and routes the result onto the secondary fire button. Bots now flip to the rifle's 4-bullet scatter secondary ~1% of close-range decisions and back ~3%, forcing primary beyond 1000u — matching QC. Same wr_aim pattern as MachineGun.BotWantsSecondary (which was already live)."
 
   - id: rifle.resetplayer
     name: "wr_resetplayer — burst accumulator reset on spawn"
     layer: [authority]
     base_refs:
       - "common/weapons/weapon/rifle.qc:wr_resetplayer"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:WrSetup (cs:118)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireDriver.cs:281 (newwep.WrSetup on switch-in)"
     constants:
-      - { name: "accumulator reset", base: "rifle_accumulator = time - bursttime", port: "none", match: false }
+      - { name: "accumulator reset", base: "rifle_accumulator = time - bursttime", port: "RifleAccumulator = Api.Clock.Time - BurstTime (cs:120)", match: true }
     status:
-      logic: missing
-      values: na
-      timing: na
+      logic: faithful
+      values: faithful
+      timing: faithful
       presentation: na
       audio: na
-      liveness: dead
-    intended_divergence: false
-    divergence_rationale: null
-    gaps:
-      - "UNCHANGED by Wave-2. Rifle's wr_resetplayer (resets rifle_accumulator across all weapon slots to time - bursttime on spawn) is still not ported. Only OkNex/Vortex implement wr_resetplayer in the port. Benign at stock bursttime 0 (the accumulator's Bound() in WrThink self-corrects within a tick)."
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "QC's wr_resetplayer resets rifle_accumulator across ALL weapon slots on respawn; the port has no per-weapon respawn-reset hook, so — like Vortex/OkNex/Tuba's setup seed — the reset is attached to the weapon switch-in path (WrSetup, dispatched by WeaponFireDriver.cs:281) and seeds only the equipped slot. Inert at stock bursttime 0 (time - 0 already bounds the accumulator), and the accumulator self-corrects via the Bound() at the top of WrThink within one tick, so the per-slot-on-switch-in placement is behaviorally faithful. A switch-away-and-back re-seeds (benign, same documented convention as Vortex)."
+    gaps: []
     verification:
-      - { kind: code, ref: "grep ResetPlayer in Weapons/* -> only OkNex.cs, Vortex.cs; no Rifle reset; RifleAccumulator never reset on spawn", result: fail }
+      - { kind: code, ref: "Rifle.cs:118-121 WrSetup sets RifleAccumulator = Api.Clock.Time - BurstTime vs rifle.qc:168-175 wr_resetplayer; WeaponFireDriver.cs:281 calls newwep.WrSetup(player, slot) on equip (same live path Vortex/OkNex/Tuba use)", result: pass }
     confidence: high
-    notes: "STILL OPEN. RifleAccumulator field exists (EntityWeaponState.cs) but is never reset on spawn for the rifle."
+    notes: "FIX vs baseline (missing/dead -> faithful/live, intended_divergence for the switch-in-vs-respawn placement). Wave-5 added the Rifle.WrSetup override; RifleAccumulator (EntityWeaponState.cs) is now seeded on equip. Benign in practice at stock bursttime 0. Mirrors the established port-wide convention (Vortex/OkNex charge seed, Tuba instrument reset) of routing wr_resetplayer/wr_setup seeds through the switch-in dispatch."

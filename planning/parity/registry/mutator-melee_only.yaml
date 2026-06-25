@@ -5,9 +5,9 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 10
   worst_gaps:
-    - "SetWeaponArena hook is now LIVE on the loadout path (forces the start/warmup arena to 'off'), BUT the item-suppression gate (StartItem.cs:331, GiveItems.cs:161) still reads the RAW g_weaponarena cvar instead of the hook-resolved arena, so melee_only + a configured g_weaponarena still wrongly suppresses every medium/large health/armor + ammo pickup Base would keep. Liveness fixed; the observable pickup bug is not."
-    - "ForbidRandomStartWeapons is STILL DEAD: FireForbidRandomStartWeapons / ForbidRandomStartWeapons.Call has zero callers; GiveRandomWeapons (SpawnSystem.cs:838-843) is gated only on g_random_start_weapons count and never consults the forbid hook. With g_weaponarena_random the random-start forbid is not honored (masked in practice by the per-spawn OnPlayerSpawn re-clear)."
-    - "Mutator-string tags (:MeleeOnly / ', Melee only Arena') still not implemented: no BuildMutatorsString/BuildMutatorsPrettyString hook chain exists in the port (MutatorHooks.cs has neither). melee_only never appears in the active-mutator label or server-browser tag."
+    - "SetWeaponArena hook is LIVE on the loadout path (forces the start/warmup arena to 'off'), BUT the item-suppression gate (StartItem.cs:331, GiveItems.cs:161) still reads the RAW g_weaponarena cvar instead of the hook-resolved arena, so melee_only + a configured g_weaponarena still wrongly suppresses every medium/large health/armor + ammo pickup Base would keep. Liveness fixed; the observable pickup bug is not."
+    - "Mutator-string handlers (:MeleeOnly / ', Melee only Arena') STILL not contributed by melee_only: the shared BuildMutatorsString/BuildMutatorsPrettyString infrastructure now EXISTS (GameplayBases virtuals + MutatorActivation chains; machine-string is LIVE at GameWorld.cs:865) but MeleeOnlyMutator does NOT override either method (only Midair/Vampire do), so melee_only never adds its tag. The pretty-string chain also still has no live caller."
+    - "ForbidRandomStartWeapons is now LIVE (FIXED): FireForbidRandomStartWeapons is consulted at SpawnSystem.cs:901 before GiveRandomWeapons, so the random-start grant is suppressed under melee_only as Base does."
 features:
   - id: melee_only.enable.predicate
     name: "Enable predicate (g_melee_only and not instagib/overkill/arena)"
@@ -32,11 +32,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Arena exclusion is checked against the g_weaponarena CVAR (==0f) rather than Base's MapInfo_LoadedGametype.m_weaponarena (the LOADED-gametype arena flag). Equivalent for the common case (arena driven by the cvar), but a gametype that sets m_weaponarena without the cvar (or vice-versa) would diverge. Minor; the instagib/overkill exclusions and the string expr_evaluate read are now faithful."
+      - "Arena exclusion is checked against the g_weaponarena CVAR (==0f) rather than Base's MapInfo_LoadedGametype.m_weaponarena (the LOADED-gametype arena flag). Equivalent for the common case (arena driven by the cvar), but a gametype that sets m_weaponarena without the cvar (or vice-versa) would diverge. Minor; the instagib/overkill exclusions and the string expr_evaluate read are faithful."
     verification:
-      - { kind: code, ref: "MeleeOnlyMutator.cs:23-28 = ExprEvaluate(GetString(g_melee_only)) && !OtherEnabled(instagib) && !OtherEnabled(overkill) && g_weaponarena==0; OtherEnabled reads the other mutator's IsEnabled (MeleeOnlyMutator.cs:32-33); InstagibMutator NetName=instagib, OverkillMutator NetName=overkill confirmed; IsEnabled gates Hook() at MutatorActivation.cs:64", result: pass }
+      - { kind: code, ref: "MeleeOnlyMutator.cs:23-28 = ExprEvaluate(GetString(g_melee_only)) && !OtherEnabled(instagib) && !OtherEnabled(overkill) && g_weaponarena==0; OtherEnabled reads the other mutator's IsEnabled (MeleeOnlyMutator.cs:32-33); InstagibMutator NetName=instagib, OverkillMutator NetName=overkill confirmed; IsEnabled gates Hook() at MutatorActivation", result: pass }
     confidence: high
-    notes: "FIXED vs baseline: the !instagib && !overkill && !arena exclusion now exists AND the cvar is read as a string expr via ExprEvaluate(GetString) (matching Base expr_evaluate(autocvar_g_melee_only), no longer GetFloat). logic/values partial->faithful. Residual minor divergence: cvar-gate vs m_weaponarena gametype flag. cvar seeded from port mutators.cfg:178 (verbatim from Base)."
+    notes: "Unchanged vs baseline (faithful/live). The !instagib && !overkill && !arena exclusion exists AND the cvar is read as a string expr via ExprEvaluate(GetString) (matching Base expr_evaluate(autocvar_g_melee_only)). Residual minor divergence: cvar-gate vs m_weaponarena gametype flag. cvar seeded from port mutators.cfg:178 (verbatim from Base)."
   - id: melee_only.loadout.start_items
     name: "Start loadout: Shotgun only, zero shells (SetStartItems)"
     layer: [authority]
@@ -60,9 +60,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "OnSetStartItems (MeleeOnlyMutator.cs:95-101) sets AmmoShells=0 + SetWeapons(shotgun) at HookOrder.Last; live via SpawnSystem.cs:711 SetStartItems.Call inside ComputeStartItems, reached by ApplyStartLoadout on every non-warmup spawn", result: pass }
+      - { kind: code, ref: "OnSetStartItems (MeleeOnlyMutator.cs:95-101) sets AmmoShells=0 + SetWeapons(shotgun) at HookOrder.Last; live via SpawnSystem.cs:767 SetStartItems.Call inside ComputeStartItems, reached by ApplyStartLoadout on every non-warmup spawn", result: pass }
     confidence: high
-    notes: "Unchanged vs baseline (faithful/live). Base sets both the live AND warmup_* globals at config; the port's SetStartItems seam is the non-warmup path only — warmup parity is salvaged by OnPlayerSpawn (see melee_only.loadout.warmup). Confidence raised medium->high (re-confirmed the live .Call site at SpawnSystem.cs:711)."
+    notes: "Unchanged vs baseline (faithful/live). Base sets both the live AND warmup_* globals at config; the port's SetStartItems seam is the non-warmup path only — warmup parity is salvaged by OnPlayerSpawn (see melee_only.loadout.warmup). Re-audit: SetStartItems.Call ref drifted 711->767 (cosmetic), still the sole live call site."
   - id: melee_only.loadout.warmup
     name: "Warmup loadout also forced to Shotgun/zero shells (warmup_start_weapons/warmup_start_ammo_shells)"
     layer: [authority]
@@ -83,11 +83,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The port's warmup spawn path (SpawnSystem.ApplyWarmupLoadout, SpawnSystem.cs:872) does NOT call SetStartItems — it now runs the SetWeaponArena seam (forced 'off' by melee_only -> no arena) then falls into the g_warmup_allguns branch (ALL non-hidden weapons, default true) + 30 shells, so the melee_only SetStartItems hook is bypassed during warmup. Faithful end-state is salvaged ONLY because the port-only OnPlayerSpawn (PlayerSpawn hook, fired AFTER PutPlayerInServer at ClientManager.cs:542 on every spawn incl. warmup) re-clears to shotgun + 0 shells. Remove OnPlayerSpawn and warmup melee_only would break."
+      - "The port's warmup spawn path (SpawnSystem.ApplyWarmupLoadout, SpawnSystem.cs:931) does NOT call SetStartItems — it runs the SetWeaponArena seam (forced 'off' by melee_only -> no arena, SpawnSystem.cs:951) then falls into the g_warmup_allguns branch (ALL non-hidden weapons, default true) + 30 shells, so the melee_only SetStartItems hook is bypassed during warmup. Faithful end-state is salvaged ONLY because the port-only OnPlayerSpawn (PlayerSpawn hook, fired AFTER PutPlayerInServer on every spawn incl. warmup) re-clears to shotgun + 0 shells. Remove OnPlayerSpawn and warmup melee_only would break."
     verification:
-      - { kind: code, ref: "ApplyWarmupLoadout (SpawnSystem.cs:872-931) runs SetWeaponArena (forced off) then g_warmup_allguns + 30 shells, never calls ComputeStartItems/SetStartItems; OnPlayerSpawn (MeleeOnlyMutator.cs:80-92) runs after it and re-applies shotgun-only/0 shells", result: pass }
+      - { kind: code, ref: "ApplyWarmupLoadout (SpawnSystem.cs:931-) runs SetWeaponArena (forced off, :951) then g_warmup_allguns + 30 shells, never calls ComputeStartItems/SetStartItems; OnPlayerSpawn (MeleeOnlyMutator.cs:80-92) runs after it and re-applies shotgun-only/0 shells", result: pass }
     confidence: medium
-    notes: "Unchanged net result vs baseline. Wave-2 added the SetWeaponArena seam to the warmup path (SpawnSystem.cs:891-893); melee_only forces it 'off' so warmup still takes the allguns branch, and OnPlayerSpawn remains LOAD-BEARING for warmup parity. Not verified in a live match."
+    notes: "Unchanged net result vs baseline. SetWeaponArena seam is on the warmup path (SpawnSystem.cs:951); melee_only forces it 'off' so warmup still takes the allguns branch, and OnPlayerSpawn remains LOAD-BEARING for warmup parity. Not verified in a live match."
   - id: melee_only.loadout.player_spawn_reapply
     name: "Per-spawn loadout re-apply (port-only PlayerSpawn handler)"
     layer: [authority]
@@ -109,9 +109,9 @@ features:
     divergence_rationale: "Port-only PlayerSpawn handler with no Base counterpart. Base enforces the loadout purely through the start_*/warmup_start_* globals computed once at config; the port's SetStartItems seam covers only the non-warmup spawn path, so this per-spawn re-application is the mechanism that (a) enforces melee_only during WARMUP (where the warmup loadout bypasses SetStartItems and would otherwise grant all-guns+shells) and (b) guarantees the shotgun-only set on every respawn. Same observable loadout as Base, achieved by a port-specific code path."
     gaps: []
     verification:
-      - { kind: code, ref: "OnPlayerSpawn (MeleeOnlyMutator.cs:80-92) live via ClientManager.cs:619 PlayerSpawn.Call (after PutPlayerInServer on every spawn); duplicates/enforces the shotgun-only loadout per spawn", result: pass }
+      - { kind: code, ref: "OnPlayerSpawn (MeleeOnlyMutator.cs:80-92) live via PlayerSpawn.Call (after PutPlayerInServer on every spawn); duplicates/enforces the shotgun-only loadout per spawn", result: pass }
     confidence: medium
-    notes: "Unchanged vs baseline (intended_divergence:true). It is NOT inert redundancy: it is the sole enforcer of melee_only's loadout during warmup. See melee_only.loadout.warmup. Re-audit 2026-06-24: PlayerSpawn.Call ref drifted 542->619 (cosmetic), still the sole live call site."
+    notes: "Unchanged vs baseline (intended_divergence:true). It is NOT inert redundancy: it is the sole enforcer of melee_only's loadout during warmup. See melee_only.loadout.warmup."
   - id: melee_only.arena.force_off
     name: "Force weapon arena off (SetWeaponArena -> 'off')"
     layer: [authority]
@@ -132,11 +132,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "PARTIAL FIX. The SetWeaponArena hook is now LIVE on the LOADOUT path: SpawnSystem.ComputeStartItems (SpawnSystem.cs:679) and ApplyWarmupLoadout (SpawnSystem.cs:892) both call SetWeaponArena.Call, so melee_only's 'off' now correctly prevents an arena weapon loadout from replacing the shotgun start set. HOWEVER the item-suppression gate still reads the RAW cvar, not the hook result: StartItem.cs:331 (HavePickupItem) and GiveItems.cs:161 test g_weaponarena (GetFloat != 0f) directly. So melee_only forcing the resolved arena to 'off' does NOT clear that gate — with melee_only + a configured g_weaponarena, the port still wrongly suppresses every medium/large health/armor and ammo world-pickup that Base keeps (Base's 'off' would re-enable them). Real bug, edge config (host must set both g_melee_only and g_weaponarena)."
+      - "PARTIAL. The SetWeaponArena hook is LIVE on the LOADOUT path: SpawnSystem.ComputeStartItems (SpawnSystem.cs:735) and ApplyWarmupLoadout (SpawnSystem.cs:951) both call SetWeaponArena.Call, so melee_only's 'off' correctly prevents an arena weapon loadout from replacing the shotgun start set. HOWEVER the item-suppression gate still reads the RAW cvar, not the hook result: StartItem.cs:331 (HavePickupItem) and GiveItems.cs:161 test g_weaponarena (GetFloat != 0f) directly. So melee_only forcing the resolved arena to 'off' does NOT clear that gate — with melee_only + a configured g_weaponarena, the port still wrongly suppresses every medium/large health/armor and ammo world-pickup that Base keeps (Base's 'off' would re-enable them). Real bug, edge config (host must set both g_melee_only and g_weaponarena)."
     verification:
-      - { kind: code, ref: "OnSetWeaponArena (MeleeOnlyMutator.cs:103-107) sets Arena='off'; LIVE via SpawnSystem.cs:679 + :892 SetWeaponArena.Call. But StartItem.cs:331 / GiveItems.cs:161 read g_weaponarena cvar (GetFloat!=0f) as the pickup-suppression gate, which the hook never clears", result: fail }
+      - { kind: code, ref: "OnSetWeaponArena (MeleeOnlyMutator.cs:103-107) sets Arena='off'; LIVE via SpawnSystem.cs:735 + :951 SetWeaponArena.Call. But StartItem.cs:331 / GiveItems.cs:161 read g_weaponarena cvar (GetFloat!=0f) as the pickup-suppression gate, which the hook never clears", result: fail }
     confidence: high
-    notes: "Liveness FIXED vs baseline (dead->live): SetWeaponArena.Call is now wired into the loadout path (was zero call sites). The loadout-arena half of the feature is now faithful+live. The residual is the pickup-suppression coupling: the item gate reads the raw cvar instead of the resolved arena, so the observable pickup bug the baseline flagged remains. status logic/values=faithful (handler is correct + reached), liveness=live, but a concrete residual gap stays open."
+    notes: "Unchanged vs baseline. Loadout-arena half is faithful+live. The residual is the pickup-suppression coupling: the item gate reads the raw cvar instead of the resolved arena, so the observable pickup bug remains. status logic/values=faithful (handler correct + reached), liveness=live, but a concrete residual gap stays open. Re-audit: call refs drifted 679/892->735/951 (cosmetic)."
   - id: melee_only.weapons.forbid_random_start
     name: "Forbid random start weapons (ForbidRandomStartWeapons -> true)"
     layer: [authority]
@@ -144,6 +144,7 @@ features:
       - "common/mutators/mutator/melee_only/sv_melee_only.qc:MUTATOR_HOOKFUNCTION(melee_only, ForbidRandomStartWeapons)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/MeleeOnlyMutator.cs:OnForbidRandomStartWeapons"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:ApplyStartLoadout"
     constants:
       - { name: "return", base: "true", port: "true", match: true }
     status:
@@ -152,15 +153,14 @@ features:
       timing: na
       presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "STILL DEAD. A FireForbidRandomStartWeapons wrapper now exists (MutatorHooks.cs:356) but has ZERO callers; ForbidRandomStartWeapons.Call appears only inside that wrapper. The actual random-start path, GiveRandomWeapons (SpawnSystem.cs:941), is invoked from ApplyStartLoadout (SpawnSystem.cs:838-843) gated solely on g_random_start_weapons count > 0 and NEVER consults the forbid hook. So with g_weaponarena_random the random-start-weapons forbid is not honored (could add weapons on top of the shotgun loadout). Partly masked by the per-spawn OnPlayerSpawn re-clear, but the hook itself is dead."
+    gaps: []
     verification:
-      - { kind: code, ref: "grep FireForbidRandomStartWeapons / ForbidRandomStartWeapons.Call over src/: only the wrapper at MutatorHooks.cs:356-360, no external caller; SpawnSystem.cs:838-843 calls GiveRandomWeapons without firing the forbid hook", result: fail }
+      - { kind: code, ref: "OnForbidRandomStartWeapons (MeleeOnlyMutator.cs:109) returns true; the random-start path GiveRandomWeapons (SpawnSystem.cs:902) is now gated on !MutatorHooks.FireForbidRandomStartWeapons(p) at SpawnSystem.cs:901, which fires the ForbidRandomStartWeapons.Call chain (MutatorHooks.cs:382-386). With g_weaponarena_random the forbid is now honored — no extra weapons added on top of the shotgun loadout", result: pass }
     confidence: high
-    notes: "NO CHANGE vs baseline despite Wave-2 adding the FireForbidRandomStartWeapons wrapper — the wrapper was never wired into the GiveRandomWeapons path, so the handler is still unreachable. Handler is correct (returns true); never invoked. Low impact: OnPlayerSpawn re-clears the set each spawn anyway."
+    notes: "FIXED vs baseline (dead->live). Wave-5 wired FireForbidRandomStartWeapons into ApplyStartLoadout (SpawnSystem.cs:901): the random-start grant is suppressed when any mutator (instagib/overkill/melee_only/nix) forbids it, matching Base client.qc:644. Handler correct (returns true) and now reachable. (Previously masked-only by the per-spawn OnPlayerSpawn re-clear.)"
   - id: melee_only.weapons.forbid_throw
     name: "Forbid throwing/dropping current weapon (ForbidThrowCurrentWeapon -> true)"
     layer: [authority]
@@ -227,11 +227,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL MISSING. No BuildMutatorsString handler AND no BuildMutatorsString hook chain exists in the port (grep over MutatorHooks.cs finds neither BuildMutatorsString nor BuildMutatorsPrettyString). melee_only never contributes the ':MeleeOnly' machine tag to g_mutatormsg / the server browser."
+      - "STILL MISSING for melee_only. The shared BuildMutatorsString infrastructure now EXISTS and is LIVE: GameplayBases.BuildMutatorsString virtual (GameplayBases.cs:198), MutatorActivation.BuildMutatorsString chain (MutatorActivation.cs:88), live caller at GameWorld.cs:865 (GameLogInit -> g_mutatormsg). But ONLY MidairMutator and VampireMutator override BuildMutatorsString; MeleeOnlyMutator does NOT, so melee_only contributes no ':MeleeOnly' machine token. Infrastructure-absence half of the baseline gap is closed; the melee_only handler is still missing."
     verification:
-      - { kind: code, ref: "MeleeOnlyMutator.cs has no mutator-string handler; grep over src/ shows no BuildMutatorsString HookChain in MutatorHooks.cs", result: fail }
+      - { kind: code, ref: "grep 'override string BuildMutatorsString' over Mutators/ => only MidairMutator.cs + VampireMutator.cs; MeleeOnlyMutator.cs has no override. Chain is live via MutatorActivation.BuildMutatorsString('') called at GameWorld.cs:865", result: fail }
     confidence: high
-    notes: "NO CHANGE vs baseline. Shared gap across the whole port: the mutator-string builder infrastructure does not exist, not just the melee_only handler."
+    notes: "PARTIAL PROGRESS vs baseline: the baseline note 'no BuildMutatorsString hook chain exists' is now STALE — the chain exists and is wired live for the machine string. melee_only just never opts in (no override). Adding a one-line override would close this."
   - id: melee_only.ui.mutator_string_pretty
     name: "Pretty mutator label ', Melee only Arena' (BuildMutatorsPrettyString)"
     layer: [authority, presentation]
@@ -250,8 +250,8 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL MISSING. No BuildMutatorsPrettyString handler AND no such hook chain in the port; the active-mutator / mutator-list UI never shows ', Melee only Arena'."
+      - "STILL MISSING for melee_only AND the chain is not displayed. The BuildMutatorsPrettyString infrastructure exists (GameplayBases.cs:206 virtual + MutatorActivation.cs:101 chain) and Midair/Vampire override it, but (a) MeleeOnlyMutator does NOT override it, and (b) MutatorActivation.BuildMutatorsPrettyString has NO live external caller (grep finds none outside the chain itself), so even an override would not reach the active-mutator / mutator-list UI. The label ', Melee only Arena' never shows."
     verification:
-      - { kind: code, ref: "MeleeOnlyMutator.cs has no pretty-string handler; no BuildMutatorsPrettyString HookChain in MutatorHooks.cs", result: fail }
+      - { kind: code, ref: "MeleeOnlyMutator.cs has no BuildMutatorsPrettyString override; grep for BuildMutatorsPrettyString( external caller => none (only GameplayBases default + MutatorActivation chain + Midair/Vampire overrides). Pretty-string chain is dead (no live caller)", result: fail }
     confidence: high
-    notes: "NO CHANGE vs baseline. Same shared-infra absence as the machine tag."
+    notes: "Slight infra progress vs baseline (the chain now exists) but two reasons melee_only's pretty label is still absent: no melee_only override AND the pretty-string chain has no live caller. Net observable result unchanged from baseline."

@@ -5,11 +5,11 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 19
   worst_gaps:
-    - "Throw / pass / request-pass are fully ported + unit-tested AND a HandleUseKey(+use) dispatcher now exists, but the server's +use rising edge (ServerNet ProvideInput) only calls VehicleBoarding.UseKey — HandleUseKey has NO caller, so a player still cannot drop/throw/pass the flag (only dying drops it)."
-    - "ctf_RemovePlayer is now ported (Ctf.RemovePlayer drops the flag + clears pass/dropper back-links) but is DEAD: ClientDisconnect calls MatchController.RemovePlayer (which only removes from its own roster list, no gametype dispatch), and there is no observer/portal/vehicle hook. A leaving carrier still keeps the flag."
-    - "Stalemate DETECTION is now live + faithful (CheckStalemate ticks at WPFE_THINKRATE, set/clear ladder matches Base) but has NO visible effect: PackCtfStatus never ORs the CTF_STALEMATE bit from ctf.Stalemate (constant declared, unused), and the enemy-FC waypoint reveal + CENTER_CTF_STALEMATE prints are absent."
-    - "Flag model is static at base: no md3 wave/bob/rotate animation, no glow trail, no dynamic light (dropped flags now DO settle via MoveType.Toss physics)."
-    - "Capture-time leaderboard/records + fastest-cap broadcast, flagcarrier damage/force factors, and auto-helpme ping remain unported."
+    - "Stalemate DETECTION is live + faithful (CheckStalemate ticks at WPFE_THINKRATE, set/clear ladder matches Base) but still has NO visible effect: PackCtfStatus (GametypeStatusBlock.cs:184) never ORs the CTF_STALEMATE bit from ctf.Stalemate, and the enemy-FC waypoint reveal + CENTER_CTF_STALEMATE prints are absent. Wave 5 did not touch this file."
+    - "Flag model is static at base: no md3 wave/bob/rotate animation, no glow trail, no dynamic light (dropped flags DO settle via MoveType.Toss physics; carried flag follows the carrier each tick)."
+    - "Capture-time leaderboard/records + fastest-cap broadcast, flagcarrier damage/force factors, auto-helpme ping, and the dropped-flag auto-capture/float-in-water/return-near-base radii remain unported."
+    - "Throw/pass/request-pass are now LIVE (Wave 5 wired Ctf.HandleUseKey onto the +use rising edge via ServerNet.UseKeyEdge) but throw/pass emit no sound, and a viable pass completes as an instant transfer (no physical arc / directional cone)."
+    - "Capture shield uses net SCORE instead of QC's (CAPS-PICKUPS+RETURNS+FCKILLS) composite and has no physical push entity / shielded centerprints; several score-cvar fallbacks differ from the stock samual cfg (cvar overrides when the cfg loads)."
 features:
   - id: ctf.flag.spawn_setup
     name: "Flag entity spawn + model/skin/bbox setup"
@@ -42,7 +42,7 @@ features:
     verification:
       - { kind: code, ref: "Ctf.cs:SpawnFlag + GameWorld objective sink", result: pass }
     confidence: high
-    notes: "Flag is networked as a real entity with model+skin, spawned via the BSP item_flag_team* lump bridged to ctf.SpawnFlag/SpawnNeutralFlag in GameWorld. Wave 2 added drop toss physics but did not animate the base-resting model."
+    notes: "Flag is networked as a real entity with model+skin, spawned via the BSP item_flag_team* lump bridged to ctf.SpawnFlag/SpawnNeutralFlag in GameWorld. Drop toss physics added; base-resting model still not animated. Unchanged by Wave 5."
 
   - id: ctf.flag.touch_dispatch
     name: "On-touch state dispatch (pickup/capture/return)"
@@ -69,7 +69,7 @@ features:
     verification:
       - { kind: code, ref: "flag entity is Solid.Trigger; Touch fired by TriggerTouch/FlyMove on the live server step", result: pass }
     confidence: high
-    notes: "Branches FLAG_BASE/DROPPED/PASSING faithfully incl. the one-flag (neutral) variant and reverse-capture base. Unchanged by Wave 2."
+    notes: "Branches FLAG_BASE/DROPPED/PASSING faithfully incl. the one-flag (neutral) variant and reverse-capture base. Unchanged by Wave 5."
 
   - id: ctf.flag.pickup
     name: "Flag pickup (base + dropped)"
@@ -80,9 +80,9 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:Pickup"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:DroppedPickupScore"
     constants:
-      - { name: "g_ctf_score_pickup_base", base: "1 (samual)", port: "cvar; fallback 0", match: false }
-      - { name: "g_ctf_score_pickup_dropped_early", base: "30 (samual)", port: "cvar; fallback 0", match: false }
-      - { name: "g_ctf_score_pickup_dropped_late", base: "12 (samual)", port: "cvar; fallback 0", match: false }
+      - { name: "g_ctf_score_pickup_base", base: "1 (samual cfg)", port: "cvar; fallback 0", match: false }
+      - { name: "g_ctf_score_pickup_dropped_early", base: "30 (samual cfg)", port: "cvar; fallback 0", match: false }
+      - { name: "g_ctf_score_pickup_dropped_late", base: "12 (samual cfg)", port: "cvar; fallback 0", match: false }
       - { name: "FLAG_CARRY_OFFSET", base: "-16 0 8", port: "-16 0 8", match: true }
     status:
       logic: faithful
@@ -94,12 +94,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Fallback dropped early/late + pickup_base constants are 0 (Base samual defaults 1/30/12) — wrong only if the cfg is not loaded; the interpolation math itself (floor(early*frac + late*(1-frac) + 0.5) over remaining auto-return time) is now ported."
+      - "Fallback dropped early/late + pickup_base constants are 0 (Base samual defaults 1/30/12) — wrong only if the cfg is not loaded; the interpolation math itself (floor(early*frac + late*(1-frac) + 0.5) over remaining auto-return time) is ported."
       - "No nade pickup bonus; no g_ctf_flag_stay phantom-flag clone."
     verification:
       - { kind: code, ref: "Ctf.cs:Pickup -> DroppedPickupScore (interpolated remaining return time)", result: pass }
     confidence: high
-    notes: "WAVE-2 FIX: the dropped-pickup interpolated score (pickup_dropped_early/late scaled by remaining auto-return time, QC floor(x+0.5)) is now ported, and pickup_base now also adds team SCORE (AddTeamScore). PICKUP_BASE sets PickupTime; global flag_taken voice + INFO_CTF_PICKUP + centerprint present."
+    notes: "The dropped-pickup interpolated score (pickup_dropped_early/late scaled by remaining auto-return time, QC floor(x+0.5)) is ported, and pickup_base adds team SCORE (AddTeamScore). PICKUP_BASE sets PickupTime; global flag_taken voice + INFO_CTF_PICKUP + centerprint present. Unchanged by Wave 5."
 
   - id: ctf.flag.capture
     name: "Flag capture + caps/score/captime"
@@ -109,9 +109,9 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:Capture"
     constants:
-      - { name: "g_ctf_score_capture (team SCORE)", base: "20 (samual)", port: "cvar; fallback 1", match: false }
+      - { name: "g_ctf_score_capture (team SCORE)", base: "20 (samual cfg)", port: "cvar; fallback 1", match: false }
       - { name: "CTF_CAPS per capture", base: "+1", port: "+1", match: true }
-      - { name: "g_ctf_score_capture_assist", base: "10 (samual)", port: "cvar; fallback 0", match: false }
+      - { name: "g_ctf_score_capture_assist", base: "10 (samual cfg)", port: "cvar; fallback 0", match: false }
     status:
       logic: faithful
       values: partial
@@ -129,7 +129,7 @@ features:
     verification:
       - { kind: code, ref: "Ctf.cs:Capture (assist to carried.Dropper) + UpdateLeaderAndCheckLimit", result: pass }
     confidence: high
-    notes: "WAVE-2 FIX: capture-assist score to the previous dropper (carried.Dropper, the flag's last ctf_dropper) is now awarded (g_ctf_score_capture_assist, both player + team SCORE). Caps drive the team primary; CTF_CAPTIME best-time recorded; global capture voice + INFO_CTF_CAPTURE + center present."
+    notes: "Capture-assist score to the previous dropper (carried.Dropper, the flag's last ctf_dropper) is awarded (g_ctf_score_capture_assist, both player + team SCORE). Caps drive the team primary; CTF_CAPTIME best-time recorded; global capture voice + INFO_CTF_CAPTURE + center present. Unchanged by Wave 5."
 
   - id: ctf.flag.return
     name: "Flag return (player + auto/timeout)"
@@ -141,8 +141,8 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:ReturnFlag"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:AutoReturnFlag"
     constants:
-      - { name: "g_ctf_score_return", base: "10 (samual)", port: "cvar; fallback 5", match: false }
-      - { name: "g_ctf_score_penalty_returned", base: "1 (samual)", port: "cvar; fallback 0", match: false }
+      - { name: "g_ctf_score_return", base: "10 (samual cfg)", port: "cvar; fallback 5", match: false }
+      - { name: "g_ctf_score_penalty_returned", base: "1 (samual cfg)", port: "cvar; fallback 0", match: false }
       - { name: "g_ctf_flag_return_time", base: "30 s", port: "cvar; fallback 30", match: true }
     status:
       logic: partial
@@ -159,7 +159,7 @@ features:
     verification:
       - { kind: code, ref: "Ctf.cs:ReturnFlag (team CTF_RETURN_<team> Info + Center) / AutoReturnFlag (CTF_FLAGRETURN_TIMEOUT_<team>)", result: pass }
     confidence: high
-    notes: "WAVE-2 FIX: the hardcoded CTF_FLAGRETURN_TIMEOUT_NEUTRAL is gone. Player return now sends team-colored CTF_RETURN_<team> (Info kill-feed + the returner's Center) and timeout auto-return sends CTF_FLAGRETURN_TIMEOUT_<team>; all per-team notif keys are registered in NotificationsList.cs. Return SCORE + RETURNS column + team SCORE penalty still applied."
+    notes: "Player return sends team-colored CTF_RETURN_<team> (Info kill-feed + the returner's Center) and timeout auto-return sends CTF_FLAGRETURN_TIMEOUT_<team>; all per-team notif keys are registered in NotificationsList.cs. Return SCORE + RETURNS column + team SCORE penalty applied. Unchanged by Wave 5."
 
   - id: ctf.flag.drop_on_death
     name: "Carrier death drops the flag"
@@ -172,7 +172,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:OnDeath"
       - "src/XonoticGodot.Engine/Simulation/MoveTypePhysics.cs:PhysicsToss"
     constants:
-      - { name: "g_ctf_score_penalty_drop", base: "1 (samual)", port: "cvar; fallback 0", match: false }
+      - { name: "g_ctf_score_penalty_drop", base: "1 (samual cfg)", port: "cvar; fallback 0", match: false }
       - { name: "FLAG_DROP_OFFSET", base: "0 0 32", port: "0 0 32", match: true }
       - { name: "g_ctf_drop_velocity_up / _side", base: "200 / 100", port: "cvar; fallback 200 / 100", match: true }
     status:
@@ -187,9 +187,9 @@ features:
     gaps:
       - "Drop penalty fallback 0 vs Base samual 1 (cfg overrides); takedamage-return arming (ctf_flagdamaged) not modeled."
     verification:
-      - { kind: code, ref: "Ctf.cs:OnDeath -> DropFlag (toss velocity = carrier.Velocity + crandom side + up), MoveType.Toss integrated by MoveTypePhysics.RunEntity (SimulationLoop:243)", result: pass }
+      - { kind: code, ref: "Ctf.cs:OnDeath -> DropFlag (toss velocity = carrier.Velocity + crandom side + up), MoveType.Toss integrated by MoveTypePhysics.RunEntity", result: pass }
     confidence: high
-    notes: "WAVE-2 FIX: the dropped flag now gets a real toss velocity (g_ctf_drop_velocity_up/side + crandom() sideways kick + the carrier's velocity) and MoveType.Toss is genuinely integrated by the new MoveTypePhysics toss integrator, so it tumbles away and settles to the floor. Death drop is still the ONLY live drop path (no +use throw/pass wired, no disconnect drop). Drop voice + INFO_CTF_LOST present."
+    notes: "The dropped flag gets a real toss velocity (g_ctf_drop_velocity_up/side + crandom() sideways kick + the carrier's velocity) and MoveType.Toss is integrated by MoveTypePhysics, so it tumbles away and settles. Death drop is NO LONGER the only live drop path — Wave 5 wired +use throw/pass (see ctf.flag.throw/pass) and disconnect/observe drop (see ctf.flag.remove_player). Drop voice + INFO_CTF_LOST present."
 
   - id: ctf.flag.fckill_score
     name: "Flag-carrier-kill score + auto-helpme"
@@ -200,7 +200,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:OnDeath"
     constants:
-      - { name: "g_ctf_score_kill", base: "5 (samual)", port: "cvar; fallback 20", match: false }
+      - { name: "g_ctf_score_kill", base: "5 (samual cfg)", port: "cvar; fallback 20", match: false }
       - { name: "g_ctf_flagcarrier_*damagefactor/forcefactor", base: "1", port: "not ported", match: false }
       - { name: "g_ctf_flagcarrier_auto_helpme_damage/_time", base: "100 / 2", port: "not ported", match: false }
     status:
@@ -218,7 +218,7 @@ features:
     verification:
       - { kind: code, ref: "Ctf.cs:OnDeath FC-kill branch", result: pass }
     confidence: high
-    notes: "Unchanged by Wave 2. FC-kill awards CTF_FCKILLS + score (teamkill penalized); the damage-factor and helpme hooks remain unported."
+    notes: "FC-kill awards CTF_FCKILLS + score (teamkill penalized); the damage-factor and helpme hooks remain unported. Unchanged by Wave 5."
 
   - id: ctf.flag.throw
     name: "Throw the flag (+use, g_ctf_throw)"
@@ -229,6 +229,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:ThrowFlag"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:HandleUseKey"
+      - "game/net/ServerNet.cs:UseKeyEdge"
     constants:
       - { name: "g_ctf_throw_velocity_forward / _up", base: "500 / 200", port: "cvar; fallback 500 / 200", match: true }
       - { name: "g_ctf_throw_strengthmultiplier", base: "2", port: "2", match: true }
@@ -240,15 +241,15 @@ features:
       timing: faithful
       presentation: na
       audio: missing
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "HandleUseKey(player, roster) now dispatches a carrier's +use to ThrowFlag, but NOTHING calls HandleUseKey: the server's +use rising edge (ServerNet ProvideInput, the QC PlayerUseKey seam) only calls VehicleBoarding.UseKey. A player still cannot throw the flag in a live match."
+      - "Throw emits no sound (Base plays a flag toss/announce cue on DROP_THROW); ThrowFlag -> ThrowDropCommon never calls FlagAnnounceSound."
     verification:
-      - { kind: code, ref: "grep: HandleUseKey has no caller in src/game (ServerNet +use edge -> VehicleBoarding.UseKey only); ThrowFlag only called from HandleUseKey/tests", result: fail }
+      - { kind: code, ref: "ServerNet.UseKeyEdge (called from both +use rising-edge sites, :1260 legacy + :1366 per-frame) -> ctf.HandleUseKey(p, roster) -> CarriedBy(p)!=null -> ThrowFlag. Logic+punish ramp unit-tested in CtfPassThrowTests.", result: pass }
     confidence: high
-    notes: "Logic incl. the punish ramp and Strength multiplier is faithful and unit-tested (CtfPassThrowTests). Wave 2 ADDED the HandleUseKey wrapper; Wave 5 did NOT wire it — re-verified at HEAD: both +use rising-edge sites (game/net/ServerNet.cs:1257 and :1363) still call ONLY VehicleBoarding.UseKey, and grep shows HandleUseKey has zero callers. Throw/pass-request seam is still dead on the live +use path."
+    notes: "WAVE-5 FIX (dead->live): the +use rising-edge dispatcher ServerNet.UseKeyEdge now calls VehicleBoarding.UseKey THEN ctf.HandleUseKey(p, _world.Clients.Players), which routes a carrier's +use to ThrowFlag (g_ctf_throw). A player can now throw the flag in a live match. Logic incl. the punish ramp and Strength multiplier is faithful and unit-tested. Only the throw SOUND is still missing."
 
   - id: ctf.flag.pass
     name: "Pass the flag to a teammate (g_ctf_pass)"
@@ -264,6 +265,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:DrivePass"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:RetrieveFlag"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:HandleUseKey"
+      - "game/net/ServerNet.cs:UseKeyEdge"
     constants:
       - { name: "g_ctf_pass_velocity", base: "750", port: "750", match: true }
       - { name: "g_ctf_pass_radius", base: "500", port: "500", match: true }
@@ -277,16 +279,16 @@ features:
       timing: faithful
       presentation: na
       audio: missing
-      liveness: dead
+      liveness: live
     intended_divergence: true
-    divergence_rationale: "A viable pass completes as an instant transfer to the receiver (the faithful OUTCOME) once the give-up conditions pass; the flight velocity is still computed for any integrating host. The arc-height line-of-sight trace + directional cone are a presentation/aim refinement deferred. NOTE: a real MoveType.Fly/Toss integrator now exists (MoveTypePhysics), so the headless-no-integrator part of the original rationale is obsolete — the instant transfer is now a deliberate simplification, not a forced one."
+    divergence_rationale: "A viable pass completes as an instant transfer to the receiver (the faithful OUTCOME) once the give-up conditions pass; the flight velocity is still computed for the integrating host. The arc-height line-of-sight trace + directional cone are a presentation/aim refinement deferred. A real MoveType.Fly/Toss integrator exists (MoveTypePhysics), so the instant transfer is a deliberate simplification, not a forced one."
     gaps:
-      - "HandleUseKey routes an empty-handed teammate's +use to RequestPass, but NOTHING calls HandleUseKey (+use edge -> VehicleBoarding.UseKey only) — passing is still unreachable in a live match."
       - "Pass does not physically arc (no arc-height trace, no pass_directional cone); it transfers instantly when viable."
+      - "Pass emits no sound (Base plays a pass cue); ThrowDropCommon never calls FlagAnnounceSound on the pass path."
     verification:
-      - { kind: code, ref: "grep: PassFlag/RequestPass only called within Ctf.cs (incl. HandleUseKey)/tests; HandleUseKey unwired; DrivePass via Tick", result: fail }
+      - { kind: code, ref: "ServerNet.UseKeyEdge -> ctf.HandleUseKey -> empty-handed teammate -> RequestPass (nearest in-radius carrier) -> PassFlag; DrivePass driven from Tick (GameWorld:2162). Give-up + transfer unit-tested in CtfPassThrowTests.", result: pass }
     confidence: high
-    notes: "Give-up conditions (target gone/dead/carrying, out of radius, timelimit) honored exactly. Wave 2 added the HandleUseKey -> RequestPass route but left it unwired; the instant-transfer + missing input are the deltas."
+    notes: "WAVE-5 FIX (dead->live): HandleUseKey is now wired onto the +use edge (ServerNet.UseKeyEdge). An empty-handed teammate's +use routes to RequestPass -> PassFlag; a carrier's +use throws instead. Give-up conditions (target gone/dead/carrying, out of radius, timelimit) honored exactly; DrivePass runs each tick. The instant-transfer (no arc) and missing pass sound are the remaining deltas."
 
   - id: ctf.flag.remove_player
     name: "Carrier disconnect/observe/portal/vehicle drops flag"
@@ -298,6 +300,9 @@ features:
       - "common/gametypes/gametype/ctf/sv_ctf.qc:MUTATOR_HOOKFUNCTION(ctf, PortalTeleport)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:RemovePlayer"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:OnPlayerRemoved"
+      - "src/XonoticGodot.Server/ClientManager.cs:473"
+      - "src/XonoticGodot.Server/ClientManager.cs:682"
     constants: []
     status:
       logic: faithful
@@ -305,16 +310,15 @@ features:
       timing: na
       presentation: na
       audio: na
-      liveness: dead
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Ctf.RemovePlayer (drop the flag + clear pass_sender/pass_target/dropper back-links) is now ported and faithful, but has NO live caller: ClientManager.ClientDisconnect calls MatchController.RemovePlayer (which only does `_players.Remove(p)` — no gametype dispatch, GameType has no RemovePlayer virtual). No MakePlayerObserver/portal/vehicle hook exists either."
-      - "A carrier who disconnects, goes spectator, or enters/exits a vehicle/portal still keeps the flag logically held (FlagState.Carrier dangles), which can leave the flag permanently unavailable."
+      - "Portal/vehicle carry handling (g_ctf_portalteleport, vehicle flag offset/hide) is still absent — only the disconnect + MakePlayerObserver leave-play hooks are wired. A carrier who enters/exits a vehicle or portal does not drop via this path."
     verification:
-      - { kind: code, ref: "grep: only MatchController.RemovePlayer (_players.Remove) is called on disconnect; Ctf.RemovePlayer is never dispatched; GameType base has no RemovePlayer virtual", result: fail }
+      - { kind: code, ref: "GameType.OnPlayerRemoved virtual is overridden by Ctf.OnPlayerRemoved -> RemovePlayer; called from ClientManager.MakePlayerObserver:473 AND ClientManager.ClientDisconnect:682 (before the roster removal so the drop sees the player).", result: pass }
     confidence: high
-    notes: "WAVE-2 PARTIAL, re-verified at HEAD: the QC ctf_RemovePlayer logic EXISTS as Ctf.RemovePlayer but is still dead. Wave 5 reworked ClientManager (forced-team + LMS join gates) and GameWorld (gametype-singleton reset) but added NO CTF disconnect dispatch — grep shows the only .RemovePlayer callers are ClientManager.cs:651 (_match.RemovePlayer = roster list only) and GameWorld.cs:949 (LMS). Portal/vehicle carry handling (g_ctf_portalteleport, vehicle flag offset/hide) is also absent."
+    notes: "WAVE-5 FIX (dead->live): the QC ctf_RemovePlayer logic (Ctf.RemovePlayer: drop the flag + clear pass_sender/pass_target/dropper back-links) is now dispatched. Wave 5 added a GameType.OnPlayerRemoved virtual (GameplayBases.cs:270), Ctf overrides it (Ctf.cs:1330), and ClientManager calls it on BOTH disconnect (:682) and demote-to-observer (:473). A leaving/spectating carrier now drops the flag. Liveness is `partial` only because the portal/vehicle leave hooks are not wired."
 
   - id: ctf.flag.think_dropped
     name: "Dropped-flag think (landtime, auto-return timer, float, capture-radius)"
@@ -343,9 +347,9 @@ features:
       - "Float-in-water buoyancy and return-when-near-base-dropped radius not implemented."
       - "Flag-damage / return-when-unreachable (lava/slime/needkill) health bleed not implemented."
     verification:
-      - { kind: code, ref: "Ctf.cs:FlagThinkEntity + Tick (auto-return timer + carrier follow + pass drive + stalemate poll)", result: pass }
+      - { kind: code, ref: "Ctf.cs:FlagThinkEntity + Tick (auto-return timer + carrier follow + pass drive + stalemate poll), Tick driven from GameWorld:2162", result: pass }
     confidence: high
-    notes: "Landtime tracked; the 30s auto-return timer and per-tick carrier-follow reposition are live. (The dropped flag now also moves under MoveType.Toss physics; see ctf.flag.drop_on_death.)"
+    notes: "Landtime tracked; the 30s auto-return timer and per-tick carrier-follow reposition are live. The dropped flag moves under MoveType.Toss physics (see ctf.flag.drop_on_death). Unchanged by Wave 5."
 
   - id: ctf.capture_shield
     name: "Capture shield (block worst players from the flag)"
@@ -376,9 +380,9 @@ features:
       - "Shield uses net SCORE (ScoreFrags) instead of QC's (CAPS-PICKUPS+RETURNS+FCKILLS) composite — different shield triggering."
       - "No physical ctf_captureshield push entity (no shield model, no force push, no shielded centerprints)."
     verification:
-      - { kind: code, ref: "Ctf.cs:CaptureShieldStatus/UpdateCaptureShields (called each tick from GameWorld:1723)", result: pass }
+      - { kind: code, ref: "Ctf.cs:CaptureShieldStatus/UpdateCaptureShields (called each tick from GameWorld:2162)", result: pass }
     confidence: medium
-    notes: "Unchanged by Wave 2. Status is computed and gates pickups (toucher.GtCaptureShielded), and the shield bit now reaches the HUD via PackCtfStatus CTF_SHIELDED; with Base default ratio 0 the whole feature is inert by default; the push entity + notifications are absent."
+    notes: "Status is computed and gates pickups (toucher.GtCaptureShielded), and the shield bit reaches the HUD via PackCtfStatus CTF_SHIELDED; with Base default ratio 0 the whole feature is inert by default; the push entity + notifications are absent. Unchanged by Wave 5."
 
   - id: ctf.stalemate
     name: "Stalemate carrier reveal"
@@ -407,9 +411,9 @@ features:
       - "The stalemate state is detected but has NO visible effect: PackCtfStatus declares CtfStalemate(8192) but never ORs it from ctf.Stalemate, so the CTF_STALEMATE OBJECTIVE_STATUS bit is never set — the client DrawCtf stalemate overlay (which IS ready to read bit 8192) never lights up."
       - "The enemy-FC waypoint reveal (WP_FlagCarrierEnemy*) and the CENTER_CTF_STALEMATE_CARRIER/OTHER center prints are not produced."
     verification:
-      - { kind: code, ref: "Ctf.cs:CheckStalemate (set/clear ladder matches sv_ctf.qc:903) is called from Tick at WPFE_THINKRATE; but GametypeStatusBlock.PackCtfStatus never sets the bit from ctf.Stalemate (CtfStalemate const unused)", result: partial }
+      - { kind: code, ref: "Ctf.cs:CheckStalemate (set/clear ladder matches sv_ctf.qc:903) is called from Tick at WPFE_THINKRATE; but GametypeStatusBlock.PackCtfStatus (line 184) never sets the bit from ctf.Stalemate (CtfStalemate const unused). Wave 5 did not touch this file.", result: partial }
     confidence: high
-    notes: "WAVE-2 PARTIAL, re-verified at HEAD: stalemate DETECTION is live + bit-faithful (instant in one-flag, per-flag g_ctf_stalemate_time, the 1/2 endcondition ladder), but the presentation half is still missing. GametypeStatusBlock.cs:184 still only RESERVES the CtfStalemate(8192) bit (`// the bit is reserved here`) and never ORs it from ctf.Stalemate — Wave 5 did not touch this file. Enemy-FC reveal + centerprints also absent — the authority half is still dead-ended at the wire."
+    notes: "STILL OPEN at HEAD: stalemate DETECTION is live + bit-faithful (instant in one-flag, per-flag g_ctf_stalemate_time, the 1/2 endcondition ladder), but the presentation half remains missing. GametypeStatusBlock.cs:184 still only RESERVES the CtfStalemate(8192) bit (`the bit is reserved here`) and never ORs it from ctf.Stalemate — Wave 5 wired throw/pass/remove_player but did NOT close this. Enemy-FC reveal + centerprints (NotificationsList registers CTF_STALEMATE_CARRIER/OTHER but nothing fires them) also absent — the authority half is still dead-ended at the wire."
 
   - id: ctf.hud.modicons
     name: "Flag-status mod-icon HUD (OBJECTIVE_STATUS)"
@@ -442,7 +446,7 @@ features:
     verification:
       - { kind: code, ref: "GametypeStatusBlock.Capture has case Ctf -> PackCtfStatus (faithful 2-bit-per-team pack); ServerNet:1536 calls Capture per peer each snapshot; NetGame:2898 selects ModIconsMode.Ctf and feeds ObjectiveStatus; DrawCtf decodes it", result: pass }
     confidence: high
-    notes: "WAVE-1/2 FIX (dead->live), re-verified at HEAD: the server packs the QC STAT(OBJECTIVE_STATUS) CTF flag-status (PackCtfStatus, recipient-relative taken/carrying), networks it per peer, and the client selects ModIconsMode.Ctf and renders DrawCtf. Flag-status icons (taken/lost/carrying/shielded, carrying blink, expand) appear in a CTF match. Only the stalemate overlay feed is still missing (GametypeStatusBlock.cs:184 reserves CtfStalemate but never sets it; unchanged by Wave 5)."
+    notes: "Flag-status icons (taken/lost/carrying/shielded, carrying blink, expand) appear in a CTF match. Note: PassFlag now sets FlagStatus.Passing and PackCtfStatus treats Passing the same as Carried (so a passed flag still shows taken/carrying correctly). Only the stalemate overlay feed is still missing (GametypeStatusBlock.cs:184 reserves CtfStalemate but never sets it; unchanged by Wave 5)."
 
   - id: ctf.hud.waypoints
     name: "Flag waypoint sprites (base / dropped / carrier)"
@@ -470,7 +474,7 @@ features:
     verification:
       - { kind: code, ref: "Ctf.cs:CollectWaypoints -> ServerNet.cs:924 networks the list -> client WaypointSpriteLayer.cs renders (Draw_WaypointSprite port, incl. distance/blink fade)", result: pass }
     confidence: high
-    notes: "Unchanged by Wave 2. Base/dropped/carrier-enemy sprites are live and the generic max-distance fade IS done by WaypointSpriteLayer; the CTF-specific sprite variants (help-me, return, enemy-FC reveal) remain missing — the stalemate reveal stays absent (see ctf.stalemate)."
+    notes: "Base/dropped/carrier-enemy sprites are live and the generic max-distance fade IS done by WaypointSpriteLayer; the CTF-specific sprite variants (help-me, return, enemy-FC reveal) remain missing — the stalemate reveal stays absent (see ctf.stalemate). Unchanged by Wave 5."
 
   - id: ctf.scoring_rules
     name: "Scoreboard columns + team caps-primary ranking"
@@ -497,7 +501,7 @@ features:
     verification:
       - { kind: code, ref: "Ctf.cs:DeclareScoreRules / GameWorld TeamScoreSource = GetTeamCaps", result: pass }
     confidence: high
-    notes: "Unchanged by Wave 2. Team score source is capture count; tie reports caps-tie for overtime."
+    notes: "Team score source is capture count; tie reports caps-tie for overtime. Unchanged by Wave 5."
 
   - id: ctf.win_condition
     name: "Capture limit + lead limit win"
@@ -525,9 +529,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "Ctf.cs:UpdateLeaderAndCheckLimit (caps >= caplimit or lead >= leadlimit), called from GameWorld:1723", result: pass }
+      - { kind: code, ref: "Ctf.cs:UpdateLeaderAndCheckLimit (caps >= caplimit or lead >= leadlimit), called from GameWorld:2162", result: pass }
     confidence: high
-    notes: "Unchanged by Wave 2. Leader/second from caps; MatchEnded read by GameWorld win check."
+    notes: "Leader/second from caps; MatchEnded read by GameWorld win check. Unchanged by Wave 5."
 
   - id: ctf.oneflag
     name: "One-flag CTF (neutral carriable flag)"
@@ -555,7 +559,7 @@ features:
     verification:
       - { kind: code, ref: "Ctf.cs:FlagTouch OneFlag switch + DelayedInit OneFlag detection", result: pass }
     confidence: medium
-    notes: "Unchanged by Wave 2. Detected at init via the neutral flag; capture at own base (default) or enemy base (reverse). g_ctf_reverse (two-flag reverse) is NOT modeled. (PackCtfStatus also sets CTF_FLAG_NEUTRAL on the HUD when a neutral flag exists.)"
+    notes: "Detected at init via the neutral flag; capture at own base (default) or enemy base (reverse). g_ctf_reverse (two-flag reverse) is NOT modeled. PackCtfStatus also sets CTF_FLAG_NEUTRAL on the HUD when a neutral flag exists. Unchanged by Wave 5."
 
   - id: ctf.bot_role
     name: "Bot CTF role (grab/cap/return/escort)"
@@ -582,4 +586,4 @@ features:
     verification:
       - { kind: trace, ref: "BotRoles.ChooseRole(\"ctf\") => BotObjectiveRoles.RoleCtf; wired at the live bot spawn (BotPopulation/BotController); Role(this,_rater) invoked per strategy frame (BotBrain)", result: pass }
     confidence: medium
-    notes: "Unchanged by Wave 2 in behaviour. RoleCtf is the live CTF bot role — selected by gametype NetName at bot spawn and invoked by the strategy-token brain each frame; logic remains a faithful collapse of the six QC roles."
+    notes: "RoleCtf is the live CTF bot role — selected by gametype NetName at bot spawn and invoked by the strategy-token brain each frame; logic remains a faithful collapse of the six QC roles. Unchanged by Wave 5."

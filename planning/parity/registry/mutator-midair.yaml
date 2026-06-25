@@ -5,8 +5,8 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 7
   worst_gaps:
-    - "Bot bunnyhop-disable is now wired (PlayerSpawn hook zeroes the bot's skill, propagated to Nav.Skill by the per-frame BotPopulation resync, which trips the bunnyhop gate), but it zeroes the bot's WHOLE skill instead of a separate move-skill: Base gates on `skill + bot_moveskill >= offset` and only zeroes bot_moveskill, so a high-skill Base bot can still bhop; the port's `Skill=0` is both more aggressive (always under the offset) AND collaterally degrades aim/reaction/dodge/reload (all Skill-gated). Behavioral, not just cosmetic."
-    - "BuildMutatorsString/BuildMutatorsPrettyString (`:midair` / `, Midair`) are STILL not produced: GameWorld.cs:829 still calls GameLog.Init with NO mutators arg (defaults null), so the `:gameinfo:mutators:LIST` line is always empty and an active midair is invisible in match metadata. Unchanged by Waves 1/2/5."
+    - "Bot bunnyhop-disable is wired (PlayerSpawn hook zeroes the bot's skill, propagated to Nav.Skill by the per-frame BotPopulation resync, which trips the bunnyhop gate), but it zeroes the bot's WHOLE skill instead of a separate move-skill: Base gates on `skill + bot_moveskill >= offset` and only zeroes bot_moveskill, so a high-skill Base bot can still bhop; the port's `Skill=0` is both more aggressive (always under the offset) AND collaterally degrades aim/reaction/dodge/reload (all Skill-gated). Behavioral, not just cosmetic. Still open after Wave 5."
+    - "BuildMutatorsPrettyString (`, Midair`) override exists but is NEVER consumed: MutatorActivation.BuildMutatorsPrettyString has no live caller (Base consumes it at server/client.qc:1107 for the per-client active-mutators display string). The machine string (`:midair`) was FIXED in Wave 5 — it now flows MutatorActivation.BuildMutatorsString -> GameWorld.cs:867 -> GameLog.Init (gated on sv_eventlog, default 0 in both Base and port, so faithful liveness) — but the pretty/display half is still missing a consumer."
 features:
   - id: mutator-midair.enable.predicate
     name: "g_midair master enable predicate"
@@ -145,7 +145,7 @@ features:
       - "server/bot/default/havocbot/havocbot.qc:1315 (skill + bot_moveskill >= bot_ai_bunnyhop_skilloffset)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/MidairMutator.cs:104 (OnPlayerSpawn -> bot.BotSkill = 0)"
-      - "src/XonoticGodot.Server/ClientManager.cs:619 (MutatorHooks.PlayerSpawn.Call)"
+      - "src/XonoticGodot.Server/ClientManager.cs:649 (MutatorHooks.PlayerSpawn.Call)"
       - "src/XonoticGodot.Server/Bot/BotPopulation.cs:148-152 (per-frame resync BotSkill -> Nav.Skill)"
       - "src/XonoticGodot.Server/Bot/BotNavigation.cs:336-337 (bunnyhop skill gate vs bot_ai_bunnyhop_skilloffset=7)"
     constants:
@@ -165,7 +165,7 @@ features:
       - "Collateral over-reach: BotBrain keys aim error, reaction interval, dodge cadence, reload-on-purpose (Skill<2/<5 gates) and roles off the same Skill, so zeroing it makes midair bots not just ground-hugging-free but markedly dumber than Base's midair bots (whose aim/reflexes are unchanged). A faithful port would add a separate move-skill term to the gate rather than zero the whole skill."
       - "The zero persists for the whole match: every respawn re-zeroes BotSkill, and the per-frame BotPopulation resync (148-152) keeps Nav.Skill at 0; a console `skill N` change would overwrite it back up (BotPopulation:146) until the next respawn re-zeroes — a minor extra divergence from Base, which re-applies bot_moveskill=0 on every spawn independent of skill."
     verification:
-      - { kind: code, ref: "OnPlayerSpawn (MidairMutator.cs:104-108) sets bot.BotSkill=0; live via ClientManager.cs:619; BotPopulation.cs:150-151 copies BotSkill->Nav.Skill every think; BotNavigation.cs:337 gates bhop on Nav.Skill >= 7. Base gate at havocbot.qc:1315 adds bot_moveskill term, absent in port.", result: pass }
+      - { kind: code, ref: "OnPlayerSpawn (MidairMutator.cs:104-108) sets bot.BotSkill=0; live via ClientManager.cs:649; BotPopulation.cs:151-152 copies BotSkill->Skill/Nav.Skill every think; BotNavigation.cs:337 gates bhop on Nav.Skill >= 7. Base gate at havocbot.qc:1315 adds bot_moveskill term, absent in port.", result: pass }
     confidence: high
     notes: "FIXED to LIVE in Wave-2 (was missing/na): the PlayerSpawn hook is now subscribed, fired on the real spawn path, and the per-frame resync genuinely propagates BotSkill=0 into the bunnyhop gate so the bot stops bunnyhopping as intended. But it is logic/values-partial, not faithful: the port lacks a separate bot_moveskill field and instead nukes the whole skill, which (a) disables bhop more aggressively than Base's skill+moveskill gate and (b) collaterally degrades aim/reaction/dodge/reload. Net effect (bots stay airborne/huntable) is achieved; fidelity is not."
 
@@ -175,23 +175,31 @@ features:
     base_refs:
       - "common/mutators/mutator/midair/sv_midair.qc:48-51 (MUTATOR_HOOKFUNCTION(midair, BuildMutatorsString): strcat(..., \":midair\"))"
       - "common/mutators/mutator/midair/sv_midair.qc:53-56 (MUTATOR_HOOKFUNCTION(midair, BuildMutatorsPrettyString): strcat(..., \", Midair\"))"
-    port_refs: []
+      - "server/gamelog.qc:50 (MUTATOR_CALLHOOK(BuildMutatorsString, \":gameinfo:mutators:LIST\") — machine-string consumer)"
+      - "server/client.qc:1107 (MUTATOR_CALLHOOK(BuildMutatorsPrettyString, \"\") — pretty/display-string consumer)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MidairMutator.cs:112 (BuildMutatorsString override -> s + \":midair\")"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MidairMutator.cs:115 (BuildMutatorsPrettyString override -> s + \", Midair\")"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:88 (BuildMutatorsString aggregator over Added mutators)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:101 (BuildMutatorsPrettyString aggregator — NO live caller)"
+      - "src/XonoticGodot.Server/GameWorld.cs:865-867 (live consumer of the machine string -> GameLog.Init, gated on sv_eventlog)"
     constants:
-      - { name: "mutators-string token", base: ":midair", port: "none (GameLog mutators list always empty)", match: false }
-      - { name: "pretty-string token", base: ", Midair", port: "none (no pretty-string consumer)", match: false }
+      - { name: "mutators-string token", base: ":midair", port: ":midair (now fed to GameLog.Init via aggregator)", match: true }
+      - { name: "pretty-string token", base: ", Midair", port: ", Midair (override exists; aggregator never called)", match: false }
     status:
-      logic: missing
-      values: missing
+      logic: partial
+      values: partial
       timing: na
       presentation: na
       audio: na
-      liveness: dead
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL OPEN (unchanged by Waves 1/2/5). Base appends `:midair` to the server mutator-id string and `, Midair` to the pretty string (server browser / scoreboard). The port's only analog is GameLog.Init's `:gameinfo:mutators:LIST` line, and its sole caller GameWorld.cs:829 still passes NO mutators argument (defaults null) — so the list is ALWAYS empty for every mutator, midair included."
-      - "There is no BuildMutatorsString/BuildMutatorsPrettyString aggregation in the port: MutatorBase.NetName exists but is never collected into a server-info / scoreboard / browser mutator label. An active midair is invisible in match metadata."
+      - "PARTIALLY FIXED in Wave 5. Machine string is now LIVE+faithful: MidairMutator.BuildMutatorsString returns `:midair`, MutatorActivation.BuildMutatorsString aggregates all Added mutators, and GameWorld.cs:865-867 feeds the tokens into GameLog.Init's `:gameinfo:mutators:LIST` line. This mirrors Base server/gamelog.qc:50 exactly, including the sv_eventlog gate (default 0 in both Base and port — so the line is only emitted when event logging is enabled, faithful)."
+      - "STILL OPEN — pretty/display string: BuildMutatorsPrettyString override (`, Midair`) and its MutatorActivation aggregator exist, but the aggregator has NO live caller anywhere in the port. Base consumes it at server/client.qc:1107 to build the per-client active-mutators display string (scoreboard / serverinfo). The port has no equivalent consumer, so the `, Midair` label is never produced — an active midair is still invisible in the human-readable mutator display."
     verification:
-      - { kind: code, ref: "GameLog.Init (GameLog.cs:114) takes mutators=null; GameWorld.cs:829 GameLog.Init(GameType?.NetName ?? DefaultGameType, MapName) — no mutators passed; no mutator-string aggregator found", result: fail }
+      - { kind: code, ref: "MutatorActivation.BuildMutatorsString(\"\") called at GameWorld.cs:865; split on ':' and passed to GameLog.Init at :867 (gated by sv_eventlog). MidairMutator.cs:112 returns `:midair`. Machine-string path LIVE.", result: pass }
+      - { kind: code, ref: "grep over src/ for callers of MutatorActivation.BuildMutatorsPrettyString / BuildMutatorsPrettyString( — only the aggregator + the per-mutator overrides; no consumer. Pretty-string path DEAD.", result: fail }
     confidence: high
-    notes: "Cosmetic/metadata only (no gameplay effect). Not touched by Waves 1/2/5; GameLog plumbing for a mutator list exists but is still never fed."
+    notes: "Cosmetic/metadata only (no gameplay effect). Wave 5 wired the machine-string half (`:midair` into the gamelog mutators list) live and faithful; the pretty-string half (`, Midair` display label) remains dead for lack of a consumer. Split status reflects this: logic/values partial, liveness partial."

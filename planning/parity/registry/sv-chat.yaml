@@ -1,12 +1,11 @@
 unit: sv-chat
 category: server
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"  # re-audited on the claude/parity-port-waves branch after Waves 1-2/5
+last_audited: "2026-06-22"  # re-audited on the claude/parity-port-waves branch after Waves 1-2/5 (voice say-coupling now wired)
 summary:
   feature_count: 13
   worst_gaps:
     - "IGNORE_MAXPLAYERS = 50 in the port vs Base 16 (cmd.qh:11): a player can ignore 50 others before 'list full'; the code comment mislabels 50 as the QC constant."
-    - "VoiceMessage text is never routed through Say: a player's voice/radio message text never appears in chat, isn't flood-throttled, and the flood<0/flood==0 'fake'/abort gating of the voice sound is absent (port plays the sound regardless of chat flood)."
     - "No active_minigame chat branch: a say_team from inside a ported minigame is not routed to co-session participants and emits no :chat_minigame: event log."
     - "%y / %x / %d formatmessage macros fall back to self-location / 'nothing' (no server-side crosshair trace wired into chat); %d uses self-origin not death_origin."
     - "DedicatedPrint is NOT gated on sv_dedicated: Base dedicated_print prints only when autocvar_sv_dedicated, but the port unconditionally echoes every routed chat line (and tells when tellprivacy off) to the host console (GD.Print)."
@@ -338,21 +337,21 @@ features:
       - "src/XonoticGodot.Server/Commands.cs:CmdVoice"
     constants: []
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
-      audio: partial
-      liveness: dead
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "A voice/radio command's optional message text is never run through Say: it does not appear in chat, is not flood-throttled via the chat flood field, and the spectator/flood-derived 'fake' gating of the voice sound (fake = IS_SPEC||IS_OBSERVER||flood<0) is absent."
-      - "Base aborts the voice sound entirely when Say returns flood==0 (the macro `break`s, no _GlobalSound); the port's CmdVoice plays the sound unconditionally regardless of chat flood state."
+    gaps: []
     verification:
-      - { kind: code-read, ref: "globalsound.qh:144-155 (VoiceMessage: int flood = Say(...); fake derivation; flood==0 break) vs Commands.cs:1654-1684 CmdVoice (SoundSystem.GlobalSound only, no Say call)", result: fail }
+      - { kind: code-read, ref: "globalsound.qh:144-155 (VoiceMessage: ownteam=teamradio; int flood = Say(this,ownteam,NULL,msg,true); fake = IS_SPEC||IS_OBSERVER||flood<0; flood==0 break) vs Commands.cs:2032-2053 CmdVoice", result: pass }
+      - { kind: code-read, ref: "Commands.cs:704 Register(\"voice\", CmdVoice) = live client-command path; CmdVoice now calls Chat.Say then derives fake and breaks on flood==0", result: pass }
+      - { kind: code-read, ref: "SoundSystem.cs:281-316 _GlobalSound honors `fake` per-voicetype (TeamRadio fake->emitter-only; LastAttacker fake->skip attacker)", result: pass }
     confidence: high
-    notes: "CmdVoice plays the sound via SoundSystem.GlobalSound (sound routing/recipients itself is live), but the Say-coupling half of the VoiceMessage macro is not ported. The optional 'message' arg in the usage string is parsed-for-help but never delivered as chat. audio: partial because the sound plays but its fake/flood gating is missing."
+    notes: "Wave-5 closed this: CmdVoice (Commands.cs:2032-2053) now routes the optional [<message>] arg through Chat.Say(p, ownteam?1:0, null, msg, true) — so voice/radio text appears in chat, is flood-throttled via the chat flood field, and a spectator say is downgraded — then derives fake (flood<0) and `return`s (no _GlobalSound) on flood==0, matching the Base macro's `break`. ownteam is taken from VoiceType.TeamRadio. The port returns early for dead/observer/spec BEFORE the Say call (Commands.cs:2026-2027), so the macro's IS_SPEC||IS_OBSERVER fake terms are mooted and fake==flood<0 is exactly equivalent on the reachable path. SoundSystem._GlobalSound (the live sound dispatch) honors fake per voicetype. All five dimensions now faithful + live."
 
   - id: sv-chat.delivery.dedicated_print_gating
     name: "dedicated_print gated on sv_dedicated (server-console echo)"

@@ -5,11 +5,11 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 11
   worst_gaps:
-    - "SelectSpecial still has no NADE-family branch: live nade kills (NadeNormalBoom/Ice/Heal/Darkness emit nade/nade_* deathtypes via NadeBlast.RadiusDamage->Combat.Damage) print the generic 'X died' / 'frag' obituary instead of the registered 'blown up by Y's Nade' line, even though the DEATH_*_NADE notification rows exist in the port. Observable whenever g_nades is enabled (mutator default OFF). UNCHANGED by Wave-1/2."
-    - "SelectSpecial still omits the TEAMCHANGE/AUTOTEAMCHANGE self lines: a live auto-team-balance kill (Teamplay.cs:452 KillPlayerForTeamChange emits DeathTypes.AutoTeamChange through Combat.Damage) falls to DEATH_SELF_GENERIC instead of DEATH_SELF_AUTOTEAMCHANGE, and EmitObituary never passes the death_team (f1) arg those rows expect."
-    - "KILL (/kill, LIVE via Commands.cs:1318) still maps to DEATH_SELF_GENERIC not Base's DEATH_SELF_SUICIDE, and MIRRORDAMAGE (LIVE via DamageSystem.cs:296 reflected teamdamage) maps to GENERIC not DEATH_SELF_BETRAYAL — both observable text mismatches, both target notif rows present but unused. Port also still omits Base's CTS /kill obituary suppression."
-    - "HURTTRIGGER mapper-custom message (msg_from_ent -> DEATH_*_VOID_ENT) and DEATH_CUSTOM (deathmessage) are still not wired into EmitObituary/SelectSpecial; mapper-authored obituary strings are ignored (void death always uses the fixed VOID line)."
-    - "SelectSpecial still omits cheat/camp/rot/shooting_star/touchexplode -> all fall to DEATH_SELF_GENERIC/DEATH_MURDER_FRAG (low impact: no live emitter found in the port today; the registered notif rows go unused)."
+    - "SelectSpecial still has no NADE-family branch: live nade kills (NadeNormalBoom/Ice/Heal/Darkness emit nade/nade_* deathtypes via NadeBlast.RadiusDamage->Combat.Damage) print the generic 'X died' / 'frag' obituary instead of the registered 'blown up by Y's Nade' line, even though the DEATH_*_NADE notification rows exist in the port. Observable whenever g_nades is enabled (mutator default OFF). UNCHANGED by Wave-5 (the CAMP branch was added but not nade)."
+    - "SelectSpecial still omits the TEAMCHANGE/AUTOTEAMCHANGE self lines: a live auto-team-balance kill (Teamplay.cs KillPlayerForTeamChange emits DeathTypes.AutoTeamChange through Combat.Damage) falls to DEATH_SELF_GENERIC instead of DEATH_SELF_AUTOTEAMCHANGE, and EmitObituary never passes the death_team (f1) arg those rows expect. UNCHANGED."
+    - "KILL (/kill, LIVE via Commands.cs) still maps to DEATH_SELF_GENERIC not Base's DEATH_SELF_SUICIDE, and MIRRORDAMAGE (LIVE via DamageSystem.cs reflected teamdamage) maps to GENERIC not DEATH_SELF_BETRAYAL — both observable text mismatches, both target notif rows present but unused. Port also still omits Base's CTS /kill obituary suppression. UNCHANGED."
+    - "DEATH_CUSTOM (mapper deathmessage, ACCIDENT branch) is still entirely unwired: no DeathTypes.Custom constant, no emitter, no SelectSpecial case. The DEATH_SELF_CUSTOM rows exist (Info 705, Center 917, Multi 1117) but are never sent. (Wave-5 DID wire the OTHER half of mapper_custom — HURTTRIGGER msg_from_ent / DEATH_*_VOID_ENT — now live; see fx-deathtypes.message.mapper_custom.)"
+    - "ACCIDENT-path ANNCE_ACHIEVEMENT_BOTLIKE (score==-5 announce) is still not emitted by EmitObituary. Minor audio/notif gap. UNCHANGED."
 features:
   - id: fx-deathtypes.registry.packing
     name: "Deathtype encoding: packed int (weaponmask + HITTYPE bits + DT_FIRST registry) vs string tag"
@@ -17,7 +17,7 @@ features:
     base_refs:
       - "common/deathtypes/all.qh:30-52 (DEATH_WEAPONMASK, HITTYPE_*, DT_FIRST, REGISTER_DEATHTYPE)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Damage/DeathTypes.cs:70 (DeathTypes string-tag scheme)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DeathTypes.cs (DeathTypes string-tag scheme)"
     constants:
       - { name: "DEATH_WEAPONMASK", base: "BITS(8)=0xFF", port: "weapon NetName via 'weapon/' prefix", match: false }
       - { name: "DT_FIRST", base: "BIT(14)", port: "bare lowercase special tag (no numeric base)", match: false }
@@ -30,12 +30,12 @@ features:
       audio: na
       liveness: live
     intended_divergence: true
-    divergence_rationale: "Port carries the deathtype as a string tag (DamageInfo.DeathType) end-to-end instead of a packed int; the bit math (weapon id, HITTYPE bits, special classification) is reproduced via HasHitType/BaseOf/IsWeapon. Behaviorally equivalent for routing; only the wire encoding differs. Documented in DeathTypes.cs:56-69. Wave-1 added the DamageSystem.SplashDeathType seam (HITTYPE_SPLASH ORed onto indirect victims) consistent with this string scheme."
+    divergence_rationale: "Port carries the deathtype as a string tag (DamageInfo.DeathType) end-to-end instead of a packed int; the bit math (weapon id, HITTYPE bits, special classification) is reproduced via HasHitType/BaseOf/IsWeapon. Behaviorally equivalent for routing; only the wire encoding differs. Documented in DeathTypes.cs. Wave-1 added the DamageSystem.SplashDeathType seam (HITTYPE_SPLASH ORed onto indirect victims) consistent with this string scheme."
     gaps: []
     verification:
-      - { kind: code, ref: "DeathTypes.IsWeapon/WeaponNetNameOf/HasHitType/BaseOf vs all.qh DEATH_WEAPONOF/DEATH_ISSPECIAL macros; all 6 HITTYPE flags present as suffix tokens; DeathTypes.cs unchanged on this branch (last commit 54ca3fd predates parity-port-waves)", result: pass }
+      - { kind: code, ref: "DeathTypes.IsWeapon/WeaponNetNameOf/HasHitType/BaseOf vs all.qh DEATH_WEAPONOF/DEATH_ISSPECIAL macros; all 6 HITTYPE flags present as suffix tokens; Wave-5 added only one new tag (DeathTypes.Camp) — no change to the encoding model", result: pass }
     confidence: high
-    notes: "Deliberate model change; the rest of this unit's parity is judged against the string scheme. Wave-1/2 did not alter DeathTypes.cs."
+    notes: "Deliberate model change; the rest of this unit's parity is judged against the string scheme. Wave-5 added DeathTypes.Camp ('camp') but left the encoding scheme intact."
 
   - id: fx-deathtypes.classify.weapon_vs_special
     name: "Weapon-vs-special + armor-pierce/fire/lethal classifiers (DEATH_ISSPECIAL, DEATH_WEAPONOF, etc.)"
@@ -44,7 +44,7 @@ features:
       - "common/deathtypes/all.qh:41-48 (DEATH_ISSPECIAL/DEATH_WEAPONOF/DEATH_ISWEAPON)"
       - "common/items/inventory.qh + server/damage.qc (DROWN||ARMORPIERCE armor bypass; FIRE/BUFF hitsound exclude)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Damage/DeathTypes.cs:161-229 (IsWeapon/IsSpecial/BypassesArmor/IsFireOrBuff/IsAlwaysLethal/IsTeamChange)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DeathTypes.cs (IsWeapon/IsSpecial/BypassesArmor/IsFireOrBuff/IsAlwaysLethal/IsTeamChange)"
     constants:
       - { name: "armor bypass", base: "DEATH_IS(t,DROWN) || (t & HITTYPE_ARMORPIERCE)", port: "BaseOf==Drown || HasHitType(ArmorPierce)", match: true }
       - { name: "always-lethal set", base: "KILL/TEAMCHANGE/AUTOTEAMCHANGE", port: "Kill/TeamChange/AutoTeamChange", match: true }
@@ -59,9 +59,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "DeathTypes.BypassesArmor/IsFireOrBuff/IsAlwaysLethal/IsTeamChange predicates vs QC; consumed live in DamageSystem.cs (deathtype string flows end-to-end; SplashDeathType seam added Wave-1 leaves specials untagged correctly)", result: pass }
+      - { kind: code, ref: "DeathTypes.BypassesArmor/IsFireOrBuff/IsAlwaysLethal/IsTeamChange predicates vs QC; consumed live in DamageSystem.cs (deathtype string flows end-to-end); the new Camp tag is unclassified-special and correctly bypasses none of these predicates", result: pass }
     confidence: high
-    notes: "Consumed live by the damage pipeline (armor split, hit-sound credit) + lethality handling. Unchanged by Wave-1/2."
+    notes: "Consumed live by the damage pipeline (armor split, hit-sound credit) + lethality handling. Unchanged by Wave-5 (Camp is a plain special, no classifier change needed)."
 
   - id: fx-deathtypes.classify.category
     name: "Monster/turret/vehicle category (.message string compare; DEATH_ISMONSTER/ISTURRET/ISVEHICLE)"
@@ -70,7 +70,7 @@ features:
       - "common/deathtypes/all.qh:44-46 (DEATH_ISVEHICLE/ISTURRET/ISMONSTER)"
       - "common/deathtypes/all.inc:15-61 (monster/turret/vehicle rows carry .message)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Damage/DeathTypes.cs:330-435 (_registry, Lookup/CategoryOf/IsMonster/IsTurret/IsVehicle)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DeathTypes.cs (_registry, Lookup/CategoryOf/IsMonster/IsTurret/IsVehicle)"
     constants:
       - { name: "monster rows", base: "8 (MAGE,GOLEM x3,SPIDER,WYVERN,ZOMBIE x2)", port: "8", match: true }
       - { name: "turret rows", base: "13 (TURRET + 12 variants)", port: "13", match: true }
@@ -90,7 +90,7 @@ features:
       - { kind: code, ref: "DeathTypes.BuildRegistry rows cross-checked line-by-line vs all.inc (self/murder names + NULL slots + RAPT_FRAGMENT reusing RAPT_BOMB lines all match); IsMonster/IsTurret/IsVehicle vs .message compare", result: pass }
       - { kind: test, ref: "MonsterTurretVehicleObituaryTests.cs; ObituaryEmissionTests.SelectSpecial_Monster_Turret_Vehicle_UseCategoryRegisteredMessages", result: pass }
     confidence: high
-    notes: "Per-entity self lines + shared murder lines (monster->MURDER_MONSTER, turret->MURDER_CHEAT, vehicle->per-vehicle, NULL->generic) match Base. Consumed by SelectSpecial's category branch (unchanged)."
+    notes: "Per-entity self lines + shared murder lines (monster->MURDER_MONSTER, turret->MURDER_CHEAT, vehicle->per-vehicle, NULL->generic) match Base. Consumed by SelectSpecial's category branch (unchanged by Wave-5)."
 
   - id: fx-deathtypes.message.weapon_select
     name: "Per-weapon kill/suicide message selection (wr_killmessage / wr_suicidemessage, HITTYPE branches)"
@@ -117,10 +117,10 @@ features:
     divergence_rationale: "Per-weapon wr_killmessage/wr_suicidemessage logic is centralized in DeathMessages (weapon classes are owned by another subsystem and must not carry message logic). Each branch is copied 1:1 with per-line QC citations."
     gaps: []
     verification:
-      - { kind: code, ref: "DeathMessages.SelectKillMessage/SelectSuicideMessage (17 weapon cases) cited vs each weapon .qc line; unknown weapon -> DEATH_MURDER_FRAG / DEATH_SELF_GENERIC fallback; DeathMessages.cs unchanged on this branch", result: pass }
+      - { kind: code, ref: "DeathMessages.SelectKillMessage/SelectSuicideMessage (17 weapon cases) cited vs each weapon .qc line; unknown weapon -> DEATH_MURDER_FRAG / DEATH_SELF_GENERIC fallback; weapon path unchanged by Wave-5", result: pass }
       - { kind: test, ref: "ObituaryEmissionTests.SelectKillMessage_Unknown_Weapon_Falls_Back_To_Generic_Frag", result: pass }
     confidence: high
-    notes: "16 weapons incl. all multi-way HITTYPE branches; hitscan suicides -> WEAPON_THINKING_WITH_PORTALS; hook has no suicide METHOD -> generic. Unchanged by Wave-1/2."
+    notes: "16 weapons incl. all multi-way HITTYPE branches; hitscan suicides -> WEAPON_THINKING_WITH_PORTALS; hook has no suicide METHOD -> generic. Unchanged by Wave-5."
 
   - id: fx-deathtypes.message.special_basic
     name: "Basic environment special-death message mapping (fall/drown/lava/slime/swamp/void/fire/telefrag/buff/noammo)"
@@ -129,11 +129,11 @@ features:
       - "server/damage.qc:Obituary_SpecialDeath (reads death_msgself/death_msgmurder)"
       - "common/deathtypes/all.inc (DROWN/FALL/FIRE/LAVA/SLIME/SWAMP/HURTTRIGGER/TELEFRAG/BUFF_*/NOAMMO rows) + common/notifications/all.inc"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:187-236 (SelectSpecial)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:209-239 (SelectSpecial)"
     constants:
       - { name: "telefrag", base: "murder-only (self->generic)", port: "murder TELEFRAG / self GENERIC", match: true }
       - { name: "noammo", base: "self-only (murder->frag)", port: "self NOAMMO / murder FRAG", match: true }
-      - { name: "void(hurttrigger)", base: "DEATH_SELF_VOID/DEATH_MURDER_VOID", port: "VOID self+murder", match: true }
+      - { name: "void(hurttrigger)", base: "DEATH_SELF_VOID/DEATH_MURDER_VOID (plain line when inflictor.message empty)", port: "VOID self+murder fixed line (now superseded by VOID_ENT when the inflictor carries a message — see mapper_custom)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -146,8 +146,9 @@ features:
     gaps: []
     verification:
       - { kind: test, ref: "ObituaryEmissionTests.SelectSpecial_Maps_Self_And_Murder_Families (fall/drown/telefrag); Suicide_By_Fall_Emits_DeathSelfFall", result: pass }
+      - { kind: code, ref: "Wave-5 made VOID conditional: the plain DEATH_*_VOID line now fires only when the Void inflictor has no .message/.message2 (MsgFromEnt returns null). This matches Base's msg_from_ent gate exactly (damage.qc:283/420/444) — MORE faithful, not a regression; the plain-VOID path still exists for messageless void deaths", result: pass }
     confidence: high
-    notes: "Shared-suffix scheme (DEATH_SELF_FALL/DEATH_MURDER_FALL) reproduced for the covered set; BUFF_INFERNO/VENGEANCE murder-only mapped correctly. Unchanged by Wave-1/2."
+    notes: "Shared-suffix scheme reproduced for the covered set; BUFF_INFERNO/VENGEANCE murder-only mapped correctly. The VOID line is now correctly conditional (plain vs ENT) per the mapper_custom fix; all other special_basic mappings unchanged by Wave-5."
 
   - id: fx-deathtypes.message.special_nade_misc
     name: "NADE-family + cheat/camp/rot/shooting_star/touchexplode special-death messages"
@@ -156,14 +157,16 @@ features:
       - "common/deathtypes/all.inc (NADE,NADE_DARKNESS/HEAL/ICE/NAPALM; CHEAT/CAMP/ROT/SHOOTING_STAR/TOUCHEXPLODE rows)"
       - "common/notifications/all.inc (DEATH_*_NADE/CHEAT/CAMP/ROT/SHOOTING_STAR/TOUCHEXPLODE)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:209-225 (SelectSpecial switch - NADE/cheat/camp/rot/shooting_star/touchexplode branches STILL ABSENT)"
-      - "src/XonoticGodot.Common/Gameplay/Nades/Booms/NadeNormalBoom.cs:36 + NadeBlast.RadiusDamage (emits 'nade' via Combat.Damage); NadeIceBoom/NadeHealBoom/NadeDarknessBoom (nade_ice/heal/darkness)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:218,235-237 (SelectSpecial - CAMP branch ADDED Wave-5; NADE/cheat/rot/shooting_star/touchexplode branches STILL ABSENT)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/CampcheckMutator.cs:130,139 (emits DeathTypes.Camp via Combat.Damage — LIVE when g_campcheck)"
+      - "src/XonoticGodot.Common/Gameplay/Nades/Booms/NadeNormalBoom.cs + NadeBlast.RadiusDamage (emits 'nade' via Combat.Damage); NadeIceBoom/NadeHealBoom/NadeDarknessBoom (nade_ice/heal/darkness)"
     constants:
+      - { name: "camp self line", base: "DEATH_SELF_CAMP (NULL murder)", port: "DEATH_SELF_CAMP self / DEATH_MURDER_FRAG murder", match: true }
       - { name: "nade murder line", base: "DEATH_MURDER_NADE ('blown up by Y's Nade')", port: "DEATH_MURDER_FRAG (generic)", match: false }
       - { name: "nade self line", base: "DEATH_SELF_NADE ('art of self-nading')", port: "DEATH_SELF_GENERIC ('died')", match: false }
     status:
       logic: partial
-      values: missing
+      values: partial
       timing: na
       presentation: partial
       audio: na
@@ -171,13 +174,14 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "SelectSpecial still has no branch for nade/nade_napalm/nade_ice/nade_heal/nade_darkness; nade kills fall to DEATH_SELF_GENERIC / DEATH_MURDER_FRAG. The DEATH_*_NADE notification rows exist in NotificationsList.cs (Info+Multi+Center, lines ~545-547/856-857/1028-1032/1069) but are never selected -> wrong obituary text for the most common 'special' death in nade play. STILL OPEN: Wave-1/2 did not touch DeathMessages.SelectSpecial (file clean on this branch). The nade boom emitters remain live-when-g_nades."
-      - "Same omission for cheat/camp/rot/shooting_star/touchexplode. No live emitter found in the port today (no camp-check kills, rot ticks, or shooting-star/touchexplode volumes located), so these are LATENT — still a faithfulness gap, but unobservable now."
+      - "NADE family STILL OPEN: SelectSpecial still has no branch for nade/nade_napalm/nade_ice/nade_heal/nade_darkness; nade kills fall to DEATH_SELF_GENERIC / DEATH_MURDER_FRAG. The DEATH_*_NADE notification rows exist in NotificationsList.cs but are never selected -> wrong obituary text for the most common 'special' death in nade play. The nade boom emitters remain live-when-g_nades."
+      - "cheat/rot/shooting_star/touchexplode STILL OPEN: no SelectSpecial branch and no live emitter found in the port (no rot ticks, shooting-star or touchexplode volumes located) — LATENT faithfulness gaps."
     verification:
-      - { kind: code, ref: "DeathMessages.SelectSpecial switch (lines 209-225) lists fall..mirrordamage only; no nade/cheat/camp/rot/shooting_star/touchexplode case; grep for those names in DeathMessages.cs/Scores.cs = none", result: fail }
-      - { kind: code, ref: "NadeNormalBoom -> NadeBlast.RadiusDamage routes NadeDeathTypes.Nade ('nade') through Combat.Damage -> Combat.Death -> EmitObituary live; gated by g_nades (mutator default OFF, NadesMutator.cs)", result: fail }
+      - { kind: code, ref: "CAMP now FIXED: DeathTypes.Camp ('camp') added (DeathTypes.cs); SelectSpecial maps Camp->'CAMP' self with murder->'FRAG' override, matching Base REGISTER_DEATHTYPE(CAMP, DEATH_SELF_CAMP, NULL) self-only; DEATH_SELF_CAMP Multi row present (NotificationsList.cs:1115)", result: pass }
+      - { kind: code, ref: "CAMP emitter LIVE-when-enabled: CampcheckMutator ([Mutator] attribute -> source-gen registered -> MutatorActivation activates when IsEnabled), PlayerPreThink calls Combat.Damage(player, null, null, dmg, 'camp', ...) -> Combat.Death -> EmitObituary; gated by g_campcheck (default OFF) like nades", result: pass }
+      - { kind: code, ref: "NADE/cheat/rot/shooting_star/touchexplode STILL fail: SelectSpecial switch (DeathMessages.cs:209-226) lists fall..camp..mirrordamage only; no nade case; grep nade/rot/shooting_star/touchexplode in DeathMessages.cs = none", result: fail }
     confidence: high
-    notes: "UNCHANGED from baseline. liveness=partial: the nade subset IS live whenever the (non-default) g_nades mutator is enabled; cheat/camp/rot/shooting_star/touchexplode have no live emitter. The defect is in the deathtype->message selector. Fix = add the missing cases to SelectSpecial (notif rows already present)."
+    notes: "PARTIAL FIX (Wave-5): the CAMP subset is now genuinely closed (deathtype + selector + live CampcheckMutator emitter + notif rows), upgrading liveness/presentation for that one death. The NADE family (live-when-g_nades, the highest-impact subset) and cheat/rot/shooting_star/touchexplode (latent) remain OPEN. Fix = add the missing cases to SelectSpecial (notif rows already present)."
 
   - id: fx-deathtypes.message.betrayal_suicide_text
     name: "MIRRORDAMAGE -> DEATH_SELF_BETRAYAL and KILL -> DEATH_SELF_SUICIDE self lines (+ CTS /kill suppression)"
@@ -186,8 +190,8 @@ features:
       - "common/deathtypes/all.inc (MIRRORDAMAGE->DEATH_SELF_BETRAYAL; KILL->DEATH_SELF_SUICIDE)"
       - "server/damage.qc:Obituary_SpecialDeath (if (g_cts && deathtype == DEATH_KILL.m_id) return)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:222-223 (Kill/MirrorDamage -> GENERIC)"
-      - "src/XonoticGodot.Server/Commands.cs:1318 (/kill emits DeathTypes.Kill, LIVE); src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:296 (reflected teamdamage emits MirrorDamage, LIVE)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:223-224 (Kill/MirrorDamage -> GENERIC)"
+      - "src/XonoticGodot.Server/Commands.cs (/kill emits DeathTypes.Kill, LIVE); src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs (reflected teamdamage emits MirrorDamage, LIVE)"
     constants:
       - { name: "mirrordamage self", base: "DEATH_SELF_BETRAYAL", port: "DEATH_SELF_GENERIC", match: false }
       - { name: "kill self", base: "DEATH_SELF_SUICIDE", port: "DEATH_SELF_GENERIC", match: false }
@@ -202,24 +206,24 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "KILL (/kill command, LIVE via Commands.cs:1318) still uses the generic 'died' line instead of Base's DEATH_SELF_SUICIDE ('couldn't take it anymore'). Observable on every manual /kill."
-      - "MIRRORDAMAGE self obituary (LIVE via DamageSystem.cs:296 reflected teamdamage Apply call) still uses generic 'died' instead of Base's DEATH_SELF_BETRAYAL ('you were betrayed'). Both target notif rows (DEATH_SELF_BETRAYAL line 1052, DEATH_SELF_SUICIDE) exist in NotificationsList.cs but are unused by SelectSpecial."
-      - "Base still suppresses the /kill obituary in CTS (g_cts && deathtype==DEATH_KILL -> return in Obituary_SpecialDeath); the port has no such gate, so a CTS /kill still prints a death line."
+      - "KILL (/kill command, LIVE via Commands.cs) still uses the generic 'died' line instead of Base's DEATH_SELF_SUICIDE ('couldn't take it anymore'). Observable on every manual /kill. STILL OPEN."
+      - "MIRRORDAMAGE self obituary (LIVE via DamageSystem.cs reflected teamdamage Apply call) still uses generic 'died' instead of Base's DEATH_SELF_BETRAYAL ('you were betrayed'). Both target notif rows exist in NotificationsList.cs but are unused by SelectSpecial. STILL OPEN."
+      - "Base still suppresses the /kill obituary in CTS (g_cts && deathtype==DEATH_KILL -> return); the port has no such gate, so a CTS /kill still prints a death line. STILL OPEN."
     verification:
-      - { kind: code, ref: "DeathMessages.SelectSpecial: Kill=>GENERIC, MirrorDamage=>GENERIC vs all.inc rows; both deathtypes confirmed live-emitted (Commands.cs:1318, DamageSystem.cs:296); DeathMessages.cs unchanged on this branch", result: fail }
+      - { kind: code, ref: "DeathMessages.SelectSpecial: Kill=>GENERIC, MirrorDamage=>GENERIC vs all.inc rows (lines 223-224); both deathtypes confirmed live-emitted; Wave-5 added a CAMP case here but did NOT touch the Kill/MirrorDamage mappings", result: fail }
     confidence: high
-    notes: "UNCHANGED from baseline. Both KILL and MIRRORDAMAGE are LIVE-emitted, so the wrong text is observable in a normal match, not latent. Commands.cs /kill line shifted 1135->1318, DamageSystem mirror emit at :296; both still live."
+    notes: "UNCHANGED from baseline. Both KILL and MIRRORDAMAGE are LIVE-emitted, so the wrong text is observable in a normal match, not latent."
 
   - id: fx-deathtypes.message.teamchange
     name: "TEAMCHANGE / AUTOTEAMCHANGE self obituary + death_team arg + auto no-frag-negation"
     layer: [authority, presentation]
     base_refs:
       - "common/deathtypes/all.inc (AUTOTEAMCHANGE->DEATH_SELF_AUTOTEAMCHANGE; TEAMCHANGE->DEATH_SELF_TEAMCHANGE)"
-      - "server/damage.qc:272-273 (SUICIDE branch: TEAMCHANGE/AUTOTEAMCHANGE -> Obituary_SpecialDeath with f1=targ.team); :303-304 (GiveFrags -1 SKIPPED for AUTOTEAMCHANGE)"
+      - "server/damage.qc:272-273 (SUICIDE branch: TEAMCHANGE/AUTOTEAMCHANGE -> Obituary_SpecialDeath with f1=targ.team); :304 (GiveFrags -1 SKIPPED for AUTOTEAMCHANGE)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:209-225 (SelectSpecial - no teamchange/autoteamchange case)"
-      - "src/XonoticGodot.Server/Scores.cs:560-568 (EmitObituary suicide branch: no teamchange special-case, no death_team f1 arg)"
-      - "src/XonoticGodot.Server/Teamplay.cs:452 (KillPlayerForTeamChange emits DeathTypes.AutoTeamChange, LIVE)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:209-239 (SelectSpecial - no teamchange/autoteamchange case)"
+      - "src/XonoticGodot.Server/Scores.cs:572-595 (EmitObituary suicide branch: no teamchange special-case, no death_team f1 arg)"
+      - "src/XonoticGodot.Server/Teamplay.cs (KillPlayerForTeamChange emits DeathTypes.AutoTeamChange, LIVE)"
     constants:
       - { name: "autoteamchange self line", base: "DEATH_SELF_AUTOTEAMCHANGE (f1=death_team)", port: "DEATH_SELF_GENERIC (no team arg)", match: false }
       - { name: "teamchange self line", base: "DEATH_SELF_TEAMCHANGE (f1=death_team)", port: "DEATH_SELF_GENERIC", match: false }
@@ -233,41 +237,44 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "SelectSpecial still has no teamchange/autoteamchange case, so an auto-team-balance kill (Teamplay.cs:452 KillPlayerForTeamChange emits DeathTypes.AutoTeamChange through Combat.Damage, LIVE) prints DEATH_SELF_GENERIC instead of DEATH_SELF_AUTOTEAMCHANGE. The DEATH_SELF_AUTOTEAMCHANGE notif rows exist (Info line 211, Center line 453, Multi line 551) with a death_team float arg, but EmitObituary's suicide branch never special-cases these or passes targ.team as f1."
-      - "Base's SUICIDE branch routes TEAMCHANGE/AUTOTEAMCHANGE specially (Obituary_SpecialDeath with s2=deathlocation, f1=targ.team) and SKIPS GiveFrags(-1) for AUTOTEAMCHANGE ('don't negate frags if auto switched'). The port's frag-negation handling for autoteamchange is in Scores.cs (SP_SCORE left alone via ClearForTeamChange/Row(p)), but the obituary special-routing + death_team arg is absent. Manual teamchange is consolidated onto the AUTOTEAMCHANGE deathtype (Teamplay.cs:452), so DEATH_TEAMCHANGE (manual) has no live emitter."
+      - "SelectSpecial still has no teamchange/autoteamchange case, so an auto-team-balance kill (Teamplay.cs KillPlayerForTeamChange emits DeathTypes.AutoTeamChange through Combat.Damage, LIVE) prints DEATH_SELF_GENERIC instead of DEATH_SELF_AUTOTEAMCHANGE. The DEATH_SELF_AUTOTEAMCHANGE notif rows exist with a death_team float arg, but EmitObituary's suicide branch never special-cases these or passes targ.team as f1. STILL OPEN."
+      - "Base's SUICIDE branch routes TEAMCHANGE/AUTOTEAMCHANGE specially (f1=targ.team) and SKIPS GiveFrags(-1) for AUTOTEAMCHANGE. The port's frag-negation handling for autoteamchange is in Scores.cs (via ClearForTeamChange/Row(p)), but the obituary special-routing + death_team arg are absent. Manual teamchange is consolidated onto the AUTOTEAMCHANGE deathtype, so DEATH_TEAMCHANGE (manual) has no live emitter. STILL OPEN."
     verification:
-      - { kind: code, ref: "DeathMessages.SelectSpecial: no teamchange/autoteamchange branch -> GENERIC; EmitObituary suicide branch (Scores.cs:560-568) sends no death_team arg vs all.inc rows + damage.qc:272-273; grep death_team/AUTOTEAMCHANGE in Scores.cs/DeathMessages.cs = none", result: fail }
-      - { kind: code, ref: "Teamplay.cs:452 KillPlayerForTeamChange emits DeathTypes.AutoTeamChange live; reaches EmitObituary suicide path; Scores.cs/DeathMessages.cs unchanged on this branch", result: fail }
+      - { kind: code, ref: "DeathMessages.SelectSpecial: no teamchange/autoteamchange branch -> GENERIC; EmitObituary suicide branch (Scores.cs:572-595) sends no death_team arg vs all.inc rows + damage.qc:272-273; Wave-5 untouched this path (only VOID_ENT + CAMP added)", result: fail }
     confidence: high
-    notes: "UNCHANGED from baseline. The AUTOTEAMCHANGE path is LIVE (every team change force-kills through it); the wrong obituary text is observable. Frag-negation skip is handled but the self-line + death_team arg are not. Teamplay emit line shifted 225->452."
+    notes: "UNCHANGED from baseline. The AUTOTEAMCHANGE path is LIVE (every team change force-kills through it); the wrong obituary text is observable. Frag-negation skip is handled but the self-line + death_team arg are not."
 
   - id: fx-deathtypes.message.mapper_custom
     name: "HURTTRIGGER mapper message (msg_from_ent / DEATH_*_VOID_ENT) + DEATH_CUSTOM (deathmessage)"
     layer: [authority, presentation]
     base_refs:
-      - "server/damage.qc:280-294 (SUICIDE HURTTRIGGER msg_from_ent=inflictor.message); :416-426 (MURDER msg_from_ent=inflictor.message2); :442-462 (ACCIDENT HURTTRIGGER + DEATH_CUSTOM deathmessage)"
+      - "server/damage.qc:281-290 (SUICIDE HURTTRIGGER msg_from_ent=inflictor.message); :420-426 (MURDER msg_from_ent=inflictor.message2); :442-462 (ACCIDENT HURTTRIGGER + DEATH_CUSTOM deathmessage)"
       - "server/damage.qc:Obituary_SpecialDeath (msg_from_ent ? death_msg_ent_murder/self : death_msgmurder/self)"
       - "common/notifications/all.inc (DEATH_SELF_VOID_ENT/DEATH_MURDER_VOID_ENT/DEATH_SELF_CUSTOM)"
     port_refs:
-      - "src/XonoticGodot.Server/Scores.cs:552-647 (EmitObituary - no msg_from_ent / custom-message path)"
-      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:187 (SelectSpecial - no ENT-variant / DEATH_CUSTOM branch)"
-    constants: []
+      - "src/XonoticGodot.Server/Scores.cs:575-587,664-680 (EmitObituary: VOID_ENT self+murder branches WIRED Wave-5); Scores.cs:729-746 (MsgFromEnt helper)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Triggers.cs:228-229,265,273 (trigger_hurt sets .Message default + passes itself as inflictor -> DeathTypes.Void)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageContracts.cs (DeathEvent.Inflictor) + DamageSystem.cs (Inflictor flows to the death event)"
+    constants:
+      - { name: "self ENT gate", base: "case DEATH_HURTTRIGGER: inflictor.message != \"\" (damage.qc:281-283,442-444)", port: "MsgFromEnt: BaseOf==Void && inflictor.Message != \"\"", match: true }
+      - { name: "murder ENT gate", base: "DEATH_ENT==HURTTRIGGER && inflictor.message2 != \"\" (damage.qc:420)", port: "MsgFromEnt(murder): BaseOf==Void && inflictor.Message2 != \"\"", match: true }
+      - { name: "DEATH_CUSTOM deathmessage", base: "ACCIDENT branch formats 'You were %s' (damage.qc:454-461)", port: "no DeathTypes.Custom tag / no emitter / no SelectSpecial case", match: false }
     status:
-      logic: missing
-      values: na
+      logic: partial
+      values: partial
       timing: na
-      presentation: missing
+      presentation: partial
       audio: na
-      liveness: dead
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "EmitObituary/SelectSpecial still have no msg_from_ent (ENT-variant) selection: Base's Obituary_SpecialDeath picks death_msg_ent_self/murder (DEATH_*_VOID_ENT) when a trigger_hurt carries inflictor.message/message2; the port always uses the fixed VOID line. The DEATH_SELF_VOID_ENT (line 644)/DEATH_MURDER_VOID_ENT rows exist in NotificationsList.cs but are never sent."
-      - "DEATH_CUSTOM (deathmessage) is still unwired: Base's ACCIDENT branch formats a mapper-supplied deathmessage into DEATH_SELF_CUSTOM ('You were %s'); the port has no DEATH_CUSTOM deathtype constant, no emitter, and no SelectSpecial case. The DEATH_SELF_CUSTOM rows exist (Info 643, Center 855, Multi 1055) but are never sent."
+      - "DEATH_CUSTOM (deathmessage) is STILL unwired: Base's ACCIDENT branch formats a mapper-supplied deathmessage into DEATH_SELF_CUSTOM ('You were %s'); the port has no DEATH_CUSTOM deathtype constant, no emitter, and no SelectSpecial case. The DEATH_SELF_CUSTOM rows exist (Info 705, Center 917, Multi 1117) but are never sent."
     verification:
-      - { kind: code, ref: "grep VOID_ENT|DEATH_CUSTOM|deathmessage|message2|msg_from_ent in Scores.cs/DeathMessages.cs -> no matches; EmitObituary maps Void to fixed VOID line only; both files unchanged on this branch", result: fail }
-    confidence: medium
-    notes: "UNCHANGED from baseline. Niche mapper feature; requires trigger_hurt to carry a custom message (mapobject unit owns the field). Flagged here because the obituary selector is the consumer. No DEATH_CUSTOM deathtype tag exists in the port at all."
+      - { kind: code, ref: "VOID_ENT now FIXED+LIVE: EmitObituary (Scores.cs:575-587 self, :664-680 murder) sends DEATH_SELF_VOID_ENT / DEATH_MURDER_VOID_ENT with the mapper string (inflictor.Message / .Message2) when a Void-deathtype inflictor carries one. MsgFromEnt gate matches Base msg_from_ent exactly (HURTTRIGGER/Void only; self uses .message, murder uses .message2). DeathEvent.Inflictor flows from DamageSystem -> Scores.Obituary -> EmitObituary. Live emitter: trigger_hurt (Triggers.cs:265/273 passes itself; .Message defaults 'was in the wrong place'); also door/laser/race Void inflictors carrying .Message2 ('was squished by' etc). DEATH_*_VOID_ENT notif rows present (NotificationsList.cs:704/706/1113/1165)", result: pass }
+      - { kind: code, ref: "DEATH_CUSTOM STILL fails: grep DEATH_CUSTOM|deathmessage|DeathTypes.Custom in Scores.cs/DeathMessages.cs/DeathTypes.cs -> no matches; the ACCIDENT custom-message branch is unported", result: fail }
+    confidence: high
+    notes: "HALF-FIXED (Wave-5). The HURTTRIGGER msg_from_ent / DEATH_*_VOID_ENT path is now genuinely live and Base-faithful (the gating, the self/.message vs murder/.message2 split, and the inflictor plumbing all verified). The DEATH_CUSTOM (mapper-formatted 'You were %s') path is still entirely missing — no tag, emitter, or selector. Upgraded liveness dead->partial and logic missing->partial."
 
   - id: fx-deathtypes.special.suicide_special_routing
     name: "Obituary SUICIDE/MURDER/ACCIDENT special-routing (TEAMCHANGE/MIRRORDAMAGE/HURTTRIGGER branch + BOTLIKE achievement)"
@@ -275,7 +282,7 @@ features:
     base_refs:
       - "server/damage.qc:268-470 (Obituary SUICIDE switch over DEATH_ENT; ACCIDENT GiveFrags(-1) + score==-5 -> ANNCE_ACHIEVEMENT_BOTLIKE)"
     port_refs:
-      - "src/XonoticGodot.Server/Scores.cs:552-647 (EmitObituary: SUICIDE/ACCIDENT collapsed, TEAMKILL, ENEMY FRAG branches; killstreak announcer; first-blood latch; typefrag/fire centerprints)"
+      - "src/XonoticGodot.Server/Scores.cs:561-680 (EmitObituary: SUICIDE/ACCIDENT collapsed + VOID_ENT branch, TEAMKILL, ENEMY FRAG branches; killstreak announcer; first-blood latch; typefrag/fire centerprints)"
     constants:
       - { name: "killstreak milestones", base: "3/5/10/15/20/25/30", port: "same (KillStreakAnnce)", match: true }
       - { name: "first-blood kill_count", base: "-1 attacker / -2 target", port: "-1 / -2", match: true }
@@ -291,13 +298,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Port still collapses Base's SUICIDE (targ==attacker) and ACCIDENT/TRAP (no player attacker) into one branch; behaviorally close for the generic case, but the per-deathtype SUICIDE switch (TEAMCHANGE f1=team, MIRRORDAMAGE, HURTTRIGGER msg_from_ent) is flattened into SelectSpecial (see teamchange/mapper_custom rows)."
-      - "ACCIDENT-path ANNCE_ACHIEVEMENT_BOTLIKE (announced when an accident drives the player's score to -5) is still not emitted by EmitObituary (the ACHIEVEMENT_BOTLIKE annce row exists at NotificationsList.cs:84 but is unused here). Minor audio/notif gap."
+      - "Port still collapses Base's SUICIDE (targ==attacker) and ACCIDENT/TRAP (no player attacker) into one branch. The HURTTRIGGER msg_from_ent sub-case is now handled (VOID_ENT, Wave-5), but the rest of the per-deathtype SUICIDE switch (TEAMCHANGE f1=team, MIRRORDAMAGE) is still flattened into SelectSpecial (see teamchange/betrayal_suicide_text rows)."
+      - "ACCIDENT-path ANNCE_ACHIEVEMENT_BOTLIKE (announced when an accident drives the player's score to -5) is STILL not emitted by EmitObituary (the ACHIEVEMENT_BOTLIKE annce row exists but is unused). Minor audio/notif gap."
     verification:
-      - { kind: code, ref: "EmitObituary branch structure vs damage.qc Obituary: killstreak/first-blood/typefrag/fire centerprints + teamkill all match; no BOTLIKE announce, no per-deathtype suicide switch; Scores.cs unchanged on this branch", result: partial }
+      - { kind: code, ref: "EmitObituary branch structure vs damage.qc Obituary: killstreak/first-blood/typefrag/fire centerprints + teamkill all match; the VOID_ENT msg_from_ent sub-case is now wired (Wave-5); still no BOTLIKE announce, no TEAMCHANGE/MIRRORDAMAGE per-deathtype suicide switch", result: partial }
       - { kind: test, ref: "ObituaryEmissionTests / MonsterTurretVehicleObituaryTests exercise the send path (generic suicide/murder/teamkill)", result: pass }
     confidence: medium
-    notes: "UNCHANGED from baseline. The killstreak announcer, first-blood latch, typefrag/fire centerprint overrides, and teamkill path are faithful (verified vs damage.qc:308-440). Residual logic gaps are the per-deathtype suicide special-routing (split across the teamchange/mapper_custom rows) and the BOTLIKE achievement announce."
+    notes: "Slightly improved by Wave-5 (the HURTTRIGGER msg_from_ent sub-branch of the suicide/accident switch is now present). Residual logic gaps are the TEAMCHANGE/MIRRORDAMAGE per-deathtype suicide special-routing (split across the teamchange/betrayal rows) and the BOTLIKE achievement announce."
 
   - id: fx-deathtypes.name.lookup
     name: "Deathtype_Name (int -> name) for logging/debug"

@@ -3,7 +3,7 @@ category: client
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-22"
 summary:
-  feature_count: 22
+  feature_count: 21
   worst_gaps:
     - "Interactive scoreboard UI still entirely absent (arrow navigation, team-selection/join screen, spectate, vote-kick/tell, scoreboard_columns_set cycling, scores_per_round toggle)."
     - "Race/CTS rankings block on the scoreboard is STILL DEAD: ScoreboardPanel.SetRankings has no live caller (NetGame.cs:3453 feeds the ScorePanel overlay, not the scoreboard; race records not networked)."
@@ -14,9 +14,11 @@ summary:
     - "Accuracy block still drawn as plain '%' text, not the per-weapon icon grid; no showdelay/warmup/doublerows/nocolors."
     - "Map-stats secrets row still never fed (only monsters); death-scoreboard + intermission-forced visibility still not ported."
   notable_fixes_since_last_audit:
-    - "Cross-fade in/out is now LIVE: NetGame.UpdateScoreboard sets ScoreboardPanel.Active=show, the Active setter + _Process ramp + _everActive now drive PanelFade on the real match path (was dead/popping)."
-    - "Respawn-status line is now LIVE + three-state: server maintains Player.RespawnTimeStat (negated while DEAD_RESPAWNING), networked via ClientNet.RespawnTimeStat, fed every frame by UpdateScoreboard; DrawRespawn now renders the full QC dead/wait/press-jump line."
-    - "Spectator list is now LIVE: the score wire carries an IsSpectator flag (ServerNet/ScoreboardBlock), SetWireRows routes spectator rows into the spectator block (was previously fed only by the dead SetSpectators API)."
+    - "RE-AUDIT 2026-06-22 (post-Wave-5 re-verify): the five Wave-5 fixes recorded last audit were independently re-traced END-TO-END and all CONFIRMED still live + faithful — 0 fixes, 0 regressions vs the prior audit. Line refs refreshed to current code."
+    - "Cross-fade in/out: LIVE (re-confirmed). NetGame.UpdateScoreboard:3407 sets ScoreboardPanel.Active=show; Active setter + _Process:661 ramp + _everActive:696 drive PanelFade on the real match path (UpdateScoreboard called from line 2716)."
+    - "Respawn-status line: LIVE + three-state (re-confirmed). Server sets Player.RespawnTimeStat (GameWorld.cs:2328, negated while DeadFlag.Respawning), networked via ClientNet.RespawnTimeStat, fed every frame by UpdateScoreboard:3413; DrawRespawn:1045 renders the full QC dead/wait/press-jump line."
+    - "Spectator list: LIVE (re-confirmed). The score wire carries IsSpectator (ServerNet.BuildScoreboard:1934 / ScoreboardBlock:99); SetWireRows:218 routes spectator rows into _spectators. Dead SetSpectators overloads remain but unused."
+    - "Packet-loss (pl) column: LIVE (re-confirmed). ServerNet.BuildScoreboard:1927 quantizes ENet loss → wire byte → GetField Pl. Rankings block: LIVE (re-confirmed). ServerNet.BuildScoreboard:1946 snapshots RaceRecords → wire → SetRankings:3433; gold/silver/bronze + self-highlight."
 features:
   - id: cl-scoreboard.toggle.showscores
     name: "Show while +showscores held"
@@ -69,7 +71,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "NetGame.cs UpdateScoreboard now sets `if (_scoreboard.Active != show) _scoreboard.Active = show`; the Active setter shows the panel, _Process ramps _fadeAlpha at fadein/fadeout speed, DrawPanel sets _everActive=true so PanelFade returns the real fade. Panel cross-fades instead of popping.", result: pass }
+      - { kind: code, ref: "NetGame.cs:3407 UpdateScoreboard sets `if (_scoreboard.Active != show) _scoreboard.Active = show` (UpdateScoreboard called from line 2716); the Active setter (panel:118) shows the panel, _Process (:661) ramps _fadeAlpha at fadein/fadeout speed (:668), DrawPanel (:696) sets _everActive=true so PanelFade (:687) returns the real fade. Panel cross-fades instead of popping. Re-verified live 2026-06-22.", result: pass }
     confidence: high
     notes: "FIXED since last audit (Wave 5). Was dead (Active never assigned → _everActive false → PanelFade==1, popped). Now live via the Active setter; _Process is a Godot engine callback so it runs even though IsDynamic=false."
 
@@ -173,10 +175,10 @@ features:
     intended_divergence: true
     divergence_rationale: "Ping is still not networked on the score row (SetWireRows hardcodes ping -1) so the cell shows a neutral dim '-' instead of QC's '>>>' no-scores glyph — a documented placeholder until ping is networked. The hardcoded 75/200/500 bands (not Base cvar-driven 20/80/200) are an UNINTENDED value gap that will surface once ping is fed."
     gaps:
-      - "Ping column always shows a dim '-' (SetWireRows hardcodes ping -1, line 234). Unchanged this audit — spectator-row ping is also still -1."
-      - "Color bands hardcoded const 75/200/500 (PingColor line 630) vs Base cvars hud_panel_scoreboard_ping_low=20/medium=80/high=200; not read from the cvar store. (Verified Base scoreboard.qc:1017-1019.)"
+      - "Ping column always shows a dim '-' (SetWireRows hardcodes ping:-1, line 238). Unchanged this audit — spectator-row ping is also still -1 (SetWireRows line 220)."
+      - "Color bands hardcoded const 75/200/500 (PingColor line 646) vs Base cvars hud_panel_scoreboard_ping_low=20/medium=80/high=200; not read from the cvar store. (Re-verified Base scoreboard.qc:1017-1019.)"
     verification:
-      - { kind: code, ref: "SetWireRows ping:-1 always (ScoreboardPanel.cs:234); PingColor const low=75/med=200/high=500 (line 630); Base scoreboard.qc:1017-1019 PING_LOW=20/MED=80/HIGH=200", result: fail }
+      - { kind: code, ref: "SetWireRows ping:-1 always (ScoreboardPanel.cs:238); PingColor const low=75/med=200/high=500 (line 646); Base scoreboard.qc:1017-1019 PING_LOW=20/MED=80/HIGH=200. Re-verified 2026-06-22.", result: fail }
     confidence: high
     notes: "PingPanel and serverlist use yet other ping ramps — three inconsistent ping ramps in the port. Unchanged this audit."
 
@@ -200,7 +202,7 @@ features:
     gaps:
       - "Movement loss (QC ping_movementloss, the '~N' suffix) is not tracked by the port — only packet loss contributes (QC's tmp==0 branch). The displayed value + red tint are otherwise bit-faithful."
     verification:
-      - { kind: code, ref: "Wave 5: ENet PacketLoss (NetTransport.Server.PacketLoss, 0..65536→0..1) captured per human in ServerNet.RefreshScore as min(ceil(loss*255),255), networked via ScoreRowWire.PacketLossByte, de-quantized in SetWireRows, rendered by GetField Pl: blank when 0 else ceil(pl*100) tinted '1 0.5 0.5'-'0 0.5 0.5'*bound(0,pl/0.2,1)", result: pass }
+      - { kind: code, ref: "Wave 5: ENet PacketLoss captured per human in ServerNet.BuildScoreboard:1927 as min(ceil(loss*255),255), serialized via ScoreRowWire.PacketLossByte (ScoreboardBlock.cs:100), de-quantized in SetWireRows:241, rendered by GetField Pl: blank when 0 else ceil(pl*100) tinted '1 0.5 0.5'-'0 0.5 0.5'*bound(0,pl/0.2,1). Re-verified 2026-06-22.", result: pass }
     confidence: high
     notes: "FIXED Wave 5. Was a blank stub; now the live SP_PL value + severity tint, fed from real ENet packet-loss. Movement loss (a client prediction metric) is the only residual."
 
@@ -402,7 +404,7 @@ features:
       - "Spectator-row ping is still -1 (per-row ping not networked) so showping shows a dim '-' rather than a real value."
       - "spectators_position (0/1/2/3 placement around the blocks) and spectators_aligned column alignment not implemented (drawn after the table only)."
     verification:
-      - { kind: code, ref: "ServerNet.cs:1902 sets isSpectator: p.IsObserver || p.FragsStatus==FragsSpectator on the wire; ScoreboardBlock.cs:87 serializes it; ScoreboardPanel.SetWireRows (line 214) routes IsSpectator rows into _spectators; UpdateScoreboard (NetGame.cs:3326) is the live caller; DrawSpectators renders the block", result: pass }
+      - { kind: code, ref: "ServerNet.cs:1934 (BuildScoreboard) sets isSpectator: p.IsObserver || p.FragsStatus==FragsSpectator on the wire; ScoreboardBlock.cs:99 serializes it; ScoreboardPanel.SetWireRows (line 218) routes IsSpectator rows into _spectators; UpdateScoreboard (NetGame.cs:3398, called from line 2716) is the live caller; DrawSpectators renders the block", result: pass }
     confidence: high
     notes: "FIXED since last audit (Wave 5). Previously dead (only SetSpectators fed it, with no caller). Now fed live by the networked IsSpectator wire flag via SetWireRows. The old SetSpectators(...) overloads remain but are dead/unused."
 
@@ -486,7 +488,7 @@ features:
     gaps:
       - "No speed-award / all-time-fastest line, no multi-column wrap / horizontal scroll (single-column list)."
     verification:
-      - { kind: code, ref: "Wave 5: ServerNet.RefreshScore snapshots RaceRecords.ReadTime/ReadName (best-first, rc→RaceRecord/cts→CtsRecord, display cap 15) into _scoreRankings; ScoreboardBlock.Serialize/Deserialize carries ScoreboardWire.Rankings (int24 TIME_ENCODE + holder); NetGame.UpdateScoreboard feeds _scoreboard.SetRankings(sb.Rankings) + RankingsSelfName; DrawRankings now draws gold/silver/bronze ranks + self-row highlight, gated rc/cts", result: pass }
+      - { kind: code, ref: "Wave 5: ServerNet.BuildScoreboard:1946-1963 snapshots RaceRecords.ReadTime/ReadName (best-first, rc→RaceRecord/cts→CtsRecord, display cap 15, dense break on first empty) into _scoreRankings; ScoreboardBlock.Serialize:117 (called ServerNet.cs:1546) / Deserialize:155 carries ScoreboardWire.Rankings (int24 TIME_ENCODE + holder); NetGame.UpdateScoreboard:3433 feeds _scoreboard.SetRankings(sb.Rankings) + RankingsSelfName:3434; DrawRankings:1126 draws gold/silver/bronze ranks + self-row highlight, gated rc/cts. Re-verified live 2026-06-22.", result: pass }
     confidence: high
     notes: "FIXED Wave 5. The scoreboard rankings block is now its OWN live caller (distinct from the ScorePanel overlay): race/CTS records ride the scoreboard wire and feed ScoreboardPanel.SetRankings. Gold/silver/bronze + self-highlight added; speed-award line + multi-column wrap remain."
 
@@ -512,7 +514,7 @@ features:
       - "Secrets (STAT(SECRETS_*)) are still never fed → the Secrets row never shows (SecretsTotal stays -1; no feeder in NetGame)."
       - "Monsters only feed when +showscores data is refreshed (FeedScoreboardHeader runs inside the change-gated branch)."
     verification:
-      - { kind: code, ref: "FeedScoreboardHeader sets MonstersTotal/Killed (now per-mode: Invasion ROUND uses inv.Wave.MaxSpawned/Killed, else MonsterAI.MonstersTotal/Killed); SecretsTotal stays -1 (grep: no SecretsTotal/SecretsFound assignment in NetGame)", result: pass }
+      - { kind: code, ref: "FeedScoreboardHeader (NetGame.cs:3689) sets MonstersTotal/Killed per-mode: Invasion ROUND uses inv.Wave.MaxSpawned/Killed (:3705), else MonsterAI.MonstersTotal/Killed (:3710); SecretsTotal stays -1 (grep: no SecretsTotal/SecretsFound assignment anywhere in NetGame). Re-verified 2026-06-22.", result: pass }
     confidence: high
     notes: "Wave-5 refined the monsters feed for ROUND Invasion (live wave counts vs natural map totals); secrets feed still missing. DrawMapStats draws both rows faithfully."
 
@@ -540,7 +542,7 @@ features:
     gaps:
       - "RespawnJumpKey is never fed (stays the default literal 'jump') — the 'press JUMP to respawn' line shows the action name, not the player's actual +jump keybind (QC getcommandkey)."
     verification:
-      - { kind: code, ref: "GameWorld.cs:2177 sets Player.RespawnTimeStat = DeadState==Respawning ? -RespawnTime : RespawnTime (0 when Silent/denied); networked via ClientNet.cs:801; NetGame.cs:3310-3311 feeds _scoreboard.RespawnStat/RespawnServerTime every frame while shown; DrawRespawn renders the three-state QC line (wait-before / press-jump / respawning-in)", result: pass }
+      - { kind: code, ref: "GameWorld.cs:2328 (DeadPlayerThink) sets Player.RespawnTimeStat = DeadState==Respawning ? -RespawnTime : RespawnTime (0 when alive/Silent/denied, :2264/:2285/:2326); networked via ClientNet.RespawnTimeStat; NetGame.cs:3413-3414 feeds _scoreboard.RespawnStat/RespawnServerTime every frame while shown; DrawRespawn:1045 renders the three-state QC line (wait-before / press-jump / respawning-in). Re-verified live 2026-06-22.", result: pass }
     confidence: high
     notes: "FIXED since last audit (Wave 5). Previously dead (RespawnRemaining had no caller; only the 'Respawning in N'/'Respawning...' two-state existed). Now live with the full QC three-state line. Only residual: the +jump keybind string isn't resolved."
 

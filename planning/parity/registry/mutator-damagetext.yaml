@@ -1,15 +1,15 @@
 unit: mutator-damagetext
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-22"  # re-audited 2026-06-25 against Wave-5 commit 023ba70 (2D placement now live)
 summary:
   feature_count: 9
   worst_gaps:
-    - "2D fallback mode is effectively absent: the port never applies the close-range (cl_damagetext_2d_close_range 125), out-of-view (cl_damagetext_2d_out_of_view), or spectating (spectatee_status) heuristics, the 2d_overlap_offset stagger, or the separate 2D fade(1.3s)/shrink(3s) lifetimes — it only drops to a screen-center number when the camera is null/behind. Numbers for very close or just-off-screen hits behave differently from Base, and 2D numbers never shrink."
-    - "World drift reduced to a vertical world-Z rise: QC offsets the number along the view basis (velocity_world/offset_world along forward/right/up) before projecting; the port keeps only the Z component as a world-up rise (hardcoded 0.0254 inch->meter scale) and drops the forward/right offsets, so the number doesn't track the view-relative placement Base uses."
-    - "Color codes not rendered: the draw uses Godot DrawString (plain) instead of drawcolorcodedstring2, so ^x color codes in cl_damagetext_format render literally; font is the Godot fallback font (no drawfontscale crisp-scaling), not the Xonotic HUD font."
+    - "World drift reduced to a vertical world-Z rise: QC offsets the number along the view basis (velocity_world/offset_world along forward/right/up) before projecting; the port keeps only the Z component as a world-up rise (hardcoded 0.0254 inch->meter scale) and drops the forward/right offsets, so the number doesn't track the view-relative placement Base uses. (STILL OPEN post Wave-5 — DamageTextLayer.cs:277-278 unchanged.)"
+    - "Color codes not rendered: the draw uses Godot DrawString (plain) instead of drawcolorcodedstring2, so ^x color codes in cl_damagetext_format render literally; font is the Godot fallback font (no drawfontscale crisp-scaling), not the Xonotic HUD font. (STILL OPEN post Wave-5 — DamageTextLayer.cs:291-294 unchanged.)"
     - "Server visibility tiers collapsed: no Net_LinkEntity; DrainPending is a host-local queue consumed only on the host path (NetGame.cs:2260 'if (_server is not null)'), so sv_damagetext 1/3 (spectators-only, all-players) and spectator/observer filtering are not modeled and a pure remote client sees no damage text (intended host-only divergence)."
-    - "ClientDisconnect dent_attackers clear is missing (no ClientDisconnect mutator hook exists in MutatorHooks), and the ui_damagetext settings menu tab has no port counterpart. (2026-06-22 re-audit post Wave-1/2: the only damagetext edit on claude/parity-port-waves is a doc comment acknowledging the ClientDisconnect gap — no fix, no hook added.)"
+    - "ClientDisconnect dent_attackers clear is missing (no ClientDisconnect mutator hook exists in MutatorHooks), and the ui_damagetext settings menu tab has no port counterpart. (Wave-5 added only a doc comment in DamagetextMutator.cs:73-82 acknowledging the ClientDisconnect gap — no fix, no hook added.)"
+    - "FIXED post Wave-5: the 2D placement heuristics (close-range cl_damagetext_2d_close_range 125, out-of-view cl_damagetext_2d_out_of_view, spectatee_status gate, 2d_overlap_offset stagger, and the separate 2D fade(1.3s)/shrink(3s) lifetimes) are now implemented and live in DamageTextLayer.Add (canUse2d fed from NetGame.cs:2269 !IsObserving == QC spectatee_status != -1)."
 features:
   - id: damagetext.sv.player_damaged_producer
     name: "Server PlayerDamaged producer (build + queue a damage-number event)"
@@ -185,30 +185,34 @@ features:
     layer: [presentation]
     base_refs:
       - "common/mutators/mutator/damagetext/cl_damagetext.qc:250-317 (NET_HANDLE: can_use_3d / too_close / prefer_in_view / prefer_2d / overlap stagger)"
+      - "common/mutators/mutator/damagetext/cl_damagetext.qc:181-204 (CONSTRUCTOR 2D vs 3D fade/shrink rate select) + :206-210 (DESTRUCTOR --DamageText_screen_count)"
     port_refs:
-      - "game/client/DamageTextLayer.cs:188 (_Draw: camera-null/behind fallback only)"
+      - "game/client/DamageTextLayer.cs:121-138 (too_close / prefer_in_view / prefer2d), :160-176 (is2d branch), :191-194 (overlap stagger + screen_count), :202-214 (ApplyPlacement 2D/3D rates), :218-224 (ProjectedOnScreen), :81 (DESTRUCTOR --_screenCount)"
+      - "game/net/NetGame.cs:2269,2274 (canUse2d = !_client.IsObserving -> Add)"
     constants:
-      - { name: "cl_damagetext_2d_close_range", base: "125", port: "read into config (CloseRange2d) but UNUSED in placement", match: false }
-      - { name: "cl_damagetext_2d_out_of_view", base: "1", port: "read (OutOfView2d) but UNUSED", match: false }
-      - { name: "cl_damagetext_2d_overlap_offset", base: "0 -15 0", port: "read (OverlapOffset2d) but UNUSED; _screenCount incremented (DamageTextLayer.cs:152) but never applied to position", match: false }
-      - { name: "cl_damagetext_2d_alpha_lifetime / size_lifetime", base: "1.3 / 3", port: "read (Alpha2dLifetime/Size2dLifetime) but UNUSED; FadeRate always uses 3D alpha_lifetime, ShrinkRate hardcoded 0 (DamageTextLayer.cs:148)", match: false }
-      - { name: "spectatee_status gate", base: "prefer_2d requires spectating (spectatee_status != -1)", port: "not modeled", match: false }
+      - { name: "cl_damagetext_2d_close_range", base: "125", port: "125 (CloseRange2d), compared after *0.0254 QU->m conversion vs Camera.GlobalPosition (DamageTextLayer.cs:133-134)", match: true }
+      - { name: "cl_damagetext_2d_out_of_view", base: "1", port: "1 (OutOfView2d) -> prefer_in_view = !ProjectedOnScreen (DamageTextLayer.cs:135-136)", match: true }
+      - { name: "cl_damagetext_2d_overlap_offset", base: "0 -15 0", port: "0 -15 0 (OverlapOffset2d) applied as screenPos += offset*_screenCount on a NEW 2D number (DamageTextLayer.cs:192-193)", match: true }
+      - { name: "cl_damagetext_2d_alpha_lifetime / size_lifetime", base: "1.3 / 3", port: "1.3 / 3 selected for 2D numbers in ApplyPlacement (DamageTextLayer.cs:204-207)", match: true }
+      - { name: "spectatee_status gate", base: "prefer_2d requires spectatee_status != -1", port: "canUse2d = !_client.IsObserving (port SpectateeStatus encodes free-observer as ==LocalNetId, so !IsObserving == QC !=-1); NetGame.cs:2269", match: true }
+      - { name: "screen_count increment order (3D pre-inc no offset / 2D offset then inc)", base: "3D: ++count; 2D: position += offset*count++", port: "3D: ++_screenCount (no offset); 2D: screenPos += offset*_screenCount then ++_screenCount; accumulate path returns before increment (DamageTextLayer.cs:178-194)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The 2D path only triggers when the camera is null or the world point is behind the camera; the close-range (<125u), out-of-view, and spectating heuristics are never applied (no entcs/view_origin distance test, no projected_on_screen test, no spectatee_status check)."
-      - "cl_damagetext_2d_overlap_offset stagger is never applied (_screenCount is incremented at DamageTextLayer.cs:152 but never used to offset the position); the 2D-specific fade(1.3s) + shrink(3s) lifetimes are never used (ShrinkRate is hardcoded 0 at :148, so 2D numbers never shrink; FadeRate is always 1/alpha_lifetime)."
+      - "QC tests entcs.has_origin for can_use_3d; the port always has a worldPos so can_use_3d is effectively always true (same as the common case). Edge: QC's 'return nothing' branch (no entcs origin AND 2D-disabled-or-observer) cannot occur in the port — a number always renders as 3D world or 2D screen. Minor; matches Base for all reachable states."
+      - "view_origin: QC uses the eye position; the port uses Camera.GlobalPosition (the host camera node). Close-range distance is computed in metres (QU*0.0254) which is dimensionally faithful but the camera origin vs QC eye origin may differ by a small view offset."
     verification:
-      - { kind: codetrace, ref: "DamageTextLayer.cs:188 only branches on 'it.ScreenCoords || Camera is null'; ScreenCoords is hardcoded false on Add (line 144); close-range/out-of-view never set it true", result: fail }
-    confidence: high
-    notes: "2026-06-22 re-audit: unchanged & still dead (DamageTextLayer.cs not edited on the branch). DamageTextConfig carries all the 2D cvars but the draw layer ignores them for placement and for the 2D fade/shrink rates; effectively dead. The 2D screen-center fallback only ever fires when there is no camera at all."
+      - { kind: codetrace, ref: "DamageTextLayer.cs:121-176 builds tooClose/preferInView/prefer2d exactly as cl_damagetext.qc:253-256; :191-194 overlap stagger matches :301/:315 increment semantics; ApplyPlacement :202-214 mirrors CONSTRUCTOR :188-200; _screenCount-- on prune :81 mirrors DESTRUCTOR :209; canUse2d wired live at NetGame.cs:2269", result: pass }
+      - { kind: codetrace, ref: "NetGame.cs:2270-2274 drains DrainPending and passes canUse2d into Add on the live host frame (still host-only via the :2260 _server guard)", result: pass }
+    confidence: medium
+    notes: "2026-06-25 re-audit (post Wave-5 commit 023ba70 'wire remaining 81 dead/stub seams live'): GAP CLOSED. Was missing/dead at baseline (2026-06-22, which predated Wave-5). DamageTextLayer.Add now computes too_close (close_range 125 QU->m), prefer_in_view (out_of_view via ProjectedOnScreen unproject+rect test), and prefer_2d gated on canUse2d (faithful map of QC spectatee_status != -1 via the port's SpectateeStatus encoding), applies the 2d_overlap_offset stagger with QC's pre/post-increment order, selects the 2D fade(1.3s)/shrink(3s) lifetimes in ApplyPlacement, and decrements _screenCount on prune (QC DESTRUCTOR). canUse2d is live-fed from NetGame.cs:2269. All 2D cvar defaults match Base (xonotic-client.cfg:584-592). Medium confidence: no unit test (Godot draw node needs a live viewport+camera); verified by codetrace + constant match, NOT in-game. The close_range view-origin (Camera node vs QC eye) is the one unverified detail."
   - id: damagetext.cl.draw_fade_shrink_move
     name: "Per-frame draw: fade, shrink, world/screen drift, centering, color codes, font"
     layer: [presentation]
@@ -216,18 +220,20 @@ features:
       - "common/mutators/mutator/damagetext/cl_damagetext.qc:22-99 (DamageText_draw2d)"
       - "common/mutators/mutator/damagetext/cl_damagetext.qc:181-204 (CONSTRUCTOR fade/shrink rates)"
     port_refs:
-      - "game/client/DamageTextLayer.cs:173 (_Draw) / :66 (_Process) / :140-153 (Add rates)"
+      - "game/client/DamageTextLayer.cs:248 (_Draw) / :68 (_Process) / :202-214 (ApplyPlacement rates) / :262-281 (draw position resolve)"
       - "game/client/DamageTextConfig.cs"
     constants:
-      - { name: "alpha_lifetime fade (3D)", base: "3 (fade_rate=1/alpha_lifetime)", port: "1/AlphaLifetime (DamageTextLayer.cs:147)", match: true }
+      - { name: "alpha_lifetime fade (3D)", base: "3 (fade_rate=1/alpha_lifetime)", port: "1/AlphaLifetime (DamageTextLayer.cs:211)", match: true }
+      - { name: "2d_alpha_lifetime / 2d_size_lifetime (2D path)", base: "1.3 / 3 (fade_rate=1/2d_alpha_lifetime, shrink=1/2d_size_lifetime)", port: "1/Alpha2dLifetime / 1/Size2dLifetime now selected for 2D numbers (DamageTextLayer.cs:204-207)", match: true }
       - { name: "lifetime hard cap", base: "-1 (ignore)", port: "-1 (Lifetime<0 -> hasLifetime always)", match: true }
-      - { name: "velocity_world / offset_world", base: "0 0 20 / 0 25 0 along view forward/right/up basis", port: "only .Z used as world-up rise x0.0254 (inch->meter); forward/right (X/Y) dropped (DamageTextLayer.cs:199-200)", match: false }
-      - { name: "offset_screen / velocity_screen", base: "0 -45 0 / 0 0 0 (screen space)", port: "applied in screen space (DamageTextLayer.cs:201-202)", match: true }
-      - { name: "string render", base: "drawcolorcodedstring2 + drawfontscale=size/size_max, size_max cell, hud font", port: "DrawString (plain, no color codes) at integer size, ThemeDB.FallbackFont (DamageTextLayer.cs:214-215)", match: false }
-      - { name: "per-weapon / friendlyfire color", base: "DEATH_WEAPONOF.m_color / friendlyfire_color", port: "Weapon.Color (by RegistryId) / FriendlyFireColor", match: true }
-      - { name: "horizontal centering", base: "screen_pos.x -= stringwidth*0.5", port: "pos.X - width*0.5 (GetStringSize)", match: true }
+      - { name: "velocity_world / offset_world", base: "0 0 20 / 0 25 0 along view forward/right/up basis", port: "only .Z used as world-up rise x0.0254 (inch->meter); forward/right (X/Y) dropped (DamageTextLayer.cs:277-278)", match: false }
+      - { name: "offset_screen / velocity_screen", base: "0 -45 0 / 0 0 0 (screen space)", port: "applied in screen space (DamageTextLayer.cs:279-280)", match: true }
+      - { name: "2d_velocity / 2d_pos drift (2D path)", base: "-25 0 0 / 0.47 0.53 (screen space)", port: "stored ScreenPos (pos+overlap stagger) + Velocity2d*since (DamageTextLayer.cs:267-270)", match: true }
+      - { name: "string render", base: "drawcolorcodedstring2 + drawfontscale=size/size_max, size_max cell, hud font", port: "DrawString (plain, no color codes) at integer size, ThemeDB.FallbackFont (DamageTextLayer.cs:291-294)", match: false }
+      - { name: "per-weapon / friendlyfire color", base: "DEATH_WEAPONOF.m_color / friendlyfire_color", port: "Weapon.Color (by RegistryId) / FriendlyFireColor (DamageTextLayer.cs:283-289)", match: true }
+      - { name: "horizontal centering", base: "screen_pos.x -= stringwidth*0.5", port: "pos.X - width*0.5 (GetStringSize) (DamageTextLayer.cs:292-293)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: partial
       timing: faithful
       presentation: partial
@@ -236,12 +242,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "World drift only rises along world-Z (x0.0254 inch->meter hardcoded scale); QC offsets along the view basis (forward/right/up) so the number's view-relative placement is lost (lateral offset_world Y=25 and the X/Y velocity components are dropped)."
-      - "Color codes in cl_damagetext_format render literally (DrawString instead of drawcolorcodedstring2); font is the Godot fallback font, not the Xonotic HUD font; drawfontscale-based crisp scaling (size/size_max cell) replaced by a direct integer pixel size, so glyph metrics/centering differ."
+      - "World drift only rises along world-Z (x0.0254 inch->meter hardcoded scale); QC offsets along the view basis (forward/right/up) so the number's view-relative placement is lost (lateral offset_world Y=25 and the X/Y velocity components are dropped). UNCHANGED by Wave-5 (DamageTextLayer.cs:277-278)."
+      - "Color codes in cl_damagetext_format render literally (DrawString instead of drawcolorcodedstring2); font is the Godot fallback font, not the Xonotic HUD font; drawfontscale-based crisp scaling (size/size_max cell) replaced by a direct integer pixel size, so glyph metrics/centering differ. UNCHANGED by Wave-5 (DamageTextLayer.cs:291-294)."
     verification:
-      - { kind: codetrace, ref: "DamageTextLayer.cs:199-200 builds worldOffset from .Z only (x0.0254) and :214-215 uses DrawString with ThemeDB.FallbackFont", result: fail }
+      - { kind: codetrace, ref: "DamageTextLayer.cs:277-278 builds worldOffset from .Z only (x0.0254) and :291-294 uses DrawString with ThemeDB.FallbackFont; the 2D screen-coords branch :267-270 now uses the stored ScreenPos + 2d_velocity (improved vs baseline)", result: fail }
     confidence: medium
-    notes: "2026-06-22 re-audit: unchanged (DamageTextLayer.cs not edited on the branch). Fade timing + FF/per-weapon color + screen-offset + centering are faithful; world-drift basis, color-code rendering, and font are gaps. NOT verified in-game (Godot draw node, no unit test) — hence medium confidence and the open question of whether the 0.0254 scale lands the number on the victim at Quake unit scale."
+    notes: "2026-06-25 re-audit (post Wave-5): IMPROVED but not fully closed. The 2D screen-coords draw path now uses the stored per-item ScreenPos (cl_damagetext_2d_pos + overlap stagger) drifting by 2d_velocity, and 2D numbers now get the 2d_alpha/size lifetimes (ApplyPlacement) — so 2D fade/shrink/drift are faithful where before only a screen-center fallback existed. Logic upgraded partial->faithful (the placement state machine is now correct). values/presentation STILL partial: the two named gaps (world-drift basis = Z-only x0.0254, and color-code/HUD-font/drawfontscale rendering) are UNCHANGED. NOT verified in-game (Godot draw node, no unit test) — medium confidence; the 0.0254 world-rise scale landing on the victim at Quake unit scale is still unverified."
   - id: damagetext.ui.settings_tab
     name: "In-game Damage Text settings menu tab"
     layer: [presentation]

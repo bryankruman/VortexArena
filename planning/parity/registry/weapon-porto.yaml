@@ -5,7 +5,7 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 11
   worst_gaps:
-    - "Death/respawn cleanup STILL MISSING: no W_Porto_Remove / wr_resetplayer port anywhere (grep finds PortoCurrent/PortoForbidden touched only inside Porto.cs). A porto in flight or a placed portal can outlive its owner's death; on respawn the porto_current latch is never cleared and porto_forbidden is never set. The PortalClearWithId host hook now EXISTS+is wired (GameWorld.cs:416), so a death-reset port could reuse it — but no caller drives it on death/respawn."
+    - "Death/respawn cleanup STILL MISSING: no W_Porto_Remove / wr_resetplayer port anywhere (grep finds PortoCurrent/PortoForbidden touched only inside Porto.cs). A porto in flight or a placed portal can outlive its owner's death; on respawn the porto_current latch is never cleared and porto_forbidden is never set. The PortalClearWithId host hook now EXISTS+is wired (GameWorld.cs:424), so a death-reset port could reuse it — but no caller drives it on death/respawn."
     - "porto_forbidden is STILL dead (read in WrThink:89 but never set or decremented — no porto_ticker SV_StartFrame mutator port, no race-respawn setter). Base decrements it every SV_StartFrame (porto.qc:99) and sets it on race respawn; in Race/CTS Base blocks re-firing a porto across a respawn, the port does not."
     - "No portal-aim trajectory preview (Porto_Draw): Base draws a reflecting red/blue Draw_CylindricLine polyline with the CheckWireframeBox 96^3 size gate showing where the in/out portals would land while you hold porto. The port renders nothing. Still entirely missing."
     - "Projectile blue reclassification suspect: client classifier (ProjectileCatalog.cs:261) STILL returns PortoRed unconditionally for classname 'porto'; the red->blue swap on a combined shot flips EF_RED/EF_BLUE on the server entity but the client never re-renders the blue variant mid-flight (classifier keys on classname only, never reads the effect flags)."
@@ -167,7 +167,7 @@ features:
     verification:
       - { kind: code, ref: "Porto.cs:OnTouch (198-280) + ProbeImpact (302-320) vs porto.qc:W_Porto_Touch (166-286); TraceService.cs:627 fills surface flags", result: partial }
     confidence: high
-    notes: "Surface-flag branches re-trace the impact face (ProbeImpact) and read real Q3 surface flags + the true plane normal, so slick/clip reflect (porto/bounce) and noimpact fail (porto/unsupported) are genuinely reachable on the live path, and the portal normal is the real wall plane (falling back to -velocity only on a probe miss). PortalClearWithId host hook WIRED (GameWorld.cs:416). Remaining divergences: re-trace approximation, ClearAll-vs-ClearWithID scope, missing wireframe size gate, missing portal_in id check on the final out-portal branch. Re-verified 2026-06-22 post-Wave-5: unchanged."
+    notes: "Surface-flag branches re-trace the impact face (ProbeImpact) and read real Q3 surface flags + the true plane normal, so slick/clip reflect (porto/bounce) and noimpact fail (porto/unsupported) are genuinely reachable on the live path, and the portal normal is the real wall plane (falling back to -velocity only on a probe miss). PortalClearWithId host hook WIRED (GameWorld.cs:424). Remaining divergences: re-trace approximation, ClearAll-vs-ClearWithID scope, missing wireframe size gate, missing portal_in id check on the final out-portal branch. Re-verified 2026-06-22 post-Wave-5: unchanged."
 
   - id: weapon-porto.touch.portal_spawn
     name: "Realise the placed portal (Portal_SpawnIn/OutPortalAtTrace) as a warpzone"
@@ -180,7 +180,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Porto.cs:PlacePortal"
       - "src/XonoticGodot.Common/Gameplay/Weapons/Porto.cs:PortalSpawner"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:PlacePortoPortal"
-      - "src/XonoticGodot.Server/GameWorld.cs:412"
+      - "src/XonoticGodot.Server/GameWorld.cs:420"
     constants:
       - { name: "in/out pair link", base: "Portal_Connect two-way transform", port: "Warpzones.PlacePortoPortal pair link", match: true }
       - { name: "portal angles", base: "fixedvectoangles2(plane_normal, right_vector)", port: "normal from ProbeImpact true plane (FixedVecToAngles in warpzone)", match: false }
@@ -200,9 +200,9 @@ features:
       - "Portal angle derivation now uses the TRUE impact-plane normal recovered by ProbeImpact (was -velocity), but Base uses fixedvectoangles2(normal, right_vector); the port passes only the normal to the warpzone (right_vector is carried+reflected but not handed to PlacePortoPortal), so portal roll may still differ."
       - "Portal health (200, damageable) / 15 s lifetime / expire (porto/expire) + explode (porto/explode + ROCKET_EXPLODE) and MDL_PORTAL visuals are not realised here (warpzone-unit scope)."
     verification:
-      - { kind: code, ref: "GameWorld.cs:412-413 wires Porto.PortalSpawner -> Warpzones.PlacePortoPortal; confirmed live in Boot", result: pass }
+      - { kind: code, ref: "GameWorld.cs:420-421 wires Porto.PortalSpawner -> Warpzones.PlacePortoPortal; confirmed live in Boot", result: pass }
     confidence: medium
-    notes: "PortalSpawner is wired LIVE in GameWorld.Boot (line 412), so placement reaches the warpzone manager on the real match path. PortalClearWithId is ALSO wired (GameWorld.cs:416 -> Warpzones.ClearPortoPortal). Whether the realised warpzone teleports correctly + expires at 15s is unverified here (warpzone unit owns it). Re-verified 2026-06-22 post-Wave-5: wiring intact (set in Boot, unaffected by the Wave-5 ActivateGameType change)."
+    notes: "PortalSpawner is wired LIVE in GameWorld.Boot (line 420), so placement reaches the warpzone manager on the real match path. PortalClearWithId is ALSO wired (GameWorld.cs:424 -> Warpzones.ClearPortoPortal). Whether the realised warpzone teleports correctly + expires at 15s is unverified here (warpzone unit owns it). Re-verified 2026-06-22 (post-Wave-5 re-audit): wiring intact at GameWorld.cs:420/424; Warpzone.PlacePortoPortal (line 375) pairs in/out by (owner,id) and LinkPair-s them; angle derived from FixedVecToAngles(surfaceNormal) only (no right_vector roll handed over)."
 
   - id: weapon-porto.lifecycle.lifetime_self_destruct
     name: "Lifetime self-destruct + success cleanup (Think/Fail/Success)"
@@ -220,7 +220,7 @@ features:
       - { name: "clear porto_current on end", base: "yes", port: "yes (CleanupProjectile)", match: true }
       - { name: "Think-time not-owner handling", base: "playerid mismatch -> plain delete (no fail)", port: "ownerGone checked; cleanup runs uniformly (silent either way)", match: true }
       - { name: "throwable-drop on soft fail", base: "yes (W_ThrowNewWeapon if weaponthrowable + still has porto)", port: "missing", match: false }
-      - { name: "Portal_ClearWithID on combined fail (cnt<0)", base: "yes", port: "PortalClearWithId?.Invoke (Porto.cs:382) + host hook WIRED (GameWorld.cs:416)", match: true }
+      - { name: "Portal_ClearWithID on combined fail (cnt<0)", base: "yes", port: "PortalClearWithId?.Invoke (Porto.cs:386) + host hook WIRED (GameWorld.cs:424)", match: true }
       - { name: "lifetime-expiry sound", base: "W_Porto_Fail plays NO sound (silent on pure timeout)", port: "PortoThink plays NO sound (silent)", match: true }
     status:
       logic: partial
@@ -235,9 +235,9 @@ features:
       - "No throwable-drop: when a combined porto fails softly Base can drop it as a pickup (W_ThrowNewWeapon) with CENTER_PORTO_FAILED; the port just cleans up."
       - "No center-print notifications (CENTER_PORTO_CREATED_IN/OUT/FAILED) anywhere."
     verification:
-      - { kind: code, ref: "Porto.cs:PortoThink/PortoSuccess/CleanupProjectile (371-398) vs porto.qc:W_Porto_Think/_Fail/_Success; GameWorld.cs:416 wires PortalClearWithId", result: partial }
+      - { kind: code, ref: "Porto.cs:PortoThink/PortoSuccess/CleanupProjectile (371-398) vs porto.qc:W_Porto_Think/_Fail/_Success; GameWorld.cs:424 wires PortalClearWithId", result: partial }
     confidence: high
-    notes: "The combined-shot soft-fail in-portal cleanup is a REAL call — PortoThink invokes PortalClearWithId on cnt<0, and the host hook is wired to Warpzones.ClearPortoPortal (GameWorld.cs:416), so a placed in-portal is torn out on a soft timeout. Self-destruct timer faithful and live; slot carried through cleanup (no hardcoded slot-0); PortoThink silent (matches W_Porto_Fail). Remaining: throwable-drop and center-prints. Re-verified 2026-06-22 post-Wave-5: unchanged."
+    notes: "The combined-shot soft-fail in-portal cleanup is a REAL call — PortoThink invokes PortalClearWithId on cnt<0, and the host hook is wired to Warpzones.ClearPortoPortal (GameWorld.cs:424), so a placed in-portal is torn out on a soft timeout. Self-destruct timer faithful and live; slot carried through cleanup (no hardcoded slot-0); PortoThink silent (matches W_Porto_Fail). Remaining: throwable-drop and center-prints. Re-verified 2026-06-22 post-Wave-5: unchanged."
 
   - id: weapon-porto.lifecycle.death_reset_cleanup
     name: "Death / respawn cleanup (W_Porto_Remove, wr_resetplayer)"

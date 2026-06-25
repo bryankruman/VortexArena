@@ -2,16 +2,19 @@ unit: sv-intermission
 category: server
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-22"
-# Re-audited 2026-06-22 on branch claude/parity-port-waves AFTER the Wave-5 wiring pass (commit 66e378f,
-# on top of the Wave-1/2 implementation). Net change for this unit vs the prior re-audit: the map-vote
-# client UI is now genuinely WIRED on the listen-server path — NetGame.UpdateMapVotePanel feeds the panel
-# (candidates/counts/own-vote/winner) from the in-process MapVoting, AND a real cast path exists (number
-# keys 1..9 → C2S impulse → Commands.DispatchImpulse intercepts during MapVote.Running → MapVoting.CastVote).
-# So mapvote.client_ui moves dead→live(partial)/faithful and mapvote.server_core's vote now receives REAL
-# votes on a listen server (liveness partial→partial-but-better). No regressions. Everything else
-# (NextLevel hooks, input early-exit, nextmap overrides, nextmap broadcast, view-freeze, scoreboard
-# auto-show, autoscreenshot, cdtrack) is UNCHANGED from the prior audit. Intermission.cs itself is byte-for-
-# byte the Wave-1/2 state (the +10s auto-advance grace remains live & faithful).
+# Re-audited 2026-06-22 on branch claude/parity-port-waves AFTER the FULL Wave-5 pass (commits 66e378f
+# "partial" → 965a42f "re-verify" → 023ba70 "Wave 5 finish"; the prior baseline of this file was taken at
+# 66e378f only, so the two later commits are NEW for this unit). Net change vs that baseline: the player
+# INPUT EARLY-EXIT is now GENUINELY WIRED — GameWorld.cs:1337-1339 (landed in 023ba70) calls
+# Intermission.RequestExit() on the live per-player movement path whenever the match is in intermission and
+# the player presses Attack1/Jump/Attack2/Hook/Use (the EXACT 5 buttons Base IntermissionThink checks,
+# server/intermission.qc:501). So sv-intermission.timer.input_early_exit moves dead/stub → live/faithful,
+# and sv-intermission.timer.exittime's in-grace early-skip half (its only remaining gap) is now closed too.
+# The map-vote client UI + cast path stay as wired at the 66e378f baseline (UpdateMapVotePanel feeds the
+# panel; number-key 1..9 → impulse → Commands.DispatchImpulse → MapVoting.CastVote on the listen server).
+# No regressions. Everything else (NextLevel hooks, nextmap overrides, nextmap broadcast, view-freeze,
+# scoreboard auto-show, autoscreenshot, cdtrack) is UNCHANGED and still open. Intermission.cs itself is
+# byte-for-byte the Wave-1/2 state (the +10s auto-advance grace remains live & faithful).
 summary:
   feature_count: 15
   worst_gaps:
@@ -19,7 +22,6 @@ summary:
     - "NextLevel omits VoteReset, the centerprint kill (Kill_Notification NOTIF_ALL), WeaponStats_Shutdown, DumpStats, the MatchEnd_BeforeScores/MatchEnd mutator hooks, and the localcmd(sv_hook_gameend) — only winners/eventlog/playerstats/campaign/demo are ported."
     - "Scoreboard does not auto-show at intermission (Base force-draws at intermission==1, hides at ==2 for the mapvote); the port only shows it while +showscores is held."
     - "No SVC_INTERMISSION view freeze: local view is not locked to an intermission camera, viewmodel is not hidden (EF_NODRAW), health sentinel -2342 not set."
-    - "The in-grace per-player early-exit (press fire/jump/atck2/hook/use to skip the +10s hold) is still unwired (RequestExit has no input caller); the +10s auto-advance itself is live & faithful."
     - "No autoscreenshot stuffcmd / sv_autoscreenshot consumer (cl_autoscreenshot is now accepted by the server allowlist but nothing reads it), and no sv_intermission_cdtrack switch / target_music_kill at match end."
     - "DoNextMapOverride omits quit_when_empty, quit_and_redirect, and lastlevel overrides."
     - "Set_NextMap / Send_NextMap_To_Player broadcast is missing: clients never receive the queued _nextmap, so the scoreboard 'Next map: …' line (ScoreboardPanel.NextMap, drawn but never assigned) stays blank."
@@ -93,7 +95,7 @@ features:
       - { name: "no-player exittime sentinel", base: "-1", port: "-1", match: true }
       - { name: "input grace after exittime (s)", base: "10", port: "10 (InputGracePeriod)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
@@ -101,13 +103,13 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "The early-skip-on-input half of the grace is still not wired: Base advances IMMEDIATELY if a player presses fire/jump/atck2/hook/use during the [exittime, exittime+10] window; the port only auto-advances at the end of the window because RequestExit (the seam that would short-circuit it) has no input caller (see sv-intermission.timer.input_early_exit). So the +10s hold is always served in full instead of being skippable."
+    gaps: []
     verification:
-      - { kind: code-read, ref: "Intermission.Think (Intermission.cs:100-123): ExitTime<0 → request-only; else returns until now>=ExitTime, then flips at now>=ExitTime+InputGracePeriod (10s) or on _exitRequested. Live via GameWorld.CheckRulesAndIntermission. Intermission.cs byte-identical to Wave-1/2 (no change since ec788f7).", result: pass }
-      - { kind: code-read, ref: "Base server/intermission.qc:497-505 IntermissionThink: `if (time < intermission_exittime) return;` then `if (time < intermission_exittime + 10 && !(BUTTON_ATCK|JUMP|ATCK2|HOOK|USE)) return;` — confirms the 10s constant and the button early-skip.", result: pass }
+      - { kind: code-read, ref: "Intermission.Think (Intermission.cs:100-123): ExitTime<0 → request-only; else returns until now>=ExitTime, then flips at now>=ExitTime+InputGracePeriod (10s) or on _exitRequested. Live via GameWorld.CheckRulesAndIntermission. Intermission.cs byte-identical to Wave-1/2.", result: pass }
+      - { kind: code-read, ref: "In-grace early-skip NOW wired: GameWorld.cs:1337-1339 (landed 023ba70) calls Intermission.RequestExit() on the live player movement path when Intermission.Running && !ReadyToChangeLevel && (Attack1|Jump|Attack2|Hook|Use) — short-circuits the +10s grace exactly as Base.", result: pass }
+      - { kind: code-read, ref: "Base server/intermission.qc:497-505 IntermissionThink: `if (time < intermission_exittime) return;` then `if (time < intermission_exittime + 10 && !(BUTTON_ATCK|JUMP|ATCK2|HOOK|USE)) return;` — confirms the 10s constant and the 5-button early-skip.", result: pass }
     confidence: high
-    notes: "The +10s auto-advance grace is present and live (corrects the false `input grace = 0` baseline; constant = 10). ExitTime computation (delay with players, -1 without) faithful. logic stays `partial` because the in-grace button early-skip is unwired and the ExitTime<0 (no-player) path still depends on a RequestExit that never fires. UNCHANGED by Wave-5."
+    notes: "FIXED since the 66e378f baseline: the in-grace button early-skip is now wired (023ba70), so a player can skip the +10s hold by pressing fire/jump/atck2/hook/use, and the auto-advance still serves the full grace when no one presses. ExitTime computation (delay with players, -1 without) faithful, +10s grace constant faithful. logic now `faithful`; the no-player ExitTime=-1 path is intentionally request-only (nobody to press, nothing to advance for) and is no longer a defect now that RequestExit is a live caller."
 
   - id: sv-intermission.timer.input_early_exit
     name: "Player input skips the scoreboard (press fire/jump after the hold)"
@@ -116,22 +118,23 @@ features:
       - "server/intermission.qc:IntermissionThink"
     port_refs:
       - "src/XonoticGodot.Server/Intermission.cs:RequestExit"
+      - "src/XonoticGodot.Server/GameWorld.cs:1337"
     constants: []
     status:
-      logic: stub
+      logic: faithful
       values: na
-      timing: stub
-      presentation: missing
+      timing: faithful
+      presentation: faithful
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "RequestExit() exists but STILL has no caller (re-verified 2026-06-22: referenced only by its own definition + the class docs) — no input path (PHYS_INPUT_BUTTON_ATCK/JUMP/ATCK2/HOOK/USE) drives it, so a player cannot skip the intermission hold early. With no players (ExitTime=-1) the map can NEVER advance because only RequestExit advances that branch."
+    gaps: []
     verification:
-      - { kind: grep, ref: "RequestExit referenced only at its definition (Intermission.cs:92) + the class doc; no live caller in src/ or game/ (re-confirmed 2026-06-22, unchanged by Wave-5)", result: fail }
+      - { kind: grep, ref: "RequestExit NOW has a live caller: GameWorld.cs:1339 (landed in 023ba70 'Wave 5 finish', after the 66e378f baseline). Definition Intermission.cs:92; binary .dll matches are stale build artifacts.", result: pass }
+      - { kind: code-read, ref: "GameWorld.cs:1337-1339 — `if (Intermission.Running && !Intermission.ReadyToChangeLevel && (input.ButtonAttack1 || input.ButtonJump || input.ButtonAttack2 || input.ButtonHook || input.ButtonUse)) Intermission.RequestExit();` — on the live per-player PlayerThink/movement path, before the dead-player branch; consumed world-side by Intermission.Think via CheckRulesAndIntermission. The 5 buttons exactly match Base PHYS_INPUT_BUTTON_ATCK/JUMP/ATCK2/HOOK/USE (server/intermission.qc:501).", result: pass }
     confidence: high
-    notes: "Present-but-dead: the classic port failure mode, UNCHANGED by Wave-5. Base checks 5 buttons during the +10s grace; the port has the seam but never wires it. A normal match with players present DOES advance ~10s after the hold without input (the auto-advance grace); this row's remaining impact is (a) the player can't skip the hold early, and (b) the no-player ExitTime=-1 deadlock."
+    notes: "FIXED since the 66e378f baseline (the classic present-but-dead seam is now wired by 023ba70). A player pressing fire/jump/atck2/hook/use during the +10s grace skips the scoreboard immediately, matching Base. Both prior impacts are resolved: (a) the player can now skip the hold early, and (b) the no-player ExitTime=-1 path is request-only by design (no players → no input → nothing waiting for a map change), no longer a deadlock defect now that the seam is live."
 
   - id: sv-intermission.overtime.cascade
     name: "Overtime / sudden-death cascade (CheckRules_World)"

@@ -5,11 +5,11 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 15
   worst_gaps:
-    - "div0_evade reseed STILL broken: AntiCheat.PreThink (zeroes evade_offset every PlayerPreThink) still has zero callers post-Wave-5 — OnClientMove fires MutatorHooks.PlayerPreThink but never AntiCheat.PreThink, so the evade detector never re-arms per frame and reads differently from Base."
-    - "anticheat_report_to_eventlog STILL never invoked: no :anticheat: event-log verdict lines on disconnect — InfraClientDisconnect calls AntiCheat.Remove but not ReportToEventLog."
+    - "div0_evade reseed STILL broken: AntiCheat.PreThink (zeroes evade_offset every PlayerPreThink) STILL has zero callers post-Wave-5 — OnClientMove fires MutatorHooks.PlayerPreThink but never AntiCheat.PreThink, so the evade detector never re-arms per frame and reads differently from Base."
     - "Still no sv_cmd anticheat admin command: the on-demand per-client verdict report (Base sv_cmd.qc:248) is absent."
-    - "Teleporter fixangle suppression STILL not wired: Teleporters.cs:309 sets player.FixAngle but never calls AntiCheat.FixAngle; a legit teleport view-snap can inflate the cheat signal."
-    - "PingProvider STILL hardcoded to 0 (GameWorld.cs:823): fixangle suppression window is always 0.2s instead of min(0.4,ping*0.001)+0.2; EndFrame at GameWorld.cs:1410 still passes no fixAngleClients."
+    - "Teleporter fixangle suppression STILL not wired: Teleporters.cs:309 sets player.FixAngle but Teleporters.cs has zero AntiCheat references; a legit teleport view-snap can inflate the cheat signal."
+    - "EndFrame fixangle propagation STILL dead + PingProvider STILL hardcoded 0 (GameWorld.cs:855): EndFrame at GameWorld.cs:1540 passes no fixAngleClients, and the suppression window is always 0.2s instead of min(0.4,ping*0.001)+0.2."
+    - "anticheat_register_to_playerstats STILL not ported: no AddEvent calls reserve the anticheat slots at GameReport init (masked because the port's Event() accepts unregistered keys)."
 features:
   - id: sv-anticheat.core.power_mean
     name: "Power-mean accumulator (MEAN_DECLARE/accumulate/evaluate)"
@@ -36,7 +36,7 @@ features:
     gaps: []
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/ServerInfraTests.cs:AntiCheat_Mean_PowerMean", result: pass }
-      - { kind: code, ref: "AntiCheat.cs:25-39 matches lib/math.qh mean_accumulate/mean_evaluate bodies branch-for-branch (re-verified 2026-06-22; class unchanged by Wave 1-5)", result: pass }
+      - { kind: code, ref: "AntiCheat.cs:24-39 matches lib/math.qh mean_accumulate/mean_evaluate bodies branch-for-branch (re-verified 2026-06-22; class unchanged by Wave 1-5)", result: pass }
     confidence: high
     notes: "Exponents 1/2/3/4/5/7/10 all match; every anticheat statistic is non-zero exponent so the additive path is live."
 
@@ -65,7 +65,7 @@ features:
       - { kind: test, ref: "tests/XonoticGodot.Tests/ServerInfraTests.cs:AntiCheat_MovementOddity_BotlikeReversalScoresHigh", result: pass }
       - { kind: code, ref: "AntiCheat.cs:296-301 == anticheat.qc:58-65 (re-verified 2026-06-22)", result: pass }
     confidence: high
-    notes: "Fed by anticheat_physics strafebot_old; uses QMath.Pi = M_PI. Live via Physics() at GameWorld.cs:1278/1288."
+    notes: "Fed by anticheat_physics strafebot_old; uses QMath.Pi = M_PI. Live via Physics() at GameWorld.cs:1408/1418."
 
   - id: sv-anticheat.detect.div0_evade
     name: "div0_evade server-driven dodge-prediction probe"
@@ -92,12 +92,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL OPEN: AntiCheat.PreThink (zeroes evade_offset) has no live caller. OnClientMove (GameWorld.cs:1170-1174) fires MutatorHooks.PlayerPreThink but never AntiCheat.PreThink(p), so the div0_evade reseed branch never re-arms per frame; the detector accumulates against a single stale phase sample and the div0_evade verdict diverges from Base for identical player behavior."
+      - "STILL OPEN: AntiCheat.PreThink (zeroes evade_offset) has no live caller. OnClientMove (GameWorld.cs:1290-1294) fires MutatorHooks.PlayerPreThink but never AntiCheat.PreThink(p), so the div0_evade reseed branch never re-arms per frame; the detector accumulates against a single stale phase sample and the div0_evade verdict diverges from Base for identical player behavior."
     verification:
-      - { kind: code, ref: "repo-wide grep 2026-06-22: AntiCheat.PreThink has zero callers (only the definition AntiCheat.cs:165); OnClientMove fires MutatorHooks.PlayerPreThink not AntiCheat.PreThink", result: fail }
+      - { kind: code, ref: "repo-wide grep 2026-06-22: AntiCheat.PreThink has zero callers (only the definition AntiCheat.cs:165); OnClientMove (GameWorld.cs:1290) fires MutatorHooks.PlayerPreThink not AntiCheat.PreThink", result: fail }
       - { kind: code, ref: "Physics() evade branch AntiCheat.cs:207-220 matches anticheat.qc:73-86", result: pass }
     confidence: high
-    notes: "Unchanged by Wave 1-5. Within-frame evade math is faithful AND live (Physics runs per usercmd); the per-frame re-arm that Base relies on (PreThink) is dead. After the first Physics call EvadeOffset!=0 forever, so only the else-branch ever runs."
+    notes: "Unchanged by Wave 1-5. Within-frame evade math is faithful AND live (Physics runs per usercmd at GameWorld.cs:1408); the per-frame re-arm that Base relies on (PreThink) is dead. After the first Physics call EvadeOffset!=0 forever, so only the else-branch ever runs."
 
   - id: sv-anticheat.detect.strafebot_new_snapaim
     name: "strafebot_new turn-angle + idle snap-aim signal/noise + snapback"
@@ -180,7 +180,7 @@ features:
     verification:
       - { kind: code, ref: "Physics() AntiCheat.cs:274-292 match anticheat.qc:146-163 (re-verified 2026-06-22)", result: pass }
     confidence: high
-    notes: "Per-usercmd dt drive (GameWorld batch, GameWorld.cs:1270-1278) keeps servertime/dt faithful vs a single per-tick step."
+    notes: "Per-usercmd dt drive (GameWorld batch, GameWorld.cs:1400-1408) keeps servertime/dt faithful vs a single per-tick step."
 
   - id: sv-anticheat.frame.evasion_phase_walk
     name: "Global div0_evade evasion-delta phase walk (start+end frame)"
@@ -193,8 +193,8 @@ features:
     port_refs:
       - "src/XonoticGodot.Server/AntiCheat.cs:StartFrame"
       - "src/XonoticGodot.Server/AntiCheat.cs:EndFrame"
-      - "src/XonoticGodot.Server/GameWorld.cs:1103"
-      - "src/XonoticGodot.Server/GameWorld.cs:1410"
+      - "src/XonoticGodot.Server/GameWorld.cs:1217"
+      - "src/XonoticGodot.Server/GameWorld.cs:1540"
     constants:
       - { name: "evasion_delta += frametime*(0.5+random()) twice per frame", base: "yes (startframe + endframe)", port: "yes (StartFrame + EndFrame)", match: true }
     status:
@@ -208,7 +208,7 @@ features:
     divergence_rationale: "RNG is a seeded deterministic Random(0x4317) vs Base unseeded random(); the phase walk is intentionally noisy so the exact sequence is irrelevant to verdicts. Deterministic seed chosen for reproducible headless sims."
     gaps: []
     verification:
-      - { kind: code, ref: "StartFrame called GameWorld.cs:1103, EndFrame GameWorld.cs:1410, both advance _evasionDelta (re-verified 2026-06-22)", result: pass }
+      - { kind: code, ref: "StartFrame called GameWorld.cs:1217, EndFrame GameWorld.cs:1540, both advance _evasionDelta (re-verified 2026-06-22)", result: pass }
     confidence: high
     notes: "Base uses unseeded random(); the port seeds the RNG for determinism. The walk is intentionally noisy so seed parity is immaterial — recorded as intended_divergence rather than a gap."
 
@@ -222,14 +222,14 @@ features:
     port_refs:
       - "src/XonoticGodot.Server/AntiCheat.cs:FixAngle"
       - "src/XonoticGodot.Server/AntiCheat.cs:EndFrame"
-      - "src/XonoticGodot.Server/GameWorld.cs:918"
-      - "src/XonoticGodot.Server/GameWorld.cs:1410"
+      - "src/XonoticGodot.Server/GameWorld.cs:1016"
+      - "src/XonoticGodot.Server/GameWorld.cs:1540"
     constants:
       - { name: "fixangle_endtime = servertime + ANTILAG_LATENCY + 0.2 (formula)", base: "min(0.4,ping*0.001)+0.2", port: "min(0.4,ping*0.001)+0.2", match: true }
-      - { name: "applied on spawn (PutPlayerInServer)", base: "yes", port: "yes (GameWorld.cs:918)", match: true }
-      - { name: "applied on teleport (teleporters.qc:310)", base: "yes", port: "no (Teleporters.cs:309 sets player.FixAngle but never calls AntiCheat.FixAngle)", match: false }
-      - { name: "applied via endframe FOREACH_CLIENT(it.fixangle)", base: "yes (world.qc:2505 -> anticheat_endframe)", port: "no (EndFrame called GameWorld.cs:1410 with no fixAngleClients arg)", match: false }
-      - { name: "ping fed to window", base: "real per-client ping", port: "AntiCheat.PingProvider STILL hardcoded 0f (GameWorld.cs:823)", match: false }
+      - { name: "applied on spawn (PutPlayerInServer)", base: "yes", port: "yes (GameWorld.cs:1016, InfraClientSpawn)", match: true }
+      - { name: "applied on teleport (teleporters.qc:310)", base: "yes", port: "no (Teleporters.cs:309 sets player.FixAngle; Teleporters.cs has zero AntiCheat references)", match: false }
+      - { name: "applied via endframe FOREACH_CLIENT(it.fixangle)", base: "yes (world.qc:2505 -> anticheat_endframe)", port: "no (EndFrame called GameWorld.cs:1540 with no fixAngleClients arg)", match: false }
+      - { name: "ping fed to window", base: "real per-client ping", port: "AntiCheat.PingProvider STILL hardcoded 0f (GameWorld.cs:855)", match: false }
     status:
       logic: partial
       values: partial
@@ -240,15 +240,15 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL OPEN: Teleporter fixangle suppression not wired. Teleporters.cs:309 sets player.FixAngle but never calls AntiCheat.FixAngle, so after a teleport snap-aim/strafebot_new is not suppressed and a legit teleport view-snap can inflate the strafebot_new / idle_snapaim signal (false positive)."
-      - "STILL OPEN: EndFrame's FOREACH_CLIENT(.fixangle) propagation is dead. GameWorld.cs:1410 always calls EndFrame(FrameTime, Time) with no fixAngleClients, so any non-spawn forced view change never opens the suppression window."
-      - "STILL OPEN: PingProvider hardcoded to 0 (GameWorld.cs:823: AntiCheat.PingProvider = _ => 0f), so the suppression window is always 0.2s instead of min(0.4,ping*0.001)+0.2, too short for laggy remote clients on a dedicated host."
+      - "STILL OPEN: Teleporter fixangle suppression not wired. Teleporters.cs:309 sets player.FixAngle but Teleporters.cs has zero AntiCheat references, so after a teleport snap-aim/strafebot_new is not suppressed and a legit teleport view-snap can inflate the strafebot_new / idle_snapaim signal (false positive)."
+      - "STILL OPEN: EndFrame's FOREACH_CLIENT(.fixangle) propagation is dead. GameWorld.cs:1540 always calls EndFrame(Simulation.FrameTime, Time) with no fixAngleClients, so any non-spawn forced view change never opens the suppression window."
+      - "STILL OPEN: PingProvider hardcoded to 0 (GameWorld.cs:855: AntiCheat.PingProvider = _ => 0f), so the suppression window is always 0.2s instead of min(0.4,ping*0.001)+0.2, too short for laggy remote clients on a dedicated host."
     verification:
       - { kind: code, ref: "FixAngle formula AntiCheat.cs:168-169 matches anticheat.qc:246 + ANTILAG_LATENCY", result: pass }
-      - { kind: code, ref: "Teleporters.cs:309 sets player.FixAngle; no AntiCheat.FixAngle call anywhere in Teleporters (grep 2026-06-22)", result: fail }
-      - { kind: code, ref: "GameWorld.cs:1410 EndFrame() called without fixAngleClients; GameWorld.cs:823 PingProvider=0f (re-verified 2026-06-22)", result: fail }
+      - { kind: code, ref: "Teleporters.cs:309 sets player.FixAngle; grep 2026-06-22: zero AntiCheat references in Teleporters.cs", result: fail }
+      - { kind: code, ref: "GameWorld.cs:1540 EndFrame() called without fixAngleClients; GameWorld.cs:855 PingProvider=0f (re-verified 2026-06-22)", result: fail }
     confidence: high
-    notes: "Unchanged by Wave 1-5. Spawn path is faithful+live (GameWorld.cs:918). Teleport + endframe propagation + real ping are the gaps. EndFrame supports a fixAngleClients arg but the live caller passes none. Listen-server/bot ping is 0 anyway, so the ping gap only bites remote clients on a dedicated host."
+    notes: "Unchanged by Wave 1-5. Spawn path is faithful+live (GameWorld.cs:1016, InfraClientSpawn). Teleport + endframe propagation + real ping are the gaps. EndFrame supports a fixAngleClients arg but the live caller passes none. Listen-server/bot ping is 0 anyway, so the ping gap only bites remote clients on a dedicated host."
 
   - id: sv-anticheat.lifecycle.init
     name: "anticheat_init (jointime stamp + speedhack baseline clear) on connect"
@@ -258,7 +258,7 @@ features:
       - "common/state.qc:59"
     port_refs:
       - "src/XonoticGodot.Server/AntiCheat.cs:Init"
-      - "src/XonoticGodot.Server/GameWorld.cs:885"
+      - "src/XonoticGodot.Server/GameWorld.cs:962"
     constants:
       - { name: "speedhack_offset = 0; jointime = servertime", base: "yes", port: "yes", match: true }
     status:
@@ -272,9 +272,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "InfraClientConnect calls AntiCheat.Init(p, Time) GameWorld.cs:885; Remove on disconnect GameWorld.cs:952 (re-verified 2026-06-22)", result: pass }
+      - { kind: code, ref: "InfraClientConnect calls AntiCheat.Init(p, Time) GameWorld.cs:962; Remove on disconnect GameWorld.cs:1056 (re-verified 2026-06-22)", result: pass }
     confidence: high
-    notes: "Remove() on disconnect (GameWorld.cs:952) frees the per-player state, analogous to QC edict teardown (state.qc detach)."
+    notes: "Remove() on disconnect (GameWorld.cs:1056) frees the per-player state, analogous to QC edict teardown (state.qc detach)."
 
   - id: sv-anticheat.report.eventlog
     name: "anticheat_report_to_eventlog (:anticheat: verdict lines on disconnect)"
@@ -284,24 +284,24 @@ features:
       - "common/state.qc:88"
     port_refs:
       - "src/XonoticGodot.Server/AntiCheat.cs:ReportToEventLog"
+      - "src/XonoticGodot.Server/GameWorld.cs:1055"
     constants:
-      - { name: "gated by autocvar_sv_eventlog", base: "default 0", port: "method exists, ungated (gate is the dead call site, not the method)", match: false }
+      - { name: "gated by autocvar_sv_eventlog", base: "default 0", port: "gated at call site: if (Cvars.Bool(\"sv_eventlog\")) (GameWorld.cs:1054)", match: true }
       - { name: ":anticheat:_time:<playerid>:<elapsed> then per-detector line", base: "yes", port: "yes (format faithful)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: na
-      presentation: na
+      presentation: faithful
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "STILL OPEN: anticheat_report_to_eventlog has no live caller. Base calls it on client disconnect (state.qc:88, ClientState_detach). The port's InfraClientDisconnect (GameWorld.cs:929) calls AntiCheat.Remove (GameWorld.cs:952) but never ReportToEventLog, so no :anticheat: verdict lines reach the event log on disconnect — only the end-of-match XonStat feed carries values."
+    gaps: []
     verification:
-      - { kind: code, ref: "repo-wide grep 2026-06-22: ReportToEventLog has zero callers (only the definition AntiCheat.cs:319); InfraClientDisconnect calls Remove not ReportToEventLog", result: fail }
+      - { kind: code, ref: "WAVE-5 FIX: InfraClientDisconnect (GameWorld.cs:1051-1055) now calls AntiCheat.ReportToEventLog(p, Time, GameLog.Echo) gated on Cvars.Bool(\"sv_eventlog\") BEFORE AntiCheat.Remove (GameWorld.cs:1056); GameLog.Echo is the live event-log sink (re-verified 2026-06-22)", result: pass }
     confidence: high
-    notes: "Unchanged by Wave 1-5. The format/logic of the method is faithful (sv_eventlog gating lives at the QC call site, which is absent here); it is purely a wiring gap. The GameLog/sv_eventlog plumbing exists (GameWorld.cs:826/GameLog) but is not used for anticheat."
+    notes: "FIXED in Wave 5: was dead in baseline, now wired on the live disconnect path. The QC self-gates on autocvar_sv_eventlog; the port gates at the call site (sv_eventlog cvar exists, default 0 — Cvars.cs:370) and feeds GameLog.Echo (the same sink Chat.cs:417 uses). Format/logic of the method already faithful; this was purely a wiring gap, now closed."
 
   - id: sv-anticheat.report.sv_cmd
     name: "sv_cmd anticheat admin on-demand verdict report"
@@ -323,9 +323,9 @@ features:
     gaps:
       - "STILL OPEN: No sv_cmd anticheat admin command. Base sv_cmd.qc:248 lets an admin dump anticheat_report_to_eventlog for a chosen client on demand. The port's server command table has no anticheat verb, so an admin cannot pull a live per-client verdict at all."
     verification:
-      - { kind: code, ref: "no anticheat verb in the port server command table; AntiCheat exposes no command handler (re-verified 2026-06-22)", result: fail }
+      - { kind: code, ref: "no anticheat verb in the port server command table; AntiCheat exposes no command handler; grep 2026-06-22 finds no \"anticheat\" sv_cmd verb", result: fail }
     confidence: medium
-    notes: "Unchanged by Wave 1-5. Distinct from the disconnect eventlog path; both are dead in the port. The underlying ReportToEventLog method exists and is faithful, so wiring is the only work."
+    notes: "Unchanged by Wave 1-5. Distinct from the disconnect eventlog path (now FIXED). The underlying ReportToEventLog method exists and is faithful, so the on-demand admin command is the only remaining work for this row."
 
   - id: sv-anticheat.report.playerstats
     name: "anticheat_report_to_playerstats (XonStat end-of-match feed)"
@@ -349,7 +349,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "PlayerStats.AnticheatReporter wired to AntiCheat.ReportToPlayerStats GameWorld.cs:833; invoked in FinalizePlayer PlayerStats.cs:238 (re-verified 2026-06-22)", result: pass }
+      - { kind: code, ref: "PlayerStats.AnticheatReporter wired to AntiCheat.ReportToPlayerStats GameWorld.cs:833; invoked in FinalizePlayer (PlayerStats.cs FinalizePlayer, called GameWorld.cs:1049 on disconnect) (re-verified 2026-06-22)", result: pass }
     confidence: medium
     notes: "Wired into PlayerStats and invoked at FinalizePlayer; not behaviorally observed end-to-end (no playerstats round-trip test for the anticheat rows). Event-id strings match PLAYERSTATS_ANTICHEAT."
 
@@ -361,7 +361,7 @@ features:
       - "common/playerstats.qc:339"
     port_refs: []
     constants:
-      - { name: "AddEvent('anticheat-_time') + AddEvent('anticheat-<name>') per detector at GameReport init", base: "yes", port: "no (no AddEvent calls for anticheat slots; PlayerStats.Init registers score/accuracy/achievement/kills slots only)", match: false }
+      - { name: "AddEvent('anticheat-_time') + AddEvent('anticheat-<name>') per detector at GameReport init", base: "yes", port: "no (no AddEvent calls for anticheat slots; PlayerStats.Init registers alivetime/latency/wins/accuracy/etc. slots only)", match: false }
     status:
       logic: missing
       values: na
@@ -372,9 +372,9 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL OPEN: anticheat_register_to_playerstats is not ported. Base pre-registers each anticheat event id via PlayerStats_GameReport_AddEvent (playerstats.qc:339) so unregistered events are dropped. The port's PlayerStats.Init (PlayerStats.cs:98-114) registers score/accuracy/achievement/kills slots only; Event() auto-accepts any key, so the anticheat feed still works WITHOUT registration — but the registration step itself is absent, a structural divergence from Base's register-then-emit contract."
+      - "STILL OPEN: anticheat_register_to_playerstats is not ported. Base pre-registers each anticheat event id via PlayerStats_GameReport_AddEvent (playerstats.qc:339) so unregistered events are dropped. The port's PlayerStats.Init (PlayerStats.cs:105-116) registers alivetime/latency/wins/matches/joins/accuracy/handicap slots only; Event() auto-accepts any key, so the anticheat feed still works WITHOUT registration — but the registration step itself is absent, a structural divergence from Base's register-then-emit contract."
     verification:
-      - { kind: code, ref: "PlayerStats.Init (PlayerStats.cs:98-114) registers score/accuracy/achievement/kills slots but no anticheat slots; Event() accepts unregistered keys so the omission is masked (re-verified 2026-06-22)", result: fail }
+      - { kind: code, ref: "PlayerStats.Init (PlayerStats.cs:105-116) registers no anticheat slots; grep 2026-06-22: no anticheat AddEvent in PlayerStats.cs; Event() accepts unregistered keys so the omission is masked", result: fail }
     confidence: high
     notes: "Unchanged by Wave 1-5. Low impact because the port's Event() does not gate on registration (unlike QC, which drops unregistered events). Listed for completeness; the playerstats feed is live regardless."
 
@@ -397,16 +397,15 @@ features:
       timing: na
       presentation: faithful
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "STILL OPEN: Display/Detectors are correct but only reachable via ReportToPlayerStats (live); the event-log + sv_cmd paths that surface these verdict strings to an admin remain dead (see sv-anticheat.report.eventlog and sv-anticheat.report.sv_cmd)."
+    gaps: []
     verification:
       - { kind: test, ref: "ServerInfraTests.cs:AntiCheat_Display_Verdicts", result: pass }
       - { kind: code, ref: "Detectors[] (AntiCheat.cs:121-141) == ANTICHEATS macro (anticheat.qc:190-208) name/tmin/mi/ma for all 18 rows (re-verified 2026-06-22)", result: pass }
     confidence: high
-    notes: "All 18 names + thresholds match the ANTICHEATS macro exactly. ReportToPlayerStats feeds the raw values (live); the human-readable verdict only surfaces via the dead eventlog/sv_cmd paths."
+    notes: "FIXED in Wave 5 (via the eventlog wiring): all 18 names + thresholds match the ANTICHEATS macro exactly. Display/Detectors are now reachable via BOTH the live ReportToPlayerStats feed AND the now-live ReportToEventLog disconnect path (GameWorld.cs:1055). The only remaining surface gap is the on-demand sv_cmd path (sv-anticheat.report.sv_cmd, still missing)."
 
   - id: sv-anticheat.spectate.evade_angle_copy
     name: "anticheat_spectatecopy (spectator body follows spectatee evade angle)"
@@ -416,20 +415,21 @@ features:
       - "server/client.qc:1837"
     port_refs:
       - "src/XonoticGodot.Server/AntiCheat.cs:SpectateCopy"
+      - "src/XonoticGodot.Server/GameWorld.cs:913"
+      - "src/XonoticGodot.Server/ClientManager.cs:580"
     constants:
       - { name: "viewer.angles = spectatee.anticheat_div0_evade_v_angle", base: "yes", port: "yes (logic)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: na
-      presentation: stub
+      presentation: faithful
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "STILL OPEN: AntiCheat.SpectateCopy has no live caller. A spectator's body angles do not inherit the spectatee's evade-tracked angle. The port's own ClientManager.SpectateCopy (private, ClientManager.cs:544, called ClientManager.cs:398/529) is a separate mirror that omits the anticheat angle-copy. Cosmetic (spectator body yaw) but a divergence from Base."
+    gaps: []
     verification:
-      - { kind: code, ref: "repo grep 2026-06-22: AntiCheat.SpectateCopy has zero callers; the only SpectateCopy callers (ClientManager.cs:398,529) target the private ClientManager.SpectateCopy (ClientManager.cs:544) which omits the anticheat angle-copy", result: fail }
+      - { kind: code, ref: "WAVE-5 FIX: GameWorld.cs:913 sets Clients.SpectateAngleCopy = (viewer,spectatee) => AntiCheat.SpectateCopy(viewer,spectatee); ClientManager.SpectateCopy tail (ClientManager.cs:580) invokes SpectateAngleCopy?.Invoke; SpectateCopy is reached on the live human-spectate path (ServerNet.cs:515 DriveObserverJoins -> ClientManager.ObserverOrSpectatorThink -> Spectate/SpectateNext -> SpectateCopy, plus the per-tick follow at ClientManager.cs:413) (re-verified 2026-06-22)", result: pass }
     confidence: high
-    notes: "Unchanged by Wave 1-5. Low gameplay impact; listed for completeness of the div0_evade SPECTATORS path (Base server/client.qc:1837)."
+    notes: "FIXED in Wave 5: was dead+stub in baseline (private ClientManager.SpectateCopy omitted the anticheat angle-copy). Now ClientManager.SpectateCopy's tail delegates to SpectateAngleCopy, which GameWorld wires to AntiCheat.SpectateCopy, and the spectate path is live for human peers via ServerNet.DriveObserverJoins (ServerNet.cs:515). The anticheat angle-copy now overrides the raw .Angles mirror exactly as Base server/client.qc:1837."

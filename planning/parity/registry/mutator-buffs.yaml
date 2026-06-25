@@ -2,13 +2,21 @@ unit: mutator-buffs
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-22"
-# Re-audited 2026-06-22 (post-Wave-1/2, branch claude/parity-port-waves @ ec788f7). Port source
-# unchanged since the prior post-implementation pass (2eea096); independent adversarial re-verification
-# confirms every status below. 0 fixes / 0 regressions vs baseline (baseline already captured Wave-2 truth).
+# Re-audited 2026-06-22 (post-Wave-5, branch claude/parity-port-waves @ 023ba70). The baseline file
+# predated the Wave-5 edits to BuffsMutator.cs (commits 66e378f / 023ba70), which added the buff-item
+# RESPAWN/RELOCATE lifecycle: BuffInNeedKill+BuffRespawn (lava/slime/sky relocation), MoveToRandomMapLocation
+# via BallEntity.RandomMapLocation with '0 0 200' launch + tracebox unstick + random_lifetime arming +
+# KA_RESPAWN sound, the MaybeRandomize/MaybeRelocate gates (now honor g_buffs_randomize & (teamplay?2:1) and
+# g_buffs_random_location/spawnflag-64 instead of always re-randomizing), and the BuffThink lifetime cycle.
+# Independent adversarial re-verification: 2 gaps genuinely closed (needkill_respawn, random_location), 1 row
+# improved-but-still-partial (respawn_cooldown), 0 regressions. The two PRIMARY liveness blockers persist:
+# still no item_buff map spawnfunc and no FilterItem powerup-replace, so buffs remain unobtainable on stock
+# maps unless g_buffs_spawn_count>0 is explicitly set. All perk rows (resistance/medic/vampire/jump/bash/
+# disability/vengeance/luck/inferno/swapper/...) re-verified live and faithful, unchanged.
 summary:
   feature_count: 34
   worst_gaps:
-    - "Map buff items (item_buff_* + Q3/QL/WOP compat classnames) still never spawn: no spawnfunc exists, so buffs are unobtainable on stock maps even with g_buffs=-1 (on)."
+    - "Map buff items (item_buff_* + Q3/QL/WOP compat classnames) still never spawn: no spawnfunc exists, so buffs are unobtainable on stock maps even with g_buffs=-1 (on) — the only obtain path is the explicit g_buffs_spawn_count>0 auto-seed (default 0)."
     - "FilterItem powerup-replacement (g_buffs>0 mode) is still not implemented, so the second obtain path is also dead."
     - "Disability buff fire-rate slow is LIVE (WeaponRateFactor x1.5), but projectile-speed (WeaponSpeedFactor x0.7) and monster run/walk (MonsterMove x0.7) slows are still absent."
     - "No carrier buff_model glow, no buff_Effect particle trail, and no WP_Buff radar/HUD waypoint on buff items."
@@ -65,7 +73,7 @@ features:
     verification:
       - { kind: code, ref: "grep item_buff/Buff_CompatName: GiveItems console-only; ItemSpawnFuncs only aliases to powerups; no buff spawnfunc", result: fail }
     confidence: high
-    notes: "Unchanged. Primary liveness blocker. The port's SpawnBuff() still builds a stripped item only via SpawnInitialBuffs (count default 0)."
+    notes: "Unchanged. Primary liveness blocker. The port's SpawnBuff() (BuffsMutator.cs:241-255) still builds a stripped item only via SpawnInitialBuffs (count default 0). Wave-5 added item-respawn/relocate lifecycle but NOT a new obtain path — the spawnfunc is still absent."
 
   - id: buffs.item.auto_spawn
     name: "Auto-spawn buffs when none exist (g_buffs_spawn_count)"
@@ -88,11 +96,11 @@ features:
     divergence_rationale: null
     gaps:
       - "Default count is 0 so this never runs unless explicitly configured (matches Base default)."
-      - "QC defers via InitializeEntity(buffs_DelayedInit, INITPRIO_FINDTARGET) and sets spawnflags|=64 (always randomize/relocate) on each seed; port spawns immediately at Hook() with no spawnflag-64 random-location and a stripped item (no waypoint/glow/cooldown state machine). The spawned item sets a model when buff.Model is present (SpawnBuff:240) but the MDL_BUFF buff model itself is unmapped."
+      - "QC defers via InitializeEntity(buffs_DelayedInit, INITPRIO_FINDTARGET) and sets spawnflags|=64 (always randomize/relocate) on each seed; port now ALSO sets BuffAlwaysRelocate=true on each auto-seed (SpawnInitialBuffs:229), runs MaybeRandomize, arms BuffLifetime, and starts the BuffThink lifetime cycle — so the spawnflag-64 always-relocate + random_lifetime behavior is now modelled. Still spawns immediately at Hook() (not via the INITPRIO_FINDTARGET defer) and the item remains stripped (no waypoint/glow/cooldown buff_activetime state machine). The spawned item sets a model when buff.Model is present (SpawnBuff:250) but the MDL_BUFF buff model itself is unmapped."
     verification:
-      - { kind: code, ref: "SpawnInitialBuffs gated on g_buffs>0 && g_buffs_spawn_count>0 (default 0); BuffsMutator.cs:213-225", result: pass }
+      - { kind: code, ref: "SpawnInitialBuffs gated on g_buffs>0 && g_buffs_spawn_count>0 (default 0); now sets BuffAlwaysRelocate + MaybeRandomize + BuffLifetime + BuffThink per seed (BuffsMutator.cs:224-234)", result: pass }
     confidence: high
-    notes: "Unchanged. Only way to obtain a buff in the port today; still requires explicit g_buffs_spawn_count>0."
+    notes: "Improved by Wave-5: each auto-seed now carries the always-relocate spawnflag + lifetime cycle. Still the only way to obtain a buff in the port today; still requires explicit g_buffs_spawn_count>0."
 
   - id: buffs.item.touch_pickup
     name: "Buff pickup + autoreplace on touch"
@@ -128,23 +136,28 @@ features:
     layer: [authority]
     base_refs:
       - "common/mutators/mutator/buffs/sv_buffs.qc:buff_Touch (ITEM_TOUCH_NEEDKILL -> buff_Respawn)"
-    port_refs: []
-    constants: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:BuffInNeedKill"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:BuffTouch"
+    constants:
+      - { name: "DPCONTENTS_NODROP (lava/slime)", base: "0x80000000", port: "0x80000000", match: true }
+      - { name: "Q3SURFACEFLAG_SKY", base: "0x4", port: "0x4", match: true }
     status:
-      logic: missing
-      values: na
-      timing: na
-      presentation: missing
-      audio: missing
-      liveness: na
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: faithful
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "When a buff item touches lava/slime/void (NEEDKILL contents), QC calls buff_Respawn to relocate it; port BuffTouch still has no NEEDKILL branch, so a buff item could settle in lava and be stuck/lost."
+      - "Reachable only once a buff item exists (gated on g_buffs_spawn_count>0; see buffs.item.spawnfunc/auto_spawn)."
+      - "QC's ITEM_TOUCH_NEEDKILL is the engine's NODROP/sky contents test; port re-derives it with a zero-length trace at the item and checks DpHitContents&NODROP | DpHitQ3SurfaceFlags&SKY. Equivalent in practice; QC's mask also covers DPCONTENTS_SLIME/LAVA/SKY/BODY/DONOTENTER but NODROP is what lava/slime brushes carry."
     verification:
-      - { kind: code, ref: "BuffTouch has no ITEM_TOUCH_NEEDKILL guard", result: fail }
+      - { kind: code, ref: "BuffTouch:274-279 calls BuffRespawn when BuffInNeedKill(item) true; BuffInNeedKill (262-267) zero-length trace, NoDropContents 0x80000000 + Q3SurfaceFlagSky 0x4", result: pass }
     confidence: high
-    notes: "Unchanged. Tied to the missing buff_Respawn relocation (buffs.item.random_location)."
+    notes: "Closed by Wave-5: the NEEDKILL branch now relocates a buff item that settles in lava/slime/void/sky via buff_Respawn (KA_RESPAWN sound included). Liveness still gated on a buff item existing."
 
   - id: buffs.item.respawn_cooldown
     name: "Buff item cooldown / respawn cycle (buff_Think + buff_SetCooldown)"
@@ -164,18 +177,18 @@ features:
       values: faithful
       timing: partial
       presentation: missing
-      audio: missing
+      audio: partial
       liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Port respawn is still a single Think after cooldown_respawn; no buff_activetime countdown, no activate-cooldown arming on round start, no buff_active state machine, no buff_Customize light pulse."
-      - "No SND_STRENGTH_RESPAWN + EFFECT_ITEM_RESPAWN on reactivation; no waypoint build-finished timer; no g_buffs_pickup_anyway instant-respawn."
-      - "Owner-gone / dead / frozen / wrong-buff respawn conditions collapsed to an unconditional re-randomizing Think (ScheduleRespawn:290-301)."
+      - "Port respawn is still a single Think after cooldown_respawn (now also clears Owner and runs MaybeRandomize/MaybeRelocate); no buff_activetime countdown, no activate-cooldown arming on round start (Base buff_Reset uses g_buffs_cooldown_activate; port only models cooldown_respawn), no buff_active/buff_activetime state machine, no buff_Customize light pulse."
+      - "No SND_STRENGTH_RESPAWN + EFFECT_ITEM_RESPAWN on reactivation; no waypoint build-finished timer; no g_buffs_pickup_anyway instant-respawn. (KA_RESPAWN now plays on a buff_Respawn RELOCATION via BuffRespawn, but not on a plain cooldown reactivation.)"
+      - "Owner-gone / dead / frozen / wrong-buff respawn conditions (QC buff_Think lines 332-336) are still collapsed: the port unconditionally clears the owner and re-arms after the respawn cooldown."
     verification:
-      - { kind: code, ref: "ScheduleRespawn vs buff_Think state machine", result: fail }
+      - { kind: code, ref: "ScheduleRespawn:320-339 sets Owner=null, Think after cooldown_respawn runs MaybeRandomize/MaybeRelocate + re-activates + arms BuffThink; vs buff_Think state machine", result: fail }
     confidence: medium
-    notes: "Unchanged. Simplified respawn; activate/respawn cooldown VALUES match but the state machine is heavily reduced."
+    notes: "Improved by Wave-5 (owner-clear + randomize/relocate gating + lifetime cycle) but still partial: no buff_activetime/buff_active countdown, no activate-cooldown-on-round-start, owner-condition checks collapsed. cooldown VALUES match Base."
 
   - id: buffs.item.random_location
     name: "Random location / lifetime / randomize-on-reset (buff_Respawn / buff_Reset)"
@@ -184,28 +197,32 @@ features:
       - "common/mutators/mutator/buffs/sv_buffs.qc:buff_Respawn"
       - "common/mutators/mutator/buffs/sv_buffs.qc:buff_Reset"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:ScheduleRespawn"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:BuffRespawn"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:MaybeRandomize"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:MaybeRelocate"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:BuffThink"
     constants:
-      - { name: "g_buffs_random_location", base: "0", port: "none", match: false }
-      - { name: "g_buffs_random_lifetime", base: "30", port: "none", match: false }
-      - { name: "g_buffs_randomize", base: "0", port: "always re-randomizes on respawn", match: false }
-      - { name: "g_buffs_random_location_attempts", base: "10", port: "none", match: false }
+      - { name: "g_buffs_random_location", base: "0", port: "0 (read in MaybeRelocate)", match: true }
+      - { name: "g_buffs_random_lifetime", base: "30", port: "read; arms BuffLifetime", match: true }
+      - { name: "g_buffs_randomize", base: "0", port: "0 (& (teamplay?2:1) gate honored)", match: true }
+      - { name: "g_buffs_random_location_attempts", base: "10", port: "not read (folded into RandomMapLocation)", match: false }
+      - { name: "relocate launch velocity", base: "'0 0 200' (+ randomvec*100 on fallback)", port: "Prandom.Vec()*100 + (0,0,200)", match: true }
     status:
       logic: partial
-      values: missing
-      timing: missing
+      values: partial
+      timing: partial
       presentation: missing
-      audio: missing
-      liveness: dead
+      audio: faithful
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No MoveToRandomMapLocation relocation, no SelectSpawnPoint fallback, no '0 0 200' launch, no lifetime-based re-spawn, no teamplay-gated randomize, no EFFECT_ELECTRO_COMBO x2, no WaypointSprite_Ping, no SND_KA_RESPAWN on relocation."
-      - "Port still always re-randomizes the buff type on respawn regardless of g_buffs_randomize (which defaults to 0 = never randomize)."
+      - "MoveToRandomMapLocation relocation IS now done (BallEntity.RandomMapLocation, which folds in the SelectSpawnPoint fallback), with the '0 0 200' launch + a mins*1.5/maxs*1.5 tracebox unstick + g_buffs_random_lifetime arming + SND_KA_RESPAWN on relocation. The g_buffs_randomize teamplay gate (& (teamplay?2:1)) and g_buffs_random_location/spawnflag-64 relocate gate are now honored (no longer an unconditional re-randomize)."
+      - "Still missing: g_buffs_random_location_attempts is not read (RandomMapLocation uses its own fixed sampling rather than the attempts/256/1024 box-content rejection of MoveToRandomMapLocation), so the relocation's content-validity check differs from QC. No EFFECT_ELECTRO_COMBO x2 visual at the relocation, no WaypointSprite_Ping."
     verification:
-      - { kind: code, ref: "ScheduleRespawn re-randomizes unconditionally; no relocation/lifetime", result: fail }
+      - { kind: code, ref: "BuffRespawn:380-404 (RandomMapLocation + '0 0 200' + tracebox unstick + lifetime + KA_RESPAWN); MaybeRandomize:356-363 (g_buffs_randomize & (teamplay?2:1)); MaybeRelocate:368-374 (g_buffs_random_location || alwaysRelocate); reached from BuffThink lifetime + ScheduleRespawn + needkill", result: pass }
     confidence: high
-    notes: "Unchanged. Whole random-location/lifetime feature absent; port's unconditional re-randomize is itself a divergence from the default (0)."
+    notes: "Closed (logic/values mostly) by Wave-5: random-location relocation + lifetime cycle + KA_RESPAWN now implemented and reachable, and the prior unconditional-re-randomize divergence is FIXED (now gated by g_buffs_randomize). Residual: the attempts-based content-rejection sampling, electro-combo VFX, waypoint ping; liveness still gated on a buff item existing."
 
   - id: buffs.item.new_type_weighting
     name: "Weighted random buff selection (buff_NewType / seencount)"
@@ -228,9 +245,9 @@ features:
     gaps:
       - "Recently-seen buffs are not deprioritized (no buff_seencount increment / weight), so the same buff type can recur more often than in Base."
     verification:
-      - { kind: code, ref: "RandomBuff uses Prandom.RangeInt over AvailableBuffs (BuffsMutator.cs:206-210)", result: pass }
+      - { kind: code, ref: "RandomBuff uses Prandom.RangeInt over AvailableBuffs (BuffsMutator.cs:207-211); re-randomize-on-respawn is now gated by g_buffs_randomize via MaybeRandomize (no longer unconditional)", result: pass }
     confidence: high
-    notes: "Unchanged. buff_Available exclusions (per-buff cvar / melee / vampire) are faithful — see buffs.item.available."
+    notes: "Unchanged (the uniform-vs-seencount divergence). Wave-5 fixed the *separate* always-re-randomize bug (now gated by g_buffs_randomize — see buffs.item.random_location). buff_Available exclusions (per-buff cvar / melee / vampire) are faithful — see buffs.item.available."
 
   - id: buffs.item.available
     name: "buff_Available (per-buff enable + exclusions)"

@@ -1,12 +1,11 @@
 unit: cl-view
 category: client
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-22"  # re-audited post Wave-5 (claude/parity-port-waves)
 summary:
   feature_count: 21
   worst_gaps:
-    - "Classic chase_active third-person cam is dead: no host sets CameraMode, and chase_back/chase_up/chase_front/chase_overhead/chase_pitchangle are ignored (menu sliders dead). Spectator third-person (View_SpectatorCamera, CAMERA_SPECTATOR) is also absent — spectating follows the target in first person."
-    - "view_punchvector (origin recoil kick) is dropped entirely — ServerNet never writes it, ClientNet never decodes it, nothing adds it to the view origin (the server-side decay runs but the value goes nowhere)."
+    - "Spectator third-person camera (View_SpectatorCamera / STAT(CAMERA_SPECTATOR) toggle / IMP_weapon_drop cycling) is still absent — spectating a player renders FIRST person (NetGame:4174 follow-cam returns before the chase logic). The user chase_active third-person cam IS now live (Wave-5), but chase_front (spectating-only) is hardcoded off."
     - "HUD_Damage draws a solid red ColorRect instead of the gfx/blood splatter texture, and the gentle-mode (cl_gentle) solid/randomized-colour path is not ported."
     - "GLSL blur/sharpen post-process (damage/content blur, powerup edge-sharpen, View_BlurTest) and night-vision are not implemented (engine shader cvars, no Godot analogue)."
     - "Velocity-zoom, zoom-scroll, and the zoomscript auto-zoom (fov<=59.5 -> +button9) are not implemented (menu cvars exist but no live reader)."
@@ -221,30 +220,31 @@ features:
       - "lib/csqcmodel/cl_player.qc:CSQCPlayer_ApplyChase"
       - "client/view.qc:View_SpectatorCamera"
     port_refs:
-      - "game/client/FirstPersonView.cs:CameraMode (enum Chase, never set)"
+      - "game/client/FirstPersonView.cs:ApplyClassicChase (FirstPersonView:401)"
+      - "game/client/FirstPersonView.cs:UpdateCamera (classicChase branch, ~247)"
+      - "game/net/NetGame.cs:2611 (CameraMode = chase_active != 0 ? Chase : None)"
     constants:
-      - { name: "chase_back", base: "user (menu 10..100)", port: "ignored", match: false }
-      - { name: "chase_up", base: "user (menu 10..50)", port: "ignored", match: false }
-      - { name: "chase_front", base: "0", port: "ignored", match: false }
-      - { name: "chase_overhead", base: "0", port: "ignored", match: false }
-      - { name: "chase_pitchangle", base: "user", port: "ignored", match: false }
+      - { name: "chase_back", base: "user (menu 10..100; DP default 48)", port: "live Cvar(\"chase_back\", 48)", match: true }
+      - { name: "chase_up", base: "user (menu 10..50; DP default 24)", port: "live Cvar(\"chase_up\", 24)", match: true }
+      - { name: "chase_front", base: "0 (spectating only)", port: "live Cvar(\"chase_front\", 0); but spectating hardcoded false → selfie branch dead", match: false }
+      - { name: "chase_overhead", base: "0", port: "live Cvar(\"chase_overhead\", 0); 5x5 grid trace ported", match: true }
+      - { name: "chase_pitchangle", base: "user", port: "live Cvar(\"chase_pitchangle\", 0)", match: true }
     status:
-      logic: stub
-      values: missing
-      timing: partial
-      presentation: stub
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: partial
       audio: na
-      liveness: dead
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No code anywhere sets CameraMode (verified: zero `CameraMode =` assignments in game/ or src/), so the user chase_active cam never engages in a match."
-      - "Even if engaged, chase_back/chase_up/chase_front/chase_overhead/chase_pitchangle are all ignored — the menu sliders for chase_back/chase_up (DialogSettingsGame.cs:489-496) are dead."
-      - "Spectator third-person (View_SpectatorCamera + STAT(CAMERA_SPECTATOR) 1/2 toggle, IMP_weapon_drop cycling) is not ported — spectating follows the target in FIRST person via SampleRemote (NetGame:3420)."
+      - "Spectator third-person (View_SpectatorCamera + STAT(CAMERA_SPECTATOR) 1/2 toggle, IMP_weapon_drop cycling) is NOT ported — spectating a player renders FIRST person: the follow-cam (NetGame:4174) builds its own first-person ViewState and returns before the chase_active CameraMode logic runs."
+      - "chase_front (the frontal selfie cam) is effectively dead: ApplyClassicChase hardcodes `spectating = false` (FirstPersonView:~415), and chase_front is QC-guarded to spectating only — so it never engages. The view-flip + overhead-while-spectating paths are untested live."
     verification:
-      - { kind: grep, ref: "no `CameraMode =` assignment in repo; chase_* cvars only in DialogSettingsGame.cs; spectate path uses SampleRemote first-person", result: fail }
+      - { kind: code, ref: "NetGame:2611 sets CameraMode = chase_active!=0 (live render path); ApplyClassicChase (FirstPersonView:401) ports CSQCPlayer_ApplyChase: pull-back along forward by chase_back + lift chase_up + world trace + 8/4 back-off, chase_overhead 5x5 grid lowest-ceiling, chase_pitchangle; chase_* read live via Cvar(); menu radio/sliders wired (DialogSettingsGame:457,487,490,496). Spectate follow-cam still first-person (NetGame:4174); spectating=false disables chase_front.", result: partial }
     confidence: high
-    notes: "FirstPersonView has a Chase enum that pulls back along -forward, but it is never selected and reads none of the chase_* knobs. ApplyEventChase honours CameraMode!=None for the geometry, but nothing sets it."
+    notes: "Wave-5 closed the BIG gap: the user chase_active third-person cam is now genuinely LIVE — NetGame:2611 sets CameraMode from the chase_active cvar each frame (the menu Perspective radio + chase_back/chase_up sliders are no longer dead), and ApplyClassicChase faithfully ports CSQCPlayer_ApplyChase (default pull-back branch + the chase_overhead 5x5 grid + chase_pitchangle, with world box/line traces). STILL OPEN: (1) the dedicated SPECTATOR camera (View_SpectatorCamera / CAMERA_SPECTATOR toggle / weapon-drop cycling) — spectating renders first-person; (2) chase_front, guarded to spectating in QC, is wired but unreachable because the local-player chase sets spectating=false. liveness: partial (own-player chase live; spectator-chase path absent)."
 
   - id: cl-view.kick.punch_angle
     name: "Punch-angle recoil kick (view angle, networked + decayed)"
@@ -281,24 +281,27 @@ features:
       - "lib/csqcmodel/cl_player.qc:CSQCPlayer_CalcRefdef (vieworg += view_punchvector)"
       - "common/physics/player.qc:PM_check_punch (punchvector decay 30u/s)"
     port_refs:
-      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:CheckPunch (decay only)"
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:CheckPunch (decay, PlayerPhysics:1630)"
+      - "game/net/ServerNet.cs:2063 (writes PunchVector, owner block)"
+      - "game/net/ClientNet.cs:814 (reads PunchVector)"
+      - "game/net/NetGame.cs:4283 (PunchOriginQuake = _client.PunchVector)"
+      - "game/client/FirstPersonView.cs:UpdateCamera (camQuake += st.PunchOriginQuake, first-person branch only)"
     constants:
-      - { name: "punchvector_decay_u_per_s", base: "30", port: "30 (decayed server-side, PlayerPhysics:1591), but never networked/applied", match: false }
+      - { name: "punchvector_decay_u_per_s", base: "30", port: "30 (decayed server-side, PlayerPhysics:1630)", match: true }
     status:
-      logic: partial
-      values: missing
-      timing: na
-      presentation: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "The view origin never kicks: ServerNet does NOT write PunchVector (only PunchAngle, ServerNet:1980), ClientNet does NOT decode it, and nothing adds it to the rendered origin. The server-side decay runs but the value goes nowhere."
+    gaps: []
     verification:
-      - { kind: grep, ref: "ServerNet writes only PunchAngle; ClientNet has only a PunchAngle field; no PunchVector reader / view application; CheckPunch:1588-1592 decays it locally", result: fail }
+      - { kind: code, ref: "Full seam wired end-to-end: PunchVector decayed 30u/s (PlayerPhysics:1630), networked in the owner block right after PunchAngle (ServerNet:2063 / ClientNet:814), fed to the shared view as PunchOriginQuake (NetGame:4283), and added to the rendered camera origin in the FIRST-PERSON branch ONLY (FirstPersonView UpdateCamera: `if(!ChaseActive) camQuake += st.PunchOriginQuake`) so a death/frozen/chase pull-back is never jolted — matching cl_player.qc:570 `vieworg += view_punchvector`.", result: pass }
     confidence: high
-    notes: "Verified that NO stock Xonotic code sets view_punchvector non-zero (only resets + decay; freezetag/server-client.qc/util.qc occurrences are all `= '0 0 0'` resets or bmodel angle-coupling). So the missing origin kick is effectively invisible in stock play — the gap is real code-wise but observable impact is nil under default content."
+    notes: "Wave-5 closed this: the view-origin recoil kick is now wired end-to-end and applied to the rendered eye (first-person only, suppressed during chase). Decay matches PM_check_punch (30 u/s). NOTE: no STOCK Xonotic content drives view_punchvector non-zero (only resets/decay; Minelayer reuses .PunchVector as a movedir alias, not a view kick), so the on-screen effect is still nil under default content — but the parity seam is genuinely faithful + live now, so any future origin kick renders correctly."
 
   - id: cl-view.bob.view_bob
     name: "View bobbing (vertical cl_bob, horizontal cl_bob2, fall-bob cl_bobfall)"

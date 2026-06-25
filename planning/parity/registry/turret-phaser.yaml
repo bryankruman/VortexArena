@@ -6,9 +6,9 @@ summary:
   feature_count: 12
   worst_gaps:
     - "Beam is single-hit in the port; Base FireImoBeam penetrates and damages/slows EVERY entity in the line"
-    - "Phaser beam sound (SND_TUR_PHASER) never plays — only a single electro_fire; no 2s re-trigger, no impact (neximpact), no silence-on-end"
     - "No beam model visual (MDL_TUR_PHASER_BEAM) and no head charge/discharge frame animation (tr_think)"
     - "Aim uses shotTimeCompensate+zPredict lead flags that Base phaser does NOT set (aim_flags = TFL_AIM_LEAD only)"
+    - "Phaser beam sound is now FIXED (Wave-5): turrets/phaser hum + 2s re-trigger + neximpact impact + silence-on-end all live"
     - "Respawn time defaults to 60 (shared Init default) instead of the cfg's 90"
     - "Beam never registers on g_bot_dodge (bot_dodge=true, bot_dodgerating=shot_dmg) — bots do not avoid the phaser beam; the port has no g_bot_dodge projectile-avoidance system at all"
 features:
@@ -253,27 +253,44 @@ features:
       - "common/turrets/turret/phaser_weapon.qc:beam_think"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:Attack"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:BeamThink"
     constants:
-      - { name: "beam sound", base: "SND_TUR_PHASER (turrets/phaser)", port: "weapons/electro_fire.wav", match: false }
-      - { name: "re-trigger period", base: "2s (shot_spread clock)", port: "none", match: false }
-      - { name: "impact sound", base: "neximpact (SND_PhaserTurretAttack_IMPACT)", port: "none", match: false }
-      - { name: "silence on end", base: "SND_Null on beam end", port: "none", match: false }
+      - { name: "beam sound", base: "SND_TUR_PHASER (turrets/phaser)", port: "turrets/phaser (SndPhaser)", match: true }
+      - { name: "beam sound channel", base: "CH_SHOTS_SINGLE (4)", port: "SoundChannel.Body (4)", match: true }
+      - { name: "re-trigger period", base: "2s (shot_spread = time + 2)", port: "2s (HumPeriod, nextHum carried via delegate)", match: true }
+      - { name: "impact sound", base: "neximpact (SND_PhaserTurretAttack_IMPACT)", port: "weapons/neximpact (SndImpact)", match: true }
+      - { name: "impact channel", base: "CH_SHOTS (-4)", port: "SoundChannel.ShotsAuto (-4)", match: true }
+      - { name: "volume/atten", base: "VOL_BASE / ATTEN_NORM", port: "VolBase / AttenNorm", match: true }
+      - { name: "silence on end", base: "SND_Null on CH_SHOTS_SINGLE at beam end", port: "Sound.Stop(beam, Body)", match: true }
     status:
-      logic: partial
-      values: missing
-      timing: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
       presentation: na
-      audio: missing
-      liveness: dead
+      audio: faithful
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "The characteristic phaser hum (SND_TUR_PHASER) is never played; the port plays a single weapons/electro_fire.wav at fire-start (PhaserTurret.Attack:95) instead. No 2s re-trigger while burning, no neximpact impact cue, and no SND_Null stop on beam end. The TUR_PHASER sample is registered (SoundsList.cs:143) but never invoked by PhaserTurret."
+    gaps: []
     verification:
-      - { kind: code, ref: "phaser_weapon.qc SND_TUR_PHASER x3 vs PhaserTurret.Attack single electro_fire", result: fail }
-      - { kind: code, ref: "grep TUR_PHASER usage in port -> registered (SoundsList.cs:143) but no Play call", result: fail }
+      - { kind: code, ref: "all.inc:152 SOUND(TUR_PHASER, turrets/phaser) == PhaserTurret.SndPhaser; registered SoundsList.cs:143", result: pass }
+      - { kind: code, ref: "Attack:103 Sound.Play(beam, Body, turrets/phaser) on spawn + Attack:109 PlayAt(impact.EndPos, ShotsAuto, neximpact)", result: pass }
+      - { kind: code, ref: "BeamThink:132-137 2s re-trigger (now-nextHum>0 -> Play + re-arm), nextHum carried via re-parked delegate", result: pass }
+      - { kind: code, ref: "BeamThink:125 Sound.Stop(beam, Body) on end == QC sound(this, CH_SHOTS_SINGLE, SND_Null)", result: pass }
+      - { kind: value, ref: "CH_SHOTS_SINGLE=4==SoundChannel.Body, CH_SHOTS=-4==SoundChannel.ShotsAuto (Services.cs:111,120)", result: pass }
     confidence: high
-    notes: "electro_fire IS a Base sound but only the player-manned wr_think branch fires it; the turret-edict beam uses SND_TUR_PHASER. So the port plays the wrong cue and omits the rest. STILL OPEN — unchanged this wave."
+    notes: >-
+      FIXED this wave (Wave-5, commit 023ba70 area). Baseline played a single weapons/electro_fire.wav
+      at fire-start and nothing else (dead/missing). Now: the SND_TUR_PHASER hum (turrets/phaser) starts
+      on the BEAM edict on CH_SHOTS_SINGLE so it follows the beam and can be silenced on end; it re-triggers
+      every 2s while burning (shot_spread clock, here carried as nextHum through the re-parked think delegate);
+      the neximpact impact cue plays once at the spawn-time trace endpoint on CH_SHOTS; and the hum is stopped
+      (Sound.Stop) on beam termination. All sample names, channels, volume/atten verified against Base.
+      The Attack/BeamThink path is the same live RunCombat->fire path already confirmed live for the beam-spawn
+      row, so liveness flips dead->live. One faithful simplification vs QC: Base's turret-edict branch does NOT
+      play electro_fire (that is the player-manned wr_think branch only) — the port correctly drops it. The QC
+      also nudges tur_head.frame (1/10) for the head anim alongside these sounds; that visual remains a separate
+      gap tracked under presentation.beam_visual_and_head_anim, not here.
 
   - id: turret-phaser.presentation.beam_visual_and_head_anim
     name: "Beam model visual (MDL_TUR_PHASER_BEAM) + head charge/discharge animation (tr_think)"

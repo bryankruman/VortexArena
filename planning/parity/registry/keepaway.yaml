@@ -5,11 +5,11 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 14
   worst_gaps:
-    - "Bot ka role is functionally inert: FindBall() queries classname 'keepaway_ball' but the live ball spawns as 'keepawayball', AND the carrier is tracked via Entity.GtCarrier (not Entity.Owner, which the bot reads — Owner is only set on DROP) — so bots never find/contest the ball and play like DM. Both defects re-confirmed post-Wave-5."
-    - "Carrier highspeed multiplier (g_keepaway_ballcarrier_highspeed) is still unimplemented (no PlayerPhysics hook; comment-only deferral in Keepaway.cs)."
+    - "Carrier highspeed multiplier (g_keepaway_ballcarrier_highspeed) is still unimplemented (no PlayerPhysics hook; comment-only deferral in Keepaway.cs:51)."
     - "Ball/carrier WAYPOINT SPRITES + radar tracking (g_keepawayball_tracking) are still not spawned/attached (sprite TYPES are registered in the catalog, but nothing emits them on the ball or carrier and the cvar is never read)."
     - "Particles still missing: EFFECT_KA_BALL_RESPAWN at relocate and EFFECT_BALL_SPARKS on world-touch are not emitted (sounds for these events now play)."
     - "Three of four drop triggers (use-key / disconnect / observe) are still unwired; only the death-drop is live."
+    - "Bot ka role's two material defects are now FIXED (FindBall queries 'keepawayball'; RoleKeepaway reads ball.GtCarrier) — it is live + finds/contests the ball; residual is the collapsed carrier/collector split + no Bot_ForbidAttack."
 features:
   - id: keepaway.ball.spawn
     name: "Ball spawn at map start (single keepawayball)"
@@ -428,25 +428,25 @@ features:
     constants:
       - { name: "ball_goalrating_scale", base: "8000", port: "RatingBall = 8000f", match: true }
       - { name: "routerating_dist", base: "2000", port: "2000f", match: true }
-      - { name: "ball_class", base: "keepawayball", port: "FindBall queries 'keepaway_ball'", match: false }
-      - { name: "carrier_field", base: "ball.owner (set on pickup, ka_TouchEvent:147)", port: "Entity.GtCarrier (Owner only set on DROP); bot reads ball.Owner", match: false }
+      - { name: "ball_class", base: "keepawayball", port: "FindBall queries 'keepawayball' (BotObjectiveRoles.cs:292)", match: true }
+      - { name: "carrier_field", base: "ball.owner (set on pickup, ka_TouchEvent:147)", port: "Entity.GtCarrier (port split: GtCarrier=carry, Owner=previous_owner/lockout); bot now reads ball.GtCarrier", match: true }
     status:
       logic: partial
       values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL OPEN / REACHABLE-BUT-BROKEN: RoleKeepaway is wired into the live bot role table (BotRoles.cs:99 'ka'/'keepaway'/'tka' → RoleKeepaway), and a real ball entity now exists on the live path — BUT FindBall() (BotObjectiveRoles.cs:277) still queries classname 'keepaway_ball' while the live ball spawns as 'keepawayball' (BallEntity.cs:105, == Base new(keepawayball)). So FindBall always returns null and the bot falls back to plain DM behaviour. This class-string mismatch was a baseline gap and is NOT fixed (re-confirmed post-Wave-5)."
-      - "SECOND DEFECT (material now the ball is live): RoleKeepaway reads ball.Owner to identify the carrier (BotObjectiveRoles.cs:249,260), but the carry path sets Entity.GtCarrier (AttachToCarrier, EntityGametypeState.cs:224), NOT Entity.Owner — in Base ka_TouchEvent sets ball.owner=toucher (sv_keepaway.qc:147), but the port deliberately split owner into GtCarrier (carry) + Owner (previous_owner/lockout, set only on DropFromCarrier:321). So even if the classname matched, a CARRIED ball's carrier would not be seen by the bot (carryingBall would be false, ball.Owner null). The collector/carrier split would misbehave."
-      - "STILL OPEN: no Bot_ForbidAttack equivalent (Base forbids attacking when neither bot nor target carries and a held ball exists)."
-      - "STILL OPEN: collector/carrier split is collapsed into one RoleKeepaway (Base has two havocbot_role_ka_carrier/collector); a structural simplification."
+      - "FIXED (was the worst gap): RoleKeepaway is live (set on the brain at bot creation — BotPopulation.cs:414 / BotController.cs:101 via BotRoles.ChooseRole; 'ka'/'keepaway'/'tka' → RoleKeepaway, BotRoles.cs:99) and now ACTUALLY engages the ball. FindBall() queries classname 'keepawayball' (BotObjectiveRoles.cs:292), matching the live spawned ball (BallEntity.cs:105 / Base new(keepawayball) sv_keepaway.qc:261) — the old 'keepaway_ball' mismatch is gone. RoleKeepaway reads ball.GtCarrier (BotObjectiveRoles.cs:255,267), which is the field AttachToCarrier actually sets (EntityGametypeState.cs:224, via BallEntity.AttachToCarrier → Keepaway.PickUp) — the old ball.Owner read (Owner is only set on DROP) is gone. So a loose ball is chased and a carried ball's carrier is correctly identified."
+      - "STILL OPEN: no Bot_ForbidAttack equivalent (Base sv_keepaway.qc:542 forbids attacking when neither bot nor target carries and a held ball exists)."
+      - "STILL OPEN (logic, why status stays partial): the collector/carrier split is collapsed into one RoleKeepaway (Base has two havocbot_role_ka_carrier sv_keepaway.qc:351 / havocbot_role_ka_collector:374 with the carrier ForbidAttack/flee behaviour); a structural simplification — the bot finds + contests the ball but does not switch to the dedicated carrier role."
     verification:
-      - { kind: codetrace, ref: "FindBall 'keepaway_ball' (BotObjectiveRoles.cs:277) vs live ball classname 'keepawayball' (BallEntity.cs:105, Base new(keepawayball) sv_keepaway.qc:261) — never matches", result: fail }
-      - { kind: codetrace, ref: "RoleKeepaway reads ball.Owner (BotObjectiveRoles.cs:249,260); AttachToCarrier sets GtCarrier not Owner (EntityGametypeState.cs:224); Owner set only on DropFromCarrier (BallEntity.cs:321)", result: fail }
+      - { kind: codetrace, ref: "FindBall queries 'keepawayball' (BotObjectiveRoles.cs:292) == live ball classname (BallEntity.cs:105, Base new(keepawayball) sv_keepaway.qc:261) — now matches", result: pass }
+      - { kind: codetrace, ref: "RoleKeepaway reads ball.GtCarrier (BotObjectiveRoles.cs:255,267); AttachToCarrier sets GtCarrier (EntityGametypeState.cs:224) on PickUp → carrier seen", result: pass }
+      - { kind: codetrace, ref: "Role is live: BotRoles.ChooseRole('ka') → RoleKeepaway assigned to BotBrain.Role at spawn (BotPopulation.cs:414 / BotController.cs:101); brain runs it on its strategy clock", result: pass }
       - { kind: value, ref: "RatingBall=8000f == Base goalrating_ball 8000; routerating 2000f == Base", result: pass }
     confidence: high
-    notes: "Role dispatch + ball entity are both live now, but the bot still can't engage: the FindBall classname is wrong AND it reads the wrong carrier field. Rating values remain faithful. Two concrete one-line-ish fixes (classname 'keepaway_ball'→'keepawayball'; carrier read ball.GtCarrier not ball.Owner) would make this live. Unchanged from baseline."
+    notes: "FIXED post-baseline (Wave 5): both material defects (FindBall classname 'keepaway_ball'→'keepawayball'; carrier read ball.Owner→ball.GtCarrier) are corrected, so the role is genuinely live — bots find and contest the ball instead of playing DM. Rating values stay faithful. Logic remains partial only for the structural carrier/collector split + the missing Bot_ForbidAttack flee behaviour."

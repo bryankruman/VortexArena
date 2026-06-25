@@ -8,7 +8,6 @@ summary:
     - "Monsters drop no loot and their normal drop is not suppressed (MonsterDropItem hook chain does not exist in the port)."
     - "Secondary Blaster does not work during the round countdown (Overkill does not subscribe the live PlayerPreThink chain)."
     - "No item-respawn waypoints for surviving health/armor; no OK items injected into the random-items pool (neither hook chain exists)."
-    - "ForbidRandomStartWeapons handler is dead: FireForbidRandomStartWeapons has no caller anywhere in the port."
     - "Enable predicate is narrower than Base: missing the !instagib / !weaponarena-gametype / g_mod_balance==\"Overkill\" guards (can double-activate)."
     - "MUTATOR_ONADD precache_all_playermodels(ok_player) and the g_overkill_items list are never built (player model + random-pool source missing)."
     - "Mod-name strings (':OK', ', Overkill', SetModname 'Overkill') and the cl_overkill cvar_settemp sync are absent."
@@ -219,7 +218,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "OnSetStartItems added at HookOrder.Last (OverkillMutator.cs:99); SetStartItems.Call live at SpawnSystem.cs:711; GiveLoadout also re-applied in OnPlayerSpawn", result: pass }
+      - { kind: code, ref: "OnSetStartItems added at HookOrder.Last (OverkillMutator.cs:99); SetStartItems.Call live at SpawnSystem.cs:767; GiveLoadout also re-applied in OnPlayerSpawn", result: pass }
     confidence: high
     notes: "Base sets start_weapons = warmup_start_weapons = ok_start_items; the port loadout is a single set so warmup equality is implied but not separately modeled. UNCHANGED by Wave-2 (was already faithful/live)."
   - id: overkill.countdown.blaster
@@ -239,9 +238,9 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "During an active-but-not-started round, pressing ATCK2 does not fire the secondary Blaster: Overkill does not subscribe the PlayerPreThink chain (which IS live — PlayerPreThink.Call at GameWorld.cs:1174). Players cannot blaster-jump during the countdown, and the button is not consumed. UNCHANGED by Wave-2; re-verified 2026-06-22 post-impl."
+      - "During an active-but-not-started round, pressing ATCK2 does not fire the secondary Blaster: Overkill does not subscribe the PlayerPreThink chain (which IS live — PlayerPreThink.Call at GameWorld.cs:1294). Players cannot blaster-jump during the countdown, and the button is not consumed. UNCHANGED; re-verified 2026-06-22 post-impl."
     verification:
-      - { kind: code, ref: "OverkillMutator subscribes 8 chains (OverkillMutator.cs:93-100), none is PlayerPreThink; the chain itself is live at GameWorld.cs:1174", result: fail }
+      - { kind: code, ref: "OverkillMutator subscribes 8 chains (OverkillMutator.cs:93-100), none is PlayerPreThink; the chain itself is live at GameWorld.cs:1294", result: fail }
     confidence: high
     notes: "Only matters in round-based gametypes (e.g. CA/freezetag) run under Overkill; the live seam exists, Overkill simply never wires onto it."
   - id: overkill.filter.items_and_powerup_replace
@@ -349,20 +348,19 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs:OnForbidRandomStartWeapons"
     constants: []
     status:
-      logic: stub
+      logic: faithful
       values: na
       timing: na
       presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Handler exists and returns true, but the ForbidRandomStartWeapons chain only fires inside FireForbidRandomStartWeapons (MutatorHooks.cs:356-360), which has NO caller anywhere in the port (grep FireForbidRandomStartWeapons → only the definition). So it never runs. Instagib/Nix/MeleeOnly subscribe the same dead chain — none takes effect either. UNCHANGED by Wave-2 (contrast SetWeaponArena, which DID get a live caller)."
+    gaps: []
     verification:
-      - { kind: code, ref: "ForbidRandomStartWeapons.Call only at MutatorHooks.cs:359 inside FireForbidRandomStartWeapons; FireForbidRandomStartWeapons has zero callers in src/", result: fail }
+      - { kind: code, ref: "OnForbidRandomStartWeapons returns true unconditionally (OverkillMutator.cs:325), matching Base. FireForbidRandomStartWeapons (MutatorHooks.cs:382-386 → ForbidRandomStartWeapons.Call) is now LIVE: called at SpawnSystem.cs:901, gating GiveRandomWeapons (randomCount > 0 && !FireForbidRandomStartWeapons(p)). So under Overkill the random-start grant is suppressed on the live spawn path.", result: pass }
     confidence: high
-    notes: "Still dead: the spawn path that should call FireForbidRandomStartWeapons (the random-start-weapons branch) never invokes it."
+    notes: "Wave-5 FIX (dead→live, stub→faithful). The baseline marked this dead: FireForbidRandomStartWeapons had no caller. SpawnSystem now invokes it on the random-start-weapons branch (SpawnSystem.cs:901), so Overkill's force-true actually suppresses GiveRandomWeapons. Instagib/Nix/MeleeOnly subscribe the same now-live chain and also take effect."
   - id: overkill.set_weapon_arena_off
     name: "SetWeaponArena -> 'off'"
     layer: [authority]
@@ -382,9 +380,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "OnSetWeaponArena sets args.Arena = \"off\" and returns false to continue the chain (OverkillMutator.cs:327-331); SetWeaponArena.Call is now LIVE in ComputeStartItems (SpawnSystem.cs:679) and the warmup loadout path (SpawnSystem.cs:892), and the resolved arena drives ExpandWeaponArena. Verified the overkill enable path adds the handler.", result: pass }
+      - { kind: code, ref: "OnSetWeaponArena sets args.Arena = \"off\" and returns false to continue the chain (OverkillMutator.cs:327-331); SetWeaponArena.Call is LIVE in ComputeStartItems (SpawnSystem.cs:735) and the warmup loadout path (SpawnSystem.cs:951), and the resolved arena drives ExpandWeaponArena (SpawnSystem.cs:736). Verified the overkill enable path adds the handler.", result: pass }
     confidence: high
-    notes: "Wave-2 FIX (dead→live, stub→faithful). The baseline marked this dead — SpawnSystem now calls SetWeaponArena.Call directly on both the live start-items and warmup paths, so Overkill's force-\"off\" is honored, suppressing any configured g_weaponarena. (FireSetWeaponArena wrapper is unused; the direct .Call sites are the live ones.)"
+    notes: "Wave-2 FIX (dead→live, stub→faithful), re-confirmed 2026-06-22. SpawnSystem calls SetWeaponArena.Call directly on both the live start-items and warmup paths, so Overkill's force-\"off\" is honored, suppressing any configured g_weaponarena. (FireSetWeaponArena wrapper is unused; the direct .Call sites are the live ones. Line numbers shifted vs prior audit: 679→735, 892→951.)"
   - id: overkill.naming.mod_strings
     name: "Mod-name strings: BuildMutatorsString ':OK', PrettyString ', Overkill', SetModname 'Overkill'; cl g_overkill cvar_settemp"
     layer: [authority, presentation]
@@ -407,9 +405,10 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Server browser / scoreboard mutator string does not show ':OK' / ', Overkill'; the mod name is not set to 'Overkill' (no BuildMutatorsString/BuildMutatorsPrettyString/SetModname hook chains or Overkill handlers)."
-      - "Client cl_overkill cvar_settemp(g_overkill,1) sync is absent. UNCHANGED by Wave-2."
+      - "Server browser / scoreboard mutator string does not show ':OK' / ', Overkill': the BuildMutatorsString / BuildMutatorsPrettyString chains now EXIST and are LIVE (MutatorBase virtuals dispatched by MutatorActivation.BuildMutatorsString/PrettyString, called from GameWorld.cs:865; other mutators e.g. Midair/Vampire override them) — but OverkillMutator does NOT override them, so it contributes no ':OK'/', Overkill' token. A one-line override would close this; user-visible behavior is still absent."
+      - "SetModname is not set to 'Overkill': no SetModname hook chain exists anywhere in the port (grep SetModname → 0 non-overkill hits), so there is nothing to subscribe."
+      - "Client cl_overkill cvar_settemp(g_overkill,1) sync is absent. UNCHANGED."
     verification:
-      - { kind: code, ref: "no BuildMutatorsString/SetModname overkill handlers or chains in src/", result: fail }
+      - { kind: code, ref: "BuildMutatorsString/PrettyString chain live (MutatorActivation.cs:88-105, called GameWorld.cs:865) but OverkillMutator overrides neither (grep BuildMutators in OverkillMutator.cs → 0). No SetModname chain in src/. No cl_overkill sync.", result: fail }
     confidence: high
-    notes: "Cosmetic / reporting only; no gameplay impact."
+    notes: "Cosmetic / reporting only; no gameplay impact. Refinement vs baseline: the BuildMutatorsString/PrettyString seam now exists and is live (baseline said no chain existed) — Overkill just doesn't subscribe — but the user-visible token/modname are still absent, so the row stays missing."
