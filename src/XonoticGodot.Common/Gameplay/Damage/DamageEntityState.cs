@@ -51,6 +51,14 @@ public partial class Entity
     /// <summary>QC forced+voluntary "take" handicap (damage this entity TAKES is multiplied by this). 1 = none.</summary>
     public float HandicapTake = 1f;
 
+    /// <summary>
+    /// QC <c>.handicap_level</c> (server/handicap.qh:64): an int 0..16 mapped from the both-ways average
+    /// total handicap (1.0..HANDICAP_MAX_LEVEL_EQUIVALENT=2.0). In Base this is networked (ent_cs) to color the
+    /// <c>player_handicap</c> scoreboard icon. Computed here by <c>Handicap_UpdateHandicapLevel</c>; the port has
+    /// no ent_cs handicap stat / scoreboard-icon consumer yet, so the value is authoritative-only. 0 = no handicap.
+    /// </summary>
+    public int HandicapLevel;
+
     // --- pain / regen timers ---
     /// <summary>QC <c>.pain_finished</c>: sim time until which a new pain animation/sound is suppressed.</summary>
     public float PainFinished;
@@ -91,6 +99,12 @@ public partial class Entity
     /// pain feedback and the same-team hit-sound). Distinct from the STATUSEFFECT_Frozen status effect.
     /// </summary>
     public int FrozenStat;
+    /// <summary>
+    /// QC <c>.revival_time</c> (sv_freezetag.qh:56): sim time the player was last revived/unfrozen. The ice
+    /// nade (ice.qc:59) refuses to re-freeze a player for 1.5s after a revive so a just-thawed player gets a
+    /// brief grace window. Set by FreezeTag.Unfreeze; 0 = never revived (eligible).
+    /// </summary>
+    public float RevivalTime;
     /// <summary>QC <c>.freeze_time</c>: sim time a freeze is held until (used by the weaponstats validity check).</summary>
     public float FreezeTime;
     /// <summary>QC <c>.freezetag_frozen_armor</c>: the player's armor snapshot saved on every hit while frozen, so a

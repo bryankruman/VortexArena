@@ -37,6 +37,8 @@ public sealed class NadesMutator : MutatorBase
     private HookHandler<MutatorHooks.DamageCalculateArgs>? _onDamageCalc;
     private HookHandler<MutatorHooks.VehicleEnterArgs>? _onVehicleEnter;
     private HookHandler<MutatorHooks.ForbidThrowCurrentWeaponArgs>? _onForbidThrow;
+    private HookHandler<MutatorHooks.MakePlayerObserverArgs>? _onObserver;
+    private HookHandler<MutatorHooks.ClientDisconnectArgs>? _onDisconnect;
 
     public override void Hook()
     {
@@ -50,6 +52,8 @@ public sealed class NadesMutator : MutatorBase
         _onDamageCalc ??= OnDamageCalculate;
         _onVehicleEnter ??= OnVehicleEnter;
         _onForbidThrow ??= OnForbidThrowCurrentWeapon;
+        _onObserver ??= OnMakePlayerObserver;
+        _onDisconnect ??= OnClientDisconnect;
 
         MutatorHooks.PlayerSpawn.Add(_onSpawn);
         MutatorHooks.PlayerPreThink.Add(_onPreThink);
@@ -60,6 +64,10 @@ public sealed class NadesMutator : MutatorBase
         MutatorHooks.VehicleEnter.Add(_onVehicleEnter);
         // QC ForbidThrowCurrentWeapon CBC_ORDER_LAST (sv_nades.qc:715): the weapon_drop second-press throw path.
         MutatorHooks.ForbidThrowCurrentWeapon.Add(_onForbidThrow, HookOrder.Last);
+        // QC MakePlayerObserver (922) / ClientDisconnect (927): nades_RemovePlayer — drop a held nade, wipe the
+        // banked bonus, and delete the spawn-loc marker so none of it leaks across observer/disconnect.
+        MutatorHooks.MakePlayerObserver.Add(_onObserver);
+        MutatorHooks.ClientDisconnect.Add(_onDisconnect);
     }
 
     public override void Unhook()
@@ -70,6 +78,8 @@ public sealed class NadesMutator : MutatorBase
         if (_onDamageCalc is not null) MutatorHooks.DamageCalculate.Remove(_onDamageCalc);
         if (_onVehicleEnter is not null) MutatorHooks.VehicleEnter.Remove(_onVehicleEnter);
         if (_onForbidThrow is not null) MutatorHooks.ForbidThrowCurrentWeapon.Remove(_onForbidThrow);
+        if (_onObserver is not null) MutatorHooks.MakePlayerObserver.Remove(_onObserver);
+        if (_onDisconnect is not null) MutatorHooks.ClientDisconnect.Remove(_onDisconnect);
     }
 
     // =====================================================================================
@@ -241,6 +251,38 @@ public sealed class NadesMutator : MutatorBase
             NadeProjectile.Toss(player, true, new System.Numerics.Vector3(0f, 0f, 100f), boomAt);
         }
         return false;
+    }
+
+    // =====================================================================================
+    //  MakePlayerObserver (sv_nades.qc:922) / ClientDisconnect (sv_nades.qc:927) — nades_RemovePlayer
+    // =====================================================================================
+    private bool OnMakePlayerObserver(ref MutatorHooks.MakePlayerObserverArgs args)
+    {
+        RemovePlayer(args.Player);
+        return false;
+    }
+
+    private bool OnClientDisconnect(ref MutatorHooks.ClientDisconnectArgs args)
+    {
+        RemovePlayer(args.Player);
+        return false;
+    }
+
+    /// <summary>
+    /// Port of <c>nades_RemovePlayer(entity this)</c> (sv_nades.qc:914): clear the held/fake nade + HUD ring
+    /// (nades_Clear), wipe the banked bonus (nades_RemoveBonus), and delete any planted spawn-loc marker — so a
+    /// player who goes observer or disconnects leaks none of it.
+    /// </summary>
+    private static void RemovePlayer(Entity player)
+    {
+        if (Api.Services is null) return;
+        NadeThrow.Clear(player);
+        NadeBonus.RemoveBonus(player);
+        if (player.NadeSpawnLoc is not null)
+        {
+            Api.Entities.Remove(player.NadeSpawnLoc);
+            player.NadeSpawnLoc = null;
+        }
     }
 
     // =====================================================================================

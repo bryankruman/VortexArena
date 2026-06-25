@@ -147,7 +147,7 @@ public sealed class Electro : Weapon
     public override void WrThink(Entity actor, WeaponSlot slot, FireMode fire)
     {
         var st = actor.WeaponState(slot);
-        float rate = WeaponRateFactor();
+        float rate = WeaponRateFactor(actor);
 
         if (fire == FireMode.Primary)
         {
@@ -198,7 +198,7 @@ public sealed class Electro : Weapon
     private void ScheduleCheckAttack(Entity actor, WeaponSlot slot)
     {
         var st = actor.WeaponState(slot);
-        float animtime = MathF.Max(0f, Secondary.Animtime) * WeaponRateFactor();
+        float animtime = MathF.Max(0f, Secondary.Animtime) * WeaponRateFactor(actor);
         WeaponFireDriver.ScheduleThink(st, animtime, (pl, sl) => CheckAttack(pl, sl));
     }
 

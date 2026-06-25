@@ -166,6 +166,12 @@ public sealed class MultijumpMutator : MutatorBase
         return false;
     }
 
+    // MUTATOR_HOOKFUNCTION(multijump, BuildMutatorsString) — multijump.qc:121-124
+    public override string BuildMutatorsString(string s) => s + ":multijump";
+
+    // MUTATOR_HOOKFUNCTION(multijump, BuildMutatorsPrettyString) — multijump.qc:126-129
+    public override string BuildMutatorsPrettyString(string s) => s + ", Multi jump";
+
     private static float Horiz2D(Entity e)
     {
         float x = e.Velocity.X, y = e.Velocity.Y;

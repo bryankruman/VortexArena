@@ -99,4 +99,10 @@ public sealed class BloodlossMutator : MutatorBase
             return true; // QC: return true (block the jump)
         return false;
     }
+
+    // MUTATOR_HOOKFUNCTION(bloodloss, BuildMutatorsString) — bloodloss.qc:46-49
+    public override string BuildMutatorsString(string s) => s + ":bloodloss";
+
+    // MUTATOR_HOOKFUNCTION(bloodloss, BuildMutatorsPrettyString) — bloodloss.qc:51-54
+    public override string BuildMutatorsPrettyString(string s) => s + ", Blood loss";
 }

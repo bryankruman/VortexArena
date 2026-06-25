@@ -342,8 +342,8 @@ public sealed class SandboxMutator : MutatorBase
     public void ObjectThink(SandboxObject e, IEnumerable<Entity> realClients)
     {
         // grab class: readonly / Sandbox_DragAllowed veto ⇒ 0; owned + free<2 ⇒ 1; else ⇒ 3.
-        // TODO[cross-file]: Sandbox_DragAllowed mutator hook has no port chain yet — gated on readonly only.
-        if (ReadOnly)
+        // QC: if(autocvar_g_sandbox_readonly || MUTATOR_CALLHOOK(Sandbox_DragAllowed, this)) this.grab = 0;
+        if (ReadOnly || MutatorHooks.FireSandboxDragAllowed(e.Edict))
             e.Grab = 0;
         else if (EditorFree < 2 && e.CryptoIdfp != "")
             e.Grab = 1; // owner only
@@ -531,7 +531,8 @@ public sealed class SandboxMutator : MutatorBase
 
     public void DatabaseSave()
     {
-        // TODO[cross-file]: Sandbox_SaveAllowed mutator hook veto has no port chain yet.
+        // QC sandbox_Database_Save head: if(MUTATOR_CALLHOOK(Sandbox_SaveAllowed)) return;
+        if (MutatorHooks.FireSandboxSaveAllowed()) return;
         if (Store is null) return;
 
         string ts = TimeStamp();
@@ -607,8 +608,8 @@ public sealed class SandboxMutator : MutatorBase
         if (argv.Length == 0 || argv[0] != "g_sandbox")
             return false;
 
-        // TODO[cross-file]: Sandbox_EditAllowed mutator hook veto has no port chain — gated on readonly only.
-        if (ReadOnly)
+        // QC: if(autocvar_g_sandbox_readonly || MUTATOR_CALLHOOK(Sandbox_EditAllowed, player)) { print readonly; return; }
+        if (ReadOnly || MutatorHooks.FireSandboxEditAllowed(player))
         {
             Print(player, "^2SANDBOX - INFO: ^7Sandbox mode is active, but in read-only mode. Sandbox commands cannot be used");
             return true;
@@ -799,7 +800,7 @@ public sealed class SandboxMutator : MutatorBase
                             {
                                 case "0": e.MoveType = MoveType.None; if (e.Edict is not null) e.Edict.MoveType = MoveType.None; break;  // static
                                 case "1": e.MoveType = MoveType.Toss; if (e.Edict is not null) e.Edict.MoveType = MoveType.Toss; break;  // movable
-                                case "2": e.MoveType = MoveType.Push; if (e.Edict is not null) e.Edict.MoveType = MoveType.Push; break;  // physical (MOVETYPE_PHYSICS)
+                                case "2": e.MoveType = MoveType.Physics; if (e.Edict is not null) e.Edict.MoveType = MoveType.Physics; break;  // physical (MOVETYPE_PHYSICS = 32)
                             }
                             break;
                         case "force": e.DamageForceScale = Stof(A(3)); break;

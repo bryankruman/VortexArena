@@ -71,6 +71,15 @@ public sealed class Vaporizer : Weapon
         var st = actor.WeaponState(slot);
         bool rm = Api.Services is not null && Api.Cvars.GetFloat("g_rm") != 0f;
 
+        // QC vaporizer.qc:353-354: releasing the laser button resets hagar_load so the next press restarts from
+        // the fan + rapid_delay. In QC the rail-primary `if` and the laser `if` are independent (no early return),
+        // and the trailing `else` clears hagar_load whenever neither fire condition held. The port's Primary call
+        // runs every tick (driver upkeep) and may return early after the rail; so detect "laser button not held"
+        // here — ATK2 up AND no out-of-cells RM primary fallback — and clear the latch before that return.
+        bool primaryFallbackHeld = rm && actor.GetResource(ResourceType.Cells) <= 0f && st.ButtonAttack;
+        if (fire == FireMode.Primary && !st.ButtonAttack2 && !primaryFallbackHeld)
+            st.HagarLoad = 0;
+
         // Primary: rail beam — but in Rocket-Minsta when out of cells, primary falls back to the laser.
         // Gated by the primary refire (QC weapon_prepareattack); the out-of-cells RM fallthrough below uses
         // its own jump_interval gate so it can fire even when PrepareAttack would block the rail.
@@ -86,16 +95,34 @@ public sealed class Vaporizer : Weapon
         // can fire independently of the rail beam (important for instagib). Each path requires its own button
         // be held — the driver calls WrThink(Primary) every tick for upkeep, so the Primary fallback must
         // check st.ButtonAttack itself (the Secondary call only happens while ATK2 is held).
-        bool primaryFallback = fire == FireMode.Primary && rm && actor.GetResource(ResourceType.Cells) <= 0f && st.ButtonAttack;
-        if (fire == FireMode.Secondary || primaryFallback)
+        bool primaryFallback = fire == FireMode.Primary && primaryFallbackHeld;
+        bool laserFire = fire == FireMode.Secondary || primaryFallback;
+
+        // QC vaporizer.qc:316: the RM-laser path also fires when g_rm_laser == 2 (standalone laser, even without
+        // g_rm). The barrage itself only depends on g_rm_laser, so resolve the firing button accordingly: with
+        // g_rm_laser==2 the secondary (and the RM out-of-cells primary, which still needs g_rm) drives it.
+        float gRmLaser = Api.Cvars.GetFloat("g_rm_laser");
+        bool rmLaserMode = (rm && gRmLaser != 0f) || gRmLaser == 2f;
+
+        if (laserFire)
         {
-            bool rmLaser = rm && Api.Cvars.GetFloat("g_rm_laser") != 0f;
-            if (rmLaser)
+            if (rmLaserMode)
             {
-                if (st.JumpInterval <= Api.Clock.Time)
+                // QC vaporizer.qc:318-335: the hold-to-stream ramp. First press (jump_interval ready and not
+                // loaded) fires the mode-0 FAN and arms hagar_load + jump_interval2 (rapid_delay). While held,
+                // once jump_interval2 elapses, fire a single mode-1 bolt on the faster rapid_refire cadence.
+                bool rapid = Cvar("g_rm_laser_rapid", 1f) != 0f;
+                if (st.JumpInterval <= Api.Clock.Time && st.HagarLoad == 0)
                 {
+                    if (rapid) st.HagarLoad = 1; // hagar_load (the RM "held_down" latch; reused as a 0/1 flag)
                     st.JumpInterval = Api.Clock.Time + Cvar("g_rm_laser_refire", 0.7f);
-                    RocketMinstaLaserBarrage(actor, slot);
+                    st.JumpInterval2 = Api.Clock.Time + Cvar("g_rm_laser_rapid_delay", 0.6f);
+                    RocketMinstaLaserBarrage(actor, slot, mode: 0);
+                }
+                else if (rapid && st.JumpInterval2 <= Api.Clock.Time && st.HagarLoad != 0)
+                {
+                    st.JumpInterval2 = Api.Clock.Time + Cvar("g_rm_laser_rapid_refire", 0.35f);
+                    RocketMinstaLaserBarrage(actor, slot, mode: 1);
                 }
             }
             else if (st.JumpInterval <= Api.Clock.Time)
@@ -191,19 +218,28 @@ public sealed class Vaporizer : Weapon
         blaster.FirePrimaryDirect(actor, slot);
     }
 
-    // W_RocketMinsta_Attack(mode 0) — a fan of short-lived bouncing laser bolts (g_rm_laser_*). vaporizer.qc:222.
-    private void RocketMinstaLaserBarrage(Entity actor, WeaponSlot slot)
+    // W_RocketMinsta_Attack — a fan (mode 0) of short-lived bouncing laser bolts, or a single straight bolt
+    // (mode 1, the rapid-fire stream). g_rm_laser_*. vaporizer.qc:222.
+    private void RocketMinstaLaserBarrage(Entity actor, WeaponSlot slot, int mode)
     {
         // Cvar fallbacks are the Base mutators.cfg:447-460 defaults (the cfg ships these; the fallbacks fire
         // only on a bare config). count 3, damage 80, radius 150, force 400, speed 6000, lifetime 30, spread 0.05.
-        int count = (int)MathF.Max(1f, Cvar("g_rm_laser_count", 3f));
+        // QC: laser_count = max(1, g_rm_laser_count); total = (mode==0) ? laser_count : 1 (vaporizer.qc:227-228).
+        int laserCount = (int)MathF.Max(1f, Cvar("g_rm_laser_count", 3f));
+        int count = (mode == 0) ? laserCount : 1;
         float damage = Cvar("g_rm_laser_damage", 80f);
         float radius = Cvar("g_rm_laser_radius", 150f);
         float force = Cvar("g_rm_laser_force", 400f);
         float speed = Cvar("g_rm_laser_speed", 6000f);
+        // QC vaporizer.qc:256: spread = g_rm_laser_spread * (g_rm_laser_spread_random ? random() : 1).
         float spread = Cvar("g_rm_laser_spread", 0.05f);
+        if (Cvar("g_rm_laser_spread_random", 0f) != 0f) spread *= Prandom.Float();
         float zspread = Cvar("g_rm_laser_zspread", 0f);
         float lifetime = Cvar("g_rm_laser_lifetime", 30f);
+        // QC vaporizer.qc:263: W_CalculateProjectileVelocity(actor, actor.velocity, vel, /*forceAbsolute*/true).
+        // With forceAbsolute true the Newtonian owner-velocity inheritance is bypassed (newton_style forced 0),
+        // so the only live effect is the g_weaponspeedfactor scale (util.qc get_shotvelocity: spd * dir).
+        float speedFactor = WeaponSpeedFactor();
 
         // QC vaporizer.qc:230,245: the bolts set up + tag as WEP_ELECTRO (proj.projectiledeathtype = WEP_ELECTRO
         // .m_id) — so the RocketMinsta mutator's electro-keyed no-self-damage hook matches and the kill feed /
@@ -239,22 +275,47 @@ public sealed class Vaporizer : Weapon
             Api.Entities.SetSize(proj, new Vector3(0, 0, -3), new Vector3(0, 0, -3));
             Api.Entities.SetOrigin(proj, shot.Origin);
 
-            // velocity = (w_shotdir + (((i+0.5)/count)*2 - 1) * right * spread) * speed; z += zspread*(random-0.5).
-            // QC uses (random() - 0.5) → [-0.5,0.5] (not a full signed [-1,1]); dormant at the default zspread 0.
-            float lat = ((i + 0.5f) / count) * 2f - 1f;
-            Vector3 v = (shot.Dir + lat * right * spread) * speed;
-            v.Z += zspread * (Prandom.Float() - 0.5f);
-            proj.Velocity = v;
+            // QC vaporizer.qc:254-262. mode 0 (fan): velocity = (w_shotdir + (((i+0.5)/count)*2 - 1) * right *
+            // spread) * speed; z += zspread*(random-0.5). mode 1 (rapid stream): a single straight bolt =
+            // w_shotdir * speed (no fan, no zspread). QC uses (random()-0.5) → [-0.5,0.5] (not a signed [-1,1]).
+            Vector3 v;
+            if (mode == 0)
+            {
+                float lat = ((i + 0.5f) / count) * 2f - 1f;
+                v = (shot.Dir + lat * right * spread) * speed;
+                v.Z += zspread * (Prandom.Float() - 0.5f);
+            }
+            else
+                v = shot.Dir * speed;
+            // QC vaporizer.qc:263: W_CalculateProjectileVelocity(..., true) — g_weaponspeedfactor scale only.
+            proj.Velocity = v * speedFactor;
             proj.Angles = QMath.VecToAngles(proj.Velocity);
 
+            // Per-bolt damage. QC distinguishes the two explode paths: the DIRECT touch
+            // (W_RocketMinsta_Laser_Touch, vaporizer.qc:212) just damages; the TIMEOUT (the .use think →
+            // W_RocketMinsta_Laser_Explode, vaporizer.qc:194) additionally awards the Electrobitch achievement
+            // when the blast lands on a flying enemy of another team. rm_laser_count = total (so damage/force are
+            // divided by the same count the bolt was spawned with — captured here as `count`).
+            int rmLaserCount = count;
             proj.Touch = (self, other) =>
             {
-                WeaponSplash.RadiusDamage(self, self.Origin, damage / count, damage / count, radius,
-                    self.Owner, laserDeathType, force / count, directHit: other);
+                WeaponSplash.RadiusDamage(self, self.Origin, damage / rmLaserCount, damage / rmLaserCount, radius,
+                    self.Owner, laserDeathType, force / rmLaserCount, directHit: other);
                 Api.Entities.Remove(self);
             };
-            proj.Think = self => { WeaponSplash.RadiusDamage(self, self.Origin, damage / count, damage / count,
-                radius, self.Owner, laserDeathType, force / count); Api.Entities.Remove(self); };
+            proj.Think = self =>
+            {
+                // QC TIMEOUT path: setthink(adaptor_think2use_hittype_splash) → adaptor_think2use(this) →
+                // this.use(this, NULL, NULL) → W_RocketMinsta_Laser_Explode_use(this, NULL, /*trigger*/NULL) →
+                // W_RocketMinsta_Laser_Explode(this, /*directhitentity*/NULL). The Electrobitch guard
+                // (vaporizer.qc:196-199) tests directhitentity.takedamage==DAMAGE_AIM && IS_PLAYER(directhitentity)
+                // && DIFF_TEAM && !IS_DEAD && IsFlying — but the timeout's directhitentity is the NULL world
+                // entity, so the guard never passes. RocketMinstaLaserExplode reproduces the guard faithfully and
+                // is invoked with NO direct-hit victim here, so (matching Base) the timeout never awards the
+                // achievement. The Touch path (above) calls W_RocketMinsta_Laser_Damage directly with no guard.
+                RocketMinstaLaserExplode(self, directHit: null, damage / rmLaserCount, radius,
+                    force / rmLaserCount, laserDeathType);
+            };
             proj.NextThink = Api.Clock.Time + lifetime;
 
             // MUTATOR_CALLHOOK(EditProjectile, actor, proj) — fired per laser bolt (vaporizer.qc RM laser barrage).
@@ -262,8 +323,48 @@ public sealed class Vaporizer : Weapon
             MutatorHooks.EditProjectile.Call(ref ep);
         }
 
-        // QC vaporizer.qc:229: mode-0 fan plays SND_CRYLINK_FIRE (electro_fire2 is only the mode-1 rapid stream).
-        Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/crylink_fire.wav");
+        // QC vaporizer.qc:229: snd = (mode==0) ? SND_CRYLINK_FIRE : SND_ELECTRO_FIRE2. W_SetupShot_ProjectileSize
+        // already plays this on CH_WEAPON_A; the port emits it here. mode-0 fan = crylink_fire, mode-1 stream =
+        // electro_fire2.
+        Api.Sound.Play(actor, SoundChannel.Weapon,
+            mode == 0 ? "weapons/crylink_fire.wav" : "weapons/electro_fire2.wav");
+    }
+
+    // W_RocketMinsta_Laser_Explode — the TIMEOUT explode path (vaporizer.qc:194-205). Awards the Electrobitch
+    // achievement when the blast's direct-hit victim is a flying enemy player (DAMAGE_AIM, different team, not
+    // dead) — but the timeout adaptor passes a NULL directhitentity, so in practice the guard never passes
+    // (faithful to Base; the touch path never reaches here). Then deals the radius damage and frees the bolt.
+    private void RocketMinstaLaserExplode(Entity self, Entity? directHit, float damagePerBolt, float radius,
+        float forcePerBolt, int laserDeathType)
+    {
+        if (directHit is not null && self.Owner is { } owner
+            && directHit.TakeDamage == DamageMode.Aim && (directHit.Flags & EntFlags.Client) != 0
+            && !Teams.SameTeam(directHit, owner) && !ReferenceEquals(directHit, owner) // QC DIFF_TEAM
+            && directHit.DeadState == DeadFlag.No && IsFlying(directHit))
+            NotificationSystem.Announce(owner, "ACHIEVEMENT_ELECTROBITCH");
+
+        WeaponSplash.RadiusDamage(self, self.Origin, damagePerBolt, damagePerBolt, radius,
+            self.Owner, laserDeathType, forcePerBolt, directHit: directHit);
+        Api.Entities.Remove(self);
+    }
+
+    // QC W_WeaponSpeedFactor / W_CalculateProjectileVelocity(forceAbsolute=true): g_weaponspeedfactor (default 1).
+    // Mirrors Devastator.WeaponSpeedFactor — only positive values take effect.
+    private static float WeaponSpeedFactor()
+    {
+        if (Api.Services is null) return 1f;
+        float f = Api.Cvars.GetFloat("g_weaponspeedfactor");
+        return f > 0f ? f : 1f;
+    }
+
+    // bool IsFlying(entity) — airshot test (mirrors Devastator/Vortex): airborne, not swimming, ≥24u clearance.
+    private static bool IsFlying(Entity e)
+    {
+        if (e.OnGround) return false;
+        if (e.WaterLevel >= 2) return false; // WATERLEVEL_SWIMMING
+        TraceResult tr = Api.Trace.Trace(e.Origin, e.Mins, e.Maxs,
+            e.Origin - new Vector3(0f, 0f, 24f), MoveFilter.Normal, e);
+        return tr.Fraction >= 1f;
     }
 
     private static float Cvar(string name, float fallback)

@@ -111,6 +111,12 @@ public sealed class HookMutator : MutatorBase
         return false;
     }
 
+    // MUTATOR_HOOKFUNCTION(hook, BuildMutatorsString) — sv_hook.qc:23-26 (":grappling_hook" server-info token).
+    public override string BuildMutatorsString(string s) => s + ":grappling_hook";
+
+    // MUTATOR_HOOKFUNCTION(hook, BuildMutatorsPrettyString) — sv_hook.qc:28-31 (", Hook" votescreen token).
+    public override string BuildMutatorsPrettyString(string s) => s + ", Hook";
+
     // MUTATOR_HOOKFUNCTION(hook, SetStartItems): grant fuel + FuelRegen when the hook uses ammo.
     private bool OnSetStartItems(ref MutatorHooks.SetStartItemsArgs args)
     {
@@ -119,7 +125,9 @@ public sealed class HookMutator : MutatorBase
         // start_items |= ITEM_FuelRegen.m_itemid; start_ammo_fuel = max(start_ammo_fuel, g_balance_fuel_rotstable);
         l.ItemFlags.Add("FUEL_REGEN");
         float rotstable = Api.Services is null ? 0f : Api.Cvars.GetFloat("g_balance_fuel_rotstable");
+        // start_ammo_fuel = max(start_ammo_fuel, rotstable); warmup_start_ammo_fuel = max(.., rotstable);
         l.AmmoFuel = MathF.Max(l.AmmoFuel, rotstable);
+        l.WarmupAmmoFuel = MathF.Max(l.WarmupAmmoFuel, rotstable);
         return false;
     }
 

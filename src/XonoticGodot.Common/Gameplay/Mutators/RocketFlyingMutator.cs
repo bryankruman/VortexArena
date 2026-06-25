@@ -20,8 +20,11 @@ namespace XonoticGodot.Common.Gameplay;
 ///
 /// Distinct from <see cref="Entity.SpawnShieldExpire"/>, which stays the PLAYER spawn-shield (read by the
 /// damage pipeline) — QC reused one <c>.spawnshieldtime</c> name for both roles, but the port splits them so a
-/// rocket is never treated as spawn-shielded. The cosmetic AllowRocketJumping + BuildMutatorsString sub-hooks
-/// are skipped (no such chains needed by the batch).
+/// rocket is never treated as spawn-shielded.
+///
+/// Also ported: the AllowRocketJumping hook (forces the Devastator's dedicated remote-jump self-boost on
+/// regardless of <c>g_balance_devastator_remote_jump</c>) and the BuildMutatorsString /
+/// BuildMutatorsPrettyString contributions (advertise ":RocketFlying" / ", Rocket Flying").
 /// </summary>
 [Mutator]
 public sealed class RocketFlyingMutator : MutatorBase
@@ -36,11 +39,14 @@ public sealed class RocketFlyingMutator : MutatorBase
         Api.Services is not null && ExprEvaluate(Api.Cvars.GetString("g_rocket_flying"));
 
     private HookHandler<MutatorHooks.EditProjectileArgs>? _onEditProjectile;
+    private HookHandler<MutatorHooks.AllowRocketJumpingArgs>? _onAllowRocketJumping;
 
     public override void Hook()
     {
         _onEditProjectile ??= OnEditProjectile;
         MutatorHooks.EditProjectile.Add(_onEditProjectile);
+        _onAllowRocketJumping ??= OnAllowRocketJumping;
+        MutatorHooks.AllowRocketJumping.Add(_onAllowRocketJumping);
         if (Api.Services is not null)
             DisableDelays = ReadBool("g_rocket_flying_disabledelays", true);
     }
@@ -48,7 +54,21 @@ public sealed class RocketFlyingMutator : MutatorBase
     public override void Unhook()
     {
         if (_onEditProjectile is not null) MutatorHooks.EditProjectile.Remove(_onEditProjectile);
+        if (_onAllowRocketJumping is not null) MutatorHooks.AllowRocketJumping.Remove(_onAllowRocketJumping);
     }
+
+    // MUTATOR_HOOKFUNCTION(rocketflying, AllowRocketJumping) — sv_rocketflying.qc:18-21: M_ARGV(0,bool)=true;
+    private bool OnAllowRocketJumping(ref MutatorHooks.AllowRocketJumpingArgs args)
+    {
+        args.Allow = true; // force rocket jumping
+        return true;
+    }
+
+    // MUTATOR_HOOKFUNCTION(rocketflying, BuildMutatorsString) — sv_rocketflying.qc:23-26
+    public override string BuildMutatorsString(string s) => s + ":RocketFlying";
+
+    // MUTATOR_HOOKFUNCTION(rocketflying, BuildMutatorsPrettyString) — sv_rocketflying.qc:28-31
+    public override string BuildMutatorsPrettyString(string s) => s + ", Rocket Flying";
 
     // MUTATOR_HOOKFUNCTION(rocketflying, EditProjectile)
     private bool OnEditProjectile(ref MutatorHooks.EditProjectileArgs args)

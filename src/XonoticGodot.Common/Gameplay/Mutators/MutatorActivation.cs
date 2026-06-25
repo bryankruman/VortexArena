@@ -22,6 +22,26 @@ namespace XonoticGodot.Common.Gameplay;
 public static class MutatorActivation
 {
     /// <summary>
+    /// Host seam for QC <c>cvar_settemp(name, value)</c> from a mutator's <c>MUTATOR_ONADD</c> (e.g. Random
+    /// Gravity settemps <c>sv_gravity</c> so the original is restored at match end). The settemp restore-stack
+    /// (<c>cvar_settemp_restore</c>) is owned by the server host (XonoticGodot.Server.SettempCvars), which the
+    /// Godot-free Common layer can't reference, so the host wires this to <c>SettempCvars.Set</c> at boot. When
+    /// unwired (headless tests) it falls back to a plain cvar set — the override still applies, only the
+    /// match-end restore is skipped (which has no live cvar host to restore to anyway).
+    /// </summary>
+    public static Action<string, string>? SettempCvarHandler;
+
+    /// <summary>
+    /// QC <c>cvar_settemp(name, value)</c>: route a mutator ONADD settemp through the host's restore stack via
+    /// <see cref="SettempCvarHandler"/>, or fall back to a plain cvar set when no host is wired.
+    /// </summary>
+    public static void SettempCvar(string name, string value)
+    {
+        if (SettempCvarHandler is { } h) h(name, value);
+        else if (XonoticGodot.Common.Services.Api.Services is not null) XonoticGodot.Common.Services.Api.Cvars.Set(name, value);
+    }
+
+    /// <summary>
     /// QC <c>Mutator_Add(mut)</c> (base.qh:237): subscribe a mutator's hooks if not already subscribed.
     /// Idempotent via the <see cref="MutatorBase.Added"/> guard (QC <c>if (mut.m_added) return true;</c>).
     /// Returns true if the mutator is now active.

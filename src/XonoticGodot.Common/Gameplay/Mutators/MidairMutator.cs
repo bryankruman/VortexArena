@@ -97,14 +97,15 @@ public sealed class MidairMutator : MutatorBase
     }
 
     // MUTATOR_HOOKFUNCTION(midair, PlayerSpawn) — QC: if(IS_BOT_CLIENT(player)) player.bot_moveskill = 0.
-    // Disabling the bot's move-skill keeps skill+moveskill below bot_ai_bunnyhop_skilloffset, so the bot
+    // Disabling the bot's MOVE-skill keeps skill+moveskill below bot_ai_bunnyhop_skilloffset, so the bot
     // stops bunnyhopping and stays airborne (huntable) instead of hugging the ground permanently shielded.
-    // The port has no separate bot_moveskill field; the bunnyhop gate (BotNavigation) keys off the bot's
-    // Skill, which is seeded from Player.BotSkill, so we zero that to push the bot under the offset.
+    // Faithful to Base: we zero BotMoveSkill (the bunnyhop-gate term) and leave BotSkill intact, so the bot's
+    // aim/reaction/dodge/role tuning is unaffected — and a high-skill bot whose configured moveskill still keeps
+    // skill+moveskill >= offset would keep bunnyhopping, exactly as Base's `skill + bot_moveskill` gate allows.
     private bool OnPlayerSpawn(ref MutatorHooks.PlayerSpawnArgs args)
     {
         if (args.Player is Player { IsBot: true } bot)
-            bot.BotSkill = 0f;
+            bot.BotMoveSkill = 0f;
         return false;
     }
 

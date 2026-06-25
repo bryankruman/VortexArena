@@ -3,7 +3,6 @@
 using System.Numerics;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Gameplay.Damage;
-using XonoticGodot.Common.Gameplay.Scoring;
 using XonoticGodot.Common.Services;
 
 namespace XonoticGodot.Common.Gameplay;
@@ -81,6 +80,16 @@ public sealed class BreakablehookMutator : MutatorBase
     }
 
     // QC common/teams.qh DIFF_TEAM(a,b): teamplay ? (a.team != b.team) : (a != b).
+    //
+    // We must NOT key this off the static GameScores.Teamplay flag: that is the CLIENT scoreboard
+    // global (only written by the dead ScoreInfoBlock.Apply deserialise) and is ALWAYS false on the
+    // server, which made a TEAMMATE's hook-break wrongly punish the teammate (the FFA branch a != b
+    // is true for two distinct allies). Instead derive both DIFF_TEAM cases from the live Entity.Team
+    // value via Teams.SameTeam (the same authoritative server-side team check the damage pipeline uses
+    // for friendly-fire, DamageSystem.cs:177). In a team game Team is nonzero, so SameTeam handles the
+    // same-team case (no punish) and entity-inequality handles self; in FFA every player is Team 0, so
+    // SameTeam is always false and this reduces to the QC FFA branch (a != b). This reproduces all four
+    // DIFF_TEAM truth-table rows (teamplay same/diff, FFA enemy/self) without the dead static.
     private static bool DiffTeam(Entity a, Entity b) =>
-        GameScores.Teamplay ? a.Team != b.Team : !ReferenceEquals(a, b);
+        !ReferenceEquals(a, b) && !Teams.SameTeam(a, b);
 }

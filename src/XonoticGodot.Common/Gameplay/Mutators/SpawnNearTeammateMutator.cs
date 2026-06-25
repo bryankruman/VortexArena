@@ -29,16 +29,19 @@ namespace XonoticGodot.Common.Gameplay;
 ///        the player beside them facing their angles. The "1-team-only-one-player" advantage guard and the
 ///        per-teammate <c>msnt_timer</c> cooldown are ported.
 ///
-/// The sky-surface reject (Q3SURFACEFLAG_SKY) and the lava/slime/water <c>pointcontents</c> reject ARE now applied
-/// (via the trace's surfaceflags + <c>Api.Trace.PointContents</c>), and both the look-at facing and the relocation
-/// facing are latched into the networked FixAngle channel so the spawn orientation actually reaches the client.
+/// All five geometry/content rejects QC applies in the relocate trace are now ported: the sky-surface reject
+/// (Q3SURFACEFLAG_SKY) and the lava/slime/water <c>pointcontents</c> reject (via the trace's surfaceflags +
+/// <c>Api.Trace.PointContents</c>), the <c>tracebox_hits_trigger_hurt</c> hurt-volume reject (a swept-AABB slab
+/// test over the trigger_hurt edicts), and — when <c>g_nades</c> is on — the nade-in-range reject (a radius scan
+/// over the live <c>nade</c> edicts within <c>g_nades_nade_radius</c>). The <c>checkpvs</c> PVS-visibility gate in
+/// Spawn_Score is applied (<c>Api.Trace.CheckPvs</c>), and the <c>closetodeath</c> sub-branch now measures from the
+/// player's latched <c>.death_origin</c> (<see cref="Player.DeathOrigin"/>). Both the look-at facing and the
+/// relocation facing are latched into the networked FixAngle channel so the spawn orientation reaches the client.
 ///
-/// NOTE (still deferred / approximated, all flagged inline): <c>checkpvs</c> (PVS visibility), the
-/// <c>tracebox_hits_trigger_hurt</c> hurt-volume check, and the nade-in-range reject (needs the projectile entity
-/// list) have no clean mutator-reachable equivalent yet, so the relocation does the traces it CAN and skips those
-/// rejections — a faithful superset (it may keep a spot QC would have rejected for a hurt trigger / nearby nade).
-/// The <c>closetodeath</c> sub-branch uses the player's current origin as the death origin (the port has no
-/// <c>.death_origin</c> field reachable here).
+/// NOTE (still approximated, flagged inline): the per-teammate <c>weaponLocked(it)</c> and
+/// <c>PHYS_INPUT_BUTTON_CHAT(it)</c> relocate gates are always false (the port has no reachable per-player weapon
+/// lock nor chat-button input) — a faithful subset that may relocate beside a mate QC would skip for a weapon lock
+/// or for typing.
 /// QC kept <c>.msnt_lookat</c> / <c>.msnt_timer</c> on the spot/player edicts; adding Entity fields is out of this
 /// task's edit scope, so both live in <see cref="ConditionalWeakTable{TKey,TValue}"/> maps keyed by the entity.
 /// </summary>
@@ -118,8 +121,10 @@ public sealed class SpawnNearTeammateMutator : MutatorBase
             float d = Vector3.Distance(spot.Origin, it.Origin);
             if (d > distance) continue;     // QC: vdist(.., >, distance) → skip
             if (d < 48f) continue;          // QC: vdist(.., <, 48) → skip
-            // QC: if(!checkpvs(spawn_spot.origin, it)) continue; — PVS visibility (no mutator-reachable equivalent;
-            // skipped, a faithful superset that may keep a not-yet-visible teammate's spot).
+            // QC: if(!checkpvs(spawn_spot.origin, it)) continue; — only bias toward / face a teammate that is
+            // potentially visible from the spot (the compiled map PVS, conservative). Skips a teammate behind a
+            // wall/in another room that QC would also skip, so the biased set matches Base, not a superset.
+            if (!Api.Trace.CheckPvs(spot.Origin, it.Origin)) continue;
             count++;
             if (Prandom.RangeInt(0, count) == 0) chosen = it; // uniform reservoir (QC AddEnt weight 1)
         }
@@ -263,9 +268,12 @@ public sealed class SpawnNearTeammateMutator : MutatorBase
                 {
                     if (closeToDeath)
                     {
-                        // QC dist2 = vlen2(chosen.origin - player.death_origin); keep the nearest to death.
-                        // The port has no .death_origin reachable here → use the player's current origin (NOTE).
-                        float dist2 = Vector3.DistanceSquared(roundChosen.Origin, player.Origin);
+                        // QC dist2 = vlen2(chosen.origin - player.death_origin); keep the spot whose teammate is
+                        // nearest to where the player died (so "spawn as close to where you died as possible").
+                        // player.DeathOrigin is latched in the Obituary path (DamageSystem.Killed); it is zero
+                        // until the player's first death, matching QC's default-zero .death_origin.
+                        Vector3 deathOrigin = player is Player pl ? pl.DeathOrigin : player.Origin;
+                        float dist2 = Vector3.DistanceSquared(roundChosen.Origin, deathOrigin);
                         if (dist2 < bestDist2)
                         {
                             bestDist2 = dist2;
@@ -321,8 +329,10 @@ public sealed class SpawnNearTeammateMutator : MutatorBase
         // SUPERCONTENTS bitmask in the port, so test the liquids mask rather than the legacy CONTENT_EMPTY value.
         if ((Api.Trace.PointContents(vertEnd) & SuperContentsLiquidsMask) != 0) return null;
 
-        // QC also rejects hurt-trigger volumes here (tracebox_hits_trigger_hurt) — no clean mutator-reachable
-        // equivalent yet (NOTE in the class doc); the geometry + sky + liquids rejects are kept.
+        // QC: if (tracebox_hits_trigger_hurt(horizontal_trace_endpos, PL_MIN, PL_MAX, vectical_trace_endpos)) goto skip;
+        // — reject a spot whose drop column to the floor sweeps through a trigger_hurt volume (don't spawn into
+        // damage). Swept-AABB-vs-box slab test over the trigger_hurt edicts (player.qc tracebox_hits_trigger_hurt).
+        if (HitsTriggerHurt(horizEnd, plMin, plMax, vertEnd)) return null;
 
         // QC: make sure there's floor (or a wall) ahead so the player won't immediately fall.
         Vector3 floorStart = vertEnd + up * plMax.Z + forward * plMax.X;
@@ -330,8 +340,83 @@ public sealed class SpawnNearTeammateMutator : MutatorBase
             floorStart + forward * 100f - up * 128f, MoveFilter.NoMonsters, mate);
         if (floorAhead.Fraction == 1.0f) return null;
 
-        // QC nade-in-range reject (g_nades) needs the projectile entity list — deferred (NOTE).
+        // QC: if (g_nades) reject when any live nade is within g_nades_nade_radius (300) of the floor spot — don't
+        // relocate a freshly-spawned player on top of a primed grenade (IL_EACH(g_projectiles, classname=="nade")).
+        if (Api.Cvars.GetFloat("g_nades") != 0f && NadeInRange(vertEnd)) return null;
+
         return vertEnd;
+    }
+
+    /// <summary>
+    /// QC <c>tracebox_hits_trigger_hurt(start, mins, maxs, end)</c> (common/mapobjects/trigger/hurt.qc:78): does the
+    /// box <paramref name="mins"/>/<paramref name="maxs"/> swept from <paramref name="start"/> to
+    /// <paramref name="end"/> overlap any <c>trigger_hurt</c> volume? Walks the trigger_hurt edicts (found by
+    /// classname; the brushes keep their absmin/absmax) and runs QC's <c>tracebox_hits_box</c> Minkowski-expanded
+    /// swept-ray-vs-box slab test. (Same algorithm as the bot-danger slice in BotDanger.HitsTriggerHurt, which lives
+    /// in the server assembly the Common mutator can't reference, so it is reproduced here.)
+    /// </summary>
+    private static bool HitsTriggerHurt(Vector3 start, Vector3 mins, Vector3 maxs, Vector3 end)
+    {
+        if (Api.Services is null) return false;
+        foreach (Entity e in Api.Entities.FindByClass("trigger_hurt"))
+        {
+            if (e.IsFreed) continue;
+            if (e.AbsMin == e.AbsMax) continue; // unlinked / degenerate volume
+            // QC: tracebox_hits_box(start, mins, maxs, end, absmin, absmax)
+            //   = trace_hits_box(start, end, absmin - maxs, absmax - mins)
+            if (TraceHitsBox(start, end, e.AbsMin - maxs, e.AbsMax - mins))
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>QC <c>trace_hits_box(start, end, thmi, thma)</c> (common/util.qc:2219): does the ray start→end cross
+    /// the AABB [thmi, thma]? Per-axis slab clip mirroring QC's <c>trace_hits_box_1d</c>.</summary>
+    private static bool TraceHitsBox(Vector3 start, Vector3 end, Vector3 thmi, Vector3 thma)
+    {
+        end -= start;
+        thmi -= start;
+        thma -= start;
+        float a0 = 0f, a1 = 1f;
+        if (!HitsBox1D(end.X, thmi.X, thma.X, ref a0, ref a1)) return false;
+        if (!HitsBox1D(end.Y, thmi.Y, thma.Y, ref a0, ref a1)) return false;
+        if (!HitsBox1D(end.Z, thmi.Z, thma.Z, ref a0, ref a1)) return false;
+        return true;
+    }
+
+    /// <summary>QC <c>trace_hits_box_1d</c> (common/util.qc:2197): one-axis slab clamp of the [a0,a1] interval.</summary>
+    private static bool HitsBox1D(float end, float thmi, float thma, ref float a0, ref float a1)
+    {
+        if (end == 0f)
+        {
+            if (0f < thmi) return false;
+            if (0f > thma) return false;
+        }
+        else
+        {
+            a0 = System.MathF.Max(a0, System.MathF.Min(thmi / end, thma / end));
+            a1 = System.MathF.Min(a1, System.MathF.Max(thmi / end, thma / end));
+            if (a0 > a1) return false;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// QC nade-in-range reject (sv_spawn_near_teammate.qc:153-163): true if any live nade (an entity with
+    /// <c>classname == "nade"</c>) is within <c>g_nades_nade_radius</c> (300) of the candidate floor spot. QC scans
+    /// the <c>g_projectiles</c> intrusive list filtered to nades; the port has no g_projectiles list but nades are
+    /// real edicts found by classname, so a radius scan over them is equivalent.
+    /// </summary>
+    private static bool NadeInRange(Vector3 spot)
+    {
+        if (Api.Services is null) return false;
+        float radius = Api.Cvars.GetFloat("g_nades_nade_radius");
+        foreach (Entity nade in Api.Entities.FindByClass("nade"))
+        {
+            if (nade.IsFreed) continue;
+            if (Vector3.Distance(nade.Origin, spot) < radius) return true; // QC: vdist(.., <, radius)
+        }
+        return false;
     }
 
     /// <summary>QC: setorigin(player, pos); player.angles = mate.angles; player.angles_z = 0 (never spawn tilted).</summary>

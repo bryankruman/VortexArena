@@ -209,6 +209,10 @@ public sealed class Ctf : GameType
     private const string CvarFcHelpMeTime   = "g_ctf_flagcarrier_auto_helpme_time";   // 2 — antispam between helpme pings
     private const float  DefaultFcHelpMeDamage = 100f;
     private const float  DefaultFcHelpMeTime   = 2f;
+    /// <summary>QC healtharmor_maxdamage(start_health, start_armorvalue, ...) for the carrier health-bar scale.
+    /// Standard CTF spawn = 100 health / 0 armor (the (HP+armor) effective-health approximation), so the bar's
+    /// max_health is 2× this (WaypointSprite_AttachCarrier). Matches the auto-helpme HP+armor proxy above.</summary>
+    private const float  CarrierStartEffHealth = 100f;
 
     public Ctf()
     {
@@ -390,13 +394,27 @@ public sealed class Ctf : GameType
             };
             // QC ctf_FlagcarrierWaypoints + Damage_Calculate auto-helpme: a low-health carrier flashes "help me"
             // on their carrier sprite (g_ctf_flagcarrier_auto_helpme_*). The flash deadline lives on the carrier.
-            float helpmeUntil = f.Status == FlagStatus.Carried && f.Carrier is { } c ? c.GtHelpMeUntil : 0f;
+            float helpmeUntil = 0f;
+            float health = -1f;
+            if (f.Status == FlagStatus.Carried && f.Carrier is { } c)
+            {
+                helpmeUntil = c.GtHelpMeUntil;
+                // QC WaypointSprite_AttachCarrier: max_health = 2 * healtharmor_maxdamage(start_health, start_armor),
+                // health = healtharmor_maxdamage(carrier HP, carrier armor) → the bar = health/max_health. We reuse
+                // the same (HP + armor) effective-health approximation as the auto-helpme path; CTF start HP is 100,
+                // start armor 0 → max_health 200, so the bar reads full at spawn and empties as the carrier is hurt.
+                float maxHp = 2f * CarrierStartEffHealth;
+                health = maxHp > 0f ? System.Math.Clamp((c.Health + c.ArmorValue) / maxHp, 0f, 1f) : -1f;
+            }
             into.Add(new Waypoints.WaypointSprite
             {
                 // Color is the RADAR tint = the flag's team color (QC WaypointSprite_UpdateTeamRadar with the
                 // team palette color); the 3D in-world sprite uses the def's own color (tan/white) from the registry.
-                SpriteName = sprite, FixedOrigin = pos, Team = f.HomeTeam, Color = TeamRadarColor(f.HomeTeam),
-                RadarIcon = 1, Health = -1f, HelpmeUntil = helpmeUntil,
+                // Visibility Team = 0: QC ctf_FlagSetup spawns the flag waypoints via WaypointSprite_SpawnFixed
+                // (showto=NULL, t=0) so flag markers are shown to EVERYONE (the SPRITERULE_DEFAULT team-restriction
+                // applies only when wp.team is set — the flag's home team lives in Color, not the visibility team).
+                SpriteName = sprite, FixedOrigin = pos, Team = 0, Color = TeamRadarColor(f.HomeTeam),
+                RadarIcon = 1, Health = health, MaxHealth = 1f, HelpmeUntil = helpmeUntil,
             });
         }
     }

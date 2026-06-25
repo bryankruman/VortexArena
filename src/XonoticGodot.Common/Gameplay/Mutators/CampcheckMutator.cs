@@ -22,12 +22,16 @@ namespace XonoticGodot.Common.Gameplay;
 ///
 /// REAL-CLIENTS ONLY (parity §11): QC restricts the check to <c>IS_REAL_CLIENT</c> (bots may "camp" only
 /// because the map lacks waypoints, and clones can't move), so bots are explicitly exempt here via
-/// <see cref="Player.IsBot"/>. The warmup_stage / game_starttime / weaponLocked gates collapse to the
-/// live-match check (<see cref="VehicleCommon.GameStopped"/>) in the headless sim, which has no warmup/lock
-/// state — documented as a deliberate simplification. The separate pre-match re-grace block is ported for the
-/// <c>time &lt; game_starttime</c> portion (via <see cref="StartItem.GameStartTimeProvider"/>); the campaign-
-/// bot-wait and round-active-but-not-started portions, plus the chat-button (<c>g_campcheck_typecheck</c>) and
-/// weaponLocked gates and the PlayerDies centerprint-clear, need cross-file seams that don't exist yet.
+/// <see cref="Player.IsBot"/>. The warmup_stage / game_starttime gate collapses to the live-match check
+/// (<see cref="VehicleCommon.GameStopped"/>) in the headless sim, which has no warmup state — documented as a
+/// deliberate simplification. The chat-button gate (<c>g_campcheck_typecheck</c> || !PHYS_INPUT_BUTTON_CHAT) is
+/// modeled via <see cref="Entity.ButtonChat"/> (written from the input <c>Typing</c> intent in PlayerPhysics),
+/// and the <c>weaponLocked</c> gate via the freeze subset (<see cref="WeaponLocked"/>, mirroring
+/// WeaponFireDriver). <c>:CampCheck</c> is advertised via <see cref="BuildMutatorsString"/>. The separate
+/// pre-match re-grace block is ported for the <c>time &lt; game_starttime</c> portion (via
+/// <see cref="StartItem.GameStartTimeProvider"/>); the campaign-bot-wait and round-active-but-not-started
+/// portions still need cross-file seams that don't exist yet, as does the CopyBody clone-origin copy (the port
+/// reuses the player edict on respawn instead of cloning a corpse, so there is no clone to copy the field onto).
 /// </summary>
 [Mutator]
 public sealed class CampcheckMutator : MutatorBase
@@ -85,6 +89,15 @@ public sealed class CampcheckMutator : MutatorBase
     private static bool IsFrozen(Entity e)
         => StatusEffectsCatalog.Frozen is { } f && StatusEffectsCatalog.Has(e, f);
 
+    /// <summary>QC <c>weaponLocked(player)</c> (weaponsystem.qc): the player can't fire so the camp check is skipped.
+    /// QC's full predicate is <c>(time &lt; game_starttime &amp;&amp; !sv_ready_restart_after_countdown) || game_stopped ||
+    /// player_blocked || StatusEffects_active(Frozen) || LockWeapon</c>. The game-start/game-stopped halves are
+    /// already covered by the gate (<see cref="VehicleCommon.GameStopped"/> + the time &lt; game_starttime re-grace);
+    /// <c>player_blocked</c> and the <c>LockWeapon</c> mutator hook aren't modeled in the port yet. The reachable
+    /// piece — mirroring <c>WeaponFireDriver.WeaponLocked</c> — is the freeze: the gametype freeze stat
+    /// (<see cref="Entity.FrozenStat"/>, e.g. Freeze Tag) OR the <c>STATUSEFFECT_Frozen</c> status effect.</summary>
+    private static bool WeaponLocked(Entity e) => e.FrozenStat != 0 || IsFrozen(e);
+
     // MUTATOR_HOOKFUNCTION(campcheck, PlayerPreThink)
     private bool OnPlayerPreThink(ref MutatorHooks.PlayerPreThinkArgs args)
     {
@@ -94,13 +107,16 @@ public sealed class CampcheckMutator : MutatorBase
         bool checked_ = false;
 
         // QC guards: interval set; match live; alive unfrozen player; (typecheck || !chat); real client; !weaponLocked.
-        // The headless sim has no warmup/game_starttime/weaponLocked, so those collapse to the live-match check.
+        // The headless sim has no warmup/game_starttime, so that half collapses to the live-match check; the chat
+        // (PHYS_INPUT_BUTTON_CHAT via player.ButtonChat) and weaponLocked gates ARE modeled below.
         // IS_REAL_CLIENT: bots are exempt — they may "camp" only because the map lacks waypoints, and clones can't
         // move; killing them for it is wrong (QC sv_campcheck.qc:44, matches the mutator's own docstring).
         if (Interval != 0f
             && !VehicleCommon.GameStopped
             && IsPlayer(player) && player is not Player { IsBot: true }
-            && player.DeadState == DeadFlag.No && !IsFrozen(player))
+            && player.DeadState == DeadFlag.No && !IsFrozen(player)
+            && (TypeCheck || !player.ButtonChat) // QC: autocvar_g_campcheck_typecheck || !PHYS_INPUT_BUTTON_CHAT
+            && !WeaponLocked(player))             // QC: !weaponLocked(player)
         {
             // 2D distance traveled since last frame (jumping in place doesn't count).
             Vector3 delta = player.CampcheckPrevOrigin - player.Origin;
@@ -174,6 +190,12 @@ public sealed class CampcheckMutator : MutatorBase
         NotificationSystem.SendCenterKill(NotifBroadcast.One, args.Target, "CPID_CAMPCHECK");
         return false;
     }
+
+    // MUTATOR_HOOKFUNCTION(campcheck, BuildMutatorsString) — sv_campcheck.qc:99-102.
+    // Appends ":CampCheck" to the active-mutators string reported in server info / scoreboard. The
+    // MutatorActivation.BuildMutatorsString chain (run from GameWorld.cs gamelog init) calls this for each
+    // active mutator. CampCheck has no BuildMutatorsPrettyString hook in Base, so none is overridden.
+    public override string BuildMutatorsString(string s) => s + ":CampCheck";
 
     // MUTATOR_HOOKFUNCTION(campcheck, PlayerSpawn) — init the camp timer/distance.
     private bool OnPlayerSpawn(ref MutatorHooks.PlayerSpawnArgs args)

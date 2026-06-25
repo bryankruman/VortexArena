@@ -28,6 +28,8 @@ public partial class Entity
     public IEntityPresence? Presence;  // link to the Godot node (client-side only)
 
     // --- spatial state (engine-maintained) ---
+    // (QC <c>.oldvelocity</c> = Entity.OldVelocity lives on the vehicles partial, Vehicles/VehicleCommon.cs;
+    // it is the shared engine last-frame velocity snapshot, distinct from OldOrigin the interpolation anchor.)
     public Vector3 Origin, OldOrigin, Velocity, Angles, AVelocity;
     public Vector3 Mins, Maxs, Size, AbsMin, AbsMax, ViewOfs, PunchAngle, PunchVector;
 

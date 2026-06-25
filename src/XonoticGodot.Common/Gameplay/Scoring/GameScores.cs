@@ -72,6 +72,15 @@ public static class GameScores
     /// </summary>
     public static Func<Entity, ScoreField, int, (bool allow, int delta, bool claimed)>? AddPlayerScoreHook { get; set; }
 
+    /// <summary>
+    /// QC the <c>AddedPlayerScore</c> mutator hook (<c>MUTATOR_CALLHOOK(AddedPlayerScore, scorefield, score, player)</c>,
+    /// server/scores.qc:377): the POST-write event, fired AFTER a non-zero delta has been applied to the column —
+    /// distinct from the pre-write <see cref="AddPlayerScoreHook"/> (veto/rewrite). dynamic_handicap subscribes
+    /// this to recompute the score-based handicap on every SP_SCORE change (caps/objective/KH/Dom/CTF points, not
+    /// just frags). Args: (player, field, applied delta). Null = no subscriber.
+    /// </summary>
+    public static Action<Entity, ScoreField, int>? AddedPlayerScoreHook { get; set; }
+
     /// <summary>QC <c>game_stopped</c>: when true, score additions are dropped (warmup end / match over).</summary>
     public static bool GameStopped { get; set; }
 
@@ -424,6 +433,9 @@ public static class GameScores
         int[] cols = Columns(p);
         cols[field.RegistryId] += delta;
         if (field.Label.Length != 0) { p.ScoreDirty |= 1u << (field.RegistryId & 31); Bump(); }
+        // QC MUTATOR_CALLHOOK(AddedPlayerScore, scorefield, score, player) (scores.qc:377): post-write event,
+        // fired after the column was actually changed (delta != 0). dynamic_handicap recomputes here.
+        AddedPlayerScoreHook?.Invoke(p, field, delta);
         return cols[field.RegistryId];
     }
 

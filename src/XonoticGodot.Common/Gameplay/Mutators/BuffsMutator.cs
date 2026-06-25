@@ -79,6 +79,7 @@ public sealed class BuffsMutator : MutatorBase
     private HookHandler<MutatorHooks.PlayerPreThinkArgs>? _onPreThink;
     private HookHandler<MutatorHooks.WeaponRateFactorArgs>? _onRate;
     private HookHandler<MutatorHooks.ForbidThrowCurrentWeaponArgs>? _onForbidThrow;
+    private HookHandler<MutatorHooks.PlayerUseKeyArgs>? _onUseKey;
 
     public override void Hook()
     {
@@ -89,6 +90,7 @@ public sealed class BuffsMutator : MutatorBase
         _onPreThink ??= OnPlayerPreThink;
         _onRate ??= OnWeaponRateFactor;
         _onForbidThrow ??= OnForbidThrowCurrentWeapon;
+        _onUseKey ??= OnPlayerUseKey;
 
         MutatorHooks.DamageCalculate.Add(_onDamageCalc);
         GameHooks.PlayerDamageSplitHealthArmor.Add(_onSplit);
@@ -97,6 +99,7 @@ public sealed class BuffsMutator : MutatorBase
         MutatorHooks.PlayerPreThink.Add(_onPreThink);
         MutatorHooks.WeaponRateFactor.Add(_onRate);
         MutatorHooks.ForbidThrowCurrentWeapon.Add(_onForbidThrow);
+        MutatorHooks.PlayerUseKey.Add(_onUseKey);
 
         if (Api.Services is not null)
         {
@@ -132,6 +135,14 @@ public sealed class BuffsMutator : MutatorBase
         }
     }
 
+    // QC MUTATOR_HOOKFUNCTION(buffs, BuildMutatorsString / BuildMutatorsPrettyString): only report Buffs as an
+    // active mutator when g_buffs > 0 (the auto-spawn/replace-powerups mode), matching Base exactly.
+    public override string BuildMutatorsString(string s)
+        => (Api.Services is not null && Api.Cvars.GetFloat("g_buffs") > 0f) ? s + ":Buffs" : s;
+
+    public override string BuildMutatorsPrettyString(string s)
+        => (Api.Services is not null && Api.Cvars.GetFloat("g_buffs") > 0f) ? s + ", Buffs" : s;
+
     public override void Unhook()
     {
         if (_onDamageCalc is not null) MutatorHooks.DamageCalculate.Remove(_onDamageCalc);
@@ -141,6 +152,7 @@ public sealed class BuffsMutator : MutatorBase
         if (_onPreThink is not null) MutatorHooks.PlayerPreThink.Remove(_onPreThink);
         if (_onRate is not null) MutatorHooks.WeaponRateFactor.Remove(_onRate);
         if (_onForbidThrow is not null) MutatorHooks.ForbidThrowCurrentWeapon.Remove(_onForbidThrow);
+        if (_onUseKey is not null) MutatorHooks.PlayerUseKey.Remove(_onUseKey);
     }
 
     private static void R(ref float field, string cvar)
@@ -188,7 +200,9 @@ public sealed class BuffsMutator : MutatorBase
     {
         if (Api.Services is null) return false;
         string n = buff.Name.StartsWith("buff_", StringComparison.Ordinal) ? buff.Name[5..] : buff.Name;
-        if (n == "ammo" && Api.Cvars.GetFloat("g_melee_only") != 0f) return false;
+        // QC: ammo is excluded when start_items already grants IT_UNLIMITED_AMMO (the dominant source of that
+        // start flag is g_use_ammunition 0 — readplayerstartcvars) OR in g_melee_only.
+        if (n == "ammo" && (StartItemsHasUnlimitedAmmo() || Api.Cvars.GetFloat("g_melee_only") != 0f)) return false;
         if (n == "vampire" && Api.Cvars.GetFloat("g_vampire") != 0f) return false;
         return Api.Cvars.GetFloat("g_buffs_" + n) != 0f;
     }
@@ -280,19 +294,29 @@ public sealed class BuffsMutator : MutatorBase
 
         if (!item.BuffActive || item.BuffDef is null) return;
         if (!IsPlayer(toucher) || toucher.DeadState != DeadFlag.No) return;
+        // QC buff_Touch: a team-forced buff item can only be picked up by its team; a vehicle occupant can't.
+        if ((item.TeamForced != 0 && (int)toucher.Team != item.TeamForced) || toucher.Vehicle is not null) return;
         if (Api.Clock.Time < toucher.BuffShield) return; // recently dropped/replaced a buff
 
         StatusEffectDef thebuff = item.BuffDef;
 
-        // QC: if the player already holds a (different) buff, replace it; same buff → do nothing.
+        // QC: if the player already holds a buff, replace it ONLY when cl_buffs_autoreplace is set AND it's a
+        // *different* buff; otherwise do nothing (keep the held buff). cl_buffs_autoreplace is REPLICATE'd to the
+        // server with default 1 (mutators.cfg); the port reads it as the server-side value (no per-client store).
         StatusEffectDef? held = HeldBuff(toucher);
         if (held is not null)
         {
-            if (held == thebuff) return;
+            bool autoreplace = CvarBool("cl_buffs_autoreplace", true);
+            if (!autoreplace || held == thebuff) return; // do nothing
+
+            // QC: notify the replaced buff is lost (to others, MSG_INFO INFO_ITEM_BUFF_LOST) + SND_BUFF_LOST.
+            NotificationSystem.Send(NotifBroadcast.AllExcept, toucher, MsgType.Info,
+                "ITEM_BUFF_LOST", toucher.NetName, held.RegistryId);
             RemoveAllBuffs(toucher);
         }
 
         item.BuffActive = false;
+        item.BuffLifetime = 0f; // QC: this.lifetime = 0 (a picked-up item no longer auto-relocates)
         item.Owner = toucher;
 
         // QC: bufftime = this.buffs_finished ? ... : thebuff.m_time(thebuff); fall back to 999 / cvar time.
@@ -303,6 +327,9 @@ public sealed class BuffsMutator : MutatorBase
         // QC Send_Notification(ITEM_BUFF_GOT, thebuff.m_id). The CENTER variant takes one float (the buff id)
         // and tells the picker "You got the <buff> buff!". (The buff id is the status-effect registry id.)
         NotificationSystem.Center(toucher, "ITEM_BUFF_GOT", thebuff.RegistryId);
+        // QC: INFO_ITEM_BUFF to everyone else — "<name> got the <buff> buff!".
+        NotificationSystem.Send(NotifBroadcast.AllExcept, toucher, MsgType.Info,
+            "ITEM_BUFF", toucher.NetName, thebuff.RegistryId);
 
         // QC: the item goes on cooldown then respawns (re-randomizing its type). Keep the entity alive.
         ScheduleRespawn(item);
@@ -411,11 +438,18 @@ public sealed class BuffsMutator : MutatorBase
     {
         string n = ShortName(buff);
 
-        // QC AmmoBuff.m_apply: grant unlimited ammo, remembering the previous state.
+        // QC AmmoBuff.m_apply: grant unlimited ammo, remembering the previous state, and force every reloadable
+        // slot's clip to full (saving the previous clip load) so reload weapons never run dry while held.
         if (n == "ammo")
         {
             actor.BuffAmmoPrevInfItems = (actor.Items & ItUnlimitedAmmo) != 0;
             actor.Items |= ItUnlimitedAmmo;
+            for (int slot = 0; slot < MutatorConstants.MaxWeaponSlots; slot++)
+            {
+                var st = actor.WeaponState(new WeaponSlot(slot));
+                if (st.ClipLoad != 0) st.BuffAmmoPrevClipLoad = st.ClipLoad;
+                FillSlotClip(st);
+            }
         }
         // QC FlightBuff.m_apply: remember gravity (so flipping it back works), default it if zero.
         if (n == "flight")
@@ -438,9 +472,19 @@ public sealed class BuffsMutator : MutatorBase
             string n = ShortName(d);
 
             if (n == "ammo")
+            {
                 actor.Items = BitSet(actor.Items, ItUnlimitedAmmo, actor.BuffAmmoPrevInfItems);
+                RestoreAmmoClips(actor); // QC AmmoBuff.m_remove: put back the pre-buff clip loads
+            }
             if (n == "flight")
-                actor.Gravity = actor.BuffFlightOldGravity;
+            {
+                // QC FlightBuff.m_remove: if the player is still standing in a gravity zone, restore THAT zone's
+                // gravity (trigger_gravity_check.enemy.gravity); otherwise restore the saved pre-buff gravity.
+                actor.Gravity = actor.GravityCheck?.Enemy is { } zone
+                    ? zone.Gravity
+                    : actor.BuffFlightOldGravity;
+                actor.BuffFlightOldGravity = 0f;
+            }
 
             StatusEffectsCatalog.Remove(actor, d);
         }
@@ -702,6 +746,32 @@ public sealed class BuffsMutator : MutatorBase
     }
 
     // =====================================================================================
+    //  PlayerUseKey — drop the held buff (g_buffs_drop)
+    // =====================================================================================
+
+    // QC MUTATOR_HOOKFUNCTION(buffs, PlayerUseKey, CBC_ORDER_FIRST): pressing +use with g_buffs_drop on drops the
+    // held buff — notify the picker (ITEM_BUFF_DROP) + others (INFO_ITEM_BUFF_LOST), strip the buff, arm the
+    // pickup-shield delay, and play SND_BUFF_LOST. Returns true to consume the press.
+    private bool OnPlayerUseKey(ref MutatorHooks.PlayerUseKeyArgs args)
+    {
+        if (Api.Services is null || VehicleCommon.GameStopped) return false;
+        if (Api.Cvars.GetFloat("g_buffs_drop") == 0f) return false;
+
+        Entity player = args.Player;
+        StatusEffectDef? held = HeldBuff(player);
+        if (held is null) return false;
+
+        NotificationSystem.Center(player, "ITEM_BUFF_DROP", held.RegistryId);
+        NotificationSystem.Send(NotifBroadcast.AllExcept, player, MsgType.Info,
+            "ITEM_BUFF_LOST", player.NetName, held.RegistryId);
+
+        RemoveAllBuffs(player); // sets buff_shield = time + g_buffs_pickup_delay
+        player.BuffShield = Api.Clock.Time + MathF.Max(0f, _pickupDelay);
+        SoundSystem.PlayOn(player, "BUFF_LOST");
+        return true;
+    }
+
+    // =====================================================================================
     //  PlayerPreThink — flight gravity flip, invisible alpha, per-frame buff ticks
     // =====================================================================================
 
@@ -750,28 +820,67 @@ public sealed class BuffsMutator : MutatorBase
         player.GiveResourceWithLimit(ResourceType.Health, regenPerSec * Api.Clock.FrameTime, medicMax);
     }
 
-    // MagnetBuff: pull nearby items into the player by triggering their touch (QC m_tick).
+    // MagnetBuff.m_tick: pull nearby items in. QC uses boxesoverlap(player.absmin/absmax expanded by the reach,
+    // item.absmin/absmax) — a box-vs-box test (so large/off-centre items are caught), with the reach selected by
+    // whether the item is a buff (range_buff) or a normal item (range_item). The FindInRadius is just a cheap
+    // broadphase over the larger of the two reaches plus the item half-extent; the per-item gate is the box test.
     private void MagnetTick(Entity player)
     {
-        float reach = MathF.Max(_magnetRangeItem, _magnetRangeBuff);
-        foreach (Entity it in Api.Entities.FindInRadius(player.Origin, reach))
+        float broad = MathF.Max(_magnetRangeItem, _magnetRangeBuff) + 256f;
+        foreach (Entity it in Api.Entities.FindInRadius(player.Origin, broad))
         {
             if ((it.Flags & EntFlags.Item) == 0 || it.IsFreed || ReferenceEquals(it, player)) continue;
-            float range = it.ClassName == "item_buff" ? _magnetRangeBuff : _magnetRangeItem;
-            if ((it.Origin - player.Origin).Length() > range) continue;
+            float reach = it.ClassName == "item_buff" ? _magnetRangeBuff : _magnetRangeItem;
+            if (!BoxesOverlapExpanded(player, it, reach)) continue;
             it.Touch?.Invoke(it, player);
         }
     }
 
-    // AmmoBuff: keep ammo topped up each frame (the unlimited-ammo flag is set on apply; this refills the
-    // current weapon's pools so reload-based weapons never run dry).
+    // QC boxesoverlap(a.absmin - r, a.absmax + r, b.absmin, b.absmax). Falls back to an origin distance test when
+    // the bounds are degenerate (headless, no physics link maintaining AbsMin/AbsMax).
+    private static bool BoxesOverlapExpanded(Entity a, Entity b, float r)
+    {
+        Vector3 e = new(r, r, r);
+        Vector3 aMin = a.AbsMin - e, aMax = a.AbsMax + e;
+        Vector3 bMin = b.AbsMin, bMax = b.AbsMax;
+        if (aMin == aMax && bMin == bMax)
+            return Vector3.Distance(a.Origin, b.Origin) <= r;
+        return aMin.X <= bMax.X && aMax.X >= bMin.X
+            && aMin.Y <= bMax.Y && aMax.Y >= bMin.Y
+            && aMin.Z <= bMax.Z && aMax.Z >= bMin.Z;
+    }
+
+    // AmmoBuff.m_tick: the unlimited-ammo flag (set on apply) covers the resource pools; QC's per-tick work only
+    // tops up each reloadable slot's clip so reload weapons (rifle / OK machinegun) never need reloading.
     private static void AmmoTick(Entity player)
     {
-        player.SetResource(ResourceType.Shells, MathF.Max(player.GetResource(ResourceType.Shells), 1f));
-        player.SetResource(ResourceType.Bullets, MathF.Max(player.GetResource(ResourceType.Bullets), 1f));
-        player.SetResource(ResourceType.Rockets, MathF.Max(player.GetResource(ResourceType.Rockets), 1f));
-        player.SetResource(ResourceType.Cells, MathF.Max(player.GetResource(ResourceType.Cells), 1f));
-        player.SetResource(ResourceType.Fuel, MathF.Max(player.GetResource(ResourceType.Fuel), 1f));
+        if (!IsPlayer(player)) return;
+        for (int slot = 0; slot < MutatorConstants.MaxWeaponSlots; slot++)
+            FillSlotClip(player.WeaponState(new WeaponSlot(slot)));
+    }
+
+    // QC: actor.(weaponentity).clip_load = actor.(weaponentity).(weapon_load[switchweapon]) = clip_size — fill the
+    // slot's live magazine AND its persistent per-weapon store for the weapon currently selected in that slot.
+    private static void FillSlotClip(WeaponSlotState st)
+    {
+        if (st.ClipSize == 0) return;
+        st.ClipLoad = st.ClipSize;
+        if (st.SwitchWeaponId >= 0)
+            Weapon.SetWeaponLoad(st, st.SwitchWeaponId, st.ClipSize);
+    }
+
+    // QC AmmoBuff.m_remove: restore each slot's pre-buff clip load (saved at apply), then clear the saved value.
+    private static void RestoreAmmoClips(Entity actor)
+    {
+        for (int slot = 0; slot < MutatorConstants.MaxWeaponSlots; slot++)
+        {
+            var st = actor.WeaponState(new WeaponSlot(slot));
+            if (st.BuffAmmoPrevClipLoad != 0)
+            {
+                st.ClipLoad = st.BuffAmmoPrevClipLoad;
+                st.BuffAmmoPrevClipLoad = 0;
+            }
+        }
     }
 
     // =====================================================================================
@@ -787,5 +896,18 @@ public sealed class BuffsMutator : MutatorBase
         if (Api.Services is null) return fallback;
         float v = Api.Cvars.GetFloat(name);
         return v != 0f ? v : fallback;
+    }
+
+    // QC: start_items & IT_UNLIMITED_AMMO. The dominant (gametype-independent) source of that start flag is
+    // g_use_ammunition 0 (readplayerstartcvars). Read it default-1-aware so an unset cvar means "ammo used".
+    private static bool StartItemsHasUnlimitedAmmo() => !CvarBool("g_use_ammunition", true);
+
+    // Read a boolean cvar default-aware: an unset cvar uses the fallback (distinguishes "unset" from explicit 0,
+    // unlike the float Cvar helper which treats 0 as "use the fallback").
+    private static bool CvarBool(string name, bool fallback)
+    {
+        if (Api.Services is null) return fallback;
+        string s = Api.Cvars.GetString(name);
+        return string.IsNullOrEmpty(s) ? fallback : Api.Cvars.GetFloat(name) != 0f;
     }
 }

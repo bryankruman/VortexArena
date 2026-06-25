@@ -795,6 +795,9 @@ public sealed class BotBrain
         // QC bot_shouldattack tail (aim.qc:127): a gametype/mutator may forbid the attack (e.g. Survival's
         // Bot_ForbidAttack vetoes same-status allies). Evaluated last so it only narrows the base eligibility.
         if (ForbidAttackHook is not null && ForbidAttackHook(self, targ)) return false;
+        // The Common-side Bot_ForbidAttack mutator chain (QC MUTATOR_CALLHOOK(Bot_ForbidAttack, this, targ)):
+        // the powerups mutator forbids attacking a player holding Invisibility (bot stealth).
+        if (MutatorHooks.FireBotForbidAttack(self, targ)) return false;
 
         return true;
     }

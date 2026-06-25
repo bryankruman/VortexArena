@@ -673,6 +673,12 @@ public sealed class SuperSpecMutator : MutatorBase
         return false;
     }
 
+    // MUTATOR_HOOKFUNCTION(superspec, BuildMutatorsString) — sv_superspec.qc:360-363.
+    public override string BuildMutatorsString(string s) => s + ":SS";
+
+    // MUTATOR_HOOKFUNCTION(superspec, BuildMutatorsPrettyString) — sv_superspec.qc:365-368.
+    public override string BuildMutatorsPrettyString(string s) => s + ", Super Spectators";
+
     // QC OPTIONINFO(flag, msg, test, text, long, short): "[ON]/[OFF] text (^3 long | ^3 short )\n".
     private static void OptionInfo(StringBuilder sb, int flag, int test, string text, string longName, string shortName)
         => sb.Append((flag & test) != 0 ? "^2[ON]  ^7" : "^1[OFF] ^7")

@@ -1,5 +1,6 @@
 // Port of common/mutators/mutator/dynamic_handicap/sv_dynamic_handicap.qc
 
+using XonoticGodot.Common.Diagnostics;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Gameplay.Scoring;
 using XonoticGodot.Common.Math;
@@ -21,12 +22,17 @@ namespace XonoticGodot.Common.Gameplay;
 /// <c>Handicap_SetForcedHandicap(it, h, take?)</c> maps to setting both, so a stronger player both deals less
 /// and takes more. Scores are read via <see cref="GameScores"/> (SP_SCORE).
 ///
-/// Recompute triggers: QC fires on ClientDisconnect / PutClientInServer / MakePlayerObserver /
-/// AddedPlayerScore(SP_SCORE). The port re-runs on PlayerSpawn (≈ PutClientInServer) and PlayerDies (a kill
-/// is a death, so frag scoring is covered). The other three Base triggers have no hook chain in the port yet:
-/// ClientDisconnect / MakePlayerObserver (roster shrink) and AddedPlayerScore (every non-kill SP_SCORE delta —
-/// caps, objective points, KH/Dom/CTF scoring). Until MutatorHooks gains those chains + live call sites, the
-/// mean can stay stale after a leave/observe or a non-death score change until the next spawn/death.
+/// Recompute triggers: QC fires DynamicHandicap_UpdateHandicap on FOUR functional hooks — PutClientInServer,
+/// ClientDisconnect, MakePlayerObserver and AddedPlayerScore(SP_SCORE). All four are now ported: PlayerSpawn
+/// (≈ PutClientInServer), <see cref="MutatorHooks.ClientDisconnect"/> and <see cref="MutatorHooks.MakePlayerObserver"/>
+/// (roster shrink), and the POST-write <see cref="GameScores.AddedPlayerScoreHook"/> filtered to SP_SCORE (every
+/// cap/objective/KH/Dom/CTF point, not just frags). PlayerDies additionally recomputes a kill's frag delta
+/// immediately. So the handicap now tracks the live score/roster the instant it changes, matching Base.
+///
+/// Also ported: <c>Handicap_SetForcedHandicap</c>'s value&lt;=0 error guard, <c>Handicap_UpdateHandicapLevel</c>
+/// (computes <see cref="Entity.HandicapLevel"/> for the scoreboard icon — authoritative-only, the port has no
+/// ent_cs handicap stat / scoreboard consumer to network it to yet), and the BuildMutatorsString /
+/// BuildMutatorsPrettyString mutator-list tokens (<c>:handicap</c> / <c>, Dynamic handicap</c>).
 /// </summary>
 [Mutator]
 public sealed class DynamicHandicapMutator : MutatorBase
@@ -60,13 +66,25 @@ public sealed class DynamicHandicapMutator : MutatorBase
 
     private HookHandler<MutatorHooks.PlayerSpawnArgs>? _onSpawn;
     private HookHandler<MutatorHooks.PlayerDiesArgs>? _onDies;
+    private HookHandler<MutatorHooks.MakePlayerObserverArgs>? _onObserver;
+    private HookHandler<MutatorHooks.ClientDisconnectArgs>? _onDisconnect;
+    private System.Action<Entity, ScoreField, int>? _onScore;
 
     public override void Hook()
     {
+        // QC dynamic_handicap fires DynamicHandicap_UpdateHandicap from FOUR functional hooks:
+        //   PutClientInServer (~PlayerSpawn), ClientDisconnect, MakePlayerObserver, AddedPlayerScore(SP_SCORE).
+        // PlayerDies additionally covers a kill's frag-score change immediately (a kill is a death event).
         _onSpawn ??= OnPlayerSpawn;
         _onDies ??= OnPlayerDies;
+        _onObserver ??= OnMakePlayerObserver;
+        _onDisconnect ??= OnClientDisconnect;
+        _onScore ??= OnAddedPlayerScore;
         MutatorHooks.PlayerSpawn.Add(_onSpawn);
         MutatorHooks.PlayerDies.Add(_onDies);
+        MutatorHooks.MakePlayerObserver.Add(_onObserver);
+        MutatorHooks.ClientDisconnect.Add(_onDisconnect);
+        GameScores.AddedPlayerScoreHook += _onScore;
 
         if (Api.Services is not null)
         {
@@ -81,10 +99,30 @@ public sealed class DynamicHandicapMutator : MutatorBase
     {
         if (_onSpawn is not null) MutatorHooks.PlayerSpawn.Remove(_onSpawn);
         if (_onDies is not null) MutatorHooks.PlayerDies.Remove(_onDies);
+        if (_onObserver is not null) MutatorHooks.MakePlayerObserver.Remove(_onObserver);
+        if (_onDisconnect is not null) MutatorHooks.ClientDisconnect.Remove(_onDisconnect);
+        if (_onScore is not null) GameScores.AddedPlayerScoreHook -= _onScore;
     }
 
     private bool OnPlayerSpawn(ref MutatorHooks.PlayerSpawnArgs args) { UpdateHandicap(); return false; }
     private bool OnPlayerDies(ref MutatorHooks.PlayerDiesArgs args) { UpdateHandicap(); return false; }
+    private bool OnMakePlayerObserver(ref MutatorHooks.MakePlayerObserverArgs args) { UpdateHandicap(); return false; }
+    private bool OnClientDisconnect(ref MutatorHooks.ClientDisconnectArgs args) { UpdateHandicap(); return false; }
+
+    // QC MUTATOR_HOOKFUNCTION(dynamic_handicap, AddedPlayerScore): recompute ONLY when the changed field is
+    // SP_SCORE (sv_dynamic_handicap.qc:113-120: `if (M_ARGV(0, entity) != SP_SCORE) return;`).
+    private void OnAddedPlayerScore(Entity player, ScoreField field, int delta)
+    {
+        if (!ReferenceEquals(field, GameScores.Score)) return;
+        UpdateHandicap();
+    }
+
+    // QC BuildMutatorsString (sv_dynamic_handicap.qc:88-91): advertise the active mutator in the server's
+    // machine-readable mutator list (server browser / gamelog).
+    public override string BuildMutatorsString(string s) => s + ":handicap";
+
+    // QC BuildMutatorsPrettyString (sv_dynamic_handicap.qc:93-96): the human-readable scoreboard mutator line.
+    public override string BuildMutatorsPrettyString(string s) => s + ", Dynamic handicap";
 
     // void DynamicHandicap_UpdateHandicap()
     public void UpdateHandicap()
@@ -112,11 +150,54 @@ public sealed class DynamicHandicapMutator : MutatorBase
             if (handicap >= 0f) ++handicap;
             else handicap = 1f / (MathF.Abs(handicap) + 1f);
             handicap = ClampHandicap(handicap);
-            // QC Handicap_SetForcedHandicap(it, h, false/true): the give (deal-less) and take (receive-more)
-            // multipliers. DamageSystem reads both (HandicapTotal).
-            it.HandicapGive = handicap;
-            it.HandicapTake = handicap;
+            // QC Handicap_SetForcedHandicap(it, h, false) then (it, h, true): the give (deal-less) and take
+            // (receive-more) multipliers. DamageSystem reads both (HandicapTotal). Each call guards value<=0 and
+            // tails into Handicap_UpdateHandicapLevel.
+            SetForcedHandicap(it, handicap, false);
+            SetForcedHandicap(it, handicap, true);
         }
+    }
+
+    // void Handicap_SetForcedHandicap(entity player, float value, bool receiving) (server/handicap.qc:81-94).
+    // Errors on a non-positive value (QC error() -> Log.Fatal), writes the give/take field, then refreshes the
+    // networked handicap level. The fold in UpdateHandicap keeps values strictly positive, so the guard never
+    // fires in normal play — it matches Base's hard fault on an invalid forced handicap.
+    private static void SetForcedHandicap(Entity player, float value, bool receiving)
+    {
+        if (HandicapDisabled) return;
+        if (value <= 0f)
+            Log.Fatal("Handicap_SetForcedHandicap: Invalid handicap value.");
+        if (receiving) player.HandicapTake = value;
+        else player.HandicapGive = value;
+        UpdateHandicapLevel(player);
+    }
+
+    // void Handicap_UpdateHandicapLevel(entity player) (server/handicap.qc:104-115)
+    // Maps the both-ways average TOTAL handicap (1 .. HANDICAP_MAX_LEVEL_EQUIVALENT=2.0) to an int level 0..16,
+    // networked to clients purely to color the player_handicap scoreboard icon. Base uses the full total handicap
+    // (forced * voluntary); for this mutator the forced half is what we just set and voluntary defaults to 1, so
+    // we derive the level from the give/take values written above.
+    private static void UpdateHandicapLevel(Entity player)
+    {
+        if (HandicapDisabled)
+        {
+            player.HandicapLevel = 0;
+            return;
+        }
+        float total = (player.HandicapTake + player.HandicapGive) / 2f;
+        player.HandicapLevel = (int)MathF.Floor(MapBoundRanges(total, 1f, HandicapMaxLevelEquivalent, 0f, 16f));
+    }
+
+    // QC HANDICAP_MAX_LEVEL_EQUIVALENT (server/handicap.qh:66) = 2.0.
+    private const float HandicapMaxLevelEquivalent = 2.0f;
+
+    // QC map_bound_ranges(x, from_min, from_max, to_min, to_max): clamp x to [from_min, from_max] then lerp into
+    // [to_min, to_max] (matches DodgingMutator.MapBoundRanges).
+    private static float MapBoundRanges(float x, float fromMin, float fromMax, float toMin, float toMax)
+    {
+        if (x <= fromMin) return toMin;
+        if (x >= fromMax) return toMax;
+        return toMin + (toMax - toMin) * (x - fromMin) / (fromMax - fromMin);
     }
 
     // float DynamicHandicap_ClampHandicap(float handicap)

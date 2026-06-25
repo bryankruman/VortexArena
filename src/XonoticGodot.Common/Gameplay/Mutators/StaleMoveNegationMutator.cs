@@ -68,6 +68,15 @@ public sealed class StaleMoveNegationMutator : MutatorBase
         if (_onDamageCalc is not null) MutatorHooks.DamageCalculate.Remove(_onDamageCalc);
     }
 
+    // MUTATOR_HOOKFUNCTION(mutator_smneg, BuildMutatorsString) — sv_stale_move_negation.qc:9-11:
+    // M_ARGV(0, string) = strcat(M_ARGV(0, string), ":StaleMoveNegation"); — the machine/scoreboard token,
+    // run via the MutatorActivation.BuildMutatorsString chain (GameWorld GameLogInit / server-browser field).
+    public override string BuildMutatorsString(string s) => s + ":StaleMoveNegation";
+
+    // MUTATOR_HOOKFUNCTION(mutator_smneg, BuildMutatorsPrettyString) — sv_stale_move_negation.qc:13-15:
+    // M_ARGV(0, string) = strcat(M_ARGV(0, string), ", Stale-move negation"); — the human-readable label.
+    public override string BuildMutatorsPrettyString(string s) => s + ", Stale-move negation";
+
     /// <summary>
     /// QC <c>smneg_multiplier(weight)</c> — ported verbatim:
     /// <code>

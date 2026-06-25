@@ -150,6 +150,7 @@ public sealed class BotPopulation
         {
             b.Skill = b.Bot.BotSkill;
             b.Nav.Skill = b.Bot.BotSkill;
+            b.Nav.MoveSkill = b.Bot.BotMoveSkill;   // QC bot_moveskill term in the bunnyhop gate (midair zeroes it)
         }
 
         // (e) autoskill (bot.qc:741-747): every 5 s, if skill_auto is set, retune the `skill` cvar toward the

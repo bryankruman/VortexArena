@@ -20,15 +20,13 @@ namespace XonoticGodot.Common.Gameplay;
 /// (NEVER keeps it, ALWAYS swaps it for the new-toy variant, RANDOM grants BOTH the core and the new-toy — faithful
 /// to QC's bit-OR of both <c>nt_GetReplacement</c> tokens into <c>newdefault</c>, not a 50/50 coin-flip).
 ///
-/// NOTE (deferred — map item pipeline, cross-file): QC also hooks <c>SetWeaponreplace</c> and <c>FilterItem</c> to
-/// rewrite the weapon a map <c>weapon_*</c> entity spawns as and to swap its pickup sound. The port's weapon-spawn
-/// pipeline (<c>ItemSpawnFuncs.WeaponSpawn → StartItem.Spawn</c>) DOES exist and DOES register one
-/// <c>weapon_&lt;netname&gt;</c> spawnfunc per weapon, but there is no <c>SetWeaponreplace</c>/<c>FilterItem</c> hook
-/// chain in <c>MutatorHooks</c> for those weapon entities and no <c>W_Apply_Weaponreplace</c> equivalent / per-entity
-/// <c>"new_toys"</c> BSP-key parse — so those two hooks have nothing to fire against. Wiring them needs new seams in
-/// files this unit may not touch (MutatorHooks, ItemSpawnFuncs, the BSP entity parser, SoundsList pickup-sound
-/// override); the mapping helpers below already encode all of <c>nt_GetReplacement</c>, so the handlers reactivate
-/// for free once those seams land. Tracked in the parity registry (mapreplace.set_weaponreplace, pickup.roflsound).
+/// Also ported (Wave-6b): QC's <c>SetWeaponreplace</c> hook (rewrite the weapon a map <c>weapon_*</c> entity
+/// spawns as — per the map <c>"new_toys"</c> BSP key, else the global <c>g_new_toys_autoreplace</c> mapping, with
+/// a random_items early-out and a <c>W_Apply_Weaponreplace</c> post-pass) and the <c>FilterItem</c> hook (swap a
+/// new-toy weapon pickup's sound to the "New toys, new toys!" roflsound when <c>g_new_toys_use_pickupsound</c> is
+/// set). The weapon-spawn pipeline (<c>ItemSpawnFuncs.WeaponSpawn</c>) fires <see cref="MutatorHooks.SetWeaponreplace"/>
+/// and tokenizes the result; <c>StartItem.Spawn</c> fires <see cref="MutatorHooks.FilterItemDefinition"/>, which this
+/// mutator reuses for the pickup-sound override (<c>Entity.ItemPickupSoundOverride</c>).
 /// </summary>
 [Mutator]
 public sealed class NewToysMutator : MutatorBase
@@ -64,11 +62,17 @@ public sealed class NewToysMutator : MutatorBase
     public static bool IsNewToy(string netName) => NewToyNames.Contains(netName);
 
     private HookHandler<MutatorHooks.SetStartItemsArgs>? _onSetStartItems;
+    private HookHandler<MutatorHooks.SetWeaponreplaceArgs>? _onSetWeaponreplace;
+    private HookHandler<MutatorHooks.FilterItemDefinitionArgs>? _onFilterItem;
 
     public override void Hook()
     {
         _onSetStartItems ??= OnSetStartItems;
         MutatorHooks.SetStartItems.Add(_onSetStartItems);
+        _onSetWeaponreplace ??= OnSetWeaponreplace;
+        MutatorHooks.SetWeaponreplace.Add(_onSetWeaponreplace);
+        _onFilterItem ??= OnFilterItem;
+        MutatorHooks.FilterItemDefinition.Add(_onFilterItem);
 
         if (Api.Services is not null)
             AutoReplace = (int)Api.Cvars.GetFloat("g_new_toys_autoreplace");
@@ -80,6 +84,8 @@ public sealed class NewToysMutator : MutatorBase
     public override void Unhook()
     {
         if (_onSetStartItems is not null) MutatorHooks.SetStartItems.Remove(_onSetStartItems);
+        if (_onSetWeaponreplace is not null) MutatorHooks.SetWeaponreplace.Remove(_onSetWeaponreplace);
+        if (_onFilterItem is not null) MutatorHooks.FilterItemDefinition.Remove(_onFilterItem);
 
         // MUTATOR_ONROLLBACK_OR_REMOVE: re-block the new-toy guns. (QC also returns -1 from ONREMOVE because it
         // "cannot be removed at runtime"; the port has no live-remove guard, so just restore the flags.)
@@ -149,6 +155,43 @@ public sealed class NewToysMutator : MutatorBase
         l.Weapons.Clear();
         foreach (string tok in resolved) l.Weapons.Add(tok);
         return false;
+    }
+
+    // MUTATOR_HOOKFUNCTION(nt, SetWeaponreplace) — rewrite a map weapon_* entity's spawn (sv_new_toys.qc:181).
+    private bool OnSetWeaponreplace(ref MutatorHooks.SetWeaponreplaceArgs args)
+    {
+        // QC: if (MUTATOR_IS_ENABLED(random_items)) return; — do not replace weapons when random items are on.
+        if (Mutators.ByName("random_items") is { IsEnabled: true })
+            return false;
+
+        if (Api.Services is not null)
+            AutoReplace = (int)Api.Cvars.GetFloat("g_new_toys_autoreplace");
+
+        // QC: if (wep.new_toys) ret = wep.new_toys; else ret = nt_GetReplacement(wepinfo.netname, autoreplace);
+        string ret = !string.IsNullOrEmpty(args.Item.NewToys)
+            ? args.Item.NewToys!
+            : GetReplacement(args.Weapon.NetName, AutoReplace);
+
+        // QC: ret = W_Apply_Weaponreplace(ret); M_ARGV(2, string) = ret;
+        args.Replacement = ItemSpawnFuncs.W_Apply_Weaponreplace(ret);
+        return false;
+    }
+
+    // MUTATOR_HOOKFUNCTION(nt, FilterItem) — swap a new-toy weapon's pickup sound (sv_new_toys.qc:210).
+    private bool OnFilterItem(ref MutatorHooks.FilterItemDefinitionArgs args)
+    {
+        Entity item = args.Definition;
+        // QC: if (nt_IsNewToy(item.weapon) && autocvar_g_new_toys_use_pickupsound) { item_pickupsound = null;
+        //         item_pickupsound_ent = SND_WEAPONPICKUP_NEW_TOYS; }
+        // The port's world item carries its weapon via the def NetName (weapon pickups set item.NetName to the
+        // weapon name); gate on that + the weapon-pickup flag so non-weapon items are untouched.
+        bool isWeaponPickup = item.Pickup?.IsWeaponPickup == true;
+        if (isWeaponPickup && IsNewToy(item.NetName)
+            && Api.Services is not null && Api.Cvars.GetFloat("g_new_toys_use_pickupsound") != 0f)
+        {
+            item.ItemPickupSoundOverride = "WEAPONPICKUP_NEW_TOYS"; // SND_WEAPONPICKUP_NEW_TOYS roflsound
+        }
+        return false; // never forbid the spawn (QC FilterItem here only swaps the sound)
     }
 
     /// <summary>QC <c>expr_evaluate(s)</c> for a cvar string: false for "" / "0" / "false", true otherwise.</summary>

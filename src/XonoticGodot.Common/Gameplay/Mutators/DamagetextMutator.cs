@@ -71,15 +71,13 @@ public readonly struct DamageTextEvent
 /// (spectators / +attacker / all); in this host port that reduces to "show to the local attacker"
 /// (the default tier 2). The queued events are the attacker-credited ones; the client gate applies.
 ///
-/// KNOWN GAP — ClientDisconnect dent_attackers clear (sv_damagetext.qc:138-148): QC's
+/// ClientDisconnect dent_attackers clear (sv_damagetext.qc:138-148): QC's
 /// MUTATOR_HOOKFUNCTION(damagetext, ClientDisconnect) walks every player and clears the leaving
 /// client's bit from their <c>dent_attackers</c> set, so a freed/reused edict slot can't mis-fire the
-/// STOP_ACCUMULATION first-hit gate. This port keys <c>DentAttackers</c> on the live <see cref="Entity"/>
-/// reference (not an etof slot index), so a reused slot is a different object and the stale entry is
-/// inert in practice; the explicit clear is still omitted. Closing it cleanly needs a new
-/// <c>MutatorHooks.ClientDisconnect</c> hook chain plus a dispatch site on the server disconnect path
-/// (game/net/ServerNet.cs:638 / ClientManager.OnClientDisconnect) — both outside this file. The handler
-/// would iterate live players and call <c>player.DentAttackers.Remove(leaver)</c>.
+/// STOP_ACCUMULATION first-hit gate. This port subscribes <see cref="MutatorHooks.ClientDisconnect"/>
+/// (fired from ClientManager.ClientDisconnect after the leaver is declassified) and removes the leaver from
+/// every remaining live player's
+/// <c>DentAttackers</c> set — the C# successor to QC's <c>FOREACH_CLIENT(true, dent_attackers[…] &amp;= ~BIT)</c>.
 /// </summary>
 [Mutator]
 public sealed class DamagetextMutator : MutatorBase
@@ -93,19 +91,23 @@ public sealed class DamagetextMutator : MutatorBase
 
     private HookHandler<MutatorHooks.PlayerDamagedArgs>? _onDamaged;
     private HookHandler<MutatorHooks.PlayerSpawnArgs>? _onSpawn;
+    private HookHandler<MutatorHooks.ClientDisconnectArgs>? _onDisconnect;
 
     public override void Hook()
     {
         _onDamaged ??= OnPlayerDamaged;
         _onSpawn ??= OnPlayerSpawn;
+        _onDisconnect ??= OnClientDisconnect;
         MutatorHooks.PlayerDamaged.Add(_onDamaged);
         MutatorHooks.PlayerSpawn.Add(_onSpawn);
+        MutatorHooks.ClientDisconnect.Add(_onDisconnect);
     }
 
     public override void Unhook()
     {
         if (_onDamaged is not null) MutatorHooks.PlayerDamaged.Remove(_onDamaged);
         if (_onSpawn is not null) MutatorHooks.PlayerSpawn.Remove(_onSpawn);
+        if (_onDisconnect is not null) MutatorHooks.ClientDisconnect.Remove(_onDisconnect);
         _pending.Clear();
         _prev = null;
     }
@@ -203,6 +205,21 @@ public sealed class DamagetextMutator : MutatorBase
     private bool OnPlayerSpawn(ref MutatorHooks.PlayerSpawnArgs args)
     {
         args.Player.DentAttackers.Clear();
+        return false;
+    }
+
+    // MUTATOR_HOOKFUNCTION(damagetext, ClientDisconnect) — QC FOREACH_CLIENT(true, dent_attackers[etof(leaver)-1
+    // bit] &= ~BIT): drop the leaving client from every player's first-hit set so a freed/reused slot can't
+    // mis-fire STOP_ACCUMULATION. Keyed on the live Entity ref here, so we remove the leaver object from each set.
+    private bool OnClientDisconnect(ref MutatorHooks.ClientDisconnectArgs args)
+    {
+        if (Api.Services is null) return false;
+        Entity leaver = args.Player;
+        foreach (Entity it in Api.Entities.FindByClass("player"))
+        {
+            if (it.IsFreed || (it.Flags & EntFlags.Client) == 0) continue;
+            it.DentAttackers.Remove(leaver);
+        }
         return false;
     }
 

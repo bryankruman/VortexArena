@@ -13,10 +13,10 @@ namespace XonoticGodot.Common.Gameplay;
 /// <c>GameWorld.DefaultPlayerAlpha</c>/<c>DefaultWeaponAlpha</c>, which spawn/death read and the client
 /// renders via <c>PlayerModel.ApplyAlpha</c>.
 ///
-/// The mutators-string reporting (QC <c>BuildMutatorsPrettyString</c> → ", Cloaked", MUT_CLOAKED bit) is
-/// cosmetic and remains skipped: the port has no active-mutators pretty-string mechanism yet (a shared
-/// infrastructure gap across all mutators, not specific to this file). Likewise the MENUQC describe text /
-/// create-game checkbox are part of the absent menu-mutator metadata system.
+/// The active-mutators pretty-string contribution (QC <c>BuildMutatorsPrettyString</c> → ", Cloaked",
+/// suppressed in CTS) is ported via <see cref="BuildMutatorsPrettyString"/>. The MENUQC create-game checkbox
+/// (<c>g_cloaked</c> "Cloaked" / "All players are almost invisible") lives in the menu's DialogMutators; the
+/// in-game per-mutator describe page is part of the absent menu-mutator describe system (shared infra gap).
 /// </summary>
 [Mutator]
 public sealed class CloakedMutator : MutatorBase
@@ -65,5 +65,15 @@ public sealed class CloakedMutator : MutatorBase
         args.PlayerAlpha = a;
         args.WeaponAlpha = a; // default_weapon_alpha = default_player_alpha
         return true; // QC returns true (handled).
+    }
+
+    // MUTATOR_HOOKFUNCTION(cloaked, BuildMutatorsPrettyString) — sv_cloaked.qc:15-18:
+    //   if (!g_cts) M_ARGV(0, string) = strcat(M_ARGV(0, string), ", Cloaked");
+    // Append ", Cloaked" to the human-readable active-mutators string, suppressed in the CTS gametype.
+    public override string BuildMutatorsPrettyString(string s)
+    {
+        // QC g_cts gate — mirrors the !g_cts read PowerupsMutator uses for its CTS-suppressed broadcasts.
+        bool cts = Api.Services is not null && Api.Cvars.GetFloat("g_cts") != 0f;
+        return cts ? s : s + ", Cloaked";
     }
 }

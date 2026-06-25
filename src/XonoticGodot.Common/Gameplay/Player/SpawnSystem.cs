@@ -598,6 +598,16 @@ public static class SpawnSystem
         // a player spawned with 0 here takes NO knockback — must seed it on (re)spawn.
         p.DamageForceScale = Cvar("g_player_damageforcescale", 2f);
 
+        // QC client.qc:776-781: a player who was a SPECTATOR (killcount == FRAGS_SPECTATOR) is now joining the
+        // match — clear its score and stamp startplaytime = time. The port models the spectator sentinel with the
+        // STATUS .frags field (FragsStatus == FragsSpectator), which an observing/connecting client carries
+        // (ClientManager sets it on connect) and which is reset to FragsPlayer just below. Read it BEFORE that
+        // reset so a genuine spectator→player transition (a fresh Join) stamps the per-client playtime origin,
+        // while a mid-life respawn (FragsStatus already FragsPlayer) leaves StartPlayTime untouched. This backs the
+        // kick_teamkiller rate denominator (time - startplaytime) faithfully for mid-match joiners.
+        if (p.FragsStatus == Player.FragsSpectator)
+            p.StartPlayTime = Api.Services is not null ? Api.Clock.Time : 0f;
+
         // QC: this.frags = FRAGS_PLAYER on every (re)spawn. The .frags field is the player STATUS sentinel
         // (FRAGS_PLAYER / FRAGS_SPECTATOR / FRAGS_OUT_OF_GAME), NOT the match score — the running score lives in
         // the real score table (Player.ScoreFrags -> GameScores SP_SCORE), so resetting status here no longer
@@ -742,6 +752,9 @@ public static class SpawnSystem
             AmmoRockets = Cvar(CvarAmmoRockets, 0f),
             AmmoCells   = Cvar(CvarAmmoCells,   0f),
             AmmoFuel    = Cvar(CvarAmmoFuel,    0f),
+            // QC world.qc:2140 (no-arena branch): warmup_start_ammo_fuel = cvar("g_warmup_start_ammo_fuel").
+            // An active arena overrides this to mirror the live start fuel below (world.qc:2127).
+            WarmupAmmoFuel = Cvar("g_warmup_start_ammo_fuel", 0f),
         };
 
         // QC world.qc:2004-2006: s = cvar_string("g_weaponarena"); MUTATOR_CALLHOOK(SetWeaponArena, s);
@@ -760,6 +773,8 @@ public static class SpawnSystem
                 if (arena.Has(w)) l.Weapons.Add(w.NetName);
             l.ItemFlags.Add("UNLIMITED_AMMO");
             l.ItemFlags.Add("UNLIMITED_SUPERWEAPONS");
+            // QC world.qc:2127: with an active weapon arena, warmup mirrors the live start fuel.
+            l.WarmupAmmoFuel = l.AmmoFuel;
         }
         else
         {
@@ -955,7 +970,13 @@ public static class SpawnSystem
         p.SetResource(ResourceType.Bullets, Cvar("g_warmup_start_ammo_nails", 160f));
         p.SetResource(ResourceType.Rockets, Cvar("g_warmup_start_ammo_rockets", 80f));
         p.SetResource(ResourceType.Cells,   Cvar("g_warmup_start_ammo_cells", 30f));
-        p.SetResource(ResourceType.Fuel,    Cvar("g_warmup_start_ammo_fuel", 0f));
+
+        // QC world.qc:2161-2167: MUTATOR_CALLHOOK(SetStartItems) runs ONCE and maxes warmup_start_ammo_fuel
+        // against rotstable for the hook/jetpack fuel-regen grant. ComputeStartItems runs that deterministic
+        // seam; use its warmup fuel (rather than the flat g_warmup_start_ammo_fuel cvar) so warmup spawns get
+        // the bumped fuel, and fold in its IT_* flags (FUEL_REGEN) below.
+        StartLoadout startSeam = ComputeStartItems();
+        p.SetResource(ResourceType.Fuel, startSeam.WarmupAmmoFuel);
 
         p.OwnedWeapons.Clear();
         p.OwnedWeaponSet.Clear();
@@ -1001,6 +1022,9 @@ public static class SpawnSystem
             }
         }
 
+        // Fold the SetStartItems seam's IT_* flags (e.g. the hook mutator's FUEL_REGEN) into the warmup items
+        // so warmup spawns get the same start_items the live path does (QC start_items is shared, world.qc:2165).
+        foreach (string flag in startSeam.ItemFlags) warmFlags.ItemFlags.Add(flag);
         p.Items = (int)Cvar(CvarStartItems, 0f) | StartItemFlagBits(warmFlags);
         Inventory.SwitchToBest(p);
     }

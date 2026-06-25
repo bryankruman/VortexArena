@@ -44,6 +44,16 @@ namespace XonoticGodot.Common.Framework
         public bool ItemIsLoot;
 
         /// <summary>
+        /// QC <c>.ok_item</c> (common/mutators/mutator/overkill/sv_overkill.qh): set on a world item that is an
+        /// Overkill item — by the Overkill loot drop (<c>ok_DropItem</c>) and by a random-items spawn/replace/loot
+        /// item when Overkill is enabled (sv_random_items.qc:274/303 <c>if (MUTATOR_IS_ENABLED(ok)) ok_item = true</c>).
+        /// The Overkill FilterItem always lets an <c>ok_item</c> through (its own loot/replacement is never re-filtered).
+        /// The port's Overkill FilterItem stands in via <see cref="ItemIsLoot"/> for its loot, but the random-items
+        /// REPLACE/SPAWN items (which are NOT loot) need this explicit tag, exactly as QC sets it.
+        /// </summary>
+        public bool OkItem;
+
+        /// <summary>
         /// QC <c>.m_isexpiring</c> (server/items/spawning.qh ITEM_IS_EXPIRING): a loot item whose powerup
         /// timers expire while it sits on the ground (its <c>nextthink</c> is the max powerup-finished time).
         /// </summary>
@@ -110,6 +120,28 @@ namespace XonoticGodot.Common.Framework
 
         /// <summary>True while the item is shown/available; mirrors QC Item_Show state (drives ITS_AVAILABLE).</summary>
         public bool ItemAvailable = true;
+
+        /// <summary>
+        /// QC <c>.new_toys</c> (common/mutators/mutator/new_toys/sv_new_toys.qc:109) — the map-authored weapon
+        /// replacement list set on a <c>weapon_*</c> map entity (BSP key <c>"new_toys"</c>, e.g.
+        /// <c>"new_toys" "vortex rifle"</c>). Read by the New Toys mutator's SetWeaponreplace handler to override
+        /// what weapon the entity spawns as. <c>null</c> = no map key (use the global autoreplace mapping).
+        /// </summary>
+        public string? NewToys;
+
+        /// <summary>
+        /// QC <c>.m_isreplaced</c> (server/weapons/spawning.qc:11) — set on a secondary weapon entity spawned by a
+        /// multi-token weaponreplace group so its own <c>weapon_defaultspawnfunc</c> skips the replace pass (it
+        /// IS the replacement). Prevents infinite recursion + double-replacement.
+        /// </summary>
+        public bool IsReplacedWeapon;
+
+        /// <summary>
+        /// QC <c>.item_pickupsound_ent</c> (the override pickup sound a FilterItem hook stamps on a world item —
+        /// e.g. New Toys' <c>SND_WEAPONPICKUP_NEW_TOYS</c> roflsound). When set, <c>PlayPickupSound</c> plays this
+        /// SND_* name instead of the def's default pickup sound. <c>null</c> = use the def's sound.
+        /// </summary>
+        public string? ItemPickupSoundOverride;
 
         /// <summary>
         /// QC <c>.mdl</c> — the item's stored world-model name, so <c>Item_Show</c> can restore

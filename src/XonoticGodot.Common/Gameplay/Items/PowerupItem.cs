@@ -202,7 +202,7 @@ public sealed class JetpackItem : PowerupPickup
         if (item.GetResource(ResourceType.Fuel) == 0f)
         {
             float fuel = item.Count > 0
-                ? item.Count * ItemPickupRules.CvarOr("g_jetpack_fuel", 100f)
+                ? item.Count * ItemPickupRules.CvarOr("g_jetpack_fuel", 8f) // g_jetpack_fuel default 8 (fuel/sec)
                 : ItemPickupRules.CvarOr("g_pickup_fuel_jetpack", 100f);
             item.SetResourceExplicit(ResourceType.Fuel, fuel);
         }

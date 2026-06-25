@@ -29,6 +29,24 @@ namespace XonoticGodot.Common.Gameplay;
 /// </summary>
 public sealed class RoundHandler
 {
+    /// <summary>
+    /// Global host seam for QC <c>round_handler_IsActive() &amp;&amp; !round_handler_IsRoundStarted()</c> — true when a
+    /// round-based gametype is running but the current round has NOT yet started (the inter-round / pre-round
+    /// grace window). The per-gametype <see cref="RoundHandler"/> instance is owned by the active gametype and is
+    /// not reachable from the Common gameplay layer, so the host (which DOES hold the live handler) wires this
+    /// each match. Consumers in Common (e.g. RandomGravityMutator's pre-round suppression gate) read it through
+    /// <see cref="RoundGateBlocks"/>. Unwired (no round gametype / headless) it is null, so the gate is inert —
+    /// matching QC where <c>round_handler_IsActive()</c> is false in non-round modes.
+    /// </summary>
+    public static Func<bool>? RoundNotStartedProvider;
+
+    /// <summary>
+    /// QC <c>round_handler_IsActive() &amp;&amp; !round_handler_IsRoundStarted()</c>: true when the active round-based
+    /// gametype is in its pre-round grace window (round armed but not yet live), so callers should suppress
+    /// per-frame round-gated behavior. False when no round gametype is active (provider unwired).
+    /// </summary>
+    public static bool RoundGateBlocks() => RoundNotStartedProvider?.Invoke() ?? false;
+
     /// <summary>The phase the handler is in (QC round_handler think branches).</summary>
     public enum RoundPhase
     {

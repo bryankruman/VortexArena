@@ -108,6 +108,17 @@ public static class StartItem
             return null;
         }
 
+        // QC: the ENTITY-level FilterItem hook (the same MUTATOR_CALLHOOK(FilterItem, this) seam, items.qc:1031).
+        // DISTINCT from the definition-level FilterItemDefinition above: this one can REPLACE the item with a
+        // different classname (random_items spawns its replacement here from the live origin/spawnflags and returns
+        // true). A true return DELETES this item (QC delete(this); return;). The replacement item runs its OWN
+        // StartItem under the mutator's recursion guard, so it re-enters here without re-replacing.
+        if (MutatorHooks.FireFilterItem(item))
+        {
+            ItemPickupRules.RemoveItem(item);
+            return null;
+        }
+
         // QC: set model + bbox BEFORE droptofloor / spawnshield (so the touch-area-grid has a real volume).
         // The defs carry the BARE model name (the QC Item_Model/W_Model macro argument); build the full VFS
         // path here or the asset loader can't find it ("not found in any mount: item_armor_large.md3").

@@ -523,7 +523,10 @@ public sealed class Domination : GameType
             {
                 SpriteName = DomSpriteName(cp.OwnerTeam),
                 FixedOrigin = pos,
-                Team = cp.OwnerTeam,
+                // Visibility Team = 0: QC dom_controlpoint_setup spawns control-point waypoints via
+                // WaypointSprite_SpawnFixed (showto=NULL, t=0) → shown to EVERYONE (no SPRITERULE_DEFAULT team
+                // restriction). The owning-team color is carried in Color, not the visibility team.
+                Team = 0,
                 Color = cp.OwnerTeam == Teams.None ? new Vector3(0f, 1f, 1f) : TeamRadarColor(cp.OwnerTeam),
                 RadarIcon = 1, // RADARICON_DOMPOINT
                 Health = -1f,

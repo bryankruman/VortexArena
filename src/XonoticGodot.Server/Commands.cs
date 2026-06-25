@@ -192,6 +192,10 @@ public sealed class Commands
         // the sv_dodging_clientselect opt-in flag; cl_dodging_timeout is the double-tap window. Wired below via
         // DodgingMutator.ClientDodgingProvider / TimeoutProvider.
         "cl_dodging", "cl_dodging_timeout",
+        // Multijump per-client opt-in/out/cap (common/mutators/mutator/multijump/multijump.qc:5 +
+        // multijump.qh:4 REPLICATE_INIT(int, cvar_cl_multijump)). -1 = use the g_multijump_client server
+        // default; 0 = opt out; >1 = cap off for me. Wired below via MultijumpMutator.ClientMultijumpProvider.
+        "cl_multijump",
         // Remaining Base REPLICATE fields (common/replicate.qh): stored per-client so the server can honor them
         // exactly like QC (every REPLICATE field lands in the per-client store). cl_handicap(+damage_given/taken)
         // feed Handicap_GetVoluntaryHandicap (wired below via VoluntaryHandicapProvider); cl_clippedspectating,

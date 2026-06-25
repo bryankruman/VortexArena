@@ -185,8 +185,14 @@ public partial class DialogMutators : MenuScreen
 
         // New Toys + its auto-replacement radio set (QC setDependentWeird on a weapon-arena compatibility test;
         // approximated as the dominant "not InstaGib" dependency + enabled only when g_new_toys is on).
+        // Port of MutatorNewToys.describe() (new_toys.qc:25): the picker info blurb — the gimmicky-weapons note,
+        // the InstaGib/Overkill exclusivity, and the current new-toy weapon list. The port has no dedicated
+        // describe-page widget, so the text is carried on the checkbox tooltip (closest faithful surface).
         var newToys = Widgets.CheckBox("g_new_toys", "New Toys",
-            "Allow maps to spawn additional weapons (new toys)");
+            "The New Toys mutator, enabled by default, allows the spawning of new gimmicky weapons, " +
+            "sometimes replacing a core weapon. Since these weapons can't spawn in InstaGib and Overkill, " +
+            "the New Toys mutator can't be enabled concurrently. The current New Toys weapons are: " +
+            "Seeker, Mine Layer, HLAC, Rifle, Arc");
         box.AddChild(newToys);
         Dependent.Bind(newToys, "g_instagib", 0, 0);
 
@@ -212,8 +218,11 @@ public partial class DialogMutators : MenuScreen
 
         // Piñata / Weapons stay — QC setDependentWeird(checkCompatibility_pinata): incompatible with instagib,
         // nix, overkill, melee_only and any weapon arena. Approximated as the dominant "not InstaGib" gate.
-        var pinata = Widgets.CheckBox("g_pinata", "Pinata",
-            "Players will drop all weapons they possessed when they are killed");
+        // Label = MutatorPinata.message (_("Piñata"), pinata.qh:6); tooltip = MutatorPinata.describe()
+        // (pinata.qc:6-8). The port has no describe-page widget, so the describe text rides on the tooltip.
+        var pinata = Widgets.CheckBox("g_pinata", "Piñata",
+            "Piñata is a mutator that makes players drop all their weapons when they die. " +
+            "Without this mutator, players normally drop only their equipped weapon");
         box.AddChild(pinata);
         Dependent.Bind(pinata, "g_instagib", 0, 0);
 

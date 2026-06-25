@@ -59,9 +59,14 @@ public sealed class InstagibMutator : MutatorBase
 
     public InstagibMutator() => NetName = "instagib";
 
-    // QC: expr_evaluate(cvar_string("g_instagib")) — instagib is the headline arena mutator.
+    // QC: REGISTER_MUTATOR(mutator_instagib, autocvar_g_instagib && !MapInfo_LoadedGametype.m_weaponarena).
+    // The `!m_weaponarena` guard keeps instagib from co-enabling with a weapon-arena gametype; the port reads
+    // it as `g_weaponarena == 0` (same stand-in melee_only uses for its identical guard) so a console
+    // `g_instagib 1` can't double-activate alongside an arena gametype, not just the menu radio-group.
     public override bool IsEnabled =>
-        Api.Services is not null && Api.Cvars.GetFloat("g_instagib") != 0f;
+        Api.Services is not null
+        && Api.Cvars.GetFloat("g_instagib") != 0f
+        && Api.Cvars.GetFloat("g_weaponarena") == 0f;
 
     private HookHandler<MutatorHooks.DamageCalculateArgs>? _onDamageCalc;
     private HookHandler<MutatorHooks.PlayerDiesArgs>? _onPlayerDies;
@@ -75,6 +80,7 @@ public sealed class InstagibMutator : MutatorBase
     private HookHandler<GameHooks.PlayerDamageArgs>? _onSplitHealthArmor;
     private HookHandler<MutatorHooks.FilterItemDefinitionArgs>? _onFilterItemDef;
     private HookHandler<MutatorHooks.ItemTouchArgs>? _onItemTouch;
+    private HookHandler<MutatorHooks.MakePlayerObserverArgs>? _onMakeObserver;
 
     public override void Hook()
     {
@@ -90,6 +96,7 @@ public sealed class InstagibMutator : MutatorBase
         _onSplitHealthArmor ??= OnPlayerDamageSplitHealthArmor;
         _onFilterItemDef ??= OnFilterItemDefinition;
         _onItemTouch ??= OnItemTouch;
+        _onMakeObserver ??= OnMakePlayerObserver;
 
         MutatorHooks.DamageCalculate.Add(_onDamageCalc);
         MutatorHooks.PlayerDies.Add(_onPlayerDies);
@@ -107,6 +114,8 @@ public sealed class InstagibMutator : MutatorBase
         MutatorHooks.FilterItemDefinition.Add(_onFilterItemDef);
         // QC ItemTouch: cells pickup full-heals; ExtraLife grants armor "lives".
         MutatorHooks.ItemTouch.Add(_onItemTouch);
+        // QC MakePlayerObserver: stop a demoted player's no-ammo countdown (clear the FINDAMMO centerprint).
+        MutatorHooks.MakePlayerObserver.Add(_onMakeObserver);
 
         if (Api.Services is not null)
         {
@@ -143,6 +152,7 @@ public sealed class InstagibMutator : MutatorBase
         if (_onSplitHealthArmor is not null) GameHooks.PlayerDamageSplitHealthArmor.Remove(_onSplitHealthArmor);
         if (_onFilterItemDef is not null) MutatorHooks.FilterItemDefinition.Remove(_onFilterItemDef);
         if (_onItemTouch is not null) MutatorHooks.ItemTouch.Remove(_onItemTouch);
+        if (_onMakeObserver is not null) MutatorHooks.MakePlayerObserver.Remove(_onMakeObserver);
     }
 
     private static bool IsPlayer(Entity? e) => e is not null && (e.Flags & EntFlags.Client) != 0;
@@ -272,6 +282,15 @@ public sealed class InstagibMutator : MutatorBase
         return false;
     }
 
+    // MUTATOR_HOOKFUNCTION(mutator_instagib, MakePlayerObserver) — sv_instagib.qc:123-128. A player demoted to
+    // observer has their no-ammo countdown stopped (and the FINDAMMO centerprint retracted) immediately, rather
+    // than only being reset on their next spawn.
+    private bool OnMakePlayerObserver(ref MutatorHooks.MakePlayerObserverArgs args)
+    {
+        StopCountdown(args.Player);
+        return false;
+    }
+
     // void instagib_ammocheck(entity this) — sv_instagib.qc
     private void AmmoCheck(Entity player)
     {
@@ -315,7 +334,10 @@ public sealed class InstagibMutator : MutatorBase
     private static void StopCountdown(Entity e)
     {
         if (!e.InstagibNeedAmmo) return;
-        // QC: Kill_Notification(... CPID_INSTAGIB_FINDAMMO) — clears the "find ammo" centerprint.
+        // QC: Kill_Notification(NOTIF_ONE_ONLY, e, MSG_CENTER, CPID_INSTAGIB_FINDAMMO) — actively retract the
+        // lingering "find ammo" / DOWNGRADE centerprint (both share the CPID_INSTAGIB_FINDAMMO group) on this
+        // client so it doesn't persist after the player re-arms / dies / spectates.
+        NotificationSystem.SendCenterKill(NotifBroadcast.OneOnly, e, "CPID_INSTAGIB_FINDAMMO");
         e.InstagibNeedAmmo = false;
     }
 
@@ -488,4 +510,12 @@ public sealed class InstagibMutator : MutatorBase
         l.ItemFlags.Add("UNLIMITED_SUPERWEAPONS");
         return false;
     }
+
+    // MUTATOR_HOOKFUNCTION(mutator_instagib, BuildMutatorsString) — sv_instagib.qc:415-418: append ":instagib"
+    // to the machine-readable mutators token (the :gameinfo:mutators:LIST event-log line / server-browser field).
+    public override string BuildMutatorsString(string s) => s + ":instagib";
+
+    // MUTATOR_HOOKFUNCTION(mutator_instagib, BuildMutatorsPrettyString) — sv_instagib.qc:420-423: append the
+    // human-readable ", InstaGib" token to the active-mutators line shown to joining clients / the scoreboard.
+    public override string BuildMutatorsPrettyString(string s) => s + ", InstaGib";
 }

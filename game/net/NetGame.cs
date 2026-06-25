@@ -1463,6 +1463,13 @@ public sealed partial class NetGame : Node3D
         AddChild(waypointLayer);
         _waypointLayer = new XonoticGodot.Game.Client.WaypointSpriteLayer { Name = "WaypointSprites", Camera = _camera };
         _waypointLayer.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+        if (_bsp is { Models.Length: > 0 })
+        {
+            // QC WaypointSprite_Load: waypointsprite_fadedistance = vlen(mi_scale) where mi_scale = mi_max - mi_min
+            // (the BSP worldspawn model extent). Drives the distance-fade ramp distancefadedistance.
+            System.Numerics.Vector3 mn = _bsp.Models[0].Mins, mx = _bsp.Models[0].Maxs;
+            _waypointLayer.MapSize = new System.Numerics.Vector3(mx.X - mn.X, mx.Y - mn.Y, mx.Z - mn.Z).Length();
+        }
         if (_client is not null)
             _waypointLayer.Source = () => _client.Waypoints;
         waypointLayer.AddChild(_waypointLayer);

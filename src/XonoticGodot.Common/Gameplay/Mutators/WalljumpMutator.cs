@@ -99,9 +99,12 @@ public sealed class WalljumpMutator : MutatorBase
 
         // QC SVQC side-effects (walljump.qc:62-68): these all run server-side.
         player.LastWallJumpTime = now;
-        // QC: player.oldvelocity = player.velocity (the POST-impulse velocity). The port Entity has no
-        // OldVelocity field yet (see todos), so we keep the anti-stick origin reference for now.
-        player.OldOrigin = player.Origin;
+        // QC: player.oldvelocity = player.velocity — the POST-impulse velocity, an anti-stick reference.
+        // (Earlier the port wrote OldOrigin = Origin, which is the WRONG field: OldOrigin is the engine's
+        // render-interpolation anchor, so stamping it cancelled interpolation on every wall jump. The shared
+        // Entity.OldVelocity field — declared on the vehicles partial (Vehicles/VehicleCommon.cs) — carries the
+        // faithful QC .oldvelocity value.)
+        player.OldVelocity = player.Velocity;
 
         // QC: Send_Effect(EFFECT_SMOKE_RING, trace_endpos, plane_normal, 5) — smoke ring at the wall
         // contact point, oriented along the plane normal.

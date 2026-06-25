@@ -238,6 +238,11 @@ public static class WeaponFiring
         float force = 0f, float falloffForceHalflife = 0f, float headshotMultiplier = 0f,
         string? tracerEffect = null, string? deathTag = null)
     {
+        // QC fireBullet's `if (snd != SND_Null) { sound(...); W_PlayStrengthSound(ent); }` (tracing.qc:161-165):
+        // every bullet shot offers the Strength-fire sound to the powerups mutator (anti-spammed there, so the
+        // per-pellet calls in a shotgun blast collapse to one cue).
+        MutatorHooks.FireWPlayStrengthSound(actor);
+
         LagComp.Begin(actor); // rewind other players to the shooter's view-time for fair hit-reg (antilag.qc)
         try
         {
@@ -703,7 +708,7 @@ public static class WeaponFiring
         spread *= WeaponSpreadFactor;
         if (spread <= 0f) return mustNormalize ? QMath.Normalize(dir) : dir;
 
-        Vector3 v = dir + Prandom.Vec() * spread; // randomvec() == [-1,1)^3
+        Vector3 v = dir + Prandom.Vec() * spread; // spread_style 0: randomvec() uniform in the unit ball (density sqrt(1-r^2))
         return mustNormalize ? QMath.Normalize(v) : v;
     }
 

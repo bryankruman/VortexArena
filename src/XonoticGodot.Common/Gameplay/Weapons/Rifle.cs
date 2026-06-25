@@ -217,7 +217,7 @@ public sealed class Rifle : Weapon
         // become-READY think with the hail continuation, fired after this shot's animtime (rifle.qc:88).
         // `this` is the process-lifetime Rifle singleton, safe to capture in the scheduled think. weapon_thinkf
         // scales the delay by the weapon rate factor (weaponsystem.qc:394), so do the same.
-        WeaponFireDriver.ScheduleThink(st, bal.Animtime * WeaponRateFactor(),
+        WeaponFireDriver.ScheduleThink(st, bal.Animtime * WeaponRateFactor(actor),
             (pl, sl) => BulletHailContinue(pl, sl, secondary));
     }
 
@@ -267,7 +267,7 @@ public sealed class Rifle : Weapon
             FireBullets(actor, slot, bal, secondary);
             st.RifleAccumulator += bal.Burstcost;
             // weapon_thinkf(..., W_Rifle_BulletHail_Continue): keep the hail going (rifle.qc:71).
-            WeaponFireDriver.ScheduleThink(st, bal.Animtime * WeaponRateFactor(),
+            WeaponFireDriver.ScheduleThink(st, bal.Animtime * WeaponRateFactor(actor),
                 (pl, sl) => BulletHailContinue(pl, sl, secondary));
         }
         else

@@ -197,6 +197,13 @@ public sealed class WeaponSlotState
     public int OldClipLoad;
 
     /// <summary>
+    /// QC <c>.buff_ammo_prev_clipload</c> (buffs/buff/ammo.qc): the slot's clip load saved when the ammo buff was
+    /// applied (which then force-fills the clip so reload weapons never run dry). Restored on the buff's removal.
+    /// 0 = nothing saved.
+    /// </summary>
+    public int BuffAmmoPrevClipLoad;
+
+    /// <summary>
     /// QC <c>.weapon_load[REGISTRY_MAX(Weapons)]</c> (weaponsystem.qh): the per-weapon persistent magazine store,
     /// indexed by weapon RegistryId, kept on the slot so each weapon's clip survives switching away and back.
     /// Seeded to <c>reloading_ammo</c> (full clip) at spawn for every reloadable weapon (QC PutPlayerInServer),

@@ -971,16 +971,42 @@ public sealed class ServerNet : IDisposable
 
     private static byte Clamp255(float c) => (byte)System.Math.Clamp((int)(c * 255f), 0, 255);
 
-    /// <summary>QC WaypointSprite_visible_for_player: a waypoint's team/rule/predicate gate for one viewer.</summary>
-    private static bool WaypointVisible(XonoticGodot.Common.Gameplay.Waypoints.WaypointSprite wp, Player peer)
+    /// <summary>QC WaypointSprite_visible_for_player (waypointsprites.qc:982): a waypoint's team/rule/predicate
+    /// gate for one viewer. Mirrors the QC control flow: personal-waypoint predicate first, then the SPECTATOR
+    /// (sv_itemstime-gated) and the team-restricted DEFAULT branches.</summary>
+    private bool WaypointVisible(XonoticGodot.Common.Gameplay.Waypoints.WaypointSprite wp, Player peer)
     {
+        // QC: personal waypoints (enemy set) — visible only to that one viewer.
         if (wp.VisibleForPlayer is not null) return wp.VisibleForPlayer(peer);
-        return wp.Rule switch
+
+        // QC IS_PLAYER(view): an in-game client (not an observer/spectator).
+        bool isPlayer = !peer.IsObserver;
+
+        switch (wp.Rule)
         {
-            XonoticGodot.Common.Gameplay.Waypoints.SpriteRule.Teamplay => wp.Team == 0 || wp.Team == (int)peer.Team,
-            XonoticGodot.Common.Gameplay.Waypoints.SpriteRule.Spectator => peer.IsObserver,
-            _ => true, // SPRITERULE_DEFAULT: visible to everyone
-        };
+            case XonoticGodot.Common.Gameplay.Waypoints.SpriteRule.Spectator:
+            {
+                // QC: hidden entirely when sv_itemstime == 0; for live players hidden unless warmup or sv_itemstime == 2.
+                float itemstime = _world.Services.Cvars.GetFloat("sv_itemstime");
+                if (itemstime == 0f)
+                    return false;
+                if (!_world.Warmup.WarmupStage && isPlayer && itemstime != 2f)
+                    return false;
+                return true;
+            }
+            case XonoticGodot.Common.Gameplay.Waypoints.SpriteRule.Teamplay:
+                return wp.Team == 0 || wp.Team == (int)peer.Team;
+            default: // SPRITERULE_DEFAULT
+                // QC: a team-set Default waypoint is visible only to the same team AND only to live players.
+                if (wp.Team != 0)
+                {
+                    if (wp.Team != (int)peer.Team)
+                        return false;
+                    if (!isPlayer)
+                        return false;
+                }
+                return true;
+        }
     }
 
     /// <summary>

@@ -581,6 +581,10 @@ public static class MonsterAI
         // the gameplay state of clients; entities without it read as fully opaque (alpha 0 == default).
         // (No alpha field on the headless Entity yet; opacity is assumed — the alpha-fade gate is a no-op.)
 
+        // QC Monster_ValidTarget:119 — MUTATOR_CALLHOOK(MonsterValidTarget, this, targ) invalidates the target
+        // (the powerups mutator forbids targeting a player holding Invisibility — monster stealth).
+        if (MutatorHooks.FireMonsterValidTarget(self, targ)) return false;
+
         // Line of sight: trace from our eye to the target's bbox center; blocked => invalid.
         if (Cvar("g_monsters_lineofsight", 1f) != 0f)
         {

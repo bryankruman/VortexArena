@@ -227,6 +227,57 @@ public static class ItemSpawnFuncs
     // ---- the weapon item spawnfunc (QC weapon_defaultspawnfunc, server/weapons/spawning.qc:29) ----
     private static void WeaponSpawn(Entity e, Weapon w)
     {
+        // QC weapon_defaultspawnfunc (spawning.qc:33): the weaponreplace + SetWeaponreplace mutator pass runs only
+        // for a real (non-loot, non-already-replaced) map weapon entity. The port's loot/thrown path reuses
+        // PickupFor + StartItem.SpawnLoot directly, so any e reaching here is a map spawn — run the full pass.
+        if (!e.ItemIsLoot && !e.IsReplacedWeapon)
+        {
+            // NOTE (deferred): QC weapon_defaultspawnfunc rejects a WEP_FLAG_MUTATORBLOCKED weapon outright here
+            // (startitem_failed). The port does NOT yet enforce that at map-spawn — doing so changes weapon spawning
+            // project-wide (compat-remapped arc/minelayer, Weapons.All[0]-based item tests) and needs its own pass
+            // with the spawn-rejection test contract updated. Left as a separate parity item so the weaponreplace
+            // pass below (the New-Toys gap this file closes) ships without that broad behavior change.
+
+            // QC: s = W_Apply_Weaponreplace(wpn.netname); MUTATOR_CALLHOOK(SetWeaponreplace, this, wpn, s);
+            //     s = M_ARGV(2, string); — the New Toys SetWeaponreplace handler rewrites s to the map "new_toys"
+            // key (or the global autoreplace mapping), then re-applies the per-weapon weaponreplace cvar.
+            string s = W_Apply_Weaponreplace(w.NetName);
+            s = MutatorHooks.FireSetWeaponreplace(e, w, s);
+            if (s.Length == 0)
+                { MapMover.RemoveEntity(e); return; } // empty result deletes the entity (QC startitem_failed)
+
+            string[] toks = s.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            // QC: a >=2 token list links the extra weapons as an --internalteam replacement group (the engine
+            // shows one). The port has no team-item select group at this layer, so the extra tokens spawn their
+            // own world weapon (faithful set of weapons present; the single-show grouping is the deviation noted
+            // in StartItem). argv(0) stays as THIS entity's weapon.
+            if (toks.Length >= 2)
+            {
+                for (int i = 1; i < toks.Length; i++)
+                {
+                    Weapon? wep = Weapons.ByName(toks[i]);
+                    if (wep is null) continue;
+                    Entity rep = Api.Entities.Spawn();
+                    rep.ClassName = e.ClassName;
+                    rep.Origin = e.Origin;
+                    rep.OldOrigin = e.Origin;
+                    rep.Angles = e.Angles;
+                    rep.TargetName = e.TargetName;
+                    rep.Target = e.Target;
+                    rep.SpawnFlags = e.SpawnFlags;
+                    rep.Team = e.Team;
+                    rep.IsReplacedWeapon = true; // QC replacement.m_isreplaced = true (skips a recursive replace)
+                    WeaponSpawn(rep, wep);
+                }
+            }
+
+            // QC: wpn = Weapon_from_name(argv(0)); if (wpn == WEP_Null) { delete; startitem_failed; return; }
+            Weapon? primary = Weapons.ByName(toks[0]);
+            if (primary is null)
+                { MapMover.RemoveEntity(e); return; }
+            w = primary;
+        }
+
         WeaponPickup def = PickupFor(w);
 
         // QC weapon_defaultspawnfunc: default respawntime; default pickup ammo if the edict didn't set it; the
@@ -238,6 +289,30 @@ public static class ItemSpawnFuncs
             e.PickupAnyway = 1;
 
         StartItem.Spawn(e, def);
+    }
+
+    /// <summary>
+    /// QC <c>W_Apply_Weaponreplace(string in)</c> (server/weapons/spawning.qc:13): token-walk <paramref name="in"/>;
+    /// for each token resolve the weapon and substitute its own <c>weaponreplace</c> cvar (single-level), dropping
+    /// any <c>"0"</c> token, then rebuild the space-joined list. An unknown token is kept verbatim (QC's
+    /// <c>Weapon_from_name</c> null case leaves <c>replacement = it</c>).
+    /// </summary>
+    public static string W_Apply_Weaponreplace(string input)
+    {
+        // QC FOREACH_WORD(in, true, ...): per token resolve the weapon's own weaponreplace (else keep the token),
+        // drop a whole-string "0" (this slot spawns nothing), and cons() the replacement onto the output. cons
+        // joins with a single space; tokenize_console later re-splits, so a multi-name replacement string is fine.
+        string outStr = "";
+        foreach (string tok in input.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        {
+            string replacement = tok;
+            Weapon? w = Weapons.ByName(tok);
+            if (w is not null)
+                replacement = w.WeaponReplace.Length > 0 ? w.WeaponReplace : tok;
+            if (replacement == "0") continue; // QC: replacement == "0" => drop
+            outStr = outStr.Length == 0 ? replacement : outStr + " " + replacement; // QC cons(out, replacement)
+        }
+        return outStr;
     }
 
     /// <summary>The stable per-weapon <see cref="WeaponPickup"/> def (QC <c>wpn.m_pickup</c>). Public so the

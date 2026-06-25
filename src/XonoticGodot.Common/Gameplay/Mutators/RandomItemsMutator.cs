@@ -25,13 +25,16 @@ namespace XonoticGodot.Common.Gameplay;
 ///    each a random classname launched on a random spread, as a real touch-pickupable loot pickup via
 ///    <see cref="StartItem.SpawnLoot"/> (the same path the thrown-weapon / Overkill drops use).
 ///
-/// BLOCKER (documented partial — map item-entity replacement): the FilterItem / ItemTouched hooks
-/// (RandomItems_ReplaceMapItem) and the per-respawn re-randomization need an entity-level FilterItem mutator-hook
-/// chain + an ItemTouch hook chain, neither of which exists in the port yet (the only item filter is the
-/// definition-level FilterItemDefinition, which cannot swap one classname for another, and ItemPickupRules.ItemTouch
-/// has no mutator dispatch). So the MAP-replacement half (<c>g_random_items</c>) is still inert; it is flagged in
-/// the cross-task TODOs. The LOOT half (<c>g_random_loot</c>) is fully live + faithful. The class-name selection
-/// engine is fully ported, so the map half gets correct classnames the day those hook seams land.
+/// MAP-replacement half (<c>g_random_items</c>): now LIVE. The entity-level <see cref="MutatorHooks.FilterItem"/>
+/// hook (fired from <see cref="StartItem"/> at the QC items.qc:1031 seam) replaces a spawning map item with a random
+/// one (<see cref="ReplaceMapItem"/> → <c>RandomItems_ReplaceMapItem</c>: the <c>g_random_items_replace_*</c> cvar
+/// drives the literal-"random" weighted pick vs the tokenized candidate list), and the
+/// <see cref="MutatorHooks.ItemTouched"/> hook re-randomizes a picked-up map item each respawn. A static
+/// <see cref="_isSpawning"/> recursion guard (QC <c>random_items_is_spawning</c>) stops the replacement item from
+/// re-replacing itself, and replaced/loot items spawned under Overkill are tagged <see cref="Entity.OkItem"/>.
+/// The LOOT half (<c>g_random_loot</c>) is fully live + faithful. The Overkill item-pool override is wired via the
+/// <see cref="MutatorHooks.RandomItemsGetClassName"/> mod-injection hook (OverkillMutator); the Instagib override
+/// is deferred until its VaporizerCells/ExtraLife items are ported (their classnames cannot resolve to a pickup yet).
 /// </summary>
 [Mutator]
 public sealed class RandomItemsMutator : MutatorBase
@@ -61,8 +64,8 @@ public sealed class RandomItemsMutator : MutatorBase
     /// <summary>QC autocvar_g_random_loot_max.</summary>
     public float LootMax;
 
-    /// <summary>QC autocvar_g_random_loot_time — seconds the dropped loot stays.</summary>
-    public float LootTime = 20f;
+    /// <summary>QC autocvar_g_random_loot_time — seconds the dropped loot stays (Base/cfg default 10).</summary>
+    public float LootTime = 10f;
 
     /// <summary>QC autocvar_g_random_loot_spread — how far loot can be thrown.</summary>
     public float LootSpread = 200f;
@@ -74,12 +77,25 @@ public sealed class RandomItemsMutator : MutatorBase
         Api.Services is not null
         && (Api.Cvars.GetFloat("g_random_items") != 0f || Api.Cvars.GetFloat("g_random_loot") != 0f);
 
+    /// <summary>
+    /// QC <c>random_items_is_spawning</c> (sv_random_items.qc:42): the recursion guard set around a spawn/replace
+    /// so the replacement item's OWN FilterItem (which re-enters StartItem) does NOT re-replace it. Static because
+    /// QC's is a file global and the replace path can re-enter through the shared StartItem driver.
+    /// </summary>
+    private static bool _isSpawning;
+
     private HookHandler<MutatorHooks.PlayerDiesArgs>? _onPlayerDies;
+    private HookHandler<MutatorHooks.FilterItemArgs>? _onFilterItem;
+    private HookHandler<MutatorHooks.ItemTouchedArgs>? _onItemTouched;
 
     public override void Hook()
     {
         _onPlayerDies ??= OnPlayerDies;
-        MutatorHooks.PlayerDies.Add(_onPlayerDies, HookOrder.Last); // QC CBC_ORDER_LAST
+        _onFilterItem ??= OnFilterItem;
+        _onItemTouched ??= OnItemTouched;
+        MutatorHooks.PlayerDies.Add(_onPlayerDies, HookOrder.Last);    // QC CBC_ORDER_LAST
+        MutatorHooks.FilterItem.Add(_onFilterItem, HookOrder.Last);    // QC CBC_ORDER_LAST
+        MutatorHooks.ItemTouched.Add(_onItemTouched, HookOrder.Last);  // QC CBC_ORDER_LAST
 
         if (Api.Services is not null)
         {
@@ -92,15 +108,116 @@ public sealed class RandomItemsMutator : MutatorBase
             float ls = Api.Cvars.GetFloat("g_random_loot_spread");
             if (ls != 0f) LootSpread = ls;
         }
-
-        // NOTE (deferred): QC also subscribes FilterItem + ItemTouched (RandomItems_ReplaceMapItem) — wired only
-        // once a map item-entity spawn pipeline exists (see the class doc / crossTaskNeeds). Nothing to add here.
     }
 
     public override void Unhook()
     {
         if (_onPlayerDies is not null) MutatorHooks.PlayerDies.Remove(_onPlayerDies);
+        if (_onFilterItem is not null) MutatorHooks.FilterItem.Remove(_onFilterItem);
+        if (_onItemTouched is not null) MutatorHooks.ItemTouched.Remove(_onItemTouched);
     }
+
+    // QC MUTATOR_HOOKFUNCTION(random_items, BuildMutatorsString) (sv_random_items.qc:312).
+    public override string BuildMutatorsString(string s) => s + ":random_items";
+
+    // QC MUTATOR_HOOKFUNCTION(random_items, BuildMutatorsPrettyString) (sv_random_items.qc:317).
+    public override string BuildMutatorsPrettyString(string s) => s + ", Random items";
+
+    // QC MUTATOR_HOOKFUNCTION(random_items, FilterItem, CBC_ORDER_LAST) (sv_random_items.qc:323): replace a
+    // spawning MAP item with a random one. Returns true to FORBID (delete) the original — the replacement has
+    // already spawned via RandomItems_ReplaceMapItem.
+    private bool OnFilterItem(ref MutatorHooks.FilterItemArgs args)
+    {
+        if (!RandomItems) return false;          // QC: if (!autocvar_g_random_items) return false;
+        if (_isSpawning) return false;           // QC: if (random_items_is_spawning) return false;
+        Entity item = args.Item;
+        if (item.ItemIsLoot) return false;       // QC: if (ITEM_IS_LOOT(item)) return false;
+        return ReplaceMapItem(item) is not null; // QC: RandomItems_ReplaceMapItem(item) == NULL ? false : true.
+    }
+
+    // QC MUTATOR_HOOKFUNCTION(random_items, ItemTouched, CBC_ORDER_LAST) (sv_random_items.qc:347): re-randomize a
+    // picked-up MAP item — replace it, schedule the replacement's respawn, delete the original.
+    private bool OnItemTouched(ref MutatorHooks.ItemTouchedArgs args)
+    {
+        if (!RandomItems) return false;          // QC: if (!autocvar_g_random_items) return;
+        Entity item = args.Item;
+        if (item.ItemIsLoot) return false;       // QC: if (ITEM_IS_LOOT(item)) return;
+        Entity? newItem = ReplaceMapItem(item);
+        if (newItem is null) return false;       // QC: if (new_item == NULL) return;
+        ItemPickupRules.ScheduleRespawn(newItem); // QC: Item_ScheduleRespawn(new_item);
+        ItemPickupRules.RemoveItem(item);         // QC: delete(item);
+        return false;
+    }
+
+    /// <summary>
+    /// Port of <c>RandomItems_ReplaceMapItem(item)</c> (sv_random_items.qc:233): pick a replacement classname for
+    /// <paramref name="item"/> from its <c>g_random_items_replace_&lt;classname&gt;</c> cvar (the literal "random"
+    /// draws from the weighted tables; otherwise a uniform pick from the tokenized candidate list), and, if it
+    /// differs from the current classname, spawn that classname as a PERMANENT (non-loot) item copying the
+    /// original's placement. Returns the spawned item, or null when there is no replacement / the spawn freed
+    /// itself. Sets the recursion guard around the spawn so the replacement doesn't re-replace.
+    /// </summary>
+    private Entity? ReplaceMapItem(Entity item)
+    {
+        if (Api.Services is null) return null;
+
+        // QC RandomItems_GetItemReplacementClassNames: cvar_string("g_random_items_replace_<classname>").
+        string cvar = $"g_random_items_replace_{item.ClassName}";
+        string newClassnames = Api.Cvars.GetString(cvar);
+        if (string.IsNullOrEmpty(newClassnames)) return null; // QC: missing cvar -> warn, return NULL.
+
+        string newClassname;
+        if (newClassnames == "random")
+        {
+            newClassname = GetRandomItemClassName("random_items"); // QC: draw from the weighted tables.
+            if (string.IsNullOrEmpty(newClassname)) return null;
+        }
+        else
+        {
+            // QC: tokenize_console; 1 entry -> as-is; else argv(floor(random()*n)).
+            string[] toks = newClassnames.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (toks.Length == 0) return null;
+            newClassname = toks.Length == 1 ? toks[0] : toks[Prandom.RangeInt(0, toks.Length)];
+        }
+
+        if (newClassname == item.ClassName) return null; // QC: chosen == current -> no change.
+
+        // QC: random_items_is_spawning = true; spawn(); Item_CopyFields(item, new_item); classname; lifetime = -1
+        //     (permanent, not loot); if (ok) ok_item = true; Item_Initialise(new_item); guard = false.
+        bool prevGuard = _isSpawning;
+        _isSpawning = true;
+        Entity newItem = Api.Entities.Spawn();
+        CopyMapPlacement(item, newItem);
+        newItem.ClassName = newClassname; // QC new_item.classname = strzone(new_classname) (before Item_Initialise).
+        newItem.ItemIsLoot = false;
+        if (OverkillEnabled())
+            newItem.OkItem = true;
+        // SpawnFuncs dispatch IS the port's Item_Initialise for a classname (resolves the def + runs StartItem).
+        bool spawned = SpawnFuncs.TrySpawn(newClassname, newItem);
+        _isSpawning = prevGuard;
+
+        if (!spawned || newItem.IsFreed) return null; // QC: wasfreed(new_item) ? NULL : new_item.
+        return newItem;
+    }
+
+    // QC Item_CopyFields: copy the placement fields the new map item inherits from the one it replaces (origin,
+    // angles, spawnflags, target(name), team, noalign) so it sits exactly where the original was authored.
+    private static void CopyMapPlacement(Entity from, Entity to)
+    {
+        to.Origin = from.Origin;
+        to.OldOrigin = from.Origin;
+        if (Api.Services is not null)
+            Api.Entities.SetOrigin(to, to.Origin);
+        to.Angles = from.Angles;
+        to.SpawnFlags = from.SpawnFlags;
+        to.Target = from.Target;
+        to.TargetName = from.TargetName;
+        to.Team = from.Team;
+        to.NoAlign = from.NoAlign;
+    }
+
+    // QC MUTATOR_IS_ENABLED(ok): read the Overkill mutator's enable predicate (matches OverkillMutator.OtherEnabled).
+    private static bool OverkillEnabled() => Mutators.ByName("overkill") is { } m && m.IsEnabled;
 
     // MUTATOR_HOOKFUNCTION(random_items, PlayerDies)
     private bool OnPlayerDies(ref MutatorHooks.PlayerDiesArgs args)
@@ -137,13 +254,21 @@ public sealed class RandomItemsMutator : MutatorBase
         Vector3 spread = new(0f, 0f, LootSpread / 2f);
         spread += Prandom.Vec() * LootSpread;
 
+        // QC: random_items_is_spawning = true around the spawn (so the loot item's own FilterItem doesn't replace
+        // it); if (MUTATOR_IS_ENABLED(ok)) ok_item = true.
+        bool prevGuard = _isSpawning;
+        _isSpawning = true;
         Entity item = Api.Entities.Spawn();
         Api.Entities.SetOrigin(item, position);
         item.Velocity = spread;
+        item.ItemIsLoot = true; // QC Item_Initialise(lifetime>=0) makes it loot; SpawnLoot also tags it.
+        if (OverkillEnabled())
+            item.OkItem = true;
 
         // QC item.lifetime = autocvar_g_random_loot_time; Item_Initialise (loot path: MOVETYPE_TOSS, touch-pickup,
         // despawn after lifetime). SpawnLoot owns the toss/despawn/touch; on a failed spawn it removes the edict.
         StartItem.SpawnLoot(item, def, LootTime);
+        _isSpawning = prevGuard;
     }
 
     /// <summary>
@@ -169,13 +294,18 @@ public sealed class RandomItemsMutator : MutatorBase
     }
 
     /// <summary>
-    /// Port of <c>RandomItems_GetRandomItemClassName(prefix)</c>: the public entry. QC first fires the
-    /// RandomItems_GetRandomItemClassName mutator hook (for mods to inject classnames) then falls back to the
-    /// vanilla pick over ALL types. The mod-injection hook isn't modeled (no subscriber in the port), so this is
-    /// the vanilla pick.
+    /// Port of <c>RandomItems_GetRandomItemClassName(prefix)</c> (sv_random_items.qc:54): the public entry. QC
+    /// first fires the <c>RandomItems_GetRandomItemClassName</c> mutator hook so a mod (Overkill / Instagib) can
+    /// substitute its OWN item pool; if a handler consumes it, that classname is returned. Otherwise it falls
+    /// through to the vanilla weighted pick over ALL types.
     /// </summary>
-    public string GetRandomItemClassName(string prefix) =>
-        GetRandomVanillaItemClassName(prefix, RandomItemType.All);
+    public string GetRandomItemClassName(string prefix)
+    {
+        // QC: if (MUTATOR_CALLHOOK(RandomItems_GetRandomItemClassName, prefix)) return M_ARGV(1, string);
+        string? overridden = MutatorHooks.FireRandomItemsGetClassName(prefix);
+        if (overridden is not null) return overridden;
+        return GetRandomVanillaItemClassName(prefix, RandomItemType.All);
+    }
 
     /// <summary>
     /// Port of <c>RandomItems_GetRandomVanillaItemClassName(prefix, types)</c>: weighted-pick an item TYPE from the

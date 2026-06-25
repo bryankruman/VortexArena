@@ -44,6 +44,13 @@ public sealed class Devastator : Weapon
         public float RemoteEdgeDamage;// g_balance_devastator_remote_edgedamage
         public float RemoteForce;     // g_balance_devastator_remote_force
         public float RemoteRadius;    // g_balance_devastator_remote_radius
+        public float RemoteJump;          // g_balance_devastator_remote_jump (0/1: enable the rocket-jump variant)
+        public float RemoteJumpDamage;    // g_balance_devastator_remote_jump_damage
+        public float RemoteJumpForce;     // g_balance_devastator_remote_jump_force
+        public float RemoteJumpRadius;    // g_balance_devastator_remote_jump_radius
+        public float RemoteJumpVelocityZAdd; // g_balance_devastator_remote_jump_velocity_z_add
+        public float RemoteJumpVelocityZMin; // g_balance_devastator_remote_jump_velocity_z_min
+        public float RemoteJumpVelocityZMax; // g_balance_devastator_remote_jump_velocity_z_max
         public float Speed;           // g_balance_devastator_speed (target/top speed)
         public float SpeedAccel;      // g_balance_devastator_speedaccel
         public float SpeedStart;      // g_balance_devastator_speedstart (launch speed)
@@ -88,6 +95,13 @@ public sealed class Devastator : Weapon
         Cvars.RemoteEdgeDamage = Bal("g_balance_devastator_remote_edgedamage", 35f);
         Cvars.RemoteForce = Bal("g_balance_devastator_remote_force", 300f);
         Cvars.RemoteRadius = Bal("g_balance_devastator_remote_radius", 110f);
+        Cvars.RemoteJump = Bal("g_balance_devastator_remote_jump", 0f);
+        Cvars.RemoteJumpDamage = Bal("g_balance_devastator_remote_jump_damage", 70f);
+        Cvars.RemoteJumpForce = Bal("g_balance_devastator_remote_jump_force", 450f);
+        Cvars.RemoteJumpRadius = Bal("g_balance_devastator_remote_jump_radius", 100f);
+        Cvars.RemoteJumpVelocityZAdd = Bal("g_balance_devastator_remote_jump_velocity_z_add", 0f);
+        Cvars.RemoteJumpVelocityZMin = Bal("g_balance_devastator_remote_jump_velocity_z_min", 400f);
+        Cvars.RemoteJumpVelocityZMax = Bal("g_balance_devastator_remote_jump_velocity_z_max", 1500f);
         Cvars.Speed = Bal("g_balance_devastator_speed", 1300f);
         Cvars.SpeedAccel = Bal("g_balance_devastator_speedaccel", 1300f);
         Cvars.SpeedStart = Bal("g_balance_devastator_speedstart", 1000f);
@@ -327,7 +341,8 @@ public sealed class Devastator : Weapon
             DoRemoteExplode(self, owner);
     }
 
-    // W_Devastator_DoRemoteExplode — the actual remote (secondary) blast: remote_* balance.
+    // W_Devastator_DoRemoteExplode — the actual remote (secondary) blast: remote_* balance, with the optional
+    // dedicated rocket-jump self-boost (remote_jump_*) the Rocket Flying mutator forces on. devastator.qc:65-138.
     private void DoRemoteExplode(Entity self, Entity owner)
     {
         // QC W_Devastator_Unregister — clear lastrocket on ALL slots (the port slot-0-only clear ignored the
@@ -340,11 +355,49 @@ public sealed class Devastator : Weapon
         self.ProjectileDamage = null;
 
         // QC OR's HITTYPE_BOUNCE onto the remote blast deathtype (devastator.qc:123) so wr_killmessage classifies
-        // a remote detonation as a SPLASH kill (the rocket-jump variant remote_jump* is not ported — stock 0).
+        // a remote detonation as a SPLASH kill.
         string deathType = Damage.DeathTypes.WithHitType(Damage.DeathTypes.FromWeapon(NetName), Damage.DeathTypes.Bounce);
 
-        // QC's remote blast goes through the plain RadiusDamage wrapper (forcexyzscale '1 1 1') — only the
-        // CONTACT explosion (W_Devastator_Explode) applies force_xyscale, so no force shaping here.
+        // QC devastator.qc:72-76: seed allow_rocketjump from the weapon's remote_jump cvar, then let the
+        // AllowRocketJumping hook chain override it (the Rocket Flying mutator forces it true).
+        bool allowRocketjump = MutatorHooks.FireAllowRocketJumping(Cvars.RemoteJump != 0f);
+
+        // QC devastator.qc:78-114: when rocket-jumping is allowed and remote_jump_radius is set, if the owner is
+        // within remote_jump_radius this becomes a dedicated rocket-jump of the owner — optional vertical-velocity
+        // shaping (gated by velocity_z_add) plus a remote_jump_* damage/force blast aimed at the owner — instead of
+        // the plain remote_* blast.
+        bool handledAsRocketjump = false;
+        if (allowRocketjump && Cvars.RemoteJumpRadius != 0f
+            && owner.TakeDamage != DamageMode.No
+            && (self.Origin - (owner.Origin + (owner.Mins + owner.Maxs) * 0.5f)).Length() <= Cvars.RemoteJumpRadius)
+        {
+            handledAsRocketjump = true;
+
+            // QC devastator.qc:89-98: modify velocity (only when velocity_z_add is set — default 0 = no-op).
+            if (Cvars.RemoteJumpVelocityZAdd != 0f)
+            {
+                Vector3 v = owner.Velocity;
+                v.X *= 0.9f;
+                v.Y *= 0.9f;
+                v.Z = QMath.Bound(Cvars.RemoteJumpVelocityZMin,
+                    v.Z + Cvars.RemoteJumpVelocityZAdd, Cvars.RemoteJumpVelocityZMax);
+                owner.Velocity = v;
+            }
+
+            // QC devastator.qc:101-111: the dedicated rocket-jump blast (remote_jump_damage as both core and edge,
+            // remote_jump_force over remote_jump_radius), attacker=owner. QC passes head as the forceintersect arg
+            // (force application target), NOT as a direct-hit/LOS-skip; the port's RadiusDamage has no
+            // forceintersect param, and at point-blank rocket-jump range LOS reduction does not engage anyway.
+            WeaponSplash.RadiusDamage(self, self.Origin, Cvars.RemoteJumpDamage, Cvars.RemoteJumpDamage,
+                Cvars.RemoteJumpRadius, owner, RegistryId, Cvars.RemoteJumpForce,
+                accuracyWeapon: this, deathTag: deathType);
+        }
+
+        // QC's plain remote blast goes through the RadiusDamage wrapper (forcexyzscale '1 1 1') — only the CONTACT
+        // explosion (W_Devastator_Explode) applies force_xyscale, so no force shaping here. (QC's forceintersect
+        // arg = handled_as_rocketjump ? head : NULL is a force-application refinement not modeled by the port's
+        // RadiusDamage; the rocket-jump branch above already delivered the owner's dedicated push.)
+        _ = handledAsRocketjump; // QC's forceintersect distinction (head vs NULL) has no port RadiusDamage analog.
         WeaponSplash.RadiusDamage(self, self.Origin, Cvars.RemoteDamage, Cvars.RemoteEdgeDamage,
             Cvars.RemoteRadius, owner, RegistryId, Cvars.RemoteForce, accuracyWeapon: this, deathTag: deathType);
         WeaponSplash.ImpactSound(self, "weapons/rocket_impact.wav"); // QC SND_ROCKET_IMPACT (wr_impacteffect)

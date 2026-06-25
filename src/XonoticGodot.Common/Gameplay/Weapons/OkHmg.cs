@@ -159,7 +159,7 @@ public sealed class OkHmg : Weapon
 
         ++st.MiscBulletCounter;
 
-        float rate = WeaponRateFactor();
+        float rate = WeaponRateFactor(actor);
         st.AttackFinished = Api.Clock.Time + Cvars.Refire * rate;
         WeaponFireDriver.ScheduleThink(st, Cvars.Refire * rate, (pl, sl) =>
         {

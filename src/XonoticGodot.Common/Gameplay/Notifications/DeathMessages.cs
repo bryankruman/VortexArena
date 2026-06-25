@@ -219,6 +219,9 @@ public static class DeathMessages
             DeathTypes.Telefrag => "TELEFRAG",     // murder-only in QC; self falls to GENERIC below
             DeathTypes.BuffInferno => "BUFF_INFERNO",
             DeathTypes.BuffVengeance => "BUFF_VENGEANCE",
+            // touchexplode (all.inc:35): registers BOTH DEATH_SELF_TOUCHEXPLODE and DEATH_MURDER_TOUCHEXPLODE,
+            // shared suffix scheme -> "died in an accident" (self) / "died in an accident with" (murder).
+            DeathTypes.TouchExplode => "TOUCHEXPLODE",
             DeathTypes.NoAmmo => "NOAMMO",         // self-only (NOAMMO has no murder line)
             DeathTypes.Kill => "GENERIC",          // /kill -> generic suicide
             DeathTypes.MirrorDamage => "GENERIC",

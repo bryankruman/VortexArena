@@ -92,10 +92,13 @@ public sealed class KickTeamkillerMutator : MutatorBase
         if (attacker is Player { IsBot: true }) return false;
 
         int teamkills = GameScores.Get(attacker, GameScores.TeamKills);
-        // QC playtime = time - CS(attacker).startplaytime; the port has no per-client startplaytime, so the
-        // sim clock stands in (playtime since match/level start) — documented substrate gap, exact for any
-        // player present since level start.
-        float playtime = Api.Clock.Time;
+        // QC: playtime = time - CS(attacker).startplaytime — seconds since this client last switched from
+        // spectator to player (Player.StartPlayTime, stamped in PutPlayerInServer on the spectator→player edge),
+        // NOT since level start. This makes the rate denominator per-client, so a mid-match joiner crosses the
+        // rate gate at the same teamkill cadence as Base. A non-Player attacker (already excluded above) or a
+        // never-joined client has StartPlayTime 0, collapsing to the level-start clock as before.
+        float startPlayTime = (attacker as Player)?.StartPlayTime ?? 0f;
+        float playtime = Api.Clock.Time - startPlayTime;
 
         // QC: rate is teamkills/minutes, playtime in seconds.
         if (teamkills < LowerLimit || teamkills < Rate * playtime / 60f)

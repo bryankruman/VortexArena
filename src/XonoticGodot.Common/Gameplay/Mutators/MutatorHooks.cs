@@ -33,6 +33,33 @@ public static class MutatorHooks
     public static readonly HookChain<PlayerSpawnArgs> PlayerSpawn = new();
 
     /// <summary>
+    /// EV_MakePlayerObserver (server/mutators/events.qh) — a live player has been demoted to a free-fly OBSERVER
+    /// (QC <c>MakePlayerObserver</c>, fired from <c>PutObserverInServer</c>). Mutators reset any per-player
+    /// state the player must not keep while spectating (e.g. dodging_ResetPlayer, sv_dodging.qc:328). Slot0 the
+    /// player being made an observer.
+    /// </summary>
+    public struct MakePlayerObserverArgs
+    {
+        public readonly Entity Player;   // MUTATOR_ARGV_0_entity
+        public MakePlayerObserverArgs(Entity player) { Player = player; }
+    }
+    public static readonly HookChain<MakePlayerObserverArgs> MakePlayerObserver = new();
+
+    /// <summary>
+    /// EV_ClientDisconnect (server/mutators/events.qh) — a client is leaving the server (QC
+    /// <c>ClientDisconnect</c>). Mutators that track the roster (e.g. dynamic_handicap recomputing the mean
+    /// score across remaining players) re-run here. Slot0 the departing player. Fired from
+    /// <c>ClientManager.ClientDisconnect</c> while the player is still in the roster's wake (after the gametype
+    /// roster relinquish, which mirrors Base running the mode hooks before the generic mutator hook).
+    /// </summary>
+    public struct ClientDisconnectArgs
+    {
+        public readonly Entity Player;   // MUTATOR_ARGV_0_entity
+        public ClientDisconnectArgs(Entity player) { Player = player; }
+    }
+    public static readonly HookChain<ClientDisconnectArgs> ClientDisconnect = new();
+
+    /// <summary>
     /// EV_Spawn_Score (server/mutators/events.qh) — fired from QC <c>Spawn_Score</c> (server/spawnpoints.qc)
     /// for EACH candidate spawn spot while selecting a spawnpoint, so a mutator can bias the spot's priority.
     /// Slot0 the player being spawned, slot1 the spawn spot entity, slot2 the spot's spawn-score vector
@@ -170,6 +197,77 @@ public static class MutatorHooks
     public static readonly HookChain<WeaponRateFactorArgs> WeaponRateFactor = new();
 
     /// <summary>
+    /// EV_W_PlayStrengthSound (server/mutators/events.qh) — a weapon just fired its shot sound (QC
+    /// <c>W_PlayStrengthSound(player)</c>, server/weapons/common.qc:40, called from the bullet-tracing
+    /// sound block and shotgun melee). The powerups mutator plays the anti-spammed SND_STRENGTH_FIRE cue
+    /// when the firing player holds Strength.
+    /// </summary>
+    public struct WPlayStrengthSoundArgs
+    {
+        public readonly Entity Player;  // MUTATOR_ARGV_0_entity
+        public WPlayStrengthSoundArgs(Entity player) { Player = player; }
+    }
+    public static readonly HookChain<WPlayStrengthSoundArgs> WPlayStrengthSound = new();
+
+    /// <summary>
+    /// EV_Bot_ForbidAttack (server/mutators/events.qh) — a bot is evaluating whether it may attack a target
+    /// (QC <c>bot_shouldattack</c> tail, server/bot/default/aim.qc). A handler returning <c>true</c> FORBIDS
+    /// the attack. The powerups mutator forbids attacking a player who holds Invisibility (radar/bot stealth).
+    /// Slot0 the attacking bot, slot1 the candidate target.
+    /// </summary>
+    public struct BotForbidAttackArgs
+    {
+        public readonly Entity Bot;     // MUTATOR_ARGV_0_entity
+        public readonly Entity Target;  // MUTATOR_ARGV_1_entity
+        public BotForbidAttackArgs(Entity bot, Entity target) { Bot = bot; Target = target; }
+    }
+    public static readonly HookChain<BotForbidAttackArgs> BotForbidAttack = new();
+
+    /// <summary>
+    /// EV_MonsterValidTarget (common/mutators/events.qh) — a monster is evaluating a candidate target (QC
+    /// <c>Monster_ValidTarget</c> tail, common/monsters/sv_monsters.qc:119). A handler returning <c>true</c>
+    /// INVALIDATES the target (the monster won't acquire it). The powerups mutator invalidates a player who
+    /// holds Invisibility (monster stealth). Slot0 the monster, slot1 the candidate target.
+    /// </summary>
+    public struct MonsterValidTargetArgs
+    {
+        public readonly Entity Monster; // MUTATOR_ARGV_0_entity
+        public readonly Entity Target;  // MUTATOR_ARGV_1_entity
+        public MonsterValidTargetArgs(Entity monster, Entity target) { Monster = monster; Target = target; }
+    }
+    public static readonly HookChain<MonsterValidTargetArgs> MonsterValidTarget = new();
+
+    /// <summary>
+    /// Fire <see cref="MonsterValidTarget"/> for a monster/target pair (QC
+    /// <c>MUTATOR_CALLHOOK(MonsterValidTarget, this, targ)</c>). Returns true if any mutator invalidates the target.
+    /// </summary>
+    public static bool FireMonsterValidTarget(Entity monster, Entity target)
+    {
+        var a = new MonsterValidTargetArgs(monster, target);
+        return MonsterValidTarget.Call(ref a);
+    }
+
+    /// <summary>
+    /// Fire <see cref="BotForbidAttack"/> for a bot/target pair (QC
+    /// <c>MUTATOR_CALLHOOK(Bot_ForbidAttack, this, targ)</c>). Returns true if any mutator forbids the attack.
+    /// </summary>
+    public static bool FireBotForbidAttack(Entity bot, Entity target)
+    {
+        var a = new BotForbidAttackArgs(bot, target);
+        return BotForbidAttack.Call(ref a);
+    }
+
+    /// <summary>
+    /// Fire <see cref="WPlayStrengthSound"/> for a player who just fired a weapon's shot sound (QC
+    /// <c>W_PlayStrengthSound</c>).
+    /// </summary>
+    public static void FireWPlayStrengthSound(Entity player)
+    {
+        var a = new WPlayStrengthSoundArgs(player);
+        WPlayStrengthSound.Call(ref a);
+    }
+
+    /// <summary>
     /// EV_PlayerJump — player pressed jump. Slot0 player, slot1 jump height (in/out), slot2 multijump
     /// flag (in/out). Bloodloss returns true to forbid the jump; multijump/walljump set
     /// <see cref="Multijump"/> = true to grant an extra jump.
@@ -179,9 +277,20 @@ public static class MutatorHooks
         public readonly Entity Player;   // MUTATOR_ARGV_0_entity
         public float JumpHeight;         // MUTATOR_ARGV_1_float (in/out)
         public bool Multijump;           // MUTATOR_ARGV_2_bool  (in/out)
+        // Per-player resolved DOUBLEJUMP stat (QC PHYS_DOUBLEJUMP(player) ==
+        // Physics_ClientOption(this, "doublejump", autocvar_sv_doublejump)). Carried from the physics call
+        // site (MovementParameters.DoubleJump) so the doublejump mutator gates its grant on the PER-PLAYER
+        // value — which can differ from the raw sv_doublejump cvar when g_physics_clientselect is on.
+        // null = not supplied (e.g. unit tests using the 3-arg ctor) → the mutator falls back to the raw
+        // sv_doublejump cvar, which equals the stat in stock play (g_physics_clientselect 0).
+        public bool? DoubleJump;
         public PlayerJumpArgs(Entity player, float jumpHeight, bool multijump)
         {
-            Player = player; JumpHeight = jumpHeight; Multijump = multijump;
+            Player = player; JumpHeight = jumpHeight; Multijump = multijump; DoubleJump = null;
+        }
+        public PlayerJumpArgs(Entity player, float jumpHeight, bool multijump, bool doubleJump)
+        {
+            Player = player; JumpHeight = jumpHeight; Multijump = multijump; DoubleJump = doubleJump;
         }
     }
     public static readonly HookChain<PlayerJumpArgs> PlayerJump = new();
@@ -364,6 +473,40 @@ public static class MutatorHooks
     }
 
     /// <summary>
+    /// EV_SetWeaponreplace (server/mutators/events.qh) — fired from QC <c>weapon_defaultspawnfunc</c>
+    /// (server/weapons/spawning.qc:43) for each <c>weapon_*</c> map entity, BEFORE the regular weaponreplace
+    /// resolves: <c>MUTATOR_CALLHOOK(SetWeaponreplace, this, wpn, s)</c>. Slot0 the spawning world item entity
+    /// (carries the map <c>"new_toys"</c> key via <see cref="Entity.NewToys"/>), slot1 the weapon being spawned,
+    /// slot2 the space-joined replacement token list (in/out — a handler rewrites <see cref="Replacement"/> and
+    /// the spawner reads it back). New Toys rewrites it to the map key / auto mapping; the spawner then tokenizes
+    /// the result and spawns the resulting weapon(s).
+    /// </summary>
+    public struct SetWeaponreplaceArgs
+    {
+        public readonly Entity Item;        // MUTATOR_ARGV_0_entity (the spawning world item)
+        public readonly Weapon Weapon;      // MUTATOR_ARGV_1_entity (the weapon being spawned)
+        public string Replacement;          // MUTATOR_ARGV_2_string (in/out)
+        public SetWeaponreplaceArgs(Entity item, Weapon weapon, string replacement)
+        {
+            Item = item; Weapon = weapon; Replacement = replacement;
+        }
+    }
+    public static readonly HookChain<SetWeaponreplaceArgs> SetWeaponreplace = new();
+
+    /// <summary>
+    /// Fire <see cref="SetWeaponreplace"/> for a spawning weapon item and return the resolved replacement token
+    /// list (QC <c>MUTATOR_CALLHOOK(SetWeaponreplace, this, wpn, s); s = M_ARGV(2, string);</c>). The weapon
+    /// spawn path (<c>ItemSpawnFuncs.WeaponSpawn</c>) calls this stable entry point; New Toys' handler rewrites
+    /// the list per its map key / autoreplace mapping.
+    /// </summary>
+    public static string FireSetWeaponreplace(Entity item, Weapon weapon, string replacement)
+    {
+        var a = new SetWeaponreplaceArgs(item, weapon, replacement);
+        SetWeaponreplace.Call(ref a);
+        return a.Replacement;
+    }
+
+    /// <summary>
     /// EV_ForbidRandomStartWeapons — return true to forbid giving random start weapons (slot0 player).
     /// </summary>
     public struct ForbidRandomStartWeaponsArgs
@@ -409,6 +552,31 @@ public static class MutatorHooks
     public static readonly HookChain<FilterItemDefinitionArgs> FilterItemDefinition = new();
 
     /// <summary>
+    /// EV_OnEntityPreSpawn (server/mutators/events.qh) — fired from QC's <c>SV_OnEntityPreSpawnFunction</c> for
+    /// every parsed map entity BEFORE its spawnfunc runs; a handler returning <c>true</c> DELETES the entity
+    /// (QC <c>if (MUTATOR_CALLHOOK(OnEntityPreSpawn, this)) { delete(this); return; }</c>). Slot0 the map
+    /// entity. NIX subscribes here to drop <c>target_items</c> triggers (they would otherwise change weapons/
+    /// ammo and fight the rotation).
+    /// </summary>
+    public struct OnEntityPreSpawnArgs
+    {
+        public readonly Entity Entity;   // MUTATOR_ARGV_0_entity
+        public OnEntityPreSpawnArgs(Entity entity) { Entity = entity; }
+    }
+    public static readonly HookChain<OnEntityPreSpawnArgs> OnEntityPreSpawn = new();
+
+    /// <summary>
+    /// Fire <see cref="OnEntityPreSpawn"/> for a map entity about to be spawned; returns true if a handler
+    /// wants it DELETED (QC <c>MUTATOR_CALLHOOK(OnEntityPreSpawn, this)</c>). The map-entity spawn loop owner
+    /// (<c>GameWorld.SpawnMapEntities</c>) calls this stable entry point before dispatching the spawnfunc.
+    /// </summary>
+    public static bool FireOnEntityPreSpawn(Entity entity)
+    {
+        var a = new OnEntityPreSpawnArgs(entity);
+        return OnEntityPreSpawn.Call(ref a);
+    }
+
+    /// <summary>
     /// EV_ItemTouch (server/mutators/events.qh) — fired from QC <c>Item_Touch</c> (server/items/items.qc:706),
     /// AFTER the touch gate (FL_PICKUPITEMS / alive / SOLID_TRIGGER / owner / spawnshield) and BEFORE the
     /// expiring-timer adjust + give, so a handler can react to a player about to collect a world item while the
@@ -439,6 +607,85 @@ public static class MutatorHooks
     }
 
     /// <summary>
+    /// EV_FilterItem (server/mutators/events.qh) — fired from QC <c>StartItem</c> (server/items/items.qc:1031:
+    /// <c>if (MUTATOR_CALLHOOK(FilterItem, this)) { delete(this); return; }</c>), AFTER the items/weapon/flags
+    /// seeding and BEFORE the have-pickup gate. DISTINCT from <see cref="FilterItemDefinition"/>: this is the
+    /// ENTITY-level hook that can REPLACE a map item with a different classname (random_items) — its CBC_ORDER_LAST
+    /// subscriber spawns a fresh replacement item from the live edict's origin/spawnflags and returns <c>true</c>
+    /// so the original is deleted. A <c>true</c> return DELETES the spawning item. Slot0 the spawning item entity.
+    /// </summary>
+    public struct FilterItemArgs
+    {
+        public readonly Entity Item;   // MUTATOR_ARGV_0_entity
+        public FilterItemArgs(Entity item) { Item = item; }
+    }
+    public static readonly HookChain<FilterItemArgs> FilterItem = new();
+
+    /// <summary>
+    /// Fire <see cref="FilterItem"/> for an item about to go live (QC <c>MUTATOR_CALLHOOK(FilterItem, this)</c>);
+    /// returns true if a handler wants the item DELETED (it has already spawned its replacement). The world-item
+    /// spawn driver (<see cref="StartItem"/>) calls this stable entry point at the same seam as the QC hook.
+    /// </summary>
+    public static bool FireFilterItem(Entity item)
+    {
+        var a = new FilterItemArgs(item);
+        return FilterItem.Call(ref a);
+    }
+
+    /// <summary>
+    /// EV_ItemTouched (server/mutators/events.qh) — fired from QC <c>Item_Touch</c> (server/items/items.qc:746),
+    /// AFTER a successful give + pickup sound (LABEL pickup), so a handler can re-spawn / re-randomize the item.
+    /// DISTINCT from <see cref="ItemTouch"/> (which fires before the give): this fires after pickup. The
+    /// random_items CBC_ORDER_LAST subscriber replaces the touched map item, schedules the replacement's respawn,
+    /// and deletes the original — so the item re-randomizes on each respawn. A handler may free the item; the
+    /// caller re-checks <see cref="Entity.Removed"/> after firing. Slot0 the item entity, slot1 the toucher.
+    /// </summary>
+    public struct ItemTouchedArgs
+    {
+        public readonly Entity Item;      // MUTATOR_ARGV_0_entity
+        public readonly Entity Toucher;   // MUTATOR_ARGV_1_entity
+        public ItemTouchedArgs(Entity item, Entity toucher) { Item = item; Toucher = toucher; }
+    }
+    public static readonly HookChain<ItemTouchedArgs> ItemTouched = new();
+
+    /// <summary>
+    /// Fire <see cref="ItemTouched"/> after a world item was picked up (QC <c>MUTATOR_CALLHOOK(ItemTouched, this,
+    /// toucher)</c>). Notify-style return; the item-pickup owner (<see cref="ItemPickupRules.ItemTouch"/>) calls
+    /// this then re-checks whether the item was freed (random_items deletes + re-spawns it).
+    /// </summary>
+    public static bool FireItemTouched(Entity item, Entity toucher)
+    {
+        var a = new ItemTouchedArgs(item, toucher);
+        return ItemTouched.Call(ref a);
+    }
+
+    /// <summary>
+    /// EV_RandomItems_GetRandomItemClassName (common/mutators/mutator/random_items/sv_random_items.qh:41) — the
+    /// mod-injection hook fired at the entry of QC <c>RandomItems_GetRandomItemClassName(prefix)</c>
+    /// (sv_random_items.qc:56): a mod (Overkill / Instagib) consumes it to substitute its OWN item pool. Slot0 the
+    /// probability-cvar prefix (<c>in</c>), slot1 the chosen classname (<c>in/out</c> — a handler returning
+    /// <c>true</c> sets <see cref="ClassName"/> and that classname is returned instead of the vanilla pick).
+    /// </summary>
+    public struct RandomItemsClassNameArgs
+    {
+        public readonly string Prefix;   // MUTATOR_ARGV_0_string
+        public string ClassName;         // MUTATOR_ARGV_1_string (in/out)
+        public RandomItemsClassNameArgs(string prefix) { Prefix = prefix; ClassName = ""; }
+    }
+    public static readonly HookChain<RandomItemsClassNameArgs> RandomItemsGetClassName = new();
+
+    /// <summary>
+    /// Fire <see cref="RandomItemsGetClassName"/> for a random-items prefix; returns the overriding classname (or
+    /// <c>null</c> if no handler consumed it, so the caller falls through to the vanilla pick). QC:
+    /// <c>if (MUTATOR_CALLHOOK(RandomItems_GetRandomItemClassName, prefix)) return M_ARGV(1, string);</c>.
+    /// </summary>
+    public static string? FireRandomItemsGetClassName(string prefix)
+    {
+        var a = new RandomItemsClassNameArgs(prefix);
+        return RandomItemsGetClassName.Call(ref a) ? a.ClassName : null;
+    }
+
+    /// <summary>
     /// EV_EditProjectile — lets mutators edit a just-fired projectile. Slot0 owner, slot1 projectile.
     /// (invincibleproj zeroes the projectile's health; rocketflying clears detonate delays.)
     /// </summary>
@@ -449,6 +696,31 @@ public static class MutatorHooks
         public EditProjectileArgs(Entity? owner, Entity projectile) { Owner = owner; Projectile = projectile; }
     }
     public static readonly HookChain<EditProjectileArgs> EditProjectile = new();
+
+    /// <summary>
+    /// EV_AllowRocketJumping (server/mutators/events.qh) — fired by <c>W_Devastator_DoRemoteExplode</c>
+    /// (devastator.qc:74-76) with slot0 seeded to <c>WEP_CVAR(WEP_DEVASTATOR, remote_jump)</c>; a handler
+    /// rewrites it to true to force the Devastator's dedicated rocket-jump self-boost blast on regardless of
+    /// the weapon's own <c>remote_jump</c> cvar. The Rocket Flying mutator is the stock subscriber.
+    /// </summary>
+    public struct AllowRocketJumpingArgs
+    {
+        public bool Allow;   // MUTATOR_ARGV_0_bool (in/out)
+        public AllowRocketJumpingArgs(bool allow) { Allow = allow; }
+    }
+    public static readonly HookChain<AllowRocketJumpingArgs> AllowRocketJumping = new();
+
+    /// <summary>
+    /// Fire <see cref="AllowRocketJumping"/> seeded with the weapon's <c>remote_jump</c> cvar and return the
+    /// resolved flag (QC <c>MUTATOR_CALLHOOK(AllowRocketJumping, allow_rocketjump); allow_rocketjump =
+    /// M_ARGV(0, bool);</c>). The Devastator's remote-explode path calls this stable entry point.
+    /// </summary>
+    public static bool FireAllowRocketJumping(bool seed)
+    {
+        var a = new AllowRocketJumpingArgs(seed);
+        AllowRocketJumping.Call(ref a);
+        return a.Allow;
+    }
 
     /// <summary>
     /// EV_GrappleHookThink (server/mutators/events.qh) — fired each think of an in-flight/latched grappling
@@ -629,6 +901,81 @@ public static class MutatorHooks
         }
     }
     public static readonly HookChain<PlayerDamagedArgs> PlayerDamaged = new();
+
+    // ----------------------------------------------------------------------------------------------
+    // Sandbox veto hooks (server/mutators/events.qh:1285-1298) — let another mutator gate the sandbox
+    // build mode. Each is a "return true to forbid" hook (Base MUTATOR_CALLHOOK in sv_sandbox.qc).
+    // No stock mutator subscribes them; they exist so the sandbox call sites mirror Base exactly
+    // (readonly OR hook) rather than gating on g_sandbox_readonly alone.
+    // ----------------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// EV_Sandbox_DragAllowed (events.qh:1285) — "Return true to prevent sandbox objects from being
+    /// dragged". Fired from QC <c>sandbox_ObjectFunction_Think</c> (sv_sandbox.qc:70): a handler returning
+    /// <c>true</c> forces the object's grab class to 0 (un-grabbable), exactly like read-only mode. Slot0
+    /// the sandbox object entity (MUTATOR_ARGV_0_entity).
+    /// </summary>
+    public struct SandboxDragAllowedArgs
+    {
+        public readonly Entity? Object;   // MUTATOR_ARGV_0_entity (the sandbox object)
+        public SandboxDragAllowedArgs(Entity? obj) { Object = obj; }
+    }
+    public static readonly HookChain<SandboxDragAllowedArgs> SandboxDragAllowed = new();
+
+    /// <summary>
+    /// Fire <see cref="SandboxDragAllowed"/> for a sandbox object (QC <c>MUTATOR_CALLHOOK(Sandbox_DragAllowed,
+    /// this)</c>); returns true if any handler forbids dragging it. The sandbox think tick calls this stable
+    /// entry point. The object edict may be null (headless), so slot0 is nullable.
+    /// </summary>
+    public static bool FireSandboxDragAllowed(Entity? obj)
+    {
+        var a = new SandboxDragAllowedArgs(obj);
+        return SandboxDragAllowed.Call(ref a);
+    }
+
+    /// <summary>
+    /// EV_Sandbox_SaveAllowed (events.qh:1292, EV_NO_ARGS) — "Return true to prevent writing sandbox changes
+    /// to storage". Fired from QC <c>sandbox_Database_Save</c> (sv_sandbox.qc:391): a handler returning
+    /// <c>true</c> aborts the save (the per-map storage file is not written). No QC args.
+    /// </summary>
+    public struct SandboxSaveAllowedArgs
+    {
+    }
+    public static readonly HookChain<SandboxSaveAllowedArgs> SandboxSaveAllowed = new();
+
+    /// <summary>
+    /// Fire <see cref="SandboxSaveAllowed"/> (QC <c>MUTATOR_CALLHOOK(Sandbox_SaveAllowed)</c>); returns true
+    /// if any handler forbids writing the storage file. The sandbox database-save path calls this stable entry.
+    /// </summary>
+    public static bool FireSandboxSaveAllowed()
+    {
+        var a = new SandboxSaveAllowedArgs();
+        return SandboxSaveAllowed.Call(ref a);
+    }
+
+    /// <summary>
+    /// EV_Sandbox_EditAllowed (events.qh:1295) — "Return true to prevent the player from editing sandbox
+    /// objects with commands". Fired from QC <c>SV_ParseClientCommand</c> head (sv_sandbox.qc:463): a handler
+    /// returning <c>true</c> rejects the player's sandbox command exactly like read-only mode. Slot0 the player
+    /// issuing the command (MUTATOR_ARGV_0_entity).
+    /// </summary>
+    public struct SandboxEditAllowedArgs
+    {
+        public readonly Entity? Player;   // MUTATOR_ARGV_0_entity
+        public SandboxEditAllowedArgs(Entity? player) { Player = player; }
+    }
+    public static readonly HookChain<SandboxEditAllowedArgs> SandboxEditAllowed = new();
+
+    /// <summary>
+    /// Fire <see cref="SandboxEditAllowed"/> for the commanding player (QC <c>MUTATOR_CALLHOOK(Sandbox_EditAllowed,
+    /// player)</c>); returns true if any handler forbids the player editing objects. The sandbox command dispatcher
+    /// calls this stable entry point at the read-only gate.
+    /// </summary>
+    public static bool FireSandboxEditAllowed(Entity? player)
+    {
+        var a = new SandboxEditAllowedArgs(player);
+        return SandboxEditAllowed.Call(ref a);
+    }
 }
 
 /// <summary>
@@ -649,6 +996,14 @@ public sealed class StartLoadout
     public float AmmoRockets;
     public float AmmoCells;
     public float AmmoFuel;
+
+    /// <summary>
+    /// QC <c>warmup_start_ammo_fuel</c> (world.qc:2127/2140/2167) — the warmup twin of <see cref="AmmoFuel"/>.
+    /// Mirrors the live fuel by default; <c>SetStartItems</c> handlers that bump fuel (the hook mutator's
+    /// fuel-regen grant) max this independently so warmup spawns get the same fuel. Consumed by the warmup
+    /// loadout path.
+    /// </summary>
+    public float WarmupAmmoFuel;
 
     /// <summary>Weapon NetNames granted at spawn (QC start_weapons bitset). e.g. "vaporizer", "shotgun".</summary>
     public readonly HashSet<string> Weapons = new(StringComparer.Ordinal);

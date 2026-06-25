@@ -123,6 +123,11 @@ public static class DeathTypes
     /// <summary>QC DEATH_BUFF_VENGEANCE — vengeance-buff reflected damage (excluded from hit-sound credit).</summary>
     public const string BuffVengeance = "buff_vengeance";
 
+    /// <summary>QC DEATH_TOUCHEXPLODE — the touch-explode mutator blast ("died in an accident"). Registered with
+    /// DEATH_SELF_TOUCHEXPLODE / DEATH_MURDER_TOUCHEXPLODE and empty .message (all.inc:35). Also used by the
+    /// nade spawn/translocate booms (NadeSpawnBoom / NadeTranslocateBoom) which tag their blast the same way.</summary>
+    public const string TouchExplode = "touchexplode";
+
     /// <summary>Prefix marking a deathtype string that names a weapon (vs. a special death).</summary>
     public const string WeaponPrefix = "weapon/";
 

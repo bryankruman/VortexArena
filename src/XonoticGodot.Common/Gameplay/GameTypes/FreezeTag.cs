@@ -307,6 +307,7 @@ public sealed class FreezeTag : GameType
         st.IsFrozen = true;
         st.ReviveProgress = 0f;
         st.FrozenTime = now;
+        targ.RevivalTime = 0f; // QC freezetag_Freeze (sv_freezetag.qc:227): clear the last-revive timestamp.
         // QC freezetag_Freeze: arm the auto-thaw timer only when revive_auto is on AND maxtime > 0.
         float maxtime = FrozenMaxtime;
         st.FrozenTimeout = (ReviveAuto && maxtime > 0f) ? now + maxtime : 0f;
@@ -360,6 +361,9 @@ public sealed class FreezeTag : GameType
             st.FrozenTime = 0f;
         }
         targ.DeadState = DeadFlag.No;
+        // QC freezetag_Unfreeze (sv_freezetag.qc:262): stamp the revive time so the ice nade's 1.5s re-freeze
+        // grace (ice.qc:59) and other revive-window checks can see a just-thawed player.
+        targ.RevivalTime = Api.Services is not null ? Api.Clock.Time : 0f;
         // QC freezetag_Unfreeze: pauseregen_finished = time + g_balance_pause_health_regen — a freshly thawed
         // player's health/armor regen is paused for the same window a damaged player's is, so revive doesn't
         // instantly start topping them up.

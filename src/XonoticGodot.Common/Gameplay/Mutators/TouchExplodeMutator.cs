@@ -1,5 +1,6 @@
 using System.Numerics;
 using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Gameplay.Damage;
 using XonoticGodot.Common.Services;
 
 namespace XonoticGodot.Common.Gameplay;
@@ -112,14 +113,13 @@ public sealed class TouchExplodeMutator : MutatorBase
         EffectEmitter.Emit("EXPLOSION_SMALL", org);
 
         // QC spawns a temp inflictor at the midpoint and RadiusDamage's around it, tagging the blast
-        // DEATH_TOUCHEXPLODE (DMG_NOWEP, no attacker credit). The string deathTag "touchexplode" carries the
-        // intent (matching the nade-boom callers); full obituary resolution still needs a DeathTypes
-        // TOUCHEXPLODE registry entry + SelectSpecial branch (cross-file — see todos).
+        // DEATH_TOUCHEXPLODE (DMG_NOWEP, no attacker credit). The deathTag DeathTypes.TouchExplode resolves
+        // to DEATH_SELF_/DEATH_MURDER_TOUCHEXPLODE ("died in an accident") via DeathMessages.SelectSpecial.
         Entity e = Api.Entities.Spawn();
         e.ClassName = "touchexplode";
         Api.Entities.SetOrigin(e, org);
         WeaponSplash.RadiusDamage(e, org, DamageAmount, EdgeDamage, Radius, attacker: null,
-            deathType: 0, force: Force, deathTag: "touchexplode");
+            deathType: 0, force: Force, deathTag: DeathTypes.TouchExplode);
         Api.Entities.Remove(e);
     }
 

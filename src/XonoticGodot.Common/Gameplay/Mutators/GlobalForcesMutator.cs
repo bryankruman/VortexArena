@@ -62,6 +62,12 @@ public sealed class GlobalForcesMutator : MutatorBase
         if (_onPlayerDamage is not null) GameHooks.PlayerDamageSplitHealthArmor.Remove(_onPlayerDamage);
     }
 
+    // MUTATOR_HOOKFUNCTION(mutator_globalforces, BuildMutatorsString) — sv_globalforces.qc:9-11
+    public override string BuildMutatorsString(string s) => s + ":GlobalForces";
+
+    // MUTATOR_HOOKFUNCTION(mutator_globalforces, BuildMutatorsPrettyString) — sv_globalforces.qc:13-15
+    public override string BuildMutatorsPrettyString(string s) => s + ", Global forces";
+
     // QC server-side IS_PLAYER (server/utils.qh:9) is classname-only — (v).classname == "player" — with NO dead
     // test, so a just-killed body still classed "player" is shoved by the spread. Match Base: client flag only,
     // do NOT exclude on DeadState (the old DeadState==No filter was a port divergence that froze corpses).

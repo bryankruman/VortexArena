@@ -106,7 +106,7 @@ public sealed class Shotgun : Weapon
     public override void WrThink(Entity actor, WeaponSlot slot, FireMode fire)
     {
         var st = actor.WeaponState(slot);
-        float rate = WeaponRateFactor();
+        float rate = WeaponRateFactor(actor);
 
         if (fire == FireMode.Primary)
         {

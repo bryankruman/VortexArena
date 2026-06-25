@@ -145,7 +145,7 @@ public sealed class OkMachinegun : Weapon
         WeaponFiring.EjectCasing(actor, shot.Origin, WeaponFiring.CasingType.Bullet);
 
         // ATTACK_FINISHED + weapon_thinkf(WFRAME_FIRE1, refire, Attack_Auto): self-reschedule while held.
-        float rate = WeaponRateFactor();
+        float rate = WeaponRateFactor(actor);
         st.AttackFinished = Api.Clock.Time + Cvars.Refire * rate;
         WeaponFireDriver.ScheduleThink(st, Cvars.Refire * rate, (pl, sl) =>
         {

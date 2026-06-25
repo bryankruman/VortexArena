@@ -39,6 +39,15 @@ public sealed class OffhandBlasterMutator : MutatorBase
         if (_onPreThink is not null) MutatorHooks.PlayerPreThink.Remove(_onPreThink);
     }
 
+    // MUTATOR_HOOKFUNCTION(offhand_blaster, BuildMutatorsString) — sv_offhand_blaster.qc:7-10:
+    // append ":offhand_blaster" to the machine-readable mutators token (:gameinfo:mutators:LIST event-log
+    // line / server-browser field), run via the MutatorActivation.BuildMutatorsString chain.
+    public override string BuildMutatorsString(string s) => s + ":offhand_blaster";
+
+    // MUTATOR_HOOKFUNCTION(offhand_blaster, BuildMutatorsPrettyString) — sv_offhand_blaster.qc:12-15:
+    // append the human-readable ", Offhand blaster" token to the scoreboard/votescreen mutator line.
+    public override string BuildMutatorsPrettyString(string s) => s + ", Offhand blaster";
+
     // MUTATOR_HOOKFUNCTION(offhand_blaster, PlayerSpawn) — player.offhand = OFFHAND_BLASTER;
     private bool OnPlayerSpawn(ref MutatorHooks.PlayerSpawnArgs args)
     {

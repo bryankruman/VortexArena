@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using Godot;
 using XonoticGodot.Common.Gameplay;
 using XonoticGodot.Common.Services;
+using XonoticGodot.Game.Hud;   // HudText (drawcolorcodedstring2) + HudPanel.HudFont (Xonotic HUD font)
 
 namespace XonoticGodot.Game.Client;
 
@@ -24,12 +25,14 @@ namespace XonoticGodot.Game.Client;
 /// Faithful to QC: the friendlyfire filter (cl_damagetext_friendlyfire 0/1/2), grouping/accumulation by
 /// server target index (DTFLAG_STOP_ACCUMULATION + the accumulate alpha/lifetime gates), the
 /// <c>cl_damagetext_format</c> token replacement, the size mapping (map_bound_ranges over potential), the
-/// per-frame fade (alpha_lifetime), shrink (2d_size_lifetime) and move (velocity_world / velocity_screen), and
-/// the 2D-vs-3D placement heuristics: a number switches to a fixed 2D screen position (with the
-/// <c>cl_damagetext_2d_overlap_offset</c> stagger and the 2D fade/shrink lifetimes) when the local view is
-/// playing/following a player and the victim is either within <c>cl_damagetext_2d_close_range</c> of the view
-/// origin or off-screen (<c>cl_damagetext_2d_out_of_view</c>), otherwise it's a world number projected through
-/// the camera. Per-weapon color and the verbose/hide-redundant format variants are honoured via cvars.
+/// per-frame fade (alpha_lifetime), shrink (2d_size_lifetime) and move (velocity_world placed along the view
+/// basis forward/right/up like QC, plus velocity_screen), and the 2D-vs-3D placement heuristics: a number
+/// switches to a fixed 2D screen position (with the <c>cl_damagetext_2d_overlap_offset</c> stagger and the 2D
+/// fade/shrink lifetimes) when the local view is playing/following a player and the victim is either within
+/// <c>cl_damagetext_2d_close_range</c> of the view origin or off-screen (<c>cl_damagetext_2d_out_of_view</c>),
+/// otherwise it's a world number projected through the camera. The label is drawn with color codes honoured
+/// (<see cref="HudText.Parse"/> = QC <c>drawcolorcodedstring2</c>) in the Xonotic HUD font
+/// (<see cref="HudPanel.HudFont"/>); per-weapon color and the verbose/hide-redundant format variants via cvars.
 /// </summary>
 public partial class DamageTextLayer : Control
 {
@@ -271,11 +274,18 @@ public partial class DamageTextLayer : Control
             }
             else
             {
-                if (Camera.IsPositionBehind(ToGodot(it.WorldPos))) continue;
-                // world_offset moves the number up over time (velocity_world) + a fixed offset_world; QC adds
-                // these along the view basis, approximated here as a world-Z rise (the dominant component).
-                Vector3 worldOffset = new(0f, 0f, cfg.OffsetWorld.Z + cfg.VelocityWorld.Z * since);
-                Vector2 projected = Camera.UnprojectPosition(ToGodot(it.WorldPos) + new Vector3(0f, worldOffset.Z * 0.0254f, 0f));
+                // QC world_offset = since*velocity_world + offset_world, then placed along the VIEW BASIS:
+                //   world_pos = origin + world_offset.x*forward + world_offset.y*right + world_offset.z*up
+                // (cl_damagetext.qc:42-50). velocity_world/offset_world are in Quake units, so convert QU→m
+                // (0.0254) when building the metre-space offset. The camera basis gives the same forward/right/up
+                // QC reads from view_angles: -Z is forward, +X is right, +Y is up.
+                Vector3 wo = cfg.OffsetWorld + cfg.VelocityWorld * since;
+                Basis b = Camera.GlobalTransform.Basis;
+                Vector3 forward = -b.Z, right = b.X, up = b.Y;
+                Vector3 worldPosM = ToGodot(it.WorldPos)
+                    + (wo.X * forward + wo.Y * right + wo.Z * up) * 0.0254f;
+                if (Camera.IsPositionBehind(worldPosM)) continue;
+                Vector2 projected = Camera.UnprojectPosition(worldPosM);
                 pos = projected + new Vector2(cfg.VelocityScreen.X, cfg.VelocityScreen.Y) * since
                     + new Vector2(cfg.OffsetScreen.X, cfg.OffsetScreen.Y);
             }
@@ -288,10 +298,24 @@ public partial class DamageTextLayer : Control
             }
             rgb.A = alpha;
 
+            // QC drawcolorcodedstring2(screen_pos, text, ..., rgb, alpha): the base color (per-weapon / friendly-
+            // fire / cl_damagetext_color) tints the leading uncolored run and supplies alpha, while inline ^N /
+            // ^xRGB codes in cl_damagetext_format override the RGB of the runs that follow. Render in the Xonotic
+            // HUD font (Xolonium), not the Godot fallback, matching the QC hud font cell. Center horizontally by
+            // the full (decolorized) string width, as QC does (screen_pos.x -= stringwidth*0.5).
             int isize = Mathf.Max(1, (int)size);
-            float width = ThemeDB.FallbackFont.GetStringSize(it.Text, HorizontalAlignment.Left, -1f, isize).X;
-            DrawString(ThemeDB.FallbackFont, new Vector2(pos.X - width * 0.5f, pos.Y), it.Text,
-                HorizontalAlignment.Left, -1f, isize, rgb);
+            Font font = HudPanel.HudFont ?? ThemeDB.FallbackFont;
+            var runs = HudText.Parse(it.Text, rgb);
+            float total = 0f;
+            foreach (HudText.Run run in runs)
+                total += font.GetStringSize(run.Text, HorizontalAlignment.Left, -1f, isize).X;
+            float rx = pos.X - total * 0.5f;
+            foreach (HudText.Run run in runs)
+            {
+                var rc = new Color(run.Color.R, run.Color.G, run.Color.B, alpha);
+                DrawString(font, new Vector2(rx, pos.Y), run.Text, HorizontalAlignment.Left, -1f, isize, rc);
+                rx += font.GetStringSize(run.Text, HorizontalAlignment.Left, -1f, isize).X;
+            }
         }
     }
 

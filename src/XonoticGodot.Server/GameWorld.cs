@@ -556,6 +556,10 @@ public sealed class GameWorld
         //     BEFORE the map's entities spawn (a mutator may filter items via the spawn/loadout hooks). Without
         //     this loop the mutators are registered but inert: their Hook() is never called and none of their
         //     handlers run. Idempotent (MutatorBase.Added guard), so a later ruleset change can re-converge.
+        // QC cvar_settemp from a mutator MUTATOR_ONADD (Random Gravity settemps sv_gravity so the original is
+        // restored at match end): route Common's mutator-side settemp through the host's restore stack so
+        // settemp_restore reverts it. Wired BEFORE Apply() so RandomGravity.Hook() registers on the restore stack.
+        XonoticGodot.Common.Gameplay.MutatorActivation.SettempCvarHandler = (n, v) => SettempCvars.Set(n, v);
         MutatorActivation.Apply();
 
         // 5b′) QC worldspawn SetDefaultAlpha(): seed default_player_alpha / default_weapon_alpha now that the
@@ -1000,6 +1004,12 @@ public sealed class GameWorld
         // hello, and load the per-client options file. Gated on the mutator being added (g_superspectate on).
         if (Mutators.ByName("superspec") is SuperSpecMutator superspecConnect && superspecConnect.Added)
             superspecConnect.OnClientConnect(p);
+
+        // QC MUTATOR_HOOKFUNCTION(bugrigs, ClientConnect) (bugrigs.qc:339-344): force the 3rd-person chase camera
+        // (Base stuffcmd "cl_cmd settemp chase_active 1") — a ground-hugging rig is unplayable from inside its own
+        // head. Gated on the mutator being added (g_bugrigs on); only a real client has a view (bots ignore it).
+        if (!p.IsBot && Mutators.ByName("bugrigs") is BugrigsMutator bugrigsConnect && bugrigsConnect.Added)
+            bugrigsConnect.OnClientConnect(p);
     }
 
     /// <summary>
@@ -1118,6 +1128,10 @@ public sealed class GameWorld
         // — block weapon fire during the pre-round grace window (warmup/countdown/end-delay). The headless
         // WeaponFireDriver can't reach the live handler, so wire the predicate here for every round-based mode.
         WeaponFireDriver.RoundFireForbidden = _ => Rounds is { IsRoundStarted: false };
+        // QC round_handler_IsActive() && !round_handler_IsRoundStarted(): the same pre-round grace-window predicate,
+        // exposed to the Common gameplay layer so mutators (e.g. Random Gravity's SV_StartFrame roll) can suppress
+        // round-gated per-frame behavior. Rounds != NULL here == round_handler_IsActive(); cleared in ActivateGameType.
+        XonoticGodot.Common.Gameplay.RoundHandler.RoundNotStartedProvider = () => Rounds is { IsRoundStarted: false };
         // QC reset_map(false) on the next round: re-spawn players + reset map objects, preserving the score.
         Rounds.OnRoundReset = () => ResetMap(fakeRoundStart: true);
         Rounds.OnCountdownTick = n => BroadcastRoundStartCountdown(Rounds.RoundsPlayed, n); // [T40] round-start countdown
@@ -1293,6 +1307,20 @@ public sealed class GameWorld
     {
         if (e is not Player p)
             return; // only players are driven here (the Clients list holds Players)
+
+        // QC W_WeaponFrame dispatches the offhand_think (the grapple hook / offhand blaster / nade throw) from
+        // the SAME frame it samples the +hook button, so the offhand reacts to this tick's press with no latency.
+        // Publish OffhandFirePressed from THIS tick's input BEFORE the PlayerPreThink hook (where the offhand-
+        // think runs) so the grapple is same-tick, not one tick stale. Humans only: InputProvider is cached per
+        // sim tick (ServerNet.ProvideInput keys on world.Time — a read here just primes that cache), whereas a
+        // bot's Bots.InputFor has a produce side-effect that must stay at its QC-ordered slot below, so bots keep
+        // the PostThink publish (they never bind +hook, so the offhand path is moot for them anyway).
+        if (!p.IsBot)
+        {
+            bool hookPressed = InputProvider(p)?.ButtonHook ?? false;
+            // QC weaponsystem.qc:609-611: zero the key in a vehicle or when weapon use is forbidden.
+            p.OffhandFirePressed = hookPressed && p.Vehicle is null;
+        }
 
         // ---- PlayerPreThink (QC client.qc PlayerPreThink) ----
         // Fire the per-frame player hook (dodging/multijump/instagib drive their state machines here).
@@ -1712,6 +1740,9 @@ public sealed class GameWorld
         // Clear the round-grace weapon-fire block (QC round_handler_IsActive => round_handler != NULL): only a
         // round-based gametype's EnableRounds re-installs it, so a non-round mode never forbids fire.
         WeaponFireDriver.RoundFireForbidden = null;
+        // Same for the Common-side pre-round gate (QC round_handler_IsActive): a non-round mode has no live handler,
+        // so the gate must read inert until a round-based gametype's EnableRounds re-installs it.
+        XonoticGodot.Common.Gameplay.RoundHandler.RoundNotStartedProvider = null;
         // Clear any prior gametype's bot attack-veto (only the incoming gametype's arm below re-installs it).
         Bot.BotBrain.ForbidAttackHook = null;
         // Tear down EVERY gametype's global hook subscriptions before activating the new one, so a live
@@ -2878,6 +2909,15 @@ public sealed class GameWorld
             // QC SV_OnEntityPreSpawnFunction: set_movetype(this, this.movetype) before the spawnfunc runs.
             // (We leave MoveType at its default None unless a field set it; the spawnfunc usually sets it.)
 
+            // QC MUTATOR_CALLHOOK(OnEntityPreSpawn, this): a mutator may veto a map entity before its spawnfunc
+            // runs (NIX deletes target_items triggers, which would otherwise fight its weapon/ammo rotation).
+            // A true return deletes the edict (QC delete(this)).
+            if (XonoticGodot.Common.Gameplay.MutatorHooks.FireOnEntityPreSpawn(e))
+            {
+                Api.Entities.Remove(e);
+                continue;
+            }
+
             if (SpawnFuncs.TrySpawn(cls, e))
             {
                 SpawnedEntityCount++;
@@ -2948,6 +2988,9 @@ public sealed class GameWorld
         if (f.TryGetValue("message", out var msg)) e.Message = msg;
         if (f.TryGetValue("model", out var mdl)) e.Model = mdl;
         if (f.TryGetValue("spawnflags", out var sf) && int.TryParse(sf, out int sfi)) e.SpawnFlags = sfi;
+        // QC .new_toys (new_toys/sv_new_toys.qc:109): a weapon_* entity's map-authored New-Toys replacement list
+        // (e.g. `"new_toys" "vortex rifle"`), read by the New Toys mutator's SetWeaponreplace handler.
+        if (f.TryGetValue("new_toys", out var nt2)) e.NewToys = nt2;
         if (f.TryGetValue("team", out var tm) && float.TryParse(tm,
                 System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float tmf))
             e.Team = tmf;

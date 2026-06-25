@@ -91,14 +91,17 @@ public sealed class DodgingMutator : MutatorBase
 
     private HookHandler<MutatorHooks.PlayerPhysicsArgs>? _onPhysics;
     private HookHandler<MutatorHooks.PlayerSpawnArgs>? _onSpawn;
+    private HookHandler<MutatorHooks.MakePlayerObserverArgs>? _onObserver;
 
     public override void Hook()
     {
         _onPhysics ??= OnPlayerPhysics;
         _onSpawn ??= OnPlayerSpawn;
+        _onObserver ??= OnMakePlayerObserver;
 
         MutatorHooks.PlayerPhysics.Add(_onPhysics);
         MutatorHooks.PlayerSpawn.Add(_onSpawn);
+        MutatorHooks.MakePlayerObserver.Add(_onObserver);
 
         if (Api.Services is not null)
         {
@@ -127,6 +130,7 @@ public sealed class DodgingMutator : MutatorBase
     {
         if (_onPhysics is not null) MutatorHooks.PlayerPhysics.Remove(_onPhysics);
         if (_onSpawn is not null) MutatorHooks.PlayerSpawn.Remove(_onSpawn);
+        if (_onObserver is not null) MutatorHooks.MakePlayerObserver.Remove(_onObserver);
     }
 
     // MUTATOR_HOOKFUNCTION(dodging, PlayerPhysics) — detect the double-tap, then drive the dodge ramp.
@@ -282,8 +286,16 @@ public sealed class DodgingMutator : MutatorBase
         return tr.Fraction < 1f && (tr.DpHitQ3SurfaceFlags & MutatorConstants.Q3SurfaceFlagSky) == 0;
     }
 
-    // MUTATOR_HOOKFUNCTION(dodging, PlayerSpawn) + MakePlayerObserver share dodging_ResetPlayer.
+    // MUTATOR_HOOKFUNCTION(dodging, PlayerSpawn) (sv_dodging.qc:322) — dodging_ResetPlayer.
     private bool OnPlayerSpawn(ref MutatorHooks.PlayerSpawnArgs args)
+    {
+        ResetPlayer(args.Player);
+        return false;
+    }
+
+    // MUTATOR_HOOKFUNCTION(dodging, MakePlayerObserver) (sv_dodging.qc:328) — share dodging_ResetPlayer so a
+    // player who spectates mid-dodge doesn't carry stale dodging_* fields into a re-join.
+    private bool OnMakePlayerObserver(ref MutatorHooks.MakePlayerObserverArgs args)
     {
         ResetPlayer(args.Player);
         return false;
@@ -356,8 +368,12 @@ public sealed class DodgingMutator : MutatorBase
             if (Api.Services is not null && Api.Cvars.GetFloat("sv_dodging_sound") != 0f)
                 Api.Sound.Play(player, SoundChannel.Body, "player/jump.wav");
             // QC also calls animdecide_setaction(this, ANIMACTION_JUMP, true) UNCONDITIONALLY here (outside the
-            // sound guard) so the dodge hop shows the jump pose. No animdecide/anim-action seam exists in the
-            // port yet — see todos for the cross-file infrastructure needed to drive ANIMACTION_JUMP.
+            // sound guard). The port has NO animdecide/anim-action networking seam (the server nets one
+            // Entity.Frame; the client reconstructs all locomotion from movement state in
+            // LocomotionBlend.SelectLegs, which returns Locomotion.Jump whenever !onGround). The UNSET_ONGROUND
+            // above plus the up-impulse leave the dodger airborne, so the client already shows the jump pose; a
+            // faithful animdecide_setaction push would need a new server->client one-shot action channel — same
+            // gap as WalljumpMutator's hop (see the matching note there).
             player.DodgingSingleAction = 0f;
         }
 

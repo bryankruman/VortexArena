@@ -210,6 +210,7 @@ public sealed class PlayerPhysics : IPlayerPhysics
         player.MovementForward = input.MoveValues.X;
         player.MovementRight = input.MoveValues.Y;
         player.ButtonCrouch = input.ButtonCrouch;
+        player.ButtonChat = input.Typing; // QC PHYS_INPUT_BUTTON_CHAT — campcheck typecheck gate reads this
         player.ViewAngles = input.ViewAngles;
 
         // ----- PlayerPhysics mutator hook (QC ecs/systems/physics.qc:56 MUTATOR_CALLHOOK(PlayerPhysics, this, dt))
@@ -868,7 +869,9 @@ public sealed class PlayerPhysics : IPlayerPhysics
         bool trackJump = mp.TrackCanJump;       // cl_movement_track_canjump (folded into sv track for the headless sim)
 
         // EV_PlayerJump mutator hook (multijump/walljump grant an extra jump; bloodloss forbids it).
-        var pj = new MutatorHooks.PlayerJumpArgs(player, mjumpheight, doublejump);
+        // Carry the per-player resolved DOUBLEJUMP stat (mp.DoubleJump = Physics_ClientOption("doublejump",
+        // sv_doublejump)) so the doublejump mutator gates on PHYS_DOUBLEJUMP(player) per Base, not just the cvar.
+        var pj = new MutatorHooks.PlayerJumpArgs(player, mjumpheight, doublejump, mp.DoubleJump);
         if (MutatorHooks.PlayerJump.Call(ref pj))
             return (true, pj.Multijump);
         mjumpheight = pj.JumpHeight;

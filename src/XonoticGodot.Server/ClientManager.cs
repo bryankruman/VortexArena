@@ -472,6 +472,13 @@ public sealed class ClientManager
         // stuck on a now-spectating player. Default is a no-op for non-objective modes.
         _match.GameType?.OnPlayerRemoved(p);
 
+        // QC MUTATOR_CALLHOOK(MakePlayerObserver, player) (the same dispatch CTF/KeyHunt/Keepaway etc. ride):
+        // notify the mutators a live player was demoted to observer so they can drop per-player state. Dodging
+        // (sv_dodging.qc:328 dodging_ResetPlayer) clears its dodging_* fields here so a player who spectates
+        // mid-dodge doesn't keep stale state into a re-join.
+        var observerArgs = new MutatorHooks.MakePlayerObserverArgs(p);
+        MutatorHooks.MakePlayerObserver.Call(ref observerArgs);
+
         p.Spectatee = null;
         p.SpectateeStatus = 0;
         p.FragsStatus = Player.FragsSpectator;   // QC RES_HEALTH/.frags = FRAGS_SPECTATOR (scoreboard sentinel)
@@ -693,6 +700,11 @@ public sealed class ClientManager
         p.CanPickupItems = false;    // [T35] QC drops FL_PICKUPITEMS with FL_CLIENT — a gone client can't pick up
         if (Api.Services is not null)
             Api.Entities.Remove(p);
+
+        // QC MUTATOR_CALLHOOK(ClientDisconnect, this): generic mutator roster hook. dynamic_handicap recomputes
+        // its score mean here (the departed client is already out of the roster, so the mean excludes them).
+        var disconnectArgs = new MutatorHooks.ClientDisconnectArgs(p);
+        MutatorHooks.ClientDisconnect.Call(ref disconnectArgs);
         return true;
     }
 

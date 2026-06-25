@@ -88,4 +88,12 @@ public sealed class PinataMutator : MutatorBase
         }
         return true; // QC hookfunction returns true (does not stop the chain)
     }
+
+    // MUTATOR_HOOKFUNCTION(pinata, BuildMutatorsString) — sv_pinata.qc:32-35: strcat(s, ":Pinata").
+    // The machine token used by the server browser / serverinfo active-mutators list.
+    public override string BuildMutatorsString(string s) => s + ":Pinata";
+
+    // MUTATOR_HOOKFUNCTION(pinata, BuildMutatorsPrettyString) — sv_pinata.qc:37-40: strcat(s, ", Piñata").
+    // The human-readable token shown in the scoreboard/HUD active-mutators display.
+    public override string BuildMutatorsPrettyString(string s) => s + ", Piñata";
 }

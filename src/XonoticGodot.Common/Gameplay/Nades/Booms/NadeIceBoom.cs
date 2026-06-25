@@ -92,6 +92,9 @@ public sealed class NadeIceBoom : INadeBoom
             bool isCreature = (it.Flags & (EntFlags.Client | EntFlags.Monster)) != 0;
             if (!isCreature || it.DeadState != DeadFlag.No) continue;
             if (it.GetResource(ResourceType.Health) <= 0f) continue;
+            // QC ice.qc:59: skip a just-revived player for 1.5s so a freshly thawed player gets a grace window
+            // before they can be re-frozen. (!it.revival_time || ((time - it.revival_time) >= 1.5))
+            if (it.RevivalTime != 0f && (now - it.RevivalTime) < 1.5f) continue;
             if (StatusEffectsCatalog.Has(it, frozen)) continue;
 
             // QC teamcheck: 0 = everyone, 2 = skip teammates (and self), 1 = skip only self.

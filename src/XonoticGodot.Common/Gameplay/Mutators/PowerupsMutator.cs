@@ -17,13 +17,20 @@
 // the powerups mutator is always-registered in QC; its hooks only fire when a player HAS the effect. So this
 // mutator is always enabled (IsEnabled true) and every handler self-gates on StatusEffectsCatalog.Has.
 //
-// Still deferred — these need cross-file seams that don't exist in the port yet (noted to the Wave-2/3 owners):
-//   - the strength-fire sound (W_PlayStrengthSound — needs a fired-weapon hook, called from weapons/tracing.qc);
-//   - the radar/monster/bot invisibility stealth (CustomizeWaypoint/MonsterValidTarget/Bot_ForbidAttack hooks
-//     are not defined in MutatorHooks);
-//   - the obituary item codes + server-browser mutator strings (LogDeath_AppendItemCodes/BuildMutatorsString
-//     hooks are not defined);
-//   - the +use drop (PlayerUseKey hook is being added in Wave-1 but isn't live for this file yet);
+// Wave-6b additions (now live for this file):
+//   - the strength-fire sound (W_PlayStrengthSound) via the new MutatorHooks.WPlayStrengthSound hook, fired
+//     once per bullet shot from WeaponFiring.FireBullet (the port analog of QC's fireBullet tracing block);
+//   - the +use drop (PlayerUseKey hook, MutatorHooks.FirePlayerUseKey at VehicleBoarding.cs);
+//   - the server-browser mutator strings (BuildMutatorsString / BuildMutatorsPrettyString overrides);
+//   - bot stealth (Bot_ForbidAttack) via the new MutatorHooks.BotForbidAttack chain (consulted in
+//     BotBrain.ShouldAttack alongside the host's gametype ForbidAttackHook delegate);
+//   - monster stealth (MonsterValidTarget) via the new MutatorHooks.MonsterValidTarget chain (consulted in
+//     MonsterAI.ValidTarget) — an invisible player is no longer acquired by monsters.
+//
+// Still deferred — these need cross-file seams that don't exist in the port yet:
+//   - the radar invisibility stealth (CustomizeWaypoint — a per-recipient waypoint-sprite send-time visibility
+//     filter; the port's waypoint system has no per-viewer customize chain);
+//   - the obituary item codes (LogDeath_AppendItemCodes — the port's kill log carries no :items= field);
 //   - the WP_Item waypoint sprite on a dropped powerup (no reachable WaypointSprite API here).
 
 using System.Numerics;
@@ -59,9 +66,17 @@ public sealed class PowerupsMutator : MutatorBase
     private float _speedAttackRate = 0.8f;     // g_balance_powerup_speed_attack_time_multiplier
     private float _invisibilityAlpha = 0.15f;  // g_balance_powerup_invisibility_alpha
 
-    // ---- drop-on-death config (xonotic-server.cfg:208-209, 245) ----
+    // ---- drop-on-death / drop-on-use config (xonotic-server.cfg:208-209, 245) ----
     private int _dropOnDeath = 1;              // g_powerups_drop_ondeath (0=off, 1=timer continues, 2=freeze)
+    private int _dropOnUse = 0;                // g_powerups_drop (0=off, 1=timer continues, 2=freeze) — +use drop
     private float _droppedLifetime = 20f;      // g_items_dropped_lifetime (frozen-timer drop lifetime)
+
+    // ---- strength-fire sound anti-spam (xonotic-server.cfg:604-605) ----
+    private float _strengthAntispamTime = 0.1f;       // sv_strengthsound_antispam_time
+    private float _strengthAntispamRefire = 0.04f;    // sv_strengthsound_antispam_refire_threshold
+    // QC player.prevstrengthsound / .prevstrengthsoundattempt (the per-player anti-spam stamps).
+    private readonly System.Collections.Generic.Dictionary<Entity, float> _prevStrengthSound = new();
+    private readonly System.Collections.Generic.Dictionary<Entity, float> _prevStrengthSoundAttempt = new();
 
     // QC EF_* render bits (dpextensions.qc) the strength/shield glow ORs into actor.effects. EF_ADDITIVE/
     // EF_FULLBRIGHT live in EntityMutatorState.EffectFlags; EF_BLUE/EF_RED are powerup-only here (the
@@ -81,6 +96,10 @@ public sealed class PowerupsMutator : MutatorBase
     private HookHandler<MutatorHooks.WeaponRateFactorArgs>? _onRate;
     private HookHandler<MutatorHooks.PlayerPreThinkArgs>? _onPreThink;
     private HookHandler<MutatorHooks.PlayerDiesArgs>? _onPlayerDies;
+    private HookHandler<MutatorHooks.WPlayStrengthSoundArgs>? _onStrengthSound;
+    private HookHandler<MutatorHooks.PlayerUseKeyArgs>? _onUseKey;
+    private HookHandler<MutatorHooks.BotForbidAttackArgs>? _onBotForbidAttack;
+    private HookHandler<MutatorHooks.MonsterValidTargetArgs>? _onMonsterValidTarget;
 
     public override void Hook()
     {
@@ -89,12 +108,20 @@ public sealed class PowerupsMutator : MutatorBase
         _onRate ??= OnWeaponRateFactor;
         _onPreThink ??= OnPlayerPreThink;
         _onPlayerDies ??= OnPlayerDies;
+        _onStrengthSound ??= OnWPlayStrengthSound;
+        _onUseKey ??= OnPlayerUseKey;
+        _onBotForbidAttack ??= OnBotForbidAttack;
+        _onMonsterValidTarget ??= OnMonsterValidTarget;
 
         MutatorHooks.DamageCalculate.Add(_onDamageCalc);
         MutatorHooks.PlayerPhysics.Add(_onPhysics);
         MutatorHooks.WeaponRateFactor.Add(_onRate);
         MutatorHooks.PlayerPreThink.Add(_onPreThink);
         MutatorHooks.PlayerDies.Add(_onPlayerDies);
+        MutatorHooks.WPlayStrengthSound.Add(_onStrengthSound);
+        MutatorHooks.PlayerUseKey.Add(_onUseKey);
+        MutatorHooks.BotForbidAttack.Add(_onBotForbidAttack);
+        MutatorHooks.MonsterValidTarget.Add(_onMonsterValidTarget);
 
         if (Api.Services is not null)
         {
@@ -108,8 +135,11 @@ public sealed class PowerupsMutator : MutatorBase
             R(ref _speedAttackRate, "g_balance_powerup_speed_attack_time_multiplier");
             R(ref _invisibilityAlpha, "g_balance_powerup_invisibility_alpha");
             R(ref _droppedLifetime, "g_items_dropped_lifetime");
+            R(ref _strengthAntispamTime, "sv_strengthsound_antispam_time");
+            R(ref _strengthAntispamRefire, "sv_strengthsound_antispam_refire_threshold");
             // g_powerups_drop_ondeath defaults to 1; a 0 is meaningful (off) so read it directly.
             _dropOnDeath = (int)Api.Cvars.GetFloat("g_powerups_drop_ondeath");
+            _dropOnUse = (int)Api.Cvars.GetFloat("g_powerups_drop"); // default 0 (off)
         }
     }
 
@@ -120,7 +150,33 @@ public sealed class PowerupsMutator : MutatorBase
         if (_onRate is not null) MutatorHooks.WeaponRateFactor.Remove(_onRate);
         if (_onPreThink is not null) MutatorHooks.PlayerPreThink.Remove(_onPreThink);
         if (_onPlayerDies is not null) MutatorHooks.PlayerDies.Remove(_onPlayerDies);
+        if (_onStrengthSound is not null) MutatorHooks.WPlayStrengthSound.Remove(_onStrengthSound);
+        if (_onUseKey is not null) MutatorHooks.PlayerUseKey.Remove(_onUseKey);
+        if (_onBotForbidAttack is not null) MutatorHooks.BotForbidAttack.Remove(_onBotForbidAttack);
+        if (_onMonsterValidTarget is not null) MutatorHooks.MonsterValidTarget.Remove(_onMonsterValidTarget);
         _prevActive.Clear();
+        _prevStrengthSound.Clear();
+        _prevStrengthSoundAttempt.Clear();
+    }
+
+    // ---- server-browser mutator strings (sv_powerups.qc:196 BuildMutatorsPrettyString / :212 BuildMutatorsString) ----
+    // QC appends ", No powerups"/":no_powerups" when g_powerups==0 and ", Powerups"/":powerups" when g_powerups>0.
+    public override string BuildMutatorsPrettyString(string s)
+    {
+        if (Api.Services is null) return s;
+        float g = Api.Cvars.GetFloat("g_powerups");
+        if (g == 0f) return s + ", No powerups";
+        if (g > 0f) return s + ", Powerups";
+        return s;
+    }
+
+    public override string BuildMutatorsString(string s)
+    {
+        if (Api.Services is null) return s;
+        float g = Api.Cvars.GetFloat("g_powerups");
+        if (g == 0f) return s + ":no_powerups";
+        if (g > 0f) return s + ":powerups";
+        return s;
     }
 
     private static void R(ref float field, string cvar)
@@ -186,6 +242,77 @@ public sealed class PowerupsMutator : MutatorBase
             args.Factor *= _speedAttackRate;
         return false;
     }
+
+    // =====================================================================================
+    //  W_PlayStrengthSound (sv_powerups.qc:3) — anti-spammed SND_STRENGTH_FIRE on firing while Strength active
+    // =====================================================================================
+    private bool OnWPlayStrengthSound(ref MutatorHooks.WPlayStrengthSoundArgs args)
+    {
+        Entity player = args.Player;
+        if (Api.Services is null) return false;
+        if (!Active(player, "strength"))
+        {
+            // QC always stamps prevstrengthsoundattempt even when no Strength (it's set unconditionally at the
+            // end of W_PlayStrengthSound), but it only matters while Strength is active, so a non-holder is a no-op.
+            _prevStrengthSoundAttempt[player] = Api.Clock.Time;
+            return false;
+        }
+
+        float now = Api.Clock.Time;
+        _prevStrengthSound.TryGetValue(player, out float prevSound);
+        _prevStrengthSoundAttempt.TryGetValue(player, out float prevAttempt);
+
+        // QC: play if (time > prevstrengthsound + antispam_time) OR (time > prevstrengthsoundattempt + refire_threshold).
+        if (now > prevSound + _strengthAntispamTime || now > prevAttempt + _strengthAntispamRefire)
+        {
+            // QC sound(player, CH_TRIGGER, SND_STRENGTH_FIRE, VOL_BASE, ATTEN_NORM). CH_TRIGGER == -3 == TriggerAuto.
+            Api.Sound.Play(player, SoundChannel.TriggerAuto, "weapons/strength_fire.wav");
+            _prevStrengthSound[player] = now;
+        }
+        _prevStrengthSoundAttempt[player] = now;
+        return false;
+    }
+
+    // =====================================================================================
+    //  PlayerUseKey (sv_powerups.qc:163) — +use drops the first active powerup and removes the effect (drop)
+    // =====================================================================================
+    private bool OnPlayerUseKey(ref MutatorHooks.PlayerUseKeyArgs args)
+    {
+        // QC: if(MUTATOR_RETURNVALUE || game_stopped || !autocvar_g_powerups_drop) return;
+        if (_dropOnUse == 0 || Api.Services is null || VehicleCommon.GameStopped) return false;
+
+        Entity player = args.Player;
+        bool freezeTimer = _dropOnUse == 2;
+
+        // QC FOREACH(StatusEffects, instanceOfPowerupStatusEffect): drop the FIRST active powerup, remove it,
+        // and return true (consume the +use press). Order matches the QC registration order.
+        foreach (string name in PowerupNames)
+        {
+            var def = StatusEffectsCatalog.ByName(name);
+            if (def is null || !StatusEffectsCatalog.Has(player, def)) continue;
+            DropPowerup(player, name, freezeTimer);
+            StatusEffectsCatalog.Remove(player, def);
+            return true; // consume the press (QC return true)
+        }
+        return false;
+    }
+
+    // QC StatusEffects registration order for the four powerup status effects (FOREACH order).
+    private static readonly string[] PowerupNames = { "strength", "shield", "speed", "invisibility" };
+
+    // =====================================================================================
+    //  Bot_ForbidAttack (sv_powerups.qc:204) — a bot may not attack a player holding Invisibility (bot stealth)
+    // =====================================================================================
+    private bool OnBotForbidAttack(ref MutatorHooks.BotForbidAttackArgs args)
+        // QC: return StatusEffects_active(STATUSEFFECT_Invisibility, targ);
+        => Active(args.Target, "invisibility");
+
+    // =====================================================================================
+    //  MonsterValidTarget (sv_powerups.qc:74) — a monster may not target a player holding Invisibility
+    // =====================================================================================
+    private bool OnMonsterValidTarget(ref MutatorHooks.MonsterValidTargetArgs args)
+        // QC: return StatusEffects_active(STATUSEFFECT_Invisibility, targ); (true => target invalid).
+        => Active(args.Target, "invisibility");
 
     // Bit per powerup in the prior-active bitmap (apply/timeout edge detection).
     private const byte AStrength = 1;

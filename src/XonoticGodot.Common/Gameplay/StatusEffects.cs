@@ -56,6 +56,15 @@ public sealed class StatusEffectDef : IRegistered
     public float Lifetime;         // QC m_lifetime — default duration cap (0 = none)
     public string? Model;          // buff model / drop model
 
+    /// <summary>QC <c>m_name</c> (all.qh:39): the HUD/menu display label (null for the hidden debuffs whose
+    /// QC <c>m_name</c> is #if 0'd out — spawnshield/stunned/frozen/burning; the visible superweapon carries one).
+    /// The live HUD still reconstructs label/icon/color from PowerupMeta, so this is carried for data-parity.</summary>
+    public string? DisplayName;
+    /// <summary>QC <c>m_icon</c> (all.qh:40): the HUD progress-bar icon name (null where the QC attrib is #if 0'd).</summary>
+    public string? Icon;
+    /// <summary>QC <c>m_color</c> (all.qh:41, default '1 1 1'): the HUD progress-bar tint (RGB 0..1).</summary>
+    public (float R, float G, float B) Color = (1f, 1f, 1f);
+
     /// <summary>
     /// QC <c>m_sound_rm</c> (all.qh:44): the sound played on a NORMAL removal of an active, non-persistent
     /// effect (sv_status_effects.qc:46-47). The registered port sound-catalog name (resolved null-safe via
@@ -78,6 +87,14 @@ public sealed class StatusEffectDef : IRegistered
     /// stunned while frozen — sv_status_effects per-effect m_tick). Null = no per-effect tick.
     /// </summary>
     public Func<Entity, ActiveStatusEffect, bool>? OnTick;
+
+    /// <summary>
+    /// QC per-effect <c>m_remove</c> override (spawnshield.qc:5 clears EF_ADDITIVE|EF_FULLBRIGHT, stunned.qc:5
+    /// clears EF_SHOCK, frozen/burning clear their own .effects bit): invoked on ANY removal (NORMAL/TIMEOUT/
+    /// CLEAR) so the presentation flag the per-effect OnTick set is torn down — Base runs the SUPER m_remove
+    /// after the per-effect override, regardless of removal_type. Null = no per-effect removal mechanics.
+    /// </summary>
+    public Action<Entity, ActiveStatusEffect>? OnRemove;
 
     public StatusEffectDef(string name, bool isBuff = false) { Name = name; IsBuff = isBuff; }
 }
@@ -120,7 +137,8 @@ public static class StatusEffectsCatalog
         void R(StatusEffectDef d) => Registry<StatusEffectDef>.Register(d);
 
         // --- core debuffs / status (status_effect/*.qh) ---
-        R(new StatusEffectDef("frozen") { Hidden = true });
+        // STATUSEFFECT_Frozen (frozen.qh): m_color '0 0.62 1', hidden.
+        R(new StatusEffectDef("frozen") { Hidden = true, Color = (0f, 0.62f, 1f) });
         // STATUSEFFECT_Burning (burning.qc): EF_FLAME flame + Fire_ApplyDamage. m_persistent = burning while
         // standing in lava (g_balance_contents_playerdamage_lava_burn, default 0). m_tick self-extinguishes in
         // non-lava water or while STAT(FROZEN). m_sound_rm = the steam-burst hiss (burning.qh SND_Burning_Remove).
@@ -128,22 +146,33 @@ public static class StatusEffectsCatalog
         {
             Hidden = true,
             Lifetime = 10f,
+            Color = (1f, 0.62f, 0f),   // QC m_color '1 0.62 0'
             RemovalSound = "BURNING_REMOVE",
             PersistentCheck = BurningPersistent,
             OnTick = BurningTick,
         });
         // STATUSEFFECT_SpawnShield (spawnshield.qh): hidden, 10s cap — post-spawn damage protection.
-        // m_tick sets EF_ADDITIVE|EF_FULLBRIGHT shimmer once time >= game_starttime (presentation; the port
-        // has no per-entity .effects field, see EffectsFlags todo — the OnTick keeps the parity tick alive).
-        R(new StatusEffectDef("spawnshield") { Hidden = true, Lifetime = 10f, OnTick = SpawnShieldTick });
+        // m_tick sets EF_ADDITIVE|EF_FULLBRIGHT shimmer once time >= game_starttime (spawnshield.qc:11-13);
+        // m_remove clears those bits (spawnshield.qc:5). Driven via the networked Entity.Effects field.
+        R(new StatusEffectDef("spawnshield")
+        {
+            Hidden = true,
+            Lifetime = 10f,
+            Color = (0.36f, 1f, 0.07f),   // QC m_color '0.36 1 0.07'
+            OnTick = SpawnShieldTick,
+            OnRemove = SpawnShieldRemove,
+        });
         // STATUSEFFECT_Stunned (stunned.qh): hidden, 10s cap — shockwave/onslaught stun. m_tick self-removes
-        // while STAT(FROZEN); m_sound_rm = the spark snap (ons_spark1). EF_SHOCK aura is presentation (no .effects).
+        // while STAT(FROZEN) else sets the EF_SHOCK aura (stunned.qc:16-25); m_remove clears EF_SHOCK
+        // (stunned.qc:5). m_sound_rm = the spark snap (ons_spark1).
         R(new StatusEffectDef("stunned")
         {
             Hidden = true,
             Lifetime = 10f,
+            Color = (0.67f, 0.84f, 1f),   // QC m_color '0.67 0.84 1'
             RemovalSound = "STUNNED_REMOVE",
             OnTick = StunnedTick,
+            OnRemove = StunnedRemove,
         });
         // STATUSEFFECT_Superweapon (superweapons.qh): superweapon ammo window (QC netname "superweapons";
         // XonoticGodot consumers use the singular "superweapon"). m_persistent = IT_UNLIMITED_SUPERWEAPONS
@@ -151,6 +180,8 @@ public static class StatusEffectsCatalog
         // m_sound_rm = POWEROFF on the countdown lapse (server/client.qc play_countdown).
         R(new StatusEffectDef("superweapon")
         {
+            DisplayName = "Superweapons",   // QC m_name _("Superweapons") (superweapons.qh)
+            Icon = "superweapons",          // QC m_icon "superweapons"
             RemovalSound = "POWEROFF",
             PersistentCheck = SuperweaponPersistent,
         });
@@ -194,15 +225,39 @@ public static class StatusEffectsCatalog
         return false;
     }
 
-    /// <summary>QC Stunned <c>m_tick</c> (stunned.qc:16-26): self-remove while frozen; the EF_SHOCK aura is
-    /// presentation (no per-entity .effects field in the port). Shock_ApplyDamage is #if'd-out in Base too.</summary>
-    private static bool StunnedTick(Entity e, ActiveStatusEffect s)
-        => IsStatusFrozen(e);
+    /// <summary>QC EF_SHOCK (constants.qh:103 BIT(18)) — the stunned arc/shock aura the client turns into a
+    /// blue-white light + particle burst (CsqcModelEffects EF_SHOCK).</summary>
+    private const int EfShock = 262144;
+    /// <summary>QC EF_ADDITIVE (dpextensions.qc:93) | EF_FULLBRIGHT (dpextensions.qc:133) — the spawnshield
+    /// post-game-start shimmer (the same additive+fullbright glow strength/shield use).</summary>
+    private const int EfSpawnShieldShimmer = 32 | 512;
 
-    /// <summary>QC SpawnShield <c>m_tick</c> (spawnshield.qc:9-14): EF_ADDITIVE|EF_FULLBRIGHT shimmer once
-    /// the match clock passes game_starttime — presentation only (no .effects field), so this is a no-op
-    /// keep-alive that documents the parity tick (the shimmer is a client-render todo).</summary>
-    private static bool SpawnShieldTick(Entity e, ActiveStatusEffect s) => false;
+    /// <summary>QC Stunned <c>m_tick</c> (stunned.qc:16-26): self-remove while frozen; otherwise OR the
+    /// EF_SHOCK aura into the actor's networked .effects (Shock_ApplyDamage is #if'd-out in Base too). The
+    /// SUPER tick (PERSISTENT recompute + timeout) runs in <see cref="Tick"/>.</summary>
+    private static bool StunnedTick(Entity e, ActiveStatusEffect s)
+    {
+        if (IsStatusFrozen(e)) return true;   // m_remove(NORMAL) — OnRemove clears EF_SHOCK
+        e.Effects |= EfShock;                 // QC actor.effects |= EF_SHOCK
+        return false;
+    }
+
+    /// <summary>QC Stunned <c>m_remove</c> (stunned.qc:5): clear EF_SHOCK before the SUPER removal.</summary>
+    private static void StunnedRemove(Entity e, ActiveStatusEffect s) => e.Effects &= ~EfShock;
+
+    /// <summary>QC SpawnShield <c>m_tick</c> (spawnshield.qc:11-13): OR EF_ADDITIVE|EF_FULLBRIGHT into the
+    /// actor's networked .effects once the match clock has passed game_starttime (so warmup doesn't shimmer).</summary>
+    private static bool SpawnShieldTick(Entity e, ActiveStatusEffect s)
+    {
+        float now = Api.Services != null ? Api.Clock.Time : 0f;
+        float gameStart = StartItem.GameStartTimeProvider?.Invoke() ?? 0f;
+        if (now >= gameStart)
+            e.Effects |= EfSpawnShieldShimmer;   // QC actor.effects |= (EF_ADDITIVE | EF_FULLBRIGHT)
+        return false;
+    }
+
+    /// <summary>QC SpawnShield <c>m_remove</c> (spawnshield.qc:5): clear EF_ADDITIVE|EF_FULLBRIGHT before SUPER.</summary>
+    private static void SpawnShieldRemove(Entity e, ActiveStatusEffect s) => e.Effects &= ~EfSpawnShieldShimmer;
 
     /// <summary>QC Superweapon <c>m_persistent</c> (superweapons.qc:4-7): persistent while the entity carries
     /// IT_UNLIMITED_SUPERWEAPONS — this is what sets the networked PERSISTENT bit (the HUD infinity glyph)
@@ -420,6 +475,9 @@ public static class StatusEffectsCatalog
         {
             if (e.StatusEffects[i].DefId != def.RegistryId) continue;
             var s = e.StatusEffects[i];
+            // QC per-effect m_remove override (runs before SUPER on EVERY removal_type): clear the .effects
+            // bit the per-effect m_tick set — spawnshield EF_ADDITIVE|EF_FULLBRIGHT, stunned EF_SHOCK.
+            def.OnRemove?.Invoke(e, s);
             // QC m_remove: sound(actor, CH_TRIGGER, m_sound_rm) on a NORMAL removal of an active,
             // non-persistent effect. (sv_status_effects.qc:46; persistent effects stay silent per #2620.)
             if (removal == StatusEffectRemoval.Normal

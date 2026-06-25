@@ -24,6 +24,9 @@ namespace XonoticGodot.Common.Framework
         public int PressedKeys;
         /// <summary>QC PHYS_INPUT_BUTTON_CROUCH — crouch button currently held.</summary>
         public bool ButtonCrouch;
+        /// <summary>QC PHYS_INPUT_BUTTON_CHAT — the player has the chat console open (typing). Mirrors the input
+        /// <c>Typing</c> intent; read by the campcheck mutator's typecheck gate (sv_campcheck.qc:43).</summary>
+        public bool ButtonChat;
         /// <summary>QC v_angle — the player's exact view angles (used for air-dodge / multijump redirect). Falls back to <see cref="Angles"/> when unset.</summary>
         public System.Numerics.Vector3 ViewAngles;
 
@@ -155,6 +158,9 @@ namespace XonoticGodot.Common.Framework
         /// <summary>QC buff spawnflag 64 ("always randomize/relocate") — set on auto-seeded buffs by
         /// buffs_DelayedInit so they relocate on every reset even when g_buffs_random_location is 0.</summary>
         public bool BuffAlwaysRelocate;
+        /// <summary>QC .team_forced (on a buff pickup) — a teamplay buff item only pickupable by this team number;
+        /// 0 = any team. Set by buff_Init_Compat from spawnflags 2/4.</summary>
+        public int TeamForced;
 
         // --- movement stat overrides (QC STAT(MOVEVARS_*)) set by movement-affecting buffs ---
         // The C# successors to QC's per-player movement stats. The buffs PlayerPhysics hook writes these

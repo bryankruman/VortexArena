@@ -325,6 +325,12 @@ public sealed class BotNavigation
     public float Skill = 5f;
 
     /// <summary>
+    /// QC <c>bot_moveskill</c>, added to <see cref="Skill"/> in the bunnyhop gate (havocbot.qc:1315). Stock default 0;
+    /// the midair mutator forces it to 0 on spawn so high-skill bots stop bunnyhopping while keeping aim/reaction.
+    /// </summary>
+    public float MoveSkill;
+
+    /// <summary>
     /// QC <c>havocbot_bunnyhop</c>: decide whether to jump this frame to bunnyhop toward the goal. The bot
     /// bunnyhops only at/above the skill offset, when not attacking, already at/above run speed, on the
     /// ground, not crouched, out of deep water, and heading at the goal within the direction-deviation cone —
@@ -333,9 +339,11 @@ public sealed class BotNavigation
     /// </summary>
     private bool Bunnyhop(Entity bot, Vector3 dir, bool onGround, Goal goal, bool attacking)
     {
-        // skill gate (QC: bunnyhopping bots are skill >= bot_ai_bunnyhop_skilloffset; ships 7).
+        // skill gate (QC havocbot.qc:1315: skill + bot_moveskill >= bot_ai_bunnyhop_skilloffset; ships 7). The
+        // midair mutator zeroes MoveSkill on spawn but leaves Skill intact, so a high-skill bot still bhops unless
+        // a configured moveskill pushed the sum over the offset (faithful to Base, which only nukes moveskill).
         float skillOffset = Cvars.FloatOr("bot_ai_bunnyhop_skilloffset", 7f);
-        if (Skill < skillOffset)
+        if (Skill + MoveSkill < skillOffset)
             return false;
         if (attacking || !onGround)
             return false;

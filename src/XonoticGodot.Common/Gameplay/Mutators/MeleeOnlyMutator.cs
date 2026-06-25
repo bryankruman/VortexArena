@@ -109,6 +109,17 @@ public sealed class MeleeOnlyMutator : MutatorBase
     private bool OnForbidRandomStartWeapons(ref MutatorHooks.ForbidRandomStartWeaponsArgs args) => true;
     private bool OnForbidThrow(ref MutatorHooks.ForbidThrowCurrentWeaponArgs args) => true;
 
+    // MUTATOR_HOOKFUNCTION(melee_only, BuildMutatorsString) — sv_melee_only.qc:44-47:
+    //   M_ARGV(0, string) = strcat(M_ARGV(0, string), ":MeleeOnly");
+    // The machine token for g_mutatormsg / the server-browser mutators field. Reaches the live
+    // MutatorActivation.BuildMutatorsString chain (run from GameWorld GameLogInit).
+    public override string BuildMutatorsString(string s) => s + ":MeleeOnly";
+
+    // MUTATOR_HOOKFUNCTION(melee_only, BuildMutatorsPrettyString) — sv_melee_only.qc:49-52:
+    //   M_ARGV(0, string) = strcat(M_ARGV(0, string), ", Melee only Arena");
+    // The human-readable "modifications" label; the leading ", " is stripped once by the caller.
+    public override string BuildMutatorsPrettyString(string s) => s + ", Melee only Arena";
+
     // MUTATOR_HOOKFUNCTION(melee_only, FilterItem) — strip small health/armor (the only "extra" sustain
     // melee_only leaves out so fights stay close-range). QC switches on ITEM_HealthSmall / ITEM_ArmorSmall;
     // matched here on the definition's classname or netname tag (the registry's instanceOf stand-in).

@@ -411,6 +411,13 @@ public static class ItemPickupRules
         // Both funnel through here, so a single emit before the loot/respawn split covers both.
         EmitItemEffect("ITEM_PICKUP", item);
 
+        // QC (items.qc:746): MUTATOR_CALLHOOK(ItemTouched, this, toucher); if (wasfreed(this)) return; — fired
+        // AFTER the give + pickup sound. random_items re-randomizes the picked-up MAP item here: it spawns a fresh
+        // replacement, schedules the replacement's respawn, and deletes THIS item — so the re-check below bails.
+        MutatorHooks.FireItemTouched(item, toucher);
+        if (item.IsFreed)
+            return;
+
         // QC: loot is removed (no respawn).
         if (item.ItemIsLoot)
         {
@@ -716,7 +723,10 @@ public static class ItemPickupRules
     /// </summary>
     public static void PlayPickupSound(Entity worldItem, Entity player)
     {
-        string snd = worldItem.Pickup?.PickupSoundName ?? "ITEMPICKUP";
+        // QC .item_pickupsound_ent override (a FilterItem hook may stamp a per-item pickup sound, e.g. New Toys'
+        // SND_WEAPONPICKUP_NEW_TOYS roflsound) wins over the def's default sound.
+        string snd = worldItem.ItemPickupSoundOverride
+            ?? worldItem.Pickup?.PickupSoundName ?? "ITEMPICKUP";
         if (Api.Services is not null && !string.IsNullOrEmpty(snd))
             // CH_TRIGGER (auto) so two quick pickups (e.g. armor + health in one pass) stack instead of the
             // second one cutting off the first — DP plays item_pickupsound on the auto trigger channel.

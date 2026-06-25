@@ -83,6 +83,14 @@ public sealed class Player : Entity
     /// </summary>
     public float BotSkill = 5f;
 
+    /// <summary>
+    /// QC <c>.bot_moveskill</c>: a movement-skill term added to <see cref="BotSkill"/> wherever the AI decides to
+    /// bunnyhop (havocbot.qc:1315 gates on <c>skill + bot_moveskill &gt;= bot_ai_bunnyhop_skilloffset</c>). Stock
+    /// non-campaign default is 0 (the READSKILL reward factor is 0; bot.qc:276). The midair mutator forces this to 0
+    /// on spawn to suppress bunnyhopping WITHOUT degrading aim/reaction (which key off <see cref="BotSkill"/>).
+    /// </summary>
+    public float BotMoveSkill;
+
     /// <summary>QC <c>.maycheat</c>: a per-player override that always permits cheats regardless of <c>sv_cheats</c>.</summary>
     public bool MayCheat;
 
@@ -146,8 +154,26 @@ public sealed class Player : Entity
     /// </summary>
     public bool JoinJumpReleased = true;
 
+    /// <summary>
+    /// QC <c>CS(this).startplaytime</c> (server/client.qh:67): the absolute sim time
+    /// (<see cref="Services.IGameClock.Time"/>) at which this client last switched from spectator to live
+    /// player — set in <c>PutPlayerInServer</c> only on a spectator→player transition (QC client.qc:780, gated on
+    /// the prior <c>killcount == FRAGS_SPECTATOR</c>), NOT on a mid-life respawn. Used as the per-client playtime
+    /// denominator (e.g. the kick_teamkiller rate gate: <c>time - startplaytime</c>). 0 until the first Join.
+    /// </summary>
+    public float StartPlayTime;
+
     /// <summary>QC IS_DEAD(this): the player is dying or already dead (<see cref="Entity.DeadState"/> != No).</summary>
     public bool IsDead => DeadState != DeadFlag.No;
+
+    /// <summary>
+    /// QC <c>.death_origin</c> (server/damage.qh:67): the player's <c>.origin</c> latched at the moment of death,
+    /// set in the Obituary path (<c>targ.death_origin = targ.origin</c>, server/damage.qc:238). Read by the
+    /// "spawn near where you died" features — the spawn_near_teammate <c>closetodeath</c> selection
+    /// (sv_spawn_near_teammate.qc:174) and the personal/here/danger waypoints (server/impulse.qc). Zero until the
+    /// player's first death.
+    /// </summary>
+    public Vector3 DeathOrigin;
 
     // ===== chat state (server/chat.qc Say + server/command/cmd.qc ignore-list CRUD — T46) =====
     // The flat per-client chat fields QC keeps on the clientstate (CS(this)): the three per-say-type flood

@@ -84,6 +84,21 @@ public abstract partial class Weapon : IRegistered
     /// Superweapon status effect lasts.</summary>
     public bool IsSuperWeapon => (SpawnFlags & WeaponFlags.SuperWeapon) != 0;
 
+    /// <summary>
+    /// QC <c>weaponreplace</c> WEP_CVAR (the per-weapon <c>g_balance_&lt;netname&gt;_weaponreplace</c> string,
+    /// default empty / NONE): a server-configured replacement token list applied to this weapon's map spawns by
+    /// <c>W_Apply_Weaponreplace</c> (server/weapons/spawning.qc:13). Empty = no replacement (spawn as-is); a
+    /// single <c>"0"</c> token deletes the spawn. Read live from the cvar store so a server cfg takes effect.
+    /// </summary>
+    public string WeaponReplace
+    {
+        get
+        {
+            if (Api.Services is null) return "";
+            return Api.Cvars.GetString($"g_balance_{NetName}_weaponreplace");
+        }
+    }
+
     // --- behavior hooks (override in concrete weapons) ---
     /// <summary>Main fire/think driver (QC wr_think).</summary>
     public virtual void WrThink(Entity actor, WeaponSlot slot, FireMode fire) { }

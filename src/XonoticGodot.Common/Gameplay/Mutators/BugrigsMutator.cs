@@ -16,8 +16,13 @@ namespace XonoticGodot.Common.Gameplay;
 /// <c>g_bugrigs</c> cvar (mutators.cfg default <b>0</b>).
 ///
 /// SVQC-only in Base (no client prediction — "disabled on the client side until prediction can be fixed"),
-/// so this port runs it server-side; the <c>chase_active 1</c> 3rd-person camera + <c>disableclientprediction</c>
-/// are client-presentation/prediction concerns noted as follow-ups.
+/// so this port runs it server-side. The forced 3rd-person <c>chase_active 1</c> camera on connect IS ported
+/// (<see cref="OnClientConnect"/>, dispatched from GameWorld.InfraClientConnect) and the mutator advertises
+/// itself in the active-mutator strings (<see cref="BuildMutatorsString"/> / <see cref="BuildMutatorsPrettyString"/>).
+/// The <c>disableclientprediction = 2</c> per-tick write is NOT ported: the port has no per-player
+/// prediction-disable plumbing (it would require networking the flag and gating the client movement-prediction
+/// /reconciliation layer), and bugrigs is server-authoritative here, so the write would land on a field nothing
+/// reads — left as a known follow-up rather than faked.
 ///
 /// Ported faithfully: the 15 <c>g_bugrigs_*</c> cvars (bugrigs_SetVars), <c>racecar_angle</c>, the whole
 /// <c>RaceCarPhysics</c> drive model (responsiveness factor, reverse speeding/spinning/stopping,
@@ -95,6 +100,28 @@ public sealed class BugrigsMutator : MutatorBase
     }
 
     private static bool IsPlayer(Entity e) => (e.Flags & EntFlags.Client) != 0;
+
+    // MUTATOR_HOOKFUNCTION(bugrigs, BuildMutatorsString) — bugrigs.qc:346-349
+    public override string BuildMutatorsString(string s) => s + ":bugrigs";
+
+    // MUTATOR_HOOKFUNCTION(bugrigs, BuildMutatorsPrettyString) — bugrigs.qc:351-354
+    public override string BuildMutatorsPrettyString(string s) => s + ", Bug rigs";
+
+    /// <summary>
+    /// MUTATOR_HOOKFUNCTION(bugrigs, ClientConnect) — bugrigs.qc:339-344. Base force-enables the 3rd-person
+    /// chase camera on connect (<c>stuffcmd(player, "cl_cmd settemp chase_active 1\n")</c>) because a
+    /// ground-hugging rig is unplayable from inside its own head. In this in-process listen server the
+    /// client's view reads the <c>chase_active</c> cvar each frame (NetGame.cs CameraMode), so the faithful
+    /// analogue of the stuffcmd is to set that cvar to 1 for the connecting human. Bots have no view, so the
+    /// caller skips them (matches the human-only observable effect). Dispatched from
+    /// <c>GameWorld.InfraClientConnect</c>, gated on the mutator being Added (QC ClientConnect only fires while
+    /// the mutator is active), mirroring how superspec's connect tail is dispatched.
+    /// </summary>
+    public void OnClientConnect(Player player)
+    {
+        if (Api.Services is null) return;
+        Api.Cvars.Set("chase_active", "1");
+    }
 
     // MUTATOR_HOOKFUNCTION(bugrigs, PM_Physics)
     private bool OnPmPhysics(ref MutatorHooks.PMPhysicsArgs args)

@@ -152,7 +152,7 @@ public sealed class Machinegun : Weapon
                         // toShoot==0 (custom balance where sustained_ammo < burst_ammo/burst): QC's wr_checkammo2
                         // would have blocked the burst. Don't enter AttackBurst (counter 0 would never re-reach 0
                         // → infinite self-reschedule); just return the slot to READY after the fire anim.
-                        float rate = WeaponRateFactor();
+                        float rate = WeaponRateFactor(actor);
                         WeaponFireDriver.ScheduleThink(st, Cvars.BurstAnimtime * rate, static (pl, sl) =>
                         {
                             WeaponSlotState s2 = pl.WeaponState(sl);
@@ -176,7 +176,7 @@ public sealed class Machinegun : Weapon
                     // hands the held-fire continuation to the self-rescheduling frame think below.
                     st.MiscBulletCounter = 1;
                     AttackSingle(actor, slot, st, secondary: false);
-                    float rate = WeaponRateFactor();
+                    float rate = WeaponRateFactor(actor);
                     WeaponFireDriver.ScheduleThink(st, Cvars.SustainedRefire * rate,
                         (pl, sl) => AttackFrame(pl, sl, pl.WeaponState(sl)));
                 }
@@ -272,7 +272,7 @@ public sealed class Machinegun : Weapon
 
         st.MachinegunSpreadAccumulation += Cvars.SpreadAdd;
 
-        float rate = WeaponRateFactor();
+        float rate = WeaponRateFactor(actor);
         ++st.MiscBulletCounter;
         if (st.MiscBulletCounter == 0)
         {
@@ -323,7 +323,7 @@ public sealed class Machinegun : Weapon
 
         // QC W_MachineGun_Attack (machinegun.qc:68): every mode-0 round re-parks ATTACK_FINISHED at
         // first_refire — the after-stream cooldown floor the held-fire frame loop runs above.
-        st.AttackFinished = Api.Clock.Time + Cvars.FirstRefire * WeaponRateFactor();
+        st.AttackFinished = Api.Clock.Time + Cvars.FirstRefire * WeaponRateFactor(actor);
     }
 
     // W_MachineGun_Attack_Frame (machinegun.qc:121) — the mode-0 primary held-fire self-continuation. While the
@@ -331,7 +331,7 @@ public sealed class Machinegun : Weapon
     // sustained values) and fire a sustained-type round every sustained_refire; otherwise return to READY.
     private void AttackFrame(Entity actor, WeaponSlot slot, WeaponSlotState st)
     {
-        float rate = WeaponRateFactor();
+        float rate = WeaponRateFactor(actor);
         // QC W_MachineGun_Attack_Frame: abort immediately if switching weapons (m_weapon != m_switchweapon).
         bool switching = st.SwitchWeaponId >= 0 && st.SwitchWeaponId != st.CurrentWeaponId;
         // QC: abort to ready if no longer holding fire (st.ButtonAttack is set live by the driver each tick).

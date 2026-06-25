@@ -49,6 +49,14 @@ public class MutatorBatchT19Tests : IDisposable
         var facade = new TestFacade();
         Api.Services = facade;
         VehicleCommon.GameStopped = false;      // the match is live (a prior test may have left this set)
+        // Reset the host-wired mutator seams a prior full-GameWorld test may have left set (these are process
+        // statics): RandomGravity reads RoundHandler.RoundNotStartedProvider (its pre-round gate — must be inert
+        // here = no round mode) and MutatorActivation.SettempCvarHandler (its ONADD sv_gravity settemp).
+        // VampireHook reads StartItem.GameStartTimeProvider for its time<game_starttime pre-match gate — null
+        // here = game_starttime 0, so the drain isn't blocked at the test clock.
+        RoundHandler.RoundNotStartedProvider = null;
+        MutatorActivation.SettempCvarHandler = null;
+        StartItem.GameStartTimeProvider = null;
         GameRegistries.Reset();                 // drops any mutator hooks from a prior test
         StatusEffectsCatalog.RegisterAll();
         foreach (var (n, v) in cvars) facade.Cvars.Set(n, v);

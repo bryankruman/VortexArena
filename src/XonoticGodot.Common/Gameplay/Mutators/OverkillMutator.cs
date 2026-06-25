@@ -66,9 +66,25 @@ public sealed class OverkillMutator : MutatorBase
     /// <summary>The base Overkill loadout (QC WEPSET(OVERKILL_MACHINEGUN|NEX|SHOTGUN)).</summary>
     private static readonly string[] BaseLoadout = { "okmachinegun", "oknex", "okshotgun" };
 
-    // QC enable: expr_evaluate(autocvar_g_overkill) && !instagib && !... — the real cvar is g_overkill.
+    // QC: REGISTER_MUTATOR(ok, expr_evaluate(autocvar_g_overkill)
+    //   && !MUTATOR_IS_ENABLED(mutator_instagib)
+    //   && !MapInfo_LoadedGametype.m_weaponarena
+    //   && cvar_string("g_mod_balance") == "Overkill").
+    // The instagib guard keeps Overkill from co-enabling alongside instagib (a console `g_overkill 1` can't
+    // double-activate, not just the menu radio-group); the weaponarena guard mirrors the same stand-in
+    // instagib/melee_only use (g_weaponarena == 0); the balance guard ensures the Overkill rules only run under
+    // the Overkill balance/cfg, not on top of an arbitrary balance.
     public override bool IsEnabled =>
-        Api.Services is not null && Api.Cvars.GetFloat("g_overkill") != 0f;
+        Api.Services is not null
+        && Api.Cvars.GetFloat("g_overkill") != 0f
+        && !OtherEnabled("instagib")                                   // QC !MUTATOR_IS_ENABLED(mutator_instagib)
+        && Api.Cvars.GetFloat("g_weaponarena") == 0f                   // QC !MapInfo_LoadedGametype.m_weaponarena
+        && Api.Cvars.GetString("g_mod_balance") == "Overkill";        // QC cvar_string("g_mod_balance") == "Overkill"
+
+    // QC MUTATOR_IS_ENABLED reads the other mutator's enable predicate (not its added state), so activation
+    // order between them can't race (same helper MeleeOnly uses).
+    private static bool OtherEnabled(string netName)
+        => Mutators.ByName(netName) is { } m && m.IsEnabled;
 
     private HookHandler<MutatorHooks.DamageCalculateArgs>? _onDamageCalc;
     private HookHandler<MutatorHooks.PlayerDiesArgs>? _onPlayerDies;
@@ -78,6 +94,7 @@ public sealed class OverkillMutator : MutatorBase
     private HookHandler<MutatorHooks.SetWeaponArenaArgs>? _onSetWeaponArena;
     private HookHandler<MutatorHooks.SetStartItemsArgs>? _onSetStartItems;
     private HookHandler<MutatorHooks.FilterItemDefinitionArgs>? _onFilterItemDef;
+    private HookHandler<MutatorHooks.RandomItemsClassNameArgs>? _onRandomItems;
 
     public override void Hook()
     {
@@ -89,6 +106,7 @@ public sealed class OverkillMutator : MutatorBase
         _onSetWeaponArena ??= OnSetWeaponArena;
         _onSetStartItems ??= OnSetStartItems;
         _onFilterItemDef ??= OnFilterItemDefinition;
+        _onRandomItems ??= OnRandomItemsGetClassName;
 
         MutatorHooks.DamageCalculate.Add(_onDamageCalc, HookOrder.Last); // QC CBC_ORDER_LAST
         MutatorHooks.PlayerDies.Add(_onPlayerDies);
@@ -98,6 +116,7 @@ public sealed class OverkillMutator : MutatorBase
         MutatorHooks.SetWeaponArena.Add(_onSetWeaponArena);
         MutatorHooks.SetStartItems.Add(_onSetStartItems, HookOrder.Last);
         MutatorHooks.FilterItemDefinition.Add(_onFilterItemDef);
+        MutatorHooks.RandomItemsGetClassName.Add(_onRandomItems);
 
         if (Api.Services is not null)
         {
@@ -140,6 +159,50 @@ public sealed class OverkillMutator : MutatorBase
         if (_onSetWeaponArena is not null) MutatorHooks.SetWeaponArena.Remove(_onSetWeaponArena);
         if (_onSetStartItems is not null) MutatorHooks.SetStartItems.Remove(_onSetStartItems);
         if (_onFilterItemDef is not null) MutatorHooks.FilterItemDefinition.Remove(_onFilterItemDef);
+        if (_onRandomItems is not null) MutatorHooks.RandomItemsGetClassName.Remove(_onRandomItems);
+    }
+
+    // QC the overkill g_overkill_items pool (sv_overkill.qh:35-39): the five overkill MAP items, by their
+    // canonical spawnfunc classname (resolved through the random-items prob cvars below). HealthMega + the four
+    // armors; the okhmg/okrpc superweapons are appended explicitly (QC adds them after the IL_EACH).
+    private static readonly string[] OverkillItemNetNames =
+        { "health_mega", "armor_small", "armor_medium", "armor_big", "armor_mega" };
+
+    // MUTATOR_HOOKFUNCTION(ok, RandomItems_GetRandomItemClassName) (sv_overkill.qc:58) — substitute the Overkill
+    // item pool. RandomItems_GetRandomOverkillItemClassName (sv_overkill.qc:21): weighted reservoir over
+    // g_overkill_items (allowed) + weapon_okhmg + weapon_okrpc, keyed by g_{prefix}_{canonical}_probability.
+    private bool OnRandomItemsGetClassName(ref MutatorHooks.RandomItemsClassNameArgs args)
+    {
+        if (Api.Services is null) { args.ClassName = ""; return true; }
+        string prefix = args.Prefix;
+        string chosen = "";
+        float total = 0f;
+
+        // QC IL_EACH(g_overkill_items, !(spawnflags & ITEM_FLAG_MUTATORBLOCKED) && Item_IsDefinitionAllowed(it)).
+        foreach (string netName in OverkillItemNetNames)
+        {
+            Pickup? def = Items.ByName(netName);
+            if (def is null) continue;
+            if ((def.ItemDef.SpawnFlags & GameItemSpawnFlag.MutatorBlocked) != 0) continue;
+            if (!def.ItemDef.IsAllowed) continue;
+            string canonical = ItemSpawnFuncs.CanonicalSpawnFunc(def);
+            float prob = Api.Cvars.GetFloat($"g_{prefix}_{canonical}_probability");
+            if (prob <= 0f) continue;
+            total += prob;
+            if (Prandom.Float() * total <= prob) chosen = canonical;
+        }
+
+        // QC: the okhmg / okrpc superweapons appended after the loop.
+        foreach (string okWep in new[] { "weapon_okhmg", "weapon_okrpc" })
+        {
+            float prob = Api.Cvars.GetFloat($"g_{prefix}_{okWep}_probability");
+            if (prob <= 0f) continue;
+            total += prob;
+            if (Prandom.Float() * total <= prob) chosen = okWep;
+        }
+
+        args.ClassName = chosen; // QC M_ARGV(1, string) = RandomSelection_chosen_string (may be "").
+        return true;             // QC returns true: the hook consumed the pick.
     }
 
     private static bool IsPlayer(Entity? e) => e is not null && (e.Flags & EntFlags.Client) != 0;
@@ -278,11 +341,10 @@ public sealed class OverkillMutator : MutatorBase
     {
         Entity item = args.Definition;
 
-        // QC: if (item.ok_item) return false; — Overkill's own loot (dropped via ok_DropItem, which routes
-        // through the loot path) is always allowed through. The port has no ok_item field; ItemIsLoot is set on
-        // the loot edict before this hook fires, so it is the faithful stand-in (the powerup-replace weapons
-        // below are permanent pickups, not loot, so they are never gated here).
-        if (item.ItemIsLoot)
+        // QC: if (item.ok_item) return false; — an Overkill item (Overkill's own ok_DropItem loot, or a
+        // random-items spawn/replace/loot item tagged ok_item under Overkill) is always allowed through. Both the
+        // explicit Entity.OkItem flag (set by the loot/replace paths) and ItemIsLoot (the loot stand-in) qualify.
+        if (item.OkItem || item.ItemIsLoot)
             return false;
 
         // QC: per-itemdef filter for the four normal big-health/armor pickups (defaults: only medium/big armor on).
@@ -329,6 +391,14 @@ public sealed class OverkillMutator : MutatorBase
         args.Arena = "off";
         return false;
     }
+
+    // MUTATOR_HOOKFUNCTION(ok, BuildMutatorsString) — sv_overkill.qc:283-286: append ":OK" to the machine-readable
+    // server-browser mutator token list.
+    public override string BuildMutatorsString(string s) => s + ":OK";
+
+    // MUTATOR_HOOKFUNCTION(ok, BuildMutatorsPrettyString) — sv_overkill.qc:288-291: append ", Overkill" to the
+    // human-readable scoreboard/server-browser mutator list.
+    public override string BuildMutatorsPrettyString(string s) => s + ", Overkill";
 
     // MUTATOR_HOOKFUNCTION(ok, SetStartItems, CBC_ORDER_LAST)
     private bool OnSetStartItems(ref MutatorHooks.SetStartItemsArgs args)
