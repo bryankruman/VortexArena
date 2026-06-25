@@ -1,15 +1,15 @@
 unit: invasion
 category: gametype
-base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+base_ref_rev: "v0.8.6-1779-g863cd3e84"  # port code re-audited at commit e596bf0 (Wave 6a)
+last_audited: "2026-06-25"
 summary:
-  feature_count: 25
+  feature_count: 28
   worst_gaps:
-    - "STAGE win still ends on the FIRST player touch (TriggerRoundEnd sets RoundEndReached unconditionally; GameWorld.cs:1925 touch fires on any one Player); Base requires ceil(realplayers*0.7) distinct REAL players to have set inv_endreached."
-    - "Point limit tracks cumulative MonstersKilled across ALL players (port) vs Base's leading-player KILLS via GameRules_limit_score; approximates but is not identical."
-    - "HUNT win is derived from the port's own Wave.MaxSpawned/Killed + LiveMonsters counters, not Base's live g_monsters (map-placed-monster) list — fidelity unverified on a real HUNT map."
-    - "Scoreboard item-stats (weapon accuracy) panel not suppressed in Invasion (no DrawScoreboardItemStats/AccuracyTargetValid gate); MoveToRandomMapLocation spawn fallback still missing (monsters pile at origin when no spawnpoints)."
-    - "Wave-5 closed the notification sends: a live InvasionNotifyHost (GameWorld.cs:3017) now broadcasts ROUND_OVER / ROUND_PLAYER_WIN / INVASION_SUPERMONSTER via NotificationSystem→NotificationNetSink, and the ROUND HUD wave counters (monsters_total/killed) are published from inv.Wave — both formerly-dead seams are now LIVE."
+    - "HUNT win is derived from the port's own Wave.MaxSpawned/Killed + LiveMonsters counters PLUS the live world monster list (Invasion.cs LiveNonRespawnedMonsterCount), not exclusively Base's g_monsters; fidelity unverified on a real HUNT map."
+    - "MoveToRandomMapLocation spawn fallback still missing (monsters pile at world origin when a map registers no invasion_spawnpoint — PickSpawnOrigin returns Vector3.Zero)."
+    - "spawn_point.target_range/target2 copy not modeled (no spawn-point entity in the port — only the origin is carried into SpawnMonsterDef)."
+    - "Console-command guards AllowMobSpawning / AllowMobButcher (block spawnmob/butcher during an invasion) are not ported (newly mapped: invasion.rules.mob_command_guards)."
+    - "Wave-6a (commit e596bf0) CLOSED the two largest open gaps: STAGE now requires ceil(realplayers*0.7) distinct REAL players (TriggerRoundEnd threshold via _endReached + the GameWorld touch volume passing the player), and the point limit now ends on the LEADING player's KILLS (CheckPointLimit/TopKillsScore) not the cumulative total; the cl_invasion DrawScoreboardItemStats accuracy-panel hide is also now live."
 features:
   - id: invasion.core.registration
     name: "Invasion gametype registration + init (g_monsters forced, score limit)"
@@ -407,12 +407,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Base derives the HUNT win from the live g_monsters list (no non-respawned monster remaining); the port checks its own Wave.MaxSpawned/Killed counters + LiveMonsters (Invasion.cs:460-465), so map-placed (pre-existing) monsters are not the win source."
+      - "Base derives the HUNT win solely from the live g_monsters list (no non-respawned monster remaining). The port now reads BOTH the live world monster list (LiveNonRespawnedMonsterCount: FindByClass(monster), alive, !Respawned) AND its own Wave.Spawned/Killed counters, requiring _huntSawMonster before treating 'none left' as a win. Closer to Base than before, but the dual-path + the 'must have seen >=1 monster' guard is still unverified on a real HUNT map."
     verification:
       - { kind: test, ref: "InvasionVariantsTests.HuntType_WinsWhenAllSpawnedMonstersCleared / HuntType_DoesNotAdvanceRounds", result: pass }
-      - { kind: code, ref: "Invasion.cs:460-465 LiveMonsters.Count==0 && Killed>=MaxSpawned", result: partial }
+      - { kind: code, ref: "Invasion.cs:526-540 Tick Hunt branch: remaining=LiveNonRespawnedMonsterCount() (world list) OR counterCleared (Wave.Spawned>=1 && Killed>=MaxSpawned); MatchEnded when remaining<=0 && _huntSawMonster; LiveNonRespawnedMonsterCount:676-690 walks FindByClass(monster) excluding dead/Respawned (QC g_monsters !MONSTERFLAG_RESPAWNED)", result: partial }
     confidence: medium
-    notes: "Test passes against the port's own model; fidelity to Base's map-placed-monster semantics is unverified in a real HUNT map. (HUNT's HUD count CAN work in the port since map-placed monsters are NATURAL — see invasion.hud.monster_count.)"
+    notes: "The port now consults the live world monster list (the Base-faithful win source) in addition to its wave counters — an improvement over the prior counters-only model — but the win is still gated on _huntSawMonster and fidelity to Base's map-placed-monster semantics is unverified on a real HUNT map. (HUNT's HUD count uses the natural map-placed totals — see invasion.hud.monster_count.)"
 
   - id: invasion.win.stage
     name: "STAGE: win when >=70% of players reach the level-end trigger"
@@ -423,23 +423,22 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Invasion.cs:TriggerRoundEnd / Tick (Stage branch)"
       - "src/XonoticGodot.Server/GameWorld.cs:WireObjectiveSpawns (roundend touch volume)"
     constants:
-      - { name: "roundend_player_fraction", base: "0.7 (ceil of real players)", port: "1 player touch (no threshold)", match: false }
+      - { name: "roundend_player_fraction", base: "0.7 (ceil of real players, count field default)", port: "ceil(realplayers * min(1,fraction)), default 0.7", match: true }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "STAGE ends on the FIRST player touch; Base requires ceil(realplayers * min(1,count)) distinct REAL players (default count=0.7 → 70%, bots excluded) to have set inv_endreached before winning. TriggerRoundEnd sets RoundEndReached unconditionally and the touch volume (GameWorld.cs:1925) has no per-player inv_endreached set or count threshold."
+    gaps: []
     verification:
       - { kind: test, ref: "InvasionVariantsTests.StageType_WinsWhenRoundEndTriggered / InvasionSpawnTests.RoundEndSpawnfunc_StageTouch_FiresTriggerRoundEnd", result: pass }
-      - { kind: code, ref: "GameWorld.cs:1925 touch → inv.TriggerRoundEnd() on any Player; Invasion.cs:133-136 sets RoundEndReached unconditionally", result: fail }
+      - { kind: code, ref: "GameWorld.cs:2199 touch → inv.TriggerRoundEnd(p) passing the toucher; Invasion.cs:154-183 TriggerRoundEnd adds the actor to _endReached (real, non-bot only), counts distinct reached real players via CountRealPlayers, sets RoundEndReached only when reached >= ceil(realCount * frac); headless/no-roster falls back to single-touch so solo test maps still complete", result: pass }
     confidence: high
-    notes: "STILL OPEN (unchanged). Single-touch is fine for solo/co-op, wrong for multi-player STAGE maps."
+    notes: "FIXED partial→faithful (Wave-6a, commit e596bf0): STAGE now requires ceil(realplayers * 0.7) distinct REAL players (bots excluded) before winning, matching target_invasion_roundend_use. The touch volume passes the player; _endReached dedupes; the headless fallback (no live roster) keeps solo/test maps completing on a single touch."
 
   - id: invasion.win.point_limit
     name: "Match end on banked-kill point limit (default 50)"
@@ -452,7 +451,7 @@ features:
     constants:
       - { name: "pointlimit", base: "50 (mapinfo) / g_invasion_point_limit (cvar default -1 = use mapinfo)", port: "g_invasion_point_limit>0 else fraglimit>0 else 50", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
@@ -461,11 +460,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Base's limit is a per-score-row total via GameRules_limit_score (the leading player's KILLS); the port latches MatchEnded on the cumulative MonstersKilled total (sum across ALL players), which approximates but is not the same as Base's leading-player limit."
+      - "Base's g_invasion_point_limit cvar treats 0 as 'play without limit'; the port's PointLimit getter resolves <=0 (incl. an explicit 0) to the mapinfo 50 default, so an operator setting 0 to disable the limit would still get a 50-kill cap. Minor (-1 default path matches Base exactly)."
     verification:
-      - { kind: code, ref: "Invasion.cs:245-255 PointLimit: only pl>0 overrides, else fraglimit>0, else 50 — the -1 sentinel no longer disables the limit; CheckPointLimit:826-831 MonstersKilled>=limit→MatchEnded; called from DriveGametypeFrame", result: partial }
+      - { kind: code, ref: "Invasion.cs:309-319 PointLimit: only pl>0 overrides, else fraglimit>0, else 50 (-1 sentinel resolves to 50, never 'no limit'); CheckPointLimit:937-949 reads TopKillsScore() = the LEADING player's banked KILLS (FindByClass(player) max GameScores.Get(p,Kills)), latches MatchEnded when leading>=limit, falling back to cumulative MonstersKilled only when no live player roster exists (headless tests); called live from DriveGametypeFrame (GameWorld.cs:2344)", result: pass }
     confidence: high
-    notes: "The -1 sentinel resolves to the 50 default (never 'no limit'). Residual: cumulative total kills (port) vs the leading player's KILLS (Base)."
+    notes: "FIXED logic partial→faithful (Wave-6a, commit e596bf0): the match-end now reads the LEADING player's KILLS via TopKillsScore (matching GameRules_limit_score / WinningConditionHelper_topscore), not the cumulative across-all-players total; cumulative is only the headless fallback. Residual: the explicit-0 = no-limit semantic isn't honored (resolves to 50)."
 
   - id: invasion.rules.no_pvp_damage
     name: "Player-vs-player damage cancelled (Damage_Calculate)"
@@ -649,8 +648,80 @@ features:
     layer: [presentation]
     base_refs:
       - "common/gametypes/gametype/invasion/cl_invasion.qc:MUTATOR_HOOKFUNCTION(cl_inv, DrawScoreboardItemStats)"
+    port_refs:
+      - "game/hud/ScoreboardPanel.cs:DrawAccuracy"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "ScoreboardPanel.cs:1097 DrawAccuracy short-circuits (return y) when GameScores.Gametype == \"inv\", hiding the weapon-accuracy item-stats panel exactly as cl_invasion.qc DrawScoreboardItemStats returns ISGAMETYPE(INVASION); DrawAccuracy is on the live scoreboard render path", result: pass }
+    confidence: high
+    notes: "FIXED missing→faithful+live (Wave-6a, commit e596bf0): the accuracy item-stats panel is now suppressed in Invasion (gametype gate in the live DrawAccuracy). The underlying AccuracyTargetValid server hook (monsters as invalid accuracy targets) is still unported — see new row invasion.rules.accuracy_target_valid — but the visible scoreboard suppression this row tracks is now done."
+
+  - id: invasion.rules.accuracy_target_valid
+    name: "Monsters are invalid weapon-accuracy targets (AccuracyTargetValid)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/invasion/sv_invasion.qc:MUTATOR_HOOKFUNCTION(inv, AccuracyTargetValid)"
+    port_refs: []
+    constants:
+      - { name: "monster_acc_result", base: "MUT_ACCADD_INVALID", port: "none", match: false }
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base's AccuracyTargetValid hook returns MUT_ACCADD_INVALID for monster targets so hits on monsters don't count toward weapon accuracy stats. The port has no AccuracyTargetValid hook chain (WeaponAccuracyEvents), so monster hits still feed the accuracy tally on the server side. The CLIENT-side scoreboard hides the accuracy panel entirely in Invasion (invasion.client.hide_item_stats), so the server-side mis-tally is not visible, but the underlying accuracy data is still wrong."
+    verification:
+      - { kind: code, ref: "no AccuracyTargetValid mutator hook in the port; grep AllowMobSpawning/AccuracyTargetValid → only Commands.cs note 'no AllowMobSpawning hook'; weapon accuracy accumulation has no monster-target gate", result: fail }
+    confidence: medium
+    notes: "Newly mapped (registry coverage gap). Largely masked by the scoreboard panel hide, but the server-side accuracy accumulation is non-faithful for monster hits."
+
+  - id: invasion.rules.mob_command_guards
+    name: "Block spawnmob/butcher console commands during an invasion (AllowMobSpawning / AllowMobButcher)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/invasion/sv_invasion.qc:MUTATOR_HOOKFUNCTION(inv, AllowMobSpawning)"
+      - "common/gametypes/gametype/invasion/sv_invasion.qc:MUTATOR_HOOKFUNCTION(inv, AllowMobButcher)"
     port_refs: []
     constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base blocks the spawnmob console command (AllowMobSpawning: 'You cannot spawn monsters during an invasion!') and the butcher command (AllowMobButcher: 'This command does not work during an invasion!') while Invasion is active. The port has neither hook — Commands.cs:2363 explicitly notes 'no port analog (no AllowMobSpawning hook); skipped', so a player/admin could spawnmob or butcher mid-invasion."
+    verification:
+      - { kind: code, ref: "Commands.cs:2363 comment 'MUTATOR_CALLHOOK(AllowMobSpawning) — no port analog (no AllowMobSpawning hook); skipped'; no AllowMobButcher equivalent anywhere", result: fail }
+    confidence: high
+    notes: "Newly mapped (registry coverage gap). Minor admin/console-guard parity; no effect on normal play unless someone runs spawnmob/butcher during an invasion."
+
+  - id: invasion.client.point_limit_menu
+    name: "Map-config point-limit menu slider (m_configuremenu 50..500)"
+    layer: [presentation]
+    base_refs:
+      - "common/gametypes/gametype/invasion/invasion.qh:METHOD(Invasion, m_configuremenu)"
+    port_refs: []
+    constants:
+      - { name: "pointlimit_slider", base: "50..500 step 10", port: "none", match: false }
     status:
       logic: missing
       values: na
@@ -661,8 +732,8 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The scoreboard item-stats (weapon accuracy) panel is not suppressed in Invasion; Base hides it because monsters aren't valid accuracy targets. Pairs with the unported AccuracyTargetValid hook (WeaponAccuracyEvents.cs notes no such chain exists). No DrawScoreboardItemStats Invasion gate exists in ScoreboardPanel.cs."
+      - "Base exposes a 'Point limit:' slider (50..500, step 10) in the create-game gametype menu via m_configuremenu. The port's create-game menu has no Invasion-specific point-limit slider row."
     verification:
-      - { kind: code, ref: "no DrawScoreboardItemStats invasion gate in game/hud/ScoreboardPanel.cs; no AccuracyTargetValid chain", result: fail }
-    confidence: medium
-    notes: "STILL OPEN (unchanged). Minor presentation parity."
+      - { kind: code, ref: "no Invasion m_configuremenu point-limit slider in the port create-game menu", result: fail }
+    confidence: low
+    notes: "Newly mapped (registry coverage gap). Menu-only; the cvar g_invasion_point_limit is still honored at runtime (invasion.win.point_limit) regardless of the missing slider. Confidence low — the port menu wiring was not exhaustively traced."

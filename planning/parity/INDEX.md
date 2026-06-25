@@ -1,6 +1,6 @@
 # Parity Index
 
-_Generated 2026-06-25 from 154 units, 1990 features._
+_Generated 2026-06-25 from 154 units, 1997 features._
 
 Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liveness `live`/`DEAD`/`~`/`?`.
 
@@ -8,12 +8,12 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 
 | dim | dead | faithful | missing | na | partial | stub | unknown |
 |---|---|---|---|---|---|---|---|
-| logic | 0 | 1409 | 230 | 16 | 331 | 3 | 1 |
-| values | 0 | 1386 | 193 | 192 | 202 | 0 | 17 |
-| timing | 0 | 907 | 119 | 855 | 84 | 0 | 25 |
-| presentation | 0 | 340 | 281 | 1128 | 234 | 0 | 7 |
-| audio | 0 | 222 | 57 | 1649 | 56 | 0 | 6 |
-| liveness | 12 | 0 | 0 | 232 | 172 | 0 | 13 |
+| logic | 0 | 1424 | 234 | 16 | 319 | 3 | 1 |
+| values | 0 | 1400 | 193 | 199 | 188 | 0 | 17 |
+| timing | 0 | 917 | 119 | 860 | 80 | 0 | 21 |
+| presentation | 0 | 343 | 281 | 1132 | 234 | 0 | 7 |
+| audio | 0 | 222 | 57 | 1656 | 56 | 0 | 6 |
+| liveness | 12 | 0 | 0 | 236 | 166 | 0 | 13 |
 
 ## Features by unit
 
@@ -333,7 +333,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `assault.objective.destructible_heal` | func_assault_destructible regen / event_heal (walls can be healed back up + sprite update) | OK | OK | - | ~ | - | live | high |
 | `assault.config.warmup_incompatible` | Assault disables warmup + ready-restart-after-countdown (ReadLevelCvars) | OK | OK | - | - | - | live | high |
 
-### `clanarena` (gametype) — 20 features
+### `clanarena` (gametype) — 24 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
@@ -351,12 +351,16 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `clanarena.hud.alive_counts` | Per-team alive counts (REDALIVE..PINKALIVE) + mod-icons panel | OK | OK | OK | OK | - | live | medium |
 | `clanarena.hud.eliminated_greyout` | Eliminated-player scoreboard grey-out | ~ | - | OK | OK | - | live | medium |
 | `clanarena.spectate.enemies_rule` | Spectate-enemies anti-ghost rule (g_ca_spectate_enemies) | OK | OK | - | - | - | live | medium |
-| `clanarena.notify.round_outcome` | Round-win / tied / over notifications + 'You are now alone' | ~ | - | OK | ~ | - | ~ | high |
+| `clanarena.notify.round_outcome` | Round-win / tied / over notifications + 'You are now alone' | OK | - | OK | OK | - | live | high |
 | `clanarena.round.grace_no_fire` | Round-start grace period: weapons cannot be fired | OK | OK | OK | - | - | live | high |
 | `clanarena.scoring.per_round_award` | Per-player ROUNDS_PL award at round start | OK | OK | OK | - | - | live | high |
 | `clanarena.spawn.no_regen_forced_spectate` | No health/armor regen; dead players forced to spectate (no respawn calc) | OK | - | OK | - | - | live | high |
 | `clanarena.join.late_join_observer` | Late joiner forced to Observer until next round (+ CA join-late info) | MISS | MISS | MISS | MISS | - | - | medium |
 | `clanarena.spawn.forbid_throw_weapon` | Cannot drop/throw the current weapon | OK | - | - | - | - | live | high |
+| `clanarena.notify.alone_on_leave` | 'You are now alone!' on teammate disconnect / make-observer | MISS | - | - | MISS | - | - | high |
+| `clanarena.matchend.restore_status` | Restore spectator/team status before final scores (MatchEnd_BeforeScores) | MISS | - | - | - | - | - | medium |
+| `clanarena.spectate.force_spectate_cmd` | CA spectate-command force + 'leave the game' notice (ClientCommand_Spectate) | MISS | - | - | MISS | - | - | medium |
+| `clanarena.cmd.shuffleteams_reset` | shuffleteams reschedules to next round (SV_ParseServerCommand) | MISS | - | - | - | - | - | medium |
 
 ### `ctf` (gametype) — 19 features
 
@@ -364,16 +368,16 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 |---|---|---|---|---|---|---|---|---|
 | `ctf.flag.spawn_setup` | Flag entity spawn + model/skin/bbox setup | OK | OK | OK | ~ | - | live | high |
 | `ctf.flag.touch_dispatch` | On-touch state dispatch (pickup/capture/return) | OK | - | OK | - | - | live | high |
-| `ctf.flag.pickup` | Flag pickup (base + dropped) | OK | ~ | OK | - | OK | live | high |
-| `ctf.flag.capture` | Flag capture + caps/score/captime | OK | ~ | OK | ~ | OK | live | high |
-| `ctf.flag.return` | Flag return (player + auto/timeout) | ~ | ~ | OK | OK | OK | live | high |
-| `ctf.flag.drop_on_death` | Carrier death drops the flag | OK | ~ | OK | - | OK | live | high |
-| `ctf.flag.fckill_score` | Flag-carrier-kill score + auto-helpme | ~ | ~ | - | MISS | - | live | high |
+| `ctf.flag.pickup` | Flag pickup (base + dropped) | OK | OK | OK | - | OK | live | high |
+| `ctf.flag.capture` | Flag capture + caps/score/captime | OK | OK | OK | ~ | OK | live | high |
+| `ctf.flag.return` | Flag return (player + auto/timeout) | OK | OK | OK | OK | OK | live | high |
+| `ctf.flag.drop_on_death` | Carrier death drops the flag | OK | OK | OK | - | OK | live | high |
+| `ctf.flag.fckill_score` | Flag-carrier-kill score + damage/force factors + auto-helpme | OK | OK | OK | ~ | - | live | high |
 | `ctf.flag.throw` | Throw the flag (+use, g_ctf_throw) | OK | OK | OK | - | MISS | live | high |
 | `ctf.flag.pass` | Pass the flag to a teammate (g_ctf_pass) *(intended)* | ~ | OK | OK | - | MISS | live | high |
 | `ctf.flag.remove_player` | Carrier disconnect/observe/portal/vehicle drops flag | OK | - | - | - | - | ~ | high |
-| `ctf.flag.think_dropped` | Dropped-flag think (landtime, auto-return timer, float, capture-radius) | ~ | ~ | OK | - | - | live | high |
-| `ctf.capture_shield` | Capture shield (block worst players from the flag) | ~ | ~ | OK | MISS | MISS | live | medium |
+| `ctf.flag.think_dropped` | Dropped-flag think (landtime, auto-return timer, float, capture-radius) | OK | OK | OK | - | - | live | high |
+| `ctf.capture_shield` | Capture shield (block worst players from the flag) | OK | OK | OK | MISS | MISS | live | high |
 | `ctf.stalemate` | Stalemate carrier reveal | OK | OK | OK | MISS | - | ~ | high |
 | `ctf.hud.modicons` | Flag-status mod-icon HUD (OBJECTIVE_STATUS) | OK | OK | OK | OK | - | live | high |
 | `ctf.hud.waypoints` | Flag waypoint sprites (base / dropped / carrier) | ~ | ~ | OK | ~ | - | live | high |
@@ -479,7 +483,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `freezetag.presentation.overlay_eventchase` | Full-screen frozen overlay tint + cl_eventchase_frozen cam + damage HUD | OK | OK | OK | ~ | - | live | high |
 | `freezetag.bots` | Bot freeing / offense roles + frozen-target gating | ~ | MISS | MISS | - | - | ~ | medium |
 
-### `invasion` (gametype) — 25 features
+### `invasion` (gametype) — 28 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
@@ -498,8 +502,8 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `invasion.round.handler_wiring` | ROUND round_handler with Invasion-specific start/end/players callbacks + warmup + timelimit | OK | OK | OK | - | - | live | high |
 | `invasion.round.timeout` | Round timeout: remove monsters, ROUND_OVER, restart round | OK | OK | OK | OK | - | live | high |
 | `invasion.win.hunt` | HUNT: win when all placed monsters are cleared | ~ | - | OK | - | - | live | medium |
-| `invasion.win.stage` | STAGE: win when >=70% of players reach the level-end trigger | ~ | ~ | OK | - | - | live | high |
-| `invasion.win.point_limit` | Match end on banked-kill point limit (default 50) | ~ | OK | OK | - | - | live | high |
+| `invasion.win.stage` | STAGE: win when >=70% of players reach the level-end trigger | OK | OK | OK | - | - | live | high |
+| `invasion.win.point_limit` | Match end on banked-kill point limit (default 50) | OK | OK | OK | - | - | live | high |
 | `invasion.rules.no_pvp_damage` | Player-vs-player damage cancelled (Damage_Calculate) | OK | OK | - | - | - | live | high |
 | `invasion.rules.no_regen` | No health/armor regeneration (PlayerRegen) | OK | - | - | - | - | live | high |
 | `invasion.rules.start_items` | ROUND start items: 200 health / 200 armor (SetStartItems) | OK | OK | - | - | - | live | high |
@@ -507,7 +511,10 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `invasion.notify.supermonster` | Center-print when a supermonster arrives (CENTER_INVASION_SUPERMONSTER) | OK | - | - | OK | - | live | high |
 | `invasion.notify.round_end` | Round-over / round-winner center+info prints | OK | - | - | OK | - | live | high |
 | `invasion.hud.monster_count` | HUD monsters_total / monsters_killed publish (SV_StartFrame) | OK | OK | OK | OK | - | live | high |
-| `invasion.client.hide_item_stats` | Scoreboard hides the item-stats panel in Invasion (cl_invasion) | MISS | - | - | MISS | - | - | medium |
+| `invasion.client.hide_item_stats` | Scoreboard hides the item-stats panel in Invasion (cl_invasion) | OK | - | - | OK | - | live | high |
+| `invasion.rules.accuracy_target_valid` | Monsters are invalid weapon-accuracy targets (AccuracyTargetValid) | MISS | - | - | - | - | - | medium |
+| `invasion.rules.mob_command_guards` | Block spawnmob/butcher console commands during an invasion (AllowMobSpawning / AllowMobButcher) | MISS | - | - | - | - | - | high |
+| `invasion.client.point_limit_menu` | Map-config point-limit menu slider (m_configuremenu 50..500) | MISS | - | - | MISS | - | - | low |
 
 ### `keepaway` (gametype) — 16 features
 
@@ -562,17 +569,17 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 |---|---|---|---|---|---|---|---|---|
 | `lms.lives.lose_on_death` | Death costs the victim a life; kills score no points | OK | OK | - | - | - | live | high |
 | `lms.lives.eliminate_at_zero` | At 0 lives the player is out of the game with a finishing rank | OK | OK | OK | - | - | live | high |
-| `lms.win.last_standing` | Match ends when at most one player still has lives; survivor wins | ~ | ~ | ? | - | - | live | high |
-| `lms.respawn.continuous` | Living players respawn continuously throughout the single match (NOT round-based) | ~ | ~ | ? | - | - | ~ | high |
+| `lms.win.last_standing` | Match ends when at most one player still has lives; survivor wins | OK | OK | ~ | - | - | live | high |
+| `lms.respawn.continuous` | Living players respawn continuously throughout the single match (NOT round-based) | OK | OK | OK | - | - | live | high |
 | `lms.lives.starting_count` | Starting lives = mapinfo lives= (default 5, legacy 9) / override, capped at fraglimit | ~ | ~ | - | - | - | live | high |
 | `lms.join.new_player_lives_gate` | Late-join lives gate (lowest-lives clamp + can't-join lockout) | OK | OK | - | - | - | live | high |
-| `lms.respawn.dynamic_delay` | Dynamic respawn delay scaling with lives behind the leader | OK | OK | OK | - | - | ~ | high |
+| `lms.respawn.dynamic_delay` | Dynamic respawn delay scaling with lives behind the leader | OK | OK | OK | - | - | live | high |
 | `lms.loadout.start_items` | Fixed LMS start loadout (health/armor/ammo) + least-healthy late-join clone | OK | OK | - | - | - | live | high |
 | `lms.loadout.weapon_arena` | LMS forces a weapon arena (most_available by default) | OK | OK | - | - | - | live | high |
 | `lms.regen.disabled` | Health/armor regen and rot disabled in LMS | OK | OK | - | - | - | live | high |
 | `lms.items.no_pickups` | Item pickups suppressed (HealthMega->ExtraLife when enabled) | OK | OK | - | - | - | live | high |
 | `lms.leader.computation` | Leader detection (max-lives players with a large enough, small enough lead) | OK | OK | OK | - | - | live | high |
-| `lms.leader.glow` | Leader glow effect (EF_ADDITIVE | EF_FULLBRIGHT) | MISS | - | - | MISS | - | - | high |
+| `lms.leader.glow` | Leader glow effect (EF_ADDITIVE | EF_FULLBRIGHT) | OK | - | OK | OK | - | live | high |
 | `lms.leader.waypoint` | Leader radar waypoint with periodic visibility window | ~ | OK | OK | MISS | - | ~ | high |
 | `lms.leader.notifications` | Leader visibility centerprints (VISIBLE_LEADER / VISIBLE_OTHER) | OK | - | OK | OK | - | live | high |
 | `lms.hud.mod_icon` | HUD mod-icon: leader count + colored +N lives lead | MISS | - | - | MISS | - | - | high |
@@ -582,13 +589,13 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `lms.scoreboard.columns` | LMS scoreboard columns (lives + rank, sorted rank-then-lives) | OK | OK | - | OK | - | live | high |
 | `lms.forfeit.remove_player` | Disconnect/forfeit assigns a rank and reshuffles other ranks | OK | OK | - | - | - | ~ | high |
 | `lms.rules.no_throw_and_spec_lockout` | Can't drop weapon; ranked-out players can't become spectators | ~ | - | - | - | - | ~ | high |
-| `lms.reset.map_players` | Map/round reset restores eliminated players and clears lives/rank | MISS | - | - | - | - | - | high |
+| `lms.reset.map_players` | Map/round reset restores eliminated players and clears lives/rank | OK | - | - | - | - | live | high |
 
 ### `mayhem` (gametype) — 13 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
-| `mayhem.identity.registration` | Gametype identity + registration (mayhem netname, FFA, USEPOINTS, limit defaults) | OK | ~ | - | - | - | live | high |
+| `mayhem.identity.registration` | Gametype identity + registration (mayhem netname, FFA, USEPOINTS, limit defaults) | OK | OK | - | - | - | live | high |
 | `mayhem.score.recompute` | MayhemCalculatePlayerScore — recompute SP_SCORE from damage+frags (methods 1/2/3) | OK | OK | - | - | - | live | high |
 | `mayhem.score.damage_accrual` | PlayerDamage_SplitHealthArmor — accrue total_damage_dealt (enemy +, self/world -) | OK | OK | - | - | - | live | high |
 | `mayhem.score.per_kill` | Per-kill score driver (QC GiveFragsForKill: zero direct frag + recompute attacker) *(intended)* | OK | OK | - | - | - | live | high |
@@ -653,10 +660,10 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
-| `race.mode.setup_limits` | Mode setup + limits (teams, qualifying, lap/frag/time limits) | ~ | ~ | ~ | - | - | ~ | high |
+| `race.mode.setup_limits` | Mode setup + limits (teams, qualifying, lap/frag/time limits) | ~ | ~ | OK | - | - | live | high |
 | `race.score.rules` | Score rules (fastest/laps/time columns + sort keys, no SP_SCORE) | OK | OK | - | - | - | live | high |
-| `race.checkpoint.entities` | Checkpoint trigger entities spawned from the map lump | ~ | OK | - | - | - | live | high |
-| `race.checkpoint.ordered_crossing` | Ordered checkpoint crossing detection + advance | ~ | OK | - | - | - | ~ | high |
+| `race.checkpoint.entities` | Checkpoint trigger entities spawned from the map lump | OK | OK | - | - | - | live | high |
+| `race.checkpoint.ordered_crossing` | Ordered checkpoint crossing detection + advance | OK | OK | - | - | - | live | high |
 | `race.lap.timing_scoring` | Lap close: fastest-lap + laps + cumulative-time scoring | OK | OK | ~ | - | - | live | high |
 | `race.records.db` | Per-map top-99 record ranking DB (read/pos/write/setTime) | OK | OK | - | - | - | live | high |
 | `race.records.notifications` | Record result + finish/abandon notifications (INFO_RACE_*) | OK | OK | - | OK | - | live | high |
@@ -664,7 +671,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `race.win.condition` | Win condition: everyone-finished + lap-limit + sudden-death run-on | OK | OK | - | - | - | live | high |
 | `race.team.laps` | Team race: members' laps add up into ST_RACE_LAPS | OK | OK | - | - | - | live | high |
 | `race.qualifying.mode` | Qualifying solo time-trial (rank by fastest, retract after each lap) | ~ | ~ | ~ | - | - | ~ | medium |
-| `race.qualifying.transition` | Qualifying-then-race transition (g_race_qualifying==2 -> 0) | OK | ~ | ~ | - | - | live | high |
+| `race.qualifying.transition` | Qualifying-then-race transition (g_race_qualifying==2 -> 0) | OK | OK | OK | - | - | live | high |
 | `race.spawn.grid_respawn` | Spawn grid by race_place + respawn at last checkpoint | ~ | ~ | - | - | - | ~ | high |
 | `race.movement.quantization` | Force-keyboard movement quantization + race_movetime + FixClientCvars | MISS | MISS | MISS | - | - | - | high |
 | `race.hud.split_timer` | Race split timer HUD panel (#8): running clock, splits, anticipation, medals | OK | OK | OK | OK | - | live | high |
@@ -677,21 +684,21 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
-| `survival.gametype.registration` | Gametype registration (surv, USEPOINTS, timelimit=20 pointlimit=12) | OK | ~ | - | - | - | live | high |
-| `survival.round.assign_roles` | Round start secretly assigns hunters (live-only count, bounded, random pick) | OK | OK | ? | OK | - | live | high |
-| `survival.round.handler` | Round-handler driven warmup/countdown/round/end-delay cycle | ~ | OK | ? | - | - | ~ | medium |
+| `survival.gametype.registration` | Gametype registration (surv, USEPOINTS, timelimit=20 pointlimit=12) | OK | OK | - | - | - | live | high |
+| `survival.round.assign_roles` | Round start secretly assigns hunters (live-only count, bounded, random pick) | OK | OK | OK | OK | - | live | high |
+| `survival.round.handler` | Round-handler driven warmup/countdown/round/end-delay cycle | OK | OK | OK | - | - | live | high |
 | `survival.scoring.bank_validkills` | Kills bank into validkills during the round (no immediate score) | OK | OK | OK | - | - | live | high |
 | `survival.scoring.round_end_award` | Round end awards banked kills + per-side bonuses (survivals/hunts, reward_survival) | OK | OK | OK | - | - | live | high |
 | `survival.scoring.anonymize` | Anonymize kills/deaths/suicides/dmg on the scoreboard while a round runs | OK | OK | OK | OK | - | live | high |
-| `survival.win.side_wipe` | Side-wipe win latch (hunters win if any hunter alive, else prey, else tie) | OK | OK | ~ | OK | - | live | high |
+| `survival.win.side_wipe` | Side-wipe win latch (hunters win if any hunter alive, else prey, else tie) | OK | OK | OK | OK | - | live | high |
 | `survival.win.timeout` | Round timer / match timeout → survivors win | OK | OK | OK | - | - | live | high |
-| `survival.death.eliminate` | Death eliminates the player for the round (no respawn) | OK | OK | ~ | - | - | live | medium |
+| `survival.death.eliminate` | Death eliminates the player for the round (no respawn) | OK | OK | OK | - | - | live | high |
 | `survival.death.punish_teamkill` | Killing an ally auto-kills the killer + docks frags | OK | OK | OK | - | - | live | high |
 | `survival.net.hidden_role_disclosure` | Hunter identities hidden from prey mid-round, disclosed at round end *(intended)* | OK | OK | OK | - | - | live | high |
 | `survival.hud.own_role_tag` | Mod-icons own-role tag (Hunter red / Survivor green), hidden pre-round | OK | OK | OK | OK | - | live | high |
 | `survival.presentation.player_colors_and_notifications` | Player green/red coloring + role/win center & info notifications | OK | ~ | OK | ~ | - | live | high |
 | `survival.bot.forbid_attack_allies` | Bots never attack same-status (ally) players | OK | OK | - | - | - | live | high |
-| `survival.notify.last_survivor_alone` | Last living member of a side gets the 'you are alone' center notify | OK | OK | ~ | OK | - | live | high |
+| `survival.notify.last_survivor_alone` | Last living member of a side gets the 'you are alone' center notify | OK | OK | OK | OK | - | live | high |
 
 ### `tdm` (gametype) — 13 features
 
@@ -737,7 +744,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
-| `tmayhem.identity.registration` | Gametype identity + registration (tmayhem netname, teamplay, USEPOINTS, limit/team defaults) | OK | ~ | - | - | - | live | high |
+| `tmayhem.identity.registration` | Gametype identity + registration (tmayhem netname, teamplay, USEPOINTS, limit/team defaults) | OK | OK | - | - | - | live | high |
 | `tmayhem.teams.count` | Team count 2..4 (g_tmayhem_teams_override >= 2 ? override : g_tmayhem_teams) | OK | OK | - | ? | - | live | medium |
 | `tmayhem.teams.spawns` | Team spawnpoints gated on g_tmayhem_team_spawns (default off) | OK | OK | - | - | - | live | high |
 | `tmayhem.score.recompute` | MayhemCalculatePlayerScore (teamplay branch) — recompute SP_SCORE + route to team ST_SCORE | OK | OK | - | - | - | live | high |

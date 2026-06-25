@@ -234,9 +234,10 @@ public static class MayhemScoring
     }
 
     /// <summary>
-    /// QC the environmental-suicide deathtype set in PlayerDamage_SplitHealthArmor (DEATH_KILL / DROWN /
-    /// HURTTRIGGER / CAMP / LAVA / SLIME / SWAMP). DEATH_HURTTRIGGER maps to the port's <c>void</c> tag; the
-    /// port has no <c>camp</c> deathtype yet (campcheck isn't modelled), so it is absent here.
+    /// QC the environmental-suicide deathtype set in the Mayhem damage-accrual frag handler (sv_mayhem.qc:325-332):
+    /// DEATH_KILL / DROWN / HURTTRIGGER / CAMP / LAVA / SLIME / SWAMP — these self-damage deaths are subtracted back
+    /// out of the victim's total_damage_dealt. DEATH_HURTTRIGGER maps to the port's <c>void</c> tag; <c>camp</c> is
+    /// the campcheck mutator's deathtype (now live via <see cref="DeathTypes.Camp"/> / CampcheckMutator).
     /// </summary>
     private static bool IsEnvironmentalSuicide(string? deathType)
     {
@@ -244,6 +245,7 @@ public static class MayhemScoring
         return b == DeathTypes.Kill
             || b == DeathTypes.Drown
             || b == DeathTypes.Void   // QC DEATH_HURTTRIGGER
+            || b == DeathTypes.Camp   // QC DEATH_CAMP (campcheck mutator)
             || b == DeathTypes.Lava
             || b == DeathTypes.Slime
             || b == DeathTypes.Swamp;

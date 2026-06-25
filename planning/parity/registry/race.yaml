@@ -1,15 +1,16 @@
 unit: race
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 19
   worst_gaps:
-    - "Wrong-way spawnflag-4 kill is coded but STILL DEAD on the live path: WireObjectiveSpawns (GameWorld.cs:1947) calls SpawnCheckpoint(e.Origin, e.Count) without reading e.SpawnFlags & 4, so no map checkpoint ever arms punishWrongWay; also uses DeathTypes.Void not Base DEATH_HURTTRIGGER. (e.SpawnFlags IS parsed at GameWorld.cs:2810 — the wiring is one branch away.)"
-    - "race_place START GRID ordering + trigger_race_checkpoint_verify map-load validation still missing; no bot race role (havocbot_role_race); no speed awards (race_SpeedAwardFrame); force-keyboard movement quantization (M_SQRT1_2 octant snap + cl_movecliptokeyboard 2) absent."
+    - "race_place START GRID ordering + trigger_race_checkpoint_verify map-load validation still missing; no bot race role (havocbot_role_race); no speed awards (race_SpeedAwardFrame). The Race force-keyboard movement quantization (M_SQRT1_2 octant snap) is implemented for CTS (Cts.OnPlayerPhysics) but NOT for Race — Race.cs registers no PlayerPhysics hook; cl_movecliptokeyboard 2 stuffcmd absent for both."
     - "HUD_Mod_Race MOD-ICON (floating PB+server-best+medal flash) has no port code (ModIconsPanel has no Race case). The split-timer (#8) + checkpoints (#27) panels still feed host-side only (no TE_CSQC_RACE net path), so split/anticipation/speed/medal are listen-server only for the split panels."
-    - "Lap-limit default (port 7) differs from Base (-1 = consult mapinfo); qualifying-timelimit SOURCE (g_race_qualifying_timelimit) still unwired so the qualifying phase runs on the plain timelimit; cl_allow_uid* consent gate on the record DB still absent."
-    - "NEW since baseline (gaps the prior audit missed): respawn-at-last-checkpoint is now implemented + LIVE (RespawnSpot/ApplyRespawnSpot via Clients.OnPreSpawn → SpawnSystem SpawnPointTarg), and the race/CTS RANKINGS scoreboard column is now genuinely NETWORKED (ServerNet snapshots RaceRecords top-15 → ScoreboardBlock wire → ScoreboardPanel.SetRankings) so it works for a pure remote client."
+    - "Lap-limit default (port 7) differs from Base (-1 = consult mapinfo). cl_allow_uid* consent gate on the record DB still absent (RaceRecords only checks for a non-empty uid)."
+    - "FIXED since 2026-06-22: the spawnflag-4 wrong-way kill AND the spawnflag-8 timed-finish (start!=finish track) are now BOTH armed from the BSP lump (WireObjectiveSpawns GameWorld.cs:2053-2055 passes punishWrongWay + timed); the wrong-way kill still uses DeathTypes.Void not Base DEATH_HURTTRIGGER (cosmetic deathtype only)."
+    - "FIXED since 2026-06-22: the g_race_qualifying_timelimit SOURCE is now wired at Race activation (GameWorld.cs:1986-1997) — g_race_qualifying_timelimit(_override)>0 derives qualifying==2, stashes the real limits, and replaces the active timelimit with the qualifying clock; TransitionQualifyingToRace restores them when it elapses."
+    - "Carried from prior audit: respawn-at-last-checkpoint is LIVE (RespawnSpot/ApplyRespawnSpot via Clients.OnPreSpawn → SpawnSystem SpawnPointTarg), and the race/CTS RANKINGS scoreboard column is genuinely NETWORKED (ServerNet snapshots RaceRecords top-15 → ScoreboardBlock wire → ScoreboardPanel.SetRankings) so it works for a pure remote client."
 features:
   - id: race.mode.setup_limits
     name: "Mode setup + limits (teams, qualifying, lap/frag/time limits)"
@@ -25,24 +26,24 @@ features:
     constants:
       - { name: "g_race_laps_limit (default)", base: "-1 (use mapinfo); 0 = unlimited", port: "7 (DefaultLapLimit fallback)", match: false }
       - { name: "g_race_teams (default)", base: "0", port: "0; clamp 2..4 when set", match: true }
-      - { name: "g_race_qualifying_timelimit (default)", base: "0", port: "not wired", match: false }
+      - { name: "g_race_qualifying_timelimit (default)", base: "0; >0 ⇒ qualifying==2 + timelimit swap", port: "wired (GameWorld.cs:1986-1997: reads g_race_qualifying_timelimit(_override), derives qualifying==2, stashes limits, replaces active timelimit)", match: true }
       - { name: "gametype legacy defaults", base: "timelimit=20 qualifying=5 laplimit=7 teamlaplimit=15 leadlimit=0", port: "laplimit=7 only", match: false }
     status:
       logic: partial
       values: partial
-      timing: partial
+      timing: faithful
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
       - "Unset g_race_laps_limit defaults to 7 in the port; Base (-1) consults the mapinfo laplimit."
-      - "Qualifying timelimit and the qualifying-then-race limit-stashing/restore are unwired (SaveRaceLimits has no caller)."
+      - "The remaining legacy gametype_init defaults (teamlaplimit=15, the 20-min timelimit / 5-min qualifying defaults) are not applied as defaults — only laplimit=7 has a port fallback."
     verification:
-      - { kind: code, ref: "Race.Activate / RaceTeams / LapLimit (live in GameWorld WireGametype:1740-1751)", result: pass }
+      - { kind: code, ref: "Race.Activate / RaceTeams / LapLimit (live in GameWorld WireGametype:1972) + qualifying-timelimit source wired (GameWorld.cs:1986-1997: q-timelimit>0 ⇒ set g_race_qualifying=2, SaveRaceLimits, replace timelimit)", result: pass }
     confidence: high
-    notes: "Unchanged by Wave-2. Team clamp + lap-limit core wired & tested; qualifying-session timing config is not."
+    notes: "FIXED since 2026-06-22 (qualifying-timelimit source wired). Team clamp + lap-limit core wired & tested; the g_race_qualifying_timelimit(_override) source now derives qualifying==2 and stashes/swaps the limits at activation (the SaveRaceLimits caller the prior audit flagged as missing now exists). Only the lap-limit -1=mapinfo semantics and the other legacy-default seeds remain divergent."
 
   - id: race.score.rules
     name: "Score rules (fastest/laps/time columns + sort keys, no SP_SCORE)"
@@ -81,9 +82,9 @@ features:
       - "src/XonoticGodot.Server/GameWorld.cs:WireObjectiveSpawns"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:RaceCheckpoint"
     constants:
-      - { name: "finish line index", base: "cp 0 (timed via spawnflags & 8)", port: "index 0 = GtIsFinishLine", match: true }
+      - { name: "finish line index", base: "race_timed_checkpoint (cp 0 closed-loop; highest CP via spawnflags & 8)", port: "TimedCheckpoint = 0 default, follows highest CP when spawnflag 8 set; armed from e.SpawnFlags & 8 (GameWorld.cs:2055)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: na
       presentation: na
@@ -92,13 +93,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Port assumes the finish is checkpoint index 0; Base's race_timed_checkpoint can be the highest CP (spawnflags & 8) on tracks where start != finish."
       - "Defrag target_checkpoint / target_startTimer / target_stopTimer chain not modeled for Race (CTS-only no-ops)."
-      - "SpawnCheckpoint has a punishWrongWay flag, but GameWorld.WireObjectiveSpawns (GameWorld.cs:1947) calls SpawnCheckpoint(e.Origin, e.Count) without reading e.SpawnFlags & 4, so the spawnflag-4 (wrong-order kill) checkpoint variant is never armed from the BSP lump. e.SpawnFlags IS parsed (GameWorld.cs:2810) — the wiring is one branch away."
     verification:
-      - { kind: code, ref: "GameWorld.WireObjectiveSpawns Race arm (GameWorld.cs:1942-1948): SpawnCheckpoint(e.Origin, e.Count) — no punishWrongWay despite e.SpawnFlags being available", result: pass }
+      - { kind: code, ref: "GameWorld.WireObjectiveSpawns Race arm (GameWorld.cs:2053-2055): SpawnCheckpoint(e.Origin, e.Count, punishWrongWay: (e.SpawnFlags & 4)!=0, timed: (e.SpawnFlags & 8)!=0) — both spawnflag variants now armed from the BSP lump", result: pass }
     confidence: high
-    notes: "Checkpoints + penalty zones are genuinely spawned from the BSP entity lump on the live path."
+    notes: "FIXED since 2026-06-22. The prior audit flagged the spawnflag-4 wrong-way variant and the spawnflag-8 timed-finish as un-armed (WireObjectiveSpawns dropped e.SpawnFlags). The Race arm now passes BOTH punishWrongWay (spawnflag 4) and timed (spawnflag 8), so a start!=finish track scores the lap at its highest timed CP (race_timed_checkpoint) instead of hardcoding CP 0. Checkpoints + penalty zones are genuinely spawned from the BSP entity lump on the live path."
 
   - id: race.checkpoint.ordered_crossing
     name: "Ordered checkpoint crossing detection + advance"
@@ -112,22 +111,21 @@ features:
     constants:
       - { name: "wrong-CP kill damage (spawnflag 4)", base: "10000 (DEATH_HURTTRIGGER)", port: "10000 (DeathTypes.Void)", match: false }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The spawnflag-4 wrong-order kill (CheckpointTouch -> Combat.Damage 10000, Race.cs:328-329) is DEAD: no caller passes punishWrongWay:true (WireObjectiveSpawns:1947 spawns every checkpoint with the flag off), so a wrong-order crossing is still merely ignored on the live path."
-      - "Uses DeathTypes.Void instead of Base's DEATH_HURTTRIGGER for the wrong-way kill."
+      - "Uses DeathTypes.Void instead of Base's DEATH_HURTTRIGGER for the wrong-way kill (cosmetic deathtype/obituary only; the 10000 damage matches)."
       - "No SUB_UseTargets / equipment-clear (Portal_ClearAll, porto_forbidden) on crossing."
     verification:
-      - { kind: code, ref: "Race.CheckpointTouch expected-next + _punishWrongWay set (never populated on live path)", result: partial }
+      - { kind: code, ref: "Race.CheckpointTouch expected-next + _punishWrongWay set; now populated from the BSP lump (WireObjectiveSpawns GameWorld.cs:2054 punishWrongWay: (e.SpawnFlags & 4)!=0), so a wrong-order crossing of a spawnflag-4 CP deals 10000 on the live path", result: pass }
     confidence: high
-    notes: "Next-CP wrap + start-line lap reset match Base. Wave-2 coded the punitive wrong-way branch but left it unwired; the trigger/SUB_UseTargets side branches remain omitted."
+    notes: "FIXED since 2026-06-22 (wrong-way kill now LIVE). Next-CP wrap + start-line lap reset match Base; the punitive spawnflag-4 branch is now armed from the map lump (GameWorld.cs:2054) so a wrong-order crossing actually kills. Residual: the Void-vs-HURTTRIGGER deathtype and the SUB_UseTargets / equipment-clear side branches remain omitted."
 
   - id: race.lap.timing_scoring
     name: "Lap close: fastest-lap + laps + cumulative-time scoring"
@@ -262,7 +260,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:FinishRacer"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:StartCompleting"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:AbandonRaceCheck"
-      - "src/XonoticGodot.Server/GameWorld.cs:2055"
+      - "src/XonoticGodot.Server/GameWorld.cs:2346 (case Race: race.Tick(); race.CheckWinningCondition())"
     constants: []
     status:
       logic: faithful
@@ -277,7 +275,7 @@ features:
       - "Sudden-death is modeled as a Race-local latch (SuddenDeath) gated on the RaceCompleting state; the shared OverTimeManager deliberately excludes the race/qualifying branch, so the standard overtime-window timer does not gate race end (intentional split, documented in OverTimeManager.cs)."
     verification:
       - { kind: test, ref: "RaceOvertimePenaltyTests.Overtime_LapLimitWithUnfinished_StartsSuddenDeath", result: pass }
-      - { kind: code, ref: "FinishRacer->StartCompleting (RaceCompleting latch + abandon dead racers) + OnDeath->AbandonRaceCheck; CheckWinningCondition gates sudden-death on RaceCompleting. Live via GameWorld.cs:2055 (race.Tick(); race.CheckWinningCondition()).", result: pass }
+      - { kind: code, ref: "FinishRacer->StartCompleting (RaceCompleting latch + abandon dead racers) + OnDeath->AbandonRaceCheck; CheckWinningCondition gates sudden-death on RaceCompleting. Live via GameWorld.cs:2346 (race.Tick(); race.CheckWinningCondition()).", result: pass }
     confidence: high
     notes: "FIXED in Wave-2 (was partial). The global race_completing latch is now modeled: the FIRST racer to reach the lap limit trips StartCompleting (abandoning every dead racer + INFO_RACE_ABANDONED), and a dead racer respawning into a completing race is auto-abandoned via OnDeath->AbandonRaceCheck. This is the multi-racer drain-to-(n==c) state machine the baseline VERIFIER flagged as absent."
 
@@ -316,7 +314,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:Qualifying"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:RetractPlayer"
-      - "src/XonoticGodot.Server/GameWorld.cs:1740-1744"
+      - "src/XonoticGodot.Server/GameWorld.cs:1972-1979 (race.Activate + OnFinishRetract = Clients.Spawn)"
     constants: []
     status:
       logic: partial
@@ -332,7 +330,7 @@ features:
       - "independent_players / MAKE_INDEPENDENT_PLAYER (solo scoring isolation) not modeled."
       - "Qualifying checkpoint records + RACE_NET_CHECKPOINT_*_QUALIFYING packets absent."
     verification:
-      - { kind: code, ref: "Race.Qualifying + OnFinishRetract wiring (GameWorld.cs:1741-1744)", result: partial }
+      - { kind: code, ref: "Race.Qualifying + OnFinishRetract wiring (GameWorld.cs:1975)", result: partial }
     confidence: medium
     notes: "Unchanged by Wave-2. Solo retract-to-start works; the qualifying-specific networking, isolation and grid spawn do not."
 
@@ -348,19 +346,18 @@ features:
     constants: []
     status:
       logic: faithful
-      values: partial
-      timing: partial
+      values: faithful
+      timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Wave-5 wired SaveRaceLimits (at Race activation when g_race_qualifying==2) + a live caller for TransitionQualifyingToRace (GameWorld.RunCheckRulesWorld: the elapsed qualifying timelimit converts the session to a real race instead of ending). The qualifying-timelimit SOURCE (g_race_qualifying_timelimit → the qualifying-phase timelimit cvar) is still not wired, so the qualifying phase runs on the plain `timelimit`; the transition itself is faithful (restores stashed limits, re-runs score rules, resets racers)."
+    gaps: []
     verification:
-      - { kind: code, ref: "GameWorld.cs Race activation calls SaveRaceLimits; RunCheckRulesWorld timelimit-elapsed branch calls race.TransitionQualifyingToRace() + re-arms GameStartTime", result: pass }
+      - { kind: code, ref: "GameWorld.cs:1986-1997 Race activation reads g_race_qualifying_timelimit(_override), derives g_race_qualifying=2 + SaveRaceLimits + replaces the active timelimit with the qualifying clock; RunCheckRulesWorld timelimit-elapsed branch (GameWorld.cs:2545) calls race.TransitionQualifyingToRace() + re-arms GameStartTime", result: pass }
     confidence: high
-    notes: "FIXED in Wave-5 (was dead). The qualifying==2 transition now runs on the live match path: when the timelimit elapses in a qualifying-then-race match the session converts to a plain race (clears g_race_qualifying, restores fraglimit/leadlimit/timelimit, re-declares score rules, resets every racer) instead of going to intermission."
+    notes: "FIXED again since 2026-06-22 (qualifying-timelimit source now wired). The full qualifying==2 chain is live: g_race_qualifying_timelimit(_override)>0 derives qualifying==2 and replaces the active timelimit with the qualifying clock at activation (GameWorld.cs:1986-1997, the prior audit's last open gap), and when that clock elapses TransitionQualifyingToRace converts the session to a plain race (clears g_race_qualifying, restores the stashed fraglimit/leadlimit/timelimit, re-declares score rules, resets every racer) instead of going to intermission."
 
   - id: race.spawn.grid_respawn
     name: "Spawn grid by race_place + respawn at last checkpoint"
@@ -373,7 +370,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:ApplyRespawnSpot"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:OnDeath (respawn-checkpoint resume)"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:CheckpointTouch (RespawnSpot/RespawnCheckpoint update)"
-      - "src/XonoticGodot.Server/GameWorld.cs:1895 (Clients.OnPreSpawn = p => race.ApplyRespawnSpot(p))"
+      - "src/XonoticGodot.Server/GameWorld.cs:1979 (Clients.OnPreSpawn = p => race.ApplyRespawnSpot(p))"
       - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:332 (consumes Player.SpawnPointTarg)"
     constants: []
     status:
@@ -417,9 +414,9 @@ features:
       - "race_movetime per-frame fractional accumulator absent (lap timing uses wall clock instead)."
       - "cl_movecliptokeyboard 2 is not stuffed to clients."
     verification:
-      - { kind: code, ref: "grep M_SQRT1_2 / movecliptokeyboard / race_movetime in Simulation — none", result: fail }
+      - { kind: code, ref: "Race.cs registers no PlayerPhysics hook (only Tick handles the penalty freeze); grep M_SQRT1_2 / movecliptokeyboard / race_movetime hits only Cts.OnPlayerPhysics, a sibling GameType — not shared with Race", result: fail }
     confidence: high
-    notes: "Unchanged by Wave-2. Cross-boundary (physics input). The spec doc-comment in Race.cs explicitly marks this deferred."
+    notes: "Still MISSING for Race (re-confirmed 2026-06-25). NOTE: the identical M_SQRT1_2 octant-snap quantization IS implemented for the sibling CTS gametype (Cts.OnPlayerPhysics, registered Cts.cs:192) — but Race : GameType and Cts : GameType are sealed siblings with no shared physics hook, so Race itself does not quantize. cl_movecliptokeyboard 2 stuffcmd + race_movetime accumulator absent for both. The spec doc-comment in Race.cs explicitly marks this deferred."
 
   - id: race.hud.split_timer
     name: "Race split timer HUD panel (#8): running clock, splits, anticipation, medals"

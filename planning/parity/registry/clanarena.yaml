@@ -1,16 +1,18 @@
 unit: clanarena
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
-  feature_count: 20
+  feature_count: 24
   worst_gaps:
-    - "'You are now alone!' (CENTER_ALONE) still dead: NotifyLastPlayerForTeam (ClanArena.cs:542) has zero live callers (not wired into any PlayerDies/disconnect path) — its IsRoundStarted gate WOULD now pass via the mirror, so only the caller is missing"
     - "Late-joiner forced-Observer / INGAME_JOINING state still missing; eliminated-greyout still approximates eliminated == dead"
     - "Cosmetic: no dedicated round-win announcer cue; RESPAWN_SILENT/FORCE flags + respawn_time = time+2 not explicitly modeled"
+    - "'You are now alone!' now fires on the death path, but NOT on the disconnect / make-observer paths (Base also calls ca_LastPlayerForTeam_Notify from ClientDisconnect + MakePlayerObserver)"
+    - "Newly-mapped Base hooks with no port impl: MatchEnd_BeforeScores (restore spectator/team status), ClientCommand_Spectate (CA force-spectate + LEAVE notice), SV_ParseServerCommand shuffleteams, MakePlayerObserver (INGAME clear / FRAGS_OUT_OF_GAME / would_spectate)"
   fixed_since_baseline:
-    - "Per-player ROUNDS_PL award now LIVE+faithful: GameWorld CA branch sets caRounds.OnRoundCounted = ca.AwardRoundStartScore (GameWorld.cs:1761); _roundPrep sets the live roster (GameWorld.cs:1764) before Rounds.Think (GameWorld.cs:1525) fires OnRoundCounted at cnt==0 (RoundHandler.cs:242). Was dead/missing."
-    - "Inter-round grace fire-block now LIVE+faithful: WeaponFireDriver.RoundFireForbidden = _ => Rounds is {IsRoundStarted:false} wired in EnableRounds (GameWorld.cs:1113, which CA calls); WeaponUseForbidden (WeaponFireDriver.cs:328) now invokes it on the live per-tick fire path (Frame, GameWorld.cs:1498). Was dead stub returning false."
+    - "'You are now alone!' (CENTER_ALONE) now LIVE+faithful: OnDeath (ClanArena.cs:301, subscribed to Combat.Death in Activate, ClanArena.cs:193-194) calls NotifyLastPlayerForTeam(victim, _roster); Combat.Death.Call fires on the live player-death path (DamageSystem.cs:576). The IsRoundStarted gate reads the mirrored owned handler. Was dead (zero callers) at the prior baseline."
+    - "Per-player ROUNDS_PL award LIVE+faithful (carried from prior wave): GameWorld CA branch sets caRounds.OnRoundCounted = ca.AwardRoundStartScore (GameWorld.cs:1768); _roundPrep sets the live roster (GameWorld.cs:1771) before Rounds.Think fires OnRoundCounted at cnt==0 (RoundHandler.cs:242)."
+    - "Inter-round grace fire-block LIVE+faithful (carried): WeaponFireDriver.RoundFireForbidden = _ => Rounds is {IsRoundStarted:false} wired in EnableRounds (GameWorld.cs:1120, which CA calls); WeaponUseForbidden (WeaponFireDriver.cs:328) invokes it on the live per-tick fire path."
 features:
   - id: clanarena.round.lifecycle
     name: "Round wait/countdown/live/end-delay state machine"
@@ -393,26 +395,28 @@ features:
       - "common/gametypes/gametype/clanarena/sv_clanarena.qc:CA_CheckWinner (Send_Notification ROUND_TEAM_WIN/TIED/OVER)"
       - "common/gametypes/gametype/clanarena/sv_clanarena.qc:ca_LastPlayerForTeam_Notify (CENTER_ALONE)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/ClanArena.cs:CheckWinner (Sends ROUND_TEAM_WIN_*/TIED/OVER, ClanArena.cs:499-510)"
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/ClanArena.cs:NotifyLastPlayerForTeam (ALONE; DEAD - no caller, ClanArena.cs:542)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/ClanArena.cs:CheckWinner (Sends ROUND_TEAM_WIN_*/TIED/OVER, ClanArena.cs:518-535)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/ClanArena.cs:OnDeath (calls NotifyLastPlayerForTeam(victim,_roster), ClanArena.cs:301; subscribed to Combat.Death in Activate, ClanArena.cs:193-194)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/ClanArena.cs:NotifyLastPlayerForTeam (ALONE; now LIVE via OnDeath, ClanArena.cs:550)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:576 (Combat.Death.Call — the live player-death path)"
       - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs (ROUND_TEAM_WIN_*/ROUND_TIED/ROUND_OVER/ALONE registered)"
     constants: []
     status:
-      logic: partial
+      logic: faithful
       values: na
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "'You are now alone!' (CENTER_ALONE) is still NOT sent: NotifyLastPlayerForTeam (ClanArena.cs:542) has ZERO live callers (grep src/ shows only the definition; ca_LastPlayerForTeam_Notify not wired into the port's PlayerDies/disconnect path — Base calls it from PlayerDies + disconnect, sv_clanarena.qc:374/393/406). Its own !Handler.IsRoundStarted gate WOULD now pass via MirrorRoundStarted, so the only remaining defect is the missing caller — not the gate. STILL OPEN after Wave-5."
+      - "'You are now alone!' (CENTER_ALONE) now fires on the death path only. Base also calls ca_LastPlayerForTeam_Notify from ClientDisconnect (sv_clanarena.qc:393) and MakePlayerObserver (sv_clanarena.qc:406), so a teammate leaving by disconnect or going to spectate mid-round will not trigger the 'alone' print in the port. Minor — the common case (teammate dies) is now covered."
       - "The round-win announcer cue is not separately played (QC plays the win sound via the notification; the port Sends the Center+Info notifications but no dedicated Annce cue is wired here)."
     verification:
-      - { kind: trace, ref: "CheckWinner (live via canRoundEnd) Sends ROUND_TEAM_WIN_<suffix> Center+Info on a team win and ROUND_TIED/ROUND_OVER on tie/stalemate (ClanArena.cs:499-510); notifications registered in NotificationsList.cs. NotifyLastPlayerForTeam (ALONE) has zero callers (grep src/)", result: pass }
+      - { kind: trace, ref: "CheckWinner (live via canRoundEnd) Sends ROUND_TEAM_WIN_<suffix> Center+Info on a team win and ROUND_TIED/ROUND_OVER on tie/stalemate (ClanArena.cs:518-535); notifications + ALONE registered in NotificationsList.cs (lines 718-724/847/950-953). NotifyLastPlayerForTeam (ALONE) IS now reached: OnDeath subscribes to Combat.Death (ClanArena.cs:193-194) which fires on the live death path (DamageSystem.cs:576) and calls NotifyLastPlayerForTeam(victim,_roster); the gate reads the mirrored owned Handler.IsRoundStarted (MirrorRoundStarted).", result: pass }
     confidence: high
-    notes: "Unchanged from baseline. Team-outcome prints (ROUND_TEAM_WIN/TIED/OVER) fire from the live CheckWinner. STILL OPEN: the 'You are now alone!' CENTER_ALONE print (NotifyLastPlayerForTeam has no caller) and any dedicated round-win announcer cue. The ALONE gate works via MirrorRoundStarted; only the caller is missing."
+    notes: "FIX since 2026-06-22 baseline: liveness partial->live, logic/presentation partial->faithful. The 'You are now alone!' CENTER_ALONE print is now wired to the live PlayerDies path via OnDeath -> NotifyLastPlayerForTeam (the missing caller the baseline flagged). Team-outcome prints (ROUND_TEAM_WIN/TIED/OVER) still fire from the live CheckWinner. Remaining minor gaps: the disconnect/make-observer notify paths and any dedicated round-win announcer cue."
 
   - id: clanarena.round.grace_no_fire
     name: "Round-start grace period: weapons cannot be fired"
@@ -549,3 +553,96 @@ features:
       - { kind: trace, ref: "ClanArena.Activate subscribes OnForbidThrowCurrentWeapon -> true (ClanArena.cs:214-215); WeaponThrowing fires ForbidThrowCurrentWeapon.Call and aborts the throw/drop on true", result: pass }
     confidence: high
     notes: "Faithful+live, unchanged since baseline. CA's ForbidThrowCurrentWeapon hook is subscribed and live, so dropping the current weapon is blocked in CA."
+
+  - id: clanarena.notify.alone_on_leave
+    name: "'You are now alone!' on teammate disconnect / make-observer"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/gametypes/gametype/clanarena/sv_clanarena.qc:MUTATOR_HOOKFUNCTION(ca, ClientDisconnect) (ca_LastPlayerForTeam_Notify, line 393)"
+      - "common/gametypes/gametype/clanarena/sv_clanarena.qc:MUTATOR_HOOKFUNCTION(ca, MakePlayerObserver) (ca_LastPlayerForTeam_Notify, line 406)"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The death-path 'alone' notify is wired (see clanarena.notify.round_outcome), but Base ALSO sends CENTER_ALONE when a live teammate disconnects or is forced to observer mid-round. The port has no CA hook on the disconnect / make-observer paths, so a teammate leaving by means other than death won't trigger the last-survivor print."
+    verification:
+      - { kind: trace, ref: "grep src/ for NotifyLastPlayerForTeam shows only the OnDeath caller (ClanArena.cs:301); no disconnect / make-observer caller exists", result: pass }
+    confidence: high
+    notes: "Newly mapped Base feature (was folded into the round_outcome gap). Low practical impact: the common case (teammate frags out) is covered by the death path."
+
+  - id: clanarena.matchend.restore_status
+    name: "Restore spectator/team status before final scores (MatchEnd_BeforeScores)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/clanarena/sv_clanarena.qc:MUTATOR_HOOKFUNCTION(ca, MatchEnd_BeforeScores) (MatchEnd_RestoreSpectatorAndTeamStatus(prev_team))"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "At match end Base restores each player's pre-CA spectator/team status from the .prev_team field (snapshotted in CA_RoundStart) so the post-match scoreboard reflects who was actually playing. The port snapshots no prev_team and has no MatchEnd_BeforeScores hook, so the final-scores spectator/team restoration is not modeled."
+    verification:
+      - { kind: trace, ref: "No MatchEnd_BeforeScores / RestoreSpectatorAndTeamStatus / prev_team handling found in the port's CA path (grep src/)", result: pass }
+    confidence: medium
+    notes: "Newly mapped Base feature. Tied to the missing INGAME/observer state (clanarena.join.late_join_observer); cosmetic end-of-match scoreboard accuracy."
+
+  - id: clanarena.spectate.force_spectate_cmd
+    name: "CA spectate-command force + 'leave the game' notice (ClientCommand_Spectate)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/clanarena/sv_clanarena.qc:MUTATOR_HOOKFUNCTION(ca, ClientCommand_Spectate) (MUT_SPECCMD_FORCE + INFO_CA_LEAVE)"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base intercepts the `spectate` client command for an INGAME player: it force-spectates (MUT_SPECCMD_FORCE) and, when sv_spectate is on and they're already spec/observer, sends INFO_CA_LEAVE ('left the game'). The port has no CA ClientCommand_Spectate hook and no CA_LEAVE notification, so leaving CA mid-game isn't handled the QC way. Tied to the missing INGAME state."
+    verification:
+      - { kind: trace, ref: "No ClientCommand_Spectate CA hook / MUT_SPECCMD_FORCE / INFO_CA_LEAVE found in the port (grep src/)", result: pass }
+    confidence: medium
+    notes: "Newly mapped Base feature. Depends on the missing INGAME_JOINING state (clanarena.join.late_join_observer)."
+
+  - id: clanarena.cmd.shuffleteams_reset
+    name: "shuffleteams reschedules to next round (SV_ParseServerCommand)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/clanarena/sv_clanarena.qc:MUTATOR_HOOKFUNCTION(ca, SV_ParseServerCommand) (shuffleteams_on_reset_map = !allowed_to_spawn)"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base defers a `shuffleteams` command issued mid-round to the next ResetMap (shuffleteams_on_reset_map = !allowed_to_spawn) so a live CA round isn't disrupted. The port has no CA SV_ParseServerCommand hook, so shuffleteams is not round-deferred in CA."
+    verification:
+      - { kind: trace, ref: "No CA SV_ParseServerCommand / shuffleteams_on_reset_map handling found in the port (grep src/)", result: pass }
+    confidence: medium
+    notes: "Newly mapped Base feature. Admin-command edge case; low practical impact for normal play."

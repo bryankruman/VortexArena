@@ -1,25 +1,29 @@
 unit: tmayhem
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"  # second-pass re-audit (commits ec788f7/a76c8bc/4be8357)
+last_audited: "2026-06-25"  # drift re-audit (branch claude/parity-port-waves, post-Wave-5)
 summary:
   feature_count: 15
   worst_gaps:
-    - "timelimit=20 gametype default is still not RESET per-select for a non-20 leftover: Wave-2 wired a live SeedTimeLimit(20) in OnInit, but its guard only writes when timelimit already == 20 (the generic default), so it is a 20→20 no-op and a prior mode's non-20 timelimit is NOT reset. Behavior unchanged from baseline mitigation."
-    - "DEATH_CAMP environmental-suicide penalty omitted (no campcheck deathtype in the port; non-default mutator only)."
+    - "DEATH_CAMP environmental-suicide penalty omitted from MayhemScoring.IsEnvironmentalSuicide (the DeathTypes.Camp tag now EXISTS in the port, but is not added to the team SplitHealthArmor suicide set; non-default campcheck-mutator concern, no campcheck death is currently produced anyway)."
     - "Menu point-limit slider uses the generic fraglimit_override 5..100 instead of QC's g_tmayhem_point_limit 200..3000 (menu/mapinfo concern, deferred)."
+    - "SetWeaponArena 'most_available' resolves to the full weapons_most (no map-weapon intersection); on a weapon-bearing map this would grant a SUPERSET of QC's map-filtered arena (low impact — tmayhem maps strip pickups)."
   notes: >
-    Wave-1/2 + second-pass re-audit (branch claude/parity-port-waves, commits ec788f7 / a76c8bc / 4be8357):
-    the single biggest baseline gap — the DEAD SetWeaponArena chain (players spawning Blaster-only) —
-    remains genuinely CLOSED and re-verified. MutatorHooks.SetWeaponArena.Call is live at
-    SpawnSystem.ComputeStartItems:679 (the readplayerstartcvars seam, reached on the real spawn path via
-    ApplyStartLoadout←SpawnSystem.cs:544) and the warmup path (:892). With TeamMayhem active, OnSetWeaponArena
-    fills "most_available", ExpandWeaponArena resolves it to weapons_most, and players spawn with the full
-    arsenal + unlimited ammo. NEW since baseline: Wave-2 also wired a live SeedTimeLimit(20) call in
-    TeamMayhem.OnInit (GameWorld.cs:495 calls OnInit before ActivateGameType) — formerly dead scaffolding.
-    Adversarial check: the seed's guard only fires when timelimit==20 (and writes 20), so it is observably a
-    no-op and does NOT actually reset a non-20 leftover; the identity timelimit gap is therefore an intent/
-    liveness improvement only, not a closed gap. No regressions found.
+    DRIFT RE-AUDIT 2026-06-25 (post-Wave-5): one FIX since the 2026-06-22 baseline. The
+    SeedTimeLimit self-cancelling guard is GONE — SeedTimeLimit (TeamMayhem.cs:107-112, called LIVE from
+    GameWorld.OnInit @503, before ActivateGameType @545) now UNCONDITIONALLY calls
+    Api.Cvars.Set("timelimit","20") on every gametype select, faithfully reproducing QC's
+    _MapInfo_Map_ApplyGametypeEx (mapinfo.qc:551 resets timelimit to defstring, :572 unconditionally applies
+    the gametype default string's timelimit=20). This RESETS a prior mode/vote/round's non-20 leftover, closing
+    the "non-20 timelimit not reset" gap → tmayhem.identity.registration values: partial→faithful.
+    The biggest historical gap — the once-DEAD SetWeaponArena chain (players spawning Blaster-only) — remains
+    CLOSED: MutatorHooks.SetWeaponArena.Call is live at SpawnSystem.cs:751 (readplayerstartcvars seam) and
+    :967 (warmup); OnSetWeaponArena fills "most_available", ExpandWeaponArena → weapons_most, full arsenal +
+    unlimited ammo. All other hooks re-verified live (DamageCalculate DamageSystem.cs:256, SplitHealthArmor
+    :438, PlayerRegen PlayerFrameLogic.cs:46, SetStartItems SpawnSystem.cs:783, FilterItem StartItem.cs:103,
+    ForbidThrow WeaponThrowing.cs:149/185). Line numbers shifted vs baseline (refs updated). One neutral
+    reclassification: DeathTypes.Camp now exists (Mayhem.cs:109) but is still excluded from the team suicide
+    set — the gap is now "not added to the set" rather than "no camp deathtype". No regressions found.
 features:
   - id: tmayhem.identity.registration
     name: "Gametype identity + registration (tmayhem netname, teamplay, USEPOINTS, limit/team defaults)"
@@ -28,29 +32,28 @@ features:
       - "common/gametypes/gametype/tmayhem/tmayhem.qh:CLASS(tmayhem)"
       - "common/gametypes/gametype/tmayhem/sv_tmayhem.qc:tmayhem_Initialize"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/TeamMayhem.cs:TeamMayhem (ctor/OnInit)"
-      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (case TeamMayhem, line 1429); OnInit at GameWorld.cs:495"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/TeamMayhem.cs:TeamMayhem (ctor/OnInit/SeedTimeLimit)"
+      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (case TeamMayhem, line 1743); OnInit at GameWorld.cs:503"
     constants:
       - { name: "netname", base: "tmayhem", port: "tmayhem", match: true }
       - { name: "teamgame", base: "true (TEAMPLAY)", port: "true", match: true }
       - { name: "pointlimit_default", base: "1500", port: "1500", match: true }
       - { name: "leadlimit_default", base: "0", port: "0", match: true }
-      - { name: "timelimit_default", base: "20 (gametype_init, applied on select)", port: "20 (global timelimit cvar default; NOT re-applied per mode-select)", match: false }
+      - { name: "timelimit_default", base: "20 (gametype_init, applied unconditionally on select)", port: "20 (SeedTimeLimit unconditionally cvar_sets timelimit=20 on select)", match: true }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: na
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "timelimit=20 gametype_init default is NOT reset per-select for a non-20 leftover. NEW since baseline: Wave-2 added a live SeedTimeLimit(20) in TeamMayhem.OnInit (TeamMayhem.cs:93, called at GameWorld.cs:495 before ActivateGameType), so the scaffolding is no longer dead — but its guard `if GetFloat(timelimit)==20` only writes when the value is already the generic default 20 (Cvars.cs:108), so it sets 20→20 (no-op) and does NOT reset a prior mode/admin's non-20 timelimit to the tmayhem default. Net behavior is unchanged from the baseline mitigation: stock play matches Base (both defaults are 20); a non-20 leftover still bleeds through. Same self-cancelling guard as Tdm.SeedTimeLimit, but for Tdm the gametype default (15) ≠ generic (20) so Tdm's guard meaningfully fires; tmayhem's never does anything observable."
+    gaps: []
     verification:
-      - { kind: code, ref: "GameWorld.ActivateGameType:1429 case TeamMayhem → tm.Activate (reached from boot via line 525); GameWorld.cs:495 GameType?.OnInit() runs before ActivateGameType so SeedTimeLimit is LIVE; TeamMayhem ctor sets NetName/TeamGame; generic timelimit default = 20 at Cvars.cs:108; SeedTimeLimit guard (TeamMayhem.cs:103-112) only writes when value==20 → observable no-op; MayhemScoringTests.TeamMayhem_Identity_TeamCount_AndPointLimitDefault", result: pass }
+      - { kind: code, ref: "FIX VERIFIED 2026-06-25 (was baseline values:partial): SeedTimeLimit (TeamMayhem.cs:107-112) no longer guards on `==20` — it now UNCONDITIONALLY Api.Cvars.Set(\"timelimit\",\"20\"). Called LIVE from GameWorld.OnInit (GameWorld.cs:503) which runs before ActivateGameType (GameWorld.cs:545). This faithfully mirrors QC _MapInfo_Map_ApplyGametypeEx (mapinfo.qc:551 resets timelimit to cvar_defstring, then :572 unconditionally applies gametype_init's timelimit=20), so a prior mode/vote/round's non-20 leftover IS reset to tmayhem's 20. case TeamMayhem live in ActivateGameType (now line 1743). TeamMayhem ctor sets NetName/TeamGame; MayhemScoringTests.TeamMayhem_Identity_TeamCount_AndPointLimitDefault", result: pass }
     confidence: high
-    notes: "pointlimit/leadlimit defaults correctly hardcoded (1500/0). RE-VERIFIED 2026-06-22 second-pass: case TeamMayhem live in ActivateGameType (now line 1429, reached from boot via 525). timelimit handling CHANGED in form (SeedTimeLimit now wired/live in OnInit, was dead) but UNCHANGED in observable behavior (the guard makes it a 20→20 no-op; a non-20 leftover is not reset). values stays partial. m_legacydefaults \"1500 20 2 0\" not ported (menu/mapinfo concern, see tmayhem.menu.describe_support)."
+    notes: "pointlimit/leadlimit defaults correctly hardcoded (1500/0). DRIFT 2026-06-25: the SeedTimeLimit self-cancelling guard was removed; timelimit is now unconditionally reset to the gametype default on every select, matching QC — the \"non-20 leftover not reset\" gap is CLOSED (values partial→faithful). m_legacydefaults \"1500 20 2 0\" not ported (menu/mapinfo concern, see tmayhem.menu.describe_support)."
 
   - id: tmayhem.teams.count
     name: "Team count 2..4 (g_tmayhem_teams_override >= 2 ? override : g_tmayhem_teams)"
@@ -152,7 +155,7 @@ features:
       - { name: "useful_damage", base: "frag_damage - max(0, dmg - take - save)", port: "fragDamage - excess", match: true }
       - { name: "credit_gate", base: "SAME_TEAM → no positive credit; SAME_TEAM or self → subtract", port: "Teams.SameTeam gate (subtract on same-team/self)", match: true }
       - { name: "spawnshield_block_ge1", base: "return if shield && blockdamage>=1", port: "same", match: true }
-      - { name: "env_suicide_set", base: "KILL,DROWN,HURTTRIGGER,CAMP,LAVA,SLIME,SWAMP", port: "Kill,Drown,Void,Lava,Slime,Swamp (no CAMP)", match: false }
+      - { name: "env_suicide_set", base: "KILL,DROWN,HURTTRIGGER,CAMP,LAVA,SLIME,SWAMP", port: "Kill,Drown,Void,Lava,Slime,Swamp (CAMP omitted from the set)", match: false }
     status:
       logic: faithful
       values: faithful
@@ -163,9 +166,9 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "DEATH_CAMP (campcheck) is omitted from the environmental-suicide subtraction (the port models no campcheck death), so a campcheck suicide would not be penalized. Non-default (campcheck mutator) only. Unchanged from baseline."
+      - "DEATH_CAMP (campcheck) is omitted from the environmental-suicide subtraction set (MayhemScoring.IsEnvironmentalSuicide, Mayhem.cs:243-249), so a campcheck suicide would not subtract score. RECLASSIFIED 2026-06-25: the DeathTypes.Camp tag NOW EXISTS in the port (Mayhem.cs:109) — the gap is now simply 'camp not added to the set' rather than the baseline's 'port models no campcheck death'. Still non-default (no campcheck death is currently produced) and low impact; the in-code comment at Mayhem.cs:238-239/225-226 (\"port has no camp deathtype yet\") is now stale."
     verification:
-      - { kind: code, ref: "AccrueSplitHealthArmor teamGame branch vs QC SAME_TEAM rule (sv_tmayhem.qc:147-205); hook fires at DamageSystem.cs PlayerDamageSplitHealthArmor.Call", result: pass }
+      - { kind: code, ref: "AccrueSplitHealthArmor teamGame branch vs QC SAME_TEAM rule (sv_tmayhem.qc:147-205; Mayhem.cs:201-219); IsEnvironmentalSuicide (Mayhem.cs:241-250) omits DeathTypes.Camp; hook fires LIVE at DamageSystem.cs:438 PlayerDamageSplitHealthArmor.Call", result: pass }
       - { kind: unit_test, ref: "MayhemScoringTests.TeamMayhem_FriendlyFire_DoesNotCreditPositively (100→50 on teammate hit)", result: pass }
     confidence: high
     notes: "The one place tmayhem diverges from FFA mayhem: team uses SAME_TEAM for the credit gate. DEATH_HURTTRIGGER maps to the port's Void tag. Untouched by Wave-2."
@@ -258,7 +261,7 @@ features:
       - "common/gametypes/gametype/tmayhem/sv_tmayhem.qc:MUTATOR_HOOKFUNCTION(tmayhem, SetStartItems)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/TeamMayhem.cs:TeamMayhem.OnSetStartItems"
-      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:711 (SetStartItems.Call)"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:783 (SetStartItems.Call)"
     constants:
       - { name: "start_health", base: "200", port: "200", match: true }
       - { name: "start_armor", base: "200", port: "200", match: true }
@@ -292,8 +295,8 @@ features:
       - "server/world.qc:2004 (MUTATOR_CALLHOOK(SetWeaponArena, s)) + world.qc:2085 (arena expansion)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/TeamMayhem.cs:TeamMayhem.OnSetWeaponArena (handler, subscribed in Activate:159)"
-      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:679 (SetWeaponArena.Call — live spawn path)"
-      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:892 (SetWeaponArena.Call — warmup path)"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:751 (SetWeaponArena.Call — live spawn path)"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:967 (SetWeaponArena.Call — warmup path)"
       - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:ExpandWeaponArena (most_available → weapons_most)"
     constants:
       - { name: "g_tmayhem_weaponarena", base: "most_available (all weapons)", port: "most_available (filled by OnSetWeaponArena when g_weaponarena empty)", match: true }
@@ -322,7 +325,7 @@ features:
       - "common/gametypes/gametype/tmayhem/sv_tmayhem.qc:MUTATOR_HOOKFUNCTION(tmayhem, FilterItem)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/TeamMayhem.cs:TeamMayhem.OnFilterItemDefinition"
-      - "src/XonoticGodot.Common/Gameplay/Items/StartItem.cs:90 (FilterItemDefinition.Call)"
+      - "src/XonoticGodot.Common/Gameplay/Items/StartItem.cs:103 (FilterItemDefinition.Call)"
     constants:
       - { name: "g_tmayhem_powerups", base: "1", port: "1", match: true }
       - { name: "g_tmayhem_pickup_items", base: "0", port: "0", match: true }
