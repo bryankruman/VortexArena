@@ -239,9 +239,9 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "During an active-but-not-started round, pressing ATCK2 does not fire the secondary Blaster: Overkill does not subscribe the PlayerPreThink chain (which IS live — PlayerPreThink.Call at GameWorld.cs:1037). Players cannot blaster-jump during the countdown, and the button is not consumed. UNCHANGED by Wave-2."
+      - "During an active-but-not-started round, pressing ATCK2 does not fire the secondary Blaster: Overkill does not subscribe the PlayerPreThink chain (which IS live — PlayerPreThink.Call at GameWorld.cs:1174). Players cannot blaster-jump during the countdown, and the button is not consumed. UNCHANGED by Wave-2; re-verified 2026-06-22 post-impl."
     verification:
-      - { kind: code, ref: "OverkillMutator subscribes 8 chains (OverkillMutator.cs:93-100), none is PlayerPreThink; the chain itself is live at GameWorld.cs:1037", result: fail }
+      - { kind: code, ref: "OverkillMutator subscribes 8 chains (OverkillMutator.cs:93-100), none is PlayerPreThink; the chain itself is live at GameWorld.cs:1174", result: fail }
     confidence: high
     notes: "Only matters in round-based gametypes (e.g. CA/freezetag) run under Overkill; the live seam exists, Overkill simply never wires onto it."
   - id: overkill.filter.items_and_powerup_replace

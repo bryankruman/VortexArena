@@ -1,7 +1,7 @@
 unit: sv-chat
 category: server
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-22"  # re-audited on the claude/parity-port-waves branch after Waves 1-2/5
 summary:
   feature_count: 13
   worst_gaps:
@@ -91,7 +91,7 @@ features:
     verification:
       - { kind: code-read, ref: "chat.qc:98-148 vs Chat.cs:152-196", result: pass }
     confidence: high
-    notes: "The \\{1}/\\{13} chat markers map to \\x01/\\x0d; /me anti-imitation (offset-0 only), private 'tells you' prefix + 'You tell X' splice, team parentheses, and the newline->space + trailing \\n rule are faithful."
+    notes: "The \\{1}/\\{13} chat markers map to \\x01/\\x0d; /me anti-imitation (offset-0 only), private 'tells you' prefix + 'You tell X' splice, team parentheses, and the newline->space + trailing \\n rule are faithful. Wave-5: the centerprint sink is now LIVE — Chat.CenterPrint (Chat.cs:665-670) was rewired from the dead DeliveredCenter-only record to NotificationSystem.SendCenterRaw(OneOnly) -> MsgType.CenterRaw -> CenterPrintPanel.Add (it still also records DeliveredCenter for headless tests). The team/private cmsgstr now actually reaches the recipient's HUD center channel; previously the constructed string was correct but its delivery was a latent dead sink."
 
   - id: sv-chat.flood.per_type_throttle
     name: "Per-say-type flood control (broadcast/team/tell) with persistent timestamps + line wrapping"
@@ -182,7 +182,7 @@ features:
       - { kind: code-read, ref: "chat.qc:241-364 (INGAME(it), active_minigame, teamsay>0/<0, public) vs Chat.cs:296-412 + IsIngame/IsObserver helpers", result: fail }
       - { kind: code-read, ref: "grep INGAME/Ingame/RoundEliminated on Player.cs = absent (no round-ingame flag)", result: fail }
     confidence: high
-    notes: "Public/team/spectator/private routing, the spectator say->teamsay=-1 downgrade under CHAT_NOSPECTATORS, the spectator-tells-ingame hide (ret=-1), DedicatedPrint, and tellprivacy are present. Two logic divergences: the minigame team-say branch is entirely absent, and the INGAME() round-elimination case is approximated by !IsObserver."
+    notes: "Public/team/spectator/private routing, the spectator say->teamsay=-1 downgrade under CHAT_NOSPECTATORS, the spectator-tells-ingame hide (ret=-1), DedicatedPrint, and tellprivacy are present. Wave-5: the team/private centerprint half of this routing is now LIVE (Chat.CenterPrint -> SendCenterRaw -> CenterRaw HUD channel), so team/private recipients now actually get the centered overlay, not just the sprint. Two logic divergences remain: the minigame team-say branch is entirely absent, and the INGAME() round-elimination case is approximated by !IsObserver."
 
   - id: sv-chat.routing.ignore_filter
     name: "Mutual-ignore filtering on every recipient (and tell-to-ignorer returns -1)"

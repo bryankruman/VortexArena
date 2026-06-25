@@ -1,6 +1,6 @@
 # Parity Index
 
-_Generated 2026-06-23 from 154 units, 1981 features._
+_Generated 2026-06-24 from 154 units, 1985 features._
 
 Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liveness `live`/`DEAD`/`~`/`?`.
 
@@ -8,12 +8,12 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 
 | dim | dead | faithful | missing | na | partial | stub | unknown |
 |---|---|---|---|---|---|---|---|
-| logic | 0 | 1271 | 297 | 16 | 366 | 30 | 1 |
-| values | 0 | 1282 | 251 | 209 | 216 | 3 | 20 |
-| timing | 0 | 827 | 156 | 877 | 87 | 2 | 32 |
-| presentation | 0 | 256 | 331 | 1131 | 228 | 27 | 8 |
-| audio | 0 | 200 | 74 | 1640 | 60 | 1 | 6 |
-| liveness | 176 | 0 | 0 | 259 | 161 | 0 | 14 |
+| logic | 0 | 1334 | 267 | 16 | 350 | 17 | 1 |
+| values | 0 | 1330 | 235 | 197 | 206 | 0 | 17 |
+| timing | 0 | 871 | 139 | 864 | 85 | 1 | 25 |
+| presentation | 0 | 304 | 308 | 1130 | 223 | 12 | 8 |
+| audio | 0 | 214 | 64 | 1644 | 57 | 0 | 6 |
+| liveness | 75 | 0 | 0 | 252 | 164 | 0 | 14 |
 
 ## Features by unit
 
@@ -75,9 +75,9 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `cl-announcer.time.remaining` | Remaining map-time cues (5/1 min) with hysteresis | OK | OK | OK | OK | OK | live | high |
 | `cl-announcer.maptime.cvar` | cl_announcer_maptime mode source + menu mapping *(intended)* | OK | OK | - | - | - | live | high |
 | `cl-announcer.voice.playback` | Announcer voice playback + antispam + queue | OK | OK | OK | OK | OK | live | medium |
-| `cl-announcer.voice.cvars` | cl_announcer (voice pack) + cl_announcer_antispam wiring | ~ | OK | - | ~ | ~ | DEAD | high |
-| `cl-announcer.title.gametype` | Gametype-name centerprint title above countdown | MISS | MISS | - | MISS | - | DEAD | high |
-| `cl-announcer.title.duel` | Duel title (A vs B) in 1v1 + ROUNDSTOP | MISS | MISS | MISS | MISS | - | DEAD | high |
+| `cl-announcer.voice.cvars` | cl_announcer (voice pack) + cl_announcer_antispam wiring | OK | OK | - | OK | OK | ~ | high |
+| `cl-announcer.title.gametype` | Gametype-name centerprint title above countdown | OK | OK | OK | OK | - | live | high |
+| `cl-announcer.title.duel` | Duel title (A vs B) in 1v1 + ROUNDSTOP | OK | OK | OK | OK | - | live | high |
 
 ### `cl-centerprint` (client) — 13 features
 
@@ -85,16 +85,16 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 |---|---|---|---|---|---|---|---|---|
 | `cl-centerprint.ring.add_replace` | Message ring + add / replace-by-cpid | OK | OK | OK | OK | - | live | high |
 | `cl-centerprint.feed.msg_center` | MSG_CENTER notification feed → panel *(intended)* | OK | OK | OK | OK | - | live | high |
-| `cl-centerprint.countdown.count_token` | ^COUNT countdown decrement | ~ | ~ | ~ | OK | - | live | medium |
+| `cl-centerprint.countdown.count_token` | ^COUNT countdown decrement | ~ | ~ | ~ | OK | - | live | high |
 | `cl-centerprint.fade.in_out` | Per-message fade in / out | OK | ~ | ~ | ~ | - | live | high |
 | `cl-centerprint.fade.subsequent` | Subsequent-message two-pass progressive fade | OK | OK | OK | OK | - | live | high |
 | `cl-centerprint.layout.draw` | Layout: flip / align / wrap / ^BOLD / color codes / font scales | OK | ~ | - | OK | - | live | high |
-| `cl-centerprint.kill.group` | centerprint_Kill — graceful group fade-out | OK | OK | OK | OK | - | DEAD | high |
-| `cl-centerprint.kill.all_remote` | MSG_CENTER_KILL — remote group / all kill from server | MISS | MISS | MISS | MISS | - | DEAD | high |
-| `cl-centerprint.title.gametype` | Gametype title line (centerprint_SetTitle + Announcer driver) | ~ | ~ | - | OK | - | DEAD | high |
-| `cl-centerprint.title.duel` | Duel title 'left vs right' (centerprint_SetDuelTitle + Announcer_Duel) | ~ | ~ | - | OK | - | DEAD | high |
-| `cl-centerprint.feed.engine_builtin` | Raw engine centerprint() builtin → panel (map/trigger/door/item/MOTD text) | MISS | - | - | MISS | ~ | DEAD | high |
-| `cl-centerprint.feed.chat_tell` | Server chat 'tell'/private-message centerprint (cmsg/sourcecmsg) | ~ | - | - | MISS | - | DEAD | high |
+| `cl-centerprint.kill.group` | centerprint_Kill — graceful group fade-out | OK | OK | OK | OK | - | live | high |
+| `cl-centerprint.kill.all_remote` | MSG_CENTER_KILL — remote group / all kill from server | OK | OK | OK | OK | - | live | high |
+| `cl-centerprint.title.gametype` | Gametype title line (centerprint_SetTitle + Announcer driver) | OK | ~ | OK | OK | - | live | high |
+| `cl-centerprint.title.duel` | Duel title 'left vs right' (centerprint_SetDuelTitle + Announcer_Duel) | OK | OK | OK | OK | - | live | high |
+| `cl-centerprint.feed.engine_builtin` | Raw engine centerprint() builtin → panel (map/trigger/door/item/target_print text) | OK | - | - | OK | OK | live | high |
+| `cl-centerprint.feed.chat_tell` | Server chat 'tell'/private-message centerprint (cmsg/sourcecmsg) | OK | OK | - | OK | - | live | high |
 | `cl-centerprint.config.preview` | HUD-config live preview messages + title | MISS | - | - | MISS | - | - | medium |
 
 ### `cl-crosshair` (client) — 17 features
@@ -105,15 +105,15 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `cl-crosshair.core.origin_chase` | Crosshair origin + third-person chase trace & body-alpha fade | MISS | MISS | - | MISS | - | - | high |
 | `cl-crosshair.trueaim.hit_classification` | True-aim forward trace + HITTEAM/HITENEMY/HITWORLD/HITOBSTRUCTION classification *(intended)* | ~ | OK | ~ | OK | - | live | medium |
 | `cl-crosshair.color.special_modes` | Crosshair color: weapon / health+armor / fixed (crosshair_color_special) | ~ | OK | - | ~ | - | live | high |
-| `cl-crosshair.anim.pickup_pulse` | Item-pickup crosshair pulse (crosshair_pickup) | OK | OK | OK | OK | - | DEAD | high |
+| `cl-crosshair.anim.pickup_pulse` | Item-pickup crosshair pulse (crosshair_pickup) | OK | OK | OK | OK | - | ~ | high |
 | `cl-crosshair.anim.hit_indication` | Hit-indication scale bump + color flash (crosshair_hitindication) | OK | OK | OK | OK | - | ~ | high |
 | `cl-crosshair.anim.smooth_ease` | Goal-based smooth scale/alpha/color ease (crosshair_effect_time) | OK | OK | OK | ~ | - | live | high |
 | `cl-crosshair.anim.switch_crossfade` | Weapon-switch crosshair image cross-fade | OK | OK | OK | OK | - | ~ | medium |
 | `cl-crosshair.trueaim.teammate_blur_signal` | Teammate shrink + wall/teammate blur signalling | OK | ~ | - | ~ | - | live | high |
-| `cl-crosshair.ring.vortex_charge` | Vortex / Overkill-Nex charge ring (+ inner chargepool / moving-average ring) | OK | OK | OK | OK | - | DEAD | high |
-| `cl-crosshair.ring.reload_ammo` | Reload / ammo (clip) ring (+ Rifle ring art) | OK | OK | OK | OK | - | DEAD | high |
-| `cl-crosshair.ring.minelayer_hagar_arc` | Mine Layer / Hagar load / Arc heat rings | OK | OK | OK | OK | - | DEAD | high |
-| `cl-crosshair.ring.switch_fade` | Weapon-switch ring fade-out/in (wcross_ring_prev) | OK | OK | OK | OK | - | DEAD | medium |
+| `cl-crosshair.ring.vortex_charge` | Vortex / Overkill-Nex charge ring (+ inner chargepool / moving-average ring) | OK | OK | OK | OK | - | ~ | high |
+| `cl-crosshair.ring.reload_ammo` | Reload / ammo (clip) ring (+ Rifle ring art) | OK | OK | OK | OK | - | ~ | high |
+| `cl-crosshair.ring.minelayer_hagar_arc` | Mine Layer / Hagar load / Arc heat rings | OK | OK | OK | OK | - | ~ | high |
+| `cl-crosshair.ring.switch_fade` | Weapon-switch ring fade-out/in (wcross_ring_prev) | OK | OK | OK | OK | - | ~ | medium |
 | `cl-crosshair.dot` | Center dot (crosshair_dot) | OK | OK | - | OK | - | live | high |
 | `cl-crosshair.objring.nade_capture_revive` | Objective rings: NADE_TIMER > CAPTURE_PROGRESS > REVIVE_PROGRESS | OK | OK | OK | ~ | - | ~ | high |
 | `cl-crosshair.per_weapon_2d_vehicle` | Per-weapon crosshair pic + 2D side-scroller + vehicle crosshair | ~ | ~ | - | ~ | - | ~ | high |
@@ -124,7 +124,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
 | `cl-csqcmodel.predraw.dispatch_order` | Predraw dispatch + ordered pass (appearance->LOD->anim->tag->effects) | ~ | - | OK | ~ | - | live | high |
-| `cl-csqcmodel.forcemodel.model_skin` | Force player model / skin (cl_forceplayermodels family) | MISS | MISS | - | MISS | - | - | high |
+| `cl-csqcmodel.forcemodel.model_skin` | Force player model / skin (cl_forceplayermodels family) | OK | OK | - | OK | - | live | high |
 | `cl-csqcmodel.forcecolors.cascade` | Force player colors + unique enemy colors *(intended)* | ~ | OK | - | OK | - | ~ | high |
 | `cl-csqcmodel.glowmod.deathfade_ghost` | Glowmod from colormap + death-fade + respawn-ghost *(intended)* | OK | OK | ~ | OK | - | live | high |
 | `cl-csqcmodel.lod.distance_swap` | LOD model selection + swap *(intended)* | ~ | OK | - | ~ | - | ~ | high |
@@ -147,7 +147,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `cl-hud.engine.num_color` | Value tint gradient (HUD_Get_Num_Color) | ~ | ~ | ~ | ~ | - | live | high |
 | `cl-hud.engine.dynamic_shake` | Damage-keyed whole-HUD shake (Hud_Dynamic_Frame shake) | OK | OK | OK | OK | - | live | high |
 | `cl-hud.engine.dynamic_follow` | HUD sway with viewmodel (hud_dynamic_follow) | MISS | MISS | MISS | MISS | - | - | high |
-| `cl-hud.engine.dock` | HUD dock background (hud_dock) | MISS | stub | - | MISS | - | DEAD | high |
+| `cl-hud.engine.dock` | HUD dock background (hud_dock) | OK | OK | - | OK | - | live | high |
 | `cl-hud.engine.configure_mode` | HUD configure-mode editor (hud_config.qc) | OK | OK | ? | OK | - | live | medium |
 | `cl-hud.panel.weapons` | Weapons panel (#0) | OK | OK | ? | ~ | - | live | medium |
 | `cl-hud.panel.ammo` | Ammo panel (#1) | OK | OK | - | ~ | - | live | medium |
@@ -157,8 +157,8 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `cl-hud.panel.timer` | Timer panel (#5) | OK | ? | OK | OK | - | live | medium |
 | `cl-hud.panel.radar` | Radar / minimap panel (#6) | ~ | ? | - | ~ | - | ~ | medium |
 | `cl-hud.panel.score` | Score overlay panel (#7) | OK | OK | - | OK | - | live | high |
-| `cl-hud.panel.racetimer` | Race timer panel (#8) | OK | ? | ? | OK | - | DEAD | high |
-| `cl-hud.panel.vote` | Vote panel (#9) | OK | ~ | OK | OK | - | DEAD | high |
+| `cl-hud.panel.racetimer` | Race timer panel (#8) | OK | OK | OK | OK | - | live | high |
+| `cl-hud.panel.vote` | Vote panel (#9) | OK | ~ | OK | OK | - | live | high |
 | `cl-hud.panel.modicons` | Mod icons panel (#10) | ~ | ? | ? | ~ | - | live | medium |
 | `cl-hud.panel.pressedkeys` | Pressed-keys panel (#11) | OK | ? | - | ~ | - | ~ | low |
 | `cl-hud.panel.chat` | Chat panel (#12) *(intended)* | ~ | - | ~ | OK | - | live | high |
@@ -171,8 +171,8 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `cl-hud.panel.scoreboard` | Scoreboard panel *(intended)* | OK | OK | ? | ~ | - | live | medium |
 | `cl-hud.panel.strafehud` | Strafe HUD panel | OK | ? | ? | ~ | - | live | low |
 | `cl-hud.panel.pickup` | Pickup panel (#26) | OK | OK | ? | OK | - | live | medium |
-| `cl-hud.panel.checkpoints` | Checkpoints panel (#27) | OK | ? | ? | OK | - | DEAD | high |
-| `cl-hud.panel.mapvote` | Map-vote panel | OK | ? | ? | OK | - | DEAD | high |
+| `cl-hud.panel.checkpoints` | Checkpoints panel (#27) | OK | OK | OK | OK | - | live | high |
+| `cl-hud.panel.mapvote` | Map-vote panel | OK | OK | OK | OK | - | live | high |
 | `cl-hud.panel.minigame` | Minigame HUD panels (BOARD/STATUS/HELP/MENU) | ~ | ? | ? | ~ | - | live | medium |
 | `cl-hud.net.hybrid_hud` | Hybrid HUD (NetHud fallback + _fullHud), font + skin wiring *(intended)* | OK | - | - | OK | - | live | high |
 
@@ -181,7 +181,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
 | `cl-scoreboard.toggle.showscores` | Show while +showscores held | ~ | - | OK | OK | - | live | high |
-| `cl-scoreboard.fade.inout` | Cross-fade in/out | OK | OK | OK | ~ | - | DEAD | high |
+| `cl-scoreboard.fade.inout` | Cross-fade in/out | OK | OK | OK | OK | - | live | high |
 | `cl-scoreboard.columns.default_layout` | Default column layout + scoreboard_columns spec | OK | OK | - | OK | - | live | high |
 | `cl-scoreboard.columns.gametype_filter` | Per-gametype column filter (+/-pattern/field) | OK | - | - | OK | - | live | high |
 | `cl-scoreboard.field.formatting` | Per-field value formatting (ScoreString/frags/kdr/sum/dmg) | ~ | OK | - | ~ | - | live | high |
@@ -193,12 +193,12 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `cl-scoreboard.row.highlights` | Row highlights (stripe / self / eliminated) | OK | OK | - | OK | - | live | high |
 | `cl-scoreboard.layout.column_widths` | Content-measured column widths + title condensing *(intended)* | ~ | MISS | - | ~ | - | live | medium |
 | `cl-scoreboard.header.gameinfo` | Game-info header (next map / gametype banner / limits / map+players) | OK | OK | - | ~ | - | live | high |
-| `cl-scoreboard.block.spectators` | Spectator list | ~ | OK | - | ~ | - | DEAD | high |
+| `cl-scoreboard.block.spectators` | Spectator list | OK | OK | - | ~ | - | live | high |
 | `cl-scoreboard.block.accuracy` | Accuracy stats block | ~ | ~ | ~ | ~ | - | live | high |
 | `cl-scoreboard.block.itemstats` | Item-stats block | MISS | MISS | MISS | MISS | - | - | high |
 | `cl-scoreboard.block.rankings` | Race/CTS rankings block | ~ | ~ | - | ~ | - | DEAD | high |
 | `cl-scoreboard.block.mapstats` | Map stats (monsters / secrets) | ~ | OK | - | OK | - | ~ | high |
-| `cl-scoreboard.block.respawn` | Respawn-status line | ~ | OK | OK | ~ | - | DEAD | high |
+| `cl-scoreboard.block.respawn` | Respawn-status line | OK | OK | OK | ~ | - | live | high |
 | `cl-scoreboard.ui.interactive` | Interactive scoreboard UI (navigation / team select / spectate / kick / tell / column cycling) | MISS | MISS | MISS | MISS | - | - | high |
 | `cl-scoreboard.draw.export` | Scoreboard text export (dump_scoreboard / scoreboard_export) | MISS | - | - | MISS | - | - | medium |
 
@@ -208,7 +208,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 |---|---|---|---|---|---|---|---|---|
 | `cl-shownames.core.master_enable` | Master enable + per-client iteration | OK | OK | OK | OK | - | live | high |
 | `cl-shownames.gate.team_enemy` | Team / enemy visibility gate | ~ | OK | - | - | - | live | high |
-| `cl-shownames.gate.self_spectatee` | Own-tag in chase + spectatee-switch window | ~ | ~ | MISS | MISS | - | DEAD | high |
+| `cl-shownames.gate.self_spectatee` | Own-tag in chase + spectatee-switch window | OK | OK | OK | ~ | - | ~ | high |
 | `cl-shownames.los.traceline` | Line-of-sight occlusion test *(intended)* | ~ | OK | - | - | - | live | high |
 | `cl-shownames.fade.ramp` | Six-branch fade ramp (dead/blocked/offscreen/overlap/team/enemy) | OK | OK | OK | OK | - | live | high |
 | `cl-shownames.crosshairdistance.gate` | Crosshair-distance proximity gate | OK | OK | OK | - | - | live | high |
@@ -217,7 +217,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `cl-shownames.resize.distance` | Distance resize (shrink, floor 0.5) | OK | OK | - | OK | - | live | high |
 | `cl-shownames.status.bar` | Teammate health/armor status bar | OK | OK | - | ~ | - | live | medium |
 | `cl-shownames.name.decolorize` | Name draw + decolorize + width-truncation | ~ | OK | - | ~ | - | live | high |
-| `cl-shownames.alpha.entcs_getalpha` | entcs_GetAlpha model-alpha factor + ShowNames_Draw mutator hook | ~ | MISS | - | ~ | - | DEAD | high |
+| `cl-shownames.alpha.entcs_getalpha` | entcs_GetAlpha model-alpha factor + ShowNames_Draw mutator hook | OK | OK | - | OK | - | live | high |
 | `cl-shownames.entcs.private_healtharmor` | entcs private-slice gating of health/armor (enemy zeroing) | ~ | - | - | OK | - | live | medium |
 
 ### `cl-teamradar` (client) — 13 features
@@ -238,7 +238,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `cl-teamradar.cvar.defaults` | cvar registration + defaults / panel enable + visibility | ~ | ~ | - | ~ | - | ~ | high |
 | `cl-teamradar.mutator.hook` | TeamRadar_Draw mutator hook (allow extra blips on radar) | MISS | - | - | MISS | - | - | medium |
 
-### `cl-view` (client) — 20 features
+### `cl-view` (client) — 21 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
@@ -258,6 +258,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `cl-view.smooth.stair_viewheight` | Stair + viewheight smoothing (stairsmoothz glide + viewheightavg blend) *(intended)* | OK | OK | OK | OK | - | ~ | high |
 | `cl-view.screen.damage_flash` | Damage red screen flash (HUD_Damage) | OK | OK | OK | ~ | - | live | high |
 | `cl-view.screen.liquid_tint` | Liquid screen tint (HUD_Contents) | OK | OK | OK | OK | - | live | high |
+| `cl-view.screen.frozen_overlay` | Freeze-Tag icy screen overlay (cl_ft HUD_Draw_overlay) | OK | OK | OK | OK | - | live | high |
 | `cl-view.screen.postprocess_nightvision` | GLSL blur/sharpen post-process + night-vision + blur-test *(intended)* | MISS | MISS | MISS | MISS | - | - | high |
 | `cl-view.reticle.zoom_reticle` | Zoom reticle (generic +zoom + weapon scope) | OK | OK | OK | OK | - | live | high |
 | `cl-view.viewmodel.sway` | Viewmodel sway (cl_followmodel / cl_leanmodel / cl_bobmodel) | OK | OK | OK | OK | - | live | high |
@@ -278,7 +279,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `cl-viewmodel.sway.bobmodel` | Bob sway (ground-walk sinusoidal side/up sway, cl_bobmodel) | OK | OK | OK | OK | - | live | high |
 | `cl-viewmodel.muzzle.flash_particle` | Muzzle flash particle (local firer + remote world-space, m_muzzleeffect) | OK | ~ | OK | ~ | - | live | medium |
 | `cl-viewmodel.muzzle.flash_model` | Muzzle flash MODEL (spinning flash md3 for Devastator + Machinegun) | MISS | MISS | MISS | MISS | - | - | high |
-| `cl-viewmodel.casings.brass_eject` | Brass / shell casings (eject, tumble, bounce, fade, bounce sounds) | stub | ~ | stub | stub | MISS | DEAD | high |
+| `cl-viewmodel.casings.brass_eject` | Brass / shell casings (eject, tumble, bounce, fade, bounce sounds) | OK | ~ | ~ | OK | MISS | live | high |
 
 ### `damage-pipeline` (damage) — 9 features
 
@@ -319,14 +320,14 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `assault.objective.activate` | Activate an objective (set health, arm its decreasers + destructibles) | OK | OK | - | ~ | - | live | high |
 | `assault.objective.decrease_and_score` | Shoot destructible -> decreaser fires -> strip objective health + award score | OK | OK | OK | - | ~ | live | high |
 | `assault.objective.advance_chain` | Destroyed objective fires its target -> activate next objective or roundend | OK | OK | - | - | - | live | high |
-| `assault.win.attacker_round` | Attackers destroy the core -> win the round (666 team-score sentinel) | OK | OK | ~ | - | - | ~ | high |
-| `assault.round.second_round` | Two-round match: swap roles, re-clock round 2 to round 1 destruction time, 5s round delay | stub | MISS | MISS | - | - | DEAD | high |
-| `assault.win.defender_timelimit` | Timelimit elapses without core destruction -> defenders win | OK | ~ | OK | - | - | ~ | high |
-| `assault.spawns.attacker_defender` | info_player_attacker / info_player_defender team spawn points | OK | OK | - | - | - | ~ | high |
+| `assault.win.attacker_round` | Attackers destroy the core -> win the round (666 team-score sentinel) | OK | OK | OK | - | - | live | high |
+| `assault.round.second_round` | Two-round match: swap roles, re-clock round 2 to round 1 destruction time, 5s round delay | OK | OK | OK | - | - | live | high |
+| `assault.win.defender_timelimit` | Timelimit elapses without core destruction -> defenders win | OK | ~ | OK | - | - | live | high |
+| `assault.spawns.attacker_defender` | info_player_attacker / info_player_defender team spawn points | ~ | OK | - | - | - | ~ | high |
 | `assault.notify.role_and_destroyed` | Per-spawn attacking/defending centerprint + objective-destroyed broadcast | OK | OK | - | OK | - | live | high |
 | `assault.objective.waypoint_sprite` | Objective waypoint sprites (defend/push/destroy + health bars + radar icon) | MISS | MISS | MISS | MISS | - | - | high |
-| `assault.mapobject.assault_wall` | func_assault_wall cosmetic wall toggles with its objective's health | MISS | MISS | MISS | MISS | - | DEAD | high |
-| `assault.turret.roundstart_teamswap` | Roundstart turret team-swap + respawn (and as TurretSpawn team seeding) | MISS | - | - | - | - | - | medium |
+| `assault.mapobject.assault_wall` | func_assault_wall cosmetic wall toggles with its objective's health | OK | OK | ~ | OK | - | live | high |
+| `assault.turret.roundstart_teamswap` | Roundstart turret team-swap + respawn (and as TurretSpawn team seeding) | MISS | - | - | - | - | - | high |
 | `assault.bot.objective_role` | Bot offense/defense role rating the assault destructible objectives | ~ | ~ | ~ | - | - | live | medium |
 | `assault.spawns.objective_evalfunc` | Objective-aware spawn-point eval (deprioritize spots near inactive/destroyed objectives) | MISS | MISS | - | - | - | - | high |
 | `assault.objective.destructible_heal` | func_assault_destructible regen / event_heal (walls can be healed back up + sprite update) | MISS | MISS | - | MISS | - | - | high |
@@ -447,7 +448,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `duel.scoring.frag_matrix` | Deathmatch frag/obituary scoring matrix (inherited) | OK | OK | OK | - | - | live | high |
 | `duel.rules.match_end_latch` | End-of-match frag-limit latch + winner resolution | OK | OK | ~ | - | - | live | high |
 | `duel.timing.respawn_delay` | Respawn delay (effective 2s via global fallback) | OK | OK | OK | - | - | live | high |
-| `duel.presentation.duel_title` | Duel 'playerA vs playerB' centerprint title | stub | - | MISS | stub | - | DEAD | high |
+| `duel.presentation.duel_title` | Duel 'playerA vs playerB' centerprint title | OK | OK | OK | OK | - | live | high |
 | `duel.presentation.forced_colors` | Forced enemy player colors in 1v1 (cl_forceplayercolors / suppress unique) | OK | OK | - | OK | - | live | high |
 | `duel.mapsupport.gating` | Map-support gating (diameter < 3250; force duel on DM maps) | MISS | MISS | - | - | - | - | medium |
 
@@ -456,7 +457,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
 | `freezetag.mode.registration` | Mode registration: teams, team-spawns, score/lead limits, FT scoring fields | OK | ~ | - | - | - | live | high |
-| `freezetag.freeze.apply` | Freeze a fragged player (ice, HP=1, status effect, score matrix) | OK | OK | OK | ~ | - | live | high |
+| `freezetag.freeze.apply` | Freeze a fragged player (ice, HP=1, status effect, score matrix) | OK | OK | OK | OK | - | live | high |
 | `freezetag.freeze.weaponlock` | Frozen player cannot fire weapons | OK | - | OK | - | - | live | high |
 | `freezetag.freeze.movementlock` | Frozen player cannot move or jump | OK | OK | OK | - | - | live | high |
 | `freezetag.unfreeze` | Unfreeze: clear ice state, restore health, re-enable | OK | ~ | OK | ~ | - | live | high |
@@ -470,12 +471,12 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `freezetag.revive.spawnshield` | Post-revive spawn shield (g_freezetag_revive_spawnshield) | OK | OK | OK | - | - | live | high |
 | `freezetag.round.flow` | Round handler flow (warmup/countdown/round/end-delay, ROUND_OVER tie) | OK | ~ | OK | - | - | live | high |
 | `freezetag.win.roundlimit` | Match win on round/lead limit (ST_FT_ROUNDS) | OK | ~ | OK | - | - | live | high |
-| `freezetag.startitems` | FT start loadout (g_ft_start_health/armor/ammo) | OK | OK | - | - | - | DEAD | high |
+| `freezetag.startitems` | FT start loadout (g_ft_start_health/armor/ammo) | OK | OK | - | - | - | live | high |
 | `freezetag.eliminated.net` | Networked alive counts + eliminated set (mod icons, scoreboard grey-out) | OK | OK | OK | OK | - | live | high |
 | `freezetag.presentation.ice_model` | Ice entity model over frozen players (MDL_ICE, 20 frames, team color) | MISS | MISS | - | ~ | - | ~ | high |
-| `freezetag.presentation.waypoints` | Frozen / Reviving waypoint sprites over frozen players | MISS | - | - | stub | - | DEAD | high |
-| `freezetag.presentation.notifications` | Freeze/revive/self/auto-revive/spawn-late notifications (+ sounds) | MISS | - | - | stub | stub | DEAD | high |
-| `freezetag.presentation.overlay_eventchase` | Full-screen frozen overlay tint + cl_eventchase_frozen cam + damage HUD | MISS | MISS | - | stub | - | DEAD | high |
+| `freezetag.presentation.waypoints` | Frozen / Reviving waypoint sprites over frozen players | OK | OK | OK | OK | - | live | high |
+| `freezetag.presentation.notifications` | Freeze/revive/self/auto-revive/spawn-late notifications (+ sounds) | OK | OK | OK | OK | ~ | live | high |
+| `freezetag.presentation.overlay_eventchase` | Full-screen frozen overlay tint + cl_eventchase_frozen cam + damage HUD | OK | OK | OK | ~ | - | live | high |
 | `freezetag.bots` | Bot freeing / offense roles + frozen-target gating | MISS | MISS | MISS | - | - | - | medium |
 
 ### `invasion` (gametype) — 25 features
@@ -493,9 +494,9 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `invasion.spawn.pick_monster` | Random monster pick with type filters + zombies-only | OK | OK | - | - | - | live | high |
 | `invasion.spawn.pick_spawnpoint` | Spawn-point selection with recent-use de-weighting | OK | OK | OK | - | - | live | high |
 | `invasion.spawn.chosen_monster` | Spawn the chosen monster (NORESPAWN, skill stamp, think wired) | OK | OK | OK | - | - | live | high |
-| `invasion.round.fill_and_win_round_mode` | ROUND fill loop + round-cleared advance / win | OK | OK | OK | - | - | live | high |
+| `invasion.round.fill_and_win_round_mode` | ROUND fill loop + round-cleared advance / win | OK | OK | OK | OK | - | live | high |
 | `invasion.round.handler_wiring` | ROUND round_handler with Invasion-specific start/end/players callbacks + warmup + timelimit | OK | OK | OK | - | - | live | high |
-| `invasion.round.timeout` | Round timeout: remove monsters, ROUND_OVER, restart round | OK | OK | OK | ~ | - | ~ | high |
+| `invasion.round.timeout` | Round timeout: remove monsters, ROUND_OVER, restart round | OK | OK | OK | OK | - | live | high |
 | `invasion.win.hunt` | HUNT: win when all placed monsters are cleared | ~ | - | OK | - | - | live | medium |
 | `invasion.win.stage` | STAGE: win when >=70% of players reach the level-end trigger | ~ | ~ | OK | - | - | live | high |
 | `invasion.win.point_limit` | Match end on banked-kill point limit (default 50) | ~ | OK | OK | - | - | live | high |
@@ -503,9 +504,9 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `invasion.rules.no_regen` | No health/armor regeneration (PlayerRegen) | OK | - | - | - | - | live | high |
 | `invasion.rules.start_items` | ROUND start items: 200 health / 200 armor (SetStartItems) | OK | OK | - | - | - | live | high |
 | `invasion.bots.targeting` | Bot/monster targeting: monsters won't target players, bots only attack monsters *(intended)* | OK | OK | - | - | - | live | high |
-| `invasion.notify.supermonster` | Center-print when a supermonster arrives (CENTER_INVASION_SUPERMONSTER) | OK | - | - | MISS | - | DEAD | high |
-| `invasion.notify.round_end` | Round-over / round-winner center+info prints | OK | - | - | MISS | - | DEAD | high |
-| `invasion.hud.monster_count` | HUD monsters_total / monsters_killed publish (SV_StartFrame) | MISS | - | - | MISS | - | DEAD | high |
+| `invasion.notify.supermonster` | Center-print when a supermonster arrives (CENTER_INVASION_SUPERMONSTER) | OK | - | - | OK | - | live | high |
+| `invasion.notify.round_end` | Round-over / round-winner center+info prints | OK | - | - | OK | - | live | high |
+| `invasion.hud.monster_count` | HUD monsters_total / monsters_killed publish (SV_StartFrame) | OK | OK | OK | OK | - | live | high |
 | `invasion.client.hide_item_stats` | Scoreboard hides the item-stats panel in Invasion (cl_invasion) | MISS | - | - | MISS | - | - | medium |
 
 ### `keepaway` (gametype) — 14 features
@@ -558,26 +559,26 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
 | `lms.lives.lose_on_death` | Death costs the victim a life; kills score no points | OK | OK | - | - | - | live | high |
-| `lms.lives.eliminate_at_zero` | At 0 lives the player is out of the game with a finishing rank | ~ | OK | ? | - | - | ~ | high |
+| `lms.lives.eliminate_at_zero` | At 0 lives the player is out of the game with a finishing rank | OK | OK | OK | - | - | live | high |
 | `lms.win.last_standing` | Match ends when at most one player still has lives; survivor wins | ~ | ~ | ? | - | - | live | high |
 | `lms.respawn.continuous` | Living players respawn continuously throughout the single match (NOT round-based) | ~ | ~ | ? | - | - | ~ | high |
 | `lms.lives.starting_count` | Starting lives = mapinfo lives= (default 5, legacy 9) / override, capped at fraglimit | ~ | ~ | - | - | - | live | high |
-| `lms.join.new_player_lives_gate` | Late-join lives gate (lowest-lives clamp + can't-join lockout) | OK | OK | - | - | - | DEAD | high |
-| `lms.respawn.dynamic_delay` | Dynamic respawn delay scaling with lives behind the leader | ~ | OK | - | - | - | DEAD | high |
+| `lms.join.new_player_lives_gate` | Late-join lives gate (lowest-lives clamp + can't-join lockout) | OK | OK | - | - | - | live | high |
+| `lms.respawn.dynamic_delay` | Dynamic respawn delay scaling with lives behind the leader | OK | OK | OK | - | - | ~ | high |
 | `lms.loadout.start_items` | Fixed LMS start loadout (health/armor/ammo) + least-healthy late-join clone | OK | OK | - | - | - | live | high |
 | `lms.loadout.weapon_arena` | LMS forces a weapon arena (most_available by default) | OK | OK | - | - | - | live | high |
 | `lms.regen.disabled` | Health/armor regen and rot disabled in LMS | OK | OK | - | - | - | live | high |
 | `lms.items.no_pickups` | Item pickups suppressed (HealthMega->ExtraLife when enabled) | OK | OK | - | - | - | live | high |
-| `lms.leader.computation` | Leader detection (max-lives players with a large enough, small enough lead) | OK | OK | OK | - | - | ~ | high |
+| `lms.leader.computation` | Leader detection (max-lives players with a large enough, small enough lead) | OK | OK | OK | - | - | live | high |
 | `lms.leader.glow` | Leader glow effect (EF_ADDITIVE | EF_FULLBRIGHT) | MISS | - | - | MISS | - | - | high |
-| `lms.leader.waypoint` | Leader radar waypoint with periodic visibility window | MISS | MISS | MISS | MISS | - | - | high |
-| `lms.leader.notifications` | Leader visibility centerprints (VISIBLE_LEADER / VISIBLE_OTHER) | MISS | - | MISS | stub | - | DEAD | high |
+| `lms.leader.waypoint` | Leader radar waypoint with periodic visibility window | ~ | OK | OK | MISS | - | ~ | high |
+| `lms.leader.notifications` | Leader visibility centerprints (VISIBLE_LEADER / VISIBLE_OTHER) | OK | - | OK | OK | - | live | high |
 | `lms.hud.mod_icon` | HUD mod-icon: leader count + colored +N lives lead | MISS | - | - | MISS | - | - | high |
-| `lms.hud.no_lives_message` | Info message: 'You have no more lives left' (eliminated local player) | MISS | - | - | stub | - | DEAD | high |
+| `lms.hud.no_lives_message` | Info message: 'You have no more lives left' (eliminated local player) | OK | - | - | OK | - | live | high |
 | `lms.damage.dynamic_vampire` | Dynamic vampire: under-dogs steal health when hitting leaders | OK | OK | - | - | - | live | high |
 | `lms.item.extra_life` | Extra-life pickups grant lives | ~ | OK | - | ? | - | DEAD | high |
-| `lms.scoreboard.columns` | LMS scoreboard columns (lives + rank, sorted rank-then-lives) | OK | OK | - | OK | - | ~ | high |
-| `lms.forfeit.remove_player` | Disconnect/forfeit assigns a rank and reshuffles other ranks | MISS | - | - | - | - | DEAD | high |
+| `lms.scoreboard.columns` | LMS scoreboard columns (lives + rank, sorted rank-then-lives) | OK | OK | - | OK | - | live | high |
+| `lms.forfeit.remove_player` | Disconnect/forfeit assigns a rank and reshuffles other ranks | OK | OK | - | - | - | live | high |
 | `lms.rules.no_throw_and_spec_lockout` | Can't drop weapon; ranked-out players can't become spectators | ~ | - | - | - | - | ~ | high |
 | `lms.reset.map_players` | Map/round reset restores eliminated players and clears lives/rank | MISS | - | - | - | - | - | high |
 
@@ -625,22 +626,22 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
-| `onslaught.graph.power_propagation` | Power graph + shielding propagation (onslaught_updatelinks) | OK | - | - | - | - | ~ | high |
-| `onslaught.links.resolution` | onslaught_link map entity → graph edges | stub | - | - | - | - | DEAD | high |
-| `onslaught.cp.touch_build` | Control-point capture-by-build (touch → icon → build → flip) | OK | OK | OK | MISS | MISS | ~ | high |
-| `onslaught.cp.icon_damage` | Capture-icon damage / destroy mid-build (revert to neutral) | OK | OK | OK | MISS | MISS | ~ | high |
-| `onslaught.cp.icon_think_regen` | Built-icon steady-state slow regen | OK | ~ | OK | - | MISS | ~ | high |
-| `onslaught.cp.icon_heal` | Capture-icon heal (Healer mutator / heal trigger) | OK | OK | - | - | - | DEAD | high |
-| `onslaught.gen.damage_destroy` | Generator shield-gated damage + destruction | OK | OK | OK | MISS | MISS | ~ | high |
-| `onslaught.round.handler` | Round handler (warmup → countdown → round → end-delay) | OK | OK | OK | - | MISS | live | high |
-| `onslaught.win.check_winner` | Win check (last standing generator) + ST_ONS_GENS credit | OK | OK | OK | MISS | MISS | live | high |
-| `onslaught.overtime.decay` | Overtime generator self-decay (sudden death) | OK | OK | OK | - | MISS | ~ | medium |
+| `onslaught.graph.power_propagation` | Power graph + shielding propagation (onslaught_updatelinks) | OK | - | - | - | - | live | high |
+| `onslaught.links.resolution` | onslaught_link map entity → graph edges | OK | - | - | - | - | live | high |
+| `onslaught.cp.touch_build` | Control-point capture-by-build (touch → icon → build → flip) | OK | OK | OK | MISS | OK | live | high |
+| `onslaught.cp.icon_damage` | Capture-icon damage / destroy mid-build (revert to neutral) | OK | OK | OK | MISS | OK | live | high |
+| `onslaught.cp.icon_think_regen` | Built-icon steady-state slow regen | OK | ~ | OK | - | MISS | live | high |
+| `onslaught.cp.icon_heal` | Capture-icon heal (Healer mutator / heal beam) | OK | OK | - | - | - | live | high |
+| `onslaught.gen.damage_destroy` | Generator shield-gated damage + destruction | OK | OK | OK | MISS | OK | live | high |
+| `onslaught.round.handler` | Round handler (warmup → countdown → round → end-delay) | OK | OK | OK | - | - | live | high |
+| `onslaught.win.check_winner` | Win check (last standing generator) + ST_ONS_GENS credit | OK | OK | OK | ~ | OK | live | high |
+| `onslaught.overtime.decay` | Overtime generator self-decay (sudden death) | OK | OK | OK | - | OK | live | high |
 | `onslaught.scoring.rules` | Scoreboard rules (generators / caps / takes) *(intended)* | OK | OK | - | ~ | - | live | high |
 | `onslaught.captureshield` | CaptureShield (spinning shield model + push + blocked sound) | MISS | MISS | MISS | MISS | MISS | - | high |
 | `onslaught.spawn.teleport_choose` | Spawn placement + teleport (spawn_choose / spawn_at_* / ons_Teleport / click-radar) | MISS | MISS | MISS | MISS | MISS | - | high |
 | `onslaught.cp.proximity_decap` | Proximity de-capture (stand near a point to flip it) | MISS | MISS | MISS | MISS | - | - | high |
 | `onslaught.presentation.csqc` | CSQC presentation (generator/icon models, animation, radar, death-cam, FX) | MISS | MISS | MISS | MISS | MISS | - | medium |
-| `onslaught.audio.cues` | Onslaught notifications + sounds emission | - | - | - | MISS | MISS | DEAD | high |
+| `onslaught.audio.cues` | Onslaught notifications + sounds emission | - | - | - | ~ | OK | live | high |
 | `onslaught.bot.roles` | Bot Onslaught objective role (offense/defense/assistant goal rating) | ~ | MISS | MISS | - | - | live | high |
 
 ### `race` (gametype) — 19 features
@@ -658,11 +659,11 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `race.win.condition` | Win condition: everyone-finished + lap-limit + sudden-death run-on | OK | OK | - | - | - | live | high |
 | `race.team.laps` | Team race: members' laps add up into ST_RACE_LAPS | OK | OK | - | - | - | live | high |
 | `race.qualifying.mode` | Qualifying solo time-trial (rank by fastest, retract after each lap) | ~ | ~ | ~ | - | - | ~ | medium |
-| `race.qualifying.transition` | Qualifying-then-race transition (g_race_qualifying==2 -> 0) | stub | - | MISS | - | - | DEAD | high |
+| `race.qualifying.transition` | Qualifying-then-race transition (g_race_qualifying==2 -> 0) | OK | ~ | ~ | - | - | live | high |
 | `race.spawn.grid_respawn` | Spawn grid by race_place + respawn at last checkpoint | MISS | MISS | - | - | - | DEAD | medium |
 | `race.movement.quantization` | Force-keyboard movement quantization + race_movetime + FixClientCvars | MISS | MISS | MISS | - | - | - | high |
-| `race.hud.split_timer` | Race split timer HUD panel (#8): running clock, splits, anticipation, medals | OK | OK | OK | ~ | - | DEAD | high |
-| `race.hud.checkpoint_splits` | Checkpoints split list panel (#27) | OK | OK | - | ~ | - | DEAD | high |
+| `race.hud.split_timer` | Race split timer HUD panel (#8): running clock, splits, anticipation, medals | OK | OK | OK | OK | - | live | high |
+| `race.hud.checkpoint_splits` | Checkpoints split list panel (#27) | OK | OK | - | OK | - | live | high |
 | `race.bot.role` | Bot race role (navigate the checkpoint track) | MISS | MISS | - | - | - | - | high |
 | `race.hud.mod_icon_rankings` | Race/CTS mod-icon (PB + server best + medals) and Rankings scoreboard column | MISS | MISS | - | MISS | - | - | high |
 | `race.speed_awards` | Speed awards (round-best + all-time-best speed at checkpoint) | MISS | MISS | MISS | MISS | - | - | high |
@@ -784,8 +785,8 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `mapobject-func.driver.calcmove` | Shared mover driver: SUB_CalcMove / SUB_CalcAngleMove + cubic_speedfunc bezier easing | OK | OK | OK | - | - | live | high |
 | `mapobject-func.driver.pushmove` | MOVETYPE_PUSH integrator: rider carry, block->revert->.blocked, local-clock think (SV_PushMove) | OK | OK | OK | - | - | live | high |
 | `mapobject-func.reset` | Map-object .reset / .reset2 pass on round/match restart (reset_map_global entity-reset) | MISS | - | - | - | - | DEAD | high |
-| `mapobject-func.door.slide` | func_door — sliding door state machine, LinkDoors groups, field, touch/use/blocked | OK | OK | OK | ~ | OK | live | high |
-| `mapobject-func.door.rotating` | func_door_rotating — swinging door (angle-move between two angle positions) | ~ | OK | OK | ~ | OK | live | high |
+| `mapobject-func.door.slide` | func_door — sliding door state machine, LinkDoors groups, field, touch/use/blocked | OK | OK | OK | OK | OK | live | high |
+| `mapobject-func.door.rotating` | func_door_rotating — swinging door (angle-move between two angle positions) | ~ | OK | OK | OK | OK | live | high |
 | `mapobject-func.door.keys` | func_door key locks (gold/silver itemkeys, consume + locked/unlocked sounds) | OK | OK | OK | MISS | ~ | live | high |
 | `mapobject-func.button` | func_button — press-to-fire (touch/use/damage), wait+return, setactive timer, alt texture | OK | OK | OK | ~ | OK | live | high |
 | `mapobject-func.plat` | func_plat — riding platform (center trigger raises, 3s top dwell, crush/reverse) | OK | OK | OK | ~ | OK | live | high |
@@ -796,7 +797,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `mapobject-func.fourier` | func_fourier — sum-of-sines mover (netname quintuple list) | OK | OK | OK | - | ~ | live | high |
 | `mapobject-func.vectormamamam` | func_vectormamamam — 4-reference projected mover | OK | OK | OK | - | ~ | live | high |
 | `mapobject-func.breakable` | func_breakable / misc_breakablemodel — destructible BSP (debris, blast, respawn) *(intended)* | OK | OK | OK | ~ | OK | live | high |
-| `mapobject-func.door_secret` | func_door_secret — Quake-1 secret door (slide back/down, then sideways, return, re-arm) *(intended)* | OK | OK | OK | ~ | OK | live | high |
+| `mapobject-func.door_secret` | func_door_secret — Quake-1 secret door (slide back/down, then sideways, return, re-arm) *(intended)* | OK | OK | OK | OK | OK | live | high |
 | `mapobject-func.conveyor_ladder` | trigger_conveyor/func_conveyor + func_ladder/func_water — per-frame volume scanners (producer) *(intended)* | OK | OK | OK | - | - | live | medium |
 
 ### `mapobject-misc` (mapobject) — 12 features
@@ -841,8 +842,8 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `mapobject-target.speed.use` | target_speed — reproject the activator's velocity from speed + axis mask *(intended)* | OK | OK | - | - | - | live | high |
 | `mapobject-target.spawnpoint.use` | target_spawnpoint — force the activator's next spawn point | OK | - | - | - | - | ? | medium |
 | `mapobject-target.location.spawn` | target_location / info_location — HUD location-name volumes | OK | - | - | ? | - | ? | medium |
-| `mapobject-target.changelevel.use` | target_changelevel — end / switch the level (multiplayer fraction) | ~ | OK | - | - | - | DEAD | high |
-| `mapobject-target.levelwarp.use` | target_levelwarp — campaign level warp | OK | - | - | - | - | DEAD | high |
+| `mapobject-target.changelevel.use` | target_changelevel — end / switch the level (multiplayer fraction) | OK | OK | - | - | - | live | high |
+| `mapobject-target.levelwarp.use` | target_levelwarp — campaign level warp | OK | - | - | - | - | live | high |
 | `mapobject-target.give.use` | target_give — give the activator the items pointed to | OK | OK | - | - | OK | live | medium |
 | `mapobject-target.items.use` | target_items — set/add items + resources + powerups via a token string | ~ | OK | - | stub | - | live | high |
 | `mapobject-target.spawn.use` | target_spawn — data-driven entity creator/editor ($-templating) *(intended)* | stub | - | - | - | - | DEAD | high |
@@ -1009,12 +1010,12 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `wyvern.attack.dispatch` | Attack: 1s wind-up, ranged+melee both lob a fireball | OK | OK | OK | - | - | live | high |
 | `wyvern.fireball.spawn` | Fireball projectile spawn (speed, size, spin, lifetime, muzzle) | OK | OK | OK | - | - | live | high |
 | `wyvern.fireball.radiusdamage` | Fireball explosion: radius damage + knockback | OK | OK | - | - | - | live | high |
-| `wyvern.fireball.burning` | Fireball ignites everything in radius (burning DoT) | OK | ~ | ~ | - | - | live | medium |
+| `wyvern.fireball.burning` | Fireball ignites everything in radius (burning DoT) | OK | OK | OK | - | - | live | high |
 | `wyvern.fireball.explode_effect` | Fireball blast particle (EFFECT_FIREBALL_EXPLODE) | OK | OK | - | OK | - | live | high |
-| `wyvern.fireball.firemine_visual` | In-flight fireball CSQC visual (PROJECTILE_FIREMINE) | MISS | - | - | MISS | - | - | high |
+| `wyvern.fireball.firemine_visual` | In-flight fireball CSQC visual (PROJECTILE_FIREMINE) | ~ | - | - | ~ | - | ~ | high |
 | `wyvern.fireball.fire_sound` | Fireball launch sound (electro_fire) | OK | OK | OK | - | OK | live | high |
 | `wyvern.brain.think_move` | Per-frame brain: flying chase + attack check | OK | OK | OK | - | - | live | high |
-| `wyvern.pain` | Pain reaction (0.5s window, pain anim) | OK | ~ | ~ | stub | OK | live | high |
+| `wyvern.pain` | Pain reaction (0.5s window, pain anim) | OK | OK | OK | stub | OK | live | high |
 | `wyvern.death` | Death: die anim + random corpse launch scatter | OK | OK | - | stub | OK | live | high |
 | `wyvern.deadthink` | Dead-think: swap to anim_die2 once the corpse lands | OK | - | OK | stub | - | live | high |
 | `wyvern.anim.frame_table` | Animation frame groups (mr_anim) | stub | MISS | - | stub | - | DEAD | high |
@@ -1157,15 +1158,15 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
 | `mutator-dodging.core.enable` | Mutator registration + g_dodging enable gate | OK | OK | - | - | - | live | high |
-| `mutator-dodging.input.double_tap` | Double-tap detection (PM_dodging_checkpressedkeys) | ~ | OK | ? | - | - | DEAD | high |
-| `mutator-dodging.input.delay_state_gate` | Delay cooldown + ground/wall/air state gating | OK | OK | ? | - | - | DEAD | high |
-| `mutator-dodging.force.scaling` | Speed-to-force scaling (determine_force / map_bound_ranges) | OK | OK | - | - | - | DEAD | high |
-| `mutator-dodging.move.ramp_impulse` | Per-frame ramp + one-shot up-impulse (PM_dodging) | OK | OK | ? | - | - | DEAD | high |
-| `mutator-dodging.audio.jump_sound` | Dodge jump sound (sv_dodging_sound) | OK | OK | - | - | OK | DEAD | medium |
+| `mutator-dodging.input.double_tap` | Double-tap detection (PM_dodging_checkpressedkeys) | OK | OK | OK | - | - | live | high |
+| `mutator-dodging.input.delay_state_gate` | Delay cooldown + ground/wall/air state gating | OK | OK | OK | - | - | live | high |
+| `mutator-dodging.force.scaling` | Speed-to-force scaling (determine_force / map_bound_ranges) | OK | OK | - | - | - | live | high |
+| `mutator-dodging.move.ramp_impulse` | Per-frame ramp + one-shot up-impulse (PM_dodging) | OK | OK | OK | - | - | live | high |
+| `mutator-dodging.audio.jump_sound` | Dodge jump sound (sv_dodging_sound) | OK | OK | - | - | OK | live | medium |
 | `mutator-dodging.anim.jump_action` | Dodge plays the jump animation (ANIMACTION_JUMP) | MISS | - | - | MISS | - | - | high |
 | `mutator-dodging.lifecycle.reset` | Dodge state reset on spawn + observer (dodging_ResetPlayer) | ~ | OK | - | - | - | ~ | high |
-| `mutator-dodging.clientselect.opt_in` | Client opt-in (sv_dodging_clientselect + cl_dodging + REPLICATE) | OK | OK | - | ~ | - | DEAD | high |
-| `mutator-dodging.frozen.dodge` | Frozen dodging (sv_dodging_frozen / _frozen_doubletap / horiz_force_frozen) | OK | OK | - | - | - | DEAD | high |
+| `mutator-dodging.clientselect.opt_in` | Client opt-in (sv_dodging_clientselect + cl_dodging + REPLICATE) | OK | OK | - | OK | - | live | high |
+| `mutator-dodging.frozen.dodge` | Frozen dodging (sv_dodging_frozen / _frozen_doubletap / horiz_force_frozen) | OK | OK | OK | - | - | live | high |
 
 ### `mutator-doublejump` (mutator) — 4 features
 
@@ -1205,15 +1206,15 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
 | `mutator-hook.enable.predicate` | Enable predicate (string g_grappling_hook via expr_evaluate) | OK | OK | - | - | - | live | high |
-| `mutator-hook.onadd.free_reel` | MUTATOR_ONADD / ONROLLBACK_OR_REMOVE: free reeling when useammo off (WEP_HOOK.ammo_factor 0<->1) *(intended)* | OK | ~ | - | - | - | DEAD | high |
+| `mutator-hook.onadd.free_reel` | MUTATOR_ONADD / ONROLLBACK_OR_REMOVE: free reeling when useammo off (WEP_HOOK.ammo_factor 0<->1) *(intended)* | OK | ~ | - | - | - | live | high |
 | `mutator-hook.spawn.assign_offhand` | PlayerSpawn: assign the hook as the player's offhand weapon | OK | - | OK | - | - | live | high |
-| `mutator-hook.offhand.think_driver` | Offhand think: drive the Hook grapple each frame while +hook is held | ~ | - | ~ | - | - | DEAD | high |
+| `mutator-hook.offhand.think_driver` | Offhand think: drive the Hook grapple each frame while +hook is held | OK | - | ~ | - | - | live | high |
 | `mutator-hook.startitems.fuel` | SetStartItems: grant fuel + FuelRegen when useammo is on | OK | ~ | - | - | - | live | high |
 | `mutator-hook.filteritem.hide_pickup` | FilterItem: suppress the WEP_HOOK world pickup | OK | - | - | - | - | live | high |
 | `mutator-hook.info.mutator_string` | BuildMutatorsString / Pretty: list the mutator in server info / votescreen | MISS | MISS | - | MISS | - | - | high |
 | `mutator-hook.client.gameplay_tip` | Client gameplay tip: 'grappling hook is enabled, press <key>' | MISS | - | - | MISS | - | - | high |
 | `mutator-hook.menu.toggle` | Menu: Grappling Hook mutator checkbox + describe page | OK | - | - | ~ | - | live | high |
-| `mutator-hook.precedence.blaster_override` | Precedence: offhand_blaster overrides grappling_hook when both enabled | OK | - | OK | - | - | DEAD | high |
+| `mutator-hook.precedence.blaster_override` | Precedence: offhand_blaster overrides grappling_hook when both enabled | OK | - | OK | - | - | live | high |
 
 ### `mutator-instagib` (mutator) — 22 features
 
@@ -1323,26 +1324,26 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
 | `mutator-nades.enable.predicate` | Enable predicate + offhand assignment (g_nades) | OK | OK | - | - | - | live | high |
-| `mutator-nades.throw.input_wire` | Throw input (offhand +hook release / weapon_drop double-press) | ~ | - | - | - | - | DEAD | high |
-| `mutator-nades.prime.select` | nade_prime: type selection (strength / bonus / client-select / cvar) | OK | OK | OK | - | - | DEAD | high |
-| `mutator-nades.throw.charge_force` | Charge-throw force ramp + spread cone | OK | OK | OK | - | - | DEAD | high |
-| `mutator-nades.toss.projectile` | toss_nade: launch physics (size, newton-style, health, fuse) | OK | ~ | OK | - | - | DEAD | high |
-| `mutator-nades.touch.bounce_pickup_detonate` | nade_touch: owner pass-through, pickup, bounce, impact detonate | OK | OK | OK | - | ~ | DEAD | high |
-| `mutator-nades.damage.launch_destroy` | nade_damage: shoot-to-launch / shoot-to-destroy interactions | ~ | ~ | OK | - | - | DEAD | high |
-| `mutator-nades.boom.dispatch` | nade_boom: type dispatch + destroyed->normal fallback | OK | - | OK | MISS | ~ | DEAD | high |
-| `mutator-nades.boom.normal` | Normal nade explosion (RadiusDamage) | OK | OK | - | MISS | - | DEAD | high |
-| `mutator-nades.boom.napalm` | Napalm: fireballs + fountain fire damage | ~ | ~ | OK | MISS | ~ | DEAD | high |
-| `mutator-nades.boom.ice` | Ice: freeze field | ~ | OK | OK | MISS | OK | DEAD | high |
-| `mutator-nades.boom.translocate` | Translocate: teleport thrower to detonation | ~ | OK | - | MISS | - | DEAD | medium |
-| `mutator-nades.boom.spawn` | Spawn: relocate respawn point | OK | OK | - | MISS | - | ~ | high |
-| `mutator-nades.boom.heal` | Heal: healing orb (friend heal / foe harm / armor) | OK | OK | OK | MISS | - | DEAD | high |
-| `mutator-nades.boom.ammo` | Ammo: ammo orb (refill friend / drain foe) | OK | OK | OK | MISS | - | DEAD | high |
-| `mutator-nades.boom.entrap_veil_darkness` | Entrap / Veil / Darkness orbs + fields | ~ | OK | OK | MISS | MISS | DEAD | high |
-| `mutator-nades.boom.monster` | Pokenade: spawn monster | ~ | ~ | ~ | - | - | DEAD | medium |
-| `mutator-nades.bonus.economy` | Bonus-nade economy (accrual / award / wipe) | ~ | ~ | OK | MISS | MISS | ~ | high |
+| `mutator-nades.throw.input_wire` | Throw input (offhand +hook release / weapon_drop double-press) | OK | OK | OK | - | - | live | high |
+| `mutator-nades.prime.select` | nade_prime: type selection (strength / bonus / client-select / cvar) | OK | OK | OK | - | - | live | high |
+| `mutator-nades.throw.charge_force` | Charge-throw force ramp + spread cone | OK | OK | OK | - | - | live | high |
+| `mutator-nades.toss.projectile` | toss_nade: launch physics (size, newton-style, health, fuse) | OK | ~ | OK | - | - | live | high |
+| `mutator-nades.touch.bounce_pickup_detonate` | nade_touch: owner pass-through, pickup, bounce, impact detonate | OK | OK | OK | - | OK | live | high |
+| `mutator-nades.damage.launch_destroy` | nade_damage: shoot-to-launch / shoot-to-destroy interactions | OK | OK | OK | - | - | live | high |
+| `mutator-nades.boom.dispatch` | nade_boom: type dispatch + destroyed->normal fallback | OK | - | OK | MISS | ~ | live | high |
+| `mutator-nades.boom.normal` | Normal nade explosion (RadiusDamage) | OK | OK | - | MISS | - | live | high |
+| `mutator-nades.boom.napalm` | Napalm: fireballs + fountain fire damage | ~ | ~ | OK | MISS | ~ | live | high |
+| `mutator-nades.boom.ice` | Ice: freeze field | ~ | OK | OK | MISS | OK | live | high |
+| `mutator-nades.boom.translocate` | Translocate: teleport thrower to detonation | ~ | OK | - | MISS | - | live | medium |
+| `mutator-nades.boom.spawn` | Spawn: relocate respawn point | OK | OK | - | MISS | - | live | high |
+| `mutator-nades.boom.heal` | Heal: healing orb (friend heal / foe harm / armor) | OK | OK | OK | MISS | - | live | high |
+| `mutator-nades.boom.ammo` | Ammo: ammo orb (refill friend / drain foe) | OK | OK | OK | MISS | - | live | high |
+| `mutator-nades.boom.entrap_veil_darkness` | Entrap / Veil / Darkness orbs + fields | ~ | OK | OK | MISS | MISS | live | high |
+| `mutator-nades.boom.monster` | Pokenade: spawn monster | OK | OK | OK | - | - | live | high |
+| `mutator-nades.bonus.economy` | Bonus-nade economy (accrual / award / wipe) | ~ | ~ | OK | MISS | MISS | live | high |
 | `mutator-nades.lifecycle.cleanup` | Held-nade/bonus cleanup + spectate copy + vehicle/death-drop toss | ~ | - | - | - | - | ~ | high |
-| `mutator-nades.damage.freezetag_revive` | Damage_Calculate: freezetag revive-nade | ~ | OK | OK | - | - | DEAD | high |
-| `mutator-nades.presentation.client` | Client presentation: projectile/trail, orb model + 2D flash, darkness overlay, bonus ammo icon, charge ring | MISS | MISS | MISS | MISS | MISS | DEAD | high |
+| `mutator-nades.damage.freezetag_revive` | Damage_Calculate: freezetag revive-nade | ~ | OK | OK | - | - | live | high |
+| `mutator-nades.presentation.client` | Client presentation: projectile/trail, orb model + 2D flash, darkness overlay, bonus ammo icon, charge ring | MISS | MISS | MISS | MISS | MISS | ~ | high |
 
 ### `mutator-new_toys` (mutator) — 9 features
 
@@ -1385,8 +1386,8 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 |---|---|---|---|---|---|---|---|---|
 | `offhand_blaster.enable.register` | Mutator enable via g_offhand_blaster cvar | OK | OK | - | - | - | live | high |
 | `offhand_blaster.spawn.assign` | Assign Blaster to player offhand slot on spawn | OK | - | OK | - | - | live | high |
-| `offhand_blaster.fire.offhand_think` | Offhand fire: hold +hook to fire a Blaster shot without switching weapons | ~ | OK | ~ | - | OK | DEAD | high |
-| `offhand_blaster.fire.blaster_attack` | Blaster primary projectile fired by the offhand (damage/force/speed) | OK | OK | OK | OK | OK | DEAD | high |
+| `offhand_blaster.fire.offhand_think` | Offhand fire: hold +hook to fire a Blaster shot without switching weapons | OK | OK | ~ | - | OK | live | high |
+| `offhand_blaster.fire.blaster_attack` | Blaster primary projectile fired by the offhand (damage/force/speed) | OK | OK | OK | OK | OK | live | high |
 | `offhand_blaster.precedence.over_hook` | Offhand blaster overrides the grappling hook offhand when both enabled | OK | - | - | - | - | live | high |
 | `offhand_blaster.report.mutators_string` | Mutator appears in BuildMutatorsString / BuildMutatorsPrettyString | MISS | MISS | - | MISS | - | - | high |
 | `offhand_blaster.tips.gameplay_hint` | Client gameplay-tips line announcing the offhand blaster bind | MISS | MISS | - | MISS | - | - | high |
@@ -1590,13 +1591,13 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `superspec.enable.predicate` | Enable predicate + registration (expr_evaluate(g_superspectate)) | OK | OK | - | - | - | live | high |
 | `superspec.state.flag_bitfields` | Per-client option state (.autospec_flags, .superspec_flags, .superspec_itemfilter) *(intended)* | OK | OK | - | - | - | live | high |
 | `superspec.spectate.transfer` | Spectate transfer helper (superspec_Spectate wrapping Spectate) *(intended)* | OK | - | - | - | - | live | high |
-| `superspec.persistence.options_file` | Per-client options persistence (load on connect / save on disconnect, crypto_idfp-keyed) | MISS | ~ | MISS | - | - | DEAD | high |
-| `superspec.notify.missing_uid` | Missing-UID notification (delayed-hello think at time+5 -> INFO_SUPERSPEC_MISSING_UID) | MISS | OK | MISS | stub | - | DEAD | high |
-| `superspec.msg.helper` | Spectator message helper (superspec_msg: sprint + conditional centerprint by silent/verbose/spamlevel) | OK | OK | - | ~ | - | live | high |
-| `superspec.itemfilter.match` | Item-message classname filter (superspec_filteritem; empty = all) | OK | OK | - | - | - | DEAD | high |
-| `superspec.itemtouch.autospec_and_msg` | ItemTouch hook: pickup messages + auto-spectate on powerup/mega/flag/item-msg | MISS | MISS | - | MISS | - | - | high |
-| `superspec.playerdies.followkiller` | PlayerDies hook: followkiller auto-spectate the attacker | OK | OK | - | stub | - | live | high |
-| `superspec.commands.parse` | Spectator console commands (superspec / autospec / superspec_itemfilter / followpowerup / followstrength / followshield) | OK | OK | - | stub | - | live | high |
+| `superspec.persistence.options_file` | Per-client options persistence (load on connect / save on disconnect, crypto_idfp-keyed) *(intended)* | OK | OK | - | - | - | live | high |
+| `superspec.notify.missing_uid` | Missing-UID notification (delayed-hello think at time+5 -> INFO_SUPERSPEC_MISSING_UID) *(intended)* | OK | OK | OK | OK | - | live | high |
+| `superspec.msg.helper` | Spectator message helper (superspec_msg: sprint + conditional centerprint by silent/verbose/spamlevel) | OK | OK | - | OK | - | live | high |
+| `superspec.itemfilter.match` | Item-message classname filter (superspec_filteritem; empty = all) | OK | OK | - | - | - | live | high |
+| `superspec.itemtouch.autospec_and_msg` | ItemTouch hook: pickup messages + auto-spectate on powerup/mega/flag/item-msg | OK | OK | - | OK | - | live | high |
+| `superspec.playerdies.followkiller` | PlayerDies hook: followkiller auto-spectate the attacker | OK | OK | - | OK | - | live | high |
+| `superspec.commands.parse` | Spectator console commands (superspec / autospec / superspec_itemfilter / followpowerup / followstrength / followshield) | OK | OK | - | OK | - | live | high |
 | `superspec.ui.mutator_strings` | Mutator string tags (:SS machine tag + ', Super Spectators' pretty label) | MISS | MISS | - | MISS | - | - | high |
 
 ### `mutator-touchexplode` (mutator) — 7 features
@@ -1649,17 +1650,17 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
 | `waypoints.registry.defs` | Waypoint-kind registry (WP_* defs: text/icon/color/blink) | OK | OK | - | OK | - | ~ | high |
-| `waypoints.server.manager_api` | Server WaypointSprite_* spawn/update/kill API + manager | ~ | ~ | OK | - | - | DEAD | high |
+| `waypoints.server.manager_api` | Server WaypointSprite_* spawn/update/kill API + manager | ~ | OK | OK | - | - | ~ | high |
 | `waypoints.gametype.collect` | Per-tick objective waypoint emit (per gametype) | ~ | OK | OK | - | - | ~ | high |
 | `waypoints.ctf.flag_markers` | CTF flag waypoint sprites (base/dropped/carrier state machine) | OK | OK | OK | ~ | - | live | medium |
-| `waypoints.deploy.personal_here_danger` | Player-deployed pings (waypoint_personal/here/danger impulses) | MISS | MISS | MISS | MISS | - | DEAD | high |
-| `waypoints.deploy.helpme` | Team HELP-ME attach + ping (waypoint_here_follow) | MISS | MISS | MISS | stub | - | DEAD | high |
+| `waypoints.deploy.personal_here_danger` | Player-deployed pings (waypoint_personal/here/danger impulses) | OK | OK | OK | - | - | live | high |
+| `waypoints.deploy.helpme` | Team HELP-ME attach + ping (waypoint_here_follow) | OK | OK | OK | OK | - | live | high |
 | `waypoints.visibility.rules` | Per-peer visibility filter (SPRITERULE_DEFAULT/TEAMPLAY/SPECTATOR) | ~ | - | - | - | - | live | high |
 | `waypoints.visibility.three_image_rule` | TEAMPLAY three-image per-audience swap (netname/2/3) | MISS | - | - | MISS | - | - | high |
 | `waypoints.net.serialize` | Waypoint networking (S2C channel + per-peer filter) *(intended)* | ~ | OK | OK | - | - | live | high |
-| `waypoints.client.draw` | 3D in-world sprite draw (icon/text + arrow + project) *(intended)* | ~ | ~ | OK | ~ | - | live | high |
+| `waypoints.client.draw` | 3D in-world sprite draw (icon/text + arrow + project) | OK | OK | OK | ~ | - | live | high |
 | `waypoints.client.fades` | Distance / edge / crosshair / lifetime fades + blink | ~ | ~ | ~ | ~ | - | live | high |
-| `waypoints.client.cvars_inert` | Client tuning cvars (g_waypointsprite_*, cl_hidewaypoints) wiring | MISS | stub | - | MISS | - | DEAD | high |
+| `waypoints.client.cvars_inert` | Client tuning cvars (g_waypointsprite_*, cl_hidewaypoints) wiring | OK | OK | - | OK | - | live | high |
 | `waypoints.radar.icons` | Team radar icons from waypoint sprites | OK | OK | OK | ~ | - | live | medium |
 
 ### `mutator-weaponarena_random` (mutator) — 6 features
@@ -1685,7 +1686,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `net-entity-state.entcs.radar_shownames_slice` | ent_cs GPS slice for radar + shownames teammate health/armor *(intended)* | OK | ~ | ~ | OK | - | live | high |
 | `net-entity-state.entcs.privacy_mask` | ent_cs public/private mask (radar_showenemies / SAME_TEAM) | MISS | MISS | - | - | - | - | high |
 | `net-entity-state.wepent.active_weapon` | wepent active/held weapon (local viewmodel + remote third-person) *(intended)* | OK | OK | OK | OK | - | live | high |
-| `net-entity-state.wepent.charges_clip_heat` | wepent charge/clip/heat HUD fields (vortex/oknex charge+pool, clip_load/size, hagar_load, minelayer_mines, arc_heat) | MISS | MISS | MISS | stub | - | DEAD | medium |
+| `net-entity-state.wepent.charges_clip_heat` | wepent charge/clip/heat HUD fields (vortex/oknex charge+pool, clip_load/size, hagar_load, minelayer_mines, arc_heat) *(intended)* | OK | OK | OK | OK | - | ~ | medium |
 | `net-entity-state.wepent.switch_alpha_misc` | wepent switch/alpha/gunalign/porto/tuba/skin viewmodel fields | MISS | MISS | MISS | MISS | - | - | medium |
 | `net-entity-state.csqcmodel.appearance_hook` | csqcmodel appearance hook (force model/colors, unique enemy colors, death-fade) | OK | OK | - | OK | - | live | high |
 | `net-entity-state.replicate.client_cvars` | Client->server cvar replication (REPLICATE / cmd sentcvar) | OK | ~ | OK | - | - | live | high |
@@ -1707,11 +1708,11 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `fx-deathtypes.special.suicide_special_routing` | Obituary SUICIDE/MURDER/ACCIDENT special-routing (TEAMCHANGE/MIRRORDAMAGE/HURTTRIGGER branch + BOTLIKE achievement) | ~ | OK | - | ~ | ~ | live | medium |
 | `fx-deathtypes.name.lookup` | Deathtype_Name (int -> name) for logging/debug *(intended)* | - | - | - | - | - | - | high |
 
-### `fx-notifications` (notification) — 14 features
+### `fx-notifications` (notification) — 16 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
-| `fx-notifications.registry.types` | Notification registry + 5 message types (MSG_ANNCE/INFO/CENTER/MULTI/CHOICE) | OK | OK | - | - | - | live | medium |
+| `fx-notifications.registry.types` | Notification registry + message types (MSG_ANNCE/INFO/CENTER/MULTI/CHOICE + MSG_CENTER_KILL + server-driven center variants) | OK | OK | - | - | - | live | high |
 | `fx-notifications.send.dispatch` | Send_Notification (broadcast, arg-count validation, type switch) | OK | OK | - | - | - | live | high |
 | `fx-notifications.net.protocol` | ENT_CLIENT_NOTIFICATION wire protocol (server encode -> client decode) *(intended)* | OK | OK | OK | OK | - | live | high |
 | `fx-notifications.net.shouldsend` | Per-recipient broadcast routing (Notification_ShouldSend) | ~ | - | - | - | - | live | high |
@@ -1724,7 +1725,9 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `fx-notifications.annce.queue` | MSG_ANNCE -> announcer voice queue + anti-spam | OK | OK | OK | OK | OK | live | high |
 | `fx-notifications.announcer.timecountdown` | Announcer time/countdown driver (REMAINING_MIN, 3-2-1-prepare, PickNumber) *(intended)* | OK | OK | OK | OK | OK | live | high |
 | `fx-notifications.gentle.variants` | Gentle-mode message-variant selection (normal_or_gentle / cl_gentle) | ~ | OK | - | ~ | - | DEAD | high |
-| `fx-notifications.net.kill` | Kill_Notification / MSG_CENTER_KILL (server clears a centerprint group) | MISS | - | - | MISS | - | - | high |
+| `fx-notifications.net.kill` | Kill_Notification / MSG_CENTER_KILL (server clears a centerprint group) | OK | OK | OK | OK | - | live | high |
+| `fx-notifications.center.title` | Server-driven centerprint title / duel title (centerprint_SetTitle / _SetDuelTitle / _ClearTitle) *(intended)* | OK | OK | OK | OK | - | live | medium |
+| `fx-notifications.center.raw` | Raw centerprint(client, text) builtin (private chat/tell, map .message, target_print, MOTD) | OK | OK | OK | OK | - | live | medium |
 
 ### `physics-movetypes` (physics) — 13 features
 
@@ -1835,9 +1838,9 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `sv-campaign.progress.save` | Frontier progress persistence to campaign.cfg (CampaignSaveCvar + the save gate) | OK | OK | - | - | - | live | high |
 | `sv-campaign.transition.next_level` | Advance / replay / last-level transition (CampaignPostIntermission + CampaignSetup) *(intended)* | OK | OK | - | OK | - | live | high |
 | `sv-campaign.warp.command` | Level warp via sv_cmd warp (CampaignLevelWarp) | OK | OK | - | - | - | live | high |
-| `sv-campaign.mapentity.levelwarp` | target_levelwarp / target_changelevel campaign win-credit (map-triggered) | stub | - | - | - | - | DEAD | high |
-| `sv-campaign.mapentity.gametype_switch` | target_changelevel next-map gametype switch (MapInfo_SwitchGameType on .gametype) | stub | - | - | - | - | DEAD | high |
-| `sv-campaign.forceteam` | g_campaign_forceteam: force the player onto a given team in campaign | stub | OK | - | - | - | DEAD | high |
+| `sv-campaign.mapentity.levelwarp` | target_levelwarp / target_changelevel campaign win-credit (map-triggered) | OK | OK | OK | - | - | live | high |
+| `sv-campaign.mapentity.gametype_switch` | target_changelevel next-map gametype switch (MapInfo_SwitchGameType on .gametype) *(intended)* | OK | OK | - | - | - | live | high |
+| `sv-campaign.forceteam` | g_campaign_forceteam: force the player onto a given team in campaign | OK | OK | - | - | - | live | high |
 | `sv-campaign.welcome.levelnum` | Campaign level number in the welcome/info message (Campaign_GetLevelNum) | stub | OK | - | MISS | - | DEAD | high |
 
 ### `sv-chat` (server) — 14 features
@@ -1951,8 +1954,8 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
 | `sv-handicap.damage.give_take_scaling` | Damage scaling by give/take handicap in PlayerDamage | OK | OK | OK | - | - | live | high |
-| `sv-handicap.total.forced_times_voluntary` | Total handicap = forced x voluntary, per direction | ~ | ~ | - | - | - | live | high |
-| `sv-handicap.voluntary.cl_handicap_cvars` | Voluntary handicap from cl_handicap / cl_handicap_damage_given/taken | MISS | MISS | MISS | - | - | - | high |
+| `sv-handicap.total.forced_times_voluntary` | Total handicap = forced x voluntary, per direction | OK | OK | - | - | - | live | high |
+| `sv-handicap.voluntary.cl_handicap_cvars` | Voluntary handicap from cl_handicap / cl_handicap_damage_given/taken | OK | OK | OK | - | - | live | high |
 | `sv-handicap.init.defaults_to_one` | Handicap_Initialize: forced handicaps reset to 1 on (re)spawn | ~ | OK | ? | - | - | ~ | medium |
 | `sv-handicap.level.compute_and_network` | handicap_level (0-16) computed + networked via ENTCS | MISS | MISS | - | MISS | - | - | high |
 | `sv-handicap.scoreboard.handicap_icon` | Scoreboard player_handicap icon (white->red by level) | MISS | MISS | - | MISS | - | - | high |
@@ -1989,7 +1992,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `sv-intermission.nextmap.override` | DoNextMapOverride priority (campaign / queued nextmap / samelevel / redirect / quit / lastlevel) | ~ | ~ | OK | - | - | ~ | high |
 | `sv-intermission.nextmap.changelevel` | Apply chosen next map (Map_Goto → changelevel) + mark recent | OK | - | OK | - | - | live | high |
 | `sv-intermission.mapvote.server_core` | Server map-vote core (MapVote_Start / tally / finish) | OK | OK | OK | - | - | ~ | high |
-| `sv-intermission.mapvote.client_ui` | Client map-vote ballot UI (MapVote_Draw) | OK | OK | - | stub | - | DEAD | high |
+| `sv-intermission.mapvote.client_ui` | Client map-vote ballot UI (MapVote_Draw) | OK | OK | OK | OK | - | ~ | high |
 | `sv-intermission.matchend.nextmap_broadcast` | Next-map broadcast to clients (Set_NextMap / Send_NextMap_To_Player → scoreboard 'Next map:') | MISS | - | - | MISS | - | - | high |
 | `sv-intermission.client.view_freeze` | Intermission view freeze (SVC_INTERMISSION: camera lock + viewmodel EF_NODRAW + health sentinel) | MISS | MISS | - | MISS | - | ~ | high |
 | `sv-intermission.client.scoreboard_autoshow` | Scoreboard auto-shows at intermission (no key held) | MISS | - | - | MISS | - | ~ | high |
@@ -2026,12 +2029,12 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `sv-mapvoting.cast.abstain` | Abstain (Don't care) option | OK | OK | - | - | - | ~ | high |
 | `sv-mapvoting.decide.tally_rank` | Tally votes + rank candidates | OK | - | - | - | - | ~ | high |
 | `sv-mapvoting.decide.early_finish` | Early finish: timeout / leader unbeatable / all voted | OK | OK | OK | - | - | ~ | high |
-| `sv-mapvoting.decide.reduce` | Ballot reduce / keep-two (mid-vote option pruning) | OK | OK | OK | MISS | - | ~ | high |
-| `sv-mapvoting.finish.winner` | Finish + pick winner + apply map change | OK | - | OK | - | - | live | high |
+| `sv-mapvoting.decide.reduce` | Ballot reduce / keep-two (mid-vote option pruning) | OK | OK | OK | ~ | - | ~ | high |
+| `sv-mapvoting.finish.winner` | Finish + pick winner + apply map change | OK | - | OK | OK | - | live | high |
 | `sv-mapvoting.gametype_vote` | Gametype vote (pre-map gametype ballot + switch) | MISS | ~ | MISS | MISS | - | - | high |
 | `sv-mapvoting.suggestions` | Player map suggestions (suggestmap) | ~ | OK | - | - | - | live | high |
-| `sv-mapvoting.net.sync` | Vote state networking (ENT_CLIENT_MAPVOTE + screenshot transfer) | MISS | - | - | MISS | - | - | high |
-| `sv-mapvoting.client.draw` | Client vote-screen panel (grid, thumbnails, counts, winner reveal) | OK | OK | ~ | OK | - | DEAD | high |
+| `sv-mapvoting.net.sync` | Vote state networking (ENT_CLIENT_MAPVOTE + screenshot transfer) *(intended)* | ~ | - | OK | ~ | - | ~ | high |
+| `sv-mapvoting.client.draw` | Client vote-screen panel (grid, thumbnails, counts, winner reveal) | OK | OK | OK | OK | - | ~ | high |
 | `sv-mapvoting.client.input` | Client vote input (keyboard/mouse selection + cast) | MISS | - | - | MISS | - | - | high |
 
 ### `sv-spawnpoints` (server) — 14 features
@@ -2059,20 +2062,20 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 |---|---|---|---|---|---|---|---|---|
 | `sv-teamplay.identity.team_codes` | Team color codes & active-team set | OK | OK | - | - | - | live | high |
 | `sv-teamplay.join.find_best_team` | Assign joiner to the best (smallest) team | ~ | OK | - | - | - | live | high |
-| `sv-teamplay.join.skill_weighting` | Inverse-variance skill-weighted balance (g_balance_teams_skill) | ~ | stub | - | - | - | ~ | high |
+| `sv-teamplay.join.skill_weighting` | Inverse-variance skill-weighted balance (g_balance_teams_skill) | ~ | ~ | - | - | - | live | high |
 | `sv-teamplay.balance.autobalance_bots` | Bot autobalance (move lowest-scoring bot largest->smallest) | ~ | ~ | ~ | - | - | live | high |
-| `sv-teamplay.balance.prevent_imbalance` | Block switching to a stronger/larger team mid-match | stub | OK | - | - | - | DEAD | high |
-| `sv-teamplay.forced.determine_team` | Forced teams (g_forced_team_*, otherwise, campaign forceteam) | stub | ~ | - | - | - | DEAD | high |
+| `sv-teamplay.balance.prevent_imbalance` | Block switching to a stronger/larger team mid-match | OK | OK | - | ~ | - | live | high |
+| `sv-teamplay.forced.determine_team` | Forced teams (g_forced_team_*, otherwise, campaign forceteam) | ~ | ~ | - | - | - | ~ | high |
 | `sv-teamplay.queue.join_queue` | Warmup/match join queue (g_balance_teams_queue) | MISS | MISS | - | - | - | - | high |
 | `sv-teamplay.remove.excess_players` | Remove excess players on leave (g_balance_teams_remove) | MISS | MISS | MISS | MISS | - | - | high |
-| `sv-teamplay.nagger.team_nagger` | Unbalanced-teams nag + warmup hold (sv_teamnagger) | stub | ~ | - | MISS | - | DEAD | high |
+| `sv-teamplay.nagger.team_nagger` | Unbalanced-teams nag + warmup hold (sv_teamnagger) | OK | OK | - | MISS | - | live | high |
 | `sv-teamplay.bot_vs_human.team_split` | bot_vs_human team partitioning (bots vs humans on separate teams) | OK | OK | - | - | - | live | high |
 | `sv-teamplay.change.kill_on_teamchange` | Kill + score clear on mid-match team change | OK | OK | - | - | - | live | high |
 | `sv-teamplay.admin.lock_shuffle_move` | Admin team commands: lockteams/shuffleteams/moveplayer/team | ~ | - | - | - | - | live | medium |
 | `sv-teamplay.color.set_player_colors` | color command / clientcolors encoding (SV_ChangeTeam, setcolor, SetPlayerColors) | MISS | MISS | - | MISS | - | - | medium |
 | `sv-teamplay.global.team_entities` | Global team entities (score, alive count, owned items, winner queries) | ~ | OK | - | - | - | ~ | low |
 | `sv-teamplay.change.team_change_hooks` | Player_ChangeTeam / Player_ChangedTeam mutator hooks | MISS | - | - | - | - | - | high |
-| `sv-teamplay.lock.lockonrestart` | Auto-lock teams on ready-restart (teamplay_lockonrestart) | MISS | MISS | - | - | - | - | high |
+| `sv-teamplay.lock.lockonrestart` | Auto-lock teams on ready-restart (teamplay_lockonrestart) | OK | OK | - | - | - | live | high |
 | `sv-teamplay.bot.bot_forced_team` | Bot forced team (bot_forced_team from bot config/connect) | OK | OK | - | - | - | live | high |
 
 ### `sv-world-rules` (server) — 17 features
@@ -2111,9 +2114,9 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `fx-sounds.emit.play2_family` | play2 / play2team / play2all / spamsound | ~ | ~ | ~ | - | ~ | ~ | high |
 | `fx-sounds.voice.playersound_registry` | PlayerSounds / GlobalSounds registries (body sound ids) | OK | OK | - | - | OK | live | high |
 | `fx-sounds.voice.voicemessage_table` | REGISTER_VOICEMSG table (team radio + taunts) + VOICETYPE constants | OK | OK | - | - | OK | live | high |
-| `fx-sounds.voice.globalsound_dispatch` | _GlobalSound VOICETYPE routing (recipients + taunt/gentle gates) | ~ | OK | - | ~ | MISS | live | high |
-| `fx-sounds.voice.live_body_callers` | PlayerSound/GlobalSound call sites (footstep/fall/pain/death/jump) | ~ | ~ | OK | ~ | ~ | live | high |
-| `fx-sounds.voice.persounds_manifest` | LoadPlayerSounds .sounds manifest parse + per-model/skin reload | MISS | MISS | - | - | MISS | DEAD | high |
+| `fx-sounds.voice.globalsound_dispatch` | _GlobalSound VOICETYPE routing (recipients + taunt/gentle gates) | ~ | OK | - | ~ | OK | live | high |
+| `fx-sounds.voice.live_body_callers` | PlayerSound/GlobalSound call sites (footstep/fall/pain/death/jump) | OK | OK | OK | OK | OK | live | high |
+| `fx-sounds.voice.persounds_manifest` | LoadPlayerSounds .sounds manifest parse + per-model/skin reload | OK | OK | - | - | OK | live | high |
 | `fx-sounds.presentation.dp_attenuation` | Client spatialization — DP SND_Spatialize distance gain + emitter follow *(intended)* | OK | OK | OK | OK | OK | live | medium |
 | `fx-sounds.presentation.hitsound_sample` | Hit-confirmation sound sample (HIT registry entry) | OK | ~ | OK | ~ | MISS | live | high |
 
@@ -2259,7 +2262,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `turret-phaser.fire.extra_slow_status` | Port-only layered slow/disability status effect *(intended)* | OK | - | OK | - | - | live | medium |
 | `turret-phaser.audio.beam_sound` | Phaser beam sound (start + 2s re-trigger + silence-on-end) and impact cue | ~ | MISS | MISS | - | MISS | DEAD | high |
 | `turret-phaser.presentation.beam_visual_and_head_anim` | Beam model visual (MDL_TUR_PHASER_BEAM) + head charge/discharge animation (tr_think) | MISS | MISS | MISS | MISS | - | - | high |
-| `turret-phaser.lifecycle.respawn_time` | Death blast + respawn timer | OK | ~ | ~ | - | - | live | high |
+| `turret-phaser.lifecycle.respawn_time` | Death + respawn timer | OK | ~ | ~ | - | - | live | high |
 
 ### `turret-plasma` (turret) — 13 features
 
@@ -2548,21 +2551,22 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `weapon-fireball.burn.model` | Fire damage-over-time (Fire_AddDamage / Fire_ApplyDamage) backing both projectiles' burns | OK | OK | OK | - | - | live | high |
 | `weapon-fireball.bot.obituary` | Bot aim (wr_aim) + kill/suicide obituary lines (FIREMINE vs BLAST) | ~ | ~ | - | ~ | - | ~ | high |
 
-### `weapon-hagar` (weapon) — 11 features
+### `weapon-hagar` (weapon) — 12 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
 | `hagar.primary.attack` | Primary rapid-fire straight rocket stream | OK | OK | OK | OK | OK | live | high |
-| `hagar.secondary.bounce` | Non-loaded secondary: single bouncing rocket | OK | OK | OK | OK | OK | DEAD | high |
-| `hagar.secondary.load_release` | Loaded secondary salvo (release fan + per-shot bias spread) *(intended)* | ~ | OK | ~ | OK | OK | live | high |
-| `hagar.secondary.load_charge_machine` | Hold-to-charge incremental load state machine *(intended)* | MISS | MISS | MISS | MISS | MISS | DEAD | high |
-| `hagar.secondary.load_audio` | Load / beep / warning charge sounds | MISS | - | MISS | - | MISS | DEAD | high |
+| `hagar.secondary.bounce` | Non-loaded secondary: single bouncing rocket | OK | OK | OK | OK | OK | live | high |
+| `hagar.secondary.load_release` | Loaded secondary salvo (release fan + per-shot bias spread) | OK | OK | OK | OK | OK | live | high |
+| `hagar.secondary.load_charge_machine` | Hold-to-charge incremental load state machine | OK | OK | OK | OK | OK | live | high |
+| `hagar.secondary.load_audio` | Load / beep / warning charge sounds | OK | OK | OK | - | OK | live | high |
 | `hagar.damage.shootdown` | Shootable rocket -> burst when shot (W_Hagar_Damage) | OK | OK | OK | OK | OK | live | high |
 | `hagar.explosion.radiusdamage` | Explosion: radius damage + knockback | OK | OK | OK | OK | OK | live | high |
 | `hagar.fx.muzzle_explode_trail` | Muzzle flash, explosion particle, rocket trail, impact sound, bounce spark *(intended)* | OK | OK | OK | OK | OK | live | high |
-| `hagar.hud.load_ring` | Crosshair Hagar load ring | stub | OK | - | stub | - | DEAD | high |
+| `hagar.hud.load_ring` | Crosshair Hagar load ring | OK | OK | - | OK | - | live | high |
 | `hagar.identity` | Weapon identity, flags, models, pickup/switch balance | OK | OK | OK | OK | - | live | high |
-| `hagar.notifications.killmessages` | Burst-vs-spray kill message + suicide message | MISS | - | - | MISS | - | DEAD | medium |
+| `hagar.notifications.killmessages` | Burst-vs-spray kill message + suicide message | OK | - | - | OK | - | live | high |
+| `hagar.load_lifecycle` | Load-state lifecycle: release/give-back on switch-away, death, reset, equip | MISS | MISS | - | - | MISS | - | high |
 
 ### `weapon-hlac` (weapon) — 9 features
 
@@ -2591,7 +2595,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `weapon-hook.primary.remove_reset` | RemoveHook / RemoveGrapplingHooks / reset + shoot-down | ~ | - | OK | - | - | live | medium |
 | `weapon-hook.secondary.gravity_bomb` | Secondary: lob the gravity bomb (W_Hook_Attack2) *(intended)* | OK | OK | OK | OK | OK | live | high |
 | `weapon-hook.secondary.blast_curve` | Secondary blast: duration-spread power-curve pull (W_Hook_ExplodeThink) | OK | OK | OK | ~ | OK | live | high |
-| `weapon-hook.offhand.mutator` | Grappling Hook offhand mutator (g_grappling_hook) | OK | OK | OK | - | - | DEAD | high |
+| `weapon-hook.offhand.mutator` | Grappling Hook offhand mutator (g_grappling_hook) | OK | OK | ~ | - | - | live | high |
 | `weapon-hook.mutator.vampirehook` | Vampire Hook (drain HP while hooked to an enemy) | OK | OK | OK | - | - | live | high |
 | `weapon-hook.presentation.rope_line` | CSQC rope line rendering (Draw_GrapplingHook) | MISS | MISS | MISS | MISS | - | - | high |
 
@@ -2763,7 +2767,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `weapon-vortex.fx.beam` | Charged beam particle (EFFECT_VORTEX_BEAM) with charge-scale + team tint | ~ | ~ | OK | ~ | - | live | high |
 | `weapon-vortex.fx.charge_glow` | Player-model charge glow (wr_glow / vortex_glowcolor) | MISS | - | - | MISS | - | - | high |
 | `weapon-vortex.fx.impact_muzzle` | Impact burst + muzzle flash | OK | OK | OK | OK | OK | live | medium |
-| `weapon-vortex.hud.charge_ring` | Charge ring (+ chargepool inner ring) on the crosshair | stub | OK | - | stub | - | DEAD | high |
+| `weapon-vortex.hud.charge_ring` | Charge ring (+ chargepool inner ring) on the crosshair | OK | OK | OK | OK | - | ~ | high |
 | `weapon-vortex.zoom.secondary_scope` | Secondary = zoom scope (reticle_nex) at stock balance | OK | OK | OK | OK | - | live | high |
 | `weapon-vortex.ammo.reload_checkammo` | Cells ammo, forced reload, checkammo1/2, charge seed *(intended)* | OK | OK | OK | - | - | live | high |
 | `weapon-vortex.achievements` | Yoda (mid-air rail kill) + Impressive (consecutive long-range hit) announcements | OK | - | OK | - | OK | live | high |

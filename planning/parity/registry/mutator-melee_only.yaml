@@ -109,9 +109,9 @@ features:
     divergence_rationale: "Port-only PlayerSpawn handler with no Base counterpart. Base enforces the loadout purely through the start_*/warmup_start_* globals computed once at config; the port's SetStartItems seam covers only the non-warmup spawn path, so this per-spawn re-application is the mechanism that (a) enforces melee_only during WARMUP (where the warmup loadout bypasses SetStartItems and would otherwise grant all-guns+shells) and (b) guarantees the shotgun-only set on every respawn. Same observable loadout as Base, achieved by a port-specific code path."
     gaps: []
     verification:
-      - { kind: code, ref: "OnPlayerSpawn (MeleeOnlyMutator.cs:80-92) live via ClientManager.cs:542 PlayerSpawn.Call (after PutPlayerInServer on every spawn); duplicates/enforces the shotgun-only loadout per spawn", result: pass }
+      - { kind: code, ref: "OnPlayerSpawn (MeleeOnlyMutator.cs:80-92) live via ClientManager.cs:619 PlayerSpawn.Call (after PutPlayerInServer on every spawn); duplicates/enforces the shotgun-only loadout per spawn", result: pass }
     confidence: medium
-    notes: "Unchanged vs baseline (intended_divergence:true). It is NOT inert redundancy: it is the sole enforcer of melee_only's loadout during warmup. See melee_only.loadout.warmup."
+    notes: "Unchanged vs baseline (intended_divergence:true). It is NOT inert redundancy: it is the sole enforcer of melee_only's loadout during warmup. See melee_only.loadout.warmup. Re-audit 2026-06-24: PlayerSpawn.Call ref drifted 542->619 (cosmetic), still the sole live call site."
   - id: melee_only.arena.force_off
     name: "Force weapon arena off (SetWeaponArena -> 'off')"
     layer: [authority]
@@ -206,7 +206,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "OnFilterItemDefinition (MeleeOnlyMutator.cs:115-123) forbids small health/armor; live via StartItem.cs FilterItemDefinition.Call (returns true => RemoveItem)", result: pass }
+      - { kind: code, ref: "OnFilterItemDefinition (MeleeOnlyMutator.cs:115-123) forbids small health/armor; live via StartItem.cs:103 FilterItemDefinition.Call (returns true => RemoveItem)", result: pass }
     confidence: high
     notes: "Unchanged vs baseline (faithful/live). Polarity correct: QC's !MUTATOR_CALLHOOK negation is folded so port-true == forbid. Matches by classname/netname string (port has no item-def identity registry)."
   - id: melee_only.ui.mutator_string_machine

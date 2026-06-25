@@ -5,10 +5,10 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 17
   worst_gaps:
-    - "tka.bot.role STILL BROKEN (top remaining gap): BotObjectiveRoles.FindBall (BotObjectiveRoles.cs:277) queries class 'keepaway_ball' (underscore), but the now-live ball is spawned with classname 'keepawayball' (BallEntity.cs:105, no underscore) — so the bot find always fails and bots fall back to DM. BotObjectiveRoles.cs was NOT touched on this branch. Still no enemy(8000)/sameteam(4000) goalrating split and no Bot_ForbidAttack."
+    - "tka.bot.role STILL BROKEN (top remaining gap): BotObjectiveRoles.FindBall (BotObjectiveRoles.cs:277) queries class 'keepaway_ball' (underscore), but the live ball is spawned with classname 'keepawayball' (BallEntity.cs:105, no underscore) — so the bot find always fails and bots fall back to DM. BotObjectiveRoles.cs was NOT touched by Wave 5 either. Still no enemy(8000)/sameteam(4000) goalrating split and no Bot_ForbidAttack."
     - "Drop triggers other than death are still unwired: only OnDeath calls DropBall. Base also drops on PlayerUseKey, ClientDisconnect, MakePlayerObserver, DropSpecialItems — none on MutatorHooks yet."
     - "Presentation entirely deferred (Wave 3): no TKA_BALLSTATUS HUD mod-icon (ModIconsPanel has no TKA mode), no STAT(TKA_BALLSTATUS) bit-packing on the server, no team-colored carrier/ball waypoints or radar, no respawn/spark particle effects, no carrier-highspeed (g_tka_ballcarrier_highspeed). Multi-ball chaining (g_tka_ballcarrier_maxballs) also unported."
-    - "FIXED THIS PASS: the dead-Tick root cause is closed. GameWorld.cs:1815 now calls `case TeamKeepaway tka: tka.Tick(Simulation.FrameTime); break;` (was CheckPointLimit-only). Tick is now LIVE, so tka.score.bctime + tka.score.timepoints accrue and the carried-ball orbit anim runs. The remaining timepoints sub-gap is only Scores_CountFragsRemaining suppression."
+    - "Re-audited post Wave-5 (commit 66e378f): TeamKeepaway.cs + BallEntity.cs were NOT modified by Wave 5; the only Wave-5 touch near TKA was GameWorld.cs (line-number shifts only) + a new Combat.Heal() in DamageContracts.cs (Onslaught — no TKA impact). All Wave-2 TKA wirings remain live: SpawnBall (GameWorld.cs:639-640), Activate (GameWorld.cs:1687-1688), Tick (GameWorld.cs:2026, ends with CheckPointLimit), winner report (GameWorld.cs:2528-2530), GiveFragsForKill fired (Scores.cs:520), DamageCalculate fired (DamageSystem.cs:256). NO fixes and NO regressions this pass."
 features:
   - id: tka.ball.spawn
     name: "Ball spawn at match start (g_tkaball_count balls)"
@@ -19,7 +19,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/TeamKeepaway.cs:SpawnBall"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/BallEntity.cs:SpawnForGametype"
-      - "src/XonoticGodot.Server/GameWorld.cs:597"
+      - "src/XonoticGodot.Server/GameWorld.cs:639-640"
     constants:
       - { name: "g_tkaball_count", base: "1", port: "1 (single ball; multi-ball loop not modeled)", match: true }
       - { name: "ball_bbox", base: "-24 -24 -24 .. 24 24 24", port: "-24 -24 -24 .. 24 24 24 (BallKind.KeepawayBall)", match: true }
@@ -39,9 +39,9 @@ features:
     gaps:
       - "Single ball only: SpawnBall makes one ball; g_tkaball_count multi-ball chaining (toucher.ballcarried.cnt vs g_tka_ballcarrier_maxballs) not modeled. Default count is 1, so values match the stock server."
       - "Model/EF_DIMLIGHT/trail_color/damageforcescale are set on the sim edict, but the actual glow_trail particle trail + EF_DIMLIGHT light are client/render concerns (Wave 3) — not yet visible."
-      - "Spawn is procedural at map-load (GameWorld.cs:592-599 switch on GameType; TKA case at 597-598), replacing QC tka_Handler_CheckBall's per-frame INITPRIO_GAMETYPE think. There is no game_starttime gate / remove-and-respawn-during-warmup loop, but the net effect (one ball once the match is live) matches."
+      - "Spawn is procedural at map-load (GameWorld.cs:631-642 switch on GameType; TKA case at 639-640), replacing QC tka_Handler_CheckBall's per-frame INITPRIO_GAMETYPE think. There is no game_starttime gate / remove-and-respawn-during-warmup loop, but the net effect (one ball once the match is live) matches."
     verification:
-      - { kind: codetrace, ref: "GameWorld.cs:592-599 post-spawn switch calls tka.SpawnBall(RandomMapLocation) for TeamKeepaway; BallEntity.SpawnForGametype(KeepawayBall) sets classname/model/bbox/effects/damageforcescale then Relocate()", result: pass }
+      - { kind: codetrace, ref: "GameWorld.cs:631-642 post-spawn switch calls tka.SpawnBall(RandomMapLocation) for TeamKeepaway; BallEntity.SpawnForGametype(KeepawayBall) sets classname/model/bbox/effects/damageforcescale then Relocate()", result: pass }
       - { kind: value, ref: "BallConfig.WithKindDefaults(KeepawayBall): bbox +-24, model orbblue.md3, effects 8, trail 254, damageforcescale 2 — all match Base g_tkaball_* defaults", result: pass }
     confidence: high
     notes: "Wave-2 FIX: SpawnBall is now LIVE via the shared BallEntity framework + a GameWorld round-drive seam. A ball exists in a live match; presentation (trail/light) deferred; multi-ball not modeled."
@@ -103,14 +103,14 @@ features:
     divergence_rationale: null
     gaps:
       - "GiveBall is LIVE: BallTouchEntity is the ball's touch handler (registered in the live SpawnBall), so a player touching the loose ball becomes the carrier, with SND_KA_PICKEDUP, INFO/CENTER_KEEPAWAY_PICKUP[_SELF] notifications, the 0.5s self-recapture lockout, AttachToCarrier, and TKA_PICKUPS+1."
-      - "FIXED this pass: the carried-ball orbit anim (Tick -> BallEntity.CarryOrbit, BALL_XYSPEED 100 / XYDIST 24) now runs — GameWorld.cs:1815 calls tka.Tick(Simulation.FrameTime) every frame (was CheckPointLimit-only). The ball orbits the carrier."
+      - "FIXED this pass: the carried-ball orbit anim (Tick -> BallEntity.CarryOrbit, BALL_XYSPEED 100 / XYDIST 24) now runs — GameWorld.cs:2026 calls tka.Tick(Simulation.FrameTime) every frame (was CheckPointLimit-only). The ball orbits the carrier."
       - "No scale 0.75 while carried, no GameRules_scoring_vip equivalent, no alpha-sync invisibility, no multi-ball chaining (this.ballcarried insert + cnt offset)."
       - "World-touch non-player branch plays SND_KA_TOUCH but omits the EFFECT_BALL_SPARKS particle (presentation, Wave 3)."
     verification:
       - { kind: codetrace, ref: "BallTouchEntity (live touch) -> GiveBall: Carrier set, AddCol TKA_PICKUPS, AttachToCarrier, SND_KA_PICKEDUP, 3 notifications, IsRecaptureLocked honored", result: pass }
-      - { kind: codetrace, ref: "Orbit: GameWorld.cs:1815 case TeamKeepaway tka: tka.Tick(Simulation.FrameTime) -> Tick calls BallEntity.CarryOrbit + GametypeEntities.SetOrigin each frame; Tick now has a live caller", result: pass }
+      - { kind: codetrace, ref: "Orbit: GameWorld.cs:2026 case TeamKeepaway tka: tka.Tick(Simulation.FrameTime) -> Tick calls BallEntity.CarryOrbit + GametypeEntities.SetOrigin each frame; Tick now has a live caller", result: pass }
     confidence: high
-    notes: "FIX this pass: orbit anim is now live (the tka.Tick wiring at GameWorld.cs:1815). values:partial kept only because scale 0.75 while carried is still unmodeled. Residual: scale/VIP/sparks/multi-ball unported."
+    notes: "FIX this pass: orbit anim is now live (the tka.Tick wiring at GameWorld.cs:2026). values:partial kept only because scale 0.75 while carried is still unmodeled. Residual: scale/VIP/sparks/multi-ball unported."
 
   - id: tka.ball.drop
     name: "Ball drop on death / use-key / disconnect / observe"
@@ -253,11 +253,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "FIXED this pass (dead->live): the TKA_BCTIME column is DECLARED in Activate (sorts as secondary) and Tick() accrues frametime to TKA_BCTIME (banks whole seconds, carries the fractional remainder, resets the remainder on each new pickup in GiveBall). Tick now has a LIVE caller: GameWorld.cs:1815 `case TeamKeepaway tka: tka.Tick(Simulation.FrameTime); break;` (was CheckPointLimit-only). So with a carrier, TKA_BCTIME accrues each frame."
+      - "FIXED this pass (dead->live): the TKA_BCTIME column is DECLARED in Activate (sorts as secondary) and Tick() accrues frametime to TKA_BCTIME (banks whole seconds, carries the fractional remainder, resets the remainder on each new pickup in GiveBall). Tick now has a LIVE caller: GameWorld.cs:2026 `case TeamKeepaway tka: tka.Tick(Simulation.FrameTime); break;` (was CheckPointLimit-only). So with a carrier, TKA_BCTIME accrues each frame."
     verification:
-      - { kind: codetrace, ref: "TeamKeepaway.Tick (TeamKeepaway.cs:516-522) accrues _bcTimeRemainder + AddCol TKA_BCTIME wholeSecs; live caller GameWorld.cs:1815 case TeamKeepaway tka: tka.Tick(Simulation.FrameTime)", result: pass }
+      - { kind: codetrace, ref: "TeamKeepaway.Tick (TeamKeepaway.cs:516-522) accrues _bcTimeRemainder + AddCol TKA_BCTIME wholeSecs; live caller GameWorld.cs:2026 case TeamKeepaway tka: tka.Tick(Simulation.FrameTime)", result: pass }
     confidence: high
-    notes: "FIX this pass: the single-line round-drive wiring (CheckPointLimit -> Tick) at GameWorld.cs:1815 makes the bctime accrual live. Tick() ends with CheckPointLimit() so the limit check is preserved."
+    notes: "FIX this pass: the single-line round-drive wiring (CheckPointLimit -> Tick) at GameWorld.cs:2026 makes the bctime accrual live. Tick() ends with CheckPointLimit() so the limit check is preserved."
 
   - id: tka.score.timepoints
     name: "Timed possession points to TEAM score (g_tka_score_timepoints)"
@@ -279,12 +279,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "FIXED this pass (dead->live): Tick() accrues g_tka_score_timepoints*dt to the carrier's TEAM score with a fractional remainder (QC float2int_decimal_fld analogue), and Tick is now CALLED every frame on the live path (GameWorld.cs:1815 case TeamKeepaway tka: tka.Tick(Simulation.FrameTime); was CheckPointLimit-only). Default is 0 (off), so still no impact on stock servers, but the feature is now connected rather than dead-wired."
+      - "FIXED this pass (dead->live): Tick() accrues g_tka_score_timepoints*dt to the carrier's TEAM score with a fractional remainder (QC float2int_decimal_fld analogue), and Tick is now CALLED every frame on the live path (GameWorld.cs:2026 case TeamKeepaway tka: tka.Tick(Simulation.FrameTime); was CheckPointLimit-only). Default is 0 (off), so still no impact on stock servers, but the feature is now connected rather than dead-wired."
       - "Residual: Scores_CountFragsRemaining suppression tied to timepoints (announce remaining frags only when timepoints off) is still unported."
     verification:
-      - { kind: codetrace, ref: "TeamKeepaway.Tick (TeamKeepaway.cs:502-512) has the timepoints accrual via ScoreTimePoints (g_tka_score_timepoints) -> AddTeamScore; live caller GameWorld.cs:1815 tka.Tick(Simulation.FrameTime)", result: pass }
+      - { kind: codetrace, ref: "TeamKeepaway.Tick (TeamKeepaway.cs:502-512) has the timepoints accrual via ScoreTimePoints (g_tka_score_timepoints) -> AddTeamScore; live caller GameWorld.cs:2026 tka.Tick(Simulation.FrameTime)", result: pass }
     confidence: high
-    notes: "FIX this pass: same single-line root cause as bctime now resolved (CheckPointLimit -> Tick at GameWorld.cs:1815). Cvar/remainder logic correct and live. Only the Scores_CountFragsRemaining suppression remains."
+    notes: "FIX this pass: same single-line root cause as bctime now resolved (CheckPointLimit -> Tick at GameWorld.cs:2026). Cvar/remainder logic correct and live. Only the Scores_CountFragsRemaining suppression remains."
 
   - id: tka.score.nofrags
     name: "No DM frags (GiveFragsForKill zeroed) + reset_map_global"
@@ -380,8 +380,8 @@ features:
       - "common/gametypes/gametype/tka/tka.qh:gametype_init pointlimit=50 leadlimit=0"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/TeamKeepaway.cs:CheckPointLimit"
-      - "src/XonoticGodot.Server/GameWorld.cs:1815"
-      - "src/XonoticGodot.Server/GameWorld.cs:2291"
+      - "src/XonoticGodot.Server/GameWorld.cs:2026"
+      - "src/XonoticGodot.Server/GameWorld.cs:2530"
     constants:
       - { name: "pointlimit_default", base: "50 (mapinfo; g_tka_point_limit=-1->mapinfo)", port: "50 (DefaultPointLimit)", match: true }
       - { name: "leadlimit_default", base: "0 (g_tka_point_leadlimit -> mapinfo 0)", port: "0 (LeadLimit; now modeled in CheckPointLimit)", match: true }
@@ -396,11 +396,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "CheckPointLimit is LIVE (now reached via tka.Tick at GameWorld.cs:1815, which ends with CheckPointLimit()) and latches WinningTeam at the point limit via the ST_SCORE team leader; reported at GameWorld.cs:2291-2293 on MatchEnded. With the now-working scoring path it can actually trigger in play."
+      - "CheckPointLimit is LIVE (now reached via tka.Tick at GameWorld.cs:2026, which ends with CheckPointLimit()) and latches WinningTeam at the point limit via the ST_SCORE team leader; reported at GameWorld.cs:2528-2530 on MatchEnded. With the now-working scoring path it can actually trigger in play."
       - "Lead limit (g_tka_point_leadlimit / GameRules_limit_lead) is modeled: LeadLimit getter + the leader-vs-second check in CheckPointLimit."
       - "Port PointLimit fallback is literal 50; Base g_tka_point_limit default is -1 (use mapinfo 50). Resolution order (g_tka_point_limit -> fraglimit -> 50) is reasonable."
     verification:
-      - { kind: codetrace, ref: "GameWorld.cs:2291-2293 reports tka.WinningTeam when MatchEnded; CheckPointLimit polled each frame via tka.Tick at :1815 (Tick ends with CheckPointLimit); lead-limit branch present", result: pass }
+      - { kind: codetrace, ref: "GameWorld.cs:2528-2530 reports tka.WinningTeam when MatchEnded; CheckPointLimit polled each frame via tka.Tick at :2026 (Tick ends with CheckPointLimit); lead-limit branch present", result: pass }
     confidence: high
     notes: "Was already live; the limit check is preserved through the Tick wiring change (Tick calls CheckPointLimit). Lead-limit modeling + the live scoring path make the limit actually reachable."
 
@@ -429,9 +429,9 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Team-count clamp (2..4), the override logic (g_tka_teams_override>=2 else g_tka_teams), team-spawn gating (g_tka_team_spawns), and tie->overtime (TeamTie.TopTwoTied on ST_SCORE) are faithfully modeled. Reachable via GameWorld.cs:1513-1514 tka.Activate()."
+      - "Team-count clamp (2..4), the override logic (g_tka_teams_override>=2 else g_tka_teams), team-spawn gating (g_tka_team_spawns), and tie->overtime (TeamTie.TopTwoTied on ST_SCORE) are faithfully modeled. Reachable via GameWorld.cs:1687-1688 tka.Activate()."
     verification:
-      - { kind: codetrace, ref: "tka.Activate() at GameWorld.cs:1513-1514; TeamGame=true; TeamCount clamp 2..4 + override; RequestsTeamSpawns gates g_tka_team_spawns; ReportsTie=TeamTie.TopTwoTied", result: pass }
+      - { kind: codetrace, ref: "tka.Activate() at GameWorld.cs:1687-1688; TeamGame=true; TeamCount clamp 2..4 + override; RequestsTeamSpawns gates g_tka_team_spawns; ReportsTie=TeamTie.TopTwoTied", result: pass }
     confidence: high
     notes: "Unchanged: correctly modeled as a team mode, with the correct g_tka_* cvars."
 

@@ -91,7 +91,7 @@ features:
       - { kind: test, ref: "tests/XonoticGodot.Tests/AntilagTests.cs:SampleAt_* (exact, midpoint, multi-axis, clamps)", result: pass }
       - { kind: code, ref: "AntilagBuffer.cs:77-109 newest->oldest walk + lerp; SampleAt:87 clamps older-than-oldest to oldest", result: pass }
     confidence: high
-    notes: "QC's three-loop wrap search and the port's logical newest->oldest walk are equivalent for the monotonic ring. Edge clamp diverges from QC only past the rewind cap."
+    notes: "QC's three-loop wrap search and the port's logical newest->oldest walk are equivalent for the monotonic ring. Edge clamp diverges from QC only past the rewind cap. RE-VERIFIED post-Wave-5 (2026-06-22): AntilagBuffer.cs is byte-identical to main — Wave-5 touched only Arc.cs/ServerNet.cs in non-antilag regions."
 
   - id: sv-antilag.latency.cap
     name: "ANTILAG_LATENCY = min(0.4, ping); takeback time = time - lag"
@@ -179,7 +179,7 @@ features:
     verification:
       - { kind: code, ref: "WeaponFiring.cs:141 SetupShot uses Api.Trace.TraceLineWarpzone (plain); :146/163/165 plain Trace; no LagComp bracket. Base tracing.qc:46/85/97 use the _antilag variants.", result: fail }
     confidence: high
-    notes: "STILL OPEN after Wave-2 (re-verified 2026-06-22: WeaponFiring.SetupShot at :105-141 is unchanged; the doc comment at :102 still reads 'Still deferred vs QC: antilag, warpzones, the trueaim'). The Wave-2 WeaponFiring edits added tracer/casing/ricochet/woosh FX seams but touched none of the SetupShot traces. SetupShot is called by EVERY weapon (hitscan + every projectile). liveness=dead because the antilag aspect of SetupShot has no code at all in the port; the SetupShot function itself is live, the rewind inside it is absent."
+    notes: "STILL OPEN after Wave-5 (re-verified 2026-06-22: WeaponFiring.SetupShot at :105-172 is unchanged; the doc comment at :102 still reads 'Still deferred vs QC: antilag, warpzones, the trueaim minrange clamp'). The trueaim trace at :141 (TraceLineWarpzone) and the muzzle-nudge traces at :146/163/165 are all plain present-position with NO LagComp bracket. The Wave-2/5 WeaponFiring edits added tracer/casing/ricochet/woosh FX seams but touched none of the SetupShot traces. SetupShot is called by EVERY weapon (hitscan + every projectile). liveness=dead because the antilag aspect of SetupShot has no code at all in the port; the SetupShot function itself is live, the rewind inside it is absent."
 
   - id: sv-antilag.solidmask.corpse
     name: "Shooter dphitcontentsmask -> SOLID|BODY|CORPSE for the duration of the trace"
@@ -339,7 +339,7 @@ features:
     verification:
       - { kind: code, ref: "Arc.cs:301-307 wraps the per-frame damage Trace in LagComp.Begin(actor)/End(); LagComp.Provider installed at ServerNet.cs:298; BeginLagComp (ServerNet.cs:2058) rewinds players+monsters+nades at the shooter's ANTILAG_LATENCY takeback time — the same machinery FireBullet uses. BeamTick is reached on the live primary/burst-beam fire path (Arc.cs:176).", result: pass }
     confidence: high
-    notes: "WAVE-2 FIX (closes the baseline gap). The Arc beam's per-frame damage trace is now bracketed by the SHARED LagComp facade rather than a custom path, so it reuses the verified ServerNet takeback (gated on g_antilag==2, honors cl_noantilag, no-op on bot-only/test). No-op when no provider is installed, so bot-only/test behavior is unchanged. The port still collapses Base's bezier-segmented beam into a single straight trace (a pre-existing render-side divergence tracked elsewhere, NOT an antilag gap). antilag_takebackavgvelocity (the Arc beam-teleport velocity helper) remains unported, but its only Base SVQC use — multijump.qc:95 — is itself commented out, so the live velocity path is matched."
+    notes: "WAVE-2 FIX (closes the baseline gap), RE-VERIFIED post-Wave-5 (bracket at Arc.cs:301-307 survived the Wave-5 Arc edits untouched; BeamTick reached live at Arc.cs:176). The Arc beam's per-frame damage trace is now bracketed by the SHARED LagComp facade rather than a custom path, so it reuses the verified ServerNet takeback (gated on g_antilag==2, honors cl_noantilag, no-op on bot-only/test). No-op when no provider is installed, so bot-only/test behavior is unchanged. The port still collapses Base's bezier-segmented beam into a single straight trace (a pre-existing render-side divergence tracked elsewhere, NOT an antilag gap). antilag_takebackavgvelocity (the Arc beam-teleport velocity helper) remains unported, but its only Base SVQC use — multijump.qc:95 — is itself commented out, so the live velocity path is matched."
 
   - id: sv-antilag.melee.secondary
     name: "Shotgun melee secondary trace is antilagged"
@@ -364,4 +364,4 @@ features:
     verification:
       - { kind: code, ref: "Shotgun.cs:238 Melee uses Api.Trace.Trace (MoveFilter.Normal) with NO LagComp bracket; Base shotgun.qc:124 W_Shotgun_Melee_Think uses WarpZone_traceline_antilag", result: fail }
     confidence: high
-    notes: "STILL OPEN after Wave-2. The Wave-2 shotgun edit added the per-swing woosh FX (MeleeWoosh) and the HITTYPE_SECONDARY slap obituary around this same trace, but did NOT add an antilag bracket — the trace at Shotgun.cs:238 is unchanged plain present-position. Short-range melee, so the latency error is small in absolute units but real. liveness=na (no antilag code on this path)."
+    notes: "STILL OPEN after Wave-5. The Wave-2 shotgun edit added the per-swing woosh FX (MeleeWoosh) and the HITTYPE_SECONDARY slap obituary around this same trace, but did NOT add an antilag bracket — the trace at Shotgun.cs:245 (Api.Trace.Trace, MoveFilter.Normal) is unchanged plain present-position. WARNING: the Shotgun.cs class docstring (Shotgun.cs:22) was edited to claim 'antilag take-back on the melee/setup traces', but that is ASPIRATIONAL — no LagComp.Begin/End wraps the melee trace; the claim is false. Short-range melee, so the latency error is small in absolute units but real. liveness=na (no antilag code on this path)."

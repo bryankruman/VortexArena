@@ -5,11 +5,11 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 13
   worst_gaps:
-    - "Player-deployed waypoints (personal/here/danger pings + team HELP-ME) are STILL DEAD: no server impulse dispatch; deploy/attach/helpme API has zero callers (re-verified by repo-wide grep post Wave-1/2)."
-    - "Server WaypointSprite_* manager API remains DEAD: Spawn/AttachCarrier/UpdateHealth/HelpMePing/Ping/Disown/Kill all still have zero callers; the gametype producers build WaypointSprite records directly and bypass the manager entirely."
-    - "Objective emit still narrow: Wave-2 added Domination control points (now LIVE), but Onslaught/KeyHunt/Assault/Keepaway/Nexball/Race/FreezeTag/LMS/itemstime/monster/turret/weapon/vehicle/buff markers are all still missing."
-    - "Client tuning cvars are still inert: WaypointSpriteLayer hardcodes constants; g_waypointsprite_* and cl_hidewaypoints (incl. the menu bindings) have no effect."
-    - "Presentation fades still missing: distance-fade, edge-fade, crosshair-fade, per-sprite scale, text/uppercase toggle, radar ping ring all unimplemented."
+    - "Server WaypointSprite_* manager API is now LIVE for player-deployed pings (DeployFixed/DeployPersonal/Attach/Clear*/HelpMePing wired through Commands.cs), but the OBJECTIVE-marker lifecycle (Spawn/SpawnFixed/AttachCarrier/UpdateHealth/UpdateSprites/UpdateRule/Ping/Disown/Kill) still has zero callers — the gametype producers build WaypointSprite records directly via CollectWaypoints and bypass the manager."
+    - "Objective emit still narrow: CTF + Domination + FreezeTag now emit live; Onslaught/KeyHunt/Assault/Keepaway/Nexball/Race/LMS/itemstime/monster/turret/weapon/vehicle/buff markers are still missing."
+    - "Visibility filter still narrow: SPRITERULE_DEFAULT team-restriction and the sv_itemstime gating of SPRITERULE_SPECTATOR are still unmodeled; the TEAMPLAY three-image (netname/2/3) audience swap is absent."
+    - "Presentation fades still partial: distance-fade, edge-fade and crosshair-fade alpha/scale ramps remain unimplemented (only lifetime fade + a single max-distance ramp + helpme blink). Per-def blink (now correct in the registry) is still not applied at draw time. Radar ping ring pulse still a no-op."
+    - "Carrier health bar + auto-helpme-on-hit on CTF flag carriers still absent (AttachCarrier dead)."
 features:
   - id: waypoints.registry.defs
     name: "Waypoint-kind registry (WP_* defs: text/icon/color/blink)"
@@ -22,6 +22,7 @@ features:
     constants:
       - { name: "def_count", base: "63 (all.inc) + Null + ~12 RadarIcons", port: "63 (Waypoints.cs Build) — all REGISTER_WAYPOINT names present", match: true }
       - { name: "WP_FROZEN_COLOR", base: "0.25 0.9 1", port: "0.25 0.9 1", match: true }
+      - { name: "def text strings", base: "_(\"White base\"/\"Red base\"/\"Enemy carrier\"/\"Return flag here\"/\"Run here\"/\"DANGER\"/\"Tagged\")", port: "matched line-by-line", match: true }
       - { name: "OnsCPDefend / OnsCPAttack / Seeker blink", base: "0.5 / 2 / 2", port: "0.5 / 2 / 2", match: true }
       - { name: "FlagReturn blink (spritelookupblinkvalue override)", base: "2", port: "2 (baked into def)", match: true }
       - { name: "blink default", base: "1", port: "1", match: true }
@@ -36,41 +37,46 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Wave-2 closed the def gap: all 63 REGISTER_WAYPOINT names are now present with matching text/icon/color, and the static per-def blink values (OnsCPDefend 0.5, OnsCPAttack 2, Seeker 2, FlagReturn 2) are correct. KeyCarrierFriend/KeyCarrierFinish added (the prior 25-def deficit is resolved)."
-      - "Only residual: the wp_extra-DRIVEN spritelookupblinkvalue overrides (superweapon Weapon=2, Item=item.m_waypointblink) are not modeled — Weapon's def blink is a flat 1 and there is no per-instance wp_extra blink lookup. Harmless while those producers are absent."
-      - "liveness: partial — most defs are reachable only once their gametype emits waypoints (only CTF + Domination do), so the bulk of the newly-added defs are not exercised on the live path yet."
+      - "Residual: the wp_extra-DRIVEN spritelookupblinkvalue overrides (superweapon Weapon=2, Item=item.m_waypointblink) are not modeled — Weapon's def blink is a flat 1 and there is no per-instance wp_extra blink lookup. Harmless while those producers are absent."
+      - "liveness: partial — most defs are reachable only once their gametype emits waypoints; CTF + Domination + FreezeTag + the player-deployed pings (Waypoint/Here/Danger/Helpme) now exercise their defs, but the bulk (Ons/KH/KA/NB/Race/LMS/items/vehicles/monsters/buffs) are not on the live path yet."
     verification:
-      - { kind: code-read, ref: "all.inc (63 REGISTER_WAYPOINT) vs WaypointRegistry.Build (63 Add(...)) — names/text/icon/color/blink line-by-line", result: pass }
+      - { kind: code-read, ref: "all.inc (63 REGISTER_WAYPOINT) vs WaypointRegistry.Build (63 Add(...)) — names/text/icon/color/blink line-by-line; texts now match (Wave-5)", result: pass }
     confidence: high
-    notes: "FIX vs baseline: the registry is now a faithful 1:1 port of all.inc (was 38/63 with blink flattened). Defs that exist are faithful; the only open item is the per-instance wp_extra blink (Weapon/Item), which matters only once those producers emit."
+    notes: "FIX vs baseline: def TEXT strings now also faithful (prior baseline still flagged \"White base\"/etc. as matched names but the live text was correct after Wave-5). The only open item is the per-instance wp_extra blink (Weapon/Item)."
 
   - id: waypoints.server.manager_api
     name: "Server WaypointSprite_* spawn/update/kill API + manager"
     layer: [authority]
     base_refs:
       - "common/mutators/mutator/waypoints/waypointsprites.qc:WaypointSprite_Spawn"
+      - "common/mutators/mutator/waypoints/waypointsprites.qc:WaypointSprite_DeployFixed"
       - "common/mutators/mutator/waypoints/waypointsprites.qc:WaypointSprite_Kill"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs:WaypointSprites"
-    constants: []
+      - "src/XonoticGodot.Server/Commands.cs:WaypointDeployFixed"
+      - "src/XonoticGodot.Server/GameWorld.cs:524"
+      - "src/XonoticGodot.Server/GameWorld.cs:1420"
+    constants:
+      - { name: "sv_waypointsprite_deployed_lifetime", base: "10", port: "10 (config + Cvar fallback)", match: true }
+      - { name: "sv_waypointsprite_deadlifetime", base: "1", port: "1", match: true }
+      - { name: "sv_waypointsprite_limitedrange", base: "5120", port: "5120", match: true }
     status:
       logic: partial
-      values: partial
+      values: faithful
       timing: faithful
       presentation: na
       audio: na
-      liveness: dead
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL DEAD: Spawn/SpawnFixed/AttachCarrier/UpdateSprites/UpdateHealth/UpdateRule/UpdateTeamRadar/UpdateBuildFinished/UpdateMaxHealth/HelpMePing/Ping/Disown/Kill/DetachCarrier still have ZERO callers; _active is always empty."
-      - "Only Reset() (map load) and Think() (per tick) are invoked — both no-op on the empty list."
-      - "The live objective producers (Ctf.CollectWaypoints, Domination.CollectWaypoints) construct WaypointSprite records directly into the net scratch list and bypass this manager entirely, so the deploy/attach/lifetime/build-progress lifecycle is unreachable."
-      - "sv_waypointsprite_deployed_lifetime/deadlifetime/limitedrange never read (consumers dead); no WaypointSprite_Init analogue."
+      - "The DEPLOY + CLEAR + HELPME slice is now LIVE: DeployFixed/DeployPersonal/Attach/ClearPersonal/ClearOwned/HelpMePing are called from Commands.cs (the waypoint_* client commands), Reset() on map load (GameWorld.cs:524) and Think() per tick (GameWorld.cs:1420) run, and SendWaypoints merges WaypointSprites.Active per peer. The deploy/attach/lifetime/fade lifecycle is exercised."
+      - "STILL DEAD (objective path): SpawnFixed/AttachCarrier/UpdateSprites/UpdateHealth/UpdateRule/UpdateTeamRadar/UpdateBuildFinished/UpdateMaxHealth/Ping/Disown/Kill/DetachCarrier have zero live callers — the gametype producers (Ctf/Domination/FreezeTag CollectWaypoints) construct WaypointSprite records directly into the net scratch list and never touch the manager for objectives."
+      - "Build-progress health (BuildFinished ramp in Think) has no live producer (UpdateBuildFinished dead)."
     verification:
-      - { kind: code-read, ref: "repo-wide grep 'WaypointSprites.(Spawn|SpawnFixed|AttachCarrier|UpdateSprites|UpdateHealth|UpdateRule|UpdateTeamRadar|UpdateBuildFinished|UpdateMaxHealth|Ping|HelpMePing|Disown|Kill|DetachCarrier|DeployFixed|DeployPersonal|Attach)' → ZERO matches post Wave-1/2", result: fail }
+      - { kind: code-read, ref: "grep callers → Commands.cs:336/1371/1377/1383/1394/1399 (Deploy/Attach/Clear) + GameWorld.cs:524/1420 (Reset/Think); objective Update*/Spawn*/AttachCarrier → ZERO non-test callers", result: partial }
     confidence: high
-    notes: "NO CHANGE vs baseline. Wave-2 added objective producers but they emit WaypointSprite records directly (ServerNet.SendWaypoints merges WaypointSprites.Active with the gametype CollectWaypoints pull); WaypointSprites.Active is still always empty. Classic present-but-dead lifecycle."
+    notes: "FIX vs baseline (was logic:partial liveness:dead): the player-deploy half of the API is now live with Base-matching cvar constants. The objective-marker half remains present-but-dead because producers bypass it."
 
   - id: waypoints.gametype.collect
     name: "Per-tick objective waypoint emit (per gametype)"
@@ -82,6 +88,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameplayBases.cs:CollectWaypoints"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:CollectWaypoints"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:CollectWaypoints"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:CollectWaypoints"
     constants: []
     status:
       logic: partial
@@ -93,13 +100,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Wave-2 added Domination control-point markers (LIVE via ServerNet.SendWaypoints:924 → GameType.CollectWaypoints): one fixed DomNeut/DomRed/Blue/Yellow/Pink marker per point at origin+'0 0 32', radar tint = team palette color. So CTF + Domination now emit (was CTF-only)."
-      - "Still missing: Onslaught control points + generators, Key Hunt keys + carriers, Assault defend/destroy/push, Keepaway/TeamKeepaway/Nexball balls + goals, Race start/finish/checkpoint, LMS leader, FreezeTag frozen/reviving markers (base no-op CollectWaypoints)."
+      - "Three live objective producers now: CTF (flag base/dropped/carrier), Domination (control-point markers), and FreezeTag (Frozen/Reviving overhead sprites with thaw-progress health bars) — all reached via ServerNet.SendWaypoints:924 → GameType.CollectWaypoints per tick (was CTF-only at baseline, CTF+Dom mid-wave)."
+      - "Still missing: Onslaught control points + generators, Key Hunt keys + carriers, Assault defend/destroy/push, Keepaway/TeamKeepaway/Nexball balls + goals, Race start/finish/checkpoint, LMS leader (base no-op CollectWaypoints)."
       - "itemstime (item-respawn) spectator waypoints, monster/turret/weapon/vehicle/buff markers: none."
     verification:
-      - { kind: code-read, ref: "grep 'override.*CollectWaypoints' → Ctf.cs + Domination.cs; both reached via ServerNet.SendWaypoints per tick", result: partial }
+      - { kind: code-read, ref: "grep 'override.*CollectWaypoints' → Ctf.cs:345 + Domination.cs:450 + FreezeTag.cs:561; all reached via ServerNet.SendWaypoints per tick", result: partial }
     confidence: high
-    notes: "PARTIAL FIX vs baseline: a second live objective producer (Domination) was added. Still a CTF/Dom-first scope; most gametypes' objective markers remain absent."
+    notes: "PARTIAL FIX vs baseline: FreezeTag added as a third live producer (frozen/reviving markers + health bar). Still a CTF/Dom/FT-first scope; most gametypes' objective markers remain absent."
 
   - id: waypoints.ctf.flag_markers
     name: "CTF flag waypoint sprites (base/dropped/carrier state machine)"
@@ -121,13 +128,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No flag-carrier HEALTH BAR (QC WaypointSprite_AttachCarrier sets one from healtharmor_maxdamage; the port's CollectWaypoints still sets Health=-1 and AttachCarrier is dead). UNCHANGED."
-      - "No auto-helpme on carrier hit (g_ctf_flagcarrier_auto_helpme_damage 100) — depends on the dead helpme path. UNCHANGED."
-      - "Enemy-flagcarrier waypoint reveal on stalemate not wired: Ctf.Stalemate state was added (Wave-2) but the QC ctf_stalemate enemy-FC waypoint reveal is still a 'presentation follow-on (see todos)' per the code comment — markers are not produced from the stalemate state."
+      - "No flag-carrier HEALTH BAR (QC WaypointSprite_AttachCarrier sets one from 2*healtharmor_maxdamage; the port's CollectWaypoints still sets Health=-1 and AttachCarrier is dead). UNCHANGED."
+      - "No auto-helpme on carrier hit (g_ctf_flagcarrier_auto_helpme_damage 100) — depends on the dead AttachCarrier/HelpMePing-on-carrier path. UNCHANGED."
+      - "Enemy-flagcarrier waypoint reveal on stalemate not wired: the QC ctf_stalemate enemy-FC waypoint reveal is still not produced from the port's stalemate state. UNCHANGED."
     verification:
       - { kind: code-read, ref: "Ctf.CollectWaypoints (Health=-1, FlagBase/Dropped/CarrierEnemy + suffix) → SendWaypoints → ClientNet → WaypointSpriteLayer/RadarPanel chain", result: pass }
     confidence: medium
-    notes: "The original live producer; State→def mapping (AtBase/Dropped/Carried × team suffix) faithful. Carrier health bar + auto-helpme + stalemate enemy-FC reveal still absent. Rendering observed only in code, not runtime."
+    notes: "The original live producer; State→def mapping (AtBase/Dropped/Carried x team suffix) faithful. Carrier health bar + auto-helpme + stalemate enemy-FC reveal still absent. Rendering observed only in code, not runtime."
 
   - id: waypoints.deploy.personal_here_danger
     name: "Player-deployed pings (waypoint_personal/here/danger impulses)"
@@ -136,51 +143,65 @@ features:
       - "server/impulse.qc:IMPULSE(waypoint_personal_here)"
       - "server/impulse.qc:IMPULSE(waypoint_here_here)"
       - "server/impulse.qc:IMPULSE(waypoint_danger_here)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Server/Commands.cs:CmdWaypointDeploy"
+      - "src/XonoticGodot.Server/Commands.cs:596 (Register waypoint_*)"
+      - "src/XonoticGodot.Server/ClientCommandRegistry.cs:74"
+      - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs:DeployFixed"
+      - "game/hud/QuickMenuPanel.cs:261"
     constants:
-      - { name: "sv_waypointsprite_deployed_lifetime", base: "10", port: "none", match: false }
-      - { name: "sv_waypointsprite_limitedrange", base: "5120", port: "none", match: false }
+      - { name: "WP_Waypoint / WP_Here / WP_Danger mapping", base: "personal→WP_Waypoint, here→WP_Here, danger→WP_Danger", port: "same (CmdWaypointDeploy switch)", match: true }
+      - { name: "sv_waypointsprite_deployed_lifetime", base: "10", port: "10", match: true }
+      - { name: "sv_waypointsprite_limitedrange", base: "5120", port: "5120", match: true }
+      - { name: "sprint feedback strings", base: "\"personal waypoint spawned at location\" / \"HERE/DANGER spawned at location\"", port: "matched", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL no server dispatch for waypoint_personal_here/_crosshair/_death, waypoint_here_*, waypoint_danger_*, waypoint_clear*. Strings appear only as QuickMenuPanel say_team macro text (QuickMenuPanel.cs:261-284); the server never routes them to DeployPersonal/DeployFixed."
+      - "Origin nuance: the port routes ALL personal/here/danger variants (_here/_crosshair/_death) to the player's feet origin (p.Origin). Base distinguishes them — _crosshair uses the crosshair world-trace endpoint, _death uses the death spot. Minor partial: the marker lands at the player instead of the aimed point for the _crosshair/_death verbs (which QuickMenu does emit)."
+      - "Personal waypoint visibility is owner-only via VisibleForPlayer predicate (matches QC showto=own)."
     verification:
-      - { kind: code-read, ref: "grep waypoint_personal/here/danger across repo → only QuickMenuPanel text + spec/registry docs; no server impulse handler", result: fail }
+      - { kind: code-read, ref: "QuickMenuPanel macro → CommandSink (NetGame:1439 → RunCommand → MenuState.Interp.ExecuteLine) → ConfigInterpreter.RouteUnknown → ConsoleCommands.RouteUnknown → LocalRouteCommand/SendStringCommand → Commands.Execute → CmdWaypointDeploy → WaypointSprites.DeployFixed/DeployPersonal; verbs allowlisted in ClientCommandRegistry; bind b/F8 quickmenu", result: pass }
     confidence: high
-    notes: "NO CHANGE vs baseline. The impulse handlers were never ported; the (now-richer) registry has the Waypoint/Here/Danger/Helpme defs but nothing deploys them."
+    notes: "FIX vs baseline (was missing/dead on all dimensions): the full deploy chain is now LIVE end-to-end with Base-matching sprite mapping, lifetime/range constants and sprint strings. Residual: the _crosshair/_death origin trace is not modeled (all land at the player)."
 
   - id: waypoints.deploy.helpme
     name: "Team HELP-ME attach + ping (waypoint_here_follow)"
     layer: [authority]
     base_refs:
       - "server/impulse.qc:IMPULSE(waypoint_here_follow)"
+      - "common/mutators/mutator/waypoints/waypointsprites.qc:WaypointSprite_Attach"
       - "common/mutators/mutator/waypoints/waypointsprites.qc:WaypointSprite_HelpMePing"
     port_refs:
+      - "src/XonoticGodot.Server/Commands.cs:WaypointDeployHelpme"
+      - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs:Attach"
       - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs:HelpMePing"
     constants:
-      - { name: "SPRITE_HELPME_BLINK", base: "2", port: "0.45 dim (different scheme)", match: false }
+      - { name: "teamplay + alive gate", base: "if(!teamplay) return; if(IS_DEAD) return;", port: "same (CmdWaypointDeploy Helpme case)", match: true }
+      - { name: "FC guard", base: "Attach returns NULL if waypointsprite_attachedforcarrier (can't attach to FC)", port: "Attach refuses + pings the existing carrier marker's helpme", match: true }
+      - { name: "attach offset / lifetime", base: "'0 0 64' / deployed_lifetime", port: "'0 0 64' / 10", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: stub
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL no waypoint_here_follow dispatch; WaypointSprite_Attach(WP_Helpme) + HelpMePing never called. The helpme flash exists in the client layer but no waypoint ever sets Helpme>0 (HelpmeUntil only set by the dead HelpMePing)."
+      - "Helpme is networked as a boolean flag (HelpmeUntil > now) and the client draws a bright/dim flash; QC's SPRITE_HELPME_BLINK *2 bright-half multiply differs from the port's 0.45 dim-half multiply (cosmetic blink-scheme divergence, see waypoints.client.fades)."
+      - "The MUTATOR_CALLHOOK(HelpMePing) extension point (mutators overriding helpme, e.g. nades) is not modeled — the port attaches WP_Helpme unconditionally in teamplay."
     verification:
-      - { kind: code-read, ref: "grep HelpMePing callers across repo → none", result: fail }
+      - { kind: code-read, ref: "waypoint_here_follow registered (Commands.cs:602) + allowlisted; CmdWaypointDeploy Helpme → WaypointDeployHelpme → WaypointSprites.Attach(\"Helpme\", ...) → HelpMePing; networked via SendWaypoints HelpmeUntil>now byte", result: pass }
     confidence: high
-    notes: "NO CHANGE vs baseline. Core teamplay communication feature is still non-functional."
+    notes: "FIX vs baseline (was missing/dead): the HELP-ME teamplay-communication path is now live — attach-with-FC-guard + helpme flash, both teamplay-gated and alive-gated as in Base."
 
   - id: waypoints.visibility.rules
     name: "Per-peer visibility filter (SPRITERULE_DEFAULT/TEAMPLAY/SPECTATOR)"
@@ -202,13 +223,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "SPRITERULE_DEFAULT: port (ServerNet.WaypointVisible:979) returns visible-to-everyone unconditionally; QC (waypointsprites.qc:996) restricts a team-set Default waypoint to the same team AND requires the viewer be a live player (not a spectator). UNCHANGED."
-      - "SPRITERULE_SPECTATOR: port = observer-only (peer.IsObserver). QC gates on sv_itemstime: hides from EVERYONE when sv_itemstime==0, shows to live players in warmup or when sv_itemstime==2. Port ignores sv_itemstime entirely. UNCHANGED."
-      - "Personal-waypoint (this.enemy/showto) restriction not modeled (no deployed personals exist anyway). UNCHANGED."
+      - "Personal-waypoint (showto = owner) restriction is now modeled: DeployPersonal sets VisibleForPlayer = owner-only and WaypointVisible (ServerNet.cs:974) honors the predicate before the rule switch. NEW since baseline."
+      - "SPRITERULE_DEFAULT: port (ServerNet.WaypointVisible:979) returns visible-to-everyone unconditionally; QC restricts a team-set Default waypoint to the same team AND requires the viewer be a live player. UNCHANGED."
+      - "SPRITERULE_SPECTATOR: port = observer-only (peer.IsObserver). QC gates on sv_itemstime (hide from everyone when ==0, show in warmup or when ==2). Port ignores sv_itemstime. UNCHANGED."
     verification:
-      - { kind: code-read, ref: "ServerNet.WaypointVisible (Teamplay/Spectator/Default switch) vs WaypointSprite_visible_for_player", result: partial }
+      - { kind: code-read, ref: "ServerNet.WaypointVisible (VisibleForPlayer predicate, then Teamplay/Spectator/Default switch) vs WaypointSprite_visible_for_player", result: partial }
     confidence: high
-    notes: "NO CHANGE vs baseline. Correct for CTF flags + Domination points (everyone-visible Default). Latent bug if team-restricted Default waypoints or spectator/itemstime waypoints are added."
+    notes: "PARTIAL FIX: the personal-waypoint owner-only predicate is now wired (needed by the live DeployPersonal). Correct for CTF flags + Domination + personal pings; latent bugs remain for team-restricted Default and spectator/itemstime waypoints."
 
   - id: waypoints.visibility.three_image_rule
     name: "TEAMPLAY three-image per-audience swap (netname/2/3)"
@@ -258,9 +279,9 @@ features:
       - "No SendFlags delta encoding (always sends all fields); QC sends only changed sub-fields. Bandwidth-only difference. UNCHANGED."
       - "wp_extra (item/weapon/buff id used for client text/color/blink lookup) not networked — fine while those producers are absent. UNCHANGED."
     verification:
-      - { kind: code-read, ref: "SendWaypoints/HandleWaypoints round-trip; merges WaypointSprites.Active + GameType.CollectWaypoints; called at ServerNet.cs:920 per tick", result: pass }
+      - { kind: code-read, ref: "SendWaypoints/HandleWaypoints round-trip; merges WaypointSprites.Active + GameType.CollectWaypoints; called at ServerNet.cs:920 per tick; Helpme + per-peer VisibleForPlayer now carried", result: pass }
     confidence: high
-    notes: "Live for CTF + Domination. Format diverges deliberately; functionally equivalent for the fields used."
+    notes: "Live for CTF + Domination + FreezeTag + player-deployed pings/helpme. Format diverges deliberately; functionally equivalent for the fields used."
 
   - id: waypoints.client.draw
     name: "3D in-world sprite draw (icon/text + arrow + project)"
@@ -271,27 +292,29 @@ features:
     port_refs:
       - "game/client/WaypointSpriteLayer.cs:_Draw"
     constants:
-      - { name: "iconsize", base: "32", port: "24 (hardcoded)", match: false }
-      - { name: "fontsize", base: "12", port: "13 (hardcoded)", match: false }
-      - { name: "edgeoffset_*", base: "0.06 (cvar)", port: "0.06 (hardcoded const)", match: true }
-      - { name: "SPRITE_ARROW_SCALE", base: "1", port: "approx (custom arrow)", match: false }
+      - { name: "iconsize", base: "32 (g_waypointsprite_iconsize)", port: "32 live (24 headless fallback)", match: true }
+      - { name: "fontsize", base: "12 (g_waypointsprite_fontsize)", port: "12 live (13 headless fallback)", match: true }
+      - { name: "edgeoffset_*", base: "0.06 (cvar)", port: "0.06 (cvar, live)", match: true }
+      - { name: "g_waypointsprite_uppercase", base: "1", port: "1 (live)", match: true }
+      - { name: "g_waypointsprite_text", base: "0", port: "0 (live)", match: true }
+      - { name: "SPRITE_ARROW_SCALE", base: "1", port: "approx (custom triangle arrow)", match: false }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: faithful
       presentation: partial
       audio: na
       liveness: live
-    intended_divergence: true
-    divergence_rationale: "IconSize 24 / FontSize 13 are a deliberate 'gently smaller than QC' tweak (per the code comment). The off-screen arrow uses a simpler triangle than QC's bordered glyph but serves the same purpose."
+    intended_divergence: false
+    divergence_rationale: null
     gaps:
-      - "g_waypointsprite_text / _uppercase / _iconcolor toggles unimplemented (always icon-if-present, mixed-case, white icon). UNCHANGED."
-      - "cl_hidewaypoints (0/1/2) and hideflags & 1 (fixed) / & 2 (radar-only) gating not honored (Hideable networked but never consulted). UNCHANGED."
-      - "No per-sprite scale (waypointsprite_scale / minscale) at all. UNCHANGED."
+      - "g_waypointsprite_text / _uppercase / _iconsize / _fontsize / _scale / _alpha / _edgeoffset_* are now READ LIVE (Wave-5) and take effect; cl_hidewaypoints 0/1/2 + hideflag&1 (Hideable) gating is now honored. FIX."
+      - "g_waypointsprite_iconcolor still hardcoded white (QC iconcolor 0 default → white, so faithful at default; the non-zero tint option is not modeled). Minor."
+      - "The off-screen arrow is a simpler filled triangle than QC's bordered glyph (cosmetic). UNCHANGED."
     verification:
-      - { kind: code-read, ref: "WaypointSpriteLayer._Draw (const EdgeInset/IconSize/FontSize) vs Draw_WaypointSprite; file untouched by Wave-1/2", result: partial }
+      - { kind: code-read, ref: "WaypointSpriteLayer._Draw now reads g_waypointsprite_* + cl_hidewaypoints via Api.Cvars; iconSize/fontSize resolve to 32/12 live; uppercase/forceText/edgeoffsets applied", result: pass }
     confidence: high
-    notes: "NO CHANGE vs baseline. Live + renders CTF flags + Domination points; icon/text/arrow present; many cvar-driven knobs hardcoded or absent."
+    notes: "FIX vs baseline: the icon/font sizes now match Base (32/12) live, and the text/uppercase/scale/alpha/edgeoffset + cl_hidewaypoints knobs are wired. Off-screen arrow glyph still simplified."
 
   - id: waypoints.client.fades
     name: "Distance / edge / crosshair / lifetime fades + blink"
@@ -303,6 +326,7 @@ features:
       - "game/client/WaypointSpriteLayer.cs:_Draw"
     constants:
       - { name: "distancealphaexponent", base: "2", port: "2 (hardcoded in maxdist ramp)", match: true }
+      - { name: "g_waypointsprite_alpha", base: "1", port: "1 (live; multiplies final alpha)", match: true }
       - { name: "distancefade{alpha,scale,distmult}", base: "1 / 0.7 / 0.5", port: "none", match: false }
       - { name: "edgefade{alpha,dist,scale}", base: "0.5 / 50 / 1", port: "none", match: false }
       - { name: "crosshairfade{alpha,dist,scale}", base: "0.25 / 150 / 1", port: "none", match: false }
@@ -317,13 +341,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "distance-fade, edge-fade, crosshair-fade (alpha+scale ramps) entirely unimplemented; only a raw max-distance cull + a single distance ramp. UNCHANGED."
+      - "distance-fade, edge-fade, crosshair-fade (alpha+scale ramps) still entirely unimplemented; only a raw max-distance cull + a single distance ramp (exponent 2) + the live g_waypointsprite_alpha multiply. UNCHANGED."
       - "Lifetime fade is server-computed (FadeAlpha) and networked rather than client-computed from fadetime/lifetime**timealphaexponent; timealphaexponent (1) not applied. UNCHANGED."
       - "Blink: only helpme dim-flash modeled (0.45 in the off-half), differing from QC's *2 bright-half scheme; per-def blink (now correct in the registry) is NOT applied at draw time. UNCHANGED."
     verification:
-      - { kind: code-read, ref: "WaypointSpriteLayer fade block vs Draw_WaypointSprite fade block; file untouched by Wave-1/2", result: partial }
+      - { kind: code-read, ref: "WaypointSpriteLayer fade block: lifetime(Fade)*globalAlpha*maxdist-ramp(pow 2)*helpme-flash; no edge/crosshair/distance-fade ramps", result: partial }
     confidence: high
-    notes: "NO CHANGE vs baseline. The registry now carries correct per-def blink, but the client draw layer does not consume it; most of the polish layer (fades/scales) remains missing."
+    notes: "PARTIAL FIX: g_waypointsprite_alpha is now applied live; the rest of the polish layer (distance/edge/crosshair fades, per-def blink at draw, helpme blink scheme) remains missing/divergent."
 
   - id: waypoints.client.cvars_inert
     name: "Client tuning cvars (g_waypointsprite_*, cl_hidewaypoints) wiring"
@@ -332,26 +356,29 @@ features:
       - "common/mutators/mutator/waypoints/waypointsprites.qc:WaypointSprite_Load"
       - "xonotic-client.cfg:g_waypointsprite_alpha"
     port_refs:
+      - "game/client/WaypointSpriteLayer.cs:CvarF"
       - "game/menu/dialogs/DialogSettingsGame.cs:228"
       - "assets/data/xonotic-data.pk3dir/xonotic-client.cfg:502"
     constants:
-      - { name: "g_waypointsprite_alpha", base: "1", port: "config default present, READ BY NOTHING", match: false }
-      - { name: "cl_hidewaypoints", base: "0", port: "config default present, READ BY NOTHING", match: false }
+      - { name: "g_waypointsprite_alpha", base: "1", port: "1 (config default, READ LIVE by WaypointSpriteLayer)", match: true }
+      - { name: "g_waypointsprite_iconsize/fontsize/scale/text/uppercase/edgeoffset_*", base: "32/12/1/0/1/0.06", port: "same, READ LIVE", match: true }
+      - { name: "cl_hidewaypoints", base: "0", port: "0 (config default, READ LIVE: 0/1/2)", match: true }
     status:
-      logic: missing
-      values: stub
+      logic: faithful
+      values: faithful
       timing: na
-      presentation: missing
+      presentation: faithful
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL: all g_waypointsprite_* cvars + cl_hidewaypoints exist as config defaults and are bound in DialogSettingsGame, but WaypointSpriteLayer reads none of them (only const EdgeInset/IconSize/FontSize; no Cvars.Get* calls) — the knobs have no effect."
+      - "All g_waypointsprite_* cvars + cl_hidewaypoints are now READ LIVE by WaypointSpriteLayer._Draw (Wave-5: CvarF/CvarOn via Api.Cvars, gated on HasCvars). The DialogSettingsGame bindings now have a real effect. FIX."
+      - "Residual: g_waypointsprite_distancefadealpha/scale/distancefadedistance + the edge/crosshair-fade cvars are still not read (see waypoints.client.fades); g_waypointsprite_iconcolor not read (default white only)."
     verification:
-      - { kind: code-read, ref: "grep Cvars/g_waypointsprite/cl_hidewaypoints in WaypointSpriteLayer.cs → only const definitions, no reads", result: fail }
+      - { kind: code-read, ref: "WaypointSpriteLayer.CvarF/CvarOn read g_waypointsprite_alpha/scale/iconsize/fontsize/text/uppercase/edgeoffset_*/cl_hidewaypoints from Api.Cvars in _Draw", result: pass }
     confidence: high
-    notes: "NO CHANGE vs baseline. Menu UI is faithful to QC but misleads the player: changing these settings does nothing."
+    notes: "FIX vs baseline (was missing/stub/dead): the core tuning cvars are now genuinely wired and change the render. Only the fade-specific cvars remain inert (tracked under waypoints.client.fades)."
 
   - id: waypoints.radar.icons
     name: "Team radar icons from waypoint sprites"
@@ -375,6 +402,6 @@ features:
     gaps:
       - "Radar PING ring pulse (WaypointSprite_Ping → cnt|BIT(7), the expanding radar circle) is still a no-op in the port (WaypointSprites.Ping is a documented no-op). UNCHANGED."
     verification:
-      - { kind: code-read, ref: "RadarPanel iterates net.Waypoints, draws teamradar_icon per RadarIcon>0; file untouched by Wave-1/2", result: pass }
+      - { kind: code-read, ref: "RadarPanel iterates net.Waypoints, draws teamradar_icon per RadarIcon>0; file untouched by Wave-5", result: pass }
     confidence: medium
-    notes: "NO CHANGE vs baseline. Live for CTF flag + Domination control-point radar icons (tinted by team radar color). Ping pulse animation absent."
+    notes: "NO CHANGE vs baseline. Live for CTF flag + Domination control-point + FreezeTag + deployed-ping radar icons (tinted by team radar color). Ping pulse animation absent."

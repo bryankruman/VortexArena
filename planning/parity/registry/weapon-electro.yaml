@@ -167,7 +167,7 @@ features:
     verification:
       - { kind: code, ref: "BoltThink (Electro.cs:249) guards on Primary.MidairComboRadius>0 (Bal default 0). When on it calls CountOrbs+TriggerCombo(any non-self orb) and reschedules min(time+0.1, deathTime) — interval now matches Base 0.1, but no SAME_TEAM/own gating and the chain uses combo_speed not midaircombo_speed.", result: fail }
     confidence: high
-    notes: "Liveness still DEAD (default-0 cvar). Audio/presentation now inherit the (fixed) combo-chain path so are no longer listed as missing, but the feature is unreachable. Interval value fixed to 0.1. Team-gating + midaircombo_speed first-orb delay remain unimplemented."
+    notes: "Re-verified 2026-06-22 (post-Wave-5, no Electro change since Wave-1/2): liveness still DEAD (Electro.cs:103 seeds MidairComboRadius=0 from bal-wep-xonotic.cfg). Audio/presentation now inherit the (fixed) combo-chain path so are no longer listed as missing, but the BoltThink branch (Electro.cs:249-264) is unreachable at stock balance. Interval value fixed to 0.1 (matches Base midaircombo_interval). STILL OPEN: own/teammate/enemy team-gating (Base electro.qc:277-281 branches on midaircombo_own/_teammate/_enemy) + the separate midaircombo_speed first-orb delay (Base electro.qc:290-296 — only the first orb uses midaircombo_speed, the rest combo_speed) remain unimplemented."
 
   - id: electro.secondary.orb_stream
     name: "Secondary orb stream (count orbs, one per animtime while held)"

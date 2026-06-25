@@ -5,9 +5,9 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 20
   worst_gaps:
-    - "Per-player ROUNDS_PL award still missing: EnableRounds never sets RoundHandler.OnRoundCounted for CA, and the CA branch doesn't either"
-    - "'You are now alone!' (CENTER_ALONE) still dead: NotifyLastPlayerForTeam has zero live callers (not wired into any PlayerDies/disconnect path) — though its IsRoundStarted gate WOULD now work via the mirror if it were called"
-    - "Inter-round grace fire-block still missing: WeaponUseForbidden in WeaponFireDriver.cs is still a stub returning false (unchanged since baseline)"
+    - "Per-player ROUNDS_PL award still missing: EnableRounds never sets RoundHandler.OnRoundCounted for CA, and the CA branch passes onRoundStart:null (GameWorld.cs:1621) — the per-player rounds stat stays 0"
+    - "'You are now alone!' (CENTER_ALONE) still dead: NotifyLastPlayerForTeam (ClanArena.cs:527) has zero live callers (not wired into any PlayerDies/disconnect path) — its IsRoundStarted gate WOULD now pass via the mirror, so only the caller is missing"
+    - "Inter-round grace fire-block still missing/dead: WeaponUseForbidden in WeaponFireDriver.cs:324 is still a stub returning false (Wave-5 touched this file but only published OffhandFirePressed; the round-phase gate was not added)"
     - "Late-joiner forced-Observer / INGAME_JOINING state still missing; eliminated-greyout still approximates eliminated == dead"
 features:
   - id: clanarena.round.lifecycle
@@ -19,12 +19,12 @@ features:
       - "common/gametypes/gametype/clanarena/sv_clanarena.qh:REGISTER_MUTATOR(ca)"
     port_refs:
       - "src/XonoticGodot.Server/RoundHandler.cs:Think (the LIVE handler, GameWorld.Rounds)"
-      - "src/XonoticGodot.Server/GameWorld.cs:EnableRounds (CA now passes CheckTeams/CheckWinner + g_ca cvars, GameWorld.cs:1384)"
-      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (case ClanArena, GameWorld.cs:1377)"
+      - "src/XonoticGodot.Server/GameWorld.cs:EnableRounds (CA passes CheckTeams/CheckWinner + g_ca cvars, GameWorld.cs:1618-1624)"
+      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (case ClanArena, GameWorld.cs:1611)"
     constants:
-      - { name: "countdown_count_s", base: "10 (g_ca_warmup, gametypes-server.cfg:263)", port: "10 (EnableRounds countdown: Cvars.FloatOr(\"g_ca_warmup\",5) — the shipped cfg sets 10, loaded live via LoadServerConfig)", match: true }
-      - { name: "end_delay_s", base: "0 (g_ca_round_enddelay, gametypes-server.cfg:266)", port: "0 (EnableRounds endDelay: g_ca_round_enddelay, shipped cfg = 0)", match: true }
-      - { name: "round_timelimit_s", base: "180 (g_ca_round_timelimit)", port: "180 (EnableRounds roundTimeLimit: g_ca_round_timelimit)", match: true }
+      - { name: "countdown_count_s", base: "10 (g_ca_warmup, gametypes-server.cfg:263)", port: "10 (EnableRounds countdown: Cvars.FloatOr(\"g_ca_warmup\",5); shipped gametypes-server.cfg:263 sets 10, loaded live via LoadServerConfig)", match: true }
+      - { name: "end_delay_s", base: "0 (g_ca_round_enddelay, gametypes-server.cfg:266)", port: "0 (EnableRounds endDelay: Cvars.FloatOr(\"g_ca_round_enddelay\",5); shipped cfg:266 = 0)", match: true }
+      - { name: "round_timelimit_s", base: "180 (g_ca_round_timelimit, gametypes-server.cfg:265)", port: "180 (EnableRounds roundTimeLimit: g_ca_round_timelimit)", match: true }
     status:
       logic: partial
       values: faithful
@@ -35,11 +35,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Per-player ROUNDS_PL award at round start is still missing: EnableRounds wires OnCountdownTick + OnRoundReset but never sets RoundHandler.OnRoundCounted for CA (see clanarena.scoring.per_round_award)."
+      - "Per-player ROUNDS_PL award at round start is still missing: the CA branch calls EnableRounds with onRoundStart:null (GameWorld.cs:1621) and EnableRounds only wires OnRoundReset + OnCountdownTick (GameWorld.cs:1007-1008), never RoundHandler.OnRoundCounted (see clanarena.scoring.per_round_award)."
     verification:
-      - { kind: trace, ref: "ActivateGameType CA branch calls EnableRounds(ca.CheckTeams, ()=>ca.CheckWinner()!=0, endDelay g_ca_round_enddelay, countdown g_ca_warmup, roundTimeLimit g_ca_round_timelimit) (GameWorld.cs:1384-1390); the live Server RoundHandler.Think drives it; cfg tree (xonotic-server.cfg->gametypes-server.cfg) loaded by GameWorld.cs:433 LoadServerConfig sets g_ca_warmup 10", result: pass }
+      - { kind: trace, ref: "ActivateGameType CA branch calls EnableRounds(ca.CheckTeams, ()=>ca.CheckWinner()!=0, onRoundStart:null, endDelay g_ca_round_enddelay, countdown g_ca_warmup, roundTimeLimit g_ca_round_timelimit) (GameWorld.cs:1618-1624); the live Server RoundHandler.Think drives it; cfg tree (xonotic-server.cfg->gametypes-server.cfg) loaded by LoadServerConfig sets g_ca_warmup 10 / enddelay 0 / timelimit 180 (verified gametypes-server.cfg:263-266)", result: pass }
     confidence: high
-    notes: "The LIVE Server RoundHandler uses CA's real CheckTeams/CheckWinner predicates and CA's own warmup/timelimit/end-delay cvars (10/180/0), not the generic 5/5/180 defaults. ca.Tick() is still never called, but the owned Common ClanArena.Handler is now a fuller mirror target: MirrorRoundTiming copies RoundEndTime/RoundsPlayed AND (post-fixup) GameStartTime + the live round PHASE via MirrorRoundStarted, which is what un-broke damage2score. logic stays partial only because the per-player ROUNDS_PL award (clanarena.scoring.per_round_award) is still unwired."
+    notes: "Unchanged since the prior (2eea096) audit. The LIVE Server RoundHandler uses CA's real CheckTeams/CheckWinner predicates and CA's own warmup/timelimit/end-delay cvars (10/0/180), not the generic 5/5/180 defaults. ca.Tick() is still never called, but the owned Common ClanArena.Handler is a mirror target: MirrorRoundTiming (GameWorld.cs:2967) copies RoundEndTime/RoundsPlayed AND GameStartTime + the live round PHASE via MirrorRoundStarted, which is what un-broke damage2score. logic stays partial only because the per-player ROUNDS_PL award is still unwired."
 
   - id: clanarena.round.checkteams_gate
     name: "Round-start gate (every active team has a live player)"
@@ -48,7 +48,7 @@ features:
       - "common/gametypes/gametype/clanarena/sv_clanarena.qc:CA_CheckTeams"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/ClanArena.cs:CheckTeams"
-      - "src/XonoticGodot.Server/GameWorld.cs:EnableRounds canStart = ca.CheckTeams (GameWorld.cs:1385)"
+      - "src/XonoticGodot.Server/GameWorld.cs:EnableRounds canStart = ca.CheckTeams (GameWorld.cs:1619)"
     constants: []
     status:
       logic: faithful
@@ -61,9 +61,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: trace, ref: "EnableRounds is now called with canStart = ca.CheckTeams (GameWorld.cs:1385); Server RoundHandler.CanStart -> _canRoundStart -> ca.CheckTeams, which requires every active team to have >=1 live player (matching QC Team_GetNumberOfAliveTeams == AVAILABLE_TEAMS)", result: pass }
+      - { kind: trace, ref: "EnableRounds is called with canStart = ca.CheckTeams (GameWorld.cs:1619); Server RoundHandler.CanStart -> ca.CheckTeams, which requires every active team to have >=1 live player (matching QC Team_GetNumberOfAliveTeams == AVAILABLE_TEAMS)", result: pass }
     confidence: high
-    notes: "FIXED vs baseline: the live canRoundStart is now CA's faithful CheckTeams (all active teams must have a live player), not the generic DefaultCanRoundStart (>=2 teams have players). Faithful for 3-4 teams now, not just 2."
+    notes: "Faithful+live, unchanged since baseline. The live canRoundStart is CA's faithful CheckTeams (all active teams must have a live player), not the generic DefaultCanRoundStart (>=2 teams have players). Faithful for 3-4 teams, not just 2."
 
   - id: clanarena.round.resolution
     name: "Round resolution: last team alive wins, banks a round point"
@@ -74,7 +74,7 @@ features:
       - "server/teamplay.qc:Team_GetWinnerAliveTeam"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/ClanArena.cs:CheckWinner"
-      - "src/XonoticGodot.Server/GameWorld.cs:EnableRounds canEnd = ()=>ca.CheckWinner()!=0 (GameWorld.cs:1386)"
+      - "src/XonoticGodot.Server/GameWorld.cs:EnableRounds canEnd = ()=>ca.CheckWinner()!=0 (GameWorld.cs:1620)"
     constants:
       - { name: "ST_CA_ROUNDS_award", base: "+1 to winner team slot (TeamScore_AddToTeam)", port: "+1 GameScores.AddToTeam(winner, TeamSlotSecondary)", match: true }
     status:
@@ -88,9 +88,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: trace, ref: "Server RoundHandler.Think polls _canRoundEnd = ()=>ca.CheckWinner()!=0 every frame while the round is live (RoundHandler.cs:261); CheckWinner banks +1 ST_CA_ROUNDS to the sole surviving team and runs UpdateLeaderAndCheckLimit; single-fire because _wait=true after it returns true. DriveGametypeFrame case ClanArena is now `break` so the dead CheckRound double-award path is avoided (GameWorld.cs:1722)", result: pass }
+      - { kind: trace, ref: "Server RoundHandler.Think polls _canRoundEnd = ()=>ca.CheckWinner()!=0 every frame while the round is live; CheckWinner banks +1 ST_CA_ROUNDS to the sole surviving team and runs UpdateLeaderAndCheckLimit; single-fire because the wait flag is set after it returns true. DriveGametypeFrame case ClanArena is `break` so the dead CheckRound double-award path is avoided (GameWorld.cs:2010)", result: pass }
     confidence: high
-    notes: "FIXED vs baseline: resolution is now the live CA_CheckWinner path (survivor + timelimit + stalemate + notifications), not the survivor-only CheckRound. CheckRound is now DEAD (no caller) but kept for the AliveByTeam recount it shares with CheckWinner."
+    notes: "Faithful+live, unchanged since baseline. Resolution is the live CA_CheckWinner path (survivor + timelimit + stalemate + notifications). CheckRound is DEAD (no caller) but kept for the AliveByTeam recount it shares with CheckWinner."
 
   - id: clanarena.round.timelimit_stalemate
     name: "Round time limit + stalemate prevention (survivors/health)"
@@ -101,10 +101,10 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/ClanArena.cs:CheckWinner (timeUp branch, ClanArena.cs:483)"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/ClanArena.cs:PreventStalemate"
-      - "src/XonoticGodot.Server/GameWorld.cs:MirrorRoundTiming (mirrors RoundEndTime into ca.Handler, GameWorld.cs:2624)"
+      - "src/XonoticGodot.Server/GameWorld.cs:MirrorRoundTiming (mirrors RoundEndTime into ca.Handler, GameWorld.cs:2967)"
     constants:
-      - { name: "g_ca_prevent_stalemate", base: "0 (bitmask b0 survivors, b1 health)", port: "read by live PreventStalemate via PreventStalemateMode", match: true }
-      - { name: "g_ca_round_enddelay", base: "0", port: "0 (passed to live EnableRounds endDelay)", match: true }
+      - { name: "g_ca_prevent_stalemate", base: "0 (bitmask b0 survivors, b1 health; gametypes-server.cfg:270)", port: "0 live, read by PreventStalemate via PreventStalemateMode", match: true }
+      - { name: "g_ca_round_enddelay", base: "0 (gametypes-server.cfg:266)", port: "0 (passed to live EnableRounds endDelay)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -115,11 +115,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Minor: CheckWinner reads ca.Handler.RoundEndTime for the timeUp test; that field IS mirrored each frame by MirrorRoundTiming, so the timelimit branch is reachable — but it depends on the per-frame _roundSync running (verified wired). At the stock g_ca_prevent_stalemate 0, a timed-out round yields a stalemate (-2 -> ROUND_OVER), matching QC."
+      - "Minor: CheckWinner reads ca.Handler.RoundEndTime for the timeUp test; that field IS mirrored each frame by MirrorRoundTiming (via _roundSync, GameWorld.cs:1403/1628), so the timelimit branch is reachable. At the stock g_ca_prevent_stalemate 0, a timed-out round yields a stalemate (-2 -> ROUND_OVER), matching QC."
     verification:
-      - { kind: trace, ref: "CheckWinner.timeUp = Handler.RoundEndTime>0 && now>=Handler.RoundEndTime (ClanArena.cs:483); _roundSync=MirrorRoundTiming(caRounds, ca.Handler) runs each frame after Rounds.Think (GameWorld.cs:1262,1394) mirroring live RoundEndTime into ca.Handler. PreventStalemate reads PreventStalemateMode (g_ca_prevent_stalemate); both survivor and health bits implemented", result: pass }
+      - { kind: trace, ref: "CheckWinner.timeUp = Handler.RoundEndTime>0 && now>=Handler.RoundEndTime (ClanArena.cs:483); _roundSync=()=>MirrorRoundTiming(caRounds, ca.Handler) (GameWorld.cs:1628) runs each frame (GameWorld.cs:1403) after Rounds.Think, mirroring live RoundEndTime into ca.Handler. PreventStalemate reads PreventStalemateMode (g_ca_prevent_stalemate); both survivor and health bits implemented", result: pass }
     confidence: high
-    notes: "FIXED vs baseline (dead->live): the stalemate/timelimit resolver is now on the live canRoundEnd path. The cross-handler RoundEndTime mirror is the load-bearing seam and IS wired. (Post-fixup MirrorRoundTiming now also mirrors IsRoundStarted/GameStartTime, which fixed damage2score; see clanarena.scoring.damage2score.)"
+    notes: "Faithful+live, unchanged since baseline. The cross-handler RoundEndTime mirror is the load-bearing seam and IS wired (_roundSync invoked at GameWorld.cs:1403). MirrorRoundTiming also mirrors IsRoundStarted/GameStartTime (the damage2score fix)."
 
   - id: clanarena.damage.no_friendly_fire
     name: "No friendly-fire / self / fall damage; no mirror damage"
@@ -127,8 +127,8 @@ features:
     base_refs:
       - "common/gametypes/gametype/clanarena/sv_clanarena.qc:MUTATOR_HOOKFUNCTION(ca, Damage_Calculate)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/ClanArena.cs:OnDamageCalculate"
-      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:219 (MutatorHooks.DamageCalculate.Call)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/ClanArena.cs:OnDamageCalculate (ClanArena.cs:231)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs (MutatorHooks.DamageCalculate.Call)"
     constants: []
     status:
       logic: faithful
@@ -143,7 +143,7 @@ features:
     verification:
       - { kind: trace, ref: "ClanArena.Activate subscribes OnDamageCalculate to MutatorHooks.DamageCalculate (ClanArena.cs:197-198); DamageSystem fires that hook live; OnDamageCalculate zeroes damage on self/team/fall for live players and always zeroes mirror damage", result: pass }
     confidence: high
-    notes: "Unchanged from baseline (already faithful+live). Live player takes 0 from self/teammate/fall; mirror damage always 0; knockback (force) left intact."
+    notes: "Unchanged from baseline (faithful+live). Live player takes 0 from self/teammate/fall; mirror damage always 0; knockback (force) left intact."
 
   - id: clanarena.scoring.no_frags_for_kill
     name: "Kills award no individual frags"
@@ -177,11 +177,11 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/ClanArena.cs:OnSplitHealthArmor (ClanArena.cs:293)"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/ClanArena.cs:AddScoreFloat2Int (decimal carry)"
-      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:438 (GameHooks.PlayerDamageSplitHealthArmor.Call)"
-      - "src/XonoticGodot.Server/GameWorld.cs:MirrorRoundTiming (now mirrors IsRoundStarted + GameStartTime into ca.Handler, GameWorld.cs:2733-2734)"
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/RoundHandler.cs:MirrorRoundStarted (RoundHandler.cs:165)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs (GameHooks.PlayerDamageSplitHealthArmor.Call)"
+      - "src/XonoticGodot.Server/GameWorld.cs:MirrorRoundTiming (mirrors IsRoundStarted + GameStartTime into ca.Handler, GameWorld.cs:2977-2978)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/RoundHandler.cs:MirrorRoundStarted"
     constants:
-      - { name: "g_ca_damage2score", base: "100 (dmg per point)", port: "100 (Damage2Score; live cvar from gametypes-server.cfg:264)", match: true }
+      - { name: "g_ca_damage2score", base: "100 (dmg per point; gametypes-server.cfg:264)", port: "100 (Damage2Score; live cvar)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -193,9 +193,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: trace, ref: "DamageSystem.cs:438 fires PlayerDamageSplitHealthArmor.Call unconditionally; ClanArena subscribes OnSplitHealthArmor (ClanArena.cs:222-223). The fixup (commit 4be8357) extended MirrorRoundTiming to push the LIVE handler's phase + start time into ca.Handler each frame: owned.GameStartTime = live.GameStartTime; owned.MirrorRoundStarted(live.IsRoundStarted) (GameWorld.cs:2733-2734). MirrorRoundTiming runs every frame via _roundSync after Rounds.Think (GameWorld.cs:1316-1320, wired in the CA branch GameWorld.cs:1454). So OnSplitHealthArmor:299's gate (now < Handler.GameStartTime || !Handler.IsRoundStarted) reads the live round phase, and the accrual fires once the round is InProgress. Gate matches Base sv_clanarena.qc:483 (IsActive reduces to true since the handler is always spawned)", result: pass }
+      - { kind: trace, ref: "DamageSystem fires PlayerDamageSplitHealthArmor.Call unconditionally; ClanArena subscribes OnSplitHealthArmor (ClanArena.cs:222-223). MirrorRoundTiming pushes the LIVE handler's phase + start time into ca.Handler each frame: owned.GameStartTime = live.GameStartTime; owned.MirrorRoundStarted(live.IsRoundStarted) (GameWorld.cs:2977-2978), run every frame via _roundSync (GameWorld.cs:1403,1628). So OnSplitHealthArmor's gate (now < Handler.GameStartTime || !Handler.IsRoundStarted) reads the live round phase, and the accrual fires once the round is InProgress. Gate matches Base sv_clanarena.qc:483", result: pass }
     confidence: high
-    notes: "FIXED vs baseline (dead/partial -> faithful/live): the SCORE accrual now actually runs. The baseline killer was that ca.Handler's phase never advanced (ClanArena.Tick has no caller and MirrorRoundTiming only copied RoundEndTime/RoundsPlayed); the fixup added a new RoundHandler.MirrorRoundStarted seam and made MirrorRoundTiming push live IsRoundStarted + GameStartTime into ca.Handler each frame. Logic + decimal-carry (AddScoreFloat2Int, excess subtraction, friendly-fire debit, environmental self-penalty) were already faithful. Worst case 1-frame phase lag (mirror runs in EndFrame, damage reads it next tick) — functionally exact."
+    notes: "Faithful+live, unchanged since baseline (the damage2score fixup landed in 4be8357 and is still intact at GameWorld.cs:2977-2978). Logic + decimal-carry (AddScoreFloat2Int, excess subtraction, friendly-fire debit, environmental self-penalty) faithful. Worst case 1-frame phase lag (mirror runs in EndFrame, damage reads it next tick) — functionally exact."
 
   - id: clanarena.loadout.start_items
     name: "CA start loadout: 200 health / 200 armor / full ammo"
@@ -204,8 +204,8 @@ features:
       - "common/gametypes/gametype/clanarena/sv_clanarena.qc:MUTATOR_HOOKFUNCTION(ca, SetStartItems)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/ClanArena.cs:OnSetStartItems (ClanArena.cs:368)"
-      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:ComputeStartItems (fires SetStartItems hook, SpawnSystem.cs:710)"
-      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:ApplyStartLoadout (live spawn path, SpawnSystem.cs:544)"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:ComputeStartItems (fires SetStartItems hook)"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:ApplyStartLoadout (live spawn path)"
     constants:
       - { name: "start_health", base: "200 (g_ca_start_health, balance-xonotic.cfg:43)", port: "200 (StartHealth, live cvar)", match: true }
       - { name: "start_armor", base: "200 (g_ca_start_armor, balance-xonotic.cfg:44)", port: "200 (StartArmor, live cvar)", match: true }
@@ -221,9 +221,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: trace, ref: "ClanArena.Activate subscribes OnSetStartItems to MutatorHooks.SetStartItems (ClanArena.cs:202-203); SpawnSystem.ComputeStartItems fires SetStartItems.Call (SpawnSystem.cs:711) and ApplyStartLoadout calls ComputeStartItems on the live non-warmup spawn (SpawnSystem.cs:544->808); OnSetStartItems sets Health/Armor 200/200 + ammo 60/320/160/180/0 and strips/grants UNLIMITED_AMMO per g_use_ammunition. Shipped balance-xonotic.cfg supplies the 200/200/ammo values, loaded live", result: pass }
+      - { kind: trace, ref: "ClanArena.Activate subscribes OnSetStartItems to MutatorHooks.SetStartItems (ClanArena.cs:202-203); SpawnSystem.ComputeStartItems fires SetStartItems.Call and ApplyStartLoadout calls ComputeStartItems on the live non-warmup spawn; OnSetStartItems sets Health/Armor 200/200 + ammo 60/320/160/180/0 and strips/grants UNLIMITED_AMMO per g_use_ammunition", result: pass }
     confidence: high
-    notes: "FIXED vs baseline (dead->live, partial->faithful): the defining CA 200/200 + full-ammo loadout now applies on every spawn via the live SetStartItems hook, exactly as the arena mutators do. IT_UNLIMITED_AMMO strip + !g_use_ammunition grant ported."
+    notes: "Faithful+live, unchanged since baseline. The defining CA 200/200 + full-ammo loadout applies on every spawn via the live SetStartItems hook. IT_UNLIMITED_AMMO strip + !g_use_ammunition grant ported."
 
   - id: clanarena.loadout.weapon_arena
     name: "Spawn with all weapons (g_ca_weaponarena 'most')"
@@ -232,8 +232,8 @@ features:
       - "common/gametypes/gametype/clanarena/sv_clanarena.qc:MUTATOR_HOOKFUNCTION(ca, SetWeaponArena)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/ClanArena.cs:OnSetWeaponArena (ClanArena.cs:390)"
-      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:ComputeStartItems (fires SetWeaponArena, SpawnSystem.cs:679)"
-      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:ExpandWeaponArena (case 'most', SpawnSystem.cs:756)"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:ComputeStartItems (fires SetWeaponArena)"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:ExpandWeaponArena (case 'most')"
     constants:
       - { name: "g_ca_weaponarena", base: '"most" (sv_clanarena.qh:17 / gametypes-server.cfg:271)', port: '"most" (CvarWeaponArena default + live cvar)', match: true }
     status:
@@ -247,9 +247,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: trace, ref: "ClanArena.Activate subscribes OnSetWeaponArena to MutatorHooks.SetWeaponArena (ClanArena.cs:206-207); SpawnSystem.ComputeStartItems fires SetWeaponArena.Call (SpawnSystem.cs:679) and ExpandWeaponArena('most') yields every WEP_FLAG_NORMAL non-hidden non-blocked weapon (SpawnSystem.cs:756-761); both the non-warmup and warmup spawn paths run the arena seam", result: pass }
+      - { kind: trace, ref: "ClanArena.Activate subscribes OnSetWeaponArena to MutatorHooks.SetWeaponArena (ClanArena.cs:206-207); SpawnSystem.ComputeStartItems fires SetWeaponArena.Call and ExpandWeaponArena('most') yields every WEP_FLAG_NORMAL non-hidden non-blocked weapon; both non-warmup and warmup spawn paths run the arena seam", result: pass }
     confidence: high
-    notes: "FIXED vs baseline (missing->faithful/live): the headline 'full arsenal' CA trait now works. OnSetWeaponArena defaults the arena to 'most' only when the configured g_weaponarena is unset/0 (matching QC's default-if-empty), and ExpandWeaponArena maps 'most'->weapons_most."
+    notes: "Faithful+live, unchanged since baseline. The headline 'full arsenal' CA trait works. OnSetWeaponArena defaults the arena to 'most' only when the configured g_weaponarena is unset/0 (matching QC's default-if-empty)."
 
   - id: clanarena.items.no_pickups
     name: "No item pickups on the map (FilterItem)"
@@ -258,7 +258,7 @@ features:
       - "common/gametypes/gametype/clanarena/sv_clanarena.qc:MUTATOR_HOOKFUNCTION(ca, FilterItem)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/ClanArena.cs:OnFilterItemDefinition (ClanArena.cs:403)"
-      - "src/XonoticGodot.Common/Gameplay/Items/StartItem.cs:103 (MutatorHooks.FilterItemDefinition.Call)"
+      - "src/XonoticGodot.Common/Gameplay/Items/StartItem.cs (MutatorHooks.FilterItemDefinition.Call)"
     constants:
       - { name: "g_pickup_items", base: "-1 (use gametype default; <=0 removes all items)", port: "-1 live (Cvar(g_pickup_items,0)<=0 -> filter; matches QC `autocvar_g_pickup_items <= 0`)", match: true }
       - { name: "g_powerups", base: "-1 (<=0 removes powerups)", port: "-1 live (Cvar(g_powerups,0)<=0 -> filter powerups)", match: true }
@@ -273,9 +273,9 @@ features:
     divergence_rationale: "Powerups are matched by classname stand-in (item_strength/shield/invincible) rather than a ported itemdef.instanceOfPowerup registry, because the port has no full item-class registry (the same approximation Mayhem/LMS/NIX/Duel use). Functionally equivalent for the stock powerup classes."
     gaps: []
     verification:
-      - { kind: trace, ref: "ClanArena.Activate subscribes OnFilterItemDefinition to MutatorHooks.FilterItemDefinition (ClanArena.cs:210-211); StartItem.cs:103 fires FilterItemDefinition.Call on the live map-item spawn path and deletes the item on true. At the live g_pickup_items -1 (<=0) all items are filtered, matching Base CA FilterItem (sv_clanarena.qc:477)", result: pass }
+      - { kind: trace, ref: "ClanArena.Activate subscribes OnFilterItemDefinition to MutatorHooks.FilterItemDefinition (ClanArena.cs:210-211); StartItem fires FilterItemDefinition.Call on the live map-item spawn path and deletes the item on true. At the live g_pickup_items -1 (<=0) all items are filtered, matching Base CA FilterItem (sv_clanarena.qc:477)", result: pass }
     confidence: high
-    notes: "FIXED vs baseline (missing->faithful/live). Note the Base/port g_pickup_items default is -1 (use-gametype-default), and BOTH satisfy `<= 0`, so all map items are removed in CA on both sides — the port's literal-0 fallback only applies when the cvar is absent (not the live case)."
+    notes: "Faithful+live, unchanged since baseline. Base/port g_pickup_items default is -1 (use-gametype-default), and BOTH satisfy `<= 0`, so all map items are removed in CA on both sides."
 
   - id: clanarena.scoring.match_limit
     name: "Match win: round limit (10) / lead limit (6)"
@@ -300,9 +300,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: trace, ref: "CheckWinner -> UpdateLeaderAndCheckLimit sets MatchEnded on bestScore>=RoundLimit or lead>=LeadLimit; GameWorld reads ca.MatchEnded (GameWorld.cs:294, win-screen branch GameWorld.cs:2181)", result: pass }
+      - { kind: trace, ref: "CheckWinner -> UpdateLeaderAndCheckLimit sets MatchEnded on bestScore>=RoundLimit or lead>=LeadLimit; GameWorld reads ca.MatchEnded (GameWorld.cs:294, win-screen branch)", result: pass }
     confidence: high
-    notes: "Unchanged from baseline (faithful+live). Now driven from the live CheckWinner instead of CheckRound, but the limit math is identical."
+    notes: "Faithful+live, unchanged since baseline. Driven from the live CheckWinner; limit math identical to QC."
 
   - id: clanarena.hud.alive_counts
     name: "Per-team alive counts (REDALIVE..PINKALIVE) + mod-icons panel"
@@ -330,7 +330,7 @@ features:
     verification:
       - { kind: trace, ref: "GametypeStatusBlock.Capture(ClanArena) writes the 4 alive counts in red/blue/yellow/pink order; NetGame.UpdateModIcons feeds ModIconsPanel. AliveByTeam is refreshed by the live CheckTeams/CheckWinner each frame", result: pass }
     confidence: medium
-    notes: "Unchanged from baseline. Note: with the rewire, AliveByTeam is now refreshed by the live CheckWinner (canRoundEnd, polled per frame while the round is live) and CheckTeams (canRoundStart) rather than CheckRound; still a per-frame recount, matching QC. Exact on-screen DrawCAItem layout not visually verified."
+    notes: "Unchanged from baseline. AliveByTeam is refreshed by the live CheckWinner (canRoundEnd, polled per frame while the round is live) and CheckTeams (canRoundStart); per-frame recount matching QC. Exact on-screen DrawCAItem layout not visually verified."
 
   - id: clanarena.hud.eliminated_greyout
     name: "Eliminated-player scoreboard grey-out"
@@ -355,7 +355,7 @@ features:
     gaps:
       - "IsEliminatedPlayer == IsDead only; QC ca_isEliminated also greys INGAME_JOINING late joiners and FRAGS_PLAYER_OUT_OF_GAME, which the port still lacks, so a late joiner waiting out the round isn't greyed until they die."
     verification:
-      - { kind: trace, ref: "GametypeStatusBlock.Capture(ClanArena) writes the eliminated id list via ca.IsEliminatedPlayer; consumed by NetGame scoreboard. Wave-2 GametypeStatusBlock change was only a Kind-range tweak, no INGAME state added", result: pass }
+      - { kind: trace, ref: "GametypeStatusBlock.Capture(ClanArena) writes the eliminated id list via ca.IsEliminatedPlayer; consumed by NetGame scoreboard. No INGAME state added since baseline", result: pass }
     confidence: medium
     notes: "Unchanged from baseline (still partial). Port has no INGAME_JOINING / FRAGS_PLAYER_OUT_OF_GAME state; eliminated approximated as dead."
 
@@ -368,7 +368,7 @@ features:
       - "src/XonoticGodot.Server/SpectatorRules.cs:CanSpectate / CycleSpectatee / SpectateEnemiesMode"
       - "src/XonoticGodot.Server/ClientManager.cs (spectate cycling)"
     constants:
-      - { name: "g_ca_spectate_enemies", base: "0 (teammates only; gametypes-server.cfg:262)", port: "0 default", match: true }
+      - { name: "g_ca_spectate_enemies", base: "0 (teammates only; gametypes-server.cfg:262)", port: "0 default/live", match: true }
     status:
       logic: faithful
       values: faithful
@@ -406,12 +406,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "'You are now alone!' (CENTER_ALONE) is still NOT sent: NotifyLastPlayerForTeam (ClanArena.cs:527) has ZERO live callers (ca_LastPlayerForTeam_Notify not wired into the port's PlayerDies/disconnect path — Base calls it from PlayerDies + disconnect, sv_clanarena.qc:374/393/406). Its own !Handler.IsRoundStarted gate WOULD now pass via the post-fixup MirrorRoundStarted mirror, so the only remaining defect is the missing caller — not the gate."
+      - "'You are now alone!' (CENTER_ALONE) is still NOT sent: NotifyLastPlayerForTeam (ClanArena.cs:527) has ZERO live callers (grep src/ shows only the definition; ca_LastPlayerForTeam_Notify not wired into the port's PlayerDies/disconnect path — Base calls it from PlayerDies + disconnect, sv_clanarena.qc:374/393/406). Its own !Handler.IsRoundStarted gate WOULD now pass via MirrorRoundStarted, so the only remaining defect is the missing caller — not the gate."
       - "The round-win announcer cue is not separately played (QC plays the win sound via the notification; the port Sends the Center+Info notifications but no dedicated Annce cue is wired here)."
     verification:
-      - { kind: trace, ref: "CheckWinner (live via canRoundEnd) Sends ROUND_TEAM_WIN_<suffix> Center+Info on a team win and ROUND_TIED/ROUND_OVER on tie/stalemate (ClanArena.cs:499-510); notifications registered in NotificationsList.cs. NotifyLastPlayerForTeam (ALONE) has zero callers (grep)", result: pass }
+      - { kind: trace, ref: "CheckWinner (live via canRoundEnd) Sends ROUND_TEAM_WIN_<suffix> Center+Info on a team win and ROUND_TIED/ROUND_OVER on tie/stalemate (ClanArena.cs:499-510); notifications registered in NotificationsList.cs. NotifyLastPlayerForTeam (ALONE) has zero callers (grep src/)", result: pass }
     confidence: high
-    notes: "Team-outcome prints (ROUND_TEAM_WIN/TIED/OVER) fire from the live CheckWinner (already true at baseline). STILL OPEN, unchanged this pass: the 'You are now alone!' CENTER_ALONE print (NotifyLastPlayerForTeam has no caller) and any dedicated round-win announcer cue. Note the prior-baseline claim that ALONE's gate would also be permanently false is now stale — the gate works via MirrorRoundStarted; only the caller is missing."
+    notes: "Unchanged from baseline. Team-outcome prints (ROUND_TEAM_WIN/TIED/OVER) fire from the live CheckWinner. STILL OPEN: the 'You are now alone!' CENTER_ALONE print (NotifyLastPlayerForTeam has no caller) and any dedicated round-win announcer cue. The ALONE gate works via MirrorRoundStarted; only the caller is missing."
 
   - id: clanarena.round.grace_no_fire
     name: "Round-start grace period: weapons cannot be fired"
@@ -420,7 +420,7 @@ features:
       - "common/gametypes/gametype/clanarena/clanarena.qc:describe (ten second grace period)"
       - "server/round_handler.qc (round active but not started)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireDriver.cs:WeaponUseForbidden (still a stub -> false, WeaponFireDriver.cs:316)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireDriver.cs:WeaponUseForbidden (still a stub -> false, WeaponFireDriver.cs:324)"
     constants:
       - { name: "grace_seconds", base: "10 (g_ca_warmup countdown)", port: "10 countdown (g_ca_warmup live), but NO fire block", match: false }
     status:
@@ -433,11 +433,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Players can still fire during the inter-round grace countdown: WeaponUseForbidden is still a stub that always returns false (WeaponFireDriver.cs:316); no round-phase (active-but-not-started) gate is wired. Wave-2 changed WeaponFiring.cs but NOT this seam."
+      - "Players can still fire during the inter-round grace countdown: WeaponUseForbidden is still a stub that always returns false (WeaponFireDriver.cs:324); no round-phase (active-but-not-started) gate is wired. Wave-5 (commit 66e378f) touched WeaponFireDriver.cs but only published Entity.OffhandFirePressed and routed it through the existing forbidden zeroing — it did NOT add the round-phase gate to WeaponUseForbidden."
     verification:
-      - { kind: trace, ref: "WeaponFireDriver.WeaponUseForbidden (line 316) still returns false unconditionally; git diff shows WeaponFiring.cs changes are unrelated to the round-grace gate", result: pass }
+      - { kind: trace, ref: "WeaponFireDriver.WeaponUseForbidden (line 324) still `=> false;` unconditionally; git show 66e378f -- WeaponFireDriver.cs confirms the Wave-5 edit is only the OffhandFirePressed publish + zeroing, not a round-grace gate", result: pass }
     confidence: high
-    notes: "PARTIALLY FIXED vs baseline: the countdown is now 10s (g_ca_warmup reaches the live handler), so the values/timing dimensions are now faithful — but the actual fire-BLOCK during grace is STILL missing/dead (WeaponUseForbidden stub). The first round's pre-game / game_stopped fire-lock is handled by the caller (WeaponLocked); only the inter-round grace window is unguarded."
+    notes: "Unchanged in substance since baseline. The countdown is 10s (g_ca_warmup reaches the live handler), so values/timing are faithful — but the actual fire-BLOCK during grace is STILL missing/dead (WeaponUseForbidden stub). The first round's pre-game / game_stopped fire-lock is handled by the caller (WeaponLocked); only the inter-round grace window is unguarded."
 
   - id: clanarena.scoring.per_round_award
     name: "Per-player ROUNDS_PL award at round start"
@@ -445,9 +445,9 @@ features:
     base_refs:
       - "server/round_handler.qc:round_handler_Think (GameRules_scoring_add(it, ROUNDS_PL, 1) at cnt==0)"
     port_refs:
-      - "src/XonoticGodot.Server/RoundHandler.cs:OnRoundCounted (hook exists, fired at cnt==0; NOT set for CA)"
+      - "src/XonoticGodot.Server/RoundHandler.cs:OnRoundCounted (hook exists, fired at cnt==0 RoundHandler.cs:242; NOT set for CA)"
     constants:
-      - { name: "rounds_pl_per_round", base: "+1 per present player when the round starts", port: "0 (EnableRounds never sets Rounds.OnRoundCounted for CA)", match: false }
+      - { name: "rounds_pl_per_round", base: "+1 per present player when the round starts", port: "0 (EnableRounds never sets Rounds.OnRoundCounted; CA branch passes onRoundStart:null)", match: false }
     status:
       logic: missing
       values: missing
@@ -458,9 +458,9 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "QC awards SP_ROUNDS_PL (+1) to every present player when a round begins. The live RoundHandler fires OnRoundCounted at cnt==0 (RoundHandler.cs:242), but EnableRounds only wires OnCountdownTick + OnRoundReset (GameWorld.cs:870-871) and CA's branch never assigns OnRoundCounted, so the per-player rounds stat stays 0."
+      - "QC awards SP_ROUNDS_PL (+1) to every present player when a round begins. The live RoundHandler fires OnRoundCounted at cnt==0 (RoundHandler.cs:242), but EnableRounds only wires OnRoundReset + OnCountdownTick (GameWorld.cs:1007-1008) and CA's branch never assigns OnRoundCounted (GameWorld.cs:1621 passes onRoundStart:null), so the per-player rounds stat stays 0."
     verification:
-      - { kind: trace, ref: "RoundHandler.Think invokes OnRoundCounted at cnt==0 (RoundHandler.cs:242); grep OnRoundCounted across GameWorld.cs -> only the doc + RoundHandler internal, never assigned; EnableRounds does not set it", result: pass }
+      - { kind: trace, ref: "Server RoundHandler.Think invokes OnRoundCounted at cnt==0 (RoundHandler.cs:242); grep OnRoundCounted across src/ -> only the property def + the Think invocation, never assigned for CA; EnableRounds (GameWorld.cs:1002-1018) does not set it", result: pass }
     confidence: high
     notes: "Unchanged from baseline (still dead). Minor scoreboard column, distinct from the team ST_CA_ROUNDS round-win count which IS awarded."
 
@@ -473,8 +473,8 @@ features:
       - "common/gametypes/gametype/clanarena/sv_clanarena.qc:MUTATOR_HOOKFUNCTION(ca, PlayerDies)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/ClanArena.cs:OnPlayerRegen (ClanArena.cs:418)"
-      - "src/XonoticGodot.Server/PlayerFrameLogic.cs:46 (MutatorHooks.PlayerRegen.Call)"
-      - "src/XonoticGodot.Server/GameWorld.cs:DeadPlayerThink (round-gated respawn, GameWorld.cs:~1767)"
+      - "src/XonoticGodot.Server/PlayerFrameLogic.cs (MutatorHooks.PlayerRegen.Call)"
+      - "src/XonoticGodot.Server/GameWorld.cs:DeadPlayerThink (round-gated respawn)"
     constants: []
     status:
       logic: faithful
@@ -488,9 +488,9 @@ features:
     gaps:
       - "QC RESPAWN_SILENT/RESPAWN_FORCE flags + respawn_time = time+2 (to suppress the spectator-camera jump) are not explicitly modeled; the effective one-life-per-round behavior holds via the round-gated respawn machine."
     verification:
-      - { kind: trace, ref: "ClanArena.Activate subscribes OnPlayerRegen -> true (ClanArena.cs:218-219); PlayerFrameLogic.cs:46 fires PlayerRegen.Call and skips regen when a handler returns true. DeadPlayerThink gates respawn on !(Rounds is {IsRoundStarted:true}) (GameWorld.cs:~1767) and RespawnDuePlayers does too (GameWorld.cs:1773), so dead CA players stay dead until OnRoundReset->ResetMap re-spawns everyone", result: pass }
+      - { kind: trace, ref: "ClanArena.Activate subscribes OnPlayerRegen -> true (ClanArena.cs:218-219); PlayerFrameLogic fires PlayerRegen.Call and skips regen when a handler returns true. DeadPlayerThink gates respawn on !(Rounds is {IsRoundStarted:true}) and RespawnDuePlayers does too, so dead CA players stay dead until OnRoundReset->ResetMap re-spawns everyone", result: pass }
     confidence: high
-    notes: "FIXED vs baseline (partial/low -> faithful/live): the no-regen rule is now explicitly ported AND live (PlayerRegen hook), and the one-life-per-round (no mid-round respawn) is confirmed via the round-gated DeadPlayerThink/RespawnDuePlayers. Only the cosmetic silent/forced respawn-flag detail remains unmodeled."
+    notes: "Faithful+live, unchanged since baseline. The no-regen rule is explicitly ported AND live (PlayerRegen hook), and the one-life-per-round (no mid-round respawn) is confirmed via the round-gated DeadPlayerThink/RespawnDuePlayers. Only the cosmetic silent/forced respawn-flag detail remains unmodeled."
 
   - id: clanarena.join.late_join_observer
     name: "Late joiner forced to Observer until next round (+ CA join-late info)"
@@ -514,9 +514,9 @@ features:
       - "While !allowed_to_spawn, QC forces a joining player to Observer (TRANSMUTE), sets INGAME_STATUS_JOINING, and sends INFO_CA_JOIN_LATE so they play from the next round. The port still has no INGAME_JOINING state and no allowed_to_spawn spawn gate, so mid-round joiners are not handled the QC way."
       - "QC Bot_FixCount counts in-game-joined clients (so bots fill mid-round) -- not ported."
     verification:
-      - { kind: trace, ref: "No INGAME_JOINING / allowed_to_spawn / CA_JOIN_LATE handling found in the port's CA spawn path; Wave-2 added no such state", result: pass }
+      - { kind: trace, ref: "No INGAME_JOINING / allowed_to_spawn / CA_JOIN_LATE handling found in the port's CA spawn path; no such state added since baseline", result: pass }
     confidence: medium
-    notes: "Unchanged from baseline (still missing). Tied to the missing INGAME_JOINING state (see eliminated_greyout). NOTE the practical impact is softened by the round-gated DeadPlayerThink: a mid-round joiner is spawnable, but the next ResetMap re-syncs everyone — still not the QC observer-until-next-round behavior."
+    notes: "Unchanged from baseline (still missing). Tied to the missing INGAME_JOINING state (see eliminated_greyout). Practical impact softened by the round-gated DeadPlayerThink: a mid-round joiner is spawnable, but the next ResetMap re-syncs everyone — still not the QC observer-until-next-round behavior."
 
   - id: clanarena.spawn.forbid_throw_weapon
     name: "Cannot drop/throw the current weapon"
@@ -525,7 +525,7 @@ features:
       - "common/gametypes/gametype/clanarena/sv_clanarena.qc:MUTATOR_HOOKFUNCTION(ca, ForbidThrowCurrentWeapon)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/ClanArena.cs:OnForbidThrowCurrentWeapon (ClanArena.cs:415)"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponThrowing.cs:149,185 (MutatorHooks.ForbidThrowCurrentWeapon.Call)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponThrowing.cs (MutatorHooks.ForbidThrowCurrentWeapon.Call)"
     constants: []
     status:
       logic: faithful
@@ -538,6 +538,6 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: trace, ref: "ClanArena.Activate subscribes OnForbidThrowCurrentWeapon -> true (ClanArena.cs:214-215); WeaponThrowing.cs:149 and :185 fire ForbidThrowCurrentWeapon.Call and abort the throw/drop on true", result: pass }
+      - { kind: trace, ref: "ClanArena.Activate subscribes OnForbidThrowCurrentWeapon -> true (ClanArena.cs:214-215); WeaponThrowing fires ForbidThrowCurrentWeapon.Call and aborts the throw/drop on true", result: pass }
     confidence: high
-    notes: "FIXED vs baseline (unknown -> faithful/live): the port DOES expose a weapon-throw/drop pathway (WeaponThrowing), and CA's ForbidThrowCurrentWeapon hook is now subscribed and live, so dropping the current weapon is blocked in CA."
+    notes: "Faithful+live, unchanged since baseline. CA's ForbidThrowCurrentWeapon hook is subscribed and live, so dropping the current weapon is blocked in CA."

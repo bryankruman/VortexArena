@@ -5,8 +5,8 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 13
   worst_gaps:
-    - "Weapon charge/clip/heat HUD rings never draw: CrosshairPanel charge setters have no live feeder (wepent vortex_charge/clip_load/hagar_load/arc_heat/minelayer_mines + chargepools neither networked nor read from local prediction) — STILL OPEN after the fix-up pass (net layer + CrosshairPanel untouched)"
     - "No ent_cs enemy-privacy mask (radar_showenemies/SAME_TEAM): every player's origin/health/armor is sent to everyone, PVS-gated only — Base strips private fields for non-teammates — STILL OPEN"
+    - "Weapon charge/clip/heat HUD rings now FED on the HOST path (Wave-5 66e378f: NetGame.UpdateCrosshairWeaponRings drives CrosshairPanel charge/clip/load/heat from the live weapon-sim slot state each HUD frame) — but the wepent.* fields are still NOT networked, so a PURE remote client / spectator sees no rings (liveness partial, presentation faithful host-only)"
     - "Networked anim action state (anim_state/anim_upper_action/anim_lower_action + times) not ported: remote attack/pain/jump torso overlays are reconstructed client-side (LocomotionBlend) from one networked Frame, not the QC animdecide upper/lower split"
     - "Remote weapon switch animation coarse: only the resolved active weapon is networked, not wepent m_switchweapon/m_switchingweapon"
     - "No out-of-PVS teammate GPS: Base keeps sending a teammate's coarse ent_cs origin out of PVS (radar blip persists); the port's relevance cull drops the entity entirely"
@@ -250,29 +250,34 @@ features:
       - "common/wepent.qc:WEPENT_NETPROPS (vortex_charge, oknex_charge, vortex_chargepool_ammo, oknex_chargepool_ammo, clip_load, clip_size, hagar_load, minelayer_mines, arc_heat_percent)"
       - "common/wepent.qh"
     port_refs:
-      - "game/hud/CrosshairPanel.cs:ClipLoad/ClipSize/ChargeFraction/ChargePool/HagarLoad/MineCount/ArcHeat (setters exist, no live feeder)"
+      - "game/net/NetGame.cs:UpdateCrosshairWeaponRings (live feeder, host path; reads LocalServerPlayer active weapon-slot scratch state)"
+      - "game/net/NetGame.cs:2302 (called each HUD frame inside the host `if (_server is not null)` block)"
+      - "game/hud/CrosshairPanel.cs:ClipLoad/ClipSize/ChargeFraction/ChargePool/HagarLoad/MineCount/ArcHeat (ring setters)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/EntityWeaponState.cs:VortexCharge/VortexChargePoolAmmo/ClipLoad/ClipSize/HagarLoad/BeamHeat/ArcOverheat (live sim source)"
     constants:
-      - { name: "vortex_charge_coding", base: "x255 byte", port: "none (not networked)", match: false }
-      - { name: "oknex_charge_coding", base: "x16 byte", port: "none", match: false }
-      - { name: "clip_load/size_coding", base: "short", port: "none", match: false }
-      - { name: "hagar_load_coding", base: "byte", port: "none", match: false }
-      - { name: "arc_heat_percent_coding", base: "x255 byte", port: "none", match: false }
-      - { name: "minelayer_mines_coding", base: "byte", port: "none", match: false }
+      - { name: "vortex_charge_coding", base: "x255 byte (networked)", port: "host-local read of st.VortexCharge [0,1] (not networked)", match: false }
+      - { name: "oknex_charge_coding", base: "x16 byte (networked)", port: "host-local read of st.VortexCharge (not networked)", match: false }
+      - { name: "clip_load/size_coding", base: "short (networked)", port: "host-local read of st.ClipLoad/ClipSize (not networked)", match: false }
+      - { name: "hagar_load_coding", base: "byte (networked)", port: "host-local read of st.HagarLoad (not networked)", match: false }
+      - { name: "arc_heat_percent_coding", base: "x255 byte (networked)", port: "host-local st.BeamHeat/OverheatMax + jam latch (not networked)", match: false }
+      - { name: "minelayer_mines_coding", base: "byte (networked)", port: "host-local live g_mines scan (not networked)", match: false }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: stub
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
       audio: na
-      liveness: dead
-    intended_divergence: false
-    divergence_rationale: null
+      liveness: partial
+    intended_divergence: true
+    divergence_rationale: "FIXED (Wave-5 66e378f): the wepent charge/clip/heat HUD rings are now fed live by NetGame.UpdateCrosshairWeaponRings each HUD frame on the HOST path, reading the active weapon-slot scratch state (the C# home of QC's networked wepent.* fields) off LocalServerPlayer and mapping the per-weapon if/else exactly like QC client/hud/crosshair.qc 471-557 (Vortex charge+pool, clip_load/clip_size reload ring, hagar_load, minelayer_mines via a live g_mines scan, arc_heat with the overheat-jam latch). Each stat resets to its no-data sentinel when the active weapon isn't the one that owns it, so only the held weapon's ring draws. Intended divergence: the wepent.* fields are STILL NOT on the wire — the rings are sourced from the host-side weapon sim, not a networked wepent stream — so a PURE remote client / spectator has no LocalServerPlayer and sees no rings. Hence liveness: partial (host-only), not full live."
     gaps:
-      - "Weapon charge/clip/heat HUD rings never draw: CrosshairPanel charge setters (ClipLoad/ChargeFraction/ChargePool/HagarLoad/MineCount/ArcHeat) have no live feeder anywhere in game/ — the wepent charge/clip/heat fields are neither networked nor read from local prediction, so the Vortex charge ring, Hagar/Mine-Layer load ring, Arc heat, and reload ring are absent."
+      - "wepent.* charge/clip/heat fields are not networked: the rings render correctly on the HOST (listen-server local player) but a pure remote client and a spectator following another player get no charge/clip/load/heat ring — the cross-client wepent stream is the follow-up. (Self-documented in NetGame.cs:2299-2301.)"
     verification:
-      - { kind: grep, ref: "no assignment to CrosshairPanel.ClipLoad/ChargeFraction/ChargePool/HagarLoad/MineCount/ArcHeat outside the panel itself in game/", result: pass }
+      - { kind: code_read, ref: "NetGame.cs:2826 UpdateCrosshairWeaponRings maps st.VortexCharge/VortexChargePoolAmmo/ClipLoad/ClipSize/HagarLoad/MineCount(scan)/BeamHeat→panel setters with per-weapon gates + no-data sentinels; called at NetGame.cs:2302 inside the host `if (_server is not null)` HUD block", result: pass }
+      - { kind: code_read, ref: "sim sources live: Vortex.cs/OkNex.cs write st.VortexCharge; WeaponFireDriver.cs:289 + Vortex.cs:207 write st.ClipLoad; Arc.cs:214/243/265 write st.BeamHeat/st.ArcOverheat; WeaponSlot(0) is the active-slot convention used throughout the firing code", result: pass }
+      - { kind: grep, ref: "still no wepent vortex_charge/clip_load/hagar_load/arc_heat/minelayer_mines field in NetEntityState (NetEntity.cs unchanged since Wave 2) — not networked", result: pass }
     confidence: medium
-    notes: "Present-but-dead presentation: the panel renders these rings when fed, but nothing feeds them. Needs an in-match Vortex-charge observation to fully confirm (open question)."
+    notes: "FIX (Wave-5 66e378f): baseline had this dead/stub (setters with no feeder) — now LIVE host-side. logic/values/timing/presentation upgraded missing/stub→faithful, liveness dead→partial. Residual gap is the cross-client wepent network stream (remote/spectator rings). Not yet behaviorally observed in-match, hence confidence medium."
 
   - id: net-entity-state.wepent.switch_alpha_misc
     name: "wepent switch/alpha/gunalign/porto/tuba/skin viewmodel fields"

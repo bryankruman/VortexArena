@@ -6,7 +6,7 @@ summary:
   feature_count: 7
   worst_gaps:
     - "Bot bunnyhop-disable is now wired (PlayerSpawn hook zeroes the bot's skill, propagated to Nav.Skill by the per-frame BotPopulation resync, which trips the bunnyhop gate), but it zeroes the bot's WHOLE skill instead of a separate move-skill: Base gates on `skill + bot_moveskill >= offset` and only zeroes bot_moveskill, so a high-skill Base bot can still bhop; the port's `Skill=0` is both more aggressive (always under the offset) AND collaterally degrades aim/reaction/dodge/reload (all Skill-gated). Behavioral, not just cosmetic."
-    - "BuildMutatorsString/BuildMutatorsPrettyString (`:midair` / `, Midair`) are STILL not produced: GameWorld.cs:717 still calls GameLog.Init with NO mutators arg (defaults null), so the `:gameinfo:mutators:LIST` line is always empty and an active midair is invisible in match metadata. Unchanged by Wave-1/2."
+    - "BuildMutatorsString/BuildMutatorsPrettyString (`:midair` / `, Midair`) are STILL not produced: GameWorld.cs:829 still calls GameLog.Init with NO mutators arg (defaults null), so the `:gameinfo:mutators:LIST` line is always empty and an active midair is invisible in match metadata. Unchanged by Waves 1/2/5."
 features:
   - id: mutator-midair.enable.predicate
     name: "g_midair master enable predicate"
@@ -31,7 +31,7 @@ features:
     verification:
       - { kind: code, ref: "MidairMutator.cs:35 IsEnabled; Hook subscribed via MutatorActivation.Apply", result: pass }
     confidence: high
-    notes: "Unchanged by Wave-1/2. Hook() runs via MutatorActivation.Apply at boot for every enabled mutator, so an enabled midair is live. Base declares g_midair as a string autocvar (expr); port reads it as float. The QC REGISTER_MUTATOR predicate has NO instagib/ok/arena exclusion (the menu radio group enforces that), so no exclusion gap exists here."
+    notes: "Unchanged by Waves 1/2/5. Hook() runs via MutatorActivation.Apply at boot for every enabled mutator, so an enabled midair is live. Base declares g_midair as a string autocvar (expr); port reads it as float. The QC REGISTER_MUTATOR predicate has NO instagib/ok/arena exclusion (the menu radio group enforces that), so no exclusion gap exists here."
 
   - id: mutator-midair.damage.shield_gate
     name: "Airborne-only damage: zero damage during post-landing shield window"
@@ -56,7 +56,7 @@ features:
     verification:
       - { kind: code, ref: "OnDamageCalculate (MidairMutator.cs:63-79) vs sv_midair.qc:17-22; live call at DamageSystem.cs:256", result: pass }
     confidence: high
-    notes: "Unchanged by Wave-1/2 (only the live-caller line numbers shifted). time < target.MidairShieldTime → damage=0; else damage *= multiplier. Same player-vs-player guard; mirrordamage (Base slot 5) left untouched in both. Hook chain confirmed live."
+    notes: "Unchanged by Waves 1/2/5 (only the live-caller line numbers shifted). time < target.MidairShieldTime → damage=0; else damage *= multiplier. Same player-vs-player guard; mirrordamage (Base slot 5) left untouched in both. Hook chain confirmed live."
 
   - id: mutator-midair.damage.multiplier
     name: "Airborne damage multiplier (g_midair_damagemultiplier)"
@@ -145,7 +145,7 @@ features:
       - "server/bot/default/havocbot/havocbot.qc:1315 (skill + bot_moveskill >= bot_ai_bunnyhop_skilloffset)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/MidairMutator.cs:104 (OnPlayerSpawn -> bot.BotSkill = 0)"
-      - "src/XonoticGodot.Server/ClientManager.cs:570 (MutatorHooks.PlayerSpawn.Call)"
+      - "src/XonoticGodot.Server/ClientManager.cs:619 (MutatorHooks.PlayerSpawn.Call)"
       - "src/XonoticGodot.Server/Bot/BotPopulation.cs:148-152 (per-frame resync BotSkill -> Nav.Skill)"
       - "src/XonoticGodot.Server/Bot/BotNavigation.cs:336-337 (bunnyhop skill gate vs bot_ai_bunnyhop_skilloffset=7)"
     constants:
@@ -165,7 +165,7 @@ features:
       - "Collateral over-reach: BotBrain keys aim error, reaction interval, dodge cadence, reload-on-purpose (Skill<2/<5 gates) and roles off the same Skill, so zeroing it makes midair bots not just ground-hugging-free but markedly dumber than Base's midair bots (whose aim/reflexes are unchanged). A faithful port would add a separate move-skill term to the gate rather than zero the whole skill."
       - "The zero persists for the whole match: every respawn re-zeroes BotSkill, and the per-frame BotPopulation resync (148-152) keeps Nav.Skill at 0; a console `skill N` change would overwrite it back up (BotPopulation:146) until the next respawn re-zeroes — a minor extra divergence from Base, which re-applies bot_moveskill=0 on every spawn independent of skill."
     verification:
-      - { kind: code, ref: "OnPlayerSpawn (MidairMutator.cs:104-108) sets bot.BotSkill=0; live via ClientManager.cs:570; BotPopulation.cs:150-151 copies BotSkill->Nav.Skill every think; BotNavigation.cs:337 gates bhop on Nav.Skill >= 7. Base gate at havocbot.qc:1315 adds bot_moveskill term, absent in port.", result: pass }
+      - { kind: code, ref: "OnPlayerSpawn (MidairMutator.cs:104-108) sets bot.BotSkill=0; live via ClientManager.cs:619; BotPopulation.cs:150-151 copies BotSkill->Nav.Skill every think; BotNavigation.cs:337 gates bhop on Nav.Skill >= 7. Base gate at havocbot.qc:1315 adds bot_moveskill term, absent in port.", result: pass }
     confidence: high
     notes: "FIXED to LIVE in Wave-2 (was missing/na): the PlayerSpawn hook is now subscribed, fired on the real spawn path, and the per-frame resync genuinely propagates BotSkill=0 into the bunnyhop gate so the bot stops bunnyhopping as intended. But it is logic/values-partial, not faithful: the port lacks a separate bot_moveskill field and instead nukes the whole skill, which (a) disables bhop more aggressively than Base's skill+moveskill gate and (b) collaterally degrades aim/reaction/dodge/reload. Net effect (bots stay airborne/huntable) is achieved; fidelity is not."
 
@@ -189,9 +189,9 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL OPEN (unchanged by Wave-1/2). Base appends `:midair` to the server mutator-id string and `, Midair` to the pretty string (server browser / scoreboard). The port's only analog is GameLog.Init's `:gameinfo:mutators:LIST` line, and its sole caller GameWorld.cs:717 still passes NO mutators argument (defaults null) — so the list is ALWAYS empty for every mutator, midair included."
+      - "STILL OPEN (unchanged by Waves 1/2/5). Base appends `:midair` to the server mutator-id string and `, Midair` to the pretty string (server browser / scoreboard). The port's only analog is GameLog.Init's `:gameinfo:mutators:LIST` line, and its sole caller GameWorld.cs:829 still passes NO mutators argument (defaults null) — so the list is ALWAYS empty for every mutator, midair included."
       - "There is no BuildMutatorsString/BuildMutatorsPrettyString aggregation in the port: MutatorBase.NetName exists but is never collected into a server-info / scoreboard / browser mutator label. An active midair is invisible in match metadata."
     verification:
-      - { kind: code, ref: "GameLog.Init (GameLog.cs:114) takes mutators=null; GameWorld.cs:717 GameLog.Init(GameType?.NetName ?? DefaultGameType, MapName) — no mutators passed; no mutator-string aggregator found", result: fail }
+      - { kind: code, ref: "GameLog.Init (GameLog.cs:114) takes mutators=null; GameWorld.cs:829 GameLog.Init(GameType?.NetName ?? DefaultGameType, MapName) — no mutators passed; no mutator-string aggregator found", result: fail }
     confidence: high
-    notes: "Cosmetic/metadata only (no gameplay effect). Not touched by Wave-1/2; GameLog plumbing for a mutator list exists but is still never fed."
+    notes: "Cosmetic/metadata only (no gameplay effect). Not touched by Waves 1/2/5; GameLog plumbing for a mutator list exists but is still never fed."

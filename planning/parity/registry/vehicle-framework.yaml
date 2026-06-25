@@ -2,6 +2,14 @@ unit: vehicle-framework
 category: vehicle
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-22"
+# Re-audited adversarially after Wave 5 (commit 66e378f): Wave 5 touched NO vehicle files
+# (git diff 2eea096..HEAD over Gameplay/Vehicles/ = empty), so the current code is identical to the
+# post-second-pass state this row set already describes. Every closed gap re-verified live on the real
+# match path (DamageSystem.cs:331 routes vehicle damage; PainFrame/RegenResource/Impact called from all 4
+# descriptor Think; VehicleInit fired from VehicleSpawnFuncs.Spawn with delete-on-veto). Every still-open
+# gap re-confirmed against Base (steal default=1 in vehicles.cfg, locktarget IS_VEHICLE||IS_TURRET+alpha
+# gate in sv_vehicles.qc:121-124, vehicles_projectile_damage in sv_vehicles.qc:165). 0 fixes, 0 regressions
+# vs the 2026-06-22 baseline; only a port_ref line-number drift corrected (impulse dispatch 1324->1608).
 summary:
   feature_count: 21
   worst_gaps:
@@ -578,7 +586,7 @@ features:
       - "common/vehicles/sv_vehicles.qc:912 (vehicle_impulse)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleBoarding.cs:299 (Impulse)"
-      - "src/XonoticGodot.Server/Commands.cs:1324 (live dispatch)"
+      - "src/XonoticGodot.Server/Commands.cs:1608 (live dispatch — seated-pilot guard before weapon impulses)"
     constants:
       - { name: "weapon_group/next/last/prev impulses", base: "1/2/3, 10/11/12", port: "1/2/3, 10/11/12", match: true }
       - { name: "IMP_weapon_drop chase toggle", base: "17 -> toggle cl_eventchase_vehicle", port: "17 consumed (no-op; client cvar)", match: false }
@@ -594,7 +602,7 @@ features:
     gaps:
       - "The shared imp 17 chase-cam toggle is consumed but does nothing (cl_eventchase_vehicle is a client cvar with no in-vehicle camera to toggle)."
     verification:
-      - { kind: code, ref: "Commands.cs:1324 routes a seated player's impulse to VehicleBoarding.Impulse before weapon impulses; Raptor/Spiderbot mode set + cycle", result: pass }
+      - { kind: code, ref: "Commands.cs:1608 routes a seated player's impulse to VehicleBoarding.Impulse before weapon impulses; Raptor/Spiderbot mode set + cycle", result: pass }
       - { kind: test, ref: "VehicleRuntimeTests impulse routing (mode set + cycle, non-seated fall-through)", result: pass }
     confidence: high
     notes: "Unchanged. Mode switching live; chase-cam toggle a no-op (no vehicle camera)."

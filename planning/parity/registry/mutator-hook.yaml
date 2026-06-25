@@ -5,11 +5,11 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 10
   worst_gaps:
-    - "The +hook button STILL never reaches the server (Wave-2 did NOT fix this): InputButtons (InputCommand.cs:11-20) has no hook bit (only Attack/Jump/Attack2/Zoom/Crouch/Use) and Entity.OffhandFirePressed (EntityMutatorState.cs:62) is never ASSIGNED anywhere in the codebase — it is READ by HookMutator(:103)/OffhandBlasterMutator(:57)/NadesMutator(:129) but written by nothing. No +hook bind exists."
-    - "Because OffhandFirePressed is always false, OnPlayerPreThink mirrors false onto the offhand slot's ButtonAttack every tick, so Hook.WrThink only ever runs the 'primary released' branch — FireGrapplingHook is never reached and the grapple can never be cast. The instahook ruleset / campaign offhand hook is inert."
-    - "No ':grappling_hook' server-info token and no ', Hook' pretty token are appended (BuildMutatorsString / BuildMutatorsPrettyString still unported), so server browsers / the votescreen won't show that the grappling-hook mutator is active. (The g_grappling_hook in CommandReplies.cs:252 is the cvar_changes BADCVAR suppression list, not the mutator-string emission.)"
-    - "No client gameplay tip is shown when the hook mutator is active (no GameplayTips system in the port at all); Base cl_hook appends 'grappling hook is enabled, press <+hook key> to use it'."
-    - "SetStartItems still omits warmup_start_ammo_fuel = max(.., rotstable) (only the non-warmup start fuel is set); minor, only matters in warmup with useammo on."
+    - "WAVE-5 FIX (major): the +hook offhand-fire button now reaches the server end-to-end, so the grapple is castable on the live path. Chain: binds-xonotic.cfg (`bind e +hook` / `bind MOUSE5 +hook`) -> BindInput map (\"hook\"->\"+hook\") -> BindTable._hook/HookHeld -> NetGame.SampleInput (`if (BindTable.HookHeld) buttons |= InputButtons.Hook`, NetGame.cs:3984) -> wire (InputButtons.Hook = BIT(6), InputCommand.cs:20) -> ServerNet.ToMovementInput (`ButtonHook = (b & InputButtons.Hook)!=0`, ServerNet.cs:1415) -> WeaponFireDriver.Frame (`player.OffhandFirePressed = input.ButtonHook`, WeaponFireDriver.cs:66) -> HookMutator.OnPlayerPreThink reads OffhandFirePressed -> Hook.WrThink fires FireGrapplingHook. The whole offhand path (think_driver, free-reel top-up, blaster precedence) is now LIVE."
+    - "Residual timing wrinkle on the offhand think: the port publishes OffhandFirePressed in PlayerPostThink (WeaponFireDriver.Frame, GameWorld.cs:1333/1368) but reads it in PlayerPreThink (GameWorld.cs:1174), which runs EARLIER in the same tick. So the offhand-think sees the button one tick stale (press/release lands one server tick late). QC dispatches offhand_think from W_WeaponFrame itself, so the read and publish are same-frame there. Functional but a 1-tick latency vs Base."
+    - "STILL MISSING: no ':grappling_hook' server-info token and no ', Hook' pretty token are emitted (BuildMutatorsString / BuildMutatorsPrettyString still unported), so server browsers / the votescreen won't show that the grappling-hook mutator is active. (g_grappling_hook in CommandReplies.cs:252 is still only the cvar_changes BADCVAR suppression list, NOT a mutator-string emitter.)"
+    - "STILL MISSING: no client gameplay tip when the hook mutator is active (no BuildGameplayTipsString/GameplayTips system in the port at all); Base cl_hook appends 'grappling hook is enabled, press <+hook key> to use it'."
+    - "STILL OPEN: SetStartItems omits warmup_start_ammo_fuel = max(.., rotstable) (StartLoadout has only AmmoFuel, no warmup-fuel field); minor, only matters in warmup with useammo on. Also no in-mutator vehicle/weaponUseForbidden gate on the offhand key (WeaponUseForbidden is a stub=false; the seated case is excluded only by WeaponThink's early return, which leaves OffhandFirePressed un-zeroed/stale while seated)."
 features:
   - id: mutator-hook.enable.predicate
     name: "Enable predicate (string g_grappling_hook via expr_evaluate)"
@@ -38,8 +38,9 @@ features:
     verification:
       - { kind: code, ref: "ExprEvaluate (HookMutator.cs:146-160) + ExprToken (163-194) vs lib/cvar.qh:48 expr_evaluate — +/- prefix, AND-chain, all 8 BINOPs, ftos-literal-or-cvar bare token, '!' invert all ported", result: pass }
       - { kind: code, ref: "MutatorActivation.Apply() walks Mutators.All and subscribes hooks; IsEnabled read live", result: pass }
+      - { kind: test, ref: "MutatorBatchT51Tests.cs:443 — Boot(g_grappling_hook 1) -> Mutators.ByName('grappling_hook').IsEnabled true", result: pass }
     confidence: high
-    notes: "WAVE-2 FIX: the truthiness-only ExprEvaluate was replaced with a faithful port of QC expr_evaluate (lib/cvar.qh:48) — full expression grammar now handled, closing the baseline logic:partial gap. g_grappling_hook is a string cvar (cvar_string + expr_evaluate, not an autocvar 'because it doesn't work in the campaign'). LIVE + correct for literals 0/1 and ruleset-instahook 'g_grappling_hook 1'. Auto-discovered via [Mutator] (NetName='grappling_hook')."
+    notes: "Unchanged by Wave-5 (already faithful since Wave-2). The truthiness-only ExprEvaluate was replaced with a faithful port of QC expr_evaluate; full expression grammar handled. g_grappling_hook is a string cvar (cvar_string + expr_evaluate). LIVE + correct for literals 0/1 and ruleset-instahook 'g_grappling_hook 1'. Auto-discovered via [Mutator] (NetName='grappling_hook')."
 
   - id: mutator-hook.onadd.free_reel
     name: "MUTATOR_ONADD / ONROLLBACK_OR_REMOVE: free reeling when useammo off (WEP_HOOK.ammo_factor 0<->1)"
@@ -59,15 +60,16 @@ features:
       timing: na
       presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: true
-    divergence_rationale: "The port has no per-weapon ammo_factor; instead OnPlayerPreThink (line 107-108) tops the player's fuel up to Primary.Ammo+1 before each WrThink so the hooked-fuel TakeResource (Hook.cs) is a no-op. Functionally equivalent for the offhand path; the ONROLLBACK_OR_REMOVE ammo_factor=1 restore is moot because there is no ammo_factor to restore (Unhook just unsubscribes the handlers). NOTE liveness=dead: the top-up sits inside OnPlayerPreThink, whose grapple-driving body is itself unreachable (see mutator-hook.offhand.think_driver)."
+    divergence_rationale: "The port has no per-weapon ammo_factor; instead OnPlayerPreThink (line 107-108) tops the player's fuel up to Primary.Ammo+1 before each WrThink so the hooked-fuel TakeResource (Hook.cs) is a no-op. Functionally equivalent for the offhand path; the ONROLLBACK_OR_REMOVE ammo_factor=1 restore is moot because there is no ammo_factor to restore (Unhook just unsubscribes the handlers)."
     gaps:
-      - "The free-reel top-up runs inside the dead offhand-think; with useammo on, the start-fuel grant (mutator-hook.startitems.fuel) is the only useammo behavior that is actually live."
+      - "Equivalence holds only because the offhand path is gated on NOT carrying the real WEP_HOOK as main-hand; if the same Hook were main-hand the top-up would also free its primary fire (an edge case that does not arise here). Cosmetic-equivalence divergence, not a behavioral gap."
     verification:
       - { kind: code, ref: "HookMutator.UseAmmo read (line 69) + PreThink fuel top-up (line 107-108) vs MUTATOR_ONADD ammo_factor=0; Unhook (line 75-81) is the rollback analogue", result: pass }
+      - { kind: code, ref: "OnPlayerPreThink is now LIVE (the offhand-think that contains the top-up is reached every tick via the wired ButtonHook->OffhandFirePressed chain)", result: pass }
     confidence: high
-    notes: "Unchanged by Wave-2. Equivalence holds only because the offhand path is gated on NOT carrying the real WEP_HOOK; if the same Hook were main-hand the top-up would also free its primary fire (edge case that doesn't arise here). ONADD and ONROLLBACK_OR_REMOVE folded into one port row (Hook()/Unhook())."
+    notes: "WAVE-5 FIX (liveness dead->live): the baseline marked this dead because the top-up sits inside the offhand-think, whose grapple-driving body was input-starved. The +hook input wire (WeaponFireDriver.cs:66) now makes OnPlayerPreThink's body reachable, so the free-reel top-up actually runs. values:partial retained (no ammo_factor, intended divergence)."
 
   - id: mutator-hook.spawn.assign_offhand
     name: "PlayerSpawn: assign the hook as the player's offhand weapon"
@@ -90,8 +92,9 @@ features:
     verification:
       - { kind: code, ref: "OnPlayerSpawn (line 84-88) sets OffhandWeapon=\"hook\" vs player.offhand=OFFHAND_HOOK", result: pass }
       - { kind: code, ref: "MutatorHooks.PlayerSpawn.Call is a live per-spawn dispatch", result: pass }
+      - { kind: test, ref: "MutatorBatchT51Tests.cs:449 — after spawn p.OffhandWeapon == \"hook\"", result: pass }
     confidence: high
-    notes: "Unchanged. The assignment is live and correct; it just has no effect downstream because the consumer (offhand-think) can't read input. Entity.OffhandWeapon is the QC .offhand analogue."
+    notes: "Unchanged. The assignment is live and correct; downstream (offhand-think) now consumes it because the input wire is in place."
 
   - id: mutator-hook.offhand.think_driver
     name: "Offhand think: drive the Hook grapple each frame while +hook is held"
@@ -102,26 +105,32 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/HookMutator.cs:OnPlayerPreThink"
       - "src/XonoticGodot.Common/Gameplay/Weapons/Hook.cs:WrThink"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireDriver.cs:Frame"
+      - "src/XonoticGodot.Net/InputCommand.cs:InputButtons.Hook"
+      - "game/net/NetGame.cs:3984"
+      - "game/net/ServerNet.cs:1415"
+      - "src/XonoticGodot.Engine/Console/BindTable.cs:131"
+      - "game/console/BindInput.cs:46"
     constants: []
     status:
-      logic: partial
+      logic: faithful
       values: na
       timing: partial
       presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL OPEN after Wave-2: the +hook button never reaches the server. InputButtons (InputCommand.cs:11-20) has no hook bit (only Attack/Jump/Attack2/Zoom/Crouch/Use) and Entity.OffhandFirePressed is never assigned ANYWHERE in the codebase — grep across src/** + game/** for 'OffhandFirePressed =' returns ZERO writes; it is only read (HookMutator:103, NadesMutator:129, OffhandBlasterMutator:57). No +hook bind / impulse exists."
-      - "Because OffhandFirePressed is always false, OnPlayerPreThink mirrors false onto the offhand slot's ButtonAttack (HookMutator.cs:103) every tick, so Hook.WrThink only ever runs the 'primary released' branch — FireGrapplingHook is never reached and the grapple can never be cast. The instahook ruleset / campaign offhand hook is inert."
-      - "No vehicle / weaponUseForbidden suppression of the offhand key (Base weaponsystem.qc:609-611 zeroes key_pressed in a vehicle or when weapon use is forbidden). Moot while the path is dead, but absent from the port even on paper."
+      - "Timing: the +hook button is published in PlayerPostThink (WeaponFireDriver.Frame, GameWorld.cs:1333/1368) but read in PlayerPreThink (GameWorld.cs:1174), which runs EARLIER in the same tick — so HookMutator.OnPlayerPreThink reads OffhandFirePressed one tick stale. Press/release lands one server tick (~1/72 s) late vs Base, where offhand_think is dispatched inside W_WeaponFrame same-frame. Functionally castable; minor latency."
+      - "No vehicle / weaponUseForbidden suppression of the offhand key inside this path. WeaponFireDriver.WeaponUseForbidden is a stub returning false; the seated case is excluded only by WeaponThink's early return (GameWorld.cs:1359) — which means OffhandFirePressed is NOT re-zeroed while seated (it retains its last value), and HookMutator.OnPlayerPreThink has no vehicle gate of its own. Base weaponsystem.qc:609-611 zeroes key_pressed in a vehicle or when weapon use is forbidden. Edge case (offhand hook + vehicle)."
     verification:
-      - { kind: code, ref: "grep 'OffhandFirePressed =' across src/** + game/** -> zero assignments (reads only at HookMutator:103, NadesMutator:129, OffhandBlasterMutator:57)", result: fail }
-      - { kind: code, ref: "InputButtons enum (InputCommand.cs:11-20) has no Hook bit; InputCommand carries no offhand button; no +hook bind", result: fail }
-      - { kind: code, ref: "MutatorHooks.PlayerPreThink.Call (GameWorld.cs:1037) IS live per-tick, but the body is starved of input", result: pass }
+      - { kind: code, ref: "Full input chain traced LIVE: BindInput.cs:46 (\"hook\"->\"+hook\") -> BindTable.cs:131 (_hook) -> BindTable.HookHeld -> NetGame.cs:3984 (buttons|=InputButtons.Hook) -> InputCommand.cs:20 (Hook=BIT(6), serialized in the button byte) -> ServerNet.cs:1415 (ButtonHook) -> WeaponFireDriver.cs:66 (OffhandFirePressed=ButtonHook) -> HookMutator.cs:103 (st.ButtonAttack=OffhandFirePressed) -> Hook.WrThink fires FireGrapplingHook", result: pass }
+      - { kind: code, ref: "Default binds exist: binds-xonotic.cfg:29 `bind MOUSE5 +hook`, :37 `bind e +hook`", result: pass }
+      - { kind: code, ref: "MutatorHooks.PlayerPreThink.Call (GameWorld.cs:1174) is live per-tick; WeaponFireDriver.Frame (GameWorld.cs:1368) is live per-tick via WeaponThink in OnPlayerPostThink", result: pass }
+      - { kind: code, ref: "ordering: PreThink (read OffhandFirePressed, line 1174) precedes PostThink->WeaponThink->Frame (publish, line 1333/1368) within OnClientMove -> 1-tick read-publish latency", result: pass }
     confidence: high
-    notes: "UNCHANGED by Wave-2 — still the worst gap. Mechanically faithful design (drives Hook.WrThink primary-only on a dedicated high slot, matching OffhandHook.offhand_think passing key_pressed?1:0). The deep grapple state machine/reel is faithful (weapon-hook.yaml). The defects are (a) the missing input wiring (makes the whole offhand path dead) and (b) no vehicle/weaponUseForbidden key gate. Same dead-input issue affects offhand_blaster and the nade offhand throw (TODO.md T11)."
+    notes: "WAVE-5 FIX (the worst baseline gap, dead->live + logic partial->faithful). InputButtons.Hook (BIT(6)) was added and the whole bind->net->driver->mutator chain wired, so OffhandFirePressed is now produced from real +hook input and the grapple is castable on the live path (instahook ruleset / campaign offhand hook). The deep grapple state machine/reel was already faithful (weapon-hook.yaml). Residuals downgraded from missing-input to (a) a 1-tick publish/read latency and (b) the absent vehicle/forbidden key gate. Same input wire revives offhand_blaster and nade offhand-throw."
 
   - id: mutator-hook.startitems.fuel
     name: "SetStartItems: grant fuel + FuelRegen when useammo is on"
@@ -143,12 +152,14 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL OPEN: only the non-warmup start fuel is bumped; Base also sets warmup_start_ammo_fuel = max(.., rotstable). Minor: only matters during warmup with useammo on (a rare combination)."
+      - "STILL OPEN: only the non-warmup start fuel is bumped (StartLoadout has a single AmmoFuel field, no warmup-fuel field). Base also sets warmup_start_ammo_fuel = max(.., rotstable); SpawnSystem.cs:883 reads a flat g_warmup_start_ammo_fuel cvar but the hook mutator never maxes it against rotstable. Minor: only matters during warmup with useammo on (a rare combination)."
     verification:
       - { kind: code, ref: "OnSetStartItems (line 115-124) adds FUEL_REGEN + AmmoFuel=max(.,rotstable) vs QC start_items|=FuelRegen + start_ammo_fuel + warmup_start_ammo_fuel", result: pass }
       - { kind: code, ref: "MutatorHooks.SetStartItems.Call is a live loadout dispatch", result: pass }
+      - { kind: code, ref: "StartLoadout (MutatorHooks.cs:627-649) has only AmmoFuel — no warmup fuel field for the mutator to set", result: fail }
+      - { kind: test, ref: "MutatorBatchT51Tests.cs:466/478 — useammo on grants fuel=max(.,rotstable); useammo off grants none", result: pass }
     confidence: high
-    notes: "Unchanged by Wave-2. Gated on UseAmmo (default off), so usually a no-op — but live and correct when useammo is enabled. Warmup-fuel omission is the only value gap (values: partial)."
+    notes: "Unchanged by Wave-5. Gated on UseAmmo (default off), so usually a no-op — but live and correct when useammo is enabled. Warmup-fuel omission is the only value gap (values: partial)."
 
   - id: mutator-hook.filteritem.hide_pickup
     name: "FilterItem: suppress the WEP_HOOK world pickup"
@@ -171,6 +182,7 @@ features:
     verification:
       - { kind: code, ref: "OnFilterItemDefinition (line 129-133) returns true for NetName==\"hook\"/ClassName==\"weapon_hook\" vs item.weapon==WEP_HOOK.m_id", result: pass }
       - { kind: code, ref: "MutatorHooks.FilterItemDefinition.Call gates world-item spawn", result: pass }
+      - { kind: test, ref: "FilterItemHookTests.cs + MutatorBatchT51Tests.cs:457 — weapon_hook def filtered when mutator active", result: pass }
     confidence: high
     notes: "Unchanged. Matches on the pickup's weapon NetName / classname. Live and correct: prevents the offhand-hook from also lying on the map."
 
@@ -194,12 +206,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL MISSING after Wave-2: no ':grappling_hook' server-info token and no ', Hook' pretty token are appended, so server browsers / the votescreen won't show that the grappling-hook mutator is active. NOTE: the g_grappling_hook entry in CommandReplies.cs:252 is the cvar_changes PureBadCvars suppression list (the announce-themselves mutators are excluded from cvar-change reporting), NOT the BuildMutatorsString token emission — those tokens have no port emitter anywhere (grep ':grappling' / ', Hook' / BuildMutatorsString -> no emission)."
+      - "STILL MISSING after Wave-5: no ':grappling_hook' server-info token and no ', Hook' pretty token are appended, so server browsers / the votescreen won't show that the grappling-hook mutator is active. The g_grappling_hook entry in CommandReplies.cs:252 remains the cvar_changes PureBadCvars suppression list, NOT the BuildMutatorsString token emission — those tokens still have no port emitter anywhere (grep ':grappling' / ', Hook' / BuildMutatorsString -> no emission)."
     verification:
-      - { kind: code, ref: "grep ':grappling_hook' / '\", Hook\"' / BuildMutatorsString emission in src/** + game/** -> none (only doc-comment mentions in PowerupsMutator/RocketFlyingMutator/SuperSpecMutator)", result: fail }
+      - { kind: code, ref: "grep ':grappling_hook' / '\", Hook\"' / BuildMutatorsString emission in src/** + game/** -> none (only doc-comment mentions in CloakedMutator and others)", result: fail }
       - { kind: code, ref: "CommandReplies.cs:252 g_grappling_hook is the cvar_changes BADCVAR list, not a mutator-string token", result: fail }
     confidence: high
-    notes: "Unchanged by Wave-2. Cosmetic/UI metadata; no gameplay effect. Several other mutators have the same omission."
+    notes: "Unchanged by Wave-5. Cosmetic/UI metadata; no gameplay effect. Several other mutators have the same omission."
 
   - id: mutator-hook.client.gameplay_tip
     name: "Client gameplay tip: 'grappling hook is enabled, press <key>'"
@@ -218,11 +230,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL MISSING after Wave-2: no client gameplay tip is shown when the hook mutator is active; Base cl_hook appends '^3grappling hook^8 is enabled, press ^3<+hook key>^8 to use it'. The port has no BuildGameplayTipsString/gameplay-tips system at all (grep src/ + game/ for BuildGameplayTip/GameplayTip/'grappling hook is enabled' -> none)."
+      - "STILL MISSING after Wave-5: no client gameplay tip is shown when the hook mutator is active; Base cl_hook appends '^3grappling hook^8 is enabled, press ^3<+hook key>^8 to use it'. The port has no BuildGameplayTipsString/gameplay-tips system at all (grep src/ + game/ for BuildGameplayTip/GameplayTip/'grappling hook is enabled' -> none)."
     verification:
       - { kind: code, ref: "no BuildGameplayTipsString / GameplayTip system for cl_hook in the port (grep src/ + game/)", result: fail }
     confidence: high
-    notes: "Unchanged by Wave-2. Presentation-only (loading/idle tip text). Low impact, but it is the discoverability hint for the offhand key — doubly moot while the offhand path is dead. The menu checkbox tooltip (DialogMutators.cs:177) carries the analogous 'Press the hook key to use it' hint, but only in the menu, not in-match."
+    notes: "Unchanged by Wave-5. Presentation-only (loading/idle tip text). Now that the offhand path is live, this is the discoverability hint for the offhand key — its absence is more noticeable, but still no gameplay effect. The menu checkbox tooltip (DialogMutators.cs:176-177) carries the analogous 'Press the hook key to use it' hint, but only in the menu, not in-match."
 
   - id: mutator-hook.menu.toggle
     name: "Menu: Grappling Hook mutator checkbox + describe page"
@@ -249,7 +261,7 @@ features:
       - { kind: code, ref: "DialogMutators.cs:176-177 CheckBox(g_grappling_hook) present + tooltip vs QC checkbox", result: pass }
       - { kind: code, ref: "no port equivalent of MutatorGrapplingHook.describe long-form text", result: fail }
     confidence: high
-    notes: "Unchanged by Wave-2. The functional toggle is present and live in the mutator menu; only the verbose describe-page text is missing."
+    notes: "Unchanged by Wave-5. The functional toggle is present and live in the mutator menu; only the verbose describe-page text is missing."
 
   - id: mutator-hook.precedence.blaster_override
     name: "Precedence: offhand_blaster overrides grappling_hook when both enabled"
@@ -269,13 +281,14 @@ features:
       timing: faithful
       presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Ordering is now traced and confirmed correct, but the precedence only resolves a moot tie: both PlayerSpawn handlers are downstream of the dead offhand-input path, so neither offhand weapon actually fires regardless of which OffhandWeapon value wins. The precedence becomes observable only once mutator-hook.offhand.think_driver is wired."
+      - "The precedence is now observable on the live path (the offhand mechanism it arbitrates is no longer input-dead). Both PlayerSpawn handlers run; the registry NetName sort makes blaster the LAST OffhandWeapon writer ('grappling_hook' < 'offhand_blaster' ordinally), so blaster wins when both are on — matching Base 'overridden by offhand_blaster'. No remaining gap."
     verification:
-      - { kind: code, ref: "Mutators.All = Registry<MutatorBase>.All, sorted ordinal by RegistryName (Registry.cs:50-53). MutatorBase.RegistryName => NetName (GameplayBases.cs:142). 'grappling_hook' < 'offhand_blaster' ordinally (g<o), so Hook subscribes/runs BEFORE blaster in PlayerSpawn; blaster's OnPlayerSpawn runs LAST and wins the OffhandWeapon assignment — matching Base 'overridden by offhand_blaster'", result: pass }
-      - { kind: code, ref: "GeneratedRegistrations.RegisterAll() (Registries.cs Bootstrap) Sort()s the mutator registry, so the ordinal order is in effect on the live path", result: pass }
+      - { kind: code, ref: "Mutators.All = Registry<MutatorBase>.All, sorted ordinal by RegistryName (Registry.cs:50-53). MutatorBase.RegistryName => NetName. 'grappling_hook' < 'offhand_blaster' (g<o), so blaster's OnPlayerSpawn runs LAST and wins the OffhandWeapon assignment", result: pass }
+      - { kind: code, ref: "GeneratedRegistrations.RegisterAll() Sort()s the mutator registry, so the ordinal order is in effect on the live path", result: pass }
+      - { kind: code, ref: "the offhand mechanism is now live (ButtonHook->OffhandFirePressed wire), so the precedence is no longer a moot tie", result: pass }
     confidence: high
-    notes: "RESOLVED this audit (baseline was status:unknown / confidence:low pending an ordering trace): the Registry ordinal sort by NetName makes blaster the last PlayerSpawn writer, so the port matches Base's blaster-wins precedence. No code change was needed — the ordering was always correct; the baseline simply hadn't traced it. liveness=dead because the whole offhand mechanism it arbitrates is input-dead (see offhand.think_driver)."
+    notes: "WAVE-5 FIX (liveness dead->live). The ordering was always correct (Registry ordinal sort by NetName makes blaster the last PlayerSpawn writer); the baseline marked it dead because the whole offhand mechanism it arbitrates was input-dead. With the +hook wire in place the precedence is now observable on the live path. No code change to this row was needed; only the upstream input wire."

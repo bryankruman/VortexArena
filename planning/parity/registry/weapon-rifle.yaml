@@ -2,10 +2,15 @@ unit: weapon-rifle
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-22"
-# Re-audited 2026-06-22 (post Wave-1/2 + second-pass fix-up, branch claude/parity-port-waves):
-# adversarial re-verification of all 16 rows against current Base+port. Net change vs the prior
-# worst_gaps: casing CLOSED (verified networks+renders), 4 still open; NO regressions found; the
-# deathtype.secondary characterization was stale and is corrected (the deathTag channel now exists).
+# Re-audited 2026-06-22 (post Wave-1/2 + second-pass fix-up + Wave-5 partial, branch
+# claude/parity-port-waves): adversarial re-verification of all 16 rows against current Base+port.
+# Wave-5 (HEAD 66e378f) touched ONLY WeaponFireDriver (added the +hook/offhand-fire button publish)
+# and is RIFLE-NEUTRAL — Rifle.cs / BotAim.cs / WeaponFiring.cs / EffectsList.cs / DeathMessages.cs /
+# DeathTypes.cs are all unchanged since the prior pass. Re-confirmed: 12 rows faithful+live, 4 still
+# open (deathtype.secondary one-line omission, bot_aim, zoom_eye, resetplayer). NO fixes, NO
+# regressions, NO newly-unmapped Base features this pass. The deathTag channel (FireBullet deathTag
+# param + ApplyDamage override + DeathTypes.WithHitType/HasHitType/Secondary) and MachineGun's live
+# use of it (MachineGun.cs:291-295) re-verified; rifle still passes deathType=RegistryId with no tag.
 summary:
   feature_count: 16
   worst_gaps:

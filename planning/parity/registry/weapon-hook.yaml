@@ -6,9 +6,9 @@ summary:
   feature_count: 12
   worst_gaps:
     - "No hook ROPE line is ever drawn: there is still no GrapplingHookSend/ENT_CLIENT_HOOK rope stream and no Draw_CylindricLine renderer. The chain HEAD is networked as a generic projectile and rendered as a red Hookbomb spike WHILE IN FLIGHT, but the connecting rope between player and latch point is absent."
-    - "Latched hook still goes INVISIBLE: GrapplingHook_Stop sets MoveType.None, which is not a projectile movetype, so ServerNet.Classify drops the model-less chain from the snapshot (Generic with no alias model) — the spike vanishes the moment the hook latches. Base keeps the latched hook + rope drawn via CSQC."
-    - "Offhand hook is STILL dead: the +hook offhand-fire button never reaches the server — InputButtons has no hook bit and Entity.OffhandFirePressed is never assigned anywhere in src/ or game/, so OnPlayerPreThink always sees the button released. Instahook/campaign offhand hook can't fire (same missing-input-wire as nade-throw / offhand-blaster)."
+    - "Latched hook still goes INVISIBLE: GrapplingHook_Stop sets MoveType.None, which is not a projectile movetype, so ServerNet.Classify (IsProjectileMoveType, line 1928) drops the model-less chain from the snapshot (Generic with no alias model) — the spike vanishes the moment the hook latches. Base keeps the latched hook + rope drawn via CSQC."
     - "Primary hook fire has no muzzle flash (Base W_MuzzleFlash) and ignores g_balance_grapplehook_gravity TOSS-mode movetype (always FLY)."
+    - "FIXED (Wave 5, commit 66e378f): the offhand +hook button is now wired end-to-end (BindInput +hook -> BindTable.HookHeld -> NetGame InputButtons.Hook (BIT 6) -> ServerNet.ButtonHook -> WeaponFireDriver.OffhandFirePressed -> HookMutator), so the offhand grappling hook (instahook ruleset / campaign specials) now actually fires. One residual 1-tick read/publish latency (PreThink reads, PostThink publishes)."
 features:
   - id: weapon-hook.identity.attributes
     name: "Weapon identity, models, color, flags, ammo type"
@@ -307,20 +307,22 @@ features:
     status:
       logic: faithful
       values: faithful
-      timing: faithful
+      timing: partial
       presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "DEAD on the live path: the +hook offhand-fire button is never delivered to the server. InputButtons has no hook bit and Entity.OffhandFirePressed is never assigned anywhere in src/ or game/ (verified: only READS — HookMutator st.ButtonAttack=player.OffhandFirePressed, OffhandBlaster/Nades reads — NO `OffhandFirePressed =`), so OnPlayerPreThink always sees the button released and the offhand hook can never fire (affects instahook ruleset + grappling-hook campaign specials). Same missing-input-wire as nade-throw / offhand-blaster (TODO.md T11)."
-      - "No useammo ammo_factor toggle on the Hook weapon (handled via fuel top-up instead) — behaviourally equivalent but only matters once the button is wired."
+      - "Residual 1-tick read/publish latency: OffhandFirePressed is published in PlayerPostThink (WeaponFireDriver.Frame, line 66) but read in PlayerPreThink (HookMutator.OnPlayerPreThink), which runs EARLIER in the same OnClientMove tick — so the offhand-think observes the +hook button one server tick (~1/72 s) stale. QC dispatches offhand_think inside W_WeaponFrame same-frame. Functionally castable; minor latency (timing: partial)."
+      - "No useammo ammo_factor toggle on the Hook weapon (handled via fuel top-up instead) — behaviourally equivalent; only matters with g_grappling_hook_useammo on."
+      - "No in-mutator vehicle / weaponUseForbidden gate on the +hook key: WeaponUseForbidden (WeaponFireDriver.cs:324) is a stub returning false, and the seated case is excluded only by WeaponThink's early return, which can leave OffhandFirePressed un-zeroed/stale while seated (edge case)."
     verification:
-      - { kind: code, ref: "HookMutator OnPlayerPreThink; PlayerPreThink.Call live in GameWorld", result: pass }
-      - { kind: code, ref: "grep `OffhandFirePressed =` over src/ + game/ -> no assignment; InputButtons has no hook bit", result: fail }
+      - { kind: code, ref: "HookMutator OnPlayerPreThink; MutatorHooks.PlayerPreThink.Call live in GameWorld", result: pass }
+      - { kind: code, ref: "Full input chain traced LIVE: BindInput.cs:46 (hook->+hook) -> BindTable.cs:131/169 (_hook/HookHeld) -> NetGame.cs:3984 (buttons|=InputButtons.Hook) -> InputCommand.cs:20 (Hook=BIT(6)) -> ServerNet.cs:1415 (ButtonHook) -> WeaponFireDriver.cs:66 (OffhandFirePressed=ButtonHook) -> HookMutator.cs:103 (st.ButtonAttack=OffhandFirePressed) -> Hook.WrThink fires FireGrapplingHook", result: pass }
+      - { kind: code, ref: "ordering: PreThink (read) precedes PostThink->WeaponThink->Frame (publish) within OnClientMove -> 1-tick read-publish latency", result: pass }
     confidence: high
-    notes: "STILL OPEN (no change in Wave 1/2). Offhand assign + filter-item suppress + start-fuel grant are faithful and PlayerPreThink fires live, but the input button is the missing link (the mutator body is otherwise reachable code)."
+    notes: "FIX (Wave 5, commit 66e378f): liveness dead->live. The +hook offhand-fire button is now delivered to the server (Entity.OffhandFirePressed = input.ButtonHook in WeaponFireDriver.Frame), reviving the offhand grappling hook (instahook ruleset g_grappling_hook 1 + grappling-hook campaign specials). Offhand assign + filter-item suppress + start-fuel grant remain faithful. The only residual is a 1-tick read/publish latency (timing partial)."
 
   - id: weapon-hook.mutator.vampirehook
     name: "Vampire Hook (drain HP while hooked to an enemy)"

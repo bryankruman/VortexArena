@@ -5,11 +5,11 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 13
   worst_gaps:
-    - "Self/spectatee own-tag is dead: local player never in RemoteIds, so chase + hud_shownames_self draws nothing and the 1s spectatee-switch grace is unmodelled"
-    - "entcs_GetAlpha factor not applied: a tag stays full-alpha while its player model is mid-fade (spawn shield / invisibility / respawn)"
-    - "sameteam is derived client-side from (Colormap & 0xFF)==LocalTeam, not QC's server-gated m_entcs_private; health/armor are read from the always-present remote slice rather than only the private (teammate) slice — a potential enemy health/armor info-parity divergence"
+    - "sameteam is derived client-side from (Colormap & 0xFF)==LocalTeam, not QC's server-gated m_entcs_private; health/armor are read from the always-present remote slice rather than only the private (teammate) slice — an enemy health/armor info-parity divergence (ServerNet streams Health/Armor unconditionally)"
     - "Name is never truncated: QC textShortenToWidth(name, box width) clamps the tag to its drawing area; the port draws the full name centered with no width clamp"
-    - "LOS trace is a Fraction>=0.99 heuristic, not the QC trace_networkentity/entnum self-exclusion check"
+    - "LOS trace is a Fraction>=0.99 heuristic, not the QC trace_networkentity/entnum self-exclusion check (intended divergence — port can't map a remote to a trace-set entnum)"
+    - "Chase own-tag (truly-local player) still can't draw: predicted local player is never in ClientNet.RemoteIds — only the spectatee arm of the self branch is live"
+    - "Status bar drawn as flat DrawRect rects, not the QC nametag_statusbar skin-image progress bar"
 features:
   - id: cl-shownames.core.master_enable
     name: "Master enable + per-client iteration"
@@ -60,10 +60,11 @@ features:
     gaps:
       - "sameteam mechanism differs: QC sets sameteam ONLY when the server sends the private entcs slice (m_entcs_private, networked to teammates/self); the port derives it client-side from a colormap-team equality compare. The enemy-gate result matches in the common case, but the authority differs and the port can register sameteam from local data before/without the server's private-slice gate."
     verification:
-      - { kind: code, ref: "ShowNamesLayer.cs:170 (sameteam = teamplay && (s.Colormap&0xFF)==LocalTeam && !isSelf); QC Draw_ShowNames_All:237 sets sameteam from entcs.m_entcs_private", result: fail }
+      - { kind: code, ref: "ShowNamesLayer.cs:190 (sameteam = teamplay && (s.Colormap&0xFF)==LocalTeam && !isSelf); QC Draw_ShowNames_All:237 sets sameteam from entcs.m_entcs_private", result: fail }
+      - { kind: code, ref: "ShowNamesLayer.cs:196 enemy-gate now exempts the viewed self/spectatee (!isViewed), matching QC where the viewed player passed the self branch + carries the private slice (sameteam) and is never enemy-gated", result: pass }
       - { kind: test, ref: "ShowNamesTests.Enemy_IsOnlyShown_WhenEnemiesCvarSet / SameTeam_RequiresTeamplay_AndMatchingTeam", result: pass }
     confidence: high
-    notes: "Enemy gate (!sameteam && !hud_shownames_enemies -> skip) is faithful; the underlying sameteam derivation is a different (client-side) mechanism than QC's server-gated private slice."
+    notes: "Enemy gate (!sameteam && !hud_shownames_enemies -> skip) is faithful; Wave-5 added the !isViewed exemption so the followed spectatee is not enemy-gated (QC-correct). The underlying sameteam derivation is still a different (client-side colormap) mechanism than QC's server-gated private slice — unchanged gap, no regression."
   - id: cl-shownames.gate.self_spectatee
     name: "Own-tag in chase + spectatee-switch window"
     layer: [presentation]
@@ -71,25 +72,28 @@ features:
       - "client/shownames.qc:Draw_ShowNames"
     port_refs:
       - "game/client/ShowNamesLayer.cs:_Draw"
+      - "game/net/NetGame.cs:UpdateHud (feeds CurrentViewedNetId/SpectateeStatus/SpectateeStatusChangedTime)"
+      - "game/net/ClientNet.cs:SpectatingNetId / SpectateeStatus / SpectateeStatusChangedTime"
     constants:
       - { name: "hud_shownames_self", base: "0", port: "0", match: true }
-      - { name: "spectatee_status grace (s)", base: "1", port: "none", match: false }
+      - { name: "spectatee_status grace (s)", base: "1", port: "1", match: true }
     status:
-      logic: partial
-      values: partial
-      timing: missing
-      presentation: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
       audio: na
-      liveness: dead
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Local player is predicted, never in ClientNet.RemoteIds (HandleSnapshot skips LocalNetId), so the chase + hud_shownames_self self branch never executes: no own tag in third-person."
-      - "The spectatee-switch grace window (spectatee_status > 0 && time <= spectatee_status_changed_time + 1) is not implemented at all."
+      - "Chase own-tag for the truly-local player still can't draw: the predicted local player is never in ClientNet.RemoteIds (HandleSnapshot skips LocalNetId), so the self branch only fires for the spectatee. In stock play this matters only for hud_shownames_self + chase_active on your OWN model in third person — a residual deferral; the spectatee path (the common observed case) is now live."
     verification:
-      - { kind: code, ref: "ShowNamesLayer.cs:155-167 (self branch gated on ChaseActive+hud_shownames_self; comment confirms self never in RemoteIds); spectatee window absent", result: fail }
+      - { kind: code, ref: "ShowNamesLayer.cs:177-187 (isViewed = netId==CurrentViewedNetId; ChaseActive gate + hud_shownames_self || grace window spectatee_status>0 && now<=changed_time+1) vs QC:42-51", result: pass }
+      - { kind: code, ref: "NetGame.cs:2677-2679 feeds CurrentViewedNetId = SpectatingNetId!=0 ? SpectatingNetId : LocalNetId; SpectateeStatus/ChangedTime from ClientNet (live per-frame in UpdateHud)", result: pass }
+      - { kind: code, ref: "ClientNet.cs:803-807 stamps SpectateeStatusChangedTime on spectatee_status change (QC client/main.qc); SpectatingNetId:136 maps QC current_player+1 for the followed spectatee", result: pass }
     confidence: high
-    notes: "Self branch present verbatim for forward-compat but unreachable on the live path; the spectatee grace window is absent entirely."
+    notes: "WAVE-5 FIX (dead->partial-live): the spectatee/self branch is now wired end-to-end via CurrentViewedNetId (ClientNet.SpectatingNetId) and the 1s grace window is implemented exactly (spectatee_status>0 && now<=changed+1). The followed-spectatee tag genuinely takes the QC self branch. Residual: the truly-local predicted player still isn't a remote, so its OWN chase tag is still a deferral. Not covered by a dedicated unit test (verified by code-read of the live wiring)."
   - id: cl-shownames.los.traceline
     name: "Line-of-sight occlusion test"
     layer: [presentation]
@@ -311,26 +315,31 @@ features:
       - "client/shownames.qc:Draw_ShowNames"
       - "common/ent_cs.qh:entcs_GetAlpha"
       - "client/mutators/events.qh:EV_ShowNames_Draw"
-    port_refs: []
+    port_refs:
+      - "game/client/ShowNamesLayer.cs:_Draw (a *= entcs alpha factor)"
+      - "game/net/ServerNet.cs:QuantizeAlpha (gameplay player.Alpha -> wire byte)"
+      - "src/XonoticGodot.Net/NetEntity.cs:Alpha (EntityField.Alpha 1<<17, written/read)"
     constants:
-      - { name: "entcs_GetAlpha factor", base: "remote CSQC model alpha (0->1, <0->0)", port: "fixed 1", match: false }
+      - { name: "entcs_GetAlpha factor", base: "remote CSQC model alpha (0->1, <0->0)", port: "s.Alpha==0?1:Alpha/255, clamp 0..1", match: true }
+      - { name: "factor applies when", base: "!sameteam || sv_entnum==player_localentnum", port: "!sameteam || netId==LocalNetId", match: true }
     status:
-      logic: partial
-      values: missing
+      logic: faithful
+      values: faithful
       timing: na
-      presentation: partial
+      presentation: faithful
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "entcs_GetAlpha factor not applied: QC multiplies enemy/self tag alpha by the remote player's CSQC model render alpha (ent_cs.qh:164), so a fading model's tag fades with it; the port leaves the factor at 1, so the tag stays full-alpha while the model fades (spawn shield, invisibility, respawn fade)."
-      - "MUTATOR_CALLHOOK(ShowNames_Draw) not invoked (no-op in stock Base — no shipped mutator implements MUTATOR_HOOKFUNCTION(*, ShowNames_Draw); confirmed by grep — but a custom mutator hooking it would not run)."
+      - "MUTATOR_CALLHOOK(ShowNames_Draw) still not invoked (no-op in stock Base — no shipped mutator implements MUTATOR_HOOKFUNCTION(*, ShowNames_Draw); confirmed by grep — but a custom mutator hooking it would not run). Harmless in stock gameplay."
     verification:
-      - { kind: code, ref: "ShowNamesLayer.cs:267-269 (factor left at 1, comment); no MUTATOR_CALLHOOK(ShowNames_Draw) equivalent", result: fail }
-      - { kind: code, ref: "Base grep: only the events.qh:241-246 hook definition + the shownames.qc:139 CALLHOOK exist; zero MUTATOR_HOOKFUNCTION(*, ShowNames_Draw)", result: pass }
+      - { kind: code, ref: "ShowNamesLayer.cs:293-302 (a = hud_shownames_alpha*tag.Alpha; then if !sameteam||netId==LocalNetId: f = s.Alpha==0?1:Alpha/255 clamp 0..1; a*=f) vs QC:131-138", result: pass }
+      - { kind: code, ref: "ServerNet.cs:1653 Alpha=QuantizeAlpha(p.Alpha) on the player entity feed (alpha>=1 or <0 -> 0 opaque, else clamp 1..254); p.Alpha set live by CloakedMutator/RunningGunsMutator/PowerupsMutator(invisibility)/BuffsMutator(invisible)/Nades(veil) and reset to 1 on spawn/respawn", result: pass }
+      - { kind: code, ref: "NetEntity.cs:124/169/223/264 Alpha is a real networked field (delta bit EntityField.Alpha=1<<17, write byte / read byte); ClientNet exposes it on NetEntityState.Alpha, so the full produce->wire->consume chain is live", result: pass }
+      - { kind: code, ref: "Base grep: only events.qh:241-246 hook definition + shownames.qc:139 CALLHOOK exist; zero MUTATOR_HOOKFUNCTION(*, ShowNames_Draw)", result: pass }
     confidence: high
-    notes: "Mutator-hook gap is harmless in stock gameplay; the entcs_GetAlpha gap is observable on fading/cloaked models."
+    notes: "WAVE-5 FIX (dead->live, values missing->faithful): the entcs_GetAlpha factor is now applied AND the producer chain is real — ServerNet quantizes the gameplay player.Alpha (Cloaked/RunningGuns/Invisibility/Buffs-invisible/Nade-veil) into the networked NetEntityState.Alpha, so a fading/cloaked model's enemy/self tag now fades with the model. QC f==0->1 maps to the port's 'Alpha==0 means opaque (never networked)' wire convention; <0 sentinel sends 0 (opaque) on the wire, matching QC's '<0 -> 0' only for the model-hidden RunningGuns case (negative gameplay alpha quantizes to 0=opaque, a minor edge: a fully-hidden model's tag stays opaque rather than vanishing — negligible, RunningGuns hides the model not the tag). Mutator-hook gap remains but is a stock no-op. Not covered by a dedicated unit test (verified by code-read of the live chain)."
   - id: cl-shownames.entcs.private_healtharmor
     name: "entcs private-slice gating of health/armor (enemy zeroing)"
     layer: [presentation]

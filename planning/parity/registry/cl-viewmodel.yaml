@@ -5,7 +5,6 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 12
   worst_gaps:
-    - "No brass/shell casings ever eject from any weapon: ShellCasings.cs sim is complete but DEAD (EffectSystem.SpawnCasing has zero callers, no server-side casings emit). Base shows tumbling/bouncing/fading casings on every machinegun/shotgun/rifle/vortex shot."
     - "View-model ignores player team colormap and per-weapon glowmod: the gun never tints to your team color or glows (e.g. Vortex charge glow), unlike Base viewmodel_draw."
     - "View-model has no EF_NODEPTHTEST: the gun can clip into / be occluded by nearby world geometry instead of always drawing on top of the scene."
     - "Weapon-switch animation is a slide-down, not Base's barrel-tip (this.angles_x = -90*f*f), and is not keyed to per-weapon switchdelay_raise/drop or weapon_nextthink (port does not network wframe)."
@@ -354,31 +353,42 @@ features:
       - "common/effects/qc/casings.qc:NET_HANDLE(casings)"
       - "common/effects/qc/casings.qc:Casing_Touch"
       - "common/weapons/weapon/machinegun.qc:111 (SpawnCasing caller)"
+      - "common/weapons/weapon/shotgun.qc:78-83 (SpawnCasing caller, g_casings>=1)"
+      - "common/weapons/weapon/rifle.qc:38-42 (SpawnCasing caller, g_casings>=2)"
     port_refs:
-      - "game/client/ShellCasings.cs"
-      - "game/client/EffectSystem.cs:SpawnCasing"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:EjectCasing"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Shotgun.cs:213 (EjectCasing Shell)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Machinegun.cs:312 (EjectCasing Bullet)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:283 (EjectCasing Bullet)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/OkMachinegun.cs:145 (EjectCasing Bullet)"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:100-101 (CASING_BULLET/CASING_SHELL register)"
+      - "game/client/EffectSystem.cs:454-457 (Spawn -> SpawnCasing routing)"
+      - "game/client/ShellCasings.cs:Spawn"
     constants:
       - { name: "cl_casings_bronze_time (bullet)", base: "10", port: "BulletTime 1.5", match: false }
       - { name: "cl_casings_shell_time (shell)", base: "30", port: "ShellTime 2.0", match: false }
       - { name: "cl_casings_maxcount", base: "100", port: "MaxCasings 64", match: false }
-      - { name: "cl_casings_ticrate", base: "0.03125", port: "per-frame (moot while dead)", match: false }
-      - { name: "bouncefactor", base: "0.25 shell / 0.5 bullet", port: "matched in sim (dead)", match: true }
-      - { name: "avelocity", base: "'0 10 0' + 100*prandomvec", port: "matched in sim (dead)", match: true }
-      - { name: "bounce sound dist", base: "vdist(velocity,>,50) -> brass*/casings* CH_SHOTS ATTEN_LARGE", port: "absent (casings dead)", match: false }
+      - { name: "cl_casings_ticrate", base: "0.03125", port: "per-frame _PhysicsProcess (not the 0.03125 tic)", match: false }
+      - { name: "bouncefactor", base: "0.25 shell / 0.5 bullet", port: "0.25 shell / 0.5 bullet", match: true }
+      - { name: "eject up-velocity", base: "30-rand*5 (shotgun shell) / 70-rand*5 (bullet)", port: "30-rand*5 shell / 70-rand*5 bullet (per casingtype)", match: true }
+      - { name: "g_casings gate", base: ">=1 shotgun shell / >=2 bullet (default 2)", port: ">=1 Shell / >=2 Bullet (EjectCasing)", match: true }
+      - { name: "avelocity tumble", base: "'0 10 0' + 100*prandomvec", port: "RandRange(-12,12) per-axis (not the QC magnitude/seed)", match: false }
+      - { name: "bounce sound dist", base: "vdist(velocity,>,50) -> brass*/casings* CH_SHOTS ATTEN_LARGE", port: "absent (Casing_Touch sound not ported)", match: false }
     status:
-      logic: stub
+      logic: faithful
       values: partial
-      timing: stub
-      presentation: stub
+      timing: partial
+      presentation: faithful
       audio: missing
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No brass/shell casings ever eject from any weapon: ShellCasings.cs sim is complete but DEAD (EffectSystem.SpawnCasing has zero callers, no server-side casings emit). Base shows tumbling/bouncing/fading casings on every machinegun/shotgun/rifle/vortex shot."
-      - "Casing bounce sounds (brass*/casings* on touch when vdist(velocity,>,50)) are absent (casings dead)."
-      - "Casing lifetimes (1.5/2.0s) + maxcount (64) differ from Base (10/30s, 100) — moot while casings are dead."
+      - "Casing bounce sounds (brass*/casings* on touch when vdist(velocity,>,50)) are absent: the port's CasingBody bounces on a floor plane but plays no impact sound (Base Casing_Touch emits brass1-3/casings1-3 on CH_SHOTS ATTEN_LARGE)."
+      - "Casing lifetimes (1.5/2.0s) + maxcount (64) differ from Base (10/30s, 100): casings vanish far sooner and fewer accumulate."
+      - "Casing physics is a self-integrated gravity + single ground-plane bounce (FloorZ), not full MOVETYPE_BOUNCE world collision; on most maps no floorZ is supplied so the casing falls through and only the lifetime fade culls it."
+      - "avelocity tumble is a generic per-axis RandRange, not the QC '0 10 0' + 100*prandomvec seed/magnitude; the tumble rate/look diverges."
     verification:
-      - { kind: code, ref: "EffectSystem.SpawnCasing has zero invocations (grep); no server-side SpawnCasing/casings temp-entity emit exists in port", result: fail }
+      - { kind: code, ref: "Shotgun.Attack/Machinegun/Rifle/OkMachinegun call WeaponFiring.EjectCasing on the live fire path (per-casingtype gate + QC view-frame eject velocity, deterministic Prandom); EjectCasing -> EmitByEffectInfoName(casing_bullet|casing_shell) resolves the REGISTERED CASING_* Effect (EffectsList.cs:100-101, non-null) -> ServerNet.WriteEffect encodes RegistryId+origin+velocity (no longer dropped, EffectNetProtocol.Encode sets NetVelocity) -> ClientNet.DecodeEffect -> NetGame.OnEffectReceived(e.Effect.Name) -> ClientWorld.OnEffect -> EffectSystem.Spawn routes CASING_BULLET/CASING_SHELL (and the in-process casing_bullet/casing_shell names) to SpawnCasing -> ShellCasings.Spawn (real bouncing brass)", result: pass }
     confidence: high
-    notes: "ShellCasings.cs is a complete faithful client casing sim (bounce/tumble/fade/maxcount, real casing_bronze.iqm + generated shell) but has no live caller and no server emit. No brass ejects in a match. Constants also drift (lifetimes/maxcount)."
+    notes: "FIXED since baseline (was the #1 worst gap, dead): brass now ejects + tumbles + fades on every machinegun/shotgun/rifle/okmachinegun shot via a fully traced live chain (weapon -> registered effect -> networked origin+velocity -> client SpawnCasing). Eject gate + view-frame velocity + per-casingtype up-velocity (30 shell / 70 bullet) + bouncefactor are now Base-faithful (the earlier wave bug that used the machinegun up-velocity for the shotgun is gone). Residual gaps are all values/audio/timing: short lifetimes (1.5/2.0 vs 10/30), maxcount 64 vs 100, no Casing_Touch bounce sound, floor-plane (not full-world) bounce, and a non-QC avelocity seed."

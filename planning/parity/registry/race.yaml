@@ -5,10 +5,11 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 19
   worst_gaps:
-    - "Race HUD split timer + checkpoint splits + medal flash + PB/server-best mod icon + rankings scoreboard are fully built but still never fed (no TE_CSQC_RACE net path; Race* props never assigned outside the panel class) — invisible in a live match. Wave-2 did not touch the client."
-    - "Qualifying-then-race (g_race_qualifying==2) transition has no caller; qualifying checkpoint networking + per-CP records still absent (TransitionQualifyingToRace/SaveRaceLimits remain dead code)."
-    - "Spawn grid by race_place + respawn-at-last-checkpoint still not modeled (retract is a plain Clients.Spawn); no bot race role; no speed awards; force-keyboard movement quantization (M_SQRT1_2 octant snap) still absent."
-    - "Wrong-way spawnflag-4 kill is now coded but DEAD on the live path: WireObjectiveSpawns calls SpawnCheckpoint without punishWrongWay:true, so no map checkpoint ever arms it."
+    - "Race split-timer (#8) + checkpoints (#27) panels are now fed LIVE on a listen server (NetGame.UpdateRacePanels, host-side per-checkpoint records) — verified live. But a PURE (remote) client still has NO feed: there is no TE_CSQC_RACE net path, so the split/anticipation/speed/medal are host-only."
+    - "Race/CTS mod-icon (HUD_Mod_Race PB+server-best+medal flash) and the race best-time RANKINGS scoreboard column (getrankings/grecordtime[]) have NO port code at all — ScoreboardPanel.SetRankings exists but has no live caller (the NetGame:3453 SetRankings is the unrelated ScorePanel standings)."
+    - "Spawn grid by race_place + respawn-at-last-checkpoint not modeled (retract is a plain Clients.Spawn); no bot race role (havocbot_role_race); no speed awards (race_SpeedAwardFrame); force-keyboard movement quantization (M_SQRT1_2 octant snap + cl_movecliptokeyboard 2) absent."
+    - "Wrong-way spawnflag-4 kill is coded but still DEAD on the live path: WireObjectiveSpawns (GameWorld.cs:1796) calls SpawnCheckpoint without punishWrongWay:true, so no map checkpoint ever arms it; also uses DeathTypes.Void not Base DEATH_HURTTRIGGER."
+    - "Lap-limit default (port 7) differs from Base (-1 = consult mapinfo); qualifying-timelimit SOURCE (g_race_qualifying_timelimit) still unwired so the qualifying phase runs on the plain timelimit."
 features:
   - id: race.mode.setup_limits
     name: "Mode setup + limits (teams, qualifying, lap/frag/time limits)"
@@ -39,7 +40,7 @@ features:
       - "Unset g_race_laps_limit defaults to 7 in the port; Base (-1) consults the mapinfo laplimit."
       - "Qualifying timelimit and the qualifying-then-race limit-stashing/restore are unwired (SaveRaceLimits has no caller)."
     verification:
-      - { kind: code, ref: "Race.Activate / RaceTeams / LapLimit (live in GameWorld.WireGametype:1471)", result: pass }
+      - { kind: code, ref: "Race.Activate / RaceTeams / LapLimit (live in GameWorld WireGametype:1740-1751)", result: pass }
     confidence: high
     notes: "Unchanged by Wave-2. Team clamp + lap-limit core wired & tested; qualifying-session timing config is not."
 
@@ -93,9 +94,9 @@ features:
     gaps:
       - "Port assumes the finish is checkpoint index 0; Base's race_timed_checkpoint can be the highest CP (spawnflags & 8) on tracks where start != finish."
       - "Defrag target_checkpoint / target_startTimer / target_stopTimer chain not modeled for Race (CTS-only no-ops)."
-      - "Wave-2 added a punishWrongWay flag to SpawnCheckpoint, but GameWorld.WireObjectiveSpawns (:1519) does not pass it, so the spawnflag-4 (wrong-order kill) checkpoint variant is never armed from the BSP lump."
+      - "SpawnCheckpoint has a punishWrongWay flag, but GameWorld.WireObjectiveSpawns (GameWorld.cs:1796) does not pass it, so the spawnflag-4 (wrong-order kill) checkpoint variant is never armed from the BSP lump."
     verification:
-      - { kind: code, ref: "GameWorld.WireObjectiveSpawns Race arm (GameWorld.cs:1514-1521)", result: pass }
+      - { kind: code, ref: "GameWorld.WireObjectiveSpawns Race arm (GameWorld.cs:1791-1798): SpawnCheckpoint(e.Origin, e.Count) — no punishWrongWay", result: pass }
     confidence: high
     notes: "Checkpoints + penalty zones are genuinely spawned from the BSP entity lump on the live path."
 
@@ -120,8 +121,8 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Wave-2 added the spawnflag-4 wrong-order kill (CheckpointTouch -> Combat.Damage 10000) but it is DEAD: no caller passes punishWrongWay:true (WireObjectiveSpawns spawns every checkpoint with the flag off), so a wrong-order crossing is still merely ignored on the live path."
-      - "Wave-2 used DeathTypes.Void instead of Base's DEATH_HURTTRIGGER for the wrong-way kill."
+      - "The spawnflag-4 wrong-order kill (CheckpointTouch -> Combat.Damage 10000, Race.cs:310-311) is DEAD: no caller passes punishWrongWay:true (WireObjectiveSpawns spawns every checkpoint with the flag off), so a wrong-order crossing is still merely ignored on the live path."
+      - "Uses DeathTypes.Void instead of Base's DEATH_HURTTRIGGER for the wrong-way kill."
       - "No SUB_UseTargets / equipment-clear (Portal_ClearAll, porto_forbidden) on crossing."
     verification:
       - { kind: code, ref: "Race.CheckpointTouch expected-next + _punishWrongWay set (never populated on live path)", result: partial }
@@ -261,7 +262,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:FinishRacer"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:StartCompleting"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:AbandonRaceCheck"
-      - "src/XonoticGodot.Server/GameWorld.cs:1752"
+      - "src/XonoticGodot.Server/GameWorld.cs:2055"
     constants: []
     status:
       logic: faithful
@@ -273,10 +274,10 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Sudden-death is modeled as a Race-local latch (SuddenDeath) gated on the new RaceCompleting state; the shared OverTimeManager deliberately excludes the race/qualifying branch, so the standard overtime-window timer does not gate race end (intentional split, documented in OverTimeManager.cs:44)."
+      - "Sudden-death is modeled as a Race-local latch (SuddenDeath) gated on the RaceCompleting state; the shared OverTimeManager deliberately excludes the race/qualifying branch, so the standard overtime-window timer does not gate race end (intentional split, documented in OverTimeManager.cs)."
     verification:
       - { kind: test, ref: "RaceOvertimePenaltyTests.Overtime_LapLimitWithUnfinished_StartsSuddenDeath", result: pass }
-      - { kind: code, ref: "FinishRacer->StartCompleting (RaceCompleting latch + abandon dead racers) + OnDeath->AbandonRaceCheck; CheckWinningCondition gates sudden-death on RaceCompleting. Live via GameWorld.cs:1752 race.Tick/CheckWinningCondition.", result: pass }
+      - { kind: code, ref: "FinishRacer->StartCompleting (RaceCompleting latch + abandon dead racers) + OnDeath->AbandonRaceCheck; CheckWinningCondition gates sudden-death on RaceCompleting. Live via GameWorld.cs:2055 (race.Tick(); race.CheckWinningCondition()).", result: pass }
     confidence: high
     notes: "FIXED in Wave-2 (was partial). The global race_completing latch is now modeled: the FIRST racer to reach the lap limit trips StartCompleting (abandoning every dead racer + INFO_RACE_ABANDONED), and a dead racer respawning into a completing race is auto-abandoned via OnDeath->AbandonRaceCheck. This is the multi-racer drain-to-(n==c) state machine the baseline VERIFIER flagged as absent."
 
@@ -315,7 +316,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:Qualifying"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:RetractPlayer"
-      - "src/XonoticGodot.Server/GameWorld.cs:1474"
+      - "src/XonoticGodot.Server/GameWorld.cs:1740-1744"
     constants: []
     status:
       logic: partial
@@ -331,7 +332,7 @@ features:
       - "independent_players / MAKE_INDEPENDENT_PLAYER (solo scoring isolation) not modeled."
       - "Qualifying checkpoint records + RACE_NET_CHECKPOINT_*_QUALIFYING packets absent."
     verification:
-      - { kind: code, ref: "Race.Qualifying + OnFinishRetract wiring (GameWorld.cs:1474)", result: partial }
+      - { kind: code, ref: "Race.Qualifying + OnFinishRetract wiring (GameWorld.cs:1741-1744)", result: partial }
     confidence: medium
     notes: "Unchanged by Wave-2. Solo retract-to-start works; the qualifying-specific networking, isolation and grid spawn do not."
 
@@ -369,7 +370,7 @@ features:
       - "server/race.qc:spawnfunc(info_player_race)"
       - "server/race.qc:race_RetractPlayer"
     port_refs:
-      - "src/XonoticGodot.Server/GameWorld.cs:1474"
+      - "src/XonoticGodot.Server/GameWorld.cs:1740-1744"
     constants: []
     status:
       logic: missing

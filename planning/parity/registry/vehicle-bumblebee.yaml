@@ -215,11 +215,12 @@ features:
     divergence_rationale: null
     gaps:
       - "Aux crosshairs ('1 0 1' lead xhair + the per-gun reload-color xhair) and the gunner/pilot HUD % mirroring NOT IMPLEMENTED."
+      - "Per-gun lock test omits the QC frozen guards (`STAT(FROZEN, gun.enemy)` lock-drop + `STAT(FROZEN, trace_ent)` skip, bumblebee.qc:113/119) — the same freezetag-only edge as the pilot heal-lock: the cannon can lock onto a frozen enemy. Minor; everything else in the lock/lead/aim/fire logic is faithful."
     verification:
-      - { kind: code, ref: "GunnerFrame mirrors bumblebee_gunner_frame lock/lead/aim/fire; the QC z-velocity*0.1 lead damping for a MOVETYPE_WALK target IS now ported (Bumblebee.cs:567: if MoveType.Walk lead.Z*=0.1f)", result: pass }
+      - { kind: code, ref: "GunnerFrame (Bumblebee.cs:558-577) mirrors bumblebee_gunner_frame lock/lead/aim/fire; the QC z-velocity*0.1 lead damping for a MOVETYPE_WALK target IS ported (Bumblebee.cs:574: if MoveType.Walk lead.Z*=0.1f). Re-verified 2026-06-22: lock_time/team gates (2.5 teamplay / 0.5 ffa) match QC; the FROZEN guards (qc:113/119) are absent (newly recorded gap, applies same as raygun row)", result: pass }
       - { kind: test, ref: "VehicleRuntimeTests.Bumblebee_GunnerFire_SpawnsAProjectile drives UseKey+Tick and asserts a projectile spawns", result: pass }
     confidence: high
-    notes: "Wave-2 LIVE (was dead) — a gunner is now seated via the live +use boarding path. Wave-2 also FIXED the walk-target z-lead damping. Only aux crosshairs / HUD % mirroring remain (presentation)."
+    notes: "Wave-2 LIVE (was dead) — a gunner is now seated via the live +use boarding path. Wave-2 also FIXED the walk-target z-lead damping. Re-audited 2026-06-22 (no code change since baseline commit 2eea096): logic/values/timing re-confirmed faithful & live. Residual: aux crosshairs / HUD % mirroring (presentation) + the missing FROZEN lock guard (now recorded; small freezetag-only logic edge, same as the raygun row)."
 
   - id: vehicle-bumblebee.gunner.cannon
     name: "Side-gunner plasma cannon projectile (bumblebee_fire_cannon)"

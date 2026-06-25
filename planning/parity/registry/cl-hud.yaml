@@ -5,10 +5,11 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 35
   worst_gaps:
-    - "CheckpointsPanel still dead: race_checkpoint_splits need per-checkpoint race-record storage the server doesn't keep; honest unresolved (Wave 5)."
-    - "RaceTimer split-vs-record deltas not fed (count-up lap clock IS live now): same per-checkpoint record-net blocker as checkpoints."
-    - "Vote + MapVote panels are now live on a listen server (fed from VoteController / MapVoting); a pure --connect client still has no vote net channel."
-    - "Progress bars are flat fills, not the skin progressbar 9-slice with baralign 0/1/2/3 semantics."
+    - "Progress bars are flat fills, not the skin progressbar 9-slice with baralign 0/1/2/3 semantics (shared primitive still simplified)."
+    - "NumColor is a 2-stop lerp with no blink/pulse animation (Base = 5-stop + sine flash >=100% + low-health pulse)."
+    - "hud_dynamic_follow (HUD sway with viewmodel bob) still unported — only the shake half of Hud_Dynamic_Frame exists."
+    - "Directional skin border variants render as the full 9-slice frame, not the engine's edge-masked crops."
+    - "Pure --connect (remote) clients still have no vote / mapvote net channel; those panels stay blank there (listen-server only)."
 features:
   - id: cl-hud.engine.registry_and_order
     name: "Panel registry, z-order, panel-order cvar"
@@ -29,9 +30,9 @@ features:
     gaps:
       - "Draw order follows Godot child order, not the QC _hud_panelorder reverse-walk; relative panel layering may differ but panels don't overlap in luma."
     verification:
-      - { kind: code, ref: "HudRegistry reflection + HudLayoutDefaults table", result: pass }
+      - { kind: code, ref: "HudRegistry reflection + HudLayoutDefaults table; Hud._Ready adds Dock first then the discovered panels", result: pass }
     confidence: high
-    notes: "Reflection-discovered registry replaces the hand list; per-panel ids/showflags/config match REGISTER_HUD_PANEL."
+    notes: "Reflection-discovered registry replaces the hand list; per-panel ids/showflags/config match REGISTER_HUD_PANEL. HudDock is now added FIRST (lowest z) before the panel walk."
 
   - id: cl-hud.engine.loadcvars
     name: "Per-frame cvar-driven layout (HUD_Panel_LoadCvars)"
@@ -53,7 +54,7 @@ features:
     verification:
       - { kind: code, ref: "HudPanel.Resolve mirrors QC '' / '0' inherit rules", result: pass }
     confidence: high
-    notes: "Live cvar reads via MenuState.Cvars so console set / menu dialogs move panels live; reload on cvar Changed + viewport resize."
+    notes: "Live cvar reads via MenuState.Cvars so console set / menu dialogs move panels live; reload on cvar Changed + viewport resize. HudPanel.TryParseRgbColor exposed publicly so HudDock can share the parser."
 
   - id: cl-hud.engine.skin_border
     name: "9-slice skin border (draw_BorderPicture)"
@@ -75,7 +76,7 @@ features:
     verification:
       - { kind: code, ref: "HudSkin resolves skin->default chain", result: pass }
     confidence: medium
-    notes: "Phase-1 simplification acknowledged in the contract (§4.2)."
+    notes: "Phase-1 simplification acknowledged in the contract (§4.2). Unchanged by Wave 5."
 
   - id: cl-hud.engine.progressbar
     name: "Progress-bar primitive (HUD_Panel_DrawProgressBar)"
@@ -93,9 +94,9 @@ features:
     gaps:
       - "Bars are flat colored rects, not the rounded skin progressbar texture; the shared baralign 0/1/2/3 semantics (esp. center-bidirectional accel bar) are approximated by each panel rather than the one primitive."
     verification:
-      - { kind: code, ref: "DrawBar is a 3-rect flat fill", result: fail }
+      - { kind: code, ref: "DrawBar is a 3-rect flat fill; unchanged by Wave 5", result: fail }
     confidence: high
-    notes: "Visually flatter than Base; vertical-bar and baralign-3 paths are per-panel approximations."
+    notes: "Visually flatter than Base; vertical-bar and baralign-3 paths are per-panel approximations. STILL OPEN."
 
   - id: cl-hud.engine.num_color
     name: "Value tint gradient (HUD_Get_Num_Color)"
@@ -113,9 +114,9 @@ features:
     gaps:
       - "No blink/pulse (full-health sine flash + low-health pulse) and a 2-stop instead of 5-stop gradient, so number tints differ from Base."
     verification:
-      - { kind: code, ref: "NumColor is a 2-segment lerp, no time term", result: fail }
+      - { kind: code, ref: "NumColor is a 2-segment lerp, no time term; unchanged by Wave 5", result: fail }
     confidence: high
-    notes: "Functional color-by-value, missing the animated emphasis."
+    notes: "Functional color-by-value, missing the animated emphasis. STILL OPEN."
 
   - id: cl-hud.engine.dynamic_shake
     name: "Damage-keyed whole-HUD shake (Hud_Dynamic_Frame shake)"
@@ -151,11 +152,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The hud_dynamic_follow HUD-shift/scale-with-viewmodel effect is unported; the HUD never sways with weapon bob."
+      - "The hud_dynamic_follow HUD-shift/scale-with-viewmodel effect is unported; the HUD never sways with weapon bob. A menu checkbox (DialogSettingsGame) toggles the cvar but no draw-side code reads it."
     verification:
-      - { kind: grep, ref: "no hud_dynamic_follow in game/", result: fail }
+      - { kind: grep, ref: "hud_dynamic_follow only appears as a menu Widgets.CheckBox in DialogSettingsGame.cs; no draw-side reader in game/hud/", result: fail }
     confidence: high
-    notes: "Only the shake half of Hud_Dynamic_Frame is ported."
+    notes: "Only the shake half of Hud_Dynamic_Frame is ported. STILL OPEN (the menu toggle is dead w.r.t. the effect)."
 
   - id: cl-hud.engine.dock
     name: "HUD dock background (hud_dock)"
@@ -167,15 +168,16 @@ features:
       - "game/hud/HudManager.cs:_Process (Dock feed)"
     constants:
       - { name: "hud_dock", base: "0 (off); dock_medium art", port: "drawn via HudDock when hud_dock != 0/''", match: true }
+      - { name: "hud_dock_alpha default", base: "1", port: "1 (unset → 1)", match: true }
     status: { logic: faithful, values: faithful, timing: na, presentation: faithful, audio: na, liveness: live }
     intended_divergence: false
     divergence_rationale: null
     gaps:
       - "shirt/pants colormap dock tint (hud_dock_color shirt/pants) not implemented; team + rgb tints are."
     verification:
-      - { kind: code, ref: "HudDock._Draw fills the viewport with gfx/hud/<skin>/<dock>→dock_medium at hud_dock_alpha*hud_fade_alpha, added first in Hud (lowest z)", result: pass }
+      - { kind: code, ref: "HudDock._Draw fills the viewport with gfx/hud/<skin>/<dock>→dock_medium at hud_dock_alpha*hud_fade_alpha; Hud._Ready adds it first (lowest z); HudManager._Process feeds HudFadeAlpha + TeamColor each frame", result: pass }
     confidence: high
-    notes: "WIRED Wave 5: HudDock is a full-screen Control added behind every panel; self-blanks while hud_dock is off (the default)."
+    notes: "WIRED: HudDock is a full-screen Control added behind every panel; self-blanks while hud_dock is off (the default)."
 
   - id: cl-hud.engine.configure_mode
     name: "HUD configure-mode editor (hud_config.qc)"
@@ -362,16 +364,17 @@ features:
     port_refs:
       - "game/hud/RaceTimerPanel.cs"
       - "game/net/NetGame.cs:UpdateRacePanels"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:RecordCheckpointSplit"
     constants: []
-    status: { logic: faithful, values: partial, timing: faithful, presentation: faithful, audio: na, liveness: live }
+    status: { logic: faithful, values: faithful, timing: faithful, presentation: faithful, audio: na, liveness: live }
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Running lap clock is now fed live (Race RaceState.LapStartTime / CTS RunStartTime + next checkpoint + penalty accumulator). The per-checkpoint split DELTAS (race_previousbesttime / race_nextbesttime via TE_CSQC_RACE) still need per-checkpoint record storage the server doesn't yet keep — so the count-up timer renders but the +/- vs-record anticipation split doesn't."
+      - "Race medal-flash status (race_SendStatus) and personal-best deltas are derived from a host-side analogue, not the TE_CSQC_RACE wire, so a pure --connect client (no in-process Race state) gets no race timer. Decimal-precision + speed-unit edge formatting not runtime-verified."
     verification:
-      - { kind: code, ref: "NetGame.UpdateRacePanels feeds RaceTimer from the listen-server Race/Cts gametype state each frame", result: pass }
+      - { kind: code, ref: "UpdateRacePanels feeds the count-up lap clock AND the per-checkpoint record deltas (RacePreviousBestTime / RaceNextBestTime / RaceMyBestTime / RaceCheckpointSpeed) from Race's new server-side per-checkpoint record store; the medal flash maps race.LastRecord", result: pass }
     confidence: high
-    notes: "WIRED Wave 5: live count-up lap timer in Race/CTS; the split-vs-record deltas remain a server record-net gap."
+    notes: "FIXED since baseline: the split-vs-record anticipation deltas are now fed live — Race.cs gained a per-checkpoint record store (race_checkpoint_records[] analogue, RecordCheckpointSplit on the live CheckpointTouch path), removing the record-net blocker. Listen-server only (the --connect wire path is still TODO)."
 
   - id: cl-hud.panel.vote
     name: "Vote panel (#9)"
@@ -382,17 +385,17 @@ features:
       - "game/hud/VotePanel.cs"
       - "game/net/NetGame.cs:UpdateVotePanel"
     constants:
-      - { name: "_alreadyvoted_alpha", base: "0.7 (hud_luma.cfg:201)", port: "0.75 default", match: false }
+      - { name: "_alreadyvoted_alpha", base: "0.7 (hud_luma.cfg:201)", port: "0.75 default (matches nexuiz skin, not luma)", match: false }
     status: { logic: faithful, values: partial, timing: faithful, presentation: faithful, audio: na, liveness: live }
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "AlreadyVoted alpha default is 0.75 vs Base luma 0.7 (draft mis-stated Base as 0.35)."
+      - "AlreadyVoted alpha default is 0.75 vs Base luma 0.7."
       - "Vote state is fed from the in-process listen-server VoteController; a pure --connect client has no vote net channel yet, so the panel stays blank there."
     verification:
-      - { kind: code, ref: "NetGame.UpdateVotePanel feeds Active/CalledVote/Yes-No/Needed/EndTime/Highlighted from GameWorld.Voting (VoteController) each frame", result: pass }
+      - { kind: code, ref: "NetGame.UpdateVotePanel feeds Active/CalledVote/Yes-No/Needed/EndTime/Highlighted from GameWorld.Voting (VoteController) each frame; VoteController.SelectionOf for the highlight", result: pass }
     confidence: high
-    notes: "WIRED Wave 5: a real callvote now shows the yes/no progress bar + your-ballot dim on a listen server (VoteController.SelectionOf added for the highlight)."
+    notes: "WIRED: a real callvote shows the yes/no progress bar + your-ballot dim on a listen server. Unchanged since baseline."
 
   - id: cl-hud.panel.modicons
     name: "Mod icons panel (#10)"
@@ -406,11 +409,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Mode coverage is CA/FreezeTag/Keyhunt/Survival; CTF flag-state icons, dom point ownership, assault and the full per-gametype icon set are partial."
+      - "Mode coverage is now CA/FreezeTag/Keyhunt/Survival/Assault/Domination/CTF/Keepaway; the full per-gametype icon-art fidelity (dom point ownership icons, some flag transitions) is partial."
     verification:
-      - { kind: code, ref: "NetGame sets ModIcons.Mode from match state", result: pass }
+      - { kind: code, ref: "NetGame sets ModIcons.Mode + KeepawayCarrying from the GametypeStatusBlock (Keepaway carrier net id resolved vs LocalNetId)", result: pass }
     confidence: medium
-    notes: "Driven live from gametype; icon fidelity per mode varies."
+    notes: "Improved since baseline: Keepaway mode added (HUD_Mod_Keepaway: carry icon blink + status-change expand, fed live from the Keepaway status block). Driven live from gametype; icon-art fidelity per mode still varies."
 
   - id: cl-hud.panel.pressedkeys
     name: "Pressed-keys panel (#11)"
@@ -483,11 +486,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Cycling group hints (spectate controls), team-unbalanced nag, spectator list and the full message set are partially covered."
+      - "Cycling group hints (spectate controls), team-unbalanced nag, spectator list and the full message set are partially covered (the eliminated-LMS line is now present)."
     verification:
-      - { kind: code, ref: "NetGame.FeedInfoMessages drives the panel", result: pass }
+      - { kind: code, ref: "NetGame.FeedInfoMessages drives the panel; LmsNoLives fed from the local scoreboard row's LMS_RANK", result: pass }
     confidence: medium
-    notes: "Observing/press-to-join/warmup/countdown lines present and fed live."
+    notes: "Observing/press-to-join/warmup/countdown lines present and fed live. Improved since baseline: the cl_lms 'no more lives left' eliminated-player line is now wired (LmsNoLives)."
 
   - id: cl-hud.panel.physics
     name: "Physics / speedometer panel (#15)"
@@ -526,11 +529,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Duel 'vs' title + follow-below-scoreboard/radar repositioning fidelity not all runtime-verified."
+      - "Follow-below-scoreboard/radar repositioning fidelity not all runtime-verified."
     verification:
-      - { kind: code, ref: "HudNotifications routes MSG_CENTER + ^COUNT countdown to CenterPrint.Push", result: pass }
+      - { kind: code, ref: "HudNotifications routes MSG_CENTER + CenterKill/CenterTitle/CenterDuelTitle/CenterRaw + ^COUNT countdown to the CenterPrint API (Push/Kill/ClearAll/SetTitle/SetDuelTitle/Add)", result: pass }
     confidence: high
-    notes: "Priority buffer + fade + id-keyed replace + countdown + bold/title scales present and fed."
+    notes: "Improved since baseline: the CenterKill retraction (group + ClearAll), SetTitle/ClearTitle, SetDuelTitle (with textShortenToWidth name-shortening) and the raw-centerprint (CenterRaw, used by map triggers / chat /tell / SuperSpec) wire types are now routed. Priority buffer + fade + id-keyed replace + countdown + bold/title present."
 
   - id: cl-hud.panel.itemstime
     name: "Items-time panel (#17)"
@@ -583,11 +586,11 @@ features:
     intended_divergence: true
     divergence_rationale: "The networked scoreboard is a standalone _scoreboard placed by a manual Configure rect (fed from ClientNet); _fullHud's discovered Scoreboard is left unfed to avoid a double scoreboard. The cvar pos/size therefore doesn't move the live board."
     gaps:
-      - "Scoreboard ignores hud_panel_scoreboard_pos/_size (manual rect); per-weapon accuracy / item-stats double-rows + full spectator/footer parity not all verified."
+      - "Scoreboard ignores hud_panel_scoreboard_pos/_size (manual rect); per-weapon accuracy / item-stats double-rows + the full footer parity not all verified. Spectator-row ping is not networked per-row yet (shown as unknown)."
     verification:
-      - { kind: code, ref: "_scoreboard fed SetWireRows/SetAccuracy + FeedScoreboardHeader from ClientNet.LatestScoreboard", result: pass }
+      - { kind: code, ref: "_scoreboard fed SetWireRows (now splitting IsSpectator rows into the spectator block) + RespawnStat/RespawnServerTime/RespawnJumpKey (3-state respawn line) + SetAccuracy + FeedScoreboardHeader from ClientNet", result: pass }
     confidence: medium
-    notes: "Columns + team totals + self/eliminated highlight + accuracy + header render live."
+    notes: "Improved since baseline: the spectator/observer block (Scoreboard_Spectators_Draw) is now split out via a networked IsSpectator flag on each ScoreRowWire, and the respawn line is now the faithful 3-state QC form ('wait N before respawning' / 'press JUMP to respawn' / 'Respawning in N') counted against the networked server time, replacing the single 'Respawning...' approximation."
 
   - id: cl-hud.panel.strafehud
     name: "Strafe HUD panel"
@@ -634,16 +637,18 @@ features:
       - "client/hud/panel/checkpoints.qc:HUD_Checkpoints"
     port_refs:
       - "game/hud/CheckpointsPanel.cs"
+      - "game/net/NetGame.cs:UpdateRacePanels"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:RecordCheckpointSplit"
     constants: []
-    status: { logic: faithful, values: unknown, timing: unknown, presentation: faithful, audio: na, liveness: dead }
+    status: { logic: faithful, values: faithful, timing: faithful, presentation: faithful, audio: na, liveness: live }
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Still no live feeder: race_checkpoint_splits requires per-checkpoint record storage + the StoreCheckpointSplits string build (built off the racetimer's vs-record deltas), which the server doesn't yet keep. The panel renders given data but the data source is the deferred race record-net subsystem (same blocker as the racetimer's split deltas). Left UNRESOLVED rather than faked — feeding empty/garbage splits would be worse than honest blank."
+      - "Listen-server only: the split list is fed from the host-side Race state (Race.RaceState + the per-checkpoint record store), not the TE_CSQC_RACE wire, so a pure --connect client (no in-process Race state) sees no checkpoint splits. The frozen-split label uses 'Checkpoint N' / 'Finish line' rather than the per-map waypoint names."
     verification:
-      - { kind: grep, ref: "no Checkpoints.* setter caller; blocked on per-checkpoint race-record net (deferred)", result: fail }
+      - { kind: code, ref: "UpdateRacePanels calls CheckpointsPanel.StoreSplit on each new crossing (de-duped) and ClearSplits on a fresh lap, with Visible owned; the data source is Race's new server-side per-checkpoint record store (CheckpointRecord), populated by RecordCheckpointSplit on the live CrossCheckpoint/CheckpointTouch path", result: pass }
     confidence: high
-    notes: "Wave 5: NOT wired — depends on per-checkpoint race records (TE_CSQC_RACE split build) the server doesn't track; honest unresolved."
+    notes: "FIXED since baseline (was liveness: dead, no feeder): the per-checkpoint record store the panel depended on now exists server-side (Race.cs RecordCheckpointSplit + _checkpointRecords, the race_checkpoint_records[] analogue), so the panel is fed a real split list live in Race. The deferred record-net blocker is resolved on the listen-server path."
 
   - id: cl-hud.panel.mapvote
     name: "Map-vote panel"
@@ -654,16 +659,18 @@ features:
     port_refs:
       - "game/hud/MapVotePanel.cs"
       - "game/net/NetGame.cs:UpdateMapVotePanel"
-    constants: []
+    constants:
+      - { name: "MV_FADETIME", base: "0.2", port: "0.2", match: true }
+      - { name: "mv_top2_alpha", base: "max(0.2, 1-(t)^2)", port: "max(0.2, 1-t^2)", match: true }
     status: { logic: faithful, values: faithful, timing: faithful, presentation: faithful, audio: na, liveness: live }
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Cell click-to-vote (cursor) isn't wired; votes are cast via impulses (Commands.cs MapVote.CastVote), so the panel shows the grid + counts + own-vote highlight + countdown but a mouse click on a cell doesn't cast. Pure --connect clients have no in-process MapVoting feed."
+      - "Cell click-to-vote (cursor) isn't wired; votes are cast via impulses (Commands.cs MapVote.CastVote), so the panel shows the grid + counts + own-vote highlight + countdown + selection/top2 fades but a mouse click on a cell doesn't cast. Pure --connect clients have no in-process MapVoting feed."
     verification:
-      - { kind: code, ref: "NetGame.UpdateMapVotePanel builds the candidate grid from GameWorld.MapVote, feeds live counts/own-vote/winner each frame; MapVoting.SelectionOf added for the own-vote highlight", result: pass }
+      - { kind: code, ref: "NetGame.UpdateMapVotePanel builds the candidate grid from GameWorld.MapVote, feeds live counts/own-vote/winner each frame; MapVoting.SelectionOf for the own-vote highlight; the panel now does the MV_FADETIME selection fade + mv_top2_alpha reduce + suggester cache", result: pass }
     confidence: high
-    notes: "WIRED Wave 5: the intermission map ballot (maps + level-shots + counts + countdown + winner reveal) now shows on a listen server when g_maplist_votable runs the vote."
+    notes: "WIRED: the intermission map ballot shows on a listen server when g_maplist_votable runs the vote. Improved since baseline: the selection-highlight fade (MV_FADETIME), the mid-vote top-2 reduce fade (mv_top2_alpha) and the suggester-name cache are now ported. Click-to-vote + --connect feed remain open."
 
   - id: cl-hud.panel.minigame
     name: "Minigame HUD panels (BOARD/STATUS/HELP/MENU)"
@@ -689,7 +696,7 @@ features:
     verification:
       - { kind: code, ref: "NetGame builds MinigameClient(_fullHud, _fullHud.MinigameMenu) when _client!=null; OnMinigameStateReceived feeds MinigameHelpPanel.ActiveMinigame; PongMoveSink wired", result: pass }
     confidence: medium
-    notes: "Draft OMITTED all 4 Base minigame HUD panels; they ARE ported and live via the MinigameClient coordinator (board renderer + menu + help). Board/status combined into MinigameRenderer."
+    notes: "All 4 Base minigame HUD panels are ported and live via the MinigameClient coordinator (board renderer + menu + help). Board/status combined into MinigameRenderer."
 
   - id: cl-hud.net.hybrid_hud
     name: "Hybrid HUD (NetHud fallback + _fullHud), font + skin wiring"

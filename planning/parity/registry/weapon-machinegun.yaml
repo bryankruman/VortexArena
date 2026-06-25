@@ -4,6 +4,7 @@ base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-22"
 summary:
   feature_count: 13
+  audit_note: "Re-audited post-Wave-5 (HEAD 66e378f). Machinegun.cs + WeaponFiring.cs are byte-identical to the prior audit (2eea096) — git diff 2eea096..HEAD over both files is empty; both were last touched in 4be8357 (the second-pass fix-up the baseline already re-verified) and Wave-5 did NOT touch them. All 13 rows re-confirmed against current Base machinegun.qc + the live port. No fixes, no regressions, no newly-unmapped features. The three worst gaps below remain open exactly as recorded."
   worst_gaps:
     - "EFFECT_BULLET tracer trail still not drawn for the MachineGun: FireBullet has the tracerEffect seam (Wave-1) and the BULLET effect IS registered (tr_bullet), but Machinegun.FireOne calls FireBullet WITHOUT a tracerEffect, so the MG bullet tracer is absent. Base passes EFFECT_BULLET on every MG fireBullet call (machinegun.qc:86/101/194/244)."
     - "Bot wr_aim distance switch still missing: bots never press the long-range no-spread burst secondary (ButtonAttack2 still forced false in BotBrain.cs:382; comment confirms the per-weapon wr_aim is deferred). Unchanged by the fix-up."

@@ -4,6 +4,7 @@ base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-22"
 summary:
   feature_count: 11
+  reaudit_note: "Re-audited 2026-06-22 against branch claude/parity-port-waves HEAD (66e378f Wave-5). The ONLY post-baseline monster change touching the zombie is the MarkPain refactor `Now+0.34f` -> `Now+st.Def.PainWindow`; Zombie inherits the default 0.34f (no override) so behavior is bit-identical. NO fixes, NO regressions, NO newly-mapped/unmapped features vs the 2026-06-22 baseline. Animation row still fully dead (no `.Frame =` anywhere under src/**/Monsters/**); SoundCues gate + all constants/liveness unchanged."
   worst_gaps:
     - "Zombie animation is still fully dead: the 14 mr_anim frame groups are collapsed to a 6-value logical phase enum that never assigns Entity.Frame; monsters network Frame=0, so the model is pinned to its static pose. Re-verified post-fixup: still no `.Frame =` anywhere under src/**/Monsters/**; MonsterAI.cs:1064 still carries the explicit 'CSQC monster animation frame playback' named no-op. No visible spawn/walk/run/melee(x3)/leap/block/pain(x2)/death(x2) anim."
     - "FIXED (Wave-4 fixup 4be8357): the Wave-2 audio regressions are GONE. A per-monster SoundCues set was added (Zombie.cs:41 = {death,sight,idle}) and MonsterSound (MonsterAI.cs:670) now gates emission on cueDefined — so the zombie no longer ATTEMPTS spawn/melee/pain/ranged sounds Base leaves silent. The SoundCues set matches zombie.dpm_0.sounds EXACTLY (death/sight/idle defined; ranged/melee/pain/spawn commented out)."
@@ -238,7 +239,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MarkPain (MonsterSound:1408)"
       - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MonsterSound (SoundCues gate)"
     constants:
-      - { name: "pain_finished_window", base: "time+0.34", port: "Now+0.34", match: true }
+      - { name: "pain_finished_window", base: "time+0.34", port: "Now + st.Def.PainWindow; Zombie inherits Monster.PainWindow=>0.34f (EntityClasses.cs:34), no override -> 0.34", match: true }
       - { name: "pain_throttle (msound_delay)", base: "1.2 (delaytoo)", port: "1.2 (delayToo)", match: true }
       - { name: "g_monsters_sounds gate", base: "autocvar_g_monsters_sounds", port: "Cvar g_monsters_sounds (default 1)", match: true }
       - { name: "pain_anim_split", base: "random()>0.5 -> pain1/pain2 (gated by spawn_time)", port: "Pain phase only", match: false }
@@ -256,10 +257,10 @@ features:
       - "pain1/pain2 frame anims ('20 1 2' / '22 1 2') never played; pain is a logical phase only (presentation)."
       - "Sound DELIVERY machinery (GlobalSound .sounds-file table, random sample, skin-keyed Monster_Sounds_Update) still unported — moot for the zombie since pain is correctly silent, but the path-form/sample-table seam is absent (latent)."
     verification:
-      - { kind: code-read, ref: "zombie.qc:mr_pain + Monster_Sound vs MonsterAI.MarkPain:1408 + MonsterSound:659 (g_monsters_sounds gate + 1.2s throttle + SoundCues gate)", result: pass }
+      - { kind: code-read, ref: "zombie.qc:mr_pain (pain_finished=time+0.34) vs MonsterAI.MarkPain:1406 (st.PainFinished=Now+st.Def.PainWindow) + MonsterSound:659 (g_monsters_sounds gate + 1.2s throttle + SoundCues gate)", result: pass }
       - { kind: data-file, ref: "zombie.dpm_0.sounds //pain commented out; SoundCues={death,sight,idle} excludes pain -> MonsterSound:670 cueDefined=false -> no Play", result: pass }
     confidence: high
-    notes: "FIXED: the core defect is closed. MarkPain still calls MonsterSound(self,st,'pain',1.2,true,...) (mirroring Base's monstersound_pain), but with the SoundCues gate the zombie emits no pain sample — matching Base's silent zombie pain. 0.34 pain window, g_monsters_sounds master gate, and 1.2s throttle all faithful. Audio is now faithful (silent in both). Only the pain-anim presentation gap and the latent delivery-machinery seam remain."
+    notes: "FIXED: the core defect is closed. MarkPain still calls MonsterSound(self,st,'pain',1.2,true,...) (mirroring Base's monstersound_pain), but with the SoundCues gate the zombie emits no pain sample — matching Base's silent zombie pain. Wave-5 (66e378f) refactored the hardcoded `Now+0.34f` to `Now+st.Def.PainWindow`; Zombie does NOT override Monster.PainWindow (EntityClasses.cs:34 default 0.34f), so the zombie window is BIT-IDENTICAL 0.34 — verified no regression. g_monsters_sounds master gate and 1.2s throttle all faithful. Audio is faithful (silent in both). Only the pain-anim presentation gap and the latent delivery-machinery seam remain."
 
   - id: monster-zombie.death.mr_death
     name: "Death: corpse + death anim + death sound + respawn machinery"

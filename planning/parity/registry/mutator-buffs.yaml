@@ -2,6 +2,9 @@ unit: mutator-buffs
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-22"
+# Re-audited 2026-06-22 (post-Wave-1/2, branch claude/parity-port-waves @ ec788f7). Port source
+# unchanged since the prior post-implementation pass (2eea096); independent adversarial re-verification
+# confirms every status below. 0 fixes / 0 regressions vs baseline (baseline already captured Wave-2 truth).
 summary:
   feature_count: 34
   worst_gaps:
@@ -381,9 +384,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "OnPlayerPhysics (BuffsMutator.cs:519/524) writes player.JumpVelocityOverride (reset 0 each frame, =_jumpVelocity when jump buff held) inside the PlayerPhysics hook fired at PlayerPhysics.cs:196; PlayerJump (called from CheckPlayerJump at PlayerPhysics.cs:265->768) reads it at PlayerPhysics.cs:827-828 (`if (JumpVelocityOverride != 0f) mjumpheight = JumpVelocityOverride`) and applies it as the jump impulse — REPLACING the cvar-built mp.JumpVelocity[Crouch], matching QC's STAT(MOVEVARS_JUMPVELOCITY) overwrite", result: pass }
+      - { kind: code, ref: "OnPlayerPhysics (BuffsMutator.cs:519/524) writes player.JumpVelocityOverride (reset 0 each frame, =_jumpVelocity when jump buff held) inside the PlayerPhysics hook fired at PlayerPhysics.cs:221; PlayerJump reads it at PlayerPhysics.cs:852-853 (`if (player.JumpVelocityOverride != 0f) mjumpheight = player.JumpVelocityOverride`) and applies it as the jump impulse — REPLACING the cvar-built jump height, matching QC's STAT(MOVEVARS_JUMPVELOCITY) overwrite", result: pass }
     confidence: high
-    notes: "CLOSED since the 2026-06-22 baseline by the second-pass fix-up commit (4be8357): the JumpVelocityOverride reader at PlayerPhysics.cs:827-828 was added. The mutator handler runs at the hook (line 196) before PlayerJump in the same Move(), so the override is set then consumed in-frame. 600 matches Base g_buffs_jump_velocity; crouch jump also overridden, matching the QC stat overwrite."
+    notes: "Confirmed live: the JumpVelocityOverride reader at PlayerPhysics.cs:852-853 is present and consumes the override set by the mutator's PlayerPhysics hook (call site PlayerPhysics.cs:221) in the same Move(). 600 matches Base g_buffs_jump_velocity; crouch jump also overridden, matching the QC stat overwrite. (Baseline cited lines 827-828/196; minor source drift, logic identical.)"
 
   - id: buffs.jump.fall_immunity
     name: "Jump buff — fall-damage immunity"

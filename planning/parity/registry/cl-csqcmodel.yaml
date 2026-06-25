@@ -5,11 +5,11 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 12
   worst_gaps:
-    - "animdecide not ported: upper-body ACTIONS (shoot/pain/draw/taunt/melee on the torso) never play on third-person models, and the 8-direction + duck-variant locomotion (~24 clips) is replaced by a coarse 6-state speed heuristic (no strafe/backward/duck-directional anims)"
-    - "CSQCMODEL networking contract is largely unmapped: Entity carries only Frame/Skin/Effects/Team — the networked colormod (sent for ALL entities, BIT(8)), scale (BIT(12)), alpha (BIT(3)), traileffect (BIT(2)), modelflags (BIT(2)), non-player glowmod (BIT(8)), v_angle (BIT(10)), and anim_state/anim_upper/lower_action+time (BIT(7-9)) are not networked, so per-model colormod tint, scale, fade-out alpha, and server-driven actions never reach the client"
-    - "Force MODEL (cl_forceplayermodels / cl_forcemyplayermodel / cl_forcemyplayerskin) does nothing — only the server-networked model is rendered"
+    - "animdecide not ported: upper-body ACTIONS (shoot/pain/draw/taunt/melee on the torso) never play on third-person models, and the 8-direction + duck-variant locomotion (~24 clips) is replaced by a coarse 6-state speed heuristic (no strafe/backward/duck-directional anims); anim_state/anim_upper/lower_action+time still not networked"
+    - "CSQCMODEL networking contract still largely unmapped: of the full extra-properties set only effects/skin/colormap(as team)/model are networked; Wave added a per-entity ALPHA wire field (producer + codec LIVE) but the CLIENT never dequantizes it into Entity.Alpha (ClientEntityView maps Frame/Skin/Effects/Health/Colormap but NOT Alpha), so cloaked/invisible/fading players still render fully opaque — alpha is half-wired/dead-on-consume. colormod (ALL entities, BIT(8)), scale (BIT(12)), traileffect (BIT(2)), modelflags (BIT(2)), non-player glowmod (BIT(8)), v_angle (BIT(10)) remain not networked"
+    - "MF_* model flags + traileffect not networked: MF-driven trails (rocket/grenade/gib/tracer) and the MF_ROCKET jetpack loop never fire for remote players/entities (modelFlags hardcoded 0 in DriveCsqcModelHooks). A Wave-added ForcedAppearance/ComposeForcedAppearance/RoleGlowFlags/ApplyForcedGlowmod machinery COULD force EF_BLUE/EF_RED role-glow + MF_ROCKET per player, but it has ZERO live callers — dead code on this branch"
     - "LOD swap is a no-op: SelectLodIndex is computed faithfully but the port never swaps to a _lodN model — and stock player models (erebus/gak/gakmasked) AND monsters (golem/spider/...) DO ship _lod1/_lod2, so with default cl_playerdetailreduction 4 distant players/monsters that downshift in Base always render full-detail lod0 in the port (a real regression, not just the fexists-miss path)"
-    - "MF_* model flags + traileffect not networked: MF-driven trails (rocket/grenade/gib/tracer) and the MF_ROCKET jetpack loop never fire for remote players/entities (modelFlags hardcoded 0 in DriveCsqcModelHooks)"
+    - "Per-player FORCED glowmod tint (gametype/powerup role color over the colormap-derived glowmod) is built but dead: ApplyForcedGlowmod exists, ForcedAppearance.HasForcedGlowmod gate exists, but no caller ever composes or passes a forced glowmod"
 features:
   - id: cl-csqcmodel.predraw.dispatch_order
     name: "Predraw dispatch + ordered pass (appearance->LOD->anim->tag->effects)"
@@ -35,34 +35,39 @@ features:
     verification:
       - { kind: code, ref: "ClientWorld.cs:942 (using FrameProfiler.Scope cw.csqc -> DriveCsqcModelHooks) called every _Process frame", result: pass }
     confidence: high
-    notes: "Live: invoked every frame from ClientWorld._Process (line 942). Iterates _entityNodes; player-model branch runs appearance, all entities run LOD-index + EF_* effects."
+    notes: "Live: invoked every frame from ClientWorld._Process (line 942). Iterates _entityNodes; player-model branch runs appearance, all entities run LOD-index + EF_* effects. Unchanged by the Wave (the item-fade branch in this pass was refactored to add distance fade, but that's the items unit, not csqcmodel)."
   - id: cl-csqcmodel.forcemodel.model_skin
     name: "Force player model / skin (cl_forceplayermodels family)"
     layer: [presentation]
     base_refs:
       - "client/csqcmodel_hooks.qc:CSQCPlayer_ModelAppearance_Apply"
-    port_refs: []
+    port_refs:
+      - "game/client/ClientWorld.cs:TryAttachForcedModel"
+      - "game/client/ClientWorld.cs:AttachForcedNode"
+      - "game/net/NetGame.cs:BuildForcedPlayerModel"
     constants:
-      - { name: "_cl_playermodel (guaranteed-good fallback)", base: "models/player/erebus.iqm", port: "none", match: false }
-      - { name: "_cl_playerskin", base: "0", port: "none", match: false }
-      - { name: "cl_forceplayermodels", base: "0", port: "none", match: false }
-      - { name: "cl_forcemyplayermodel", base: "\"\"", port: "none", match: false }
-      - { name: "cl_forcemyplayerskin", base: "0", port: "none", match: false }
+      - { name: "isfriend (teamplay? team==myteam : islocalplayer)", base: "csqcmodel_hooks.qc:206-210", port: "ctx.Teamplay ? team==MyTeam : Index==LocalNetId — match", match: true }
+      - { name: "cl_forcemyplayermodel (friend-only branch)", base: "\"\"", port: "Api.Cvars.GetString(cl_forcemyplayermodel)", match: true }
+      - { name: "cl_forcemyplayerskin", base: "0", port: "cl_forcemyplayerskin", match: true }
+      - { name: "cl_forceplayermodels (all branch -> _cl_playermodel)", base: "0 -> _cl_playermodel", port: "cl_forceplayermodels -> _cl_playermodel", match: true }
+      - { name: "_cl_playermodel (guaranteed-good fallback)", base: "models/player/erebus.iqm", port: "DefaultPlayerModel const present; live path reads _cl_playermodel cvar", match: true }
+      - { name: "fexists-miss -> keep own model", base: "yes", port: "ForcedModelResolver returns null -> return false -> own model", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: faithful
+      values: faithful
       timing: na
-      presentation: missing
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "cl_forceplayermodels / cl_forcemyplayermodel / cl_forcemyplayerskin are not honored: the port renders only the server-networked model. The friend-vs-all cascade, the demo-trust branch, and the guaranteed-good erebus.iqm fallback are all unimplemented."
+      - "The explicit QC 4th-branch guaranteed-good erebus fallback for a genuinely-missing networked model is implicit: a true forced-model VFS miss falls through to the entity's own model (which the loader validates) rather than to a hardcoded erebus. The DefaultPlayerModel const exists but the live path resolves _cl_playermodel from cvars."
     verification:
-      - { kind: code, ref: "grep ForcedModelResolver/forceplayermodels in game/src: only colors are forced (ResolveForcedColormap); no model override path", result: fail }
+      - { kind: code, ref: "ClientWorld.cs:1541 TryAttachModel -> TryAttachForcedModel (reads cl_forcemyplayermodel/cl_forceplayermodels/cl_forcemyplayerskin/_cl_playermodel, isfriend cascade); NetGame.cs:1099 ForcedModelResolver = BuildForcedPlayerModel (LIVE wiring)", result: pass }
+      - { kind: code, ref: "git show main:game/client/ClientWorld.cs has 8 forcemodel matches — code pre-existed on main; baseline registry mis-recorded this row as missing/empty port_refs", result: pass }
     confidence: high
-    notes: "Colors ARE forced (see forcecolors feature); models are not. ForcedModelResolver hook exists in ClientWorld but is not wired to the cl_force*model cvars."
+    notes: "CORRECTED vs baseline: the baseline marked this missing/port_refs:[] (claiming only colors are forced and ForcedModelResolver is unwired). FALSE — TryAttachForcedModel implements the full friend/all cascade reading all four cvars, and NetGame.cs:1099 wires ForcedModelResolver=BuildForcedPlayerModel on the live path (streams the forced skeletal IQM via the placeholder/async path). Forced model gets FORCECOLORS via AttachForcedNode->ResolveForcedColormap. Live + faithful. (This is a registry-truth fix, not a Wave-2 code change — the code was on main; the baseline was stale.)"
   - id: cl-csqcmodel.forcecolors.cascade
     name: "Force player colors + unique enemy colors"
     layer: [presentation]
@@ -83,6 +88,7 @@ features:
       - { name: "FFA enable set", base: "{1,2}", port: "{1,2}", match: true }
       - { name: "unique combo", base: "c1=num%15,q=floor(num/15),c2=(c1+1+q)%15,colormap=1024+(c1<<4)+c2", port: "UniqueColormap same formula", match: true }
       - { name: "team colormap encoding", base: "1024 + 17*team", port: "1024 + 17*team", match: true }
+      - { name: "forceplayercolors fallback (Base: player_localnum+1 SLOT idx)", base: "player_localnum+1 (slot)", port: "1024+playerLocalNum+1 (biased into >=1024 form for ModelTint)", match: false }
     status:
       logic: partial
       values: faithful
@@ -91,14 +97,15 @@ features:
       audio: na
       liveness: partial
     intended_divergence: true
-    divergence_rationale: "The friend-only-force collision suppression (QC walks the live `teams` list to reject a forced friend color equal to any team's color) is reduced to a local-team-only compare because the port doesn't network the full team list to the client (documented in CsqcModelAppearance ~line 101-103). The cascade is also inert unless an AppearanceProvider is wired; on the live NetGame path it IS wired (NetGame.cs:960), so this is live in a match but degrades to the entity's own colormap in a pure demo with no provider."
+    divergence_rationale: "The friend-only-force collision suppression (QC walks the live `teams` list to reject a forced friend color equal to any team's color) is reduced to a local-team-only compare because the port doesn't network the full team list to the client (documented in CsqcModelAppearance ~line 96-103). The cascade is also inert unless an AppearanceProvider is wired; on the live NetGame path it IS wired (NetGame.cs:BuildAppearanceContext), so this is live in a match but degrades to the entity's own colormap in a pure demo with no provider. Additionally the forcePlayerColorsEnabled branch returns 1024+playerLocalNum+1 rather than Base's bare slot index (player_localnum+1) so the port's ModelTint (which expects the >=1024 explicit-RGB form) paints correctly — documented at CsqcModelAppearance.cs:127-132."
     gaps:
       - "Friend-color collision check compares only against the local team, not every team's color (QC's teams.sort_next walk); rare multi-team edge cases can differ."
       - "Without an AppearanceProvider (pure demo / no NetGame context) the override is inert and the entity keeps its server colormap."
+      - "The forcePlayerColorsEnabled branch returns 1024+localnum+1 instead of Base's bare slot index (intended, for ModelTint contract-safety)."
     verification:
-      - { kind: code, ref: "ClientWorld.cs:1253 ResolveForcedColormap -> ForcePlayerColorsEnabled/ResolveForcedColormap/UniqueColormap; provider wired NetGame.cs:960 BuildAppearanceContext", result: pass }
+      - { kind: code, ref: "ClientWorld.cs ResolveForcedColormap -> ForcePlayerColorsEnabled/ResolveForcedColormap/UniqueColormap; provider wired NetGame.cs:BuildAppearanceContext", result: pass }
     confidence: high
-    notes: "Pure cascade math (1v1/2-team/FFA enable sets, unique-color combo formula, team encoding) is a 1:1 port with unit tests; the divergence is the collision-check reduction + provider dependency."
+    notes: "Pure cascade math (1v1/2-team/FFA enable sets, unique-color combo formula, team encoding) is a 1:1 port with unit tests; the divergences are the collision-check reduction, the provider dependency, and the >=1024 colormap bias on the forceplayercolors slot branch. Unchanged behavior vs baseline (the Wave only added a clarifying comment to the slot-bias line)."
   - id: cl-csqcmodel.glowmod.deathfade_ghost
     name: "Glowmod from colormap + death-fade + respawn-ghost"
     layer: [presentation]
@@ -107,6 +114,10 @@ features:
     port_refs:
       - "src/XonoticGodot.Engine/Simulation/CsqcModelAppearance.cs:ColormapPaletteColor"
       - "src/XonoticGodot.Engine/Simulation/CsqcModelAppearance.cs:DeathGlowFactor"
+      - "src/XonoticGodot.Engine/Simulation/CsqcModelAppearance.cs:BaseGlowmod"
+      - "src/XonoticGodot.Engine/Simulation/CsqcModelAppearance.cs:GuardGlowmodZero"
+      - "src/XonoticGodot.Engine/Simulation/CsqcModelAppearance.cs:ApplyHdrGlowClamp"
+      - "src/XonoticGodot.Engine/Simulation/CsqcModelAppearance.cs:RespawnGhostClearsColors"
       - "game/client/ModelTint.cs:ApplyAppearance"
       - "game/client/ClientWorld.cs:IsDeadModel"
     constants:
@@ -116,6 +127,9 @@ features:
       - { name: "r_hdr_glowintensity", base: "1", port: "1", match: true }
       - { name: "min_factor halved when colored", base: "yes", port: "yes", match: true }
       - { name: "glow_fade = bound(0,1-(time-death_time)/cl_deathglow,1)", base: "yes", port: "yes", match: true }
+      - { name: "glowmod-zero guard x=0.000001", base: "yes (csqcmodel_hooks.qc:353-354)", port: "GuardGlowmodZero — match", match: true }
+      - { name: "hdr clamp glowmod/=r_hdr_glowintensity when >1", base: "yes (359-360)", port: "ApplyHdrGlowClamp — match", match: true }
+      - { name: "respawn-ghost early-out -> black + colormap 0", base: "yes (331-336)", port: "RespawnGhostClearsColors — match", match: true }
       - { name: "isdead source", base: "IS_DEAD_FRAME(frame)=(frame==0||frame==1)", port: "DeadState/Health<=0", match: false }
       - { name: "death_time source", base: "networked ReadApproxPastTime (BIT(5))", port: "client-observed first-dead-frame instant", match: false }
     status:
@@ -130,9 +144,9 @@ features:
     gaps:
       - "Death-fade origin (death_time) is client-observed, not server-networked, so the fade can start a frame or two late under packet loss."
     verification:
-      - { kind: code, ref: "ClientWorld.cs:1046-1064 (IsDeadModel + DeathTime capture + ModelTint.ApplyAppearance) calls DeathGlowFactor/ColormapPaletteColor", result: pass }
+      - { kind: code, ref: "ClientWorld.cs IsDeadModel + DeathTime capture + ModelTint.ApplyAppearance calls DeathGlowFactor/ColormapPaletteColor/BaseGlowmod/GuardGlowmodZero/ApplyHdrGlowClamp/RespawnGhostClearsColors", result: pass }
     confidence: high
-    notes: "Live per-frame on player models. ColormapPaletteColor reproduces the 0..15 palette incl. the animated rainbow (15); DeathGlowFactor matches the min_factor + glow_fade*(1-min_factor) curve incl. the colored-halving and the 0.000001 floor. Change-gated uniform push (R8)."
+    notes: "Live per-frame on player models. ColormapPaletteColor reproduces the 0..15 palette incl. the animated rainbow (15); DeathGlowFactor matches the min_factor + glow_fade*(1-min_factor) curve incl. the colored-halving and the 0.000001 floor. Wave REFACTORED the inline glowmod/ghost/hdr math in ModelTint into shared CsqcModelAppearance helpers (BaseGlowmod/GuardGlowmodZero/ApplyHdrGlowClamp/RespawnGhostClearsColors) — VERIFIED behavior-IDENTICAL (same formulas; keepColors flip preserved: !keepColors == Cvar==0). No regression; same single source of truth for live + tested math. Change-gated uniform push (R8)."
   - id: cl-csqcmodel.lod.distance_swap
     name: "LOD model selection + swap"
     layer: [presentation]
@@ -157,15 +171,15 @@ features:
       audio: na
       liveness: partial
     intended_divergence: true
-    divergence_rationale: "INTENDED only for the two unported renderer globals: view_quality (a renderer LOD-quality global) and current_viewzoom have no port equivalent, both pinned to 1 — adaptive-quality / zoom LOD scaling is deliberately absent. The missing _lodN SWAP is NOT an intended divergence (see gaps): it is deferred render work, and the draft's framing of it as 'the QC fexists-miss path' is wrong for stock content — stock player + monster models DO ship _lodN."
+    divergence_rationale: "INTENDED only for the two unported renderer globals: view_quality (a renderer LOD-quality global) and current_viewzoom have no port equivalent, both pinned to 1 — adaptive-quality / zoom LOD scaling is deliberately absent. The missing _lodN SWAP is NOT an intended divergence (see gaps): it is deferred render work; stock player + monster models DO ship _lodN."
     gaps:
       - "REAL REGRESSION (not the fexists-miss path): stock player models erebus/gak/gakmasked AND monsters golem/spider/nanomage/wyvern ship _lod1/_lod2 in Base/data; with the default cl_playerdetailreduction 4, Base downshifts distant players/monsters to lod1/lod2, but the port discards the computed index (`_ = SelectLodIndex(...)`) and ALWAYS renders lod0. So distant detail never reduces for default content (perf + visible-detail parity gap)."
       - "view_quality and current_viewzoom are pinned to 1 (no port equivalent), so adaptive-quality / zoom LOD scaling is absent. (Intended.)"
     verification:
-      - { kind: code, ref: "ClientWorld.cs:1205 `_ = CsqcModelLod.SelectLodIndex(...)` result discarded; comment 'keep lod0 (the QC fexists-miss path)'", result: fail }
-      - { kind: code, ref: "Base/data/xonotic-data.pk3dir/models/player/{erebus,gak,gakmasked}_lod{1,2}.iqm + models/monsters/{golem,spider,nanomage,wyvern}_lod1.dpm EXIST — the no-op swap regresses default content", result: fail }
+      - { kind: code, ref: "ClientWorld.cs:1264 `_ = CsqcModelLod.SelectLodIndex(...)` result discarded; 1265 comment 'keep lod0 (the QC fexists-miss path)' — UNCHANGED by the Wave", result: fail }
+      - { kind: code, ref: "Base/data models/player/{erebus,gak,gakmasked}_lod{1,2}.iqm + models/monsters/{golem,spider,nanomage,wyvern}_lod1.dpm EXIST — the no-op swap regresses default content", result: fail }
     confidence: high
-    notes: "SelectLodIndex distance pick (<=0 static thresholds + f>dist2/f>dist1 distance bands) and NearestPointOnBox are faithful ports; the swap is the dead part. ApplyLod is live (called from DriveCsqcModelHooks) but inert."
+    notes: "SelectLodIndex distance pick (<=0 static thresholds + f>dist2/f>dist1 distance bands) and NearestPointOnBox are faithful ports; the swap is the dead part. ApplyLod is live (called from DriveCsqcModelHooks) but inert. STILL OPEN — Wave did not wire the swap."
   - id: cl-csqcmodel.skeleton.upper_lower_aim
     name: "Skeletal upper/lower split + aim bones + fixbone"
     layer: [presentation]
@@ -179,7 +193,7 @@ features:
     constants:
       - { name: "upper body plays frames 1+3, lower plays 2+4 (lerpfrac juggle)", base: "yes", port: "Lerp/Lerp3/Lerp4 doubled split", match: true }
       - { name: "aim bones bend by bound(-90,v_angle.x,90)*aimweight", base: "yes", port: "yes (aim pitch bend; uses Entity.Angles.X, v_angle not separately networked)", match: true }
-      - { name: "fixbone re-anchors upper body", base: "yes", port: "yes — PORTED faithfully (PlayerSkeleton.FromFrames:124-154: build-as-upper, snapshot split-bone orientation, re-anchor after the per-group split)", match: true }
+      - { name: "fixbone re-anchors upper body", base: "yes", port: "yes — PORTED faithfully (PlayerSkeleton.FromFrames: build-as-upper, snapshot split-bone orientation, re-anchor after the per-group split)", match: true }
       - { name: "v_angle source for aim pitch", base: "networked v_angle_x (BIT(10), ReadAngle)", port: "Entity.Angles.X (no separate v_angle network)", match: false }
       - { name: "MAX_BONES", base: "128", port: "n/a (Godot Skeleton3D-backed)", match: true }
     status:
@@ -195,9 +209,9 @@ features:
       - "Presentation gap is on the ACTION side, not the split mechanism: the upper-body torso always shows a stable idle/aim frame (LocomotionBlend.Split torsoTime=0), so the bone split + fixbone + aim-pitch are structurally faithful but the torso never animates beyond the aim-bone pitch bend (the upper-body ACTION overlay is the animdecide feature's gap)."
       - "Aim pitch reads Entity.Angles.X instead of a separately-networked v_angle_x (BIT(10)); for remote players these can differ slightly (the visible head/torso bend may lag or use the body yaw-pitch rather than the true view pitch)."
     verification:
-      - { kind: code, ref: "ClientWorld.cs:937 pm.Pose(...) live for skeletal IQM players; PlayerModel.cs:162-169 SelectLegs->Split->PlayerSkeleton.FromFrames; FromFrames implements fixbone (124-154) + aim bones (156-170) as a 1:1 port of player_skeleton.qc:114-208", result: pass }
+      - { kind: code, ref: "ClientWorld.cs:937 pm.Pose(...) live for skeletal IQM players; PlayerModel.cs SelectLegs->Split->PlayerSkeleton.FromFrames; FromFrames implements fixbone + aim bones as a 1:1 port of player_skeleton.qc:114-208", result: pass }
     confidence: high
-    notes: "CORRECTED vs draft: fixbone IS faithfully ported (the draft marked it 'unknown'/unverified). The bone-split, fixbone re-anchor, and aim-pitch math are all faithful 1:1 ports. The only real presentation gap is the static torso (captured by the animdecide feature) and the v_angle source. Live for skeletal-IQM players via PlayerModel.Pose."
+    notes: "fixbone IS faithfully ported. The bone-split, fixbone re-anchor, and aim-pitch math are all faithful 1:1 ports. The only real presentation gap is the static torso (captured by the animdecide feature) and the v_angle source. Live for skeletal-IQM players via PlayerModel.Pose. Unchanged by the Wave (PlayerModel gained an ApplyAlpha call at the top of Pose, but that is the alpha-net seam, separate from the skeletal split)."
   - id: cl-csqcmodel.animdecide.state_machine
     name: "animdecide locomotion + upper-body action state machine"
     layer: [presentation, shared]
@@ -235,10 +249,10 @@ features:
       - "Per-anim framerates (die 0.5fps, shoot 5, jump 10, draw 3, taunt 0.33) and the per-clip framegroup names are not used; clips are picked by a fuzzy name Contains match with a 20fps fallback."
       - "The CSQC-side implicit jump detection (ground->air transition sets ANIMACTION_JUMP) is approximated by the on-ground->Jump clip pick; no end-of-jump-anim freeze."
     verification:
-      - { kind: code, ref: "LocomotionBlend.cs:78 SelectLegs (6-state, 20/220 thresholds) live via PlayerModel.Pose; no anim_state/action wire in Entity", result: fail }
-      - { kind: code, ref: "grep anim_state/anim_upper_action/anim_lower_action across src+game: absent from the network layer", result: fail }
+      - { kind: code, ref: "LocomotionBlend.cs SelectLegs (6-state, 20/220 thresholds) live via PlayerModel.Pose; no anim_state/action wire in Entity or EntityField — UNCHANGED by the Wave", result: fail }
+      - { kind: code, ref: "grep anim_state/anim_upper_action/anim_lower_action across src+game: absent from the network layer (NetEntity EntityField has no anim_* bit)", result: fail }
     confidence: high
-    notes: "This is the dominant parity gap. Liveness=partial: a coarse legs heuristic IS live (SelectLegs), but the action/8-direction/duck-directional/framerate systems are missing entirely. Layer is presentation+shared because animdecide is shared sv/cl code in Base."
+    notes: "Still the dominant parity gap. Liveness=partial: a coarse legs heuristic IS live (SelectLegs), but the action/8-direction/duck-directional/framerate systems are missing entirely. The remote-velocity + on-ground + ducked flags that feed SelectLegs ARE networked, so legs animate; the upper-body actions are not. Layer presentation+shared. STILL OPEN — Wave did not network the anim_* block."
   - id: cl-csqcmodel.fallbackframe.remap
     name: "Fallback frame remap (missing-frame substitution)"
     layer: [presentation]
@@ -263,7 +277,7 @@ features:
     gaps:
       - "Live only on the MD3 ModelAnimator player path; skeletal-IQM players drive frames via LocomotionBlend, which never produces the high-numbered melee/duckwalk frame ids that the remap targets, so the remap rarely fires in practice."
     verification:
-      - { kind: code, ref: "CsqcFallbackFrame.Remap reproduces the QC switch table; ModelAnimator.FrameDuration is the fexists/frameduration analogue", result: pass }
+      - { kind: code, ref: "CsqcFallbackFrame.Remap reproduces the QC switch table; ModelAnimator.FrameDuration is the fexists/frameduration analogue — UNCHANGED by the Wave", result: pass }
     confidence: medium
     notes: "Faithful remap table; liveness is partial because the port's primary player path is skeletal, not the MD3 frame-id path that the fallback serves."
   - id: cl-csqcmodel.tagindex.weapon_attach
@@ -289,11 +303,11 @@ features:
     divergence_rationale: null
     gaps:
       - "The QC h_/v_ model tag resolution cascade (weapon bone -> gettagindex weapon/tag_weapon -> shot/tag_shot, with recursive parent predraw and drawmask=0 when the tag can't resolve) is simplified to a tag_weapon marker attach; weapon-on-weapon and the shot-muzzle tag chain are not faithfully reproduced."
-      - "No recursive predraw of the parent entity to fix forcemodel/LOD bone-index mismatch (moot since forcemodel + LOD swap are absent)."
+      - "No recursive predraw of the parent entity to fix forcemodel/LOD bone-index mismatch (forcemodel is now live, so a forced-model bone-index mismatch on the held weapon attach is a possible new edge case; LOD swap is still absent)."
     verification:
-      - { kind: code, ref: "ViewEntityRenderer attaches the held weapon via a tag_weapon marker; full QC tag cascade not reproduced", result: fail }
+      - { kind: code, ref: "ViewEntityRenderer attaches the held weapon via a tag_weapon marker; full QC tag cascade not reproduced — UNCHANGED by the Wave", result: fail }
     confidence: medium
-    notes: "Held first-person/third-person weapon attachment is live; the full networked tag_networkentity attachment graph (arbitrary entity-on-tag) is not."
+    notes: "Held first-person/third-person weapon attachment is live; the full networked tag_networkentity attachment graph (arbitrary entity-on-tag) is not. Note: forcemodel is now live so the 'moot since forcemodel absent' caveat from the baseline is no longer true — a forced model's differing bone layout could misplace the held weapon (untested)."
   - id: cl-csqcmodel.effects.ef_mf_trail_lights
     name: "EF_*/MF_* effects: dynamic lights, particles, render-flags, trails"
     layer: [presentation]
@@ -302,19 +316,21 @@ features:
     port_refs:
       - "game/client/CsqcModelEffects.cs:Apply"
       - "src/XonoticGodot.Engine/Simulation/CsqcModelEffectFlags.cs"
+      - "src/XonoticGodot.Engine/Simulation/CsqcModelAppearance.cs:ComposeForcedAppearance"
     constants:
       - { name: "EF_BRIGHTLIGHT light", base: "400 / '3 3 3'", port: "400 / (3,3,3)", match: true }
       - { name: "EF_DIMLIGHT light", base: "200 / '1.5 1.5 1.5'", port: "200 / (1.5,1.5,1.5)", match: true }
-      - { name: "EF_BLUE light", base: "200 / '0.15 0.15 1.5'", port: "200 / (0.15,0.15,1.5) — PRESENT (CsqcModelEffects.cs:106)", match: true }
-      - { name: "EF_RED light", base: "200 / '1.5 0.15 0.15'", port: "200 / (1.5,0.15,0.15) — PRESENT (CsqcModelEffects.cs:107)", match: true }
-      - { name: "EF_FLAME light + box particles", base: "200 '1 0.35 0' @ +'0 0 10' + EF_FLAME boxparticles", port: "present (light + EF_FLAME point-burst; boxparticles->point-burst at origin)", match: true }
-      - { name: "EF_SHOCK light + particles", base: "50 '3.1 4.4 10' + EF_SHOCK/ARC_LIGHTNING", port: "50 / (3.1,4.4,10) + EF_SHOCK burst — PRESENT (CsqcModelEffects.cs:123-124)", match: true }
-      - { name: "EF_NODRAW -> hide / EF_NOSHADOW / EF_NODEPTHTEST", base: "yes", port: "root.Visible=!hidden / SetCastShadow / SetNoDepthTest (per-instance material) — present", match: true }
+      - { name: "EF_BLUE light", base: "200 / '0.15 0.15 1.5'", port: "200 / (0.15,0.15,1.5)", match: true }
+      - { name: "EF_RED light", base: "200 / '1.5 0.15 0.15'", port: "200 / (1.5,0.15,0.15)", match: true }
+      - { name: "EF_FLAME light + box particles", base: "200 '1 0.35 0' @ +'0 0 10' + EF_FLAME boxparticles", port: "present (light + point-burst at origin)", match: true }
+      - { name: "EF_SHOCK light + particles", base: "50 '3.1 4.4 10' + EF_SHOCK/ARC_LIGHTNING", port: "50 / (3.1,4.4,10) + EF_SHOCK burst", match: true }
+      - { name: "EF_NODRAW -> hide / EF_NOSHADOW / EF_NODEPTHTEST", base: "yes", port: "root.Visible=!hidden / SetCastShadow / SetNoDepthTest (per-instance material)", match: true }
       - { name: "boxparticles(absmin..absmax,velocity) volume emission", base: "yes (box volume)", port: "point-burst at origin (no box-volume primitive)", match: false }
-      - { name: "MF->trail map (ROCKET/GRENADE/GIB/TRACER/ZOMGIB/TRACER2/TRACER3)", base: "TR_ROCKET/GRENADE/BLOOD/WIZSPIKE/SLIGHTBLOOD/KNIGHTSPIKE/VORESPIKE", port: "mapped in CsqcModelEffectFlags but MF=0 here", match: false }
+      - { name: "MF->trail map (ROCKET/GRENADE/GIB/TRACER/ZOMGIB/TRACER2/TRACER3)", base: "TR_ROCKET/GRENADE/BLOOD/WIZSPIKE/SLIGHTBLOOD/KNIGHTSPIKE/VORESPIKE", port: "mapped in CsqcModelEffectFlags but MF=0 here (modelFlags:0; forced override has no caller)", match: false }
       - { name: "EF_BRIGHTFIELD -> TR_NEXUIZPLASMA trail", base: "yes", port: "dropped on player model (trail return unused)", match: false }
       - { name: "render-flags ADDITIVE/FULLBRIGHT/NODEPTHTEST/NOSHADOW/NODRAW", base: "yes", port: "per-instance override only (not shared/cached materials)", match: false }
       - { name: "MF_ROTATE spin (makevectors angles+'0 100 0'*fmod(time,3.6))", base: "yes", port: "none (no caller supplies the bit)", match: false }
+      - { name: "EF_BLUE/EF_RED role-glow forcing (server sets these in Base; port re-derives)", base: "server-set", port: "ComposeForcedAppearance/RoleGlowFlags exist but DEAD (no caller)", match: false }
     status:
       logic: partial
       values: partial
@@ -325,15 +341,17 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "MF_* model flags + traileffect are NOT networked (Entity has no modelflags/traileffect), and DriveCsqcModelHooks passes modelFlags:0 — so MF-driven trails (rocket/grenade/gib/tracer) and the MF_ROCKET jetpack loop never fire for remote players/entities from this path (projectiles route trails via ProjectileRenderer separately)."
+      - "MF_* model flags + traileffect are STILL NOT networked (Entity has no modelflags/traileffect, EntityField has no MF bit), and the live call site DriveCsqcModelHooks (ClientWorld.cs:1095) passes modelFlags:0 with NO forced override — so MF-driven trails (rocket/grenade/gib/tracer) and the MF_ROCKET jetpack loop never fire for remote players/entities from this path."
+      - "NEW DEAD CODE (Wave): CsqcModelEffects.Apply gained an optional `forced` ForcedAppearance param (ORs ExtraEffects/ModelFlags), and CsqcModelAppearance gained ForcedAppearance/ComposeForcedAppearance/RoleGlowFlags + CsqcModelEffectFlags.ForcedEffectFlags — a complete client-side seam to re-derive EF_BLUE/EF_RED role-glow + MF_ROCKET per player WITHOUT networking MF_*. But it has ZERO callers: the single live Apply() call passes default(ForcedAppearance), so role-glow lights, forced trails, and the jetpack loop remain unreachable. Wiring is a caller-only change now."
       - "EF_BRIGHTFIELD on a player model is dropped (the trail return is unused in the entity-node pass)."
       - "Render-flags (additive/fullbright/nodepthtest) only apply to per-instance BaseMaterial3D overrides, not shared/cached shader materials, so on resolved player/weapon models additive/fullbright/depthhack are a parity gap."
       - "MF_ROTATE spin is not applied (no caller supplies the bit)."
       - "boxparticles volume emission (absmin..absmax) is reduced to a point-burst at the entity origin for EF_FLAME/EF_SHOCK/EF_STARDUST (no box-volume particle primitive in the port)."
     verification:
-      - { kind: code, ref: "ClientWorld.cs:1095 CsqcModelEffects.Apply(..., modelFlags:0, ...) — MF_* hardcoded 0; CsqcModelEffects.cs:101-128 light specs 400/(3,3,3), 200/(1.5..), 200/(0.15,0.15,1.5), 200/(1.5,0.15,0.15), 200 flame, 50/(3.1,4.4,10) ALL match Base", result: pass }
+      - { kind: code, ref: "ClientWorld.cs:1095 CsqcModelEffects.Apply(..., modelFlags:0, ..., ghostBit) — no forced arg, modelFlags hardcoded 0; CsqcModelEffects.cs:101-128 light specs ALL match Base", result: pass }
+      - { kind: code, ref: "grep ComposeForcedAppearance/ForcedAppearance/RoleGlowFlags/ApplyForcedGlowmod across game+src: ZERO callers outside the defining files — the forced-effects seam is dead", result: fail }
     confidence: high
-    notes: "CORRECTED vs draft: EF_BLUE/EF_RED/EF_SHOCK lights are PRESENT and faithful (draft marked them 'unknown'). All EF_* light specs + EF_NODRAW/NOSHADOW/NODEPTHTEST render-flags are live and faithful where the bit is networked. The structural gaps remain: MF_* not networked (modelFlags:0), shared-material render-flags (additive/fullbright/depthhack only on per-instance materials), EF_BRIGHTFIELD trail dropped on player nodes, box->point particle reduction. CsqcModelEffectFlags carries the full EF/MF bit values + trail map so wiring MF later is a values-only change."
+    notes: "EF_* light specs + EF_NODRAW/NOSHADOW/NODEPTHTEST render-flags are live and faithful where the bit is networked (unchanged from baseline). Wave ADDED a per-player forced-effects/forced-glowmod seam (ForcedAppearance, ComposeForcedAppearance, RoleGlowFlags, ForcedEffectFlags mask, ApplyForcedGlowmod) — well-formed and unit-testable but ENTIRELY DEAD (no caller composes or passes it; modelFlags still 0). So all the baseline structural gaps remain OPEN: MF_* not networked, MF trails/jetpack/role-glow unreachable, shared-material render-flags, EF_BRIGHTFIELD trail dropped, box->point reduction. Liveness partial (EF live, MF/forced dead)."
   - id: cl-csqcmodel.effects.jetpack_loop
     name: "Jetpack loop sound (MF_ROCKET)"
     layer: [presentation, audio]
@@ -355,11 +373,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Only reachable when modelFlags carries MF_ROCKET, but DriveCsqcModelHooks hardcodes modelFlags:0 and MF_* is not networked, so the jetpack loop start/stop on the CSQC-model path never fires (it's dead on this path; the local jetpack sound, if any, is driven elsewhere)."
+      - "Only reachable when modelFlags carries MF_ROCKET, but the live DriveCsqcModelHooks call hardcodes modelFlags:0 and MF_* is not networked. The Wave-added ForcedAppearance seam (ComposeForcedAppearance jetpackActive -> MF_ROCKET) COULD reach it, but has no caller — so the jetpack loop start/stop on the CSQC-model path STILL never fires (dead)."
     verification:
-      - { kind: code, ref: "CsqcModelEffects.cs:152 DriveJetpackLoop gated on (modelFlags & MF_ROCKET); modelFlags always 0 from ClientWorld.cs:1095", result: fail }
+      - { kind: code, ref: "CsqcModelEffects.cs DriveJetpackLoop gated on (modelFlags & MF_ROCKET); modelFlags always 0 from ClientWorld.cs:1095; ComposeForcedAppearance(jetpackActive) has no caller", result: fail }
     confidence: high
-    notes: "The loop logic (start once, VOL_BASE/cl_jetpack_attenuation 2, stop on clear) is a faithful port but unreachable from the CSQC-model pass because MF_ROCKET is never set on this path."
+    notes: "The loop logic (start once, VOL_BASE/cl_jetpack_attenuation 2, stop on clear) is a faithful port but unreachable: MF_ROCKET is never set on this path. STILL DEAD — the Wave added a path to force MF_ROCKET (ComposeForcedAppearance) but did not wire a caller."
   - id: cl-csqcmodel.networking.csqcmodel_contract
     name: "CSQCMODEL networked-property contract (effects/modelflags/skin/traileffect/colormap/colormod/glowmod/scale/alpha/v_angle/anim_*)"
     layer: [shared]
@@ -367,13 +385,16 @@ features:
       - "common/csqcmodel_settings.qh:CSQCMODEL_EXTRAPROPERTIES"
     port_refs:
       - "src/XonoticGodot.Common/Framework/Entity.cs"
+      - "src/XonoticGodot.Net/NetEntity.cs"
+      - "game/net/ServerNet.cs:QuantizeAlpha"
+      - "game/net/ClientEntityView.cs"
     constants:
       - { name: "colormap BIT(0)", base: "networked (ReadShort)", port: "Entity.Team (team id only, reconstructed to 1024+17*team)", match: false }
       - { name: "effects BIT(1)", base: "networked (ReadInt24_t)", port: "Entity.Effects (int) — networked", match: true }
       - { name: "modelflags BIT(2)", base: "networked (ReadByte)", port: "NOT networked (Entity has no ModelFlags; DriveCsqcModelHooks passes 0)", match: false }
       - { name: "skin BIT(2)", base: "networked (ReadByte)", port: "Entity.Skin — networked", match: true }
       - { name: "traileffect BIT(2)", base: "networked (ReadByte)", port: "NOT networked (Entity has no TrailEffect)", match: false }
-      - { name: "alpha BIT(3) scaled 254/-1/254", base: "networked", port: "NOT networked as a CSQCMODEL property (item fade/ghost driven by separate item flags)", match: false }
+      - { name: "alpha BIT(3) scaled 254/-1/254", base: "networked", port: "PRODUCER+CODEC networked (EntityField.Alpha 1<<17, ServerNet QuantizeAlpha for players+entities, codec read/write) but CLIENT NEVER CONSUMES — ClientEntityView does not map s.Alpha->e.Alpha, so the render Entity.Alpha stays at its 1f default and PlayerModel.ApplyAlpha is fed opaque", match: false }
       - { name: "death_time BIT(5) ReadApproxPastTime", base: "networked", port: "NOT networked — client-observed first-dead-frame instant (see deathfade row, intended)", match: false }
       - { name: "non-player glowmod BIT(8) scaled", base: "networked for !isplayer", port: "NOT networked (computed from colormap for player models only)", match: false }
       - { name: "colormod BIT(8) scaled 16/0/255 (ALL entities)", base: "networked for every entity", port: "NOT networked (ModelTint colormod stays white; only the frozen-tint override touches it)", match: false }
@@ -393,10 +414,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The CSQCMODEL extra-properties contract is the spine of this whole unit, and most of it is NOT networked: Entity carries only Frame/Skin/Effects/Team/ModelIndex (+Angles/Origin/Velocity from the movement state). Missing: colormap proper (only a team id is sent; non-team FFA per-client colors round-trip through Entity.Team poorly), modelflags, traileffect, alpha (as a model property), non-player glowmod, the per-entity colormod (sent for EVERY entity in Base — drives subtle per-model tint, e.g. team-tinted gibs/casings and gametype colormods), scale, v_angle, and the entire anim_state/anim_upper/lower_action+time block."
-      - "Consequence chain (each also tracked in its feature row): no colormod => no server-driven per-model tint; no scale => no resized models; no modelflags/traileffect => no MF trails + dead jetpack loop; no anim_* => no upper-body actions / server-decided locomotion; no v_angle => aim pitch uses body angles; no networked colormap => force-color path leans on a reconstructed team id."
+      - "The CSQCMODEL extra-properties contract is the spine of this whole unit, and most of it is STILL NOT networked: Entity carries Frame/Skin/Effects/Team/ModelIndex/Velocity/Health (+Angles/Origin from the movement state) and now an Alpha wire field. Missing: colormap proper (only a team id is sent), modelflags, traileffect, non-player glowmod, the per-entity colormod (sent for EVERY entity in Base), scale, v_angle, and the entire anim_state/anim_upper/lower_action+time block."
+      - "ALPHA is HALF-WIRED (Wave): EntityField.Alpha (1<<17) + ServerNet.QuantizeAlpha (players line 1653, entities line 1733) + the codec write/read are all LIVE on the wire, and the server DOES set player.Alpha (Cloaked 0.25, Buffs-invisible 0.5). BUT the client drops it: ClientEntityView.cs maps Velocity/Frame/Skin/ModelIndex/Effects/Health/Colormap onto the render Entity and NEVER copies s.Alpha -> e.Alpha (there is no DequantizeAlpha anywhere). PlayerModel.ApplyAlpha(e.Alpha) therefore always renders opaque. Net effect: a cloaked/invisible/fading player is fully visible on the client — the alpha render path is DEAD on consume despite the producer being live. Closing it is a one-line client map + dequantize (0 -> 1f opaque, else byte/255)."
+      - "Consequence chain (each also tracked in its feature row): no colormod => no server-driven per-model tint; no scale => no resized models; no modelflags/traileffect => no MF trails + dead jetpack loop; no anim_* => no upper-body actions / server-decided locomotion; no v_angle => aim pitch uses body angles; no networked colormap => force-color path leans on a reconstructed team id; alpha networked but not consumed => cloak/invisibility invisible-effect not rendered."
     verification:
-      - { kind: code, ref: "Entity.cs:63-70 fields = Frame,Skin,Effects,ModelIndex,Team,Frags (+origin/angles/velocity elsewhere); no Colormod/Glowmod/Scale/Alpha/ModelFlags/TrailEffect/AnimState/VAngle", result: fail }
-      - { kind: code, ref: "csqcmodel_settings.qh:45-85 CSQCMODEL_EXTRAPROPERTIES enumerates the full networked set", result: pass }
+      - { kind: code, ref: "Entity fields (DamageEntityState.cs:123 Alpha=1f default; Framework/Entity.cs Frame/Skin/Effects/Team) — Alpha is a server gameplay field; not fed from the wire on the client", result: fail }
+      - { kind: code, ref: "NetEntity.cs:89 EntityField.Alpha=1<<17 + codec lines 223/264 write/read; ServerNet.cs:1653/1733 Alpha=QuantizeAlpha(...); but ClientEntityView.cs:125-144 has NO e.Alpha = s.Alpha mapping and no DequantizeAlpha exists in the repo", result: fail }
+      - { kind: code, ref: "csqcmodel_settings.qh CSQCMODEL_EXTRAPROPERTIES enumerates the full networked set", result: pass }
     confidence: high
-    notes: "ADDED by adversarial verify — the draft only mentioned the networking contract in the spec port-mapping table with no feature row. This is the umbrella structural gap; the colormod omission (networked for ALL entities in Base, not just players) and scale are the two not separately captured by another row. Layer=shared because CSQCMODEL_EXTRAPROPERTIES is the shared sv-write/cl-read contract."
+    notes: "Wave PROGRESS: added a per-entity alpha network field end-to-end on the SERVER/wire side (EntityField.Alpha, QuantizeAlpha producer for players + entities, codec read/write) — genuine forward motion vs baseline where alpha was entirely absent. But it is NOT a closed gap: the client consume is missing (ClientEntityView never assigns e.Alpha; no DequantizeAlpha), so cloak/invisibility/fade still render opaque. Recorded as a half-wired partial, not faithful. The rest of the contract (colormod for ALL entities, scale, modelflags, traileffect, v_angle, anim_*) is unchanged-missing. Layer=shared."

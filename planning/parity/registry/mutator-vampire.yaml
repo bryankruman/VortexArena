@@ -16,7 +16,7 @@ features:
       - "common/mutators/mutator/instagib/sv_instagib.qh:35 (REGISTER_MUTATOR mutator_instagib = autocvar_g_instagib && !MapInfo_LoadedGametype.m_weaponarena)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/VampireMutator.cs:24 (IsEnabled: g_vampire!=0 && g_instagib==0)"
-      - "src/XonoticGodot.Server/GameWorld.cs:535 (MutatorActivation.Apply)"
+      - "src/XonoticGodot.Server/GameWorld.cs:539 (MutatorActivation.Apply)"
       - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:60 (Apply -> mut.IsEnabled -> Add/Remove)"
     constants:
       - { name: "g_vampire", base: "0 (string)", port: "0 (mutators.cfg)", match: true }
@@ -33,11 +33,11 @@ features:
     gaps:
       - "Minor edge divergence: Base excludes vampire when the instagib MUTATOR is enabled, and instagib itself is gated on `g_instagib && !m_weaponarena`. The port's `g_instagib == 0` term keys on the cvar, not the resolved mutator state — so on a weaponarena gametype with g_instagib 1 (instagib mutator OFF) Base would permit vampire but the port suppresses it. The common `g_vampire 1; g_instagib 1` double-activation (the actual baseline defect) is now correctly prevented."
     verification:
-      - { kind: code, ref: "VampireMutator.IsEnabled (VampireMutator.cs:24-27) now includes `g_instagib == 0f` — the !instagib term that was absent at baseline is present (Wave-2 diff)", result: pass }
-      - { kind: code, ref: "live: MutatorActivation.Apply (MutatorActivation.cs:60-69) iterates Mutators.All and calls mut.IsEnabled; invoked from GameWorld.cs:535 at boot", result: pass }
-      - { kind: code, ref: "Base instagib register (sv_instagib.qh:35) also requires !m_weaponarena; port keys on g_instagib cvar only -> narrow edge case", result: pass }
+      - { kind: code, ref: "re-audit 2026-06-22: VampireMutator.IsEnabled (VampireMutator.cs:24-27) = `Api.Services is not null && GetFloat(g_vampire) != 0f && GetFloat(g_instagib) == 0f` — the !instagib term is present (git diff main..HEAD confirms it was added in Wave-2)", result: pass }
+      - { kind: code, ref: "live: MutatorActivation.Apply (MutatorActivation.cs:59-69) iterates Mutators.All and Add/Removes per mut.IsEnabled; invoked from GameWorld.cs:539 at server boot", result: pass }
+      - { kind: code, ref: "Base instagib register (sv_instagib.qh:35) also requires !m_weaponarena; port keys on g_instagib cvar only -> narrow weaponarena edge case (unchanged)", result: pass }
     confidence: high
-    notes: "Wave-2 closed the baseline gate defect (instagib exclusion added). Activation path is live (IsEnabled read each Apply). Residual is only the weaponarena edge, which is the same approximation used across NIX/new_toys/instagib-family ports."
+    notes: "Re-verified 2026-06-22 against current HEAD: Wave-2 closed the baseline gate defect (instagib exclusion present). Activation path is live (IsEnabled read each Apply). Residual is only the weaponarena edge, the same approximation used across NIX/new_toys/instagib-family ports. No change vs baseline."
 
   - id: mutator-vampire.heal.on_damage
     name: "Heal attacker by damage dealt (PlayerDamage_SplitHealthArmor hook)"
@@ -70,13 +70,13 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "OnPlayerDamage (VampireMutator.cs:45-79) heal math + total-vs-health/alive/frozen/self/player guards vs sv_vampire.qc:9 — all match", result: pass }
-      - { kind: code, ref: "spawn-shield guard now present: `targetSpawnShielded = target.SpawnShieldExpire > now` (VampireMutator.cs:64); skips heal when shielded. Mirrors DamageSystem.HasSpawnShield (DamageSystem.cs:767). SpawnShieldExpire is set on the live spawn path (SpawnSystem.cs:605)", result: pass }
-      - { kind: code, ref: "timing: with default g_spawnshield_blockdamage 1 (DefSpawnShieldBlock=1f, DamageSystem.cs:72) the partial reduction at DamageSystem.cs:391 (`shieldBlock < 1f`) is skipped, so DamageTake/DamageSave at hook time (DamageSystem.cs:438) are the full unblocked amounts — the vampire guard, not the damage block, is what suppresses the heal, exactly as Base", result: pass }
-      - { kind: code, ref: "g_vampire_factor / g_vampire_use_total_damage now read live per event (VampireMutator.cs:52-53); factor 0 no longer swallowed (the `if(f!=0)` snapshot in Hook() was removed in Wave-2)", result: pass }
+      - { kind: code, ref: "re-audit 2026-06-22: OnPlayerDamage (VampireMutator.cs:45-79) heal math + total-vs-health/alive/frozen/self/player guards vs sv_vampire.qc:9 — all match", result: pass }
+      - { kind: code, ref: "spawn-shield guard present: `targetSpawnShielded = target.SpawnShieldExpire > now` (VampireMutator.cs:63-64) skips heal when shielded; mirrors DamageSystem.HasSpawnShield (DamageSystem.cs:773). SpawnShieldExpire is set on the LIVE player spawn path (SpawnSystem.cs:605 `p.SpawnShieldExpire = now + g_spawnshieldtime`)", result: pass }
+      - { kind: code, ref: "timing: with default g_spawnshield_blockdamage 1 the partial reduction at DamageSystem.cs:391 is skipped, so DamageTake/DamageSave at hook time (DamageSystem.cs:438) are full unblocked amounts — the vampire guard, not the damage block, suppresses the heal, exactly as Base", result: pass }
+      - { kind: code, ref: "g_vampire_factor / g_vampire_use_total_damage read live per event (VampireMutator.cs:52-53); factor 0 no longer swallowed (the `if(f!=0)` snapshot in Hook() was removed in Wave-2; the `&& damageTake > 0f` guard was also dropped, matching Base which has no such guard)", result: pass }
       - { kind: code, ref: "live: DamageSystem.cs:438 fires PlayerDamageSplitHealthArmor for every player-damage event; VampireMutator subscribes via Hook() (line 35)", result: pass }
     confidence: high
-    notes: "Wave-2 closed all three baseline divergences: spawn-shield guard added (verified the entity tracks SpawnShieldExpire on the live spawn path and the hook fires before the full shield block), g_vampire_factor==0 now honored (live read replaced the snapshot), and cvar cadence is now per-event. The old `&& damageTake > 0f` guard was also dropped, which is MORE faithful (Base has no such guard; GiveResource(0) is a no-op). No dedicated vampire unit test; the hook chain is exercised structurally by Mayhem/buffs/globalforces tests that drive PlayerDamageSplitHealthArmor, and discovery is asserted in IntegrationSmokeTests."
+    notes: "Re-verified 2026-06-22: Wave-2 closed all three baseline divergences and the fix holds at current HEAD — spawn-shield guard added (entity tracks SpawnShieldExpire, set on the live spawn path SpawnSystem.cs:605, and the hook fires before the full shield block), g_vampire_factor==0 honored (live read replaced the snapshot), and cvar cadence is per-event. No dedicated vampire unit test; the hook chain is exercised structurally by Mayhem/buffs/globalforces tests that drive PlayerDamageSplitHealthArmor, and discovery is asserted in IntegrationSmokeTests. No change vs baseline."
 
   - id: mutator-vampire.health.cap
     name: "Heal clamped to health limit (GiveResource -> GetResourceLimit)"
@@ -100,10 +100,10 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "current Base GetResourceLimit (sv_resources.qc:12-66) has NO vampire-specific override; heal caps at g_balance_health_limit. Port matches (Resources.cs:84,105)", result: pass }
+      - { kind: code, ref: "re-audit 2026-06-22: current Base GetResourceLimit (sv_resources.qc) has NO vampire-specific override; heal caps at g_balance_health_limit. Port matches (Resources.cs:84 `Cvar(g_balance_health_limit, 200f)`, 105)", result: pass }
       - { kind: value, ref: "g_balance_health_limit 200; port default 200 (Resources.cs:84)", result: pass }
     confidence: high
-    notes: "Behavior is faithful (unchanged by Wave-2). Both Base's MENUQC describe text and the port comment claiming health exceeds 200 are stale documentation; the modern resource system caps at the balance limit in both. The Wave-2 vampire comment now correctly calls out the stale note."
+    notes: "Faithful (unchanged by Wave-2). Both Base's MENUQC describe text and the port comment claiming health exceeds 200 are stale documentation; the modern resource system caps at the balance limit in both. The Wave-2 vampire comment correctly calls out the stale note. No change vs baseline."
 
   - id: mutator-vampire.buff.exclusion
     name: "g_vampire suppresses the BUFF_VAMPIRE pickup"
@@ -124,9 +124,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "BuffsMutator.cs:191 `if (n == \"vampire\" && g_vampire != 0) return false;` mirrors buff_Available", result: pass }
+      - { kind: code, ref: "re-audit 2026-06-22: BuffsMutator.cs:191 `if (n == \"vampire\" && Api.Cvars.GetFloat(\"g_vampire\") != 0f) return false;` mirrors buff_Available", result: pass }
     confidence: high
-    notes: "Faithful port (unchanged by Wave-2 beyond a line move from 165 to 191); exercised on the buff-spawn path when g_buffs is enabled."
+    notes: "Faithful port (unchanged by Wave-2 beyond a line move; now at line 191); exercised on the buff-spawn path when g_buffs is enabled. No change vs baseline."
 
   - id: mutator-vampire.report.mutator_strings
     name: "Mutator-list strings + menu description (':Vampire' / ', Vampire' / MENUQC describe)"
@@ -148,10 +148,10 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "BuildMutatorsString/BuildMutatorsPrettyString STILL not ported — no such hook chain exists in the port (only comments in CloakedMutator.cs:16, PowerupsMutator.cs:24, RocketFlyingMutator.cs:23, SuperSpecMutator.cs:38). 'Vampire' never appears in the machine or pretty mutator-list string (server browser / scoreboard / status reporting). Cross-cutting across all mutators; Wave-2 did not touch it."
+      - "BuildMutatorsString/BuildMutatorsPrettyString STILL not ported — no such hook chain exists in the port (only comments in CloakedMutator.cs:16, PowerupsMutator.cs:24, RocketFlyingMutator.cs:23, SuperSpecMutator.cs:52). 'Vampire' never appears in the machine or pretty mutator-list string (server browser / scoreboard / status reporting). Cross-cutting across all mutators; Wave-2 did not touch it."
       - "MENUQC describe (the 2-paragraph mutator info page) still not ported; only the checkbox tooltip 'Damage done to your enemy gets added to your own health' exists."
     verification:
-      - { kind: code, ref: "grep BuildMutators* across src/ + game/ -> only comments, no hook chain or call site (unchanged from baseline)", result: fail }
+      - { kind: code, ref: "re-audit 2026-06-22: grep BuildMutators* across src/ + game/ -> only comments, no hook chain or call site (unchanged from baseline)", result: fail }
       - { kind: code, ref: "DialogMutators.cs:140 vampire checkbox + tooltip present; no describe page", result: pass }
     confidence: high
-    notes: "The mutator-list-string hooks remain absent for ALL port mutators, not just vampire; tracked here as the vampire-specific instance. Purely cosmetic/reporting. STILL OPEN after Wave-2."
+    notes: "The mutator-list-string hooks remain absent for ALL port mutators, not just vampire; tracked here as the vampire-specific instance. Purely cosmetic/reporting. STILL OPEN after Wave-2. No change vs baseline."

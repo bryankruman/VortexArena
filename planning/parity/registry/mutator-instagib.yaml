@@ -5,9 +5,9 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 22
   worst_gaps:
-    - "FilterItem now LIVE but logic-partial: under default cvars (g_instagib_ammo_convert_* 0) the port KEEPS cell/rocket/shell/bullet ammo packs on the map (Base always deletes them), and the final fallthrough KEEPS every other item/weapon (Base deletes all non-converted items). So a normal DM map under instagib still spawns its stock weapons + ammo — only big powerups/jetpacks/Vortex/Devastator are removed."
-    - "Item economy still absent: OnCellsTouch/OnExtraLifeTouch remain DEAD (no ItemTouch hook chain in the port; ItemPickupRules.cs:364 confirms), and there are still no VaporizerCells/ExtraLife spawnfuncs — so cells-pickup full-heal and ExtraLife armor-grant never fire, and instagib ammo/extra-life items never spawn."
-    - "AmmoCheck game_stopped stop-condition reads a phantom cvar g_game_stopped (never registered/set in the port; the real state is GameWorld.GameStopped) — so that branch is non-functional. The UNLIMITED_AMMO + rocketminsta-downgrade additions ARE functional."
+    - "FilterItem is LIVE but logic-partial (InstagibMutator.cs UNCHANGED since the post-Wave-2 baseline): under default cvars (g_instagib_ammo_convert_* 0) the port KEEPS cell/rocket/shell/bullet ammo packs on the map (Base sv_instagib.qc:326-341 ALWAYS deletes them via return true), and the final fallthrough (line 421 `return false`) KEEPS every other item/weapon (Base sv_instagib.qc:361-368 deletes all non-converted items by default). So a normal DM map under instagib still spawns its stock weapons + ammo — only big powerups/jetpacks/Vortex/Devastator are removed."
+    - "Item economy still absent: OnCellsTouch/OnExtraLifeTouch remain DEAD. Wave-5 added a generic MutatorHooks.ItemTouch chain (MutatorHooks.cs:FireItemTouch, dispatched at ItemPickupRules.cs:372) and one subscriber (SuperSpecMutator), but INSTAGIB never subscribes to it and still has no VaporizerCells/ExtraLife spawnfuncs — so cells-pickup full-heal and ExtraLife armor-grant never fire, and instagib ammo/extra-life items never spawn."
+    - "AmmoCheck game_stopped stop-condition reads a phantom cvar g_game_stopped (InstagibMutator.cs:276) which is NEVER set/registered anywhere in the port (grep: only 3 readers, 0 writers; Cvars.cs does not register it) — so GetFloat returns 0 and that branch is non-functional. Unlike VehicleCommon.cs:846 which ORs in the real GameStopped global, instagib reads ONLY the dead cvar. The UNLIMITED_AMMO + rocketminsta-downgrade additions ARE functional."
     - "Hitsound feedback still missing: the ++hitsound_damage_dealt increments on the vaporizer life-eat (both target+attacker) and the mirror self-hit are not ported."
     - "MatchEnd / MakePlayerObserver stop-countdown still missing (no lifecycle hook chains); stale FINDAMMO centerprint can linger, and StopCountdown still never Kill_Notification(CPID_INSTAGIB_FINDAMMO)."
     - "Yoda easter-egg (alpha 0<a<1 -> yoda=1) still not ported; modname/serverinfo strings + MonsterDrop/MonsterSpawn + RandomItems instagib pick still missing; ForbidRandomStartWeapons handler still dead (no dispatch)."
@@ -34,9 +34,9 @@ features:
       - "Port enable predicate omits the !MapInfo_LoadedGametype.m_weaponarena guard; console `g_instagib 1` could co-enable with a weapon-arena gametype. Mitigated on the live path only by the menu radio-group (DialogMutators.cs:268 _arenaGroup zeroes g_weaponarena/g_nix when InstaGib is picked) — same mitigation pattern as NIX; the console double-activation hole remains."
       - "ONADD item-flag unblocking of VaporizerCells/Invisibility/Speed and the g_instagib_items IntrusiveList are not ported (tied to the still-missing item economy)."
     verification:
-      - { kind: code, ref: "InstagibMutator.cs:63 IsEnabled; MutatorActivation.Apply at GameWorld.cs:511; menu radio-group DialogMutators.cs:268 — UNCHANGED by Wave-2", result: pass }
+      - { kind: code, ref: "InstagibMutator.cs:63 IsEnabled; MutatorActivation.Apply at GameWorld.cs:511; menu radio-group DialogMutators.cs:268 — UNCHANGED by Wave-1/2/5", result: pass }
     confidence: high
-    notes: "Activation is live; predicate is still a subset of Base. Unchanged by Wave-1/2."
+    notes: "Activation is live; predicate is still a subset of Base. Unchanged by Wave-5."
   - id: mutator-instagib.loadout.start_items
     name: "Start loadout (100hp/0armor/cells/Vaporizer-only/unlimited-superweapons)"
     layer: [authority]
@@ -64,7 +64,7 @@ features:
       - "No explicit warmup_start_* twins in StartLoadout; relies on the single value mirroring QC warmup (equal in Base, so behaviorally faithful)."
       - "Port reads g_instagib_ammo_start but keeps default 10 when the cvar reads 0 (`if (start != 0f)`); Base would set cells to 0. Edge case only (default is 10)."
     verification:
-      - { kind: code, ref: "OnSetStartItems; SetStartItems dispatched at SpawnSystem.cs:669 — UNCHANGED by Wave-2", result: pass }
+      - { kind: code, ref: "OnSetStartItems; SetStartItems dispatched at SpawnSystem.cs (live + warmup paths) — UNCHANGED by Wave-5", result: pass }
     confidence: high
     notes: "Loadout also reapplied per-spawn in OnPlayerSpawn (ClearWeapons/GiveWeapon vaporizer)."
   - id: mutator-instagib.damage.vaporizer_lives
@@ -89,7 +89,7 @@ features:
     gaps:
       - "Port still omits the ++hitsound_damage_dealt increment on both target and attacker (hit-confirm feedback), so the hitsound cue on a life-eating hit is absent."
     verification:
-      - { kind: code, ref: "OnDamageCalculate vaporizer branch; DamageCalculate dispatched at DamageSystem.cs:219", result: pass }
+      - { kind: code, ref: "OnDamageCalculate vaporizer branch; DamageCalculate dispatched at DamageSystem.cs:219 — UNCHANGED by Wave-5", result: pass }
     confidence: high
     notes: "Core armor-as-lives logic faithful; only the hitsound feedback is missing (unchanged)."
   - id: mutator-instagib.damage.blaster
@@ -114,9 +114,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "OnDamageCalculate blaster branch vs Base 212-226", result: pass }
+      - { kind: code, ref: "OnDamageCalculate blaster branch vs Base 212-226 — UNCHANGED by Wave-5", result: pass }
     confidence: high
-    notes: "Branch structure matches Base. Cvars read once at Hook(); faithful unless changed mid-match. Unchanged by Wave-2."
+    notes: "Branch structure matches Base. Cvars read once at Hook(); faithful unless changed mid-match."
   - id: mutator-instagib.damage.mirror_as_lives
     name: "Mirror damage costs the attacker an armor 'life' instead of killing"
     layer: [authority]
@@ -138,9 +138,9 @@ features:
     gaps:
       - "Port still omits `attacker.hitsound_damage_dealt += frag_mirrordamage` (the hit-confirm cue on a self-mirror life loss)."
     verification:
-      - { kind: code, ref: "OnDamageCalculate mirror block vs Base 229-243", result: pass }
+      - { kind: code, ref: "OnDamageCalculate mirror block vs Base 229-243 — UNCHANGED by Wave-5", result: pass }
     confidence: high
-    notes: "Gated on !MirrorDamage; logic/values faithful; only the hitsound increment missing. Unchanged by Wave-2."
+    notes: "Gated on !MirrorDamage; logic/values faithful; only the hitsound increment missing."
   - id: mutator-instagib.damage.fall
     name: "Fall damage never counted"
     layer: [authority]
@@ -183,9 +183,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "Wave-2 added the FIRST-branch guard: g_friendlyfire==0 && IsPlayer(target)&&IsPlayer(attacker) && Teams.SameTeam -> args.Damage=0 (Teams.cs:35 SameTeam = Team!=0 && Team==Team, matches QC SAME_TEAM). Reached via live MutatorHooks.DamageCalculate dispatch", result: pass }
+      - { kind: code, ref: "FIRST-branch guard: g_friendlyfire==0 && IsPlayer(target)&&IsPlayer(attacker) && Teams.SameTeam -> args.Damage=0 (Teams.SameTeam = Team!=0 && Team==Team, matches QC SAME_TEAM). Reached via live MutatorHooks.DamageCalculate dispatch — UNCHANGED by Wave-5", result: pass }
     confidence: high
-    notes: "CLOSED by Wave-2. Faithful to Base line 176-177."
+    notes: "Closed by Wave-2; still faithful to Base line 176-177."
   - id: mutator-instagib.damage.contents
     name: "Lava/slime/drown damage gated by g_instagib_damagedbycontents"
     layer: [authority]
@@ -206,9 +206,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "Wave-2 reads DamagedByContents from g_instagib_damagedbycontents (mutators.cfg:47 default 1, shipped in assets/data); when false, DeathTypes.BaseOf -> Drown/Slime/Lava -> Damage=0 (matches Base 184-192). DamageSystem split-armor now fixed so applied contents damage is no longer 70%-absorbed", result: pass }
+      - { kind: code, ref: "Reads DamagedByContents from g_instagib_damagedbycontents (mutators.cfg:47 default 1); when false, DeathTypes.BaseOf -> Drown/Slime/Lava -> Damage=0 (matches Base 184-192). Split-armor fix means applied contents damage is no longer 70%-absorbed — UNCHANGED by Wave-5", result: pass }
     confidence: high
-    notes: "CLOSED by Wave-2. Default-faithful AND the cvar override now works. The earlier split-armor distortion note is resolved (see regen.split_health_armor)."
+    notes: "Closed by Wave-2. Default-faithful AND the cvar override works."
   - id: mutator-instagib.damage.friendlypush
     name: "Vaporizer knockback on teammates gated by g_instagib_friendlypush"
     layer: [authority]
@@ -229,9 +229,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "Wave-2: inside the wep==vaporizer branch, !FriendlyPush && Teams.SameTeam(target,attacker) -> args.Force=Vector3.Zero (matches Base 197-198). FriendlyPush reads g_instagib_friendlypush (cfg default 1)", result: pass }
+      - { kind: code, ref: "Inside the wep==vaporizer branch, !FriendlyPush && Teams.SameTeam(target,attacker) -> args.Force=Vector3.Zero (matches Base 197-198). FriendlyPush reads g_instagib_friendlypush (cfg default 1) — UNCHANGED by Wave-5", result: pass }
     confidence: high
-    notes: "CLOSED by Wave-2."
+    notes: "Closed by Wave-2."
   - id: mutator-instagib.damage.yoda
     name: "Yoda easter-egg: hitting a partially-transparent player sets the announcer yoda flag"
     layer: [authority, presentation]
@@ -251,7 +251,7 @@ features:
     gaps:
       - "Instagib's Damage_Calculate yoda branch (target alpha in (0,1) and is a player -> set global yoda=1, used for the humiliation announcer) is still not ported. Vaporizer.cs:139 only notes yoda/impressive as a deferred client-render TODO."
     verification:
-      - { kind: code, ref: "no yoda set in InstagibMutator.OnDamageCalculate (Wave-2 added no such branch); Vaporizer.cs:139 deferred-only", result: fail }
+      - { kind: code, ref: "no yoda set in InstagibMutator.OnDamageCalculate; Vaporizer.cs:139 deferred-only — UNCHANGED by Wave-5", result: fail }
     confidence: medium
     notes: "Still open. Niche announcer flavor; low gameplay impact."
   - id: mutator-instagib.death.gib
@@ -319,9 +319,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: trace, ref: "Wave-2 subscribes GameHooks.PlayerDamageSplitHealthArmor at InstagibMutator.cs:103 (Hook). Dispatch is LIVE+UNCONDITIONAL at DamageSystem.cs:438: the 0.7-block split is computed at line 394, then the hook overwrites take=save+take, save=0 (lines 439-440) before the subtract at 465-466. So armor absorbs nothing and acts as discrete lives; the no-ammo bleed lands at its raw 10/5", result: pass }
+      - { kind: trace, ref: "Subscribes GameHooks.PlayerDamageSplitHealthArmor at InstagibMutator.cs:103 (Hook). Dispatch is LIVE+UNCONDITIONAL at DamageSystem.cs:438: the 0.7-block split is computed first, then the hook overwrites take=save+take, save=0 before the subtract. So armor absorbs nothing and acts as discrete lives; the no-ammo bleed lands at its raw 10/5 — UNCHANGED by Wave-5", result: pass }
     confidence: high
-    notes: "CLOSED by Wave-2 — the single worst baseline gap. Was missing (armor 70%-absorbed all non-vaporizer/blaster damage); now faithful and live. Matches QC M_ARGV(4)=M_ARGV(7), M_ARGV(5)=0."
+    notes: "Closed by Wave-2 — the single worst baseline gap. Matches QC M_ARGV(4)=M_ARGV(7), M_ARGV(5)=0."
   - id: mutator-instagib.countdown.bleed
     name: "No-ammo bleed-out countdown (1s cadence, 10/5 dmg, DEATH_NOAMMO, stop conditions)"
     layer: [authority]
@@ -344,12 +344,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "game_stopped stop-condition reads a PHANTOM cvar g_game_stopped (Api.Cvars.GetFloat, InstagibMutator.cs:276): that cvar is never registered or set in the port (the real frozen state is GameWorld.GameStopped = Intermission/MatchEnded/Timeout). So GetFloat returns 0 and the game_stopped branch is non-functional. The UNLIMITED_AMMO check (line 282) and rocketminsta-downgrade branch (line 284-292) ARE functional."
-      - "Effective bleed damage is now correct (the split-armor gap that 70%-absorbed the 10/5 bleed is fixed) — this distortion note from the baseline is RESOLVED."
+      - "game_stopped stop-condition reads a PHANTOM cvar g_game_stopped (Api.Cvars.GetFloat, InstagibMutator.cs:276): that cvar is never registered or set anywhere in the port (grep: 3 readers, 0 writers; Cvars.cs does not register it; the real frozen state is GameScores/VehicleCommon.GameStopped). So GetFloat returns 0 and the game_stopped branch is non-functional. Unlike VehicleCommon.cs:846 which ORs in the real GameStopped global, instagib reads ONLY the dead cvar. The UNLIMITED_AMMO check (line 282) and rocketminsta-downgrade branch (line 284-292) ARE functional."
     verification:
-      - { kind: code, ref: "AmmoCheck/Countdown vs Base 70-95; PlayerPreThink dispatched at GameWorld.cs:988. Wave-2 added unlimitedAmmo + rocketminsta-downgrade + a game_stopped branch (latter reads a non-existent cvar)", result: pass }
+      - { kind: code, ref: "AmmoCheck/Countdown vs Base 70-95; PlayerPreThink dispatched at GameWorld.cs:988. unlimitedAmmo + rocketminsta-downgrade work; the game_stopped branch reads a non-existent cvar (still dead after Wave-5 — Cvars.cs adds team-balance cvars only, not g_game_stopped)", result: pass }
     confidence: high
-    notes: "Core bleed timing/cadence/values faithful; UNLIMITED_AMMO + rocketminsta stop conditions now wired (improvement). Only residual: the game_stopped branch reads a phantom cvar."
+    notes: "Core bleed timing/cadence/values faithful; UNLIMITED_AMMO + rocketminsta stop conditions wired. Only residual: the game_stopped branch reads a phantom cvar — UNCHANGED by Wave-5."
   - id: mutator-instagib.countdown.announce
     name: "Countdown announcer + find-ammo centerprints (number ladder, TERMINATED, MULTI variant, DOWNGRADE, clear)"
     layer: [authority, presentation]
@@ -373,9 +372,9 @@ features:
     gaps:
       - "StopCountdown still never issues Kill_Notification(NOTIF_ONE_ONLY, e, MSG_CENTER, CPID_INSTAGIB_FINDAMMO) to clear the centerprint (StopCountdown:302-307 only flips the InstagibNeedAmmo bool). Minor cosmetic: a lingering FINDAMMO centerprint isn't actively cleared. (No Kill_Notification primitive in the port's NotificationSystem.)"
     verification:
-      - { kind: code, ref: "Wave-2 added: hp>5 -> Announce(NUM_{ceil(hp/10)}) (NUM_1..NUM_10 registered+enabled NotificationsList.cs:112; == ANNCE_NUM_n that CNT_NORMAL resolves to); hp>90 -> MULTI_INSTAGIB_FINDAMMO (NotificationsList.cs:1111) else INSTAGIB_FINDAMMO; rocketminsta -> INSTAGIB_DOWNGRADE (NotificationsList.cs:940). All ids exist + Send/Announce overloads verified", result: pass }
+      - { kind: code, ref: "hp>5 -> Announce(NUM_{ceil(hp/10)}) (NUM_1..NUM_10 registered+enabled NotificationsList.cs:112 loop); hp>90 -> MULTI_INSTAGIB_FINDAMMO (NotificationsList.cs:1111) else INSTAGIB_FINDAMMO (943/941); rocketminsta -> INSTAGIB_DOWNGRADE (NotificationsList.cs:940). All ids + Send/Announce/Center overloads re-verified present after Wave-5 NotificationSystem edits", result: pass }
     confidence: high
-    notes: "Largely CLOSED by Wave-2: the per-number ladder, >90 MULTI variant, and rocketminsta DOWNGRADE are all wired now. Only the StopCountdown Kill_Notification clear remains."
+    notes: "Largely closed by Wave-2: per-number ladder, >90 MULTI variant, rocketminsta DOWNGRADE all wired. Only the StopCountdown Kill_Notification clear remains. Notification ids survived Wave-5's NotificationSystem.cs edits."
   - id: mutator-instagib.spawn.fullbright
     name: "Players glow fullbright on spawn (EF_FULLBRIGHT)"
     layer: [presentation]
@@ -397,7 +396,7 @@ features:
     gaps:
       - "Whether EffectFlags.FullBright actually renders the player model fullbright in the Godot renderer is still unverified (behavioral check needed)."
     verification:
-      - { kind: code, ref: "OnPlayerSpawn sets Effects |= FullBright; PlayerSpawn dispatched ClientManager.cs:542 — UNCHANGED by Wave-2", result: pass }
+      - { kind: code, ref: "OnPlayerSpawn sets Effects |= FullBright; PlayerSpawn dispatched ClientManager.cs:542 — UNCHANGED by Wave-5", result: pass }
     confidence: medium
     notes: "Flag set on the live spawn path; render effect not behaviorally verified. OnPlayerSpawn also reapplies the Vaporizer-only loadout and resets countdown bookkeeping."
   - id: mutator-instagib.items.filter
@@ -424,14 +423,14 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "AMMO-PACK DIVERGENCE (new code): Base ALWAYS deletes cell/rocket/shell/bullet packs (return true), conditionally replacing with VaporizerCells when the convert cvar is set. The port returns the convert flag itself (AmmoConvert*), so under the DEFAULT cvars (all 0) it returns FALSE = KEEPS the original ammo pack on the map. Wrong: stock ammo packs survive under instagib."
-      - "FALLTHROUGH DIVERGENCE (new code): Base's tail (sv_instagib.qc:361-368) DELETES all other items by default (return true) unless they carry cells and aren't weapons. The port's final `return false` (line 421) KEEPS everything else — so all non-Vortex/non-Devastator stock weapons (Shotgun/MachineGun/etc.) still spawn under instagib, opposite of Base."
+      - "AMMO-PACK DIVERGENCE: Base (sv_instagib.qc:326-341) ALWAYS deletes cell/rocket/shell/bullet packs (return true), conditionally replacing with VaporizerCells when the convert cvar is set. The port returns the convert flag itself (AmmoConvert*, lines 404-411), so under the DEFAULT cvars (all 0) it returns FALSE = KEEPS the original ammo pack on the map. Wrong: stock ammo packs survive under instagib."
+      - "FALLTHROUGH DIVERGENCE: Base's tail (sv_instagib.qc:361-368) DELETES all other items by default (return true) unless they carry cells and aren't weapons. The port's final `return false` (line 421) KEEPS everything else — so all non-Vortex/non-Devastator stock weapons (Shotgun/MachineGun/etc.) still spawn under instagib, opposite of Base."
       - "instagib_replace_item_with_random_powerup deck (even distribution of Invisibility/ExtraLife/Speed for big powerups under g_powerups) not ported — the port DELETES big powerups instead of replacing them (documented cross-file TODO; matches Base only when g_powerups is off)."
-      - "Vaporizer loot-drop cells-seed (RES_CELLS = g_instagib_ammo_drop, return false) and the generic cells>ammo_drop clamp are not ported."
+      - "Vaporizer loot-drop cells-seed (RES_CELLS = g_instagib_ammo_drop, return false; sv_instagib.qc:349-355) and the generic cells>ammo_drop clamp (361-363) are not ported."
     verification:
-      - { kind: trace, ref: "Wave-2 subscribes MutatorHooks.FilterItemDefinition (InstagibMutator.cs:105). Dispatch is LIVE at StartItem.cs:103 with item.ClassName (line 66) + item.NetName (line 100) populated before the call; true -> ItemPickupRules.RemoveItem + return null. Handler removes big powerups/Vortex/Devastator and gates jetpacks, but ammo-pack + fallthrough branches diverge from Base (see gaps)", result: partial }
+      - { kind: trace, ref: "Subscribes MutatorHooks.FilterItemDefinition (InstagibMutator.cs:105). Dispatch is LIVE at StartItem.cs:102-103 with item.ClassName + NetName populated before the call; true -> RemoveItem + return null. Handler removes big powerups/Vortex/Devastator and gates jetpacks, but ammo-pack + fallthrough branches diverge from Base (see gaps). InstagibMutator.cs UNCHANGED by Wave-5", result: partial }
     confidence: high
-    notes: "WAS missing (never subscribed). Wave-2 made it LIVE and partially correct: powerups/jetpacks/Vortex/Devastator handled. Still partial: under default cvars ammo packs AND all other stock weapons are wrongly kept, and the random-powerup deck + loot cells-seed are absent."
+    notes: "Live and partially correct: powerups/jetpacks/Vortex/Devastator handled. Still partial: under default cvars ammo packs AND all other stock weapons are wrongly kept, and the random-powerup deck + loot cells-seed are absent."
   - id: mutator-instagib.items.touch
     name: "ItemTouch: cells pickup full-heals to 100; ExtraLife grants armor lives"
     layer: [authority, presentation]
@@ -455,11 +454,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "OnCellsTouch and OnExtraLifeTouch STILL have NO caller (grep across src/+game/+tests/ -> only the defs + a doc comment). The port still has no ItemTouch mutator hook chain (ItemPickupRules.cs:364 explicitly: 'the port has no ItemTouch hook chain yet'). Cells pickups won't full-heal and ExtraLife pickups won't grant lives in a real match."
+      - "OnCellsTouch and OnExtraLifeTouch STILL have NO caller (grep across src/+game/+tests/ -> only the defs + a doc comment; the only non-binary hits are the methods themselves). Wave-5 ADDED a generic MutatorHooks.ItemTouch chain (MutatorHooks.cs FireItemTouch, dispatched at ItemPickupRules.cs:372) but INSTAGIB never subscribes to it (the only subscriber is SuperSpecMutator.cs:172) and still routes nothing into OnCellsTouch/OnExtraLifeTouch. Cells pickups won't full-heal and ExtraLife pickups won't grant lives in a real match — and there are still no instagib pickups to route (see items.defs)."
     verification:
-      - { kind: code, ref: "grep OnCellsTouch/OnExtraLifeTouch across src/+game/+tests -> 0 call sites; ItemPickupRules.ItemTouch (line 345) has no MUTATOR_CALLHOOK(ItemTouch) chain (line 364 note). UNCHANGED by Wave-2", result: fail }
+      - { kind: code, ref: "grep OnCellsTouch/OnExtraLifeTouch across src/+game/+tests -> 0 call sites; new ItemTouch chain has only the SuperSpec subscriber; instagib does not Add to it. ItemPickupRules.ItemTouch now fires FireItemTouch but no instagib path consumes it", result: fail }
     confidence: high
-    notes: "Still dead. The methods faithfully reproduce Base but are inert without an item-pipeline caller (and without items.defs there are no instagib pickups to route)."
+    notes: "Still dead despite the new ItemTouch seam. The methods faithfully reproduce Base but are inert without an instagib subscription and without VaporizerCells/ExtraLife item spawns."
   - id: mutator-instagib.items.defs
     name: "VaporizerCells / ExtraLife item definitions + spawnfuncs"
     layer: [authority, presentation]
@@ -481,9 +480,9 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Still no item_vaporizer_cells / item_minst_cells spawnfunc (grep -> none). item_extralife exists only as an LMS extra-life spawn (LastManStanding.cs:389), not the instagib VaporizerCells economy; the ammo_vaporizercells_init (cells = g_instagib_ammo_drop) seed is absent."
+      - "Still no item_vaporizer_cells / item_minst_cells spawnfunc (grep -> none). item_extralife exists only as an LMS extra-life spawn (LastManStanding.cs), not the instagib VaporizerCells economy; the ammo_vaporizercells_init (cells = g_instagib_ammo_drop) seed is absent."
     verification:
-      - { kind: code, ref: "grep item_vaporizer_cells/item_minst_cells/VaporizerCells spawnfunc in src/ -> none. UNCHANGED by Wave-2", result: fail }
+      - { kind: code, ref: "grep item_vaporizer_cells/item_minst_cells/VaporizerCells spawnfunc in src/ -> none. UNCHANGED by Wave-5", result: fail }
     confidence: high
     notes: "Still tied to the missing item economy; without these the touch handlers have nothing to route."
   - id: mutator-instagib.weapons.throw_arena_forbid
@@ -492,7 +491,7 @@ features:
     base_refs:
       - "common/mutators/mutator/instagib/sv_instagib.qc:161-165 ForbidThrowCurrentWeapon / sv_instagib.qc:269-273 SetWeaponArena / sv_instagib.qc:130-133 ForbidRandomStartWeapons"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/InstagibMutator.cs:424 OnForbidThrow / 428 OnSetWeaponArena / 425 OnForbidRandomStartWeapons"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/InstagibMutator.cs:424 OnForbidThrow / 425 OnForbidRandomStartWeapons / 428 OnSetWeaponArena"
     constants: []
     status:
       logic: faithful
@@ -504,12 +503,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "ForbidRandomStartWeapons handler is still subscribed but never dispatched (FireForbidRandomStartWeapons/ForbidRandomStartWeapons.Call -> only the helper def at MutatorHooks.cs:356, zero call sites) — dead."
-      - "ForbidThrowCurrentWeapon IS live (WeaponThrowing.cs:149,185); SetWeaponArena is NOW live too."
+      - "ForbidRandomStartWeapons handler is still subscribed but never dispatched (grep FireForbidRandomStartWeapons/ForbidRandomStartWeapons.Call -> only the chain def at MutatorHooks.cs + handler defs in instagib/nix/melee/overkill, zero call sites) — dead."
+      - "ForbidThrowCurrentWeapon IS live (WeaponThrowing.cs:149,185); SetWeaponArena IS live (SpawnSystem.cs:679 live path + 892 warmup path)."
     verification:
-      - { kind: code, ref: "dispatch: ForbidThrowCurrentWeapon live (WeaponThrowing.cs); SetWeaponArena NOW live (Wave-2: SpawnSystem.cs:679 calls SetWeaponArena.Call on the real start-items path; instagib forces Arena='off' -> arenaActive false); ForbidRandomStartWeapons still 0 dispatch sites", result: partial }
+      - { kind: code, ref: "dispatch: ForbidThrowCurrentWeapon live (WeaponThrowing.cs); SetWeaponArena live (SpawnSystem.cs:679 + 892; instagib forces Arena='off'); ForbidRandomStartWeapons still 0 dispatch sites — UNCHANGED by Wave-5", result: partial }
     confidence: high
-    notes: "IMPROVED by Wave-2: SetWeaponArena went dead->live (now enforced at SpawnSystem.cs:679). ForbidThrow live; ForbidRandomStartWeapons still dead. Logic of all three handlers is faithful."
+    notes: "ForbidThrow + SetWeaponArena live; ForbidRandomStartWeapons still dead. Logic of all three handlers faithful."
   - id: mutator-instagib.lifecycle.stop_countdown
     name: "Stop the no-ammo countdown on MatchEnd and MakePlayerObserver"
     layer: [authority]
@@ -527,9 +526,9 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Port still has no MatchEnd / MakePlayerObserver hook chains and no instagib subscription; the countdown's needammo flag / FINDAMMO centerprint is only reset on the next spawn (OnPlayerSpawn) and by the per-tick stop conditions — not when the match ends or a player becomes a spectator. (The new per-tick game_stopped branch that could have partly covered MatchEnd reads a phantom cvar and is non-functional.)"
+      - "Port still has no MatchEnd / MakePlayerObserver hook chains and no instagib subscription; the countdown's needammo flag / FINDAMMO centerprint is only reset on the next spawn (OnPlayerSpawn) and by the per-tick stop conditions — not when the match ends or a player becomes a spectator. (The per-tick game_stopped branch that could have partly covered MatchEnd reads a phantom cvar and is non-functional.)"
     verification:
-      - { kind: code, ref: "no MatchEnd/MakePlayerObserver chain in MutatorHooks.cs; OnPlayerSpawn is the only countdown reset. UNCHANGED by Wave-2", result: fail }
+      - { kind: code, ref: "no MatchEnd/MakePlayerObserver chain in MutatorHooks.cs; OnPlayerSpawn is the only countdown reset. UNCHANGED by Wave-5", result: fail }
     confidence: high
     notes: "Still open; minor cosmetic centerprint persistence."
   - id: mutator-instagib.misc.strings_monsters
@@ -553,6 +552,6 @@ features:
       - "MonsterDropItem (vaporizer_cells) and MonsterSpawn (Mage skin 1) not ported."
       - "RandomItems_GetRandomInstagibItemClassName (weighted instagib item pick over g_instagib_items) not ported."
     verification:
-      - { kind: code, ref: "no BuildMutators/SetModname/MonsterDrop/MonsterSpawn/RandomItems hook chains in MutatorHooks.cs and no instagib handlers. UNCHANGED by Wave-2", result: fail }
+      - { kind: code, ref: "no BuildMutators/SetModname/MonsterDrop/MonsterSpawn/RandomItems hook chains in MutatorHooks.cs and no instagib handlers. UNCHANGED by Wave-5", result: fail }
     confidence: medium
     notes: "Still open. Cosmetic/integration hooks; modname/string tags affect scoreboard/serverinfo display."

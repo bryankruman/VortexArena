@@ -5,11 +5,11 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 17
   worst_gaps:
-    - "STILL the worst gap: onslaught_link map entities are never resolved into graph edges on the live BSP path. Wave-2 ADDED a StageLink/ResolveLinks/NodeByName API + named AddGenerator/AddControlPoint overloads on Onslaught.cs, but it is entirely DEAD — zero callers in src/ or tests, GameWorld's 'onslaught_link' case is still an empty stub, and CpCombat.SpawnGenerator/SpawnControlPoint still call the NAMELESS overloads so _nodesByName is never populated. With no links every node stays shielded forever: on a real map NO control point can be captured and NO generator damaged. The mode is still non-functional in an actual match."
-    - "No Onslaught notifications/sounds/particles are ever emitted (capture/build/under-attack/destroy/win cues registered as data but never called)"
-    - "No CSQC presentation: no generator/control-point/icon models, no progressive damage models, no icon bob/spin/punch animation, no radar links, no objective death-cam"
-    - "cp_regen hardcoded fallback STILL 10 vs Base 20 (NOT fixed by Wave-2, unlike gen/cp health which WERE fixed) — masked only while the shipped cfg is loaded"
-    - "CaptureShield (spinning shield model + push + blocked sound), proximity-decap, ons_Teleport / spawn_choose / spawn_at_* placement all NOT IMPLEMENTED"
+    - "cp_regen hardcoded fallback STILL 10 vs Base 20 (OnslaughtControlPoint.cs:53 DefCpRegen=10f vs gametypes-server.cfg:581 g_onslaught_cp_regen 20) — the ONE numeric fallback Wave-2/5 did NOT fix; masked only while the shipped cfg is loaded (live cvar = 20), but a missing-cfg / bare-default boot regenerates icons at half the Base rate."
+    - "No CSQC presentation: no generator/control-point/icon world models, no progressive damage-model swaps, no icon bob/spin/punch animation, no radar link lines, no objective death-cam, no generator explosion sequence, and no particle effects (EFFECT_SPARKS/CAP/RAGE/ROCKET_EXPLODE) or waypoint-sprite build/health bars."
+    - "CaptureShield (spinning shield model + push + blocked-sound entity), proximity-decap, ons_Teleport / spawn_choose / spawn_at_* placement all NOT IMPLEMENTED (damage-immunity itself IS enforced via the Shielded flag, but the physical/visible shield + teleport + decap are absent)."
+    - "Bot Onslaught role is a single coarse offense-only approximation (rates ALL non-own generators/CPs by classname with no attackability/neighbor filter and no offense/defense/assistant role state machine + 120s timeout)."
+    - "play2team / per-team sound routing approximated by global emission (NotifBroadcast.All + SoundSystem.PlayGlobal) in the headless server; proximity self-destruct nearby-enemy +5 reward not modeled."
 
 features:
   - id: onslaught.graph.power_propagation
@@ -28,16 +28,17 @@ features:
       timing: na
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Algorithm is faithful (3-phase: reset → flow power → unshield enemy-adjacent), but the graph has NO EDGES on a live map because onslaught_link is STILL never resolved (see onslaught.links.resolution — the Wave-2 ResolveLinks API is dead). Live, the propagation runs over an edgeless graph: every CP stays shielded and every generator stays shielded, so nothing is ever attackable."
+      - "None on logic: the 3-phase algorithm (reset → flow power outward through same-team captured/linked neighbors → unshield nodes adjacent to a powered ENEMY node) matches sv_onslaught.qc. Now LIVE on a real map: the graph HAS edges because onslaught.links.resolution is wired (ResolveLinks runs in the post-spawn pass), so propagation runs over a real edge set — enemy-adjacent CPs/generators become attackable."
     verification:
-      - { kind: unit_test, ref: "tests/XonoticGodot.Tests/OnslaughtCombatTests.cs (manual Link()+UpdateLinks)", result: pass }
-      - { kind: code_read, ref: "Onslaught.cs UpdateLinks vs sv_onslaught.qc:109-246", result: pass }
+      - { kind: unit_test, ref: "tests/XonoticGodot.Tests/OnslaughtCombatTests.cs (Link()+UpdateLinks via combat tests)", result: pass }
+      - { kind: code_read, ref: "Onslaught.cs:385-430 UpdateLinks vs sv_onslaught.qc:109-246 (3-phase match)", result: pass }
+      - { kind: code_read, ref: "live edges via GameWorld.cs:627-628 ons.ResolveLinks() post-spawn", result: pass }
     confidence: high
-    notes: "Logic verified against QC; liveness partial only because edges are missing on the live path (a separate feature, still open)."
+    notes: "Re-verified: logic faithful AND now live (edges exist on the live BSP path; previously partial). liveness partial→live as a downstream consequence of onslaught.links.resolution being wired."
 
   - id: onslaught.links.resolution
     name: "onslaught_link map entity → graph edges"
@@ -46,9 +47,9 @@ features:
       - "common/gametypes/gametype/onslaught/sv_onslaught.qc:spawnfunc(onslaught_link)"
       - "common/gametypes/gametype/onslaught/sv_onslaught.qc:ons_DelayedLinkSetup"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:StageLink (LIVE — GameWorld onslaught_link case)"
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:ResolveLinks (LIVE — GameWorld post-spawn pass)"
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:NodeByName / AddGenerator(team,name) / AddControlPoint(id,name) (LIVE — SpawnGenerator/SpawnControlPoint pass e.TargetName)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:StageLink"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:ResolveLinks"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:NodeByName / AddGenerator(team,name) / AddControlPoint(id,name)"
       - "src/XonoticGodot.Server/GameWorld.cs:WireObjectiveSpawns (onslaught_generator/controlpoint pass TargetName; onslaught_link → StageLink) + post-spawn ons.ResolveLinks()"
     constants: []
     status:
@@ -60,15 +61,14 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "WAVE-5 FIX: the deferred link-resolution API is now WIRED on the live BSP path. GameWorld.WireObjectiveSpawns passes each onslaught_generator/onslaught_controlpoint placeholder's .targetname into SpawnGenerator/SpawnControlPoint (which call the name-indexing AddGenerator(team,name)/AddControlPoint(id,name) overloads → _nodesByName populated); the onslaught_link case now calls ons.StageLink(e.Target, e.Target2); and the post-spawn pass (Boot, next to Assault.ResolveObjectiveGraph) calls ons.ResolveLinks(). Entity gained a .Target2 field + the BSP key promoter reads `target2`."
-      - "Consequence: the power graph now has edges on a real map, so UpdateLinks unshields enemy-adjacent nodes — control points become capturable and the enemy generator becomes damageable once a linked CP is taken. The combat logic below is now reachable on the live path."
+    gaps: []
     verification:
-      - { kind: code_read, ref: "GameWorld.cs WireObjectiveSpawns: onslaught_generator/controlpoint pass e.TargetName; onslaught_link → ons.StageLink(e.Target, e.Target2); post-spawn `if (GameType is Onslaught onsMode) onsMode.ResolveLinks()`", result: pass }
-      - { kind: code_read, ref: "OnslaughtControlPoint.SpawnGenerator/SpawnControlPoint named overloads → AddGenerator(team,name)/AddControlPoint(id,name)", result: pass }
-      - { kind: code_read, ref: "Entity.cs gained Target2; GameWorld key promoter reads `target2`", result: pass }
+      - { kind: code_read, ref: "GameWorld.cs:1799-1819 WireObjectiveSpawns Onslaught arm: onslaught_generator→SpawnGenerator(team,origin,e.TargetName); onslaught_controlpoint→SpawnControlPoint(id,origin,e.TargetName); onslaught_link→ons.StageLink(e.Target,e.Target2)", result: pass }
+      - { kind: code_read, ref: "GameWorld.cs:627-628 post-spawn `if (GameType is Onslaught onsMode) onsMode.ResolveLinks()` (mirrors Assault.ResolveObjectiveGraph at :622-623); WireObjectiveSpawns called live at Boot :531", result: pass }
+      - { kind: code_read, ref: "Onslaught.cs:331-364 StageLink/ResolveLinks (empty-name drop, deferred name→node resolution, UpdateLinks); SpawnGenerator/SpawnControlPoint call AddGenerator(team,name)/AddControlPoint(id,name) → RegisterNodeName → _nodesByName", result: pass }
+      - { kind: code_read, ref: "Entity.Target2 read from `target2` BSP key (GameWorld.cs:2655)", result: pass }
     confidence: high
-    notes: "Wave-5: wired the dead ResolveLinks/StageLink API into the live spawn + post-spawn path (mirrors Assault). liveness dead→live, logic stub→faithful. Single most severe gap CLOSED. Combat logic below is now reachable without hand-wired Link()."
+    notes: "Re-verified against current code (commit 66e378f): the deferred link-resolution API is genuinely WIRED on the live BSP path — full chain traced (key promoter → WireObjectiveSpawns named overloads → _nodesByName → post-spawn ResolveLinks → UpdateLinks). The single most severe pre-Wave gap is CLOSED; the combat logic below is reachable on a real map without hand-wired Link()."
 
   - id: onslaught.cp.touch_build
     name: "Control-point capture-by-build (touch → icon → build → flip)"
@@ -82,7 +82,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/OnslaughtControlPoint.cs:SpawnIcon"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/OnslaughtControlPoint.cs:IconBuildThink"
     constants:
-      - { name: "g_onslaught_cp_health", base: "1000", port: "1000 (cvar) / 1000 (hardcoded fallback)", match: true }
+      - { name: "g_onslaught_cp_health", base: "1000", port: "1000 (cvar) / 1000 (hardcoded fallback, Onslaught.ControlPointHealth)", match: true }
       - { name: "g_onslaught_cp_buildhealth", base: "100", port: "100", match: true }
       - { name: "g_onslaught_cp_buildtime", base: "5", port: "5", match: true }
       - { name: "ONS_CP_THINKRATE", base: "0.2", port: "0.2", match: true }
@@ -91,18 +91,19 @@ features:
       values: faithful
       timing: faithful
       presentation: missing
-      audio: missing
-      liveness: partial
+      audio: faithful
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No ONS_CONTROLPOINT_BUILD/BUILT sound, no EFFECT_CAP/EFFECT_RAGE particles, no pad-model swap (MDL_ONS_CP_PAD1/2), no build-bar waypoint sprite — none are emitted."
-      - "Liveness partial: only reachable once links exist (see onslaught.links.resolution, still open)."
+      - "Audio NOW EMITTED: SpawnIcon→ONS_CONTROLPOINT_BUILD on the CP; IconBuildThink completion→ONS_CONTROLPOINT_BUILT. Presentation still missing: no EFFECT_CAP/EFFECT_RAGE particles, no pad-model swap (MDL_ONS_CP_PAD1/2), no build-bar waypoint sprite."
+      - "Liveness live: reachable on a real map now that links resolve (onslaught.links.resolution)."
     verification:
       - { kind: unit_test, ref: "OnslaughtCombatTests.ControlPoint_BuildToCompletion_CapturesAndCredits", result: pass }
-      - { kind: code_read, ref: "Onslaught.cs ControlPointHealth fallback fixed 200→1000 (Onslaught.cs:163)", result: pass }
+      - { kind: code_read, ref: "OnslaughtControlPoint.cs:299-341 SpawnIcon (perTick=(max-build)*0.2/buildtime, ONS_CONTROLPOINT_BUILD), :349-391 IconBuildThink (CanBeLinked gate, flip-on-completion, ONS_CONTROLPOINT_BUILT + capture notifies)", result: pass }
+      - { kind: code_read, ref: "Onslaught.cs:153 ControlPointHealth fallback 1000 (matches gametypes-server.cfg:578)", result: pass }
     confidence: high
-    notes: "Wave-2 FIX: cp_health hardcoded fallback corrected 200→1000 (matches gametypes-server.cfg:578). Values now faithful. Per-tick build rate matches QC; capture flips only on completion."
+    notes: "Re-verified: cp_health fallback 1000 correct; per-tick build rate matches QC; capture flips only on completion. audio missing→faithful (build/built sounds emitted), liveness partial→live."
 
   - id: onslaught.cp.icon_damage
     name: "Capture-icon damage / destroy mid-build (revert to neutral)"
@@ -117,18 +118,18 @@ features:
       values: faithful
       timing: faithful
       presentation: missing
-      audio: missing
-      liveness: partial
+      audio: faithful
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Shield-block ignore, subtract, destroy-at-0 → revert owner to neutral + UpdateLinks all faithful. But no ONS_HIT1/2 / ONS_GENERATOR_EXPLODE sound, no EFFECT_SPARKS/ROCKET_EXPLODE particles, no CP-destroyed notification, no progressive icon model swap."
-      - "Proximity self-destruct nearby-enemy +5 reward (QC FOREACH_CLIENT branch) not modeled — only the single-attacker ONS_TAKES+1/SCORE+10 path."
-      - "Liveness partial: needs links (still open)."
+      - "Audio NOW EMITTED: shielded→ONS_DAMAGEBLOCKEDBYSHIELD to attacker (debounced); per-hit ONS_HIT1/2; destroy→ONS_GENERATOR_EXPLODE + ONSLAUGHT_CPDESTROYED_NONAME info. Presentation still missing: no EFFECT_SPARKS/ROCKET_EXPLODE particles, no progressive icon model swap."
+      - "Proximity self-destruct nearby-enemy +5 reward (QC FOREACH_CLIENT branch) NOT modeled — only the single-attacker ONS_TAKES+1/SCORE+10 path."
     verification:
       - { kind: unit_test, ref: "OnslaughtCombatTests.ControlPointIcon_DestroyedMidBuild_AbortsCapture", result: pass }
+      - { kind: code_read, ref: "OnslaughtControlPoint.cs:416-483 IconDamage (shield-block ignore + hint, subtract, destroy-at-0 → revert owner neutral + UpdateLinks + ONS_TAKES/SCORE credit + notify/explode)", result: pass }
     confidence: high
-    notes: "Unchanged by Wave-2. Destroyer credited ONS_TAKES+1 + SCORE+10 (QC). Routed via shared DamageSystem (GtEventDamage)."
+    notes: "Re-verified: destroyer credited ONS_TAKES+1 + SCORE+10; routed via shared DamageSystem (GtEventDamage). audio missing→faithful, liveness partial→live. Proximity self-destruct reward still open."
 
   - id: onslaught.cp.icon_think_regen
     name: "Built-icon steady-state slow regen"
@@ -146,27 +147,29 @@ features:
       timing: faithful
       presentation: na
       audio: missing
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL OPEN: hardcoded cp_regen fallback DefCpRegen = 10f (OnslaughtControlPoint.cs:53) vs Base 20. Wave-2 fixed gen_health and cp_health fallbacks but MISSED this one (live correct only via cfg)."
-      - "Damaged-FX sparks + ONS_SPARK1/2 sounds not emitted."
+      - "STILL OPEN (UNCHANGED by Wave-5): hardcoded cp_regen fallback DefCpRegen = 10f (OnslaughtControlPoint.cs:53) vs Base g_onslaught_cp_regen 20 (gametypes-server.cfg:581). Live-correct only because the shipped cfg sets the cvar to 20; a bare-default / missing-cfg boot regenerates icons at HALF the Base rate."
+      - "Damaged-FX sparks + ONS_SPARK1/2 ambient sounds not emitted (presentation/audio FX, not the steady regen logic)."
     verification:
-      - { kind: code_read, ref: "OnslaughtControlPoint.cs:53 DefCpRegen=10f vs gametypes-server.cfg:581 g_onslaught_cp_regen 20", result: fail }
+      - { kind: code_read, ref: "OnslaughtControlPoint.cs:53 DefCpRegen=10f vs gametypes-server.cfg:581 g_onslaught_cp_regen 20 — confirmed mismatch", result: fail }
+      - { kind: code_read, ref: "OnslaughtControlPoint.cs:398-408 IconThink: regen at GtBuildRate (=CpRegen*0.2) only 5s after last hit, up to max — matches QC", result: pass }
     confidence: high
-    notes: "Regen rate = cp_regen * THINKRATE applied 5 s after last hit, matching QC. Values still partial: the 10 fallback was NOT fixed (confidence raised medium→high after direct read)."
+    notes: "Re-verified by direct read: the 10 fallback was NOT corrected (only gen_health/cp_health/round_timelimit fallbacks were fixed). values remains partial. liveness partial→live (reachable on a real map)."
 
   - id: onslaught.cp.icon_heal
-    name: "Capture-icon heal (Healer mutator / heal trigger)"
+    name: "Capture-icon heal (Healer mutator / heal beam)"
     layer: [authority]
     base_refs:
       - "common/gametypes/gametype/onslaught/sv_onslaught.qc:ons_ControlPoint_Icon_Heal"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/OnslaughtControlPoint.cs:IconHeal"
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/OnslaughtControlPoint.cs:GeneratorHeal (new, QC ons_GeneratorHeal)"
-      - "src/XonoticGodot.Common/Gameplay/Damage/DamageContracts.cs:Combat.Heal (new, QC server/damage.qc Heal())"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Arc.cs (non-player heal beam dispatches via Combat.Heal)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/OnslaughtControlPoint.cs:GeneratorHeal (QC ons_GeneratorHeal)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageContracts.cs:Combat.Heal (QC server/damage.qc Heal())"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/EntityGametypeState.cs:Entity.GtEventHeal (QC .event_heal)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Arc.cs (non-player heal beam → Combat.Heal)"
     constants: []
     status:
       logic: faithful
@@ -177,13 +180,12 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "WAVE-5 FIX: IconHeal is now LIVE. Added a generic event_heal seam: Entity.GtEventHeal (QC .event_heal) + Combat.Heal (QC server/damage.qc:948 Heal() — dispatches to targ.event_heal). SpawnIcon wires icon.GtEventHeal = IconHeal and SpawnGenerator wires gen.GtEventHeal = GeneratorHeal (new, ports ons_GeneratorHeal). The Arc heal-beam's NON-player branch (Arc.cs) now routes through Combat.Heal so a friendly Arc beam on an Onslaught icon/generator tops up its GtObjHealth (previously it wrote the wrong Health resource and never reached IconHeal). (trigger_heal stays creature-gated like QC, so it correctly does NOT heal objectives.)"
+    gaps: []
     verification:
-      - { kind: code_read, ref: "OnslaughtControlPoint.cs IconHeal/GeneratorHeal vs sv_onslaught.qc:460-475/1005-1019 (logic match)", result: pass }
-      - { kind: code_read, ref: "icon.GtEventHeal = IconHeal (SpawnIcon); gen.GtEventHeal = GeneratorHeal (SpawnGenerator); Combat.Heal dispatch; Arc.cs non-player branch → Combat.Heal", result: pass }
+      - { kind: code_read, ref: "OnslaughtControlPoint.cs:489-516 IconHeal/GeneratorHeal vs sv_onslaught.qc:460-475/1005-1019 (heal-toward-limit; trueLimit = limit>0 ? limit : max_health)", result: pass }
+      - { kind: code_read, ref: "SpawnIcon:324 icon.GtEventHeal=IconHeal; SpawnGenerator:129 gen.GtEventHeal=GeneratorHeal; DamageContracts.cs:73-77 Combat.Heal→target.GtEventHeal; Arc.cs:332-333 non-player branch → Combat.Heal", result: pass }
     confidence: high
-    notes: "Wave-5: heal-toward-limit logic matches QC AND is now reachable via the Arc heal-beam (and any future mage/bumblebee healgun) through the new event_heal seam. liveness dead→live."
+    notes: "Re-verified: event_heal seam (Entity.GtEventHeal) genuinely wired — Arc heal-beam's non-player branch tops up GtObjHealth via Combat.Heal → IconHeal/GeneratorHeal. liveness dead→live confirmed (full dispatch chain traced). trigger_heal stays creature-gated like QC so it correctly does NOT heal objectives."
 
   - id: onslaught.gen.damage_destroy
     name: "Generator shield-gated damage + destruction"
@@ -196,25 +198,26 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/OnslaughtControlPoint.cs:SpawnGenerator"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:DamageGenerator"
     constants:
-      - { name: "g_onslaught_gen_health", base: "2500", port: "2500 (cvar) / 2500 (hardcoded fallback)", match: true }
+      - { name: "g_onslaught_gen_health", base: "2500", port: "2500 (cvar) / 2500 (hardcoded fallback, Onslaught.DefaultGenHealth)", match: true }
       - { name: "generator_kill_score", base: "100", port: "100", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
       presentation: missing
-      audio: missing
-      liveness: partial
+      audio: faithful
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No generator damage `frame = 10*(1-hp/max)` (progressive damage state), no under-attack ONS_GENERATOR_UNDERATTACK sound / CENTER notify, no flaming-gib chance (ROCKET_IMPACT) / EFFECT_SPARKS / ONS_HIT1/2, no GENDESTROYED info notify, no ons_camSetup death-cam."
-      - "Liveness partial: needs an unshielded generator, which needs an enemy-controlled linked CP, which needs links (still open)."
+      - "Audio NOW EMITTED: blocked-by-shield hint; GENERATOR_UNDERATTACK center + ONS_GENERATOR_UNDERATTACK (10s debounce); per-hit ONS_GENERATOR_EXPLODE at chance damage/220 else ONS_HIT1/2; destroy→ONSLAUGHT_GENDESTROYED(_OVERTIME) info + ONS_GENERATOR_EXPLODE. Presentation still missing: no progressive damage `frame=10*(1-hp/max)`, no flaming-gib (ROCKET_IMPACT) / EFFECT_SPARKS particles, no ons_camSetup death-cam."
+      - "NOTE: the per-hit 'gib impact' branch maps QC SND_ROCKET_IMPACT to ONS_GENERATOR_EXPLODE (port approximation, documented inline); under-attack alarm uses PlayGlobal not play2team."
     verification:
       - { kind: unit_test, ref: "OnslaughtCombatTests.Generator_ShieldBlocksThenDestroyThroughPipeline", result: pass }
-      - { kind: code_read, ref: "Onslaught.cs:43 DefaultGenHealth fixed 2000→2500 (matches gametypes-server.cfg:576)", result: pass }
+      - { kind: code_read, ref: "OnslaughtControlPoint.cs:142-228 GeneratorDamage (RoundStarted gate, shield ignore + hint, under-attack notify, self-damage shield-bypass, destroy→notify+explode+disarm); SpawnGenerator:111-133 wires GtEventDamage+GtEventHeal", result: pass }
+      - { kind: code_read, ref: "Onslaught.cs:43 DefaultGenHealth=2500f (matches gametypes-server.cfg:576); :497-525 DamageGenerator (shield gate, SCORE+100, round-end)", result: pass }
     confidence: high
-    notes: "Wave-2 FIX: gen_health hardcoded fallback corrected 2000→2500. Values now faithful. Shield-block + destroy + attacker SCORE+100 + round-end + ST_ONS_GENS+1 verified. warmup/round-started gate present (GeneratorDamage RoundStarted() check). Self-damage (overtime) shield-bypass branch present."
+    notes: "Re-verified: gen_health fallback 2500 correct; shield-block + destroy + attacker SCORE+100 + round-end + ST_ONS_GENS+1; warmup/round-started gate (RoundStarted()); self-damage overtime shield-bypass branch present. audio missing→faithful, liveness partial→live."
 
   - id: onslaught.round.handler
     name: "Round handler (warmup → countdown → round → end-delay)"
@@ -238,18 +241,19 @@ features:
       values: faithful
       timing: faithful
       presentation: na
-      audio: missing
+      audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Per-player ROUNDLOST/player_blocked latch, nades_RemovePlayer, and the round-win center/info notifications + play2all CTF_CAPTURE on round decision are not driven by the port's handler."
-      - "Note: GameWorld's case Onslaught still calls a bare EnableRounds() (GameWorld.cs:1451) which spins up a SECOND generic live RoundHandler, but Onslaught actually runs its OWN Handler via ons.Tick() each frame (where the 5→7 logic lives), so this is harmless/redundant rather than a regression."
+      - "Per-player ROUNDLOST/player_blocked latch, nades_RemovePlayer, and the round-decision notifications are partly handled in BankRoundWin (round-win/tie center+info + win jingle now sent) but the per-player blocked-latch and nade cleanup are not driven by the port's handler."
+      - "NOTE: GameWorld's case Onslaught still calls a bare EnableRounds() (GameWorld.cs:1685) which spins up a SECOND generic live RoundHandler, but Onslaught runs its OWN Handler via ons.Tick() each frame (where the 5→7 logic lives) — harmless/redundant, not a regression."
     verification:
-      - { kind: code_read, ref: "Onslaught.cs:193 Handler.Init(5f, warmup, round_timelimit 500); CanRoundEndOns bumps EndDelay 5→7 on decided round (Onslaught.cs:535-538)", result: pass }
-      - { kind: code_read, ref: "Base sv_onslaught.qc:2156 round_handler_Init(5,…) initial; :1236 round_handler_Init(7,…) on decided round", result: pass }
+      - { kind: code_read, ref: "Onslaught.cs:193 Handler.Init(5f, warmup 5, round_timelimit 500); :534-540 CanRoundEndOns bumps EndDelay 5→7 on decided round", result: pass }
+      - { kind: code_read, ref: "GameWorld.cs:2013-2015 DriveGametypeFrame case Onslaught → ons.Tick() (round handler + overtime); :1683-1686 case Onslaught Activate()+EnableRounds()", result: pass }
+      - { kind: code_read, ref: "Base sv_onslaught.qc:2155-2156 round_handler_Init(5,…) initial; :1236 round_handler_Init(7,…) on decided round", result: pass }
     confidence: high
-    notes: "Wave-2 FIXES: first-round end-delay corrected 7→5 + added the 5→7 bump on the first decided round (now matches QC's two-stage delay); round_timelimit fallback corrected 0→500. timing partial→faithful, values partial→faithful. Handler is constructed, Init'd, and Tick'd live."
+    notes: "Re-verified: two-stage end-delay (5 first round, 7 thereafter) + round_timelimit 500 fallback. Handler constructed, Init'd, Tick'd live via DriveGametypeFrame."
 
   - id: onslaught.win.check_winner
     name: "Win check (last standing generator) + ST_ONS_GENS credit"
@@ -267,17 +271,18 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
-      audio: missing
+      presentation: partial
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Tie handling (-1, none standing) + the winner credit ST_ONS_GENS+1 are ported and the host reads MatchEnded/WinningTeam, but the ROUND_TEAM_WIN/ROUND_TIED notifications + win jingle are not sent."
+      - "BankRoundWin NOW sends ROUND_TEAM_WIN_<team> center+info to all and the play2all CTF_CAPTURE_<team> win jingle (winner>0), and ROUND_TIED center+info (winner==-1). Remaining: the scoreboard column rendering + any winner-banner HUD presentation is a client concern (tracked under onslaught.presentation.csqc)."
     verification:
       - { kind: unit_test, ref: "OnslaughtCombatTests.Generator_ShieldBlocksThenDestroyThroughPipeline (ST_ONS_GENS+1, WinningTeam)", result: pass }
+      - { kind: code_read, ref: "Onslaught.cs:561-572 CheckWinner (tie=-1, sole=team, idempotent via MatchEnded); :596-621 BankRoundWin (ST_ONS_GENS+1 + ROUND_TEAM_WIN/ROUND_TIED + CTF_CAPTURE jingle)", result: pass }
     confidence: high
-    notes: "Unchanged by Wave-2. Winner = sole team with a live generator; idempotent via MatchEnded latch."
+    notes: "Re-verified: winner = sole team with a live generator; idempotent via MatchEnded latch. audio missing→faithful (win jingle + round-decision notifies now emitted)."
 
   - id: onslaught.overtime.decay
     name: "Overtime generator self-decay (sudden death)"
@@ -297,18 +302,18 @@ features:
       values: faithful
       timing: faithful
       presentation: na
-      audio: missing
-      liveness: partial
+      audio: faithful
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "d = max_health/window scaled by 1 + (#enemy-linked CPs) per second faithful, routed via the self-damage (DEATH_HURTTRIGGER) generator path. But OVERTIME_CONTROLPOINT center notify + ONS_GENERATOR_DECAY announce sound are not emitted (only a bool latch OvertimeAnnounced)."
-      - "Liveness partial: the base self-decay self-damage path DOES bypass the shield (GeneratorDamage selfDamage branch unshields, OnslaughtControlPoint.cs:154-161), so even on an edgeless map overtime would eventually destroy a generator once the timelimit/round-end gate trips — but the enemy-linked-CP acceleration is always 0 without links, so decay runs at the base rate only."
+      - "d = max_health/window scaled by 1 + (#enemy-linked CPs) per second, routed via the self-damage (DEATH_HURTTRIGGER) generator path. Audio NOW EMITTED: first overtime tick fires OVERTIME_CONTROLPOINT center + ONS_GENERATOR_DECAY (latched once via OvertimeAnnounced)."
+      - "NOTE: the enemy-linked-CP acceleration is now meaningful (links resolve), so on a real map a team holding more of the map decays the enemy generator faster, matching QC. The base self-decay still bypasses the shield (selfDamage branch)."
     verification:
       - { kind: unit_test, ref: "tests/XonoticGodot.Tests/OverTimeManagerTests.cs (overtime decay)", result: pass }
-      - { kind: code_read, ref: "OnslaughtControlPoint.cs OvertimeDecayTick vs sv_onslaught.qc:1188-1211", result: pass }
-    confidence: medium
-    notes: "Unchanged by Wave-2. Decay accelerates with enemy-linked CP count exactly like QC; uses gen.MaxHealth/window."
+      - { kind: code_read, ref: "OnslaughtControlPoint.cs:530-564 OvertimeDecayTick (window=max(30,60*sd), d=1+enemy-linked CPs, *=max_h/window, Combat.Damage self-inflicted); Onslaught.cs:224-256 IsInOvertime/DriveOvertime (1s step)", result: pass }
+    confidence: high
+    notes: "Re-verified: decay accelerates with enemy-linked CP count exactly like QC; uses gen.MaxHealth/window; 1s cadence. audio missing→faithful, liveness partial→live (links now resolve so the acceleration is real)."
 
   - id: onslaught.scoring.rules
     name: "Scoreboard rules (generators / caps / takes)"
@@ -328,13 +333,13 @@ features:
       audio: na
       liveness: live
     intended_divergence: true
-    divergence_rationale: "QC awards ONS_TAKES on destroying an enemy icon and ONS_CAPS on a completed build (two separate events). The port credits ONS_TAKES+SCORE+10 on icon destroy (IconDamage) and ONS_CAPS+SCORE+10 on build completion (CaptureControlPoint) — same columns, but the port deliberately does NOT add ONS_TAKES on a build-capture (it documents collapsing to avoid double-credit). Net player columns match Base for each event."
+    divergence_rationale: "QC awards ONS_TAKES on destroying an enemy icon and ONS_CAPS on a completed build (two separate events). The port credits ONS_TAKES+SCORE+10 on icon destroy (IconDamage) and ONS_CAPS+SCORE+10 on build completion (CaptureControlPoint) — same columns, but the port deliberately does NOT add ONS_TAKES on a build-capture (documented to avoid double-credit). Net player columns match Base for each event."
     gaps:
-      - "The scoreboard COLUMN rendering (the actual HUD scoreboard layout for the generators/caps/takes fields) is a presentation/HUD concern not audited here."
+      - "The scoreboard COLUMN rendering (the HUD scoreboard layout for generators/caps/takes) is a presentation/HUD concern not audited here."
     verification:
-      - { kind: code_read, ref: "Onslaught.cs Activate score rules vs sv_onslaught.qc:2135-2149", result: pass }
+      - { kind: code_read, ref: "Onslaught.cs:165-176 Activate score rules (field_team ST_ONS_GENS generators PRIMARY + ONS_CAPS SECONDARY + ONS_TAKES) vs sv_onslaught.qc:2135-2149", result: pass }
     confidence: high
-    notes: "Unchanged by Wave-2. field_team(ST_ONS_GENS, generators, PRIMARY) + field(caps, SECONDARY) + field(takes, 0) reproduced."
+    notes: "Re-verified unchanged: field_team(ST_ONS_GENS, generators, PRIMARY) + field(caps, SECONDARY) + field(takes, 0) reproduced; intended_divergence on the take/cap collapse retained."
 
   - id: onslaught.captureshield
     name: "CaptureShield (spinning shield model + push + blocked sound)"
@@ -357,11 +362,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No physical capture-shield around shielded generators/control points: an enemy player can walk into a shielded node with no push-back, no ONS_DAMAGEBLOCKEDBYSHIELD sound, no GENERATOR/CONTROLPOINT_SHIELDED center notification, and no spinning additive shield model. (The shield is purely a feel/feedback layer; the damage-ignore IS enforced in code via the isshielded flag.)"
+      - "No physical capture-shield entity around shielded generators/control points: an enemy player can walk into a shielded node with no push-back, no GENERATOR/CONTROLPOINT_SHIELDED center notification on contact, and no spinning additive shield model. (The damage-ignore IS enforced in code via node.Shielded, and the weapon-damage blocked-by-shield SOUND hint IS now played in IconDamage/GeneratorDamage; only the touch-push shield ENTITY + its center-print are missing.)"
     verification:
-      - { kind: code_read, ref: "grep CaptureShield in src — only CTF; no Onslaught shield", result: fail }
+      - { kind: code_read, ref: "grep CaptureShield in src — only CTF; no Onslaught shield entity", result: fail }
     confidence: high
-    notes: "Unchanged by Wave-2. Damage immunity itself is honored (node.Shielded gate); only the visible/physical shield entity is missing."
+    notes: "Re-verified UNCHANGED: damage immunity honored (Shielded gate) and the weapon-shield blocked sound now plays, but the touchable spinning shield entity (push + on-contact shielded notify) is still missing."
 
   - id: onslaught.spawn.teleport_choose
     name: "Spawn placement + teleport (spawn_choose / spawn_at_* / ons_Teleport / click-radar)"
@@ -389,11 +394,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No control-point-to-control-point teleport (use key / click-radar), no respawn-at-chosen-CP, no spawn_at_controlpoints / spawn_at_generator placement near owned nodes. Players spawn only via the generic team spawn system. The ons_spawn client command + clickradar HUD are absent. (spawn_choose defaults ON in Base.) The ONS_TELEPORT/ONS_TELEPORT_ANTISPAM notifications are registered as data (NotificationsList.cs:963-964) but never emitted."
+      - "No control-point-to-control-point teleport (use key / click-radar), no respawn-at-chosen-CP, no spawn_at_controlpoints / spawn_at_generator placement near owned nodes. Players spawn only via the generic team spawn system. The ons_spawn client command + clickradar HUD are absent. (spawn_choose defaults ON in Base.) The ONS_TELEPORT/ONS_TELEPORT_ANTISPAM notifications are registered as data but never emitted."
     verification:
       - { kind: code_read, ref: "grep ons_Teleport/spawn_choose/teleport_antispam in src — none (only NotificationsList data rows)", result: fail }
     confidence: high
-    notes: "Unchanged by Wave-2. Default-on spawn_choose makes this a noticeable gameplay-feel gap on real ONS maps."
+    notes: "Re-verified UNCHANGED by Wave-5. Default-on spawn_choose makes this a noticeable gameplay-feel gap on real ONS maps."
 
   - id: onslaught.cp.proximity_decap
     name: "Proximity de-capture (stand near a point to flip it)"
@@ -417,9 +422,9 @@ features:
     gaps:
       - "Proximity-decap (friendly-minus-enemy player count within 512 qu changes icon HP at 100 HP/s, destroying it at 0) is not implemented. Default OFF in Base, so low player impact, but a hosted server enabling it gets no effect."
     verification:
-      - { kind: code_read, ref: "OnslaughtControlPoint.cs IconThink comment 'Proximity-decap is deferred'; grep proximitydecap in src — none", result: fail }
+      - { kind: code_read, ref: "OnslaughtControlPoint.cs:394-396 IconThink comment 'Proximity-decap is deferred'; grep proximitydecap in src — none", result: fail }
     confidence: high
-    notes: "Unchanged by Wave-2. Explicitly deferred in the port (IconThink comment). Default-off mitigates impact."
+    notes: "Re-verified UNCHANGED. Explicitly deferred in the port (IconThink doc). Default-off mitigates impact."
 
   - id: onslaught.presentation.csqc
     name: "CSQC presentation (generator/icon models, animation, radar, death-cam, FX)"
@@ -444,11 +449,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No generator/control-point/icon world models on the client; no progressive damage-model swaps; no icon bob/spin/punch-on-hit animation; no generator damage `frame`; no radar link lines; no objective death-cam (ENT_ONSCAMERA/WantEventchase) on round loss; no generator explosion sequence (rays/shockwave/gibs/electricity)."
+      - "No generator/control-point/icon world models on the client; no progressive damage-model swaps; no icon bob/spin/punch-on-hit animation; no generator damage `frame`; no radar link lines; no objective death-cam (ENT_ONSCAMERA/WantEventchase) on round loss; no generator explosion sequence (rays/shockwave/gibs/electricity); no particle effects (EFFECT_SPARKS/CAP/RAGE/ROCKET_EXPLODE) or waypoint-sprite build/health bars."
     verification:
       - { kind: code_read, ref: "no CSQC onslaught entity handlers in port; effects registered as data only", result: fail }
     confidence: medium
-    notes: "Unchanged by Wave-2. Cross-boundary (client). Port comments explicitly defer all CSQC models/animation/FX."
+    notes: "Re-verified UNCHANGED. Cross-boundary (client). Port comments explicitly defer all CSQC models/animation/FX/particles."
 
   - id: onslaught.audio.cues
     name: "Onslaught notifications + sounds emission"
@@ -471,12 +476,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "WAVE-5 FIX: the core Onslaught sound + notification cues are now EMITTED on the live path. SpawnIcon→ONS_CONTROLPOINT_BUILD; IconBuildThink completion→ONS_CONTROLPOINT_BUILT + ONSLAUGHT_CAPTURE_NONAME info + ONS_CAPTURE(_TEAM)_NONAME centers; IconDamage→ONS_DAMAGEBLOCKEDBYSHIELD (shielded) / ONS_HIT1/2 per hit / ONS_GENERATOR_EXPLODE + ONSLAUGHT_CPDESTROYED_NONAME on destroy; GeneratorDamage→blocked-by-shield / GENERATOR_UNDERATTACK center + ONS_GENERATOR_UNDERATTACK / ONS_HIT1-2 (or explode at damage/220) per hit / ONSLAUGHT_GENDESTROYED(_OVERTIME) + explode on destroy; OvertimeDecayTick first tick→OVERTIME_CONTROLPOINT center + ONS_GENERATOR_DECAY; BankRoundWin→ROUND_TEAM_WIN / ROUND_TIED center+info + the play2all CTF_CAPTURE win jingle."
-      - "Remaining (presentation/cross-boundary, tracked under onslaught.presentation.csqc): particle effects (EFFECT_SPARKS/CAP/RAGE/ROCKET_EXPLODE), waypoint-sprite build/health bars, the CP map .message name (port emits the NONAME notification variants since the CP carries no message), and play2team→the port uses play2all-style global emission as the headless approximation (no per-team sound routing yet)."
+      - "Core Onslaught sound + notification cues are EMITTED on the live path: SpawnIcon→ONS_CONTROLPOINT_BUILD; build completion→ONS_CONTROLPOINT_BUILT + ONSLAUGHT_CAPTURE_NONAME info + ONS_CAPTURE(_TEAM)_NONAME centers; IconDamage→ONS_DAMAGEBLOCKEDBYSHIELD / ONS_HIT1/2 / ONS_GENERATOR_EXPLODE + ONSLAUGHT_CPDESTROYED_NONAME; GeneratorDamage→blocked-by-shield / GENERATOR_UNDERATTACK + ONS_GENERATOR_UNDERATTACK / ONS_HIT1-2 (or explode at chance damage/220) / ONSLAUGHT_GENDESTROYED(_OVERTIME) + explode; OvertimeDecayTick first tick→OVERTIME_CONTROLPOINT + ONS_GENERATOR_DECAY; BankRoundWin→ROUND_TEAM_WIN / ROUND_TIED + play2all CTF_CAPTURE win jingle. Sounds (7) + notifications (40) registered."
+      - "Remaining (presentation/cross-boundary, tracked under onslaught.presentation.csqc): particle effects, waypoint-sprite build/health bars, the CP map .message name (port emits NONAME variants since the CP carries no message), and play2team→the port uses global emission (NotifBroadcast.All + SoundSystem.PlayGlobal) as the headless approximation (no per-team sound routing)."
     verification:
-      - { kind: code_read, ref: "OnslaughtControlPoint.cs + Onslaught.cs now contain the SoundSystem.PlayOn/PlayGlobal + NotificationSystem.Send emit calls at the QC call sites", result: pass }
+      - { kind: code_read, ref: "OnslaughtControlPoint.cs + Onslaught.cs contain SoundSystem.PlayOn/PlayGlobal + NotificationSystem.Send at the QC call sites", result: pass }
+      - { kind: code_read, ref: "SoundsList.cs registers ONS_CONTROLPOINT_BUILD/BUILT, ONS_HIT1/2, ONS_GENERATOR_EXPLODE/UNDERATTACK/DECAY, ONS_DAMAGEBLOCKEDBYSHIELD (7 refs); NotificationsList.cs registers ONSLAUGHT_CAPTURE/CPDESTROYED/GENDESTROYED, ONS_CAPTURE, GENERATOR_UNDERATTACK, OVERTIME_CONTROLPOINT, ROUND_TEAM_WIN/TIED (40 refs)", result: pass }
     confidence: high
-    notes: "Wave-5: the audio/notification cues are emitted live (server records SoundEvents + NotificationDispatches via the existing sinks). liveness dead→live, audio missing→faithful. Particle/sprite/CSQC presentation still deferred."
+    notes: "Re-verified: the audio/notification cues are emitted live (server records SoundEvents + NotificationDispatches via the existing sinks) and the cue names are registered. liveness live, audio faithful. Particle/sprite/CSQC + per-team routing still deferred."
 
   - id: onslaught.bot.roles
     name: "Bot Onslaught objective role (offense/defense/assistant goal rating)"
@@ -502,9 +508,8 @@ features:
     divergence_rationale: null
     gaps:
       - "Port has a SINGLE simplified offense role (rate every non-own onslaught_generator at RatingGenerator + every non-own onslaught_controlpoint at RatingControlPoint, by classname only) plus items + roam. Base has three roles (offense/defense/assistant) with a 120 s role-timeout re-evaluation (havocbot_role_ons_setrole)."
-      - "Port rates ALL non-own nodes; Base goal-rating FILTERS to only ATTACKABLE nodes (skips cp2.isshielded) and only nodes that are a generator/CP neighbor of the bot's team (aregensneighbor/arecpsneighbor bitmask), plus teammate-interest cost balancing (havocbot_ons_target). The port's lack of a shield/neighbor filter means bots also path toward unattackable shielded nodes."
-      - "Compounded by onslaught.links.resolution: with no live edges every node is shielded anyway, so on a real map the bot rates shielded objectives it can never act on."
+      - "Port rates ALL non-own nodes; Base goal-rating FILTERS to only ATTACKABLE nodes (skips cp2.isshielded) and only nodes that neighbor the bot's team (aregensneighbor/arecpsneighbor bitmask), plus teammate-interest cost balancing (havocbot_ons_target). The port's lack of a shield/neighbor filter means bots also path toward unattackable shielded nodes."
     verification:
-      - { kind: code_read, ref: "BotObjectiveRoles.cs:169-196 (UNCHANGED by Wave-2) vs sv_onslaught.qc havocbot_role_ons_* + goalrating", result: fail }
+      - { kind: code_read, ref: "BotObjectiveRoles.cs:169-196 RoleOnslaught (UNCHANGED) — classname scan, no Shielded/IsAttackable filter, no role state machine, vs sv_onslaught.qc havocbot_role_ons_* + goalrating", result: fail }
     confidence: high
-    notes: "Unchanged by Wave-2 (BotObjectiveRoles.cs had no diff). Role IS wired live (BotRoles classname dispatch) but is a coarse offense-only approximation with no attackability filter and no role state machine. Monster/turret/vehicle reteam hooks not ported — those belong to the monster/turret/vehicle units."
+    notes: "Re-verified UNCHANGED by Wave-5 (no diff to BotObjectiveRoles.cs). Role IS wired live (BotRoles classname dispatch) but is a coarse offense-only approximation with no attackability filter and no role state machine. Monster/turret/vehicle reteam hooks belong to those units."

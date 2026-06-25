@@ -5,10 +5,10 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 17
   worst_gaps:
-    - "In-flight fireball has no PROJECTILE_FIREMINE CSQC visual: the port spawns an invisible server-only monster_projectile (no spinning fire-mine model/glow/trail)."
+    - "In-flight fireball renders as a GENERIC CSQC projectile, not PROJECTILE_FIREMINE: the monster_projectile IS now networked + drawn, but ProjectileCatalog.Classify resolves netname 'wyvern' -> Generic, so there is no fire-mine fire-sprite/glow/FIREMINE trail."
     - "Monster animation frame groups (mr_anim idle/walk/run/pain/shoot/die1/die2) are never driven — only a logical MonsterAnim phase exists (system-wide CSQC playback deferral)."
-    - "Pain window uses the generic 0.34s instead of the wyvern's 0.5s pain_finished (mr_pain not overridden)."
     - "die2 landed-corpse frame swap is detected (mr_deadthink hook now driven) but the actual frame group is CSQC-deferred."
+    - "The wyvern's MENUQC describe() flavor prose is not surfaced (DialogMonsterTools lists only the name)."
 features:
   - id: wyvern.identity.spawnflags_hitbox
     name: "Identity, fly spawnflags, asymmetric hitbox"
@@ -170,19 +170,18 @@ features:
       - { name: "target filter", base: "takedamage==DAMAGE_AIM && it!=own", port: "TakeDamage==Aim && it!=owner", match: true }
     status:
       logic: faithful
-      values: partial
-      timing: partial
+      values: faithful
+      timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Burn reshaped from QC .fire_* accumulator into a Burning status-effect whose per-tick strength*0.05 is derived from dps*FrameTime; total over the window is intended to match but the per-tick cadence is approximate, not bit-exact."
+    gaps: []
     verification:
-      - { kind: source, ref: "Fire_AddDamage loop vs onExplode + MonsterFramework.AddFireDamage", result: pass }
-    confidence: medium
-    notes: "Same burn approximation affects every igniting monster; needs a headless tick test to confirm the DoT total under the live tick rate. Unchanged by Wave-2."
+      - { kind: source, ref: "Re-verified 06-22: MonsterFramework.AddFireDamage now routes through StatusEffectsCatalog.FireAddDamage (StatusEffects.cs:249), a faithful port of QC Fire_AddDamage incl. the overlap LEMMA, fire_damagepersec storage, and deathtype/owner attribution; the burn tick (FireApplyDamage) deals fire_damagepersec * min(frametime, fireend-time) — frame-rate-independent, NOT the old strength*0.05/frame approximation. onExplode loop matches FOREACH_ENTITY_RADIUS (it!=own && TakeDamage==Aim, 5*skillmod, damagetime).", result: pass }
+    confidence: high
+    notes: "FIXED by the Wave-2 fix-up: the old strength*0.05*FrameTime accumulator was replaced by the shared faithful FireAddDamage entry point (commit ec788f7 reworked MonsterFramework.AddFireDamage). Burn DoT total + per-tick cadence now match QC's accumulated fire damage under the live tick rate. The same fix benefits every igniting monster + the player Fireball/napalm."
 
   - id: wyvern.fireball.explode_effect
     name: "Fireball blast particle (EFFECT_FIREBALL_EXPLODE)"
@@ -214,24 +213,26 @@ features:
     layer: [presentation]
     base_refs:
       - "common/monsters/monster/wyvern.qc:wr_think (CSQCProjectile(missile, true, PROJECTILE_FIREMINE, true))"
-    port_refs: []
+    port_refs:
+      - "game/net/ServerNet.cs:1948 (Classify -> NetEntityKind.Projectile for the monster_projectile)"
+      - "game/client/ProjectileCatalog.cs:234 (Classify) / :180 (Firemine Desc, FireSprite + FIREMINE trail)"
     constants:
-      - { name: "csqc projectile type", base: "PROJECTILE_FIREMINE", port: "none", match: false }
+      - { name: "csqc projectile type", base: "PROJECTILE_FIREMINE", port: "Generic (netname 'wyvern' matches no Firemine/Fireball key)", match: false }
     status:
-      logic: missing
+      logic: partial
       values: na
       timing: na
-      presentation: missing
+      presentation: partial
       audio: na
-      liveness: na
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "In-flight fireball has no PROJECTILE_FIREMINE CSQC visual: the port spawns an invisible server-only monster_projectile (no spinning fire-mine model/glow/trail)."
+      - "In-flight fireball renders as the GENERIC CSQC projectile, not PROJECTILE_FIREMINE. The monster_projectile is now networked (FlyMissile + FL_PROJECTILE marker + Owner => ServerNet.Classify NetEntityKind.Projectile) and the client DOES draw a projectile, but ProjectileCatalog.Classify keys on classname/model/netname = 'monster_projectile  wyvern', which matches no Firemine/Fireball rule and falls through to Generic — so there is no fire-mine FireSprite body, FireOrange glow, light, or FIREMINE trail."
     verification:
-      - { kind: source, ref: "SpawnProjectile creates a server-only monster_projectile with no .Model and no CSQC projectile registration", result: fail }
+      - { kind: source, ref: "Re-verified 06-22: SpawnProjectile (MonsterAI.cs:1276) sets ClassName='monster_projectile', NetName=Def.NetName ('wyvern'), no Model, MoveType.FlyMissile, Flags|=Item, Owner=actor. ServerNet.Classify (:1948) returns Projectile (Item+Owner+IsProjectileMoveType). ProjectileCatalog.Classify (:234) on 'monster_projectile  wyvern' hits NO firemine/fireball branch -> Generic (:269). A Firemine Desc EXISTS (:180) but is unreachable for the wyvern netname.", result: fail }
     confidence: high
-    notes: "System-wide: the monster projectile spawner has no CSQC visual layer yet. STILL OPEN after Wave-2 (only the blast effect was added, not the in-flight model)."
+    notes: "PARTIAL improvement vs baseline (which wrongly said the projectile is invisible/server-only): the projectile IS now CSQC-networked and rendered, but as the wrong (Generic) visual. To close: add a 'wyvern'->Firemine (or a monster_projectile+netname) branch in ProjectileCatalog.Classify, OR set proj.Model/ClassName so it keys to Firemine. Until then the spinning fire-mine model/glow/trail is still absent. Same spawner is shared by mage/golem (which DO match via netname 'mage'/'golem')."
 
   - id: wyvern.fireball.fire_sound
     name: "Fireball launch sound (electro_fire)"
@@ -291,25 +292,26 @@ features:
     base_refs:
       - "common/monsters/monster/wyvern.qc:METHOD(Wyvern, mr_pain)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MarkPain"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Wyvern.cs:36 (PainWindow => 0.5f)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:1406 (MarkPain: PainFinished = Now + st.Def.PainWindow)"
     constants:
-      - { name: "pain_finished window", base: "0.5", port: "0.34 (generic MarkPain)", match: false }
+      - { name: "pain_finished window", base: "0.5", port: "0.5 (Wyvern.PainWindow override)", match: true }
       - { name: "pain anim", base: "anim_pain1 '3 1 2'", port: "MonsterAnim.Pain (no frame group)", match: false }
     status:
       logic: faithful
-      values: partial
-      timing: partial
+      values: faithful
+      timing: faithful
       presentation: stub
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Pain window uses the generic 0.34s instead of the wyvern's 0.5s pain_finished (mr_pain not overridden)."
+      - "anim_pain1 '3 1 2' frame group is not played (logical MonsterAnim.Pain only); CSQC monster frame playback deferred system-wide."
     verification:
-      - { kind: source, ref: "Re-verified 06-22: Wyvern.cs has no Pain override; MarkDamage (MonsterAI.cs:1398) hardcodes PainFinished = Now + 0.34f; Base wyvern.qc:142 sets pain_finished = time + 0.5. Audio: MarkDamage:1402 now calls MonsterSound(self, st, \"pain\", 1.2f, true, CH_PAIN/Body) — the QC 1.2s delaytoo throttle (wyvern.qc/Monster_Damage:1101)", result: fail }
+      - { kind: source, ref: "Re-verified 06-22: Wyvern.cs:36 now overrides PainWindow => 0.5f (vs the generic 0.34f at EntityClasses.cs:34); MarkPain (MonsterAI.cs:1406) consumes it via st.PainFinished = Now + st.Def.PainWindow, matching Base wyvern.qc:142 (pain_finished = time + 0.5). Live: Wyvern.Spawn -> MonsterAI.Setup installs MonsterEventDamage as e.GtEventDamage (:301) -> on a hit DamageSystem routes here -> MarkPain. Audio: MarkPain:1410 calls MonsterSound(self, st, \"pain\", 1.2f, true, CH/Body) — the QC 1.2s delaytoo throttle (wyvern.qc/Monster_Damage:1101), playing monsters/wyvern_pain.wav gated by g_monsters_sounds.", result: pass }
     confidence: high
-    notes: "Wyvern does not override the pain hook; falls back to the generic monster pain window and the abstract MonsterAnim.Pain phase. STILL OPEN (values/timing: 0.34s vs the wyvern's 0.5s). Wave-2 DID upgrade the pain AUDIO: the cue routes through the throttled MonsterSound (CH_PAIN/Body, 1.2s self-spam guard) instead of an unthrottled play — audio dimension now faithful."
+    notes: "FIXED by Wave-2: the wyvern now exposes its wider 0.5s pain window via the PainWindow override, genuinely consumed on the live damage path (values + timing now faithful; baseline was 0.34s generic). Pain AUDIO routes through the throttled MonsterSound (1.2s self-spam guard). Only the anim_pain1 FRAME GROUP (presentation) remains CSQC-deferred — the same system-wide monster-animation deferral as wyvern.anim.frame_table."
 
   - id: wyvern.death
     name: "Death: die anim + random corpse launch scatter"

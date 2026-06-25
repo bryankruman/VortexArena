@@ -1,17 +1,16 @@
 unit: weapon-vortex
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-24"
 summary:
   feature_count: 14
   worst_gaps:
-    - "Charge ring on the crosshair is STILL DEAD (Wave-2 did NOT fix it): the HUD render path is correct, but CrosshairPanel.ChargeFraction/ChargePool still have ZERO writers in the repo and vortex_charge remains server-only (EntityWeaponState, never networked) — so the player still gets NO on-screen feedback while charging. This is the shared root-cause blocker for the beam tint and the charge glow."
-    - "Beam is STILL not charge-scaled (sqrt(charge) alpha/spacing) and not team-color-tinted (vortex_glowcolor) — looks identical at every charge level and ignores team colors. Blocked by charge not being networked."
-    - "Player-model charge glow (wr_glow / vortex_glowcolor) STILL not ported — the Wave-2/3 CsqcModelEffects glow changes are generic role/powerup glow, NOT vortex-charge-driven; carrier model does not brighten as charge builds. Blocked by charge not being networked."
-    - "No nexwhoosh beam fly-by sound to nearby players — FireRailgunBullet still defers the whoosh."
+    - "Charge ring beam tint / scale still blocked: vortex_charge is networked to the local HUD only on the listen-server HOST path (NetGame.UpdateCrosshairWeaponRings reads LocalServerPlayer's slot state); a PURE remote client has no charge stat, so the ring is host-only and the beam/glow tint+scale still have no client-side charge value cross-client. The charge ring itself now fills on the host."
+    - "Beam is STILL not charge-scaled (sqrt(charge) alpha/spacing) and not team-color-tinted (vortex_glowcolor) — looks identical at every charge level and ignores team colors. Vortex.cs:312 emits VORTEX_BEAM as a plain trail with no charge/color args (UNCHANGED). Also blocked by charge not being networked cross-client."
+    - "Player-model charge glow (wr_glow / vortex_glowcolor) STILL not ported — the Wave-3 CsqcModelEffects glow changes are generic role/powerup forced-EF_*/glowmod overrides, NOT vortex-charge-driven; carrier model does not brighten as charge builds."
+    - "No nexwhoosh beam fly-by sound to nearby players — FireRailgunBullet still defers the whoosh (WeaponFiring.cs:358)."
   notable_fixes_this_audit:
-    - "FIXED weapon-vortex.achievements: yoda (mid-air rail kill) + impressive (every-other cross-team hit) are now genuinely implemented and LIVE (Vortex.Announce, called from Attack on the WrThink path). flying captured before the trace; per-actor vortex_lasthit tracked in a ConditionalWeakTable; team/player/airborne gating faithful to QC vortex.qc:141-162 + damage.qc:646-651."
-    - "FIXED weapon-vortex.attack.overcharge_sound audio: the overcharge zap now plays at the charge-proportional VOL_BASE*(charge-0.5*animlimit)/(1-0.5*animlimit) volume (VOL_BASE=0.7), matching QC vortex.qc:139 — was a flat-volume defect."
+    - "FIXED weapon-vortex.hud.charge_ring (stub/dead -> faithful/partial-live, HOST path): Wave-5 added NetGame.UpdateCrosshairWeaponRings (NetGame.cs:2826), called every frame at NetGame.cs:2302, which now WRITES CrosshairPanel.ChargeFraction = st.VortexCharge and ChargePool = st.VortexChargePoolAmmo for the active vortex slot off LocalServerPlayer. The previously-grep-conclusive dead feeder now has a live writer; with stock charge sitting at 0.5->1.0 the crosshair charge ring genuinely fills. Liveness is `partial` (host/listen-server only — a pure remote client still has no charge data)."
 features:
   - id: weapon-vortex.charge.regen_passive
     name: "Passive charge regen toward charge_limit"
@@ -239,7 +238,7 @@ features:
     verification:
       - { kind: codetrace, ref: "Vortex.cs:312 EffectEmitter.Emit('VORTEX_BEAM', shot.Origin, impTr.EndPos, 0) — STILL no charge/color args after Wave-2; EffectsList registers it as a plain trail", result: fail }
     confidence: high
-    notes: "UNCHANGED THIS AUDIT (Wave-2 did not touch the beam). Beam IS drawn and broadcast (EffectNetSink), so the wire is live; the charge-driven visual modulation and team tint are still missing. Root cause unchanged: charge level is server-only (EntityWeaponState, not networked), so any port-side tint/scale needs the charge value sent to clients first — the same blocker as the dead charge ring and the missing charge glow."
+    notes: "UNCHANGED THIS AUDIT (Vortex.cs:312 still emits VORTEX_BEAM as a plain trail with no charge/color args). Beam IS drawn and broadcast (EffectNetSink), so the wire is live; the charge-driven visual modulation and team tint are still missing. Root cause: charge level is server-only (EntityWeaponState) and only networked to the HOST HUD (the Wave-5 charge-ring feeder), not to every client — any port-side cross-client tint/scale needs the charge value sent to clients first. Same blocker as the missing charge glow."
 
   - id: weapon-vortex.fx.charge_glow
     name: "Player-model charge glow (wr_glow / vortex_glowcolor)"
@@ -300,27 +299,28 @@ features:
       - "common/weapons/weapon/vortex.qc:wr_think (vortex_charge stat)"
     port_refs:
       - "game/hud/CrosshairPanel.cs:DrawStatRing"
+      - "game/net/NetGame.cs:UpdateCrosshairWeaponRings"
     constants:
       - { name: "crosshair_ring_vortex", base: "1", port: "1 (read)", match: true }
-      - { name: "vortex_charge networked to client", base: "yes (STAT)", port: "no (server-only EntityWeaponState)", match: false }
+      - { name: "vortex_charge networked to client", base: "yes (STAT, all clients)", port: "host/listen-server local player only (read off LocalServerPlayer slot state)", match: false }
     status:
-      logic: stub
+      logic: faithful
       values: faithful
-      timing: na
-      presentation: stub
+      timing: faithful
+      presentation: faithful
       audio: na
-      liveness: dead
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The crosshair charge ring NEVER fills: DrawStatRing reads CrosshairPanel.ChargeFraction / ChargePool, which are never assigned anywhere in the repo (grep: zero writers), so ChargeRingValue always returns 0."
-      - "vortex_charge is server-only state (EntityWeaponState) and is not present in any network snapshot/stat, so the client has no charge data to feed the ring even if the feeder existed."
-      - "The chargepool inner ring (and its moving-average fallback) is likewise never driven."
+      - "Host-only: the charge stat is fed from LocalServerPlayer's slot state (NetGame.UpdateCrosshairWeaponRings), so the ring fills on a listen-server / single-player host but a PURE remote client has no charge data and still sees no ring. QC networks vortex_charge as a STAT to every client; the port still has no cross-client charge stat (the wepent-props follow-up)."
     verification:
-      - { kind: codetrace, ref: "Grep `.ChargeFraction =` / `.ChargePool =` over src+game (excl. bin) -> ZERO assignments; the only hit is the unrelated `_useChargePool = true` (CrosshairPanel.cs:874). ChargeRingValue (CrosshairPanel.cs:961) returns 0 when ChargeFraction < 0 (its -1 default).", result: fail }
-      - { kind: codetrace, ref: "VortexCharge written only by server gameplay (Vortex.cs/OkNex.cs); no snapshot/stat carries it to the client", result: fail }
+      - { kind: codetrace, ref: "NetGame.cs:2847-2848 now WRITES x.ChargeFraction = st.VortexCharge and x.ChargePool = st.VortexChargePoolAmmo for the active vortex slot (net is 'vortex'/'vaporizer'/contains 'nex'); reset to -1 sentinels otherwise (NetGame.cs:2834,2852). The previously-dead feeder now has a live writer.", result: pass }
+      - { kind: codetrace, ref: "Live path: NetGame.cs:2302 calls UpdateCrosshairWeaponRings() every frame inside the local-player HUD update. Off LocalServerPlayer (NetGame.cs:217) — null on a pure client, so host-only.", result: pass }
+      - { kind: codetrace, ref: "Render: CrosshairPanel.DrawStatRing (CrosshairPanel.cs:847) draws when crosshair_ring_vortex!=0 && vortexLike && charge>0; ChargeRingValue (CrosshairPanel.cs:961) returns Clamp(ChargeFraction). WeaponHud.IsChargeWeapon resolves the nested Cvars.Charge (true stock), so the ring is enabled. ChargePool drives the inner ring.", result: pass }
+      - { kind: codetrace, ref: "VortexCharge still written only by server gameplay (Vortex.cs); no cross-client snapshot/STAT carries it — so a non-host remote client still has no charge value.", result: fail }
     confidence: high
-    notes: "UNCHANGED THIS AUDIT (re-verified: still zero ChargeFraction/ChargePool writers, VortexCharge still server-only in EntityWeaponState). The dead feeder is grep-conclusive. Full ring rendering logic is present and correct (CrosshairPanel.cs DrawStatRing, ChargeFraction default -1) but ChargeFraction stays at its -1 default forever, so the ring never draws. With stock cvars charge sits at 0.5 -> 1.0, so the ring SHOULD be visible — the player currently sees nothing. This is the highest-impact remaining vortex gap."
+    notes: "FIXED THIS AUDIT (stub/dead -> faithful/partial-live) by Wave-5 NetGame.UpdateCrosshairWeaponRings. The baseline's grep-conclusive 'zero ChargeFraction/ChargePool writers' is no longer true — NetGame now feeds both off the host-side LocalServerPlayer slot every frame. With stock cvars charge sits at 0.5 -> 1.0 so the ring genuinely fills on the host. Liveness downgraded from full `live` to `partial` only because it remains host-only (no cross-client charge STAT yet). The full ring rendering logic (DrawStatRing, ChargeFraction/-1 default, moving-avg fallback, inner chargepool ring) is present and correct."
 
   - id: weapon-vortex.zoom.secondary_scope
     name: "Secondary = zoom scope (reticle_nex) at stock balance"

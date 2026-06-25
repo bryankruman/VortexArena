@@ -1,14 +1,15 @@
 unit: weapon-hagar
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-24"
+last_audited: "2026-06-22"
 summary:
-  feature_count: 11
+  feature_count: 12
   worst_gaps:
-    - "RESOLVED (Wave-5): the loadable secondary hold-to-charge state machine is now ported and driven live each frame (AttackLoad) — partial 1-3 loads, 0.5s/rocket charge, auto-release after load_hold, abort-on-primary give-back, loadblock gate."
+    - "RESOLVED (Wave-5): the loadable secondary hold-to-charge state machine is now ported and driven live each frame (AttackLoad) — partial 1-3 loads, 0.5s/rocket charge, auto-release after load_hold, abort-on-primary give-back, loadblock gate. Re-verified live: WeaponFireDriver.Frame calls WrThink(Primary) every tick with st.ButtonAttack/ButtonAttack2 set (driver.cs:134,163), AttackLoad runs first inside it."
     - "RESOLVED (Wave-5): Hagar load/charge audio (SND_HAGAR_LOAD per-rocket tick + SND_HAGAR_BEEP last-rocket/abort/warning beeps) now play from the charge machine."
-    - "RESOLVED (Wave-5): the HUD Hagar load ring now draws — the charge machine writes a live st.HagarLoad that the existing NetGame feed renders."
+    - "RESOLVED (Wave-5): the HUD Hagar load ring now draws — the charge machine writes a live st.HagarLoad; UpdateCrosshairWeaponRings (NetGame.cs:2826, called per-frame at :2302) feeds it to CrosshairPanel.HagarLoad which draws the ring (CrosshairPanel.cs:906)."
     - "RESOLVED (Wave-5): burst-vs-spray + suicide kill messages now differentiate (Explode passes the HITTYPE-carrying deathtag); the non-loaded bouncing secondary stays correctly load-0-only (matching Base) and now tags HITTYPE_BOUNCE."
+    - "NEW (this audit): the Hagar load-state LIFECYCLE hooks are unported (hagar.load_lifecycle row) — wr_gonethink (release loaded rockets when switching away), wr_playerdeath (release on death if load_releasedeath), wr_resetplayer (clear load on reset), and wr_setup's load give-back. With the charge machine now LIVE this is a real divergence: a player who switches/dies mid-charge keeps ammo deducted with no give-back/release."
 features:
   - id: hagar.primary.attack
     name: "Primary rapid-fire straight rocket stream"
@@ -69,7 +70,7 @@ features:
       timing: faithful
       presentation: faithful
       audio: faithful
-      liveness: conditional
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
@@ -139,8 +140,10 @@ features:
     divergence_rationale: null
     gaps:
       - "load_animtime (0.2) post-release anim time is folded into the secondary refire gate (the Hagar has no separate animtime cvar in the port; release schedules become-READY after Secondary.Refire) — cosmetic anim-only."
+      - "Re-verified 2026-06-22: the load==0 out-of-ammo branch (hagar.qc:357-363 wr_checkammo1+2 -> W_SwitchToOtherWeapon when neither has ammo) is NOT ported — the port's AttackLoad else-branch only resets the beep/warning flags. Minor: out-of-ammo auto-switch from the empty-hand upkeep tick is dropped (the player keeps the empty Hagar instead of auto-switching)."
     verification:
-      - { kind: code_read, ref: "hagar.qc:261-365 W_Hagar_Attack2_Load vs Hagar.cs:AttackLoad — per-rocket load@load_speed, last/abort/warning beeps, auto-release@load_hold, abort-on-primary give-back, loadblock gate all ported", result: pass }
+      - { kind: code_read, ref: "hagar.qc:261-365 W_Hagar_Attack2_Load vs Hagar.cs:254-343 AttackLoad — per-rocket load@load_speed, last/abort/warning beeps, auto-release@load_hold, abort-on-primary give-back, loadblock gate all ported; ammo give-back on abort uses GiveResource(ammo*load); RE-VERIFIED LIVE 2026-06-22", result: pass }
+      - { kind: code_read, ref: "WeaponFireDriver.Frame: SetButtons(st,atck,atck2) at :134 then WrThink(Primary) at :163 EVERY tick (ClearButtons after at :166); AttackLoad reads st.ButtonAttack/ButtonAttack2 live — held-button state confirmed present", result: pass }
       - { kind: code_read, ref: "WrThink(Primary) runs AttackLoad every tick (QC 'must always run each frame'); driver supplies per-tick st.ButtonAttack/ButtonAttack2 (WeaponFireDriver.cs:163,134) — the earlier 'headless layer lacks held-button state' rationale no longer holds", result: pass }
       - { kind: grep, ref: "HagarLoad/HagarLoadStep/HagarLoadBlock/HagarLoadBeep/HagarWarning now read+written in AttackLoad/AttackLoadRelease", result: pass }
     confidence: high
@@ -345,3 +348,33 @@ features:
       - { kind: code_read, ref: "Hagar.Explode now passes deathTag (FromWeapon(hagar) | HITTYPE_SECONDARY for the loaded burst + bouncing secondary, + HITTYPE_BOUNCE once bounced) into WeaponSplash.RadiusDamage; primary = no tag = spray", result: pass }
     confidence: high
     notes: "FIXED in Wave-5. The central DeathMessages selector already had faithful hagar branches; the missing piece was Hagar.Explode passing the HITTYPE-carrying deathtag so the obituary can tell BURST (secondary) from SPRAY (primary) and tag a bounce kill. WEAPON_HAGAR_SUICIDE is selected by SelectSuicideMessage on any hagar self-death."
+
+  - id: hagar.load_lifecycle
+    name: "Load-state lifecycle: release/give-back on switch-away, death, reset, equip"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/hagar.qc:wr_gonethink"
+      - "common/weapons/weapon/hagar.qc:wr_playerdeath"
+      - "common/weapons/weapon/hagar.qc:wr_resetplayer"
+      - "common/weapons/weapon/hagar.qc:wr_setup"
+    port_refs: []
+    constants:
+      - { name: "secondary_load_releasedeath", base: "1", port: "not ported", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: missing
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "wr_gonethink (hagar.qc:422-430): when the player switches AWAY from the Hagar with rockets loaded, Base sets WS_READY and calls W_Hagar_Attack2_Load_Release to fire the charged salvo. NOT ported — the driver has no wr_gonethink dispatch, so a switch-away mid-charge silently drops the loaded rockets (ammo already deducted, never fired, never given back)."
+      - "wr_playerdeath (hagar.qc:465-470): on death with rockets loaded AND load_releasedeath=1 (stock), Base releases the salvo. NOT ported."
+      - "wr_resetplayer (hagar.qc:456-463): clears hagar_load on every weaponslot when the player is reset (round restart). NOT ported — stale HagarLoad could persist on the slot state across a reset."
+      - "wr_setup (hagar.qc:432-440): on equip, clears hagar_loadblock and gives back ammo for any residual hagar_load. Hagar does NOT override WrSetup (the driver DOES call WrSetup on switch-in, WeaponFireDriver.cs:281, and other weapons override it — so the seam exists, the Hagar just doesn't use it)."
+    verification:
+      - { kind: code_read, ref: "grep WrGoneThink/WrPlayerDeath/WrResetPlayer/WrSetup in Hagar.cs -> none; driver only dispatches WrSetup (WeaponFireDriver.cs:281). No gonethink/playerdeath/resetplayer dispatch exists anywhere in the port weapon driver.", result: fail }
+    confidence: high
+    notes: "NEW gap surfaced by this 2026-06-22 re-audit (was not a registry row pre-Wave-5 because the charge machine that creates load-state was itself dead). Now that AttackLoad genuinely accumulates st.HagarLoad with per-rocket ammo deducted, the missing lifecycle hooks are a real, reproducible divergence: switch-away or die mid-charge and the rockets+ammo vanish instead of firing/refunding. Low player-facing severity (edge timing) but bit-unfaithful. Fix needs a wr_gonethink/wr_playerdeath/wr_resetplayer dispatch in WeaponFireDriver plus a Hagar WrSetup override; AttackLoadRelease already exists to call."

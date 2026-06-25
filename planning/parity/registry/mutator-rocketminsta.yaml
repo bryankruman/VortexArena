@@ -6,7 +6,7 @@ summary:
   feature_count: 9
   worst_gaps:
     - "Laser barrage still has no rapid-fire ramp: Base's hold-to-stream (hagar_load/jump_interval2 + g_rm_laser_rapid 1 / _rapid_delay 0.6 / _rapid_refire 0.35 + the mode-1 single-bolt stream) is absent. The port Vaporizer still has no hagar_load/JumpInterval2 state — it fires only the mode-0 fan on the 0.7s g_rm_laser_refire gate."
-    - "RM laser bolts are still not networked/rendered as projectiles: no CSQCProjectile PROJECTILE_ROCKETMINSTA_LASER, no models/elaser.mdl, no EFFECT_ROCKETMINSTA_LASER trail attached, no team-color colormod. The bolts deal radius damage but are visually invisible (only the trail effect string is registered at EffectsList.cs:241, with no emitter)."
+    - "RM laser bolts are still not networked/rendered as projectiles: no CSQCProjectile PROJECTILE_ROCKETMINSTA_LASER, no models/elaser.mdl, no EFFECT_ROCKETMINSTA_LASER trail attached, no team-color colormod. The bolts deal radius damage but are visually invisible (only the trail effect string is registered at EffectsList.cs:250, with no emitter)."
     - "Electrobitch achievement (RM laser timeout-explode landing on a flying enemy of another team) is still not implemented; the port collapses the Base touch path (no achievement) and the timeout .use path (achievement) into one RadiusDamage with no ANNCE_ACHIEVEMENT_ELECTROBITCH."
     - "Owner velocity not added to laser bolts: Base applies W_CalculateProjectileVelocity(actor, actor.velocity, vel, true); the port still omits it (aim divergence while moving). g_rm_laser==2 standalone-laser mode and the forced-reload-for-laser branch are still unmodeled (dormant at defaults)."
 features:
@@ -213,11 +213,11 @@ features:
       - "client/weapons/projectile.qc (colormod = team palette when colormap>0)"
       - "common/effects/all.inc (EFFECT_ROCKETMINSTA_LASER rocketminsta_laser_neutral)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:241 (ROCKETMINSTA_LASER trail registered)"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:250 (ROCKETMINSTA_LASER trail registered)"
     constants:
       - { name: "projectile id", base: "PROJECTILE_ROCKETMINSTA_LASER", port: "none (not networked as a projectile)", match: false }
       - { name: "model", base: "models/elaser.mdl", port: "none", match: false }
-      - { name: "trail effect", base: "EFFECT_ROCKETMINSTA_LASER", port: "registered name only (EffectsList.cs:241); not emitted by a bolt", match: false }
+      - { name: "trail effect", base: "EFFECT_ROCKETMINSTA_LASER", port: "registered name only (EffectsList.cs:250); not emitted by a bolt", match: false }
       - { name: "team colormod", base: "colormapPaletteColor(colormap & 0x0F)", port: "none", match: false }
     status:
       logic: na
@@ -231,7 +231,7 @@ features:
     gaps:
       - "RM laser bolts are invisible: no CSQCProjectile/entity networking, no models/elaser.mdl, no EFFECT_ROCKETMINSTA_LASER trail attached, no team-color colormod. The trail effect string is registered (EffectsList.cs:241) but nothing emits it for these bolts."
     verification:
-      - { kind: code, ref: "Vaporizer.cs RocketMinstaLaserBarrage spawns a headless damage entity (plasma_prim, no SetModel, no CSQCProjectile, no trail emit); only the effect string is registered. Wave-2 added an ELECTRO_MUZZLEFLASH at the muzzle but the bolts themselves remain unrendered.", result: fail }
+      - { kind: code, ref: "Vaporizer.cs:223-254 RocketMinstaLaserBarrage spawns a headless damage entity (plasma_prim, no SetModel, no CSQCProjectile, no trail emit); only the effect string is registered (EffectsList.cs:250). The ELECTRO_MUZZLEFLASH at the muzzle (Vaporizer.cs:219) is the firing-point flash, not the per-bolt model/trail; the bolts themselves remain unrendered. Re-verified 2026-06-22: no RM laser projectile networking/model/trail/colormod added in Wave 5 (grep CSQCProjectile/PROJECTILE_ROCKETMINSTA/elaser — none on the RM path).", result: fail }
     confidence: high
     notes: "STILL OPEN. liveness:dead — the registered trail effect has no emitter on the RM-laser path. Base networks each bolt as PROJECTILE_ROCKETMINSTA_LASER and tints it to the firer's team. (The new muzzle flash is the firing-point flash, not the per-bolt model/trail.)"
 

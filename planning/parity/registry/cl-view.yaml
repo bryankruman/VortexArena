@@ -3,7 +3,7 @@ category: client
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-22"
 summary:
-  feature_count: 20
+  feature_count: 21
   worst_gaps:
     - "Classic chase_active third-person cam is dead: no host sets CameraMode, and chase_back/chase_up/chase_front/chase_overhead/chase_pitchangle are ignored (menu sliders dead). Spectator third-person (View_SpectatorCamera, CAMERA_SPECTATOR) is also absent — spectating follows the target in first person."
     - "view_punchvector (origin recoil kick) is dropped entirely — ServerNet never writes it, ClientNet never decodes it, nothing adds it to the view origin (the server-side decay runs but the value goes nowhere)."
@@ -197,6 +197,7 @@ features:
       - { name: "cl_eventchase_viewoffset", base: "'0 0 20'", port: "'0 0 20'", match: true }
       - { name: "cl_eventchase_mins", base: "'-12 -12 -8'", port: "'-12 -12 -8'", match: true }
       - { name: "cl_eventchase_maxs", base: "'12 12 8'", port: "'12 12 8'", match: true }
+      - { name: "cl_eventchase_frozen", base: "0 (off by default)", port: "0 (read live via Cvar default; not seeded but default matches)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -207,11 +208,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Vehicle chase (cl_eventchase_vehicle/_vehicle_distance), frozen-state chase (cl_eventchase_frozen), spectated-change chase (cl_eventchase_spectated_change), the WantEventchase mutator hook, and the game-stop/intermission/viewloc chase triggers in WantEventchase are not ported (only death + host-forced chase)."
+      - "Vehicle chase (cl_eventchase_vehicle/_vehicle_distance), spectated-change chase (cl_eventchase_spectated_change), and the game-stop/intermission/viewloc chase triggers in WantEventchase are not ported (death + frozen + host-forced chase only)."
     verification:
-      - { kind: code, ref: "ApplyEventChase: death==2 velocity-settle gate + latch + viewoffset ceiling trace + box-trace pull-back (FirstPersonView:270-343)", result: pass }
+      - { kind: code, ref: "ApplyEventChase: death==2 velocity-settle gate + latch + viewoffset ceiling trace + box-trace pull-back; frozenChase = st.IsFrozen && cl_eventchase_frozen!=0 (FirstPersonView:284-287); IsFrozen fed live from FreezeTag Frozen status (NetGame:4176)", result: pass }
     confidence: high
-    notes: "Death-cam is faithful (corpse-settle gate, eventchase_running latch, ceiling-aware viewoffset, eased distance, world-only box-trace with start-solid fallback). The other WantEventchase entry conditions are absent."
+    notes: "Death-cam is faithful (corpse-settle gate, eventchase_running latch, ceiling-aware viewoffset, eased distance, world-only box-trace with start-solid fallback). Wave-5 closed the frozen-state chase: cl_ft WantEventchase is now ported — IsFrozen (live FreezeTag Frozen status effect on the host-side local Player) + cl_eventchase_frozen (read live, default 0 = off, matching Base) engages the pull-back. The other WantEventchase entry conditions (vehicle/spectated-change/intermission/viewloc) remain absent."
 
   - id: cl-view.chase.classic_thirdperson
     name: "Classic chase_active third-person + spectator camera (chase_back/up/front/overhead; View_SpectatorCamera)"
@@ -469,6 +470,34 @@ features:
       - { kind: code, ref: "UpdateContents: contentavgalpha low-pass fade in/out + per-content colour + colour latch while fading out; eye contents sampled at final render origin (FirstPersonView:254)", result: pass }
     confidence: high
     notes: "Eye contents sampled at the FINAL render origin (the pulled-back cam during chase) matching pointcontents(view_origin), view.qc:1176."
+
+  - id: cl-view.screen.frozen_overlay
+    name: "Freeze-Tag icy screen overlay (cl_ft HUD_Draw_overlay)"
+    layer: [presentation]
+    base_refs:
+      - "common/gametypes/gametype/freezetag/cl_freezetag.qc:HUD_Draw_overlay (29-44)"
+    port_refs:
+      - "game/client/ViewEffects.cs:UpdateFrozenOverlay"
+      - "game/net/NetGame.cs:2655-2661"
+    constants:
+      - { name: "base_color", base: "'0.25 0.90 1'", port: "'0.25 0.90 1'", match: true }
+      - { name: "col_fade", base: "max(0, REVIVE_PROGRESS*2 - 1)", port: "max(0, p*2-1)", match: true }
+      - { name: "alpha_fade", base: "0.3 + 0.7*(1 - max(0, REVIVE_PROGRESS*4 - 3))", port: "0.3 + 0.7*(1 - max(0, p*4-3))", match: true }
+      - { name: "col_warm", base: "col += (col_fade, -col_fade, -col_fade)", port: "(0.25+cf, 0.90-cf, 1-cf)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "UpdateFrozenOverlay mirrors HUD_Draw_overlay exactly: base '0.25 0.90 1', col_fade/alpha_fade formulas + colour-warm; gated on STAT(FROZEN). Wired live NetGame:2655-2661 off the host-side local Player Frozen status effect + REVIVE_PROGRESS (FreezeTag.ReviveTick). A pure remote client reads frozen=false (no overlay).", result: pass }
+    confidence: high
+    notes: "Wave-5 addition (previously unmapped). Full-screen ColorRect composited above the damage + liquid tints. Faithful icy-blue tint that warms toward white and fades out as the thaw ring (STAT(REVIVE_PROGRESS)) fills. Driven by the live FreezeTag gametype, same source as the crosshair thaw ring. liveness: live only in Freeze Tag (the gametype gates STAT(FROZEN)); a pure remote (non-host) client has no LocalServerPlayer so reads false — the cross-client wepent/stat follow-up is the same limitation noted on the crosshair revive ring."
 
   - id: cl-view.screen.postprocess_nightvision
     name: "GLSL blur/sharpen post-process + night-vision + blur-test"

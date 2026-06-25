@@ -330,7 +330,7 @@ features:
     verification:
       - { kind: codetrace, ref: "FiremineThink (Fireball.cs:447): timeout Remove; owner-eye distance counter cnt->3 then Owner=null; LaserPlay sec. FiremineTouch (478): if Aim && FireAddDamage>=0 Remove (silent) else re-aim/bounce.", result: pass }
     confidence: high
-    notes: "FIX vs baseline (was partial): the make-it-hot owner decouple, the silent firemine impact, and the bounce-on-fail (Fire_AddDamage>=0 gate) are all now ported and faithful. The Wave-2 attribution regression (RealOwner=>Owner alias dropping firer credit on decouple) is FIXED in the Wave-4 fix-up by capturing the firer separately and threading it for all burn/obituary credit."
+    notes: "FIX vs baseline (was partial): the make-it-hot owner decouple, the silent firemine impact, and the bounce-on-fail (Fire_AddDamage>=0 gate) are all now ported and faithful. The Wave-2 attribution regression (RealOwner=>Owner alias dropping firer credit on decouple) is FIXED in the Wave-4 fix-up by capturing the firer separately and threading it for all burn/obituary credit. RE-CONFIRMED (2026-06-22 re-audit): the second-pass fix-up (commit 4be8357) is the only change since the prior audit and is present in current code — Attack2 captures `Entity firer = actor` (Fireball.cs:443) and threads it through FiremineTouch/FiremineThink (444-445) and LaserPlay's creditOwner (483); FireApplyDamage credit and the same-team/firer-skip gates all use the threaded firer. No regression."
 
   - id: weapon-fireball.burn.model
     name: "Fire damage-over-time (Fire_AddDamage / Fire_ApplyDamage) backing both projectiles' burns"
@@ -341,7 +341,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/StatusEffects.cs:FireAddDamage"
       - "src/XonoticGodot.Common/Gameplay/StatusEffects.cs:FireApplyDamage"
-      - "src/XonoticGodot.Server/GameWorld.cs:1187 (StatusEffectsCatalog.Tick on the live player loop)"
+      - "src/XonoticGodot.Server/GameWorld.cs:1324 (StatusEffectsCatalog.Tick on the live player loop)"
     constants:
       - { name: "per-frame burn", base: "fire_damagepersec * min(frametime, fireend-time)", port: "dps * min(frametime, fireEnd-now)", match: true }
       - { name: "dps", base: "d / max(t,0.1)", port: "d / max(t,0.1)", match: true }
@@ -360,7 +360,7 @@ features:
     gaps:
       - "Fire transfer to adjacent overlapping damageable entities (g_balance_firetransfer_damage 0.8 / _time 0.9) is not modeled (needs the g_damagedbycontents iteration outside this file)."
     verification:
-      - { kind: codetrace, ref: "FireAddDamage implements the QC overlap LEMMA (totaldamage/totaltime/mindps) + return-value contract; FireApplyDamage deals fire_damagepersec*min(frametime,fireend-now) via Combat.Damage(e,e,fire_owner,...). Live: GameWorld player loop -> StatusEffectsCatalog.Tick -> BurningTick -> FireApplyDamage (frame-rate independent).", result: pass }
+      - { kind: codetrace, ref: "FireAddDamage implements the QC overlap LEMMA (totaldamage/totaltime/mindps) + return-value contract; FireApplyDamage deals fire_damagepersec*min(frametime,fireend-now) via Combat.Damage(e,e,fire_owner,...). Live: GameWorld player loop (GameWorld.cs:1324) -> StatusEffectsCatalog.Tick -> BurningTick -> FireApplyDamage (frame-rate independent).", result: pass }
     confidence: high
     notes: "MAJOR FIX vs baseline (was partial: Strength*0.05/frame, no frametime, plain overwrite). The burn is now the faithful frametime-scaled DOT with the combine LEMMA, live on the per-player tick. Both the laser scorch and firemine ignite route through it. Residual: fire-transfer todo + the FireApplyDamage frametime headless fallback (1/72) when Api.Clock unavailable (test-only path)."
 

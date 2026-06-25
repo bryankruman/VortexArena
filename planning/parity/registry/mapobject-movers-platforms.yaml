@@ -6,7 +6,7 @@ summary:
   feature_count: 12
   worst_gaps:
     - "q3compat plat defaults still dead (speed 200/lip 8/dmg 2, spawnflags zeroing, medplat sounds, CPMA sound_start/sound_end probe): the Wave-2 change DOCUMENTS the Q3 algorithm and even wires medplat selection through ApplyPlatSounds, but the q3compat flag is hardcoded `false` (no live setter; CompatRemaps.cs:17 — and the unrelated StartItem.Q3CompatProvider is also never assigned), so a Q3/Q3DF-imported func_plat still moves at 150 with lip 16, no default bite, and plays plat1/plat2."
-    - "plat sounds still play on SoundChannel.Voice (=2); Base plat _sound uses CH_TRIGGER_SINGLE (=3) (port's Item slot = 3). The cue sample is right; the channel number diverges (low audible impact). UNCHANGED by Wave-2."
+    - "plat sounds still play on SoundChannel.Voice (=2); Base plat _sound uses CH_TRIGGER_SINGLE (=3) (port's Item slot = 3). The cue sample is right; the channel number diverges (low audible impact). UNCHANGED through Wave-5."
     - "plat_target_use is implemented but DEAD: it is only installed by PlatReset on the Q3COMPAT targeted-ground-plat fork (q3compat==false), so no live path reaches it; reachable only once a real q3compat flag exists or via the (commented-out) CSQC plat link."
     - "plat_outside_touch is implemented but DEAD: stock func_plat never spawns an outside trigger, so PlatOutsideTouch has no live caller (custom-mapper wiring only, which the port's spawnfunc does not generate)."
 features:
@@ -47,7 +47,7 @@ features:
       - { kind: code, ref: "Message2 \"was squished by\" default set in PlatSetup:49-50 when .dmg && Message2 empty — matches plat.qc:75-78", result: pass }
       - { kind: code, ref: "ApplyPlatSounds (MapObjectsCommon.cs:864-881) reproduces plat.qc:80-97 sounds==1->plat1/2, sounds==2->medplat, then sound1/sound2 overrides; .sounds/.sound1/.sound2 promoted live in MapObjectFieldsExtra.Apply:148-149 (called GameWorld.cs:2402 BEFORE spawnfunc dispatch at 2263)", result: pass }
     confidence: high
-    notes: "Re-verified 2026-06-22 against current code: both prior gaps stay closed. The message2 default is applied in PlatSetup; the 'sounds' selector + legacy sound1/sound2 overrides are read via MapMover.ApplyPlatSounds (the .sounds/.sound1/.sound2 keys are promoted onto the edict in MapObjectFieldsExtra.Apply, which runs on the live host map-spawn path before the spawnfunc). values and audio remain faithful. The q3compat default block is a separate (still-dead) row."
+    notes: "Re-verified 2026-06-22 (post-Wave-5): unchanged. Platforms.cs has not been touched since Wave-1/2; the only Wave-5 edits to this unit's files (CompatRemaps.cs, MapObjectsCommon.cs) wired the target_*/UseTargets centerprint TEXT and do not touch any plat row. Both prior gaps stay closed: the message2 default is applied in PlatSetup; the 'sounds' selector + legacy sound1/sound2 overrides are read via MapMover.ApplyPlatSounds (the .sounds/.sound1/.sound2 keys are promoted onto the edict in MapObjectFieldsExtra.Apply:155-158, which runs on the live host map-spawn path before the spawnfunc). func_plat registered MapObjectsRegistry.cs:42. values and audio remain faithful. The q3compat default block is a separate (still-dead) row."
 
   - id: mapobject-movers-platforms.plat.q3compat_defaults
     name: "Q3/Q3DF compat: speed 200, lip 8, dmg 2, medplat sounds, CPMA sound keys"
@@ -81,7 +81,7 @@ features:
       - { kind: code, ref: "ApplyPlatSounds medplat branch (MapObjectsCommon.cs:871) fires on `e.Sounds == 2 || q3compat`; with q3compat==false a Q3 plat (sounds unset) gets plat1/plat2 not medplat", result: fail }
       - { kind: code, ref: "grep q3compat across src/ — no live setter; StartItem.Q3CompatProvider (StartItem.cs:50) is declared but never assigned", result: fail }
     confidence: high
-    notes: "Re-verified 2026-06-22: branch documented + ApplyPlatSounds carries the medplat selection, but the gating flag is still hardcoded false so this is dead, not live. liveness stays dead (the branch code exists but has no live caller). Closing this requires a real per-map q3compat flag set during entity parse (the cross-cutting CompatRemaps.cs:17 gap)."
+    notes: "Re-verified 2026-06-22 (post-Wave-5): STILL OPEN/DEAD. The q3compat const is hardcoded false at both PlatSetup:33 and PlatReset:98; grep confirms no `Q3CompatProvider =` assignment anywhere in src/ and the plat layer does not even consult StartItem.Q3CompatProvider. Wave 5 did NOT add a live q3compat setter. Branch documented + ApplyPlatSounds carries the medplat selection, but the gating flag is still false so this is dead, not live. liveness stays dead. Closing this requires a real per-map q3compat flag set during entity parse (the cross-cutting CompatRemaps.cs:17 gap)."
 
   - id: mapobject-movers-platforms.plat.center_trigger
     name: "plat_spawn_inside_trigger: ride-detect center trigger volume"
@@ -111,7 +111,7 @@ features:
     verification:
       - { kind: code, ref: "SpawnInsideTrigger (Platforms.cs:159-197) vs plat_spawn_inside_trigger (platforms.qc:21-59) box geometry line-by-line; the final tmin<tmax guard (platforms.qc:48-58) is reproduced — a degenerate box drops the trigger (MapMover.RemoveEntity) instead of SetSize-ing an inverted box", result: pass }
     confidence: high
-    notes: "Re-verified 2026-06-22: the degenerate/inverted-box path deletes the trigger rather than registering an inverted volume, matching QC's delete+objerror. Trigger touch is PlatCenterTouch via the engine TriggerTouch path. Base only spawns the inside trigger when (!q3compat || targetname==\"\"); port always spawns it (moot — no q3compat flag). Base plat_delayedinit defers to INITPRIO_FINDTARGET; the port spawns inline (no observable ordering difference for a single plat)."
+    notes: "Re-verified 2026-06-22 (post-Wave-5): unchanged. The degenerate/inverted-box path deletes the trigger rather than registering an inverted volume, matching QC's delete+objerror. Trigger touch is PlatCenterTouch via the engine TriggerTouch path. Base only spawns the inside trigger when (!q3compat || targetname==\"\"); port always spawns it (moot — no q3compat flag). Base plat_delayedinit defers to INITPRIO_FINDTARGET; the port spawns inline (no observable ordering difference for a single plat)."
 
   - id: mapobject-movers-platforms.plat.state_machine
     name: "Up/down/top/bottom state machine + dwell timers"
@@ -146,7 +146,7 @@ features:
       - { kind: code, ref: "PlatGoUp/Down/HitTop/HitBottom (Platforms.cs:202-231) vs platforms.qc:61-88 — state, CalcMove targets, 3s dwell all match", result: pass }
       - { kind: code, ref: "Base sound.qh:11 CH_VOICE_SINGLE=2 (commented), :13 CH_TRIGGER_SINGLE=3; port Services SoundChannel Voice=2, Item=3; plat Sound calls pass SoundChannel.Voice (Platforms.cs:204,212,220,229)", result: fail }
     confidence: high
-    notes: "Re-verified 2026-06-22: go_up/go_down play noise, hit_top/hit_bottom play noise1; top dwell sets Think=PlatGoDown at LTime+3 — bit-faithful. The ONLY divergence is the sound-channel constant (2 vs 3), unchanged. Note Voice=2 is CH_VOICE_SINGLE, not CH_TRIGGER_SINGLE (=Item=3)."
+    notes: "Re-verified 2026-06-22 (post-Wave-5): go_up/go_down play noise, hit_top/hit_bottom play noise1; top dwell sets Think=PlatGoDown at LTime+3 — bit-faithful. The ONLY divergence is the sound-channel constant: port passes SoundChannel.Voice=2 (Services.cs:118; Base sound.qh commented CH_VOICE_SINGLE=2) while Base plat.qc:63,72,78,85 all use CH_TRIGGER_SINGLE=3 (= port Item slot). Verified directly in Base platforms.qc this audit. Unchanged by Wave 5."
 
   - id: mapobject-movers-platforms.plat.center_touch
     name: "plat_center_touch: live creature raises / refreshes plat"

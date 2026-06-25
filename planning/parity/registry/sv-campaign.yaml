@@ -5,12 +5,10 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 14
   worst_gaps:
-    - "target_levelwarp STILL does nothing in a campaign: CampaignLevelWarpHandler/IsCampaign are still never assigned outside tests (Wave-2 added an Assault.cs CONSUMER of IsCampaign but no host assignment), so the entity is dead and its campaign gate short-circuits."
-    - "target_changelevel campaign win-credit STILL dead: NextLevelHandler unassigned in production + the QC `campaign_forcewin = true` (real-client-touched stage win) line still has no port equivalent, so a map that ends a stage via target_changelevel never registers the win."
-    - "g_campaign_forceteam: Wave-2 added Teamplay.DetermineForcedTeam (reads it) + AssignBestTeam (honors it), but DetermineForcedTeam has NO live caller (the connect path calls AssignBestTeam directly), so the forced-team table is never populated and the cvar still has no effect (logic present, dead)."
-    - "Campaign_Invalid: Wave-2 added Campaign.Validate() and calls it live in PreInit/PostInit, but its map/gametype probes (LoadedMapName/GametypeMismatch) are never wired by the host, so it skips both checks and cannot detect a mismatch (guard present but inert)."
-    - "Campaign_GetLevelNum: Wave-2 added Campaign.LevelNum (level+1) but nothing reads or networks it, so the welcome/info dialog still cannot show 'Level N'."
-    - "campaign_bots_may_start: still wired ONLY into bot MOVEMENT (BotPopulation.MovementHeld + BotBrain pre-game hold). The round-handler campaign gate (Base round_handler.qc:38) remains EXPLICITLY DEFERRED in the port (RoundHandler.cs:41 'Deferred: ... campaign bot gating')."
+    - "Campaign_Invalid STILL inert: Wave-5 did NOT wire the two host probes (LoadedMapName / GametypeMismatch) — both remain null, so Validate() skips both checks and a level whose actual map/gametype diverges from the file is never detected or aborted."
+    - "Campaign_GetLevelNum STILL dead: Campaign.LevelNum (level+1) is computed but has ZERO readers in src/+game/ — no SendWelcomeMessage equivalent networks it, DialogWelcome has no campaign-level field, so the welcome/info dialog still cannot show 'Level N'."
+    - "campaign_bots_may_start STILL wired ONLY into bot MOVEMENT (BotPopulation.MovementHeld). The round-handler campaign gate (Base round_handler.qc:38) remains EXPLICITLY DEFERRED (RoundHandler.cs:41 'campaign bot ...'); the monster move/think + campcheck + LMS start gates are not wired either."
+    - "checkrulesEquality is still hardcoded false at the live PreIntermission call site (GameWorld.cs:2357): a degenerate exact-tie at the limit is scored a win where Base could score it a loss (out-of-scope, unchanged)."
 features:
   - id: sv-campaign.file.parse
     name: "Campaign .txt quoted-CSV parse (CampaignFile_Load)"
@@ -44,7 +42,7 @@ features:
       - { kind: unit_test, ref: "CampaignCatalogTests (menu all-levels parse)", result: pass }
       - { kind: code, ref: "real maps/campaignxonoticbeta.txt: ,, empty fields + single-mutator entries (g_instagib 1) parse correctly under ParseCsvLine", result: pass }
     confidence: high
-    notes: "Index parity between menu (all levels) and server (current+next) is maintained because both classify comment lines identically. Real file uses ,, for empty fields and the 9-column form; port handles both."
+    notes: "Index parity between menu (all levels) and server (current+next) is maintained because both classify comment lines identically. Real file uses ,, for empty fields and the 9-column form; port handles both. Unchanged this wave."
 
   - id: sv-campaign.preinit.config
     name: "Per-level config: gametype + bot count/skill + mutator/permanent settemps (CampaignPreInit)"
@@ -54,7 +52,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Server/Campaign.cs:PreInit"
       - "src/XonoticGodot.Server/Campaign.cs:ApplyMutators"
-      - "src/XonoticGodot.Server/GameWorld.cs:Boot (step 1e, line 458-462)"
+      - "src/XonoticGodot.Server/GameWorld.cs:Boot (step 1e, line 488-490)"
     constants:
       - { name: "baseskill", base: "max(0, g_campaign_skill + botskill[0])", port: "max(0, g_campaign_skill + botskill)", match: true }
       - { name: "permanent sets", base: "sv_public 0; pausable 1", port: "sv_public 0; pausable 1", match: true }
@@ -77,7 +75,7 @@ features:
       - { kind: code, ref: "GameWorld.Boot step 1e calls PreInit before gametype resolution (QC worldspawn order); CurrentGametype feeds gameTypeName", result: pass }
       - { kind: code, ref: "real file mutator entries (g_instagib 1, g_grappling_hook 1, sv_gravity 200, g_nix 1) -> single name/value settemp via ApplyMutators", result: pass }
     confidence: high
-    notes: "Mutator settemp loop tokenizes campaign_mutators[0] and applies each name/value as a settemp. Real campaign file uses single-mutator entries per level; port's Split(';')+first-space split matches QC's per-entry settemp."
+    notes: "Mutator settemp loop tokenizes campaign_mutators[0] and applies each name/value as a settemp. Real campaign file uses single-mutator entries per level; port's Split(';')+first-space split matches QC's per-entry settemp. Unchanged this wave."
 
   - id: sv-campaign.preinit.gametype_switch
     name: "MapInfo_SwitchGameType + Campaign_Invalid revalidation"
@@ -86,12 +84,12 @@ features:
       - "server/campaign.qc:CampaignPreInit"
       - "server/campaign.qc:Campaign_Invalid"
     port_refs:
-      - "src/XonoticGodot.Server/GameWorld.cs:Boot (gametype resolution, line 485)"
+      - "src/XonoticGodot.Server/GameWorld.cs:Boot (gametype resolution, line 488-490)"
       - "src/XonoticGodot.Server/Campaign.cs:Validate (Campaign_Invalid)"
-      - "src/XonoticGodot.Server/Campaign.cs:PreInit (calls Validate at tail)"
-      - "src/XonoticGodot.Server/Campaign.cs:PostInit (calls Validate at entry)"
-      - "src/XonoticGodot.Server/Campaign.cs:LoadedMapName (host probe, UNWIRED)"
-      - "src/XonoticGodot.Server/Campaign.cs:GametypeMismatch (host probe, UNWIRED)"
+      - "src/XonoticGodot.Server/Campaign.cs:PreInit (calls Validate at tail, line 266)"
+      - "src/XonoticGodot.Server/Campaign.cs:PostInit (calls Validate at entry, line 312)"
+      - "src/XonoticGodot.Server/Campaign.cs:LoadedMapName (host probe, STILL UNWIRED)"
+      - "src/XonoticGodot.Server/Campaign.cs:GametypeMismatch (host probe, STILL UNWIRED)"
     constants: []
     status:
       logic: partial
@@ -103,12 +101,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Wave-2 ADDED Campaign.Validate() (the Campaign_Invalid logic — gametype-mismatch + map-mismatch → Bailout) and CALLS it live at the tail of PreInit and the entry of PostInit. BUT the two probes it reads (LoadedMapName / GametypeMismatch) are NEVER assigned by the host (GameWorld.cs:730-731 wires only Campaign.Log + OnLevelTransition). With both probes null, Validate() skips both checks and always returns true — so the guard is present but INERT: a level whose actual map/gametype diverges from the file is still not detected or aborted."
+      - "Campaign.Validate() (the Campaign_Invalid logic — gametype-mismatch + map-mismatch -> Bailout) exists and IS called live at the tail of PreInit and the entry of PostInit. BUT the two probes it reads (LoadedMapName / GametypeMismatch) are STILL never assigned by the host (Wave-5 wired IsCampaign/NextLevelHandler/CampaignLevelWarpHandler/SwitchGameTypeHandler in Boot but NOT these two). grep confirms ZERO assignments of Campaign.LoadedMapName / Campaign.GametypeMismatch in src/+game/. With both probes null, Validate() skips both checks and always returns true — so the guard is present but INERT: a level whose actual map/gametype diverges from the file is still not detected or aborted."
     verification:
-      - { kind: code, ref: "Campaign.Validate exists + is invoked from PreInit (Campaign.cs:264) and PostInit (Campaign.cs:311); PreInit itself is live (GameWorld.cs:485)", result: pass }
-      - { kind: grep, ref: "Campaign.LoadedMapName / Campaign.GametypeMismatch have ZERO assignments in src/ + game/ (only Campaign.Log + Campaign.OnLevelTransition are wired at GameWorld.cs:730-731) — both probes null → Validate skips both checks", result: fail }
+      - { kind: code, ref: "Campaign.Validate exists + is invoked from PreInit (Campaign.cs:266) and PostInit (Campaign.cs:312); PreInit itself is live (GameWorld.cs:489)", result: pass }
+      - { kind: grep, ref: "Campaign.LoadedMapName / Campaign.GametypeMismatch have ZERO assignments in src/+game/ (only the .get/.set property declarations + the Validate readers in Campaign.cs); both probes null -> Validate skips both checks", result: fail }
     confidence: high
-    notes: "Partial fix this wave: the Campaign_Invalid decision logic now exists AND is reached on the live boot path, but the host map/gametype probes are unwired so it cannot actually detect a mismatch (liveness downgraded faithful→partial accordingly: the call is live, the effect is not). MapInfo_SwitchGameType is still reproduced indirectly: PreInit's CurrentGametype drives Boot's gameTypeName."
+    notes: "Unchanged this wave. The Campaign_Invalid decision logic exists AND is reached on the live boot path, but the host map/gametype probes are still unwired so it cannot actually detect a mismatch (liveness partial: the call is live, the effect is not). MapInfo_SwitchGameType is still reproduced indirectly: PreInit's CurrentGametype drives Boot's gameTypeName."
 
   - id: sv-campaign.preinit.abort
     name: "Bailout paths: unknown map + cheats (CampaignBailout)"
@@ -137,7 +135,7 @@ features:
     verification:
       - { kind: unit_test, ref: "CampaignFlowTests.PreInit_UnknownMapAborts / PreInit_CheatsAbort", result: pass }
     confidence: high
-    notes: "Aborted flag falls the host back to normal play (g_campaign 0); GameWorld gates PostInit/PreIntermission/PostIntermission on !Campaign.Aborted."
+    notes: "Aborted flag falls the host back to normal play (g_campaign 0); GameWorld gates PostInit/PreIntermission/PostIntermission on !Campaign.Aborted. Unchanged this wave."
 
   - id: sv-campaign.postinit.limits
     name: "Per-level frag/time limits: default vs empty vs value (CampaignPostInit)"
@@ -146,7 +144,7 @@ features:
       - "server/campaign.qc:CampaignPostInit"
     port_refs:
       - "src/XonoticGodot.Server/Campaign.cs:PostInit"
-      - "src/XonoticGodot.Server/GameWorld.cs:Boot (step 6b, line 562-563)"
+      - "src/XonoticGodot.Server/GameWorld.cs:Boot (step 6b, line 657-658)"
     constants:
       - { name: "testrun limits", base: "fraglimit 0; leadlimit 0; timelimit 0.01", port: "0 / 0 / 0.01", match: true }
       - { name: "fraglimit form", base: "score+lead (tokenize by +)", port: "Split('+')", match: true }
@@ -164,7 +162,7 @@ features:
     verification:
       - { kind: unit_test, ref: "CampaignFlowTests.PostInit_AppliesLevelLimits / PostInit_DefaultKeywordLeavesCvarUntouched / PostInit_FragPlusLeadSplit", result: pass }
     confidence: high
-    notes: "Permanent cvar_set (not settemp), matching QC. Wave-2 ADDED the QC Campaign_Invalid recheck at PostInit entry (now calls Validate before applying limits — see gametype_switch row), but that recheck is inert until the host wires the map/gametype probes."
+    notes: "Permanent cvar_set (not settemp), matching QC. PostInit calls the QC Campaign_Invalid recheck (Validate) at entry, but that recheck is still inert until the host wires the map/gametype probes (see gametype_switch row). Unchanged this wave."
 
   - id: sv-campaign.bots.may_start
     name: "campaign_bots_may_start: hold bots/rounds/monsters until the human spawns"
@@ -180,9 +178,8 @@ features:
       - "common/gametypes/gametype/lms/sv_lms.qc:85"
     port_refs:
       - "src/XonoticGodot.Server/Campaign.cs:BotsMayStart"
-      - "src/XonoticGodot.Server/GameWorld.cs:OnClientSpawned (line 755)"
-      - "src/XonoticGodot.Server/Bot/BotPopulation.cs:MovementHeld (line 429-431)"
-      - "src/XonoticGodot.Server/Bot/BotBrain.cs (pre-game movement hold, line 226)"
+      - "src/XonoticGodot.Server/GameWorld.cs:OnClientSpawned (line 925)"
+      - "src/XonoticGodot.Server/Bot/BotPopulation.cs:MovementHeld (line 454-456)"
     constants:
       - { name: "set true on", base: "first real client spawn (client.qc:2082)", port: "OnClientSpawned (non-bot)", match: true }
     status:
@@ -195,14 +192,14 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Confirmed wired ONLY into bot MOVEMENT (BotPopulation.MovementHeld + BotBrain pre-game hold). The round-handler campaign gate (Base round_handler.qc:38) is EXPLICITLY DEFERRED in the port (RoundHandler.cs comment: 'Deferred: ... campaign bot gating')."
-      - "Base also keys monster move (sv_monsters.qc:846) + monster think (1165), the campcheck mutator (sv_campcheck.qc:51), and the LMS campaign-start gate (sv_lms.qc:85) off campaign_bots_may_start; none of these subsystems consult Campaign.BotsMayStart in the port (monster AI move/think + campcheck not ported with the gate; LMS gate absent)."
+      - "Confirmed STILL wired ONLY into bot MOVEMENT (BotPopulation.MovementHeld checks g_campaign && !Campaign.BotsMayStart). The round-handler campaign gate (Base round_handler.qc:38) is EXPLICITLY DEFERRED in the port (RoundHandler.cs:41 comment mentions 'campaign bot ...')."
+      - "Base also keys monster move (sv_monsters.qc:846) + monster think (1165), the campcheck mutator (sv_campcheck.qc:51), and the LMS campaign-start gate (sv_lms.qc:85) off campaign_bots_may_start; none of these subsystems consult Campaign.BotsMayStart in the port (grep finds the only consumer is BotPopulation.MovementHeld)."
     verification:
-      - { kind: code, ref: "BotPopulation.MovementHeld checks g_campaign && !Campaign.BotsMayStart; OnClientSpawned sets it for the human", result: pass }
-      - { kind: code, ref: "RoundHandler.cs explicitly defers campaign bot gating; no BotsMayStart read there", result: fail }
-      - { kind: code, ref: "monster/campcheck/LMS gates: no Campaign.BotsMayStart reference outside Bot/* + GameWorld", result: fail }
+      - { kind: code, ref: "BotPopulation.MovementHeld (line 456) checks g_campaign && !Campaign.BotsMayStart; OnClientSpawned (GameWorld.cs:925) sets it true for the human", result: pass }
+      - { kind: code, ref: "RoundHandler.cs:41 still defers campaign bot gating; no BotsMayStart read there", result: fail }
+      - { kind: grep, ref: "Campaign.BotsMayStart consumers = only BotPopulation.MovementHeld; no monster/campcheck/LMS gate references", result: fail }
     confidence: high
-    notes: "Bot-movement hold is live and correct; the round-handler / monster / campcheck / LMS start gates that Base also keys off campaign_bots_may_start are NOT wired -> liveness partial, logic partial. In a single-player campaign (no rounds/monsters in the shipped xonoticbeta levels) the practical impact is small, but a rounds-based or monster campaign level would not be held."
+    notes: "Unchanged this wave. Bot-movement hold is live and correct; the round-handler / monster / campcheck / LMS start gates that Base also keys off campaign_bots_may_start are NOT wired -> liveness partial, logic partial. In a single-player campaign (no rounds/monsters in the shipped xonoticbeta levels) the practical impact is small, but a rounds-based or monster campaign level would not be held."
 
   - id: sv-campaign.winlose.decision
     name: "Win/lose decision: sole-human-winner + beat-the-clock (CampaignPreIntermission)"
@@ -211,7 +208,7 @@ features:
       - "server/campaign.qc:CampaignPreIntermission"
     port_refs:
       - "src/XonoticGodot.Server/Campaign.cs:PreIntermission"
-      - "src/XonoticGodot.Server/GameWorld.cs:NextLevel (PreIntermission call, line 1926-1932)"
+      - "src/XonoticGodot.Server/GameWorld.cs:NextLevel (PreIntermission call, line 2353-2359)"
     constants:
       - { name: "win condition", base: "won==1 && lost==0 && checkrules_equality==0 (bots excluded)", port: "same; non-bot clients only (p.IsBot filter)", match: true }
       - { name: "time-up loss (sole-winner branch)", base: "timelimit!=0 && fraglimit!=0 && time>timelimit*60 -> LOST", port: "same", match: true }
@@ -227,12 +224,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "checkrulesEquality is hardcoded false at the live call site (GameWorld.cs:1930): a degenerate exact-tie at the limit would be scored a win in the port where Base could score it a loss. ForceWin override branch is reachable in unit tests but ForceWin has no LIVE setter (see mapentity.levelwarp) — so in production the forcewin path of this decision is effectively unreachable."
+      - "checkrulesEquality is hardcoded false at the live call site (GameWorld.cs:2357): a degenerate exact-tie at the limit would be scored a win in the port where Base could score it a loss. Out-of-scope known caveat, unchanged."
     verification:
       - { kind: unit_test, ref: "CampaignFlowTests.PreIntermission_SoloWinAdvancesFrontier / _LossDoesNotAdvance / _ForceWinAlwaysWins / _SoleWinnerButTimeUpIsALoss / _BotsAreNotCountedAsWinnersOrLosers", result: pass }
       - { kind: code, ref: "GameWorld.NextLevel feeds checkrulesEquality:false (hardcoded)", result: fail }
+      - { kind: code, ref: "ForceWin override branch now reachable in production: TargetUtilities.NextLevelHandler (GameWorld.cs:577-582) sets Campaign.ForceWin=true on a real-client target_changelevel before EndMatch -> intermission -> NextLevel -> PreIntermission consumes it", result: pass }
     confidence: high
-    notes: "Branch order matches QC exactly. bprint WON/LOST lines route through Campaign.Log -> Commands.ChatBroadcast (presentation faithful). No campaign-specific audio in Base (the `// sound!` comments are unimplemented in Base too)."
+    notes: "Branch order matches QC exactly. Wave-5 closed the previously-unreachable forcewin override: ForceWin now has a LIVE setter via the target_changelevel campaign-win path (see mapentity.levelwarp), so the forcewin branch of this decision is now exercised in production, not only in unit tests. bprint WON/LOST lines route through Campaign.Log -> Commands.ChatBroadcast. No campaign-specific audio in Base."
 
   - id: sv-campaign.progress.save
     name: "Frontier progress persistence to campaign.cfg (CampaignSaveCvar + the save gate)"
@@ -261,7 +259,7 @@ features:
     verification:
       - { kind: unit_test, ref: "CampaignFlowTests.PreIntermission_CheatsBlockTheSave / _ReplayingBelowFrontierDoesNotRegressIt / PostIntermission_WinningTheLastLevelEndsTheCampaign / SaveCvar_RewritesCampaignCfgPreservingOtherKeys", result: pass }
     confidence: high
-    notes: "OnProgressSaved mirrors each saved cvar to the shared menu cvar store so the front-end list sees the new frontier (port private/shared store bridge). QC registercvar+cvar_set side is reproduced by Cvars.Set."
+    notes: "OnProgressSaved mirrors each saved cvar to the shared menu cvar store so the front-end list sees the new frontier (port private/shared store bridge). QC registercvar+cvar_set side is reproduced by Cvars.Set. Unchanged this wave."
 
   - id: sv-campaign.transition.next_level
     name: "Advance / replay / last-level transition (CampaignPostIntermission + CampaignSetup)"
@@ -272,7 +270,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Server/Campaign.cs:PostIntermission"
       - "src/XonoticGodot.Server/Campaign.cs:Setup"
-      - "src/XonoticGodot.Server/GameWorld.cs:DriveEndOfMatchMapFlow (line 1974-1979)"
+      - "src/XonoticGodot.Server/GameWorld.cs:DriveEndOfMatchMapFlow (line 2402-2409)"
       - "game/net/NetGame.cs:MapChangeRequested"
     constants:
       - { name: "last-level end", base: "won && entries<2 -> campaign over (togglemenu 1)", port: "PostIntermission returns false; ApplyMapChange(\"\")", match: true }
@@ -291,7 +289,7 @@ features:
     verification:
       - { kind: unit_test, ref: "CampaignFlowTests.PostIntermission_NextLevelSetsUpAndTransitions / _LossReplaysSameLevel / _WinningTheLastLevelEndsTheCampaign / _LosingTheLastLevelReplaysIt / Setup_SetsCampaignCvarsAndFiresTransition", result: pass }
     confidence: high
-    notes: "OnLevelTransition -> QueuedNextMap -> MapChangeRequested -> Shell reboot in campaign mode at the next/replayed level. Menu->host boot entry is SingleplayerScreen -> StartGameRequested(CampaignId, CampaignIndex) -> NetGame.StartListenServer -> Boot."
+    notes: "OnLevelTransition -> QueuedNextMap -> MapChangeRequested -> Shell reboot in campaign mode at the next/replayed level. Menu->host boot entry is SingleplayerScreen -> StartGameRequested(CampaignId, CampaignIndex) -> NetGame.StartListenServer -> Boot. Unchanged this wave."
 
   - id: sv-campaign.warp.command
     name: "Level warp via sv_cmd warp (CampaignLevelWarp)"
@@ -301,7 +299,7 @@ features:
       - "server/command/sv_cmd.qc:1718"
     port_refs:
       - "src/XonoticGodot.Server/Campaign.cs:LevelWarp"
-      - "src/XonoticGodot.Server/Commands.cs:CmdWarp (line 1461)"
+      - "src/XonoticGodot.Server/Commands.cs:CmdWarp"
     constants:
       - { name: "next-level sentinel", base: "n<0 -> campaign_level+1", port: "n<0 -> Level+1", match: true }
       - { name: "warp setup", base: "Unload; CampaignFile_Load(n,1); if entries CampaignSetup(0) else error", port: "Unload; Load(n,1); if>0 Setup(0) else Echo", match: true }
@@ -319,7 +317,7 @@ features:
     verification:
       - { kind: code, ref: "Commands.CmdWarp gated on g_campaign ('Not in a campaign.' otherwise), calls Campaign.LevelWarp(arg | -1)", result: pass }
     confidence: high
-    notes: "Console-command warp is live; the map-entity warp (target_levelwarp) is the dead sibling — see sv-campaign.mapentity.levelwarp."
+    notes: "Console-command warp is live; the map-entity warp (target_levelwarp) is now ALSO live as of Wave-5 — see sv-campaign.mapentity.levelwarp. Unchanged this wave."
 
   - id: sv-campaign.mapentity.levelwarp
     name: "target_levelwarp / target_changelevel campaign win-credit (map-triggered)"
@@ -328,29 +326,30 @@ features:
       - "common/mapobjects/target/levelwarp.qc:target_levelwarp_use"
       - "common/mapobjects/target/changelevel.qc:target_changelevel_use"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/MapObjects/TargetUtilities.cs:LevelWarpUse"
-      - "src/XonoticGodot.Common/Gameplay/MapObjects/TargetUtilities.cs:ChangeLevelUse"
-      - "src/XonoticGodot.Server/Campaign.cs:ForceWin (no live setter)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/TargetUtilities.cs:LevelWarpUse (line 403-414)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/TargetUtilities.cs:ChangeLevelUse (line 366-370)"
+      - "src/XonoticGodot.Server/GameWorld.cs:Boot (IsCampaign line 567, NextLevelHandler 577-582, CampaignLevelWarpHandler 604)"
+      - "src/XonoticGodot.Server/Campaign.cs:ForceWin (live setter via NextLevelHandler)"
+      - "src/XonoticGodot.Server/Campaign.cs:LevelWarp"
     constants:
-      - { name: "levelwarp cnt", base: "cnt-1 (1-based specific) / -1 (next)", port: "Cnt-1 / -1 (logic present but IsCampaign+CampaignLevelWarpHandler null)", match: false }
-      - { name: "changelevel campaign win", base: "empty chmap + IS_REAL_CLIENT + g_campaign -> campaign_forcewin=true; NextLevel()", port: "NextLevelHandler null -> no-op; NO `ForceWin=true` line exists in the port at all", match: false }
+      - { name: "levelwarp cnt", base: "cnt-1 (1-based specific) / -1 (next)", port: "Cnt-1 / -1 (LevelWarpUse, now wired to IsCampaign + CampaignLevelWarpHandler)", match: true }
+      - { name: "changelevel campaign win", base: "empty chmap + IS_REAL_CLIENT + g_campaign -> campaign_forcewin=true; NextLevel()", port: "NextLevelHandler: g_campaign && actor is non-bot Player -> Campaign.ForceWin=true; EndMatch()", match: true }
     status:
-      logic: stub
-      values: na
-      timing: na
+      logic: faithful
+      values: faithful
+      timing: faithful
       presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "target_levelwarp does nothing in a campaign: CampaignLevelWarpHandler/IsCampaign seams are never wired by the host (dead)."
-      - "target_changelevel campaign win-credit is dead: NextLevelHandler unassigned + the QC `campaign_forcewin = true` (real-client-touched stage win) line has no port equivalent, so a map that ends a stage via target_changelevel never registers the win."
+    gaps: []
     verification:
-      - { kind: code, ref: "grep: TargetUtilities.{NextLevelHandler,CampaignLevelWarpHandler,IsCampaign,RealPlayerVoteCount} have ZERO assignments in src/+game/ (only the unrelated Commands.ChangeLevelHandler is wired by NetGame, for the console map/changelevel command)", result: fail }
-      - { kind: code, ref: "Campaign.ForceWin has no assignment except the internal `ForceWin=false` reset in PreInit; no production caller sets it true", result: fail }
+      - { kind: code, ref: "GameWorld.Boot wires TargetUtilities.IsCampaign (567), NextLevelHandler (577), CampaignLevelWarpHandler (604) every Boot; LevelWarpUse gate IsCampaign() + CampaignLevelWarpHandler(Cnt-1/-1) matches Base cnt semantics exactly", result: pass }
+      - { kind: code, ref: "NextLevelHandler sets Campaign.ForceWin=true when g_campaign && actor is non-bot Player (Base IS_REAL_CLIENT && autocvar_g_campaign), then EndMatch() -> intermission -> NextLevel() -> CampaignPreIntermission consumes ForceWin and credits the stage win", result: pass }
+      - { kind: code, ref: "ChMap/Cnt spawn keys bound (MapObjectFieldsExtra.cs:142; Cnt via the int count key), so the entities receive their map data", result: pass }
     confidence: high
-    notes: "Spawnfuncs are registered (LevelWarpSetup/ChangeLevelSetup in MapObjectsRegistry) so the entities exist, but degrade to no-op without host seams. ChangeLevelUse's empty-chmap path calls NextLevelHandler (dead) and never reproduces QC's `campaign_forcewin=true` line. ForceWin is exercised in CampaignFlowTests but has no production caller."
+    notes: "FIXED this wave (Wave-5). Baseline had this dead/stub: IsCampaign/CampaignLevelWarpHandler/NextLevelHandler were all null and the QC `campaign_forcewin = true` line had no port equivalent. GameWorld.Boot now assigns all three seams every boot (so they never stale across a map change) and the NextLevelHandler reproduces the QC real-client campaign-win flag. target_levelwarp jumps campaign levels and target_changelevel credits the stage win on the live match path."
 
   - id: sv-campaign.mapentity.gametype_switch
     name: "target_changelevel next-map gametype switch (MapInfo_SwitchGameType on .gametype)"
@@ -358,24 +357,26 @@ features:
     base_refs:
       - "common/mapobjects/target/changelevel.qc:target_changelevel_use"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/MapObjects/TargetUtilities.cs:ChangeLevelUse (line 349-352)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/TargetUtilities.cs:ChangeLevelUse (line 358-364)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/TargetUtilities.cs:SwitchGameTypeHandler (seam, line 298)"
+      - "src/XonoticGodot.Server/GameWorld.cs:Boot (SwitchGameTypeHandler line 602)"
     constants:
-      - { name: "gametype switch", base: "if(.gametype != \"\") MapInfo_SwitchGameType(...)", port: "log-only Trace, no switch", match: false }
+      - { name: "gametype switch", base: "if(.gametype != \"\") MapInfo_SwitchGameType(MapInfo_Type_FromString(...))", port: "SwitchGameTypeHandler -> Cvars.Set(\"gametype\", gt) so the next changelevel boots that mode", match: true }
     status:
-      logic: stub
-      values: na
+      logic: faithful
+      values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: dead
-    intended_divergence: false
-    divergence_rationale: null
-    gaps:
-      - "When a target_changelevel sets a .gametype for the next map, Base applies MapInfo_SwitchGameType before the level change; the port only Log.Trace's '... (not ported)' and never switches the gametype. Compounded by the dead NextLevelHandler/ChangeLevelHandler seams, the whole entity is inert."
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "QC MapInfo_SwitchGameType(MapInfo_Type_FromString(gametype)) switches the active gametype in-engine; on the in-process listen server the port equivalent sets the live `gametype` cvar so the rebooted/changelevel'd map comes up in that mode (the same mechanism Commands.CmdGameType uses). Host-plumbing equivalence, not a behavior change."
+    gaps: []
     verification:
-      - { kind: code, ref: "ChangeLevelUse: `if(!string.IsNullOrEmpty(self.ChLevelGameType)) Log.Trace(... not ported)` — explicit log-only stub", result: fail }
+      - { kind: code, ref: "ChangeLevelUse: when self.ChLevelGameType non-empty, calls SwitchGameTypeHandler(gt) (no longer the log-only stub); GameWorld.Boot:602 wires SwitchGameTypeHandler = gt => Cvars.Set(\"gametype\", gt)", result: pass }
+      - { kind: code, ref: "gametype spawn key bound to ChLevelGameType (MapObjectFieldsExtra.cs:143)", result: pass }
     confidence: high
-    notes: "Distinct from the campaign win-credit gap: this is the QC `if(this.gametype != \"\") MapInfo_SwitchGameType(...)` branch, which is reproduced nowhere. Low practical impact (campaign uses one gametype per level via the file), but the entity feature is a stub."
+    notes: "FIXED this wave (Wave-5). Baseline had this as a log-only stub ('... not ported'). The SwitchGameTypeHandler seam is now wired in Boot to set the live `gametype` cvar — the port's MapInfo_SwitchGameType equivalent on a listen server. Marked intended_divergence: the mechanism (cvar set + reboot) differs from QC's in-engine switch but is behaviorally equivalent for the listen-server transition."
 
   - id: sv-campaign.forceteam
     name: "g_campaign_forceteam: force the player onto a given team in campaign"
@@ -385,28 +386,28 @@ features:
       - "server/teamplay.qc:385"
       - "server/teamplay.qc:938"
     port_refs:
-      - "src/XonoticGodot.Server/Cvars.cs:379 (registration)"
-      - "src/XonoticGodot.Server/Teamplay.cs:DetermineForcedTeam (Player_DetermineForcedTeam — reads g_campaign_forceteam, line 122-162; NO LIVE CALLER)"
-      - "src/XonoticGodot.Server/Teamplay.cs:AssignBestTeam (honors HasRealForcedTeam, line 244-246)"
+      - "src/XonoticGodot.Server/Cvars.cs (g_campaign_forceteam registration)"
+      - "src/XonoticGodot.Server/Teamplay.cs:DetermineForcedTeam (Player_DetermineForcedTeam, reads g_campaign_forceteam, line 123-163)"
+      - "src/XonoticGodot.Server/Teamplay.cs:AssignBestTeam (honors HasRealForcedTeam, line 245-254)"
+      - "src/XonoticGodot.Server/ClientManager.cs:184 (live caller on connect)"
     constants:
       - { name: "g_campaign_forceteam default", base: "0", port: "0", match: true }
-      - { name: "forced-team index (1..4) honored in balance", base: "team_forced 1..4 → that team", port: "DetermineForcedTeam stores 1..4; AssignBestTeam early-outs on HasRealForcedTeam", match: true }
+      - { name: "forced-team index (1..4) honored in balance", base: "team_forced 1..4 -> that team", port: "DetermineForcedTeam stores 1..4 (campaign real clients); AssignBestTeam early-outs on HasRealForcedTeam when the team is allowed", match: true }
     status:
-      logic: stub
+      logic: faithful
       values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Wave-2 ADDED Teamplay.DetermineForcedTeam (QC Player_DetermineForcedTeam) which reads g_campaign_forceteam when isCampaign and stores the 1..4 forced index, and AssignBestTeam (line 244) now honors HasRealForcedTeam. BUT DetermineForcedTeam has ZERO live callers anywhere in src/ + game/ — it is referenced only in its own definition + docstrings. The connect path (ClientManager.cs:181) calls AssignBestTeam directly without ever calling DetermineForcedTeam first, so the _forcedTeam table is never populated, HasRealForcedTeam is always false, and g_campaign_forceteam still has NO effect. The cvar is read inside a method that never runs on the live path → still dead."
+    gaps: []
     verification:
-      - { kind: code, ref: "Teamplay.DetermineForcedTeam reads g_campaign_forceteam (Teamplay.cs:131); AssignBestTeam honors HasRealForcedTeam (Teamplay.cs:244)", result: pass }
-      - { kind: grep, ref: "DetermineForcedTeam has ZERO callers in src/ + game/ (grep finds only its definition + <see cref> docstrings); the live connect path ClientManager.cs:181 calls AssignBestTeam WITHOUT first calling DetermineForcedTeam → _forcedTeam never populated → g_campaign_forceteam still inert", result: fail }
+      - { kind: code, ref: "ClientManager.cs:184 calls _teamplay.DetermineForcedTeam(p, isCampaign: g_campaign!=0) for EVERY connecting client, BEFORE the AssignBestTeam call at line 188 — so the _forcedTeam table is populated before balance reads it", result: pass }
+      - { kind: code, ref: "DetermineForcedTeam (Teamplay.cs:127-135): when isCampaign and !player.IsBot, reads g_campaign_forceteam (1..4) and stores it via SetForcedTeam; AssignBestTeam (245) joins that team iff allowed", result: pass }
     confidence: high
-    notes: "Partial fix this wave: the campaign team-force LOGIC now exists and is correct, and the balance code that would honor it is wired — but the populating call (DetermineForcedTeam on connect) is missing, so the feature is still dead on the live path. Base: teamplay.qc:385 sets player.team_forced = autocvar_g_campaign_forceteam on connect; :938 picks it in balance. Logic upgraded missing→stub (placeholder method exists, no-ops because uncalled); liveness still dead."
+    notes: "FIXED this wave (Wave-5). Baseline had the logic present but DEAD: DetermineForcedTeam had zero callers and the connect path called AssignBestTeam directly. ClientManager.cs:184 now calls DetermineForcedTeam on connect, before AssignBestTeam, so g_campaign_forceteam genuinely pins a real campaign client to its team. Base: teamplay.qc:385 sets player.team_forced on connect; :938 picks it in balance — reproduced faithfully."
 
   - id: sv-campaign.welcome.levelnum
     name: "Campaign level number in the welcome/info message (Campaign_GetLevelNum)"
@@ -415,7 +416,7 @@ features:
       - "server/campaign.qc:Campaign_GetLevelNum"
       - "server/client.qc:1080 (SendWelcomeMessage)"
     port_refs:
-      - "src/XonoticGodot.Server/Campaign.cs:LevelNum (Campaign_GetLevelNum = Level + 1; NEVER READ/NETWORKED)"
+      - "src/XonoticGodot.Server/Campaign.cs:LevelNum (Campaign_GetLevelNum = Level + 1; STILL NEVER READ/NETWORKED)"
     constants:
       - { name: "level num", base: "campaign_level + 1 (networked in SendWelcomeMessage when g_campaign)", port: "Campaign.LevelNum = Level+1 computed, but not networked/read", match: false }
     status:
@@ -428,9 +429,9 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Wave-2 ADDED the Campaign.LevelNum property (QC Campaign_GetLevelNum = campaign_level + 1), but it is NEVER read or networked anywhere in src/ + game/. There is no SendWelcomeMessage equivalent that consults it, and DialogWelcome still has no campaign-level field. The value is computed but never reaches the client → the welcome/info dialog still cannot show 'Level N'."
+      - "The Campaign.LevelNum property (QC Campaign_GetLevelNum = campaign_level + 1) exists but is STILL never read or networked anywhere in src/+game/ (grep confirms zero readers outside its own definition). Wave-5 did not add a SendWelcomeMessage equivalent that consults it, and DialogWelcome still has no campaign-level field. The value is computed but never reaches the client -> the welcome/info dialog still cannot show 'Level N'."
     verification:
-      - { kind: code, ref: "Campaign.LevelNum exists (Campaign.cs:81 → Level + 1, value correct)", result: pass }
-      - { kind: grep, ref: "Campaign.LevelNum has ZERO readers in src/ + game/ (only its own definition); no SendWelcomeMessage / welcome-message campaign-level networking path; DialogWelcome has no campaign-level field", result: fail }
+      - { kind: code, ref: "Campaign.LevelNum exists (Campaign.cs:81 -> Level + 1, value correct)", result: pass }
+      - { kind: grep, ref: "Campaign.LevelNum has ZERO readers in src/+game/ (only its own definition); no SendWelcomeMessage / welcome-message campaign-level networking path; DialogWelcome has no campaign-level field", result: fail }
     confidence: high
-    notes: "Partial fix this wave: the Campaign_GetLevelNum VALUE now exists (LevelNum property, correct level+1) but the networking/presentation side is still entirely absent — no consumer reads it and no welcome-channel carries it. Logic upgraded missing→stub (the getter exists, unused); presentation still missing, liveness still dead. Cosmetic info-dialog feature; the HUD/menu campaign list separately shows progress, so low-impact."
+    notes: "Unchanged this wave. The Campaign_GetLevelNum VALUE exists (LevelNum property, correct level+1) but the networking/presentation side is still entirely absent — no consumer reads it and no welcome-channel carries it. Cosmetic info-dialog feature; the HUD/menu campaign list separately shows progress, so low-impact."

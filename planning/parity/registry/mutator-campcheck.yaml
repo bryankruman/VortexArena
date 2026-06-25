@@ -21,7 +21,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Mutators/CampcheckMutator.cs:IsEnabled"
       - "src/XonoticGodot.Common/Gameplay/Mutators/CampcheckMutator.cs:Hook"
       - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:Apply"
-      - "src/XonoticGodot.Server/GameWorld.cs:511"
+      - "src/XonoticGodot.Server/GameWorld.cs:539"
     constants:
       - { name: "g_campcheck", base: "0 (string, expr_evaluate truthy)", port: 'ExprEvaluate(GetString("g_campcheck"))', match: true }
       - { name: "g_campcheck_interval", base: "10 s", port: "Interval = GetFloat (10)", match: true }
@@ -39,7 +39,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code-read, ref: "[Mutator] discovery -> Mutators.All -> MutatorActivation.Apply (GameWorld.cs:511) -> Hook(); cvar reads vs mutators.cfg:328-331 (port mutators.cfg matches: interval 10/damage 100/distance 1800). Wave-2 added a g_campcheck_typecheck read into TypeCheck.", result: pass }
+      - { kind: code-read, ref: "[Mutator] discovery -> Mutators.All -> MutatorActivation.Apply (GameWorld.cs:539) -> Hook(); cvar reads vs mutators.cfg:328-331 (port mutators.cfg matches: interval 10/damage 100/distance 1800). Wave-2 added a g_campcheck_typecheck read into TypeCheck; Wave-5 left CampcheckMutator.cs untouched.", result: pass }
     confidence: high
     notes: "Default g_campcheck 0 keeps it off exactly like Base. ExprEvaluate matches QC ''/'0'/'false' -> off. Hook() reads the cvars via plain GetFloat (not the 0-fallback Cvar helper); harmless since the port's mutators.cfg ships all four. NOTE: g_campcheck_typecheck is now READ but the value is NOT used in the gate (see campcheck.realclient.gate) — so registration/cvar-load is faithful even though the typecheck BEHAVIOR is still missing."
 
@@ -50,7 +50,7 @@ features:
       - "common/mutators/mutator/campcheck/sv_campcheck.qc:35"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/CampcheckMutator.cs:OnPlayerPreThink"
-      - "src/XonoticGodot.Server/GameWorld.cs:988"
+      - "src/XonoticGodot.Server/GameWorld.cs:1174"
     constants:
       - { name: "distance measured in", base: "vec2(prevorigin-origin) (Z dropped)", port: "delta.Z=0; abs(delta.Length())", match: true }
       - { name: "damage cap", base: "bound(0, damage, health + armor*g_balance_armor_blockpercent + 5)", port: "QMath.Bound(0, Damage, health + armor*blockpercent + 5)", match: true }
@@ -68,7 +68,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code-read, ref: "line diff OnPlayerPreThink vs sv_campcheck.qc:47-72; hook fired GameWorld.cs:988; blockpercent 0.7 matches balance-xonotic.cfg:178. Wave-2 did not alter the core accumulate/check/damage math.", result: pass }
+      - { kind: code-read, ref: "line diff OnPlayerPreThink vs sv_campcheck.qc:47-72; hook fired GameWorld.cs:1174 (MutatorHooks.PlayerPreThink.Call); blockpercent 0.7 matches balance-xonotic.cfg:178. Wave-5 did not touch CampcheckMutator.cs (line shift from baseline 988 is unrelated Wave-5 edits in GameWorld).", result: pass }
     confidence: high
     notes: "Non-one-shot cap, interval cadence, 2D-only distance, and timer-keep-fresh-when-not-checked branch all match. The deathtype STRING is correct ('camp'); its OBITUARY routing is a separate (still-open) gap (campcheck.death.obituary)."
 
@@ -104,7 +104,7 @@ features:
       - "common/mutators/mutator/campcheck/sv_campcheck.qc:23"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/CampcheckMutator.cs:OnDamageCalculate"
-      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:219"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:256"
     constants:
       - { name: "reset value", base: "attacker.traveled = target.traveled = g_campcheck_distance", port: "both = Distance", match: true }
       - { name: "guard", base: "attacker != target && IS_PLAYER(both)", port: "attacker!=null && !ReferenceEquals && IsPlayer(both)", match: true }
@@ -130,7 +130,7 @@ features:
       - "common/mutators/mutator/campcheck/sv_campcheck.qc:91"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/CampcheckMutator.cs:OnPlayerSpawn"
-      - "src/XonoticGodot.Server/ClientManager.cs:542"
+      - "src/XonoticGodot.Server/ClientManager.cs:619"
     constants:
       - { name: "spawn grace", base: "nextcheck = time + interval*2", port: "CampcheckNextCheck = time + Interval*2", match: true }
       - { name: "spawn distance", base: "traveled = 0", port: "CampcheckTraveledDistance = 0", match: true }
@@ -145,7 +145,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code-read, ref: "OnPlayerSpawn vs sv_campcheck.qc:95-96; hook fired ClientManager.cs:542 (unchanged by Wave-2)", result: pass }
+      - { kind: code-read, ref: "OnPlayerSpawn vs sv_campcheck.qc:95-96; hook fired ClientManager.cs:619 (MutatorHooks.PlayerSpawn.Call; line shift from baseline 542 is unrelated Wave-5 edits)", result: pass }
     confidence: high
     notes: "Faithful (re)spawn grace."
 
@@ -250,10 +250,10 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/CampcheckMutator.cs:OnPlayerPreThink"
       - "src/XonoticGodot.Common/Gameplay/Items/StartItem.cs:GameStartTimeProvider"
-      - "src/XonoticGodot.Server/GameWorld.cs:550"
+      - "src/XonoticGodot.Server/GameWorld.cs:554"
     constants:
       - { name: "live gate", base: "!game_stopped && !warmup_stage && time >= game_starttime", port: "!VehicleCommon.GameStopped only", match: false }
-      - { name: "round/campaign reset block", base: "(g_campaign && !campaign_bots_may_start) || time<game_starttime || (round_active && !round_started) -> nextcheck=time+interval*2, traveled=0", port: "time<game_starttime portion FIXED Wave-2 (re-grace via StartItem.GameStartTimeProvider, live-wired GameWorld.cs:550); campaign-bot-wait and round-active-not-started portions STILL MISSING", match: false }
+      - { name: "round/campaign reset block", base: "(g_campaign && !campaign_bots_may_start) || time<game_starttime || (round_active && !round_started) -> nextcheck=time+interval*2, traveled=0", port: "time<game_starttime portion FIXED Wave-2 (re-grace via StartItem.GameStartTimeProvider, live-wired GameWorld.cs:554); campaign-bot-wait and round-active-not-started portions STILL MISSING", match: false }
     status:
       logic: partial
       values: partial
@@ -266,7 +266,7 @@ features:
     gaps:
       - "Partial pre-match reset: Wave-2 added the time<game_starttime re-grace (nextcheck=time+interval*2, traveled=0) wired live via StartItem.GameStartTimeProvider (GameWorld.cs:550). Still missing: the campaign-bot-wait portion (g_campaign && !campaign_bots_may_start) and the round-active-but-not-started portion (round_handler_IsActive && !round_handler_IsRoundStarted), neither of which has a Common-reachable seam yet."
     verification:
-      - { kind: code-read, ref: "OnPlayerPreThink lines 115-120 add `if(time < GameStartTimeProvider()) { nextcheck=time+interval*2; traveled=0 }`; GameStartTimeProvider wired at GameWorld.cs:550 -> live. No campaign/round-handler reset term. TouchExplode/Bloodloss confirm the GameStopped-only live-gate convention.", result: partial }
+      - { kind: code-read, ref: "OnPlayerPreThink lines 115-120 add `if(time < GameStartTimeProvider()) { nextcheck=time+interval*2; traveled=0 }`; GameStartTimeProvider wired at GameWorld.cs:554 -> live. No campaign/round-handler reset term. TouchExplode/Bloodloss confirm the GameStopped-only live-gate convention.", result: partial }
     confidence: high
     notes: "FIX since baseline: the time<game_starttime re-grace is now implemented and live. Remaining gaps: campaign-bot-wait and round-not-started reset portions (no seam). Split intent: warmup/game_starttime LIVE-gate collapse is intended; the residual reset-block omissions are unintended."
 

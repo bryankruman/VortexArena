@@ -5,9 +5,9 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 15
   worst_gaps:
-    - "Win/role/alone notifications are STILL DEAD (unchanged by the second-pass fix-up): Survival.cs raises Role / RoundResult / Alone via the ISurvivalNotifications sink, but NO host ever sets surv.Notifications. Grep over src/ + game/ for `Notifications =` finds ONLY the parity-doc references — the Survival arm in ActivateGameType (GameWorld.cs:1534-1545) calls `surv.Activate(); EnableRounds(); Bot.BotBrain.ForbidAttackHook = …` and never assigns Notifications. Every notify call is guarded `if (Notifications is not null)` → never fires. The player still never sees their role at round start nor a win/tie/alone banner."
-    - "Dual-handler architecture UNCHANGED: Survival drives a second generic Server RoundHandler via EnableRounds() (DefaultCanRoundStart/End — note DefaultCanRoundEnd is TEAM-based, wrong for FFA Survival; GameWorld.cs:2750) AND its own surv.Handler (ticked by surv.Tick). Unlike CA/FreezeTag, the Survival arm wires NEITHER _roundPrep NOR _roundSync (GameWorld.cs:1453-1454/1505-1506 do for CA/FT; the Survival case does not), so the live map-reset handler's round_endtime is never mirrored into surv.Handler — the timeout/role-assign timeline reads surv.Handler's OWN independent clock, not the map-reset clock."
-    - "Survival is still absent from GameWorld.MatchEnded (the switch at GameWorld.cs:288-309 has no Survival arm; Survival has no MatchEnded latch) — the overall match-end / intermission path for Survival is unverified."
+    - "Win/role/alone notifications are STILL DEAD after Wave-5 (66e378f): Survival.cs raises Role / RoundResult / Alone via the ISurvivalNotifications sink, but NO host ever sets surv.Notifications. Re-grep over src/ + game/ for `ISurvivalNotifications` finds the type referenced ONLY in Survival.cs (declaration + call sites); unlike Invasion (which gets `inv.Notifications = new InvasionNotifyHost()` at GameWorld.cs:1738) there is NO SurvivalNotifyHost and NO `surv.Notifications =` assignment anywhere. The Survival arm in ActivateGameType (GameWorld.cs:1719-1730) calls `surv.Activate(); EnableRounds(); Bot.BotBrain.ForbidAttackHook = …` and never assigns Notifications. Every notify call is guarded `if (Notifications is not null)` → never fires. The player still never sees their role at round start nor a win/tie/alone banner."
+    - "Dual-handler architecture UNCHANGED: Survival drives a second generic Server RoundHandler via EnableRounds() (DefaultCanRoundStart/End — DefaultCanRoundEnd is TEAM-based, wrong for FFA Survival; GameWorld.cs:2994 iterates Teams.Active so with TeamGame=false it counts 0 alive teams → ≤1 → always-true round-end) AND its own surv.Handler (ticked by surv.Tick). Unlike CA/FreezeTag, the Survival arm wires NEITHER _roundPrep NOR _roundSync (GameWorld.cs:1627-1628/1679-1680 do for CA/FT; the Survival case at 1719-1730 does not), so the live map-reset handler's round_endtime is never mirrored into surv.Handler — the timeout/role-assign timeline reads surv.Handler's OWN independent clock, not the map-reset clock."
+    - "Survival is still absent from GameWorld.MatchEnded (the switch at GameWorld.cs:288-310 has no Survival arm → falls to `_ => false`) AND from the win-condition switch (GameWorld.cs default: return false at 2538-2539) — Survival has no MatchEnded latch; the overall match-end / intermission path for Survival is unverified."
     - "No player-model/scoreboard green-prey/red-hunter colormap override (SURV_COLOR_PREY 51 / SURV_COLOR_HUNTER 68 not applied)."
 
 features:
@@ -35,9 +35,9 @@ features:
     gaps:
       - "The registered defaults (timelimit=20 pointlimit=12) and m_isForcedSupported (LMS-map inheritance) are not modeled in the gametype class; map-support inheritance is unverified."
     verification:
-      - { kind: code, ref: "[GameType] attr + NetName=surv resolves; ResolveGameType maps 'surv' to Survival", result: pass }
+      - { kind: code, ref: "[GameType] attr + NetName=surv (Survival.cs:110) resolves; ResolveGameType maps 'surv' to Survival", result: pass }
     confidence: high
-    notes: "Unchanged. Registered and selectable. The 'timelimit=20 pointlimit=12' defaults and LMS-map auto-support live in cfg/menu, not audited here."
+    notes: "Unchanged through Wave-5. Registered and selectable. The 'timelimit=20 pointlimit=12' defaults and LMS-map auto-support live in cfg/menu, not audited here."
 
   - id: survival.round.assign_roles
     name: "Round start secretly assigns hunters (live-only count, bounded, random pick)"
@@ -61,13 +61,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "VERIFIED LIVE: AssignRoles runs on the live path via surv.Tick() → Handler.OnRoundStart (Survival.cs:155; driven from GameWorld.cs:1829). The dual-handler desync persists: GameWorld also calls EnableRounds() (GameWorld.cs:1536) spawning a SECOND generic Server.RoundHandler (DefaultCanRoundStart/End) that drives the live map-reset/respawn gate and never calls AssignRoles, with NO _roundSync mirroring (unlike CA/FT). The two handlers run on independent timers, so the secret-role moment and the map-reset/respawn-unlock moment are not guaranteed to coincide. Timing left unknown pending a runtime trace."
-      - "The per-live-player Notifications.Role(p, isHunter) call at the tail of AssignRoles (Survival.cs:260-262) is DEAD — Notifications is never set by the host, so the role-disclosure side effect never fires. The role assignment itself is unaffected and remains live."
+      - "VERIFIED LIVE: AssignRoles runs on the live path via surv.Tick() → Handler.OnRoundStart (Survival.cs:155; driven from GameWorld.cs:2047). The dual-handler desync persists: GameWorld also calls EnableRounds() (GameWorld.cs:1721) spawning a SECOND generic Server.RoundHandler (DefaultCanRoundStart/End) that drives the live map-reset/respawn gate and never calls AssignRoles, with NO _roundSync mirroring (unlike CA/FT). The two handlers run on independent timers, so the secret-role moment and the map-reset/respawn-unlock moment are not guaranteed to coincide. Timing left unknown pending a runtime trace."
+      - "The per-live-player Notifications.Role(p, isHunter) call at the tail of AssignRoles (Survival.cs:260-262) is DEAD — Notifications is never set by the host (no SurvivalNotifyHost exists), so the role-disclosure side effect never fires. The role assignment itself is unaffected and remains live."
     verification:
       - { kind: test, ref: "SurvivalRolesTests (live-only count, bound formula, random pick, <2 guard) pass; no test covers the Notifications.Role call", result: pass }
-      - { kind: code, ref: "GameWorld DriveGametypeFrame Survival arm (GameWorld.cs:1827-1831): surv.SetRoster + surv.Tick() drives Handler.OnRoundStart=AssignRoles (live)", result: pass }
+      - { kind: code, ref: "GameWorld DriveGametypeFrame Survival arm (GameWorld.cs:2045-2049): surv.SetRoster + surv.Tick() drives Handler.OnRoundStart=AssignRoles (live)", result: pass }
     confidence: high
-    notes: "Assignment algorithm faithful + live. The per-player role notify remains dead (Notifications sink still unwired)."
+    notes: "Assignment algorithm faithful + live. The per-player role notify remains dead (Notifications sink still unwired after Wave-5)."
 
   - id: survival.round.handler
     name: "Round-handler driven warmup/countdown/round/end-delay cycle"
@@ -92,12 +92,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Two separate round handlers still exist for Survival: surv.Handler (Common RoundHandler, ticked by surv.Tick) and GameWorld.Rounds (Server RoundHandler, spawned by EnableRounds() with the generic Default predicates). Only the world handler resets the map / gates respawns / broadcasts the countdown; it never calls AssignRoles. The Survival arm wires NEITHER _roundPrep NOR _roundSync, so unlike CA (GameWorld.cs:1453-1454) and FreezeTag (1505-1506) the live handler's round_endtime is NOT mirrored into surv.Handler."
-      - "DefaultCanRoundEnd (GameWorld.cs:2750) is team-based (alive teams ≤ 1); for FFA Survival (TeamGame=false) its team iteration never reflects the hunter/prey side-wipe — the live GameWorld.Rounds round-end predicate is NOT the survival CheckWinner. Live round-reset cadence for Survival is unverified."
+      - "Two separate round handlers still exist for Survival: surv.Handler (Common RoundHandler, ticked by surv.Tick) and GameWorld.Rounds (Server RoundHandler, spawned by EnableRounds() with the generic Default predicates). Only the world handler resets the map / gates respawns / broadcasts the countdown; it never calls AssignRoles. The Survival arm wires NEITHER _roundPrep NOR _roundSync, so unlike CA (GameWorld.cs:1627-1628) and FreezeTag (1679-1680) the live handler's round_endtime is NOT mirrored into surv.Handler."
+      - "DefaultCanRoundEnd (GameWorld.cs:2994) is team-based (alive teams ≤ 1); for FFA Survival (TeamGame=false) Teams.Active yields no team buckets, so aliveTeams stays 0 → ≤1 → the predicate is effectively always true. The live GameWorld.Rounds round-end predicate is therefore NOT the survival CheckWinner and does not reflect the hunter/prey side-wipe. Live round-reset cadence for Survival is unverified."
     verification:
-      - { kind: code, ref: "Init constants correct: Activate (Survival.cs:160-162) fallbacks warmup=10/rtl=120 and Handler.Init(5f,…) hardcodes the 5s end-delay. Still architecturally double-driven: surv.Activate()+EnableRounds() at GameWorld.cs:1535-1536 with no _roundSync.", result: fail }
+      - { kind: code, ref: "Init constants correct: Activate (Survival.cs:160-162) fallbacks warmup=10/rtl=120 and Handler.Init(5f,…) hardcodes the 5s end-delay. Still architecturally double-driven: surv.Activate()+EnableRounds() at GameWorld.cs:1720-1721 with no _roundSync.", result: fail }
     confidence: medium
-    notes: "Init constant fallbacks are faithful (values). The dual-drive architecture is unchanged and the surv.Handler↔live-handler timing is still unmirrored — logic partial / liveness partial pending a runtime trace."
+    notes: "Init constant fallbacks are faithful (values). The dual-drive architecture is unchanged through Wave-5 and the surv.Handler↔live-handler timing is still unmirrored — logic partial / liveness partial pending a runtime trace."
 
   - id: survival.scoring.bank_validkills
     name: "Kills bank into validkills during the round (no immediate score)"
@@ -126,7 +126,7 @@ features:
       - { kind: test, ref: "SurvivalScoringTests.RoundEnd_AwardsBankedKillsAndSideBonuses pass; no test covers the roundStarted gate or the teamkill ±1/±2 delta", result: pass }
       - { kind: code, ref: "Survival.OnDeath gates banking on `roundStarted` (Survival.cs:323) AND applies the same-status ±1/±2 delta (cs:327) — matches QC GiveFragsForKill's round-started gate + ClientObituary's teamkill GiveFrags(-1/-2).", result: pass }
     confidence: high
-    notes: "Faithful. roundStarted gate + teamkill frag delta both present (timing + values faithful)."
+    notes: "Faithful. roundStarted gate + teamkill frag delta both present (timing + values faithful). Unchanged through Wave-5."
 
   - id: survival.scoring.round_end_award
     name: "Round end awards banked kills + per-side bonuses (survivals/hunts, reward_survival)"
@@ -152,9 +152,9 @@ features:
       - "QC also adds banked kills to totalfrags; the port's totalfrags equivalent is not updated here (minor — stock scoreboard reads SP_SCORE)."
     verification:
       - { kind: test, ref: "SurvivalScoringTests (RoundEnd award + TimedOut reward unit-tested directly)", result: pass }
-      - { kind: code, ref: "UpdateScores (Survival.cs:447-474): banked validkills→SP_SCORE, surviving prey +SURV_SURVIVALS (+1 SCORE if timedOut && reward_survival), surviving hunters +SURV_HUNTS — matches Surv_UpdateScores (sv_survival.qc:55-74).", result: pass }
+      - { kind: code, ref: "UpdateScores (Survival.cs:447-474): banked validkills→SP_SCORE, surviving prey +SURV_SURVIVALS (+1 SCORE if timedOut && reward_survival), surviving hunters +SURV_HUNTS — matches Surv_UpdateScores.", result: pass }
     confidence: high
-    notes: "Award logic faithful and tested. Reachable on the live path via both the side-wipe (CheckWinningCondition) and the (now correctly gated) timeout branch (EndRoundTimedOut). The timeout branch is OFF in stock cfg (enddelay=0), matching Base — see survival.win.timeout."
+    notes: "Award logic faithful and tested. Reachable on the live path via both the side-wipe (CheckWinningCondition) and the (correctly gated) timeout branch (EndRoundTimedOut). The timeout branch is OFF in stock cfg (enddelay=0), matching Base — see survival.win.timeout. Unchanged through Wave-5."
 
   - id: survival.scoring.anonymize
     name: "Anonymize kills/deaths/suicides/dmg on the scoreboard while a round runs"
@@ -179,7 +179,7 @@ features:
     verification:
       - { kind: test, ref: "SurvivalScoringTests.Anonymization_SuppressesKillsAndDeaths", result: pass }
     confidence: high
-    notes: "Unchanged. Hook installed in Activate, removed in Deactivate; falls through without claiming the write (matches QC AddPlayerScore returning false)."
+    notes: "Unchanged. Hook installed in Activate (Survival.cs:173), removed in Deactivate; falls through without claiming the write (matches QC AddPlayerScore returning false)."
 
   - id: survival.win.side_wipe
     name: "Side-wipe win latch (hunters win if any hunter alive, else prey, else tie)"
@@ -201,12 +201,12 @@ features:
     divergence_rationale: null
     gaps:
       - "Tie path modeled in LOGIC (WinningSide=None when both sides reach zero same frame), but the ROUND_TIED notification is dead (Notifications sink unwired — see survival.presentation row)."
-      - "No end-delay (g_survival_round_enddelay > 0) deferral modeling: QC can defer the resolution by round_handler_SetEndDelayTime and re-check (sv_survival.qc:114-128); the port resolves immediately on the first frame both sides aren't alive. Harmless in stock cfg (enddelay=0) but divergent if set."
+      - "No end-delay (g_survival_round_enddelay > 0) deferral modeling: QC can defer the resolution by round_handler_SetEndDelayTime and re-check; the port resolves immediately on the first frame both sides aren't alive. Harmless in stock cfg (enddelay=0) but divergent if set."
     verification:
       - { kind: test, ref: "GametypeStatusTests wipes prey then asserts RoundOver + disclosure", result: pass }
-      - { kind: code, ref: "CheckWinningCondition (Survival.cs:413-418) resolves hunters/prey/tie and is called directly every frame at GameWorld.cs:1830 (live)", result: pass }
+      - { kind: code, ref: "CheckWinningCondition (Survival.cs:413-418) resolves hunters/prey/tie and is called directly every frame at GameWorld.cs:2048 (live)", result: pass }
     confidence: high
-    notes: "Latch + winning-side logic + tie branch faithful and live. Tie messaging + the enddelay>0 deferral path still absent."
+    notes: "Latch + winning-side logic + tie branch faithful and live. Tie messaging + the enddelay>0 deferral path still absent. Unchanged through Wave-5."
 
   - id: survival.win.timeout
     name: "Round timer / match timeout → survivors win"
@@ -220,7 +220,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Survival.cs:CheckWinningCondition"
     constants:
       - { name: "g_survival_round_timelimit", base: "120 (s)", port: "120 via cvar (RoundEndTime armed AND checked)", match: true }
-      - { name: "g_survival_round_enddelay == -1 gate", base: "timeout→survivors-win branch ONLY runs when enddelay==-1 (default 0, so OFF in stock)", port: "NOW MODELED — RoundTimedOut returns false unless enddelay==-1 (Survival.cs:434-435)", match: true }
+      - { name: "g_survival_round_enddelay == -1 gate", base: "timeout→survivors-win branch ONLY runs when enddelay==-1 (default 0, so OFF in stock)", port: "MODELED — RoundTimedOut returns false unless enddelay==-1 (Survival.cs:434-436)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -234,10 +234,10 @@ features:
       - "RoundTimedOut reads surv.Handler.RoundEndTime, which is armed by surv.Handler's OWN countdown→InProgress timeline (surv.Tick), NOT the live GameWorld.Rounds map-reset timeline (no _roundSync mirror for Survival — see survival.round.handler). So the 120s clock is the owned handler's, which may desync from the map-reset handler. Behaviorally moot in stock cfg (the whole branch is off at enddelay=0) but the clock provenance is still the unmirrored owned handler."
       - "The timeout branch's other QC side effects (nades_RemovePlayer, allowed_to_spawn=false, game_stopped=true, round_handler re-Init, survivalStatuses SendFlags) are not all reproduced in EndRoundTimedOut beyond the score award + RoundResult notify."
     verification:
-      - { kind: code, ref: "RoundTimedOut (Survival.cs:430-439) now gates on `TryCvar(g_survival_round_enddelay) && enddelay == -1f` before checking Handler.RoundEndTime — matches Base sv_survival.qc:78-79. EndRoundTimedOut (cs:510) reached only when the gate passes.", result: pass }
-      - { kind: code, ref: "Base Surv_CheckWinner timeout branch requires `autocvar_g_survival_round_enddelay == -1`; shipped default is 0 (gametypes-server.cfg:704) so the branch is OFF in stock — port now behaves identically (no auto-resolve of a hiding-prey round in stock cfg).", result: pass }
+      - { kind: code, ref: "RoundTimedOut (Survival.cs:430-439) gates on `TryCvar(g_survival_round_enddelay) && enddelay == -1f` before checking Handler.RoundEndTime — matches Base sv_survival.qc:78-79. EndRoundTimedOut (cs:510) reached only when the gate passes.", result: pass }
+      - { kind: code, ref: "Base Surv_CheckWinner timeout branch requires `autocvar_g_survival_round_enddelay == -1`; shipped default is 0 (gametypes-server.cfg:704) so the branch is OFF in stock — port behaves identically (no auto-resolve of a hiding-prey round in stock cfg).", result: pass }
     confidence: high
-    notes: "FIXED since baseline: the second-pass added the `enddelay == -1` gate (Survival.cs:434-435) the baseline noted as omitted. The port no longer ends a timed-out round that stock Base would leave running; the branch is correctly OFF at the stock enddelay=0 default and only fires when an operator sets enddelay=-1, exactly like Base. The baseline's regression/divergence call is resolved."
+    notes: "The second-pass added the `enddelay == -1` gate (Survival.cs:434-436); re-verified present and unchanged through Wave-5. The port does not end a timed-out round that stock Base would leave running; the branch is correctly OFF at the stock enddelay=0 default and only fires when an operator sets enddelay=-1, exactly like Base."
 
   - id: survival.death.eliminate
     name: "Death eliminates the player for the round (no respawn)"
@@ -260,12 +260,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "QC sets RESPAWN_FORCE/RESPAWN_SILENT + respawn_time=time+2 and clears the bot queue (bot_clearqueue) on death; the port relies on the generic round respawn gate (RespawnDuePlayers skips while a round is live, GameWorld.cs:1858) — the silent-forced-respawn nuance and bot-queue clear are still not ported."
+      - "QC sets RESPAWN_FORCE/RESPAWN_SILENT + respawn_time=time+2 and clears the bot queue (bot_clearqueue) on death; the port relies on the generic round respawn gate (RespawnDuePlayers skips while a round is live, GameWorld.cs:2110 respawnAllowed gated on !(Rounds.IsRoundStarted)) — the silent-forced-respawn nuance and bot-queue clear are still not ported."
       - "surv_isEliminated also flags joining players (INGAME_JOINING / FRAGS_PLAYER_OUT_OF_GAME); the port has no joining state, so a late joiner is not marked eliminated until the next AssignRoles."
     verification:
       - { kind: code, ref: "OnDeath sets Alive=false (Survival.cs:331); RespawnDuePlayers gated on Rounds.IsRoundStarted; IsEliminatedPlayer feeds the wire eliminated set", result: pass }
     confidence: medium
-    notes: "Unchanged. Elimination + grey-out work; the late-join forced-observe and silent-respawn details remain absent."
+    notes: "Unchanged through Wave-5. Elimination + grey-out work; the late-join forced-observe and silent-respawn details remain absent."
 
   - id: survival.death.punish_teamkill
     name: "Killing an ally auto-kills the killer + docks frags"
@@ -299,7 +299,7 @@ features:
       - { kind: code, ref: "OnDeath (Survival.cs:337-342): PunishTeamkill && sameStatus && roundStarted && !NeedKill → Combat.Damage(attacker self, 100000, MirrorDamage). Combat.System is the live DamageSystem on the server, so the mirror death genuinely applies. Frag penalty applied at cs:327.", result: pass }
       - { kind: code, ref: "Base sv_survival.qc:392-394 (mirror) + the ClientObituary frag -1/-2 + util ITEM_DAMAGE_NEEDKILL — constants 100000 / -1 / -2 / MIRRORDAMAGE all match", result: pass }
     confidence: high
-    notes: "Faithful + live (mirror-kill + same-status frag penalty + NEEDKILL exclusion + round-started gate). No dedicated test yet — confidence high on read but un-pinned by a test."
+    notes: "Faithful + live (mirror-kill + same-status frag penalty + NEEDKILL exclusion + round-started gate). No dedicated test yet — confidence high on read but un-pinned by a test. Unchanged through Wave-5."
 
   - id: survival.net.hidden_role_disclosure
     name: "Hunter identities hidden from prey mid-round, disclosed at round end"
@@ -376,13 +376,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The gametype-side signal exists: AssignRoles calls Notifications.Role(p, hunter) (Survival.cs:260-262) and CheckWinningCondition/EndRoundTimedOut call Notifications.RoundResult(side) (cs:420/516). BUT no host ever assigns surv.Notifications — grep over src/ + game/ for `Notifications =` finds zero assignment (the Survival arm in ActivateGameType, GameWorld.cs:1534-1545, wires Activate/EnableRounds/ForbidAttackHook only). Every call is null-guarded and DEAD. The player is still never told their role and never sees a win/tie banner."
+      - "The gametype-side signal exists: AssignRoles calls Notifications.Role(p, hunter) (Survival.cs:260-262) and CheckWinningCondition/EndRoundTimedOut call Notifications.RoundResult(side) (cs:420/516). BUT no host ever assigns surv.Notifications — re-grep over src/ + game/ for `ISurvivalNotifications` finds the type referenced ONLY in Survival.cs; there is NO SurvivalNotifyHost class and NO `surv.Notifications =` assignment anywhere (contrast Invasion's `inv.Notifications = new InvasionNotifyHost()` at GameWorld.cs:1738). The Survival arm in ActivateGameType (GameWorld.cs:1719-1730) wires Activate/EnableRounds/ForbidAttackHook only. Every call is null-guarded and DEAD. The player is still never told their role and never sees a win/tie banner."
       - "SURVIVAL_SURVIVOR / SURVIVAL_HUNTER (role) and SURVIVAL_HUNTER_WIN / SURVIVAL_SURVIVOR_WIN / ROUND_TIED (result) are declared in NotificationsList but never reach a client on the live path."
       - "No player-model/scoreboard green-prey/red-hunter colormap override (own role at round end is not visually reflected on models)."
     verification:
-      - { kind: code, ref: "grep '.Notifications =' over src+game: the ISurvivalNotifications interface is implemented/assigned NOWHERE (only declared in Survival.cs). The Role/RoundResult calls are all guarded `if (Notifications is not null)` → unreachable.", result: fail }
+      - { kind: code, ref: "grep 'ISurvivalNotifications' over src+game: implemented/assigned NOWHERE (only declared+called in Survival.cs). The Role/RoundResult calls are all guarded `if (Notifications is not null)` → unreachable. No SurvivalNotifyHost exists (unlike InvasionNotifyHost).", result: fail }
     confidence: high
-    notes: "Unchanged since baseline: the ISurvivalNotifications SEAM exists but is still unwired — a classic compiles-but-dead change. Logic stub (the call sites exist), liveness dead. Still no player colormap override."
+    notes: "Unchanged through Wave-5 (66e378f did NOT wire Survival notifications): the ISurvivalNotifications SEAM exists but is still unwired — a classic compiles-but-dead change. Logic stub (the call sites exist), liveness dead. Still no player colormap override."
 
   - id: survival.bot.forbid_attack_allies
     name: "Bots never attack same-status (ally) players"
@@ -404,11 +404,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Minor: the port restricts the veto to `self is Player && targ is Player` (GameWorld.cs:1542-1544). Base evaluates `targ.survival_status == bot.survival_status` unconditionally — for non-player targets both sides read 0/None and Base would also veto when the bot is prey/None (e.g. pre-round, or a non-hunter bot vs a monster). The port does NOT veto non-player targets. With no monsters in stock Survival this is behaviorally moot, but it is a small narrowing of Base's rule."
+      - "Minor: the port restricts the veto to `self is Player && targ is Player` (GameWorld.cs:1727-1729). Base evaluates `targ.survival_status == bot.survival_status` unconditionally — for non-player targets both sides read 0/None and Base would also veto when the bot is prey/None (e.g. pre-round, or a non-hunter bot vs a monster). The port does NOT veto non-player targets. With no monsters in stock Survival this is behaviorally moot, but it is a small narrowing of Base's rule."
     verification:
-      - { kind: code, ref: "FIXED: ForbidAttackHook assigned in the Survival arm (GameWorld.cs:1542-1544) and consulted live in the bot targeting decision (BotBrain.cs:776: `if (ForbidAttackHook is not null && ForbidAttackHook(self, targ)) return false;`). Cleared to null for other gametypes (GameWorld.cs:1409). Matches Base sv_survival.qc:489 (targ.survival_status == bot.survival_status). The equality holds pre-round (both None) so warmup attacks are forbidden, as in Base.", result: pass }
+      - { kind: code, ref: "ForbidAttackHook assigned in the Survival arm (GameWorld.cs:1727-1729) and consulted live in the bot targeting decision (BotBrain.cs:776: `if (ForbidAttackHook is not null && ForbidAttackHook(self, targ)) return false;`). Matches Base sv_survival.qc:489 (targ.survival_status == bot.survival_status). The equality holds pre-round (both None) so warmup attacks are forbidden, as in Base.", result: pass }
     confidence: high
-    notes: "FIXED by the second-pass fix-up (commit 4be8357): missing→faithful, na→live. Bots no longer attack same-status allies (which, with the live teamkill punishment, also stops an ally-fragging bot from mirror-killing itself). No dedicated test yet."
+    notes: "Fixed by the second-pass fix-up (commit 4be8357); re-verified live + unchanged through Wave-5. Bots no longer attack same-status allies (which, with the live teamkill punishment, also stops an ally-fragging bot from mirror-killing itself). The hook is NOT cleared to null for other gametypes by the Survival arm itself — verify the activation deactivation path clears it; no dedicated test yet."
 
   - id: survival.notify.last_survivor_alone
     name: "Last living member of a side gets the 'you are alone' center notify"
@@ -431,9 +431,9 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "NotifyLastForTeam (Survival.cs:367-384), called from OnDeath (cs:310-311), implements the last-of-side detection and matches QC surv_LastPlayerForTeam (exactly-one-living-same-status-ally → notify). BUT it returns early on `Notifications is null` (Survival.cs:369) and Notifications is never wired → DEAD. The ALONE center is declared in NotificationsList but never sent."
+      - "NotifyLastForTeam (Survival.cs:367-384), called from OnDeath (cs:310-311), implements the last-of-side detection and matches QC surv_LastPlayerForTeam (exactly-one-living-same-status-ally → notify). BUT it returns early on `Notifications is null` (Survival.cs:369) and Notifications is never wired (no SurvivalNotifyHost) → DEAD. The ALONE center is declared in NotificationsList but never sent."
       - "Only the PlayerDies call site is ported; the QC ClientDisconnect and MakePlayerObserver call sites of surv_LastPlayerForTeam_Notify are not wired (host-side disconnect/forced-observe paths)."
     verification:
       - { kind: code, ref: "NotifyLastForTeam exists + is called from OnDeath, but returns early on `Notifications is null` (always null on live path). No disconnect/observer call sites.", result: fail }
     confidence: high
-    notes: "Unchanged since baseline: the detection LOGIC (last-of-side) exists but is dead (Notifications unwired) and only on the death path. logic stub / liveness dead."
+    notes: "Unchanged through Wave-5: the detection LOGIC (last-of-side) exists but is dead (Notifications unwired) and only on the death path. logic stub / liveness dead."

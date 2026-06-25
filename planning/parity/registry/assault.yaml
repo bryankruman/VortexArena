@@ -5,10 +5,10 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 18
   worst_gaps:
-    - "Match-end now works in CAMPAIGN but NOT in a normal multiplayer match. The per-frame WinningCondition_Assault is now genuinely LIVE (DriveGametypeFrame:1817 calls aslt.DriveFrame(Time) every tick, and TargetUtilities.IsCampaign is now ASSIGNED at GameWorld.cs:567, live via NetGame.Boot). So with g_campaign=1 a single-round Assault ENDS correctly on both the attacker-destroys-core path (DestroyFinalObjective campaign branch) and the defender-timelimit path (DriveFrame -> TimeLimitReached(isFinalRound:true)). BUT in a normal (non-campaign) match, round 1 destruction/timeout sets WinningTeam yet leaves MatchEnded=false because the second round never begins (StartSecondRound still has ZERO callers) — the QC `ent.cnt==1` second-round-end half is unmodeled. Won-but-not-ended limbo persists for non-campaign play."
-    - "No second round: StartSecondRound() still has ZERO live callers (only doc-comment refs in Assault.cs). Roles never swap; the faster-destroyer overall winner is never decided; the 5s AS_ROUND_DELAY freeze + ReadyRestart_force map reset + 'Starting second round' are unimplemented. EnableRounds() is deliberately NOT called for Assault (GameWorld.cs:1519 comment); Assault runs entirely off the per-frame DriveFrame — which is correct architecture, but the round-2 swap that DriveFrame's design depends on has no driver."
+    - "Second round is now GENUINELY LIVE (the big fix this wave). DestroyFinalObjective's round-1 non-campaign branch sets SecondRoundPending + _secondRoundDueAt = now + RoundDelay(5s); DriveFrame (live per-tick via OnEndFrame->DriveGametypeFrame:2034) fires StartSecondRound once the delay elapses, swapping AttackerTeam, re-arming the objective chain, and invoking OnSecondRoundRestart (assigned at GameWorld.cs:1707 to ResetMap(fakeRoundStart:true)). Roles swap, round-2 timelimit is set from FirstRoundDestroyTime, and the faster-destroyer overall winner is decided. Won-but-not-ended limbo is GONE for both attacker-win and defender-timelimit non-campaign paths. Verified by AssaultSpawnTests.AttackerWin_SchedulesSecondRound_ThenSwapsRolesAfterTheDelay."
+    - "Residual round machinery gaps: (1) the 5s AS_ROUND_DELAY freeze does NOT actually freeze the game — GameStopped is a computed property (Intermission||MatchEnded||Timeout) that ignores SecondRoundPending, so players keep moving/firing/respawning during the inter-round window (QC sets game_stopped=true). DriveFrame still correctly awards no win while pending. (2) info_player_attacker/defender spawn points keep their fixed red/blue team stamps and never swap with the roles (QC swaps g_saved_team.team_saved each round), so on round 2 the blue attackers spawn at the geographically-defender location. (3) roundstart turret team-swap still unimplemented."
     - "Default timelimit=20 (QC mapinfo default args 'timelimit=20') still not represented in the port's Assault mapinfo defaults; DriveFrame reads the live 'timelimit' cvar, so the defender-timelimit win only fires if a timelimit is actually configured. If timelimit=0 the round is undecidable except by objective destruction."
-    - "Presentation/UX still absent: no objective waypoint sprites, health bars, or radar icons; func_assault_wall consumed as a no-op (geometry never toggles with objective health); roundstart turret team-swap unimplemented; destructible heal/event_heal absent; objective .message centerprint absent; objective-aware spawn evalfunc absent; warmup-incompatible ReadLevelCvars override absent."
+    - "Presentation/UX still absent: no objective waypoint sprites, health bars, or radar icons; destructible heal/event_heal absent; objective .message centerprint absent; objective-aware spawn evalfunc absent; warmup-incompatible ReadLevelCvars override absent. (func_assault_wall is now FIXED — DriveWalls toggles its solid/model with objective health.)"
 features:
   - id: assault.mode.registration
     name: "Assault gametype registration + scoring layout (always red vs blue)"
@@ -47,7 +47,7 @@ features:
       - "common/gametypes/gametype/assault/sv_assault.qc:spawnfunc(func_assault_destructible)"
       - "common/gametypes/gametype/assault/sv_assault.qc:assault_setenemytoobjective"
     port_refs:
-      - "src/XonoticGodot.Server/GameWorld.cs:WireObjectiveSpawns (Assault arm, GameWorld.cs:1628)"
+      - "src/XonoticGodot.Server/GameWorld.cs:WireObjectiveSpawns (Assault arm, GameWorld.cs:1824)"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:ResolveObjectiveGraph"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:StageDecreaser"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:GametypeObjectiveSpawns (Assault block)"
@@ -68,7 +68,7 @@ features:
       - { kind: test, ref: "AssaultSpawnTests.cs:DeferredResolution_LinksDestructibleToDecreaserToObjective_RegardlessOfSpawnOrder", result: pass }
       - { kind: test, ref: "AssaultSpawnTests.cs:DecreaserDmg_DefaultsTo101_WhenUnset", result: pass }
     confidence: high
-    notes: "Unchanged this wave. QC INITPRIO_FINDTARGET resolution mirrored: decreasers/destructibles staged then linked by name after the whole lump; dangling targets are skipped (QC objerrors)."
+    notes: "Unchanged this wave. QC INITPRIO_FINDTARGET resolution mirrored: decreasers/destructibles/walls staged then linked by name after the whole lump; dangling targets are skipped (QC objerrors). ResolveObjectiveGraph now also stages walls + arms the chain (ResetObjectives + DriveWalls) at the end."
 
   - id: assault.objective.inactive_sentinel
     name: "Objective inactive-health sentinel (ASSAULT_VALUE_INACTIVE)"
@@ -129,7 +129,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:DamageDestructible"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:DecreaseObjective"
-      - "src/XonoticGodot.Server/GameWorld.cs:WireObjectiveSpawns (func_assault_destructible GtEventDamage, GameWorld.cs:1652-1661)"
+      - "src/XonoticGodot.Server/GameWorld.cs:WireObjectiveSpawns (func_assault_destructible GtEventDamage, GameWorld.cs:1855-1864)"
     constants:
       - { name: "team_gate", base: "actor.team == assault_attacker_team", port: "byTeam == State.AttackerTeam", match: true }
       - { name: "score_on_hit", base: "SCORE += dmg (or remaining hlth on kill)", port: "actor.ScoreFrags += removed", match: true }
@@ -186,28 +186,29 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:DestroyFinalObjective"
       - "src/XonoticGodot.Server/GameWorld.cs:IsMatchOver (Assault arm, GameWorld.cs:302)"
-      - "src/XonoticGodot.Server/GameWorld.cs:TryGetWinner (Assault arm, GameWorld.cs:2297)"
+      - "src/XonoticGodot.Server/GameWorld.cs:TryGetWinner (Assault arm, GameWorld.cs:2534)"
       - "src/XonoticGodot.Server/GameWorld.cs:Boot (TargetUtilities.IsCampaign assignment, GameWorld.cs:567)"
     constants:
       - { name: "winning_team_score_sentinel", base: "ST_ASSAULT_OBJECTIVES set to 666", port: "SetTeamScore(slot, 666)", match: true }
       - { name: "campaign_single_round_end", base: "ent.cnt == 1 || autocvar_g_campaign => WINNING_YES", port: "isFinalRound || Round>=1 || (IsCampaign?.Invoke() ?? false)", match: true }
+      - { name: "AS_ROUND_DELAY", base: "5 (inter-round freeze before round 2)", port: "RoundDelay = 5f (SecondRoundPending due-time)", match: true }
     status:
       logic: faithful
       values: faithful
-      timing: partial
+      timing: faithful
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL OPEN (non-campaign): in a normal multiplayer Assault, round-1 core destruction calls DestroyFinalObjective(elapsed, isFinalRound=State.Round>=1=false) with campaign=false, so it sets WinningTeam + the 666 sentinel + the OBJ_DESTROYED notification but DOES NOT set MatchEnded — it waits for a StartSecondRound that never comes (zero callers). Round-1 attacker-win therefore still leaves WinningTeam set but MatchEnded=false (won-but-not-ended limbo) for non-campaign play. This is the QC `ent.cnt==1` second-round-end half, which is unmodeled."
+      - "Residual (cosmetic-flow): the 5s AS_ROUND_DELAY between a round-1 attacker win and the round-2 swap is modeled as SecondRoundPending/_secondRoundDueAt but does NOT actually freeze the game — GameStopped (Intermission||MatchEnded||Timeout) ignores SecondRoundPending, so players keep moving/firing during the window (QC sets game_stopped=true). DriveFrame still correctly returns false (awards no win) while pending, so the match outcome is unaffected; only the visible freeze is missing."
     verification:
-      - { kind: code_read, ref: "Assault.cs:465 campaign = TargetUtilities.IsCampaign?.Invoke() ?? false; IsCampaign IS NOW ASSIGNED at GameWorld.cs:567 (=> Cvars.Bool('g_campaign')), live via NetGame.cs:605 _serverWorld.Boot. Campaign single-round end now genuinely terminates the match.", result: pass }
-      - { kind: code_read, ref: "Assault.cs:467 if(isFinalRound||Round>=1||campaign) — campaign branch now live; Round>=1 branch still unreachable (StartSecondRound has zero callers)", result: partial }
-      - { kind: test, ref: "AssaultSpawnTests.cs:WinPath_DestroyingTheChain_EndsWithAttackersWinning (asserts WinningTeam==Red only; still does NOT assert MatchEnded)", result: pass }
+      - { kind: code_read, ref: "Assault.cs:562 campaign = TargetUtilities.IsCampaign?.Invoke(); IsCampaign assigned at GameWorld.cs:567 (=> Cvars.Bool('g_campaign')), live via NetGame Boot. Campaign single-round end terminates the match.", result: pass }
+      - { kind: code_read, ref: "Assault.cs:564 if(isFinalRound||Round>=1||campaign) MatchEnded=true; else (round-1 non-campaign) SecondRoundPending=true + _secondRoundDueAt=now+RoundDelay (Assault.cs:582-583). DriveFrame fires StartSecondRound when due (Assault.cs:700-705) — LIVE via DriveGametypeFrame:2034.", result: pass }
+      - { kind: test, ref: "AssaultSpawnTests.cs:AttackerWin_SchedulesSecondRound_ThenSwapsRolesAfterTheDelay (asserts SecondRoundPending then role swap + restart after RoundDelay)", result: pass }
     confidence: high
-    notes: "FIXED this wave (campaign sub-gap): TargetUtilities.IsCampaign was DECLARED-BUT-UNASSIGNED (dead) in the baseline; the fix-up commit (4be8357) assigns it in GameWorld.Boot (live), so a single-round CAMPAIGN Assault now ends the match the instant the core is destroyed (QC autocvar_g_campaign branch). The round-1 NON-campaign won-but-not-ended limbo persists because StartSecondRound is still dead (see assault.round.second_round). liveness dead-campaign-branch -> live; overall still partial because the multiplayer second-round-end path is unmodeled."
+    notes: "FIXED this wave: the round-1 attacker win no longer dead-ends in won-but-not-ended limbo. It now schedules round 2 (SecondRoundPending) and DriveFrame (live per-tick) runs StartSecondRound after AS_ROUND_DELAY. liveness partial->live, timing partial->faithful. The only residual is the non-enforced 5s game freeze (cosmetic)."
 
   - id: assault.round.second_round
     name: "Two-round match: swap roles, re-clock round 2 to round 1 destruction time, 5s round delay"
@@ -218,27 +219,30 @@ features:
       - "common/gametypes/gametype/assault/sv_assault.qc:AS_ROUND_DELAY"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:StartSecondRound"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:DriveFrame (SecondRoundPending branch, Assault.cs:700)"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:AssaultState.FirstRoundDestroyTime"
+      - "src/XonoticGodot.Server/GameWorld.cs:Activate (aslt.OnSecondRoundRestart assignment, GameWorld.cs:1707)"
     constants:
-      - { name: "AS_ROUND_DELAY", base: "5 (seconds inter-round freeze)", port: "none", match: false }
-      - { name: "round2_timelimit", base: "ceil(time - AS_ROUND_DELAY - game_starttime)/60 minutes", port: "FirstRoundDestroyTime consulted by DriveFrame; but no caller starts round 2", match: false }
+      - { name: "AS_ROUND_DELAY", base: "5 (seconds inter-round freeze)", port: "RoundDelay = 5f", match: true }
+      - { name: "round2_timelimit", base: "ceil(time - AS_ROUND_DELAY - game_starttime)/60 minutes", port: "ceil(FirstRoundDestroyTime/60) min; DriveFrame uses FirstRoundDestroyTime sec directly", match: true }
     status:
-      logic: stub
-      values: missing
-      timing: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
       presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL DEAD: StartSecondRound() has ZERO live callers (grep across src/ tests/ game/ = only doc-comment references inside Assault.cs). DriveFrame is now driven per-frame (DriveGametypeFrame:1817), but nothing flips to round 2 when round 1 is decided — DriveFrame/DestroyFinalObjective record FirstRoundDestroyTime and broadcast OBJ_DESTROYED, then expect a StartSecondRound that never fires. Roles never swap; the faster-destroyer overall winner is never decided."
-      - "The 5s AS_ROUND_DELAY freeze (as_round entity nextthink) + ReadyRestart_force map reset + bprint('Starting second round...') + the timelimit bump (autocvar_timelimit + AS_ROUND_DELAY/60) are not implemented."
-      - "Round 2's timelimit (= round 1 destruction time) is recorded as FirstRoundDestroyTime and consulted by DriveFrame, but no caller ever sets State.Round=1 so the round-2 branch is unreachable."
+      - "Residual: the 5s AS_ROUND_DELAY freeze is timed correctly (DriveFrame waits _secondRoundDueAt) but does NOT set game_stopped — play is not actually frozen during the window (see assault.win.attacker_round). bprint('Starting second round...') is not emitted (cosmetic)."
+      - "Residual: info_player_attacker/defender spawn points keep their fixed red/blue team stamps and are NOT swapped with the roles on round 2 (QC swaps g_saved_team.team_saved in assault_new_round), so the new (blue) attackers spawn at the geographically-defender location (see assault.spawns.attacker_defender)."
+      - "Residual: roundstart turret team-swap is still unimplemented (see assault.turret.roundstart_teamswap)."
     verification:
-      - { kind: code_read, ref: "grep StartSecondRound across src/ tests/ game/: ZERO live callers outside Assault.cs (doc-comment + def only)", result: fail }
+      - { kind: code_read, ref: "DriveFrame Assault.cs:700-705: if(SecondRoundPending){ if(now>=_secondRoundDueAt) StartSecondRound(); return false; } — StartSecondRound is LIVE-called per-tick. OnSecondRoundRestart assigned GameWorld.cs:1707 => GameStartTime=Time; ResetMap(fakeRoundStart:true).", result: pass }
+      - { kind: test, ref: "AssaultSpawnTests.cs:AttackerWin_SchedulesSecondRound_ThenSwapsRolesAfterTheDelay (Round->1, AttackerTeam Red->Blue, chain re-armed, restart fired)", result: pass }
     confidence: high
-    notes: "Unchanged liveness this wave. POJO API (StartSecondRound + FirstRoundDestroyTime + DriveFrame's round-2 branch) exists and DriveFrame is now LIVE, but the round-2 swap that the design depends on has no driver. EnableRounds() is deliberately NOT called for Assault (GameWorld.cs:1519 comment — correct, since QC Assault has no generic round_handler), so the round handler can't drive the swap either; a dedicated as_round timer + ReadyRestart bridge is needed."
+    notes: "FIXED this wave (the headline change): StartSecondRound went from ZERO live callers (dead) to live, fired by DriveFrame's SecondRoundPending branch once AS_ROUND_DELAY elapses; OnSecondRoundRestart now does the real ReadyRestart_force-equivalent map reset (ResetMap(fakeRoundStart:true) at GameWorld.cs:1707). Roles swap, FirstRoundDestroyTime clocks round 2, the chain re-arms. logic stub->faithful, values missing->faithful, timing missing->faithful, liveness dead->live. Remaining gaps are the non-enforced freeze, spawn-team swap, and turret swap (tracked in their own rows)."
 
   - id: assault.win.defender_timelimit
     name: "Timelimit elapses without core destruction -> defenders win"
@@ -248,7 +252,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:TimeLimitReached"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:DriveFrame"
-      - "src/XonoticGodot.Server/GameWorld.cs:DriveGametypeFrame (Assault arm, GameWorld.cs:1817)"
+      - "src/XonoticGodot.Server/GameWorld.cs:DriveGametypeFrame (Assault arm, GameWorld.cs:2034)"
     constants:
       - { name: "default_timelimit_min", base: "20 (timelimit=20 default args)", port: "reads live cvar 'timelimit'*60; default 20 not asserted in mapinfo defaults", match: false }
     status:
@@ -257,17 +261,16 @@ features:
       timing: faithful
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL OPEN (non-campaign multi-round): DriveFrame is now driven LIVE per-frame (DriveGametypeFrame:1817 → aslt.DriveFrame(Time), OnEndFrame is the live per-tick hook). In CAMPAIGN, when the timelimit elapses with the core intact, TimeLimitReached(isFinalRound:true) sets MatchEnded and the defenders win — fully wired. BUT in a normal (non-campaign) round 1, TimeLimitReached(isFinalRound:false) sets WinningTeam=DefenderTeam yet leaves MatchEnded=false (it expects a second round), so the match doesn't terminate — same StartSecondRound dependency as assault.win.attacker_round."
-      - "The default timelimit of 20 minutes (QC mapinfo default args 'timelimit=20') is still not represented in the port's Assault mapinfo defaults; DriveFrame reads the live 'timelimit' cvar, so if timelimit=0 the defender-timelimit win can't fire and the round is decidable only by objective destruction."
+      - "STILL OPEN (values only): the default timelimit of 20 minutes (QC mapinfo default args 'timelimit=20') is not represented in the port's Assault mapinfo defaults; DriveFrame reads the live 'timelimit' cvar, so if timelimit=0 the defender-timelimit win can't fire and the round is decidable only by objective destruction."
     verification:
-      - { kind: code_read, ref: "GameWorld.cs:1817 case Assault aslt: aslt.GameStartTime=GameStartTime; aslt.DriveFrame(Time); — DriveGametypeFrame is called from OnEndFrame (GameWorld.cs:1306), wired via Simulation.EndFrame=OnEndFrame (GameWorld.cs:621). DriveFrame is LIVE per-tick.", result: pass }
-      - { kind: code_read, ref: "Assault.cs:569 TimeLimitReached(isFinalRound: State.Round>=1 || IsCampaign) — campaign ends the match; non-campaign round 1 sets WinningTeam but not MatchEnded (StartSecondRound dead)", result: partial }
+      - { kind: code_read, ref: "GameWorld.cs:2034 case Assault aslt: aslt.GameStartTime=GameStartTime; aslt.DriveFrame(Time); — DriveGametypeFrame called from OnEndFrame (GameWorld.cs:1385), wired via Simulation.EndFrame=OnEndFrame (GameWorld.cs:663) -> SimulationLoop.EndFrame.Invoke (72Hz). DriveFrame is LIVE per-tick.", result: pass }
+      - { kind: code_read, ref: "Assault.cs:663 TimeLimitReached guards (MatchEnded||SecondRoundPending). DriveFrame round-1 non-final and round-2 both reach it: round 2's limit = FirstRoundDestroyTime; defender win is terminal in both rounds (QC has no second round off a defender timelimit win).", result: pass }
     confidence: high
-    notes: "FIXED this wave (liveness + logic + timing): baseline had DriveFrame with ZERO callers (dead) and no Assault arm in DriveGametypeFrame; the fix-up commit (4be8357) added the live per-frame Assault arm AND wired IsCampaign. The defender-timelimit win now genuinely runs every frame and terminates a CAMPAIGN match correctly. liveness dead->partial; logic stub->faithful; timing missing->faithful. values still partial (timelimit=20 default not in mapinfo). Remaining non-campaign limbo is the shared StartSecondRound gap."
+    notes: "FIXED this wave (liveness): the round-1 non-campaign defender-timelimit win no longer dead-ends — TimeLimitReached now guards SecondRoundPending and the round-2 path is reachable via the live StartSecondRound. In round 2 the limit is FirstRoundDestroyTime, so the faster-destroyer comparison resolves. liveness partial->live. values still partial (timelimit=20 default not in mapinfo)."
 
   - id: assault.spawns.attacker_defender
     name: "info_player_attacker / info_player_defender team spawn points"
@@ -275,13 +278,14 @@ features:
     base_refs:
       - "common/gametypes/gametype/assault/sv_assault.qc:spawnfunc(info_player_attacker)"
       - "common/gametypes/gametype/assault/sv_assault.qc:spawnfunc(info_player_defender)"
+      - "common/gametypes/gametype/assault/sv_assault.qc:assault_new_round (g_saved_team team swap)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:275-276 (info_player_attacker/defender registration)"
     constants:
       - { name: "attacker_team", base: "NUM_TEAM_1 (red)", port: "Teams.Red", match: true }
       - { name: "defender_team", base: "NUM_TEAM_2 (blue)", port: "Teams.Blue", match: true }
     status:
-      logic: faithful
+      logic: partial
       values: faithful
       timing: na
       presentation: na
@@ -290,11 +294,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Spawns are stamped with a fixed team and retagged to info_player_deathmatch, but because roles never swap (no second round), the spawn-team-swap-per-round behavior is never exercised; attacker is permanently red. Unchanged this wave."
+      - "STILL OPEN: spawns are stamped with a FIXED team (red=attacker/blue=defender) at map-load and retagged to info_player_deathmatch. The round-2 role swap is now live (StartSecondRound flips AttackerTeam), but the SPAWN POINTS themselves are never re-teamed (QC assault_new_round swaps g_saved_team.team_saved on the spawn edicts too). So on round 2 the new (blue) attackers spawn at the geographically-defender location — the spawns don't follow the role swap. Round-1 placement is correct; round-2 placement is geographically wrong."
     verification:
-      - { kind: test, ref: "AssaultSpawnTests.cs:InfoPlayerAttackerDefender_BecomeTeamSpawnPoints", result: pass }
+      - { kind: test, ref: "AssaultSpawnTests.cs:InfoPlayerAttackerDefender_BecomeTeamSpawnPoints (round-1 stamping only)", result: pass }
+      - { kind: code_read, ref: "MapObjectsRegistry.cs:275-276 stamps e.Team Red/Blue once at load; no per-round re-stamp anywhere (StartSecondRound/ResetMap do not re-team spawn edicts)", result: fail }
     confidence: high
-    notes: "QC swaps these teams each round via g_saved_team; the port has no round swap so the spawns stay red=attacker/blue=defender. Unchanged this wave."
+    notes: "Improved this wave (the role swap it depends on is now live) but the spawn-point geographic swap is still missing. QC swaps the spawn entities' saved team each round so the attackers always spawn at the attacker location; the port leaves spawns red/blue forever."
 
   - id: assault.notify.role_and_destroyed
     name: "Per-spawn attacking/defending centerprint + objective-destroyed broadcast"
@@ -321,12 +326,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Minor: ASSAULT_OBJ_DESTROYED is broadcast from DestroyFinalObjective's round-1 fall-through branch (Assault.cs:477) — the live non-campaign path — but in QC this notification is paired with actually starting round 2. The port sends the notification then expects a StartSecondRound that never comes (see assault.round.second_round), so the 'Objective destroyed in Xs!' message fires but no second round follows. The message itself is correct and live. (In campaign the OBJ_DESTROYED message is correctly NOT sent — the match ends instead.)"
+      - "Minor (cosmetic): QC pairs CENTER_ASSAULT_OBJ_DESTROYED with bprint('Starting second round...'); the port emits the centerprint (correct text/args) but not the chat bprint line. The notification is now correctly followed by an actual round 2 (StartSecondRound is live), so the message is no longer a dead-end."
     verification:
-      - { kind: code_read, ref: "Assault.cs:401 MutatorHooks.PlayerSpawn.Add(OnPlayerSpawn); fired live on every spawn/respawn; Assault.cs:425-428 Send(One, player, Center, ASSAULT_ATTACKING/DEFENDING)", result: pass }
-      - { kind: code_read, ref: "Assault.cs:477 Send(All, null, Center, ASSAULT_OBJ_DESTROYED, ceil(elapsed)) reached on the live round-1-win (non-campaign) branch", result: pass }
+      - { kind: code_read, ref: "Assault.cs:497-498 MutatorHooks.PlayerSpawn.Add(OnPlayerSpawn); fired live on every spawn/respawn; Assault.cs:523-525 Send(One, player, Center, ASSAULT_ATTACKING/DEFENDING)", result: pass }
+      - { kind: code_read, ref: "Assault.cs:574 Send(All, null, Center, ASSAULT_OBJ_DESTROYED, ceil(elapsed)) on the live round-1-win (non-campaign) branch, now followed by a live second round", result: pass }
     confidence: high
-    notes: "Unchanged this wave (already FIXED in the prior wave). Role centerprint fires per spawn keyed on the live attacker team; ASSAULT_OBJ_DESTROYED sent on the live non-campaign round-1 destruction branch. Text/args match Base exactly."
+    notes: "Role centerprint fires per spawn keyed on the live (swappable) attacker team; ASSAULT_OBJ_DESTROYED sent on the live round-1 destruction branch. Text/args match Base exactly. Now genuinely paired with a real round-2 swap (was a dead-end last wave)."
 
   - id: assault.objective.waypoint_sprite
     name: "Objective waypoint sprites (defend/push/destroy + health bars + radar icon)"
@@ -361,24 +366,29 @@ features:
       - "common/gametypes/gametype/assault/sv_assault.qc:spawnfunc(func_assault_wall)"
       - "common/gametypes/gametype/assault/sv_assault.qc:assault_wall_think"
     port_refs:
-      - "src/XonoticGodot.Server/GameWorld.cs:WireObjectiveSpawns (func_assault_wall case, GameWorld.cs:1666)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:Wall"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:StageWall"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:DriveWalls"
+      - "src/XonoticGodot.Server/GameWorld.cs:WireObjectiveSpawns (func_assault_wall case, GameWorld.cs:1869-1880)"
     constants:
-      - { name: "think_interval", base: "0.2 s (nextthink = time + 0.2)", port: "none", match: false }
+      - { name: "think_interval", base: "0.2 s (nextthink = time + 0.2)", port: "per-frame (DriveWalls runs every tick from DriveFrame)", match: false }
+      - { name: "hide_predicate", base: "GetResource(enemy, RES_HEALTH) < 0", port: "ObjectiveRef.Health < 0f", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
+      logic: faithful
+      values: faithful
+      timing: partial
+      presentation: faithful
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL a no-op: func_assault_wall edicts are consumed (GameWorld.cs:1666-1670, then RetirePlaceholder) with no behavior. The wall that should hide (model='' + SOLID_NOT) once its objective is destroyed and reappear otherwise does neither, so a path that QC opens by destroying an objective stays blocked (or vice versa)."
+      - "Timing: QC re-evaluates each func_assault_wall on a 0.2s nextthink; the port re-evaluates every tick (DriveWalls is called from the live per-frame DriveFrame) but only re-stamps the edict on a state transition. Functionally equivalent (the visible/solid toggle happens at most ~0.2s sooner); cheap (transition-gated). Not a behavioral divergence."
     verification:
-      - { kind: code_read, ref: "GameWorld.cs:1666 func_assault_wall case is a no-op (edict consumed by RetirePlaceholder)", result: fail }
+      - { kind: test, ref: "AssaultSpawnTests.cs:FuncAssaultWall_HidesWhenItsObjectiveIsDestroyed_AndIsSolidWhileItLives (solid while objective lives -> non-solid + model='' once destroyed)", result: pass }
+      - { kind: code_read, ref: "DriveWalls (Assault.cs:328-352) toggles edict.Model/edict.Solid (Bsp<->Not) on objective health; DriveFrame calls DriveWalls every tick (Assault.cs:692); StageWall staged from GameWorld.cs:1880 and linked in ResolveObjectiveGraph.", result: pass }
     confidence: high
-    notes: "Unchanged this wave. Recon flagged LOW priority; impacts maps that gate geometry on objective state."
+    notes: "FIXED this wave: was a missing/dead no-op (edict consumed by RetirePlaceholder). Now the Wall POJO + StageWall + DriveWalls faithfully hide the wall (model='' + SOLID_NOT) once its objective is destroyed and keep it SOLID_BSP/visible otherwise, re-resolving the brush bounds on re-show. logic/values/presentation missing->faithful, liveness dead->live; timing partial (per-frame vs 0.2s think, parity-neutral)."
 
   - id: assault.turret.roundstart_teamswap
     name: "Roundstart turret team-swap + respawn (and as TurretSpawn team seeding)"
@@ -398,11 +408,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL MISSING: turrets are never team-swapped/respawned at roundstart and unteamed turrets are not seeded to the attacker team; with no second round this is moot today, but turrets also won't follow the attacker/defender split correctly."
+      - "STILL MISSING: turrets are never team-swapped/respawned at roundstart and unteamed turrets are not seeded to the attacker team. Now that the round-2 swap is LIVE, this is no longer moot — round-2 turrets keep their round-1 teams (so a turret that defended for red in round 1 still fights for red in round 2 instead of swapping to defend for the new defenders). target_assault_roundstart is consumed as a no-op (GameWorld.cs:1885-1888)."
     verification:
-      - { kind: code_read, ref: "grep: no Assault turret team-swap; no as TurretSpawn hook in the port", result: fail }
-    confidence: medium
-    notes: "Unchanged this wave. Tied to the dead round-restart machinery (assault_roundstart_use runs from ReadyRestart_force)."
+      - { kind: code_read, ref: "GameWorld.cs:1885 target_assault_roundstart case is a no-op; grep: no Assault turret team-swap; no as TurretSpawn hook in the port", result: fail }
+    confidence: high
+    notes: "Unchanged this wave (still unimplemented), but its impact rose from moot to real now that round 2 actually runs. assault_roundstart_use runs from ReadyRestart_force; the port's OnSecondRoundRestart does the map reset but not the turret swap."
 
   - id: assault.bot.objective_role
     name: "Bot offense/defense role rating the assault destructible objectives"
@@ -412,7 +422,7 @@ features:
       - "common/gametypes/gametype/assault/sv_assault.qc:havocbot_role_ast_defense"
       - "common/gametypes/gametype/assault/sv_assault.qc:havocbot_goalrating_ast_targets"
     port_refs:
-      - "src/XonoticGodot.Server/Bot/BotObjectiveRoles.cs:RoleAssault"
+      - "src/XonoticGodot.Server/Bot/BotObjectiveRoles.cs:RoleAssault (BotObjectiveRoles.cs:340)"
       - "src/XonoticGodot.Server/Bot/BotRoles.cs:ChooseRole (assault/as, BotRoles.cs:101)"
     constants:
       - { name: "role_timeout_s", base: "120 (havocbot_role_timeout = time+120)", port: "none (collapsed role, no timeout)", match: false }
@@ -429,9 +439,9 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Port collapses offense+defense into one RoleAssault that simply heads for the NEAREST func_assault_destructible (attacker push / defender hold), without the QC active-objective filter, PVS-best-waypoint pick, 120s role timeout, or havocbot_attack_time commitment; rating radii/weights are approximate, not the QC values. Unchanged this wave."
+      - "Port collapses offense+defense into one RoleAssault that heads for the NEAREST func_assault_destructible (attacker push / defender hold), without the QC active-objective filter, PVS-best-waypoint pick, 120s role timeout, or havocbot_attack_time commitment; rating radii/weights are approximate, not the QC values. Unchanged this wave."
     verification:
-      - { kind: code_read, ref: "BotRoles.cs:101 dispatches RoleAssault for 'assault'/'as' (live)", result: pass }
+      - { kind: code_read, ref: "BotRoles.cs:101 dispatches RoleAssault for 'assault'/'as' (live); BotObjectiveRoles.cs:340-348 rates nearest destructible, attacker RatingGenerator(20000) / defender *0.7", result: pass }
     confidence: medium
     notes: "Unchanged this wave. Behaviorally bots do push/hold the walls, but the rating fidelity (only-active targets, attack-time commit) is approximate."
 
@@ -504,8 +514,8 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL MISSING: QC (as, ReadLevelCvars) forces warmup_stage = 0 and sv_ready_restart_after_countdown = 0 because Assault is incompatible with warmup. The port's Assault does not special-case the warmup flow (it deliberately skips EnableRounds, but does not force-disable warmup). ReadyRestart_Deny (the round-2 gate; QC returns true unless g_campaign) is also unimplemented."
+      - "STILL MISSING: QC (as, ReadLevelCvars) forces warmup_stage = 0 and sv_ready_restart_after_countdown = 0 because Assault is incompatible with warmup. The port's Assault does not special-case the warmup flow. ReadyRestart_Deny (the round-2 gate; QC returns true unless g_campaign) is also unimplemented — the port's round-2 swap is driven by the in-Assault SecondRoundPending timer (which works), so the ReadyRestart_Deny gate is structurally unneeded, but the warmup_stage/ready_restart_after_countdown forcing is genuinely absent."
     verification:
-      - { kind: code_read, ref: "grep warmup in Assault.cs: none; no (as, ReadLevelCvars)/(as, ReadyRestart_Deny) equivalent", result: fail }
+      - { kind: code_read, ref: "grep warmup in Assault.cs: none; no (as, ReadLevelCvars) equivalent forcing warmup_stage/sv_ready_restart_after_countdown", result: fail }
     confidence: medium
-    notes: "Unchanged this wave. Config/flow divergence tied to the round machinery; low gameplay impact today, but it is a distinct Base authority hook."
+    notes: "Unchanged this wave. Config/flow divergence; low gameplay impact today, but a distinct Base authority hook. The ReadyRestart_Deny half is mooted by the port's own round-timer architecture, but the warmup-disable half is a real gap."
